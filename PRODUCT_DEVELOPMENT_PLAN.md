@@ -1,0 +1,1495 @@
+# 小说创作平台 - 本地版产品规划 v4
+
+## 1. 产品定位
+
+构建一个面向个人创作者的本地版 AI 长篇小说创作工作台。
+
+当前版本不做云端账号、团队协作、在线发布、付费体系，优先解决一个核心问题：
+
+> 让 AI 可以全程参与长篇小说创作，同时保留想象力、发散性和意外生长，并通过本地记忆系统避免长篇写作失控。
+
+这个产品不是传统意义上的“大纲管理器”，也不是简单的“AI 续写器”。它更像一个本地创作引擎：
+
+- AI 负责构思、发散、正文生成、局部改写、审稿、总结、状态提取。
+- 用户负责方向选择、审美判断、定稿确认、取舍和最终控制。
+- 系统负责记忆、版本、上下文组织、模型调度、设定一致性和创作安全网。
+
+## 2. 核心判断
+
+全程 AI 创作是可行的，但不能采用“先规划完整 500 章，然后按表施工”的思路。
+
+长篇小说的生命力来自不确定性。人物会在写作中长出来，伏笔会变形，支线会突然变重要，原本的结局也可能被更好的想法替代。因此产品应该遵循：
+
+- 远景模糊，近景清晰。
+- 先发散，再收束。
+- AI 可以大胆提出可能性，但只有用户确认后的内容才能进入正式世界。
+- 大纲、角色状态、伏笔管理退居后台，成为安全网，而不是创作的枷锁。
+- 系统不能把小说写成任务清单。
+
+## 3. 本地版边界
+
+### 3.1 当前版本做什么
+
+- 本地浏览器运行前端 + FastAPI 后端服务。
+- 数据存储使用本地 MySQL 5.7，通过 FastAPI REST API 访问。
+- 用户自行配置大模型 API Key（前端直连 AI 供应商，不经过后端）。
+- 支持多个模型供应商配置。
+- 支持本地项目、章节、草稿、定稿、版本、记忆库。
+- 支持 TXT/Markdown/JSON 导出备份（后端提供全量导入导出 API）。
+- 支持选题材与市场观察入口，但第一版以手动导入和公开元数据整理为主。
+
+### 3.2 当前版本不做什么
+
+- 不做云端同步。
+- 不做用户账号。
+- 不做在线发布。
+- 不做 AI Gateway（AI 请求前端直连供应商，不经过后端代理）。
+- 不抓取付费正文、登录后内容或受限制内容。
+- 不把热门小说正文作为训练语料。
+- 不承诺自动生成商业精品长篇。
+- 不做重型爬虫平台。
+
+## 4. 产品原则
+
+### 4.1 创作优先
+
+用户进入产品后看到的首先应该是创作现场，而不是复杂后台。
+
+主界面应该围绕三件事：
+
+- 当前正在写什么。
+- AI 能给出哪些有想象力的可能性。
+- 已经定稿的事实是什么。
+
+### 4.2 保留未知
+
+不要一开始强制生成完整全书大纲。更好的结构是：
+
+- 未来 3-10 章：相对清晰。
+- 当前卷：有方向和压力。
+- 全书远景：只有主题、命运压力、核心矛盾和可能结局。
+
+### 4.3 先野后稳
+
+AI 创作分两层：
+
+- 发散层：脑洞、反转、支线、人物秘密、场景、对白、设定变体。
+- 正史层：用户确认后的章节、设定、人物状态、伏笔状态。
+
+发散层可以大胆，正史层必须稳定。
+
+### 4.4 不污染正式稿
+
+所有 AI 生成内容默认进入候选区、草稿区或版本区。
+
+只有用户点击确认后，内容才进入：
+
+- 正式章节。
+- 正式设定。
+- 角色状态。
+- 伏笔状态。
+- 长期记忆库。
+
+### 4.5 结构服务创作
+
+三级大纲、章节摘要、角色状态、伏笔提醒都有用，但它们不应该成为作者的主要负担。
+
+系统应该自动整理，用户只需要在关键节点确认。
+
+## 5. 用户核心流程
+
+### 5.1 选题与创作种子
+
+用户可以从两个入口开始：
+
+1. 自己输入一个想法。
+2. 进入“选题雷达”，查看热门题材和市场趋势。
+
+系统生成 3-8 个故事种子，每个种子包括：
+
+- 题材类型。
+- 核心卖点。
+- 主角欲望。
+- 世界压力。
+- 开局钩子。
+- 主要情绪价值。
+- 潜在差异化。
+- 风险提示。
+
+用户选择一个种子进入创作。
+
+### 5.2 发散设定
+
+AI 基于种子生成多组可能性：
+
+- 世界观方向。
+- 主角版本。
+- 反派版本。
+- 关键秘密。
+- 关系张力。
+- 题材混搭方案。
+- 可能的意外转向。
+- 风格样章。
+
+这些内容先进入“可能性池”，不直接成为正式设定。
+
+### 5.3 建立创作圣经
+
+用户确认后，系统形成最小创作圣经：
+
+- 作品一句话。
+- 题材与目标读者。
+- 主角核心欲望。
+- 核心冲突。
+- 世界规则。
+- 风格要求。
+- 禁忌与不想写的方向。
+- 已确认人物。
+- 已确认设定。
+
+### 5.4 滚动大纲
+
+系统不强制全书完整大纲，而是维护三层结构：
+
+- 远景：主题、最终压力、可能结局。
+- 中景：当前卷的矛盾、阶段目标、主要势力。
+- 近景：未来 3-10 章的章节目标。
+
+每写完一章，AI 可以提出：
+
+- 继续原路线。
+- 人物失控路线。
+- 更商业爽点路线。
+- 更黑暗路线。
+- 更文学化路线。
+- 意外反转路线。
+
+用户选择后，滚动更新近景大纲。
+
+### 5.5 章节生成
+
+每章可以生成多个候选版本，而不是直接覆盖正文。
+
+推荐默认候选：
+
+- 稳妥推进版。
+- 强冲突版。
+- 意外转向版。
+- 文学气质版。
+
+用户可以：
+
+- 选择一个版本作为草稿。
+- 融合多个版本。
+- 局部重写。
+- 让 AI 继续扩写。
+- 手动编辑。
+
+### 5.6 定稿入库
+
+用户点击“确认定稿”后：
+
+- 正文进入正式章节表。
+- 自动生成章节摘要。
+- 自动提取角色状态变化。
+- 自动提取新增事实。
+- 自动识别新增伏笔和回收伏笔。
+- 生成“待确认变更”。
+
+用户可以一次性确认、逐条确认或全部忽略。
+
+只有确认后的内容进入长期记忆库。
+
+## 6. 功能模块
+
+## 6.1 项目库
+
+用于管理本地小说项目。
+
+字段：
+
+- 项目名称。
+- 题材。
+- 简介。
+- 目标字数。
+- 目标章节数。
+- 当前章节。
+- 创建时间。
+- 更新时间。
+- 默认模型配置。
+
+功能：
+
+- 新建项目。
+- 打开项目。
+- 删除项目。
+- 导出项目。
+- 导入项目备份。
+
+## 6.2 多模型配置
+
+多模型配置是底层核心能力。
+
+小说创作不应该只绑定一个模型。不同模型适合不同任务：
+
+- 正文创作。
+- 脑洞发散。
+- 大纲规划。
+- 审稿检查。
+- 摘要压缩。
+- 结构化提取。
+- 选题分析。
+- 润色改写。
+
+### 6.2.1 Provider 类型
+
+第一版支持三类：
+
+1. Claude 原生接口。
+2. OpenAI-compatible 通用接口。
+3. 自定义接口配置。
+
+内置预设：
+
+- OpenAI。
+- Anthropic Claude。
+- DeepSeek。
+- 通义千问 / Qwen。
+- Kimi / Moonshot。
+- 腾讯混元。
+- 百度千帆 / 文心。
+- 自定义 OpenAI-compatible。
+
+注意：具体模型 ID、base URL、鉴权方式可能随平台变化，开发时以各平台官方文档为准。产品层只保存可配置项，不把模型写死。
+
+### 6.2.2 配置字段
+
+```js
+{
+  id: 'uuid',
+  name: 'Claude 主创',
+  providerType: 'anthropic' | 'openai-compatible' | 'custom',
+  baseURL: '',
+  apiKey: '',
+  model: '',
+  stream: true,
+  maxContextTokens: 200000,
+  maxOutputTokens: 4096,
+  temperature: 0.8,
+  topP: 0.9,
+  supportsJSON: true,
+  supportsStreaming: true,
+  notes: '',
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+```
+
+### 6.2.3 任务模型映射
+
+```js
+{
+  projectId: 'uuid',
+  writingModelId: 'uuid',
+  brainstormModelId: 'uuid',
+  outlineModelId: 'uuid',
+  auditModelId: 'uuid',
+  summaryModelId: 'uuid',
+  extractionModelId: 'uuid',
+  marketModelId: 'uuid',
+  polishModelId: 'uuid'
+}
+```
+
+### 6.2.4 模型试写对比
+
+同一个章节目标可以让多个模型各写一版。
+
+对比维度：
+
+- 想象力。
+- 情节推进。
+- 文字风格。
+- 人物声音。
+- 商业爽点。
+- 可继续性。
+
+用户可以选择一个版本，或让 AI 融合多个版本。
+
+## 6.3 选题雷达
+
+选题雷达是“市场观察 + 创意孵化”，不是热门小说复制器。
+
+### 6.3.1 目标
+
+- 观察不同平台的热门题材。
+- 按类型聚类。
+- 给出每个题材下 10-20 本作品卡片。
+- 提炼题材卖点、读者情绪、开局钩子和差异化机会。
+- 帮助 AI 生成更贴近市场但不抄袭的原创故事种子。
+
+### 6.3.2 数据来源
+
+v0.4 实现方案：直接并抓取已知可读的排行榜页面，无需用户手动粘贴。
+
+已知可读平台：
+
+- 书旗小说（shuqi.com/rank）
+- 纵横中文网（zongheng.com/rank.html）
+- 潇湘书院（xxsy.net/rank）
+- 52书库（52shuku.net/Top）
+- 小说阅读网（m.readnovel.com/rank）
+
+技术方案：httpx.AsyncClient + asyncio.gather 并发请求 → 正则提取书名/作者/分类/简介 → 写入 market_items 表。新增平台通过扩展 KNOWN_RANK_PAGES 列表即可。
+
+搜索引擎中转方案（DuckDuckGo HTML 搜索）经实测不可用，返回 202 状态码，已被放弃。
+
+### 6.3.3 采集边界
+
+只采集公开可见页面的元数据：
+
+- 书名、作者名、平台、分类、标签。
+- 简介（meta description 或页面公开摘要）。
+- 榜单位置、字数、连载状态、热度指标。
+- 公开 URL、抓取时间。
+
+不采集：
+
+- 正文、付费章节。
+- 登录后内容。
+- 受平台 robots.txt 或条款禁止抓取的内容。
+- 任何需要绕过限制才能获得的数据。
+
+### 6.3.4 输出内容
+
+每个题材输出：
+
+- 热门程度。
+- 代表作品 10-20 本。
+- 共同卖点。
+- 常见开局。
+- 常见主角类型。
+- 常见冲突结构。
+- 读者情绪价值。
+- 同质化风险。
+- 可创新空间。
+- 推荐原创切入角度。
+
+### 6.3.5 作品卡片
+
+```js
+{
+  id: 'uuid',
+  platform: 'qidian' | 'fanqie' | 'qimao' | 'shuqi' | 'manual',
+  title: '',
+  author: '',
+  category: '',
+  tags: [],
+  rankName: '',
+  rankPosition: 1,
+  intro: '',
+  wordCount: 0,
+  status: 'serializing' | 'completed' | 'unknown',
+  heatText: '',
+  url: '',
+  capturedAt: timestamp,
+  aiSummary: '',
+  extractedHooks: [],
+  extractedAppeals: [],
+  plagiarismRiskNotes: ''
+}
+```
+
+### 6.3.6 选题生成
+
+基于选题雷达，AI 生成原创选题时必须遵守：
+
+- 不复刻具体作品设定。
+- 不借用具体角色、剧情、专有名词。
+- 只抽象题材趋势、读者情绪和结构机会。
+- 每个选题必须给出差异化理由。
+
+## 6.4 创作种子
+
+创作种子是项目的原点。
+
+字段：
+
+- 题材。
+- 一句话故事。
+- 主角。
+- 主角欲望。
+- 核心矛盾。
+- 世界压力。
+- 开局钩子。
+- 情绪价值。
+- 差异化。
+- 风格目标。
+- 禁写方向。
+
+功能：
+
+- AI 生成多个种子。
+- 用户收藏种子。
+- 种子对比。
+- 从种子生成创作圣经。
+
+## 6.5 可能性池
+
+可能性池用于保存 AI 的发散内容。
+
+它不是正式设定，只是创作燃料。
+
+类型：
+
+- 人物秘密。
+- 支线。
+- 反转。
+- 场景。
+- 台词。
+- 设定变体。
+- 伏笔候选。
+- 结局候选。
+- 风格样段。
+
+字段：
+
+```js
+{
+  id: 'uuid',
+  projectId: 'uuid',
+  type: 'character_secret' | 'plot_twist' | 'scene' | 'dialogue' | 'setting' | 'ending' | 'style_sample',
+  title: '',
+  content: '',
+  source: 'ai' | 'user' | 'market-radar',
+  status: 'candidate' | 'accepted' | 'rejected' | 'archived',
+  relatedChapter: null,
+  relatedCharacters: [],
+  createdAt: timestamp
+}
+```
+
+## 6.6 创作圣经
+
+创作圣经只保存确认后的核心信息。
+
+包括：
+
+- 作品定位。
+- 风格圣经。
+- 世界规则。
+- 主题与母题。
+- 人物档案。
+- 重要关系。
+- 正式设定。
+- 禁忌设定。
+
+旧方案中的世界观圣经保留，但需要增加“风格圣经”和“主题母题”。
+
+## 6.7 角色系统
+
+角色不能只像 RPG 存档。
+
+角色状态分两层：
+
+### 6.7.1 硬状态
+
+- 位置。
+- 身体状态。
+- 持有物。
+- 身份。
+- 所属势力。
+- 已知信息。
+- lastUpdatedChapter。
+
+### 6.7.2 软状态
+
+- 当前欲望。
+- 恐惧。
+- 误解。
+- 执念。
+- 情绪状态。
+- 与主角关系。
+- 秘密。
+- 人物弧光阶段。
+
+AI 写作时，硬状态防止错误，软状态保证人物有生命力。
+
+## 6.8 伏笔与线索系统
+
+伏笔不做硬性截止日期。
+
+状态：
+
+- candidate：候选伏笔。
+- planted：已埋设。
+- developing：正在推进。
+- transformed：已变形。
+- resolved：已回收。
+- abandoned：放弃。
+
+字段：
+
+- 内容。
+- 首次出现章节。
+- 关联角色。
+- 关联设定。
+- 可能回收窗口。
+- 回收方式候选。
+- 当前状态。
+- AI 提醒。
+
+提醒语气应该是“建议推进”，不是“本章必须回收”。
+
+## 6.9 滚动大纲
+
+不强制完整全书大纲。
+
+结构：
+
+```js
+{
+  projectId: 'uuid',
+  farVision: {
+    theme: '',
+    finalPressure: '',
+    possibleEndings: [],
+    unresolvedBigQuestions: []
+  },
+  currentVolume: {
+    title: '',
+    goal: '',
+    mainConflict: '',
+    emotionalArc: '',
+    expectedChapterRange: [1, 60]
+  },
+  nearChapters: [
+    {
+      chapterNum: 1,
+      title: '',
+      goal: '',
+      conflict: '',
+      turn: '',
+      emotionalBeat: '',
+      requiredFacts: [],
+      optionalSurprises: []
+    }
+  ]
+}
+```
+
+## 6.10 写作台
+
+写作台是主界面。
+
+布局：
+
+- 左侧：项目章节、版本、候选。
+- 中间：正文编辑区。
+- 右侧：本章记忆、角色状态、伏笔、AI 操作。
+
+编辑器：
+
+- MVP 使用纯 textarea。
+- 支持自动保存。
+- 支持选区改写。
+- 支持版本保存。
+- 支持候选版本对比。
+
+AI 操作：
+
+- 生成本章。
+- 继续写。
+- 扩写场景。
+- 压缩场景。
+- 改对白。
+- 加强冲突。
+- 加强人物心理。
+- 改成更有网感。
+- 改成更文学化。
+- 生成多个候选版本。
+- 检查逻辑。
+- 检查人物是否跑偏。
+- 总结本章。
+
+## 6.11 定稿与记忆入库
+
+章节定稿后进入审计流程，但不强制打断创作。
+
+系统生成“待确认记忆变更”：
+
+- 新增事实。
+- 修改事实。
+- 角色状态变化。
+- 软状态变化。
+- 新增伏笔。
+- 推进伏笔。
+- 回收伏笔。
+- 章节摘要。
+
+用户可以：
+
+- 全部确认。
+- 逐条确认。
+- 合并编辑后确认。
+- 忽略。
+- 稍后处理。
+
+状态：
+
+- pending_review。
+- accepted。
+- rejected。
+- edited。
+
+## 6.12 版本系统
+
+每章支持多个版本。
+
+版本类型：
+
+- ai_candidate。
+- user_draft。
+- polished。
+- final。
+- archived。
+
+不要让 AI 直接覆盖正式稿。
+
+## 6.13 导入导出
+
+MVP 必须支持：
+
+- 导出全书 TXT。
+- 导出 Markdown。
+- 导出项目 JSON 备份。
+- 导入项目 JSON 备份。
+
+后续支持：
+
+- Word。
+- EPUB。
+- 分卷导出。
+- 章节单独导出。
+
+## 7. 技术栈
+
+当前技术栈：
+
+- 前端框架：Vue 3 + Vite。
+- UI：Naive UI。
+- 样式：Tailwind CSS。
+- 状态管理：Pinia。
+- 路由：Vue Router 4。
+- 后端：FastAPI（Python 3.12）+ aiomysql 异步连接池。
+- 数据库：MySQL 5.7，utf8mb4 字符集，LONGTEXT 存正文，JSON 存数组/对象字段。
+- API：RESTful，CORS 允许 localhost:5173。
+- AI 调用：前端 fetch + ReadableStream 直连 AI 供应商。
+- 编辑器：纯 textarea。
+- 导出：前端调用后端全量导出 API 生成 TXT / Markdown / JSON。
+
+暂不引入：
+
+- 登录系统。
+- 云同步。
+- AI Gateway（后端 AI 代理）。
+- 向量检索。
+- 富文本编辑器。
+
+## 8. 目录结构
+
+```txt
+Novel_Creater/
+├── frontend/                   # 前端 (Vue 3 + Vite)
+│   ├── src/
+│   │   ├── api/
+│   │   │   ├── ai/
+│   │   │   │   ├── index.js
+│   │   │   │   ├── adapterBase.js
+│   │   │   │   ├── anthropicAdapter.js
+│   │   │   │   ├── openaiCompatibleAdapter.js
+│   │   │   │   └── providerPresets.js
+│   │   │   └── db/
+│   │   │       └── client.js      # MySQL API 客户端层
+│   │   ├── components/
+│   │   │   ├── layout/            # Sidebar, TopBar
+│   │   │   ├── settings/          # ProviderSettings, ProviderForm, TaskModelBinding
+│   │   │   ├── seed/              # SeedWorkbench, SeedCard
+│   │   │   ├── bible/             # CreativeBible
+│   │   │   └── writer/            # AIActionPanel, ChapterVersionList, CanonReviewPanel, ContextMemoryPanel
+│   │   ├── stores/
+│   │   │   ├── projectStore.js
+│   │   │   ├── providerStore.js
+│   │   │   ├── seedStore.js
+│   │   │   ├── novelStore.js
+│   │   │   ├── writerStore.js
+│   │   │   └── memoryStore.js
+│   │   ├── prompts/               # 9 个 AI prompt 模块
+│   │   ├── utils/
+│   │   │   ├── contextBuilder.js
+│   │   │   ├── export.js
+│   │   │   ├── backup.js
+│   │   │   └── id.js
+│   │   ├── views/                 # HomeView, ProjectView, WriterView, SettingsView
+│   │   ├── router/
+│   │   └── main.js
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js
+├── backend/                      # 后端 (FastAPI + MySQL)
+│   ├── main.py                   # FastAPI 入口 + CORS
+│   ├── config.py                 # MySQL 连接配置
+│   ├── database.py               # aiomysql 异步连接池
+│   ├── schema.sql                # 14 张表，utf8mb4
+│   ├── requirements.txt
+│   └── routers/
+│       ├── projects.py           # /api/projects
+│       ├── providers.py          # /api/providers
+│       ├── chapters.py           # /api/chapters + versions + tempDrafts
+│       ├── seeds.py              # /api/seeds
+│       ├── novel.py              # /api/bible, outline, characters, plot-threads, canon-facts, possibility-cards
+│       └── export.py             # /api/export/full, /api/import/full
+├── DEVELOPMENT_LOG.md
+└── PRODUCT_DEVELOPMENT_PLAN.md
+```
+
+## 9. 数据结构
+
+本版不再把所有数据塞进单条 novelData JSON blob。为了长期维护，核心对象拆表。
+
+### 9.1 projects
+
+```js
+{
+  id: 'uuid',
+  title: '',
+  genre: '',
+  description: '',
+  targetWords: 1000000,
+  targetChapters: 500,
+  currentChapterNum: 1,
+  status: 'drafting',
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+```
+
+### 9.2 providerProfiles
+
+见 6.2.2。
+
+### 9.3 taskModelBindings
+
+见 6.2.3。
+
+### 9.4 marketItems
+
+见 6.3.5。
+
+### 9.5 creativeSeeds
+
+```js
+{
+  id: 'uuid',
+  projectId: 'uuid',
+  title: '',
+  genre: '',
+  logline: '',
+  protagonist: '',
+  desire: '',
+  coreConflict: '',
+  worldPressure: '',
+  openingHook: '',
+  emotionalPromise: '',
+  differentiation: '',
+  styleTarget: '',
+  source: 'user' | 'ai' | 'market',
+  status: 'candidate' | 'selected' | 'archived',
+  createdAt: timestamp
+}
+```
+
+### 9.6 possibilityCards
+
+见 6.5。
+
+### 9.7 creativeBible
+
+```js
+{
+  projectId: 'uuid',
+  premise: '',
+  targetReader: '',
+  styleBible: '',
+  themeBible: '',
+  worldRules: '',
+  confirmedSettings: [],
+  forbiddenDirections: [],
+  updatedAt: timestamp
+}
+```
+
+### 9.8 characters
+
+```js
+{
+  id: 'uuid',
+  projectId: 'uuid',
+  name: '',
+  role: 'protagonist' | 'supporting' | 'antagonist' | 'minor',
+  appearance: '',
+  personality: '',
+  desire: '',
+  fear: '',
+  misbelief: '',
+  secret: '',
+  relationshipNotes: '',
+  arcStage: '',
+  hardState: {
+    location: '',
+    physicalStatus: '',
+    identity: '',
+    faction: '',
+    items: [],
+    knownFacts: [],
+    lastUpdatedChapter: 0
+  },
+  softState: {
+    emotion: '',
+    currentDesire: '',
+    currentFear: '',
+    relationshipToProtagonist: '',
+    innerConflict: ''
+  },
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+```
+
+### 9.9 plotThreads
+
+```js
+{
+  id: 'uuid',
+  projectId: 'uuid',
+  title: '',
+  content: '',
+  status: 'candidate' | 'planted' | 'developing' | 'transformed' | 'resolved' | 'abandoned',
+  plantedChapter: null,
+  relatedCharacters: [],
+  possibleResolveWindow: [null, null],
+  resolveOptions: [],
+  resolvedChapter: null,
+  notes: '',
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+```
+
+### 9.10 rollingOutlines
+
+见 6.9。
+
+### 9.11 chapters
+
+```js
+{
+  id: 'uuid',
+  projectId: 'uuid',
+  chapterNum: 1,
+  title: '',
+  finalVersionId: null,
+  status: 'planned' | 'drafting' | 'reviewing' | 'final',
+  summary: '',
+  wordCount: 0,
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+```
+
+### 9.12 chapterVersions
+
+```js
+{
+  id: 'uuid',
+  projectId: 'uuid',
+  chapterId: 'uuid',
+  chapterNum: 1,
+  title: '',
+  content: '',
+  versionType: 'ai_candidate' | 'user_draft' | 'polished' | 'final' | 'archived',
+  sourceModelId: null,
+  promptBrief: '',
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+```
+
+### 9.13 canonFacts
+
+```js
+{
+  id: 'uuid',
+  projectId: 'uuid',
+  chapterNum: 1,
+  factType: 'world' | 'character' | 'plot' | 'relationship' | 'timeline' | 'style',
+  content: '',
+  relatedCharacters: [],
+  relatedPlotThreads: [],
+  evidence: '',
+  confidence: 0.8,
+  status: 'pending_review' | 'accepted' | 'rejected' | 'edited',
+  createdAt: timestamp,
+  updatedAt: timestamp
+}
+```
+
+### 9.14 tempDrafts
+
+```js
+{
+  id: 'projectId_chapterNum',
+  projectId: 'uuid',
+  chapterNum: 1,
+  content: '',
+  savedAt: timestamp
+}
+```
+
+## 10. Context Builder
+
+上下文构建器是本产品的核心。
+
+它不应该机械塞入所有资料，而是根据任务和 token 预算选择内容。
+
+### 10.1 上下文优先级
+
+正文生成时优先级：
+
+1. 本章目标。
+2. 当前草稿或上一版。
+3. 近景大纲。
+4. 相关角色硬状态。
+5. 相关角色软状态。
+6. 最近 3-5 章摘要。
+7. 当前卷目标。
+8. 必须遵守的世界规则。
+9. 相关伏笔。
+10. 风格圣经。
+11. 远景压力。
+
+### 10.2 发散任务上下文
+
+脑洞发散时不应过度约束，只提供：
+
+- 创作种子。
+- 风格目标。
+- 当前矛盾。
+- 不想写的方向。
+- 已经确认不能违背的事实。
+
+### 10.3 审稿任务上下文
+
+审稿时提供：
+
+- 当前章节全文。
+- 章节摘要。
+- 角色状态。
+- 伏笔状态。
+- 时间线事实。
+- 世界规则。
+
+### 10.4 Token 预算
+
+保留 tokenBudget 工具：
+
+- 计算上下文长度。
+- 按优先级裁剪。
+- 对低优先级内容做摘要压缩。
+- 为模型输出保留足够 token。
+
+## 11. Prompt 设计方向
+
+Prompt 不追求让 AI 永远服从固定大纲，而是让它理解当前任务的创作自由度。
+
+每个创作 Prompt 都应该包含：
+
+- 哪些事实不可违背。
+- 哪些方向可以大胆发散。
+- 这次输出是候选，不是定稿。
+- 需要给出不同风味的版本时，不要只换措辞，要换情节选择。
+
+核心 Prompt：
+
+- 选题分析 Prompt。
+- 原创种子生成 Prompt。
+- 可能性发散 Prompt。
+- 滚动大纲 Prompt。
+- 章节候选生成 Prompt。
+- 多模型融合 Prompt。
+- 选区重写 Prompt。
+- 风格统一 Prompt。
+- 章节摘要 Prompt。
+- Canon 事实提取 Prompt。
+- 一致性审稿 Prompt。
+
+## 12. 开发优先级
+
+### Phase 1：本地地基
+
+- 初始化 Vite + Vue3 + Naive UI + Tailwind。
+- 建立路由与基础布局。
+- 实现 FastAPI + MySQL 本地数据层。
+- 实现项目库。
+- 实现本地导入导出 JSON。
+- 实现 Provider 配置。
+- 实现 Claude 原生适配器。
+- 实现 OpenAI-compatible 通用适配器。
+- 实现任务模型映射。
+
+验收标准：
+
+- 用户可以创建项目。
+- 用户可以配置至少一个模型。
+- 用户可以测试模型连通性。
+- 项目可以导出并重新导入。
+
+### Phase 2：AI 创作闭环
+
+- 创作种子工作台。
+- 可能性池。
+- 创作圣经。
+- 滚动大纲基础版。
+- 写作台。
+- 章节候选生成。
+- 多版本保存。
+- 选区重写。
+- 自动保存 tempDraft。
+- 确认定稿。
+
+验收标准：
+
+- 用户可以从一个种子生成设定和第一章。
+- 用户可以生成多个章节候选。
+- 用户可以选择候选进入草稿。
+- 用户可以局部改写。
+- 用户可以确认定稿。
+
+### Phase 3：记忆与审稿
+
+- 章节摘要。
+- Canon 事实提取。
+- 角色硬状态提取。
+- 角色软状态提取。
+- 伏笔候选提取。
+- 待确认变更面板。
+- 上下文构建器。
+- 一致性检查。
+
+验收标准：
+
+- 写完 10 章后，系统能持续带入已确认事实。
+- AI 不明显遗忘主要角色状态。
+- 系统能提示明显矛盾。
+- 用户可以确认或忽略记忆变更。
+
+### Phase 4：选题雷达
+
+- 并抓取已知可读平台的排行榜页面。
+- 并发请求 5 个排行榜页面（书旗、纵横、潇湘、52书库、小说阅读网）。
+- 正则提取书名/作者/分类/简介。
+- 作品卡片展示（平台筛选、分类筛选、分类统计标签）。
+- AI 选题顾问对话面板。
+- AI 提炼热门题材趋势和卖点。
+- AI 结合市场数据和用户想法生成原创创作种子。
+- 种子自动存入 creative_seeds 表。
+
+验收标准：
+
+- 用户可以输入关键词，系统自动抓取热门小说榜单。
+- 系统按平台和分类展示作品卡片。
+- 用户可以与 AI 对话讨论选题，AI 能结合市场数据给出建议。
+- AI 能生成创作种子并保存到"创作种子"标签页。
+- 输出不复刻具体作品。
+
+### Phase 5：体验增强
+
+- 模型试写对比。
+- 多模型融合。
+- 风格圣经强化。
+- 章节节奏分析。
+- 人物弧光视图。
+- 伏笔视图。
+- Markdown/TXT 导出优化。
+- 本地备份提醒。
+
+## 13. 旧方案调整说明
+
+以下旧设计保留，但降级或改造：
+
+- 三级大纲：改为滚动大纲，不强制全书完整规划。
+- 角色状态 Diff：保留，但加入软状态和待确认流程。
+- 伏笔 URGENT：改为温和提醒，不做硬性截止。
+- 一致性预检：保留为手动或定稿后审稿，不默认打断写作。
+- AI 指令模式全量替换：改为候选版本，不直接覆盖当前正文。
+- ContextPreview：保留为高级调试面板。
+- JSON blob novelData：改为拆表。
+
+以下旧设计暂不优先：
+
+- 每章强制弹出大量确认。
+- 每次生成都要求完整三层大纲注入。
+- 过度复杂的开发阶段一次性铺开。
+- 一开始就做全平台自动爬虫。
+
+## 14. MVP 成功标准
+
+第一阶段产品是否成立，不看功能数量，看这个闭环：
+
+1. 用户输入一个创作种子。
+2. AI 发散出有想象力的故事方向。
+3. 用户选择方向并生成第一章。
+4. 用户定稿后系统生成摘要和记忆。
+5. AI 写第二章时能接住第一章的事实和风格。
+6. 连续写到第 10 章，系统仍能维持主要设定、人物状态和情节连续性。
+7. 用户感觉自己是在导演一部不断生长的小说，而不是在填写项目管理表。
+
+## 15. 给 Claude Code 的启动指令
+
+请阅读本文件，按 Phase 1 开始开发本地版。
+
+第一步只做本地地基：
+
+1. 初始化 Vite + Vue3 + Naive UI + Tailwind 项目。
+2. 建立路由：HomeView、SettingsView、ProjectView、WriterView。
+3. 建立基础布局：Sidebar、TopBar。
+4. 实现 FastAPI + MySQL 数据库结构。
+5. 实现项目库：新建、打开、删除、导出、导入。
+6. 实现 Provider 配置：新增、编辑、删除、测试连接。
+7. 实现 Claude 原生适配器和 OpenAI-compatible 通用适配器。
+8. 实现任务模型映射。
+
+关键约束：
+
+- 当前版本是本地版，不做后端。
+- API Key 仅保存在本地，并在界面提示风险。
+- 正文编辑器使用纯 textarea。
+- AI 生成内容默认进入候选版本，不直接覆盖正式稿。
+- 所有正式内容必须有用户确认动作。
+- 所有持久化数据走 `src/api/db/client.js` → FastAPI → MySQL。
+- 先跑通本地创作闭环，再扩展选题雷达。
+
+## 16. 未来 SaaS 化技术蓝图
+
+当前版本先做本地版，不引入后端。但代码结构需要为 SaaS 化预留边界。
+
+未来 SaaS 版优先采用 FastAPI 技术栈，因为已有服务端体系可复用，便于统一部署、鉴权、日志、监控和运维。
+
+### 16.1 SaaS 化触发条件
+
+出现以下需求时，再启动 SaaS 化：
+
+- 多设备同步。
+- 用户账号。
+- 云端项目库。
+- 统一模型代理。
+- 团队协作。
+- 额度控制。
+- 付费订阅。
+- 自动选题雷达采集任务。
+- 云端备份与恢复。
+
+### 16.2 推荐技术栈
+
+- 前端：Vue 3 + Vite + Naive UI。
+- 后端：FastAPI。
+- API 规范：REST + SSE 流式输出，必要时补充 WebSocket。
+- 数据库：MySQL，优先复用现有服务端数据库体系。
+- 向量检索：预留可插拔抽象，早期不强依赖；后续可接独立向量库或云厂商向量检索服务。
+- 缓存：Redis。
+- 后台任务：Celery / RQ / Dramatiq 任选其一，优先选择和现有服务一致的方案。
+- 对象存储：S3 / R2 / OSS / COS。
+- 部署：优先复用现有 FastAPI 服务部署方式。
+
+### 16.2.1 MySQL 设计原则
+
+SaaS 版优先使用 MySQL 时，需要提前注意：
+
+- 字符集统一使用 `utf8mb4`，避免中文、特殊符号、长文本保存问题。
+- 章节正文、版本正文使用 `LONGTEXT` 或独立内容表，不塞进超大的 JSON 字段。
+- 项目、章节、角色、伏笔、版本、记忆事实尽量拆表，方便检索、分页和迁移。
+- JSON 字段只用于低频变化的扩展信息，不作为核心查询字段。
+- 常用查询字段必须建索引，例如 `user_id`、`project_id`、`chapter_num`、`updated_at`、`status`。
+- 全文搜索和向量检索不要在第一版强行做重，先保证按项目、章节、角色、伏笔的结构化检索稳定。
+- 后续如需语义记忆检索，通过 repository/service 抽象接入外部向量服务，不影响主业务表。
+
+### 16.3 后端核心服务
+
+SaaS 后端至少拆出以下模块：
+
+- 用户与鉴权服务。
+- 项目同步服务。
+- 章节与版本服务。
+- 创作记忆服务。
+- AI Gateway 服务。
+- 用量统计与计费服务。
+- 选题雷达任务服务。
+- 导入导出服务。
+
+### 16.4 AI Gateway
+
+未来所有模型请求都通过 AI Gateway，不由前端直连供应商。
+
+AI Gateway 负责：
+
+- Provider 适配。
+- API Key 托管。
+- 流式响应转发。
+- 请求重试。
+- 错误归一。
+- 限流。
+- 成本统计。
+- 用户额度控制。
+- 日志脱敏。
+- 模型 fallback。
+
+### 16.5 当前架构说明
+
+当前版本已完成 FastAPI + MySQL 架构迁移：
+
+- 前端 Vue 组件不直接操作本地存储或数据库，统一经过 `src/api/db/client.js` → FastAPI → MySQL。
+- AI 调用仍走 `api/ai` adapter 浏览器直连供应商，不经过后端代理。
+- 项目数据支持 JSON 全量导出和导入（通过后端 `/api/export/full` 和 `/api/import/full`）。
+- 数据结构保留 `projectId`、`createdAt`、`updatedAt` 等字段，与 MySQL 表结构一致。
+- 数据层细节集中在 Store 中，Vue 页面组件不感知存储实现。
+
+未来 SaaS 化时：
+
+- 后端 FastAPI 可直接扩展为多用户版本。
+- AI 调用可迁移到 AI Gateway（后端统一代理）。
+- 前端写作体验无需变更。
+
+## 17. 版本路线与开发执行协议
+
+当前规划已经可以进入开发，但必须用版本边界约束范围，避免开发中不断加功能导致核心闭环迟迟跑不通。
+
+开发过程必须同时维护 `DEVELOPMENT_LOG.md`，记录已完成内容、关键决策、当前阻塞、下一步任务和验证结果。每完成一个功能块，都要更新该文件，防止上下文压缩或中断后出现开发断层。
+
+### 17.1 版本路线
+
+#### v0.1 本地地基版
+
+目标：让产品能在本地跑起来，并完成项目、存储、模型配置的基础闭环。
+
+范围：
+
+- 初始化 Vue 3 + Vite + Naive UI + Tailwind。
+- 建立基础布局和路由。
+- 建立 FastAPI + MySQL 数据库。
+- 项目库：新建、打开、删除。
+- 项目 JSON 导出与导入。
+- Provider 配置：新增、编辑、删除。
+- Claude 原生适配器。
+- OpenAI-compatible 通用适配器。
+- 模型连通性测试。
+- 任务模型映射基础版。
+
+不做：
+
+- 正文生成完整体验。
+- 选题雷达。
+- 角色和伏笔系统。
+- SaaS 后端。
+
+验收：
+
+- 本地启动成功。
+- 可以创建项目并持久化。
+- 刷新页面后项目仍存在。
+- 可以配置一个模型并测试连接。
+- 可以导出项目 JSON 并重新导入。
+
+#### v0.2 AI 创作闭环版
+
+目标：用户可以从创作种子生成章节候选，并定稿保存。
+
+范围：
+
+- 创作种子工作台。
+- 可能性池基础版。
+- 创作圣经基础版。
+- 写作台。
+- 章节候选生成。
+- 多版本保存。
+- 纯 textarea 编辑。
+- 选区重写。
+- 自动保存 tempDraft。
+- 确认定稿。
+- TXT / Markdown 导出。
+
+验收：
+
+- 用户输入一个种子后，可以生成第一章候选。
+- 至少支持两个候选版本保存。
+- 用户可以手动编辑候选内容。
+- 用户可以选区改写。
+- 用户可以确认定稿。
+- 定稿后可导出文本。
+
+#### v0.3 记忆与审稿版
+
+目标：连续写作时系统能记住事实，减少长篇失控。
+
+范围：
+
+- 章节摘要。
+- Canon 事实提取。
+- 角色硬状态提取。
+- 角色软状态提取。
+- 伏笔候选提取。
+- 待确认变更面板。
+- Context Builder。
+- 一致性检查。
+- 记忆入库确认流程。
+
+验收：
+
+- 连续写 10 章后，系统能带入前文主要事实。
+- 角色位置、状态、目标不明显错乱。
+- 系统能发现明显矛盾。
+- 用户可以确认、编辑或忽略记忆变更。
+
+#### v0.4 选题雷达版
+
+目标：支持热门题材观察和原创选题孵化。
+
+范围：
+
+- 手动粘贴榜单信息。
+- 手动录入作品卡片。
+- 公开元数据解析。
+- 题材聚类。
+- 每类作品卡片展示。
+- AI 提炼共同卖点。
+- AI 生成原创选题机会。
+
+不做：
+
+- 绕过限制抓取。
+- 抓取正文。
+- 付费内容采集。
+- 重型自动爬虫。
+
+验收：
+
+- 可以导入一批作品元数据。
+- 可以按题材聚类。
+- 可以生成题材趋势总结。
+- 可以生成原创选题建议，且不复刻具体作品。
+
+#### v0.5 体验增强版
+
+目标：提升全程 AI 创作质量和可控性。
+
+范围：
+
+- 多模型试写对比。
+- 多模型融合。
+- 风格圣经强化。
+- 章节节奏分析。
+- 人物弧光视图。
+- 伏笔视图。
+- 本地备份提醒。
+- 导出体验优化。
+
+验收：
+
+- 同一章节目标可以由多个模型生成候选。
+- 用户可以对比并融合候选。
+- 系统可以检查风格偏移和节奏问题。
+
+#### v1.0 本地稳定版（开发完成，待验收）
+
+目标：本地版形成可持续写作工具。
+
+已完成内容：
+- v0.1-v0.5 的稳定整合。
+- 全量错误处理加固：6 个 Pinia Store + API 客户端（超时 + JSON 保护）+ 3 个视图 + 备份并发锁。
+- 健康检查与断网降级：周期性 ping 后端，离线时 NAlert 提示。
+- 全局错误边界（onErrorCaptured）。
+- 备份可靠性增强（并发锁防重复触发）。
+- 文档同步（DEVELOPMENT_LOG.md + PRODUCT_DEVELOPMENT_PLAN.md）。
+
+待验收：
+- 浏览器端端到端验证所有 v1.0 功能。
+- 100 章以上长篇项目性能与实际写作流程验证。
+
+#### v2.0 SaaS 准备版
+
+目标：在本地版验证产品价值后，启动 FastAPI + MySQL SaaS 化。
+
+范围：
+
+- FastAPI 后端。
+- MySQL 主业务库。
+- 用户账号。
+- 项目云同步。
+- AI Gateway。
+- 用量统计。
+- 云端备份。
+
+注意：v2.0 不在当前本地版开发范围内，只保留架构边界。
+
+### 17.2 开发执行原则
+
+- 每次只推进一个版本内的功能，不跨版本偷跑大模块。
+- 每个功能块完成后，必须更新 `DEVELOPMENT_LOG.md`。
+- 每个功能块都要有最小可验证结果。
+- 组件只负责 UI，复杂业务逻辑放到 store/service/repository。
+- AI 调用只走 `api/ai` adapter。
+- 数据访问集中在 `src/api/db/client.js`、store 和后端 router/service 层。
+- 不在 Vue 页面里散落存储、SQL 或接口拼接细节。
+- 正式内容必须有用户确认动作。
+- 后端先作为本地数据层服务，未来 SaaS 化主要扩展鉴权、部署、租户隔离和任务队列。
+
+### 17.3 每次开发交接记录格式
+
+每完成一个阶段，在 `DEVELOPMENT_LOG.md` 追加：
+
+```md
+## YYYY-MM-DD HH:mm - 阶段名称
+
+### 本次完成
+- ...
+
+### 修改文件
+- ...
+
+### 验证结果
+- ...
+
+### 当前决策
+- ...
+
+### 未完成 / 阻塞
+- ...
+
+### 下一步
+- ...
+```
+
+### 17.4 开发前安装规划
+
+v0.1 开始时按以下步骤执行：
+
+1. 初始化前端项目。
+2. 安装 UI、路由、状态、存储、样式依赖。
+3. 配置 Tailwind。
+4. 配置 `@/` 路径别名。
+5. 建立基础目录结构。
+6. 建立 FastAPI + MySQL 数据库。
+7. 建立 Provider adapter 基础接口。
+8. 跑通本地开发服务器。
+9. 跑通生产构建。
+
+每一步完成后记录到 `DEVELOPMENT_LOG.md`。
