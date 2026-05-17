@@ -145,6 +145,46 @@ export const api = {
     delete: (projectId, cardId) => del(`/projects/${projectId}/possibility-cards/${cardId}`),
   },
 
+  // === 设定库 ===
+  settings: {
+    entities: {
+      list: (projectId, params = {}) => {
+        const qs = new URLSearchParams()
+        if (params.type) qs.set('type', params.type)
+        if (params.q) qs.set('q', params.q)
+        const query = qs.toString()
+        return get(`/projects/${projectId}/settings/entities${query ? `?${query}` : ''}`)
+      },
+      get: (projectId, entityId) => get(`/projects/${projectId}/settings/entities/${entityId}`),
+      create: (projectId, data) => post(`/projects/${projectId}/settings/entities`, data),
+      update: (projectId, entityId, data) => put(`/projects/${projectId}/settings/entities/${entityId}`, data),
+      delete: (projectId, entityId) => del(`/projects/${projectId}/settings/entities/${entityId}`),
+    },
+    relations: {
+      list: (projectId, entityId = '') => {
+        const query = entityId ? `?entityId=${encodeURIComponent(entityId)}` : ''
+        return get(`/projects/${projectId}/settings/relations${query}`)
+      },
+      create: (projectId, data) => post(`/projects/${projectId}/settings/relations`, data),
+      update: (projectId, relationId, data) => put(`/projects/${projectId}/settings/relations/${relationId}`, data),
+      delete: (projectId, relationId) => del(`/projects/${projectId}/settings/relations/${relationId}`),
+    },
+    changeEvents: {
+      list: (projectId, params = {}) => {
+        const qs = new URLSearchParams()
+        if (params.status) qs.set('status', params.status)
+        if (params.chapterNum != null) qs.set('chapterNum', params.chapterNum)
+        const query = qs.toString()
+        return get(`/projects/${projectId}/settings/change-events${query ? `?${query}` : ''}`)
+      },
+      create: (projectId, data) => post(`/projects/${projectId}/settings/change-events`, data),
+      update: (projectId, eventId, data) => put(`/projects/${projectId}/settings/change-events/${eventId}`, data),
+      accept: (projectId, eventId) => post(`/projects/${projectId}/settings/change-events/${eventId}/accept`),
+      reject: (projectId, eventId) => post(`/projects/${projectId}/settings/change-events/${eventId}/reject`),
+      delete: (projectId, eventId) => del(`/projects/${projectId}/settings/change-events/${eventId}`),
+    },
+  },
+
   // === 导入导出 ===
   exportFull: (projectId = '', includeApiKeys = false) => {
     const params = new URLSearchParams()

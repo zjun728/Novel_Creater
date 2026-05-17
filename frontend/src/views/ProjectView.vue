@@ -7,11 +7,13 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useWriterStore } from '@/stores/writerStore'
 import { useSeedStore } from '@/stores/seedStore'
 import { useNovelStore } from '@/stores/novelStore'
+import { useSettingStore } from '@/stores/settingStore'
 import SeedWorkbench from '@/components/seed/SeedWorkbench.vue'
 import CreativeBible from '@/components/bible/CreativeBible.vue'
 import MarketRadar from '@/components/market/MarketRadar.vue'
 import CharacterArcView from '@/components/bible/CharacterArcView.vue'
 import PlotThreadBoard from '@/components/bible/PlotThreadBoard.vue'
+import SettingLibrary from '@/components/settings-library/SettingLibrary.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,11 +21,47 @@ const projectStore = useProjectStore()
 const writerStore = useWriterStore()
 const seedStore = useSeedStore()
 const novelStore = useNovelStore()
+const settingStore = useSettingStore()
 const message = useMessage()
 
 const project = computed(() => projectStore.currentProject)
-const activeTab = ref('chapters')
+const activeTab = ref('market')
 const selectedSeed = computed(() => seedStore.seeds.find(s => s.status === 'selected'))
+const bibleReady = computed(() => Boolean(novelStore.bible?.premise || novelStore.bible?.worldRules || novelStore.bible?.styleBible))
+const settingsReady = computed(() => settingStore.entities.length > 0)
+
+const workflowSteps = computed(() => [
+  {
+    key: 'market',
+    title: '1 选题',
+    desc: '确定题材赛道、卖点和读者预期',
+    done: Boolean(project.value?.genre)
+  },
+  {
+    key: 'seed',
+    title: '2 种子',
+    desc: '沉淀主角、冲突、开局钩子',
+    done: Boolean(selectedSeed.value)
+  },
+  {
+    key: 'bible',
+    title: '3 圣经',
+    desc: '确认作品蓝图和长期写作原则',
+    done: bibleReady.value
+  },
+  {
+    key: 'settingsLibrary',
+    title: '4 设定库',
+    desc: '记录人物、势力、地点与规则',
+    done: settingsReady.value
+  },
+  {
+    key: 'chapters',
+    title: '5 章节',
+    desc: '进入写字台按小纲生成正文',
+    done: writerStore.chapters.length > 0
+  }
+])
 
 onMounted(async () => {
   const id = route.params.id
@@ -38,7 +76,10 @@ onMounted(async () => {
         novelStore.loadBible(id),
         novelStore.loadCharacters(id),
         novelStore.loadPlotThreads(id),
-        novelStore.loadCanonFacts(id)
+        novelStore.loadCanonFacts(id),
+        settingStore.loadEntities(id),
+        settingStore.loadRelations(id),
+        settingStore.loadChangeEvents(id)
       ])
     }
   } catch (e) {
@@ -124,9 +165,85 @@ const chapterStatusColors = {
       </div>
     </div>
 
+    <!-- 创作准备流程 -->
+    <n-card class="mb-4" size="small">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 class="text-base font-semibold text-gray-700">创作准备流程</h3>
+          <p class="text-xs text-gray-400 mt-1">按真实长篇小说开发顺序推进：先判断写什么，再确定怎么写，最后进入章节生产。</p>
+        </div>
+        <n-button size="small" type="primary" secondary @click="goToWriter(project.currentChapterNum || 1)">
+          进入写字台
+        </n-button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-2 mt-3">
+        <button
+          v-for="step in workflowSteps"
+          :key="step.key"
+          class="text-left rounded border px-3 py-2 transition-colors bg-white hover:border-green-300"
+          :class="activeTab === step.key ? 'border-green-500 bg-green-50' : 'border-gray-200'"
+          @click="activeTab = step.key"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-sm font-medium text-gray-700">{{ step.title }}</span>
+            <n-tag size="tiny" :type="step.done ? 'success' : 'default'" :bordered="!step.done">
+              {{ step.done ? '已就绪' : '待完善' }}
+            </n-tag>
+          </div>
+          <p class="text-xs text-gray-400 mt-1 leading-5">{{ step.desc }}</p>
+        </button>
+      </div>
+    </n-card>
+
     <!-- 标签页 -->
     <n-tabs v-model:value="activeTab" type="line" animated>
-      <n-tab-pane name="chapters" tab="章节管理">
+      <n-tab-pane name="market" tab="1 选题雷达">
+        <div class="mt-4">
+          <MarketRadar :project-id="project.id" />
+        </div>
+      </n-tab-pane>
+
+      <n-tab-pane name="seed" tab="2 创作种子">
+        <div class="mt-4">
+          <SeedWorkbench :project-id="project.id" @seed-selected="onSeedSelected" />
+        </div>
+      </n-tab-pane>
+
+      <n-tab-pane name="bible" tab="3 创作圣经">
+        <div class="mt-4 max-w-3xl">
+          <CreativeBible :project-id="project.id" />
+
+          <!-- 项目基本信息 -->
+          <n-card title="项目信息" class="mt-4" size="small">
+            <div class="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <span class="text-gray-400">简介：</span>
+                <span>{{ project.description || '暂无' }}</span>
+              </div>
+              <div>
+                <span class="text-gray-400">当前章节：</span>
+                <span>第 {{ project.currentChapterNum || 0 }} 章</span>
+              </div>
+              <div>
+                <span class="text-gray-400">创建时间：</span>
+                <span>{{ new Date(project.createdAt).toLocaleString('zh-CN') }}</span>
+              </div>
+              <div>
+                <span class="text-gray-400">更新时间：</span>
+                <span>{{ new Date(project.updatedAt).toLocaleString('zh-CN') }}</span>
+              </div>
+            </div>
+          </n-card>
+        </div>
+      </n-tab-pane>
+
+      <n-tab-pane name="settingsLibrary" tab="4 设定库">
+        <div class="mt-4">
+          <SettingLibrary :project-id="project.id" />
+        </div>
+      </n-tab-pane>
+
+      <n-tab-pane name="chapters" tab="5 章节管理">
         <div class="mt-4">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-lg font-semibold text-gray-700">
@@ -165,46 +282,6 @@ const chapterStatusColors = {
               </div>
             </div>
           </div>
-        </div>
-      </n-tab-pane>
-
-      <n-tab-pane name="seed" tab="创作种子">
-        <div class="mt-4">
-          <SeedWorkbench :project-id="project.id" @seed-selected="onSeedSelected" />
-        </div>
-      </n-tab-pane>
-
-      <n-tab-pane name="bible" tab="创作圣经">
-        <div class="mt-4 max-w-3xl">
-          <CreativeBible :project-id="project.id" />
-
-          <!-- 项目基本信息 -->
-          <n-card title="项目信息" class="mt-4" size="small">
-            <div class="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <span class="text-gray-400">简介：</span>
-                <span>{{ project.description || '暂无' }}</span>
-              </div>
-              <div>
-                <span class="text-gray-400">当前章节：</span>
-                <span>第 {{ project.currentChapterNum || 0 }} 章</span>
-              </div>
-              <div>
-                <span class="text-gray-400">创建时间：</span>
-                <span>{{ new Date(project.createdAt).toLocaleString('zh-CN') }}</span>
-              </div>
-              <div>
-                <span class="text-gray-400">更新时间：</span>
-                <span>{{ new Date(project.updatedAt).toLocaleString('zh-CN') }}</span>
-              </div>
-            </div>
-          </n-card>
-        </div>
-      </n-tab-pane>
-
-      <n-tab-pane name="market" tab="选题雷达">
-        <div class="mt-4">
-          <MarketRadar :project-id="project.id" />
         </div>
       </n-tab-pane>
 

@@ -3,7 +3,18 @@ import { ref } from 'vue'
 import { api } from '@/api/db/client'
 import { chatCompletion, chatCompletionStream } from '@/api/ai'
 import { useProviderStore } from './providerStore'
-import { buildChapterSystemPrompt, buildChapterPrompt, buildContinuePrompt, buildExpandPrompt, buildCompressPrompt, buildMultiVariantPrompt } from '@/prompts/chapter'
+import {
+  buildChapterSystemPrompt,
+  buildChapterPrompt,
+  buildChapterBeatSystemPrompt,
+  buildChapterBeatPrompt,
+  buildContinuePrompt,
+  buildExpandPrompt,
+  buildCompressPrompt,
+  buildMultiVariantPrompt,
+  cleanGeneratedChapterText,
+  cleanChapterBeatPlanText
+} from '@/prompts/chapter'
 import { buildRewriteSystemPrompt, buildRewritePrompt } from '@/prompts/rewrite'
 
 export const useWriterStore = defineStore('writer', () => {
@@ -14,7 +25,16 @@ export const useWriterStore = defineStore('writer', () => {
   const tempDraft = ref(null)
   const loading = ref(false)
   const generating = ref(false)
+  const beatPlanning = ref(false)
+  const chapterBeatPlan = ref('')
   const generationStream = ref('')
+
+  function extractAiContent(result) {
+    if (typeof result === 'string') return result
+    if (result?.content) return result.content
+    if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
+    return result ? JSON.stringify(result) : ''
+  }
 
   // === 章节管理 ===
   async function loadChapters(projectId) {
@@ -172,6 +192,34 @@ export const useWriterStore = defineStore('writer', () => {
     }
   }
 
+  // === AI 生成章前小纲 ===
+  async function generateChapterBeatPlan(projectId, chapterNum, context, providerId) {
+    beatPlanning.value = true
+    try {
+      const providerStore = useProviderStore()
+      await providerStore.ensureProvidersLoaded()
+      const provider = providerId
+        ? providerStore.providers.find(p => p.id === providerId)
+        : providerStore.providers[0]
+      if (!provider) throw new Error('请先在设置中配置模型')
+
+      const messages = [
+        { role: 'system', content: buildChapterBeatSystemPrompt() },
+        { role: 'user', content: buildChapterBeatPrompt({ chapterNum, ...context }) }
+      ]
+
+      const result = await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.72 })
+      const content = cleanChapterBeatPlanText(extractAiContent(result))
+      chapterBeatPlan.value = content
+      return content
+    } catch (e) {
+      console.error('生成章前小纲失败:', e.message)
+      throw e
+    } finally {
+      beatPlanning.value = false
+    }
+  }
+
   // === AI 生成章节（流式） ===
   async function generateChapter(projectId, chapterNum, context, providerId, onStream) {
     generating.value = true
@@ -207,9 +255,11 @@ export const useWriterStore = defineStore('writer', () => {
         if (typeof result === 'string') content = result
         else if (result?.content) content = result.content
         else if (result?.choices?.[0]?.message?.content) content = result.choices[0].message.content
-        generationStream.value = content
-        if (onStream) onStream(content, content)
       }
+
+      content = cleanGeneratedChapterText(content)
+      generationStream.value = content
+      if (onStream) onStream(content, '')
 
       const chapter = await getOrCreateChapter(projectId, chapterNum)
       const version = await createVersion(projectId, chapter.id, chapterNum, {
@@ -217,7 +267,7 @@ export const useWriterStore = defineStore('writer', () => {
         content,
         versionType: 'ai_candidate',
         sourceModelId: provider.id,
-        promptBrief: '章节生成'
+        promptBrief: context?.beatPlan ? '按确认小纲生成章节' : '章节生成'
       })
       currentVersion.value = version
       return version
@@ -260,6 +310,7 @@ export const useWriterStore = defineStore('writer', () => {
       if (typeof result === 'string') content = result
       else if (result?.content) content = result.content
       else if (result?.choices?.[0]?.message?.content) content = result.choices[0].message.content
+      content = cleanGeneratedChapterText(content)
 
       const results = []
       const chapter = await getOrCreateChapter(projectId, chapterNum)
@@ -381,6 +432,8 @@ export const useWriterStore = defineStore('writer', () => {
     tempDraft,
     loading,
     generating,
+    beatPlanning,
+    chapterBeatPlan,
     generationStream,
     loadChapters,
     getOrCreateChapter,
@@ -393,6 +446,7 @@ export const useWriterStore = defineStore('writer', () => {
     saveTempDraft,
     loadTempDraft,
     clearTempDraft,
+    generateChapterBeatPlan,
     generateChapter,
     continueWriting,
     generateMultiVariants,

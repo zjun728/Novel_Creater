@@ -183,31 +183,54 @@ export const useMarketStore = defineStore('market', () => {
       else if (result?.content) text = result.content
       else if (result?.choices?.[0]?.message?.content) text = result.choices[0].message.content
 
-      // 尝试提取种子
+      // 尝试提取种子。明确要求修改当前种子时，应用到已选种子；否则另存为候选种子。
       const seedList = extractSeedsFromText(text)
       let createdSeeds = []
+      let seedAction = ''
       if (seedList && Array.isArray(seedList)) {
         const seedStore = useSeedStore()
-        for (const seed of seedList) {
-          try {
-            const created = await seedStore.createSeed(projectId, {
-              ...seed,
-              source: 'ai'
-            })
-            createdSeeds.push(created)
-          } catch {
-            // 跳过单个种子创建失败
+        await seedStore.loadSeeds(projectId)
+        const selectedSeed = seedStore.seeds.find(seed => seed.status === 'selected')
+        const wantsSeedUpdate = /(?:修改|更改|调整|优化|改成|换成|更新|覆盖|应用).{0,12}(?:种子|当前方向|当前设定|这个方向)/.test(userMessage)
+
+        if (wantsSeedUpdate && selectedSeed && seedList.length > 0) {
+          const [seedPatch] = seedList
+          const updated = await seedStore.updateSeed({
+            ...selectedSeed,
+            ...seedPatch,
+            id: selectedSeed.id,
+            projectId: selectedSeed.projectId || selectedSeed.project_id || projectId,
+            status: 'selected',
+            source: selectedSeed.source || 'ai'
+          })
+          if (updated) {
+            createdSeeds = [updated]
+            seedAction = 'updated'
           }
+        } else {
+          for (const seed of seedList) {
+            try {
+              const created = await seedStore.createSeed(projectId, {
+                ...seed,
+                source: 'ai'
+              })
+              createdSeeds.push(created)
+            } catch {
+              // 跳过单个种子创建失败
+            }
+          }
+          if (createdSeeds.length) seedAction = 'created'
         }
       }
 
       chatMessages.value.push({
         role: 'assistant',
         content: text,
-        seeds: createdSeeds
+        seeds: createdSeeds,
+        seedAction
       })
 
-      return { message: text, seeds: createdSeeds }
+      return { message: text, seeds: createdSeeds, seedAction }
     } catch (e) {
       chatMessages.value.push({
         role: 'assistant',

@@ -7,6 +7,7 @@ import { useWriterStore } from '@/stores/writerStore'
 import { useNovelStore } from '@/stores/novelStore'
 import { useSeedStore } from '@/stores/seedStore'
 import { useMemoryStore } from '@/stores/memoryStore'
+import { useSettingStore } from '@/stores/settingStore'
 import { buildWritingContext } from '@/utils/contextBuilder'
 import { downloadFile, exportTxt, exportMarkdown } from '@/utils/export'
 import AIActionPanel from '@/components/writer/AIActionPanel.vue'
@@ -28,6 +29,7 @@ const writerStore = useWriterStore()
 const novelStore = useNovelStore()
 const seedStore = useSeedStore()
 const memoryStore = useMemoryStore()
+const settingStore = useSettingStore()
 const compareStore = useCompareStore()
 const message = useMessage()
 
@@ -47,8 +49,12 @@ const showStyleModal = ref(false)
 const showPacingModal = ref(false)
 const showCompareModal = ref(false)
 const showFusionPanel = ref(false)
+const showBeatPlanModal = ref(false)
 const showAuditModal = ref(false)
 const auditRunning = ref(false)
+const beatPlanText = ref('')
+const beatPlanIntent = ref('single')
+const beatPlanPrimaryText = computed(() => beatPlanIntent.value === 'multi' ? '生成多候选版本' : '开始生成本章')
 
 // Memory processing
 const memoryProcessing = ref(false)
@@ -71,6 +77,8 @@ onMounted(async () => {
 })
 
 watch(chapterNum, async (newNum) => {
+  showBeatPlanModal.value = false
+  beatPlanText.value = ''
   await loadChapter()
   router.replace(`/writer/${projectId.value}/${newNum}`)
 })
@@ -82,6 +90,9 @@ async function loadContextData() {
     novelStore.loadCharacters(projectId.value),
     novelStore.loadPlotThreads(projectId.value),
     novelStore.loadCanonFacts(projectId.value),
+    settingStore.loadEntities(projectId.value),
+    settingStore.loadRelations(projectId.value),
+    settingStore.loadChangeEvents(projectId.value),
     seedStore.loadSeeds(projectId.value)
   ])
 }
@@ -135,41 +146,186 @@ function handleContentChange() {
 // === AI 操作 ===
 const streamingContent = ref(false)
 
+function getSelectedSeed() {
+  return seedStore.seeds.find(seed => seed.status === 'selected')
+}
+
+function buildSequenceRules() {
+  const rules = [
+    '本章正文必须从本章时间线最早的可写场景开始。',
+    '禁止用后续会议结论、追查结果、角色受伤或死亡后的余波作为开头，除非本章小纲第一条明确要求。',
+    '每一段必须承接上一段的时间、地点或视角，不要突然跳到未铺垫的会议、院落、审讯、战斗结论或事后复盘。',
+    '如果需要倒叙、插叙或闪回，必须先用当前场景落地，再自然切入。'
+  ]
+
+  if (chapterNum.value === 1) {
+    rules.push('第一章必须从创作种子的开局钩子或主角初始处境开始，不要先写背景结论、势力会议或后续反应。')
+  }
+
+  return rules
+}
+
+function buildSeedContext(seed) {
+  if (!seed) return null
+
+  return {
+    genre: seed.genre,
+    logline: seed.logline,
+    protagonist: seed.protagonist,
+    desire: seed.desire,
+    coreConflict: seed.coreConflict,
+    worldPressure: seed.worldPressure,
+    openingHook: seed.openingHook,
+    styleTarget: seed.styleTarget,
+    differentiation: seed.differentiation
+  }
+}
+
+function buildBaseContext() {
+  const { context } = buildWritingContext(novelStore, chapterNum.value, undefined, settingStore)
+  const selectedSeed = getSelectedSeed()
+  const seedContext = buildSeedContext(selectedSeed)
+
+  if (seedContext) {
+    context.seed = seedContext
+    if (chapterNum.value === 1 && seedContext.openingHook) {
+      context.openingAnchor = seedContext.openingHook
+    }
+  }
+
+  context.sequenceRules = buildSequenceRules()
+  return context
+}
+
+function buildPlanningContext() {
+  const context = buildBaseContext()
+  const draft = editorContent.value?.trim()
+  if (draft) {
+    context.currentDraft = draft.length > 3000 ? draft.slice(-3000) : draft
+  }
+  return context
+}
+
+async function ensureBeatPlan(force = false) {
+  const existingPlan = beatPlanText.value.trim()
+  if (existingPlan && !force) return existingPlan
+
+  const context = buildBaseContext()
+  beatPlanText.value = await writerStore.generateChapterBeatPlan(projectId.value, chapterNum.value, context)
+  return beatPlanText.value
+}
+
+async function handlePlanBeats() {
+  try {
+    beatPlanIntent.value = 'single'
+    await ensureBeatPlan(false)
+    showBeatPlanModal.value = true
+    message.success('已打开本章小纲，请审阅后再开始生成正文')
+  } catch (e) {
+    message.error('小纲生成失败：' + e.message)
+  }
+}
+
+async function handleRefreshBeatPlan() {
+  try {
+    await ensureBeatPlan(true)
+    showBeatPlanModal.value = true
+    message.success('本章小纲已重新生成')
+  } catch (e) {
+    message.error('小纲重新生成失败：' + e.message)
+  }
+}
+
 async function handleGenerate() {
+  beatPlanIntent.value = 'single'
+  const existingPlan = beatPlanText.value.trim()
+  if (existingPlan) {
+    await generateChapterFromPlan(existingPlan)
+    return
+  }
+
+  try {
+    await ensureBeatPlan(false)
+    showBeatPlanModal.value = true
+    message.success('请先审阅本章小纲，确认后再开始生成正文')
+  } catch (e) {
+    message.error('小纲准备失败：' + e.message)
+  }
+}
+
+async function generateChapterFromPlan(confirmedPlan) {
   try {
     streamingContent.value = true
     editorContent.value = ''
-    const { context } = buildWritingContext(novelStore, chapterNum.value)
+    const context = {
+      ...buildBaseContext(),
+      beatPlan: confirmedPlan
+    }
     const version = await writerStore.generateChapter(
       projectId.value,
       chapterNum.value,
       context,
       null,
-      (fullContent, delta) => {
-        // 流式回调：实时更新编辑器
+      (fullContent) => {
         editorContent.value = fullContent
       }
     )
     writerStore.currentVersion = version
-    streamingContent.value = false
-    message.success('章节生成成功')
+    message.success('已按确认小纲生成章节')
   } catch (e) {
+    message.error('按小纲生成失败：' + e.message)
+  } finally {
     streamingContent.value = false
-    message.error('生成失败：' + e.message)
   }
 }
 
-async function handleMultiVariant() {
+async function generateMultiVariantsFromPlan(confirmedPlan) {
   try {
-    const { context } = buildWritingContext(novelStore, chapterNum.value)
+    const context = {
+      ...buildBaseContext(),
+      beatPlan: confirmedPlan
+    }
     const versions = await writerStore.generateMultiVariants(projectId.value, chapterNum.value, context)
-    message.success(`生成了 ${versions.length} 个候选版本`)
+    message.success(`基于小纲生成了 ${versions.length} 个候选版本`)
     if (versions.length > 0) {
       writerStore.currentVersion = versions[0]
       editorContent.value = versions[0].content
     }
   } catch (e) {
-    message.error('生成失败：' + e.message)
+    message.error('多候选版本生成失败：' + e.message)
+  }
+}
+
+async function handleGenerateFromBeatPlan() {
+  const confirmedPlan = beatPlanText.value.trim()
+  if (!confirmedPlan) {
+    message.warning('请先生成或填写本章小纲')
+    return
+  }
+
+  showBeatPlanModal.value = false
+  if (beatPlanIntent.value === 'multi') {
+    await generateMultiVariantsFromPlan(confirmedPlan)
+    return
+  }
+
+  await generateChapterFromPlan(confirmedPlan)
+}
+
+async function handleMultiVariant() {
+  beatPlanIntent.value = 'multi'
+  const existingPlan = beatPlanText.value.trim()
+  if (existingPlan) {
+    await generateMultiVariantsFromPlan(existingPlan)
+    return
+  }
+
+  try {
+    await ensureBeatPlan(false)
+    showBeatPlanModal.value = true
+    message.success('请先审阅本章小纲，确认后再生成多候选版本')
+  } catch (e) {
+    message.error('小纲准备失败：' + e.message)
   }
 }
 
@@ -212,7 +368,11 @@ async function handleCompress() {
 async function handleRewrite(mode) {
   if (!selectedText.value) { message.warning('请先选中要改写的文字'); return }
   try {
-    const context = { styleBible: novelStore.bible?.styleBible, characters: novelStore.characters }
+    const context = {
+      styleBible: novelStore.bible?.styleBible,
+      characters: novelStore.characters,
+      settingLibrary: buildBaseContext().settingLibrary
+    }
     const result = await writerStore.rewriteSelection(selectedText.value, mode, context)
     editorContent.value = editorContent.value.replace(selectedText.value, result)
     selectedText.value = result
@@ -359,6 +519,7 @@ function goToChapter(num) {
           {{ projectStore.currentProject.title }}
         </h2>
         <n-tag size="small">第 {{ chapterNum }} 章</n-tag>
+        <n-tag v-if="beatPlanText" size="small" type="success" :bordered="false">已生成小纲</n-tag>
         <n-spin v-if="memoryProcessing" size="tiny" />
       </div>
       <n-space>
@@ -438,8 +599,11 @@ function goToChapter(num) {
         <div v-if="rightPanel === 'tools'" class="space-y-2">
           <AIActionPanel
             :generating="writerStore.generating"
+            :planning="writerStore.beatPlanning"
+            :has-beat-plan="!!beatPlanText"
             :has-content="!!editorContent"
             :has-selection="hasSelection"
+            @plan-beats="handlePlanBeats"
             @generate="handleGenerate"
             @multi-variant="handleMultiVariant"
             @continue="handleContinue"
@@ -506,6 +670,44 @@ function goToChapter(num) {
         </n-card>
       </div>
     </div>
+
+    <!-- 本章小纲确认弹窗 -->
+    <n-modal v-model:show="showBeatPlanModal" title="本章小纲确认" preset="card" style="width: 720px; max-height: 85vh;">
+      <div class="space-y-3">
+        <div class="rounded border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-6 text-emerald-800">
+          先确认这一章的剧情节拍，再生成正文。你可以直接修改小纲，AI 会按确认后的顺序展开，但仍保留场景、对白和细节的发挥空间。
+        </div>
+
+        <n-input
+          v-model:value="beatPlanText"
+          type="textarea"
+          placeholder="这里会显示 AI 生成的本章小纲，也可以手动补充或重排节拍..."
+          :autosize="{ minRows: 16, maxRows: 24 }"
+        />
+
+        <div class="flex items-center justify-end">
+          <n-space>
+            <n-button
+              size="small"
+              :loading="writerStore.beatPlanning"
+              :disabled="streamingContent"
+              @click="handleRefreshBeatPlan"
+            >
+              重新生成小纲
+            </n-button>
+            <n-button
+              size="small"
+              type="primary"
+              :loading="streamingContent"
+              :disabled="!beatPlanText.trim() || writerStore.beatPlanning"
+              @click="handleGenerateFromBeatPlan"
+            >
+              {{ beatPlanPrimaryText }}
+            </n-button>
+          </n-space>
+        </div>
+      </div>
+    </n-modal>
 
     <!-- 审稿结果弹窗 -->
     <n-modal v-model:show="showAuditModal" title="一致性审稿报告" preset="card" style="width: 700px; max-height: 80vh;">

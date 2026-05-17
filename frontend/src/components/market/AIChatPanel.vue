@@ -8,7 +8,7 @@ const props = defineProps({
   items: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['seed-created'])
+const emit = defineEmits(['seed-created', 'seed-updated'])
 
 const marketStore = useMarketStore()
 const message = useMessage()
@@ -34,7 +34,11 @@ async function sendMessage() {
   try {
     const result = await marketStore.sendChatMessage(props.projectId, text)
     if (result?.seeds?.length) {
-      emit('seed-created', { seeds: result.seeds })
+      if (result.seedAction === 'updated') {
+        emit('seed-updated', { seeds: result.seeds })
+      } else {
+        emit('seed-created', { seeds: result.seeds })
+      }
     }
   } catch (e) {
     message.error('发送失败：' + e.message)
@@ -112,7 +116,7 @@ function getRoleLabel(role) {
           <!-- 种子结果 -->
           <div v-if="msg.seeds?.length" class="mt-3 border-t border-gray-300 pt-2">
             <p class="text-[10px] font-semibold text-green-600 mb-1">
-              已生成 {{ msg.seeds.length }} 个创作种子 →
+              {{ msg.seedAction === 'updated' ? '已更新当前创作种子 →' : `已生成 ${msg.seeds.length} 个创作种子 →` }}
             </p>
           </div>
         </div>

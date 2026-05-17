@@ -2,15 +2,19 @@
 Novel Creator — FastAPI 后端入口
 """
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from database import get_pool, close_pool
-from routers import projects, providers, chapters, seeds, novel, export, market
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from database import get_pool, close_pool, ensure_schema
+from routers import projects, providers, chapters, seeds, novel, export, market, settings_library
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await get_pool()
+    await ensure_schema()
     yield
     await close_pool()
 
@@ -34,8 +38,28 @@ app.include_router(seeds.router, prefix="/api")
 app.include_router(novel.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
+app.include_router(settings_library.router, prefix="/api")
 
 
 @app.get("/api/health")
 async def health():
     return {"ok": True}
+
+
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+
+if FRONTEND_DIST.exists():
+    assets_dir = FRONTEND_DIST / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/")
+    async def serve_frontend_index():
+        return FileResponse(FRONTEND_DIST / "index.html")
+
+    @app.get("/{path:path}")
+    async def serve_frontend(path: str):
+        file_path = FRONTEND_DIST / path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(FRONTEND_DIST / "index.html")

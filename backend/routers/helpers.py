@@ -3,7 +3,7 @@ import json
 import re
 
 # 布尔字段列表（snake_case），MySQL TINYINT → Python bool
-BOOL_FIELDS = {'stream', 'supports_json', 'supports_streaming'}
+BOOL_FIELDS = {'stream', 'supports_json', 'supports_streaming', 'is_hidden'}
 
 JSON_FIELDS = {
     'thinking',
@@ -21,6 +21,8 @@ JSON_FIELDS = {
     'tags',
     'extracted_hooks',
     'extracted_appeals',
+    'aliases',
+    'profile',
 }
 
 # 首字母缩写映射：snake_case 部分 → camelCase 中正确的大小写

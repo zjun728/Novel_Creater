@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { chatCompletion } from '@/api/ai'
 import { useProviderStore } from './providerStore'
 import { useNovelStore } from './novelStore'
+import { useSettingStore } from './settingStore'
 import {
   buildSummarySystemPrompt,
   buildSummaryPrompt
@@ -23,6 +24,10 @@ import {
   buildPacingSystemPrompt,
   buildPacingPrompt
 } from '@/prompts/pacing'
+import {
+  buildSettingExtractionSystemPrompt,
+  buildSettingExtractionPrompt
+} from '@/prompts/settingExtraction'
 
 export const useMemoryStore = defineStore('memory', () => {
   const processing = ref(false)
@@ -31,6 +36,7 @@ export const useMemoryStore = defineStore('memory', () => {
   const lastAuditResult = ref(null)
   const lastStyleAnalysis = ref(null)
   const lastPacingAnalysis = ref(null)
+  const lastSettingChanges = ref([])
   const styleAnalyzing = ref(false)
   const pacingAnalyzing = ref(false)
 
@@ -52,11 +58,11 @@ export const useMemoryStore = defineStore('memory', () => {
     return JSON.parse(jsonMatch[0])
   }
 
-  async function getProvider(projectId) {
+  async function getProvider(projectId, preferredKey = 'summaryModelId') {
     const providerStore = useProviderStore()
     await providerStore.ensureProvidersLoaded()
     const bindings = await providerStore.getBindings(projectId)
-    const modelId = bindings?.summaryModelId || bindings?.writingModelId
+    const modelId = bindings?.[preferredKey] || bindings?.summaryModelId || bindings?.writingModelId
     const provider = providerStore.providers.find(p => p.id === modelId) || providerStore.providers[0]
     if (!provider) throw new Error('请先在设置中配置模型')
     return provider
@@ -65,7 +71,7 @@ export const useMemoryStore = defineStore('memory', () => {
   // === 章节摘要生成 ===
   async function generateSummary(projectId, chapterContent, chapterNum) {
     try {
-      const provider = await getProvider(projectId)
+      const provider = await getProvider(projectId, 'summaryModelId')
       const messages = [
         { role: 'system', content: buildSummarySystemPrompt() },
         { role: 'user', content: buildSummaryPrompt(chapterContent, chapterNum) }
@@ -83,7 +89,7 @@ export const useMemoryStore = defineStore('memory', () => {
   // === Canon 事实提取 ===
   async function extractFacts(projectId, chapterContent, chapterNum) {
     try {
-      const provider = await getProvider(projectId)
+      const provider = await getProvider(projectId, 'extractionModelId')
       const novelStore = useNovelStore()
       const existingFacts = novelStore.canonFacts?.filter(f => f.status === 'accepted') || []
 
@@ -105,7 +111,7 @@ export const useMemoryStore = defineStore('memory', () => {
   // === 一致性审稿 ===
   async function auditChapter(projectId, chapterContent, chapterNum) {
     try {
-      const provider = await getProvider(projectId)
+      const provider = await getProvider(projectId, 'auditModelId')
       const novelStore = useNovelStore()
 
       const context = {
@@ -132,7 +138,7 @@ export const useMemoryStore = defineStore('memory', () => {
 
   // === 风格分析 ===
   async function analyzeStyle(projectId, chapterContent, chapterNum) {
-    const provider = await getProvider(projectId)
+    const provider = await getProvider(projectId, 'polishModelId')
     const messages = [
       { role: 'system', content: buildStyleSystemPrompt() },
       { role: 'user', content: buildStyleAnalysisPrompt(chapterContent) }
@@ -151,7 +157,7 @@ export const useMemoryStore = defineStore('memory', () => {
 
   // === 节奏分析 ===
   async function analyzePacing(projectId, chapterContent, chapterNum) {
-    const provider = await getProvider(projectId)
+    const provider = await getProvider(projectId, 'auditModelId')
     const messages = [
       { role: 'system', content: buildPacingSystemPrompt() },
       { role: 'user', content: buildPacingPrompt(chapterContent) }
@@ -167,17 +173,41 @@ export const useMemoryStore = defineStore('memory', () => {
     }
   }
 
+  // === 设定库变更提取 ===
+  async function extractSettingChanges(projectId, chapterContent, chapterNum) {
+    try {
+      const provider = await getProvider(projectId, 'extractionModelId')
+      const settingStore = useSettingStore()
+      await settingStore.loadEntities(projectId)
+
+      const messages = [
+        { role: 'system', content: buildSettingExtractionSystemPrompt() },
+        { role: 'user', content: buildSettingExtractionPrompt(chapterContent, chapterNum, settingStore.entities) }
+      ]
+      const result = await chatCompletion(provider, messages, { maxTokens: 3072, temperature: 0.25 })
+      const parsed = parseAIJson(result)
+      const changes = Array.isArray(parsed) ? parsed : (parsed.changes || parsed.settingChanges || [])
+      lastSettingChanges.value = changes
+      return changes
+    } catch (e) {
+      console.error('设定变更提取失败:', e.message)
+      throw e
+    }
+  }
+
   // === 批量处理：定稿后自动执行全部记忆提取 ===
   async function processChapterFinalization(projectId, chapterContent, chapterNum) {
     processing.value = true
     try {
-      const results = { summary: null, facts: [], audit: null }
+      const results = { summary: null, facts: [], settingChanges: [], audit: null }
 
       try { results.summary = await generateSummary(projectId, chapterContent, chapterNum) } catch (e) { console.warn('摘要生成失败:', e.message) }
       try { results.facts = await extractFacts(projectId, chapterContent, chapterNum) } catch (e) { console.warn('事实提取失败:', e.message) }
+      try { results.settingChanges = await extractSettingChanges(projectId, chapterContent, chapterNum) } catch (e) { console.warn('设定变更提取失败:', e.message) }
       try { results.audit = await auditChapter(projectId, chapterContent, chapterNum) } catch (e) { console.warn('审稿失败:', e.message) }
 
       const novelStore = useNovelStore()
+      const settingStore = useSettingStore()
       for (const f of results.facts) {
         await novelStore.saveCanonFact({
           projectId,
@@ -210,6 +240,71 @@ export const useMemoryStore = defineStore('memory', () => {
                 ...existing.hardState,
                 lastUpdatedChapter: chapterNum
               }
+            })
+          }
+        }
+      }
+
+      await settingStore.loadEntities(projectId)
+      if (results.settingChanges?.length) {
+        for (const change of results.settingChanges) {
+          const entityType = change.entityType || 'character'
+          const entityName = change.entityName || change.name || ''
+          if (!entityName && change.changeType !== 'relationship') continue
+          const existingEntity = settingStore.entities.find(e =>
+            e.entityType === entityType && e.name === entityName
+          )
+          await settingStore.saveChangeEvent(projectId, {
+            entityType,
+            entityId: existingEntity?.id || null,
+            entityName,
+            changeType: change.changeType || 'update_entity',
+            fieldPath: change.fieldPath || (change.changeType === 'new_entity' ? 'summary' : ''),
+            oldValue: change.oldValue || '',
+            newValue: normalizeSettingChangeValue(change),
+            chapterNum,
+            evidence: change.evidence || '',
+            confidence: change.confidence ?? 0.8,
+            status: 'pending_review'
+          })
+        }
+      } else if (results.summary?.characterChanges?.length) {
+        for (const change of results.summary.characterChanges) {
+          const existingEntity = settingStore.entities.find(e =>
+            e.entityType === 'character' && e.name === change.character
+          )
+          await settingStore.saveChangeEvent(projectId, {
+            entityType: 'character',
+            entityId: existingEntity?.id || null,
+            entityName: change.character || '',
+            changeType: 'chapter_state_change',
+            fieldPath: '状态变化',
+            oldValue: '',
+            newValue: change.change || '',
+            chapterNum,
+            evidence: results.summary?.summary || '',
+            confidence: 0.7,
+            status: 'pending_review'
+          })
+        }
+      }
+
+      if (!results.settingChanges?.length && results.summary?.newElements?.characters?.length) {
+        for (const charName of results.summary.newElements.characters) {
+          const exists = settingStore.entities.find(e =>
+            e.entityType === 'character' && e.name === charName
+          )
+          if (!exists) {
+            await settingStore.saveChangeEvent(projectId, {
+              entityType: 'character',
+              entityName: charName,
+              changeType: 'new_entity',
+              fieldPath: '新增人物',
+              newValue: `第 ${chapterNum} 章出现的新人物：${charName}`,
+              chapterNum,
+              evidence: results.summary?.summary || '',
+              confidence: 0.65,
+              status: 'pending_review'
             })
           }
         }
@@ -250,6 +345,7 @@ export const useMemoryStore = defineStore('memory', () => {
     lastAuditResult,
     lastStyleAnalysis,
     lastPacingAnalysis,
+    lastSettingChanges,
     styleAnalyzing,
     pacingAnalyzing,
     generateSummary,
@@ -257,6 +353,27 @@ export const useMemoryStore = defineStore('memory', () => {
     auditChapter,
     analyzeStyle,
     analyzePacing,
+    extractSettingChanges,
     processChapterFinalization
   }
 })
+
+function normalizeSettingChangeValue(change) {
+  if (change.changeType === 'relationship') {
+    return JSON.stringify(change.newValue || {}, null, 0)
+  }
+
+  if (change.changeType === 'new_entity') {
+    return JSON.stringify({
+      summary: change.summary || (typeof change.newValue === 'string' ? change.newValue : ''),
+      category: change.category || '',
+      importance: change.importance || 3,
+      profile: change.profilePatch || {},
+      tags: change.tags || []
+    }, null, 0)
+  }
+
+  return typeof change.newValue === 'object'
+    ? JSON.stringify(change.newValue, null, 0)
+    : (change.newValue || '')
+}

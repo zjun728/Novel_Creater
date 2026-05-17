@@ -52,6 +52,9 @@ async def export_full(projectId: str = "", includeApiKeys: bool = False):
             "outlines": _convert(await fetchall("SELECT * FROM rolling_outlines WHERE project_id=%s", (pid,)))[:1],
             "canonFacts": _convert(await fetchall("SELECT * FROM canon_facts WHERE project_id=%s", (pid,))),
             "possibilityCards": _convert(await fetchall("SELECT * FROM possibility_cards WHERE project_id=%s", (pid,))),
+            "settingEntities": _convert(await fetchall("SELECT * FROM setting_entities WHERE project_id=%s", (pid,))),
+            "settingRelations": _convert(await fetchall("SELECT * FROM setting_relations WHERE project_id=%s", (pid,))),
+            "settingChangeEvents": _convert(await fetchall("SELECT * FROM setting_change_events WHERE project_id=%s", (pid,))),
             "tempDrafts": _convert(await fetchall("SELECT * FROM temp_drafts WHERE project_id=%s", (pid,))),
             "bindings": _convert(await fetchall("SELECT * FROM task_model_bindings WHERE project_id=%s", (pid,))),
         })
@@ -79,6 +82,7 @@ async def import_full(data: dict):
             old_project_id = proj.get("id", "")
             new_project_id = str(uuid.uuid4())
             id_map = {old_project_id: new_project_id} if old_project_id else {}
+            setting_entity_id_map = {}
             pending_final_versions = []
 
             proj["id"] = new_project_id
@@ -157,6 +161,34 @@ async def import_full(data: dict):
                 card["id"] = str(uuid.uuid4())
                 _put_key(card, "projectId", new_project_id)
                 await _insert("possibility_cards", card)
+
+            for entity in proj_data.get("settingEntities", []):
+                old_entity_id = entity.get("id", "")
+                new_entity_id = str(uuid.uuid4())
+                if old_entity_id:
+                    setting_entity_id_map[old_entity_id] = new_entity_id
+                entity["id"] = new_entity_id
+                _put_key(entity, "projectId", new_project_id)
+                await _insert("setting_entities", entity)
+
+            for relation in proj_data.get("settingRelations", []):
+                relation["id"] = str(uuid.uuid4())
+                _put_key(relation, "projectId", new_project_id)
+                old_source_id = _get_key(relation, "sourceEntityId")
+                old_target_id = _get_key(relation, "targetEntityId")
+                if old_source_id in setting_entity_id_map:
+                    _put_key(relation, "sourceEntityId", setting_entity_id_map[old_source_id])
+                if old_target_id in setting_entity_id_map:
+                    _put_key(relation, "targetEntityId", setting_entity_id_map[old_target_id])
+                await _insert("setting_relations", relation)
+
+            for event in proj_data.get("settingChangeEvents", []):
+                event["id"] = str(uuid.uuid4())
+                _put_key(event, "projectId", new_project_id)
+                old_entity_id = _get_key(event, "entityId")
+                if old_entity_id in setting_entity_id_map:
+                    _put_key(event, "entityId", setting_entity_id_map[old_entity_id])
+                await _insert("setting_change_events", event)
 
             for draft in proj_data.get("tempDrafts", []):
                 chapter_num = _get_key(draft, "chapterNum") or 0

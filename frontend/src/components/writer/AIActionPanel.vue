@@ -3,11 +3,14 @@ import { NButton, NSpace, NDivider, NPopconfirm } from 'naive-ui'
 
 defineProps({
   generating: { type: Boolean, default: false },
+  planning: { type: Boolean, default: false },
+  hasBeatPlan: { type: Boolean, default: false },
   hasContent: { type: Boolean, default: false },
   hasSelection: { type: Boolean, default: false }
 })
 
 const emit = defineEmits([
+  'planBeats',
   'generate',
   'multiVariant',
   'compare',
@@ -31,15 +34,26 @@ const emit = defineEmits([
     <div class="mb-3">
       <p class="text-xs text-gray-400 mb-1">章节生成</p>
       <n-space vertical size="small">
+        <n-button
+          size="small"
+          block
+          secondary
+          :loading="planning"
+          :disabled="generating"
+          @click="emit('planBeats')"
+        >
+          {{ planning ? '生成小纲中' : '查看小纲' }}
+        </n-button>
         <div class="flex gap-1">
           <n-button
             size="small"
             type="primary"
             style="flex: 1"
-            :loading="generating"
+            :loading="generating || planning"
+            :disabled="generating || planning"
             @click="emit('generate')"
           >
-            生成本章
+            {{ planning ? '准备小纲' : '生成本章' }}
           </n-button>
           <n-button
             size="small"
@@ -52,10 +66,11 @@ const emit = defineEmits([
         <n-button
           size="small"
           block
-          :disabled="!hasContent"
+          :loading="generating || planning"
+          :disabled="generating || planning"
           @click="emit('multiVariant')"
         >
-          生成多候选版本
+          基于小纲生成多版本
         </n-button>
       </n-space>
     </div>

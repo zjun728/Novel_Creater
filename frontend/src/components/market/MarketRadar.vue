@@ -15,6 +15,7 @@ const message = useMessage()
 const keywords = ref('热门小说')
 const platformFilter = ref('')
 const categoryFilter = ref('')
+const lastSources = ref([])
 
 // 弹窗
 const showDetail = ref(false)
@@ -61,13 +62,19 @@ async function handleScrape() {
   }
   try {
     const result = await marketStore.scrapeMarket(props.projectId, keywords.value.trim())
+    lastSources.value = result?.sources || []
     const count = result?.count || 0
     if (count > 0) {
-      message.success(`成功抓取 ${count} 条热门小说数据`)
+      if (result?.fallback) {
+        message.warning(result.message || `实时抓取失败，已加载 ${count} 条本地参考样本`)
+      } else {
+        message.success(result.message || `成功抓取 ${count} 条热门小说数据`)
+      }
     } else {
-      message.warning('未找到可读取的结果，请尝试其他关键词')
+      message.warning(result?.message || '未找到可读取的结果，请尝试其他关键词')
     }
   } catch (e) {
+    lastSources.value = []
     message.error('抓取失败：' + e.message)
   }
 }
@@ -91,6 +98,10 @@ function handleDelete(item) {
 
 function handleSeedCreated({ seeds }) {
   message.success(`${seeds.length} 个创作种子已保存，可在"创作种子"标签页查看`)
+}
+
+function handleSeedUpdated({ seeds }) {
+  message.success(`当前创作种子已更新，可在"创作种子"标签页查看和手动微调`)
 }
 
 // 分类统计
@@ -170,6 +181,19 @@ const categoryOptions = computed(() =>
         </div>
       </div>
 
+      <div v-if="lastSources.length" class="flex items-center gap-1 mb-3 flex-wrap">
+        <span class="text-xs text-gray-400 mr-1">来源状态：</span>
+        <n-tag
+          v-for="source in lastSources.slice(0, 12)"
+          :key="source.platform + source.url"
+          size="tiny"
+          :type="source.count > 0 ? 'success' : source.ok ? 'warning' : 'error'"
+          :bordered="source.count === 0"
+        >
+          {{ source.platform }} {{ source.count || 0 }}
+        </n-tag>
+      </div>
+
       <!-- 筛选 -->
       <div class="flex items-center gap-2 mb-3" v-if="marketStore.items.length > 0">
         <n-select
@@ -241,6 +265,7 @@ const categoryOptions = computed(() =>
         :project-id="projectId"
         :items="marketStore.items"
         @seed-created="handleSeedCreated"
+        @seed-updated="handleSeedUpdated"
       />
     </div>
 

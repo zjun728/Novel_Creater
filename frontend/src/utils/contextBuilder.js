@@ -82,13 +82,20 @@ class ContextBuilder {
 }
 
 // === 正文生成上下文 ===
-export function buildWritingContext(novelStore, chapterNum, maxTokens) {
+export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null) {
   const builder = new ContextBuilder(maxTokens || BUDGETS.writing)
   const bible = novelStore.bible?.value || novelStore.bible
   const outline = novelStore.outline?.value || novelStore.outline
   const characters = novelStore.characters?.value || novelStore.characters || []
   const plotThreads = novelStore.plotThreads?.value || novelStore.plotThreads || []
   const canonFacts = novelStore.canonFacts?.value || novelStore.canonFacts || []
+  const settingEntities = settingStore?.entities?.value || settingStore?.entities || []
+  const settingRelations = settingStore?.relations?.value || settingStore?.relations || []
+  const settingChangeEvents = settingStore?.changeEvents?.value || settingStore?.changeEvents || []
+
+  if (bible?.premise) {
+    builder.add('premise', bible.premise, { priority: 1, required: true, maxTokens: 800 })
+  }
 
   // P1: 本章目标（必须）
   const nearChapter = outline?.nearChapters?.find(n => n.chapterNum === chapterNum)
@@ -125,6 +132,17 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens) {
   // P6: 风格要求
   if (bible?.styleBible) {
     builder.add('styleBible', bible.styleBible, { priority: 3, maxTokens: 600 })
+  }
+
+  // P6.5: 结构化设定库，优先注入高重要度、活跃实体和关系
+  const settingLibrary = summarizeSettingLibrary(settingEntities, settingRelations)
+  if (settingLibrary) {
+    builder.add('settingLibrary', settingLibrary, { priority: 3, maxTokens: 2400 })
+  }
+
+  const recentSettingChanges = summarizeSettingChanges(settingChangeEvents, chapterNum)
+  if (recentSettingChanges) {
+    builder.add('recentSettingChanges', recentSettingChanges, { priority: 4, maxTokens: 900 })
   }
 
   // P7: 主要角色状态
@@ -176,6 +194,128 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens) {
     usedTokens: builder.getUsedTokens(),
     maxTokens: builder.maxTokens
   }
+}
+
+function summarizeSettingLibrary(entities, relations) {
+  const activeEntities = (entities || [])
+    .filter(e => (e.status || 'active') === 'active')
+    .sort((a, b) => Number(b.importance || 3) - Number(a.importance || 3))
+    .slice(0, 36)
+
+  if (!activeEntities.length) return ''
+
+  const entityMap = new Map(activeEntities.map(e => [e.id, e]))
+  const lines = activeEntities.map(entity => {
+    const profile = entity.profile || {}
+    const facts = pickProfileFacts(entity.entityType, profile)
+    const tags = entity.tags?.length ? `；标签：${entity.tags.join('、')}` : ''
+    const aliases = entity.aliases?.length ? `；别名：${entity.aliases.join('、')}` : ''
+    return `- [${settingTypeLabel(entity.entityType)}] ${entity.name}${entity.category ? `（${entity.category}）` : ''}：${entity.summary || '无概要'}${facts ? `；${facts}` : ''}${aliases}${tags}`
+  })
+
+  const relationLines = (relations || [])
+    .filter(r => r.status !== 'archived' && entityMap.has(r.sourceEntityId) && entityMap.has(r.targetEntityId))
+    .slice(0, 24)
+    .map(r => {
+      const source = entityMap.get(r.sourceEntityId)?.name || '未知'
+      const target = entityMap.get(r.targetEntityId)?.name || '未知'
+      return `- ${source} -> ${r.relationType || '关系'} -> ${target}${r.stance ? `（${r.stance}）` : ''}：${r.summary || '无说明'}`
+    })
+
+  return [
+    '### 关键实体',
+    lines.join('\n'),
+    relationLines.length ? `\n### 关键关系\n${relationLines.join('\n')}` : ''
+  ].filter(Boolean).join('\n')
+}
+
+function summarizeSettingChanges(events, chapterNum) {
+  const recent = (events || [])
+    .filter(e => e.status === 'accepted')
+    .filter(e => !chapterNum || !e.chapterNum || e.chapterNum <= chapterNum)
+    .sort((a, b) => Number(b.chapterNum || 0) - Number(a.chapterNum || 0))
+    .slice(0, 12)
+
+  if (!recent.length) return ''
+  return recent.map(e =>
+    `- 第${e.chapterNum || '?'}章：${e.entityName || settingTypeLabel(e.entityType)} 的 ${e.fieldPath || e.changeType || '设定'} 变为「${e.newValue || ''}」`
+  ).join('\n')
+}
+
+function pickProfileFacts(type, profile) {
+  const keysByType = {
+    character: ['family', 'sect', 'faction', 'nation', 'rankTitle', 'realm', 'realmLevel', 'techniques', 'weapons', 'location', 'physicalStatus', 'mentalState', 'currentGoal'],
+    faction: ['leader', 'territory', 'hierarchy', 'resources', 'allies', 'enemies', 'goal'],
+    location: ['parentLocation', 'geography', 'resources', 'controller', 'dangerLevel', 'restrictions'],
+    power_system: ['realms', 'breakthroughRules', 'techniqueGrades', 'itemGrades', 'forbiddenBreaks', 'limits'],
+    technique: ['techniqueType', 'grade', 'origin', 'owner', 'requirements', 'effects', 'limitations'],
+    item: ['itemType', 'grade', 'owner', 'ability', 'limitation', 'itemStatus']
+  }
+  const keys = keysByType[type] || []
+  return keys
+    .filter(key => profile[key])
+    .map(key => `${profileLabel(key)}：${profile[key]}`)
+    .join('；')
+}
+
+function settingTypeLabel(type) {
+  const labels = {
+    character: '人物',
+    faction: '势力',
+    location: '地点',
+    power_system: '体系',
+    technique: '功法',
+    item: '物品'
+  }
+  return labels[type] || '设定'
+}
+
+function profileLabel(key) {
+  const labels = {
+    family: '家族',
+    sect: '宗门',
+    faction: '阵营',
+    nation: '国家',
+    rankTitle: '身份',
+    realm: '境界',
+    realmLevel: '层级',
+    techniques: '功法',
+    weapons: '武器',
+    location: '位置',
+    physicalStatus: '身体',
+    mentalState: '心理',
+    currentGoal: '目标',
+    leader: '掌权者',
+    territory: '范围',
+    hierarchy: '结构',
+    resources: '资源',
+    allies: '盟友',
+    enemies: '敌对',
+    goal: '目标',
+    parentLocation: '上级地点',
+    geography: '地貌',
+    controller: '控制者',
+    dangerLevel: '危险',
+    restrictions: '限制',
+    realms: '境界',
+    breakthroughRules: '突破规则',
+    techniqueGrades: '功法品阶',
+    itemGrades: '物品等级',
+    forbiddenBreaks: '禁忌',
+    limits: '边界',
+    techniqueType: '类型',
+    grade: '品阶',
+    origin: '来源',
+    owner: '持有者',
+    requirements: '要求',
+    effects: '效果',
+    limitations: '限制',
+    itemType: '类型',
+    ability: '能力',
+    limitation: '限制',
+    itemStatus: '状态'
+  }
+  return labels[key] || key
 }
 
 // === 脑洞发散上下文（不过度约束） ===

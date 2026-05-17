@@ -258,3 +258,70 @@ CREATE TABLE IF NOT EXISTS market_items (
   INDEX idx_market_category (category),
   INDEX idx_market_project (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 15. 设定库实体：人物 / 势力 / 地点 / 体系 / 功法 / 物品
+CREATE TABLE IF NOT EXISTS setting_entities (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  entity_type VARCHAR(40) NOT NULL DEFAULT 'character',
+  name VARCHAR(200) NOT NULL DEFAULT '',
+  category VARCHAR(100) DEFAULT '',
+  summary TEXT DEFAULT NULL,
+  status VARCHAR(30) DEFAULT 'active',
+  importance INT DEFAULT 3,
+  aliases JSON DEFAULT NULL,
+  tags JSON DEFAULT NULL,
+  profile JSON DEFAULT NULL,
+  first_chapter INT DEFAULT NULL,
+  last_chapter INT DEFAULT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  INDEX idx_setting_entities_project (project_id),
+  INDEX idx_setting_entities_type (project_id, entity_type),
+  INDEX idx_setting_entities_name (project_id, name),
+  INDEX idx_setting_entities_status (project_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 16. 设定库关系
+CREATE TABLE IF NOT EXISTS setting_relations (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  source_entity_id CHAR(36) NOT NULL,
+  target_entity_id CHAR(36) NOT NULL,
+  relation_type VARCHAR(80) DEFAULT '',
+  stance VARCHAR(40) DEFAULT '',
+  summary TEXT DEFAULT NULL,
+  is_hidden TINYINT(1) DEFAULT 0,
+  evidence TEXT DEFAULT NULL,
+  chapter_num INT DEFAULT NULL,
+  status VARCHAR(30) DEFAULT 'active',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  INDEX idx_setting_relations_project (project_id),
+  INDEX idx_setting_relations_source (project_id, source_entity_id),
+  INDEX idx_setting_relations_target (project_id, target_entity_id),
+  INDEX idx_setting_relations_status (project_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 17. 设定状态变更日志
+CREATE TABLE IF NOT EXISTS setting_change_events (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  entity_type VARCHAR(40) DEFAULT '',
+  entity_id CHAR(36) DEFAULT NULL,
+  entity_name VARCHAR(200) DEFAULT '',
+  change_type VARCHAR(80) DEFAULT 'update',
+  field_path VARCHAR(200) DEFAULT '',
+  old_value TEXT DEFAULT NULL,
+  new_value TEXT DEFAULT NULL,
+  chapter_num INT DEFAULT NULL,
+  evidence TEXT DEFAULT NULL,
+  confidence DOUBLE DEFAULT 0.8,
+  status VARCHAR(30) DEFAULT 'pending_review',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  INDEX idx_setting_changes_project (project_id),
+  INDEX idx_setting_changes_entity (project_id, entity_id),
+  INDEX idx_setting_changes_status (project_id, status),
+  INDEX idx_setting_changes_chapter (project_id, chapter_num)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

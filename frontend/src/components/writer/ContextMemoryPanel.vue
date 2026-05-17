@@ -2,8 +2,10 @@
 import { computed } from 'vue'
 import { NTag, NEmpty, NDivider } from 'naive-ui'
 import { useNovelStore } from '@/stores/novelStore'
+import { useSettingStore } from '@/stores/settingStore'
 
 const novelStore = useNovelStore()
+const settingStore = useSettingStore()
 
 const activePlotThreads = computed(() =>
   (novelStore.plotThreads || []).filter(t => t.status === 'planted' || t.status === 'developing')
@@ -19,6 +21,19 @@ const mainCharacters = computed(() =>
   (novelStore.characters || []).filter(c =>
     c.role === 'protagonist' || c.role === 'antagonist'
   )
+)
+
+const keySettings = computed(() =>
+  (settingStore.entities || [])
+    .filter(e => (e.status || 'active') === 'active')
+    .sort((a, b) => Number(b.importance || 3) - Number(a.importance || 3))
+    .slice(0, 8)
+)
+
+const acceptedSettingChanges = computed(() =>
+  (settingStore.changeEvents || [])
+    .filter(e => e.status === 'accepted')
+    .slice(0, 8)
 )
 
 // Group facts by type
@@ -65,6 +80,26 @@ const factsByType = computed(() => {
 
     <n-divider v-if="mainCharacters.length > 0" style="margin: 8px 0" />
 
+    <!-- 设定库速览 -->
+    <div v-if="keySettings.length > 0" class="mb-3">
+      <h5 class="text-xs font-medium text-gray-400 mb-1">
+        关键设定（{{ keySettings.length }}）
+      </h5>
+      <div v-for="entity in keySettings" :key="entity.id" class="text-xs py-1">
+        <div class="flex items-center gap-1 mb-0.5">
+          <n-tag size="tiny" :bordered="false">
+            {{ entity.entityType === 'character' ? '人物' : entity.entityType === 'faction' ? '势力' : entity.entityType === 'location' ? '地点' : entity.entityType === 'power_system' ? '体系' : entity.entityType === 'technique' ? '功法' : entity.entityType === 'item' ? '物品' : '设定' }}
+          </n-tag>
+          <span class="font-medium text-gray-700">{{ entity.name }}</span>
+        </div>
+        <p class="text-gray-500 line-clamp-2 whitespace-pre-wrap">
+          {{ entity.summary || entity.category || '暂无概要' }}
+        </p>
+      </div>
+    </div>
+
+    <n-divider v-if="keySettings.length > 0" style="margin: 8px 0" />
+
     <!-- 进行中的伏笔 -->
     <div v-if="activePlotThreads.length > 0" class="mb-3">
       <h5 class="text-xs font-medium text-gray-400 mb-1">
@@ -79,6 +114,19 @@ const factsByType = computed(() => {
     </div>
 
     <n-divider v-if="activePlotThreads.length > 0" style="margin: 8px 0" />
+
+    <!-- 最近设定变化 -->
+    <div v-if="acceptedSettingChanges.length > 0" class="mb-3">
+      <h5 class="text-xs font-medium text-gray-400 mb-1">最近设定变化</h5>
+      <div v-for="event in acceptedSettingChanges" :key="event.id" class="text-xs py-0.5 text-gray-600">
+        <span v-if="event.chapterNum">第{{ event.chapterNum }}章：</span>
+        <span>{{ event.entityName || '设定' }}</span>
+        <span v-if="event.fieldPath"> · {{ event.fieldPath }}</span>
+        <span v-if="event.newValue"> → {{ event.newValue }}</span>
+      </div>
+    </div>
+
+    <n-divider v-if="acceptedSettingChanges.length > 0" style="margin: 8px 0" />
 
     <!-- 世界规则 -->
     <div v-if="novelStore.bible?.worldRules" class="mb-3">
@@ -101,7 +149,7 @@ const factsByType = computed(() => {
     </div>
 
     <n-empty
-      v-if="!mainCharacters.length && !activePlotThreads.length && !novelStore.bible?.worldRules"
+      v-if="!mainCharacters.length && !keySettings.length && !activePlotThreads.length && !acceptedSettingChanges.length && !novelStore.bible?.worldRules"
       description="暂无上下文记忆，定稿章节后将自动提取"
       size="small"
       class="py-6"

@@ -39,6 +39,7 @@ export const useSeedStore = defineStore('seed', () => {
       const updated = await api.seeds.update(pid, seed.id, seed)
       const idx = seeds.value.findIndex(s => s.id === seed.id)
       if (idx !== -1) seeds.value[idx] = updated
+      return updated
     } catch (e) {
       console.error('更新种子失败:', e.message)
       throw e

@@ -59,7 +59,7 @@ function getTagType(genre) {
     <template #footer>
       <n-space justify="end" size="small">
         <n-button size="tiny" quaternary @click="emit('delete', seed)">删除</n-button>
-        <n-button size="tiny" @click="emit('view', seed)">详情</n-button>
+        <n-button size="tiny" @click="emit('view', seed)">查看/编辑</n-button>
         <n-button
           size="tiny"
           type="primary"

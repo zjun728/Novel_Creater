@@ -107,39 +107,56 @@ export class OpenaiCompatibleAdapter extends AdapterBase {
        */
       async readNext() {
         while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
+          const readResult = await reader.read()
+          const reachedEnd = readResult.done
+          if (reachedEnd) {
+            const tail = decoder.decode()
+            if (tail) this.buffer += tail
+            if (!this.buffer.trim()) break
+          } else {
+            this.buffer += decoder.decode(readResult.value, { stream: true })
+          }
 
-          this.buffer += decoder.decode(value, { stream: true })
           const lines = this.buffer.split('\n')
-          this.buffer = lines.pop() || ''
+          this.buffer = reachedEnd ? '' : (lines.pop() || '')
+          let batchDelta = ''
+          let finishReason = null
+          let streamFinished = false
 
           for (const line of lines) {
             const trimmed = line.trim()
-            if (!trimmed || !trimmed.startsWith('data: ')) continue
+            if (!trimmed || !trimmed.startsWith('data:')) continue
 
-            const dataStr = trimmed.slice(6)
+            const dataStr = trimmed.replace(/^data:\s*/, '')
             if (dataStr === '[DONE]') {
-              return { done: true, content: this.fullContent, delta: '', finishReason: 'stop' }
+              streamFinished = true
+              finishReason = finishReason || 'stop'
+              break
             }
 
             try {
               const chunk = JSON.parse(dataStr)
               const delta = chunk.choices?.[0]?.delta?.content || ''
-              const finishReason = chunk.choices?.[0]?.finish_reason || null
+              const chunkFinishReason = chunk.choices?.[0]?.finish_reason || null
               if (delta) {
                 this.fullContent += delta
+                batchDelta += delta
               }
-              if (delta || finishReason) {
-                return {
-                  done: finishReason === 'stop',
-                  content: this.fullContent,
-                  delta,
-                  finishReason
-                }
+              if (chunkFinishReason) {
+                finishReason = chunkFinishReason
+                streamFinished = true
               }
             } catch (e) {
-              // 跳过解析失败的行
+              // 跳过解析失败的行，等待后续 chunk 补齐。
+            }
+          }
+
+          if (batchDelta || streamFinished || finishReason) {
+            return {
+              done: streamFinished || Boolean(finishReason),
+              content: this.fullContent,
+              delta: batchDelta,
+              finishReason
             }
           }
         }
