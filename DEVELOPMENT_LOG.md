@@ -996,6 +996,355 @@
 ### 下一步
 - 浏览器端验证：选题对话生成种子 → 要求调整当前种子 → 创作种子页查看是否已更新 → 手动调整保存。
 
+## 2026-05-18 - 种子 JSON 解析与选题对话落库修复
+
+### 本次完成
+- 新增统一的种子 JSON 解析工具，兼容 Markdown 代码块、裸 JSON 数组、单对象、`{ seeds: [...] }` 包装、snake_case 字段和部分中文字段名。
+- 修复“创作种子”模块 AI 生成种子时因 JSON 包装或字段格式略有差异导致的“JSON 结构错误”。
+- 修复“选题雷达”AI 对话中模型输出种子 JSON 但前端没有保存到创作种子列表的问题。
+- 选题对话保存失败不再静默吞掉，改为在聊天消息和提示条中显示失败原因。
+- 选题对话面板新增“生成新种子”显式入口，不再要求用户靠自然语言猜触发方式。
+- 选题对话发送给模型前会剥离前端内部字段，只保留 `role/content`，避免部分 OpenAI-compatible 接口拒绝请求。
+- 创作种子手动创建和详情编辑补充“风险提示”字段，避免 AI 生成内容落库后无法维护。
+- 后端种子更新接口补充 `riskNotes` 字段，支持风险提示后续编辑保存。
+
+### 修改文件
+- `frontend/src/utils/seedParser.js`
+- `frontend/src/stores/seedStore.js`
+- `frontend/src/stores/marketStore.js`
+- `frontend/src/prompts/market.js`
+- `frontend/src/components/market/AIChatPanel.vue`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `backend/routers/seeds.py`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- AI 生成种子是“生成内容 + 解析 + 落库”的完整动作，不能只把 JSON 展示给用户。
+- 选题雷达对话保留自由讨论，但生成种子必须提供显式按钮，降低误操作和不可预期。
+
+### 未完成 / 阻塞
+- 仍需浏览器端用实际模型验证：种子页 AI 生成、选题对话“生成新种子”、对话中“修改当前种子”三条链路。
+
+### 下一步
+- 若模型仍偶尔输出非 JSON 建议，可增加“从上一条回复保存为种子”的手动解析按钮作为兜底。
+
+## 2026-05-18 - 本地启动脚本补充
+
+### 本次完成
+- 新增后端启动脚本 `start_backend.bat`，用于手动启动 FastAPI 服务。
+- 新增前端启动脚本 `start_frontend.bat`，用于手动启动 Vite 前端服务。
+- 脚本优先使用当前机器固定路径下的 Python / npm，路径不存在时回退到系统 PATH。
+
+### 修改文件
+- `start_backend.bat`
+- `start_frontend.bat`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 未运行脚本，脚本内容已按当前项目路径和既有启动命令生成。
+
+## 2026-05-18 - 选题雷达顾问记忆与方向建议
+
+### 本次完成
+- 选题雷达 AI 顾问聊天记录改为按项目保存到 MySQL，刷新页面后可继续基于历史上下文沟通。
+- 聊天记录会保存用户消息、AI 回复、种子创建/更新结果和保存失败提示。
+- 清空对话改为同步清空数据库中的当前项目顾问记录，不影响已生成的创作种子。
+- 抓取热点小说后会自动调用市场模型生成 4-6 个“AI 选题方向建议”。
+- 方向建议以卡片展示读者期待、当前依据、可切入角度、风险，并提供“和 AI 顾问讨论”按钮把方向带入聊天输入框。
+- 方向建议报告保存到 MySQL，刷新页面后保留最近一次建议。
+- 项目导出/导入补充 `marketItems`、`marketChatMessages`、`marketDirectionReports`。
+
+### 修改文件
+- `backend/schema.sql`
+- `backend/database.py`
+- `backend/routers/market.py`
+- `backend/routers/export.py`
+- `backend/routers/helpers.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/marketStore.js`
+- `frontend/src/components/market/AIChatPanel.vue`
+- `frontend/src/components/market/MarketRadar.vue`
+- `frontend/src/prompts/marketDirections.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- 后端已重启，`/api/health` 正常。
+- `GET /api/market/chat?projectId=__healthcheck__` 正常返回空列表。
+- `GET /api/market/directions?projectId=__healthcheck__` 正常返回空列表。
+
+### 当前决策
+- 选题雷达不只展示抓取结果，还要给出可讨论、可孵化的题材方向。
+- 选题顾问对话属于项目创作资产，必须持久化，方便后续基于历史脉络调整种子。
+
+### 未完成 / 阻塞
+- 方向建议质量仍依赖市场模型配置和抓取结果质量，需要浏览器端用真实数据验证。
+
+### 下一步
+- 如实际体验中方向建议过多或偏泛，可增加“偏男频/女频/短篇/长篇/平台风格”的筛选约束。
+
+## 2026-05-18 - AI 种子解析兜底与详情弹窗修复
+
+### 本次完成
+- 强化创作种子解析器：会扫描 AI 回复中的多个 JSON 候选段，不再只取第一个 `[` 或 `{`。
+- 解析器新增中文标签兜底，支持从“标题：/题材：/开局钩子：/风险提示：”这类非 JSON 结构中提取种子。
+- AI 生成种子 Prompt 改为要求顶层 `{ "seeds": [...] }` 合法 JSON，减少模型输出 Markdown 或说明文字。
+- 当首次解析失败时，自动追加一次“JSON 修复器”调用，把模型原始输出转成可保存种子 JSON，再尝试落库。
+- 修复“查看 / 调整种子”弹窗长文本撑开页面的问题：弹窗宽度增大，内容区内部滚动，底部按钮固定在弹窗底部。
+
+### 修改文件
+- `frontend/src/utils/seedParser.js`
+- `frontend/src/prompts/seed.js`
+- `frontend/src/stores/seedStore.js`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- 本地解析样例验证通过：标准 JSON、带前置干扰文本的 JSON、中文标签式种子都可解析。
+
+### 当前决策
+- AI 种子生成不能依赖模型一次性输出完美 JSON，必须有解析兜底和格式修复链路。
+- 长文本种子编辑需要稳定弹窗布局，不能让表单内容撑破页面。
+
+## 2026-05-18 - 方向建议失败策略调整
+
+### 本次完成
+- 选题方向建议解析器改为扫描多个 JSON 候选段，支持顶层 `{ "directions": [...] }`。
+- 当 AI 返回方向建议但格式不合法时，自动追加一次“JSON 修复器”调用，只修复格式，不新增本地市场判断。
+- 抓取失败进入本地参考样本时，不再自动生成 AI 选题方向建议，避免长期输出同一套本地保守方向。
+- 抓取失败时会清空当前方向建议并提示用户更换关键词或稍后重试实时抓取。
+
+### 修改文件
+- `frontend/src/prompts/marketDirections.js`
+- `frontend/src/stores/marketStore.js`
+- `frontend/src/components/market/MarketRadar.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地方向建议 JSON 解析样例通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 方向建议必须基于真实抓取结果或真实 AI 输出，不用本地兜底样本伪装市场结论。
+
+## 2026-05-18 - 结构化生成二次加固
+
+### 本次完成
+- AI 生成种子启用模型 JSON 输出约束（当 Provider 支持 JSON 时）。
+- AI 方向建议启用模型 JSON 输出约束（当 Provider 支持 JSON 时）。
+- 种子解析器补充英文、snake_case、英文空格标签和 Markdown 粗体标签解析，例如 `Opening Hook`、`Core Conflict`、`Risk Notes`。
+- 方向建议解析器补充 Markdown/编号/英文标签解析，例如 `Reader Expectation`、`Seed Angle`、`Discussion Prompt`。
+- 种子和方向建议在解析失败时，错误信息会附带 AI 返回片段，便于判断模型实际输出内容。
+- 格式修复 Prompt 调整为“从原文已有信息结构化”，不是只修 JSON 标点，提升非 JSON 回复的可恢复性。
+
+### 修改文件
+- `frontend/src/utils/seedParser.js`
+- `frontend/src/prompts/seed.js`
+- `frontend/src/prompts/marketDirections.js`
+- `frontend/src/stores/seedStore.js`
+- `frontend/src/stores/marketStore.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地英文 Markdown 标签解析样例通过。
+- 本地 JSON 包装解析样例通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 创意生成允许模型自由发挥，但落库前必须经历“解析 → 格式修复 → 带原文片段报错”的结构化链路。
+
+## 2026-05-18 - 完整种子 JSON 直存与截断风险降低
+
+### 本次完成
+- 创作种子 AI 生成入口增加“输入直解析”：如果用户在创作想法里粘贴完整种子 JSON / 中文标签种子，系统会直接保存为种子，不再交给 AI 重写。
+- AI 生成种子默认数量从 3-5 个调整为 1-3 个。
+- 开局钩子建议长度从 200-400 字调整为 120-220 字。
+- Prompt 增加每字段 300 字以内约束，降低模型输出过长导致 JSON 中途截断的概率。
+
+### 修改文件
+- `frontend/src/stores/seedStore.js`
+- `frontend/src/prompts/seed.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地完整种子 JSON 解析样例通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 粘贴完整种子时应视为“导入/保存种子”，而不是再次让 AI 扩写，避免长 JSON 被模型重写后截断。
+
+## 2026-05-18 - JSON-like 粘贴种子解析修复
+
+### 本次完成
+- 创作想法直存解析支持 `"title":`、`"genre":` 这类带引号的 JSON-like 字段名。
+- 支持字段值里存在真实换行的非严格 JSON 文本，尽量按字段边界提取为种子。
+- 支持 `endingAnchor` / `结局锚点` 作为额外字段边界，但当前不写入种子表，避免污染风险提示字段。
+- 修复用户粘贴长种子 JSON-like 内容时仍然走 AI 重写并被截断的问题。
+
+### 修改文件
+- `frontend/src/utils/seedParser.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地“带引号字段名 + 字段值真实换行 + endingAnchor 额外字段”的种子解析样例通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-18 - 粘贴种子显式保存入口
+
+### 本次完成
+- “AI 生成种子”弹窗新增“保存粘贴种子”按钮，用于把已整理好的 JSON / JSON-like / 中文标签种子直接保存到种子库。
+- “生成”按钮执行前也会先尝试解析粘贴内容，解析成功则直接保存，不再调用大模型。
+- 粘贴解析失败时只在用户点击“保存粘贴种子”时提示字段要求；普通 AI 生成仍可继续。
+
+### 修改文件
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- 后端 `/api/health` 正常。
+
+### 当前决策
+- “粘贴已有种子”和“让 AI 生成新种子”是两个不同动作，界面上必须给显式入口，避免误走外部 AI 网络请求。
+
+## 2026-05-18 - 种子长字段保存与 endingAnchor 支持
+
+### 本次完成
+- `creative_seeds` 新增 `ending_anchor` 字段，用于保存结局锚点。
+- `emotional_promise`、`style_target` 从短文本扩容为 `TEXT`，避免长种子保存时数据库截断/报错。
+- 后端种子创建/更新接口新增 `endingAnchor`。
+- 前端种子解析器把 `endingAnchor` / `结局锚点` 纳入正式种子字段。
+- 手动创建种子、查看/编辑种子增加“结局锚点”输入项。
+- 手动创建种子增加异常捕获，保存失败时会明确提示错误，不再表现为点击无反应。
+
+### 修改文件
+- `backend/schema.sql`
+- `backend/database.py`
+- `backend/routers/seeds.py`
+- `frontend/src/utils/seedParser.js`
+- `frontend/src/prompts/seed.js`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- 后端已重启，`/api/health` 正常。
+- 使用超长 `emotionalPromise` / `styleTarget` / `endingAnchor` 调用创建种子接口成功，并删除测试数据成功。
+
+### 当前决策
+- 结局锚点是长篇创作种子的重要资产，应进入种子模型，而不是丢弃或混入风险提示。
+
+## 2026-05-18 - 创作种子生成创作圣经补强
+
+### 本次完成
+- 新增“创作种子 -> 创作圣经”的专用 AI 生成链路，不再只是把种子的 `logline` / `styleTarget` / `worldPressure` 简单搬运到圣经字段。
+- 创作圣经生成会从题材、情绪价值、核心矛盾、世界压力、风格试写、风险提示和结局锚点中推导 `targetReader`、`themeBible`、`styleBible`、`worldRules` 和 `forbiddenDirections`。
+- 新增创作圣经 JSON 解析与修复提示，模型返回非标准结构时会先尝试修复；仍失败时保留返回片段报错，不静默写入低质量内容。
+- 创作圣经编辑页增加 store 同步：从种子页生成或更新圣经后，点击编辑会先读取最新数据，避免看到旧的空表单。
+
+### 修改文件
+- `frontend/src/prompts/bibleFromSeed.js`
+- `frontend/src/stores/novelStore.js`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 创作圣经 JSON 解析器本地样例通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 创作圣经是作品级蓝图，应由 AI 基于种子做“编辑推导”，不能由前端做机械字段映射；目标读者和主题母题属于必填核心字段。
+
+## 2026-05-18 - 创作圣经生成 JSON 源头排查与修复
+
+### 本次完成
+- 排查“以此创建创作圣经”失败链路：种子传入和按钮逻辑正常，失败点在模型返回的创作圣经内容不是严格 JSON。
+- 触发原因：原 Prompt 要求 `styleBible`、`themeBible`、`worldRules` 输出长字符串，模型容易在字符串内部直接换行，导致“看起来像 JSON，但不是合法 JSON”。
+- 调整 Prompt：长字段改为 JSON 短句数组输出，要求所有字符串内部不直接换行，每个数组元素控制为短句。
+- 增强创作圣经解析器：当严格 JSON 解析失败时，会按字段边界从 JSON-like 文本中提取 `premise`、`targetReader`、`styleBible`、`themeBible`、`worldRules`、`forbiddenDirections`。
+
+### 修改文件
+- `frontend/src/prompts/bibleFromSeed.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地构造“字段值内部未转义换行”的非法 JSON 样例，解析成功。
+- 本地构造“长字段为数组”的合法 JSON 样例，解析成功并转换为前端文本。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 模型输出给程序落库时，长段落字段应优先使用数组短句，而不是单个长字符串，降低 JSON 损坏概率。
+
+## 2026-05-18 - 创作圣经数组字符串清洗
+
+### 本次完成
+- 修复创作圣经生成成功后，`styleBible`、`themeBible`、`worldRules` 字段显示为 `[` 开头的问题。
+- 原因是部分模型会把数组整体作为字符串返回，例如 `"styleBible": "[...]"`，严格 JSON 可解析，但字段内容仍带数组外壳。
+- 标准化逻辑新增“数组字符串”识别：支持合法 JSON 数组字符串和多行 JSON-like 数组文本，统一转换为换行文本。
+- 创作圣经查看态和编辑态都改为使用标准化后的数据，已保存的旧脏数据打开页面时也会被清洗展示。
+
+### 修改文件
+- `frontend/src/prompts/bibleFromSeed.js`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地构造 `styleBible: "[...]"`、`themeBible: "[...]"`、`worldRules: "[...]"` 样例，均成功清洗为换行文本。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- AI 返回结构化数据时，要同时防御“数组”和“数组字符串”两种形态，不能只按理想 JSON 处理。
+
+## 2026-05-18 - 禁止方向落库修复
+
+### 本次完成
+- 排查“页面有禁止方向标签，但数据库 `creative_bible.forbidden_directions` 显示 `[]`”的问题。
+- 原因之一是模型可能返回中文字段名 `"禁止方向"`，严格 JSON 解析成功后提前走标准化，但旧逻辑只读取 `forbiddenDirections` 等英文 key，导致中文 key 未映射落库。
+- `normalizeBiblePayload` 改为遍历所有字段并通过别名表映射，支持中文 key、snake_case、camelCase 等多种形态。
+- `novelStore.saveBible` 保存前强制执行标准化，确保编辑页或生成页传入的数据都会以标准字段落库。
+
+### 修改文件
+- `frontend/src/prompts/bibleFromSeed.js`
+- `frontend/src/stores/novelStore.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地构造 `"禁止方向": [...]` 样例，成功归并到 `forbiddenDirections`。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 任何写入创作圣经的入口都必须先标准化，不能只在展示层清洗。
+
+## 2026-05-18 - 创作圣经到设定库初始化入口
+
+### 本次完成
+- 在创作圣经卡片新增“提取到设定库”入口。
+- 新增从创作圣经和当前选中创作种子提取初始设定候选的 Prompt。
+- 提取结果不直接写入正式设定库，而是保存到 `setting_change_events`，状态为 `pending_review`。
+- 复用现有设定库“待确认设定变更”流程，用户确认后再创建/更新 `setting_entities` 或 `setting_relations`。
+- 设定库待确认区说明更新为支持“创作圣经初始化”和“章节定稿提取”两个来源。
+
+### 修改文件
+- `frontend/src/prompts/settingsFromBible.js`
+- `frontend/src/stores/settingStore.js`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `frontend/src/components/settings-library/SettingLibrary.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地初始设定候选 JSON 解析样例通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 圣经到设定库必须走“待确认设定变更”，不允许 AI 直接污染正式设定库。
+
 ## 记录模板
 
 ```md
@@ -1019,3 +1368,281 @@
 ### 下一步
 - 
 ```
+
+## 2026-05-18 - 圣经到设定库提取容错与流程锁
+
+### 本次完成
+- 增强“创作圣经 -> 设定库”提取解析器：支持中文字段名、snake_case、`settings/entities/candidates/设定候选` 等多种 AI 返回结构。
+- 新增设定候选 JSON 修复二次调用：首次解析失败时，让模型只做格式修复，不新增内容。
+- 设定库初始化结果统一打上“创作圣经初始化”来源标记，便于识别初始化是否已执行。
+- 创作圣经页加载设定变更记录后显示初始化状态；已提取过时按钮变为“已提取到设定库”并禁止再次提取。
+- 从种子生成创作圣经增加流程保护：项目已有设定库数据或已写章节后，不再允许从种子覆盖圣经，只能在圣经页局部编辑。
+
+### 修改文件
+- `frontend/src/prompts/settingsFromBible.js`
+- `frontend/src/stores/settingStore.js`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 本地构造中文 key、`entities`、`设定候选`、关系候选等样例，均能解析为可保存的设定变更。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 创作圣经到设定库是一次性初始化动作。初始化后，设定来源应转为“章节定稿提取 + 设定库人工确认”，避免旧种子或新圣经覆盖已经写作过的世界状态。
+- 写作开始后不允许从种子重新生成并覆盖创作圣经；后续如需要大改，应设计为“新版圣经草案/差异对比/人工确认迁移”，不能直接覆盖。
+
+## 2026-05-18 - 全局提醒改为手动关闭弹窗
+
+### 本次完成
+- 新增统一提醒组合函数 `useAppMessage`，对外保留 `success/error/warning/info` 调用方式。
+- 将前端所有原 `useMessage` 短暂 toast 替换为 Naive UI Dialog 弹窗提醒。
+- 弹窗默认不可点击遮罩或 ESC 自动关闭，必须点击“关闭”按钮手动关闭。
+- 长错误信息支持换行与自动换行，避免 AI 返回片段或异常信息被截断难读。
+
+### 修改文件
+- `frontend/src/composables/useAppMessage.js`
+- `frontend/src/style.css`
+- `frontend/src/components/**`
+- `frontend/src/views/**`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 全项目已无 `useMessage` 调用。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 完成、失败、警告、普通提示统一使用手动关闭弹窗，避免关键反馈几秒后消失。
+
+## 2026-05-18 - 禁止种子重复覆盖创作圣经
+
+### 本次完成
+- 修复“创作圣经已生成后，种子页仍可点击以此创建创作圣经并重生成”的问题。
+- 种子页点击前会重新读取当前项目创作圣经；只要已有圣经，就弹窗提示并阻止覆盖。
+- `novelStore.generateBibleFromSeed` 增加 store 层硬拦截，避免未来其他入口误调用导致覆盖。
+
+### 修改文件
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `frontend/src/stores/novelStore.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 从种子创建圣经只能发生在“项目尚无创作圣经”的阶段。
+- 已有圣经后的调整只能在创作圣经页局部编辑；后续若需要大改，应另做“新版圣经草案/差异对比”功能。
+
+## 2026-05-18 - 阶段数据清空与项目更新时间同步
+
+### 本次完成
+- 修复创作圣经保存后，项目页“项目信息”更新时间不刷新的问题：保存/删除圣经会同步更新 `projects.updated_at` 并刷新前端当前项目。
+- 新增项目内容状态接口 `/projects/{pid}/content-state`，用于判断是否已有章节正文或候选版本。
+- 新增清空/删除接口：删除创作圣经、清空创作种子、清空设定库。
+- 种子页新增“清空种子”按钮；圣经页新增“删除圣经”按钮；设定库新增“清空设定库”按钮。
+- 清空操作会根据章节内容状态弹窗确认：没有章节内容时一次确认；已有章节内容时二次警告确认。
+- 项目删除时补充清理市场数据与设定库数据，避免残留孤立数据。
+
+### 修改文件
+- `backend/routers/helpers.py`
+- `backend/routers/projects.py`
+- `backend/routers/novel.py`
+- `backend/routers/seeds.py`
+- `backend/routers/settings_library.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/composables/useResetConfirmation.js`
+- `frontend/src/stores/novelStore.js`
+- `frontend/src/stores/seedStore.js`
+- `frontend/src/stores/settingStore.js`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `frontend/src/components/settings-library/SettingLibrary.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 阶段回退允许存在，但必须显式确认；已有章节内容时必须二次确认。
+- 删除种子、圣经、设定库都不删除章节正文，只清理对应阶段数据。
+
+## 2026-05-18 - 项目库基础信息编辑
+
+### 本次完成
+- 项目库卡片新增“编辑”按钮，可修改项目名称、题材、简介、目标字数和目标章节数。
+- 新增“编辑项目信息”弹窗，复用新建项目的基础字段。
+- 编辑时会读取项目内容状态；如果已有章节或正文候选版本，目标字数和目标章节数会锁定不可编辑。
+- 后端 `PUT /projects/{pid}` 增加硬保护：已有章节或章节版本时，不允许修改目标字数或目标章节数。
+- 项目更新后会刷新项目库卡片与当前项目状态。
+
+### 修改文件
+- `backend/routers/projects.py`
+- `frontend/src/views/HomeView.vue`
+- `frontend/src/stores/projectStore.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 项目名称、题材、简介属于基础描述，可随时修改。
+- 目标字数和目标章节数属于章节规划约束；项目已有章节后不再允许修改，避免影响后续章节规划和进度判断。
+
+## 2026-05-19 - 长篇承载第一步：分卷规划
+
+### 本次完成
+- 新增 `project_volumes` 分卷 / 阶段规划表，作为长篇小说的阶段锚点。
+- 新增分卷规划后端接口：
+  - `GET /projects/{pid}/volumes`
+  - `POST /projects/{pid}/volumes`
+  - `PUT /projects/{pid}/volumes/{vid}`
+  - `DELETE /projects/{pid}/volumes/{vid}`
+- 项目导入导出补充分卷规划数据 `projectVolumes`。
+- 项目删除时同步清理分卷规划，避免残留数据。
+- 前端新增 `volumeStore` 管理分卷数据。
+- 章节管理页新增“分卷规划”模块，支持：
+  - 按项目目标章节快速初始化分卷；
+  - 手动新增 / 编辑 / 删除分卷；
+  - 维护章节范围、目标字数、阶段目标、核心冲突、关键人物、阶段摘要和状态；
+  - 删除分卷时若范围内已有章节，会提示删除只移除规划，不删除正文。
+
+### 修改文件
+- `backend/database.py`
+- `backend/main.py`
+- `backend/schema.sql`
+- `backend/routers/helpers.py`
+- `backend/routers/projects.py`
+- `backend/routers/export.py`
+- `backend/routers/volumes.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/volumeStore.js`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/views/ProjectView.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+### 当前决策
+- 分卷规划是长篇工程化的第一层结构，不直接修改章节正文。
+- 先把“卷”作为人工可控的阶段锚点落地，后续再把章节生成上下文、阶段总结、伏笔回收审计接入分卷范围。
+
+## 2026-05-19 - 分卷审稿 v1
+
+### 本次完成
+- 在 `project_volumes` 中新增 `audit_report` 和 `audit_updated_at` 字段，用于保存每一卷最近一次审稿结果。
+- 新增分卷上下文接口 `GET /projects/{pid}/volumes/{vid}/context`，返回该卷章节范围内的章节列表、定稿正文和统计信息。
+- 新增分卷审稿保存接口 `PUT /projects/{pid}/volumes/{vid}/audit`。
+- 前端新增 `volumeAudit` Prompt，按分卷目标、章节摘要、正文节选、Canon 事实、设定库、关系和伏笔生成阶段审稿报告。
+- `memoryStore` 新增 `auditVolume`，复用审稿模型绑定生成分卷报告。
+- 分卷规划卡片新增“分卷审稿 / 重新审稿 / 查看报告”操作。
+- 审稿报告会保存到当前分卷，并支持回看：
+  - 总体评价
+  - 阶段判断
+  - 当前优点
+  - 主要问题
+  - 人物弧光
+  - 设定一致性
+  - 伏笔状态
+  - 节奏判断
+  - 下一步建议
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`，把分卷 / 阶段审稿写回需求文档。
+
+### 修改文件
+- `backend/database.py`
+- `backend/schema.sql`
+- `backend/routers/helpers.py`
+- `backend/routers/volumes.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/prompts/volumeAudit.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/stores/volumeStore.js`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 分卷审稿 v1 先保存“每卷最近一次报告”，不做历史报告表。
+- 审稿上下文以“章节摘要 + 关键正文节选 + 结构化记忆”为主，不强行塞整卷全部正文，优先保证稳定和可用。
+
+### 下一步
+- 做“分卷阶段总结”，让每卷在写作推进过程中自动沉淀阶段事实和接力点。
+- 再把分卷规划 / 阶段总结接入写作台上下文，提升长篇连续生成的稳定性。
+
+## 2026-05-19 - 分卷阶段总结 v1
+
+### 本次完成
+- `project_volumes` 新增 `stage_summary_report` 和 `summary_updated_at` 字段，用于保存每卷最近一次阶段总结。
+- 新增后端接口 `PUT /projects/{pid}/volumes/{vid}/summary-report`，保存结构化阶段总结，并同步更新分卷卡片摘要。
+- 前端新增 `volumeSummary` Prompt，要求 AI 输出阶段总览、已完成节点、未解问题、人物变化、设定变化、伏笔状态、下一卷接力点、连续性约束和下一卷剧情种子。
+- `memoryStore` 新增 `summarizeVolume`，复用分卷上下文接口，读取章节摘要/正文节选、创作圣经、Canon 事实、设定库、关系、伏笔和最近审稿报告。
+- `volumeStore` 新增 `saveStageSummary`。
+- 分卷卡片新增“生成总结 / 更新总结 / 查看总结”操作，并展示最近总结时间。
+- 新增“分卷阶段总结”弹窗，支持回看结构化总结内容。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`，把分卷阶段总结写回需求规划。
+
+### 修改文件
+- `backend/database.py`
+- `backend/schema.sql`
+- `backend/routers/helpers.py`
+- `backend/routers/volumes.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/prompts/volumeSummary.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/stores/volumeStore.js`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 阶段总结先保存“每卷最近一次结果”，不单独做历史版本表。
+- 分卷总结会更新分卷摘要，方便卡片快速浏览；完整结构化内容仍保存在 `stage_summary_report` 中。
+- 阶段总结不自动改写设定库，设定变更仍走章节定稿后的待确认流程，避免已写设定被阶段总结反向覆盖。
+
+## 2026-05-19 - 写作台接入分卷阶段上下文
+
+### 本次完成
+- `buildWritingContext` 新增分卷识别能力，会根据当前章节号找到所属分卷。
+- 写作上下文新增 `volumeStage`，包含：
+  - 当前分卷标题、章节范围、目标字数、状态。
+  - 分卷目标、核心冲突、关键人物。
+  - 分卷短摘要、阶段总结、已完成节点、未解问题。
+  - 人物变化、设定变化、伏笔状态、下一卷接力点、连续性约束。
+  - 最近分卷审稿结论和待处理问题。
+  - 最近两个前卷阶段摘要。
+- 章节小纲、生成本章、多候选版本会自动注入分卷阶段上下文。
+- 续写、扩写、选区改写也接入轻量分卷上下文，减少局部操作跑偏。
+- 写作台顶部新增当前章节所属分卷标签，便于用户确认本章承接位置。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`。
+
+### 修改文件
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/rewrite.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/views/WriterView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 分卷上下文作为“中间层约束”注入写作任务，不要求模型读取整卷全文。
+- 续写和局部改写只注入必要的分卷、设定和事实信息，避免局部操作被过多历史资料压垮。
+- 分卷上下文不替代设定库；人物境界、功法、归属、关系等仍以设定库和 Canon 事实为准。

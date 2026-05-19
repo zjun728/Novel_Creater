@@ -1,83 +1,179 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
-import { NButton, NCard, NInput, NSpace, NTag, NDynamicTags, useMessage } from 'naive-ui'
+import { computed, ref, onMounted, watch } from 'vue'
+import { NButton, NCard, NInput, NSpace, NTag, NDynamicTags } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
+import { useResetConfirmation } from '@/composables/useResetConfirmation'
 import { useNovelStore } from '@/stores/novelStore'
+import { useSettingStore } from '@/stores/settingStore'
+import { normalizeBiblePayload } from '@/prompts/bibleFromSeed'
 
 const props = defineProps({
   projectId: { type: String, required: true }
 })
 
 const novelStore = useNovelStore()
-const message = useMessage()
+const settingStore = useSettingStore()
+const message = useAppMessage()
+const { confirmStageReset } = useResetConfirmation()
 
 const editing = ref(false)
-const formData = ref({
-  premise: '',
-  targetReader: '',
-  styleBible: '',
-  themeBible: '',
-  worldRules: '',
-  forbiddenDirections: []
-})
+const displayBible = computed(() => novelStore.bible ? normalizeBiblePayload(novelStore.bible) : null)
+const bibleInitialized = computed(() => settingStore.hasBibleInitialization)
+
+function emptyBibleForm() {
+  return {
+    premise: '',
+    targetReader: '',
+    styleBible: '',
+    themeBible: '',
+    worldRules: '',
+    forbiddenDirections: []
+  }
+}
+
+const formData = ref(emptyBibleForm())
+
+function syncBibleToForm(bible = novelStore.bible) {
+  if (!bible) {
+    formData.value = emptyBibleForm()
+    return
+  }
+
+  const normalized = normalizeBiblePayload(bible)
+  formData.value = {
+    premise: normalized.premise || '',
+    targetReader: normalized.targetReader || '',
+    styleBible: normalized.styleBible || '',
+    themeBible: normalized.themeBible || '',
+    worldRules: normalized.worldRules || '',
+    forbiddenDirections: normalized.forbiddenDirections || []
+  }
+}
+
+function toggleEditing() {
+  if (!editing.value) syncBibleToForm()
+  editing.value = !editing.value
+}
+
+async function loadPageData(projectId) {
+  await Promise.allSettled([
+    novelStore.loadBible(projectId),
+    settingStore.loadChangeEvents(projectId)
+  ])
+  syncBibleToForm()
+}
 
 onMounted(async () => {
-  await novelStore.loadBible(props.projectId)
-  if (novelStore.bible) {
-    formData.value = {
-      premise: novelStore.bible.premise || '',
-      targetReader: novelStore.bible.targetReader || '',
-      styleBible: novelStore.bible.styleBible || '',
-      themeBible: novelStore.bible.themeBible || '',
-      worldRules: novelStore.bible.worldRules || '',
-      forbiddenDirections: novelStore.bible.forbiddenDirections || []
-    }
-  }
+  await loadPageData(props.projectId)
 })
 
 watch(() => props.projectId, async (newId) => {
-  if (newId) {
-    await novelStore.loadBible(newId)
-  }
+  if (newId) await loadPageData(newId)
 })
+
+watch(() => novelStore.bible, (value) => {
+  if (!editing.value) syncBibleToForm(value)
+}, { deep: true })
 
 async function handleSave() {
   await novelStore.saveBible(props.projectId, formData.value)
   message.success('创作圣经已保存')
   editing.value = false
 }
+
+async function handleInitializeSettings() {
+  if (!displayBible.value) {
+    message.warning('请先生成或填写创作圣经')
+    return
+  }
+  if (bibleInitialized.value) {
+    message.warning('创作圣经已提取过设定库，后续请通过章节定稿提取或手动维护设定')
+    return
+  }
+
+  try {
+    const created = await settingStore.initializeFromBible(props.projectId, displayBible.value)
+    message.success(`已提取 ${created.length} 条待确认设定，请到设定库确认入库`)
+  } catch (e) {
+    message.error('提取设定失败：' + e.message)
+  }
+}
+
+async function handleDeleteBible() {
+  const { confirmed } = await confirmStageReset({
+    projectId: props.projectId,
+    title: '删除创作圣经',
+    safeContent: '将删除当前创作圣经。因为还没有章节内容，删除后可以重新从种子生成圣经。',
+    riskContent: '删除创作圣经不会删除已写章节，但会移除后续写作的重要蓝图依据。已有章节可能与重新生成的圣经不一致。',
+    finalContent: '最终确认：删除创作圣经后，原有作品定位、风格要求、主题母题、世界规则和禁止方向都会被清空。',
+    positiveText: '确认删除圣经'
+  })
+  if (!confirmed) return
+
+  try {
+    await novelStore.deleteBible(props.projectId)
+    editing.value = false
+    syncBibleToForm(null)
+    message.success('创作圣经已删除，可以重新生成')
+  } catch (e) {
+    message.error('删除创作圣经失败：' + e.message)
+  }
+}
 </script>
 
 <template>
   <n-card title="创作圣经" size="small">
     <template #header-extra>
-      <n-button size="tiny" @click="editing = !editing">{{ editing ? '取消' : '编辑' }}</n-button>
+      <n-space size="small">
+        <n-button
+          v-if="!editing && displayBible"
+          size="tiny"
+          type="error"
+          secondary
+          :loading="novelStore.loading"
+          @click="handleDeleteBible"
+        >
+          删除圣经
+        </n-button>
+        <n-button
+          v-if="!editing"
+          size="tiny"
+          type="primary"
+          :disabled="!displayBible || bibleInitialized"
+          :loading="settingStore.initializingFromBible"
+          @click="handleInitializeSettings"
+        >
+          {{ bibleInitialized ? '已提取到设定库' : '提取到设定库' }}
+        </n-button>
+        <n-button size="tiny" @click="toggleEditing">{{ editing ? '取消' : '编辑' }}</n-button>
+      </n-space>
     </template>
 
-    <div v-if="!editing && novelStore.bible" class="space-y-3 text-sm">
-      <div v-if="novelStore.bible.premise">
+    <div v-if="!editing && displayBible" class="space-y-3 text-sm">
+      <div v-if="displayBible.premise">
         <span class="font-medium text-gray-500">作品定位：</span>
-        <p class="text-gray-700">{{ novelStore.bible.premise }}</p>
+        <p class="text-gray-700">{{ displayBible.premise }}</p>
       </div>
-      <div v-if="novelStore.bible.targetReader">
+      <div v-if="displayBible.targetReader">
         <span class="font-medium text-gray-500">目标读者：</span>
-        <span>{{ novelStore.bible.targetReader }}</span>
+        <span>{{ displayBible.targetReader }}</span>
       </div>
-      <div v-if="novelStore.bible.styleBible">
+      <div v-if="displayBible.styleBible">
         <span class="font-medium text-gray-500">风格要求：</span>
-        <p class="text-gray-700 whitespace-pre-wrap">{{ novelStore.bible.styleBible }}</p>
+        <p class="text-gray-700 whitespace-pre-wrap">{{ displayBible.styleBible }}</p>
       </div>
-      <div v-if="novelStore.bible.themeBible">
+      <div v-if="displayBible.themeBible">
         <span class="font-medium text-gray-500">主题与母题：</span>
-        <p class="text-gray-700 whitespace-pre-wrap">{{ novelStore.bible.themeBible }}</p>
+        <p class="text-gray-700 whitespace-pre-wrap">{{ displayBible.themeBible }}</p>
       </div>
-      <div v-if="novelStore.bible.worldRules">
+      <div v-if="displayBible.worldRules">
         <span class="font-medium text-gray-500">世界规则：</span>
-        <p class="text-gray-700 whitespace-pre-wrap">{{ novelStore.bible.worldRules }}</p>
+        <p class="text-gray-700 whitespace-pre-wrap">{{ displayBible.worldRules }}</p>
       </div>
-      <div v-if="novelStore.bible.forbiddenDirections?.length">
+      <div v-if="displayBible.forbiddenDirections?.length">
         <span class="font-medium text-gray-500">禁止方向：</span>
         <n-space>
-          <n-tag v-for="d in novelStore.bible.forbiddenDirections" :key="d" size="small" type="error">{{ d }}</n-tag>
+          <n-tag v-for="d in displayBible.forbiddenDirections" :key="d" size="small" type="error">{{ d }}</n-tag>
         </n-space>
       </div>
     </div>
@@ -89,7 +185,7 @@ async function handleSave() {
     <div v-if="editing" class="space-y-3">
       <div>
         <label class="text-xs text-gray-500 mb-1 block">作品定位（一句话）</label>
-        <n-input v-model:value="formData.premise" type="textarea" rows="2" placeholder="用一句话说清这是什么故事" />
+        <n-input v-model:value="formData.premise" type="textarea" rows="2" placeholder="用一句话说清这是一个什么故事" />
       </div>
       <div>
         <label class="text-xs text-gray-500 mb-1 block">目标读者</label>

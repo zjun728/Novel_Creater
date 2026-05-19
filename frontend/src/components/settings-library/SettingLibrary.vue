@@ -13,9 +13,10 @@ import {
   NPopconfirm,
   NSelect,
   NSpace,
-  NTag,
-  useMessage
+  NTag
 } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
+import { useResetConfirmation } from '@/composables/useResetConfirmation'
 import { ENTITY_TYPES, useSettingStore } from '@/stores/settingStore'
 
 const props = defineProps({
@@ -23,12 +24,14 @@ const props = defineProps({
 })
 
 const settingStore = useSettingStore()
-const message = useMessage()
+const message = useAppMessage()
+const { confirmStageReset } = useResetConfirmation()
 
 const activeType = ref('character')
 const selectedEntityId = ref('')
 const saving = ref(false)
 const relationSaving = ref(false)
+const clearingSettings = ref(false)
 
 const draft = reactive(createBlankDraft())
 const relationDraft = reactive(createBlankRelation())
@@ -153,6 +156,36 @@ async function deleteCurrentEntity() {
     else startCreate(activeType.value)
   } catch (e) {
     message.error('删除失败：' + e.message)
+  }
+}
+
+async function handleClearSettings() {
+  const count = settingStore.entities.length + settingStore.relations.length + settingStore.changeEvents.length
+  if (!count) {
+    message.warning('当前设定库为空，不需要清空')
+    return
+  }
+
+  const { confirmed } = await confirmStageReset({
+    projectId: props.projectId,
+    title: '清空设定库',
+    safeContent: '将清空设定实体、关系和待确认变更。因为还没有章节内容，清空后可以重新从圣经提取设定。',
+    riskContent: '清空设定库不会删除已写章节，但会移除人物、势力、地点、功法、关系等长期状态记录。已有章节可能失去一致性约束。',
+    finalContent: '最终确认：清空设定库后，所有设定实体、关系和待确认变更都会被删除。已写章节不会删除。',
+    positiveText: '确认清空设定库'
+  })
+  if (!confirmed) return
+
+  clearingSettings.value = true
+  try {
+    await settingStore.clearSettings(props.projectId)
+    selectedEntityId.value = ''
+    startCreate(activeType.value)
+    message.success('设定库已清空，可以重新从圣经提取')
+  } catch (e) {
+    message.error('清空设定库失败：' + e.message)
+  } finally {
+    clearingSettings.value = false
   }
 }
 
@@ -354,6 +387,23 @@ const PROFILE_FIELDS = {
 
 <template>
   <div class="setting-library">
+    <div class="library-toolbar">
+      <div>
+        <h3>设定库</h3>
+        <p>维护长篇写作中的人物、势力、地点、体系和关系状态。</p>
+      </div>
+      <n-button
+        size="small"
+        type="error"
+        secondary
+        :loading="clearingSettings"
+        :disabled="!settingStore.entities.length && !settingStore.relations.length && !settingStore.changeEvents.length"
+        @click="handleClearSettings"
+      >
+        清空设定库
+      </n-button>
+    </div>
+
     <div class="setting-layout">
       <aside class="setting-sidebar">
         <div class="type-list">
@@ -515,7 +565,7 @@ const PROFILE_FIELDS = {
 
           <n-collapse-item :title="`待确认设定变更（${settingStore.pendingChangeEvents.length}）`" name="changes">
             <n-alert type="info" :bordered="false" class="mb-3">
-              这些候选由 AI 在定稿后提取。确认后会自动创建或更新设定档案；拒绝则不会进入正式设定库。
+              这些候选由 AI 从创作圣经初始化或在章节定稿后提取。确认后会自动创建或更新设定档案；拒绝则不会进入正式设定库。
             </n-alert>
             <div v-if="settingStore.pendingChangeEvents.length" class="change-list">
               <div v-for="event in settingStore.pendingChangeEvents" :key="event.id" class="change-row">
@@ -547,6 +597,26 @@ const PROFILE_FIELDS = {
 <style scoped>
 .setting-library {
   color: #1f2937;
+}
+
+.library-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.library-toolbar h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 750;
+}
+
+.library-toolbar p {
+  margin: 4px 0 0;
+  color: #8b95a1;
+  font-size: 13px;
 }
 
 .setting-layout {

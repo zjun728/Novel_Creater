@@ -82,7 +82,7 @@ class ContextBuilder {
 }
 
 // === 正文生成上下文 ===
-export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null) {
+export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null) {
   const builder = new ContextBuilder(maxTokens || BUDGETS.writing)
   const bible = novelStore.bible?.value || novelStore.bible
   const outline = novelStore.outline?.value || novelStore.outline
@@ -92,6 +92,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const settingEntities = settingStore?.entities?.value || settingStore?.entities || []
   const settingRelations = settingStore?.relations?.value || settingStore?.relations || []
   const settingChangeEvents = settingStore?.changeEvents?.value || settingStore?.changeEvents || []
+  const volumes = volumeStore?.volumes?.value || volumeStore?.volumes || []
 
   if (bible?.premise) {
     builder.add('premise', bible.premise, { priority: 1, required: true, maxTokens: 800 })
@@ -107,6 +108,12 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
       turn: nearChapter.turn,
       emotionalBeat: nearChapter.emotionalBeat
     }, { priority: 1, required: true })
+  }
+
+  // P1.5: 分卷阶段上下文（长篇连续创作的中间锚点）
+  const volumeContext = buildVolumeStageContext(volumes, chapterNum)
+  if (volumeContext) {
+    builder.add('volumeStage', volumeContext, { priority: 1, required: true, maxTokens: 2200 })
   }
 
   // P2: 当前卷信息（必须）
@@ -240,6 +247,59 @@ function summarizeSettingChanges(events, chapterNum) {
   return recent.map(e =>
     `- 第${e.chapterNum || '?'}章：${e.entityName || settingTypeLabel(e.entityType)} 的 ${e.fieldPath || e.changeType || '设定'} 变为「${e.newValue || ''}」`
   ).join('\n')
+}
+
+function buildVolumeStageContext(volumes, chapterNum) {
+  if (!volumes?.length) return null
+  const current = volumes.find(volume =>
+    Number(chapterNum) >= Number(volume.startChapter || 0) &&
+    Number(chapterNum) <= Number(volume.endChapter || 0)
+  )
+  if (!current) return null
+
+  const previousSummaries = volumes
+    .filter(volume =>
+      Number(volume.endChapter || 0) < Number(current.startChapter || 0) &&
+      volume.stageSummaryReport
+    )
+    .sort((a, b) => Number(b.endChapter || 0) - Number(a.endChapter || 0))
+    .slice(0, 2)
+    .map(volume => ({
+      title: volume.title,
+      range: `第${volume.startChapter}-${volume.endChapter}章`,
+      summary: volume.stageSummaryReport?.compactSummary || volume.summary || volume.stageSummaryReport?.stageSummary || ''
+    }))
+
+  const report = current.stageSummaryReport || null
+  const audit = current.auditReport || null
+  return {
+    title: current.title || `第 ${current.volumeNum || '?'} 卷`,
+    volumeNum: current.volumeNum,
+    chapterRange: `第${current.startChapter}-${current.endChapter}章`,
+    targetWords: current.targetWords || 0,
+    status: current.status || 'planned',
+    coreGoal: current.coreGoal || '',
+    mainConflict: current.mainConflict || '',
+    keyCharacters: current.keyCharacters || [],
+    currentSummary: report?.compactSummary || current.summary || '',
+    stageSummary: report?.stageSummary || '',
+    completedBeats: report?.completedBeats || [],
+    openQuestions: report?.openQuestions || [],
+    characterChanges: report?.characterChanges || [],
+    settingChanges: report?.settingChanges || [],
+    foreshadowingState: report?.foreshadowingState || [],
+    handoffToNext: report?.handoffToNext || [],
+    continuityNotes: report?.continuityNotes || [],
+    nextVolumeSeeds: report?.nextVolumeSeeds || [],
+    auditAssessment: audit?.overallAssessment || '',
+    auditIssues: (audit?.issues || []).slice(0, 6).map(issue => ({
+      severity: issue.severity,
+      type: issue.type,
+      description: issue.description,
+      suggestion: issue.suggestion
+    })),
+    previousVolumeSummaries: previousSummaries
+  }
 }
 
 function pickProfileFacts(type, profile) {

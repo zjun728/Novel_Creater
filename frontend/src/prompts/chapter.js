@@ -106,6 +106,50 @@ function formatSequenceRules(rules) {
   return rules.filter(hasText).map(rule => `- ${rule}`).join('\n')
 }
 
+function formatVolumeStage(stage) {
+  if (!stage) return ''
+  if (typeof stage === 'string') return stage.trim()
+
+  const lines = [
+    `- 当前分卷：${stage.title || '未命名'}（${stage.chapterRange || '章节范围未定'}）`,
+    stage.targetWords ? `- 目标字数：${stage.targetWords}` : '',
+    stage.status ? `- 状态：${stage.status}` : '',
+    stage.coreGoal ? `- 分卷目标：${stage.coreGoal}` : '',
+    stage.mainConflict ? `- 分卷核心冲突：${stage.mainConflict}` : '',
+    stage.keyCharacters?.length ? `- 分卷关键人物：${stage.keyCharacters.join('、')}` : '',
+    stage.currentSummary ? `- 当前阶段短摘要：${stage.currentSummary}` : '',
+    stage.stageSummary ? `- 阶段总结：${stage.stageSummary}` : '',
+    stage.completedBeats?.length ? `- 已完成节点：${stage.completedBeats.map(formatStageItem).join('；')}` : '',
+    stage.openQuestions?.length ? `- 未解问题：${stage.openQuestions.map(formatStageItem).join('；')}` : '',
+    stage.characterChanges?.length ? `- 人物变化：${stage.characterChanges.map(formatStageItem).join('；')}` : '',
+    stage.settingChanges?.length ? `- 设定变化：${stage.settingChanges.map(formatStageItem).join('；')}` : '',
+    stage.foreshadowingState?.length ? `- 伏笔状态：${stage.foreshadowingState.map(formatStageItem).join('；')}` : '',
+    stage.handoffToNext?.length ? `- 接力点：${stage.handoffToNext.map(formatStageItem).join('；')}` : '',
+    stage.continuityNotes?.length ? `- 连续性约束：${stage.continuityNotes.map(formatStageItem).join('；')}` : '',
+    stage.auditAssessment ? `- 最近分卷审稿：${stage.auditAssessment}` : '',
+    stage.auditIssues?.length ? `- 审稿待处理：${stage.auditIssues.map(formatStageItem).join('；')}` : '',
+    stage.previousVolumeSummaries?.length
+      ? `- 前卷摘要：${stage.previousVolumeSummaries.map(item => `${item.title || item.range}：${item.summary}`).join('；')}`
+      : ''
+  ].filter(hasText)
+
+  return lines.join('\n')
+}
+
+function formatStageItem(item) {
+  if (typeof item === 'string') return item
+  if (!item || typeof item !== 'object') return ''
+  return [
+    item.name || item.title || item.label || '',
+    item.state ? `状态=${item.state}` : '',
+    item.change ? `变化=${item.change}` : '',
+    item.description || '',
+    item.suggestion ? `建议=${item.suggestion}` : '',
+    item.note ? `说明=${item.note}` : '',
+    item.nextUse ? `接力=${item.nextUse}` : ''
+  ].filter(hasText).join('，')
+}
+
 export function cleanGeneratedChapterText(text) {
   if (!text) return ''
 
@@ -180,6 +224,9 @@ export function buildChapterPrompt(context) {
 
   const sequenceRules = formatSequenceRules(context.sequenceRules)
   if (sequenceRules) parts.push(`## 顺序控制（必须遵守）\n${sequenceRules}`)
+
+  const volumeStage = formatVolumeStage(context.volumeStage)
+  if (volumeStage) parts.push(`## 分卷阶段上下文（必须承接）\n${volumeStage}`)
 
   const chapterGoal = formatChapterGoal(context.chapterGoal)
   if (chapterGoal) parts.push(`## 本章目标\n${chapterGoal}`)
@@ -297,8 +344,17 @@ export function buildChapterBeatPrompt(context) {
 /**
  * 章节续写 prompt
  */
-export function buildContinuePrompt(currentContent, instruction) {
-  return `以下是小说的当前内容：
+export function buildContinuePrompt(currentContent, instruction, context = {}) {
+  const volumeStage = formatVolumeStage(context.volumeStage)
+  const constraints = [
+    context.styleBible ? `风格要求：${context.styleBible}` : '',
+    context.settingLibrary ? `设定库：\n${context.settingLibrary}` : '',
+    context.recentSettingChanges ? `最近设定变化：\n${context.recentSettingChanges}` : '',
+    volumeStage ? `分卷阶段上下文：\n${volumeStage}` : '',
+    context.recentFacts ? `已确认事实：\n${context.recentFacts}` : ''
+  ].filter(hasText).join('\n\n')
+
+  return `${constraints ? `## 写作上下文\n${constraints}\n\n` : ''}以下是小说的当前内容：
 
 ---
 ${currentContent}
@@ -309,6 +365,7 @@ ${currentContent}
 要求：
 - 只输出续写正文，不要输出标题、说明或提纲。
 - 保持一致的风格和人物声音。
+- 承接当前分卷目标、阶段总结、人物状态和已确认事实。
 - 向前推进情节或深化人物。
 - 不要重复已有内容。
 - 续写长度：800-2000 字。`
@@ -333,8 +390,13 @@ export function buildMultiVariantPrompt(context) {
 /**
  * 扩写 prompt
  */
-export function buildExpandPrompt(selectedText, context) {
+export function buildExpandPrompt(selectedText, context = {}) {
+  const volumeStage = formatVolumeStage(context.volumeStage)
   return `请扩写以下段落，丰富细节、心理描写和场景氛围：
+
+${volumeStage ? `## 分卷阶段上下文\n${volumeStage}\n` : ''}
+${context.styleBible ? `## 风格要求\n${context.styleBible}\n` : ''}
+
 ---
 ${selectedText}
 ---

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { chatCompletion } from '@/api/ai'
+import { api } from '@/api/db/client'
 import { useProviderStore } from './providerStore'
 import { useNovelStore } from './novelStore'
 import { useSettingStore } from './settingStore'
@@ -28,6 +29,14 @@ import {
   buildSettingExtractionSystemPrompt,
   buildSettingExtractionPrompt
 } from '@/prompts/settingExtraction'
+import {
+  buildVolumeAuditSystemPrompt,
+  buildVolumeAuditPrompt
+} from '@/prompts/volumeAudit'
+import {
+  buildVolumeSummarySystemPrompt,
+  buildVolumeSummaryPrompt
+} from '@/prompts/volumeSummary'
 
 export const useMemoryStore = defineStore('memory', () => {
   const processing = ref(false)
@@ -37,8 +46,12 @@ export const useMemoryStore = defineStore('memory', () => {
   const lastStyleAnalysis = ref(null)
   const lastPacingAnalysis = ref(null)
   const lastSettingChanges = ref([])
+  const lastVolumeAuditResult = ref(null)
+  const lastVolumeSummaryResult = ref(null)
   const styleAnalyzing = ref(false)
   const pacingAnalyzing = ref(false)
+  const volumeAuditing = ref(false)
+  const volumeSummarizing = ref(false)
 
   function parseAIJson(text) {
     if (typeof text !== 'string') {
@@ -195,6 +208,113 @@ export const useMemoryStore = defineStore('memory', () => {
     }
   }
 
+  async function auditVolume(projectId, volume, projectInfo = null) {
+    volumeAuditing.value = true
+    try {
+      const provider = await getProvider(projectId, 'auditModelId')
+      const novelStore = useNovelStore()
+      const settingStore = useSettingStore()
+
+      if (!settingStore.entities.length) {
+        await settingStore.loadEntities(projectId)
+      }
+      if (!settingStore.relations.length) {
+        await settingStore.loadRelations(projectId)
+      }
+
+      const rawContext = await api.volumes.context(projectId, volume.id)
+      const context = buildVolumeAuditContext({
+        projectInfo,
+        volume,
+        rawContext,
+        bible: novelStore.bible,
+        canonFacts: (novelStore.canonFacts || []).filter(f =>
+          f.status === 'accepted' &&
+          Number(f.chapterNum || 0) >= Number(volume.startChapter || 0) &&
+          Number(f.chapterNum || 0) <= Number(volume.endChapter || 0)
+        ),
+        plotThreads: (novelStore.plotThreads || []).filter(thread => {
+          const planted = Number(thread.plantedChapter || 0)
+          const resolved = Number(thread.resolvedChapter || 0)
+          return (
+            (planted >= Number(volume.startChapter || 0) && planted <= Number(volume.endChapter || 0)) ||
+            (!resolved && ['planted', 'developing', 'transformed'].includes(thread.status))
+          )
+        }),
+        entities: settingStore.entities,
+        relations: settingStore.relations
+      })
+
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: buildVolumeAuditSystemPrompt() },
+        { role: 'user', content: buildVolumeAuditPrompt(context) }
+      ], { maxTokens: 4096, temperature: 0.3 })
+
+      const data = parseAIJson(result)
+      lastVolumeAuditResult.value = data
+      return data
+    } catch (e) {
+      console.error('分卷审稿失败:', e.message)
+      throw e
+    } finally {
+      volumeAuditing.value = false
+    }
+  }
+
+  async function summarizeVolume(projectId, volume, projectInfo = null) {
+    volumeSummarizing.value = true
+    try {
+      const provider = await getProvider(projectId, 'summaryModelId')
+      const novelStore = useNovelStore()
+      const settingStore = useSettingStore()
+
+      if (!settingStore.entities.length) {
+        await settingStore.loadEntities(projectId)
+      }
+      if (!settingStore.relations.length) {
+        await settingStore.loadRelations(projectId)
+      }
+
+      const rawContext = await api.volumes.context(projectId, volume.id)
+      const context = buildVolumeAuditContext({
+        projectInfo,
+        volume,
+        rawContext,
+        bible: novelStore.bible,
+        canonFacts: (novelStore.canonFacts || []).filter(f =>
+          f.status === 'accepted' &&
+          Number(f.chapterNum || 0) >= Number(volume.startChapter || 0) &&
+          Number(f.chapterNum || 0) <= Number(volume.endChapter || 0)
+        ),
+        plotThreads: (novelStore.plotThreads || []).filter(thread => {
+          const planted = Number(thread.plantedChapter || 0)
+          const resolved = Number(thread.resolvedChapter || 0)
+          return (
+            (planted >= Number(volume.startChapter || 0) && planted <= Number(volume.endChapter || 0)) ||
+            (!resolved && ['planted', 'developing', 'transformed'].includes(thread.status))
+          )
+        }),
+        entities: settingStore.entities,
+        relations: settingStore.relations
+      })
+      context.auditSummary = formatAuditReport(volume.auditReport)
+
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: buildVolumeSummarySystemPrompt() },
+        { role: 'user', content: buildVolumeSummaryPrompt(context) }
+      ], { maxTokens: 4096, temperature: 0.25 })
+
+      const data = parseAIJson(result)
+      lastVolumeSummaryResult.value = data
+      return data
+    } catch (e) {
+      console.error('分卷阶段总结失败:', e.message)
+      throw e
+    } finally {
+      volumeSummarizing.value = false
+    }
+  }
+
   // === 批量处理：定稿后自动执行全部记忆提取 ===
   async function processChapterFinalization(projectId, chapterContent, chapterNum) {
     processing.value = true
@@ -346,14 +466,20 @@ export const useMemoryStore = defineStore('memory', () => {
     lastStyleAnalysis,
     lastPacingAnalysis,
     lastSettingChanges,
+    lastVolumeAuditResult,
+    lastVolumeSummaryResult,
     styleAnalyzing,
     pacingAnalyzing,
+    volumeAuditing,
+    volumeSummarizing,
     generateSummary,
     extractFacts,
     auditChapter,
     analyzeStyle,
     analyzePacing,
     extractSettingChanges,
+    auditVolume,
+    summarizeVolume,
     processChapterFinalization
   }
 })
@@ -376,4 +502,145 @@ function normalizeSettingChangeValue(change) {
   return typeof change.newValue === 'object'
     ? JSON.stringify(change.newValue, null, 0)
     : (change.newValue || '')
+}
+
+function buildVolumeAuditContext({
+  projectInfo,
+  volume,
+  rawContext,
+  bible,
+  canonFacts,
+  plotThreads,
+  entities,
+  relations
+}) {
+  const rangeChapters = rawContext?.chapters || []
+  const keyNames = new Set((volume.keyCharacters || []).map(name => String(name).trim()).filter(Boolean))
+  const relevantEntities = entities
+    .filter(entity => {
+      if (keyNames.size) return keyNames.has(entity.name)
+      return Number(entity.importance || 0) >= 4
+    })
+    .slice(0, 12)
+  const relevantEntityIds = new Set(relevantEntities.map(entity => entity.id))
+  const relevantRelations = relations
+    .filter(relation =>
+      relevantEntityIds.has(relation.sourceEntityId) ||
+      relevantEntityIds.has(relation.targetEntityId)
+    )
+    .slice(0, 16)
+
+  return {
+    projectTitle: projectInfo?.title || '未命名项目',
+    projectGenre: projectInfo?.genre || '',
+    volumeTitle: volume.title || `第 ${volume.volumeNum} 卷`,
+    startChapter: volume.startChapter,
+    endChapter: volume.endChapter,
+    targetWords: volume.targetWords || 0,
+    volumeGoal: volume.coreGoal || '',
+    volumeConflict: volume.mainConflict || '',
+    keyCharacters: volume.keyCharacters || [],
+    bibleSummary: summarizeBible(bible),
+    chapterSummaries: formatChapterSummaries(rangeChapters),
+    chapterExcerpts: formatChapterExcerpts(rangeChapters),
+    canonFacts: formatCanonFacts(canonFacts),
+    settingSummary: formatEntities(relevantEntities),
+    relationSummary: formatRelations(relevantRelations, entities),
+    plotSummary: formatPlotThreads(plotThreads)
+  }
+}
+
+function summarizeBible(bible) {
+  if (!bible) return ''
+  return [
+    bible.premise ? `作品定位：${bible.premise}` : '',
+    bible.themeBible ? `主题母题：${truncateText(bible.themeBible, 600)}` : '',
+    bible.worldRules ? `世界规则：${truncateText(bible.worldRules, 800)}` : '',
+    bible.styleBible ? `风格要求：${truncateText(bible.styleBible, 500)}` : ''
+  ].filter(Boolean).join('\n')
+}
+
+function formatChapterSummaries(chapters) {
+  if (!chapters.length) return ''
+  return chapters.map(ch => {
+    const summary = ch.summary || '暂无摘要'
+    return `- 第 ${ch.chapterNum} 章《${ch.title || '未命名'}》 [${ch.status || 'unknown'} / ${ch.wordCount || 0}字]：${truncateText(summary, 180)}`
+  }).join('\n')
+}
+
+function formatChapterExcerpts(chapters) {
+  const selected = chapters
+    .filter(ch => ch.finalContent || ch.summary)
+    .slice(-6)
+  if (!selected.length) return ''
+  return selected.map(ch => {
+    const content = ch.finalContent
+      ? buildExcerpt(ch.finalContent)
+      : truncateText(ch.summary || '', 300)
+    return `### 第 ${ch.chapterNum} 章《${ch.title || '未命名'}》\n${content}`
+  }).join('\n\n')
+}
+
+function formatCanonFacts(facts) {
+  if (!facts.length) return ''
+  return facts
+    .slice(-24)
+    .map(f => `- 第 ${f.chapterNum} 章 [${f.factType}] ${truncateText(f.content || '', 120)}`)
+    .join('\n')
+}
+
+function formatEntities(entities) {
+  if (!entities.length) return ''
+  return entities.map(entity => {
+    const profile = entity.profile || {}
+    const highlight = [
+      profile.realm ? `境界=${profile.realm}` : '',
+      profile.faction ? `归属=${profile.faction}` : '',
+      entity.category ? `类别=${entity.category}` : ''
+    ].filter(Boolean).join('，')
+    return `- [${entity.entityType}] ${entity.name}${highlight ? `（${highlight}）` : ''}：${truncateText(entity.summary || '暂无概要', 120)}`
+  }).join('\n')
+}
+
+function formatRelations(relations, entities) {
+  if (!relations.length) return ''
+  const entityMap = new Map(entities.map(entity => [entity.id, entity.name]))
+  return relations.map(relation => {
+    const source = entityMap.get(relation.sourceEntityId) || '未知主体'
+    const target = entityMap.get(relation.targetEntityId) || '未知客体'
+    return `- ${source} -> ${target} [${relation.relationType || '关系'} / ${relation.stance || '未标注'}] ${truncateText(relation.summary || '', 100)}`
+  }).join('\n')
+}
+
+function formatPlotThreads(plotThreads) {
+  if (!plotThreads.length) return ''
+  return plotThreads.slice(0, 20).map(thread => {
+    return `- [${thread.status}] ${thread.title}：${truncateText(thread.content || '', 100)}`
+  }).join('\n')
+}
+
+function formatAuditReport(report) {
+  if (!report) return ''
+  return [
+    report.overallAssessment ? `总体评价：${report.overallAssessment}` : '',
+    report.stageSummary ? `阶段判断：${report.stageSummary}` : '',
+    report.characterArcReview ? `人物弧光：${report.characterArcReview}` : '',
+    report.settingConsistency ? `设定一致性：${report.settingConsistency}` : '',
+    report.foreshadowingReview ? `伏笔状态：${report.foreshadowingReview}` : '',
+    report.pacingReview ? `节奏判断：${report.pacingReview}` : '',
+    report.nextActionPlan?.length ? `下一步建议：${report.nextActionPlan.join('；')}` : ''
+  ].filter(Boolean).join('\n')
+}
+
+function buildExcerpt(content) {
+  const text = String(content || '').trim()
+  if (!text) return '暂无正文'
+  if (text.length <= 1800) return text
+  return `${text.slice(0, 900)}\n...\n${text.slice(-700)}`
+}
+
+function truncateText(text, limit = 120) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim()
+  if (value.length <= limit) return value
+  return `${value.slice(0, limit)}...`
 }

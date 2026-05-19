@@ -85,9 +85,69 @@ async def ensure_schema():
           INDEX idx_setting_changes_chapter (project_id, chapter_num)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
+        """
+        CREATE TABLE IF NOT EXISTS market_chat_messages (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          role VARCHAR(20) NOT NULL DEFAULT 'user',
+          content MEDIUMTEXT DEFAULT NULL,
+          metadata JSON DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          INDEX idx_market_chat_project (project_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS market_direction_reports (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          keywords VARCHAR(200) DEFAULT '',
+          content_json JSON DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          INDEX idx_market_direction_project (project_id, created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS project_volumes (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          volume_num INT NOT NULL DEFAULT 1,
+          title VARCHAR(200) DEFAULT '',
+          start_chapter INT NOT NULL DEFAULT 1,
+          end_chapter INT NOT NULL DEFAULT 1,
+          target_words INT DEFAULT 0,
+          core_goal TEXT DEFAULT NULL,
+          main_conflict TEXT DEFAULT NULL,
+          key_characters JSON DEFAULT NULL,
+          summary TEXT DEFAULT NULL,
+          stage_summary_report JSON DEFAULT NULL,
+          summary_updated_at BIGINT DEFAULT NULL,
+          audit_report JSON DEFAULT NULL,
+          audit_updated_at BIGINT DEFAULT NULL,
+          status VARCHAR(30) DEFAULT 'planned',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          INDEX idx_project_volumes_project (project_id),
+          INDEX idx_project_volumes_num (project_id, volume_num),
+          INDEX idx_project_volumes_range (project_id, start_chapter, end_chapter),
+          INDEX idx_project_volumes_status (project_id, status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        "ALTER TABLE project_volumes ADD COLUMN stage_summary_report JSON DEFAULT NULL AFTER summary",
+        "ALTER TABLE project_volumes ADD COLUMN summary_updated_at BIGINT DEFAULT NULL AFTER stage_summary_report",
+        "ALTER TABLE project_volumes ADD COLUMN audit_report JSON DEFAULT NULL AFTER summary",
+        "ALTER TABLE project_volumes ADD COLUMN audit_updated_at BIGINT DEFAULT NULL AFTER audit_report",
+        "ALTER TABLE creative_seeds MODIFY emotional_promise TEXT DEFAULT NULL",
+        "ALTER TABLE creative_seeds MODIFY style_target TEXT DEFAULT NULL",
+        "ALTER TABLE creative_seeds ADD COLUMN ending_anchor TEXT DEFAULT NULL AFTER risk_notes",
     ]
     for sql in statements:
-        await execute(sql)
+        try:
+            await execute(sql)
+        except Exception as exc:
+            # MySQL 5.7 does not support ADD COLUMN IF NOT EXISTS.
+            # Duplicate column errors are safe during local schema upgrades.
+            if "Duplicate column" not in str(exc) and "1060" not in str(exc):
+                raise
 
 
 async def close_pool():

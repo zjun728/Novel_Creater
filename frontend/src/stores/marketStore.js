@@ -7,6 +7,31 @@ import { useProjectStore } from './projectStore'
 import { useNovelStore } from './novelStore'
 import { useSeedStore } from './seedStore'
 import { buildMarketChatSystemPrompt, extractSeedsFromText } from '@/prompts/market'
+import {
+  buildMarketDirectionPrompt,
+  buildMarketDirectionRepairPrompt,
+  extractMarketDirections
+} from '@/prompts/marketDirections'
+
+function getCompletionText(result) {
+  if (typeof result === 'string') return result
+  if (result?.content) return result.content
+  if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
+  return ''
+}
+
+function jsonOptions(provider, options = {}) {
+  return provider?.supportsJSON === false
+    ? options
+    : { ...options, responseFormat: 'json' }
+}
+
+function snippet(text) {
+  return (text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220)
+}
 
 export const useMarketStore = defineStore('market', () => {
   const items = ref([])
@@ -14,6 +39,10 @@ export const useMarketStore = defineStore('market', () => {
   const scraping = ref(false)
   const chatMessages = ref([])
   const chatLoading = ref(false)
+  const directionReports = ref([])
+  const currentDirections = ref([])
+  const directionsLoading = ref(false)
+  const chatDraft = ref('')
 
   // === Market Items CRUD ===
 
@@ -40,6 +69,43 @@ export const useMarketStore = defineStore('market', () => {
     } finally {
       scraping.value = false
     }
+  }
+
+  // === AI 顾问聊天记录 ===
+
+  async function loadChatMessages(projectId) {
+    try {
+      const rows = await api.market.chat.list(projectId)
+      chatMessages.value = (rows || []).map(row => ({
+        id: row.id,
+        role: row.role,
+        content: row.content || '',
+        createdAt: row.createdAt,
+        ...(row.metadata || {})
+      }))
+    } catch (e) {
+      console.warn('加载选题顾问聊天记录失败:', e.message)
+      chatMessages.value = []
+    }
+  }
+
+  async function persistChatMessage(projectId, message) {
+    const metadata = {}
+    if (message.seeds?.length) metadata.seeds = message.seeds
+    if (message.seedAction) metadata.seedAction = message.seedAction
+    if (message.seedError) metadata.seedError = message.seedError
+
+    const saved = await api.market.chat.create({
+      projectId,
+      role: message.role,
+      content: message.content || '',
+      metadata
+    })
+    Object.assign(message, {
+      id: saved?.id || message.id,
+      createdAt: saved?.createdAt || message.createdAt
+    })
+    return saved
   }
 
   async function createItem(data) {
@@ -142,10 +208,13 @@ export const useMarketStore = defineStore('market', () => {
   }
 
   async function sendChatMessage(projectId, userMessage) {
-    chatMessages.value.push({ role: 'user', content: userMessage })
+    const userEntry = { role: 'user', content: userMessage, seeds: [] }
+    chatMessages.value.push(userEntry)
     chatLoading.value = true
 
     try {
+      await persistChatMessage(projectId, userEntry)
+
       const context = await buildChatContext(projectId)
       const systemPrompt = buildMarketChatSystemPrompt(context)
 
@@ -170,7 +239,7 @@ export const useMarketStore = defineStore('market', () => {
 
       const messages = [
         { role: 'system', content: systemPrompt },
-        ...chatMessages.value
+        ...chatMessages.value.map(({ role, content }) => ({ role, content }))
       ]
 
       const result = await chatCompletion(provider, messages, {
@@ -187,25 +256,34 @@ export const useMarketStore = defineStore('market', () => {
       const seedList = extractSeedsFromText(text)
       let createdSeeds = []
       let seedAction = ''
-      if (seedList && Array.isArray(seedList)) {
+      let seedError = ''
+      const seedErrors = []
+      if (seedList.length) {
         const seedStore = useSeedStore()
         await seedStore.loadSeeds(projectId)
         const selectedSeed = seedStore.seeds.find(seed => seed.status === 'selected')
-        const wantsSeedUpdate = /(?:修改|更改|调整|优化|改成|换成|更新|覆盖|应用).{0,12}(?:种子|当前方向|当前设定|这个方向)/.test(userMessage)
+        const wantsSeedUpdate = /(?:修改|更改|调整|优化|改成|换成|更新|覆盖|应用).{0,16}(?:种子|当前种子|这个种子|当前方向|当前设定|这个方向)/.test(userMessage)
 
         if (wantsSeedUpdate && selectedSeed && seedList.length > 0) {
           const [seedPatch] = seedList
-          const updated = await seedStore.updateSeed({
-            ...selectedSeed,
-            ...seedPatch,
-            id: selectedSeed.id,
-            projectId: selectedSeed.projectId || selectedSeed.project_id || projectId,
-            status: 'selected',
-            source: selectedSeed.source || 'ai'
-          })
-          if (updated) {
-            createdSeeds = [updated]
-            seedAction = 'updated'
+          const nonEmptyPatch = Object.fromEntries(
+            Object.entries(seedPatch).filter(([, value]) => value !== '')
+          )
+          try {
+            const updated = await seedStore.updateSeed({
+              ...selectedSeed,
+              ...nonEmptyPatch,
+              id: selectedSeed.id,
+              projectId: selectedSeed.projectId || selectedSeed.project_id || projectId,
+              status: 'selected',
+              source: selectedSeed.source || 'ai'
+            })
+            if (updated) {
+              createdSeeds = [updated]
+              seedAction = 'updated'
+            }
+          } catch (e) {
+            seedErrors.push(e.message)
           }
         } else {
           for (const seed of seedList) {
@@ -215,36 +293,153 @@ export const useMarketStore = defineStore('market', () => {
                 source: 'ai'
               })
               createdSeeds.push(created)
-            } catch {
-              // 跳过单个种子创建失败
+            } catch (e) {
+              seedErrors.push(e.message)
             }
           }
           if (createdSeeds.length) seedAction = 'created'
         }
+
+        if (seedErrors.length) {
+          seedError = createdSeeds.length
+            ? `部分种子保存失败：${seedErrors[0]}`
+            : `AI 已返回种子 JSON，但保存失败：${seedErrors[0]}`
+        }
       }
 
-      chatMessages.value.push({
+      const assistantEntry = {
         role: 'assistant',
         content: text,
         seeds: createdSeeds,
-        seedAction
-      })
+        seedAction,
+        seedError
+      }
+      chatMessages.value.push(assistantEntry)
+      await persistChatMessage(projectId, assistantEntry)
 
-      return { message: text, seeds: createdSeeds, seedAction }
+      return { message: text, seeds: createdSeeds, seedAction, seedError }
     } catch (e) {
-      chatMessages.value.push({
+      const assistantEntry = {
         role: 'assistant',
         content: `抱歉，请求失败：${e.message}`,
         seeds: []
-      })
+      }
+      chatMessages.value.push(assistantEntry)
+      try {
+        await persistChatMessage(projectId, assistantEntry)
+      } catch (saveError) {
+        console.warn('保存失败消息失败:', saveError.message)
+      }
       return { message: '', seeds: [] }
     } finally {
       chatLoading.value = false
     }
   }
 
-  function clearChat() {
+  async function clearChat(projectId) {
+    if (projectId) {
+      await api.market.chat.clear(projectId)
+    }
     chatMessages.value = []
+  }
+
+  function setChatDraft(text) {
+    chatDraft.value = text || ''
+  }
+
+  function clearChatDraft() {
+    chatDraft.value = ''
+  }
+
+  // === 市场方向建议 ===
+
+  async function loadDirectionReports(projectId) {
+    try {
+      const reports = await api.market.directions.list(projectId)
+      directionReports.value = reports || []
+      currentDirections.value = directionReports.value[0]?.contentJson || []
+    } catch (e) {
+      console.warn('加载选题方向建议失败:', e.message)
+      directionReports.value = []
+      currentDirections.value = []
+    }
+  }
+
+  async function generateMarketDirections(projectId, keywords = '') {
+    directionsLoading.value = true
+    try {
+      const providerStore = useProviderStore()
+      await providerStore.ensureProvidersLoaded()
+      let bindings
+      try {
+        bindings = await providerStore.getBindings(projectId)
+      } catch {
+        bindings = null
+      }
+
+      const modelId = bindings?.marketModelId
+        || bindings?.brainstormModelId
+        || bindings?.writingModelId
+
+      const provider = modelId
+        ? providerStore.providers.find(p => p.id === modelId)
+        : providerStore.providers[0]
+
+      if (!provider) throw new Error('请先在设置中配置模型')
+
+      const projectStore = useProjectStore()
+      const prompt = buildMarketDirectionPrompt({
+        project: projectStore.currentProject,
+        keywords,
+        items: items.value
+      })
+
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: '你是资深网文选题策划编辑，只输出用户要求的 JSON。' },
+        { role: 'user', content: prompt }
+      ], jsonOptions(provider, {
+        maxTokens: 4096,
+        temperature: 0.75
+      }))
+
+      const text = getCompletionText(result)
+      let directions = extractMarketDirections(text)
+      let repairText = ''
+      if (!directions.length && text.trim()) {
+        const repairResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildMarketDirectionRepairPrompt(text)
+          }
+        ], jsonOptions(provider, {
+          maxTokens: 4096,
+          temperature: 0.2
+        }))
+        repairText = getCompletionText(repairResult)
+        directions = extractMarketDirections(repairText)
+      }
+      if (!directions.length) {
+        const raw = snippet(repairText) || snippet(text)
+        throw new Error(`AI 没有返回可解析的方向建议 JSON${raw ? `。返回片段：${raw}` : ''}`)
+      }
+
+      currentDirections.value = directions
+      const saved = await api.market.directions.create({
+        projectId,
+        keywords,
+        contentJson: directions
+      })
+      if (saved) {
+        directionReports.value = [saved, ...directionReports.value].slice(0, 5)
+      }
+      return directions
+    } finally {
+      directionsLoading.value = false
+    }
   }
 
   return {
@@ -253,13 +448,22 @@ export const useMarketStore = defineStore('market', () => {
     scraping,
     chatMessages,
     chatLoading,
+    directionReports,
+    currentDirections,
+    directionsLoading,
+    chatDraft,
     loadItems,
     scrapeMarket,
     createItem,
     updateItem,
     deleteItem,
     analyzeItem,
+    loadChatMessages,
     sendChatMessage,
-    clearChat
+    clearChat,
+    setChatDraft,
+    clearChatDraft,
+    loadDirectionReports,
+    generateMarketDirections
   }
 })

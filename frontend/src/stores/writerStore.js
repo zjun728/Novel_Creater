@@ -277,7 +277,7 @@ export const useWriterStore = defineStore('writer', () => {
   }
 
   // === AI 续写 ===
-  async function continueWriting(currentContent, instruction, providerId) {
+  async function continueWriting(currentContent, instruction, providerId, context = {}) {
     generating.value = true
     try {
       const providerStore = useProviderStore()
@@ -286,7 +286,7 @@ export const useWriterStore = defineStore('writer', () => {
         ? providerStore.providers.find(p => p.id === providerId)
         : providerStore.providers[0]
       if (!provider) throw new Error('请先在设置中配置模型')
-      const messages = [{ role: 'user', content: buildContinuePrompt(currentContent, instruction) }]
+      const messages = [{ role: 'user', content: buildContinuePrompt(currentContent, instruction, context) }]
       return await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.8 })
     } finally {
       generating.value = false
@@ -359,7 +359,7 @@ export const useWriterStore = defineStore('writer', () => {
   }
 
   // === AI 扩写 ===
-  async function expandText(selectedText, context) {
+  async function expandText(selectedText, context = {}) {
     generating.value = true
     try {
       const providerStore = useProviderStore()

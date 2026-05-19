@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { NModal, NButton, NCheckbox, NCard, NTag, NProgress, NSpace, useMessage } from 'naive-ui'
+import { NModal, NButton, NCheckbox, NCard, NTag, NProgress, NSpace } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useCompareStore } from '@/stores/compareStore'
 import { useProviderStore } from '@/stores/providerStore'
 import { buildWritingContext } from '@/utils/contextBuilder'
@@ -16,7 +17,7 @@ const emit = defineEmits(['close'])
 const compareStore = useCompareStore()
 const providerStore = useProviderStore()
 const novelStore = useNovelStore()
-const message = useMessage()
+const message = useAppMessage()
 
 const step = ref('select') // 'select' | 'running' | 'done'
 const selectedModels = ref([])
@@ -156,3 +157,4 @@ function done() {
     </div>
   </n-modal>
 </template>
+

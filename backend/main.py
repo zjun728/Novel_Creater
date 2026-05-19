@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from database import get_pool, close_pool, ensure_schema
-from routers import projects, providers, chapters, seeds, novel, export, market, settings_library
+from routers import projects, providers, chapters, seeds, novel, export, market, settings_library, volumes
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ app.include_router(novel.router, prefix="/api")
 app.include_router(export.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(settings_library.router, prefix="/api")
+app.include_router(volumes.router, prefix="/api")
 
 
 @app.get("/api/health")

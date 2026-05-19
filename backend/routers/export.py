@@ -50,8 +50,12 @@ async def export_full(projectId: str = "", includeApiKeys: bool = False):
             "characters": _convert(await fetchall("SELECT * FROM characters WHERE project_id=%s", (pid,))),
             "plotThreads": _convert(await fetchall("SELECT * FROM plot_threads WHERE project_id=%s", (pid,))),
             "outlines": _convert(await fetchall("SELECT * FROM rolling_outlines WHERE project_id=%s", (pid,)))[:1],
+            "projectVolumes": _convert(await fetchall("SELECT * FROM project_volumes WHERE project_id=%s", (pid,))),
             "canonFacts": _convert(await fetchall("SELECT * FROM canon_facts WHERE project_id=%s", (pid,))),
             "possibilityCards": _convert(await fetchall("SELECT * FROM possibility_cards WHERE project_id=%s", (pid,))),
+            "marketItems": _convert(await fetchall("SELECT * FROM market_items WHERE project_id=%s", (pid,))),
+            "marketChatMessages": _convert(await fetchall("SELECT * FROM market_chat_messages WHERE project_id=%s", (pid,))),
+            "marketDirectionReports": _convert(await fetchall("SELECT * FROM market_direction_reports WHERE project_id=%s", (pid,))),
             "settingEntities": _convert(await fetchall("SELECT * FROM setting_entities WHERE project_id=%s", (pid,))),
             "settingRelations": _convert(await fetchall("SELECT * FROM setting_relations WHERE project_id=%s", (pid,))),
             "settingChangeEvents": _convert(await fetchall("SELECT * FROM setting_change_events WHERE project_id=%s", (pid,))),
@@ -152,6 +156,11 @@ async def import_full(data: dict):
                 _put_key(outline, "projectId", new_project_id)
                 await _insert("rolling_outlines", outline)
 
+            for volume in proj_data.get("projectVolumes", []):
+                volume["id"] = str(uuid.uuid4())
+                _put_key(volume, "projectId", new_project_id)
+                await _insert("project_volumes", volume)
+
             for fact in proj_data.get("canonFacts", []):
                 fact["id"] = str(uuid.uuid4())
                 _put_key(fact, "projectId", new_project_id)
@@ -161,6 +170,21 @@ async def import_full(data: dict):
                 card["id"] = str(uuid.uuid4())
                 _put_key(card, "projectId", new_project_id)
                 await _insert("possibility_cards", card)
+
+            for item in proj_data.get("marketItems", []):
+                item["id"] = str(uuid.uuid4())
+                _put_key(item, "projectId", new_project_id)
+                await _insert("market_items", item)
+
+            for chat_message in proj_data.get("marketChatMessages", []):
+                chat_message["id"] = str(uuid.uuid4())
+                _put_key(chat_message, "projectId", new_project_id)
+                await _insert("market_chat_messages", chat_message)
+
+            for report in proj_data.get("marketDirectionReports", []):
+                report["id"] = str(uuid.uuid4())
+                _put_key(report, "projectId", new_project_id)
+                await _insert("market_direction_reports", report)
 
             for entity in proj_data.get("settingEntities", []):
                 old_entity_id = entity.get("id", "")

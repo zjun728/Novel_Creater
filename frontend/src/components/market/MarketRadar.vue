@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { NButton, NInput, NSelect, NTag, NSpace, NEmpty, NModal, NCard, useMessage } from 'naive-ui'
+import { ref, computed, onMounted } from 'vue'
+import { NButton, NInput, NSelect, NTag, NSpace, NEmpty, NModal, NCard } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useMarketStore } from '@/stores/marketStore'
 import MarketCard from './MarketCard.vue'
 import AIChatPanel from './AIChatPanel.vue'
@@ -10,7 +11,7 @@ const props = defineProps({
 })
 
 const marketStore = useMarketStore()
-const message = useMessage()
+const message = useAppMessage()
 
 const keywords = ref('热门小说')
 const platformFilter = ref('')
@@ -20,9 +21,6 @@ const lastSources = ref([])
 // 弹窗
 const showDetail = ref(false)
 const detailItem = ref(null)
-
-// 一次性加载种子数提示
-const lastSeedCount = ref(0)
 
 // 预设搜索关键词
 const presetKeywords = [
@@ -37,23 +35,11 @@ const presetKeywords = [
 ]
 
 onMounted(async () => {
-  await marketStore.loadItems(props.projectId)
+  await Promise.all([
+    marketStore.loadItems(props.projectId),
+    marketStore.loadDirectionReports(props.projectId)
+  ])
 })
-
-watch(
-  () => marketStore.chatMessages.length,
-  (newLen) => {
-    // 检查是否有新的种子
-    const lastMsg = marketStore.chatMessages[marketStore.chatMessages.length - 1]
-    if (lastMsg?.seeds?.length) {
-      const newSeeds = lastMsg.seeds.length
-      if (newSeeds > lastSeedCount.value) {
-        message.success(`已生成 ${newSeeds} 个创作种子，可在"创作种子"标签页查看`)
-        lastSeedCount.value = newSeeds
-      }
-    }
-  }
-)
 
 async function handleScrape() {
   if (!keywords.value.trim()) {
@@ -73,10 +59,41 @@ async function handleScrape() {
     } else {
       message.warning(result?.message || '未找到可读取的结果，请尝试其他关键词')
     }
+
+    if (count > 0 && !result?.fallback) {
+      try {
+        await marketStore.generateMarketDirections(props.projectId, keywords.value.trim())
+        message.success('已生成选题方向建议，可选择方向继续和 AI 顾问讨论')
+      } catch (e) {
+        message.warning('热点数据已抓取，方向建议生成失败：' + e.message)
+      }
+    } else if (result?.fallback) {
+      marketStore.currentDirections = []
+      message.info('当前是本地参考样本，不生成 AI 选题方向建议；请更换关键词或稍后重试实时抓取')
+    }
   } catch (e) {
     lastSources.value = []
     message.error('抓取失败：' + e.message)
   }
+}
+
+async function handleGenerateDirections() {
+  if (!marketStore.items.length) {
+    message.warning('请先抓取热点小说数据')
+    return
+  }
+  try {
+    await marketStore.generateMarketDirections(props.projectId, keywords.value.trim())
+    message.success('方向建议已更新')
+  } catch (e) {
+    message.error('生成方向建议失败：' + e.message)
+  }
+}
+
+function discussDirection(direction) {
+  const prompt = direction.discussionPrompt
+    || `我想重点聊这个方向：${direction.title || direction.genre}。请结合当前市场数据，帮我判断它适不适合作为新书选题，并继续拆成可落地的创作种子。`
+  marketStore.setChatDraft(prompt)
 }
 
 function handleAnalyze(item) {
@@ -193,6 +210,57 @@ const categoryOptions = computed(() =>
           {{ source.platform }} {{ source.count || 0 }}
         </n-tag>
       </div>
+
+      <!-- AI 方向建议 -->
+      <n-card
+        v-if="marketStore.currentDirections.length || marketStore.directionsLoading"
+        size="small"
+        class="mb-3"
+      >
+        <template #header>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-semibold text-gray-700">AI 选题方向建议</span>
+            <n-tag v-if="marketStore.directionsLoading" size="tiny" type="info" :bordered="false">
+              分析中...
+            </n-tag>
+          </div>
+        </template>
+        <template #header-extra>
+          <n-button
+            size="tiny"
+            :loading="marketStore.directionsLoading"
+            :disabled="!marketStore.items.length"
+            @click="handleGenerateDirections"
+          >
+            重新生成
+          </n-button>
+        </template>
+
+        <div v-if="marketStore.currentDirections.length" class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          <div
+            v-for="(direction, idx) in marketStore.currentDirections"
+            :key="idx"
+            class="border border-gray-100 rounded p-3 bg-gray-50"
+          >
+            <div class="flex items-center gap-2 mb-2">
+              <n-tag size="tiny" type="info" :bordered="false">{{ direction.genre || '未分类' }}</n-tag>
+              <h4 class="text-sm font-semibold text-gray-800 leading-snug">{{ direction.title }}</h4>
+            </div>
+            <div class="space-y-1.5 text-xs text-gray-600 leading-relaxed">
+              <p v-if="direction.readerExpectation"><span class="font-medium text-gray-500">读者期待：</span>{{ direction.readerExpectation }}</p>
+              <p v-if="direction.whyNow"><span class="font-medium text-gray-500">为什么值得看：</span>{{ direction.whyNow }}</p>
+              <p v-if="direction.seedAngle"><span class="font-medium text-gray-500">可切入：</span>{{ direction.seedAngle }}</p>
+              <p v-if="direction.evidence"><span class="font-medium text-gray-500">依据：</span>{{ direction.evidence }}</p>
+              <p v-if="direction.risks"><span class="font-medium text-gray-500">风险：</span>{{ direction.risks }}</p>
+            </div>
+            <div class="flex justify-end mt-3">
+              <n-button size="tiny" type="primary" secondary @click="discussDirection(direction)">
+                和 AI 顾问讨论
+              </n-button>
+            </div>
+          </div>
+        </div>
+      </n-card>
 
       <!-- 筛选 -->
       <div class="flex items-center gap-2 mb-3" v-if="marketStore.items.length > 0">
@@ -316,3 +384,4 @@ const categoryOptions = computed(() =>
   width: 100%;
 }
 </style>
+

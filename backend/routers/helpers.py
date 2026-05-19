@@ -1,6 +1,7 @@
 """路由公共工具：camelCase ↔ snake_case 转换"""
 import json
 import re
+import time
 
 # 布尔字段列表（snake_case），MySQL TINYINT → Python bool
 BOOL_FIELDS = {'stream', 'supports_json', 'supports_streaming', 'is_hidden'}
@@ -21,8 +22,13 @@ JSON_FIELDS = {
     'tags',
     'extracted_hooks',
     'extracted_appeals',
+    'metadata',
+    'content_json',
     'aliases',
     'profile',
+    'key_characters',
+    'stage_summary_report',
+    'audit_report',
 }
 
 # 首字母缩写映射：snake_case 部分 → camelCase 中正确的大小写
@@ -72,3 +78,7 @@ def convert_row(r):
 def convert_rows(rows):
     if not rows: return []
     return [convert_row(r) for r in rows]
+
+async def touch_project(pid: str):
+    from database import execute
+    await execute("UPDATE projects SET updated_at=%s WHERE id=%s", (int(time.time() * 1000), pid))

@@ -44,10 +44,65 @@ async def get_project(pid: str):
     if not row: raise HTTPException(404, "项目不存在")
     return convert_row(row)
 
+@router.get("/projects/{pid}/content-state")
+async def get_project_content_state(pid: str):
+    chapter_count = await _count("SELECT COUNT(*) AS c FROM chapters WHERE project_id=%s", (pid,))
+    written_chapters = await _count(
+        """
+        SELECT COUNT(*) AS c FROM chapters
+        WHERE project_id=%s
+          AND (COALESCE(word_count, 0) > 0 OR final_version_id IS NOT NULL OR COALESCE(summary, '') <> '' OR status IN ('final', 'reviewing'))
+        """,
+        (pid,),
+    )
+    chapter_versions = await _count(
+        "SELECT COUNT(*) AS c FROM chapter_versions WHERE project_id=%s AND COALESCE(content, '') <> ''",
+        (pid,),
+    )
+    seed_count = await _count("SELECT COUNT(*) AS c FROM creative_seeds WHERE project_id=%s", (pid,))
+    bible_count = await _count("SELECT COUNT(*) AS c FROM creative_bible WHERE project_id=%s", (pid,))
+    setting_entities = await _count("SELECT COUNT(*) AS c FROM setting_entities WHERE project_id=%s", (pid,))
+    setting_relations = await _count("SELECT COUNT(*) AS c FROM setting_relations WHERE project_id=%s", (pid,))
+    setting_events = await _count("SELECT COUNT(*) AS c FROM setting_change_events WHERE project_id=%s", (pid,))
+    return {
+        "chaptersCount": chapter_count,
+        "writtenChapters": written_chapters,
+        "chapterVersions": chapter_versions,
+        "hasChapterContent": written_chapters > 0 or chapter_versions > 0,
+        "seedsCount": seed_count,
+        "hasBible": bible_count > 0,
+        "settingEntitiesCount": setting_entities,
+        "settingRelationsCount": setting_relations,
+        "settingChangeEventsCount": setting_events,
+        "settingsCount": setting_entities + setting_relations + setting_events,
+    }
+
 @router.put("/projects/{pid}")
 async def update_project(pid: str, data: ProjectUpdate):
+    current = await fetchone("SELECT * FROM projects WHERE id=%s", (pid,))
+    if not current:
+        raise HTTPException(404, "项目不存在")
+
+    incoming = data.dict(exclude_none=True)
+    target_words_changed = (
+        "targetWords" in incoming
+        and int(incoming["targetWords"] or 0) != int(current.get("target_words") or 0)
+    )
+    target_chapters_changed = (
+        "targetChapters" in incoming
+        and int(incoming["targetChapters"] or 0) != int(current.get("target_chapters") or 0)
+    )
+    if target_words_changed or target_chapters_changed:
+        chapter_count = await _count("SELECT COUNT(*) AS c FROM chapters WHERE project_id=%s", (pid,))
+        version_count = await _count("SELECT COUNT(*) AS c FROM chapter_versions WHERE project_id=%s", (pid,))
+        if chapter_count > 0 or version_count > 0:
+            raise HTTPException(
+                400,
+                "项目已有章节内容，不能修改目标字数或目标章节数；如需重新规划，请先清空章节内容后再调整。",
+            )
+
     sets, args = [], []
-    for k, v in data.dict(exclude_none=True).items():
+    for k, v in incoming.items():
         sets.append(f"{to_snake(k)}=%s")
         args.append(v)
     if not sets: return await get_project(pid)
@@ -61,8 +116,14 @@ async def update_project(pid: str, data: ProjectUpdate):
 async def delete_project(pid: str):
     tables = ["chapters", "chapter_versions", "creative_seeds", "creative_bible",
               "characters", "plot_threads", "rolling_outlines", "canon_facts",
-              "possibility_cards", "temp_drafts", "task_model_bindings"]
+              "possibility_cards", "temp_drafts", "task_model_bindings",
+              "market_items", "market_chat_messages", "market_direction_reports",
+              "project_volumes", "setting_relations", "setting_change_events", "setting_entities"]
     for t in tables:
         await execute(f"DELETE FROM {t} WHERE project_id=%s", (pid,))
     await execute("DELETE FROM projects WHERE id=%s", (pid,))
     return {"ok": True}
+
+async def _count(sql: str, args: tuple):
+    row = await fetchone(sql, args)
+    return int((row or {}).get("c") or 0)

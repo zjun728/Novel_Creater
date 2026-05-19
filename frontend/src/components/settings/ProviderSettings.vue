@@ -1,13 +1,14 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { NButton, NCard, NEmpty, NModal, NSpace, NTag, useMessage, useDialog, NAlert, NInput, NSelect, NForm, NFormItem, NSwitch, NInputNumber, NIcon } from 'naive-ui'
+import { NButton, NCard, NEmpty, NModal, NSpace, NTag, useDialog, NAlert, NInput, NSelect, NForm, NFormItem, NSwitch, NInputNumber, NIcon } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useProviderStore } from '@/stores/providerStore'
 import { testConnection } from '@/api/ai'
 import ProviderForm from './ProviderForm.vue'
 import TaskModelBinding from './TaskModelBinding.vue'
 
 const providerStore = useProviderStore()
-const message = useMessage()
+const message = useAppMessage()
 const dialog = useDialog()
 
 const showForm = ref(false)
@@ -149,3 +150,4 @@ async function handleTest(provider) {
     </n-card>
   </div>
 </template>
+

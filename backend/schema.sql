@@ -109,11 +109,12 @@ CREATE TABLE IF NOT EXISTS creative_seeds (
   core_conflict TEXT DEFAULT NULL,
   world_pressure TEXT DEFAULT NULL,
   opening_hook TEXT DEFAULT NULL,
-  emotional_promise VARCHAR(200) DEFAULT '',
+  emotional_promise TEXT DEFAULT NULL,
   differentiation TEXT DEFAULT NULL,
-  style_target VARCHAR(200) DEFAULT '',
+  style_target TEXT DEFAULT NULL,
   source VARCHAR(20) DEFAULT 'user',
   risk_notes TEXT DEFAULT NULL,
+  ending_anchor TEXT DEFAULT NULL,
   status VARCHAR(20) DEFAULT 'candidate',
   created_at BIGINT NOT NULL,
   INDEX idx_seeds_project (project_id),
@@ -203,6 +204,32 @@ CREATE TABLE IF NOT EXISTS rolling_outlines (
   UNIQUE INDEX idx_outline_project (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 11.1 分卷 / 阶段规划
+CREATE TABLE IF NOT EXISTS project_volumes (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  volume_num INT NOT NULL DEFAULT 1,
+  title VARCHAR(200) DEFAULT '',
+  start_chapter INT NOT NULL DEFAULT 1,
+  end_chapter INT NOT NULL DEFAULT 1,
+  target_words INT DEFAULT 0,
+  core_goal TEXT DEFAULT NULL,
+  main_conflict TEXT DEFAULT NULL,
+  key_characters JSON DEFAULT NULL,
+  summary TEXT DEFAULT NULL,
+  stage_summary_report JSON DEFAULT NULL,
+  summary_updated_at BIGINT DEFAULT NULL,
+  audit_report JSON DEFAULT NULL,
+  audit_updated_at BIGINT DEFAULT NULL,
+  status VARCHAR(30) DEFAULT 'planned',
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  INDEX idx_project_volumes_project (project_id),
+  INDEX idx_project_volumes_num (project_id, volume_num),
+  INDEX idx_project_volumes_range (project_id, start_chapter, end_chapter),
+  INDEX idx_project_volumes_status (project_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 12. Canon 事实表
 CREATE TABLE IF NOT EXISTS canon_facts (
   id CHAR(36) PRIMARY KEY,
@@ -257,6 +284,27 @@ CREATE TABLE IF NOT EXISTS market_items (
   INDEX idx_market_platform (platform),
   INDEX idx_market_category (category),
   INDEX idx_market_project (project_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 14.1 选题雷达 AI 顾问对话记录
+CREATE TABLE IF NOT EXISTS market_chat_messages (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  role VARCHAR(20) NOT NULL DEFAULT 'user',
+  content MEDIUMTEXT DEFAULT NULL,
+  metadata JSON DEFAULT NULL,
+  created_at BIGINT NOT NULL,
+  INDEX idx_market_chat_project (project_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 14.2 选题雷达方向建议报告
+CREATE TABLE IF NOT EXISTS market_direction_reports (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  keywords VARCHAR(200) DEFAULT '',
+  content_json JSON DEFAULT NULL,
+  created_at BIGINT NOT NULL,
+  INDEX idx_market_direction_project (project_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 15. 设定库实体：人物 / 势力 / 地点 / 体系 / 功法 / 物品

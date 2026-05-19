@@ -63,6 +63,7 @@ export const useProjectStore = defineStore('project', () => {
       const idx = projects.value.findIndex(p => p.id === updated.id)
       if (idx !== -1) projects.value[idx] = updated
       if (currentProject.value?.id === updated.id) currentProject.value = updated
+      return updated
     } catch (e) {
       console.error('更新项目失败:', e.message)
       throw e

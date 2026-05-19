@@ -55,6 +55,7 @@ export const api = {
     list: () => get('/projects'),
     create: (data) => post('/projects', data),
     get: (id) => get(`/projects/${id}`),
+    contentState: (id) => get(`/projects/${id}/content-state`),
     update: (id, data) => put(`/projects/${id}`, data),
     delete: (id) => del(`/projects/${id}`),
   },
@@ -101,18 +102,31 @@ export const api = {
     create: (projectId, data) => post(`/projects/${projectId}/seeds`, data),
     update: (projectId, seedId, data) => put(`/projects/${projectId}/seeds/${seedId}`, data),
     delete: (projectId, seedId) => del(`/projects/${projectId}/seeds/${seedId}`),
+    clear: (projectId) => del(`/projects/${projectId}/seeds`),
   },
 
   // === 创作圣经 ===
   bible: {
     get: (projectId) => get(`/projects/${projectId}/bible`),
     save: (projectId, data) => put(`/projects/${projectId}/bible`, data),
+    delete: (projectId) => del(`/projects/${projectId}/bible`),
   },
 
   // === 滚动大纲 ===
   outline: {
     get: (projectId) => get(`/projects/${projectId}/outline`),
     save: (projectId, data) => put(`/projects/${projectId}/outline`, data),
+  },
+
+  // === 分卷规划 ===
+  volumes: {
+    list: (projectId) => get(`/projects/${projectId}/volumes`),
+    context: (projectId, volumeId) => get(`/projects/${projectId}/volumes/${volumeId}/context`),
+    create: (projectId, data) => post(`/projects/${projectId}/volumes`, data),
+    update: (projectId, volumeId, data) => put(`/projects/${projectId}/volumes/${volumeId}`, data),
+    saveAudit: (projectId, volumeId, report) => put(`/projects/${projectId}/volumes/${volumeId}/audit`, { report }),
+    saveSummary: (projectId, volumeId, report) => put(`/projects/${projectId}/volumes/${volumeId}/summary-report`, { report }),
+    delete: (projectId, volumeId) => del(`/projects/${projectId}/volumes/${volumeId}`),
   },
 
   // === 角色 ===
@@ -183,6 +197,7 @@ export const api = {
       reject: (projectId, eventId) => post(`/projects/${projectId}/settings/change-events/${eventId}/reject`),
       delete: (projectId, eventId) => del(`/projects/${projectId}/settings/change-events/${eventId}`),
     },
+    clear: (projectId) => del(`/projects/${projectId}/settings`),
   },
 
   // === 导入导出 ===
@@ -202,5 +217,14 @@ export const api = {
     create: (data) => post('/market/items', data),
     update: (id, data) => put(`/market/items/${id}`, data),
     delete: (id) => del(`/market/items/${id}`),
+    chat: {
+      list: (projectId) => get(`/market/chat?projectId=${encodeURIComponent(projectId)}`),
+      create: (data) => post('/market/chat', data),
+      clear: (projectId) => del(`/market/chat?projectId=${encodeURIComponent(projectId)}`),
+    },
+    directions: {
+      list: (projectId) => get(`/market/directions?projectId=${encodeURIComponent(projectId)}`),
+      create: (data) => post('/market/directions', data),
+    },
   },
 }

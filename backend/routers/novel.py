@@ -3,7 +3,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional, List
 from database import fetchone, fetchall, execute
-from .helpers import convert_row, convert_rows, to_snake
+from .helpers import convert_row, convert_rows, to_snake, touch_project
 import uuid, time, json
 
 router = APIRouter(tags=["novel"])
@@ -42,7 +42,14 @@ async def save_bible(pid: str, data: BibleUpdate):
         bid = str(uuid.uuid4())
         args = [bid, pid] + args
         await execute(f"INSERT INTO creative_bible (id, project_id, {','.join([to_snake(k) for k in data.dict()])}, updated_at) VALUES (%s,%s,{','.join(['%s']*len(data.dict()))},%s)", args + [now])
+    await touch_project(pid)
     return await get_bible(pid)
+
+@router.delete("/projects/{pid}/bible")
+async def delete_bible(pid: str):
+    await execute("DELETE FROM creative_bible WHERE project_id=%s", (pid,))
+    await touch_project(pid)
+    return {"ok": True}
 
 # --- 滚动大纲 ---
 @router.get("/projects/{pid}/outline")

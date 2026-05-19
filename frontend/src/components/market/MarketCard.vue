@@ -1,12 +1,11 @@
 <script setup>
-import { NCard, NTag, NButton, NSpace, NPopconfirm, useMessage } from 'naive-ui'
+import { NCard, NTag, NButton, NSpace, NPopconfirm } from 'naive-ui'
 
 const props = defineProps({
   item: { type: Object, required: true }
 })
 
 const emit = defineEmits(['analyze', 'view', 'delete'])
-const message = useMessage()
 
 const platformColors = {
   'fanqienovel.com': '#FF6B35',
@@ -151,3 +150,4 @@ function getStatusLabel(status) {
   overflow: hidden;
 }
 </style>
+

@@ -33,6 +33,9 @@ export function buildRewritePrompt(selectedText, mode, context) {
 ## 上下文
 ${context?.styleBible ? `风格要求：${context.styleBible}` : ''}
 ${context?.characters?.length ? `相关角色：${context.characters.map(c => `${c.name}（${c.personality || ''}）`).join('、')}` : ''}
+${context?.volumeStage ? `分卷阶段：${formatVolumeStageForRewrite(context.volumeStage)}` : ''}
+${context?.settingLibrary ? `设定库：${context.settingLibrary}` : ''}
+${context?.recentFacts ? `已确认事实：${context.recentFacts}` : ''}
 
 ## 原文
 ---
@@ -40,4 +43,22 @@ ${selectedText}
 ---
 
 请输出改写后的完整段落。`
+}
+
+function formatVolumeStageForRewrite(stage) {
+  if (!stage) return ''
+  if (typeof stage === 'string') return stage
+  return [
+    stage.title ? `当前分卷=${stage.title}` : '',
+    stage.coreGoal ? `分卷目标=${stage.coreGoal}` : '',
+    stage.mainConflict ? `核心冲突=${stage.mainConflict}` : '',
+    stage.currentSummary ? `阶段摘要=${stage.currentSummary}` : '',
+    stage.continuityNotes?.length ? `连续性约束=${stage.continuityNotes.map(formatItem).join('；')}` : ''
+  ].filter(Boolean).join('；')
+}
+
+function formatItem(item) {
+  if (typeof item === 'string') return item
+  if (!item || typeof item !== 'object') return ''
+  return item.name || item.title || item.change || item.note || JSON.stringify(item)
 }

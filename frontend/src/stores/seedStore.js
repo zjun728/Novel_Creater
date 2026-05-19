@@ -2,8 +2,30 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/db/client'
 import { chatCompletion } from '@/api/ai'
-import { buildSeedSystemPrompt, buildSeedUserPrompt } from '@/prompts/seed'
+import { buildSeedRepairPrompt, buildSeedSystemPrompt, buildSeedUserPrompt } from '@/prompts/seed'
+import { extractSeedsFromText } from '@/utils/seedParser'
 import { useProviderStore } from './providerStore'
+import { useProjectStore } from './projectStore'
+
+function getCompletionText(result) {
+  if (typeof result === 'string') return result
+  if (result?.content) return result.content
+  if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
+  return ''
+}
+
+function jsonOptions(provider, options = {}) {
+  return provider?.supportsJSON === false
+    ? options
+    : { ...options, responseFormat: 'json' }
+}
+
+function snippet(text) {
+  return (text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220)
+}
 
 export const useSeedStore = defineStore('seed', () => {
   const seeds = ref([])
@@ -53,8 +75,20 @@ export const useSeedStore = defineStore('seed', () => {
       const pid = seed.projectId || seed.project_id
       await api.seeds.delete(pid, id)
       seeds.value = seeds.value.filter(s => s.id !== id)
+      await refreshProject(pid)
     } catch (e) {
       console.error('删除种子失败:', e.message)
+      throw e
+    }
+  }
+
+  async function clearSeeds(projectId) {
+    try {
+      await api.seeds.clear(projectId)
+      seeds.value = []
+      await refreshProject(projectId)
+    } catch (e) {
+      console.error('清空种子失败:', e.message)
       throw e
     }
   }
@@ -81,6 +115,21 @@ export const useSeedStore = defineStore('seed', () => {
   async function generateSeeds(projectId, input) {
     generating.value = true
     try {
+      const directSeeds = extractSeedsFromText([
+        input?.idea || '',
+        input?.genre || '',
+        input?.stylePreference || '',
+        input?.forbidden || ''
+      ].filter(Boolean).join('\n\n'))
+      if (directSeeds.length) {
+        const created = []
+        for (const item of directSeeds) {
+          const seed = await createSeed(projectId, { ...item, source: 'user' })
+          created.push(seed)
+        }
+        return created
+      }
+
       const providerStore = useProviderStore()
       await providerStore.ensureProvidersLoaded()
       const bindings = await providerStore.getBindings(projectId)
@@ -93,21 +142,37 @@ export const useSeedStore = defineStore('seed', () => {
         { role: 'user', content: buildSeedUserPrompt(input) }
       ]
 
-      const result = await chatCompletion(provider, messages, { maxTokens: 4096, temperature: 0.9 })
-      let text = ''
-      if (typeof result === 'string') text = result
-      else if (result?.content) text = result.content
-      else if (result?.choices?.[0]?.message?.content) text = result.choices[0].message.content
+      const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 4096, temperature: 0.9 }))
+      const text = getCompletionText(result)
 
-      const jsonMatch = text.match(/\[[\s\S]*\]/)
-      if (!jsonMatch) throw new Error('AI 返回格式不正确')
+      let seedList = extractSeedsFromText(text)
+      let repairText = ''
+      if (!seedList.length && text.trim()) {
+        const repairResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildSeedRepairPrompt(text)
+          }
+        ], jsonOptions(provider, { maxTokens: 4096, temperature: 0.2 }))
+        repairText = getCompletionText(repairResult)
+        seedList = extractSeedsFromText(repairText)
+      }
 
-      const seedList = JSON.parse(jsonMatch[0])
+      if (!seedList.length) {
+        const raw = snippet(repairText) || snippet(text)
+        throw new Error(`AI 返回格式不正确：没有解析到可保存的种子 JSON${raw ? `。返回片段：${raw}` : ''}`)
+      }
+
       const created = []
       for (const item of seedList) {
         const seed = await createSeed(projectId, { ...item, source: 'ai' })
         created.push(seed)
       }
+      if (!created.length) throw new Error('AI 返回了种子，但保存失败')
       return created
     } catch (e) {
       console.error('生成种子失败:', e.message)
@@ -125,7 +190,19 @@ export const useSeedStore = defineStore('seed', () => {
     createSeed,
     updateSeed,
     deleteSeed,
+    clearSeeds,
     selectSeed,
     generateSeeds
   }
 })
+
+async function refreshProject(projectId) {
+  try {
+    const projectStore = useProjectStore()
+    if (projectStore.currentProject?.id === projectId) {
+      await projectStore.openProject(projectId)
+    }
+  } catch {
+    // Project metadata refresh should not block the primary action.
+  }
+}

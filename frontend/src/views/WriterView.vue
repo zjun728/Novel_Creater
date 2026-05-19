@@ -1,13 +1,15 @@
 <script setup>
 import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCard, NEmpty, NSpace, NInput, NSelect, NTag, NModal, NPopconfirm, NSpin, NDivider, NDropdown, useMessage } from 'naive-ui'
+import { NButton, NCard, NEmpty, NSpace, NInput, NSelect, NTag, NModal, NPopconfirm, NSpin, NDivider, NDropdown } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useProjectStore } from '@/stores/projectStore'
 import { useWriterStore } from '@/stores/writerStore'
 import { useNovelStore } from '@/stores/novelStore'
 import { useSeedStore } from '@/stores/seedStore'
 import { useMemoryStore } from '@/stores/memoryStore'
 import { useSettingStore } from '@/stores/settingStore'
+import { useVolumeStore } from '@/stores/volumeStore'
 import { buildWritingContext } from '@/utils/contextBuilder'
 import { downloadFile, exportTxt, exportMarkdown } from '@/utils/export'
 import AIActionPanel from '@/components/writer/AIActionPanel.vue'
@@ -30,8 +32,9 @@ const novelStore = useNovelStore()
 const seedStore = useSeedStore()
 const memoryStore = useMemoryStore()
 const settingStore = useSettingStore()
+const volumeStore = useVolumeStore()
 const compareStore = useCompareStore()
-const message = useMessage()
+const message = useAppMessage()
 
 const projectId = computed(() => route.params.projectId)
 const chapterNum = ref(Number(route.params.chapterNum) || 1)
@@ -55,6 +58,12 @@ const auditRunning = ref(false)
 const beatPlanText = ref('')
 const beatPlanIntent = ref('single')
 const beatPlanPrimaryText = computed(() => beatPlanIntent.value === 'multi' ? '生成多候选版本' : '开始生成本章')
+const currentVolume = computed(() =>
+  volumeStore.volumes.find(volume =>
+    chapterNum.value >= Number(volume.startChapter || 0) &&
+    chapterNum.value <= Number(volume.endChapter || 0)
+  )
+)
 
 // Memory processing
 const memoryProcessing = ref(false)
@@ -93,6 +102,7 @@ async function loadContextData() {
     settingStore.loadEntities(projectId.value),
     settingStore.loadRelations(projectId.value),
     settingStore.loadChangeEvents(projectId.value),
+    volumeStore.loadVolumes(projectId.value),
     seedStore.loadSeeds(projectId.value)
   ])
 }
@@ -182,7 +192,7 @@ function buildSeedContext(seed) {
 }
 
 function buildBaseContext() {
-  const { context } = buildWritingContext(novelStore, chapterNum.value, undefined, settingStore)
+  const { context } = buildWritingContext(novelStore, chapterNum.value, undefined, settingStore, volumeStore)
   const selectedSeed = getSelectedSeed()
   const seedContext = buildSeedContext(selectedSeed)
 
@@ -331,7 +341,12 @@ async function handleMultiVariant() {
 
 async function handleContinue() {
   try {
-    const result = await writerStore.continueWriting(editorContent.value, '自然续写，推进情节')
+    const result = await writerStore.continueWriting(
+      editorContent.value,
+      '自然续写，推进情节',
+      null,
+      buildPlanningContext()
+    )
     let content = ''
     if (typeof result === 'string') content = result
     else if (result?.content) content = result.content
@@ -346,7 +361,7 @@ async function handleContinue() {
 async function handleExpand() {
   if (!selectedText.value) { message.warning('请先选中要扩写的文字'); return }
   try {
-    const result = await writerStore.expandText(selectedText.value, {})
+    const result = await writerStore.expandText(selectedText.value, buildPlanningContext())
     editorContent.value = editorContent.value.replace(selectedText.value, result)
     message.success('扩写完成')
   } catch (e) {
@@ -368,10 +383,13 @@ async function handleCompress() {
 async function handleRewrite(mode) {
   if (!selectedText.value) { message.warning('请先选中要改写的文字'); return }
   try {
+    const baseContext = buildBaseContext()
     const context = {
       styleBible: novelStore.bible?.styleBible,
       characters: novelStore.characters,
-      settingLibrary: buildBaseContext().settingLibrary
+      settingLibrary: baseContext.settingLibrary,
+      recentFacts: baseContext.recentFacts,
+      volumeStage: baseContext.volumeStage
     }
     const result = await writerStore.rewriteSelection(selectedText.value, mode, context)
     editorContent.value = editorContent.value.replace(selectedText.value, result)
@@ -519,6 +537,9 @@ function goToChapter(num) {
           {{ projectStore.currentProject.title }}
         </h2>
         <n-tag size="small">第 {{ chapterNum }} 章</n-tag>
+        <n-tag v-if="currentVolume" size="small" type="info" :bordered="false">
+          {{ currentVolume.title || `第 ${currentVolume.volumeNum} 卷` }}
+        </n-tag>
         <n-tag v-if="beatPlanText" size="small" type="success" :bordered="false">已生成小纲</n-tag>
         <n-spin v-if="memoryProcessing" size="tiny" />
       </div>

@@ -1,6 +1,36 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/db/client'
+import { chatCompletion } from '@/api/ai'
+import {
+  buildBibleFromSeedPrompt,
+  buildBibleFromSeedRepairPrompt,
+  buildBibleFromSeedSystemPrompt,
+  extractBibleFromText,
+  normalizeBiblePayload
+} from '@/prompts/bibleFromSeed'
+import { useProviderStore } from './providerStore'
+import { useProjectStore } from './projectStore'
+
+function getCompletionText(result) {
+  if (typeof result === 'string') return result
+  if (result?.content) return result.content
+  if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
+  return ''
+}
+
+function jsonOptions(provider, options = {}) {
+  return provider?.supportsJSON === false
+    ? options
+    : { ...options, responseFormat: 'json' }
+}
+
+function snippet(text) {
+  return (text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 220)
+}
 
 export const useNovelStore = defineStore('novel', () => {
   const bible = ref(null)
@@ -10,6 +40,7 @@ export const useNovelStore = defineStore('novel', () => {
   const canonFacts = ref([])
   const possibilityCards = ref([])
   const loading = ref(false)
+  const generatingBible = ref(false)
 
   // === 创作圣经 ===
   async function loadBible(projectId) {
@@ -28,14 +59,89 @@ export const useNovelStore = defineStore('novel', () => {
   async function saveBible(projectId, data) {
     loading.value = true
     try {
-      const result = await api.bible.save(projectId, data)
+      const result = await api.bible.save(projectId, normalizeBiblePayload(data))
       bible.value = result
+      await refreshProject(projectId)
       return result
     } catch (e) {
       console.error('保存创作圣经失败:', e.message)
       throw e
     } finally {
       loading.value = false
+    }
+  }
+
+  async function deleteBible(projectId) {
+    loading.value = true
+    try {
+      await api.bible.delete(projectId)
+      bible.value = null
+      await refreshProject(projectId)
+    } catch (e) {
+      console.error('删除创作圣经失败:', e.message)
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function generateBibleFromSeed(projectId, seed, options = {}) {
+    if (!seed) throw new Error('请先选择一个创作种子')
+    generatingBible.value = true
+    try {
+      const existingBible = await loadBible(projectId)
+      if (existingBible) {
+        throw new Error('当前项目已有创作圣经，不能从种子重复生成并覆盖。请在创作圣经页局部编辑。')
+      }
+
+      const providerStore = useProviderStore()
+      await providerStore.ensureProvidersLoaded()
+      const bindings = await providerStore.getBindings(projectId)
+      const modelId = bindings?.brainstormModelId || bindings?.writingModelId
+      const provider = modelId
+        ? providerStore.providers.find(p => p.id === modelId)
+        : providerStore.providers[0]
+
+      if (!provider) throw new Error('请先在设置中配置模型')
+
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: buildBibleFromSeedSystemPrompt() },
+        { role: 'user', content: buildBibleFromSeedPrompt(seed, options) }
+      ], jsonOptions(provider, {
+        maxTokens: 4096,
+        temperature: 0.45
+      }))
+
+      const text = getCompletionText(result)
+      let bibleData = extractBibleFromText(text)
+      let repairText = ''
+
+      if (!bibleData && text.trim()) {
+        const repairResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildBibleFromSeedRepairPrompt(text)
+          }
+        ], jsonOptions(provider, {
+          maxTokens: 4096,
+          temperature: 0.2
+        }))
+        repairText = getCompletionText(repairResult)
+        bibleData = extractBibleFromText(repairText)
+      }
+
+      if (!bibleData) {
+        const raw = snippet(repairText) || snippet(text)
+        throw new Error(`AI 没有返回可解析的创作圣经 JSON${raw ? `。返回片段：${raw}` : ''}`)
+      }
+
+      return await saveBible(projectId, normalizeBiblePayload(bibleData))
+    } finally {
+      generatingBible.value = false
     }
   }
 
@@ -260,8 +366,11 @@ export const useNovelStore = defineStore('novel', () => {
     canonFacts,
     possibilityCards,
     loading,
+    generatingBible,
     loadBible,
     saveBible,
+    deleteBible,
+    generateBibleFromSeed,
     loadOutline,
     saveOutline,
     loadCharacters,
@@ -279,3 +388,14 @@ export const useNovelStore = defineStore('novel', () => {
     deletePossibilityCard
   }
 })
+
+async function refreshProject(projectId) {
+  try {
+    const projectStore = useProjectStore()
+    if (projectStore.currentProject?.id === projectId) {
+      await projectStore.openProject(projectId)
+    }
+  } catch {
+    // Project metadata refresh should not block the primary action.
+  }
+}

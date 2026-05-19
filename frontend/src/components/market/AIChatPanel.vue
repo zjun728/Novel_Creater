@@ -1,6 +1,7 @@
 <script setup>
-import { ref, watch, nextTick } from 'vue'
-import { NButton, NInput, NSpace, NTag, NSpin, NPopconfirm, useMessage } from 'naive-ui'
+import { ref, watch, nextTick, onMounted } from 'vue'
+import { NButton, NInput, NSpace, NTag, NSpin, NPopconfirm } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useMarketStore } from '@/stores/marketStore'
 
 const props = defineProps({
@@ -11,7 +12,7 @@ const props = defineProps({
 const emit = defineEmits(['seed-created', 'seed-updated'])
 
 const marketStore = useMarketStore()
-const message = useMessage()
+const message = useAppMessage()
 
 const inputText = ref('')
 const chatContainer = ref(null)
@@ -25,6 +26,20 @@ watch(
     }
   }
 )
+
+watch(
+  () => marketStore.chatDraft,
+  (draft) => {
+    if (draft) {
+      inputText.value = draft
+      marketStore.clearChatDraft()
+    }
+  }
+)
+
+onMounted(() => {
+  marketStore.loadChatMessages(props.projectId)
+})
 
 async function sendMessage() {
   const text = inputText.value.trim()
@@ -40,9 +55,18 @@ async function sendMessage() {
         emit('seed-created', { seeds: result.seeds })
       }
     }
+    if (result?.seedError) {
+      message.warning(result.seedError)
+    }
   } catch (e) {
     message.error('发送失败：' + e.message)
   }
+}
+
+async function generateNewSeed() {
+  if (marketStore.chatLoading) return
+  inputText.value = '请基于当前选题雷达数据和我们刚才的讨论，生成 1 个新的完整创作种子，并保存为候选种子。要求回复末尾必须输出完整 JSON 数组。'
+  await sendMessage()
 }
 
 function handleKeyDown(e) {
@@ -52,8 +76,13 @@ function handleKeyDown(e) {
   }
 }
 
-function clearChat() {
-  marketStore.clearChat()
+async function clearChat() {
+  try {
+    await marketStore.clearChat(props.projectId)
+    message.success('对话记录已清空')
+  } catch (e) {
+    message.error('清空失败：' + e.message)
+  }
 }
 
 function getRoleLabel(role) {
@@ -76,7 +105,7 @@ function getRoleLabel(role) {
         <template #trigger>
           <n-button size="tiny" quaternary>清空对话</n-button>
         </template>
-        确定清空当前对话？种子不会丢失。
+        确定清空当前对话记录？种子不会丢失。
       </n-popconfirm>
     </div>
 
@@ -119,6 +148,11 @@ function getRoleLabel(role) {
               {{ msg.seedAction === 'updated' ? '已更新当前创作种子 →' : `已生成 ${msg.seeds.length} 个创作种子 →` }}
             </p>
           </div>
+          <div v-if="msg.seedError" class="mt-3 border-t border-gray-300 pt-2">
+            <p class="text-[10px] font-semibold text-red-500">
+              {{ msg.seedError }}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -144,15 +178,25 @@ function getRoleLabel(role) {
       </div>
       <div class="flex justify-between items-center mt-1">
         <span class="text-[10px] text-gray-300">Enter 发送 / Shift+Enter 换行</span>
-        <n-button
-          size="tiny"
-          type="primary"
-          :disabled="!inputText.trim() || marketStore.chatLoading"
-          :loading="marketStore.chatLoading"
-          @click="sendMessage"
-        >
-          发送
-        </n-button>
+        <div class="flex items-center gap-1">
+          <n-button
+            size="tiny"
+            secondary
+            :disabled="marketStore.chatLoading"
+            @click="generateNewSeed"
+          >
+            生成新种子
+          </n-button>
+          <n-button
+            size="tiny"
+            type="primary"
+            :disabled="!inputText.trim() || marketStore.chatLoading"
+            :loading="marketStore.chatLoading"
+            @click="sendMessage"
+          >
+            发送
+          </n-button>
+        </div>
       </div>
     </div>
   </div>
@@ -164,3 +208,4 @@ function getRoleLabel(role) {
   max-height: calc(100vh - 260px);
 }
 </style>
+

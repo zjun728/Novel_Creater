@@ -1,12 +1,13 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { NButton, NForm, NFormItem, NSelect, NSpace, useMessage } from 'naive-ui'
+import { NButton, NForm, NFormItem, NSelect, NSpace } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useProviderStore } from '@/stores/providerStore'
 import { useProjectStore } from '@/stores/projectStore'
 
 const providerStore = useProviderStore()
 const projectStore = useProjectStore()
-const message = useMessage()
+const message = useAppMessage()
 
 const bindings = ref({
   writingModelId: null,
@@ -112,3 +113,4 @@ async function handleSave() {
     </p>
   </div>
 </template>
+

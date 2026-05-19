@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { NModal, NButton, NTag, NInput, NSpace, useMessage } from 'naive-ui'
+import { NModal, NButton, NTag, NInput, NSpace } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useCompareStore } from '@/stores/compareStore'
 import { useProviderStore } from '@/stores/providerStore'
 import { useWriterStore } from '@/stores/writerStore'
@@ -15,7 +16,7 @@ const emit = defineEmits(['close'])
 const compareStore = useCompareStore()
 const providerStore = useProviderStore()
 const writerStore = useWriterStore()
-const message = useMessage()
+const message = useAppMessage()
 
 const fusing = ref(false)
 const fusedContent = ref('')
@@ -146,3 +147,4 @@ async function saveFusedVersion() {
     </div>
   </n-modal>
 </template>
+

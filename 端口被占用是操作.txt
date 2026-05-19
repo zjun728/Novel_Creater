@@ -1,0 +1,7 @@
+如果以后又被占用，可以先用这个查：
+
+netstat -ano | findstr :8000
+确认是旧后端进程后，再结束对应 PID：
+
+注意：进程ID 替换成真正的id 比如：4400
+taskkill /PID 进程ID /F

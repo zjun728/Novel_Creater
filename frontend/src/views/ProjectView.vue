@@ -1,7 +1,8 @@
 <script setup>
 import { onMounted, computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCard, NEmpty, NSpace, NTag, NTabs, NTabPane, NDropdown, useMessage } from 'naive-ui'
+import { NButton, NCard, NEmpty, NSpace, NTag, NTabs, NTabPane, NDropdown } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { downloadFile, exportTxt, exportMarkdown, exportProjectBundle } from '@/utils/export'
 import { useProjectStore } from '@/stores/projectStore'
 import { useWriterStore } from '@/stores/writerStore'
@@ -14,6 +15,7 @@ import MarketRadar from '@/components/market/MarketRadar.vue'
 import CharacterArcView from '@/components/bible/CharacterArcView.vue'
 import PlotThreadBoard from '@/components/bible/PlotThreadBoard.vue'
 import SettingLibrary from '@/components/settings-library/SettingLibrary.vue'
+import VolumePlanner from '@/components/chapter/VolumePlanner.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,7 +24,7 @@ const writerStore = useWriterStore()
 const seedStore = useSeedStore()
 const novelStore = useNovelStore()
 const settingStore = useSettingStore()
-const message = useMessage()
+const message = useAppMessage()
 
 const project = computed(() => projectStore.currentProject)
 const activeTab = ref('market')
@@ -245,6 +247,8 @@ const chapterStatusColors = {
 
       <n-tab-pane name="chapters" tab="5 章节管理">
         <div class="mt-4">
+          <VolumePlanner :project="project" :chapters="writerStore.chapters" />
+
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-lg font-semibold text-gray-700">
               章节列表（{{ writerStore.chapters.length }} 章）

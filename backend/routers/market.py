@@ -166,6 +166,17 @@ class ScrapeRequest(BaseModel):
     keywords: str = "热门小说"
     projectId: str = ""
 
+class MarketChatMessageCreate(BaseModel):
+    projectId: str = ""
+    role: str = "user"
+    content: str = ""
+    metadata: Optional[dict] = None
+
+class MarketDirectionReportCreate(BaseModel):
+    projectId: str = ""
+    keywords: str = ""
+    contentJson: Optional[list] = None
+
 # ---- 页面内容提取 ----
 
 def decode_response_text(resp) -> str:
@@ -779,3 +790,83 @@ async def delete_item(mid: str):
     """删除 market item"""
     await execute("DELETE FROM market_items WHERE id=%s", (mid,))
     return {"ok": True}
+
+
+@router.get("/market/chat")
+async def list_chat_messages(projectId: str):
+    """列出某项目的选题雷达 AI 顾问对话记录"""
+    if not projectId.strip():
+        raise HTTPException(400, "项目ID不能为空")
+    rows = await fetchall(
+        "SELECT * FROM market_chat_messages WHERE project_id=%s ORDER BY created_at ASC",
+        (projectId,),
+    )
+    return convert_rows(rows)
+
+
+@router.post("/market/chat")
+async def create_chat_message(data: MarketChatMessageCreate):
+    """保存一条选题雷达 AI 顾问对话记录"""
+    if not data.projectId.strip():
+        raise HTTPException(400, "项目ID不能为空")
+    if data.role not in {"user", "assistant", "system"}:
+        raise HTTPException(400, "role 不合法")
+
+    now = int(time.time() * 1000)
+    mid = str(uuid.uuid4())
+    await execute(
+        """INSERT INTO market_chat_messages (id, project_id, role, content, metadata, created_at)
+           VALUES (%s,%s,%s,%s,%s,%s)""",
+        (
+            mid,
+            data.projectId,
+            data.role,
+            data.content,
+            json.dumps(data.metadata or {}, ensure_ascii=False),
+            now,
+        ),
+    )
+    return convert_row(await fetchone("SELECT * FROM market_chat_messages WHERE id=%s", (mid,)))
+
+
+@router.delete("/market/chat")
+async def clear_chat_messages(projectId: str):
+    """清空某项目的选题雷达 AI 顾问对话记录"""
+    if not projectId.strip():
+        raise HTTPException(400, "项目ID不能为空")
+    await execute("DELETE FROM market_chat_messages WHERE project_id=%s", (projectId,))
+    return {"ok": True}
+
+
+@router.get("/market/directions")
+async def list_direction_reports(projectId: str):
+    """列出某项目最近的选题方向建议报告"""
+    if not projectId.strip():
+        raise HTTPException(400, "项目ID不能为空")
+    rows = await fetchall(
+        "SELECT * FROM market_direction_reports WHERE project_id=%s ORDER BY created_at DESC LIMIT 5",
+        (projectId,),
+    )
+    return convert_rows(rows)
+
+
+@router.post("/market/directions")
+async def create_direction_report(data: MarketDirectionReportCreate):
+    """保存选题方向建议报告"""
+    if not data.projectId.strip():
+        raise HTTPException(400, "项目ID不能为空")
+
+    now = int(time.time() * 1000)
+    rid = str(uuid.uuid4())
+    await execute(
+        """INSERT INTO market_direction_reports (id, project_id, keywords, content_json, created_at)
+           VALUES (%s,%s,%s,%s,%s)""",
+        (
+            rid,
+            data.projectId,
+            data.keywords,
+            json.dumps(data.contentJson or [], ensure_ascii=False),
+            now,
+        ),
+    )
+    return convert_row(await fetchone("SELECT * FROM market_direction_reports WHERE id=%s", (rid,)))

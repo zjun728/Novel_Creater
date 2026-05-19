@@ -1,5 +1,7 @@
 /** 选题雷达 AI Prompt 模板 */
 
+export { extractSeedsFromText } from '@/utils/seedParser'
+
 /**
  * 构建市场聊天系统 Prompt
  * 注入市场数据 + 项目背景 + 圣经约束
@@ -78,28 +80,4 @@ ${item.aiSummary ? `- AI 分析：${item.aiSummary}` : ''}
 - 先问清楚用户的想法再给建议，不要假设`
 
   return prompt
-}
-
-/**
- * 从 AI 回复中提取种子 JSON
- */
-export function extractSeedsFromText(text) {
-  if (!text) return null
-  // 匹配 json 代码块
-  const jsonMatch = text.match(/```json\s*([\s\S]*?)```/)
-  if (!jsonMatch) {
-    // 尝试直接匹配 JSON 数组
-    const arrMatch = text.match(/\[\s*\{[\s\S]*\}\s*\]/)
-    if (!arrMatch) return null
-    try {
-      return JSON.parse(arrMatch[0])
-    } catch {
-      return null
-    }
-  }
-  try {
-    return JSON.parse(jsonMatch[1])
-  } catch {
-    return null
-  }
 }

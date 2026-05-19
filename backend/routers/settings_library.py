@@ -1,7 +1,7 @@
 """设定库：人物、势力、地点、体系、物品、关系和状态变更。"""
 from fastapi import APIRouter, Query
 from database import fetchone, fetchall, execute
-from .helpers import convert_row, convert_rows
+from .helpers import convert_row, convert_rows, touch_project
 import json
 import time
 import uuid
@@ -115,6 +115,16 @@ async def update_setting_entity(pid: str, eid: str, data: dict):
 async def delete_setting_entity(pid: str, eid: str):
     await execute("DELETE FROM setting_relations WHERE project_id=%s AND (source_entity_id=%s OR target_entity_id=%s)", (pid, eid, eid))
     await execute("DELETE FROM setting_entities WHERE project_id=%s AND id=%s", (pid, eid))
+    await touch_project(pid)
+    return {"ok": True}
+
+
+@router.delete("/projects/{pid}/settings")
+async def clear_setting_library(pid: str):
+    await execute("DELETE FROM setting_relations WHERE project_id=%s", (pid,))
+    await execute("DELETE FROM setting_change_events WHERE project_id=%s", (pid,))
+    await execute("DELETE FROM setting_entities WHERE project_id=%s", (pid,))
+    await touch_project(pid)
     return {"ok": True}
 
 

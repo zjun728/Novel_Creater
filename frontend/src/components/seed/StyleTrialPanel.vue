@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { NButton, NCard, NEmpty, NInput, NSpin, NTag, useMessage } from 'naive-ui'
+import { NButton, NCard, NEmpty, NInput, NSpin, NTag } from 'naive-ui'
+import { useAppMessage } from '@/composables/useAppMessage'
 import { useStyleTrialStore } from '@/stores/styleTrialStore'
 
 const props = defineProps({
@@ -10,7 +11,7 @@ const props = defineProps({
 
 const emit = defineEmits(['applyStyle'])
 
-const message = useMessage()
+const message = useAppMessage()
 const styleTrialStore = useStyleTrialStore()
 
 const selectedPresetIds = ref(['fast-web', 'cold-restraint', 'suspense-pressure'])
@@ -212,3 +213,4 @@ function applyStyle(trial) {
     </div>
   </n-card>
 </template>
+
