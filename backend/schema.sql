@@ -230,6 +230,41 @@ CREATE TABLE IF NOT EXISTS project_volumes (
   INDEX idx_project_volumes_status (project_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 11.2 项目级审稿报告
+CREATE TABLE IF NOT EXISTS project_audit_reports (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  report_type VARCHAR(40) NOT NULL DEFAULT 'global',
+  title VARCHAR(200) DEFAULT '',
+  report_json JSON DEFAULT NULL,
+  created_at BIGINT NOT NULL,
+  INDEX idx_project_audits_project (project_id, created_at),
+  INDEX idx_project_audits_type (project_id, report_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 11.3 审稿纠偏任务
+CREATE TABLE IF NOT EXISTS correction_tasks (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  source_type VARCHAR(40) NOT NULL DEFAULT 'global_audit',
+  source_id CHAR(36) DEFAULT NULL,
+  target_module VARCHAR(40) DEFAULT 'general',
+  title VARCHAR(300) NOT NULL DEFAULT '',
+  description TEXT DEFAULT NULL,
+  severity VARCHAR(30) DEFAULT 'minor',
+  issue_type VARCHAR(50) DEFAULT 'general',
+  chapter_refs JSON DEFAULT NULL,
+  related_items JSON DEFAULT NULL,
+  suggested_action TEXT DEFAULT NULL,
+  status VARCHAR(30) DEFAULT 'pending',
+  metadata JSON DEFAULT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  INDEX idx_correction_tasks_project (project_id, status),
+  INDEX idx_correction_tasks_source (project_id, source_type, source_id),
+  INDEX idx_correction_tasks_module (project_id, target_module)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 12. Canon 事实表
 CREATE TABLE IF NOT EXISTS canon_facts (
   id CHAR(36) PRIMARY KEY,

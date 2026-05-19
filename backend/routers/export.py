@@ -51,6 +51,8 @@ async def export_full(projectId: str = "", includeApiKeys: bool = False):
             "plotThreads": _convert(await fetchall("SELECT * FROM plot_threads WHERE project_id=%s", (pid,))),
             "outlines": _convert(await fetchall("SELECT * FROM rolling_outlines WHERE project_id=%s", (pid,)))[:1],
             "projectVolumes": _convert(await fetchall("SELECT * FROM project_volumes WHERE project_id=%s", (pid,))),
+            "projectAuditReports": _convert(await fetchall("SELECT * FROM project_audit_reports WHERE project_id=%s", (pid,))),
+            "correctionTasks": _convert(await fetchall("SELECT * FROM correction_tasks WHERE project_id=%s", (pid,))),
             "canonFacts": _convert(await fetchall("SELECT * FROM canon_facts WHERE project_id=%s", (pid,))),
             "possibilityCards": _convert(await fetchall("SELECT * FROM possibility_cards WHERE project_id=%s", (pid,))),
             "marketItems": _convert(await fetchall("SELECT * FROM market_items WHERE project_id=%s", (pid,))),
@@ -160,6 +162,16 @@ async def import_full(data: dict):
                 volume["id"] = str(uuid.uuid4())
                 _put_key(volume, "projectId", new_project_id)
                 await _insert("project_volumes", volume)
+
+            for report in proj_data.get("projectAuditReports", []):
+                report["id"] = str(uuid.uuid4())
+                _put_key(report, "projectId", new_project_id)
+                await _insert("project_audit_reports", report)
+
+            for task in proj_data.get("correctionTasks", []):
+                task["id"] = str(uuid.uuid4())
+                _put_key(task, "projectId", new_project_id)
+                await _insert("correction_tasks", task)
 
             for fact in proj_data.get("canonFacts", []):
                 fact["id"] = str(uuid.uuid4())

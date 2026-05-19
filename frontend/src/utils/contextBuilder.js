@@ -82,7 +82,7 @@ class ContextBuilder {
 }
 
 // === 正文生成上下文 ===
-export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null) {
+export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null, correctionTaskStore = null) {
   const builder = new ContextBuilder(maxTokens || BUDGETS.writing)
   const bible = novelStore.bible?.value || novelStore.bible
   const outline = novelStore.outline?.value || novelStore.outline
@@ -93,6 +93,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const settingRelations = settingStore?.relations?.value || settingStore?.relations || []
   const settingChangeEvents = settingStore?.changeEvents?.value || settingStore?.changeEvents || []
   const volumes = volumeStore?.volumes?.value || volumeStore?.volumes || []
+  const correctionTasks = correctionTaskStore?.tasks?.value || correctionTaskStore?.tasks || []
 
   if (bible?.premise) {
     builder.add('premise', bible.premise, { priority: 1, required: true, maxTokens: 800 })
@@ -150,6 +151,11 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const recentSettingChanges = summarizeSettingChanges(settingChangeEvents, chapterNum)
   if (recentSettingChanges) {
     builder.add('recentSettingChanges', recentSettingChanges, { priority: 4, maxTokens: 900 })
+  }
+
+  const activeCorrectionTasks = summarizeCorrectionTasks(correctionTasks, chapterNum)
+  if (activeCorrectionTasks) {
+    builder.add('activeCorrectionTasks', activeCorrectionTasks, { priority: 4, maxTokens: 1200 })
   }
 
   // P7: 主要角色状态
@@ -300,6 +306,23 @@ function buildVolumeStageContext(volumes, chapterNum) {
     })),
     previousVolumeSummaries: previousSummaries
   }
+}
+
+function summarizeCorrectionTasks(tasks, chapterNum) {
+  const active = (tasks || [])
+    .filter(task => !['done', 'rejected'].includes(task.status))
+    .filter(task => {
+      const refs = task.chapterRefs || []
+      return !refs.length || refs.includes(chapterNum) || task.sourceType === 'global_audit'
+    })
+    .slice(0, 12)
+
+  if (!active.length) return ''
+  return active.map(task => [
+    `- [${task.severity || 'minor'} / ${task.targetModule || 'general'}] ${task.title}`,
+    task.suggestedAction ? `建议：${task.suggestedAction}` : '',
+    task.chapterRefs?.length ? `涉及章节：${task.chapterRefs.join('、')}` : ''
+  ].filter(Boolean).join('；')).join('\n')
 }
 
 function pickProfileFacts(type, profile) {

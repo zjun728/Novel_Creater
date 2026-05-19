@@ -132,6 +132,41 @@ async def ensure_schema():
           INDEX idx_project_volumes_status (project_id, status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
+        """
+        CREATE TABLE IF NOT EXISTS project_audit_reports (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          report_type VARCHAR(40) NOT NULL DEFAULT 'global',
+          title VARCHAR(200) DEFAULT '',
+          report_json JSON DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          INDEX idx_project_audits_project (project_id, created_at),
+          INDEX idx_project_audits_type (project_id, report_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS correction_tasks (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          source_type VARCHAR(40) NOT NULL DEFAULT 'global_audit',
+          source_id CHAR(36) DEFAULT NULL,
+          target_module VARCHAR(40) DEFAULT 'general',
+          title VARCHAR(300) NOT NULL DEFAULT '',
+          description TEXT DEFAULT NULL,
+          severity VARCHAR(30) DEFAULT 'minor',
+          issue_type VARCHAR(50) DEFAULT 'general',
+          chapter_refs JSON DEFAULT NULL,
+          related_items JSON DEFAULT NULL,
+          suggested_action TEXT DEFAULT NULL,
+          status VARCHAR(30) DEFAULT 'pending',
+          metadata JSON DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          INDEX idx_correction_tasks_project (project_id, status),
+          INDEX idx_correction_tasks_source (project_id, source_type, source_id),
+          INDEX idx_correction_tasks_module (project_id, target_module)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
         "ALTER TABLE project_volumes ADD COLUMN stage_summary_report JSON DEFAULT NULL AFTER summary",
         "ALTER TABLE project_volumes ADD COLUMN summary_updated_at BIGINT DEFAULT NULL AFTER stage_summary_report",
         "ALTER TABLE project_volumes ADD COLUMN audit_report JSON DEFAULT NULL AFTER summary",

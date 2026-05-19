@@ -9,6 +9,10 @@ import {
   extractBibleFromText,
   normalizeBiblePayload
 } from '@/prompts/bibleFromSeed'
+import {
+  buildGlobalAuditSystemPrompt,
+  buildGlobalAuditPrompt
+} from '@/prompts/globalAudit'
 import { useProviderStore } from './providerStore'
 import { useProjectStore } from './projectStore'
 
@@ -32,6 +36,21 @@ function snippet(text) {
     .slice(0, 220)
 }
 
+function parseGlobalAuditJson(text) {
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    const match = String(text).match(/\{[\s\S]*\}/)
+    if (!match) return null
+    try {
+      return JSON.parse(match[0])
+    } catch {
+      return null
+    }
+  }
+}
+
 export const useNovelStore = defineStore('novel', () => {
   const bible = ref(null)
   const outline = ref(null)
@@ -39,6 +58,8 @@ export const useNovelStore = defineStore('novel', () => {
   const plotThreads = ref([])
   const canonFacts = ref([])
   const possibilityCards = ref([])
+  const globalAuditReports = ref([])
+  const globalAuditing = ref(false)
   const loading = ref(false)
   const generatingBible = ref(false)
 
@@ -83,6 +104,64 @@ export const useNovelStore = defineStore('novel', () => {
     } finally {
       loading.value = false
     }
+  }
+
+  async function loadGlobalAudits(projectId) {
+    loading.value = true
+    try {
+      globalAuditReports.value = await api.globalAudits.list(projectId)
+      return globalAuditReports.value
+    } catch (e) {
+      console.error('加载全局审稿报告失败:', e.message)
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function generateGlobalAudit(project, context) {
+    if (!project?.id) throw new Error('项目不存在')
+    globalAuditing.value = true
+    try {
+      const providerStore = useProviderStore()
+      await providerStore.ensureProvidersLoaded()
+      const bindings = await providerStore.getBindings(project.id)
+      const modelId = bindings?.auditModelId || bindings?.summaryModelId || bindings?.writingModelId
+      const provider = modelId
+        ? providerStore.providers.find(p => p.id === modelId)
+        : providerStore.providers[0]
+      if (!provider) throw new Error('请先在设置中配置模型')
+
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: buildGlobalAuditSystemPrompt() },
+        { role: 'user', content: buildGlobalAuditPrompt(context) }
+      ], jsonOptions(provider, {
+        maxTokens: 4096,
+        temperature: 0.25
+      }))
+
+      const text = getCompletionText(result)
+      const report = parseGlobalAuditJson(text)
+      if (!report) {
+        throw new Error(`AI 没有返回可解析的全局审稿 JSON${text ? `。返回片段：${snippet(text)}` : ''}`)
+      }
+
+      const saved = await api.globalAudits.create(project.id, {
+        reportType: 'global',
+        title: `${project.title || '项目'} 全局审稿`,
+        report
+      })
+      globalAuditReports.value.unshift(saved)
+      await refreshProject(project.id)
+      return saved
+    } finally {
+      globalAuditing.value = false
+    }
+  }
+
+  async function deleteGlobalAudit(projectId, reportId) {
+    await api.globalAudits.delete(projectId, reportId)
+    globalAuditReports.value = globalAuditReports.value.filter(report => report.id !== reportId)
   }
 
   async function generateBibleFromSeed(projectId, seed, options = {}) {
@@ -365,12 +444,17 @@ export const useNovelStore = defineStore('novel', () => {
     plotThreads,
     canonFacts,
     possibilityCards,
+    globalAuditReports,
     loading,
     generatingBible,
+    globalAuditing,
     loadBible,
     saveBible,
     deleteBible,
     generateBibleFromSeed,
+    loadGlobalAudits,
+    generateGlobalAudit,
+    deleteGlobalAudit,
     loadOutline,
     saveOutline,
     loadCharacters,

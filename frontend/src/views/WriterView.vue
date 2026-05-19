@@ -10,6 +10,7 @@ import { useSeedStore } from '@/stores/seedStore'
 import { useMemoryStore } from '@/stores/memoryStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { useVolumeStore } from '@/stores/volumeStore'
+import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
 import { buildWritingContext } from '@/utils/contextBuilder'
 import { downloadFile, exportTxt, exportMarkdown } from '@/utils/export'
 import AIActionPanel from '@/components/writer/AIActionPanel.vue'
@@ -33,6 +34,7 @@ const seedStore = useSeedStore()
 const memoryStore = useMemoryStore()
 const settingStore = useSettingStore()
 const volumeStore = useVolumeStore()
+const correctionTaskStore = useCorrectionTaskStore()
 const compareStore = useCompareStore()
 const message = useAppMessage()
 
@@ -103,6 +105,7 @@ async function loadContextData() {
     settingStore.loadRelations(projectId.value),
     settingStore.loadChangeEvents(projectId.value),
     volumeStore.loadVolumes(projectId.value),
+    correctionTaskStore.loadTasks(projectId.value),
     seedStore.loadSeeds(projectId.value)
   ])
 }
@@ -192,7 +195,14 @@ function buildSeedContext(seed) {
 }
 
 function buildBaseContext() {
-  const { context } = buildWritingContext(novelStore, chapterNum.value, undefined, settingStore, volumeStore)
+  const { context } = buildWritingContext(
+    novelStore,
+    chapterNum.value,
+    undefined,
+    settingStore,
+    volumeStore,
+    correctionTaskStore
+  )
   const selectedSeed = getSelectedSeed()
   const seedContext = buildSeedContext(selectedSeed)
 
@@ -389,7 +399,8 @@ async function handleRewrite(mode) {
       characters: novelStore.characters,
       settingLibrary: baseContext.settingLibrary,
       recentFacts: baseContext.recentFacts,
-      volumeStage: baseContext.volumeStage
+      volumeStage: baseContext.volumeStage,
+      activeCorrectionTasks: baseContext.activeCorrectionTasks
     }
     const result = await writerStore.rewriteSelection(selectedText.value, mode, context)
     editorContent.value = editorContent.value.replace(selectedText.value, result)

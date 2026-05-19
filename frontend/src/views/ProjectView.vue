@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCard, NEmpty, NSpace, NTag, NTabs, NTabPane, NDropdown } from 'naive-ui'
+import { NAlert, NButton, NCard, NEmpty, NSpace, NTag, NTabs, NTabPane, NDropdown, NModal } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { downloadFile, exportTxt, exportMarkdown, exportProjectBundle } from '@/utils/export'
 import { useProjectStore } from '@/stores/projectStore'
@@ -9,6 +9,8 @@ import { useWriterStore } from '@/stores/writerStore'
 import { useSeedStore } from '@/stores/seedStore'
 import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
+import { useVolumeStore } from '@/stores/volumeStore'
+import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
 import SeedWorkbench from '@/components/seed/SeedWorkbench.vue'
 import CreativeBible from '@/components/bible/CreativeBible.vue'
 import MarketRadar from '@/components/market/MarketRadar.vue'
@@ -16,6 +18,7 @@ import CharacterArcView from '@/components/bible/CharacterArcView.vue'
 import PlotThreadBoard from '@/components/bible/PlotThreadBoard.vue'
 import SettingLibrary from '@/components/settings-library/SettingLibrary.vue'
 import VolumePlanner from '@/components/chapter/VolumePlanner.vue'
+import CorrectionTaskBoard from '@/components/correction/CorrectionTaskBoard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,10 +27,14 @@ const writerStore = useWriterStore()
 const seedStore = useSeedStore()
 const novelStore = useNovelStore()
 const settingStore = useSettingStore()
+const volumeStore = useVolumeStore()
+const correctionTaskStore = useCorrectionTaskStore()
 const message = useAppMessage()
 
 const project = computed(() => projectStore.currentProject)
 const activeTab = ref('market')
+const showGlobalAuditModal = ref(false)
+const activeGlobalAudit = ref(null)
 const selectedSeed = computed(() => seedStore.seeds.find(s => s.status === 'selected'))
 const bibleReady = computed(() => Boolean(novelStore.bible?.premise || novelStore.bible?.worldRules || novelStore.bible?.styleBible))
 const settingsReady = computed(() => settingStore.entities.length > 0)
@@ -62,6 +69,12 @@ const workflowSteps = computed(() => [
     title: '5 章节',
     desc: '进入写字台按小纲生成正文',
     done: writerStore.chapters.length > 0
+  },
+  {
+    key: 'corrections',
+    title: '6 纠偏',
+    desc: '把审稿问题转成可执行任务',
+    done: correctionTaskStore.activeTasks.length === 0 && correctionTaskStore.tasks.length > 0
   }
 ])
 
@@ -79,9 +92,12 @@ onMounted(async () => {
         novelStore.loadCharacters(id),
         novelStore.loadPlotThreads(id),
         novelStore.loadCanonFacts(id),
+        novelStore.loadGlobalAudits(id),
+        correctionTaskStore.loadTasks(id),
         settingStore.loadEntities(id),
         settingStore.loadRelations(id),
-        settingStore.loadChangeEvents(id)
+        settingStore.loadChangeEvents(id),
+        volumeStore.loadVolumes(id)
       ])
     }
   } catch (e) {
@@ -126,6 +142,140 @@ function onSeedSelected(seed) {
   // 种子被选中后，可以创建创作圣经
 }
 
+async function handleGlobalAudit() {
+  try {
+    const report = await novelStore.generateGlobalAudit(project.value, buildGlobalAuditContext())
+    activeGlobalAudit.value = report
+    showGlobalAuditModal.value = true
+    message.success('全局审稿已生成')
+  } catch (e) {
+    message.error('全局审稿失败：' + e.message)
+  }
+}
+
+function viewGlobalAudit(report) {
+  activeGlobalAudit.value = report
+  showGlobalAuditModal.value = true
+}
+
+async function handleCreateCorrectionTasksFromGlobalAudit() {
+  const report = activeGlobalAudit.value
+  if (!report) return
+  const payloads = correctionTaskStore.buildTasksFromGlobalAudit(report)
+  if (!payloads.length) {
+    message.warning('当前全局审稿报告没有可转化的问题项')
+    return
+  }
+  try {
+    const created = await correctionTaskStore.bulkCreate(project.value.id, payloads)
+    message.success(`已生成 ${created.length} 条全局纠偏任务`)
+  } catch (e) {
+    message.error('生成纠偏任务失败：' + e.message)
+  }
+}
+
+function buildGlobalAuditContext() {
+  return {
+    projectTitle: project.value?.title,
+    genre: project.value?.genre,
+    description: project.value?.description,
+    targetWords: project.value?.targetWords,
+    targetChapters: project.value?.targetChapters,
+    currentChapterNum: project.value?.currentChapterNum,
+    seedSummary: formatSelectedSeed(selectedSeed.value),
+    bibleSummary: formatBible(novelStore.bible),
+    volumeSummary: formatVolumes(volumeStore.volumes),
+    chapterSummary: formatChapters(writerStore.chapters),
+    settingSummary: formatSettings(settingStore.entities, settingStore.relations),
+    factSummary: formatFacts(novelStore.canonFacts),
+    threadSummary: formatThreads(novelStore.plotThreads),
+    settingChangeSummary: formatSettingChanges(settingStore.changeEvents)
+  }
+}
+
+function formatSelectedSeed(seed) {
+  if (!seed) return ''
+  return [
+    seed.title ? `标题：${seed.title}` : '',
+    seed.genre ? `题材：${seed.genre}` : '',
+    seed.logline ? `一句话：${seed.logline}` : '',
+    seed.protagonist ? `主角：${seed.protagonist}` : '',
+    seed.coreConflict ? `核心冲突：${seed.coreConflict}` : '',
+    seed.emotionalPromise ? `情绪价值：${seed.emotionalPromise}` : ''
+  ].filter(Boolean).join('\n')
+}
+
+function formatBible(bible) {
+  if (!bible) return ''
+  return [
+    bible.premise ? `作品定位：${bible.premise}` : '',
+    bible.targetReader ? `目标读者：${bible.targetReader}` : '',
+    bible.styleBible ? `风格要求：${bible.styleBible}` : '',
+    bible.themeBible ? `主题母题：${bible.themeBible}` : '',
+    bible.worldRules ? `世界规则：${bible.worldRules}` : '',
+    bible.forbiddenDirections?.length ? `禁止方向：${bible.forbiddenDirections.join('；')}` : ''
+  ].filter(Boolean).join('\n')
+}
+
+function formatVolumes(volumes) {
+  if (!volumes?.length) return ''
+  return volumes.map(volume => [
+    `- ${volume.title || `第${volume.volumeNum}卷`}（第${volume.startChapter}-${volume.endChapter}章 / ${volume.status}）`,
+    volume.coreGoal ? `目标：${volume.coreGoal}` : '',
+    volume.mainConflict ? `冲突：${volume.mainConflict}` : '',
+    volume.summary ? `摘要：${volume.summary}` : '',
+    volume.stageSummaryReport?.handoffToNext?.length ? `接力：${volume.stageSummaryReport.handoffToNext.join('；')}` : '',
+    volume.auditReport?.overallAssessment ? `审稿：${volume.auditReport.overallAssessment}` : ''
+  ].filter(Boolean).join('；')).join('\n')
+}
+
+function formatChapters(chapters) {
+  if (!chapters?.length) return ''
+  return chapters.slice(-80).map(ch =>
+    `- 第${ch.chapterNum}章《${ch.title || '未命名'}》[${ch.status || 'unknown'} / ${ch.wordCount || 0}字]：${ch.summary || '暂无摘要'}`
+  ).join('\n')
+}
+
+function formatSettings(entities, relations) {
+  const entityLines = (entities || [])
+    .filter(entity => entity.status !== 'archived')
+    .sort((a, b) => Number(b.importance || 0) - Number(a.importance || 0))
+    .slice(0, 40)
+    .map(entity => `- [${entity.entityType}] ${entity.name}：${entity.summary || '暂无概要'}`)
+  const entityMap = new Map((entities || []).map(entity => [entity.id, entity.name]))
+  const relationLines = (relations || []).slice(0, 24).map(relation =>
+    `- ${entityMap.get(relation.sourceEntityId) || '未知'} -> ${entityMap.get(relation.targetEntityId) || '未知'}：${relation.summary || relation.relationType || '关系'}`
+  )
+  return [entityLines.join('\n'), relationLines.length ? `关系：\n${relationLines.join('\n')}` : ''].filter(Boolean).join('\n')
+}
+
+function formatFacts(facts) {
+  return (facts || [])
+    .filter(f => f.status === 'accepted')
+    .slice(0, 80)
+    .map(f => `- 第${f.chapterNum}章[${f.factType}] ${f.content}`)
+    .join('\n')
+}
+
+function formatThreads(threads) {
+  return (threads || [])
+    .slice(0, 60)
+    .map(thread => `- [${thread.status}] ${thread.title}：${thread.content || ''}${thread.resolvedChapter ? `；回收于第${thread.resolvedChapter}章` : ''}`)
+    .join('\n')
+}
+
+function formatSettingChanges(events) {
+  return (events || [])
+    .filter(event => event.status === 'accepted')
+    .slice(0, 40)
+    .map(event => `- 第${event.chapterNum || '?'}章 ${event.entityName || event.entityType}：${event.fieldPath || event.changeType} -> ${event.newValue || ''}`)
+    .join('\n')
+}
+
+function auditReport() {
+  return activeGlobalAudit.value?.reportJson || activeGlobalAudit.value?.report || null
+}
+
 const chapterStatusLabels = {
   planned: '规划中',
   drafting: '草稿中',
@@ -161,6 +311,13 @@ const chapterStatusColors = {
         <NDropdown trigger="click" :options="exportOptions" @select="handleExportSelect">
           <n-button size="large">导出</n-button>
         </NDropdown>
+        <n-button
+          size="large"
+          :loading="novelStore.globalAuditing"
+          @click="handleGlobalAudit"
+        >
+          全局审稿
+        </n-button>
         <n-button type="primary" size="large" @click="goToWriter(project.currentChapterNum || 1)">
           进入写作台
         </n-button>
@@ -178,7 +335,7 @@ const chapterStatusColors = {
           进入写字台
         </n-button>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-5 gap-2 mt-3">
+      <div class="grid grid-cols-1 md:grid-cols-6 gap-2 mt-3">
         <button
           v-for="step in workflowSteps"
           :key="step.key"
@@ -196,6 +353,33 @@ const chapterStatusColors = {
         </button>
       </div>
     </n-card>
+
+    <n-alert
+      v-if="novelStore.globalAuditReports.length"
+      type="info"
+      :bordered="false"
+      class="mb-4"
+    >
+      最近全局审稿：
+      <button class="text-blue-600 hover:underline" @click="viewGlobalAudit(novelStore.globalAuditReports[0])">
+        {{ novelStore.globalAuditReports[0].title || '全局审稿报告' }}
+      </button>
+      <span class="text-gray-400 ml-2">
+        {{ new Date(novelStore.globalAuditReports[0].createdAt).toLocaleString('zh-CN') }}
+      </span>
+    </n-alert>
+
+    <n-alert
+      v-if="correctionTaskStore.activeTasks.length"
+      type="warning"
+      :bordered="false"
+      class="mb-4"
+    >
+      当前还有 {{ correctionTaskStore.activeTasks.length }} 条未完成纠偏任务。
+      <button class="text-blue-600 hover:underline" @click="activeTab = 'corrections'">
+        查看任务板
+      </button>
+    </n-alert>
 
     <!-- 标签页 -->
     <n-tabs v-model:value="activeTab" type="line" animated>
@@ -289,6 +473,12 @@ const chapterStatusColors = {
         </div>
       </n-tab-pane>
 
+      <n-tab-pane name="corrections" tab="6 纠偏任务">
+        <div class="mt-4">
+          <CorrectionTaskBoard :project-id="project.id" />
+        </div>
+      </n-tab-pane>
+
       <n-tab-pane name="characterArcs" tab="人物弧光">
         <div class="mt-4">
           <CharacterArcView
@@ -308,6 +498,91 @@ const chapterStatusColors = {
         </div>
       </n-tab-pane>
     </n-tabs>
+
+    <n-modal v-model:show="showGlobalAuditModal" preset="card" title="全局审稿报告" style="width: 820px; max-height: 86vh;">
+      <div v-if="auditReport()" class="space-y-4">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-bold text-gray-800">项目健康度 {{ auditReport().healthScore ?? '-' }}</h3>
+            <p class="text-xs text-gray-400 mt-1">
+              {{ activeGlobalAudit?.createdAt ? new Date(activeGlobalAudit.createdAt).toLocaleString('zh-CN') : '' }}
+            </p>
+          </div>
+          <n-tag :type="auditReport().safeToWriteNext ? 'success' : 'warning'" :bordered="false">
+            {{ auditReport().safeToWriteNext ? '可继续写' : '建议先调整' }}
+          </n-tag>
+        </div>
+
+        <n-alert type="info" :bordered="false">
+          {{ auditReport().overallVerdict || '暂无总体判断' }}
+        </n-alert>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <n-card
+            v-for="section in [
+              ['mainlineReview', '主线'],
+              ['characterReview', '人物'],
+              ['settingReview', '设定'],
+              ['foreshadowingReview', '伏笔'],
+              ['pacingReview', '节奏'],
+              ['readerPromiseReview', '读者承诺']
+            ]"
+            :key="section[0]"
+            size="small"
+            :title="section[1]"
+          >
+            <n-tag size="tiny" :bordered="false" class="mb-2">
+              {{ auditReport()[section[0]]?.status || 'unknown' }}
+            </n-tag>
+            <p class="text-sm text-gray-600 leading-6 whitespace-pre-wrap">
+              {{ auditReport()[section[0]]?.comment || '暂无' }}
+            </p>
+            <ul v-if="auditReport()[section[0]]?.actions?.length" class="text-xs text-gray-500 mt-2 list-disc pl-4 leading-5">
+              <li v-for="(action, idx) in auditReport()[section[0]].actions" :key="idx">{{ action }}</li>
+            </ul>
+          </n-card>
+        </div>
+
+        <n-card v-if="auditReport().criticalIssues?.length" title="关键问题" size="small">
+          <div class="space-y-2">
+            <div
+              v-for="(issue, idx) in auditReport().criticalIssues"
+              :key="idx"
+              class="rounded border border-gray-200 p-3 text-sm"
+            >
+              <div class="flex items-center gap-2 mb-1">
+                <n-tag size="tiny" :type="issue.severity === 'critical' ? 'error' : issue.severity === 'major' ? 'warning' : 'default'">
+                  {{ issue.severity || 'issue' }}
+                </n-tag>
+                <n-tag size="tiny" :bordered="false">{{ issue.type || 'general' }}</n-tag>
+              </div>
+              <p class="font-medium text-gray-800">{{ issue.description }}</p>
+              <p v-if="issue.impact" class="text-gray-500 mt-1">影响：{{ issue.impact }}</p>
+              <p v-if="issue.suggestion" class="text-blue-600 mt-1">建议：{{ issue.suggestion }}</p>
+            </div>
+          </div>
+        </n-card>
+
+        <n-card v-if="auditReport().nextActions?.length" title="下一步行动" size="small">
+          <ul class="list-disc pl-5 text-sm text-gray-600 leading-7">
+            <li v-for="(item, idx) in auditReport().nextActions" :key="idx">{{ item }}</li>
+          </ul>
+        </n-card>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button
+            v-if="auditReport()?.criticalIssues?.length || auditReport()?.nextActions?.length"
+            type="primary"
+            secondary
+            @click="handleCreateCorrectionTasksFromGlobalAudit"
+          >
+            生成纠偏任务
+          </n-button>
+          <n-button @click="showGlobalAuditModal = false">关闭</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 
   <div v-else class="p-6">

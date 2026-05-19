@@ -1646,3 +1646,117 @@
 - 分卷上下文作为“中间层约束”注入写作任务，不要求模型读取整卷全文。
 - 续写和局部改写只注入必要的分卷、设定和事实信息，避免局部操作被过多历史资料压垮。
 - 分卷上下文不替代设定库；人物境界、功法、归属、关系等仍以设定库和 Canon 事实为准。
+
+## 2026-05-19 - 全局审稿 v1
+
+### 本次完成
+- 新增 `project_audit_reports` 表，用于保存项目级审稿报告。
+- 新增后端接口：
+  - `GET /projects/{pid}/global-audits`
+  - `POST /projects/{pid}/global-audits`
+  - `DELETE /projects/{pid}/global-audits/{rid}`
+- 项目导入导出补充 `projectAuditReports`，避免全局审稿报告丢失。
+- 前端新增 `globalAudit` Prompt，要求 AI 从主线、人物、设定、伏笔、节奏、读者承诺六个角度输出结构化审稿报告。
+- `novelStore` 新增全局审稿报告加载、生成、删除能力。
+- 项目页顶部新增“全局审稿”按钮，生成后弹窗展示完整报告。
+- 项目页新增最近全局审稿提示，可回看最近报告。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`。
+
+### 修改文件
+- `backend/database.py`
+- `backend/schema.sql`
+- `backend/routers/helpers.py`
+- `backend/routers/novel.py`
+- `backend/routers/export.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/prompts/globalAudit.js`
+- `frontend/src/stores/novelStore.js`
+- `frontend/src/views/ProjectView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 全局审稿 v1 保存历史报告，但项目页默认只展示最近一次。
+- 全局审稿只提出项目级风险和行动建议，不自动改写圣经、设定库、分卷规划或章节正文。
+- 上下文以结构化摘要为主，不塞全书全文；后续可补“指定章节范围审稿”或“审稿后生成修订任务清单”。
+
+## 2026-05-19 - 审稿纠偏任务 v1
+
+### 本次完成
+- 新增 `correction_tasks` 表，用于保存审稿发现后的纠偏任务。
+- 新增后端接口：
+  - `GET /projects/{pid}/correction-tasks`
+  - `POST /projects/{pid}/correction-tasks`
+  - `POST /projects/{pid}/correction-tasks/bulk`
+  - `PUT /projects/{pid}/correction-tasks/{task_id}`
+  - `DELETE /projects/{pid}/correction-tasks/{task_id}`
+- 项目导入导出补充 `correctionTasks`。
+- 前端新增 `correctionTaskStore`，支持加载、批量创建、状态更新和删除。
+- 新增 `CorrectionTaskBoard` 任务板，支持按状态筛选，以及接受、处理中、完成、拒绝。
+- 分卷审稿报告新增“生成纠偏任务”按钮，可从 `issues` 转成分卷纠偏任务。
+- 全局审稿报告新增“生成纠偏任务”按钮，可从 `criticalIssues` 和 `nextActions` 转成全局纠偏任务。
+- 项目页新增“6 纠偏任务”流程入口和未完成任务提醒。
+- 写作台上下文新增未完成纠偏任务，生成小纲、正文、续写和局部改写时会提醒 AI 避免继续扩大问题。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`。
+
+### 修改文件
+- `backend/database.py`
+- `backend/schema.sql`
+- `backend/main.py`
+- `backend/routers/helpers.py`
+- `backend/routers/export.py`
+- `backend/routers/correction_tasks.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/correctionTaskStore.js`
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/rewrite.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 纠偏任务 v1 只做任务化和状态流转，不自动改正文、设定库、伏笔或圣经。
+- 正文相关纠偏后续如果支持应用，也只能生成候选版本，不直接覆盖正文。
+- 设定/Canon/伏笔类纠偏后续可接入“待确认变更”，仍由用户确认后入库。
+
+## 2026-05-19 - 纠偏任务应用 v2（低风险入口）
+
+### 本次完成
+- 纠偏任务状态文案调整：底层仍使用 `rejected`，界面展示为“忽略本次”，更贴合作品创作里的主动偏离。
+- 纠偏任务板新增“生成Canon候选”：
+  - 从任务标题、描述、建议动作生成待确认 Canon 事实。
+  - Canon 事实状态为 `pending_review`，需要用户在 Canon 面板确认后才生效。
+- 纠偏任务板新增“生成设定候选”：
+  - 从任务生成待确认设定变更事件。
+  - 设定变更状态为 `pending_review`，需要用户在设定库变更面板确认后才入库。
+- 生成候选后，纠偏任务自动进入“处理中”，表示已经转入对应模块等待确认。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`。
+
+### 修改文件
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `frontend/src/stores/correctionTaskStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 纠偏任务 v2 先只支持低风险应用：Canon 候选、设定变更候选。
+- 不自动改正文，不自动覆盖正式设定。
+- 伏笔、分卷规划、创作圣经类任务后续先做“跳转定位”，再考虑可控的局部应用。

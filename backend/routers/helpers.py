@@ -29,6 +29,9 @@ JSON_FIELDS = {
     'key_characters',
     'stage_summary_report',
     'audit_report',
+    'report_json',
+    'chapter_refs',
+    'related_items',
 }
 
 # 首字母缩写映射：snake_case 部分 → camelCase 中正确的大小写

@@ -18,6 +18,12 @@ class BibleUpdate(BaseModel):
     confirmedSettings: Optional[List[str]] = None
     forbiddenDirections: Optional[List[str]] = None
 
+
+class ProjectAuditCreate(BaseModel):
+    reportType: str = "global"
+    title: str = ""
+    report: dict
+
 @router.get("/projects/{pid}/bible")
 async def get_bible(pid: str):
     rows = await fetchall("SELECT * FROM creative_bible WHERE project_id=%s", (pid,))
@@ -48,6 +54,50 @@ async def save_bible(pid: str, data: BibleUpdate):
 @router.delete("/projects/{pid}/bible")
 async def delete_bible(pid: str):
     await execute("DELETE FROM creative_bible WHERE project_id=%s", (pid,))
+    await touch_project(pid)
+    return {"ok": True}
+
+
+# --- 项目级审稿报告 ---
+@router.get("/projects/{pid}/global-audits")
+async def list_global_audits(pid: str):
+    return convert_rows(await fetchall(
+        """
+        SELECT * FROM project_audit_reports
+        WHERE project_id=%s AND report_type='global'
+        ORDER BY created_at DESC
+        LIMIT 10
+        """,
+        (pid,),
+    ))
+
+
+@router.post("/projects/{pid}/global-audits")
+async def create_global_audit(pid: str, data: ProjectAuditCreate):
+    now = int(time.time() * 1000)
+    rid = str(uuid.uuid4())
+    await execute(
+        """
+        INSERT INTO project_audit_reports (
+          id, project_id, report_type, title, report_json, created_at
+        ) VALUES (%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            rid,
+            pid,
+            data.reportType or "global",
+            data.title or "全局审稿报告",
+            json.dumps(data.report, ensure_ascii=False),
+            now,
+        ),
+    )
+    await touch_project(pid)
+    return convert_row(await fetchone("SELECT * FROM project_audit_reports WHERE id=%s", (rid,)))
+
+
+@router.delete("/projects/{pid}/global-audits/{rid}")
+async def delete_global_audit(pid: str, rid: str):
+    await execute("DELETE FROM project_audit_reports WHERE project_id=%s AND id=%s", (pid, rid))
     await touch_project(pid)
     return {"ok": True}
 

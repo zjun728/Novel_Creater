@@ -36,6 +36,7 @@ ${context?.characters?.length ? `相关角色：${context.characters.map(c => `$
 ${context?.volumeStage ? `分卷阶段：${formatVolumeStageForRewrite(context.volumeStage)}` : ''}
 ${context?.settingLibrary ? `设定库：${context.settingLibrary}` : ''}
 ${context?.recentFacts ? `已确认事实：${context.recentFacts}` : ''}
+${context?.activeCorrectionTasks ? `未完成纠偏任务：${context.activeCorrectionTasks}` : ''}
 
 ## 原文
 ---

@@ -18,6 +18,7 @@ import {
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useVolumeStore, VOLUME_STATUS_OPTIONS } from '@/stores/volumeStore'
 import { useMemoryStore } from '@/stores/memoryStore'
+import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
 
 const props = defineProps({
   project: { type: Object, required: true },
@@ -26,6 +27,7 @@ const props = defineProps({
 
 const volumeStore = useVolumeStore()
 const memoryStore = useMemoryStore()
+const correctionTaskStore = useCorrectionTaskStore()
 const message = useAppMessage()
 const dialog = useDialog()
 
@@ -159,6 +161,21 @@ function handleViewAudit(volume) {
   activeAuditVolume.value = volume
   activeAuditReport.value = volume.auditReport
   showAuditModal.value = true
+}
+
+async function handleCreateCorrectionTasksFromAudit() {
+  if (!activeAuditReport.value || !activeAuditVolume.value) return
+  const payloads = correctionTaskStore.buildTasksFromVolumeAudit(activeAuditVolume.value, activeAuditReport.value)
+  if (!payloads.length) {
+    message.warning('当前分卷审稿报告没有可转化的问题项')
+    return
+  }
+  try {
+    const created = await correctionTaskStore.bulkCreate(props.project.id, payloads)
+    message.success(`已生成 ${created.length} 条分卷纠偏任务`)
+  } catch (e) {
+    message.error('生成纠偏任务失败：' + e.message)
+  }
 }
 
 async function handleSummary(volume) {
@@ -517,6 +534,14 @@ function summaryList(report, key) {
       </div>
       <template #footer>
         <n-space justify="end">
+          <n-button
+            v-if="activeAuditReport?.issues?.length"
+            type="primary"
+            secondary
+            @click="handleCreateCorrectionTasksFromAudit"
+          >
+            生成纠偏任务
+          </n-button>
           <n-button @click="showAuditModal = false">关闭</n-button>
         </n-space>
       </template>

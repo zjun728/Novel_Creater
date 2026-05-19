@@ -112,6 +112,27 @@ export const api = {
     delete: (projectId) => del(`/projects/${projectId}/bible`),
   },
 
+  // === 项目级审稿 ===
+  globalAudits: {
+    list: (projectId) => get(`/projects/${projectId}/global-audits`),
+    create: (projectId, data) => post(`/projects/${projectId}/global-audits`, data),
+    delete: (projectId, reportId) => del(`/projects/${projectId}/global-audits/${reportId}`),
+  },
+
+  // === 审稿纠偏任务 ===
+  correctionTasks: {
+    list: (projectId, params = {}) => {
+      const qs = new URLSearchParams()
+      if (params.status) qs.set('status', params.status)
+      const query = qs.toString()
+      return get(`/projects/${projectId}/correction-tasks${query ? `?${query}` : ''}`)
+    },
+    create: (projectId, data) => post(`/projects/${projectId}/correction-tasks`, data),
+    bulkCreate: (projectId, data) => post(`/projects/${projectId}/correction-tasks/bulk`, data),
+    update: (projectId, taskId, data) => put(`/projects/${projectId}/correction-tasks/${taskId}`, data),
+    delete: (projectId, taskId) => del(`/projects/${projectId}/correction-tasks/${taskId}`),
+  },
+
   // === 滚动大纲 ===
   outline: {
     get: (projectId) => get(`/projects/${projectId}/outline`),

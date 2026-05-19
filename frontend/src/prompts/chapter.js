@@ -213,6 +213,7 @@ export function buildChapterPrompt(context) {
   if (worldRules) parts.push(`## 世界规则（不可违背）\n${worldRules}`)
   if (context.settingLibrary) parts.push(`## 设定库（不可违背）\n${context.settingLibrary}`)
   if (context.recentSettingChanges) parts.push(`## 最近设定变化\n${context.recentSettingChanges}`)
+  if (context.activeCorrectionTasks) parts.push(`## 未完成纠偏任务（写作时优先避免继续扩大问题）\n${context.activeCorrectionTasks}`)
   if (forbiddenDirections?.length) parts.push(`## 禁止方向\n${formatList(forbiddenDirections)}`)
 
   const seedInfo = formatSeedContext(context.seed)
@@ -350,6 +351,7 @@ export function buildContinuePrompt(currentContent, instruction, context = {}) {
     context.styleBible ? `风格要求：${context.styleBible}` : '',
     context.settingLibrary ? `设定库：\n${context.settingLibrary}` : '',
     context.recentSettingChanges ? `最近设定变化：\n${context.recentSettingChanges}` : '',
+    context.activeCorrectionTasks ? `未完成纠偏任务：\n${context.activeCorrectionTasks}` : '',
     volumeStage ? `分卷阶段上下文：\n${volumeStage}` : '',
     context.recentFacts ? `已确认事实：\n${context.recentFacts}` : ''
   ].filter(hasText).join('\n\n')
