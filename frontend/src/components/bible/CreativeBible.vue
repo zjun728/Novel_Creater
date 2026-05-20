@@ -1,11 +1,13 @@
 <script setup>
-import { computed, ref, onMounted, watch } from 'vue'
+import { computed, h, ref, onMounted, watch } from 'vue'
 import { NButton, NCard, NInput, NSpace, NTag, NDynamicTags } from 'naive-ui'
+import { useDialog } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useResetConfirmation } from '@/composables/useResetConfirmation'
 import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { normalizeBiblePayload } from '@/prompts/bibleFromSeed'
+import { api } from '@/api/db/client'
 
 const props = defineProps({
   projectId: { type: String, required: true }
@@ -14,6 +16,7 @@ const props = defineProps({
 const novelStore = useNovelStore()
 const settingStore = useSettingStore()
 const message = useAppMessage()
+const dialog = useDialog()
 const { confirmStageReset } = useResetConfirmation()
 
 const editing = ref(false)
@@ -76,6 +79,22 @@ watch(() => novelStore.bible, (value) => {
 }, { deep: true })
 
 async function handleSave() {
+  const state = await api.projects.contentState(props.projectId)
+  if (state.hasChapterContent) {
+    const confirmed = await new Promise(resolve => {
+      dialog.warning({
+        title: '已进入写作阶段',
+        content: () => h('div', { class: 'app-message-dialog-content' }, '当前项目已有正文内容。保存圣经修改只会影响后续写作上下文，不会自动改写既有章节；如果是大改主线，建议先通过纠偏任务或新草案方式处理。'),
+        positiveText: '继续保存',
+        negativeText: '取消',
+        maskClosable: false,
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false)
+      })
+    })
+    if (!confirmed) return
+  }
   await novelStore.saveBible(props.projectId, formData.value)
   message.success('创作圣经已保存')
   editing.value = false
@@ -106,7 +125,9 @@ async function handleDeleteBible() {
     safeContent: '将删除当前创作圣经。因为还没有章节内容，删除后可以重新从种子生成圣经。',
     riskContent: '删除创作圣经不会删除已写章节，但会移除后续写作的重要蓝图依据。已有章节可能与重新生成的圣经不一致。',
     finalContent: '最终确认：删除创作圣经后，原有作品定位、风格要求、主题母题、世界规则和禁止方向都会被清空。',
-    positiveText: '确认删除圣经'
+    positiveText: '确认删除圣经',
+    blockWhenChapterContent: true,
+    blockedContent: '当前项目已有正文内容，不能删除创作圣经。后续如需调整，请使用局部编辑、纠偏任务或新草案迁移。'
   })
   if (!confirmed) return
 

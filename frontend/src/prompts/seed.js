@@ -16,7 +16,8 @@ export function buildSeedSystemPrompt() {
 - 顶层对象必须只有一个字段 "seeds"。
 - "seeds" 必须是数组。
 - 字符串内部不要写未转义换行，长文本用中文句号连接。
-- 不要在 JSON 前后添加解释、编号、标题或结语。`
+- 不要在 JSON 前后添加解释、编号、标题或结语。
+- 每个种子对象必须保留 endingAnchor 字段；内容可以为空字符串，但不要省略字段。`
 }
 
 export function buildSeedUserPrompt(input) {
@@ -45,7 +46,7 @@ ${input.forbidden ? `不想写的方向：${input.forbidden}` : ''}
       "differentiation": "差异化理由（与同类作品的区别）",
       "styleTarget": "风格目标（如：快节奏爽文、慢热文学、黑暗现实、轻松日常）",
       "riskNotes": "风险提示（可能的坑）",
-      "endingAnchor": "结局锚点（可选，故事最终抵达的画面或主题归宿）"
+      "endingAnchor": "结局锚点（故事最终抵达的画面、情绪收束或主题归宿；不需要剧透全部细节）"
     }
   ]
 }
@@ -57,7 +58,8 @@ ${input.forbidden ? `不想写的方向：${input.forbidden}` : ''}
 4. 差异化理由要实话实说，不要吹嘘。
 5. 风险提示要诚实。
 6. 每个字段控制在 300 字以内，避免输出过长导致 JSON 被截断。
-7. 最终回复只能是上面结构的合法 JSON。`
+7. 结局锚点不是强制剧情大纲，但必须保留字段；能判断时写出终局画面、情绪收束或主题归宿，无法判断时填空字符串。
+8. 最终回复只能是上面结构的合法 JSON。`
 }
 
 export function buildSeedRepairPrompt(rawText) {
@@ -67,6 +69,7 @@ export function buildSeedRepairPrompt(rawText) {
 - 从原文中提取标题、题材、主角、开局钩子等字段。
 - 原文有明确信息但字段名不同，可以归并到最接近的字段。
 - 不要编造原文没有的新方向，不要新增本地样本。
+- 每个种子对象必须保留 endingAnchor 字段；原文没有结局锚点时填空字符串。
 
 请严格输出合法 JSON 对象，顶层只有 "seeds" 字段：
 {

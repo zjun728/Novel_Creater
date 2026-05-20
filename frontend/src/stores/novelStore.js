@@ -148,7 +148,7 @@ export const useNovelStore = defineStore('novel', () => {
 
       const saved = await api.globalAudits.create(project.id, {
         reportType: 'global',
-        title: `${project.title || '项目'} 全局审稿`,
+        title: `${project.title || '项目'} ${context?.auditScopeLabel || '全书'}审稿`,
         report
       })
       globalAuditReports.value.unshift(saved)

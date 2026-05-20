@@ -69,6 +69,12 @@ async function generateNewSeed() {
   await sendMessage()
 }
 
+async function updateLatestSeed() {
+  if (marketStore.chatLoading) return
+  inputText.value = '请基于当前选中的创作种子、当前选题雷达数据，以及我们刚才的对话调整内容，更新当前种子，而不是新增候选种子。请输出修改后的完整单个创作种子 JSON 数组，系统会应用到当前选中的种子。'
+  await sendMessage()
+}
+
 function handleKeyDown(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -179,6 +185,14 @@ function getRoleLabel(role) {
       <div class="flex justify-between items-center mt-1">
         <span class="text-[10px] text-gray-300">Enter 发送 / Shift+Enter 换行</span>
         <div class="flex items-center gap-1">
+          <n-button
+            size="tiny"
+            secondary
+            :disabled="marketStore.chatLoading"
+            @click="updateLatestSeed"
+          >
+            更新当前种子
+          </n-button>
           <n-button
             size="tiny"
             secondary

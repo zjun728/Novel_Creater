@@ -16,6 +16,7 @@ import {
   cleanChapterBeatPlanText
 } from '@/prompts/chapter'
 import { buildRewriteSystemPrompt, buildRewritePrompt } from '@/prompts/rewrite'
+import { buildCorrectionDraftPrompt } from '@/prompts/correctionDraft'
 
 export const useWriterStore = defineStore('writer', () => {
   const chapters = ref([])
@@ -276,6 +277,39 @@ export const useWriterStore = defineStore('writer', () => {
     }
   }
 
+  async function generateCorrectionDraft(projectId, chapterNum, task, originalContent, providerId) {
+    generating.value = true
+    try {
+      const providerStore = useProviderStore()
+      await providerStore.ensureProvidersLoaded()
+      const provider = providerId
+        ? providerStore.providers.find(p => p.id === providerId)
+        : providerStore.providers[0]
+      if (!provider) throw new Error('请先在设置中配置模型')
+
+      const result = await chatCompletion(provider, [
+        {
+          role: 'user',
+          content: buildCorrectionDraftPrompt({ chapterNum, originalContent, task })
+        }
+      ], { maxTokens: 8192, temperature: 0.62 })
+
+      const content = cleanGeneratedChapterText(extractAiContent(result))
+      const chapter = await getOrCreateChapter(projectId, chapterNum)
+      const version = await createVersion(projectId, chapter.id, chapterNum, {
+        title: `第 ${chapterNum} 章 - 纠偏候选`,
+        content,
+        versionType: 'correction_candidate',
+        sourceModelId: provider.id,
+        promptBrief: `纠偏任务：${task?.title || ''}`.slice(0, 180)
+      })
+      currentVersion.value = version
+      return version
+    } finally {
+      generating.value = false
+    }
+  }
+
   // === AI 续写 ===
   async function continueWriting(currentContent, instruction, providerId, context = {}) {
     generating.value = true
@@ -448,6 +482,7 @@ export const useWriterStore = defineStore('writer', () => {
     clearTempDraft,
     generateChapterBeatPlan,
     generateChapter,
+    generateCorrectionDraft,
     continueWriting,
     generateMultiVariants,
     rewriteSelection,

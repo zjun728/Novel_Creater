@@ -1,7 +1,18 @@
 <script setup>
 import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCard, NEmpty, NSpace, NInput, NSelect, NTag, NModal, NPopconfirm, NSpin, NDivider, NDropdown } from 'naive-ui'
+import {
+  NButton,
+  NCard,
+  NEmpty,
+  NSpace,
+  NInput,
+  NTag,
+  NModal,
+  NSpin,
+  NDivider,
+  NDropdown
+} from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useProjectStore } from '@/stores/projectStore'
 import { useWriterStore } from '@/stores/writerStore'
@@ -11,6 +22,7 @@ import { useMemoryStore } from '@/stores/memoryStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { useVolumeStore } from '@/stores/volumeStore'
 import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
+import { useCompareStore } from '@/stores/compareStore'
 import { buildWritingContext } from '@/utils/contextBuilder'
 import { downloadFile, exportTxt, exportMarkdown } from '@/utils/export'
 import AIActionPanel from '@/components/writer/AIActionPanel.vue'
@@ -23,7 +35,7 @@ import PacingChart from '@/components/writer/PacingChart.vue'
 import CompareModal from '@/components/writer/CompareModal.vue'
 import CompareInline from '@/components/writer/CompareInline.vue'
 import FusionPanel from '@/components/writer/FusionPanel.vue'
-import { useCompareStore } from '@/stores/compareStore'
+import VersionDiffModal from '@/components/writer/VersionDiffModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,37 +55,40 @@ const chapterNum = ref(Number(route.params.chapterNum) || 1)
 const editorContent = ref('')
 const selectedText = ref('')
 const hasSelection = ref(false)
-const currentView = ref('writer') // 'writer' | 'bible' | 'memory'
-const rightPanel = ref('tools') // 'tools' | 'memory'
+const currentView = ref('writer')
+const rightPanel = ref('tools')
 
 const exportOptions = [
   { label: '导出 TXT', key: 'txt' },
-  { label: '导出 MD', key: 'md' }
+  { label: '导出 Markdown', key: 'md' }
 ]
+
 const showStyleModal = ref(false)
 const showPacingModal = ref(false)
 const showCompareModal = ref(false)
 const showFusionPanel = ref(false)
+const showDiffModal = ref(false)
 const showBeatPlanModal = ref(false)
 const showAuditModal = ref(false)
 const auditRunning = ref(false)
 const beatPlanText = ref('')
 const beatPlanIntent = ref('single')
-const beatPlanPrimaryText = computed(() => beatPlanIntent.value === 'multi' ? '生成多候选版本' : '开始生成本章')
+const streamingContent = ref(false)
+const memoryProcessing = ref(false)
+const showMemoryResult = ref(false)
+const memoryResult = ref(null)
+let autoSaveTimer = null
+
+const beatPlanPrimaryText = computed(() =>
+  beatPlanIntent.value === 'multi' ? '生成多候选版本' : '开始生成本章'
+)
+
 const currentVolume = computed(() =>
   volumeStore.volumes.find(volume =>
     chapterNum.value >= Number(volume.startChapter || 0) &&
     chapterNum.value <= Number(volume.endChapter || 0)
   )
 )
-
-// Memory processing
-const memoryProcessing = ref(false)
-const showMemoryResult = ref(false)
-const memoryResult = ref(null)
-
-// 自动保存
-let autoSaveTimer = null
 
 onMounted(async () => {
   try {
@@ -83,7 +98,7 @@ onMounted(async () => {
     await loadChapter()
     await loadContextData()
   } catch (e) {
-    message.error('初始化写作台失败：' + e.message)
+    message.error('初始化写字台失败：' + e.message)
   }
 })
 
@@ -117,16 +132,12 @@ async function loadChapter() {
     await writerStore.loadVersions(projectId.value, chapter.id)
 
     const draft = await writerStore.loadTempDraft(projectId.value, chapterNum.value)
-
     if (draft?.content) {
       editorContent.value = draft.content
     } else if (chapter.finalVersionId) {
-      const versions = writerStore.versions
-      const final = versions.find(v => v.id === chapter.finalVersionId)
-      if (final) {
-        editorContent.value = final.content
-        writerStore.currentVersion = final
-      }
+      const final = writerStore.versions.find(version => version.id === chapter.finalVersionId)
+      editorContent.value = final?.content || ''
+      writerStore.currentVersion = final || null
     } else if (writerStore.versions.length > 0) {
       writerStore.currentVersion = writerStore.versions[0]
       editorContent.value = writerStore.versions[0].content
@@ -141,12 +152,11 @@ async function loadChapter() {
 
 function handleSelectionChange() {
   const textarea = document.querySelector('.writer-editor textarea')
-  if (textarea) {
-    const start = textarea.selectionStart
-    const end = textarea.selectionEnd
-    selectedText.value = editorContent.value.substring(start, end)
-    hasSelection.value = start !== end
-  }
+  if (!textarea) return
+  const start = textarea.selectionStart
+  const end = textarea.selectionEnd
+  selectedText.value = editorContent.value.substring(start, end)
+  hasSelection.value = start !== end
 }
 
 function handleContentChange() {
@@ -156,9 +166,6 @@ function handleContentChange() {
   }, 2000)
 }
 
-// === AI 操作 ===
-const streamingContent = ref(false)
-
 function getSelectedSeed() {
   return seedStore.seeds.find(seed => seed.status === 'selected')
 }
@@ -167,20 +174,17 @@ function buildSequenceRules() {
   const rules = [
     '本章正文必须从本章时间线最早的可写场景开始。',
     '禁止用后续会议结论、追查结果、角色受伤或死亡后的余波作为开头，除非本章小纲第一条明确要求。',
-    '每一段必须承接上一段的时间、地点或视角，不要突然跳到未铺垫的会议、院落、审讯、战斗结论或事后复盘。',
+    '每一段必须承接上一段的时间、地点或视角，不要突然跳到未铺垫的会议、审讯、复盘或事后结论。',
     '如果需要倒叙、插叙或闪回，必须先用当前场景落地，再自然切入。'
   ]
-
   if (chapterNum.value === 1) {
     rules.push('第一章必须从创作种子的开局钩子或主角初始处境开始，不要先写背景结论、势力会议或后续反应。')
   }
-
   return rules
 }
 
 function buildSeedContext(seed) {
   if (!seed) return null
-
   return {
     genre: seed.genre,
     logline: seed.logline,
@@ -203,16 +207,13 @@ function buildBaseContext() {
     volumeStore,
     correctionTaskStore
   )
-  const selectedSeed = getSelectedSeed()
-  const seedContext = buildSeedContext(selectedSeed)
-
+  const seedContext = buildSeedContext(getSelectedSeed())
   if (seedContext) {
     context.seed = seedContext
     if (chapterNum.value === 1 && seedContext.openingHook) {
       context.openingAnchor = seedContext.openingHook
     }
   }
-
   context.sequenceRules = buildSequenceRules()
   return context
 }
@@ -220,18 +221,14 @@ function buildBaseContext() {
 function buildPlanningContext() {
   const context = buildBaseContext()
   const draft = editorContent.value?.trim()
-  if (draft) {
-    context.currentDraft = draft.length > 3000 ? draft.slice(-3000) : draft
-  }
+  if (draft) context.currentDraft = draft.length > 3000 ? draft.slice(-3000) : draft
   return context
 }
 
 async function ensureBeatPlan(force = false) {
   const existingPlan = beatPlanText.value.trim()
   if (existingPlan && !force) return existingPlan
-
-  const context = buildBaseContext()
-  beatPlanText.value = await writerStore.generateChapterBeatPlan(projectId.value, chapterNum.value, context)
+  beatPlanText.value = await writerStore.generateChapterBeatPlan(projectId.value, chapterNum.value, buildBaseContext())
   return beatPlanText.value
 }
 
@@ -240,7 +237,7 @@ async function handlePlanBeats() {
     beatPlanIntent.value = 'single'
     await ensureBeatPlan(false)
     showBeatPlanModal.value = true
-    message.success('已打开本章小纲，请审阅后再开始生成正文')
+    message.success('已打开本章小纲，请审阅后再生成正文')
   } catch (e) {
     message.error('小纲生成失败：' + e.message)
   }
@@ -263,11 +260,10 @@ async function handleGenerate() {
     await generateChapterFromPlan(existingPlan)
     return
   }
-
   try {
     await ensureBeatPlan(false)
     showBeatPlanModal.value = true
-    message.success('请先审阅本章小纲，确认后再开始生成正文')
+    message.success('请先审阅本章小纲，确认后再生成正文')
   } catch (e) {
     message.error('小纲准备失败：' + e.message)
   }
@@ -277,16 +273,12 @@ async function generateChapterFromPlan(confirmedPlan) {
   try {
     streamingContent.value = true
     editorContent.value = ''
-    const context = {
-      ...buildBaseContext(),
-      beatPlan: confirmedPlan
-    }
     const version = await writerStore.generateChapter(
       projectId.value,
       chapterNum.value,
-      context,
+      { ...buildBaseContext(), beatPlan: confirmedPlan },
       null,
-      (fullContent) => {
+      fullContent => {
         editorContent.value = fullContent
       }
     )
@@ -301,11 +293,10 @@ async function generateChapterFromPlan(confirmedPlan) {
 
 async function generateMultiVariantsFromPlan(confirmedPlan) {
   try {
-    const context = {
+    const versions = await writerStore.generateMultiVariants(projectId.value, chapterNum.value, {
       ...buildBaseContext(),
       beatPlan: confirmedPlan
-    }
-    const versions = await writerStore.generateMultiVariants(projectId.value, chapterNum.value, context)
+    })
     message.success(`基于小纲生成了 ${versions.length} 个候选版本`)
     if (versions.length > 0) {
       writerStore.currentVersion = versions[0]
@@ -322,14 +313,12 @@ async function handleGenerateFromBeatPlan() {
     message.warning('请先生成或填写本章小纲')
     return
   }
-
   showBeatPlanModal.value = false
   if (beatPlanIntent.value === 'multi') {
     await generateMultiVariantsFromPlan(confirmedPlan)
-    return
+  } else {
+    await generateChapterFromPlan(confirmedPlan)
   }
-
-  await generateChapterFromPlan(confirmedPlan)
 }
 
 async function handleMultiVariant() {
@@ -339,7 +328,6 @@ async function handleMultiVariant() {
     await generateMultiVariantsFromPlan(existingPlan)
     return
   }
-
   try {
     await ensureBeatPlan(false)
     showBeatPlanModal.value = true
@@ -351,16 +339,10 @@ async function handleMultiVariant() {
 
 async function handleContinue() {
   try {
-    const result = await writerStore.continueWriting(
-      editorContent.value,
-      '自然续写，推进情节',
-      null,
-      buildPlanningContext()
-    )
-    let content = ''
-    if (typeof result === 'string') content = result
-    else if (result?.content) content = result.content
-    else if (result?.choices?.[0]?.message?.content) content = result.choices[0].message.content
+    const result = await writerStore.continueWriting(editorContent.value, '自然续写，推进情节', null, buildPlanningContext())
+    const content = typeof result === 'string'
+      ? result
+      : result?.content || result?.choices?.[0]?.message?.content || ''
     editorContent.value = editorContent.value + '\n\n' + content
     message.success('续写完成')
   } catch (e) {
@@ -369,7 +351,10 @@ async function handleContinue() {
 }
 
 async function handleExpand() {
-  if (!selectedText.value) { message.warning('请先选中要扩写的文字'); return }
+  if (!selectedText.value) {
+    message.warning('请先选中要扩写的文字')
+    return
+  }
   try {
     const result = await writerStore.expandText(selectedText.value, buildPlanningContext())
     editorContent.value = editorContent.value.replace(selectedText.value, result)
@@ -380,7 +365,10 @@ async function handleExpand() {
 }
 
 async function handleCompress() {
-  if (!selectedText.value) { message.warning('请先选中要压缩的文字'); return }
+  if (!selectedText.value) {
+    message.warning('请先选中要压缩的文字')
+    return
+  }
   try {
     const result = await writerStore.compressText(selectedText.value)
     editorContent.value = editorContent.value.replace(selectedText.value, result)
@@ -391,18 +379,20 @@ async function handleCompress() {
 }
 
 async function handleRewrite(mode) {
-  if (!selectedText.value) { message.warning('请先选中要改写的文字'); return }
+  if (!selectedText.value) {
+    message.warning('请先选中要改写的文字')
+    return
+  }
   try {
     const baseContext = buildBaseContext()
-    const context = {
+    const result = await writerStore.rewriteSelection(selectedText.value, mode, {
       styleBible: novelStore.bible?.styleBible,
       characters: novelStore.characters,
       settingLibrary: baseContext.settingLibrary,
       recentFacts: baseContext.recentFacts,
       volumeStage: baseContext.volumeStage,
       activeCorrectionTasks: baseContext.activeCorrectionTasks
-    }
-    const result = await writerStore.rewriteSelection(selectedText.value, mode, context)
+    })
     editorContent.value = editorContent.value.replace(selectedText.value, result)
     selectedText.value = result
     message.success('改写完成')
@@ -411,7 +401,6 @@ async function handleRewrite(mode) {
   }
 }
 
-// === 多模型对比 ===
 function handleCompare() {
   showCompareModal.value = true
 }
@@ -420,9 +409,25 @@ function handleOpenFusion() {
   showFusionPanel.value = true
 }
 
-// === 风格分析 ===
+function handleOpenDiff() {
+  if (compareStore.comparisonVersions.length < 2) {
+    message.warning('请先至少加入两个版本到对比池')
+    return
+  }
+  showDiffModal.value = true
+}
+
+function handleToggleVersionCompare(version) {
+  compareStore.toggleVersion(version)
+  const inPool = compareStore.comparisonVersions.some(item => item.id === version.id)
+  message.success(inPool ? '已加入对比池' : '已从对比池移除')
+}
+
 async function handleStyleAnalysis() {
-  if (!editorContent.value) { message.warning('请先生成或输入正文'); return }
+  if (!editorContent.value) {
+    message.warning('请先生成或输入正文')
+    return
+  }
   showStyleModal.value = true
   try {
     await memoryStore.analyzeStyle(projectId.value, editorContent.value, chapterNum.value)
@@ -431,9 +436,11 @@ async function handleStyleAnalysis() {
   }
 }
 
-// === 节奏分析 ===
 async function handlePacingAnalysis() {
-  if (!editorContent.value) { message.warning('请先生成或输入正文'); return }
+  if (!editorContent.value) {
+    message.warning('请先生成或输入正文')
+    return
+  }
   showPacingModal.value = true
   try {
     await memoryStore.analyzePacing(projectId.value, editorContent.value, chapterNum.value)
@@ -442,9 +449,11 @@ async function handlePacingAnalysis() {
   }
 }
 
-// === 一致性审稿 ===
 async function handleAudit() {
-  if (!editorContent.value) { message.warning('请先生成或输入正文'); return }
+  if (!editorContent.value) {
+    message.warning('请先生成或输入正文')
+    return
+  }
   auditRunning.value = true
   showAuditModal.value = true
   try {
@@ -456,7 +465,6 @@ async function handleAudit() {
   }
 }
 
-// === 版本操作 ===
 function loadVersion(version) {
   writerStore.currentVersion = version
   editorContent.value = version.content
@@ -467,25 +475,16 @@ async function handleFinalize(version) {
   await writerStore.clearTempDraft(projectId.value, chapterNum.value)
   message.success('已定稿，正在提取记忆...')
 
-  // 触发记忆提取管道
   memoryProcessing.value = true
   try {
-    const results = await memoryStore.processChapterFinalization(
-      projectId.value,
-      version.content,
-      chapterNum.value
-    )
+    const results = await memoryStore.processChapterFinalization(projectId.value, version.content, chapterNum.value)
     memoryResult.value = results
     showMemoryResult.value = true
-    // 刷新数据
     await loadContextData()
 
     const factCount = results.facts?.length || 0
-    const hasIssues = results.audit?.issues?.length > 0
-    message.success(
-      `记忆提取完成：提取 ${factCount} 条事实` +
-      (hasIssues ? `，发现 ${results.audit.issues.length} 个问题` : '')
-    )
+    const issueCount = results.audit?.issues?.length || 0
+    message.success(`记忆提取完成：提取 ${factCount} 条事实${issueCount ? `，发现 ${issueCount} 个问题` : ''}`)
   } catch (e) {
     message.warning('记忆提取部分失败：' + e.message)
   } finally {
@@ -507,7 +506,6 @@ async function handleManualSave() {
   message.success('草稿已保存')
 }
 
-// === 导出 ===
 function handleExportSelect(key) {
   if (key === 'txt') handleExportTxt()
   else if (key === 'md') handleExportMd()
@@ -540,38 +538,33 @@ function goToChapter(num) {
 </script>
 
 <template>
-  <div class="writer-desk h-full flex flex-col" v-if="projectStore.currentProject">
-    <!-- 顶部工具栏 -->
+  <div v-if="projectStore.currentProject" class="writer-desk h-full flex flex-col">
     <div class="flex items-center justify-between px-4 py-2 border-b bg-white">
       <div class="flex items-center gap-3">
-        <h2 class="text-lg font-bold text-gray-800">
-          {{ projectStore.currentProject.title }}
-        </h2>
+        <h2 class="text-lg font-bold text-gray-800">{{ projectStore.currentProject.title }}</h2>
         <n-tag size="small">第 {{ chapterNum }} 章</n-tag>
         <n-tag v-if="currentVolume" size="small" type="info" :bordered="false">
           {{ currentVolume.title || `第 ${currentVolume.volumeNum} 卷` }}
         </n-tag>
-        <n-tag v-if="beatPlanText" size="small" type="success" :bordered="false">已生成小纲</n-tag>
+        <n-tag v-if="beatPlanText" size="small" type="success" :bordered="false">已有小纲</n-tag>
         <n-spin v-if="memoryProcessing" size="tiny" />
       </div>
       <n-space>
-        <n-button size="small" @click="handleAudit" :loading="auditRunning">🔍 审稿</n-button>
+        <n-button size="small" @click="handleAudit" :loading="auditRunning">审稿</n-button>
         <n-button size="small" @click="currentView = currentView === 'writer' ? 'bible' : 'writer'">
-          {{ currentView === 'writer' ? '圣经' : '写作台' }}
+          {{ currentView === 'writer' ? '圣经' : '写字台' }}
         </n-button>
         <n-button size="small" @click="currentView = currentView === 'memory' ? 'writer' : 'memory'">
-          {{ currentView === 'memory' ? '写作台' : '记忆' }}
+          {{ currentView === 'memory' ? '写字台' : '记忆' }}
         </n-button>
-        <NDropdown trigger="click" :options="exportOptions" @select="handleExportSelect">
+        <n-dropdown trigger="click" :options="exportOptions" @select="handleExportSelect">
           <n-button size="small">导出</n-button>
-        </NDropdown>
+        </n-dropdown>
         <n-button size="small" type="primary" @click="handleManualSave">保存草稿</n-button>
       </n-space>
     </div>
 
-    <!-- 主内容区：写作台 -->
-    <div class="flex-1 flex overflow-hidden" v-if="currentView === 'writer'">
-      <!-- 左侧：章节列表 -->
+    <div v-if="currentView === 'writer'" class="flex-1 flex overflow-hidden">
       <div class="w-44 border-r bg-gray-50 p-2 overflow-y-auto flex-shrink-0">
         <h4 class="text-xs font-semibold text-gray-500 mb-2 px-1">章节</h4>
         <div class="space-y-0.5">
@@ -584,7 +577,7 @@ function goToChapter(num) {
             ]"
             @click="goToChapter(ch.chapterNum)"
           >
-            <span class="truncate block">第{{ ch.chapterNum }}章</span>
+            <span class="truncate block">第 {{ ch.chapterNum }} 章</span>
             <div class="flex gap-1 mt-0.5">
               <n-tag v-if="ch.status === 'final'" type="success" size="tiny" :bordered="false">定</n-tag>
               <span v-if="ch.summary" class="text-gray-400 truncate block text-[10px]">{{ ch.summary }}</span>
@@ -594,13 +587,12 @@ function goToChapter(num) {
         <n-button size="tiny" block class="mt-2" @click="goToChapter((writerStore.chapters.length || 0) + 1)">+ 新章节</n-button>
       </div>
 
-      <!-- 中间：编辑器 -->
       <div class="flex-1 flex flex-col overflow-hidden">
         <div class="flex-1 p-4 overflow-y-auto">
           <n-input
             v-model:value="editorContent"
             type="textarea"
-            placeholder="在此输入正文，或使用右侧 AI 操作生成..."
+            placeholder="在此输入正文，或使用右侧 AI 工具生成..."
             :rows="0"
             class="writer-editor h-full"
             :input-props="{ style: 'min-height: 100%' }"
@@ -612,7 +604,7 @@ function goToChapter(num) {
         <div class="px-4 py-1.5 border-t bg-gray-50 text-xs text-gray-400 flex justify-between">
           <div class="flex items-center gap-2">
             <span>字数：{{ editorContent?.length || 0 }}</span>
-            <span v-if="streamingContent" class="text-green-500 animate-pulse">● 流式生成中...</span>
+            <span v-if="streamingContent" class="text-green-500 animate-pulse">流式生成中...</span>
           </div>
           <span v-if="hasSelection" class="text-blue-500">已选中 {{ selectedText?.length || 0 }} 字符</span>
           <span v-if="writerStore.tempDraft?.savedAt">
@@ -621,7 +613,6 @@ function goToChapter(num) {
         </div>
       </div>
 
-      <!-- 右侧：工具面板 -->
       <div class="w-60 border-l bg-gray-50 p-2 overflow-y-auto flex-shrink-0 space-y-2">
         <div class="flex gap-1 mb-2">
           <n-button size="tiny" :type="rightPanel === 'tools' ? 'primary' : 'default'" @click="rightPanel = 'tools'" block>AI 工具</n-button>
@@ -666,17 +657,24 @@ function goToChapter(num) {
           <ChapterVersionList
             :versions="writerStore.versions"
             :current-version-id="writerStore.currentVersion?.id"
+            :comparison-version-ids="compareStore.comparisonVersions.map(version => version.id)"
             @load="loadVersion"
             @delete="handleDeleteVersion"
             @finalize="handleFinalize"
+            @compare="handleToggleVersionCompare"
           />
 
           <CompareInline @load-version="loadVersion" />
 
           <div v-if="compareStore.comparisonVersions.length >= 2" class="pt-1">
-            <n-button size="tiny" type="warning" block @click="handleOpenFusion">
-              融合多模型版本
-            </n-button>
+            <div class="grid grid-cols-1 gap-1">
+              <n-button size="tiny" type="info" secondary block @click="handleOpenDiff">
+                差异对比
+              </n-button>
+              <n-button size="tiny" type="warning" block @click="handleOpenFusion">
+                融合多模型版本
+              </n-button>
+            </div>
           </div>
         </div>
 
@@ -688,13 +686,11 @@ function goToChapter(num) {
       </div>
     </div>
 
-    <!-- 创作圣经视图 -->
-    <div class="flex-1 overflow-y-auto p-4" v-if="currentView === 'bible'">
+    <div v-if="currentView === 'bible'" class="flex-1 overflow-y-auto p-4">
       <CreativeBible :project-id="projectId" />
     </div>
 
-    <!-- 记忆管理视图 -->
-    <div class="flex-1 overflow-y-auto p-4" v-if="currentView === 'memory'">
+    <div v-if="currentView === 'memory'" class="flex-1 overflow-y-auto p-4">
       <div class="max-w-3xl mx-auto space-y-4">
         <CanonReviewPanel />
         <n-card title="角色与伏笔" size="small">
@@ -703,11 +699,10 @@ function goToChapter(num) {
       </div>
     </div>
 
-    <!-- 本章小纲确认弹窗 -->
     <n-modal v-model:show="showBeatPlanModal" title="本章小纲确认" preset="card" style="width: 720px; max-height: 85vh;">
       <div class="space-y-3">
         <div class="rounded border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-6 text-emerald-800">
-          先确认这一章的剧情节拍，再生成正文。你可以直接修改小纲，AI 会按确认后的顺序展开，但仍保留场景、对白和细节的发挥空间。
+          先确认这一章的剧情节拍，再生成正文。你可以直接修改小纲，AI 会按确认后的顺序展开，同时保留场景、对白和细节的发挥空间。
         </div>
 
         <n-input
@@ -719,21 +714,10 @@ function goToChapter(num) {
 
         <div class="flex items-center justify-end">
           <n-space>
-            <n-button
-              size="small"
-              :loading="writerStore.beatPlanning"
-              :disabled="streamingContent"
-              @click="handleRefreshBeatPlan"
-            >
+            <n-button size="small" :loading="writerStore.beatPlanning" :disabled="streamingContent" @click="handleRefreshBeatPlan">
               重新生成小纲
             </n-button>
-            <n-button
-              size="small"
-              type="primary"
-              :loading="streamingContent"
-              :disabled="!beatPlanText.trim() || writerStore.beatPlanning"
-              @click="handleGenerateFromBeatPlan"
-            >
+            <n-button size="small" type="primary" :loading="streamingContent" :disabled="!beatPlanText.trim() || writerStore.beatPlanning" @click="handleGenerateFromBeatPlan">
               {{ beatPlanPrimaryText }}
             </n-button>
           </n-space>
@@ -741,7 +725,6 @@ function goToChapter(num) {
       </div>
     </n-modal>
 
-    <!-- 审稿结果弹窗 -->
     <n-modal v-model:show="showAuditModal" title="一致性审稿报告" preset="card" style="width: 700px; max-height: 80vh;">
       <n-spin :show="auditRunning">
         <div v-if="memoryStore.lastAuditResult" class="space-y-4">
@@ -799,14 +782,12 @@ function goToChapter(num) {
       </n-spin>
     </n-modal>
 
-    <!-- 风格分析弹窗 -->
     <StyleAnalysisPanel
       v-if="showStyleModal"
       :project-id="projectId"
       @close="showStyleModal = false"
     />
 
-    <!-- 节奏分析弹窗 -->
     <n-modal v-model:show="showPacingModal" title="章节节奏分析" preset="card" style="width: 640px; max-height: 80vh;">
       <n-spin :show="memoryStore.pacingAnalyzing">
         <PacingChart v-if="memoryStore.lastPacingAnalysis" :pacing="memoryStore.lastPacingAnalysis" />
@@ -814,7 +795,6 @@ function goToChapter(num) {
       </n-spin>
     </n-modal>
 
-    <!-- 多模型对比弹窗 -->
     <CompareModal
       v-if="showCompareModal"
       :project-id="projectId"
@@ -822,12 +802,18 @@ function goToChapter(num) {
       @close="showCompareModal = false"
     />
 
-    <!-- 多模型融合弹窗 -->
     <FusionPanel
       v-if="showFusionPanel"
       :project-id="projectId"
       :chapter-num="chapterNum"
       @close="showFusionPanel = false"
+    />
+
+    <VersionDiffModal
+      v-if="showDiffModal"
+      :versions="compareStore.comparisonVersions"
+      @load-version="loadVersion"
+      @close="showDiffModal = false"
     />
   </div>
 

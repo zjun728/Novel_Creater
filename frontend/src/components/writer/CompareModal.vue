@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { NModal, NButton, NCheckbox, NCard, NTag, NProgress, NSpace } from 'naive-ui'
+import { NModal, NButton, NCheckbox, NTag } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useCompareStore } from '@/stores/compareStore'
 import { useProviderStore } from '@/stores/providerStore'
@@ -19,26 +19,23 @@ const providerStore = useProviderStore()
 const novelStore = useNovelStore()
 const message = useAppMessage()
 
-const step = ref('select') // 'select' | 'running' | 'done'
+const step = ref('select')
 const selectedModels = ref([])
 
 const writableProviders = computed(() =>
-  providerStore.providers.filter(p => p.apiKey && p.model)
+  providerStore.providers.filter(provider => provider.apiKey && provider.model)
 )
 
 const doneCount = computed(() =>
-  Object.values(compareStore.runningJobs).filter(j => j.done).length
+  Object.values(compareStore.runningJobs).filter(job => job.done).length
 )
 
 const totalCount = computed(() => Object.keys(compareStore.runningJobs).length)
 
 function toggleModel(providerId) {
   const idx = selectedModels.value.indexOf(providerId)
-  if (idx >= 0) {
-    selectedModels.value.splice(idx, 1)
-  } else {
-    selectedModels.value.push(providerId)
-  }
+  if (idx >= 0) selectedModels.value.splice(idx, 1)
+  else selectedModels.value.push(providerId)
 }
 
 async function startComparison() {
@@ -76,23 +73,22 @@ function done() {
     style="width: 90vw; max-width: 960px; max-height: 85vh;"
     @close="done"
   >
-    <!-- Step 1: 选择模型 -->
     <div v-if="step === 'select'">
-      <p class="text-sm text-gray-500 mb-4">选择 2 个或更多模型，系统将用相同的上下文并发生成章节</p>
+      <p class="text-sm text-gray-500 mb-4">选择 2 个或更多模型，系统会用相同上下文并发生成章节候选。</p>
       <div class="grid grid-cols-2 gap-2 mb-4">
         <div
-          v-for="p in writableProviders"
-          :key="p.id"
+          v-for="provider in writableProviders"
+          :key="provider.id"
           :class="[
             'flex items-center gap-2 p-2 rounded border cursor-pointer transition-colors',
-            selectedModels.includes(p.id) ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+            selectedModels.includes(provider.id) ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
           ]"
-          @click="toggleModel(p.id)"
+          @click="toggleModel(provider.id)"
         >
-          <n-checkbox :checked="selectedModels.includes(p.id)" />
+          <n-checkbox :checked="selectedModels.includes(provider.id)" />
           <div class="text-sm">
-            <div class="font-medium text-gray-700">{{ p.name }}</div>
-            <div class="text-xs text-gray-400">{{ p.model }}</div>
+            <div class="font-medium text-gray-700">{{ provider.name }}</div>
+            <div class="text-xs text-gray-400">{{ provider.model }}</div>
           </div>
         </div>
       </div>
@@ -107,7 +103,6 @@ function done() {
       </div>
     </div>
 
-    <!-- Step 2: 运行中 / 完成 -->
     <div v-else>
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2">
@@ -120,29 +115,29 @@ function done() {
 
       <div class="flex gap-3 overflow-x-auto pb-3" style="min-height: 300px">
         <div
-          v-for="mid in selectedModels"
-          :key="mid"
+          v-for="modelId in selectedModels"
+          :key="modelId"
           class="flex-shrink-0 rounded border p-3"
           style="width: 280px; max-height: 55vh; overflow-y: auto"
         >
           <div class="flex items-center justify-between mb-2">
-            <n-tag size="tiny" :type="compareStore.runningJobs[mid]?.error ? 'error' : compareStore.runningJobs[mid]?.done ? 'success' : 'info'">
-              {{ providerStore.providers.find(p => p.id === mid)?.name || mid }}
+            <n-tag size="tiny" :type="compareStore.runningJobs[modelId]?.error ? 'error' : compareStore.runningJobs[modelId]?.done ? 'success' : 'info'">
+              {{ providerStore.providers.find(provider => provider.id === modelId)?.name || modelId }}
             </n-tag>
           </div>
 
-          <div v-if="compareStore.runningJobs[mid]?.error" class="text-xs text-red-500">
-            {{ compareStore.runningJobs[mid].error }}
+          <div v-if="compareStore.runningJobs[modelId]?.error" class="text-xs text-red-500">
+            {{ compareStore.runningJobs[modelId].error }}
           </div>
 
           <div
-            v-else-if="compareStore.runningJobs[mid]?.content"
+            v-else-if="compareStore.runningJobs[modelId]?.content"
             class="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed"
           >
-            {{ compareStore.runningJobs[mid].content }}
+            {{ compareStore.runningJobs[modelId].content }}
           </div>
 
-          <div v-else-if="compareStore.runningJobs[mid]?.streaming" class="text-xs text-gray-400 animate-pulse">
+          <div v-else-if="compareStore.runningJobs[modelId]?.streaming" class="text-xs text-gray-400 animate-pulse">
             正在生成...
           </div>
         </div>
@@ -157,4 +152,3 @@ function done() {
     </div>
   </n-modal>
 </template>
-

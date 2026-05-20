@@ -93,7 +93,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const settingRelations = settingStore?.relations?.value || settingStore?.relations || []
   const settingChangeEvents = settingStore?.changeEvents?.value || settingStore?.changeEvents || []
   const volumes = volumeStore?.volumes?.value || volumeStore?.volumes || []
-  const correctionTasks = correctionTaskStore?.tasks?.value || correctionTaskStore?.tasks || []
+  const correctionTasks = getContextCorrectionTasks(correctionTaskStore)
 
   if (bible?.premise) {
     builder.add('premise', bible.premise, { priority: 1, required: true, maxTokens: 800 })
@@ -310,10 +310,10 @@ function buildVolumeStageContext(volumes, chapterNum) {
 
 function summarizeCorrectionTasks(tasks, chapterNum) {
   const active = (tasks || [])
-    .filter(task => !['done', 'rejected'].includes(task.status))
+    .filter(isCorrectionTaskActiveForContext)
     .filter(task => {
-      const refs = task.chapterRefs || []
-      return !refs.length || refs.includes(chapterNum) || task.sourceType === 'global_audit'
+      const refs = normalizeChapterRefs(task.chapterRefs)
+      return !refs.length || refs.includes(Number(chapterNum)) || task.sourceType === 'global_audit'
     })
     .slice(0, 12)
 
@@ -323,6 +323,32 @@ function summarizeCorrectionTasks(tasks, chapterNum) {
     task.suggestedAction ? `建议：${task.suggestedAction}` : '',
     task.chapterRefs?.length ? `涉及章节：${task.chapterRefs.join('、')}` : ''
   ].filter(Boolean).join('；')).join('\n')
+}
+
+function unwrapMaybeRef(value) {
+  return value?.value ?? value
+}
+
+function getContextCorrectionTasks(correctionTaskStore) {
+  const contextActiveTasks = unwrapMaybeRef(correctionTaskStore?.contextActiveTasks)
+  if (Array.isArray(contextActiveTasks)) return contextActiveTasks
+
+  const activeTasks = unwrapMaybeRef(correctionTaskStore?.activeTasks)
+  if (Array.isArray(activeTasks)) return activeTasks.filter(isCorrectionTaskActiveForContext)
+
+  const tasks = unwrapMaybeRef(correctionTaskStore?.tasks)
+  return Array.isArray(tasks) ? tasks.filter(isCorrectionTaskActiveForContext) : []
+}
+
+function isCorrectionTaskActiveForContext(task) {
+  const status = task?.status || 'pending'
+  return ['pending', 'accepted', 'in_progress'].includes(status)
+}
+
+function normalizeChapterRefs(refs) {
+  return (refs || [])
+    .map(ref => Number(ref))
+    .filter(ref => Number.isFinite(ref) && ref > 0)
 }
 
 function pickProfileFacts(type, profile) {

@@ -10,12 +10,28 @@ export const CORRECTION_STATUS_OPTIONS = [
   { label: '忽略本次', value: 'rejected' }
 ]
 
+export const CORRECTION_CONTEXT_STATUSES = ['pending', 'accepted', 'in_progress']
+export const CORRECTION_CLOSED_STATUSES = ['done', 'rejected', 'ignored', 'cancelled', 'archived']
+
+export function isCorrectionTaskOpen(task) {
+  return !CORRECTION_CLOSED_STATUSES.includes(task?.status)
+}
+
+export function isCorrectionTaskActiveForContext(task) {
+  const status = task?.status || 'pending'
+  return CORRECTION_CONTEXT_STATUSES.includes(status)
+}
+
 export const useCorrectionTaskStore = defineStore('correctionTask', () => {
   const tasks = ref([])
   const loading = ref(false)
 
   const activeTasks = computed(() =>
-    tasks.value.filter(task => !['done', 'rejected'].includes(task.status))
+    tasks.value.filter(isCorrectionTaskOpen)
+  )
+
+  const contextActiveTasks = computed(() =>
+    tasks.value.filter(isCorrectionTaskActiveForContext)
   )
 
   async function loadTasks(projectId, params = {}) {
@@ -111,15 +127,14 @@ export const useCorrectionTaskStore = defineStore('correctionTask', () => {
 
   function mergeTasks(items) {
     const map = new Map()
-    for (const item of items) {
-      map.set(item.id, item)
-    }
+    for (const item of items) map.set(item.id, item)
     return [...map.values()]
   }
 
   return {
     tasks,
     activeTasks,
+    contextActiveTasks,
     loading,
     loadTasks,
     bulkCreate,

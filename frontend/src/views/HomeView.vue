@@ -1,7 +1,21 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NAlert, NButton, NCard, NEmpty, NModal, NForm, NFormItem, NInput, NInputNumber, NSpace, NGrid, NGridItem, useDialog } from 'naive-ui'
+import {
+  NAlert,
+  NButton,
+  NCard,
+  NEmpty,
+  NModal,
+  NForm,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NSpace,
+  NGrid,
+  NGridItem,
+  useDialog
+} from 'naive-ui'
 import { api } from '@/api/db/client'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useProjectStore } from '@/stores/projectStore'
@@ -176,7 +190,7 @@ async function handleImport() {
     return
   }
   try {
-    const project = await projectStore.importProjectJson(importJson.value)
+    await projectStore.importProjectJson(importJson.value)
     message.success('导入成功')
     showImportModal.value = false
     importJson.value = ''
@@ -191,15 +205,17 @@ async function handleImport() {
     <div class="flex items-center justify-between mb-6">
       <h2 class="text-2xl font-bold text-gray-800">项目库</h2>
       <n-space>
-        <nButton @click="showImportModal = true">导入项目</nButton>
-        <nButton type="primary" @click="showCreateModal = true">新建项目</nButton>
+        <n-button @click="showImportModal = true">导入项目</n-button>
+        <n-button type="primary" @click="showCreateModal = true">新建项目</n-button>
       </n-space>
     </div>
 
-    <n-empty v-if="projectStore.projects.length === 0 && !projectStore.loading" description="还没有项目，点击上方按钮创建">
-    </n-empty>
+    <n-empty
+      v-if="projectStore.projects.length === 0 && !projectStore.loading"
+      description="还没有项目，点击上方按钮创建"
+    />
 
-    <n-grid :cols="3" :x-gap="16" :y-gap="16" v-if="projectStore.projects.length > 0">
+    <n-grid v-if="projectStore.projects.length > 0" :cols="3" :x-gap="16" :y-gap="16">
       <n-grid-item v-for="project in projectStore.projects" :key="project.id">
         <n-card
           :title="project.title"
@@ -216,17 +232,16 @@ async function handleImport() {
           </div>
           <template #footer>
             <n-space justify="end">
-              <nButton size="tiny" @click="handleExport(project)">导出</nButton>
-              <nButton size="tiny" @click="handleEdit(project)">编辑</nButton>
-              <nButton size="tiny" type="error" quaternary @click="handleDelete(project)">删除</nButton>
-              <nButton size="tiny" type="primary" @click="handleOpen(project)">打开</nButton>
+              <n-button size="tiny" @click="handleExport(project)">导出</n-button>
+              <n-button size="tiny" @click="handleEdit(project)">编辑</n-button>
+              <n-button size="tiny" type="error" quaternary @click="handleDelete(project)">删除</n-button>
+              <n-button size="tiny" type="primary" @click="handleOpen(project)">打开</n-button>
             </n-space>
           </template>
         </n-card>
       </n-grid-item>
     </n-grid>
 
-    <!-- 新建项目弹窗 -->
     <n-modal v-model:show="showCreateModal" title="新建项目" preset="card" style="width: 520px">
       <n-form :model="formValue">
         <n-form-item label="项目名称" required>
@@ -239,7 +254,13 @@ async function handleImport() {
           <n-input v-model:value="formValue.description" type="textarea" rows="3" placeholder="项目简介" />
         </n-form-item>
         <n-form-item label="目标字数（万字）">
-          <n-input-number v-model:value="formValue.targetWords" :min="1" :step="1" :format="v => `${v / 10000}`" :parse="v => parseFloat(v) * 10000" />
+          <n-input-number
+            v-model:value="formValue.targetWords"
+            :min="1"
+            :step="1"
+            :format="v => `${v / 10000}`"
+            :parse="v => Number.parseFloat(v || 0) * 10000"
+          />
         </n-form-item>
         <n-form-item label="目标章节数">
           <n-input-number v-model:value="formValue.targetChapters" :min="1" :step="1" />
@@ -247,13 +268,12 @@ async function handleImport() {
       </n-form>
       <template #footer>
         <n-space justify="end">
-          <nButton @click="showCreateModal = false">取消</nButton>
-          <nButton type="primary" :loading="creating" @click="handleCreate">创建</nButton>
+          <n-button @click="showCreateModal = false">取消</n-button>
+          <n-button type="primary" :loading="creating" @click="handleCreate">创建</n-button>
         </n-space>
       </template>
     </n-modal>
 
-    <!-- 编辑项目信息弹窗 -->
     <n-modal v-model:show="showEditModal" title="编辑项目信息" preset="card" style="width: 560px">
       <n-form :model="editFormValue">
         <n-form-item label="项目名称" required>
@@ -275,7 +295,7 @@ async function handleImport() {
             :step="1"
             :disabled="projectPlanLocked"
             :format="v => `${v / 10000}`"
-            :parse="v => parseFloat(v) * 10000"
+            :parse="v => Number.parseFloat(v || 0) * 10000"
           />
         </n-form-item>
         <n-form-item label="目标章节数">
@@ -289,20 +309,19 @@ async function handleImport() {
       </n-form>
       <template #footer>
         <n-space justify="end">
-          <nButton @click="showEditModal = false">取消</nButton>
-          <nButton type="primary" :loading="editing" @click="handleUpdateProject">保存修改</nButton>
+          <n-button @click="showEditModal = false">取消</n-button>
+          <n-button type="primary" :loading="editing" @click="handleUpdateProject">保存修改</n-button>
         </n-space>
       </template>
     </n-modal>
 
-    <!-- 导入项目弹窗 -->
     <n-modal v-model:show="showImportModal" title="导入项目" preset="card" style="width: 560px">
-      <p class="text-sm text-yellow-600 mb-3">⚠️ 请粘贴从本系统导出的项目 JSON 备份文件内容。</p>
+      <p class="text-sm text-yellow-600 mb-3">请粘贴从本系统导出的项目 JSON 备份文件内容。</p>
       <n-input v-model:value="importJson" type="textarea" rows="10" placeholder="粘贴项目 JSON 内容" />
       <template #footer>
         <n-space justify="end">
-          <nButton @click="showImportModal = false">取消</nButton>
-          <nButton type="primary" @click="handleImport">导入</nButton>
+          <n-button @click="showImportModal = false">取消</n-button>
+          <n-button type="primary" @click="handleImport">导入</n-button>
         </n-space>
       </template>
     </n-modal>

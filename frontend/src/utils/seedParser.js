@@ -273,7 +273,8 @@ function extractLooseSeedFromBlock(block) {
 
 function extractLooseSeeds(text) {
   const cleaned = text
-    .replace(/```[\s\S]*?```/g, '\n')
+    .replace(/```(?:json|JSON)?\s*/g, '\n')
+    .replace(/```/g, '\n')
     .replace(/<think>[\s\S]*?<\/think>/gi, '\n')
 
   const headingRegex = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:种子|方案|方向)\s*[一二三四五六七八九十\d]+[：:、.\s-]*/g

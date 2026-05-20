@@ -7,6 +7,7 @@ import { useProjectStore } from './projectStore'
 import { useNovelStore } from './novelStore'
 import { useSeedStore } from './seedStore'
 import { buildMarketChatSystemPrompt, extractSeedsFromText } from '@/prompts/market'
+import { buildSeedRepairPrompt } from '@/prompts/seed'
 import {
   buildMarketDirectionPrompt,
   buildMarketDirectionRepairPrompt,
@@ -31,6 +32,11 @@ function snippet(text) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 220)
+}
+
+function hasSeedIntent(text) {
+  return /(?:生成|创建|新增|保存|输出|整理|给我|做|产出).{0,24}(?:种子|创作种子|候选种子|完整种子|seed)/i.test(text)
+    || /保存为候选种子|完整\s*JSON\s*数组/i.test(text)
 }
 
 export const useMarketStore = defineStore('market', () => {
@@ -253,7 +259,31 @@ export const useMarketStore = defineStore('market', () => {
       else if (result?.choices?.[0]?.message?.content) text = result.choices[0].message.content
 
       // 尝试提取种子。明确要求修改当前种子时，应用到已选种子；否则另存为候选种子。
-      const seedList = extractSeedsFromText(text)
+      const requestedSeed = hasSeedIntent(userMessage)
+      let seedList = extractSeedsFromText(text)
+      let repairText = ''
+      if (!seedList.length && requestedSeed && text.trim()) {
+        try {
+          const repairResult = await chatCompletion(provider, [
+            {
+              role: 'system',
+              content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+            },
+            {
+              role: 'user',
+              content: buildSeedRepairPrompt(text)
+            }
+          ], jsonOptions(provider, {
+            maxTokens: 4096,
+            temperature: 0.2
+          }))
+          repairText = getCompletionText(repairResult)
+          seedList = extractSeedsFromText(repairText)
+        } catch (e) {
+          repairText = `种子 JSON 修复失败：${e.message}`
+        }
+      }
+
       let createdSeeds = []
       let seedAction = ''
       let seedError = ''
@@ -262,7 +292,8 @@ export const useMarketStore = defineStore('market', () => {
         const seedStore = useSeedStore()
         await seedStore.loadSeeds(projectId)
         const selectedSeed = seedStore.seeds.find(seed => seed.status === 'selected')
-        const wantsSeedUpdate = /(?:修改|更改|调整|优化|改成|换成|更新|覆盖|应用).{0,16}(?:种子|当前种子|这个种子|当前方向|当前设定|这个方向)/.test(userMessage)
+        const wantsSeedUpdate = /(?:修改|更改|调整|优化|改成|换成|更新|覆盖|应用).{0,24}(?:种子|当前种子|最新种子|这个种子|当前方向|当前设定|这个方向)/.test(userMessage)
+          || /(?:种子|当前种子|最新种子).{0,24}(?:修改|更改|调整|优化|改成|换成|更新|覆盖|应用)/.test(userMessage)
 
         if (wantsSeedUpdate && selectedSeed && seedList.length > 0) {
           const [seedPatch] = seedList
@@ -285,6 +316,8 @@ export const useMarketStore = defineStore('market', () => {
           } catch (e) {
             seedErrors.push(e.message)
           }
+        } else if (wantsSeedUpdate && !selectedSeed) {
+          seedError = '当前没有已选中的创作种子，无法更新。请先在“创作种子”页选择一个种子，或使用“生成新种子”。'
         } else {
           for (const seed of seedList) {
             try {
@@ -305,6 +338,13 @@ export const useMarketStore = defineStore('market', () => {
             ? `部分种子保存失败：${seedErrors[0]}`
             : `AI 已返回种子 JSON，但保存失败：${seedErrors[0]}`
         }
+
+        if (createdSeeds.length) {
+          await seedStore.loadSeeds(projectId)
+        }
+      } else if (requestedSeed) {
+        const raw = snippet(repairText) || snippet(text)
+        seedError = `AI 已回复，但没有解析到可保存的种子 JSON${raw ? `。返回片段：${raw}` : ''}`
       }
 
       const assistantEntry = {

@@ -45,7 +45,45 @@ export const useStyleTrialStore = defineStore('styleTrial', () => {
   const trials = ref([])
   const sampleAnalysis = ref(null)
   const selectedTrial = ref(null)
+  const selectedStyleBible = ref('')
   const generating = ref(false)
+  const activeStorageKey = ref('')
+
+  function storageKey(projectId, seedId) {
+    return projectId && seedId ? `novel-creator:style-trials:${projectId}:${seedId}` : ''
+  }
+
+  function persistCurrent() {
+    if (!activeStorageKey.value) return
+    localStorage.setItem(activeStorageKey.value, JSON.stringify({
+      trials: trials.value,
+      sampleAnalysis: sampleAnalysis.value,
+      selectedTrialId: selectedTrial.value?.id || '',
+      selectedStyleBible: selectedStyleBible.value
+    }))
+  }
+
+  function loadSaved(projectId, seedId) {
+    activeStorageKey.value = storageKey(projectId, seedId)
+    trials.value = []
+    sampleAnalysis.value = null
+    selectedTrial.value = null
+    selectedStyleBible.value = ''
+
+    if (!activeStorageKey.value) return
+    const raw = localStorage.getItem(activeStorageKey.value)
+    if (!raw) return
+
+    try {
+      const saved = JSON.parse(raw)
+      trials.value = Array.isArray(saved.trials) ? saved.trials.map(normalizeTrial) : []
+      sampleAnalysis.value = saved.sampleAnalysis || null
+      selectedTrial.value = trials.value.find(trial => trial.id === saved.selectedTrialId) || null
+      selectedStyleBible.value = saved.selectedStyleBible || (selectedTrial.value ? buildStyleBible(selectedTrial.value) : '')
+    } catch {
+      localStorage.removeItem(activeStorageKey.value)
+    }
+  }
 
   async function getProvider(projectId) {
     const providerStore = useProviderStore()
@@ -78,7 +116,10 @@ export const useStyleTrialStore = defineStore('styleTrial', () => {
       const data = extractJson(result)
       sampleAnalysis.value = data.sampleAnalysis || null
       trials.value = (data.trials || []).map(normalizeTrial)
-      selectedTrial.value = trials.value[0] || null
+      selectedTrial.value = null
+      selectedStyleBible.value = ''
+      activeStorageKey.value = storageKey(projectId, seed?.id)
+      persistCurrent()
       return trials.value
     } finally {
       generating.value = false
@@ -87,6 +128,8 @@ export const useStyleTrialStore = defineStore('styleTrial', () => {
 
   function selectTrial(trial) {
     selectedTrial.value = trial
+    selectedStyleBible.value = buildStyleBible(trial)
+    persistCurrent()
   }
 
   function buildStyleBible(trial = selectedTrial.value) {
@@ -118,9 +161,11 @@ ${trial.excerpt}`
   }
 
   function clearTrials() {
+    if (activeStorageKey.value) localStorage.removeItem(activeStorageKey.value)
     trials.value = []
     sampleAnalysis.value = null
     selectedTrial.value = null
+    selectedStyleBible.value = ''
   }
 
   return {
@@ -128,7 +173,9 @@ ${trial.excerpt}`
     trials,
     sampleAnalysis,
     selectedTrial,
+    selectedStyleBible,
     generating,
+    loadSaved,
     generateTrials,
     selectTrial,
     buildStyleBible,

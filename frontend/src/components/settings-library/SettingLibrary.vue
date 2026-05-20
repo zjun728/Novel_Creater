@@ -8,8 +8,11 @@ import {
   NCollapseItem,
   NDivider,
   NEmpty,
+  NForm,
+  NFormItem,
   NInput,
   NInputNumber,
+  NModal,
   NPopconfirm,
   NSelect,
   NSpace,
@@ -32,9 +35,12 @@ const selectedEntityId = ref('')
 const saving = ref(false)
 const relationSaving = ref(false)
 const clearingSettings = ref(false)
+const showChangeEditModal = ref(false)
+const changeSaving = ref(false)
 
 const draft = reactive(createBlankDraft())
 const relationDraft = reactive(createBlankRelation())
+const changeDraft = reactive(createBlankChangeDraft())
 
 const typeOptions = ENTITY_TYPES.map(t => ({ label: t.label, value: t.value }))
 
@@ -172,7 +178,9 @@ async function handleClearSettings() {
     safeContent: '将清空设定实体、关系和待确认变更。因为还没有章节内容，清空后可以重新从圣经提取设定。',
     riskContent: '清空设定库不会删除已写章节，但会移除人物、势力、地点、功法、关系等长期状态记录。已有章节可能失去一致性约束。',
     finalContent: '最终确认：清空设定库后，所有设定实体、关系和待确认变更都会被删除。已写章节不会删除。',
-    positiveText: '确认清空设定库'
+    positiveText: '确认清空设定库',
+    blockWhenChapterContent: true,
+    blockedContent: '当前项目已有正文内容，不能清空设定库。设定库会作为后续写作、审稿和纠偏的连续性依据；如需调整，请新增或修改具体设定，并保留变更记录。'
   })
   if (!confirmed) return
 
@@ -230,6 +238,32 @@ async function markChangeEvent(eventId, status) {
     }
   } catch (e) {
     message.error('处理变更失败：' + e.message)
+  }
+}
+
+function editChangeEvent(event) {
+  Object.assign(changeDraft, eventToChangeDraft(event))
+  showChangeEditModal.value = true
+}
+
+async function saveChangeEventEdit() {
+  if (!changeDraft.entityName.trim()) {
+    message.warning('请填写实体名称')
+    return
+  }
+  changeSaving.value = true
+  try {
+    await settingStore.saveChangeEvent(props.projectId, {
+      ...changeDraft,
+      confidence: Number(changeDraft.confidence || 0.8),
+      chapterNum: changeDraft.chapterNum ?? null
+    })
+    showChangeEditModal.value = false
+    message.success('待确认变更已更新')
+  } catch (e) {
+    message.error('保存变更失败：' + e.message)
+  } finally {
+    changeSaving.value = false
   }
 }
 
@@ -305,6 +339,40 @@ function createBlankRelation(entityId = '') {
     evidence: '',
     chapterNum: null,
     status: 'active'
+  }
+}
+
+function createBlankChangeDraft() {
+  return {
+    id: '',
+    entityType: 'character',
+    entityId: null,
+    entityName: '',
+    changeType: 'update',
+    fieldPath: '',
+    oldValue: '',
+    newValue: '',
+    chapterNum: null,
+    evidence: '',
+    confidence: 0.8,
+    status: 'pending_review'
+  }
+}
+
+function eventToChangeDraft(event = {}) {
+  return {
+    id: event.id || '',
+    entityType: event.entityType || 'character',
+    entityId: event.entityId || null,
+    entityName: event.entityName || '',
+    changeType: event.changeType || 'update',
+    fieldPath: event.fieldPath || '',
+    oldValue: event.oldValue || '',
+    newValue: event.newValue || '',
+    chapterNum: event.chapterNum ?? null,
+    evidence: event.evidence || '',
+    confidence: Number(event.confidence || 0.8),
+    status: event.status || 'pending_review'
   }
 }
 
@@ -581,6 +649,7 @@ const PROFILE_FIELDS = {
                   <p v-if="event.evidence" class="evidence">证据：{{ event.evidence }}</p>
                 </div>
                 <n-space>
+                  <n-button size="small" @click="editChangeEvent(event)">编辑</n-button>
                   <n-button size="small" type="primary" @click="markChangeEvent(event.id, 'accepted')">确认</n-button>
                   <n-button size="small" @click="markChangeEvent(event.id, 'rejected')">拒绝</n-button>
                 </n-space>
@@ -591,6 +660,86 @@ const PROFILE_FIELDS = {
         </n-collapse>
       </main>
     </div>
+
+    <n-modal
+      v-model:show="showChangeEditModal"
+      preset="card"
+      title="编辑待确认设定变更"
+      style="width: min(760px, calc(100vw - 48px));"
+    >
+      <n-form :model="changeDraft" label-placement="left" label-width="100">
+        <div class="form-grid">
+          <n-form-item label="实体类型">
+            <n-select v-model:value="changeDraft.entityType" :options="typeOptions" />
+          </n-form-item>
+          <n-form-item label="关联实体">
+            <n-select
+              v-model:value="changeDraft.entityId"
+              :options="entityOptions"
+              placeholder="可选：绑定已有实体"
+              clearable
+              filterable
+            />
+          </n-form-item>
+        </div>
+        <n-form-item label="实体名称">
+          <n-input v-model:value="changeDraft.entityName" placeholder="例如：苏月 / 青玄宗 / 筑基境" />
+        </n-form-item>
+        <div class="form-grid">
+          <n-form-item label="变更类型">
+            <n-select
+              v-model:value="changeDraft.changeType"
+              :options="[
+                { label: '新增实体', value: 'new_entity' },
+                { label: '字段更新', value: 'update' },
+                { label: '关系变更', value: 'relationship' }
+              ]"
+            />
+          </n-form-item>
+          <n-form-item label="字段路径">
+            <n-input v-model:value="changeDraft.fieldPath" placeholder="如：profile.realm / summary / relationship" />
+          </n-form-item>
+        </div>
+        <div class="form-grid">
+          <n-form-item label="章节">
+            <n-input-number v-model:value="changeDraft.chapterNum" clearable class="w-full" />
+          </n-form-item>
+          <n-form-item label="置信度">
+            <n-input-number v-model:value="changeDraft.confidence" :min="0" :max="1" :step="0.05" class="w-full" />
+          </n-form-item>
+        </div>
+        <n-form-item label="原值">
+          <n-input
+            v-model:value="changeDraft.oldValue"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 5 }"
+            placeholder="可留空"
+          />
+        </n-form-item>
+        <n-form-item label="新值">
+          <n-input
+            v-model:value="changeDraft.newValue"
+            type="textarea"
+            :autosize="{ minRows: 4, maxRows: 10 }"
+            placeholder="字段更新可写普通文本；新增实体或关系可保留 JSON"
+          />
+        </n-form-item>
+        <n-form-item label="证据">
+          <n-input
+            v-model:value="changeDraft.evidence"
+            type="textarea"
+            :autosize="{ minRows: 2, maxRows: 6 }"
+            placeholder="来自圣经、章节原文或人工说明"
+          />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showChangeEditModal = false">取消</n-button>
+          <n-button type="primary" :loading="changeSaving" @click="saveChangeEventEdit">保存修改</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 

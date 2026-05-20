@@ -46,9 +46,14 @@ export const useSeedStore = defineStore('seed', () => {
 
   async function createSeed(projectId, data) {
     try {
+      const shouldAutoSelect = !seeds.value.some(seed => seed.status === 'selected')
       const seed = await api.seeds.create(projectId, data)
-      seeds.value.push(seed)
-      return seed
+      let saved = seed
+      if (shouldAutoSelect) {
+        saved = await api.seeds.update(projectId, seed.id, { status: 'selected' })
+      }
+      seeds.value.push(saved)
+      return saved
     } catch (e) {
       console.error('创建种子失败:', e.message)
       throw e

@@ -1,5 +1,5 @@
-<script setup>
-import { ref, onMounted, computed } from 'vue'
+﻿<script setup>
+import { ref, onMounted, computed, watch } from 'vue'
 import { NButton, NCard, NModal, NForm, NFormItem, NInput, NSpace, NEmpty, NSpin } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useResetConfirmation } from '@/composables/useResetConfirmation'
@@ -7,7 +7,9 @@ import { useSeedStore } from '@/stores/seedStore'
 import { useNovelStore } from '@/stores/novelStore'
 import { useWriterStore } from '@/stores/writerStore'
 import { useSettingStore } from '@/stores/settingStore'
+import { useStyleTrialStore } from '@/stores/styleTrialStore'
 import { extractSeedsFromText } from '@/utils/seedParser'
+import { api } from '@/api/db/client'
 import SeedCard from './SeedCard.vue'
 import StyleTrialPanel from './StyleTrialPanel.vue'
 
@@ -21,6 +23,7 @@ const seedStore = useSeedStore()
 const novelStore = useNovelStore()
 const writerStore = useWriterStore()
 const settingStore = useSettingStore()
+const styleTrialStore = useStyleTrialStore()
 const message = useAppMessage()
 const { confirmStageReset } = useResetConfirmation()
 
@@ -86,7 +89,28 @@ const selectedSeed = computed(() =>
   seedStore.seeds.find(s => s.status === 'selected')
 )
 
+const selectedStyleName = computed(() => styleTrialStore.selectedTrial?.name || '')
+
+watch(
+  selectedSeed,
+  seed => {
+    styleTrialStore.loadSaved(props.projectId, seed?.id)
+    selectedStyleBible.value = styleTrialStore.selectedStyleBible
+  },
+  { immediate: true }
+)
+
+async function ensureSeedPlanningEditable(action = '调整创作种子') {
+  const state = await api.projects.contentState(props.projectId)
+  if (state.hasChapterContent) {
+    message.warning(`项目已有正文内容，不能${action}。后续请通过创作圣经局部编辑、设定库变更或纠偏任务来调整。`)
+    return false
+  }
+  return true
+}
+
 async function handleCreate() {
+  if (!await ensureSeedPlanningEditable('新增创作种子')) return
   if (!formValue.value.title.trim()) {
     message.warning('请输入种子标题')
     return
@@ -102,12 +126,14 @@ async function handleCreate() {
 }
 
 async function handleSelect(seed) {
+  if (!await ensureSeedPlanningEditable('切换当前创作种子')) return
   await seedStore.selectSeed(seed)
-  message.success(`已选择种子「${seed.title}」`)
+  message.success(`已选择种子《${seed.title}》`)
   emit('seedSelected', seed)
 }
 
 async function handleDelete(seed) {
+  if (!await ensureSeedPlanningEditable('删除创作种子')) return
   await seedStore.deleteSeed(seed.id)
   message.success('已删除')
 }
@@ -123,7 +149,9 @@ async function handleClearSeeds() {
     safeContent: '将清空当前项目的所有创作种子。后续可以重新生成或手动创建种子。',
     riskContent: '清空种子不会删除已生成的圣经、设定库和章节，但会移除它们的早期来源依据。',
     finalContent: '最终确认：清空种子后，所有候选种子和当前选中种子都会被删除。已写章节不会删除。',
-    positiveText: '确认清空种子'
+    positiveText: '确认清空种子',
+    blockWhenChapterContent: true,
+    blockedContent: '当前项目已有正文内容，不能清空创作种子。种子是创作圣经、设定库和已写章节的早期依据，清空后会造成来源断裂。'
   })
   if (!confirmed) return
 
@@ -140,6 +168,7 @@ async function handleClearSeeds() {
 }
 
 async function handleGenerate() {
+  if (!await ensureSeedPlanningEditable('生成新的创作种子')) return
   if (!genInput.value.idea.trim()) {
     message.warning('请输入你的创作想法')
     return
@@ -157,6 +186,7 @@ async function handleGenerate() {
 }
 
 async function handleImportPastedSeeds(showFailure = true) {
+  if (!await ensureSeedPlanningEditable('导入新的创作种子')) return false
   const text = [
     genInput.value.idea || '',
     genInput.value.genre || '',
@@ -197,6 +227,7 @@ function editSelectedSeed() {
 
 async function handleSaveDetail() {
   if (!detailSeed.value || !detailForm.value) return
+  if (!await ensureSeedPlanningEditable('修改创作种子')) return
   if (!detailForm.value.title.trim()) {
     message.warning('请输入种子标题')
     return
@@ -219,6 +250,7 @@ async function handleSaveDetail() {
 
 async function handleSaveAsNewSeed() {
   if (!detailForm.value) return
+  if (!await ensureSeedPlanningEditable('另存新的创作种子')) return
   if (!detailForm.value.title.trim()) {
     message.warning('请输入种子标题')
     return
@@ -243,6 +275,10 @@ async function handleSaveAsNewSeed() {
 
 function handleApplyStyle({ styleBible }) {
   selectedStyleBible.value = styleBible
+}
+
+function handleClearStyle() {
+  selectedStyleBible.value = ''
 }
 
 async function planningIsLocked() {
@@ -300,7 +336,7 @@ async function createBibleFromSeed() {
           清空种子
         </n-button>
         <n-button size="small" @click="showGenModal = true" :loading="seedStore.generating">
-          🤖 AI 生成种子
+          AI 生成种子
         </n-button>
         <n-button size="small" type="primary" @click="showCreateModal = true">
           手动创建种子
@@ -308,7 +344,7 @@ async function createBibleFromSeed() {
       </n-space>
     </div>
 
-    <!-- 已选中的种子 -->
+    <!-- 宸查€変腑鐨勭瀛?-->
     <n-card v-if="selectedSeed" title="当前选中的种子" class="mb-4 border-2 border-green-300" size="small">
       <div class="space-y-4 text-[15px] leading-7 text-gray-700 break-words">
         <div><span class="font-medium text-gray-500">题材：</span>{{ selectedSeed.genre }}</div>
@@ -321,7 +357,7 @@ async function createBibleFromSeed() {
         <div v-if="selectedSeed.riskNotes" class="col-span-2"><span class="font-medium text-gray-500">风险提示：</span>{{ selectedSeed.riskNotes }}</div>
         <div v-if="selectedSeed.endingAnchor" class="col-span-2"><span class="font-medium text-gray-500">结局锚点：</span>{{ selectedSeed.endingAnchor }}</div>
         <div v-if="selectedStyleBible" class="rounded bg-green-50 border border-green-100 px-3 py-2 text-sm text-green-800">
-          已选择风格试写结果，创建创作圣经时会写入风格基准。
+          已选择风格：{{ selectedStyleName || '未命名风格' }}。创建创作圣经时会写入风格基准。
         </div>
       </div>
       <template #footer>
@@ -341,9 +377,10 @@ async function createBibleFromSeed() {
       :project-id="projectId"
       :seed="selectedSeed"
       @apply-style="handleApplyStyle"
+      @clear-style="handleClearStyle"
     />
 
-    <!-- 种子列表 -->
+    <!-- 绉嶅瓙鍒楄〃 -->
     <n-empty v-if="seedStore.seeds.length === 0 && !seedStore.loading" description="还没有创作种子，点击上方按钮创建">
     </n-empty>
 
@@ -359,7 +396,7 @@ async function createBibleFromSeed() {
       />
     </div>
 
-    <!-- 手动创建弹窗 -->
+    <!-- 鎵嬪姩鍒涘缓寮圭獥 -->
     <n-modal v-model:show="showCreateModal" title="创建种子" preset="card" style="width: 600px">
       <n-form :model="formValue" label-placement="left" label-width="90">
         <n-form-item label="标题" required>
@@ -369,7 +406,7 @@ async function createBibleFromSeed() {
           <n-input v-model:value="formValue.genre" placeholder="如：玄幻、都市、科幻" />
         </n-form-item>
         <n-form-item label="一句话故事">
-          <n-input v-model:value="formValue.logline" type="textarea" rows="2" placeholder="30字以内" />
+          <n-input v-model:value="formValue.logline" type="textarea" rows="2" placeholder="30 字以内" />
         </n-form-item>
         <n-form-item label="主角">
           <n-input v-model:value="formValue.protagonist" placeholder="主角简介" />
@@ -410,7 +447,7 @@ async function createBibleFromSeed() {
       </template>
     </n-modal>
 
-    <!-- AI 生成弹窗 -->
+    <!-- AI 鐢熸垚寮圭獥 -->
     <n-modal v-model:show="showGenModal" title="AI 生成种子" preset="card" style="width: 560px">
       <n-form :model="genInput" label-placement="left" label-width="90">
         <n-form-item label="创作想法" required>
@@ -435,7 +472,7 @@ async function createBibleFromSeed() {
       </template>
     </n-modal>
 
-    <!-- 种子详情弹窗 -->
+    <!-- 绉嶅瓙璇︽儏寮圭獥 -->
     <n-modal
       v-model:show="showDetailModal"
       title="查看 / 调整种子"

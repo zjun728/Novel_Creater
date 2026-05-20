@@ -18,17 +18,22 @@ function dialogContent(text) {
 function openConfirm(dialog, type, options) {
   return new Promise(resolve => {
     const open = dialog[type] || dialog.warning
-    open({
+    const dialogOptions = {
       title: options.title,
       content: dialogContent(options.content),
       positiveText: options.positiveText || '确认',
-      negativeText: options.negativeText || '取消',
       maskClosable: false,
       closeOnEsc: false,
       closable: false,
       onPositiveClick: () => resolve(true),
-      onNegativeClick: () => resolve(false),
       onClose: () => resolve(false)
+    }
+    if (options.negativeText !== '') {
+      dialogOptions.negativeText = options.negativeText || '取消'
+      dialogOptions.onNegativeClick = () => resolve(false)
+    }
+    open({
+      ...dialogOptions
     })
   })
 }
@@ -42,9 +47,21 @@ export function useResetConfirmation() {
     safeContent,
     riskContent,
     finalContent,
-    positiveText = '确认删除'
+    positiveText = '确认删除',
+    blockWhenChapterContent = false,
+    blockedContent = ''
   }) {
     const state = await api.projects.contentState(projectId)
+    if (state.hasChapterContent && blockWhenChapterContent) {
+      await openConfirm(dialog, 'error', {
+        title: '已进入写作阶段，不能执行此操作',
+        content: `${blockedContent || riskContent || '当前项目已有正式章节内容，不能清空或删除核心创作资产。'}\n\n当前项目状态：${stateSummary(state)}`,
+        positiveText: '知道了',
+        negativeText: ''
+      })
+      return { confirmed: false, state, blocked: true }
+    }
+
     if (!state.hasChapterContent) {
       const confirmed = await openConfirm(dialog, 'warning', {
         title,

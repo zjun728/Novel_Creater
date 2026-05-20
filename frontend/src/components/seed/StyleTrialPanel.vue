@@ -1,5 +1,5 @@
-<script setup>
-import { computed, ref } from 'vue'
+﻿<script setup>
+import { computed, onMounted, ref, watch } from 'vue'
 import { NButton, NCard, NEmpty, NInput, NSpin, NTag } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useStyleTrialStore } from '@/stores/styleTrialStore'
@@ -9,7 +9,7 @@ const props = defineProps({
   seed: { type: Object, required: true }
 })
 
-const emit = defineEmits(['applyStyle'])
+const emit = defineEmits(['applyStyle', 'clearStyle'])
 
 const message = useAppMessage()
 const styleTrialStore = useStyleTrialStore()
@@ -20,6 +20,17 @@ const sampleText = ref('')
 
 const canGenerate = computed(() =>
   selectedPresetIds.value.length > 0 || sampleText.value.trim().length > 80
+)
+
+function restoreSavedTrials() {
+  styleTrialStore.loadSaved(props.projectId, props.seed?.id)
+}
+
+onMounted(restoreSavedTrials)
+
+watch(
+  () => [props.projectId, props.seed?.id],
+  restoreSavedTrials
 )
 
 function togglePreset(id) {
@@ -42,6 +53,7 @@ async function handleGenerate() {
       sampleName: sampleName.value,
       sampleText: sampleText.value.trim()
     })
+    emit('clearStyle')
     message.success('风格试写已生成')
   } catch (e) {
     message.error('风格试写失败：' + e.message)
@@ -52,9 +64,13 @@ function applyStyle(trial) {
   styleTrialStore.selectTrial(trial)
   emit('applyStyle', {
     trial,
-    styleBible: styleTrialStore.buildStyleBible(trial)
+    styleBible: styleTrialStore.selectedStyleBible
   })
-  message.success(`已将「${trial.name}」设为创作圣经风格基准`)
+  message.success(`已将《${trial.name}》设为创作圣经风格基准`)
+}
+function clearTrials() {
+  styleTrialStore.clearTrials()
+  emit('clearStyle')
 }
 </script>
 
@@ -105,7 +121,7 @@ function applyStyle(trial) {
       </div>
 
       <div class="flex justify-end gap-2">
-        <n-button size="small" @click="styleTrialStore.clearTrials">
+        <n-button size="small" @click="clearTrials">
           清空对比
         </n-button>
         <n-button
@@ -164,22 +180,27 @@ function applyStyle(trial) {
                 <div class="font-semibold text-gray-800">{{ trial.name }}</div>
                 <div class="mt-1 text-xs leading-5 text-gray-500">{{ trial.positioning }}</div>
               </div>
-              <n-button size="tiny" type="primary" @click="applyStyle(trial)">
-                设为主风格
+              <n-button
+                size="tiny"
+                :type="styleTrialStore.selectedTrial?.id === trial.id ? 'success' : 'primary'"
+                :secondary="styleTrialStore.selectedTrial?.id !== trial.id"
+                @click="applyStyle(trial)"
+              >
+                {{ styleTrialStore.selectedTrial?.id === trial.id ? '已选风格' : '设为主风格' }}
               </n-button>
             </div>
 
             <div class="mt-3 grid grid-cols-3 gap-2 text-center">
               <div class="rounded bg-gray-50 py-2">
-                <div class="text-[11px] text-gray-400">适配</div>
+                <div class="text-[11px] text-gray-400">閫傞厤</div>
                 <div class="font-semibold text-gray-800">{{ trial.suitabilityScore }}</div>
               </div>
               <div class="rounded bg-gray-50 py-2">
-                <div class="text-[11px] text-gray-400">稳定</div>
+                <div class="text-[11px] text-gray-400">绋冲畾</div>
                 <div class="font-semibold text-gray-800">{{ trial.continuationStability }}</div>
               </div>
               <div class="rounded bg-gray-50 py-2">
-                <div class="text-[11px] text-gray-400">想象</div>
+                <div class="text-[11px] text-gray-400">鎯宠薄</div>
                 <div class="font-semibold text-gray-800">{{ trial.imaginationSpace }}</div>
               </div>
             </div>

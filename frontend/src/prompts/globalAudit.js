@@ -5,12 +5,18 @@ export function buildGlobalAuditSystemPrompt() {
 - 关注项目级结构风险，不做逐句润色。
 - 优先检查主线承诺、人物弧光、设定一致性、伏笔容量、节奏结构、读者期待兑现。
 - 区分“必须修”的硬问题和“可以优化”的软建议。
+- 如果用户指定了章节范围，只审查该范围内的推进质量，同时说明它对全书后续的影响。
 - 给出可执行的下一步，不要只写抽象评价。
 - 必须输出合法 JSON，不要附加解释。`
 }
 
 export function buildGlobalAuditPrompt(context) {
-  return `请基于以下资料，对当前小说项目做一次全局审稿。
+  return `请基于以下资料，对当前小说项目做一次${context.auditScopeLabel || '全局'}审稿。
+
+## 审稿范围
+- 范围：${context.auditScopeLabel || '全书'}
+- 起始章节：${context.auditStartChapter || '不限'}
+- 结束章节：${context.auditEndChapter || '不限'}
 
 ## 项目基础
 - 项目：${context.projectTitle || '未命名项目'}

@@ -1760,3 +1760,397 @@
 - 纠偏任务 v2 先只支持低风险应用：Canon 候选、设定变更候选。
 - 不自动改正文，不自动覆盖正式设定。
 - 伏笔、分卷规划、创作圣经类任务后续先做“跳转定位”，再考虑可控的局部应用。
+
+## 2026-05-19 - 选题顾问种子落库与结局锚点修复
+
+### 本次完成
+- 选题雷达 AI 顾问的种子生成模板补回 `endingAnchor`，结局锚点继续作为长篇收束字段保留。
+- 选题顾问对话在用户明确要求生成/保存种子时，如果首次解析 AI 回复失败，会追加一次 JSON 修复器调用后再尝试落库。
+- 选题顾问种子保存成功后强制刷新种子 Store，避免聊天侧已创建但种子页未同步。
+- 种子解析器保留 Markdown 代码块内文本参与中文标签兜底解析，避免代码块 JSON 略有问题时直接丢失可提取内容。
+- 当用户要求生成种子但无法解析或保存时，会把失败原因写入聊天消息元数据，便于回看排查。
+
+### 修改文件
+- `frontend/src/prompts/market.js`
+- `frontend/src/stores/marketStore.js`
+- `frontend/src/utils/seedParser.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- `endingAnchor` 不取消。它不是第一章写作必须字段，但对长篇终局方向、主题归宿和后续圣经生成很有价值。
+- 选题顾问生成种子不是“只把 JSON 发到聊天框”，必须完成解析、修复、落库和种子页同步闭环。
+
+## 2026-05-19 - 流程状态同步与创作阶段保护
+
+### 本次完成
+- 项目页创作准备流程改为真实数据驱动状态：
+  - 种子：无种子为“待完善”，有候选无选中为“待确认”，有选中为“已就绪”。
+  - 圣经：有核心内容为“已就绪”。
+  - 设定库：有待确认变更为“有待确认”，有正式设定为“已就绪”。
+  - 章节：已有正文或定稿为“已开始”。
+  - 纠偏：有未完成任务为“待处理”，已处理过为“已处理”。
+- 创建第一条种子时自动设为当前选中种子，顶部流程直接进入“已就绪”；后续新增种子不覆盖当前选中。
+- 清空种子后，种子 Store 清空，流程状态自然回到“待完善”。
+- 项目已有正文内容后，禁止新增、导入、生成、修改、另存、选择、删除或清空创作种子。
+- 项目已有正文内容后，禁止删除创作圣经；圣经仍允许局部编辑，但保存前弹出写作阶段风险确认。
+- 项目已有正文内容后，禁止清空设定库；仍允许维护单条设定和关系，保留变更连续性。
+- 阶段重置确认组件新增 `blockWhenChapterContent` 保护开关，用于核心规划资产的硬拦截。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`。
+
+### 修改文件
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/stores/seedStore.js`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `frontend/src/components/settings-library/SettingLibrary.vue`
+- `frontend/src/composables/useResetConfirmation.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 创作开始前允许自由重置种子、圣经和设定库；创作开始后，核心资产只能局部维护，不能整块清空或删除。
+- 种子是前期选题资产，进入正文创作后不再作为可重写地基使用；后续大改应走纠偏任务、新草案或人工迁移流程。
+
+## 2026-05-19 - 选题顾问更新当前种子入口
+
+### 本次完成
+- AI 选题顾问输入区新增“更新当前种子”按钮。
+- “生成新种子”继续保留，用于新增候选种子。
+- “更新当前种子”会基于当前选中种子、选题雷达数据和最近对话，要求 AI 输出完整修订版种子 JSON，并应用到当前选中的种子。
+- 选题顾问更新识别规则补充“最新种子/当前种子”前置表达，避免按钮指令被误判为新增。
+- 选题顾问 Prompt 中标记已有种子的“当前选中/候选”状态，帮助 AI 明确要更新的对象。
+
+### 修改文件
+- `frontend/src/components/market/AIChatPanel.vue`
+- `frontend/src/stores/marketStore.js`
+- `frontend/src/prompts/market.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 选题顾问里“生成新种子”和“更新当前种子”是两个独立动作：前者新增候选，后者修改已选中种子。
+
+## 2026-05-19 - 待确认设定变更编辑
+
+### 本次完成
+- 设定库“待确认设定变更”列表新增“编辑”按钮。
+- 新增编辑弹窗，支持在确认入库前调整：
+  - 实体类型。
+  - 绑定已有实体。
+  - 实体名称。
+  - 变更类型。
+  - 字段路径。
+  - 章节号。
+  - 置信度。
+  - 原值 / 新值。
+  - 证据。
+- 编辑后仍保持 `pending_review` 状态，用户可以继续确认或拒绝。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`。
+
+### 修改文件
+- `frontend/src/components/settings-library/SettingLibrary.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- AI 提取设定变更不能默认完美，确认前必须允许人工修正关键字段。
+- 编辑弹窗先保持通用字段，不为不同实体类型拆复杂表单，避免设定库入口过重。
+
+## 2026-05-19 - 创作种子结局锚点输出规则
+
+### 本次完成
+- 强化选题顾问种子 Prompt：`endingAnchor` 字段必须保留，能判断时输出终局画面、情绪收束或主题归宿；信息不足时填空字符串。
+- 强化创作种子 AI 生成 Prompt：每个种子对象必须包含 `endingAnchor` 字段，但该字段不作为阻塞保存的必填内容。
+- 强化种子 JSON 修复 Prompt：原文没有结局锚点时补空字符串，不删除字段。
+
+### 修改文件
+- `frontend/src/prompts/market.js`
+- `frontend/src/prompts/seed.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 结局锚点继续保留在创作种子模型中；它用于长篇方向和主题收束，不等于固定详细结局。
+
+## 2026-05-19 - 主规划同步整理
+
+### 本次完成
+- 将近期需求变更从开发日志沉淀到 `PRODUCT_DEVELOPMENT_PLAN.md` 对应章节：
+  - 用户核心流程补充选题顾问“生成新种子 / 更新当前种子”和结局锚点说明。
+  - 选题雷达补充对话历史持久化、种子落库闭环、解析失败提示和 `endingAnchor` 字段规则。
+  - 创作种子补充字段清单、首个种子自动选中、流程状态规则和写作阶段锁定规则。
+  - 新增“创作流程状态”章节，统一待完善、待确认、已就绪、有待确认、已开始、待处理等状态口径。
+  - 创作圣经补充生成限制、一次性提取到设定库、写作后禁止删除和局部编辑提醒。
+  - 设定库补充待确认变更确认前编辑字段、写作后禁止清空设定库的规则。
+
+### 修改文件
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 文档整理，无需构建。
+
+### 当前决策
+- `PRODUCT_DEVELOPMENT_PLAN.md` 保存稳定产品规则；细粒度实现历史继续记录在 `DEVELOPMENT_LOG.md`。
+
+## 2026-05-19 - 纠偏任务定位处理
+
+### 本次完成
+- 纠偏任务板新增“定位处理”按钮。
+- 根据任务目标模块和问题类型自动定位：
+  - 圣经类任务跳转到创作圣经。
+  - 设定 / 人物类任务跳转到设定库。
+  - 伏笔类任务跳转到伏笔看板。
+  - 主线 / 结构 / 分卷规划类任务跳转到章节管理。
+  - 章节 / 节奏 / 情绪类任务优先进入写作台对应章节。
+- 点击定位后，待确认或已接受任务会自动进入“处理中”。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`。
+
+### 修改文件
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `frontend/src/views/ProjectView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 伏笔、分卷规划、创作圣经和正文类纠偏先做定位处理，不自动修改正式内容。
+
+## 2026-05-19 - 风格试写主风格持久化
+
+### 本次完成
+- 风格试写对比结果按 `projectId + seedId` 保存到本地存储，刷新种子页后可恢复对比结果和已选主风格。
+- “设为主风格”按钮在当前已选风格上显示为“已选风格”，未选中的结果仍显示“设为主风格”。
+- 当前选中种子卡片底部提示改为显示具体风格名称：`已选择风格：xxx。创建创作圣经时会写入风格基准。`
+- 新生成风格试写时不再默认选中第一项，必须由用户主动设为主风格；清空对比会同步清除已选风格提示和本地缓存。
+- 修复种子页和风格试写组件中部分历史乱码导致的模板 / 字符串损坏问题。
+
+### 修改文件
+- `frontend/src/stores/styleTrialStore.js`
+- `frontend/src/components/seed/StyleTrialPanel.vue`
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+## 2026-05-19 - 种子页按钮乱码修复
+
+### 本次完成
+- 修复种子页顶部按钮、当前种子操作按钮、AI 生成弹窗按钮、手动创建弹窗按钮、详情弹窗按钮中的乱码文案。
+- 修复风格试写组件“清空对比”按钮乱码。
+- 扫描 `frontend/src/components/seed` 下种子相关组件，剩余乱码只存在历史注释，不影响界面显示。
+
+### 修改文件
+- `frontend/src/components/seed/SeedWorkbench.vue`
+- `frontend/src/components/seed/StyleTrialPanel.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍出现既有动态导入告警：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+## 2026-05-19 - 全局审稿范围选择
+
+### 本次完成
+- 全局审稿新增范围选择弹窗，支持“全书”和“指定章节”两种模式。
+- 指定章节模式下，可填写起始章节和结束章节；系统会按章节号裁剪章节摘要、Canon 事实和设定变更上下文。
+- 全局审稿 Prompt 增加审稿范围说明，要求 AI 只审当前范围，同时判断该范围对后续全书推进的影响。
+- 审稿报告标题写入审稿范围，例如“项目名 第 10-20 章审稿”，方便后续回看区分。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`，记录全局审稿范围选择规则。
+
+### 修改文件
+- `frontend/src/prompts/globalAudit.js`
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/stores/novelStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍提示既有动态导入警告：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 范围审稿先作为“局部审稿入口”使用，不自动修改正文、设定库或圣经。
+- 审稿后如需处理问题，仍通过纠偏任务板转成可执行任务，由用户确认后再进入 Canon、设定库、章节或圣经模块处理。
+## 2026-05-19 - 项目基础信息编辑
+
+### 本次完成
+- 项目库项目卡片新增“编辑”入口，可调整项目名称、题材和简介。
+- 编辑弹窗支持目标字数、目标章节数修改，但会先检查项目内容状态。
+- 当项目已有章节或正文/候选版本时，目标字数和目标章节数自动锁定，并显示锁定原因，避免影响后续章节规划和进度判断。
+- 清理项目库首页乱码文案，恢复新建、导入、导出、编辑、删除、打开等按钮和弹窗中文显示。
+- 清理 `projectStore` 中项目相关错误日志乱码。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md` 的项目库编辑规则。
+
+### 修改文件
+- `frontend/src/views/HomeView.vue`
+- `frontend/src/stores/projectStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- Vite 构建仍提示既有动态导入警告：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 项目名称、题材、简介属于轻量基础信息，可随时编辑。
+- 目标字数和目标章节数属于项目规划尺度，已有章节后不在项目库直接修改，后续如果要调整应通过分卷规划或阶段规划承接。
+## 2026-05-19 - 核心页面乱码收口与项目详情编辑入口
+
+### 本次完成
+- 重写项目详情页 `ProjectView.vue` 的可见文案，清理流程状态、审稿、纠偏、章节管理、项目信息、弹窗和按钮中的历史乱码。
+- 项目详情页顶部新增“编辑项目信息”入口，可修改项目名称、题材、简介。
+- 项目详情页编辑入口复用项目内容状态检查：已有章节或正文/候选版本时，目标字数和目标章节数自动锁定。
+- 重写写字台 `WriterView.vue` 的可见文案，清理顶部工具栏、章节列表、AI 工具区、小纲弹窗、审稿弹窗、节奏分析弹窗和导出提示中的历史乱码。
+- 修复设置页标题乱码。
+- 重写后端项目路由文案，项目不存在、目标规划锁定等接口错误提示恢复为中文。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`，补充项目详情页编辑入口和核心页面文案可读性要求。
+
+### 修改文件
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/views/SettingsView.vue`
+- `backend/routers/projects.py`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `git diff --check` 通过。
+- Vite 构建仍提示既有动态导入警告：`writerStore` 同时被静态和动态引用；不影响当前功能，可后续单独清理。
+
+### 当前决策
+- 项目详情页和项目库都允许编辑项目基础信息；目标字数/章节数在写作开始后锁定。
+- 写字台这次只清理文案和保留原有流程，不改变正文生成、定稿、记忆提取和多候选版本的业务逻辑。
+## 2026-05-19 - 正文类纠偏候选草案
+
+### 本次完成
+- 清理纠偏任务板可见乱码，恢复任务状态、按钮、说明、标签等中文文案。
+- 清理 `correctionTaskStore` 中纠偏任务状态和审稿转任务文案乱码。
+- 新增 `correctionDraft` Prompt，用于根据纠偏任务和原章节正文生成完整章节修订候选稿。
+- `writerStore` 新增 `generateCorrectionDraft` 方法：读取模型输出后创建 `correction_candidate` 类型章节版本。
+- 纠偏任务板新增“生成章节修订草案”按钮：
+  - 仅对章节类、节奏类、情绪类、剧情类或带章节引用的任务显示。
+  - 自动读取对应章节的定稿版本或最新候选版本作为修订源。
+  - 生成结果保存为新的章节候选版本，不覆盖正文，不自动定稿。
+  - 成功后任务进入“处理中”，用户可到写字台版本列表审阅。
+
+### 修改文件
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `frontend/src/stores/correctionTaskStore.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/prompts/correctionDraft.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check` 通过。
+- Vite 构建仍提示既有动态导入警告：`writerStore` 同时被静态和动态引用；新增纠偏任务板引用后警告列表包含该组件，但不影响当前功能。
+
+### 当前决策
+- 正文类纠偏只生成候选版本，绝不直接覆盖当前正文。
+- 纠偏任务是否完成仍由用户判断；生成草案只代表进入“处理中”。
+## 2026-05-19 - 纠偏候选版本识别与对比池
+
+### 本次完成
+- 重写章节版本列表文案，清理历史乱码。
+- 版本列表新增 `correction_candidate` 类型识别，显示为“纠偏候选”。
+- 版本卡片显示 `promptBrief` 来源说明，纠偏候选可看到对应纠偏任务来源。
+- 版本列表新增“加入对比 / 已加入对比”操作，可把任意版本加入对比池。
+- 写字台接入版本对比事件，加入或移除版本时给出提示。
+- 对比池组件同时展示多模型对比结果和手动加入的版本，支持从对比池移除。
+- 清理多模型对比弹窗和 compareStore 的乱码文案。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`，补充纠偏候选版本和对比池规则。
+
+### 修改文件
+- `frontend/src/components/writer/ChapterVersionList.vue`
+- `frontend/src/components/writer/CompareInline.vue`
+- `frontend/src/components/writer/CompareModal.vue`
+- `frontend/src/stores/compareStore.js`
+- `frontend/src/views/WriterView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check` 通过。
+- Vite 构建仍提示既有动态导入警告：`writerStore` 同时被静态和动态引用；不影响当前功能。
+
+### 当前决策
+- 纠偏候选不自动采纳，必须在版本列表中人工审阅、对比、再定稿。
+- 对比池先做轻量版本集合，不强制两栏 diff；后续如需要再做逐段差异对比。
+
+## 2026-05-19 - 对比池版本差异视图
+
+### 本次完成
+- 写字台对比池新增“差异对比”入口，当对比池内至少有两个版本时可打开。
+- 新增版本差异弹窗，支持选择基准版本和对比版本。
+- 差异视图提供字数变化、新增段落、删除段落、保留段落和改动段落预览。
+- 差异算法使用本地段落级 LCS 对比，优先帮助用户判断纠偏候选是否值得采纳，不依赖额外 AI 调用。
+- 支持从差异弹窗加载对比版本到编辑器，但不会自动覆盖定稿，也不会自动完成纠偏任务。
+
+### 修改文件
+- `frontend/src/components/writer/VersionDiffModal.vue`
+- `frontend/src/views/WriterView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check` 通过。
+- Vite 构建仍提示既有动态导入警告：`writerStore` 同时被静态和动态引用；不影响当前功能。
+
+### 当前决策
+- 差异视图只做审阅辅助，不自动采纳。
+- 纠偏候选的正式采用仍走用户人工加载、编辑、保存版本或确认定稿流程。
+
+## 2026-05-20 - 纠偏任务上下文过滤
+
+### 本次完成
+- 纠偏任务 store 新增上下文活跃任务集合，明确只有 `pending`、`accepted`、`in_progress` 会进入写作台 AI 上下文。
+- `done`、`rejected`、`ignored`、`cancelled`、`archived` 统一视为关闭状态，不再计入未完成纠偏任务。
+- 写作上下文构建器优先读取上下文活跃任务，避免已完成或已忽略任务继续影响生成、小纲、续写和选区改写。
+- 章节引用过滤兼容字符串和数字，避免 `chapterRefs` 类型不一致导致任务匹配错位。
+- 纠偏任务板的“忽略本次”增加确认弹窗，并说明忽略后会从写作台 AI 上下文移除，但历史任务仍保留。
+- 纠偏任务板说明文案补充“已完成或忽略的任务不会再进入写作台 AI 上下文”。
+
+### 修改文件
+- `frontend/src/stores/correctionTaskStore.js`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `git diff --check` 通过。
+
+### 当前决策
+- 忽略本次不是物理删除，而是关闭任务并保留历史。
+- 关闭类纠偏任务不再进入 AI 写作上下文，避免用户已经放弃的问题反复污染后续正文。

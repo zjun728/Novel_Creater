@@ -1,21 +1,27 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NCard, NEmpty, NSelect, NSpace, NTag } from 'naive-ui'
+import { NButton, NCard, NEmpty, NSelect, NSpace, NTag, useDialog } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { CORRECTION_STATUS_OPTIONS, useCorrectionTaskStore } from '@/stores/correctionTaskStore'
 import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
+import { useWriterStore } from '@/stores/writerStore'
 
 const props = defineProps({
   projectId: { type: String, required: true },
   compact: { type: Boolean, default: false }
 })
 
+const emit = defineEmits(['navigate'])
+
 const taskStore = useCorrectionTaskStore()
 const novelStore = useNovelStore()
 const settingStore = useSettingStore()
+const writerStore = useWriterStore()
 const message = useAppMessage()
+const dialog = useDialog()
 const statusFilter = ref('')
+const draftingTaskId = ref('')
 
 const statusOptions = computed(() => [
   { label: '全部', value: '' },
@@ -31,9 +37,7 @@ onMounted(loadData)
 watch(() => props.projectId, loadData)
 
 async function loadData() {
-  if (props.projectId) {
-    await taskStore.loadTasks(props.projectId)
-  }
+  if (props.projectId) await taskStore.loadTasks(props.projectId)
 }
 
 async function setStatus(task, status) {
@@ -43,6 +47,17 @@ async function setStatus(task, status) {
   } catch (e) {
     message.error('更新纠偏任务失败：' + e.message)
   }
+}
+
+function ignoreTask(task) {
+  dialog.warning({
+    title: '忽略本次纠偏',
+    content: '忽略后，该任务会从未完成任务和写作台 AI 上下文中移除；历史任务仍会保留，方便以后回看。',
+    positiveText: '确认忽略',
+    negativeText: '取消',
+    maskClosable: false,
+    onPositiveClick: () => setStatus(task, 'rejected')
+  })
 }
 
 async function createCanonCandidate(task) {
@@ -89,6 +104,52 @@ async function createSettingChangeCandidate(task) {
   }
 }
 
+async function createChapterRevisionDraft(task) {
+  const chapterNum = firstChapterRef(task)
+  if (!chapterNum) {
+    message.warning('该任务没有明确章节号，先定位到对应章节后再生成修订草案')
+    return
+  }
+
+  draftingTaskId.value = task.id
+  try {
+    await writerStore.loadChapters(props.projectId)
+    const chapter = await writerStore.getOrCreateChapter(props.projectId, chapterNum)
+    await writerStore.loadVersions(props.projectId, chapter.id)
+    const sourceVersion = findSourceVersion(chapter)
+    if (!sourceVersion?.content?.trim()) {
+      message.warning('未找到可修订的章节正文或候选版本')
+      return
+    }
+    await writerStore.generateCorrectionDraft(props.projectId, chapterNum, task, sourceVersion.content)
+    await setStatus(task, 'in_progress')
+    message.success('已生成章节修订候选版本，可到写字台版本列表查看')
+  } catch (e) {
+    message.error('生成章节修订草案失败：' + e.message)
+  } finally {
+    draftingTaskId.value = ''
+  }
+}
+
+async function navigateToTask(task) {
+  emit('navigate', {
+    task,
+    targetTab: targetTabForTask(task),
+    chapterNum: firstChapterRef(task) || null
+  })
+  if (['pending', 'accepted'].includes(task.status)) {
+    await setStatus(task, 'in_progress')
+  }
+}
+
+function findSourceVersion(chapter) {
+  if (chapter.finalVersionId) {
+    const finalVersion = writerStore.versions.find(version => version.id === chapter.finalVersionId)
+    if (finalVersion) return finalVersion
+  }
+  return writerStore.currentVersion || writerStore.versions[0] || null
+}
+
 function inferEntityType(task) {
   if (task.issueType === 'character') return 'character'
   if (task.issueType === 'setting') return 'location'
@@ -102,6 +163,24 @@ function canCreateCanon(task) {
 
 function canCreateSetting(task) {
   return task.targetModule === 'setting' || ['character', 'setting'].includes(task.issueType)
+}
+
+function canCreateChapterDraft(task) {
+  return (
+    task.targetModule === 'chapter' ||
+    ['plot', 'pacing', 'emotion'].includes(task.issueType) ||
+    (task.chapterRefs?.length && !canCreateSetting(task))
+  )
+}
+
+function targetTabForTask(task) {
+  if (task.targetModule === 'bible' || task.issueType === 'market') return 'bible'
+  if (task.targetModule === 'setting' || ['character', 'setting'].includes(task.issueType)) return 'settingsLibrary'
+  if (task.targetModule === 'plot_thread' || task.issueType === 'foreshadowing') return 'plotThreads'
+  if (['outline', 'planning'].includes(task.targetModule) || ['mainline', 'structure', 'next_action'].includes(task.issueType)) return 'chapters'
+  if (task.targetModule === 'chapter' || ['plot', 'pacing', 'emotion'].includes(task.issueType)) return 'writer'
+  if (task.chapterRefs?.length) return 'writer'
+  return 'corrections'
 }
 
 function firstChapterRef(task) {
@@ -167,7 +246,7 @@ function statusLabel(status) {
     <div class="board-head">
       <div>
         <h3>纠偏任务板</h3>
-        <p v-if="!compact">审稿发现的问题先进入任务板，确认后再处理，不自动覆盖正文或设定。</p>
+        <p v-if="!compact">审稿发现的问题先进入任务板，确认后再处理；正文类问题只生成候选版本，不自动覆盖正式正文。已完成或忽略的任务不会再进入写作台 AI 上下文。</p>
       </div>
       <n-space align="center">
         <n-select
@@ -211,7 +290,7 @@ function statusLabel(status) {
               secondary
               @click="createCanonCandidate(task)"
             >
-              生成Canon候选
+              生成 Canon 候选
             </n-button>
             <n-button
               v-if="canCreateSetting(task) && !['done', 'rejected'].includes(task.status)"
@@ -220,6 +299,23 @@ function statusLabel(status) {
               @click="createSettingChangeCandidate(task)"
             >
               生成设定候选
+            </n-button>
+            <n-button
+              v-if="canCreateChapterDraft(task) && !['done', 'rejected'].includes(task.status)"
+              size="tiny"
+              secondary
+              :loading="draftingTaskId === task.id"
+              @click="createChapterRevisionDraft(task)"
+            >
+              生成章节修订草案
+            </n-button>
+            <n-button
+              v-if="!['done', 'rejected'].includes(task.status)"
+              size="tiny"
+              secondary
+              @click="navigateToTask(task)"
+            >
+              定位处理
             </n-button>
             <n-button v-if="task.status === 'pending'" size="tiny" @click="setStatus(task, 'accepted')">
               接受
@@ -230,7 +326,7 @@ function statusLabel(status) {
             <n-button v-if="task.status !== 'done'" size="tiny" type="primary" secondary @click="setStatus(task, 'done')">
               完成
             </n-button>
-            <n-button v-if="task.status !== 'rejected'" size="tiny" type="error" secondary @click="setStatus(task, 'rejected')">
+            <n-button v-if="task.status !== 'rejected'" size="tiny" type="error" secondary @click="ignoreTask(task)">
               忽略本次
             </n-button>
           </n-space>

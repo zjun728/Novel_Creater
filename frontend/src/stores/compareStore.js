@@ -15,22 +15,23 @@ export const useCompareStore = defineStore('compare', () => {
   }
 
   async function startComparison(projectId, chapterNum, context, modelIds) {
-    const providerStore = useProviderStore()
     const writerStore = useWriterStore()
 
     comparing.value = true
     comparisonVersions.value = []
 
-    // Initialize all jobs
-    for (const mid of modelIds) {
-      updateJob(mid, { streaming: true, content: '', done: false, error: null, version: null })
+    for (const modelId of modelIds) {
+      updateJob(modelId, { streaming: true, content: '', done: false, error: null, version: null })
     }
 
     const jobs = modelIds.map(async (modelId) => {
       try {
         const version = await writerStore.generateChapter(
-          projectId, chapterNum, context, modelId,
-          (fullContent) => {
+          projectId,
+          chapterNum,
+          context,
+          modelId,
+          fullContent => {
             updateJob(modelId, { content: fullContent })
           }
         )
@@ -46,6 +47,13 @@ export const useCompareStore = defineStore('compare', () => {
     await Promise.allSettled(jobs)
     comparing.value = false
     return comparisonVersions.value
+  }
+
+  function toggleVersion(version) {
+    if (!version?.id) return
+    const idx = comparisonVersions.value.findIndex(item => item.id === version.id)
+    if (idx >= 0) comparisonVersions.value.splice(idx, 1)
+    else comparisonVersions.value.push(version)
   }
 
   function cancelAll() {
@@ -71,12 +79,9 @@ export const useCompareStore = defineStore('compare', () => {
         : providerStore.providers[0]
       if (!provider) throw new Error('请先在设置中配置模型')
 
-      const userMessage = buildFusionPrompt(fragments, { chapterNum })
-      const messages = [
-        { role: 'user', content: userMessage }
-      ]
-
-      const result = await chatCompletion(provider, messages, { maxTokens: 4096, temperature: 0.7 })
+      const result = await chatCompletion(provider, [
+        { role: 'user', content: buildFusionPrompt(fragments, { chapterNum }) }
+      ], { maxTokens: 4096, temperature: 0.7 })
       if (typeof result === 'string') return result
       if (result?.content) return result.content
       if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
@@ -92,6 +97,7 @@ export const useCompareStore = defineStore('compare', () => {
     comparisonVersions,
     comparing,
     startComparison,
+    toggleVersion,
     cancelAll,
     clearComparison,
     fuseFragments
