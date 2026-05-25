@@ -55,7 +55,7 @@ async def list_correction_tasks(pid: str, status: str = Query("", alias="status"
             """
             SELECT * FROM correction_tasks
             WHERE project_id=%s
-            ORDER BY FIELD(status, 'pending', 'accepted', 'in_progress', 'done', 'rejected'),
+            ORDER BY FIELD(status, 'pending', 'accepted', 'in_progress', 'done', 'ignored', 'rejected'),
                      FIELD(severity, 'critical', 'major', 'minor', 'suggestion'),
                      updated_at DESC
             """,

@@ -218,8 +218,8 @@ async def create_setting_change_event(pid: str, data: dict):
         "entity_name": data.get("entityName") or "",
         "change_type": data.get("changeType") or "update",
         "field_path": data.get("fieldPath") or "",
-        "old_value": data.get("oldValue") or "",
-        "new_value": data.get("newValue") or "",
+        "old_value": _stringify_value(data.get("oldValue")),
+        "new_value": _stringify_value(data.get("newValue")),
         "chapter_num": data.get("chapterNum"),
         "evidence": data.get("evidence") or "",
         "confidence": data.get("confidence") or 0.8,
@@ -227,6 +227,35 @@ async def create_setting_change_event(pid: str, data: dict):
         "created_at": now,
         "updated_at": now,
     }
+    duplicate = await fetchone(
+        """
+        SELECT * FROM setting_change_events
+        WHERE project_id=%s
+          AND entity_type=%s
+          AND entity_name=%s
+          AND change_type=%s
+          AND field_path=%s
+          AND (chapter_num <=> %s)
+          AND evidence=%s
+          AND new_value=%s
+          AND status='pending_review'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (
+            values["project_id"],
+            values["entity_type"],
+            values["entity_name"],
+            values["change_type"],
+            values["field_path"],
+            values["chapter_num"],
+            values["evidence"],
+            values["new_value"],
+        ),
+    )
+    if duplicate:
+        return convert_row(duplicate)
+
     await _insert("setting_change_events", values)
     return convert_row(await fetchone(
         "SELECT * FROM setting_change_events WHERE project_id=%s AND id=%s",
@@ -315,6 +344,8 @@ async def _update(table: str, field_map: dict, data: dict, where_sql: str, where
         value = data[js_key]
         if value_type == "json":
             value = _json(value or ([] if js_key in ("aliases", "tags") else {}))
+        elif table == "setting_change_events" and js_key in ("oldValue", "newValue"):
+            value = _stringify_value(value)
         elif value_type == "bool":
             value = 1 if value else 0
         sets.append(f"{col}=%s")

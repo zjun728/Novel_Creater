@@ -11,6 +11,7 @@ import { buildSeedRepairPrompt } from '@/prompts/seed'
 import {
   buildMarketDirectionPrompt,
   buildMarketDirectionRepairPrompt,
+  buildFallbackMarketDirections,
   extractMarketDirections
 } from '@/prompts/marketDirections'
 
@@ -464,7 +465,15 @@ export const useMarketStore = defineStore('market', () => {
       }
       if (!directions.length) {
         const raw = snippet(repairText) || snippet(text)
-        throw new Error(`AI 没有返回可解析的方向建议 JSON${raw ? `。返回片段：${raw}` : ''}`)
+        directions = buildFallbackMarketDirections({
+          project: projectStore.currentProject,
+          keywords,
+          items: items.value
+        })
+        if (!directions.length) {
+          throw new Error(`AI 没有返回可解析的方向建议 JSON${raw ? `。返回片段：${raw}` : ''}`)
+        }
+        console.warn(`AI 方向建议解析失败，已使用本地保守方向。${raw ? `返回片段：${raw}` : ''}`)
       }
 
       currentDirections.value = directions

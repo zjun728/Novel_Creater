@@ -9,6 +9,43 @@ export const useProviderStore = defineStore('provider', () => {
   let loadPromise = null
   const bindingCache = ref({})
 
+  const bindingKeys = [
+    'writingModelId',
+    'brainstormModelId',
+    'outlineModelId',
+    'auditModelId',
+    'summaryModelId',
+    'extractionModelId',
+    'marketModelId',
+    'polishModelId'
+  ]
+
+  const snakeBindingKeys = {
+    writingModelId: 'writing_model_id',
+    brainstormModelId: 'brainstorm_model_id',
+    outlineModelId: 'outline_model_id',
+    auditModelId: 'audit_model_id',
+    summaryModelId: 'summary_model_id',
+    extractionModelId: 'extraction_model_id',
+    marketModelId: 'market_model_id',
+    polishModelId: 'polish_model_id'
+  }
+
+  function emptyBindings() {
+    return Object.fromEntries(bindingKeys.map(key => [key, null]))
+  }
+
+  function normalizeBindings(raw) {
+    const normalized = emptyBindings()
+    if (!raw) return normalized
+
+    for (const key of bindingKeys) {
+      const value = raw[key] ?? raw[snakeBindingKeys[key]] ?? null
+      normalized[key] = value || null
+    }
+    return normalized
+  }
+
   async function loadProviders(force = true) {
     if (loading.value && loadPromise) return loadPromise
     if (loaded.value && !force) return providers.value
@@ -101,10 +138,12 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function getBindings(projectId) {
     try {
+      if (!projectId) return emptyBindings()
       if (bindingCache.value[projectId]) return bindingCache.value[projectId]
       const bindings = await api.bindings.get(projectId)
-      bindingCache.value[projectId] = bindings
-      return bindings
+      const normalized = normalizeBindings(bindings)
+      bindingCache.value[projectId] = normalized
+      return normalized
     } catch (e) {
       console.error('获取绑定配置失败:', e.message)
       throw e
@@ -113,9 +152,11 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function saveBindings(projectId, bindings) {
     try {
-      const result = await api.bindings.save(projectId, bindings)
-      bindingCache.value[projectId] = result
-      return result
+      const payload = normalizeBindings(bindings)
+      const result = await api.bindings.save(projectId, payload)
+      const normalized = normalizeBindings(result)
+      bindingCache.value[projectId] = normalized
+      return normalized
     } catch (e) {
       console.error('保存绑定配置失败:', e.message)
       throw e
@@ -137,6 +178,8 @@ export const useProviderStore = defineStore('provider', () => {
     loaded,
     loadProviders,
     ensureProvidersLoaded,
+    emptyBindings,
+    normalizeBindings,
     addProvider,
     updateProvider,
     deleteProvider,

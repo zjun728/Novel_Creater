@@ -40,6 +40,25 @@ class SeedUpdate(BaseModel):
     endingAnchor: Optional[str] = None
     status: Optional[str] = None
 
+def _has_text(value):
+    return value is not None and str(value).strip() != ""
+
+def _validate_seed_completeness(data: SeedCreate):
+    core_fields = [
+        data.logline,
+        data.protagonist,
+        data.desire,
+        data.coreConflict,
+        data.openingHook,
+        data.emotionalPromise,
+    ]
+    core_count = sum(1 for value in core_fields if _has_text(value))
+    if not (_has_text(data.title) or _has_text(data.logline)) or not _has_text(data.genre) or core_count < 3:
+        raise HTTPException(
+            400,
+            "种子内容不完整：至少需要题材，并包含一句话、主角、欲望、核心矛盾、开局钩子或情绪价值中的 3 项",
+        )
+
 @router.get("/projects/{pid}/seeds")
 async def list_seeds(pid: str):
     rows = await fetchall("SELECT * FROM creative_seeds WHERE project_id=%s ORDER BY created_at DESC", (pid,))
@@ -47,6 +66,7 @@ async def list_seeds(pid: str):
 
 @router.post("/projects/{pid}/seeds")
 async def create_seed(pid: str, data: SeedCreate):
+    _validate_seed_completeness(data)
     now = int(time.time() * 1000)
     sid = str(uuid.uuid4())
     await execute("""INSERT INTO creative_seeds (id, project_id, title, genre, logline, protagonist,

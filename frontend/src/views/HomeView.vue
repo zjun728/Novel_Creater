@@ -53,18 +53,16 @@ const editFormValue = ref({
 
 const projectPlanLocked = computed(() => {
   if (loadingEditState.value) return true
-  return Boolean(
-    (editContentState.value?.chaptersCount || 0) > 0 ||
-    (editContentState.value?.chapterVersions || 0) > 0
-  )
+  return Boolean(editContentState.value?.hasChapterContent)
 })
 
 const projectPlanLockReason = computed(() => {
   if (loadingEditState.value) return '正在检查项目章节状态，目标规划字段暂时锁定。'
-  const chapters = editContentState.value?.chaptersCount || 0
+  const writtenChapters = editContentState.value?.writtenChapters || 0
   const versions = editContentState.value?.chapterVersions || 0
-  if (chapters > 0 || versions > 0) {
-    return `当前项目已有 ${chapters} 个章节、${versions} 个正文/候选版本。目标字数和目标章节数会影响后续章节规划与进度判断，已锁定不可编辑。`
+  const drafts = editContentState.value?.tempDrafts || 0
+  if (editContentState.value?.hasChapterContent) {
+    return `当前项目已有 ${writtenChapters} 个含正文状态的章节、${versions} 个正文/候选版本、${drafts} 个临时草稿。目标字数和目标章节数会影响后续章节规划与进度判断，已锁定不可编辑。`
   }
   return ''
 })
@@ -113,7 +111,7 @@ async function handleEdit(project) {
   try {
     editContentState.value = await api.projects.contentState(project.id)
   } catch (e) {
-    editContentState.value = { chaptersCount: 1, chapterVersions: 1 }
+    editContentState.value = { hasChapterContent: true, writtenChapters: 1, chapterVersions: 1, tempDrafts: 0 }
     message.warning('无法检查章节状态，已临时锁定目标字数和目标章节数。')
   } finally {
     loadingEditState.value = false

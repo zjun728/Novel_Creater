@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { api } from '@/api/db/client'
 import { chatCompletion } from '@/api/ai'
 import { buildSeedRepairPrompt, buildSeedSystemPrompt, buildSeedUserPrompt } from '@/prompts/seed'
-import { extractSeedsFromText } from '@/utils/seedParser'
+import { extractSeedsFromText, isSavableSeed, normalizeSeedPayload } from '@/utils/seedParser'
 import { useProviderStore } from './providerStore'
 import { useProjectStore } from './projectStore'
 
@@ -46,8 +46,12 @@ export const useSeedStore = defineStore('seed', () => {
 
   async function createSeed(projectId, data) {
     try {
+      const payload = normalizeSeedPayload(data)
+      if (!isSavableSeed(payload)) {
+        throw new Error('种子内容不完整，至少需要题材，并包含一句话、主角、欲望、核心矛盾、开局钩子或情绪价值中的 3 项')
+      }
       const shouldAutoSelect = !seeds.value.some(seed => seed.status === 'selected')
-      const seed = await api.seeds.create(projectId, data)
+      const seed = await api.seeds.create(projectId, payload)
       let saved = seed
       if (shouldAutoSelect) {
         saved = await api.seeds.update(projectId, seed.id, { status: 'selected' })

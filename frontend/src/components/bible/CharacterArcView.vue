@@ -51,8 +51,13 @@ function getCellTitle(character, chapter) {
 
 <template>
   <div>
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="text-lg font-semibold text-gray-700">人物弧光时间线</h3>
+    <div class="flex items-start justify-between gap-4 mb-3">
+      <div>
+        <h3 class="text-lg font-semibold text-gray-700">人物弧光时间线</h3>
+        <p class="mt-1 text-[11px] leading-5 text-gray-400">
+          硬状态：身份、等级、位置、伤势、持有物等客观变化；软状态：心理、态度、关系、认知等内在变化；双重变更：硬状态和软状态同时发生；有事实：本章记录了相关事实但未改变状态；未出现：本章没有识别到有效出场或变化。
+        </p>
+      </div>
       <n-select
         v-model:value="filterCharId"
         placeholder="全部角色"

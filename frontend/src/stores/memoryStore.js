@@ -15,7 +15,8 @@ import {
 } from '@/prompts/extraction'
 import {
   buildAuditSystemPrompt,
-  buildAuditPrompt
+  buildAuditPrompt,
+  buildAuditRepairPrompt
 } from '@/prompts/audit'
 import {
   buildStyleSystemPrompt,
@@ -27,7 +28,8 @@ import {
 } from '@/prompts/pacing'
 import {
   buildSettingExtractionSystemPrompt,
-  buildSettingExtractionPrompt
+  buildSettingExtractionPrompt,
+  buildSettingExtractionRepairPrompt
 } from '@/prompts/settingExtraction'
 import {
   buildVolumeAuditSystemPrompt,
@@ -139,8 +141,9 @@ export const useMemoryStore = defineStore('memory', () => {
         { role: 'system', content: buildAuditSystemPrompt() },
         { role: 'user', content: buildAuditPrompt(chapterContent, context) }
       ]
-      const result = await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.3 })
-      const data = parseAIJson(result)
+      const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 4096, temperature: 0.25 }))
+      const text = getCompletionText(result)
+      const data = await parseAuditResult(provider, text)
       lastAuditResult.value = data
       return data
     } catch (e) {
@@ -192,14 +195,32 @@ export const useMemoryStore = defineStore('memory', () => {
       const provider = await getProvider(projectId, 'extractionModelId')
       const settingStore = useSettingStore()
       await settingStore.loadEntities(projectId)
+      await settingStore.loadRelations(projectId)
+      await settingStore.loadChangeEvents(projectId)
 
       const messages = [
         { role: 'system', content: buildSettingExtractionSystemPrompt() },
-        { role: 'user', content: buildSettingExtractionPrompt(chapterContent, chapterNum, settingStore.entities) }
+        {
+          role: 'user',
+          content: buildSettingExtractionPrompt(
+            chapterContent,
+            chapterNum,
+            settingStore.entities,
+            settingStore.relations
+          )
+        }
       ]
-      const result = await chatCompletion(provider, messages, { maxTokens: 3072, temperature: 0.25 })
-      const parsed = parseAIJson(result)
-      const changes = Array.isArray(parsed) ? parsed : (parsed.changes || parsed.settingChanges || [])
+      const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 4096, temperature: 0.2 }))
+      const text = getCompletionText(result)
+      let rawChanges = extractSettingChangesPayload(text)
+      if (!rawChanges.length && text.trim()) {
+        const repairResult = await chatCompletion(provider, [
+          { role: 'system', content: '你是 JSON 修复器。只能输出合法 JSON，不要解释。' },
+          { role: 'user', content: buildSettingExtractionRepairPrompt(text) }
+        ], jsonOptions(provider, { maxTokens: 4096, temperature: 0 }))
+        rawChanges = extractSettingChangesPayload(getCompletionText(repairResult))
+      }
+      const changes = normalizeSettingChanges(rawChanges, settingStore)
       lastSettingChanges.value = changes
       return changes
     } catch (e) {
@@ -315,8 +336,9 @@ export const useMemoryStore = defineStore('memory', () => {
     }
   }
 
-  // === 批量处理：定稿后自动执行全部记忆提取 ===
-  async function processChapterFinalization(projectId, chapterContent, chapterNum) {
+  // === 批量处理：定稿后自动执行记忆和设定提取 ===
+  async function processChapterFinalization(projectId, chapterContent, chapterNum, options = {}) {
+    const includeAudit = options.includeAudit === true
     processing.value = true
     try {
       const results = { summary: null, facts: [], settingChanges: [], audit: null }
@@ -324,7 +346,9 @@ export const useMemoryStore = defineStore('memory', () => {
       try { results.summary = await generateSummary(projectId, chapterContent, chapterNum) } catch (e) { console.warn('摘要生成失败:', e.message) }
       try { results.facts = await extractFacts(projectId, chapterContent, chapterNum) } catch (e) { console.warn('事实提取失败:', e.message) }
       try { results.settingChanges = await extractSettingChanges(projectId, chapterContent, chapterNum) } catch (e) { console.warn('设定变更提取失败:', e.message) }
-      try { results.audit = await auditChapter(projectId, chapterContent, chapterNum) } catch (e) { console.warn('审稿失败:', e.message) }
+      if (includeAudit) {
+        try { results.audit = await auditChapter(projectId, chapterContent, chapterNum) } catch (e) { console.warn('审稿失败:', e.message) }
+      }
 
       const novelStore = useNovelStore()
       const settingStore = useSettingStore()
@@ -366,6 +390,8 @@ export const useMemoryStore = defineStore('memory', () => {
       }
 
       await settingStore.loadEntities(projectId)
+      await settingStore.loadRelations(projectId)
+      await settingStore.loadChangeEvents(projectId)
       if (results.settingChanges?.length) {
         for (const change of results.settingChanges) {
           const entityType = change.entityType || 'character'
@@ -374,7 +400,7 @@ export const useMemoryStore = defineStore('memory', () => {
           const existingEntity = settingStore.entities.find(e =>
             e.entityType === entityType && e.name === entityName
           )
-          await settingStore.saveChangeEvent(projectId, {
+          const payload = {
             entityType,
             entityId: existingEntity?.id || null,
             entityName,
@@ -386,7 +412,10 @@ export const useMemoryStore = defineStore('memory', () => {
             evidence: change.evidence || '',
             confidence: change.confidence ?? 0.8,
             status: 'pending_review'
-          })
+          }
+          if (!hasDuplicatePendingChange(settingStore.changeEvents, payload)) {
+            await settingStore.saveChangeEvent(projectId, payload)
+          }
         }
       } else if (results.summary?.characterChanges?.length) {
         for (const change of results.summary.characterChanges) {
@@ -483,6 +512,281 @@ export const useMemoryStore = defineStore('memory', () => {
     processChapterFinalization
   }
 })
+
+function normalizeSettingChanges(changes, settingStore) {
+  if (!Array.isArray(changes)) return []
+  const seen = new Set()
+  return changes
+    .map(change => normalizeSettingChange(change, settingStore))
+    .filter(Boolean)
+    .filter(change => {
+      const key = [
+        change.entityType,
+        change.entityName,
+        change.changeType,
+        change.fieldPath,
+        normalizeSettingChangeValue(change)
+      ].join('::')
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function getCompletionText(result) {
+  if (typeof result === 'string') return result
+  if (Array.isArray(result)) {
+    const block = result.find(item => item?.type === 'text')
+    return block?.text || JSON.stringify(result)
+  }
+  if (typeof result?.content === 'string') return result.content
+  if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
+  return result ? JSON.stringify(result) : ''
+}
+
+function jsonOptions(provider, options = {}) {
+  return provider?.supportsJSON === false
+    ? options
+    : { ...options, responseFormat: 'json' }
+}
+
+async function parseAuditResult(provider, text) {
+  const parsed = parseJsonCandidates(text)
+  for (const item of parsed) {
+    const normalized = normalizeAuditResult(item)
+    if (normalized) return normalized
+  }
+
+  if (String(text || '').trim()) {
+    try {
+      const repairResult = await chatCompletion(provider, [
+        { role: 'system', content: '你是 JSON 修复器。只能输出合法 JSON，不要解释。' },
+        { role: 'user', content: buildAuditRepairPrompt(text) }
+      ], jsonOptions(provider, { maxTokens: 4096, temperature: 0 }))
+      const repairedText = getCompletionText(repairResult)
+      for (const item of parseJsonCandidates(repairedText)) {
+        const normalized = normalizeAuditResult(item)
+        if (normalized) return normalized
+      }
+    } catch (e) {
+      console.warn('审稿 JSON 修复失败:', e.message)
+    }
+  }
+
+  return buildFallbackAuditResult(text)
+}
+
+function normalizeAuditResult(value) {
+  const payload = Array.isArray(value) ? { issues: value } : value
+  if (!payload || typeof payload !== 'object') return null
+  const rawIssues = Array.isArray(payload.issues)
+    ? payload.issues
+    : Array.isArray(payload.problems)
+      ? payload.problems
+      : []
+  return {
+    issues: rawIssues.map(normalizeAuditIssue).filter(Boolean),
+    overallAssessment: String(payload.overallAssessment || payload.assessment || payload.summary || '本章审稿完成，未发现模型可结构化输出的总体评价。'),
+    styleConsistency: String(payload.styleConsistency || payload.style || '暂无风格一致性评价。'),
+    characterConsistency: String(payload.characterConsistency || payload.character || '暂无角色一致性评价。'),
+    recommendations: normalizeStringList(payload.recommendations || payload.suggestions || payload.nextSteps)
+  }
+}
+
+function normalizeAuditIssue(issue) {
+  if (!issue || typeof issue !== 'object') return null
+  return {
+    severity: pickEnum(issue.severity, ['critical', 'major', 'minor', 'suggestion'], 'suggestion'),
+    type: pickEnum(issue.type, ['contradiction', 'character_inconsistency', 'world_rule_violation', 'pacing', 'dialogue', 'logic', 'quality', 'human_motivation', 'emotional_logic', 'ai_tone'], 'quality'),
+    description: String(issue.description || issue.problem || issue.summary || '').trim(),
+    location: String(issue.location || issue.evidence || issue.quote || '').trim(),
+    suggestion: String(issue.suggestion || issue.fix || issue.advice || '').trim(),
+    replacement: String(issue.replacement || issue.rewrite || issue.fixedText || issue.newText || '').trim(),
+    reason: String(issue.reason || issue.why || '').trim()
+  }
+}
+
+function buildFallbackAuditResult(rawText) {
+  return {
+    issues: [],
+    overallAssessment: '审稿模型返回内容未能解析为结构化 JSON，本次未生成可保存的问题列表。建议重新审稿，或复制模型返回片段排查模型格式稳定性。',
+    styleConsistency: '未能解析。',
+    characterConsistency: '未能解析。',
+    recommendations: ['重新执行本章审稿。', '如连续失败，建议切换审稿模型或降低章节长度后重试。'],
+    rawText: String(rawText || '').slice(0, 1200)
+  }
+}
+
+function pickEnum(value, allowed, fallback) {
+  return allowed.includes(value) ? value : fallback
+}
+
+function normalizeStringList(value) {
+  if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
+  if (typeof value === 'string') return value.split(/\n|；|;/).map(item => item.trim()).filter(Boolean)
+  return []
+}
+
+function extractSettingChangesPayload(text) {
+  const parsed = parseJsonCandidates(text)
+  for (const item of parsed) {
+    const list = pickSettingChangeList(item)
+    if (list.length) return list
+  }
+  return []
+}
+
+function pickSettingChangeList(payload) {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return []
+  const keys = ['settingChanges', 'settings', 'changes', 'data', 'items', 'events', 'results']
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key]
+  }
+  for (const key of keys) {
+    const nested = pickSettingChangeList(payload[key])
+    if (nested.length) return nested
+  }
+  if (payload.entityName || payload.name || payload.changeType || payload.entityType) return [payload]
+  return []
+}
+
+function parseJsonCandidates(text) {
+  const clean = String(text || '')
+    .replace(/```(?:json)?/gi, '')
+    .replace(/```/g, '')
+    .trim()
+  const candidates = [clean, ...findBalancedJsonBlocks(clean)]
+  const parsed = []
+  const seen = new Set()
+  for (const candidate of candidates) {
+    const value = candidate.trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    try {
+      parsed.push(JSON.parse(value))
+    } catch {
+      // Keep trying other balanced candidates.
+    }
+  }
+  return parsed
+}
+
+function findBalancedJsonBlocks(text) {
+  const blocks = []
+  for (let i = 0; i < text.length; i++) {
+    const opener = text[i]
+    if (opener !== '{' && opener !== '[') continue
+    const closer = opener === '{' ? '}' : ']'
+    const stack = [closer]
+    let inString = false
+    let escaped = false
+    for (let j = i + 1; j < text.length; j++) {
+      const char = text[j]
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === '\\') {
+        escaped = true
+        continue
+      }
+      if (char === '"') {
+        inString = !inString
+        continue
+      }
+      if (inString) continue
+      if (char === '{') stack.push('}')
+      else if (char === '[') stack.push(']')
+      else if (char === stack[stack.length - 1]) {
+        stack.pop()
+        if (!stack.length) {
+          blocks.push(text.slice(i, j + 1))
+          break
+        }
+      }
+    }
+  }
+  return blocks
+}
+
+function normalizeSettingChange(change, settingStore) {
+  if (!change || typeof change !== 'object') return null
+  const entityType = normalizeEntityType(change.entityType)
+  const changeType = normalizeChangeType(change.changeType)
+  const entityName = String(change.entityName || change.name || '').trim()
+  const relationValue = changeType === 'relationship' ? normalizeRelationValue(change.newValue) : null
+  if (!entityName && !relationValue?.targetEntityName) return null
+
+  const existing = settingStore.entities.find(entity =>
+    entity.entityType === entityType && entity.name === entityName
+  )
+  const fieldPath = normalizeFieldPath(change.fieldPath, changeType)
+  return {
+    ...change,
+    entityType,
+    entityName,
+    changeType: existing && changeType === 'new_entity' ? 'update_entity' : changeType,
+    fieldPath,
+    newValue: relationValue || change.newValue || '',
+    confidence: clampConfidence(change.confidence),
+    importance: Number(change.importance || 3)
+  }
+}
+
+function normalizeEntityType(type) {
+  return ['character', 'faction', 'location', 'power_system', 'technique', 'item'].includes(type)
+    ? type
+    : 'character'
+}
+
+function normalizeChangeType(type) {
+  if (type === 'new_entity' || type === 'relationship') return type
+  return 'update_entity'
+}
+
+function normalizeFieldPath(fieldPath, changeType) {
+  if (changeType === 'relationship') return 'relationship'
+  const value = String(fieldPath || '').trim()
+  return value || (changeType === 'new_entity' ? 'summary' : 'notes')
+}
+
+function normalizeRelationValue(value) {
+  if (!value) return null
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return { summary: value }
+    }
+  }
+  if (typeof value !== 'object') return null
+  return {
+    targetEntityName: String(value.targetEntityName || value.targetName || '').trim(),
+    targetEntityType: normalizeEntityType(value.targetEntityType),
+    relationType: value.relationType || '关系',
+    stance: value.stance || '未知',
+    summary: value.summary || ''
+  }
+}
+
+function clampConfidence(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return 0.75
+  return Math.min(1, Math.max(0, number))
+}
+
+function hasDuplicatePendingChange(events, payload) {
+  return (events || []).some(event =>
+    event.status === 'pending_review' &&
+    event.entityType === payload.entityType &&
+    event.entityName === payload.entityName &&
+    event.changeType === payload.changeType &&
+    event.fieldPath === payload.fieldPath &&
+    String(event.newValue || '') === String(payload.newValue || '') &&
+    Number(event.chapterNum || 0) === Number(payload.chapterNum || 0)
+  )
+}
 
 function normalizeSettingChangeValue(change) {
   if (change.changeType === 'relationship') {

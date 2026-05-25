@@ -4,14 +4,19 @@ import { api } from '@/api/db/client'
 import { chatCompletion } from '@/api/ai'
 import { normalizeBiblePayload } from '@/prompts/bibleFromSeed'
 import {
-  buildSettingsFromBiblePrompt,
+  SETTING_INITIALIZATION_GROUPS,
+  buildSettingsFromBibleSegmentPrompt,
   buildSettingsFromBibleRepairPrompt,
   buildSettingsFromBibleSystemPrompt,
+  buildFallbackSettingsFromBibleEvents,
+  dedupeSettingInitializationEvents,
+  filterEventsForInitializationGroup,
   extractSettingsFromBibleText
 } from '@/prompts/settingsFromBible'
 import { useProviderStore } from './providerStore'
 import { useProjectStore } from './projectStore'
 import { useSeedStore } from './seedStore'
+import { findDuplicateSettingChangeEvent } from '@/utils/settingChangeDedup'
 
 export const ENTITY_TYPES = [
   { value: 'character', label: '人物' },
@@ -119,6 +124,9 @@ export const useSettingStore = defineStore('setting', () => {
   }
 
   async function saveChangeEvent(projectId, data) {
+    const duplicate = findDuplicateSettingChangeEvent(changeEvents.value, data)
+    if (!data.id && duplicate) return duplicate
+
     const result = data.id
       ? await api.settings.changeEvents.update(projectId, data.id, data)
       : await api.settings.changeEvents.create(projectId, data)
@@ -188,36 +196,65 @@ export const useSettingStore = defineStore('setting', () => {
       }
       const selectedSeed = seedStore.seeds.find(seed => seed.status === 'selected') || null
 
-      const result = await chatCompletion(provider, [
-        { role: 'system', content: buildSettingsFromBibleSystemPrompt() },
-        {
-          role: 'user',
-          content: buildSettingsFromBiblePrompt({
-            bible: normalizedBible,
-            seed: selectedSeed,
-            existingSettings: entities.value
-          })
-        }
-      ], jsonOptions(provider, {
-        maxTokens: 8192,
-        temperature: 0.25
-      }))
+      let events = []
+      let lastText = ''
+      let firstError = null
 
-      const text = getCompletionText(result)
-      let events = extractSettingsFromBibleText(text)
-      if (!events.length && text.trim()) {
-        const repairResult = await chatCompletion(provider, [
-          { role: 'system', content: '你是 JSON 修复器。只能输出合法 JSON，不要解释。' },
-          { role: 'user', content: buildSettingsFromBibleRepairPrompt(text) }
-        ], jsonOptions(provider, {
-          maxTokens: 8192,
-          temperature: 0
-        }))
-        events = extractSettingsFromBibleText(getCompletionText(repairResult))
+      for (const group of SETTING_INITIALIZATION_GROUPS) {
+        try {
+          const result = await chatCompletion(provider, [
+            { role: 'system', content: buildSettingsFromBibleSystemPrompt() },
+            {
+              role: 'user',
+              content: buildSettingsFromBibleSegmentPrompt({
+                bible: normalizedBible,
+                seed: selectedSeed,
+                existingSettings: entities.value,
+                existingEvents: events,
+                group
+              })
+            }
+          ], jsonOptions(provider, {
+            maxTokens: 4096,
+            temperature: 0.2
+          }))
+
+          const text = getCompletionText(result)
+          lastText = text || lastText
+          let groupEvents = filterEventsForInitializationGroup(extractSettingsFromBibleText(text), group)
+          if (!groupEvents.length && text.trim()) {
+            const repairResult = await chatCompletion(provider, [
+              { role: 'system', content: '你是 JSON 修复器。只能输出合法 JSON，不要解释。' },
+              { role: 'user', content: buildSettingsFromBibleRepairPrompt(text) }
+            ], jsonOptions(provider, {
+              maxTokens: 4096,
+              temperature: 0
+            }))
+            groupEvents = filterEventsForInitializationGroup(
+              extractSettingsFromBibleText(getCompletionText(repairResult)),
+              group
+            )
+          }
+
+          events = dedupeSettingInitializationEvents([...events, ...groupEvents], entities.value)
+        } catch (error) {
+          console.warn(`初始化提取${group.label}失败`, error)
+          if (!firstError) firstError = error
+        }
+      }
+
+      if (!events.length) {
+        events = buildFallbackSettingsFromBibleEvents({
+          bible: normalizedBible,
+          seed: selectedSeed,
+          existingSettings: entities.value
+        })
       }
       if (!events.length) {
-        throw new Error(`AI 没有返回可保存的设定候选。返回片段：${snippet(text)}`)
+        if (firstError) throw firstError
+        throw new Error(`AI 没有返回可保存的设定候选。返回片段：${snippet(lastText)}`)
       }
+      events = dedupeSettingInitializationEvents(events, entities.value)
 
       const created = []
       for (const event of events) {

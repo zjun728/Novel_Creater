@@ -4,19 +4,18 @@ import { NModal, NButton, NCheckbox, NTag } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useCompareStore } from '@/stores/compareStore'
 import { useProviderStore } from '@/stores/providerStore'
-import { buildWritingContext } from '@/utils/contextBuilder'
-import { useNovelStore } from '@/stores/novelStore'
 
 const props = defineProps({
   projectId: { type: String, required: true },
-  chapterNum: { type: Number, required: true }
+  chapterNum: { type: Number, required: true },
+  context: { type: Object, default: () => ({}) },
+  beatPlan: { type: String, default: '' }
 })
 
 const emit = defineEmits(['close'])
 
 const compareStore = useCompareStore()
 const providerStore = useProviderStore()
-const novelStore = useNovelStore()
 const message = useAppMessage()
 
 const step = ref('select')
@@ -32,6 +31,8 @@ const doneCount = computed(() =>
 
 const totalCount = computed(() => Object.keys(compareStore.runningJobs).length)
 
+const canStart = computed(() => Boolean(props.beatPlan?.trim()))
+
 function toggleModel(providerId) {
   const idx = selectedModels.value.indexOf(providerId)
   if (idx >= 0) selectedModels.value.splice(idx, 1)
@@ -39,17 +40,20 @@ function toggleModel(providerId) {
 }
 
 async function startComparison() {
+  if (!canStart.value) {
+    message.warning('请先确认本章小纲后再开始多模型对比')
+    return
+  }
   if (selectedModels.value.length < 2) {
     message.warning('请至少选择 2 个模型')
     return
   }
   step.value = 'running'
-  const context = buildWritingContext(novelStore, props.chapterNum)
   try {
     await compareStore.startComparison(
       props.projectId,
       props.chapterNum,
-      context.context,
+      props.context,
       selectedModels.value
     )
     step.value = 'done'
@@ -74,7 +78,10 @@ function done() {
     @close="done"
   >
     <div v-if="step === 'select'">
-      <p class="text-sm text-gray-500 mb-4">选择 2 个或更多模型，系统会用相同上下文并发生成章节候选。</p>
+      <p class="text-sm text-gray-500 mb-3">选择 2 个或更多模型，系统会用当前确认小纲和写字台完整上下文并发生成章节候选。</p>
+      <div class="rounded border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 mb-3">
+        已接入当前确认小纲、设定库、分卷上下文和未完成纠偏任务。
+      </div>
       <div class="grid grid-cols-2 gap-2 mb-4">
         <div
           v-for="provider in writableProviders"
@@ -97,7 +104,7 @@ function done() {
       </div>
       <div class="flex justify-end gap-2">
         <n-button size="small" @click="emit('close')">取消</n-button>
-        <n-button size="small" type="primary" :disabled="selectedModels.length < 2" @click="startComparison">
+        <n-button size="small" type="primary" :disabled="!canStart || selectedModels.length < 2" @click="startComparison">
           开始对比（{{ selectedModels.length }} 个模型）
         </n-button>
       </div>

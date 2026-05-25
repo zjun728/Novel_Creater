@@ -5,12 +5,15 @@ import { NButton, NTag, NPopconfirm, NEmpty } from 'naive-ui'
 const props = defineProps({
   versions: { type: Array, default: () => [] },
   currentVersionId: { type: String, default: null },
-  comparisonVersionIds: { type: Array, default: () => [] }
+  finalVersionId: { type: String, default: '' },
+  comparisonVersionIds: { type: Array, default: () => [] },
+  finalizeDisabled: { type: Boolean, default: false }
 })
 
 const emit = defineEmits(['load', 'delete', 'finalize', 'compare'])
 
 const comparisonIds = computed(() => new Set(props.comparisonVersionIds))
+const hasFinalVersion = computed(() => !!props.finalVersionId || props.versions.some(version => version.versionType === 'final'))
 
 const versionTypeLabels = {
   ai_candidate: 'AI 候选',
@@ -41,7 +44,9 @@ function previewText(content, maxLen = 80) {
 }
 
 function sourceBrief(version) {
-  const brief = version.promptBrief || version.prompt_brief || ''
+  const brief = String(version.promptBrief || version.prompt_brief || '')
+    .replace(/\n?\[correctionTaskId:[0-9a-fA-F-]{36}\]/g, '')
+    .trim()
   if (!brief) return ''
   return brief.length > 80 ? brief.slice(0, 80) + '...' : brief
 }
@@ -85,21 +90,53 @@ function sourceBrief(version) {
           >
             {{ comparisonIds.has(version.id) ? '已加入对比' : '加入对比' }}
           </n-button>
+          <n-button
+            v-if="version.versionType === 'final' || version.id === finalVersionId"
+            size="tiny"
+            quaternary
+            type="success"
+            disabled
+            @click.stop
+          >
+            已定稿
+          </n-button>
           <n-popconfirm
-            v-if="version.versionType !== 'final'"
+            v-else-if="!hasFinalVersion"
             @positive-click="emit('finalize', version)"
           >
             <template #trigger>
-              <n-button size="tiny" quaternary type="success" @click.stop>定稿</n-button>
+              <n-button size="tiny" quaternary type="success" :disabled="finalizeDisabled" @click.stop>定稿</n-button>
             </template>
             确认将此版本设为定稿？
           </n-popconfirm>
-          <n-popconfirm @positive-click="emit('delete', version)">
+          <n-button
+            v-else
+            size="tiny"
+            quaternary
+            disabled
+            @click.stop
+          >
+            已锁定
+          </n-button>
+          <n-popconfirm
+            v-if="!hasFinalVersion"
+            @positive-click="emit('delete', version)"
+          >
             <template #trigger>
               <n-button size="tiny" quaternary type="error" @click.stop>删除</n-button>
             </template>
             确认删除此版本？
           </n-popconfirm>
+          <n-button
+            v-else
+            size="tiny"
+            quaternary
+            type="error"
+            disabled
+            @click.stop
+          >
+            删除
+          </n-button>
         </div>
       </div>
     </div>

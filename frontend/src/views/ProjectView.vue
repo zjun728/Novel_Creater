@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, computed, ref } from 'vue'
+import { onMounted, computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NAlert,
@@ -15,12 +15,15 @@ import {
   NInputNumber,
   NRadioGroup,
   NRadioButton,
+  NSelect,
   NForm,
   NFormItem,
-  NInput
+  NInput,
+  useDialog
 } from 'naive-ui'
 import { api } from '@/api/db/client'
 import { useAppMessage } from '@/composables/useAppMessage'
+import { auditIssueTypeLabel, auditSeverityLabel } from '@/utils/auditLabels'
 import { downloadFile, exportTxt, exportMarkdown, exportProjectBundle } from '@/utils/export'
 import { useProjectStore } from '@/stores/projectStore'
 import { useWriterStore } from '@/stores/writerStore'
@@ -48,13 +51,31 @@ const settingStore = useSettingStore()
 const volumeStore = useVolumeStore()
 const correctionTaskStore = useCorrectionTaskStore()
 const message = useAppMessage()
+const dialog = useDialog()
 
 const project = computed(() => projectStore.currentProject)
-const activeTab = ref('market')
+const projectTabs = new Set([
+  'market',
+  'seed',
+  'bible',
+  'settingsLibrary',
+  'chapters',
+  'corrections',
+  'characterArcs',
+  'plotThreads'
+])
+
+function normalizeProjectTab(tab) {
+  const value = Array.isArray(tab) ? tab[0] : tab
+  return projectTabs.has(value) ? value : ''
+}
+
+const activeTab = ref(normalizeProjectTab(route.query.tab) || 'market')
 
 const showProjectEditModal = ref(false)
 const editingProject = ref(false)
 const loadingProjectEditState = ref(false)
+const projectContentState = ref(null)
 const projectEditContentState = ref(null)
 const projectEditForm = ref({
   title: '',
@@ -70,6 +91,8 @@ const activeGlobalAudit = ref(null)
 const globalAuditScope = ref('all')
 const globalAuditStartChapter = ref(1)
 const globalAuditEndChapter = ref(null)
+const creatingEmptyChapters = ref(false)
+const activeChapterVolumeId = ref('')
 
 const selectedSeed = computed(() => seedStore.seeds.find(seed => seed.status === 'selected'))
 const bibleReady = computed(() => Boolean(novelStore.bible?.premise || novelStore.bible?.worldRules || novelStore.bible?.styleBible))
@@ -80,18 +103,16 @@ const pendingSettingChanges = computed(() =>
 
 const projectPlanLocked = computed(() => {
   if (loadingProjectEditState.value) return true
-  return Boolean(
-    (projectEditContentState.value?.chaptersCount || 0) > 0 ||
-    (projectEditContentState.value?.chapterVersions || 0) > 0
-  )
+  return Boolean(projectEditContentState.value?.hasChapterContent)
 })
 
 const projectPlanLockReason = computed(() => {
   if (loadingProjectEditState.value) return '正在检查项目章节状态，目标规划字段暂时锁定。'
-  const chapters = projectEditContentState.value?.chaptersCount || 0
+  const writtenChapters = projectEditContentState.value?.writtenChapters || 0
   const versions = projectEditContentState.value?.chapterVersions || 0
-  if (chapters > 0 || versions > 0) {
-    return `当前项目已有 ${chapters} 个章节、${versions} 个正文/候选版本。目标字数和目标章节数会影响后续章节规划与进度判断，已锁定不可编辑。`
+  const drafts = projectEditContentState.value?.tempDrafts || 0
+  if (projectEditContentState.value?.hasChapterContent) {
+    return `当前项目已有 ${writtenChapters} 个含正文状态的章节、${versions} 个正文/候选版本、${drafts} 个临时草稿。目标字数和目标章节数会影响后续章节规划与进度判断，已锁定不可编辑。`
   }
   return ''
 })
@@ -119,6 +140,41 @@ const chapterStepState = computed(() => {
   }
   if (writerStore.chapters.length > 0) return { done: false, statusLabel: '待写作', statusType: 'warning' }
   return { done: false, statusLabel: '待完善', statusType: 'default' }
+})
+
+const sortedVolumes = computed(() =>
+  [...volumeStore.volumes].sort((a, b) =>
+    Number(a.startChapter || 0) - Number(b.startChapter || 0) ||
+    Number(a.volumeNum || 0) - Number(b.volumeNum || 0)
+  )
+)
+
+const activeChapterVolume = computed(() => {
+  if (!sortedVolumes.value.length) return null
+  return sortedVolumes.value.find(volume => volume.id === activeChapterVolumeId.value) || sortedVolumes.value[0]
+})
+
+const chapterVolumeOptions = computed(() =>
+  sortedVolumes.value.map(volume => ({
+    label: `${volume.title || `第 ${volume.volumeNum} 卷`}（第 ${volume.startChapter}-${volume.endChapter} 章）`,
+    value: volume.id
+  }))
+)
+
+const visibleChapters = computed(() => {
+  const volume = activeChapterVolume.value
+  if (!volume) return writerStore.chapters
+  const start = Number(volume.startChapter || 1)
+  const end = Number(volume.endChapter || start)
+  return writerStore.chapters.filter(ch => {
+    const chapterNum = Number(ch.chapterNum || 0)
+    return chapterNum >= start && chapterNum <= end
+  })
+})
+
+const settingsDeleteLocked = computed(() => {
+  if (projectContentState.value?.hasChapterContent) return true
+  return writerStore.chapters.some(ch => Number(ch.wordCount || 0) > 0 || ch.finalVersionId || ch.status === 'final')
 })
 
 const correctionStepState = computed(() => {
@@ -187,13 +243,43 @@ onMounted(async () => {
         settingStore.loadEntities(id),
         settingStore.loadRelations(id),
         settingStore.loadChangeEvents(id),
-        volumeStore.loadVolumes(id)
+        volumeStore.loadVolumes(id),
+        api.projects.contentState(id)
+          .then(state => {
+            projectContentState.value = state
+          })
+          .catch(() => {
+            projectContentState.value = null
+          })
       ])
     }
   } catch (e) {
     message.error('加载项目数据失败：' + e.message)
   }
 })
+
+watch(() => route.query.tab, tab => {
+  const nextTab = normalizeProjectTab(tab)
+  if (nextTab) {
+    activeTab.value = nextTab
+  }
+})
+
+watch(activeTab, tab => {
+  if (projectTabs.has(tab) && route.query.tab !== tab) {
+    router.replace({ query: { ...route.query, tab } })
+  }
+})
+
+watch(sortedVolumes, volumes => {
+  if (!volumes.length) {
+    activeChapterVolumeId.value = ''
+    return
+  }
+  if (!volumes.some(volume => volume.id === activeChapterVolumeId.value)) {
+    activeChapterVolumeId.value = volumes[0].id
+  }
+}, { immediate: true })
 
 const exportOptions = [
   { label: '导出全部 TXT', key: 'txt' },
@@ -257,7 +343,7 @@ async function openProjectEditModal() {
   try {
     projectEditContentState.value = await api.projects.contentState(project.value.id)
   } catch (e) {
-    projectEditContentState.value = { chaptersCount: 1, chapterVersions: 1 }
+    projectEditContentState.value = { hasChapterContent: true, writtenChapters: 1, chapterVersions: 1, tempDrafts: 0 }
     message.warning('无法检查章节状态，已临时锁定目标字数和目标章节数。')
   } finally {
     loadingProjectEditState.value = false
@@ -314,6 +400,77 @@ function handleCorrectionNavigate({ targetTab, chapterNum, task }) {
   }
   activeTab.value = tabMap[targetTab] || 'corrections'
   message.success(`已定位到「${task?.title || '纠偏任务'}」对应模块`)
+}
+
+async function handleBulkCreateEmptyChapters() {
+  if (!project.value?.id) return
+  const volume = activeChapterVolume.value
+  if (!volume) {
+    message.warning('请先创建或选择一个分卷。')
+    return
+  }
+
+  const startChapter = Number(volume.startChapter || 0)
+  const endChapter = Number(volume.endChapter || 0)
+  if (startChapter < 1 || endChapter < startChapter) {
+    message.warning('当前分卷的章节范围无效，请先编辑分卷规划。')
+    return
+  }
+
+  creatingEmptyChapters.value = true
+  try {
+    const created = await writerStore.bulkCreateEmptyChapterRange(project.value.id, startChapter, endChapter)
+    if (created.length) {
+      message.success(`已为当前卷创建 ${created.length} 个空章节`)
+    } else {
+      message.info('当前卷范围内的空章节已全部存在')
+    }
+  } catch (e) {
+    message.error('按当前卷创建空章节失败：' + e.message)
+  } finally {
+    creatingEmptyChapters.value = false
+  }
+}
+
+function hasLocalChapterWrittenAsset(chapter) {
+  return Boolean(
+    chapter?.finalVersionId ||
+    Number(chapter?.wordCount || 0) > 0 ||
+    chapter?.status === 'final'
+  )
+}
+
+function handleDeleteChapter(chapter) {
+  if (!chapter?.id) return
+  if (hasLocalChapterWrittenAsset(chapter)) {
+    dialog.warning({
+      title: '不能删除章节',
+      content: '当前章节已有正文、定稿或字数记录，不能物理删除。后续会使用“废弃/归档章节”流程保留历史，避免破坏设定库、记忆和后续上下文。',
+      positiveText: '知道了'
+    })
+    return
+  }
+
+  dialog.warning({
+    title: '确认删除章节',
+    content: `确定删除「第 ${chapter.chapterNum} 章 ${chapter.title || ''}」吗？如果该章只有小纲，小纲也会一并删除；已有正文、候选版本、定稿或记忆资产时系统会拒绝删除。`,
+    positiveText: '确认删除',
+    negativeText: '取消',
+    maskClosable: false,
+    closeOnEsc: false,
+    onPositiveClick: async () => {
+      try {
+        await writerStore.deleteChapter(chapter.id)
+        message.success('章节已删除')
+      } catch (e) {
+        dialog.warning({
+          title: '删除章节失败',
+          content: e.message,
+          positiveText: '知道了'
+        })
+      }
+    }
+  })
 }
 
 async function handleGlobalAudit() {
@@ -621,16 +778,46 @@ function auditReport() {
 
       <n-tab-pane name="settingsLibrary" tab="4 设定库">
         <div class="mt-4">
-          <SettingLibrary :project-id="project.id" />
+          <SettingLibrary :project-id="project.id" :delete-locked="settingsDeleteLocked" />
         </div>
       </n-tab-pane>
 
       <n-tab-pane name="chapters" tab="5 章节管理">
         <div class="mt-4">
-          <VolumePlanner :project="project" :chapters="writerStore.chapters" />
+          <VolumePlanner
+            :project="project"
+            :chapters="writerStore.chapters"
+            :active-volume-id="activeChapterVolume?.id || ''"
+            @select-volume="activeChapterVolumeId = $event"
+          />
 
           <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-semibold text-gray-700">章节列表（{{ writerStore.chapters.length }} 章）</h3>
+            <div>
+              <h3 class="text-lg font-semibold text-gray-700">
+                章节列表（{{ activeChapterVolume ? `${activeChapterVolume.title || `第 ${activeChapterVolume.volumeNum} 卷`} · ` : '' }}{{ visibleChapters.length }} 章）
+              </h3>
+              <p v-if="activeChapterVolume" class="text-sm text-gray-500 mt-1">
+                当前卷范围：第 {{ activeChapterVolume.startChapter }}-{{ activeChapterVolume.endChapter }} 章，章节号沿用全书全局编号。
+              </p>
+            </div>
+            <div class="flex items-center gap-2">
+              <n-select
+                v-if="chapterVolumeOptions.length"
+                v-model:value="activeChapterVolumeId"
+                :options="chapterVolumeOptions"
+                size="small"
+                style="width: 260px"
+              />
+              <n-button
+                size="small"
+                secondary
+                :loading="creatingEmptyChapters"
+                :disabled="!activeChapterVolume"
+                @click="handleBulkCreateEmptyChapters"
+              >
+                按当前卷创建空章节
+              </n-button>
+            </div>
           </div>
 
           <n-empty v-if="writerStore.chapters.length === 0" description="暂无章节，进入写字台开始创作">
@@ -638,10 +825,25 @@ function auditReport() {
               <n-button type="primary" @click="goToWriter(1)">开始创作第 1 章</n-button>
             </template>
           </n-empty>
+          <n-empty
+            v-else-if="activeChapterVolume && visibleChapters.length === 0"
+            description="当前卷还没有章节"
+          >
+            <template #action>
+              <n-button
+                type="primary"
+                secondary
+                :loading="creatingEmptyChapters"
+                @click="handleBulkCreateEmptyChapters"
+              >
+                按当前卷创建空章节
+              </n-button>
+            </template>
+          </n-empty>
 
-          <div v-if="writerStore.chapters.length > 0" class="grid gap-2">
+          <div v-if="visibleChapters.length > 0" class="grid gap-2">
             <div
-              v-for="ch in writerStore.chapters"
+              v-for="ch in visibleChapters"
               :key="ch.id"
               class="flex items-center justify-between p-3 rounded border border-gray-200 hover:border-blue-300 cursor-pointer transition-colors"
               @click="goToWriter(ch.chapterNum)"
@@ -656,6 +858,14 @@ function auditReport() {
               <div class="flex items-center gap-3 text-xs text-gray-400">
                 <span v-if="ch.wordCount">{{ ch.wordCount }} 字</span>
                 <span v-if="ch.summary" class="line-clamp-1 max-w-60">{{ ch.summary }}</span>
+                <n-button
+                  size="tiny"
+                  type="error"
+                  text
+                  @click.stop="handleDeleteChapter(ch)"
+                >
+                  删除
+                </n-button>
                 <span>进入</span>
               </div>
             </div>
@@ -815,9 +1025,9 @@ function auditReport() {
             >
               <div class="flex items-center gap-2 mb-1">
                 <n-tag size="tiny" :type="issue.severity === 'critical' ? 'error' : issue.severity === 'major' ? 'warning' : 'default'">
-                  {{ issue.severity || 'issue' }}
+                  {{ auditSeverityLabel(issue.severity) }}
                 </n-tag>
-                <n-tag size="tiny" :bordered="false">{{ issue.type || 'general' }}</n-tag>
+                <n-tag size="tiny" :bordered="false">{{ auditIssueTypeLabel(issue.type) }}</n-tag>
               </div>
               <p class="font-medium text-gray-800">{{ issue.description }}</p>
               <p v-if="issue.impact" class="text-gray-500 mt-1">影响：{{ issue.impact }}</p>

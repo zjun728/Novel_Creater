@@ -295,6 +295,18 @@ CREATE TABLE IF NOT EXISTS temp_drafts (
   INDEX idx_drafts_chapter (project_id, chapter_num)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 13.1 章节小纲表
+CREATE TABLE IF NOT EXISTS chapter_beat_plans (
+  id VARCHAR(80) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  chapter_num INT NOT NULL DEFAULT 0,
+  content MEDIUMTEXT DEFAULT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE KEY uniq_chapter_beat_plan (project_id, chapter_num),
+  INDEX idx_chapter_beat_plans_project (project_id, chapter_num)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 14. 选题雷达（预留给 v0.4）
 CREATE TABLE IF NOT EXISTS market_items (
   id CHAR(36) PRIMARY KEY,

@@ -16,14 +16,18 @@ import {
   useDialog
 } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
+import { auditIssueTypeLabel, auditSeverityLabel } from '@/utils/auditLabels'
 import { useVolumeStore, VOLUME_STATUS_OPTIONS } from '@/stores/volumeStore'
 import { useMemoryStore } from '@/stores/memoryStore'
 import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
 
 const props = defineProps({
   project: { type: Object, required: true },
-  chapters: { type: Array, default: () => [] }
+  chapters: { type: Array, default: () => [] },
+  activeVolumeId: { type: String, default: '' }
 })
+
+const emit = defineEmits(['select-volume'])
 
 const volumeStore = useVolumeStore()
 const memoryStore = useMemoryStore()
@@ -131,9 +135,9 @@ async function handleInitialize() {
   }
   try {
     const created = await volumeStore.initializeByProject(props.project)
-    message.success(`已按目标章节初始化 ${created.length} 个分卷`)
+    message.success(`已自动生成 ${created.length} 个分卷规划`)
   } catch (e) {
-    message.error('初始化分卷失败：' + e.message)
+    message.error('生成分卷规划失败：' + e.message)
   }
 }
 
@@ -208,11 +212,17 @@ function handleDelete(volume) {
   const overlap = props.chapters.filter(ch =>
     ch.chapterNum >= volume.startChapter && ch.chapterNum <= volume.endChapter
   )
+  if (overlap.length) {
+    dialog.warning({
+      title: '分卷内已有章节',
+      content: `当前分卷范围内已有 ${overlap.length} 个章节，不能直接删除分卷。请先移动或删除这些章节，再删除分卷。`,
+      positiveText: '知道了'
+    })
+    return
+  }
   dialog.warning({
-    title: overlap.length ? '分卷内已有章节' : '确认删除分卷',
-    content: overlap.length
-      ? `该分卷范围内已有 ${overlap.length} 个章节。删除只会移除分卷规划，不会删除章节正文。`
-      : `确定删除「${volume.title}」吗？`,
+    title: '确认删除分卷',
+    content: `确定删除「${volume.title}」吗？`,
     positiveText: '确认删除',
     negativeText: '取消',
     maskClosable: false,
@@ -232,6 +242,10 @@ function chapterCountIn(volume) {
   return props.chapters.filter(ch =>
     ch.chapterNum >= volume.startChapter && ch.chapterNum <= volume.endChapter
   ).length
+}
+
+function selectVolume(volume) {
+  emit('select-volume', volume.id)
 }
 
 function formatSummaryItem(item) {
@@ -261,7 +275,7 @@ function summaryList(report, key) {
         <p>把长篇拆成可管理的阶段，后续章节生成、阶段总结和伏笔回收都以此为锚。</p>
       </div>
       <n-space>
-        <n-button size="small" @click="handleInitialize">按目标章节初始化</n-button>
+        <n-button size="small" @click="handleInitialize">自动生成分卷规划</n-button>
         <n-button size="small" type="primary" @click="openCreate">新增分卷</n-button>
       </n-space>
     </div>
@@ -281,7 +295,8 @@ function summaryList(report, key) {
         v-for="volume in volumeStore.volumes"
         :key="volume.id"
         size="small"
-        class="volume-card"
+        :class="['volume-card', { 'is-active': volume.id === activeVolumeId }]"
+        @click="selectVolume(volume)"
       >
         <div class="volume-card-head">
           <div>
@@ -292,6 +307,9 @@ function summaryList(report, key) {
           </div>
           <n-tag size="small" :type="statusTypeMap[volume.status] || 'default'" :bordered="false">
             {{ statusLabelMap[volume.status] || volume.status }}
+          </n-tag>
+          <n-tag v-if="volume.id === activeVolumeId" size="small" type="success" :bordered="false">
+            当前卷
           </n-tag>
         </div>
 
@@ -326,17 +344,17 @@ function summaryList(report, key) {
 
         <template #footer>
           <n-space justify="end">
-            <n-button size="tiny" :loading="auditingId === volume.id" @click="handleAudit(volume)">
+            <n-button size="tiny" :loading="auditingId === volume.id" @click.stop="handleAudit(volume)">
               {{ volume.auditReport ? '重新审稿' : '分卷审稿' }}
             </n-button>
-            <n-button size="tiny" :loading="summarizingId === volume.id" @click="handleSummary(volume)">
+            <n-button size="tiny" :loading="summarizingId === volume.id" @click.stop="handleSummary(volume)">
               {{ volume.stageSummaryReport ? '更新总结' : '生成总结' }}
             </n-button>
             <n-button
               v-if="volume.auditReport"
               size="tiny"
               secondary
-              @click="handleViewAudit(volume)"
+              @click.stop="handleViewAudit(volume)"
             >
               查看报告
             </n-button>
@@ -344,12 +362,12 @@ function summaryList(report, key) {
               v-if="volume.stageSummaryReport"
               size="tiny"
               secondary
-              @click="handleViewSummary(volume)"
+              @click.stop="handleViewSummary(volume)"
             >
               查看总结
             </n-button>
-            <n-button size="tiny" @click="openEdit(volume)">编辑</n-button>
-            <n-button size="tiny" type="error" secondary @click="handleDelete(volume)">删除</n-button>
+            <n-button size="tiny" @click.stop="openEdit(volume)">编辑</n-button>
+            <n-button size="tiny" type="error" secondary @click.stop="handleDelete(volume)">删除</n-button>
           </n-space>
         </template>
       </n-card>
@@ -492,9 +510,9 @@ function summaryList(report, key) {
           <div v-for="(issue, index) in activeAuditReport.issues" :key="`${issue.type}-${index}`" class="issue-card">
             <div class="issue-head">
               <n-tag size="tiny" :type="issue.severity === 'critical' ? 'error' : issue.severity === 'major' ? 'warning' : 'default'" :bordered="false">
-                {{ issue.severity || 'issue' }}
+                {{ auditSeverityLabel(issue.severity) }}
               </n-tag>
-              <span class="issue-type">{{ issue.type || 'general' }}</span>
+              <span class="issue-type">{{ auditIssueTypeLabel(issue.type) }}</span>
               <span v-if="issue.chapterRefs?.length" class="issue-chapters">
                 章节：{{ issue.chapterRefs.join('、') }}
               </span>
@@ -584,6 +602,13 @@ function summaryList(report, key) {
 
 .volume-card {
   border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.volume-card.is-active {
+  border-color: #18a058;
+  box-shadow: 0 0 0 1px rgba(24, 160, 88, 0.22);
 }
 
 .volume-card-head {

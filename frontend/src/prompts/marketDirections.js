@@ -153,12 +153,22 @@ function normalizeDirectionList(parsed) {
         ? parsed.data
         : Array.isArray(parsed?.items)
           ? parsed.items
-          : []
+          : looksLikeDirectionPayload(parsed)
+            ? [parsed]
+            : []
 
   return list
     .filter(item => item && typeof item === 'object')
     .map(normalizeDirectionPayload)
     .filter(item => item.title || item.seedAngle)
+}
+
+function looksLikeDirectionPayload(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  return Object.keys(value).some(key => {
+    const cleanKey = String(key).trim()
+    return Boolean(DIRECTION_FIELD_ALIASES[cleanKey] || DIRECTION_FIELD_ALIASES[cleanKey.toLowerCase()])
+  })
 }
 
 function escapeRegExp(text) {
@@ -284,6 +294,80 @@ export function extractMarketDirections(text) {
   }
 
   return extractLooseDirections(text)
+}
+
+export function buildFallbackMarketDirections({ keywords = '', items = [], project } = {}) {
+  const groups = groupMarketItems(items)
+  const topGroups = groups.length ? groups.slice(0, 4) : [{
+    genre: project?.genre || keywords || '综合热门',
+    items: [],
+    platforms: [],
+    tags: []
+  }]
+
+  return topGroups.map((group, index) => {
+    const sampleTitles = group.items.slice(0, 3).map(item => item.title).filter(Boolean)
+    const platformText = group.platforms.slice(0, 3).join('、') || '本地样本'
+    const tagText = group.tags.slice(0, 5).join('、') || group.genre
+    const title = buildFallbackDirectionTitle(group.genre, keywords, index)
+
+    return normalizeDirectionPayload({
+      title,
+      genre: group.genre,
+      readerExpectation: `读者可能期待${group.genre}题材里的强钩子、清晰爽点和持续升级反馈，同时希望看到区别于同类套路的新设定或新场景。`,
+      whyNow: group.items.length
+        ? `当前样本中 ${platformText} 出现了 ${sampleTitles.join('、') || group.genre} 等相关作品，说明该方向具备一定热度参考。`
+        : `实时 AI 方向解析失败，系统基于“${keywords || project?.genre || '热门小说'}”给出保守选题方向，适合作为后续和 AI 顾问讨论的起点。`,
+      seedAngle: `不要复刻样本作品，可从“${tagText}”中选一个核心情绪，再换主角身份、时代背景或能力规则做原创切入。`,
+      evidence: group.items.length
+        ? `${platformText}；参考作品：${sampleTitles.join('、') || '暂无明确书名'}；标签：${tagText}`
+        : '本地保守建议，无实时 AI 结构化结果。',
+      risks: '容易只追热点而缺少原创核心；需要尽快落到主角欲望、长期矛盾和前三章钩子，避免停留在题材口号。',
+      discussionPrompt: `我想讨论“${title}”这个方向，请结合当前热点样本，帮我拆成一个不撞车、有前三章钩子的原创创作种子。`
+    })
+  })
+}
+
+function groupMarketItems(items = []) {
+  const map = new Map()
+  for (const item of items || []) {
+    const genre = String(item.category || item.genre || item.rankName || '综合热门').trim() || '综合热门'
+    if (!map.has(genre)) {
+      map.set(genre, {
+        genre,
+        items: [],
+        platformCounts: new Map(),
+        tagCounts: new Map()
+      })
+    }
+    const group = map.get(genre)
+    group.items.push(item)
+    const platform = item.platform || '未知平台'
+    group.platformCounts.set(platform, (group.platformCounts.get(platform) || 0) + 1)
+    const tags = Array.isArray(item.tags) ? item.tags : String(item.tags || '').split(/[、,\s]+/)
+    for (const tag of tags.filter(Boolean)) {
+      group.tagCounts.set(tag, (group.tagCounts.get(tag) || 0) + 1)
+    }
+  }
+
+  return [...map.values()]
+    .map(group => ({
+      genre: group.genre,
+      items: group.items,
+      platforms: [...group.platformCounts.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name),
+      tags: [...group.tagCounts.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name)
+    }))
+    .sort((a, b) => b.items.length - a.items.length)
+}
+
+function buildFallbackDirectionTitle(genre, keywords, index) {
+  const cleanGenre = genre || '热门题材'
+  const cleanKeywords = String(keywords || '').replace(/\s+/g, '')
+  const suffixes = ['情绪升级方向', '差异化切入方向', '强钩子试写方向', '长线连载方向']
+  if (cleanKeywords && !cleanGenre.includes(cleanKeywords)) {
+    return `${cleanKeywords}${cleanGenre}${suffixes[index % suffixes.length]}`
+  }
+  return `${cleanGenre}${suffixes[index % suffixes.length]}`
 }
 
 export function buildMarketDirectionRepairPrompt(rawText) {

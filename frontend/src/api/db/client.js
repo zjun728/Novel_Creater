@@ -79,6 +79,7 @@ export const api = {
     list: (projectId) => get(`/projects/${projectId}/chapters`),
     create: (projectId, data) => post(`/projects/${projectId}/chapters`, data),
     update: (projectId, chapterId, data) => put(`/projects/${projectId}/chapters/${chapterId}`, data),
+    delete: (projectId, chapterId) => del(`/projects/${projectId}/chapters/${chapterId}`),
   },
 
   // === 章节版本 ===
@@ -86,6 +87,7 @@ export const api = {
     list: (projectId, chapterId) => get(`/projects/${projectId}/chapters/${chapterId}/versions`),
     create: (projectId, chapterId, data) => post(`/projects/${projectId}/chapters/${chapterId}/versions`, data),
     update: (projectId, chapterId, versionId, data) => put(`/projects/${projectId}/chapters/${chapterId}/versions/${versionId}`, data),
+    finalize: (projectId, chapterId, versionId, data = {}) => post(`/projects/${projectId}/chapters/${chapterId}/versions/${versionId}/finalize`, data),
     delete: (projectId, chapterId, versionId) => del(`/projects/${projectId}/chapters/${chapterId}/versions/${versionId}`),
   },
 
@@ -94,6 +96,13 @@ export const api = {
     get: (projectId, chapterNum) => get(`/projects/${projectId}/temp-draft/${chapterNum}`),
     save: (projectId, chapterNum, content) => put(`/projects/${projectId}/temp-draft/${chapterNum}`, { content }),
     delete: (projectId, chapterNum) => del(`/projects/${projectId}/temp-draft/${chapterNum}`),
+  },
+
+  // === 章节小纲 ===
+  beatPlans: {
+    get: (projectId, chapterNum) => get(`/projects/${projectId}/chapter-beat-plan/${chapterNum}`),
+    save: (projectId, chapterNum, content) => put(`/projects/${projectId}/chapter-beat-plan/${chapterNum}`, { content }),
+    delete: (projectId, chapterNum) => del(`/projects/${projectId}/chapter-beat-plan/${chapterNum}`),
   },
 
   // === 创作种子 ===

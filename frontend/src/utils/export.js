@@ -1,4 +1,5 @@
 import { api } from '@/api/db/client'
+import { formatChapterDisplayTitle } from '@/prompts/chapter'
 
 async function fetchChapterContent(projectId, chapter) {
   const versions = await api.versions.list(projectId, chapter.id)
@@ -34,7 +35,7 @@ export async function exportTxt(projectId) {
   lines.push('')
 
   for (const { chapter, content } of versionResults) {
-    lines.push(chapter.title || `第 ${chapter.chapterNum} 章`)
+    lines.push(formatChapterDisplayTitle(chapter))
     lines.push('-'.repeat(30))
     lines.push('')
     if (content) lines.push(content)
@@ -67,7 +68,7 @@ export async function exportMarkdown(projectId) {
   lines.push('')
 
   for (const { chapter, content } of versionResults) {
-    lines.push(`## ${chapter.title || `第 ${chapter.chapterNum} 章`}`)
+    lines.push(`## ${formatChapterDisplayTitle(chapter)}`)
     lines.push('')
     if (chapter.summary) {
       lines.push(`*${chapter.summary}*`)
@@ -107,7 +108,7 @@ export async function exportSelectedChapters(projectId, chapterIds, format = 'tx
     lines.push(`# ${project.title}（节选）`)
     lines.push('')
     for (const { chapter, content } of versionResults) {
-      lines.push(`## ${chapter.title || `第 ${chapter.chapterNum} 章`}`)
+      lines.push(`## ${formatChapterDisplayTitle(chapter)}`)
       lines.push('')
       lines.push(content || '[暂无内容]')
       lines.push('')
@@ -119,7 +120,7 @@ export async function exportSelectedChapters(projectId, chapterIds, format = 'tx
   lines.push(`${project.title}（节选）`)
   lines.push('')
   for (const { chapter, content } of versionResults) {
-    lines.push(chapter.title || `第 ${chapter.chapterNum} 章`)
+    lines.push(formatChapterDisplayTitle(chapter))
     lines.push('-'.repeat(30))
     lines.push('')
     lines.push(content || '[暂无内容]')

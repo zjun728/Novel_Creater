@@ -103,6 +103,45 @@ const CATEGORY_KEYS = new Map([
   ['道具', 'item']
 ])
 
+export const SETTING_INITIALIZATION_GROUPS = [
+  {
+    key: 'characters',
+    label: '人物',
+    entityTypes: ['character'],
+    maxItems: 8,
+    focus: '主角、关键配角、长期对手、隐藏守护者、会反复影响主线的人物。优先提取身份、归属、长期欲望、能力限制、秘密和需要追踪的状态。'
+  },
+  {
+    key: 'factions',
+    label: '势力/组织',
+    entityTypes: ['faction'],
+    maxItems: 8,
+    focus: '家族、宗门、国家、机构、秘密组织、群聊组织、理念派系。优先提取立场、目标、控制范围、组织规则和与主线矛盾的关系。'
+  },
+  {
+    key: 'worldRules',
+    label: '世界规则/能力体系',
+    entityTypes: ['power_system', 'technique'],
+    maxItems: 8,
+    focus: '世界底层规则、修炼/能力体系、等级秩序、封印规则、资源分布、功法或特殊能力。优先提取后续章节不能写错的硬规则。'
+  },
+  {
+    key: 'locationsItems',
+    label: '地点/物品',
+    entityTypes: ['location', 'item'],
+    maxItems: 8,
+    focus: '国家区域、城市、宗门驻地、秘境、关键道具、武器、系统、账号、信物。优先提取会反复出现或承载剧情功能的地点和物品。'
+  },
+  {
+    key: 'relationships',
+    label: '长期关系',
+    entityTypes: ['character', 'faction', 'location', 'power_system', 'technique', 'item'],
+    maxItems: 10,
+    relationshipOnly: true,
+    focus: '亲属、血脉、师承、隶属、敌对、守护、控制、持有、隐藏观察、理念对立等长期关系。只提取明确存在且后续会影响剧情的关系。'
+  }
+]
+
 function asText(value) {
   if (value == null) return ''
   if (Array.isArray(value)) return value.filter(Boolean).map(asText).join('\n')
@@ -188,6 +227,13 @@ function formatExistingSettings(settings = []) {
     .join('\n')
 }
 
+function formatExistingEvents(events = []) {
+  return (events || [])
+    .slice(0, 80)
+    .map(event => `- [${event.entityType || 'unknown'}] ${event.entityName || '未命名'} / ${event.changeType || 'new_entity'} / ${event.fieldPath || 'summary'}：${event.evidence || ''}`)
+    .join('\n')
+}
+
 export function buildSettingsFromBibleSystemPrompt() {
   return `你是长篇小说设定库编辑，负责从“创作圣经”和“创作种子”中提取初始设定候选。
 你的任务不是扩写剧情，也不是写百科大全，而是找出后续长篇写作必须长期追踪的设定：人物、势力、地点、世界规则、能力体系、功法、物品、关系。
@@ -242,7 +288,68 @@ relationship 的 newValue 必须是对象：
 4. 关系候选只提取明确长期存在的关系，不要臆造人物关系。
 5. 如果一个实体有多个属性，用一个 new_entity 加 profilePatch，不要拆成多条。
 6. 如果已有设定库里已有同名同类型实体，不要重复 new_entity，可输出关系或跳过。
-7. 不确定的信息可以降低 confidence，但不要编造圣经和种子里没有的专有名词。`
+7. 不确定的信息可以降低 confidence，但不要编造圣经和种子里没有的专有名词。
+8. profilePatch 每个字段值必须短，不要整段复制原文；长说明放入 summary 或 evidence。`
+}
+
+export function buildSettingsFromBibleSegmentPrompt({ bible, seed, existingSettings = [], existingEvents = [], group }) {
+  const safeGroup = group || SETTING_INITIALIZATION_GROUPS[0]
+  const allowedTypes = (safeGroup.entityTypes || Array.from(VALID_ENTITY_TYPES)).join('|')
+  const typeRule = safeGroup.relationshipOnly
+    ? '本轮只允许输出 relationship；不要输出 new_entity。关系两端如果尚未在已提取候选中出现，也可以按名称写入 targetEntityName，但不要补写实体档案。'
+    : `本轮主要输出 new_entity；entityType 只能是 ${allowedTypes}。除非关系是理解该实体不可缺少的信息，否则不要在本轮输出 relationship。`
+
+  return `请从下面的创作圣经和创作种子中，分批提取“${safeGroup.label}”设定候选。
+这一轮只处理：${safeGroup.focus}
+
+## 创作圣经
+${formatBible(bible) || '无'}
+
+## 创作种子
+${formatSeed(seed) || '无'}
+
+${existingSettings?.length ? `## 已有正式设定库（避免重复创建）\n${formatExistingSettings(existingSettings)}` : ''}
+
+${existingEvents?.length ? `## 本次初始化已提取候选（避免重复）\n${formatExistingEvents(existingEvents)}` : ''}
+
+请严格输出 JSON 对象，顶层固定为 settings 数组：
+{
+  "settings": [
+    {
+      "entityType": "${allowedTypes}",
+      "entityName": "实体名称",
+      "changeType": "new_entity|relationship",
+      "fieldPath": "summary|关系",
+      "summary": "一句话说明该实体或关系为何需要长期追踪",
+      "category": "可选分类",
+      "importance": 1,
+      "profilePatch": {
+        "身份/归属/等级/位置/能力/限制等": "只写短字段，不要整段复制原文"
+      },
+      "newValue": "",
+      "evidence": "来自圣经或种子的依据，短句即可",
+      "confidence": 0.8
+    }
+  ]
+}
+
+relationship 的 newValue 必须是对象：
+{
+  "targetEntityName": "关系另一端名称",
+  "targetEntityType": "character|faction|location|power_system|technique|item",
+  "relationType": "亲属|血脉|师承|隶属|敌对|持有|控制|隐藏关系|理念对立|守护",
+  "stance": "亲近|中立|敌对|利用|未知",
+  "summary": "关系说明"
+}
+
+提取要求：
+1. ${typeRule}
+2. 本轮最多 ${safeGroup.maxItems || 8} 条，只提取会影响后续长篇写作的核心设定。
+3. 不要把风格要求、目标读者、禁止方向直接填进设定库。
+4. 同名同类型实体如果已在正式设定库或本次已提取候选中出现，不要重复 new_entity。
+5. profilePatch 每个字段值必须短；长说明放入 summary 或 evidence。
+6. 不确定的信息可以降低 confidence，但不要编造圣经和种子里没有的专有名词。
+7. 只输出合法 JSON，不要输出 Markdown、解释或额外文字。`
 }
 
 export function buildSettingsFromBibleRepairPrompt(rawText) {
@@ -496,4 +603,263 @@ export function extractSettingsFromBibleText(text) {
   }
 
   return []
+}
+
+export function filterEventsForInitializationGroup(events = [], group) {
+  if (!group) return events
+  const allowedTypes = new Set(group.entityTypes || [])
+  return (events || []).filter(event => {
+    if (!event?.entityName) return false
+    if (group.relationshipOnly) return event.changeType === 'relationship'
+    if (event.changeType === 'relationship') return false
+    return !allowedTypes.size || allowedTypes.has(event.entityType)
+  })
+}
+
+export function dedupeSettingInitializationEvents(events = [], existingSettings = []) {
+  const existingEntityKeys = new Set((existingSettings || [])
+    .map(entity => entityKey(entity.entityType || 'character', entity.name || entity.entityName || '')))
+  const seenEntityKeys = new Set()
+  const seenEventKeys = new Set()
+  const seenRelationKeys = new Set()
+  const deduped = []
+
+  for (const event of events || []) {
+    if (!event?.entityName) continue
+
+    if (event.changeType === 'relationship') {
+      const relation = parseRelationValue(event.newValue)
+      const key = relationKey(
+        event.entityType,
+        event.entityName,
+        relation.targetEntityType,
+        relation.targetEntityName,
+        relation.relationType
+      )
+      if (!relation.targetEntityName || seenRelationKeys.has(key)) continue
+      seenRelationKeys.add(key)
+      deduped.push(event)
+      continue
+    }
+
+    const key = entityKey(event.entityType, event.entityName)
+    if (existingEntityKeys.has(key) || seenEntityKeys.has(key)) continue
+    seenEntityKeys.add(key)
+
+    const eventKey = [
+      key,
+      event.changeType || 'new_entity',
+      event.fieldPath || 'summary',
+      String(event.newValue || '')
+    ].join('::')
+    if (seenEventKeys.has(eventKey)) continue
+    seenEventKeys.add(eventKey)
+    deduped.push(event)
+  }
+
+  return deduped
+}
+
+function entityKey(entityType, entityName) {
+  return `${String(entityType || 'character').trim()}::${String(entityName || '').trim()}`
+}
+
+function relationKey(sourceType, sourceName, targetType, targetName, relationType) {
+  const source = entityKey(sourceType, sourceName)
+  const target = entityKey(targetType || 'character', targetName)
+  const relation = String(relationType || '关系').trim()
+  return `${source}::${target}::${relation}`
+}
+
+function parseRelationValue(value) {
+  if (!value) return {}
+  if (typeof value === 'object') return value
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function buildFallbackSettingsFromBibleEvents({ bible = {}, seed = {}, existingSettings = [] } = {}) {
+  const existingKeys = new Set((existingSettings || [])
+    .map(entity => `${entity.entityType || 'character'}::${entity.name || ''}`))
+  const rawEvents = buildFallbackRawEvents(bible, seed)
+  const seen = new Set()
+
+  return rawEvents
+    .filter(item => !existingKeys.has(`${item.entityType || 'character'}::${item.entityName || ''}`))
+    .map(normalizeEvent)
+    .filter(Boolean)
+    .filter(event => {
+      const key = `${event.entityType}::${event.entityName}::${event.changeType}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .slice(0, 12)
+}
+
+function buildFallbackRawEvents(bible, seed) {
+  const text = [
+    formatBible(bible),
+    formatSeed(seed)
+  ].filter(Boolean).join('\n')
+
+  const events = []
+  const protagonistName = extractLeadingChineseName(seed.protagonist) || extractLeadingChineseName(seed.logline)
+  if (protagonistName) {
+    events.push({
+      entityType: 'character',
+      entityName: protagonistName,
+      changeType: 'new_entity',
+      fieldPath: 'summary',
+      summary: summarizeText(seed.protagonist || seed.logline || bible.premise, 160) || '作品主角，需要长期追踪成长、身份和选择。',
+      category: '主角',
+      importance: 5,
+      profilePatch: {
+        身份: extractAfter(seed.protagonist, ['身份：', '隐藏身份：']) || '',
+        初始处境: summarizeText(seed.protagonist, 80),
+        长期欲望: summarizeText(seed.desire, 120)
+      },
+      evidence: seed.protagonist || seed.logline || bible.premise,
+      confidence: 0.85
+    })
+  }
+
+  for (const name of extractKnownNames(text)) {
+    if (name === protagonistName) continue
+    events.push({
+      entityType: 'character',
+      entityName: name,
+      changeType: 'new_entity',
+      fieldPath: 'summary',
+      summary: inferCharacterSummary(name, text),
+      category: inferCharacterCategory(name),
+      importance: ['沈苍', '吕岳', '昴日星官', '昴日'].includes(name) ? 5 : 4,
+      profilePatch: {},
+      evidence: findSentenceContaining(text, name),
+      confidence: 0.72
+    })
+  }
+
+  if (/三界同僚工作群|神仙工作群/.test(text)) {
+    events.push({
+      entityType: 'faction',
+      entityName: '三界同僚工作群',
+      changeType: 'new_entity',
+      fieldPath: 'summary',
+      summary: '连接天庭、地府、龙宫、灵山等神仙成员的核心群聊，也是主角被卷入主线的入口。',
+      category: '核心组织/信息入口',
+      importance: 5,
+      profilePatch: { 形式: '群聊', 作用: '主线入口与长期信息源' },
+      evidence: findSentenceContaining(text, '三界同僚工作群') || findSentenceContaining(text, '神仙工作群'),
+      confidence: 0.88
+    })
+  }
+
+  if (/封印|混沌|末法|灵气枯竭/.test(text)) {
+    events.push({
+      entityType: 'power_system',
+      entityName: '封印悖论与末法时代',
+      changeType: 'new_entity',
+      fieldPath: 'summary',
+      summary: '封印、混沌力、灵气枯竭和末法时代构成作品底层世界规则，是长篇主线矛盾。',
+      category: '世界底层规则',
+      importance: 5,
+      profilePatch: {
+        核心矛盾: summarizeText(seed.coreConflict || bible.worldRules, 160),
+        风险: '维持封印等于慢性死亡，打破封印等于释放混沌。'
+      },
+      evidence: seed.coreConflict || bible.worldRules || findSentenceContaining(text, '封印'),
+      confidence: 0.86
+    })
+  }
+
+  if (/打破派/.test(text)) {
+    events.push({
+      entityType: 'faction',
+      entityName: '打破派',
+      changeType: 'new_entity',
+      fieldPath: 'summary',
+      summary: '主张加速封印破碎并在废墟上建立新纪元的理念派系，是中后期核心对立力量。',
+      category: '理念派系',
+      importance: 5,
+      profilePatch: { 立场: '打破旧封印，接管新纪元' },
+      evidence: findSentenceContaining(text, '打破派'),
+      confidence: 0.82
+    })
+  }
+
+  if (protagonistName && /封渊君|封渊神君|沈苍/.test(text)) {
+    events.push({
+      entityType: 'character',
+      entityName: protagonistName,
+      changeType: 'relationship',
+      fieldPath: '关系',
+      newValue: {
+        targetEntityName: '沈苍',
+        targetEntityType: 'character',
+        relationType: '血脉/传承',
+        stance: '亲近',
+        summary: `${protagonistName} 是封渊君沈苍的血脉后世，入群后激活沉寂神脉。`
+      },
+      evidence: findSentenceContaining(text, '沈苍') || findSentenceContaining(text, '封渊君'),
+      confidence: 0.78
+    })
+  }
+
+  return events
+}
+
+function extractKnownNames(text) {
+  const candidates = ['沈苍', '吕岳', '昴日星官', '哪吒', '太白金星', '崔判官', '二郎神', '哮天犬']
+  return candidates.filter(name => text.includes(name))
+}
+
+function extractLeadingChineseName(text = '') {
+  const value = String(text || '').trim()
+  const match = value.match(/^([\u4e00-\u9fa5]{2,4})[，,、\s]/)
+  return match?.[1] || ''
+}
+
+function extractAfter(text = '', markers = []) {
+  const value = String(text || '')
+  for (const marker of markers) {
+    const index = value.indexOf(marker)
+    if (index !== -1) return summarizeText(value.slice(index + marker.length), 80)
+  }
+  return ''
+}
+
+function findSentenceContaining(text = '', keyword = '') {
+  if (!keyword) return ''
+  const normalized = String(text || '').replace(/\s+/g, ' ')
+  const index = normalized.indexOf(keyword)
+  if (index === -1) return ''
+  const start = Math.max(0, index - 70)
+  const end = Math.min(normalized.length, index + keyword.length + 110)
+  return normalized.slice(start, end).trim()
+}
+
+function summarizeText(text = '', limit = 120) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim()
+  if (value.length <= limit) return value
+  return `${value.slice(0, limit)}...`
+}
+
+function inferCharacterSummary(name, text) {
+  const sentence = findSentenceContaining(text, name)
+  if (name === '沈苍') return '封渊君相关核心人物，疑似残存代码或血脉传承源头，需要长期追踪。'
+  if (name === '吕岳') return '瘟神，前期疑点人物与沉默守护者线索，需要长期追踪其秘密和牺牲弧光。'
+  if (name === '昴日星官' || name === '昴日') return '司晨之神，隐藏观察者和打破派相关关键人物，需要长期追踪其立场变化。'
+  return summarizeText(sentence, 120) || `${name} 是种子中出现的长期角色候选。`
+}
+
+function inferCharacterCategory(name) {
+  if (name === '沈苍') return '前史关键人物'
+  if (name === '吕岳') return '关键配角/误导线'
+  if (name === '昴日星官' || name === '昴日') return '关键配角/隐藏观察者'
+  return '神仙群成员'
 }

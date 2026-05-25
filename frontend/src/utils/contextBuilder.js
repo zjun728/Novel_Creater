@@ -1,3 +1,9 @@
+import {
+  correctionTaskMode,
+  isCorrectionTaskActiveForContext,
+  isCorrectionTaskBlockingForGeneration
+} from '@/stores/correctionTaskStore'
+
 /**
  * 上下文构建器
  *
@@ -142,8 +148,13 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     builder.add('styleBible', bible.styleBible, { priority: 3, maxTokens: 600 })
   }
 
-  // P6.5: 结构化设定库，优先注入高重要度、活跃实体和关系
-  const settingLibrary = summarizeSettingLibrary(settingEntities, settingRelations)
+  // P6.5: 结构化设定库，优先注入与本章/分卷相关的实体和关系
+  const settingLibrary = summarizeSettingLibrary(settingEntities, settingRelations, {
+    chapterNum,
+    nearChapter,
+    volumeContext,
+    settingChangeEvents
+  })
   if (settingLibrary) {
     builder.add('settingLibrary', settingLibrary, { priority: 3, maxTokens: 2400 })
   }
@@ -209,15 +220,26 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   }
 }
 
-function summarizeSettingLibrary(entities, relations) {
+function summarizeSettingLibrary(entities, relations, options = {}) {
+  const { chapterNum, nearChapter, volumeContext, settingChangeEvents } = options
   const activeEntities = (entities || [])
     .filter(e => (e.status || 'active') === 'active')
-    .sort((a, b) => Number(b.importance || 3) - Number(a.importance || 3))
+    .map(entity => ({
+      entity,
+      relevance: scoreSettingEntity(entity, {
+        chapterNum,
+        nearChapter,
+        volumeContext,
+        settingChangeEvents
+      })
+    }))
+    .sort((a, b) => b.relevance - a.relevance || Number(b.entity.importance || 3) - Number(a.entity.importance || 3))
     .slice(0, 36)
+    .map(item => item.entity)
 
   if (!activeEntities.length) return ''
 
-  const entityMap = new Map(activeEntities.map(e => [e.id, e]))
+  const entityMap = new Map((entities || []).map(e => [e.id, e]))
   const lines = activeEntities.map(entity => {
     const profile = entity.profile || {}
     const facts = pickProfileFacts(entity.entityType, profile)
@@ -226,10 +248,16 @@ function summarizeSettingLibrary(entities, relations) {
     return `- [${settingTypeLabel(entity.entityType)}] ${entity.name}${entity.category ? `（${entity.category}）` : ''}：${entity.summary || '无概要'}${facts ? `；${facts}` : ''}${aliases}${tags}`
   })
 
+  const selectedIds = new Set(activeEntities.map(entity => entity.id))
   const relationLines = (relations || [])
-    .filter(r => r.status !== 'archived' && entityMap.has(r.sourceEntityId) && entityMap.has(r.targetEntityId))
+    .filter(r => r.status !== 'archived' && (selectedIds.has(r.sourceEntityId) || selectedIds.has(r.targetEntityId)))
+    .map(relation => ({
+      relation,
+      relevance: scoreSettingRelation(relation, selectedIds, entityMap)
+    }))
+    .sort((a, b) => b.relevance - a.relevance)
     .slice(0, 24)
-    .map(r => {
+    .map(({ relation: r }) => {
       const source = entityMap.get(r.sourceEntityId)?.name || '未知'
       const target = entityMap.get(r.targetEntityId)?.name || '未知'
       return `- ${source} -> ${r.relationType || '关系'} -> ${target}${r.stance ? `（${r.stance}）` : ''}：${r.summary || '无说明'}`
@@ -240,6 +268,81 @@ function summarizeSettingLibrary(entities, relations) {
     lines.join('\n'),
     relationLines.length ? `\n### 关键关系\n${relationLines.join('\n')}` : ''
   ].filter(Boolean).join('\n')
+}
+
+function scoreSettingEntity(entity, context) {
+  const profile = entity.profile || {}
+  const chapterNum = Number(context.chapterNum || 0)
+  const name = String(entity.name || '').trim()
+  const category = String(entity.category || '')
+  const summary = String(entity.summary || '')
+  const aliases = Array.isArray(entity.aliases) ? entity.aliases : []
+  const tags = Array.isArray(entity.tags) ? entity.tags : []
+  const searchableNames = [name, ...aliases].filter(Boolean)
+  const currentTexts = [
+    context.nearChapter?.title,
+    context.nearChapter?.goal,
+    context.nearChapter?.conflict,
+    context.nearChapter?.turn,
+    context.nearChapter?.emotionalBeat,
+    context.volumeContext?.coreGoal,
+    context.volumeContext?.mainConflict,
+    context.volumeContext?.currentSummary,
+    context.volumeContext?.stageSummary,
+    ...(context.volumeContext?.keyCharacters || []),
+    ...(context.volumeContext?.completedBeats || []),
+    ...(context.volumeContext?.openQuestions || []),
+    ...(context.volumeContext?.handoffToNext || []),
+    ...(context.volumeContext?.continuityNotes || [])
+  ].map(value => typeof value === 'string' ? value : JSON.stringify(value || ''))
+
+  let score = Number(entity.importance || 3) * 2
+  if (searchableNames.some(item => containsAny(currentTexts, item))) score += 18
+  if ((context.volumeContext?.keyCharacters || []).some(item => item === name || aliases.includes(item))) score += 16
+
+  const firstChapter = Number(entity.firstChapter || 0)
+  const lastChapter = Number(entity.lastChapter || 0)
+  if (chapterNum && firstChapter && Math.abs(firstChapter - chapterNum) <= 3) score += 6
+  if (chapterNum && lastChapter && Math.abs(lastChapter - chapterNum) <= 8) score += 10
+  if (chapterNum && firstChapter && firstChapter <= chapterNum && (!lastChapter || lastChapter >= chapterNum - 12)) score += 4
+
+  const recentChanges = (context.settingChangeEvents || [])
+    .filter(event => event.status === 'accepted')
+    .filter(event => !chapterNum || !event.chapterNum || Number(event.chapterNum) <= chapterNum)
+    .filter(event => event.entityId === entity.id || event.entityName === name)
+    .sort((a, b) => Number(b.chapterNum || 0) - Number(a.chapterNum || 0))
+  if (recentChanges[0]) {
+    const distance = chapterNum - Number(recentChanges[0].chapterNum || chapterNum)
+    score += distance <= 3 ? 12 : distance <= 10 ? 8 : 4
+  }
+
+  if (profile.location && containsAny(currentTexts, profile.location)) score += 8
+  if (profile.faction && containsAny(currentTexts, profile.faction)) score += 6
+  if (profile.sect && containsAny(currentTexts, profile.sect)) score += 6
+  if (profile.owner && containsAny(currentTexts, profile.owner)) score += 6
+  if (category && containsAny(currentTexts, category)) score += 3
+  if (tags.some(tag => containsAny(currentTexts, tag))) score += 3
+  if (summary && searchableNames.some(item => summary.includes(item))) score += 1
+
+  return score
+}
+
+function scoreSettingRelation(relation, selectedIds, entityMap) {
+  let score = 0
+  if (selectedIds.has(relation.sourceEntityId)) score += 8
+  if (selectedIds.has(relation.targetEntityId)) score += 8
+  if (selectedIds.has(relation.sourceEntityId) && selectedIds.has(relation.targetEntityId)) score += 8
+  const sourceImportance = Number(entityMap.get(relation.sourceEntityId)?.importance || 0)
+  const targetImportance = Number(entityMap.get(relation.targetEntityId)?.importance || 0)
+  score += sourceImportance + targetImportance
+  if (relation.status === 'active') score += 2
+  return score
+}
+
+function containsAny(texts, needle) {
+  const value = String(needle || '').trim()
+  if (!value) return false
+  return (texts || []).some(text => String(text || '').includes(value))
 }
 
 function summarizeSettingChanges(events, chapterNum) {
@@ -319,7 +422,8 @@ function summarizeCorrectionTasks(tasks, chapterNum) {
 
   if (!active.length) return ''
   return active.map(task => [
-    `- [${task.severity || 'minor'} / ${task.targetModule || 'general'}] ${task.title}`,
+    `- [${task.severity || 'minor'} / ${correctionTaskMode(task)} / ${task.targetModule || 'general'}] ${task.title}`,
+    isCorrectionTaskBlockingForGeneration(task) ? '处理规则：阻断型硬纠偏，必须先人工确认处理后再继续生成。' : '处理规则：软纠偏，不回改已定稿正文；在后续章节中自然补解释、补动机或回收伏笔。',
     task.suggestedAction ? `建议：${task.suggestedAction}` : '',
     task.chapterRefs?.length ? `涉及章节：${task.chapterRefs.join('、')}` : ''
   ].filter(Boolean).join('；')).join('\n')
@@ -338,11 +442,6 @@ function getContextCorrectionTasks(correctionTaskStore) {
 
   const tasks = unwrapMaybeRef(correctionTaskStore?.tasks)
   return Array.isArray(tasks) ? tasks.filter(isCorrectionTaskActiveForContext) : []
-}
-
-function isCorrectionTaskActiveForContext(task) {
-  const status = task?.status || 'pending'
-  return ['pending', 'accepted', 'in_progress'].includes(status)
 }
 
 function normalizeChapterRefs(refs) {

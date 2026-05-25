@@ -70,6 +70,28 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+  async function updateCurrentChapterNum(id, chapterNum) {
+    const nextNum = Number(chapterNum || 0)
+    if (!id || nextNum <= 0) return null
+
+    const knownProject = currentProject.value?.id === id
+      ? currentProject.value
+      : projects.value.find(p => p.id === id)
+    const currentNum = Number(knownProject?.currentChapterNum || 0)
+    if (currentNum >= nextNum) return knownProject || null
+
+    try {
+      const updated = await api.projects.update(id, { currentChapterNum: nextNum })
+      const idx = projects.value.findIndex(p => p.id === updated.id)
+      if (idx !== -1) projects.value[idx] = updated
+      if (currentProject.value?.id === updated.id) currentProject.value = updated
+      return updated
+    } catch (e) {
+      console.error('同步项目当前章节失败:', e.message)
+      throw e
+    }
+  }
+
   async function deleteProject(id) {
     try {
       await api.projects.delete(id)
@@ -118,6 +140,7 @@ export const useProjectStore = defineStore('project', () => {
     createProject,
     openProject,
     updateProject,
+    updateCurrentChapterNum,
     deleteProject,
     exportProjectJson,
     importProjectJson

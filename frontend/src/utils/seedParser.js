@@ -127,12 +127,36 @@ const SEED_FIELDS = [
   'endingAnchor'
 ]
 
+const CORE_SAVE_FIELDS = [
+  'logline',
+  'protagonist',
+  'desire',
+  'coreConflict',
+  'openingHook',
+  'emotionalPromise'
+]
+
 function normalizeValue(value) {
   if (value == null) return ''
   if (typeof value === 'string') return value.trim()
   if (Array.isArray(value)) return value.filter(Boolean).join('、')
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+
+function hasText(value) {
+  return value !== undefined && value !== null && String(value).trim() !== ''
+}
+
+export function seedCompletenessScore(seed = {}) {
+  return CORE_SAVE_FIELDS.reduce((score, field) => score + (hasText(seed[field]) ? 1 : 0), 0)
+}
+
+export function isSavableSeed(seed = {}) {
+  const normalized = normalizeSeedPayload(seed)
+  const hasIdentity = hasText(normalized.title) || hasText(normalized.logline)
+  const hasGenre = hasText(normalized.genre)
+  return hasIdentity && hasGenre && seedCompletenessScore(normalized) >= 3
 }
 
 export function normalizeSeedPayload(raw = {}) {
@@ -303,7 +327,7 @@ function extractLooseSeeds(text) {
 
   return blocks
     .map(extractLooseSeedFromBlock)
-    .filter(seed => seed && (seed.title || seed.logline || seed.openingHook))
+    .filter(isSavableSeed)
 }
 
 export function extractSeedsFromText(text) {
@@ -327,7 +351,7 @@ export function extractSeedsFromText(text) {
     const seeds = parsed
       .filter(item => item && typeof item === 'object')
       .map(normalizeSeedPayload)
-      .filter(seed => seed.title || seed.logline || seed.openingHook)
+      .filter(isSavableSeed)
 
     if (seeds.length) return seeds
   }

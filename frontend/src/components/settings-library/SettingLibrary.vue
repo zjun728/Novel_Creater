@@ -16,18 +16,21 @@ import {
   NPopconfirm,
   NSelect,
   NSpace,
-  NTag
+  NTag,
+  useDialog
 } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useResetConfirmation } from '@/composables/useResetConfirmation'
 import { ENTITY_TYPES, useSettingStore } from '@/stores/settingStore'
 
 const props = defineProps({
-  projectId: { type: String, required: true }
+  projectId: { type: String, required: true },
+  deleteLocked: { type: Boolean, default: false }
 })
 
 const settingStore = useSettingStore()
 const message = useAppMessage()
+const dialog = useDialog()
 const { confirmStageReset } = useResetConfirmation()
 
 const activeType = ref('character')
@@ -37,6 +40,8 @@ const relationSaving = ref(false)
 const clearingSettings = ref(false)
 const showChangeEditModal = ref(false)
 const changeSaving = ref(false)
+const batchAcceptingChanges = ref(false)
+const batchRejectingChanges = ref(false)
 
 const draft = reactive(createBlankDraft())
 const relationDraft = reactive(createBlankRelation())
@@ -83,6 +88,13 @@ const relatedRelations = computed(() => {
   return settingStore.relations.filter(r =>
     r.sourceEntityId === selectedEntityId.value || r.targetEntityId === selectedEntityId.value
   )
+})
+
+const acceptedEventsForSelectedEntity = computed(() => {
+  if (!selectedEntity.value) return []
+  return settingStore.changeEvents
+    .filter(event => event.status === 'accepted' && isEventRelatedToSelectedEntity(event))
+    .slice(0, 12)
 })
 
 const activeProfileFields = computed(() => PROFILE_FIELDS[draft.entityType] || PROFILE_FIELDS.character)
@@ -154,6 +166,10 @@ async function saveEntity() {
 
 async function deleteCurrentEntity() {
   if (!selectedEntityId.value) return
+  if (props.deleteLocked) {
+    warnDeleteLocked('设定实体')
+    return
+  }
   try {
     await settingStore.deleteEntity(props.projectId, selectedEntityId.value)
     message.success('设定已删除')
@@ -163,6 +179,14 @@ async function deleteCurrentEntity() {
   } catch (e) {
     message.error('删除失败：' + e.message)
   }
+}
+
+function warnDeleteLocked(targetLabel = '设定') {
+  dialog.warning({
+    title: `不能删除${targetLabel}`,
+    content: '当前项目已有章节内容，设定库已经成为后续写作、审稿和纠偏的连续性依据，不能再物理删除人物、地点、势力、体系或关系。需要调整时，请修改设定内容、变更状态为隐藏/失效/存档，或通过待确认设定变更记录修正。',
+    positiveText: '知道了'
+  })
 }
 
 async function handleClearSettings() {
@@ -215,6 +239,10 @@ async function saveRelation() {
 }
 
 async function deleteRelation(relationId) {
+  if (props.deleteLocked) {
+    warnDeleteLocked('设定关系')
+    return
+  }
   try {
     await settingStore.deleteRelation(props.projectId, relationId)
     message.success('关系已删除')
@@ -226,6 +254,12 @@ async function deleteRelation(relationId) {
 async function markChangeEvent(eventId, status) {
   try {
     if (status === 'accepted') {
+      const event = settingStore.changeEvents.find(item => item.id === eventId)
+      const conflicts = getConflictWarnings(event)
+      if (conflicts.length) {
+        const confirmed = await confirmConflictAccept(conflicts)
+        if (!confirmed) return
+      }
       const result = await settingStore.acceptChangeEvent(props.projectId, eventId)
       if (result?.entity) {
         activeType.value = result.entity.entityType || activeType.value
@@ -238,6 +272,67 @@ async function markChangeEvent(eventId, status) {
     }
   } catch (e) {
     message.error('处理变更失败：' + e.message)
+  }
+}
+
+async function acceptAllPendingChanges() {
+  const events = [...settingStore.pendingChangeEvents]
+  if (!events.length) {
+    message.warning('暂无待确认设定变更')
+    return
+  }
+  batchAcceptingChanges.value = true
+  let success = 0
+  const safeEvents = events.filter(event => !getConflictWarnings(event).length)
+  const skipped = events.length - safeEvents.length
+  try {
+    for (const event of safeEvents) {
+      await settingStore.acceptChangeEvent(props.projectId, event.id)
+      success += 1
+    }
+    message.success(skipped
+      ? `已确认 ${success} 条低风险设定变更，跳过 ${skipped} 条冲突风险项，请逐条确认`
+      : `已确认 ${success} 条设定变更`)
+  } catch (e) {
+    message.error(`批量确认中断：已确认 ${success} 条，失败原因：${e.message}`)
+  } finally {
+    batchAcceptingChanges.value = false
+  }
+}
+
+function confirmConflictAccept(conflicts) {
+  return new Promise(resolve => {
+    dialog.warning({
+      title: '设定冲突风险',
+      content: () => conflicts.join('\n'),
+      positiveText: '仍然确认',
+      negativeText: '先不确认',
+      maskClosable: false,
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false)
+    })
+  })
+}
+
+async function rejectAllPendingChanges() {
+  const events = [...settingStore.pendingChangeEvents]
+  if (!events.length) {
+    message.warning('暂无待确认设定变更')
+    return
+  }
+  batchRejectingChanges.value = true
+  let success = 0
+  try {
+    for (const event of events) {
+      await settingStore.rejectChangeEvent(props.projectId, event.id)
+      success += 1
+    }
+    message.success(`已拒绝 ${success} 条设定变更`)
+  } catch (e) {
+    message.error(`批量拒绝中断：已拒绝 ${success} 条，失败原因：${e.message}`)
+  } finally {
+    batchRejectingChanges.value = false
   }
 }
 
@@ -275,6 +370,59 @@ function relationName(entityId) {
   return settingStore.entities.find(e => e.id === entityId)?.name || '未知设定'
 }
 
+function relationCounterpartName(relation) {
+  if (!selectedEntityId.value) return relationName(relation.targetEntityId)
+  const counterpartId = relation.sourceEntityId === selectedEntityId.value
+    ? relation.targetEntityId
+    : relation.sourceEntityId
+  return relationName(counterpartId)
+}
+
+function relationDirectionLabel(relation) {
+  if (!selectedEntityId.value) {
+    return `${relationName(relation.sourceEntityId)} → ${relation.relationType || '关系'} → ${relationName(relation.targetEntityId)}`
+  }
+  const isSource = relation.sourceEntityId === selectedEntityId.value
+  const counterpart = relationCounterpartName(relation)
+  return isSource
+    ? `对 ${counterpart}：${relation.relationType || '关系'}`
+    : `来自 ${counterpart}：${relation.relationType || '关系'}`
+}
+
+function parseRelationPayload(event) {
+  if (event?.changeType !== 'relationship') return null
+  const parsed = parseMaybeJson(event.newValue)
+  return parsed && typeof parsed === 'object' ? parsed : null
+}
+
+function changeEventTitle(event) {
+  const payload = parseRelationPayload(event)
+  if (payload) {
+    return `${event.entityName || '未命名实体'} → ${payload.targetEntityName || payload.targetName || payload.target || '未知对象'}`
+  }
+  return event.entityName || '未命名实体'
+}
+
+function changeEventMeta(event) {
+  const payload = parseRelationPayload(event)
+  if (payload) {
+    return [payload.relationType || event.fieldPath || '关系', payload.stance].filter(Boolean).join(' / ')
+  }
+  return event.fieldPath || event.changeType
+}
+
+function isEventRelatedToSelectedEntity(event) {
+  const selected = selectedEntity.value
+  if (!selected || !event) return false
+  if (event.entityId && event.entityId === selected.id) return true
+  if (event.entityName && event.entityName === selected.name && (event.entityType || selected.entityType) === selected.entityType) return true
+  const payload = parseRelationPayload(event)
+  if (!payload) return false
+  const targetName = payload.targetEntityName || payload.targetName || payload.target
+  const targetType = payload.targetEntityType || payload.targetType || selected.entityType
+  return targetName === selected.name && targetType === selected.entityType
+}
+
 function displayEventValue(value) {
   if (!value) return '空'
   try {
@@ -294,6 +442,128 @@ function displayEventValue(value) {
   } catch {
     return value
   }
+}
+
+function getConflictWarnings(event) {
+  if (!event) return []
+  if (event.changeType === 'relationship') return getRelationConflictWarnings(event)
+  return getEntityConflictWarnings(event)
+}
+
+function getEntityConflictWarnings(event) {
+  const warnings = []
+  const entity = findEntityForEvent(event)
+  const newValue = parseMaybeJson(event.newValue)
+
+  if (event.changeType === 'new_entity' && entity) {
+    warnings.push(`已存在同名${typeLabel(entity.entityType)}「${entity.name}」，确认后会更新已有档案，而不是创建全新实体。`)
+  }
+
+  if (!entity) return warnings
+  const fieldPath = normalizeEventFieldPath(event.fieldPath, event.changeType)
+  const existingValue = readEntityField(entity, fieldPath)
+  const incomingValue = stringifyDisplayValue(
+    event.changeType === 'new_entity' && newValue?.summary ? newValue.summary : event.newValue
+  )
+
+  if (isHardSettingField(fieldPath) && existingValue && incomingValue && existingValue !== incomingValue) {
+    warnings.push(`硬设定字段「${fieldLabel(fieldPath)}」将从「${existingValue}」变为「${incomingValue}」。`)
+  }
+
+  if (event.changeType === 'new_entity' && newValue?.profile && typeof newValue.profile === 'object') {
+    for (const [key, value] of Object.entries(newValue.profile)) {
+      const profilePath = `profile.${key}`
+      const current = readEntityField(entity, profilePath)
+      const next = stringifyDisplayValue(value)
+      if (isHardSettingField(profilePath) && current && next && current !== next) {
+        warnings.push(`硬设定字段「${fieldLabel(profilePath)}」将从「${current}」变为「${next}」。`)
+      }
+    }
+  }
+
+  return warnings
+}
+
+function getRelationConflictWarnings(event) {
+  const payload = parseMaybeJson(event.newValue)
+  if (!payload || typeof payload !== 'object') return []
+  const source = findEntityByName(event.entityType || 'character', event.entityName)
+  const target = findEntityByName(payload.targetEntityType || payload.targetType || 'character', payload.targetEntityName || payload.targetName || payload.target)
+  if (!source || !target) return []
+
+  const relationType = payload.relationType || event.fieldPath || '关系'
+  const existing = settingStore.relations.find(relation =>
+    relation.sourceEntityId === source.id &&
+    relation.targetEntityId === target.id &&
+    relation.relationType === relationType
+  )
+  if (!existing) return []
+
+  const warnings = [`关系「${source.name} -> ${relationType} -> ${target.name}」已存在，确认后会覆盖该关系记录。`]
+  if (existing.stance && payload.stance && existing.stance !== payload.stance) {
+    warnings.push(`关系立场将从「${existing.stance}」变为「${payload.stance}」。`)
+  }
+  if (existing.summary && payload.summary && existing.summary !== payload.summary) {
+    warnings.push('关系说明与现有记录不同，建议逐条确认。')
+  }
+  return warnings
+}
+
+function findEntityForEvent(event) {
+  return event.entityId
+    ? settingStore.entities.find(entity => entity.id === event.entityId)
+    : findEntityByName(event.entityType || 'character', event.entityName)
+}
+
+function findEntityByName(entityType, name) {
+  const normalizedName = String(name || '').trim()
+  if (!normalizedName) return null
+  return settingStore.entities.find(entity =>
+    entity.entityType === entityType &&
+    entity.name === normalizedName
+  )
+}
+
+function normalizeEventFieldPath(fieldPath, changeType) {
+  const value = String(fieldPath || '').trim()
+  if (value) return value
+  return changeType === 'new_entity' ? 'summary' : 'notes'
+}
+
+function readEntityField(entity, fieldPath) {
+  if (!entity || !fieldPath) return ''
+  if (fieldPath.startsWith('profile.')) {
+    const key = fieldPath.split('.', 2)[1]
+    return stringifyDisplayValue(entity.profile?.[key])
+  }
+  if (fieldPath === 'summary') return stringifyDisplayValue(entity.summary)
+  if (fieldPath === 'category') return stringifyDisplayValue(entity.category)
+  if (fieldPath === 'status') return stringifyDisplayValue(entity.status)
+  return stringifyDisplayValue(entity.profile?.[fieldPath])
+}
+
+function parseMaybeJson(value) {
+  if (!value) return null
+  if (typeof value === 'object') return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
+function stringifyDisplayValue(value) {
+  if (value == null) return ''
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value).trim()
+}
+
+function isHardSettingField(fieldPath) {
+  return HARD_SETTING_FIELDS.has(fieldPath)
+}
+
+function fieldLabel(fieldPath) {
+  return FIELD_LABELS[fieldPath] || fieldPath
 }
 
 function createBlankDraft(type = 'character') {
@@ -374,6 +644,62 @@ function eventToChangeDraft(event = {}) {
     confidence: Number(event.confidence || 0.8),
     status: event.status || 'pending_review'
   }
+}
+
+const HARD_SETTING_FIELDS = new Set([
+  'summary',
+  'category',
+  'status',
+  'profile.family',
+  'profile.sect',
+  'profile.faction',
+  'profile.nation',
+  'profile.rankTitle',
+  'profile.realm',
+  'profile.realmLevel',
+  'profile.techniques',
+  'profile.weapons',
+  'profile.location',
+  'profile.physicalStatus',
+  'profile.currentGoal',
+  'profile.leader',
+  'profile.territory',
+  'profile.resources',
+  'profile.controller',
+  'profile.realms',
+  'profile.breakthroughRules',
+  'profile.grade',
+  'profile.owner',
+  'profile.ability',
+  'profile.itemStatus'
+])
+
+const FIELD_LABELS = {
+  summary: '概要',
+  category: '分类',
+  status: '状态',
+  'profile.family': '家族',
+  'profile.sect': '宗门/门派',
+  'profile.faction': '阵营',
+  'profile.nation': '国家',
+  'profile.rankTitle': '身份/职位',
+  'profile.realm': '境界',
+  'profile.realmLevel': '境界层级',
+  'profile.techniques': '功法',
+  'profile.weapons': '武器/法宝',
+  'profile.location': '当前位置',
+  'profile.physicalStatus': '身体状态',
+  'profile.currentGoal': '当前目标',
+  'profile.leader': '掌权者',
+  'profile.territory': '控制范围',
+  'profile.resources': '资源',
+  'profile.controller': '控制者',
+  'profile.realms': '境界顺序',
+  'profile.breakthroughRules': '突破规则',
+  'profile.grade': '品阶',
+  'profile.owner': '持有者',
+  'profile.ability': '能力',
+  'profile.itemStatus': '物品状态'
 }
 
 const PROFILE_FIELDS = {
@@ -600,6 +926,34 @@ const PROFILE_FIELDS = {
           </div>
         </n-card>
 
+        <n-card v-if="selectedEntityId" title="关联关系摘要" size="small" class="mt-4">
+          <div v-if="relatedRelations.length" class="relation-summary-list">
+            <div v-for="relation in relatedRelations" :key="relation.id" class="relation-summary-row">
+              <div class="relation-summary-title">
+                <strong>{{ relationDirectionLabel(relation) }}</strong>
+                <n-tag v-if="relation.stance" size="tiny" :bordered="false">{{ relation.stance }}</n-tag>
+              </div>
+              <p>{{ relation.summary || relation.evidence || '暂无关系说明' }}</p>
+            </div>
+          </div>
+          <n-empty v-else size="small" description="暂无已确认关系" class="py-3" />
+        </n-card>
+
+        <n-card v-if="selectedEntityId && acceptedEventsForSelectedEntity.length" title="已确认变更记录" size="small" class="mt-4">
+          <div class="accepted-change-list">
+            <div v-for="event in acceptedEventsForSelectedEntity" :key="event.id" class="accepted-change-row">
+              <div class="change-title">
+                <n-tag size="tiny">{{ typeLabel(event.entityType) }}</n-tag>
+                <strong>{{ changeEventTitle(event) }}</strong>
+                <span>{{ changeEventMeta(event) }}</span>
+                <span v-if="event.chapterNum">第 {{ event.chapterNum }} 章</span>
+              </div>
+              <p>{{ displayEventValue(event.newValue) }}</p>
+              <p v-if="event.evidence" class="evidence">证据：{{ event.evidence }}</p>
+            </div>
+          </div>
+        </n-card>
+
         <n-collapse class="mt-4">
           <n-collapse-item title="关系管理" name="relations">
             <div class="relation-form">
@@ -635,18 +989,46 @@ const PROFILE_FIELDS = {
             <n-alert type="info" :bordered="false" class="mb-3">
               这些候选由 AI 从创作圣经初始化或在章节定稿后提取。确认后会自动创建或更新设定档案；拒绝则不会进入正式设定库。
             </n-alert>
+            <div v-if="settingStore.pendingChangeEvents.length" class="change-actions">
+              <n-button
+                size="small"
+                type="primary"
+                secondary
+                :loading="batchAcceptingChanges"
+                @click="acceptAllPendingChanges"
+              >
+                批量确认
+              </n-button>
+              <n-button
+                size="small"
+                secondary
+                :loading="batchRejectingChanges"
+                @click="rejectAllPendingChanges"
+              >
+                批量拒绝
+              </n-button>
+            </div>
             <div v-if="settingStore.pendingChangeEvents.length" class="change-list">
               <div v-for="event in settingStore.pendingChangeEvents" :key="event.id" class="change-row">
                 <div>
                   <div class="change-title">
                     <n-tag size="tiny">{{ typeLabel(event.entityType) }}</n-tag>
-                    <strong>{{ event.entityName || '未命名实体' }}</strong>
-                    <span>{{ event.fieldPath || event.changeType }}</span>
+                    <n-tag v-if="getConflictWarnings(event).length" size="tiny" type="error" :bordered="false">
+                      冲突风险
+                    </n-tag>
+                    <strong>{{ changeEventTitle(event) }}</strong>
+                    <span>{{ changeEventMeta(event) }}</span>
                     <span v-if="event.chapterNum">第 {{ event.chapterNum }} 章</span>
                   </div>
                   <p v-if="event.oldValue">原：{{ displayEventValue(event.oldValue) }}</p>
                   <p>新：{{ displayEventValue(event.newValue) }}</p>
                   <p v-if="event.evidence" class="evidence">证据：{{ event.evidence }}</p>
+                  <div v-if="getConflictWarnings(event).length" class="conflict-box">
+                    <strong>确认前请检查：</strong>
+                    <ul>
+                      <li v-for="warning in getConflictWarnings(event)" :key="warning">{{ warning }}</li>
+                    </ul>
+                  </div>
                 </div>
                 <n-space>
                   <n-button size="small" @click="editChangeEvent(event)">编辑</n-button>
@@ -892,6 +1274,43 @@ label span,
   gap: 8px;
 }
 
+.relation-summary-list,
+.accepted-change-list {
+  display: grid;
+  gap: 10px;
+}
+
+.relation-summary-row,
+.accepted-change-row {
+  border: 1px solid #edf0f2;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fbfdff;
+}
+
+.relation-summary-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.relation-summary-row p,
+.accepted-change-row p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.change-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
 .relation-row,
 .change-row {
   display: flex;
@@ -920,6 +1339,22 @@ label span,
 
 .evidence {
   color: #8b95a1;
+}
+
+.conflict-box {
+  margin-top: 8px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fef2f2;
+  padding: 8px 10px;
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.conflict-box ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
 }
 
 @media (max-width: 980px) {

@@ -74,6 +74,10 @@ async def get_project_content_state(pid: str):
         "SELECT COUNT(*) AS c FROM chapter_versions WHERE project_id=%s AND COALESCE(content, '') <> ''",
         (pid,),
     )
+    temp_drafts = await _count(
+        "SELECT COUNT(*) AS c FROM temp_drafts WHERE project_id=%s AND COALESCE(content, '') <> ''",
+        (pid,),
+    )
     seed_count = await _count("SELECT COUNT(*) AS c FROM creative_seeds WHERE project_id=%s", (pid,))
     bible_count = await _count("SELECT COUNT(*) AS c FROM creative_bible WHERE project_id=%s", (pid,))
     setting_entities = await _count("SELECT COUNT(*) AS c FROM setting_entities WHERE project_id=%s", (pid,))
@@ -83,7 +87,8 @@ async def get_project_content_state(pid: str):
         "chaptersCount": chapter_count,
         "writtenChapters": written_chapters,
         "chapterVersions": chapter_versions,
-        "hasChapterContent": written_chapters > 0 or chapter_versions > 0,
+        "tempDrafts": temp_drafts,
+        "hasChapterContent": written_chapters > 0 or chapter_versions > 0 or temp_drafts > 0,
         "seedsCount": seed_count,
         "hasBible": bible_count > 0,
         "settingEntitiesCount": setting_entities,
@@ -109,12 +114,10 @@ async def update_project(pid: str, data: ProjectUpdate):
         and int(incoming["targetChapters"] or 0) != int(current.get("target_chapters") or 0)
     )
     if target_words_changed or target_chapters_changed:
-        chapter_count = await _count("SELECT COUNT(*) AS c FROM chapters WHERE project_id=%s", (pid,))
-        version_count = await _count("SELECT COUNT(*) AS c FROM chapter_versions WHERE project_id=%s", (pid,))
-        if chapter_count > 0 or version_count > 0:
+        if await _has_project_chapter_content(pid):
             raise HTTPException(
                 400,
-                "项目已有章节内容，不能修改目标字数或目标章节数；如需重新规划，请先清空章节内容后再调整。",
+                "项目已有正文、候选版本或临时草稿，不能修改目标字数或目标章节数；如需重新规划，请先清空章节内容后再调整。",
             )
 
     sets, args = [], []
@@ -142,11 +145,14 @@ async def delete_project(pid: str):
         "rolling_outlines",
         "canon_facts",
         "possibility_cards",
+        "chapter_beat_plans",
         "temp_drafts",
         "task_model_bindings",
         "market_items",
         "market_chat_messages",
         "market_direction_reports",
+        "project_audit_reports",
+        "correction_tasks",
         "project_volumes",
         "setting_relations",
         "setting_change_events",
@@ -161,3 +167,23 @@ async def delete_project(pid: str):
 async def _count(sql: str, args: tuple):
     row = await fetchone(sql, args)
     return int((row or {}).get("c") or 0)
+
+
+async def _has_project_chapter_content(pid: str) -> bool:
+    written_chapters = await _count(
+        """
+        SELECT COUNT(*) AS c FROM chapters
+        WHERE project_id=%s
+          AND (COALESCE(word_count, 0) > 0 OR final_version_id IS NOT NULL OR COALESCE(summary, '') <> '' OR status IN ('final', 'reviewing'))
+        """,
+        (pid,),
+    )
+    chapter_versions = await _count(
+        "SELECT COUNT(*) AS c FROM chapter_versions WHERE project_id=%s AND COALESCE(content, '') <> ''",
+        (pid,),
+    )
+    temp_drafts = await _count(
+        "SELECT COUNT(*) AS c FROM temp_drafts WHERE project_id=%s AND COALESCE(content, '') <> ''",
+        (pid,),
+    )
+    return written_chapters > 0 or chapter_versions > 0 or temp_drafts > 0

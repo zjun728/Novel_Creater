@@ -55,6 +55,7 @@ async def export_full(projectId: str = "", includeApiKeys: bool = False):
             "correctionTasks": _convert(await fetchall("SELECT * FROM correction_tasks WHERE project_id=%s", (pid,))),
             "canonFacts": _convert(await fetchall("SELECT * FROM canon_facts WHERE project_id=%s", (pid,))),
             "possibilityCards": _convert(await fetchall("SELECT * FROM possibility_cards WHERE project_id=%s", (pid,))),
+            "chapterBeatPlans": _convert(await fetchall("SELECT * FROM chapter_beat_plans WHERE project_id=%s", (pid,))),
             "marketItems": _convert(await fetchall("SELECT * FROM market_items WHERE project_id=%s", (pid,))),
             "marketChatMessages": _convert(await fetchall("SELECT * FROM market_chat_messages WHERE project_id=%s", (pid,))),
             "marketDirectionReports": _convert(await fetchall("SELECT * FROM market_direction_reports WHERE project_id=%s", (pid,))),
@@ -182,6 +183,12 @@ async def import_full(data: dict):
                 card["id"] = str(uuid.uuid4())
                 _put_key(card, "projectId", new_project_id)
                 await _insert("possibility_cards", card)
+
+            for beat_plan in proj_data.get("chapterBeatPlans", []):
+                chapter_num = _get_key(beat_plan, "chapterNum") or 0
+                beat_plan["id"] = f"{new_project_id}_{chapter_num}"
+                _put_key(beat_plan, "projectId", new_project_id)
+                await _insert("chapter_beat_plans", beat_plan)
 
             for item in proj_data.get("marketItems", []):
                 item["id"] = str(uuid.uuid4())

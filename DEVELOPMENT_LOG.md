@@ -18,8 +18,8 @@
 - v0.4 选题雷达版已完成。
 - v0.5 体验增强版已完成。
 - 已完成 IndexedDB → FastAPI + MySQL 迁移。
-- v0.6 设定库与世界观一致性版已开始开发，第一条可用竖切已完成。
-- v1.0 本地稳定版调整为待 v0.6 补强后验收。
+- v0.6 设定库与世界观一致性版已完成主体闭环：设定库、关系、待确认变更、定稿提取、冲突检测和写作上下文接入均已可用。
+- v1.0 本地稳定版进入补强与验收阶段：重点是章节生成链路稳定性、上下文透明化、纠偏闭环和长篇项目端到端验证。
 
 ## 文档入口
 
@@ -40,6 +40,8 @@
 - 设定库作为长篇小说结构化记忆底座，负责人物、势力、世界观、修炼体系、物品、关系和状态变更。
 - 创作圣经只保存作品级核心原则，不承载完整百科式资料。
 - 章节定稿后由 AI 提取待确认设定变更，必须经用户确认后才能写入设定库。
+- 设定库提取分为两条不同流程：项目初始阶段的“圣经/种子初始化提取”和写作过程中的“章节定稿增量提取”，后续开发不得混用。
+- 初始化提取可以分类型处理长篇圣经和种子；章节增量提取只能基于本章定稿正文和已有设定库，不允许重新扫描圣经覆盖正式设定。
 
 ## 版本进度
 
@@ -50,15 +52,669 @@
 | v0.3 记忆与审稿版 | 已完成 | 摘要、事实、角色状态、伏笔、审稿 |
 | v0.4 选题雷达版 | 已完成 | 网页抓取热门排行、分类展示、AI 选题顾问、大纲生成 |
 | v0.5 体验增强版 | 已完成 | 多模型对比、融合、风格和节奏分析、人物弧光/伏笔可视化 |
-| v0.6 设定库与世界观一致性版 | 开发中 | 人物、势力、世界观、修炼体系、关系图谱、状态变更日志 |
-| v1.0 本地稳定版 | 待 v0.6 补强后验收 | 稳定整合和长篇项目验证 |
+| v0.6 设定库与世界观一致性版 | 主体完成，继续补强 | 人物、势力、世界观、修炼体系、关系图谱、状态变更日志 |
+| v1.0 本地稳定版 | 补强与验收中 | 稳定整合、章节生成稳定性和长篇项目验证 |
 
 ## 下一步任务
 
-1. 浏览器端用真实章节定稿验证 AI 设定变更提取质量。
-2. 在设定库中检查“待确认 → 确认入库”体验，确认是否需要增加逐条编辑弹窗。
-3. 继续优化设定提取字段映射，尤其是玄幻/修真场景的境界、功法、法宝、宗门关系。
-4. 长篇项目实际写作流程验证，观察设定库注入后章节生成是否减少错乱。
+当前开发必须围绕 `PRODUCT_DEVELOPMENT_PLAN.md` 的 v1.0 本地稳定版验收推进，优先补齐“长篇可持续创作”的实用闭环，不新增偏炫技功能。
+
+1. v1.0 浏览器端手工验收：在真实页面中按“选题 → 种子 → 圣经 → 设定库初始化 → 章节小纲 → 正文生成 → 定稿入库 → 审稿纠偏 → 下一章生成”的完整路径点击验证。
+2. 长篇项目验证：准备 50-100 章规模的模拟或真实项目数据，观察设定库注入、章节列表、版本列表、审稿和导出导入性能。
+
+注意：以上为已确认的待修复/待验收队列；当前按用户确认后的优先级逐项执行，完成一项即同步文档和验证结果。
+
+暂缓事项：
+
+- SaaS 化、多用户、计费、云同步暂不进入当前开发。
+- 重型爬虫、平台正文抓取、向量检索、复杂富文本编辑器暂不进入当前开发。
+- 新增功能必须服务当前长篇创作主流程，避免偏离“实用创作平台”目标。
+
+## 2026-05-24 - 本章审稿逐条修订面板
+
+### 问题
+- 本章审稿弹窗关闭或点击返回修改后，用户回到正文界面看不到原来的修改建议，只能反复“审稿 -> 生成修订版本 -> 再审稿”，修稿成本高。
+- 实测发现审稿 `location` 片段与正文只要存在空格、换行或引号差异，一键替换就会提示“正文中未找到该片段”。
+
+### 本次完成
+- 审稿 Prompt 新增 `replacement` 字段，要求模型为每个问题尽量提供可直接替换原文的正文片段。
+- 审稿结果解析保留 `replacement`，并补齐 `human_motivation`、`emotional_logic`、`ai_tone` 等审稿类型。
+- 写字台右侧新增“审稿修改建议”面板：审稿报告关闭后仍保留问题列表、原文、建议和替换文本。
+- 支持逐条定位原文：点击后在正文 textarea 中选中对应片段。
+- 支持逐条替换：只替换当前正文中仍能精确找到的原文片段，替换后正文进入未另存状态并触发临时草稿保存。
+- 支持忽略单条问题；找不到原文时提示正文已变化，不做模糊替换。
+- 替换定位升级为安全宽松匹配：允许忽略空白、换行、中英文引号和常见标点差异，但必须唯一命中，避免误替换相似段落。
+- 半句定位保护已补齐：当审稿 `location` 只定位到半句、但 `replacement` 是完整句时，自动扩展到当前完整句再替换，避免把完整句插入到半句话中。
+- 审稿 Prompt 已明确要求 `location` 必须从正文逐字复制，且 `replacement` 与 `location` 粒度一致。
+
+### 修改文件
+- `frontend/src/prompts/audit.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/utils/auditRevisionTools.js`
+- `frontend/src/views/WriterView.vue`
+- `tmp/test_audit_revision_tools.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp\test_audit_revision_tools.mjs` 通过。
+- `node tmp\test_chapter_title_generation.mjs` 通过。
+- `node tmp\test_chapter_word_prompt_guard.mjs` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-24 - AI 腔句式硬约束升级
+
+### 问题
+- 实际生成章节中，“不是X，是Y / 不是X，而是Y”句式一章可出现 20 多次，软性提示不足以约束模型。
+
+### 本次完成
+- 正文生成系统提示词从“避免高频”升级为可计数硬约束：非对白叙述中同类句式整章最多 2 次。
+- 输出前静默自检新增同类句式数量检查，超过阈值必须改成动作、感官、物象、对白停顿或人物反应。
+- 本章审稿新增 `ai_tone` 问题类型，超过阈值时应作为“AI 腔”问题提出。
+- 去 AI 腔/润色 Prompt 升级为尽量清零同类句式，不再只是减少。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/audit.js`
+- `frontend/src/prompts/rewrite.js`
+- `frontend/src/utils/auditLabels.js`
+- `tmp/test_human_motivation_prompts.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp\test_human_motivation_prompts.mjs` 通过。
+- `node tmp\test_finalize_endpoint_contract.mjs` 通过。
+- `node tmp\test_correction_manual_closure.mjs` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-24 - 定稿接口锁定顺序修复
+
+### 问题
+- 用户点击定稿后出现 `API error 409: 本章已经定稿，正文、小纲和版本已锁定，不能再修改。`
+- 根因是前端先把候选版本更新为 `final`，再调用普通章节更新接口写入 `finalVersionId`、状态和字数；后端章节锁定保护检测到章节已定稿后拒绝普通更新。
+
+### 本次完成
+- 后端新增版本专用定稿接口，一次性完成版本 final 标记、章节 finalVersionId、章节状态、字数和更新时间写入。
+- 前端定稿流程改为调用专用定稿接口，不再在定稿过程中调用普通章节更新接口。
+- 保留已定稿章节的普通更新锁定保护，避免定稿后再次修改正文、小纲或版本。
+
+### 修改文件
+- `backend/routers/chapters.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/writerStore.js`
+- `tmp/test_finalize_endpoint_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp\test_finalize_endpoint_contract.mjs` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-24 - 纠偏设定候选手动闭环提示
+
+### 产品决策
+- 点击“生成设定候选”只生成待确认设定变更，不自动确认入库，也不自动完成纠偏任务。
+- 用户需要到设定库确认或拒绝候选；确认入库后回到纠偏任务点击“完成”，拒绝后可以“忽略本次”或继续人工处理。
+
+### 本次完成
+- 新增纠偏设定候选状态判断工具，区分待确认、已确认、已拒绝和本地刚生成状态。
+- 纠偏任务卡片新增手动闭环提示，并在待确认状态提供“去设定库确认”入口。
+- 生成设定候选后的成功提示改为明确说明下一步，不再让用户误以为任务已经处理完。
+
+### 修改文件
+- `frontend/src/utils/correctionManualClosure.js`
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `tmp/test_correction_manual_closure.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp\test_correction_manual_closure.mjs` 通过。
+
+## 2026-05-23 - 人物弧光时间线说明补充
+
+### 本次完成
+- 在人物弧光时间线标题下方新增小字说明，解释硬状态、软状态、双重变更、有事实和未出现的判定含义。
+- 保留原有颜色图例，用于快速识别各章节的人物状态变化。
+
+### 修改文件
+- `frontend/src/components/bible/CharacterArcView.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-23 - 生成本章质量护栏前置
+
+### 产品决策
+- 本章审稿继续保留为事后质检，不用生成提示词替代审稿。
+- 生成本章前置轻量规则，只作为创作边界，不把正文写成固定模板，避免压制想象力。
+
+### 本次完成
+- 章节正文系统提示词补充：允许合理反转，但必须通过隐藏真相、角色认知有限或误导解除成立。
+- 章节正文系统提示词补充：新增关键人物、势力、地点、物品或能力时必须有清晰叙事作用，便于后续进入设定库。
+- 章节正文任务末尾新增“输出前静默自检”，要求模型在心中检查承接、小纲完成、设定冲突、新增关键设定和开头乱序，并自行修正但不输出检查过程。
+- 产品规划和功能测试清单已同步新增该质量护栏要求。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-23 - 审稿标签中文化
+
+### 本次完成
+- 新增审稿标签映射工具，统一把 `critical`、`major`、`minor`、`suggestion` 显示为严重、主要、轻微、建议。
+- 统一把 `contradiction`、`pacing`、`logic`、`quality` 等审稿问题类型显示为中文。
+- 本章审稿、分卷审稿、全局审稿和纠偏任务板已接入中文展示。
+
+### 修改文件
+- `frontend/src/utils/auditLabels.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-23 - 小纲静默自检护栏
+
+### 产品决策
+- 小纲阶段只做 AI 静默自检，不新增人工审查环节，避免创作流程变重。
+
+### 本次完成
+- 小纲系统提示词要求输出前先在心中自检并修正，不输出检查过程。
+- 小纲任务提示词新增静默自检项：上一章承接、自然时间顺序、设定一致性、人物行动合理性、本章目标和正文发挥空间。
+- 产品规划和功能测试清单已同步小纲质量护栏。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-23 - 定稿前审稿门禁
+
+### 产品决策
+- 定稿前先审稿，定稿后只做记忆和设定提取，避免正文锁定后才发现可修订问题。
+- 审稿不能自动改写或自动定稿修订内容；修订仍进入候选版本，必须由用户确认。
+
+### 本次完成
+- 写字台定稿流程改为：点击定稿 -> 本章一致性审稿 -> 严重/主要问题拦截 -> 用户选择修订、仍然定稿或返回修改。
+- 轻微/建议类问题会提示用户继续定稿或返回修改。
+- 定稿后处理不再重复执行本章审稿，只保留摘要、记忆事实和设定变更提取。
+- 定稿后处理完成弹窗文案改为显示记忆事实和待确认设定变更数量，不再把审稿问题混在“记忆提取”里。
+- 产品规划和功能测试清单已同步定稿前审稿门禁。
+
+### 修改文件
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/stores/memoryStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-23 - 正文生成降低 AI 腔
+
+### 本次完成
+- 章节正文系统提示词新增“降低 AI 腔”规则，减少“不是……而是……”“不是……是……”“像是……又像是……”“某种……”等套路化反差句和虚化判断的高频使用。
+- 输出前静默自检新增 AI 腔句式检查，要求重复出现时改成具体动作、感官、物象或人物反应。
+- 产品规划和功能测试清单已同步该质量要求。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-22 - 纠偏任务硬/软分层与生成门禁
+
+### 产品决策
+- 章节纠偏只用于未定稿章节，属于硬纠偏；未处理前阻断本章定稿和继续生成。
+- 已定稿章节不再回改正文，分卷/全局纠偏默认作为软纠偏进入后续章节上下文，用自然补解释、补动机、回收伏笔的方式修复偏差。
+- 涉及设定库或记忆的纠偏不自动覆盖正式资料，只生成待确认候选。
+
+### 本次完成
+- 纠偏任务增加 `correctionMode` 与 `blocking` 元数据，用于区分硬纠偏、软纠偏、设定候选、记忆候选和建议。
+- 写字台生成小纲、正文、多候选、续写、扩写、压缩、选区改写、多模型对比和定稿前，会检查阻断型纠偏任务。
+- 软纠偏任务不阻断生成，但会进入 AI 写作上下文，并明确要求后续章节自然修复，不回改已定稿正文。
+- 本章审稿报告在未定稿章节可转为本章硬纠偏任务；已定稿章节不提供正文修订型纠偏入口。
+- 纠偏任务板显示纠偏类型，正文修订草案只对硬纠偏任务开放。
+
+## 2026-05-20 - 写字台小纲确认弹窗与记忆导航修复
+
+### 问题
+- 本章小纲确认弹窗在小纲较长时会把底部按钮挤到视口底部，保存、重新生成和开始生成按钮不够稳定。
+- 写字台顶部进入“记忆”视图后，两个按钮都可能显示“写字台”，导航语义混乱。
+- 重新生成小纲原逻辑会立即保存新小纲，存在误覆盖已保存小纲的风险。
+
+### 本次完成
+- 小纲弹窗改为内容区滚动、底部操作区固定，长小纲不会遮挡操作按钮。
+- “重新生成小纲”改为只更新当前弹窗草稿，不立即覆盖已保存小纲。
+- 点击“保存小纲”或“开始生成本章”时，才会把当前小纲保存到章节小纲记录。
+- 顶部“记忆”按钮在记忆视图中仍显示“记忆”，左侧按钮负责从圣经/记忆返回写字台。
+- 顶部“已有小纲”标记改为只基于已保存小纲显示，避免临时草稿误导用户。
+- AI 工具区按钮改为无保存小纲时显示“先做小纲”，有保存小纲后显示“查看小纲”。
+- AI 工具区 loading 状态从全局生成态拆出具体动作态，避免生成正文或生成小纲时“基于小纲生成多版本”按钮误显示旋转进度。
+- 版本差异对比改为“当前正文/定稿作为默认基准 + 已加入对比的候选作为对比对象”，加入一个候选即可打开差异对比。
+- 基于小纲生成多版本后不再自动把第一个候选加载进编辑器，避免覆盖用户正在看的原版正文基准。
+- 差异对比基准选择补强：如果当前选中的版本已经加入对比池，会优先选择未加入对比池的原始生成版本作为基准，避免“基准=候选”导致误报没有候选版本。
+- 差异对比弹窗选项补入“当前编辑器正文”和章节全部版本，选项文案改为显示版本类型、来源说明和时间，避免多个 `AI 候选` 难以区分。
+- 多候选生成逻辑收敛：已有正文时只补充“强冲突版/意外转向版”两个替代候选，并保留当前正文作为默认基准；无正文时直接生成三版候选，并默认载入第一版到编辑器。
+- 顶部“保存草稿”改为“另存为版本”，会把当前编辑器正文创建为 `用户草稿` 版本进入版本列表。
+- 从版本列表切换版本时，如果当前编辑器内容相对已载入版本有手动改动，会弹窗提示先另存为版本、直接切换或继续编辑，避免误以为候选版本被自动覆盖。
+- 续写、扩写、压缩和选区改写执行期间，写字台正文编辑器会显示处理遮罩并禁用编辑，避免 AI 回写过程中用户继续修改导致内容错位。
+- 版本列表定稿逻辑收紧：本章已有定稿后，其他版本不再允许继续点击定稿，避免重复覆盖 `finalVersionId` 和重复触发记忆提取。
+
+### 修改文件
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/components/writer/AIActionPanel.vue`
+- `frontend/src/components/writer/VersionDiffModal.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-20 - v1.0 接口级完整链路冒烟验收
+
+### 本次完成
+- 新增临时冒烟脚本 `tmp/v1_e2e_smoke.ps1`，用于验证后端核心数据流，不依赖外部 AI。
+- 通过临时项目完整跑通：项目创建、内容状态检查、创作种子、创作圣经、设定变更确认入库、分卷、章节、小纲、候选正文、定稿、内容状态锁定、全局审稿报告、纠偏任务、纠偏忽略状态和项目清理。
+- 修复项目删除遗漏：删除项目时现在会同步清理 `project_audit_reports` 和 `correction_tasks`，避免审稿/纠偏孤儿数据残留。
+- 修复设定变更接口鲁棒性：`oldValue` / `newValue` 现在支持对象或数组入参，后端会统一转为 JSON 字符串存储，避免 AI 提取候选直接传对象时 500。
+- 验收过程中使用 `8010` 临时后端验证新代码，结束后已关闭临时进程；不影响用户已有 `8000` 本地服务。
+
+### 修改文件
+- `backend/routers/projects.py`
+- `backend/routers/settings_library.py`
+- `tmp/v1_e2e_smoke.ps1`
+- `DEVELOPMENT_LOG.md`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+
+### 验证
+- `powershell.exe -ExecutionPolicy Bypass -File tmp\v1_e2e_smoke.ps1` 在 `NOVEL_SMOKE_BASE=http://127.0.0.1:8010/api` 下通过，输出 `SMOKE_OK` 和 `CLEANUP_OK`。
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+
+### 后续
+- 接口级闭环已通过，下一步需要在浏览器页面做手工验收，重点看弹窗、按钮状态、页面状态流转、AI 生成失败提示和用户可见交互是否一致。
+
+## 2026-05-20 - 选题雷达方向建议解析与兜底修复
+
+### 问题
+- 浏览器端抓取热点后，AI 已返回接近正确的 `{ "directions": [...] }` 方向建议，但前端提示“AI 没有返回可解析的方向建议 JSON”。
+- 根因之一是解析器会收集 JSON 内部的单个方向对象，但归一化逻辑只接受数组或顶层 `directions`，不接受单个方向对象。
+- 如果 AI 输出被截断或修复仍失败，当前流程会直接报错，没有把已抓取热点转成可继续讨论的保守方向建议。
+
+### 本次完成
+- `extractMarketDirections` 已支持单个方向对象解析，能从 `{ title, genre, readerExpectation... }` 这种候选中恢复方向建议。
+- 新增 `buildFallbackMarketDirections`：当 AI JSON 解析和修复都失败时，基于已抓取热点样本按题材、平台、标签生成本地保守方向建议。
+- `generateMarketDirections` 不再在有热点样本时直接失败；解析失败会记录 warning，并保存本地保守方向建议，保证选题雷达流程不中断。
+
+### 修改文件
+- `frontend/src/prompts/marketDirections.js`
+- `frontend/src/stores/marketStore.js`
+- `tmp/test_market_directions.mjs`
+
+### 验证
+- `node tmp\test_market_directions.mjs` 通过：覆盖顶层 `directions`、单个方向对象、本地保守兜底三类情况。
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-20 - 章节管理按钮语义拆分
+
+### 问题
+- 章节管理页里的“按目标章节初始化”位于分卷规划区域，实际功能是自动创建分卷规划，不是创建章节小纲，也不是批量创建空章节。
+- 该文案容易让用户误以为它是章节小纲或空章节创建入口。
+
+### 本次完成
+- 分卷规划按钮文案改为“自动生成分卷规划”，成功/失败提示也同步改为分卷规划语义。
+- 章节列表区域新增“批量创建空章节”按钮，真正按项目目标章节数补齐缺失章节记录。
+- 批量创建空章节只创建缺失章节，不覆盖已有章节、小纲、正文、候选版本或定稿。
+
+### 修改文件
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/stores/writerStore.js`
+
+### 验证
+- 已检索旧文案“按目标章节初始化/初始化分卷”，确认页面不再残留误导文案。
+- `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-20 - 纠偏任务忽略状态独立化
+
+### 本次完成
+- “忽略本次”从原先复用 `rejected` 调整为独立状态 `ignored`。
+- `rejected` 保留为历史兼容和“已拒绝”语义，仍视为关闭状态，不进入写作台 AI 上下文。
+- 纠偏任务板按钮统一使用“是否仍为打开任务”判断，已完成、已忽略、已拒绝、已取消和已归档任务都不再显示生成候选、定位、完成或忽略按钮。
+- 后端纠偏任务列表排序补入 `ignored`，历史任务列表显示顺序与状态语义保持一致。
+
+### 修改文件
+- `frontend/src/stores/correctionTaskStore.js`
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `backend/routers/correction_tasks.py`
+
+### 验证
+- 已检查源码中纠偏任务面板不再写死 `done/rejected` 判断。
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `git diff --check` 通过，仅有既有 CRLF 换行提示。
+
+## 2026-05-20 - 项目目标规模锁定规则复核
+
+### 本次完成
+- 项目目标字数和目标章节数的锁定规则从“只要有章节记录就锁定”调整为“已有真实正文资产才锁定”。
+- 空章节、自动创建的章节记录和仅有小纲不再锁定目标规模，避免用户刚进入写字台后就无法调整项目目标。
+- 后端 `/projects/{pid}/content-state` 新增 `tempDrafts` 统计，并将 `hasChapterContent` 定义为：存在含正文状态的章节、正文/候选版本或临时草稿。
+- 后端更新项目时同样使用真实正文资产判断，防止前端放开后后端仍因空章节误拦截。
+- 项目库首页和项目详情页编辑弹窗统一使用 `hasChapterContent` 判断是否锁定，并在提示中分别显示含正文状态章节、正文/候选版本、临时草稿数量。
+
+### 修改文件
+- `backend/routers/projects.py`
+- `frontend/src/views/HomeView.vue`
+- `frontend/src/views/ProjectView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- backend/routers/projects.py frontend/src/views/HomeView.vue frontend/src/views/ProjectView.vue PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过，仅有既有 CRLF 提示。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 目标字数和目标章节数属于项目规划尺度；只有在真实写作内容已经产生后才锁定。空章节和小纲可以随目标规模调整继续滚动规划。
+
+## 2026-05-20 - 写字台 AI 操作上下文加载保护
+
+### 本次完成
+- 写字台新增章节加载、上下文加载和上下文就绪状态，顶部会显示“正在加载章节资料 / 正在加载创作上下文 / 创作上下文尚未就绪”。
+- AI 工具面板在上下文未就绪时禁用小纲、正文生成、多候选、对比、续写、扩写和选区改写等会读取创作上下文的操作。
+- 关键 AI 操作函数增加二次保护：即使通过事件或弹窗触发，也会先确认上下文已加载；未就绪时阻止执行，避免空上下文进入模型。
+- 如果上下文尚未标记为已加载，会先尝试重新加载；加载失败时给出错误提示并阻止 AI 操作。
+- 上下文预览按钮在上下文未就绪时禁用，避免用户误以为空白预览就是实际将注入的资料。
+
+### 修改文件
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/components/writer/AIActionPanel.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/views/WriterView.vue frontend/src/components/writer/AIActionPanel.vue PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过，仅有既有 CRLF 提示。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 正文生成、小纲、多候选、对比、续写、扩写和选区改写都必须等待写作上下文加载完成；压缩场景不依赖上下文，但仍受当前生成状态保护。
+
+## 2026-05-20 - 多候选版本拆分增强
+
+### 本次完成
+- 多候选生成 Prompt 改为要求模型使用固定分隔协议：`<<<VARIANT:版本名>>>` 与 `<<<END_VARIANT>>>`，减少多个候选粘连成一个版本的概率。
+- 新增 `parseMultiVariantText` 本地解析器，优先识别固定分隔协议；如果模型未完全遵守，也兼容 Markdown 标题、`版本一/版本二/版本三`、`【稳妥推进版】` 等常见格式。
+- 多候选保存逻辑改为基于解析后的 `{ label, content }` 列表创建版本，每个候选单独清理正文标题和解释性文字。
+- 解析失败时仍保留兜底：把完整结果保存为一个“候选”，避免生成结果丢失。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `node --input-type=module -e "...parseMultiVariantText..."` 冒烟测试通过，固定分隔符、Markdown 标题和版本编号三种格式都能拆出 3 个候选。
+- `git diff --check -- frontend/src/prompts/chapter.js frontend/src/stores/writerStore.js PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过，仅有既有 CRLF 提示。
+
+### 当前决策
+- 多候选版本属于候选区资产，即使解析器只能兜底保存一个版本，也不能自动覆盖草稿或定稿。
+
+## 2026-05-20 - 圣经/种子设定初始化分类型提取
+
+### 本次完成
+- 圣经/种子到设定库初始化从单次大模型提取升级为分类型批次提取，依次处理人物、势力/组织、世界规则/能力体系、地点/物品和长期关系。
+- 每个批次只要求模型提取当前类型，并把前面批次已提取候选作为去重上下文，降低长篇种子过长导致的 JSON 截断、偏科和重复创建风险。
+- 长期关系批次只允许输出 relationship，避免把关系误存成实体；非关系批次默认只保留 new_entity。
+- 新增初始化候选合并去重逻辑：同名同类型实体不重复创建，关系按来源、目标和关系类型去重；已有正式设定库中的同名实体不会重复进入初始化候选。
+- 保留原有保守兜底：所有分类型提取都失败或为空时，仍会基于圣经和选中种子生成保守版待确认候选，但不会自动写入正式设定。
+
+### 修改文件
+- `frontend/src/prompts/settingsFromBible.js`
+- `frontend/src/stores/settingStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/prompts/settingsFromBible.js frontend/src/stores/settingStore.js PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过，仅有既有 CRLF 提示。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 项目初始化提取和章节定稿增量提取继续保持分离：初始化可以读取圣经和种子并分批提取；章节定稿后只能基于本章正文和已有设定库做增量候选，不允许重新扫描圣经覆盖正式设定。
+
+## 2026-05-20 - 设定库上下文相关性排序
+
+### 本次完成
+- 写字台设定库上下文从单纯按重要度排序，升级为“本章相关性优先 + 重要度兜底”。
+- 相关性评分会参考本章目标、当前分卷目标/冲突/阶段摘要、分卷关键人物、最近已确认设定变更、实体首末出现章节、实体位置/归属/持有者等信息。
+- 关系注入从“只保留两端都在高重要度实体内”调整为“任一端与当前上下文相关即可进入候选关系”，并按两端相关性和重要度排序。
+- 重要度仍保留为排序兜底，避免当前章节缺少明确线索时上下文为空。
+
+### 修改文件
+- `frontend/src/utils/contextBuilder.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/utils/contextBuilder.js PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 长篇写作上下文不能长期塞入全书最高重要度设定，而应优先服务当前章节和当前分卷，减少无关设定稀释模型注意力。
+
+## 2026-05-20 - 章节小纲备份迁移闭环
+
+### 本次完成
+- `schema.sql` 补入 `chapter_beat_plans` 表，保证新环境按 schema 初始化时包含章节小纲表。
+- 全量导出新增 `chapterBeatPlans`，项目备份会包含每章已确认/已保存小纲。
+- 全量导入新增 `chapterBeatPlans` 还原逻辑，导入新项目时重新绑定新项目 ID，并按新项目 ID + 章节号生成小纲记录 ID。
+- 删除项目时同步清理 `chapter_beat_plans`，避免删除项目后遗留孤儿小纲数据。
+
+### 修改文件
+- `backend/schema.sql`
+- `backend/routers/export.py`
+- `backend/routers/projects.py`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- backend/schema.sql backend/routers/export.py backend/routers/projects.py frontend/src/prompts/settingExtraction.js frontend/src/stores/memoryStore.js PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 章节小纲属于章节级创作资产，必须随项目备份、导入和删除生命周期一起流转。
+
+## 2026-05-20 - 定稿设定增量提取 JSON 解析增强
+
+### 本次完成
+- 章节定稿后的设定变更提取 Prompt 改为要求输出 `{ "settingChanges": [] }` 对象，减少 JSON mode 与数组顶层结构冲突。
+- 增加专用解析器，兼容模型返回数组、`settingChanges`、`settings`、`changes`、`data`、`items`、`events`、`results` 等常见顶层字段。
+- 增加 Markdown 代码块清理和均衡 JSON 块扫描，避免前后解释文字干扰解析。
+- 增加一次 JSON 修复调用：只修复模型已经输出的候选，不新增、不脑补；修复后仍只进入章节定稿增量提取链路。
+- 保持和“圣经/种子初始化提取”分离：本次没有复用初始化兜底生成，也不从圣经重新扫描覆盖正式设定。
+
+### 修改文件
+- `frontend/src/prompts/settingExtraction.js`
+- `frontend/src/stores/memoryStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/prompts/settingExtraction.js frontend/src/stores/memoryStore.js PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 定稿设定增量提取可以修复模型 JSON 结构，但不能在解析失败时本地伪造设定候选；没有可靠候选时返回空数组，由用户通过摘要、审稿或手动设定维护补充。
+
+## 2026-05-20 - 多模型对比接入完整章节上下文
+
+### 本次完成
+- 写字台多模型对比改为必须基于当前确认小纲启动。
+- 点击“对比”时，如果本章已有小纲，直接使用该小纲和写字台完整上下文打开多模型对比。
+- 如果本章没有小纲，先生成小纲并打开确认弹窗；用户点击“开始多模型对比”后才启动候选生成。
+- 多模型对比弹窗不再自行临时构建简化上下文，而是接收写字台统一组装后的上下文，包含创作种子、设定库、分卷上下文、顺序规则和未完成纠偏任务。
+- 切换章节时会关闭当前对比弹窗并清空旧章节的对比上下文，避免跨章节误用。
+
+### 修改文件
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/components/writer/CompareModal.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/views/WriterView.vue frontend/src/components/writer/CompareModal.vue PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 多模型对比属于章节正文候选生成链路，必须和“生成本章”“生成多候选版本”一样遵守小纲确认和完整上下文注入规则。
+- 对比结果仍只进入候选版本/对比池，不自动覆盖当前草稿或正式定稿。
+
+## 2026-05-20 - 项目当前章节进度同步
+
+### 本次完成
+- `projectStore` 新增 `updateCurrentChapterNum`，用于只向前推进项目当前章节号，不回退旧章节。
+- 写字台生成单章候选、多候选版本、纠偏候选后，会同步项目 `currentChapterNum`。
+- 用户确认定稿后，也会同步项目 `currentChapterNum`，保证导入旧候选或手动定稿时进度仍能更新。
+- 同步失败不会阻断候选生成或定稿流程，只记录警告，避免因为项目进度更新失败污染正文生成结果。
+
+### 修改文件
+- `frontend/src/stores/projectStore.js`
+- `frontend/src/stores/writerStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/views/WriterView.vue frontend/src/components/writer/CompareModal.vue frontend/src/stores/projectStore.js frontend/src/stores/writerStore.js PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 当前决策
+- 当前章节号代表“项目已经推进到的最远写作章节”，只能向前推进，不因修订旧章节或旧章节纠偏而回退。
+
+## 2026-05-20 - 章节小纲持久化
+
+### 本次完成
+- 新增章节级小纲持久化表 `chapter_beat_plans`，按项目和章节号唯一保存小纲。
+- 新增后端接口：读取、保存、删除章节小纲。
+- 前端 API 与写作台 store 接入小纲读写。
+- 写字台加载章节时恢复已保存小纲。
+- AI 生成或重新生成小纲后自动保存。
+- 小纲确认弹窗新增“保存小纲”，用户手动修改后可落库。
+- 点击“开始生成本章”或“生成多候选版本”前，会先保存当前确认的小纲。
+
+### 修改文件
+- `backend/database.py`
+- `backend/routers/chapters.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/views/WriterView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- backend/database.py backend/routers/chapters.py frontend/src/api/db/client.js frontend/src/stores/writerStore.js frontend/src/views/WriterView.vue PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+## 2026-05-20 - 写作台上下文预览增强
+
+### 本次完成
+- 上下文预览弹窗新增“复制全部上下文”。
+- 每个上下文模块新增单独复制按钮，便于排查某一块资料是否正确注入。
+- 缺失项从纯文本提示改为可点击入口，可跳转到创作种子、创作圣经、章节管理、设定库或纠偏任务模块补资料。
+- 写字台接收上下文预览跳转事件，自动回到项目页对应标签。
+- 项目页支持 `?tab=xxx` 查询参数打开指定模块，并在用户切换标签时同步地址栏。
+
+### 修改文件
+- `frontend/src/components/writer/ContextPreviewModal.vue`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/views/ProjectView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/components/writer/ContextPreviewModal.vue frontend/src/views/WriterView.vue frontend/src/views/ProjectView.vue PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+## 2026-05-20 - 圣经提取设定库兜底修复
+
+### 本次完成
+- 修复“从创作圣经提取到设定库”在 AI 返回 JSON 被截断或格式损坏时直接失败的问题。
+- 圣经提取解析失败且 JSON 修复仍失败时，会基于当前创作圣经和当前选中种子生成保守版设定候选，避免用户卡死。
+- 保守版候选优先提取长篇后续必需追踪的实体：主角、关键人物、核心组织、世界底层规则、理念派系和明确关系。
+- 优化圣经提取 Prompt，要求 `profilePatch` 字段保持短值，减少模型把整段原文塞进 JSON 导致截断。
+
+### 修改文件
+- `frontend/src/prompts/settingsFromBible.js`
+- `frontend/src/stores/settingStore.js`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `git diff --check -- frontend/src/prompts/settingsFromBible.js frontend/src/stores/settingStore.js PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md` 通过。
+- Vite 仍提示 `writerStore` 同时被动态和静态导入，这是既有非阻塞警告。
+
+### 后续边界补充
+- 圣经/种子提取到设定库只用于项目初始阶段，属于初始化提取。
+- 后续章节定稿后的设定更新属于章节增量提取，只读取本章定稿正文和已有设定库。
+- 两条流程最终都进入待确认设定变更，但触发时机、上下文来源和禁止事项必须区分，避免后续开发把初始化逻辑用于覆盖已写章节设定。
+
+## 2026-05-20 - 写作流程风险排查记录
+
+### 本次完成
+- 全面排查当前规划、已开发功能和关键数据流，重点检查会影响实际写作连续性的链路。
+- 确认整体方向仍按“选题 → 种子 → 圣经 → 设定库 → 章节小纲 → 正文生成 → 定稿入库 → 审稿纠偏 → 下一章生成”推进。
+- 发现一批待修复风险，已同步到本文件顶部“下一步任务”和 `PRODUCT_DEVELOPMENT_PLAN.md` 的 v1.0 待修复风险。
+
+### 重点风险
+- 多模型试写对比目前可能绕过完整上下文和当前确认小纲。
+- 项目 `currentChapterNum` 可能没有随生成/定稿同步更新。
+- 章节定稿后的设定增量提取解析能力不如圣经初始化提取稳健。
+- 章节小纲未完全进入 schema、导入导出和删除清理链路。
+- 设定库上下文注入目前偏全局重要度，后续长篇需要改为本章相关性优先。
+- 圣经/种子初始化到设定库分类型提取已在后续开发中完成。
+- 多候选版本拆分、上下文加载保护、项目目标锁定规则和忽略状态语义仍需后续复核。
+
+### 当前决策
+- 本轮只记录和同步，不做代码修复。
+- 等用户明确通知后，再按顶部下一步任务顺序执行修复。
 
 ## 2026-05-17 - AI 设定提取与确认入库闭环
 
@@ -2154,3 +2810,389 @@
 ### 当前决策
 - 忽略本次不是物理删除，而是关闭任务并保留历史。
 - 关闭类纠偏任务不再进入 AI 写作上下文，避免用户已经放弃的问题反复污染后续正文。
+
+## 2026-05-20 - 纠偏候选定稿完成闭环
+
+### 本次完成
+- 纠偏任务生成章节修订候选时，会在版本来源说明中写入关联纠偏任务 ID。
+- 写字台定稿版本时，如果当前版本来自纠偏任务，会自动把对应纠偏任务标记为 `done`。
+- 自动完成任务不会打断原有定稿流程，后续仍继续执行清空临时草稿、记忆提取和审稿结果展示。
+- 版本列表会隐藏内部关联标记，用户只看到正常的来源说明。
+
+### 修改文件
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/components/writer/ChapterVersionList.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `git diff --check` 通过。
+
+### 当前决策
+- 纠偏任务和纠偏候选版本采用轻量来源标记关联，暂不新增版本 metadata 字段，避免数据库迁移。
+- 只有用户确认纠偏候选为定稿后，任务才自动完成；生成候选或加载候选都不代表任务已解决。
+
+## 2026-05-20 - 定稿后设定库自动提取增强
+
+### 本次完成
+- 重写设定变更提取 Prompt，明确从定稿章节提取人物、势力、地点、体系、功法、物品和关系变化。
+- 设定提取上下文新增已有关系列表，AI 在生成候选时可以避免重复创建关系。
+- 定稿后保存设定候选前新增标准化和去重：同一章节、同一实体、同一字段、同一新值不会重复写入待确认变更。
+- 新增对 relationship 类型候选的规范化处理，确保关系候选可被后端设定库确认逻辑消费。
+- 设定库“待确认设定变更”区域新增“批量确认”和“批量拒绝”，便于处理章节定稿后产生的多条低风险候选。
+
+### 修改文件
+- `frontend/src/prompts/settingExtraction.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/components/settings-library/SettingLibrary.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `git diff --check` 通过。
+
+### 当前决策
+- 定稿后设定提取仍然只生成待确认候选，不直接写入正式设定库。
+- 批量确认是效率工具，不改变“正式设定必须由用户确认”的原则。
+
+## 2026-05-20 - 设定库冲突检测基础版
+
+### 本次完成
+- 待确认设定变更新增冲突检测：当候选会覆盖已有概要、分类、状态、人物归属、境界、功法、武器、位置、势力控制、体系规则、物品持有者等硬设定时，界面显示“冲突风险”。
+- 冲突候选卡片展示具体风险说明，例如“境界将从 A 变为 B”。
+- 单条确认冲突候选时弹出二次确认，用户必须明确选择“仍然确认”才会写入设定库。
+- 批量确认时自动跳过有冲突风险的候选，只确认低风险变更，并提示跳过数量。
+- 关系类候选会检查已有 source-target-relationType 关系，发现重复或立场/说明变化时提示风险。
+
+### 修改文件
+- `frontend/src/components/settings-library/SettingLibrary.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `git diff --check` 通过。
+
+### 当前决策
+- 冲突检测先做前端基础版，不阻止用户强制确认。
+- 批量确认默认保守：跳过冲突项，要求用户逐条审阅。
+
+## 2026-05-20 - 写作台上下文预览
+
+### 本次完成
+- 新增 `ContextPreviewModal`，用于展示写作台当前会注入 AI 的核心上下文。
+- 写作台右侧 AI 工具区新增“预览 AI 上下文”入口；上下文页新增“预览本章 AI 上下文”入口。
+- 预览内容复用真实的 `buildWritingContext` 和写作台补充上下文逻辑，包含创作种子、作品定位、本章目标、分卷上下文、设定库摘要、最近设定变更、未完成纠偏任务、Canon 事实、伏笔、风格要求、禁止方向、正文顺序规则和当前草稿片段。
+- 弹窗显示已注入上下文数量、token 估算和缺失项，方便排查 AI 为什么没有承接某些设定。
+- 上下文预览只用于透明化，不会修改 Prompt 或自动补全资料。
+
+### 修改文件
+- `frontend/src/components/writer/ContextPreviewModal.vue`
+- `frontend/src/views/WriterView.vue`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `git diff --check` 通过。
+
+### 当前决策
+- 上下文预览先做只读基础版；后续如果需要，可再增加“复制上下文”和“按模块跳转补资料”。
+## 2026-05-21 - 设定库已有正文后的删除保护
+
+### 问题
+- 项目已有章节内容时，`清空设定库` 已经会被阻止，但设定库内的单个实体和关系仍然可以点击删除。
+- 单条删除会破坏后续写作、审稿、纠偏依赖的长期设定连续性，风险与清空设定库同类。
+
+### 本次完成
+- 项目详情页新增项目内容状态读取，并把“已有章节内容”的删除锁传入设定库。
+- 设定库实体删除新增业务拦截：已有章节内容时不允许物理删除人物、地点、势力、体系、功法、物品等实体。
+- 设定库关系删除新增同样拦截：已有章节内容时不允许物理删除实体关系。
+- 拦截时使用手动关闭弹窗说明原因，并提示改用修改设定、调整状态为隐藏/失效/存档，或通过待确认设定变更记录修正。
+
+### 修改文件
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/components/settings-library/SettingLibrary.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 已进入章节写作后，设定库不再允许物理删除正式设定资产；后续只能通过“修改/状态变更/设定变更记录”保留可追溯历史。
+## 2026-05-21 - 分卷与章节删除安全规则
+
+### 问题
+- 章节管理中可以删除当前分卷，即使该分卷范围内已有章节，容易造成“分卷规划被删但章节仍存在”的结构断层。
+- 章节列表没有删除入口；同时前端 store 里旧的 `deleteChapter` 只移除本地数组，没有真正调用后端删除。
+
+### 本次完成
+- 分卷删除改为保守规则：当前分卷范围内已有章节时禁止删除，并弹窗提示先移动或删除章节。
+- 后端分卷删除接口同步增加校验，防止绕过前端直接删除有章节的分卷。
+- 章节列表新增“删除”按钮。
+- 章节删除改为只允许删除空章节或仅有小纲的章节；删除时会同步清理该章小纲。
+- 如果章节已有正文、候选版本、定稿、临时草稿、Canon 事实或设定变更记录，后端拒绝物理删除。
+- 前端对已有正文/定稿/字数记录的章节先行弹窗拦截，并说明后续应使用“废弃/归档章节”流程。
+
+### 修改文件
+- `backend/routers/chapters.py`
+- `backend/routers/volumes.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/views/ProjectView.vue`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 当前版本不做“连同正文资产一起删除”的高风险操作。
+- 已产生正文资产的章节后续应走归档/废弃流程，而不是物理删除，以保护长篇写作上下文、记忆、设定库和纠偏链路。
+## 2026-05-21 - 全量功能验收清单
+
+### 本次完成
+- 新增 `FUNCTION_TEST_CHECKLIST.md`，按真实创作流程整理本地版全量功能验收项。
+- 清单覆盖启动、项目库、选题雷达、创作种子、创作圣经、设定库、章节管理、写字台、小纲、正文生成、版本对比、定稿入库、审稿、纠偏、导入导出和多模型配置。
+- 清单明确标出当前已规划但待补能力，例如上下文复制/跳转、章节废弃/归档、Word/EPUB/分卷导出。
+
+### 修改文件
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 后续浏览器端验收优先按照 `FUNCTION_TEST_CHECKLIST.md` 逐项测试；发现问题后按功能块记录并修复。
+
+## 2026-05-22 - 章节管理改为按当前卷创建空章节
+
+### 问题
+- 原“批量创建空章节”会按项目目标章节数一次性补齐全书章节，长篇项目会直接创建数百章空记录，过于激进。
+- 章节列表展示全书所有章节，不利于围绕当前分卷推进。
+
+### 本次完成
+- 分卷卡片支持选中当前卷，选中态会高亮显示。
+- 章节列表改为只展示当前卷范围内的章节。
+- 章节号继续沿用全书全局编号，例如第 2 卷范围是 61-120 章时，列表显示第 61 章、第 62 章，不会在每卷内重新编号。
+- “批量创建空章节”改为“按当前卷创建空章节”，只补齐当前卷章节范围内缺失的空章节，不再一次性创建全书目标章节。
+- 保留已有章节、小纲、正文、候选版本和定稿，不做覆盖。
+
+### 修改文件
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/stores/writerStore.js`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+
+## 2026-05-22 - 写字台跨章节连续性与待确认设定保护
+
+### 问题
+- 切换到新章节后，对比池仍保留上一章节候选，容易把不同章节版本混入差异对比。
+- 点击“查看小纲”时，已经打开小纲弹窗，还会额外弹出“已打开本章小纲，请审阅后再生成正文”的提示，交互重复。
+- 正文生成 token 上限偏低，长章可能在句子中途被截断。
+- 下一章生成上下文没有强制注入上一章结尾原文，导致章节开头可能跳到全新场景，前后不连贯。
+- 上一章定稿后如果产生待确认设定变更，用户未确认就生成下一章时，下一章只会读取已确认设定库，容易遗漏上一章新增状态。
+
+### 本次完成
+- 写字台进入页面和切换章节时清空对比池。
+- 查看已保存小纲时不再弹出额外成功提示，只保留小纲审阅弹窗。
+- 正文生成流式与非流式 `maxTokens` 从 4096 提高到 8192，降低长章中途截断概率。
+- 写字台加载当前章时同步读取上一章最终/最新版本的末尾片段，并注入正文生成上下文。
+- 章节 Prompt 新增“上一章结尾原文（下一章必须承接）”约束，要求后续章节先承接上一章结尾的情绪、危险、动作或悬念。
+- 新增待确认设定变更保护：生成新小纲、正文、多候选、续写、扩写、选区改写和多模型对比前，若设定库存在 `pending_review` 变更，会弹窗阻止，要求先确认或拒绝。
+
+### 修改文件
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/prompts/chapter.js`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `npm.cmd --prefix frontend run build` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+### 2026-05-22 - 设定库确认后关系展示修正
+
+- 排查“待确认设定变更确认后，林逐等人物详情看不到大量关系信息”的问题。
+- 结论：多数候选是 relationship 类型，确认后写入 `setting_relations`，不会自动并入人物主档案字段；写作上下文可读取关系，但前端默认折叠导致像是信息丢失。
+- 已调整：设定实体详情页新增“关联关系摘要”和“已确认变更记录”，直接展示当前实体相关关系与最近确认事件。
+- 已调整：待确认关系候选标题从“实体名 + 关系”改为“主体 → 客体 + 关系/立场”，降低重复人物误判。
+- 验证：`npm.cmd --prefix frontend run build` 通过；`D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+### 2026-05-22 - 上一章未定稿阻止下一章 AI 创作
+
+- 排查发现：写字台原先只拦截“待确认设定变更”，没有拦截“上一章未定稿”；读取上一章结尾时还会在无定稿版本时使用最新候选版本，存在章节断层风险。
+- 已调整：第 2 章及以后，生成小纲、生成正文、多候选生成、多模型对比、续写、扩写和选区改写前，必须检查上一章是否已定稿。
+- 已调整：上一章结尾上下文只读取上一章定稿版本，不再使用未定稿候选版本作为下一章承接依据。
+- 保留规则：仍允许提前创建空章节和进入章节页面，但不能执行会推进正文的 AI 创作操作。
+- 验证：`npm.cmd --prefix frontend run build` 通过；`D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+
+### 2026-05-22 - 已定稿章节锁死保护
+
+- 规则确认：当前版本不做“修改已定稿章节”能力，避免重新牵动记忆、设定库、上下章衔接和纠偏链路。
+- 前端调整：章节已定稿后，写字台正文编辑器锁定；生成本章、重新生成小纲、多候选、续写、扩写、压缩、选区改写、润色、另存版本和删除版本入口禁用或拦截。
+- 前端保留：已定稿章节仍可查看正文、小纲、审稿、导出、上下文和记忆。
+- 后端调整：章节已定稿后，拒绝新增/修改/删除版本，拒绝保存临时草稿，拒绝保存或删除本章小纲，防止绕过 UI 改动定稿章。
+
+### 2026-05-22 - 设置页任务模型映射刷新回显修正
+
+- 问题：任务模型映射按项目保存，但设置页刷新后可能没有当前项目上下文，导致下拉框恢复为空。
+- 已调整：任务模型映射区新增“当前配置项目”选择，刷新后自动恢复上次配置项目。
+- 已调整：前端统一规范化模型映射字段，兼容后端返回的不同字段形态，避免保存成功但回显失败。
+- 验收补充：功能清单新增“刷新设置页后仍能回显上次配置项目和已选模型”检查项。
+
+### 2026-05-23 - 同章多纠偏综合修订候选
+
+- 问题：同一章存在多条纠偏任务时，逐条点击“生成章节修订草案”会生成多个彼此独立的候选版本，用户只能选择其中一个，无法一次解决全部问题。
+- 已调整：正文类硬纠偏任务在同章存在多条未完成任务时，纠偏任务板显示“综合修订本章”按钮。
+- 已调整：综合修订会把同章所有可生成章节修订草案的未完成硬纠偏任务一起交给 AI，生成一个完整章节综合修订候选版本。
+- 已调整：综合候选版本会记录多个 `correctionTaskId`，该版本定稿后会把关联的多条纠偏任务一起标记完成。
+- 保留：单条“生成章节修订草案”仍可用于只想单独参考某个问题的局部修订候选。
+
+### 2026-05-23 - 本章审稿改为即时修订版本
+
+- 产品决策：本章未定稿阶段的审稿属于即时修稿工具，不再要求先生成纠偏任务、再去纠偏任务板流转状态。
+- 已调整：本章审稿弹窗底部按钮从“生成本章纠偏任务”改为“生成本章修订版本”。
+- 已调整：点击后直接基于当前正文和本次审稿问题生成一个 `correction_candidate` 修订候选版本，进入版本列表，不覆盖当前正文。
+- 已调整：生成完成后自动把修订候选加入对比池，并打开“当前正文 vs 修订候选”的差异对比。
+- 保留：已定稿章节仍不允许生成正文修订版本；分卷/全局审稿继续走纠偏任务板，用于长期软纠偏和跨章节问题管理。
+
+### 2026-05-23 - 选区去 AI 腔/润色
+
+- 写字台右侧“润色”按钮升级为“去 AI 腔/润色”，继续沿用选区改写链路，避免直接改整章造成不可控变化。
+- `polish` 改写模式新增去 AI 腔约束：不改变剧情事实、人物意图、视角和信息量，重点减少套路化反差句、虚化判断、解释腔和模板化升华。
+- Prompt 要求将抽象表达优先替换为具体动作、感官细节、物象变化、对白停顿或人物即时反应。
+- 功能清单补充去 AI 腔/润色验收项。
+
+### 2026-05-23 - 本章审稿局部修订候选
+
+- 本章审稿弹窗里的“生成本章修订版本”调整为“生成局部修订版本”。
+- 新流程不再要求 AI 输出整章重写稿，而是先生成局部替换补丁：原文片段、替换片段、修改原因和置信度。
+- 系统只应用能在当前正文中精确匹配且唯一匹配的补丁；无法匹配或重复匹配的补丁会跳过，避免误改相似段落。
+- 应用补丁后的完整正文会保存为 `correction_candidate` 候选版本，自动加入对比池并打开差异对比；当前正文不被覆盖。
+- 保留原有整章纠偏候选函数给纠偏任务板使用，本章即时审稿优先走局部修订，减少修订引入新问题。
+
+### 2026-05-23 - 单章目标字数约束
+
+- 问题：项目虽然有目标字数和目标章节数，但正文生成提示词没有明确单章目标体量，导致 300 万字 / 600 章这类项目有时生成 1 万字以上的超长章节。
+- 已调整：写字台上下文会根据项目 `targetWords / targetChapters` 推导本章建议字数，并注入小纲生成和正文生成提示词。
+- 已调整：默认合理浮动范围为目标字数的 90%-110%，硬边界为 80%-120%；例如 300 万字 / 600 章得到约 5000 字，建议 4500-5500 字，硬边界 4000-6000 字。
+- 已调整：正文生成和多候选生成完成后会评估候选字数，明显超长或偏短时弹窗提醒用户压缩、拆章或补足推进。
+- 设计原则：字数约束只作为节奏护栏，不机械截断正文，也不牺牲必要剧情；如果内容自然超量，应优先压缩重复描写、解释性设定和低效对白。
+- 验证：`node tmp\test_chapter_word_target.mjs` 通过；`npm.cmd --prefix frontend run build` 通过。
+
+### 2026-05-23 - 本章审稿局部修订失败兜底
+
+- 问题：本章审稿后点击“生成局部修订版本”时，AI 可能只返回 `unpatchable` 或返回无法逐字匹配正文的片段，导致系统弹出“AI 没有返回可应用的局部修订补丁”。
+- 根因：局部补丁链路过于严格，只接受 `patches` 且要求 `originalText` 与当前正文完全逐字匹配；审稿问题多为概括性描述时，模型容易不给补丁或忽略换行差异。
+- 已调整：局部补丁解析兼容 `changes`、`edits`、`items`、`oldText/newText`、`before/after`、`find/replace` 等常见字段。
+- 已调整：补丁应用增加空白差异容错；当 `originalText` 与正文只存在换行或空格差异时，只要压缩空白后唯一命中，就允许安全替换。
+- 已调整：AI 首次未返回可用补丁时，会追加一次“重新定位最小原文片段”的局部补丁重试。
+- 已调整：如果重试后仍然没有可应用局部补丁，则生成“审稿修订候选”兜底版，进入版本列表并打开差异对比，不覆盖当前正文。
+- 验证：`node tmp\test_local_revision_patch.mjs` 通过；`node tmp\test_chapter_word_target.mjs` 通过；`npm.cmd --prefix frontend run build` 通过。
+
+### 2026-05-23 - 定稿后记忆/设定提取门禁
+
+- 问题：上一章定稿后，摘要、记忆事实和设定变更仍在提取时，用户可以关闭提示并进入下一章生成小纲，导致下一章可能读不到上一章刚产生的人物状态和设定变更。
+- 已调整：写字台定稿后立即写入章节后处理标记，并显示不可关闭遮罩，处理期间阻止章节切换、AI 生成、续写、改写等推进操作。
+- 已调整：第 2 章及以后执行小纲、正文、多候选、续写、扩写、压缩、选区改写和多模型对比前，会检查上一章是否仍处于定稿后处理状态。
+- 已调整：定稿后处理完成后清理处理标记；若产生待确认设定变更，继续沿用待确认设定变更门禁，要求用户确认或拒绝后再生成下一章。
+- 验收补充：功能清单新增“定稿后处理遮罩”和“上一章处理未完成时阻止下一章生成”检查项。
+
+### 2026-05-23 - 纠偏任务板操作说明补充
+
+- 问题：纠偏任务板中的接受、处理中、定位处理、生成设定候选、生成 Canon 候选、生成章节修订草案、完成和忽略本次等按钮含义不够直观。
+- 已调整：纠偏任务板标题说明下方新增常驻操作说明，解释每个按钮点击后的结果、是否会自动改正文/设定库，以及任务是否仍会进入后续 AI 上下文。
+- 验收补充：功能清单新增纠偏任务板操作说明检查项。
+
+### 2026-05-24 - 人性动机与代入感护栏
+
+- 问题：AI 正文容易只完成设定、爽点和漂亮句子，但缺少人物欲望、恐惧、遮掩、选择代价和情绪残留，读者代入感不足。
+- 已调整：章节正文系统提示词新增“人物代入感 / 人性动机”护栏，要求外部事件必须通过人物内在动机产生代入感，避免人物沦为推动剧情或解释设定的工具人。
+- 已调整：本章小纲生成新增“人物动机层”，要求在写正文前明确关键人物想得到什么、害怕失去什么、为什么不能直说、选择代价和情绪残留。
+- 已调整：本章审稿新增人物动机与代入感检查，支持 `human_motivation` 和 `emotional_logic` 问题类型，并在前端标签中以中文展示。
+- 验收补充：功能清单新增小纲人物动机层、正文人性动机约束和审稿中文标签检查项。
+
+### 2026-05-24 - 纠偏设定候选重复生成保护
+
+- 问题：纠偏任务板中“生成设定候选”可重复点击，每次都会新增一条相同的待确认设定变更。
+- 根因：纠偏任务状态变为处理中后仍属于 open 状态，按钮仍显示；前端 store 和后端创建接口都没有按同一来源证据和候选内容做幂等去重。
+- 已调整：前端生成设定候选前会加载待确认设定变更，并在已存在同任务候选时显示“已生成设定候选”，阻止重复点击。
+- 已调整：`settingStore.saveChangeEvent` 新增待确认候选去重；后端创建 `setting_change_events` 时也会按项目、实体、字段、章节、证据和新值返回已有记录，避免绕过前端重复插入。
+- 验收补充：功能清单新增“同一纠偏任务重复生成设定候选不新增重复记录”检查项。
+
+### 2026-05-24 - 选题顾问空种子入库拦截
+
+- 问题：AI 选题顾问聊天中显示“已生成创作种子”，但种子页出现空种子或字段大量为空。
+- 根因：种子解析器只要识别到标题、logline 或开局钩子就会当作可保存种子；部分方向建议 JSON 或未确认方案会被误判为种子并入库。
+- 已调整：种子解析器新增可保存完整度校验，要求至少有题材，并在一句话、主角、欲望、核心矛盾、开局钩子、情绪价值中满足 3 项。
+- 已调整：前端 `createSeed` 和后端 `/seeds` 创建接口都加同样的完整度保护，防止空种子从聊天、手动粘贴或直接接口进入数据库。
+- 验收补充：功能清单新增“方向建议/字段不足方案不会生成空种子”检查项。
+## 2026-05-24 - 单章字数浮动规则收紧
+
+### 本次完成
+- 单章目标字数的正常范围从较宽松的 85%-120% 调整为 90%-110%。
+- 单章硬边界调整为 80%-120%，低于硬下限或高于硬上限时都应提醒用户处理。
+- 例如 300 万字 / 600 章时，单章目标约 5000 字，正常范围为 4500-5500 字，硬边界为 4000-6000 字。
+- 正文生成提示词补充质量优先规则：接近硬上限时主动收束场景，把未展开内容留作下一章钩子；不得为了压字数省略关键动作、情绪转折或因果交代。
+- 小纲生成提示词补充单章体量规则：节拍按一章可完成范围设计，剧情自然超量时减少支线节拍，把后续冲突或余波留到下一章。
+
+### 修改文件
+- `frontend/src/utils/chapterWordTarget.js`
+- `frontend/src/prompts/chapter.js`
+- `tmp/test_chapter_word_target.mjs`
+- `tmp/test_chapter_word_prompt_guard.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+## 2026-05-24 - 定稿时默认章名与显示优化
+
+### 本次完成
+- 新增章节命名 prompt：用户定稿时，如果当前章节标题仍是默认“第 N 章”，系统会基于定稿正文生成一个默认章名。
+- 章名清洗限制为 2-14 个汉字，自动去掉“第 N 章”、书名号、引号、Markdown 标题和“章名：”等包装文本。
+- 章名生成失败不会阻断定稿，也不会影响已保存的正文候选版本；后续如新增章节标题编辑入口，只调整章节元数据，不回改已定稿正文。
+- 候选版本阶段不再自动改章节标题，避免不同候选版本切换导致章名漂移。
+- 写字台顶部改为显示“第 N 章 · 章名”；左侧章节列表保留章节号，并在下一行显示章名。
+- TXT / Markdown 导出标题改为包含章节号，有章名时为“第 N 章 · 章名”，无章名时为“第 N 章”。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/utils/export.js`
+- `tmp/test_chapter_title_generation.mjs`
+- `tmp/test_chapter_display_title.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+## 2026-05-25 - 定稿后处理重复触发防护
+
+### 问题
+- 在定稿前审稿发现问题后，用户可在审稿弹窗点击“仍然定稿”。如果按钮反馈较慢并被连续点击，可能并发触发多次定稿后摘要、记忆和设定变更提取。
+- 同一章节的多次 AI 提取结果不是逐字重复，但会产生大量语义重复的待确认设定变更，增加后续确认成本。
+
+### 本次完成
+- 新增定稿运行锁：同一项目、同一章节、同一版本在定稿或定稿后处理期间只能进入一次执行链路。
+- 定稿运行锁会在真正调用定稿接口前写入本地 pending 标记，堵住定稿接口返回前的连点窗口。
+- 版本列表定稿、轻微问题继续定稿、严重/主要问题后的“仍然定稿”统一走同一条 `performFinalize` 兜底防重链路。
+- 定稿执行中禁用相关定稿按钮，并显示处理中提示，避免重复触发记忆/设定提取。
+
+### 修改文件
+- `frontend/src/utils/finalizationGuard.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/components/writer/ChapterVersionList.vue`
+- `tmp/test_finalization_guard.mjs`
+- `tmp/test_writer_finalization_lock_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node .\tmp\test_finalization_guard.mjs` 通过。
+- `node .\tmp\test_writer_finalization_lock_contract.mjs` 通过。
+- `npm.cmd --prefix frontend run build` 通过。

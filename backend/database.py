@@ -167,6 +167,18 @@ async def ensure_schema():
           INDEX idx_correction_tasks_module (project_id, target_module)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
+        """
+        CREATE TABLE IF NOT EXISTS chapter_beat_plans (
+          id VARCHAR(80) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          chapter_num INT NOT NULL,
+          content MEDIUMTEXT DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          UNIQUE KEY uniq_chapter_beat_plan (project_id, chapter_num),
+          INDEX idx_chapter_beat_plans_project (project_id, chapter_num)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
         "ALTER TABLE project_volumes ADD COLUMN stage_summary_report JSON DEFAULT NULL AFTER summary",
         "ALTER TABLE project_volumes ADD COLUMN summary_updated_at BIGINT DEFAULT NULL AFTER stage_summary_report",
         "ALTER TABLE project_volumes ADD COLUMN audit_report JSON DEFAULT NULL AFTER summary",

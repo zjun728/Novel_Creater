@@ -194,6 +194,18 @@ async def update_volume(pid: str, vid: str, data: VolumeUpdate):
 
 @router.delete("/projects/{pid}/volumes/{vid}")
 async def delete_volume(pid: str, vid: str):
+    volume = await fetchone("SELECT * FROM project_volumes WHERE project_id=%s AND id=%s", (pid, vid))
+    if not volume:
+        raise HTTPException(404, "分卷不存在")
+    chapter_count = await _count(
+        "SELECT COUNT(*) AS c FROM chapters WHERE project_id=%s AND chapter_num BETWEEN %s AND %s",
+        (pid, volume["start_chapter"], volume["end_chapter"]),
+    )
+    if chapter_count > 0:
+        raise HTTPException(
+            409,
+            f"当前分卷范围内已有 {chapter_count} 个章节，不能直接删除分卷。请先移动或删除这些章节，再删除分卷。",
+        )
     await execute("DELETE FROM project_volumes WHERE project_id=%s AND id=%s", (pid, vid))
     await touch_project(pid)
     return {"ok": True}
@@ -205,6 +217,11 @@ def _pick_summary_text(report: dict):
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+async def _count(sql: str, args: tuple) -> int:
+    row = await fetchone(sql, args)
+    return int((row or {}).get("c") or 0)
 
 
 def _validate_range(start: int, end: int):

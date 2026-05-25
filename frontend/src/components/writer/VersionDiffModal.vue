@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { NModal, NButton, NCard, NEmpty, NSelect, NSpace, NTag } from 'naive-ui'
 
 const props = defineProps({
+  baseVersion: { type: Object, default: null },
   versions: { type: Array, default: () => [] }
 })
 
@@ -11,27 +12,40 @@ const emit = defineEmits(['close', 'load-version'])
 const baseVersionId = ref('')
 const targetVersionId = ref('')
 
+const allVersions = computed(() => {
+  const items = []
+  const seen = new Set()
+  const addVersion = version => {
+    if (!version?.id || seen.has(version.id)) return
+    seen.add(version.id)
+    items.push(version)
+  }
+  addVersion(props.baseVersion)
+  props.versions.forEach(addVersion)
+  return items
+})
+
 const versionOptions = computed(() =>
-  props.versions.map(version => ({
-    label: `${versionTypeLabel(version)} · ${version.title || version.promptBrief || version.id}`,
+  allVersions.value.map(version => ({
+    label: versionDisplayLabel(version),
     value: version.id
   }))
 )
 
-const baseVersion = computed(() => props.versions.find(version => version.id === baseVersionId.value) || null)
-const targetVersion = computed(() => props.versions.find(version => version.id === targetVersionId.value) || null)
+const baseVersion = computed(() => allVersions.value.find(version => version.id === baseVersionId.value) || null)
+const targetVersion = computed(() => allVersions.value.find(version => version.id === targetVersionId.value) || null)
 
 const diff = computed(() => buildParagraphDiff(baseVersion.value?.content || '', targetVersion.value?.content || ''))
 
 watch(
-  () => props.versions,
-  versions => {
+  () => [allVersions.value, props.baseVersion],
+  ([versions]) => {
     if (!versions.length) return
-    if (!baseVersionId.value) {
-      const finalVersion = versions.find(version => version.versionType === 'final')
-      baseVersionId.value = finalVersion?.id || versions[0]?.id || ''
+    const preferredBase = props.baseVersion || versions.find(version => version.versionType === 'final')
+    if (!baseVersionId.value || !versions.some(version => version.id === baseVersionId.value)) {
+      baseVersionId.value = preferredBase?.id || versions[0]?.id || ''
     }
-    if (!targetVersionId.value) {
+    if (!targetVersionId.value || targetVersionId.value === baseVersionId.value || !versions.some(version => version.id === targetVersionId.value)) {
       const correctionVersion = versions.find(version => version.versionType === 'correction_candidate')
       targetVersionId.value = correctionVersion?.id || versions.find(version => version.id !== baseVersionId.value)?.id || ''
     }
@@ -49,6 +63,22 @@ function versionTypeLabel(version) {
     archived: '存档'
   }
   return labels[version?.versionType] || version?.versionType || '版本'
+}
+
+function versionDisplayLabel(version) {
+  const type = versionTypeLabel(version)
+  const title = String(version?.title || '').trim()
+  const brief = String(version?.promptBrief || version?.prompt_brief || '').trim()
+  const time = formatDate(version?.createdAt || version?.created_at)
+  if (version?.id === '__current_editor_draft__') return `当前编辑器正文 · ${time || '实时内容'}`
+  if (version?.versionType === 'final') return `定稿 · ${title || brief || version.id}`
+  const detail = brief || title || version?.id || ''
+  return `${type} · ${detail}${time ? ` · ${time}` : ''}`
+}
+
+function formatDate(ts) {
+  if (!ts) return ''
+  return new Date(ts).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 function splitParagraphs(text) {
@@ -143,7 +173,7 @@ function preview(text, max = 180) {
     style="width: 920px; max-width: 92vw; max-height: 86vh;"
     @close="emit('close')"
   >
-    <n-empty v-if="versions.length < 2" description="至少需要两个版本才能对比" />
+    <n-empty v-if="allVersions.length < 2" description="至少需要一个基准版本和一个对比版本才能对比" />
 
     <div v-else class="space-y-4">
       <div class="grid grid-cols-2 gap-3">
