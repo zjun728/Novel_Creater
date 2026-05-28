@@ -3196,3 +3196,211 @@
 - `node .\tmp\test_finalization_guard.mjs` 通过。
 - `node .\tmp\test_writer_finalization_lock_contract.mjs` 通过。
 - `npm.cmd --prefix frontend run build` 通过。
+
+## 2026-05-28 - 核心写作链路保护与任务模型映射补强
+
+### 本次完成
+- 写作台 AI 调用改为优先读取“任务模型映射”，正文创作、小纲规划、审稿/纠偏、摘要压缩、结构化提取、选区改写、润色和章名生成都会按任务类型选择模型，不再固定取第一个 Provider。
+- 设置页任务模型映射保存时支持显式清空，刷新后不会把已清空的模型又恢复成空白异常状态。
+- 后端新增核心规划保护：项目已有正文内容后，禁止新增、导入、生成、修改、选择、删除或清空创作种子。
+- AI 选题顾问生成种子时也会检查项目是否已有正文，避免绕过种子页保护直接写入空种子或覆盖种子。
+- 项目已有正文后，禁止从创作圣经再次初始化提取到设定库，避免覆盖已经进入写作阶段的设定体系。
+- 项目已有正文后，禁止删除创作圣经、清空设定库、删除设定实体和删除设定关系；章节定稿后的设定变更确认仍允许正常入库。
+- 定稿后摘要、事实或设定变更提取如果出现必需步骤失败，会保留章节定稿后处理阻断标记，避免下一章在记忆/设定不完整时继续生成。
+- 定稿后章节摘要写回改为专用接口，只更新派生摘要，不再走普通章节更新接口，避免触发“本章已定稿，正文、小纲和版本已锁定”的 409。
+
+### 修改文件
+- `backend/routers/guards.py`
+- `backend/routers/chapters.py`
+- `backend/routers/seeds.py`
+- `backend/routers/novel.py`
+- `backend/routers/settings_library.py`
+- `backend/routers/providers.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/stores/marketStore.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/utils/finalizationGuard.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `tmp/test_task_model_bindings_contract.mjs`
+- `tmp/test_core_planning_locks_contract.mjs`
+- `tmp/test_finalization_postprocess_contract.mjs`
+- `tmp/test_finalization_summary_writeback_contract.mjs`
+- `tmp/test_provider_bindings_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node .\tmp\test_task_model_bindings_contract.mjs` 通过。
+- `node .\tmp\test_core_planning_locks_contract.mjs` 通过。
+- `node .\tmp\test_finalization_postprocess_contract.mjs` 通过。
+- `node .\tmp\test_finalization_summary_writeback_contract.mjs` 通过。
+- `node .\tmp\test_provider_bindings_contract.mjs` 通过。
+- 既有章节、审稿、纠偏、种子解析、设定去重、定稿锁相关 Node 回归测试通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- `npm.cmd --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
+### 当前决策
+- 种子、圣经初始化和设定库初始化属于“写作前核心规划”，一旦已有正文内容就锁定。
+- 定稿后的设定变更确认属于“写作中增量维护”，不能被核心规划锁误伤。
+- 定稿后处理失败时宁可阻断下一章，也不让下一章读取缺失的记忆或设定上下文。
+
+### 未完成 / 阻塞
+- 后续可补一个“定稿后处理失败重试 / 解除阻断”入口，当前版本先以阻断保护为主。
+
+### 下一步
+- 继续做浏览器端完整链路验收，重点覆盖任务模型映射回显、已有正文后的核心资料锁、定稿后处理失败提示和下一章生成门禁。
+
+## 2026-05-28 - 本地浏览器百万级规模 QA
+
+### 本次完成
+- 新增本地浏览器 QA 脚本，通过 Chrome DevTools Protocol 启动 headless Chrome，不依赖 Playwright npm 包。
+- 自动创建临时 QA 项目，写入 200 章、每章约 5000 字的定稿正文，总计 1000000 字，用于模拟百万级小说体量。
+- 验证首页、设置页、项目详情页、章节管理页和写字台可访问。
+- 验证已有正文后，新增种子、删除圣经、删除设定实体会被 409 拦截。
+- 验证已定稿章节普通更新被锁定，专用摘要写回接口仍可工作。
+- 测试结束后自动删除 QA 项目，避免污染项目库。
+
+### 修改文件
+- `tmp/run_browser_qa.mjs`
+- `tmp/browser-qa/latest-report.json`
+- `tmp/browser-qa/latest-report.md`
+- `tmp/browser-qa/*.png`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 浏览器 QA：29/29 项通过。
+- 百万级模拟数据：200 章 / 1000000 字。
+- 页面加载耗时：项目库约 1268ms，设置页约 976ms，项目详情约 931ms，写字台约 876ms。
+- 浏览器控制台错误：0。
+
+### 当前发现
+- headless 默认 800px 窄视口下，写字台三栏布局会明显挤压，正文只读提示和中间编辑区展示不够舒适；宽屏桌面可用，但后续需要补响应式优化。
+
+### 下一步
+- 后续浏览器验收建议补两档视口：1440px 宽屏主验收、800px 窄屏布局检查。
+- 真正接入大模型后的验收仍需单独覆盖：选题抓取、AI 生成种子、圣经生成、设定提取、正文生成、审稿和局部替换。
+
+## 2026-05-28 - 结构化 JSON 输出韧性修复
+
+### 本次完成
+- 修复 AI 生成种子、AI 选题顾问生成/更新种子、全局审稿在长 JSON 被截断或格式不稳定时容易直接失败的问题。
+- 种子生成新增三段式兜底：正常生成 -> JSON 修复 -> 基于用户输入和可见输出压缩重试，压缩重试只生成 1 条可保存种子并保留 `endingAnchor`。
+- AI 选题顾问在用户明确要求生成或更新种子时，也会执行同样的压缩重试，避免对话里看似生成了 JSON、种子页却新增空种子或不新增。
+- 全局审稿新增 JSON 修复和精简重试，失败时保留更有效的返回片段，便于定位模型格式问题。
+- 将相关结构化调用的 `maxTokens` 从 4096 提升到 6000，降低长字段中途截断概率。
+
+### 修改文件
+- `frontend/src/prompts/seed.js`
+- `frontend/src/prompts/globalAudit.js`
+- `frontend/src/stores/seedStore.js`
+- `frontend/src/stores/marketStore.js`
+- `frontend/src/stores/novelStore.js`
+- `tmp/test_structured_json_resilience_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node tmp\test_structured_json_resilience_contract.mjs` 通过。
+- `node tmp\test_seed_parser_completeness.mjs` 通过。
+- `node tmp\test_market_directions.mjs` 通过。
+- `node tmp\test_provider_bindings_contract.mjs` 通过。
+- `node tmp\test_task_model_bindings_contract.mjs` 通过。
+- `npm.cmd --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
+### 下一步
+- 从真实流程测试项目 `真实流程测试200万_20260528063230` 继续生成第 3-20 章，每 20 章暂停确认是否继续。
+
+## 2026-05-28 - 记忆事实提取 JSON 韧性修复
+
+### 本次完成
+- 真实 200 万字流程续跑时发现：第 4 章定稿后，事实记忆提取返回的 `facts` JSON 被截断，导致流程中断。
+- 将章节事实提取补齐为三段式流程：正常结构化输出 -> JSON 修复 -> 极简事实重试。
+- 极简事实重试最多输出 3 条短事实，限制 `content/evidence` 长度，避免长篇章节中事实提取再次因输出过长截断。
+- 真实流程 QA 脚本同步增加事实提取和设定变更提取的紧凑重试；二次失败时记录失败项并继续生成，便于 20 章节点完整观察问题分布。
+
+### 修改文件
+- `frontend/src/prompts/extraction.js`
+- `frontend/src/stores/memoryStore.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_memory_extraction_json_resilience_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node tmp\test_memory_extraction_json_resilience_contract.mjs` 通过。
+- `node --check tmp\run_realistic_longform_flow.mjs` 通过。
+- `node tmp\test_structured_json_resilience_contract.mjs` 通过。
+- `node tmp\test_finalization_postprocess_contract.mjs` 通过。
+- `node tmp\test_provider_bindings_contract.mjs` 通过。
+- `node tmp\test_task_model_bindings_contract.mjs` 通过。
+- `npm.cmd --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
+### 下一步
+- 继续从项目 `真实流程测试200万_20260528063230` 续跑到第 20 章，重点观察章节字数、审稿问题复发、事实/设定提取稳定性和上下章衔接。
+
+## 2026-05-28 - 真实流程 QA 审稿 JSON 截断兜底
+
+### 本次完成
+- 续跑到第 7 章时，章节审稿返回的 `issues` JSON 中途截断，导致测试脚本中断。
+- 为真实流程 QA 脚本增加章节审稿结构化兜底：正常审稿 -> JSON 修复 -> 审稿紧凑重试。
+- 紧凑重试最多保留 3 个关键问题，并限制 `location/issue/suggestion/replacement` 字段长度，避免审稿报告过长再次截断。
+- 若紧凑重试仍失败，记录失败项并让章节继续进入后续流程，便于长篇规模测试持续观察。
+
+### 修改文件
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_memory_extraction_json_resilience_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node tmp\test_memory_extraction_json_resilience_contract.mjs` 通过。
+- `node --check tmp\run_realistic_longform_flow.mjs` 通过。
+
+### 下一步
+- 从同一测试项目继续续跑到第 20 章；第 7 章会重新生成/审稿，继续观察审稿 JSON 稳定性。
+
+## 2026-05-28 - 设定变更 status 字段后端容错
+
+### 本次完成
+- 真实流程续跑到第 9 章后，自动确认设定变更时后端返回 500。
+- 根因：AI 将“人物当前状态变化”输出为 `fieldPath: status`，后端直接写入 `setting_entities.status VARCHAR(30)`；长文本状态导致数据库写入失败。
+- 修复：`status` 字段只有 `active/inactive/hidden/archived` 等系统状态才写入实体状态列；普通剧情状态文本改写入 `profile.currentState`。
+
+### 修改文件
+- `backend/routers/settings_library.py`
+- `tmp/test_setting_event_status_field_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node tmp\test_setting_event_status_field_contract.mjs` 通过。
+- `D:\Software\Python\Python312\python.exe -m compileall backend` 通过。
+- 本地后端已重启，`GET /api/health` 通过。
+- 对失败事件 `23413eb1-b16f-4ab3-80fb-7fab4c1f550b` 重新执行确认，接口返回 200。
+
+### 下一步
+- 继续从真实流程测试项目续跑到第 20 章；脚本会先处理第 9 章剩余待确认设定变更，再从第 10 章继续。
+
+## 2026-05-28 - 真实流程 QA 质量门禁与多章验收
+
+### 本次完成
+- 修复真实长篇流程 QA 脚本中的审稿兜底逻辑：章节审稿 JSON 连续解析失败时，不再被当作“零问题章节”静默放行，而是记录审稿结构化失败、增加纠偏任务并标记质量门禁失败。
+- 新增章节字数验收护栏：按项目目标字数 / 目标章节数推导单章目标，记录初稿字数和最终定稿字数；超出硬范围时在报告中标记失败。
+- 新增审稿修订字数漂移保护：审稿后的修订候选如果相对原稿字数漂移过大，或超出单章硬边界，会回退到修订前正文并记录失败，避免“修一处问题，整章体量失控”。
+- 新增长篇多章一致性验收模块：基于最近最多 20 个已定稿章节的摘要、首尾片段、设定库和 Canon 事实，检查人物设定漂移、情节矛盾、时间线、世界规则、伏笔、重复冗余、风格漂移、状态承接和上下章衔接。
+- 真实流程报告新增“多章一致性验收”章节，并区分候选初稿字数与最终定稿字数。
+
+### 修改文件
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_realistic_longform_acceptance_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+
+### 验证结果
+- `node tmp\test_realistic_longform_acceptance_contract.mjs` 通过。
+- `node tmp\test_memory_extraction_json_resilience_contract.mjs` 通过。
+- `node tmp\test_setting_event_status_field_contract.mjs` 通过。
+- `node --check tmp\run_realistic_longform_flow.mjs` 通过。
+
+### 下一步
+- 继续从真实流程测试项目续跑下一批章节时，每 20 章查看多章验收报告，重点判断上下章衔接、设定库同步、记忆事实覆盖和章节字数是否稳定。

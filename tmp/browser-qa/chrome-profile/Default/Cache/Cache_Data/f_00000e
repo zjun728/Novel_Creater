@@ -1,0 +1,272 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/components/settings/ProviderForm.vue");import { ref, watch } from "/node_modules/.vite/deps/vue.js?v=9f9297c1"
+import { NButton, NForm, NFormItem, NInput, NSelect, NSpace, NSwitch, NInputNumber } from "/node_modules/.vite/deps/naive-ui.js?v=9f9297c1"
+import { providerTypeOptions, defaultBaseUrls } from "/src/api/ai/providerPresets.js"
+
+
+const _sfc_main = {
+  __name: 'ProviderForm',
+  props: {
+  initial: { type: Object, default: null }
+},
+  emits: ['save', 'cancel'],
+  setup(__props, { expose: __expose, emit: __emit }) {
+  __expose();
+
+const props = __props
+
+const emit = __emit
+
+const form = ref({
+  name: '',
+  providerType: 'openai-compatible',
+  baseURL: '',
+  apiKey: '',
+  model: '',
+  stream: true,
+  maxContextTokens: 200000,
+  maxOutputTokens: 4096,
+  temperature: 0.8,
+  topP: 0.9,
+  supportsJSON: true,
+  supportsStreaming: true,
+  notes: ''
+})
+
+const defaults = {
+  name: '',
+  providerType: 'openai-compatible',
+  baseURL: '',
+  apiKey: '',
+  model: '',
+  stream: true,
+  maxContextTokens: 200000,
+  maxOutputTokens: 4096,
+  temperature: 0.8,
+  topP: 0.9,
+  supportsJSON: true,
+  supportsStreaming: true,
+  notes: ''
+}
+
+watch(() => props.initial, (val) => {
+  if (val) {
+    form.value = { ...defaults, ...val }
+  } else {
+    form.value = { ...defaults }
+  }
+}, { immediate: true })
+
+function handleTypeChange(type) {
+  form.value.providerType = type
+  if (!props.initial) {
+    form.value.baseURL = defaultBaseUrls[type] || ''
+  }
+}
+
+function handleSubmit() {
+  if (!form.value.name.trim()) return
+  if (!form.value.model.trim()) return
+  emit('save', { ...form.value })
+}
+
+const __returned__ = { props, emit, form, defaults, handleTypeChange, handleSubmit, ref, watch, get NButton() { return NButton }, get NForm() { return NForm }, get NFormItem() { return NFormItem }, get NInput() { return NInput }, get NSelect() { return NSelect }, get NSpace() { return NSpace }, get NSwitch() { return NSwitch }, get NInputNumber() { return NInputNumber }, get providerTypeOptions() { return providerTypeOptions }, get defaultBaseUrls() { return defaultBaseUrls } }
+Object.defineProperty(__returned__, '__isScriptSetup', { enumerable: false, value: true })
+return __returned__
+}
+
+}
+import { createVNode as _createVNode, withCtx as _withCtx, createElementVNode as _createElementVNode, createTextVNode as _createTextVNode, Fragment as _Fragment, openBlock as _openBlock, createElementBlock as _createElementBlock } from "/node_modules/.vite/deps/vue.js?v=9f9297c1"
+
+const _hoisted_1 = { class: "grid grid-cols-2 gap-4" }
+const _hoisted_2 = { class: "flex justify-end gap-2 mt-6" }
+
+function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
+  return (_openBlock(), _createElementBlock(_Fragment, null, [
+    _createVNode($setup["NForm"], { model: $setup.form }, {
+      default: _withCtx(() => [
+        _createVNode($setup["NFormItem"], {
+          label: "名称",
+          required: ""
+        }, {
+          default: _withCtx(() => [
+            _createVNode($setup["NInput"], {
+              value: $setup.form.name,
+              "onUpdate:value": _cache[0] || (_cache[0] = $event => (($setup.form.name) = $event)),
+              placeholder: "如：Claude 主创、DeepSeek 脑洞"
+            }, null, 8 /* PROPS */, ["value"])
+          ]),
+          _: 1 /* STABLE */
+        }),
+        _createVNode($setup["NFormItem"], {
+          label: "Provider 类型",
+          required: ""
+        }, {
+          default: _withCtx(() => [
+            _createVNode($setup["NSelect"], {
+              value: $setup.form.providerType,
+              "onUpdate:value": [
+                _cache[1] || (_cache[1] = $event => (($setup.form.providerType) = $event)),
+                $setup.handleTypeChange
+              ],
+              options: $setup.providerTypeOptions
+            }, null, 8 /* PROPS */, ["value", "options"])
+          ]),
+          _: 1 /* STABLE */
+        }),
+        _createVNode($setup["NFormItem"], { label: "Base URL" }, {
+          default: _withCtx(() => [
+            _createVNode($setup["NInput"], {
+              value: $setup.form.baseURL,
+              "onUpdate:value": _cache[2] || (_cache[2] = $event => (($setup.form.baseURL) = $event)),
+              placeholder: "默认使用 API 供应商的官方地址"
+            }, null, 8 /* PROPS */, ["value"])
+          ]),
+          _: 1 /* STABLE */
+        }),
+        _createVNode($setup["NFormItem"], {
+          label: "模型 ID",
+          required: ""
+        }, {
+          default: _withCtx(() => [
+            _createVNode($setup["NInput"], {
+              value: $setup.form.model,
+              "onUpdate:value": _cache[3] || (_cache[3] = $event => (($setup.form.model) = $event)),
+              placeholder: "如：claude-sonnet-4-20250514、gpt-4o"
+            }, null, 8 /* PROPS */, ["value"])
+          ]),
+          _: 1 /* STABLE */
+        }),
+        _createVNode($setup["NFormItem"], { label: "API Key" }, {
+          default: _withCtx(() => [
+            _createVNode($setup["NInput"], {
+              value: $setup.form.apiKey,
+              "onUpdate:value": _cache[4] || (_cache[4] = $event => (($setup.form.apiKey) = $event)),
+              type: "password",
+              "show-password-on": "click",
+              placeholder: "输入 API Key"
+            }, null, 8 /* PROPS */, ["value"])
+          ]),
+          _: 1 /* STABLE */
+        }),
+        _createVNode($setup["NFormItem"], { label: "备注" }, {
+          default: _withCtx(() => [
+            _createVNode($setup["NInput"], {
+              value: $setup.form.notes,
+              "onUpdate:value": _cache[5] || (_cache[5] = $event => (($setup.form.notes) = $event)),
+              type: "textarea",
+              rows: "2",
+              placeholder: "可选备注信息"
+            }, null, 8 /* PROPS */, ["value"])
+          ]),
+          _: 1 /* STABLE */
+        }),
+        _createElementVNode("div", _hoisted_1, [
+          _createVNode($setup["NFormItem"], { label: "流式输出" }, {
+            default: _withCtx(() => [
+              _createVNode($setup["NSwitch"], {
+                value: $setup.form.stream,
+                "onUpdate:value": _cache[6] || (_cache[6] = $event => (($setup.form.stream) = $event))
+              }, null, 8 /* PROPS */, ["value"])
+            ]),
+            _: 1 /* STABLE */
+          }),
+          _createVNode($setup["NFormItem"], { label: "支持 JSON" }, {
+            default: _withCtx(() => [
+              _createVNode($setup["NSwitch"], {
+                value: $setup.form.supportsJSON,
+                "onUpdate:value": _cache[7] || (_cache[7] = $event => (($setup.form.supportsJSON) = $event))
+              }, null, 8 /* PROPS */, ["value"])
+            ]),
+            _: 1 /* STABLE */
+          }),
+          _createVNode($setup["NFormItem"], { label: "Temperature" }, {
+            default: _withCtx(() => [
+              _createVNode($setup["NInputNumber"], {
+                value: $setup.form.temperature,
+                "onUpdate:value": _cache[8] || (_cache[8] = $event => (($setup.form.temperature) = $event)),
+                min: 0,
+                max: 2,
+                step: 0.1
+              }, null, 8 /* PROPS */, ["value"])
+            ]),
+            _: 1 /* STABLE */
+          }),
+          _createVNode($setup["NFormItem"], { label: "Top P" }, {
+            default: _withCtx(() => [
+              _createVNode($setup["NInputNumber"], {
+                value: $setup.form.topP,
+                "onUpdate:value": _cache[9] || (_cache[9] = $event => (($setup.form.topP) = $event)),
+                min: 0,
+                max: 1,
+                step: 0.1
+              }, null, 8 /* PROPS */, ["value"])
+            ]),
+            _: 1 /* STABLE */
+          }),
+          _createVNode($setup["NFormItem"], { label: "最大上下文 Tokens" }, {
+            default: _withCtx(() => [
+              _createVNode($setup["NInputNumber"], {
+                value: $setup.form.maxContextTokens,
+                "onUpdate:value": _cache[10] || (_cache[10] = $event => (($setup.form.maxContextTokens) = $event)),
+                min: 1000,
+                step: 1000
+              }, null, 8 /* PROPS */, ["value"])
+            ]),
+            _: 1 /* STABLE */
+          }),
+          _createVNode($setup["NFormItem"], { label: "最大输出 Tokens" }, {
+            default: _withCtx(() => [
+              _createVNode($setup["NInputNumber"], {
+                value: $setup.form.maxOutputTokens,
+                "onUpdate:value": _cache[11] || (_cache[11] = $event => (($setup.form.maxOutputTokens) = $event)),
+                min: 256,
+                step: 256
+              }, null, 8 /* PROPS */, ["value"])
+            ]),
+            _: 1 /* STABLE */
+          })
+        ])
+      ]),
+      _: 1 /* STABLE */
+    }, 8 /* PROPS */, ["model"]),
+    _createElementVNode("div", _hoisted_2, [
+      _createVNode($setup["NButton"], {
+        onClick: _cache[12] || (_cache[12] = $event => ($setup.emit('cancel')))
+      }, {
+        default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
+          _createTextVNode("取消", -1 /* CACHED */)
+        ]))]),
+        _: 1 /* STABLE */
+      }),
+      _createVNode($setup["NButton"], {
+        type: "primary",
+        onClick: $setup.handleSubmit
+      }, {
+        default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+          _createTextVNode("保存", -1 /* CACHED */)
+        ]))]),
+        _: 1 /* STABLE */
+      })
+    ])
+  ], 64 /* STABLE_FRAGMENT */))
+}
+
+
+
+_sfc_main.__hmrId = "efebd006"
+typeof __VUE_HMR_RUNTIME__ !== 'undefined' && __VUE_HMR_RUNTIME__.createRecord(_sfc_main.__hmrId, _sfc_main)
+import.meta.hot.on('file-changed', ({ file }) => {
+  __VUE_HMR_RUNTIME__.CHANGED_FILE = file
+})
+import.meta.hot.accept(mod => {
+  if (!mod) return
+  const { default: updated, _rerender_only } = mod
+  if (_rerender_only) {
+    __VUE_HMR_RUNTIME__.rerender(updated.__hmrId, updated.render)
+  } else {
+    __VUE_HMR_RUNTIME__.reload(updated.__hmrId, updated)
+  }
+})
+import _export_sfc from "/@id/__x00__plugin-vue:export-helper"
+export default /*#__PURE__*/_export_sfc(_sfc_main, [['render',_sfc_render],['__file',"D:/Projects/Novel_Creater/frontend/src/components/settings/ProviderForm.vue"]])
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJuYW1lcyI6W10sInNvdXJjZXMiOlsiUHJvdmlkZXJGb3JtLnZ1ZSJdLCJzb3VyY2VzQ29udGVudCI6WyI8c2NyaXB0IHNldHVwPlxuaW1wb3J0IHsgcmVmLCB3YXRjaCB9IGZyb20gJ3Z1ZSdcbmltcG9ydCB7IE5CdXR0b24sIE5Gb3JtLCBORm9ybUl0ZW0sIE5JbnB1dCwgTlNlbGVjdCwgTlNwYWNlLCBOU3dpdGNoLCBOSW5wdXROdW1iZXIgfSBmcm9tICduYWl2ZS11aSdcbmltcG9ydCB7IHByb3ZpZGVyVHlwZU9wdGlvbnMsIGRlZmF1bHRCYXNlVXJscyB9IGZyb20gJ0AvYXBpL2FpL3Byb3ZpZGVyUHJlc2V0cydcblxuY29uc3QgcHJvcHMgPSBkZWZpbmVQcm9wcyh7XG4gIGluaXRpYWw6IHsgdHlwZTogT2JqZWN0LCBkZWZhdWx0OiBudWxsIH1cbn0pXG5cbmNvbnN0IGVtaXQgPSBkZWZpbmVFbWl0cyhbJ3NhdmUnLCAnY2FuY2VsJ10pXG5cbmNvbnN0IGZvcm0gPSByZWYoe1xuICBuYW1lOiAnJyxcbiAgcHJvdmlkZXJUeXBlOiAnb3BlbmFpLWNvbXBhdGlibGUnLFxuICBiYXNlVVJMOiAnJyxcbiAgYXBpS2V5OiAnJyxcbiAgbW9kZWw6ICcnLFxuICBzdHJlYW06IHRydWUsXG4gIG1heENvbnRleHRUb2tlbnM6IDIwMDAwMCxcbiAgbWF4T3V0cHV0VG9rZW5zOiA0MDk2LFxuICB0ZW1wZXJhdHVyZTogMC44LFxuICB0b3BQOiAwLjksXG4gIHN1cHBvcnRzSlNPTjogdHJ1ZSxcbiAgc3VwcG9ydHNTdHJlYW1pbmc6IHRydWUsXG4gIG5vdGVzOiAnJ1xufSlcblxuY29uc3QgZGVmYXVsdHMgPSB7XG4gIG5hbWU6ICcnLFxuICBwcm92aWRlclR5cGU6ICdvcGVuYWktY29tcGF0aWJsZScsXG4gIGJhc2VVUkw6ICcnLFxuICBhcGlLZXk6ICcnLFxuICBtb2RlbDogJycsXG4gIHN0cmVhbTogdHJ1ZSxcbiAgbWF4Q29udGV4dFRva2VuczogMjAwMDAwLFxuICBtYXhPdXRwdXRUb2tlbnM6IDQwOTYsXG4gIHRlbXBlcmF0dXJlOiAwLjgsXG4gIHRvcFA6IDAuOSxcbiAgc3VwcG9ydHNKU09OOiB0cnVlLFxuICBzdXBwb3J0c1N0cmVhbWluZzogdHJ1ZSxcbiAgbm90ZXM6ICcnXG59XG5cbndhdGNoKCgpID0+IHByb3BzLmluaXRpYWwsICh2YWwpID0+IHtcbiAgaWYgKHZhbCkge1xuICAgIGZvcm0udmFsdWUgPSB7IC4uLmRlZmF1bHRzLCAuLi52YWwgfVxuICB9IGVsc2Uge1xuICAgIGZvcm0udmFsdWUgPSB7IC4uLmRlZmF1bHRzIH1cbiAgfVxufSwgeyBpbW1lZGlhdGU6IHRydWUgfSlcblxuZnVuY3Rpb24gaGFuZGxlVHlwZUNoYW5nZSh0eXBlKSB7XG4gIGZvcm0udmFsdWUucHJvdmlkZXJUeXBlID0gdHlwZVxuICBpZiAoIXByb3BzLmluaXRpYWwpIHtcbiAgICBmb3JtLnZhbHVlLmJhc2VVUkwgPSBkZWZhdWx0QmFzZVVybHNbdHlwZV0gfHwgJydcbiAgfVxufVxuXG5mdW5jdGlvbiBoYW5kbGVTdWJtaXQoKSB7XG4gIGlmICghZm9ybS52YWx1ZS5uYW1lLnRyaW0oKSkgcmV0dXJuXG4gIGlmICghZm9ybS52YWx1ZS5tb2RlbC50cmltKCkpIHJldHVyblxuICBlbWl0KCdzYXZlJywgeyAuLi5mb3JtLnZhbHVlIH0pXG59XG48L3NjcmlwdD5cblxuPHRlbXBsYXRlPlxuICA8bi1mb3JtIDptb2RlbD1cImZvcm1cIj5cbiAgICA8bi1mb3JtLWl0ZW0gbGFiZWw9XCLlkI3np7BcIiByZXF1aXJlZD5cbiAgICAgIDxuLWlucHV0IHYtbW9kZWw6dmFsdWU9XCJmb3JtLm5hbWVcIiBwbGFjZWhvbGRlcj1cIuWmgu+8mkNsYXVkZSDkuLvliJvjgIFEZWVwU2VlayDohJHmtJ5cIiAvPlxuICAgIDwvbi1mb3JtLWl0ZW0+XG4gICAgPG4tZm9ybS1pdGVtIGxhYmVsPVwiUHJvdmlkZXIg57G75Z6LXCIgcmVxdWlyZWQ+XG4gICAgICA8bi1zZWxlY3RcbiAgICAgICAgdi1tb2RlbDp2YWx1ZT1cImZvcm0ucHJvdmlkZXJUeXBlXCJcbiAgICAgICAgOm9wdGlvbnM9XCJwcm92aWRlclR5cGVPcHRpb25zXCJcbiAgICAgICAgQHVwZGF0ZTp2YWx1ZT1cImhhbmRsZVR5cGVDaGFuZ2VcIlxuICAgICAgLz5cbiAgICA8L24tZm9ybS1pdGVtPlxuICAgIDxuLWZvcm0taXRlbSBsYWJlbD1cIkJhc2UgVVJMXCI+XG4gICAgICA8bi1pbnB1dCB2LW1vZGVsOnZhbHVlPVwiZm9ybS5iYXNlVVJMXCIgcGxhY2Vob2xkZXI9XCLpu5jorqTkvb/nlKggQVBJIOS+m+W6lOWVhueahOWumOaWueWcsOWdgFwiIC8+XG4gICAgPC9uLWZvcm0taXRlbT5cbiAgICA8bi1mb3JtLWl0ZW0gbGFiZWw9XCLmqKHlnosgSURcIiByZXF1aXJlZD5cbiAgICAgIDxuLWlucHV0IHYtbW9kZWw6dmFsdWU9XCJmb3JtLm1vZGVsXCIgcGxhY2Vob2xkZXI9XCLlpoLvvJpjbGF1ZGUtc29ubmV0LTQtMjAyNTA1MTTjgIFncHQtNG9cIiAvPlxuICAgIDwvbi1mb3JtLWl0ZW0+XG4gICAgPG4tZm9ybS1pdGVtIGxhYmVsPVwiQVBJIEtleVwiPlxuICAgICAgPG4taW5wdXRcbiAgICAgICAgdi1tb2RlbDp2YWx1ZT1cImZvcm0uYXBpS2V5XCJcbiAgICAgICAgdHlwZT1cInBhc3N3b3JkXCJcbiAgICAgICAgc2hvdy1wYXNzd29yZC1vbj1cImNsaWNrXCJcbiAgICAgICAgcGxhY2Vob2xkZXI9XCLovpPlhaUgQVBJIEtleVwiXG4gICAgICAvPlxuICAgIDwvbi1mb3JtLWl0ZW0+XG4gICAgPG4tZm9ybS1pdGVtIGxhYmVsPVwi5aSH5rOoXCI+XG4gICAgICA8bi1pbnB1dCB2LW1vZGVsOnZhbHVlPVwiZm9ybS5ub3Rlc1wiIHR5cGU9XCJ0ZXh0YXJlYVwiIHJvd3M9XCIyXCIgcGxhY2Vob2xkZXI9XCLlj6/pgInlpIfms6jkv6Hmga9cIiAvPlxuICAgIDwvbi1mb3JtLWl0ZW0+XG4gICAgPGRpdiBjbGFzcz1cImdyaWQgZ3JpZC1jb2xzLTIgZ2FwLTRcIj5cbiAgICAgIDxuLWZvcm0taXRlbSBsYWJlbD1cIua1geW8j+i+k+WHulwiPlxuICAgICAgICA8bi1zd2l0Y2ggdi1tb2RlbDp2YWx1ZT1cImZvcm0uc3RyZWFtXCIgLz5cbiAgICAgIDwvbi1mb3JtLWl0ZW0+XG4gICAgICA8bi1mb3JtLWl0ZW0gbGFiZWw9XCLmlK/mjIEgSlNPTlwiPlxuICAgICAgICA8bi1zd2l0Y2ggdi1tb2RlbDp2YWx1ZT1cImZvcm0uc3VwcG9ydHNKU09OXCIgLz5cbiAgICAgIDwvbi1mb3JtLWl0ZW0+XG4gICAgICA8bi1mb3JtLWl0ZW0gbGFiZWw9XCJUZW1wZXJhdHVyZVwiPlxuICAgICAgICA8bi1pbnB1dC1udW1iZXIgdi1tb2RlbDp2YWx1ZT1cImZvcm0udGVtcGVyYXR1cmVcIiA6bWluPVwiMFwiIDptYXg9XCIyXCIgOnN0ZXA9XCIwLjFcIiAvPlxuICAgICAgPC9uLWZvcm0taXRlbT5cbiAgICAgIDxuLWZvcm0taXRlbSBsYWJlbD1cIlRvcCBQXCI+XG4gICAgICAgIDxuLWlucHV0LW51bWJlciB2LW1vZGVsOnZhbHVlPVwiZm9ybS50b3BQXCIgOm1pbj1cIjBcIiA6bWF4PVwiMVwiIDpzdGVwPVwiMC4xXCIgLz5cbiAgICAgIDwvbi1mb3JtLWl0ZW0+XG4gICAgICA8bi1mb3JtLWl0ZW0gbGFiZWw9XCLmnIDlpKfkuIrkuIvmlocgVG9rZW5zXCI+XG4gICAgICAgIDxuLWlucHV0LW51bWJlciB2LW1vZGVsOnZhbHVlPVwiZm9ybS5tYXhDb250ZXh0VG9rZW5zXCIgOm1pbj1cIjEwMDBcIiA6c3RlcD1cIjEwMDBcIiAvPlxuICAgICAgPC9uLWZvcm0taXRlbT5cbiAgICAgIDxuLWZvcm0taXRlbSBsYWJlbD1cIuacgOWkp+i+k+WHuiBUb2tlbnNcIj5cbiAgICAgICAgPG4taW5wdXQtbnVtYmVyIHYtbW9kZWw6dmFsdWU9XCJmb3JtLm1heE91dHB1dFRva2Vuc1wiIDptaW49XCIyNTZcIiA6c3RlcD1cIjI1NlwiIC8+XG4gICAgICA8L24tZm9ybS1pdGVtPlxuICAgIDwvZGl2PlxuICA8L24tZm9ybT5cbiAgPGRpdiBjbGFzcz1cImZsZXgganVzdGlmeS1lbmQgZ2FwLTIgbXQtNlwiPlxuICAgIDxuLWJ1dHRvbiBAY2xpY2s9XCJlbWl0KCdjYW5jZWwnKVwiPuWPlua2iDwvbi1idXR0b24+XG4gICAgPG4tYnV0dG9uIHR5cGU9XCJwcmltYXJ5XCIgQGNsaWNrPVwiaGFuZGxlU3VibWl0XCI+5L+d5a2YPC9uLWJ1dHRvbj5cbiAgPC9kaXY+XG48L3RlbXBsYXRlPlxuIl0sIm1hcHBpbmdzIjoiQUFDQSxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQy9CLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ25HLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDOzs7Ozs7Ozs7Ozs7QUFFOUUsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDOztBQUlkLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7O0FBRWIsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ2pCLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDVixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDbkMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNiLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ1osQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ1gsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ2QsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQzFCLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUN2QixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNsQixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDWCxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDcEIsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUN6QixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ1YsQ0FBQzs7QUFFRCxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDakIsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNWLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNuQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ2IsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDWixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDWCxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDZCxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDMUIsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ3ZCLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ2xCLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNYLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNwQixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ3pCLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDVjs7QUFFQSxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNwQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDWCxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUN2QyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNULENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDL0IsQ0FBQyxDQUFDO0FBQ0YsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQzs7QUFFdEIsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ2hDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUM7QUFDL0IsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUN0QixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNuRCxDQUFDLENBQUM7QUFDRjs7QUFFQSxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUN4QixDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNwQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDO0FBQ3JDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQyxDQUFDLENBQUMsQ0FBQztBQUNoQzs7Ozs7Ozs7OztxQkFn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

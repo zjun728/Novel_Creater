@@ -1,0 +1,190 @@
+{
+  "startedAt": "2026-05-28T05:21:39.184Z",
+  "project": {
+    "id": "3e20fa9f-91dd-4de9-a747-ccb16130108a",
+    "title": "QA百万级浏览器验收_1779945702931"
+  },
+  "scale": {
+    "chapterCount": 200,
+    "finalizedChapters": 200,
+    "totalWords": 1000000,
+    "setupMs": 4456,
+    "domStats": {
+      "nodes": 330,
+      "textLength": 739,
+      "memory": {
+        "usedJSHeapSize": 66856674,
+        "totalJSHeapSize": 101930294
+      }
+    }
+  },
+  "checks": [
+    {
+      "name": "后端健康检查",
+      "status": "pass",
+      "detail": "已有服务可用"
+    },
+    {
+      "name": "前端页面检查",
+      "status": "pass",
+      "detail": "脚本已启动 Vite"
+    },
+    {
+      "name": "百万级正文数据准备",
+      "status": "pass",
+      "detail": "200 章，1000000 字"
+    },
+    {
+      "name": "已有正文后禁止新增种子",
+      "status": "pass",
+      "detail": "按预期返回 409"
+    },
+    {
+      "name": "已有正文后禁止删除圣经",
+      "status": "pass",
+      "detail": "按预期返回 409"
+    },
+    {
+      "name": "已有正文后禁止删除设定实体",
+      "status": "pass",
+      "detail": "按预期返回 409"
+    },
+    {
+      "name": "已定稿章节普通更新被锁定",
+      "status": "pass",
+      "detail": "按预期返回 409"
+    },
+    {
+      "name": "已定稿章节允许专用摘要写回",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "首页项目库可访问",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "首页能看到 QA 项目",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "设置页任务模型映射可见",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "设置页模型配置区域可见",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：选题雷达",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：创作种子",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：创作圣经",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：设定库",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：章节管理",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：纠偏任务",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：人物弧光",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "项目页标签可见：伏笔看板",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "可切换到章节管理",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "章节管理显示 200 章规模",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "写字台显示项目名",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "已定稿章节进入只读状态",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "写字台有返回项目详情入口",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "写字台本章审稿入口可见",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "写字台项目详情按钮可点击",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "写字台可返回项目详情页",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "QA 测试项目清理",
+      "status": "pass",
+      "detail": "已删除 QA 项目 3e20fa9f-91dd-4de9-a747-ccb16130108a"
+    }
+  ],
+  "timings": {
+    "homeLoadMs": 1268,
+    "settingsLoadMs": 976,
+    "projectLoadMs": 931,
+    "writerLoadMs": 876
+  },
+  "browserConsole": [],
+  "screenshots": [
+    "D:\\Projects\\Novel_Creater\\tmp\\browser-qa\\home.png",
+    "D:\\Projects\\Novel_Creater\\tmp\\browser-qa\\project-overview.png",
+    "D:\\Projects\\Novel_Creater\\tmp\\browser-qa\\project-chapters.png",
+    "D:\\Projects\\Novel_Creater\\tmp\\browser-qa\\writer-finalized.png"
+  ],
+  "cleanup": "已删除 QA 项目 3e20fa9f-91dd-4de9-a747-ccb16130108a",
+  "notes": [],
+  "finishedAt": "2026-05-28T05:21:56.054Z",
+  "summary": {
+    "totalChecks": 29,
+    "failedChecks": 0,
+    "passedChecks": 29,
+    "browserConsoleErrors": 0
+  }
+}

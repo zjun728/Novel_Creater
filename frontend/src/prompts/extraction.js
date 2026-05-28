@@ -47,3 +47,59 @@ ${existingFacts?.length ? `## 已有事实（供参考，避免重复）\n${exis
 4. confidence 表示你对该事实判断的信心（0-1）。
 5. 如果某事实与已有事实矛盾，额外标注 conflictWithExisting。`
 }
+
+export function buildExtractionRepairPrompt(rawText) {
+  return `请把下面内容修复为合法 JSON，只输出 JSON，不要解释，不要 Markdown。
+
+目标格式必须是：
+{
+  "facts": [
+    {
+      "factType": "world|character|plot|relationship|timeline|style",
+      "content": "80字内事实描述",
+      "relatedCharacters": ["角色名"],
+      "relatedPlotThreads": ["伏笔标题"],
+      "evidence": "80字内原文依据",
+      "confidence": 0.8
+    }
+  ]
+}
+
+要求：
+1. 最多保留 4 条最重要事实。
+2. content 和 evidence 必须短，不要长篇复述。
+3. 如果原始内容不完整，只保留能确定的完整事实。
+4. 如果没有可确定事实，输出 {"facts":[]}。
+
+原始内容：
+${String(rawText || '').slice(0, 12000)}`
+}
+
+export function buildCompactExtractionPrompt(chapterContent, chapterNum, existingFacts = [], rawText = '') {
+  const existingBrief = existingFacts.slice(0, 12).map(f => `- [${f.factType || 'plot'}] ${f.content || ''}`).join('\n')
+  return `请重新从第 ${chapterNum} 章提取极简记忆事实。
+
+只输出合法 JSON，不要解释，不要 Markdown：
+{
+  "facts": [
+    {
+      "factType": "world|character|plot|relationship|timeline|style",
+      "content": "80字内事实描述",
+      "relatedCharacters": ["角色名"],
+      "relatedPlotThreads": ["伏笔标题"],
+      "evidence": "80字内原文依据",
+      "confidence": 0.8
+    }
+  ]
+}
+
+硬性要求：
+1. 最多 3 条事实；宁可少，不要多。
+2. 只记录会影响后续章节的事实：角色状态、关系变化、世界规则、关键物品、关键事件结果。
+3. 不要记录普通环境描写、临时动作、无后续影响的细节。
+4. content/evidence 都必须短，避免输出过长导致 JSON 截断。
+5. 如果没有必要事实，输出 {"facts":[]}。
+
+${existingBrief ? `已有事实参考，避免重复：\n${existingBrief}\n\n` : ''}${rawText ? `上一次模型返回片段：\n${String(rawText).slice(0, 2000)}\n\n` : ''}第 ${chapterNum} 章正文节选：
+${String(chapterContent || '').slice(0, 9000)}`
+}

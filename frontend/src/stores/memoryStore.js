@@ -11,7 +11,9 @@ import {
 } from '@/prompts/summary'
 import {
   buildExtractionSystemPrompt,
-  buildExtractionPrompt
+  buildExtractionPrompt,
+  buildExtractionRepairPrompt,
+  buildCompactExtractionPrompt
 } from '@/prompts/extraction'
 import {
   buildAuditSystemPrompt,
@@ -112,11 +114,41 @@ export const useMemoryStore = defineStore('memory', () => {
         { role: 'system', content: buildExtractionSystemPrompt() },
         { role: 'user', content: buildExtractionPrompt(chapterContent, chapterNum, existingFacts) }
       ]
-      const result = await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.3 })
-      const facts = parseAIJson(result)
-      const factList = Array.isArray(facts) ? facts : (facts.facts || [facts])
-      lastExtractions.value = factList
-      return factList
+      const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 3000, temperature: 0.25 }))
+      const text = getCompletionText(result)
+      let parsed = parseFactExtractionText(text)
+      let repairText = ''
+      let compactText = ''
+
+      if (!parsed.ok && text.trim()) {
+        try {
+          const repairResult = await chatCompletion(provider, [
+            { role: 'system', content: '你是 JSON 修复器。只能输出合法 JSON，不要解释。' },
+            { role: 'user', content: buildExtractionRepairPrompt(text) }
+          ], jsonOptions(provider, { maxTokens: 3000, temperature: 0 }))
+          repairText = getCompletionText(repairResult)
+          parsed = parseFactExtractionText(repairText)
+        } catch (repairError) {
+          console.warn('事实提取 JSON 修复失败:', repairError.message)
+        }
+      }
+
+      if (!parsed.ok) {
+        const compactResult = await chatCompletion(provider, [
+          { role: 'system', content: buildExtractionSystemPrompt() },
+          { role: 'user', content: buildCompactExtractionPrompt(chapterContent, chapterNum, existingFacts, repairText || text) }
+        ], jsonOptions(provider, { maxTokens: 3000, temperature: 0.15 }))
+        compactText = getCompletionText(compactResult)
+        parsed = parseFactExtractionText(compactText)
+      }
+
+      if (!parsed.ok) {
+        const snippet = (compactText || repairText || text || '').slice(0, 500)
+        throw new Error(`AI 没有返回可解析的记忆事实 JSON。返回片段：${snippet}`)
+      }
+
+      lastExtractions.value = parsed.facts
+      return parsed.facts
     } catch (e) {
       console.error('事实提取失败:', e.message)
       throw e
@@ -336,19 +368,32 @@ export const useMemoryStore = defineStore('memory', () => {
     }
   }
 
+  const requiredFinalizationSteps = new Set(['summary', 'facts', 'settingChanges'])
+
+  function recordFinalizationStepError(results, step, error) {
+    const item = {
+      step,
+      message: error?.message || String(error || 'unknown error'),
+      required: requiredFinalizationSteps.has(step)
+    }
+    results.errors.push(item)
+    console.warn(`定稿后处理步骤失败(${step}):`, item.message)
+  }
+
   // === 批量处理：定稿后自动执行记忆和设定提取 ===
   async function processChapterFinalization(projectId, chapterContent, chapterNum, options = {}) {
     const includeAudit = options.includeAudit === true
     processing.value = true
     try {
-      const results = { summary: null, facts: [], settingChanges: [], audit: null }
+      const results = { summary: null, facts: [], settingChanges: [], audit: null, errors: [] }
 
-      try { results.summary = await generateSummary(projectId, chapterContent, chapterNum) } catch (e) { console.warn('摘要生成失败:', e.message) }
-      try { results.facts = await extractFacts(projectId, chapterContent, chapterNum) } catch (e) { console.warn('事实提取失败:', e.message) }
-      try { results.settingChanges = await extractSettingChanges(projectId, chapterContent, chapterNum) } catch (e) { console.warn('设定变更提取失败:', e.message) }
+      try { results.summary = await generateSummary(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'summary', e) }
+      try { results.facts = await extractFacts(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'facts', e) }
+      try { results.settingChanges = await extractSettingChanges(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'settingChanges', e) }
       if (includeAudit) {
-        try { results.audit = await auditChapter(projectId, chapterContent, chapterNum) } catch (e) { console.warn('审稿失败:', e.message) }
+        try { results.audit = await auditChapter(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'audit', e) }
       }
+      const requiredFailures = results.errors.filter(error => error.required)
 
       const novelStore = useNovelStore()
       const settingStore = useSettingStore()
@@ -477,8 +522,17 @@ export const useMemoryStore = defineStore('memory', () => {
       const writerStore = useWriterStore()
       const chapter = writerStore.chapters.find(c => c.chapterNum === chapterNum)
       if (chapter && results.summary) {
-        chapter.summary = results.summary.summary || ''
-        await writerStore.updateChapter(chapter)
+        const updatedChapter = await api.chapters.updateSummary(projectId, chapter.id, {
+          summary: results.summary.summary || ''
+        })
+        Object.assign(chapter, updatedChapter || { summary: results.summary.summary || '' })
+        if (writerStore.currentChapter?.id === chapter.id) {
+          writerStore.currentChapter = { ...writerStore.currentChapter, ...chapter }
+        }
+      }
+
+      if (requiredFailures.length) {
+        results.requiredFailures = requiredFailures
       }
 
       return results
@@ -625,6 +679,59 @@ function normalizeStringList(value) {
   if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
   if (typeof value === 'string') return value.split(/\n|；|;/).map(item => item.trim()).filter(Boolean)
   return []
+}
+
+function parseFactExtractionText(text) {
+  const parsed = parseJsonCandidates(text)
+  for (const item of parsed) {
+    const list = pickCanonFactList(item)
+    if (Array.isArray(list)) {
+      return { ok: true, facts: normalizeCanonFacts(list) }
+    }
+  }
+  return { ok: false, facts: [] }
+}
+
+function pickCanonFactList(payload) {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return null
+  const keys = ['facts', 'canonFacts', 'items', 'data', 'results']
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key]
+  }
+  for (const key of keys) {
+    const nested = pickCanonFactList(payload[key])
+    if (Array.isArray(nested)) return nested
+  }
+  if (payload.content || payload.factType || payload.evidence) return [payload]
+  return null
+}
+
+function normalizeCanonFacts(facts) {
+  const seen = new Set()
+  return (Array.isArray(facts) ? facts : [])
+    .map(normalizeCanonFact)
+    .filter(Boolean)
+    .filter(fact => {
+      const key = `${fact.factType}::${fact.content}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function normalizeCanonFact(fact) {
+  if (!fact || typeof fact !== 'object') return null
+  const content = String(fact.content || fact.summary || fact.fact || '').trim()
+  if (!content) return null
+  return {
+    factType: pickEnum(fact.factType || fact.type, ['world', 'character', 'plot', 'relationship', 'timeline', 'style', 'setting'], 'plot'),
+    content,
+    relatedCharacters: normalizeStringList(fact.relatedCharacters || fact.characters),
+    relatedPlotThreads: normalizeStringList(fact.relatedPlotThreads || fact.plotThreads),
+    evidence: String(fact.evidence || fact.quote || '').trim(),
+    confidence: clampConfidence(fact.confidence)
+  }
 }
 
 function extractSettingChangesPayload(text) {

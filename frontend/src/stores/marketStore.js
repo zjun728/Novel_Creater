@@ -7,7 +7,7 @@ import { useProjectStore } from './projectStore'
 import { useNovelStore } from './novelStore'
 import { useSeedStore } from './seedStore'
 import { buildMarketChatSystemPrompt, extractSeedsFromText } from '@/prompts/market'
-import { buildSeedRepairPrompt } from '@/prompts/seed'
+import { buildCompactSeedRetryPrompt, buildSeedRepairPrompt } from '@/prompts/seed'
 import {
   buildMarketDirectionPrompt,
   buildMarketDirectionRepairPrompt,
@@ -38,6 +38,11 @@ function snippet(text) {
 function hasSeedIntent(text) {
   return /(?:生成|创建|新增|保存|输出|整理|给我|做|产出).{0,24}(?:种子|创作种子|候选种子|完整种子|seed)/i.test(text)
     || /保存为候选种子|完整\s*JSON\s*数组/i.test(text)
+}
+
+async function ensureSeedPlanningMutableForChat(projectId) {
+  const state = await api.projects.contentState(projectId)
+  return !state?.hasChapterContent
 }
 
 export const useMarketStore = defineStore('market', () => {
@@ -250,7 +255,7 @@ export const useMarketStore = defineStore('market', () => {
       ]
 
       const result = await chatCompletion(provider, messages, {
-        maxTokens: 4096,
+        maxTokens: 6000,
         temperature: 0.9
       })
 
@@ -263,6 +268,7 @@ export const useMarketStore = defineStore('market', () => {
       const requestedSeed = hasSeedIntent(userMessage)
       let seedList = extractSeedsFromText(text)
       let repairText = ''
+      let compactText = ''
       if (!seedList.length && requestedSeed && text.trim()) {
         try {
           const repairResult = await chatCompletion(provider, [
@@ -275,7 +281,7 @@ export const useMarketStore = defineStore('market', () => {
               content: buildSeedRepairPrompt(text)
             }
           ], jsonOptions(provider, {
-            maxTokens: 4096,
+            maxTokens: 6000,
             temperature: 0.2
           }))
           repairText = getCompletionText(repairResult)
@@ -285,11 +291,52 @@ export const useMarketStore = defineStore('market', () => {
         }
       }
 
+      if (!seedList.length && requestedSeed) {
+        try {
+          const compactResult = await chatCompletion(provider, [
+            {
+              role: 'system',
+              content: '你是小说种子结构化助手。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+            },
+            {
+              role: 'user',
+              content: buildCompactSeedRetryPrompt({
+                userMessage,
+                input: {
+                  idea: userMessage,
+                  genre: context.project?.genre || '',
+                  stylePreference: context.bible?.styleBible || '',
+                  forbidden: Array.isArray(context.bible?.forbiddenDirections)
+                    ? context.bible.forbiddenDirections.join('；')
+                    : ''
+                },
+                chatContext: chatMessages.value
+                  .slice(-8)
+                  .map(({ role, content }) => `${role === 'user' ? '用户' : '顾问'}：${content}`)
+                  .join('\n\n'),
+                rawText: [text, repairText].filter(Boolean).join('\n\n')
+              })
+            }
+          ], jsonOptions(provider, {
+            maxTokens: 6000,
+            temperature: 0.35
+          }))
+          compactText = getCompletionText(compactResult)
+          seedList = extractSeedsFromText(compactText)
+        } catch (e) {
+          compactText = `种子 JSON 压缩重试失败：${e.message}`
+        }
+      }
+
       let createdSeeds = []
       let seedAction = ''
       let seedError = ''
       const seedErrors = []
       if (seedList.length) {
+        const seedMutationAllowed = await ensureSeedPlanningMutableForChat(projectId)
+        if (!seedMutationAllowed) {
+          seedError = '当前项目已经有正文内容，AI 选题顾问不能再新增或更新创作种子。请把新的方向作为后续纠偏、章节修订或软过渡参考。'
+        } else {
         const seedStore = useSeedStore()
         await seedStore.loadSeeds(projectId)
         const selectedSeed = seedStore.seeds.find(seed => seed.status === 'selected')
@@ -343,8 +390,9 @@ export const useMarketStore = defineStore('market', () => {
         if (createdSeeds.length) {
           await seedStore.loadSeeds(projectId)
         }
+        }
       } else if (requestedSeed) {
-        const raw = snippet(repairText) || snippet(text)
+        const raw = snippet(compactText) || snippet(repairText) || snippet(text)
         seedError = `AI 已回复，但没有解析到可保存的种子 JSON${raw ? `。返回片段：${raw}` : ''}`
       }
 

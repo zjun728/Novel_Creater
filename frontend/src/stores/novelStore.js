@@ -10,6 +10,8 @@ import {
   normalizeBiblePayload
 } from '@/prompts/bibleFromSeed'
 import {
+  buildCompactGlobalAuditPrompt,
+  buildGlobalAuditRepairPrompt,
   buildGlobalAuditSystemPrompt,
   buildGlobalAuditPrompt
 } from '@/prompts/globalAudit'
@@ -136,14 +138,57 @@ export const useNovelStore = defineStore('novel', () => {
         { role: 'system', content: buildGlobalAuditSystemPrompt() },
         { role: 'user', content: buildGlobalAuditPrompt(context) }
       ], jsonOptions(provider, {
-        maxTokens: 4096,
+        maxTokens: 6000,
         temperature: 0.25
       }))
 
       const text = getCompletionText(result)
-      const report = parseGlobalAuditJson(text)
+      let globalAuditText = text
+      let report = parseGlobalAuditJson(globalAuditText)
+      let repairText = ''
+      let compactText = ''
+
+      if (!report && text.trim()) {
+        const repairResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildGlobalAuditRepairPrompt(text)
+          }
+        ], jsonOptions(provider, {
+          maxTokens: 6000,
+          temperature: 0
+        }))
+        repairText = getCompletionText(repairResult)
+        globalAuditText = repairText || globalAuditText
+        report = parseGlobalAuditJson(globalAuditText)
+      }
+
       if (!report) {
-        throw new Error(`AI 没有返回可解析的全局审稿 JSON${text ? `。返回片段：${snippet(text)}` : ''}`)
+        const compactResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是长篇小说总审稿编辑。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildCompactGlobalAuditPrompt(context, [text, repairText].filter(Boolean).join('\n\n'))
+          }
+        ], jsonOptions(provider, {
+          maxTokens: 6000,
+          temperature: 0.2
+        }))
+        compactText = getCompletionText(compactResult)
+        globalAuditText = compactText || globalAuditText
+        report = parseGlobalAuditJson(globalAuditText)
+      }
+
+      if (!report) {
+        const raw = snippet(compactText) || snippet(repairText) || snippet(text)
+        throw new Error(`AI 没有返回可解析的全局审稿 JSON${raw ? `。返回片段：${raw}` : ''}`)
       }
 
       const saved = await api.globalAudits.create(project.id, {

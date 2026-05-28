@@ -95,3 +95,55 @@ export function buildSeedRepairPrompt(rawText) {
 原始内容：
 ${rawText}`
 }
+
+export function buildCompactSeedRetryPrompt({ input = {}, rawText = '', userMessage = '', chatContext = '' } = {}) {
+  const idea = input?.idea || userMessage || '用户要求生成或更新小说创作种子'
+  const genre = input?.genre || ''
+  const stylePreference = input?.stylePreference || ''
+  const forbidden = input?.forbidden || ''
+
+  return `前一次小说种子 JSON 可能过长、被截断或无法保存。请根据“用户意图”和“可见内容”重新整理为一条可保存的精简创作种子。
+
+重要规则：
+- 只输出合法 JSON，不要 Markdown，不要解释。
+- 顶层只能是 {"seeds":[...]}。
+- 只生成 1 条种子，不要生成多条。
+- 每个字段必须保留，缺少信息时用已有上下文合理压缩补齐；endingAnchor 字段必须保留。
+- title、genre、logline 尽量短；openingHook 控制在 180 字以内；其余字段控制在 120 字以内。
+- 不要输出未转义换行；长句用中文逗号或句号连接。
+- 结果必须能被直接保存为创作种子。
+
+用户意图：
+${idea}
+
+偏好题材：${genre || '未指定'}
+偏好风格：${stylePreference || '未指定'}
+不想写的方向：${forbidden || '未指定'}
+
+最近对话/上下文：
+${chatContext || '暂无'}
+
+前一次可见输出：
+${rawText || '暂无'}
+
+请严格输出：
+{
+  "seeds": [
+    {
+      "title": "",
+      "genre": "",
+      "logline": "",
+      "protagonist": "",
+      "desire": "",
+      "coreConflict": "",
+      "worldPressure": "",
+      "openingHook": "",
+      "emotionalPromise": "",
+      "differentiation": "",
+      "styleTarget": "",
+      "riskNotes": "",
+      "endingAnchor": ""
+    }
+  ]
+}`
+}

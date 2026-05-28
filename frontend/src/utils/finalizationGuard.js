@@ -85,5 +85,7 @@ export function beginChapterFinalizationRun(projectId, chapterNum, versionId = '
 
 export function endChapterFinalizationRun(key, projectId, chapterNum, options = {}) {
   if (key) activeFinalizationRuns.delete(key)
-  clearChapterFinalizationPending(projectId, chapterNum, options)
+  if (!options.keepPending) {
+    clearChapterFinalizationPending(projectId, chapterNum, options)
+  }
 }

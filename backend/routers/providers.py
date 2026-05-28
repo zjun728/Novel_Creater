@@ -109,12 +109,13 @@ async def get_bindings(pid: str):
 async def save_bindings(pid: str, data: BindingsUpdate):
     now = int(time.time() * 1000)
     rows = await fetchall("SELECT * FROM task_model_bindings WHERE project_id=%s", (pid,))
-    d = data.dict(exclude_none=True)
+    d = data.dict()
     if rows:
         sets = [f"{to_snake(k)}=%s" for k in d]
-        sets.append("updated_at=%s")
-        args = list(d.values()) + [now, rows[0]['id']]
-        await execute(f"UPDATE task_model_bindings SET {', '.join(sets)} WHERE id=%s", args)
+        if sets:
+            sets.append("updated_at=%s")
+            args = list(d.values()) + [now, rows[0]['id']]
+            await execute(f"UPDATE task_model_bindings SET {', '.join(sets)} WHERE id=%s", args)
     else:
         bid = str(uuid.uuid4())
         vals = [bid, pid] + [d.get(k) for k in ['writingModelId','brainstormModelId','outlineModelId','auditModelId','summaryModelId','extractionModelId','marketModelId','polishModelId']]

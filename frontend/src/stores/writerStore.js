@@ -50,6 +50,38 @@ export const useWriterStore = defineStore('writer', () => {
     return result ? JSON.stringify(result) : ''
   }
 
+  async function resolveTaskProvider(projectId, bindingKeys = [], providerId = null) {
+    const providerStore = useProviderStore()
+    await providerStore.ensureProvidersLoaded()
+
+    if (providerId) {
+      const explicitProvider = providerStore.providers.find(p => p.id === providerId)
+      if (!explicitProvider) throw new Error('指定的模型配置不存在或已被删除')
+      return explicitProvider
+    }
+
+    const fallbackProjectId = projectId || useProjectStore().currentProject?.id || currentChapter.value?.projectId || currentChapter.value?.project_id
+    let bindings = null
+    if (fallbackProjectId) {
+      try {
+        bindings = await providerStore.getBindings(fallbackProjectId)
+      } catch (e) {
+        console.warn('读取任务模型映射失败，回退到默认模型:', e.message)
+      }
+    }
+
+    for (const key of bindingKeys) {
+      const modelId = bindings?.[key]
+      if (!modelId) continue
+      const mappedProvider = providerStore.providers.find(p => p.id === modelId)
+      if (mappedProvider) return mappedProvider
+    }
+
+    const defaultProvider = providerStore.providers[0]
+    if (!defaultProvider) throw new Error('请先在设置中配置模型')
+    return defaultProvider
+  }
+
   async function syncProjectCurrentChapter(projectId, chapterNum) {
     try {
       const projectStore = useProjectStore()
@@ -157,8 +189,9 @@ export const useWriterStore = defineStore('writer', () => {
   }
 
   async function generateDefaultChapterTitle(projectId, chapter, chapterNum, content, context, provider) {
-    if (!projectId || !chapter?.id || !provider || !content) return ''
+    if (!projectId || !chapter?.id || !content) return ''
     if (!isDefaultChapterTitle(chapter.title, chapterNum)) return chapter.title || ''
+    const resolvedProvider = provider || await resolveTaskProvider(projectId, ['summaryModelId', 'writingModelId'])
 
     const messages = [
       { role: 'system', content: buildChapterTitleSystemPrompt() },
@@ -173,7 +206,7 @@ export const useWriterStore = defineStore('writer', () => {
       }
     ]
 
-    const result = await chatCompletion(provider, messages, { maxTokens: 80, temperature: 0.45 })
+    const result = await chatCompletion(resolvedProvider, messages, { maxTokens: 80, temperature: 0.45 })
     const title = cleanGeneratedChapterTitle(extractAiContent(result))
     if (!title) return ''
 
@@ -329,12 +362,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function generateChapterBeatPlan(projectId, chapterNum, context, providerId) {
     beatPlanning.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerId
-        ? providerStore.providers.find(p => p.id === providerId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(projectId, ['outlineModelId', 'writingModelId'], providerId)
 
       const messages = [
         { role: 'system', content: buildChapterBeatSystemPrompt() },
@@ -358,12 +386,7 @@ export const useWriterStore = defineStore('writer', () => {
     generating.value = true
     generationStream.value = ''
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerId
-        ? providerStore.providers.find(p => p.id === providerId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(projectId, ['writingModelId'], providerId)
 
       const messages = [
         { role: 'system', content: buildChapterSystemPrompt() },
@@ -413,12 +436,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function generateCorrectionDraft(projectId, chapterNum, taskOrTasks, originalContent, providerId) {
     generating.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerId
-        ? providerStore.providers.find(p => p.id === providerId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(projectId, ['polishModelId', 'auditModelId', 'writingModelId'], providerId)
 
       const result = await chatCompletion(provider, [
         {
@@ -452,12 +470,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function generateLocalCorrectionPatchCandidate(projectId, chapterNum, issues, originalContent, providerId) {
     generating.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerId
-        ? providerStore.providers.find(p => p.id === providerId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(projectId, ['polishModelId', 'auditModelId', 'writingModelId'], providerId)
 
       const result = await chatCompletion(provider, [
         {
@@ -567,12 +580,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function continueWriting(currentContent, instruction, providerId, context = {}) {
     generating.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerId
-        ? providerStore.providers.find(p => p.id === providerId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(context?.projectId, ['writingModelId'], providerId)
       const messages = [{ role: 'user', content: buildContinuePrompt(currentContent, instruction, context) }]
       return await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.8 })
     } finally {
@@ -584,10 +592,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function generateMultiVariants(projectId, chapterNum, context) {
     generating.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(projectId, ['writingModelId'])
       const messages = [
         { role: 'system', content: buildChapterSystemPrompt() },
         { role: 'user', content: buildMultiVariantPrompt({ chapterNum, ...context }) }
@@ -622,12 +627,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function rewriteSelection(selectedText, mode, context, providerId) {
     generating.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerId
-        ? providerStore.providers.find(p => p.id === providerId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(context?.projectId, ['polishModelId', 'writingModelId'], providerId)
       const messages = [
         { role: 'system', content: buildRewriteSystemPrompt() },
         { role: 'user', content: buildRewritePrompt(selectedText, mode, context) }
@@ -646,10 +646,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function expandText(selectedText, context = {}) {
     generating.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(context?.projectId, ['polishModelId', 'writingModelId'])
       const messages = [{ role: 'user', content: buildExpandPrompt(selectedText, context) }]
       const result = await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.7 })
       if (typeof result === 'string') return result
@@ -665,10 +662,7 @@ export const useWriterStore = defineStore('writer', () => {
   async function compressText(selectedText) {
     generating.value = true
     try {
-      const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await resolveTaskProvider(null, ['polishModelId', 'summaryModelId', 'writingModelId'])
       const messages = [{ role: 'user', content: buildCompressPrompt(selectedText) }]
       const result = await chatCompletion(provider, messages, { maxTokens: 1024, temperature: 0.5 })
       if (typeof result === 'string') return result
@@ -688,19 +682,13 @@ export const useWriterStore = defineStore('writer', () => {
       const chapter = chapters.value.find(c => c.id === cid)
       if (chapter && isDefaultChapterTitle(chapter.title, chapter.chapterNum || chapter.chapter_num || version.chapterNum || version.chapter_num)) {
         try {
-          const providerStore = useProviderStore()
-          await providerStore.ensureProvidersLoaded()
-          const provider = providerStore.providers[0]
-          if (provider) {
-            await generateDefaultChapterTitle(
-              pid,
-              chapter,
-              chapter.chapterNum || chapter.chapter_num || version.chapterNum || version.chapter_num,
-              version.content,
-              {},
-              provider
-            )
-          }
+          await generateDefaultChapterTitle(
+            pid,
+            chapter,
+            chapter.chapterNum || chapter.chapter_num || version.chapterNum || version.chapter_num,
+            version.content,
+            {}
+          )
         } catch (titleErr) {
           console.warn('定稿章名生成失败，保留默认章名:', titleErr.message)
         }

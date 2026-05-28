@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Query
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, touch_project
+from .guards import ensure_project_without_chapter_content
 import json
 import time
 import uuid
@@ -113,6 +114,7 @@ async def update_setting_entity(pid: str, eid: str, data: dict):
 
 @router.delete("/projects/{pid}/settings/entities/{eid}")
 async def delete_setting_entity(pid: str, eid: str):
+    await ensure_project_without_chapter_content(pid, "删除设定实体")
     await execute("DELETE FROM setting_relations WHERE project_id=%s AND (source_entity_id=%s OR target_entity_id=%s)", (pid, eid, eid))
     await execute("DELETE FROM setting_entities WHERE project_id=%s AND id=%s", (pid, eid))
     await touch_project(pid)
@@ -121,6 +123,7 @@ async def delete_setting_entity(pid: str, eid: str):
 
 @router.delete("/projects/{pid}/settings")
 async def clear_setting_library(pid: str):
+    await ensure_project_without_chapter_content(pid, "清空设定库")
     await execute("DELETE FROM setting_relations WHERE project_id=%s", (pid,))
     await execute("DELETE FROM setting_change_events WHERE project_id=%s", (pid,))
     await execute("DELETE FROM setting_entities WHERE project_id=%s", (pid,))
@@ -184,6 +187,7 @@ async def update_setting_relation(pid: str, rid: str, data: dict):
 
 @router.delete("/projects/{pid}/settings/relations/{rid}")
 async def delete_setting_relation(pid: str, rid: str):
+    await ensure_project_without_chapter_content(pid, "删除设定关系")
     await execute("DELETE FROM setting_relations WHERE project_id=%s AND id=%s", (pid, rid))
     return {"ok": True}
 
@@ -389,6 +393,12 @@ async def _apply_entity_event(pid: str, event: dict):
         key = field_path.split(".", 1)[1]
         if key:
             profile[key] = _stringify_value(event.get("new_value"))
+    elif field_path == "status":
+        status_value = _stringify_value(event.get("new_value")).strip()
+        if status_value in SYSTEM_ENTITY_STATUSES:
+            updates["status"] = status_value
+        elif status_value:
+            profile[STORY_STATE_PROFILE_PATH] = status_value
     elif field_path in ENTITY_COLUMN_PATHS:
         updates[ENTITY_COLUMN_PATHS[field_path]] = _stringify_value(event.get("new_value"))
     elif event.get("new_value"):
@@ -531,6 +541,9 @@ ENTITY_COLUMN_PATHS = {
     "firstChapter": "first_chapter",
     "lastChapter": "last_chapter",
 }
+
+SYSTEM_ENTITY_STATUSES = {"active", "inactive", "hidden", "archived"}
+STORY_STATE_PROFILE_PATH = "currentState"
 
 
 FIELD_ALIASES = {

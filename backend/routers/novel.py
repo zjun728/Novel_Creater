@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
+from .guards import ensure_project_without_chapter_content
 import uuid, time, json
 
 router = APIRouter(tags=["novel"])
@@ -53,6 +54,7 @@ async def save_bible(pid: str, data: BibleUpdate):
 
 @router.delete("/projects/{pid}/bible")
 async def delete_bible(pid: str):
+    await ensure_project_without_chapter_content(pid, "删除创作圣经")
     await execute("DELETE FROM creative_bible WHERE project_id=%s", (pid,))
     await touch_project(pid)
     return {"ok": True}

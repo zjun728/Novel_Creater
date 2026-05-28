@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
+from .guards import ensure_project_without_chapter_content
 import uuid, time
 
 router = APIRouter(tags=["seeds"])
@@ -66,6 +67,7 @@ async def list_seeds(pid: str):
 
 @router.post("/projects/{pid}/seeds")
 async def create_seed(pid: str, data: SeedCreate):
+    await ensure_project_without_chapter_content(pid, "新增、导入或生成创作种子")
     _validate_seed_completeness(data)
     now = int(time.time() * 1000)
     sid = str(uuid.uuid4())
@@ -82,6 +84,7 @@ async def create_seed(pid: str, data: SeedCreate):
 
 @router.put("/projects/{pid}/seeds/{sid}")
 async def update_seed(pid: str, sid: str, data: SeedUpdate):
+    await ensure_project_without_chapter_content(pid, "修改或选择创作种子")
     sets, args = [], []
     for k, v in data.dict(exclude_none=True).items():
         sets.append(f"{to_snake(k)}=%s")
@@ -95,12 +98,14 @@ async def update_seed(pid: str, sid: str, data: SeedUpdate):
 
 @router.delete("/projects/{pid}/seeds/{sid}")
 async def delete_seed(pid: str, sid: str):
+    await ensure_project_without_chapter_content(pid, "删除创作种子")
     await execute("DELETE FROM creative_seeds WHERE id=%s", (sid,))
     await touch_project(pid)
     return {"ok": True}
 
 @router.delete("/projects/{pid}/seeds")
 async def clear_seeds(pid: str):
+    await ensure_project_without_chapter_content(pid, "清空创作种子")
     await execute("DELETE FROM creative_seeds WHERE project_id=%s", (pid,))
     await touch_project(pid)
     return {"ok": True}

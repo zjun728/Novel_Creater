@@ -1324,10 +1324,13 @@ async function performFinalize(version) {
     return
   }
   const correctionTaskIds = extractCorrectionTaskIds(version)
+  let chapterFinalized = false
+  let finalizationCompleted = false
   finalizeSubmitting.value = true
   memoryProcessing.value = true
   try {
     await writerStore.finalizeVersion(version)
+    chapterFinalized = true
     pendingFinalizeVersion.value = null
     showAuditModal.value = false
     message.success('已定稿，正在提取记忆和设定变更...')
@@ -1343,17 +1346,28 @@ async function performFinalize(version) {
       console.warn('临时草稿清理失败:', e.message)
     }
     const results = await memoryStore.processChapterFinalization(finalizedProjectId, version.content, finalizedChapterNum)
+    if (results.errors?.length) {
+      const requiredFailures = results.errors.filter(error => error.required)
+      if (requiredFailures.length) {
+        throw new Error(requiredFailures.map(error => `${error.step}: ${error.message}`).join('；'))
+      }
+    }
     memoryResult.value = results
     showMemoryResult.value = true
     await loadContextData()
 
     const factCount = results.facts?.length || 0
     const settingChangeCount = results.settingChanges?.length || 0
+    finalizationCompleted = true
     message.success(`定稿后处理完成：提取 ${factCount} 条记忆事实，生成 ${settingChangeCount} 条待确认设定变更`)
   } catch (e) {
-    message.warning('定稿后处理部分失败：' + e.message)
+    if (chapterFinalized) {
+      message.warning('定稿后处理失败，已保留阻断标记，避免下一章读取不完整上下文：' + e.message)
+    } else {
+      message.error('定稿失败：' + e.message)
+    }
   } finally {
-    endChapterFinalizationRun(finalizationRun.runKey, finalizedProjectId, finalizedChapterNum)
+    endChapterFinalizationRun(finalizationRun.runKey, finalizedProjectId, finalizedChapterNum, { keepPending: chapterFinalized && !finalizationCompleted })
     finalizeSubmitting.value = false
     memoryProcessing.value = false
   }

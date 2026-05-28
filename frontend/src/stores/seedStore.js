@@ -2,7 +2,12 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/db/client'
 import { chatCompletion } from '@/api/ai'
-import { buildSeedRepairPrompt, buildSeedSystemPrompt, buildSeedUserPrompt } from '@/prompts/seed'
+import {
+  buildCompactSeedRetryPrompt,
+  buildSeedRepairPrompt,
+  buildSeedSystemPrompt,
+  buildSeedUserPrompt
+} from '@/prompts/seed'
 import { extractSeedsFromText, isSavableSeed, normalizeSeedPayload } from '@/utils/seedParser'
 import { useProviderStore } from './providerStore'
 import { useProjectStore } from './projectStore'
@@ -151,11 +156,12 @@ export const useSeedStore = defineStore('seed', () => {
         { role: 'user', content: buildSeedUserPrompt(input) }
       ]
 
-      const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 4096, temperature: 0.9 }))
+      const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 6000, temperature: 0.85 }))
       const text = getCompletionText(result)
 
       let seedList = extractSeedsFromText(text)
       let repairText = ''
+      let compactText = ''
       if (!seedList.length && text.trim()) {
         const repairResult = await chatCompletion(provider, [
           {
@@ -166,13 +172,31 @@ export const useSeedStore = defineStore('seed', () => {
             role: 'user',
             content: buildSeedRepairPrompt(text)
           }
-        ], jsonOptions(provider, { maxTokens: 4096, temperature: 0.2 }))
+        ], jsonOptions(provider, { maxTokens: 6000, temperature: 0.2 }))
         repairText = getCompletionText(repairResult)
         seedList = extractSeedsFromText(repairText)
       }
 
       if (!seedList.length) {
-        const raw = snippet(repairText) || snippet(text)
+        const compactResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是小说种子结构化助手。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildCompactSeedRetryPrompt({
+              input,
+              rawText: [text, repairText].filter(Boolean).join('\n\n')
+            })
+          }
+        ], jsonOptions(provider, { maxTokens: 6000, temperature: 0.35 }))
+        compactText = getCompletionText(compactResult)
+        seedList = extractSeedsFromText(compactText)
+      }
+
+      if (!seedList.length) {
+        const raw = snippet(compactText) || snippet(repairText) || snippet(text)
         throw new Error(`AI 返回格式不正确：没有解析到可保存的种子 JSON${raw ? `。返回片段：${raw}` : ''}`)
       }
 

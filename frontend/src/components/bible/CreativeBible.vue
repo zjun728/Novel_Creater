@@ -109,6 +109,16 @@ async function handleInitializeSettings() {
     message.warning('创作圣经已提取过设定库，后续请通过章节定稿提取或手动维护设定')
     return
   }
+  try {
+    const state = await api.projects.contentState(props.projectId)
+    if (state.hasChapterContent) {
+      message.warning('当前项目已经有正文内容，不能再从创作圣经做初始化提取。后续请通过章节定稿提取设定变更，避免覆盖已经写过的设定。')
+      return
+    }
+  } catch (e) {
+    message.error('检查项目写作状态失败：' + e.message)
+    return
+  }
 
   try {
     const created = await settingStore.initializeFromBible(props.projectId, displayBible.value)
