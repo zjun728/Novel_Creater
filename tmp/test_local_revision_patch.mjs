@@ -77,4 +77,74 @@ assert.equal(parsedAliases.length, 1)
 assert.equal(parsedAliases[0].originalText, '需要替换的原句。')
 assert.equal(parsedAliases[0].replacementText, '替换后的新句。')
 
+const overbroadPatch = applyLocalRevisionPatches('甲'.repeat(520), [
+  {
+    originalText: '甲'.repeat(520),
+    replacementText: '过度概括后的摘要。'
+  }
+])
+assert.equal(overbroadPatch.applied.length, 0)
+assert.equal(overbroadPatch.skipped[0].reason, 'overbroad_patch')
+
+const overcompressedPatch = applyLocalRevisionPatches('乙'.repeat(180), [
+  {
+    originalText: '乙'.repeat(180),
+    replacementText: '压缩太狠。'
+  }
+])
+assert.equal(overcompressedPatch.applied.length, 0)
+assert.equal(overcompressedPatch.skipped[0].reason, 'overcompressed_patch')
+
+const overexpandedPatch = applyLocalRevisionPatches('丙'.repeat(24), [
+  {
+    originalText: '丙'.repeat(24),
+    replacementText: '新增无关剧情。'.repeat(40)
+  }
+])
+assert.equal(overexpandedPatch.applied.length, 0)
+assert.equal(overexpandedPatch.skipped[0].reason, 'overexpanded_patch')
+
+const trailingCommaJson = extractLocalRevisionPatches(`{
+  "patches": [
+    {
+      "issueIndex": 1,
+      "originalText": "不是刻上去的。是信息态纹理的显形。",
+      "replacementText": "砧石表面浮现出一行字，字迹像信息态纹理自行显形。",
+      "reason": "去掉机械句式",
+    },
+  ],
+}`)
+assert.equal(trailingCommaJson.length, 1)
+assert.equal(trailingCommaJson[0].originalText, '不是刻上去的。是信息态纹理的显形。')
+
+const truncatedJson = extractLocalRevisionPatches(`{
+  "patches": [
+    {
+      "issueIndex": 1,
+      "originalText": "林逐站在门口。",
+      "replacementText": "林逐停在门槛外，先看了一眼门缝里漏出的灯。",
+      "reason": "补足人物动作"
+    },
+    {
+      "issueIndex": 2,
+      "originalText": "这段还没写完"
+`)
+assert.equal(truncatedJson.length, 1)
+assert.equal(truncatedJson[0].replacementText, '林逐停在门槛外，先看了一眼门缝里漏出的灯。')
+
+const punctuationTolerant = applyLocalRevisionPatches(
+  '不是刻上去的。是信息态纹理的显形。字迹像火尖烧出来的一道沟槽。',
+  [
+    {
+      originalText: '不是刻上去的——是信息态纹理的显形。',
+      replacementText: '砧石表面浮现出一行字，字迹像信息态纹理自行显形。'
+    }
+  ]
+)
+assert.equal(punctuationTolerant.applied.length, 1)
+assert.equal(
+  punctuationTolerant.content,
+  '砧石表面浮现出一行字，字迹像信息态纹理自行显形。字迹像火尖烧出来的一道沟槽。'
+)
+
 console.log('LOCAL_REVISION_PATCH_TEST_OK')

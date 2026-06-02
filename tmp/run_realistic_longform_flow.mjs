@@ -9,6 +9,23 @@ import {
   appendFileSync
 } from 'node:fs'
 import { join, resolve } from 'node:path'
+import {
+  applyLocalRevisionPatches,
+  extractLocalRevisionPatches
+} from '../frontend/src/utils/localRevisionPatch.js'
+import {
+  analyzeProseRhythm,
+  countCjkChars,
+  formatProseRhythmAnalysis,
+  shouldRepairProseRhythm
+} from '../frontend/src/utils/proseRhythmGuard.js'
+import { buildChapterStateLedger } from '../frontend/src/utils/chapterStateLedger.js'
+import {
+  buildChapterTitlePrompt,
+  buildChapterTitleSystemPrompt,
+  cleanGeneratedChapterTitle,
+  isDefaultChapterTitle
+} from '../frontend/src/prompts/chapter.js'
 
 const ROOT = resolve('.')
 const API_BASE = 'http://127.0.0.1:8000/api'
@@ -19,6 +36,13 @@ const PROFILE_DIR = join(REPORT_DIR, 'chrome-profile')
 const LOG_FILE = join(REPORT_DIR, 'run.log')
 const KEEP_PROJECT = process.env.DELETE_REALISTIC_QA_PROJECT !== '1'
 const CONTINUE_TO_CHAPTER = Number(process.env.CONTINUE_REALISTIC_QA_TO_CHAPTER || 0)
+const INITIAL_TO_CHAPTER = Number(process.env.REALISTIC_QA_INITIAL_TO_CHAPTER || 0)
+const QA_PROJECT_PREFIX = process.env.REALISTIC_QA_PROJECT_PREFIX || '写作标准验收200万'
+const QA_PRIMARY_STANDARD = process.env.REALISTIC_QA_PRIMARY_STANDARD || 'rational-fantasy'
+const QA_SECONDARY_FLAVOR = process.env.REALISTIC_QA_SECONDARY_FLAVOR || 'suspense-hook'
+const QA_STYLE_NOTES = process.env.REALISTIC_QA_STYLE_NOTES || '本轮重点验证：知识体系必须参与行动和判断；悬疑钩子通过证据、误导和新问题递进；减少模板化章尾、信息倾倒和“不是X，是Y”句式。'
+const MAX_JSON_SCAN_CHARS = 30000
+const MAX_JSON_CANDIDATES = 8
 
 mkdirSync(REPORT_DIR, { recursive: true })
 writeFileSync(LOG_FILE, '', 'utf8')
@@ -51,6 +75,31 @@ const report = {
   screenshots: [],
   cleanup: KEEP_PROJECT ? '保留测试项目' : null,
   notes: []
+}
+
+function normalizeGeneratedReport(generated = {}) {
+  const base = {
+    marketItems: 0,
+    directions: 0,
+    seeds: 0,
+    settingEvents: 0,
+    acceptedSettings: 0,
+    chaptersCreated: 0,
+    finalizedChapters: 0,
+    canonFacts: 0,
+    chapterSettingChanges: 0,
+    correctionTasks: 0,
+    chapterWordCounts: [],
+    finalChapterWordCounts: [],
+    auditFailures: 0,
+    multiChapterAcceptance: null
+  }
+  const merged = { ...base, ...(generated || {}) }
+  merged.chapterWordCounts = Array.isArray(merged.chapterWordCounts) ? merged.chapterWordCounts : []
+  merged.finalChapterWordCounts = Array.isArray(merged.finalChapterWordCounts) ? merged.finalChapterWordCounts : []
+  merged.auditFailures = Number(merged.auditFailures || 0)
+  if (merged.multiChapterAcceptance === undefined) merged.multiChapterAcceptance = null
+  return merged
 }
 
 function now() {
@@ -194,21 +243,39 @@ async function chat(provider, messages, options = {}) {
   }
   if (options.json) body.response_format = jsonResponseFormat(provider)
 
-  const res = await fetch(`${provider.baseURL.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${provider.apiKey}`
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(options.timeoutMs || 240000)
-  })
-  const text = await res.text()
-  if (!res.ok) {
-    throw new Error(`LLM ${res.status}: ${text.slice(0, 500)}`)
+  const attempts = options.attempts ?? 3
+  let lastError = null
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const res = await fetch(`${provider.baseURL.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${provider.apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(options.timeoutMs || 240000)
+      })
+      const text = await res.text()
+      if (!res.ok) {
+        const error = new Error(`LLM ${res.status}: ${text.slice(0, 500)}`)
+        error.retryable = res.status === 429 || res.status >= 500
+        throw error
+      }
+      const data = JSON.parse(text)
+      return data?.choices?.[0]?.message?.content || ''
+    } catch (error) {
+      lastError = error
+      const retryable = Boolean(error.retryable)
+        || error.name === 'TimeoutError'
+        || error.name === 'AbortError'
+        || error.message.includes('fetch failed')
+      if (!retryable || attempt >= attempts) throw error
+      report.notes.push(`LLM 请求失败，第 ${attempt}/${attempts} 次后重试：${trimText(error.message, 160)}`)
+      await sleep(1000 * attempt)
+    }
   }
-  const data = JSON.parse(text)
-  return data?.choices?.[0]?.message?.content || ''
+  throw lastError || new Error('LLM request failed')
 }
 
 async function chatJson(provider, messages, options = {}, repairHint = '请把上一次内容整理成合法 JSON。') {
@@ -253,16 +320,20 @@ function cleanJsonCandidate(candidate) {
 }
 
 function collectBalanced(text, openChar, closeChar) {
+  const source = String(text || '').slice(0, MAX_JSON_SCAN_CHARS)
   const out = []
+  const startedAt = Date.now()
   let cursor = 0
-  while (cursor < text.length) {
-    const start = text.indexOf(openChar, cursor)
+  while (cursor < source.length && out.length < MAX_JSON_CANDIDATES) {
+    if (Date.now() - startedAt > 1500) break
+    const start = source.indexOf(openChar, cursor)
     if (start === -1) break
     let depth = 0
     let inString = false
     let escaped = false
-    for (let i = start; i < text.length; i += 1) {
-      const ch = text[i]
+    let balanced = false
+    for (let i = start; i < source.length; i += 1) {
+      const ch = source[i]
       if (inString) {
         if (escaped) escaped = false
         else if (ch === '\\') escaped = true
@@ -274,13 +345,14 @@ function collectBalanced(text, openChar, closeChar) {
       else if (ch === closeChar) {
         depth -= 1
         if (depth === 0) {
-          out.push(text.slice(start, i + 1))
+          out.push(source.slice(start, i + 1))
           cursor = i + 1
+          balanced = true
           break
         }
       }
-      if (i === text.length - 1) cursor = start + 1
     }
+    if (!balanced) cursor = start + 1
   }
   return out
 }
@@ -333,6 +405,7 @@ function normalizeBible(raw) {
     styleBible: stringifyList(raw.styleBible || raw.style_bible || raw.style),
     themeBible: stringifyList(raw.themeBible || raw.theme_bible || raw.theme),
     worldRules: stringifyList(raw.worldRules || raw.world_rules),
+    writingProfile: raw.writingProfile || raw.writing_profile || {},
     forbiddenDirections: Array.isArray(raw.forbiddenDirections)
       ? raw.forbiddenDirections.filter(Boolean).map(String)
       : stringifyList(raw.forbiddenDirections || raw.forbidden_directions).split(/\n+/).filter(Boolean)
@@ -358,9 +431,9 @@ function expectedChapterWordRange(project) {
   return {
     target,
     softMin: Math.round(target * 0.9),
-    softMax: Math.round(target * 1.1),
+    softMax: Math.round(target * 1.3),
     hardMin: Math.round(target * 0.8),
-    hardMax: Math.round(target * 1.2)
+    hardMax: Math.round(target * 1.4)
   }
 }
 
@@ -373,15 +446,99 @@ function upsertCount(list, chapterNum, patch) {
 function assessChapterWordCount(project, chapterNum, count, stage = '正文') {
   const range = expectedChapterWordRange(project)
   const detail = `${count} 字；目标 ${range.target}，建议 ${range.softMin}-${range.softMax}，硬范围 ${range.hardMin}-${range.hardMax}`
-  if (count < range.hardMin || count > range.hardMax) {
+  if (isChapterWordCountTooFarForQaStop(project, count)) {
     fail(`第 ${chapterNum} 章${stage}字数越界`, detail)
     return false
+  }
+  if (!isChapterWordCountInHardRange(project, count)) {
+    report.notes.push(`第 ${chapterNum} 章${stage}字数进入质量保留容忍区：${detail}`)
+    pass(`第 ${chapterNum} 章${stage}字数进入质量保留容忍区`, detail)
+    return true
   }
   if (count < range.softMin || count > range.softMax) {
     report.notes.push(`第 ${chapterNum} 章${stage}字数略偏离建议范围：${detail}`)
   }
   pass(`第 ${chapterNum} 章${stage}字数在可接受范围`, detail)
   return true
+}
+
+function isChapterWordCountInHardRange(project, count) {
+  const range = expectedChapterWordRange(project)
+  return count >= range.hardMin && count <= range.hardMax
+}
+
+function isChapterWordCountTooFarForQaStop(project, count) {
+  const range = expectedChapterWordRange(project)
+  const qaStopMin = Math.round(range.target * 0.65)
+  const qaStopMax = Math.round(range.target * 1.4)
+  return count < qaStopMin || count > qaStopMax
+}
+
+function isChapterWordCountWithinQualityGrace(project, count) {
+  const range = expectedChapterWordRange(project)
+  return Number(count) >= range.hardMin && !isChapterWordCountTooFarForQaStop(project, count)
+}
+
+function chooseBestChapterCandidate(project, candidates = []) {
+  const range = expectedChapterWordRange(project)
+  const valid = candidates
+    .filter(candidate => candidate && candidate.content && Number(candidate.count) > 0)
+    .map(candidate => ({
+      ...candidate,
+      count: Number(candidate.count),
+      distance: Math.abs(Number(candidate.count) - range.target)
+    }))
+
+  const bestByDistance = list => list
+    .slice()
+    .sort((left, right) => left.distance - right.distance || left.count - right.count)[0] || null
+
+  const inHardRange = valid.filter(candidate => isChapterWordCountInHardRange(project, candidate.count))
+  if (inHardRange.length) return { ...bestByDistance(inHardRange), selectionReason: 'hard_range' }
+
+  const qualityGrace = valid.filter(candidate => isChapterWordCountWithinQualityGrace(project, candidate.count))
+  if (qualityGrace.length) return { ...bestByDistance(qualityGrace), selectionReason: 'quality_grace' }
+
+  return null
+}
+
+function buildChapterWordGateError(project, chapterNum, count, stage = 'chapter') {
+  const range = expectedChapterWordRange(project)
+  const direction = count < range.hardMin ? 'too_short' : 'too_long'
+  const error = new Error(
+    `WORD_COUNT_GATE: chapter ${chapterNum} ${stage} is ${direction}; ` +
+      `${count} chars, hard range ${range.hardMin}-${range.hardMax}. ` +
+      'Candidate was saved, but QA stopped before audit/finalize.'
+  )
+  error.code = 'WORD_COUNT_GATE'
+  error.chapterNum = chapterNum
+  error.count = count
+  error.range = range
+  return error
+}
+
+function findFinalizedWordOutliers(project, finalizedChapters = []) {
+  return finalizedChapters
+    .filter(item => isChapterWordCountTooFarForQaStop(project, item?.wordCount))
+    .map(item => ({ chapterNum: item.chapterNum, count: item.wordCount }))
+}
+
+function assertNoFinalizedWordOutliers(project, finalizedChapters = [], scope = 'existing_finalized') {
+  const outliers = findFinalizedWordOutliers(project, finalizedChapters)
+  if (!outliers.length) return
+  const range = expectedChapterWordRange(project)
+  fail(
+    '续写前发现已定稿章节字数硬性越界',
+    `range=${range.hardMin}-${range.hardMax}, outliers=${JSON.stringify(outliers)}`
+  )
+  const error = new Error(
+    `WORD_COUNT_GATE: ${scope} contains finalized word outliers; ` +
+      `range ${range.hardMin}-${range.hardMax}; outliers=${JSON.stringify(outliers)}`
+  )
+  error.code = 'WORD_COUNT_GATE'
+  error.outliers = outliers
+  error.range = range
+  throw error
 }
 
 function validateRevisionWordDrift(project, chapterNum, originalContent, revisedContent) {
@@ -405,6 +562,9 @@ function validateRevisionWordDrift(project, chapterNum, originalContent, revised
 }
 
 function recordFinalChapterWordCount(chapterNum, count) {
+  if (!Array.isArray(report.generated.finalChapterWordCounts)) {
+    report.generated.finalChapterWordCounts = []
+  }
   upsertCount(report.generated.finalChapterWordCounts, chapterNum, { count })
 }
 
@@ -415,7 +575,7 @@ function chapterTitle(chapterNum, name = '') {
 async function createProject(provider) {
   const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)
   const project = await request('POST', '/projects', {
-    title: `真实流程测试200万_${stamp}`,
+    title: `${QA_PROJECT_PREFIX}_${stamp}`,
     genre: '玄幻悬疑 / 人性选择',
     description: '自动化真实流程测试项目：按 200 万字、400 章规模规划，真实调用网络抓取和大模型生成前几章内容。',
     targetWords: 2000000,
@@ -511,6 +671,15 @@ async function runBibleAndSettings(project, provider, seed) {
     { role: 'user', content: `根据种子生成创作圣经。输出 {"premise":"","targetReader":"","styleBible":[],"themeBible":[],"worldRules":[],"forbiddenDirections":[]}。\n要求：保留想象力，但把硬规则写清楚；明确避免 AI 腔，少用“不是X，是Y”句式；长期目标是 200 万字。\n\n种子：\n${JSON.stringify(seed, null, 2)}` }
   ], { json: true, maxTokens: 4096, temperature: 0.55 })
   const bible = normalizeBible(parseJsonPayload(bibleText))
+  bible.writingProfile = {
+    primaryStandard: QA_PRIMARY_STANDARD,
+    secondaryFlavor: QA_SECONDARY_FLAVOR,
+    customStyleNotes: QA_STYLE_NOTES
+  }
+  bible.styleBible = [
+    bible.styleBible,
+    `写作策略标准：主写作标准=${QA_PRIMARY_STANDARD}；辅助风味=${QA_SECONDARY_FLAVOR}；${QA_STYLE_NOTES}`
+  ].filter(Boolean).join('\n')
   await request('PUT', `/projects/${project.id}/bible`, bible)
   assertCheck(Boolean(bible.premise && bible.styleBible && bible.worldRules), '创作圣经已生成并保存', bible.premise.slice(0, 60))
 
@@ -601,12 +770,48 @@ async function saveBeatPlan(project, chapterNum, content) {
   await request('PUT', `/projects/${project.id}/chapter-beat-plan/${chapterNum}`, { content })
 }
 
+async function compactBeatPlanIfNeeded(provider, chapterNum, text, context) {
+  text = String(text || '').trim()
+  if (text.length <= 1300) return text
+
+  log(`第 ${chapterNum} 章小纲过长，开始压缩`)
+  let best = text
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const compacted = await chat(provider, [
+      { role: 'system', content: '你是长篇小说分章小纲编辑。只负责压缩小纲，不写正文，不解释。' },
+      {
+        role: 'user',
+        content: [
+          `请把第 ${chapterNum} 章小纲压缩为 700-1100 字，绝不能超过 1300 字。`,
+          '节拍控制在 4-6 条，保留本章核心目的、人物动机、关键选择、代价、结尾钩子、连续性自检和写作约束。',
+          '必须保留时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫的关键提醒，但用短句合并表达。',
+          '不要新增剧情，不要改变因果顺序，不要把两章容量塞进一章。',
+          attempt > 1 ? `上一次压缩仍过长（${best.length} 字符），请继续压缩。` : '',
+          `上下文：\n${String(context || '').slice(0, 2400)}`,
+          `原小纲：\n${best}`
+        ].filter(Boolean).join('\n\n')
+      }
+    ], { maxTokens: 1400, temperature: 0.3, timeoutMs: 240000 })
+    const cleaned = compacted.trim()
+    if (cleaned.length >= 600 && cleaned.length < best.length) best = cleaned
+    if (best.length <= 1300) {
+      pass(`第 ${chapterNum} 章小纲已自动压缩`, `${text.length} -> ${best.length} chars`)
+      return best
+    }
+  }
+
+  report.notes.push(`第 ${chapterNum} 章小纲压缩后仍偏长：${text.length} -> ${best.length}`)
+  assertCheck(best.length <= 1300, `第 ${chapterNum} 章小纲压缩到建议上限内`, `${text.length} -> ${best.length} chars`)
+  return best.length < text.length ? best : text
+}
+
 async function generateBeatPlan(project, provider, chapterNum, context) {
   log(`开始生成第 ${chapterNum} 章小纲`)
-  const text = await chat(provider, [
+  const rawText = await chat(provider, [
     { role: 'system', content: '你是长篇小说分章小纲编辑。只输出正文小纲，不要 JSON。' },
-    { role: 'user', content: `为第 ${chapterNum} 章生成小纲。按 5000 字体量设计，建议 4500-5500 字，尽量不要规划成超过 6000 字的一章，更不得规划成两章内容。必须先自查是否偏离设定；如果上一章结尾未收束，要自然承接。小纲要包含：本章目标、情绪推进、关键场景、结尾钩子、写作约束。\n\n上下文：\n${context}` }
-  ], { maxTokens: 3000, temperature: 0.55 })
+    { role: 'user', content: `为第 ${chapterNum} 章生成小纲。按 5000 字体量设计，建议 4500-6500 字，尽量不要规划成超过 7000 字的一章，更不得规划成两章内容。小纲总长度控制在 700-1100 字，节拍控制在 4-6 条，不要把两章容量塞进一章，超过 1300 字必须主动压缩。必须先自查是否偏离设定；如果上一章结尾未收束，要自然承接。小纲要包含：本章目标、情绪推进、关键场景、结尾钩子、写作约束、连续性自检。连续性自检必须覆盖时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫。若剧情密度较高，可以把支线、解释和余波留到下一章，不要为了塞满信息牺牲阅读质量。\n\n上下文：\n${context}` }
+  ], { maxTokens: 1800, temperature: 0.5 })
+  const text = await compactBeatPlanIfNeeded(provider, chapterNum, rawText, context)
   await saveBeatPlan(project, chapterNum, text)
   assertCheck(text.length > 200, `第 ${chapterNum} 章小纲已生成`, `${text.length} chars`)
   return text
@@ -621,17 +826,168 @@ async function generateChapterContent(project, provider, chapterNum, context, be
         '你是成熟的长篇网文作者。写作目标是有代入感的人性选择，不是堆设定。',
         '正文要具体、可感、有行动和欲望；少用抽象总结。',
         '严格减少“不是X，是Y”句式；本章出现次数不得超过 3 次。',
-        '目标字数 5000 字，建议 4500-5500 字；如情节需要可自然延展，但优先控制在 4000-6000 字，不能为了字数强行收尾或砍掉关键细节。',
+        '只输出小说正文，不要输出标题、Markdown 标题、“# 第N章”或“第N章”。第一行直接进入场景。',
+        '生成前先检查时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫；这些问题必须在正文中自然补足，不要留到审稿阶段。',
+        '目标字数 5000 字，建议 4500-6500 字；如情节需要可自然延展，但优先控制在 4000-7000 字，不能为了字数强行收尾或砍掉关键细节。',
         '如果内容超量，优先压缩解释性设定和重复心理描写，不压缩关键动作、选择和代价；如一章装不下，保留自然钩子交给下一章。'
       ].join('\n')
     },
     { role: 'user', content: `根据上下文和小纲生成第 ${chapterNum} 章正文。不要输出标题，不要解释。\n\n上下文：\n${context}\n\n本章小纲：\n${beatPlan}` }
-  ], { maxTokens: 9000, temperature: 0.78, timeoutMs: 360000 })
-  const count = wordCount(content)
+  ], { maxTokens: 8192, temperature: 0.72, timeoutMs: 360000 })
+  const cleaned = cleanQaGeneratedText(content)
+  const count = wordCount(cleaned)
   report.generated.chapterWordCounts.push({ chapterNum, count, stage: 'first_draft' })
   assertCheck(count >= 3000, `第 ${chapterNum} 章正文已生成`, `${count} 字`)
-  assessChapterWordCount(project, chapterNum, count, '初稿')
-  return content.trim()
+  return cleaned
+}
+
+function cleanQaGeneratedText(text) {
+  const isOpeningMetaLine = (line) => {
+    const trimmed = line.trim()
+    if (!trimmed) return true
+    const withoutMarkdown = trimmed.replace(/^#{1,6}\s*/, '').trim()
+    if (/^(以下是|下面是|正文如下|候选稿|章节正文)[：:]/.test(withoutMarkdown)) return true
+    if (/^(?:正文|章节正文|候选正文)\s*[：:]\s*$/.test(withoutMarkdown)) return true
+    return /^第\s*[\d一二三四五六七八九十百千万零〇两]+\s*章(?:\s*[：:、.\-—·]\s*.*|\s+\S{1,16})?$/.test(withoutMarkdown)
+  }
+
+  const lines = String(text || '')
+    .replace(/^\s*```(?:markdown|md|text|txt)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .split(/\r?\n/)
+
+  let hasProseStarted = false
+  return lines
+    .filter(line => {
+      const trimmed = line.trim()
+      if (!hasProseStarted && isOpeningMetaLine(line)) return false
+      if (trimmed) hasProseStarted = true
+      return true
+    })
+    .join('\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim()
+}
+
+async function repairProseRhythmForQa(project, provider, chapterNum, context, beatPlan, content) {
+  const original = String(content || '').trim()
+  const analysis = analyzeProseRhythm(original)
+  if (!shouldRepairProseRhythm(analysis)) return original
+
+  log(`第 ${chapterNum} 章触发句式节奏修订：${analysis.reasons.join('；')}`)
+  const repaired = cleanQaGeneratedText(await chat(provider, [
+    {
+      role: 'system',
+      content: [
+        '你是长篇小说正文节奏修订编辑。只修正文稿中过密的短句独立段落、机械化 AI 腔句式和碎片化分镜感。',
+        '不要新增剧情、人物、设定或结论；保留事件顺序、人物选择、对白含义、结尾钩子和已确认设定。',
+        '常规叙事段落自然合并为 2-5 句；短句只能保留在局部爆点、恐惧、断裂、反转或停顿。',
+        '输出完整正文，不要标题，不要解释，不要 JSON。'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        `请修订第 ${chapterNum} 章的句式节奏。`,
+        `节奏报告：\n${formatProseRhythmAnalysis(analysis)}`,
+        '目标：减少连续短句独立段落，去掉机械“不是X，是Y”模板，保持剧情事实和字数体量基本不变。',
+        `上下文：\n${trimText(context, 2600)}`,
+        `小纲：\n${trimText(beatPlan, 1600)}`,
+        `正文：\n${original}`
+      ].join('\n\n')
+    }
+  ], { maxTokens: 5200, temperature: 0.28, timeoutMs: 300000 }))
+
+  const repairedAnalysis = analyzeProseRhythm(repaired)
+  const drift = countCjkChars(repaired) / Math.max(countCjkChars(original), 1)
+  const improved =
+    repaired &&
+    repaired !== original &&
+    drift >= 0.78 &&
+    drift <= 1.22 &&
+    (
+      repairedAnalysis.shortParagraphRate < analysis.shortParagraphRate ||
+      repairedAnalysis.maxShortStreak < analysis.maxShortStreak ||
+      repairedAnalysis.aiContrastCount < analysis.aiContrastCount ||
+      repairedAnalysis.maxSameLeadingSubjectCount < analysis.maxSameLeadingSubjectCount
+    )
+
+  if (!improved) {
+    report.notes.push(`第 ${chapterNum} 章句式节奏修订未采用：drift=${drift.toFixed(2)}；before=${analysis.shortParagraphRate.toFixed(2)}/${analysis.maxShortStreak}/lead${analysis.maxSameLeadingSubjectCount || 0}；after=${repairedAnalysis.shortParagraphRate.toFixed(2)}/${repairedAnalysis.maxShortStreak}/lead${repairedAnalysis.maxSameLeadingSubjectCount || 0}`)
+    return original
+  }
+
+  pass(`第 ${chapterNum} 章节奏修订已采用`, `短句率 ${analysis.shortParagraphRate.toFixed(2)} -> ${repairedAnalysis.shortParagraphRate.toFixed(2)}，连续 ${analysis.maxShortStreak} -> ${repairedAnalysis.maxShortStreak}，段首重复 ${analysis.maxSameLeadingSubjectCount || 0} -> ${repairedAnalysis.maxSameLeadingSubjectCount || 0}`)
+  return repaired
+}
+
+async function expandShortChapterContent(project, provider, chapterNum, context, beatPlan, shortContent) {
+  const range = expectedChapterWordRange(project)
+  const currentCount = wordCount(shortContent)
+  log(`第 ${chapterNum} 章初稿偏短，开始补足重试：${currentCount} 字`)
+  const expanded = await chat(provider, [
+    {
+      role: 'system',
+      content: [
+        '你是长篇网文补稿编辑。任务是保留原文主体，只补足缺失的场景、行动、动机、过渡和感官细节。',
+        '不要推翻原剧情，不要另起炉灶，不要总结式扩写；补足后输出完整正文。',
+        '如果当前稿仍明显偏短，至少新增一到两个完整场景或完整行动段，不要只补几句说明。',
+        '目标字数 5000 字，建议 4500-6500 字；必须至少达到硬下限，但不能为了凑字重复解释或灌水。',
+        '如果小纲内容不足，优先展开人物选择、阻力、代价、场景推进和章末钩子。'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        `第 ${chapterNum} 章初稿只有 ${currentCount} 字，低于硬下限 ${range.hardMin} 字。`,
+        `请在不改变核心情节的前提下补足为完整章节，尽量靠近 ${range.target} 字，允许 ${range.hardMin}-${range.hardMax} 字。`,
+        `这次输出必须明显长于当前稿，至少补足到 ${range.hardMin + 200} 字以上。`,
+        '只输出补足后的完整正文，不要标题，不要解释。',
+        '',
+        `上下文：\n${context}`,
+        '',
+        `本章小纲：\n${beatPlan}`,
+        '',
+        `当前初稿：\n${shortContent}`
+      ].join('\n')
+    }
+  ], { maxTokens: 6500, temperature: 0.66, timeoutMs: 360000 })
+  return expanded.trim()
+}
+
+async function compressLongChapterContent(project, provider, chapterNum, context, beatPlan, longContent, compressAttempt = 1) {
+  const range = expectedChapterWordRange(project)
+  const currentCount = wordCount(longContent)
+  log(`第 ${chapterNum} 章稿件过长，开始压缩重试：${currentCount} 字`)
+  const strictHint = compressAttempt > 1
+    ? `这是第 ${compressAttempt} 次压缩，上一版仍过长。这次必须压到 ${range.softMin}-${range.softMax} 字，宁可把余波和解释留到下一章。`
+    : `请压缩到 ${range.softMin}-${range.softMax} 字附近，最多不要超过 ${range.hardMax} 字。`
+  const compressed = await chat(provider, [
+    {
+      role: 'system',
+      content: [
+        '你是长篇网文压缩编辑。任务是把超长章节压回目标区间，同时保留关键事件、人物选择、代价、转折和章末钩子。',
+        '优先删除重复解释、重复心理、过长设定说明、重复环境描写；不要删掉造成下一章衔接所需的因果信息。',
+        '如果信息量过大，必须用自然钩子把部分解释、余波或支线推迟到下一章。',
+        '输出必须是完整正文，不要标题，不要解释，不要列提纲。'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        `第 ${chapterNum} 章当前 ${currentCount} 字，超过硬上限 ${range.hardMax} 字。`,
+        strictHint,
+        '如果必须取舍，保留动作和因果，删减解释和重复句式。',
+        '',
+        `上下文：\n${context}`,
+        '',
+        `本章小纲：\n${beatPlan}`,
+        '',
+        `当前超长正文：\n${longContent}`
+      ].join('\n')
+    }
+  ], { maxTokens: compressAttempt > 1 ? 4300 : 5000, temperature: compressAttempt > 1 ? 0.18 : 0.28, timeoutMs: 360000 })
+  return compressed.trim()
 }
 
 function auditChapterPayload(payload) {
@@ -686,13 +1042,28 @@ async function auditChapter(provider, chapterNum, content, context) {
       }, '审稿紧凑重试修复为 {"summary":"","issues":[...]} 格式；最多保留 3 个短问题。')
       audit = auditChapterPayload(compact.payload)
     } catch (retryError) {
-      fail(`第 ${chapterNum} 章审稿结构化失败`, trimText(retryError.message, 240))
-      report.generated.auditFailures += 1
-      return {
-        summary: '审稿结构化失败，已作为质量门禁失败记录。',
-        issues: [],
-        auditFailed: true,
-        error: trimText(retryError.message, 240)
+      report.notes.push(`第 ${chapterNum} 章审稿紧凑重试失败，已启用最终极简重试：${trimText(retryError.message, 180)}`)
+      try {
+        const ultraCompact = await chatJson(provider, [
+          { role: 'system', content: '你是小说一致性审稿人。只输出合法 JSON，不要解释。字段必须短。' },
+          { role: 'user', content: `审稿最终极简重试：审查第 ${chapterNum} 章，只保留 0-1 个最阻塞的问题；如果没有确定问题，输出空数组。每个字段少于 50 字，replacement 可为空，禁止长引用原文。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文摘要：${trimText(context, 900)}\n\n正文开头：\n${content.slice(0, 3200)}\n\n正文结尾：\n${content.slice(-1600)}` }
+        ], {
+          maxTokens: 1400,
+          repairMaxTokens: 1400,
+          retryMaxTokens: 1800,
+          temperature: 0.1,
+          timeoutMs: 240000
+        }, '审稿最终极简重试修复为 {"summary":"","issues":[...]} 格式；最多 1 个短问题。')
+        audit = auditChapterPayload(ultraCompact.payload)
+      } catch (finalRetryError) {
+        fail(`第 ${chapterNum} 章审稿结构化失败`, trimText(finalRetryError.message, 240))
+        report.generated.auditFailures += 1
+        return {
+          summary: '审稿结构化失败，已作为质量门禁失败记录。',
+          issues: [],
+          auditFailed: true,
+          error: trimText(finalRetryError.message, 240)
+        }
       }
     }
   }
@@ -703,24 +1074,82 @@ async function auditChapter(provider, chapterNum, content, context) {
 async function reviseChapter(project, provider, chapterNum, content, audit) {
   if (!audit.issues.length) return content
   log(`开始基于审稿局部修订第 ${chapterNum} 章`)
-  const issueBrief = audit.issues.slice(0, 5).map((item, index) =>
-    `${index + 1}. [${item.severity || ''}/${item.type || ''}] ${item.issue || ''}\n位置：${item.location || ''}\n建议：${item.suggestion || ''}`
-  ).join('\n\n')
-  const text = await chat(provider, [
-    { role: 'system', content: '你是小说局部修订助手。尽量只修有问题的段落，保留其他内容。只输出修订后的完整正文，不要解释。' },
-    { role: 'user', content: `请根据审稿问题修订第 ${chapterNum} 章。不要大幅重写；保留原文结构和绝大多数段落。修正逻辑、动机、数值、AI腔问题。\n\n审稿问题：\n${issueBrief}\n\n原文：\n${content}` }
-  ], { maxTokens: 9000, temperature: 0.45, timeoutMs: 360000 })
-  const revised = text.trim() || content
-  const drift = validateRevisionWordDrift(project, chapterNum, content, revised)
-  return drift.ok ? revised : content
+  const issues = audit.issues.slice(0, 5).map((item, index) => ({
+    issueIndex: index + 1,
+    severity: item.severity || 'minor',
+    type: item.type || 'general',
+    description: item.issue || item.description || '',
+    location: item.location || '',
+    suggestion: item.replacement || item.suggestion || '',
+    reason: item.reason || ''
+  }))
+
+  let rawPatchText = ''
+  try {
+    rawPatchText = await chat(provider, [
+    {
+      role: 'system',
+      content: '你是小说局部修订助手。只输出合法 JSON，不要解释。只能给局部补丁，不能整章重写。'
+    },
+    {
+      role: 'user',
+      content: [
+        `请根据审稿问题生成第 ${chapterNum} 章的局部补丁。`,
+        '输出格式：{"patches":[{"issueIndex":1,"originalText":"必须从原文中逐字复制、可唯一命中的短片段","replacementText":"只替换该片段的修订文本","reason":"","confidence":0.8}]}。',
+        '硬性规则：originalText 必须是原文中的连续短片段；不要使用概括、改写后的原文或整段大范围替换；replacementText 只覆盖同一处局部问题；无安全补丁则输出 {"patches":[]}。',
+        `审稿问题：\n${JSON.stringify(issues, null, 2)}`,
+        `原文：\n${content}`
+      ].join('\n\n')
+    }
+  ], {
+    maxTokens: 3600,
+    repairMaxTokens: 3600,
+    retryMaxTokens: 4200,
+    temperature: 0.25,
+    timeoutMs: 300000
+  }, '请修复为 {"patches":[{"issueIndex":1,"originalText":"","replacementText":"","reason":"","confidence":0.8}]} 格式。')
+
+  } catch (error) {
+    const detail = trimText(error.message || String(error), 240)
+    report.notes.push(`chapter ${chapterNum} local revision JSON failed; skipped auto revision: ${detail}`)
+    log(`NOTE chapter ${chapterNum} local revision JSON failed; skipped auto revision: ${detail}`)
+    return content
+  }
+
+  const patches = extractLocalRevisionPatches(rawPatchText)
+  const patchResult = applyLocalRevisionPatches(content, patches)
+  if (!patchResult.applied.length) {
+    fail(`第 ${chapterNum} 章审稿局部修订未应用`, `AI 未返回可安全应用的局部补丁，跳过自动修订。`)
+    return content
+  }
+  if (patchResult.skipped.length) {
+    report.notes.push(`第 ${chapterNum} 章局部修订跳过 ${patchResult.skipped.length} 条不安全补丁。`)
+  }
+  const drift = validateRevisionWordDrift(project, chapterNum, content, patchResult.content)
+  return drift.ok ? patchResult.content : content
+}
+
+function buildLocalChapterSummaryFallback(chapterNum, content) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim()
+  if (!text) return `第 ${chapterNum} 章摘要生成失败，正文为空。`
+  const head = text.slice(0, 120)
+  const tail = text.length > 240 ? text.slice(-120) : ''
+  return [`第 ${chapterNum} 章本地摘要兜底：`, head, tail ? `...${tail}` : ''].filter(Boolean).join('')
 }
 
 async function summarizeChapter(provider, chapterNum, content) {
-  const text = await chat(provider, [
-    { role: 'system', content: '你是长篇小说记忆压缩助手。输出 120-180 字中文摘要，不要 JSON。' },
-    { role: 'user', content: `总结第 ${chapterNum} 章，保留人物选择、设定变化、结尾状态。\n\n正文：\n${content.slice(0, 9000)}` }
-  ], { maxTokens: 600, temperature: 0.25 })
-  return text.trim()
+  try {
+    const text = await chat(provider, [
+      { role: 'system', content: '你是长篇小说记忆压缩助手。输出 120-180 字中文摘要，不要 JSON。' },
+      { role: 'user', content: `总结第 ${chapterNum} 章，保留人物选择、设定变化、结尾状态。\n\n正文：\n${content.slice(0, 7000)}` }
+    ], { maxTokens: 500, temperature: 0.2, timeoutMs: 120000 })
+    return text.trim() || buildLocalChapterSummaryFallback(chapterNum, content)
+  } catch (error) {
+    const fallback = buildLocalChapterSummaryFallback(chapterNum, content)
+    report.notes.push(`第 ${chapterNum} 章摘要生成失败，已启用本地兜底摘要：${error.message}`)
+    log(`NOTE 第 ${chapterNum} 章摘要生成失败，已启用本地兜底摘要：${error.message}`)
+    return fallback
+  }
 }
 
 function extractCanonFactsPayload(payload) {
@@ -731,7 +1160,7 @@ function extractCanonFactsPayload(payload) {
       : []
   return list
     .filter(fact => fact && String(fact.content || '').trim())
-    .slice(0, 4)
+    .slice(0, 6)
     .map(fact => ({
       factType: fact.factType || fact.type || 'plot',
       content: trimText(fact.content || fact.summary || '', 120),
@@ -746,26 +1175,36 @@ async function extractCanonFacts(provider, project, chapterNum, content) {
   try {
     const result = await chatJson(provider, [
       { role: 'system', content: '你是小说事实记忆提取器。只输出合法 JSON。' },
-      { role: 'user', content: `从第 ${chapterNum} 章提取 2-4 条后续必须记住的事实，输出 {"facts":[{"factType":"plot|character|setting|relationship","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}。\n\n正文：\n${content.slice(0, 10000)}` }
+      { role: 'user', content: `从第 ${chapterNum} 章提取 2-6 条后续必须记住的事实，输出 {"facts":[{"factType":"plot|character|setting|relationship|timeline","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}。
+
+硬状态优先：凡正文出现交易次数、剩余寿命、冷却时间、隐性/显性消耗、物品价值/售价、时间流速、持有物数量、伤势、境界等级、当前位置，必须保留精确数字和单位。
+如果出现“首次/第二次/第三次交易”“剩余多少寿命/次数”“下次何时可用”“某物价值或售价”“不同世界时间比例”，必须提取为短事实。
+
+正文：
+${content.slice(0, 10000)}` }
     ], {
       maxTokens: 2400,
       repairMaxTokens: 2400,
       retryMaxTokens: 3000,
       temperature: 0.2
-    }, '请修复为 {"facts":[...]} 格式；最多保留 4 条事实。')
+    }, '请修复为 {"facts":[...]} 格式；最多保留 6 条事实，硬状态优先。')
     facts = extractCanonFactsPayload(result.payload)
   } catch (error) {
     report.notes.push(`第 ${chapterNum} 章事实提取首次失败，已启用紧凑重试：${trimText(error.message, 180)}`)
     try {
       const compact = await chatJson(provider, [
         { role: 'system', content: '你是小说事实记忆提取器。只输出合法 JSON，不要解释。' },
-        { role: 'user', content: `紧凑重试：从第 ${chapterNum} 章只提取 0-2 条最重要事实。每条 content 和 evidence 都必须少于 80 字。输出 {"facts":[{"factType":"plot|character|setting|relationship","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}。如果没有必要事实，输出 {"facts":[]}。\n\n正文节选：\n${content.slice(0, 8000)}` }
+        { role: 'user', content: `紧凑重试：从第 ${chapterNum} 章只提取 0-3 条最重要事实。每条 content 和 evidence 都必须少于 80 字。输出 {"facts":[{"factType":"plot|character|setting|relationship|timeline","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}。
+硬状态不得漏：交易次数、剩余寿命、冷却时间、物品价值、时间流速如果明确出现，优先提取。没有则输出 {"facts":[]}。
+
+正文节选：
+${content.slice(0, 8000)}` }
       ], {
         maxTokens: 1400,
         repairMaxTokens: 1400,
         retryMaxTokens: 1800,
         temperature: 0.1
-      }, '紧凑重试修复为 {"facts":[...]} 格式；最多保留 2 条短事实。')
+      }, '紧凑重试修复为 {"facts":[...]} 格式；最多保留 3 条短事实，硬状态优先。')
       facts = extractCanonFactsPayload(compact.payload)
     } catch (retryError) {
       fail(`第 ${chapterNum} 章事实提取失败`, trimText(retryError.message, 240))
@@ -797,7 +1236,7 @@ function extractSettingChangesPayloadForQa(payload) {
       : []
   return list
     .filter(change => change && String(change.entityName || '').trim() && String(change.newValue || '').trim())
-    .slice(0, 4)
+    .slice(0, 6)
     .map(change => ({
       entityType: change.entityType || 'character',
       entityName: String(change.entityName || '').trim(),
@@ -813,27 +1252,36 @@ async function extractChapterSettingChanges(provider, project, chapterNum, conte
   let changes = []
   try {
     const result = await chatJson(provider, [
-      { role: 'system', content: '你是设定变更提取器。只输出合法 JSON。仅提取本章之后仍会影响后文的变化，不要把普通描写当设定。' },
-      { role: 'user', content: `从第 ${chapterNum} 章提取 0-4 条待确认设定变更，输出 {"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary","newValue":"","evidence":"","confidence":0.8}]}。\n\n正文：\n${content.slice(0, 10000)}` }
+      { role: 'system', content: '你是设定变更提取器。只输出合法 JSON。仅提取本章之后仍会影响后文的变化，不要把普通描写当设定。硬状态必须优先保留。' },
+      { role: 'user', content: `从第 ${chapterNum} 章提取 0-6 条待确认设定变更，输出 {"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary|profile.transactionCount|profile.remainingLifespan|profile.cooldownUntil|profile.costRule|profile.valueLevel|profile.price|profile.timeFlowRule|profile.physicalStatus|profile.location","newValue":"","evidence":"","confidence":0.8}]}。
+
+硬状态优先：交易次数、剩余寿命、冷却时间、隐性/显性消耗规则、物品价值/售价、时间流速、持有物数量、伤势、当前位置、境界等级，一旦发生变化必须提取并保留精确数字和单位。
+
+正文：
+${content.slice(0, 10000)}` }
     ], {
       maxTokens: 3000,
       repairMaxTokens: 3000,
       retryMaxTokens: 3600,
       temperature: 0.2
-    }, '请修复为 {"changes":[...]} 格式；最多保留 4 条真正影响后文的设定变更。')
+    }, '请修复为 {"changes":[...]} 格式；最多保留 6 条真正影响后文的设定变更，硬状态优先。')
     changes = extractSettingChangesPayloadForQa(result.payload)
   } catch (error) {
     report.notes.push(`第 ${chapterNum} 章设定变更提取首次失败，已启用紧凑重试：${trimText(error.message, 180)}`)
     try {
       const compact = await chatJson(provider, [
         { role: 'system', content: '你是设定变更提取器。只输出合法 JSON，不要解释。' },
-        { role: 'user', content: `紧凑重试：从第 ${chapterNum} 章提取 0-2 条后续必须同步的设定变更。每条 newValue 和 evidence 少于 100 字。输出 {"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary","newValue":"","evidence":"","confidence":0.8}]}。没有则输出 {"changes":[]}。\n\n正文节选：\n${content.slice(0, 8000)}` }
+        { role: 'user', content: `紧凑重试：从第 ${chapterNum} 章提取 0-3 条后续必须同步的设定变更。每条 newValue 和 evidence 少于 100 字。输出 {"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary|profile.transactionCount|profile.remainingLifespan|profile.cooldownUntil|profile.costRule|profile.valueLevel|profile.price|profile.timeFlowRule","newValue":"","evidence":"","confidence":0.8}]}。
+硬状态不得漏：交易次数、剩余寿命、冷却时间、物品价值、时间流速如果明确出现，优先提取。没有则输出 {"changes":[]}。
+
+正文节选：
+${content.slice(0, 8000)}` }
       ], {
         maxTokens: 1600,
         repairMaxTokens: 1600,
         retryMaxTokens: 1800,
         temperature: 0.1
-      }, '紧凑重试修复为 {"changes":[...]} 格式；最多保留 2 条短设定变更。')
+      }, '紧凑重试修复为 {"changes":[...]} 格式；最多保留 3 条短设定变更，硬状态优先。')
       changes = extractSettingChangesPayloadForQa(compact.payload)
     } catch (retryError) {
       fail(`第 ${chapterNum} 章设定变更提取失败`, trimText(retryError.message, 240))
@@ -875,15 +1323,69 @@ async function saveCandidate(project, chapter, title, content, type = 'ai_candid
   })
 }
 
-async function finalizeChapter(project, chapter, version, summary) {
+async function generateRealisticQaChapterTitle(project, provider, chapter, version, summary, beatPlan = '') {
+  const chapterNum = Number(chapter?.chapterNum || chapter?.chapter_num || version?.chapterNum || version?.chapter_num || 0)
+  const existingTitle = chapter?.title || ''
+  if (!project?.id || !chapter?.id || !version?.content || !chapterNum) return ''
+  if (!isDefaultChapterTitle(existingTitle, chapterNum)) return existingTitle
+
+  const promptContext = {
+    chapterNum,
+    chapterGoal: { goal: summary || '' },
+    beatPlan,
+    content: version.content
+  }
+
+  try {
+    const rawTitle = await chat(provider, [
+      { role: 'system', content: buildChapterTitleSystemPrompt() },
+      { role: 'user', content: buildChapterTitlePrompt(promptContext) }
+    ], { maxTokens: 80, temperature: 0.35, attempts: 2 })
+
+    let title = cleanGeneratedChapterTitle(rawTitle)
+    if (!title) {
+      const retryTitle = await chat(provider, [
+        { role: 'system', content: buildChapterTitleSystemPrompt() },
+        {
+          role: 'user',
+          content: [
+            '上一次输出不像小说目录章名，可能是正文片段、剧情摘要或流水句，请重新命名。',
+            `上一次输出：${rawTitle}`,
+            buildChapterTitlePrompt(promptContext),
+            '只输出一个 2-10 个汉字的短章名，优先名词短语、意象短语或悬念短语，不要输出句子。'
+          ].join('\n\n')
+        }
+      ], { maxTokens: 80, temperature: 0.25, attempts: 2 })
+      title = cleanGeneratedChapterTitle(retryTitle)
+    }
+
+    if (!title) {
+      report.notes.push(`第 ${chapterNum} 章章名生成结果不合格，保留默认章名。`)
+      return ''
+    }
+
+    const updated = await request('PUT', `/projects/${project.id}/chapters/${chapter.id}`, { title })
+    chapter.title = updated?.title || title
+    pass(`第 ${chapterNum} 章章名已生成`, chapter.title)
+    return chapter.title
+  } catch (error) {
+    report.notes.push(`第 ${chapterNum} 章章名生成失败，保留默认章名：${trimText(error.message, 180)}`)
+    return ''
+  }
+}
+
+async function finalizeChapter(project, provider, chapter, version, summary, beatPlan = '') {
   const count = wordCount(version.content)
+  if (!assessChapterWordCount(project, chapter.chapterNum, count, '定稿')) {
+    throw buildChapterWordGateError(project, chapter.chapterNum, count, 'final_draft')
+  }
+  await generateRealisticQaChapterTitle(project, provider, chapter, version, summary, beatPlan)
   await request('POST', `/projects/${project.id}/chapters/${chapter.id}/versions/${version.id}/finalize`, {
     summary,
     wordCount: count
   })
   report.generated.finalizedChapters += 1
   recordFinalChapterWordCount(chapter.chapterNum, count)
-  assessChapterWordCount(project, chapter.chapterNum, count, '定稿')
 }
 
 async function runChapter(project, provider, chapterNum, context) {
@@ -891,7 +1393,95 @@ async function runChapter(project, provider, chapterNum, context) {
   const beatPlan = await generateBeatPlan(project, provider, chapterNum, context)
   const firstContent = await generateChapterContent(project, provider, chapterNum, context, beatPlan)
   const firstVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章候选稿`, firstContent, 'ai_candidate', '按小纲生成章节')
-  const audit = await auditChapter(provider, chapterNum, firstContent, context)
+  let draftContent = firstContent
+  let draftVersion = firstVersion
+  let draftCount = wordCount(draftContent)
+  const range = expectedChapterWordRange(project)
+  for (let expandAttempt = 1; expandAttempt <= 2; expandAttempt += 1) {
+    if (draftCount >= range.hardMin) break
+    const expandedContent = await expandShortChapterContent(project, provider, chapterNum, context, beatPlan, draftContent)
+    const expandedVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章补足稿 ${expandAttempt}`, expandedContent, 'ai_candidate', '初稿偏短后补足重试')
+    const expandedCount = wordCount(expandedContent)
+    report.generated.chapterWordCounts.push({ chapterNum, count: expandedCount, stage: 'expanded_retry', attempt: expandAttempt })
+    if (isChapterWordCountInHardRange(project, expandedCount)) {
+      pass(`第 ${chapterNum} 章补足重试已进入可接受范围`, `${draftCount} -> ${expandedCount} 字`)
+      draftContent = expandedContent
+      draftVersion = expandedVersion
+      draftCount = expandedCount
+      break
+    }
+    if (expandedCount > range.hardMax) {
+      report.notes.push(`第 ${chapterNum} 章补足稿超过硬上限，转入压缩重试：${expandedCount} 字。`)
+      draftContent = expandedContent
+      draftVersion = expandedVersion
+      draftCount = expandedCount
+      break
+    }
+    if (expandAttempt === 2) {
+      report.notes.push(`第 ${chapterNum} 章补足稿仍然字数硬性越界，QA 停止自动审稿/修订/定稿，避免污染长篇链路。`)
+      throw buildChapterWordGateError(project, chapterNum, expandedCount, 'expanded_retry')
+    }
+    report.notes.push(`第 ${chapterNum} 章第 ${expandAttempt} 次补足后仍偏短：${expandedCount} 字，继续第二轮补足。`)
+    draftContent = expandedContent
+    draftVersion = expandedVersion
+    draftCount = expandedCount
+  }
+  let compressionCandidates = null
+  for (let compressAttempt = 1; draftCount > range.hardMax && compressAttempt <= 2; compressAttempt += 1) {
+    if (!compressionCandidates) {
+      compressionCandidates = [{ content: draftContent, version: draftVersion, count: draftCount, stage: 'pre_compression' }]
+    }
+    const compressedContent = await compressLongChapterContent(project, provider, chapterNum, context, beatPlan, draftContent, compressAttempt)
+    const compressedVersion = await saveCandidate(project, chapter, compressAttempt === 1 ? `第 ${chapterNum} 章压缩稿` : `第 ${chapterNum} 章压缩稿 ${compressAttempt}`, compressedContent, 'ai_candidate', '超长稿压缩重试')
+    const compressedCount = wordCount(compressedContent)
+    compressionCandidates.push({ content: compressedContent, version: compressedVersion, count: compressedCount, stage: 'compressed_retry', attempt: compressAttempt })
+    report.generated.chapterWordCounts.push({ chapterNum, count: compressedCount, stage: 'compressed_retry', attempt: compressAttempt })
+    if (isChapterWordCountInHardRange(project, compressedCount)) {
+      pass(`第 ${chapterNum} 章压缩重试已进入可接受范围`, `${draftCount} -> ${compressedCount} 字`)
+      draftContent = compressedContent
+      draftVersion = compressedVersion
+      draftCount = compressedCount
+      break
+    }
+    if (compressedCount > range.hardMax && compressAttempt < 2) {
+      report.notes.push(`第 ${chapterNum} 章第 ${compressAttempt} 次压缩后仍过长：${compressedCount} 字，继续第二轮压缩。`)
+      draftContent = compressedContent
+      draftVersion = compressedVersion
+      draftCount = compressedCount
+      continue
+    }
+    break
+  }
+  if (compressionCandidates && !isChapterWordCountInHardRange(project, draftCount)) {
+    const selectedCandidate = chooseBestChapterCandidate(project, compressionCandidates)
+    if (!selectedCandidate) {
+      const lastCandidate = compressionCandidates[compressionCandidates.length - 1] || { count: draftCount }
+      report.notes.push(`第 ${chapterNum} 章压缩稿仍然字数硬性越界，QA 停止自动审稿/修订/定稿，避免污染长篇链路。`)
+      throw buildChapterWordGateError(project, chapterNum, lastCandidate.count, 'compressed_retry')
+    }
+    draftContent = selectedCandidate.content
+    draftVersion = selectedCandidate.version
+    draftCount = selectedCandidate.count
+    if (selectedCandidate.selectionReason === 'quality_grace') {
+      report.notes.push(`第 ${chapterNum} 章压缩候选接近硬上限但未严重越界，优先保留质量更完整版本：${draftCount} 字。`)
+    }
+    pass(`第 ${chapterNum} 章压缩候选已择优回退`, `${selectedCandidate.stage || 'candidate'} -> ${draftCount} 字`)
+  }
+  if (!assessChapterWordCount(project, chapterNum, draftCount, draftVersion.id === firstVersion.id ? '初稿' : '补足稿')) {
+    throw buildChapterWordGateError(project, chapterNum, draftCount, draftVersion.id === firstVersion.id ? 'first_draft' : 'expanded_retry')
+  }
+  const rhythmContent = await repairProseRhythmForQa(project, provider, chapterNum, context, beatPlan, draftContent)
+  if (rhythmContent && rhythmContent !== draftContent) {
+    draftContent = rhythmContent
+    draftVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章句式节奏修订稿`, draftContent, 'ai_candidate', '正文生成后句式节奏修订')
+    draftCount = wordCount(draftContent)
+    report.generated.chapterWordCounts.push({ chapterNum, count: draftCount, stage: 'prose_rhythm_repair' })
+    if (!assessChapterWordCount(project, chapterNum, draftCount, '句式节奏修订稿')) {
+      throw buildChapterWordGateError(project, chapterNum, draftCount, 'prose_rhythm_repair')
+    }
+  }
+
+  const audit = await auditChapter(provider, chapterNum, draftContent, context)
   if (audit.auditFailed) {
     const task = await request('POST', `/projects/${project.id}/correction-tasks`, {
       sourceType: 'chapter_audit',
@@ -907,8 +1497,15 @@ async function runChapter(project, provider, chapterNum, context) {
       metadata: { auditFailed: true }
     })
     report.generated.correctionTasks += 1
-    await request('PUT', `/projects/${project.id}/correction-tasks/${task.id}`, { status: 'ignored' })
     fail(`第 ${chapterNum} 章审稿质量门禁未通过`, '审稿结构化失败，已记录纠偏任务，不能当作零问题章节。')
+    const auditGateError = new Error(
+      `AUDIT_GATE: chapter ${chapterNum} audit could not be parsed; ` +
+        'candidate was saved, but QA stopped before revision/finalize.'
+    )
+    auditGateError.code = 'AUDIT_GATE'
+    auditGateError.chapterNum = chapterNum
+    auditGateError.taskId = task.id
+    throw auditGateError
   }
 
   for (const issue of audit.issues.slice(0, 5)) {
@@ -929,15 +1526,18 @@ async function runChapter(project, provider, chapterNum, context) {
     await request('PUT', `/projects/${project.id}/correction-tasks/${task.id}`, { status: 'ignored' })
   }
 
-  const revisedContent = await reviseChapter(project, provider, chapterNum, firstContent, audit)
-  let finalVersion = firstVersion
-  if (revisedContent && revisedContent !== firstContent) {
+  const revisedContent = await reviseChapter(project, provider, chapterNum, draftContent, audit)
+  let finalVersion = draftVersion
+  if (revisedContent && revisedContent !== draftContent) {
     finalVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章审稿修订候选`, revisedContent, 'ai_candidate', '审稿后局部修订')
   }
   const summary = await summarizeChapter(provider, chapterNum, finalVersion.content)
-  await finalizeChapter(project, chapter, finalVersion, summary)
+  await finalizeChapter(project, provider, chapter, finalVersion, summary, beatPlan)
   await request('PUT', `/projects/${project.id}/chapters/${chapter.id}/summary`, { summary })
-  await extractCanonFacts(provider, project, chapterNum, finalVersion.content)
+  const extractedFacts = await extractCanonFacts(provider, project, chapterNum, finalVersion.content)
+  if (!extractedFacts.length) {
+    throw new Error(`第 ${chapterNum} 章定稿后没有提取到记忆事实，停止生成下一章。`)
+  }
   await extractChapterSettingChanges(provider, project, chapterNum, finalVersion.content)
   pass(`第 ${chapterNum} 章已定稿并完成记忆/设定提取`, `${wordCount(finalVersion.content)} 字`)
 
@@ -958,6 +1558,7 @@ async function runWritingFlow(project, provider, seed, bible) {
     `核心矛盾：${seed.coreConflict}`,
     `圣经定位：${bible.premise}`,
     `风格规则：${bible.styleBible}`,
+    `写作策略：${JSON.stringify(bible.writingProfile || {})}`,
     `世界规则：${bible.worldRules}`,
     `禁止方向：${(bible.forbiddenDirections || []).join('；')}`
   ].join('\n')
@@ -1048,6 +1649,7 @@ async function backfillMissingFinalizedPostprocess(project, provider, finalizedN
         pass('补齐已定稿章节事实记忆', `第 ${chapterNum} 章 facts=${extractedFacts.length}`)
       } else {
         fail('补齐已定稿章节事实记忆', `第 ${chapterNum} 章没有提取到事实`)
+        throw new Error(`第 ${chapterNum} 章定稿后没有提取到记忆事实，停止继续生成。`)
       }
     }
 
@@ -1105,8 +1707,16 @@ async function buildContinuationContext(project, chapterNum) {
     .slice(0, 20)
     .map(item => `${item.entityName} ${item.fieldPath}: ${trimText(item.newValue || '', 120)}`)
     .join('\n')
+  const stateLedger = buildChapterStateLedger({
+    chapterNum,
+    settingEntities: entities,
+    settingChangeEvents: settingEvents,
+    canonFacts: facts,
+    maxLines: 24
+  })
 
   return [
+    `章节状态账本（硬状态）：\n${stateLedger || '暂无'}`,
     `项目目标：${project.targetWords || 2000000} 字 / ${project.targetChapters || 400} 章，单章约 5000 字。`,
     `当前任务：生成第 ${chapterNum} 章，必须自然承接上一章结尾，避免跳场和断层。`,
     `创作种子：${JSON.stringify(selectedSeed)}`,
@@ -1144,6 +1754,15 @@ async function loadFinalizedChapters(project, startChapter = 1, endChapter = Num
     })
   }
   return out
+}
+
+async function syncProjectChapterStats(project) {
+  const chapters = await request('GET', `/projects/${project.id}/chapters`)
+  report.generated.chaptersCreated = Math.max(
+    Number(report.generated.chaptersCreated || 0),
+    chapters.length
+  )
+  report.generated.finalizedChapters = chapters.filter(item => item.finalVersionId).length
 }
 
 function normalizeAcceptancePayload(payload) {
@@ -1264,6 +1883,10 @@ async function continueWritingFlow(project, provider, toChapter) {
   const finalizedNums = new Set(chapters.filter(item => item.finalVersionId).map(item => Number(item.chapterNum)))
   const maxFinalized = Math.max(0, ...finalizedNums)
   const startChapter = Math.max(1, maxFinalized + 1)
+  if (maxFinalized > 0) {
+    const finalizedChapters = await loadFinalizedChapters(project, 1, maxFinalized)
+    assertNoFinalizedWordOutliers(project, finalizedChapters, 'resume_before_continue')
+  }
   await backfillMissingFinalizedPostprocess(
     project,
     provider,
@@ -1285,6 +1908,8 @@ async function continueWritingFlow(project, provider, toChapter) {
     const context = await buildContinuationContext(project, chapterNum)
     lastResult = await runChapter(project, provider, chapterNum, context)
     await handlePendingSettingChanges(project, `第 ${chapterNum} 章定稿后`)
+    await syncProjectChapterStats(project)
+    writeReport()
   }
 
   pass('真实流程续写到目标章数', `第 ${startChapter}-${toChapter} 章，最后一章 ${wordCount(lastResult?.finalVersion?.content || '')} 字`)
@@ -1621,7 +2246,7 @@ async function main() {
         try {
           const previous = JSON.parse(await import('node:fs').then(fs => fs.readFileSync(previousReportPath, 'utf8')))
           if (previous?.project?.id === resumeProjectId) {
-            report.generated = previous.generated || report.generated
+            report.generated = normalizeGeneratedReport(previous?.generated)
             report.notes = previous.notes || report.notes
           }
         } catch {
@@ -1647,8 +2272,12 @@ async function main() {
       const { bible } = await runBibleAndSettings(project, provider, seed)
       await createVolumesAndChapters(project)
       chapters = await runWritingFlow(project, provider, seed, bible)
+      if (INITIAL_TO_CHAPTER > 2) {
+        chapters = await continueWritingFlow(project, provider, INITIAL_TO_CHAPTER)
+      }
     }
     const finalizedForAcceptance = await loadFinalizedChapters(project, 1, CONTINUE_TO_CHAPTER || 9999)
+    report.generated.finalizedChapters = finalizedForAcceptance.length
     const acceptanceEnd = Math.max(0, ...finalizedForAcceptance.map(item => item.chapterNum))
     if (acceptanceEnd > 0) {
       const acceptanceStart = Math.max(1, acceptanceEnd - 19)

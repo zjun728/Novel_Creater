@@ -14,16 +14,18 @@ assert.equal(normalizeWordCount('5000'), 5000)
 assert.deepEqual(target, {
   target: 5000,
   min: 4500,
-  max: 5500,
+  max: 6500,
   hardMin: 4000,
-  hardMax: 6000
+  hardMax: 7000
 })
 
 assert.equal(assessChapterWordCount('x'.repeat(5200), target).level, 'ok')
-assert.equal(assessChapterWordCount('x'.repeat(5800), target).level, 'over')
-assert.equal(assessChapterWordCount('x'.repeat(6200), target).level, 'hard_over')
+assert.equal(assessChapterWordCount('x'.repeat(6200), target).level, 'ok')
+assert.equal(assessChapterWordCount('x'.repeat(6800), target).level, 'over')
+assert.equal(assessChapterWordCount('x'.repeat(7100), target).level, 'hard_over')
 assert.equal(assessChapterWordCount('x'.repeat(4300), target).level, 'under')
-assert.equal(assessChapterWordCount('x'.repeat(3800), target).level, 'hard_under')
+assert.equal(assessChapterWordCount('x'.repeat(4100), target).level, 'under')
+assert.equal(assessChapterWordCount('x'.repeat(3900), target).level, 'hard_under')
 
 const volumeTarget = buildChapterWordTarget({}, {
   targetWords: 300000,

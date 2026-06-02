@@ -155,11 +155,16 @@ async function createChapterRevisionDraft(task) {
       message.warning('未找到可修订的章节正文或候选版本')
       return
     }
-    await writerStore.generateCorrectionDraft(props.projectId, chapterNum, task, sourceVersion.content)
+    await writerStore.generateLocalCorrectionPatchCandidate(
+      props.projectId,
+      chapterNum,
+      correctionTasksToPatchIssues([task]),
+      sourceVersion.content
+    )
     await setStatus(task, 'in_progress')
-    message.success('已生成章节修订候选版本，可到写字台版本列表查看')
+    message.success('已生成章节局部修订候选版本，可到写字台版本列表查看')
   } catch (e) {
-    message.error('生成章节修订草案失败：' + e.message)
+    message.error('生成章节局部修订候选失败：' + e.message)
   } finally {
     draftingTaskId.value = ''
   }
@@ -183,13 +188,18 @@ async function createChapterRevisionDraftBatch(task) {
       message.warning('未找到可修订的章节正文或候选版本')
       return
     }
-    await writerStore.generateCorrectionDraft(props.projectId, chapterNum, tasks, sourceVersion.content)
+    await writerStore.generateLocalCorrectionPatchCandidate(
+      props.projectId,
+      chapterNum,
+      correctionTasksToPatchIssues(tasks),
+      sourceVersion.content
+    )
     await Promise.all(tasks.map(item =>
       taskStore.updateTask(props.projectId, item.id, { status: 'in_progress' })
     ))
-    message.success(`已基于第 ${chapterNum} 章 ${tasks.length} 条纠偏任务生成综合修订候选版本`)
+    message.success(`已基于第 ${chapterNum} 章 ${tasks.length} 条纠偏任务生成综合局部修订候选版本`)
   } catch (e) {
-    message.error('生成本章综合修订草案失败：' + e.message)
+    message.error('生成本章综合局部修订候选失败：' + e.message)
   } finally {
     draftingTaskId.value = ''
   }
@@ -212,6 +222,45 @@ function findSourceVersion(chapter) {
     if (finalVersion) return finalVersion
   }
   return writerStore.currentVersion || writerStore.versions[0] || null
+}
+
+function taskMetadata(task) {
+  return task?.metadata && typeof task.metadata === 'object' ? task.metadata : {}
+}
+
+function extractTaskLocation(task) {
+  const metadata = taskMetadata(task)
+  const rawIssue = metadata.rawIssue || {}
+  const metadataLocation = metadata.location || metadata.quote || rawIssue.location || rawIssue.quote || rawIssue.evidence || ''
+  if (metadataLocation) return metadataLocation
+
+  const fields = [task?.location, task?.evidence, task?.description, task?.suggestedAction, rawIssue.reason]
+  for (const value of fields) {
+    const text = String(value || '')
+    const match = text.match(/位置[：:]\s*([^\n]+)/)
+    if (match?.[1]) return match[1].trim()
+  }
+  return ''
+}
+
+function correctionTaskToPatchIssue(task) {
+  const metadata = taskMetadata(task)
+  const rawIssue = metadata.rawIssue || {}
+  const location = extractTaskLocation(task)
+  return {
+    severity: task?.severity || 'minor',
+    type: task?.issueType || task?.targetModule || 'correction_task',
+    description: [task?.title, task?.description, rawIssue.description || rawIssue.issue].filter(Boolean).join('\n') || '纠偏任务要求局部修订本章正文',
+    location,
+    suggestion: metadata.replacement || rawIssue.replacement || task?.suggestedAction || rawIssue.suggestion || '只修订命中的问题片段，保留无关段落。',
+    reason: task?.reason || metadata.reason || rawIssue.reason || ''
+  }
+}
+
+function correctionTasksToPatchIssues(tasks) {
+  return (Array.isArray(tasks) ? tasks : [])
+    .filter(Boolean)
+    .map(correctionTaskToPatchIssue)
 }
 
 function inferEntityType(task) {
@@ -382,8 +431,8 @@ function correctionModeType(task) {
           <div><strong>定位处理：</strong>跳到相关章节或模块，并把任务推进为处理中。</div>
           <div><strong>生成设定候选：</strong>只生成待确认设定变更，不直接写入正式设定库；确认入库后再回到这里点完成。</div>
           <div><strong>生成 Canon 候选：</strong>生成待确认记忆事实（Canon），不直接进入正式长期记忆。</div>
-          <div><strong>生成章节修订草案：</strong>生成一个章节候选版本，进入写字台版本列表，不覆盖正文。</div>
-          <div><strong>综合修订本章：</strong>把同章多个正文纠偏合成一个修订候选版本。</div>
+          <div><strong>生成章节局部修订候选：</strong>只替换 AI 能安全定位到的原文片段，生成一个候选版本进入写字台版本列表，不覆盖正文。</div>
+          <div><strong>综合局部修订本章：</strong>把同章多个正文纠偏合成一个局部补丁候选版本，仍不直接修改正文。</div>
           <div><strong>完成：</strong>只在候选已确认、正文候选已采纳或人工处理完成后点击；完成后不再进入后续 AI 上下文。</div>
           <div><strong>忽略本次：</strong>放弃本次处理，任务关闭但保留历史记录。</div>
         </div>
@@ -463,7 +512,7 @@ function correctionModeType(task) {
               :loading="draftingTaskId === task.id"
               @click="createChapterRevisionDraft(task)"
             >
-              生成章节修订草案
+              生成章节局部修订候选
             </n-button>
             <n-button
               v-if="canCreateChapterDraft(task) && isCorrectionTaskOpen(task) && sameChapterDraftTaskCount(task) > 1"
@@ -473,7 +522,7 @@ function correctionModeType(task) {
               :loading="draftingTaskId === `chapter-${firstChapterRef(task)}`"
               @click="createChapterRevisionDraftBatch(task)"
             >
-              综合修订本章（{{ sameChapterDraftTaskCount(task) }}）
+              综合局部修订本章（{{ sameChapterDraftTaskCount(task) }}）
             </n-button>
             <n-button
               v-if="isCorrectionTaskOpen(task)"

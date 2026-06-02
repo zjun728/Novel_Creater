@@ -3,6 +3,8 @@ import {
   isCorrectionTaskActiveForContext,
   isCorrectionTaskBlockingForGeneration
 } from '@/stores/correctionTaskStore'
+import { formatWritingStyleStandardsForPrompt } from '@/data/writingStyleStandards'
+import { buildChapterStateLedger } from './chapterStateLedger.js'
 
 /**
  * 上下文构建器
@@ -19,6 +21,34 @@ export function estimateTokens(text) {
   const chineseChars = (text.match(/[一-鿿]/g) || []).length
   const otherChars = text.length - chineseChars
   return Math.ceil(chineseChars * 0.5 + otherChars * 0.25)
+}
+
+function compactText(value, limit = 240) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || '')
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
+}
+
+function buildCreativeBoundary({ bible, outline, volumeContext } = {}) {
+  const lines = []
+  if (bible?.premise) lines.push(`作品方向：${compactText(bible.premise, 220)}`)
+  if (bible?.worldRules) lines.push(`世界硬边界：${compactText(bible.worldRules, 260)}`)
+  if (volumeContext?.coreGoal || volumeContext?.mainConflict) {
+    lines.push(`当前阶段压力：${compactText([volumeContext.coreGoal, volumeContext.mainConflict].filter(Boolean).join('；'), 260)}`)
+  } else if (outline?.currentVolume) {
+    lines.push(`当前卷压力：${compactText([outline.currentVolume.goal, outline.currentVolume.mainConflict].filter(Boolean).join('；'), 220)}`)
+  }
+  return lines.join('\n')
+}
+
+function buildStyleMethodBrief(styleBible, styleStandardBrief) {
+  const style = compactText(styleBible, 220)
+  const standard = compactText(styleStandardBrief, 260)
+  if (style && standard) return `本书风格：${style}\n写作方法参考：${standard}`
+  if (style) return `本书风格：${style}`
+  if (standard) return `写作方法参考：${standard}`
+  return ''
 }
 
 // 默认 token 预算分配
@@ -87,6 +117,87 @@ class ContextBuilder {
   }
 }
 
+function normalizeThreadLabel(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  return text.startsWith('#') ? text : `#${text.replace(/^#+/, '')}`
+}
+
+function normalizeThreadList(value) {
+  if (Array.isArray(value)) return value.map(normalizeThreadLabel).filter(Boolean)
+  if (typeof value === 'string') return value.split(/\n|；|;|,|，/).map(normalizeThreadLabel).filter(Boolean)
+  return []
+}
+
+function addThreadKeywordLabels(text, labels) {
+  const source = String(text || '')
+  if (/身世|血脉|父亲|母亲|家族|来历|真相/.test(source)) labels.add('#主角身世线')
+  if (/女主|她|少女|妻|恋|情感|感情|羁绊/.test(source)) labels.add('#女主秘密线')
+  if (/反派|阴谋|幕后|组织|追杀|内鬼|背叛/.test(source)) labels.add('#反派阴谋线')
+  if (/道具|钥匙|令牌|碎片|法宝|武器|遗物|信物/.test(source)) labels.add('#关键道具线')
+  if (/功法|境界|修为|代价|系统|能力|规则/.test(source)) labels.add('#功法代价线')
+  if (/宗门|家族|朝堂|势力|盟约|战争|派系/.test(source)) labels.add('#势力斗争线')
+}
+
+function collectThreadLabels({ plotThreads = [], nearChapter = null, outline = null, volumeContext = null } = {}) {
+  const labels = new Set()
+  const activeThreads = (plotThreads || []).filter(thread =>
+    ['planted', 'developing', 'active', 'accepted', 'in_progress'].includes(thread?.status || 'developing')
+  )
+
+  for (const thread of activeThreads) {
+    const title = thread?.title || thread?.name
+    if (title) labels.add(normalizeThreadLabel(title))
+    for (const tag of normalizeThreadList(thread?.tags || thread?.threadTags || thread?.relatedPlotThreads)) {
+      labels.add(tag)
+    }
+  }
+
+  const planningText = JSON.stringify({
+    nearChapter,
+    nearChapters: outline?.nearChapters,
+    currentVolume: outline?.currentVolume,
+    volumeContext
+  })
+  addThreadKeywordLabels(planningText, labels)
+
+  return labels
+}
+
+function summarizeThreadFacts(canonFacts = [], plotThreads = [], options = {}) {
+  const labels = collectThreadLabels({
+    plotThreads,
+    nearChapter: options.nearChapter,
+    outline: options.outline,
+    volumeContext: options.volumeContext
+  })
+
+  const acceptedTaggedFacts = (canonFacts || [])
+    .filter(fact => (fact?.status || 'accepted') === 'accepted')
+    .map(fact => ({
+      fact,
+      tags: normalizeThreadList(fact?.relatedPlotThreads || fact?.related_plot_threads || fact?.threadTags || fact?.tags)
+    }))
+    .filter(item => item.tags.length)
+
+  if (!acceptedTaggedFacts.length) return ''
+
+  let selected = acceptedTaggedFacts.filter(item => {
+    if (!labels.size) return true
+    return item.tags.some(tag => labels.has(tag))
+  })
+
+  if (!selected.length) {
+    selected = acceptedTaggedFacts.slice(-12)
+  }
+
+  return selected
+    .slice(-24)
+    .map(({ fact, tags }) => `${tags.join(' ')} [${fact.factType || fact.fact_type || 'plot'}] ${fact.content || fact.summary || fact.fact || ''}`)
+    .filter(Boolean)
+    .join('\n')
+}
+
 // === 正文生成上下文 ===
 export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null, correctionTaskStore = null) {
   const builder = new ContextBuilder(maxTokens || BUDGETS.writing)
@@ -100,10 +211,6 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const settingChangeEvents = settingStore?.changeEvents?.value || settingStore?.changeEvents || []
   const volumes = volumeStore?.volumes?.value || volumeStore?.volumes || []
   const correctionTasks = getContextCorrectionTasks(correctionTaskStore)
-
-  if (bible?.premise) {
-    builder.add('premise', bible.premise, { priority: 1, required: true, maxTokens: 800 })
-  }
 
   // P1: 本章目标（必须）
   const nearChapter = outline?.nearChapters?.find(n => n.chapterNum === chapterNum)
@@ -119,13 +226,22 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
 
   // P1.5: 分卷阶段上下文（长篇连续创作的中间锚点）
   const volumeContext = buildVolumeStageContext(volumes, chapterNum)
-  if (volumeContext) {
-    builder.add('volumeStage', volumeContext, { priority: 1, required: true, maxTokens: 2200 })
+  const creativeBoundary = buildCreativeBoundary({ bible, outline, volumeContext })
+  if (creativeBoundary) {
+    builder.add('creativeBoundary', creativeBoundary, { priority: 1, required: true, maxTokens: 650 })
   }
 
-  // P2: 当前卷信息（必须）
+  if (bible?.premise) {
+    builder.add('premise', bible.premise, { priority: 3, maxTokens: 300 })
+  }
+
+  if (volumeContext) {
+    builder.add('volumeStage', volumeContext, { priority: 5, maxTokens: 800 })
+  }
+
+  // P2: 当前卷信息
   if (outline?.currentVolume) {
-    builder.add('currentVolume', outline.currentVolume, { priority: 1, required: true, maxTokens: 1000 })
+    builder.add('currentVolume', outline.currentVolume, { priority: 5, maxTokens: 500 })
   }
 
   // P3: 近景大纲
@@ -133,9 +249,9 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     builder.add('nearOutline', outline.nearChapters.filter(n => n.chapterNum >= chapterNum), { priority: 2, maxTokens: 800 })
   }
 
-  // P4: 世界规则（必须遵守）
+  // P4: 世界规则摘要
   if (bible?.worldRules) {
-    builder.add('worldRules', bible.worldRules, { priority: 2, required: true, maxTokens: 1000 })
+    builder.add('worldRules', bible.worldRules, { priority: 5, maxTokens: 500 })
   }
 
   // P5: 禁止方向
@@ -145,7 +261,16 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
 
   // P6: 风格要求
   if (bible?.styleBible) {
-    builder.add('styleBible', bible.styleBible, { priority: 3, maxTokens: 600 })
+    builder.add('styleBible', bible.styleBible, { priority: 5, maxTokens: 320 })
+  }
+
+  const styleStandardBrief = formatWritingStyleStandardsForPrompt(bible?.writingProfile)
+  const styleMethodBrief = buildStyleMethodBrief(bible?.styleBible, styleStandardBrief)
+  if (styleMethodBrief) {
+    builder.add('styleMethodBrief', styleMethodBrief, { priority: 3, maxTokens: 420 })
+  }
+  if (styleStandardBrief) {
+    builder.add('styleStandardBrief', styleStandardBrief, { priority: 7, maxTokens: 320 })
   }
 
   // P6.5: 结构化设定库，优先注入与本章/分卷相关的实体和关系
@@ -156,17 +281,36 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     settingChangeEvents
   })
   if (settingLibrary) {
-    builder.add('settingLibrary', settingLibrary, { priority: 3, maxTokens: 2400 })
+    builder.add('settingLibrary', settingLibrary, { priority: 3, maxTokens: 1900 })
   }
 
   const recentSettingChanges = summarizeSettingChanges(settingChangeEvents, chapterNum)
   if (recentSettingChanges) {
-    builder.add('recentSettingChanges', recentSettingChanges, { priority: 4, maxTokens: 900 })
+    builder.add('recentSettingChanges', recentSettingChanges, { priority: 4, maxTokens: 650 })
+  }
+
+  const stateLedger = buildChapterStateLedger({
+    chapterNum,
+    settingEntities,
+    settingChangeEvents,
+    canonFacts
+  })
+  if (stateLedger) {
+    builder.add('stateLedger', stateLedger, { priority: 2, required: true, maxTokens: 1400 })
   }
 
   const activeCorrectionTasks = summarizeCorrectionTasks(correctionTasks, chapterNum)
   if (activeCorrectionTasks) {
-    builder.add('activeCorrectionTasks', activeCorrectionTasks, { priority: 4, maxTokens: 1200 })
+    builder.add('softCorrectionAims', activeCorrectionTasks, { priority: 6, maxTokens: 420 })
+  }
+
+  const threadFacts = summarizeThreadFacts(canonFacts, plotThreads, {
+    nearChapter,
+    outline,
+    volumeContext
+  })
+  if (threadFacts) {
+    builder.add('threadFacts', threadFacts, { priority: 4, maxTokens: 900 })
   }
 
   // P7: 主要角色状态
@@ -186,7 +330,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
       emotion: c.softState?.emotion,
       currentDesire: c.softState?.currentDesire
     }))
-    builder.add('characters', simplified, { priority: 4, maxTokens: 1500 })
+    builder.add('characters', simplified, { priority: 4, maxTokens: 1000 })
   }
 
   // P8: 最近已确认事实
@@ -195,7 +339,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     .slice(-20)
   if (recentFacts.length > 0) {
     const summary = recentFacts.map(f => `[${f.factType}] ${f.content}`).join('\n')
-    builder.add('recentFacts', summary, { priority: 5, maxTokens: 1500 })
+    builder.add('recentFacts', summary, { priority: 5, maxTokens: 900 })
   }
 
   // P9: 进行中的伏笔
@@ -412,21 +556,42 @@ function buildVolumeStageContext(volumes, chapterNum) {
 }
 
 function summarizeCorrectionTasks(tasks, chapterNum) {
-  const active = (tasks || [])
+  const ranked = (tasks || [])
     .filter(isCorrectionTaskActiveForContext)
     .filter(task => {
       const refs = normalizeChapterRefs(task.chapterRefs)
       return !refs.length || refs.includes(Number(chapterNum)) || task.sourceType === 'global_audit'
     })
-    .slice(0, 12)
+    .filter(isCorrectionTaskHighPriorityForWriting)
+    .sort((a, b) => correctionContextRank(a, chapterNum) - correctionContextRank(b, chapterNum))
+  const active = ranked.slice(0, 3)
 
   if (!active.length) return ''
-  return active.map(task => [
+  const lines = active.map(task => [
     `- [${task.severity || 'minor'} / ${correctionTaskMode(task)} / ${task.targetModule || 'general'}] ${task.title}`,
     isCorrectionTaskBlockingForGeneration(task) ? '处理规则：阻断型硬纠偏，必须先人工确认处理后再继续生成。' : '处理规则：软纠偏，不回改已定稿正文；在后续章节中自然补解释、补动机或回收伏笔。',
     task.suggestedAction ? `建议：${task.suggestedAction}` : '',
     task.chapterRefs?.length ? `涉及章节：${task.chapterRefs.join('、')}` : ''
-  ].filter(Boolean).join('；')).join('\n')
+  ].filter(Boolean).join('；'))
+
+  const omitted = ranked.length - active.length
+  if (omitted > 0) {
+    lines.push(`- 另有 ${omitted} 条低优先级纠偏未写入本次上下文，避免干扰本章生成；优先处理上方高优先级问题。`)
+  }
+  return lines.join('\n')
+}
+
+function isCorrectionTaskHighPriorityForWriting(task) {
+  if (isCorrectionTaskBlockingForGeneration(task)) return true
+  return ['critical', 'major'].includes(task?.severity)
+}
+
+function correctionContextRank(task, chapterNum) {
+  const refs = normalizeChapterRefs(task?.chapterRefs)
+  const sameChapter = refs.includes(Number(chapterNum)) ? 0 : 20
+  const blocking = isCorrectionTaskBlockingForGeneration(task) ? 0 : 10
+  const severity = { critical: 0, major: 2, minor: 4, suggestion: 6 }[task?.severity] ?? 4
+  return blocking + sameChapter + severity
 }
 
 function unwrapMaybeRef(value) {
@@ -530,12 +695,13 @@ function profileLabel(key) {
 export function buildBrainstormContext(seedStore, novelStore) {
   const selectedSeed = seedStore?.selectedSeed?.value || seedStore?.selectedSeed
   const bible = novelStore?.bible?.value || novelStore?.bible
+  const styleStandardBrief = formatWritingStyleStandardsForPrompt(bible?.writingProfile)
   return {
     seedInfo: selectedSeed
       ? `题材：${selectedSeed.genre}\n一句话：${selectedSeed.logline}\n主角：${selectedSeed.protagonist}\n欲望：${selectedSeed.desire}`
       : '无',
     bibleInfo: bible
-      ? `风格：${bible.styleBible || ''}\n禁忌：${(bible.forbiddenDirections || []).join('、')}`
+      ? `风格：${bible.styleBible || ''}\n题材/风格标准：${styleStandardBrief || '无'}\n禁忌：${(bible.forbiddenDirections || []).join('、')}`
       : '',
     currentConflict: (novelStore?.outline?.value || novelStore?.outline)?.currentVolume?.mainConflict || '',
     constraints: bible?.forbiddenDirections?.join('\n') || ''
@@ -552,6 +718,7 @@ export function buildAuditContext(chapterContent, chapterNum, novelStore) {
     chapterNum,
     chapterContent,
     bible,
+    styleStandardBrief: formatWritingStyleStandardsForPrompt(bible?.writingProfile),
     characters,
     canonFacts: canonFacts.filter(f => f.status === 'accepted'),
     plotThreads: plotThreads.filter(t => t.status === 'planted' || t.status === 'developing')

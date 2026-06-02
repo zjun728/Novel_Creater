@@ -107,6 +107,17 @@ async def ensure_schema():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
         """
+        CREATE TABLE IF NOT EXISTS rolling_outlines (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          far_vision JSON DEFAULT NULL,
+          current_volume JSON DEFAULT NULL,
+          near_chapters JSON DEFAULT NULL,
+          updated_at BIGINT NOT NULL,
+          UNIQUE INDEX idx_outline_project (project_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
         CREATE TABLE IF NOT EXISTS project_volumes (
           id CHAR(36) PRIMARY KEY,
           project_id CHAR(36) NOT NULL,
@@ -186,6 +197,7 @@ async def ensure_schema():
         "ALTER TABLE creative_seeds MODIFY emotional_promise TEXT DEFAULT NULL",
         "ALTER TABLE creative_seeds MODIFY style_target TEXT DEFAULT NULL",
         "ALTER TABLE creative_seeds ADD COLUMN ending_anchor TEXT DEFAULT NULL AFTER risk_notes",
+        "ALTER TABLE creative_bible ADD COLUMN writing_profile JSON DEFAULT NULL AFTER world_rules",
     ]
     for sql in statements:
         try:

@@ -1,11 +1,11 @@
 {
-  "startedAt": "2026-05-28T09:46:41.184Z",
+  "startedAt": "2026-06-01T09:19:40.178Z",
   "project": {
-    "id": "01abd042-0f56-4741-a4f4-be8fde0a7958",
-    "title": "真实流程测试200万_20260528063230",
+    "id": "8eebea8a-f8fd-4fdd-9f76-1928d2b8afc1",
+    "title": "QualityBalanceQA200w_20260601090726",
     "targetWords": 2000000,
     "targetChapters": 400,
-    "url": "http://127.0.0.1:5173/project/01abd042-0f56-4741-a4f4-be8fde0a7958"
+    "url": "http://127.0.0.1:5173/project/8eebea8a-f8fd-4fdd-9f76-1928d2b8afc1"
   },
   "provider": {
     "name": "联通云-DeepSeek-V4-Flash",
@@ -23,7 +23,7 @@
       "detail": ""
     },
     {
-      "name": "前端服务已由脚本启动",
+      "name": "前端服务可用",
       "status": "pass",
       "detail": ""
     },
@@ -35,487 +35,181 @@
     {
       "name": "续跑已有测试项目",
       "status": "pass",
-      "detail": "真实流程测试200万_20260528063230"
+      "detail": "QualityBalanceQA200w_20260601090726"
     },
     {
-      "name": "补齐已定稿章节设定变更",
+      "name": "第 1 章小纲已自动压缩",
       "status": "pass",
-      "detail": "第 7 章无必要设定变更"
+      "detail": "1883 -> 1011 chars"
+    },
+    {
+      "name": "第 1 章小纲已生成",
+      "status": "pass",
+      "detail": "1011 chars"
+    },
+    {
+      "name": "第 1 章正文已生成",
+      "status": "pass",
+      "detail": "6180 字"
+    },
+    {
+      "name": "第 1 章初稿字数在可接受范围",
+      "status": "pass",
+      "detail": "6180 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
+    },
+    {
+      "name": "第 1 章节奏修订已采用",
+      "status": "pass",
+      "detail": "短句率 0.37 -> 0.00，连续 4 -> 0"
+    },
+    {
+      "name": "第 1 章句式节奏修订稿字数在可接受范围",
+      "status": "pass",
+      "detail": "6186 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
+    },
+    {
+      "name": "第 1 章审稿完成",
+      "status": "pass",
+      "detail": "issues=4"
+    },
+    {
+      "name": "第 1 章定稿字数在可接受范围",
+      "status": "pass",
+      "detail": "6390 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
+    },
+    {
+      "name": "第 1 章章名已生成",
+      "status": "pass",
+      "detail": "灰白废星"
+    },
+    {
+      "name": "第 1 章已定稿并完成记忆/设定提取",
+      "status": "pass",
+      "detail": "6390 字"
     },
     {
       "name": "待确认设定变更已模拟人工处理",
       "status": "pass",
-      "detail": "续写前，第 10 章之前 accepted=2, rejected=0"
+      "detail": "第 1 章定稿后 accepted=6, rejected=0"
     },
     {
-      "name": "第 10 章小纲已生成",
+      "name": "第 2 章小纲已自动压缩",
       "status": "pass",
-      "detail": "2606 chars"
+      "detail": "2717 -> 859 chars"
     },
     {
-      "name": "第 10 章正文已生成",
+      "name": "第 2 章小纲已生成",
       "status": "pass",
-      "detail": "4919 字"
+      "detail": "859 chars"
     },
     {
-      "name": "第 10 章审稿完成",
+      "name": "第 2 章正文已生成",
+      "status": "pass",
+      "detail": "5147 字"
+    },
+    {
+      "name": "第 2 章初稿字数在可接受范围",
+      "status": "pass",
+      "detail": "5147 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
+    },
+    {
+      "name": "第 2 章节奏修订已采用",
+      "status": "pass",
+      "detail": "短句率 0.18 -> 0.00，连续 1 -> 0"
+    },
+    {
+      "name": "第 2 章句式节奏修订稿字数在可接受范围",
+      "status": "pass",
+      "detail": "5146 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
+    },
+    {
+      "name": "第 2 章审稿完成",
       "status": "pass",
       "detail": "issues=6"
     },
     {
-      "name": "第 10 章已定稿并完成记忆/设定提取",
+      "name": "第 2 章定稿字数在可接受范围",
       "status": "pass",
-      "detail": "3910 字"
+      "detail": "5086 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
+    },
+    {
+      "name": "第 2 章章名已生成",
+      "status": "pass",
+      "detail": "星阵织忆"
+    },
+    {
+      "name": "第 2 章已定稿并完成记忆/设定提取",
+      "status": "pass",
+      "detail": "5086 字"
     },
     {
       "name": "待确认设定变更已模拟人工处理",
       "status": "pass",
-      "detail": "第 10 章定稿后 accepted=3, rejected=0"
-    },
-    {
-      "name": "第 11 章小纲已生成",
-      "status": "pass",
-      "detail": "3465 chars"
-    },
-    {
-      "name": "第 11 章正文已生成",
-      "status": "pass",
-      "detail": "6529 字"
-    },
-    {
-      "name": "第 11 章审稿完成",
-      "status": "pass",
-      "detail": "issues=6"
-    },
-    {
-      "name": "第 11 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "6437 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 11 章定稿后 accepted=4, rejected=0"
-    },
-    {
-      "name": "第 12 章小纲已生成",
-      "status": "pass",
-      "detail": "3772 chars"
-    },
-    {
-      "name": "第 12 章正文已生成",
-      "status": "pass",
-      "detail": "3894 字"
-    },
-    {
-      "name": "第 12 章审稿完成",
-      "status": "pass",
-      "detail": "issues=6"
-    },
-    {
-      "name": "第 12 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "3726 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 12 章定稿后 accepted=4, rejected=0"
-    },
-    {
-      "name": "第 13 章小纲已生成",
-      "status": "pass",
-      "detail": "3598 chars"
-    },
-    {
-      "name": "第 13 章正文已生成",
-      "status": "pass",
-      "detail": "5241 字"
-    },
-    {
-      "name": "第 13 章审稿完成",
-      "status": "pass",
-      "detail": "issues=3"
-    },
-    {
-      "name": "第 13 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "5310 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 13 章定稿后 accepted=4, rejected=0"
-    },
-    {
-      "name": "第 14 章小纲已生成",
-      "status": "pass",
-      "detail": "3637 chars"
-    },
-    {
-      "name": "第 14 章正文已生成",
-      "status": "pass",
-      "detail": "5886 字"
-    },
-    {
-      "name": "第 14 章审稿结构化失败",
-      "status": "fail",
-      "detail": "没有解析到 JSON：{\n  \"summary\": \"第14章中林默通过第8次测试，母亲选择忘记他以保护他，但代价链仅暂停，面临第9次选择：让母亲活在虚无或记起后死去。\",\n  \"issues\": [\n    {\n      \"severity\": \"major\",\n      \"type\": \"contradiction\",\n      \"location\": \"影子在路灯下时而拉长时而缩短，但不再跟随他的动作。他停下，影子继续向前移动了两步才停住。\",\n      \"is..."
-    },
-    {
-      "name": "第 14 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "5886 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 14 章定稿后 accepted=4, rejected=0"
-    },
-    {
-      "name": "第 15 章小纲已生成",
-      "status": "pass",
-      "detail": "2666 chars"
-    },
-    {
-      "name": "第 15 章正文已生成",
-      "status": "pass",
-      "detail": "6660 字"
-    },
-    {
-      "name": "第 15 章审稿结构化失败",
-      "status": "fail",
-      "detail": "没有解析到 JSON：{\n  \"summary\": \"林默通过代价回溯发现曾设下让母亲忘记自己的指令，并试图利用漏洞破解代价链。他找到母亲日记，通过情感记忆让母亲主动想起自己，完成第9次测试，代价链转移至交易所。\",\n  \"issues\": [\n    {\n      \"severity\": \"major\",\n      \"type\": \"logic\",\n      \"location\": \"平衡者·健康站在窗边，手里拿着病历本\",\n      \"issue\": \"平衡者·健..."
-    },
-    {
-      "name": "第 15 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "6660 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 15 章定稿后 accepted=3, rejected=0"
-    },
-    {
-      "name": "第 16 章小纲已生成",
-      "status": "pass",
-      "detail": "3352 chars"
-    },
-    {
-      "name": "第 16 章正文已生成",
-      "status": "pass",
-      "detail": "6050 字"
-    },
-    {
-      "name": "第 16 章审稿完成",
-      "status": "pass",
-      "detail": "issues=6"
-    },
-    {
-      "name": "第 16 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "6144 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 16 章定稿后 accepted=4, rejected=0"
-    },
-    {
-      "name": "第 17 章小纲已生成",
-      "status": "pass",
-      "detail": "2332 chars"
-    },
-    {
-      "name": "第 17 章正文已生成",
-      "status": "pass",
-      "detail": "6891 字"
-    },
-    {
-      "name": "第 17 章审稿完成",
-      "status": "pass",
-      "detail": "issues=3"
-    },
-    {
-      "name": "第 17 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "7104 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 17 章定稿后 accepted=3, rejected=0"
-    },
-    {
-      "name": "第 18 章小纲已生成",
-      "status": "pass",
-      "detail": "2926 chars"
-    },
-    {
-      "name": "第 18 章正文已生成",
-      "status": "pass",
-      "detail": "3507 字"
-    },
-    {
-      "name": "第 18 章审稿完成",
-      "status": "pass",
-      "detail": "issues=6"
-    },
-    {
-      "name": "第 18 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "3708 字"
-    },
-    {
-      "name": "第 19 章小纲已生成",
-      "status": "pass",
-      "detail": "3925 chars"
-    },
-    {
-      "name": "第 19 章正文已生成",
-      "status": "pass",
-      "detail": "5024 字"
-    },
-    {
-      "name": "第 19 章审稿完成",
-      "status": "pass",
-      "detail": "issues=6"
-    },
-    {
-      "name": "第 19 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "5206 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 19 章定稿后 accepted=4, rejected=0"
-    },
-    {
-      "name": "第 20 章小纲已生成",
-      "status": "pass",
-      "detail": "2768 chars"
-    },
-    {
-      "name": "第 20 章正文已生成",
-      "status": "pass",
-      "detail": "4722 字"
-    },
-    {
-      "name": "第 20 章审稿完成",
-      "status": "pass",
-      "detail": "issues=3"
-    },
-    {
-      "name": "第 20 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "4855 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 20 章定稿后 accepted=3, rejected=0"
-    },
-    {
-      "name": "真实流程续写到目标章数",
-      "status": "pass",
-      "detail": "第 10-20 章，最后一章 4855 字"
-    },
-    {
-      "name": "项目级审稿已保存",
-      "status": "pass",
-      "detail": "issues=5"
-    },
-    {
-      "name": "项目详情页可打开",
-      "status": "pass",
-      "detail": "真实流程测试200万_20260528063230"
-    },
-    {
-      "name": "项目详情页显示模块：选题雷达",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：创作种子",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：创作圣经",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：设定库",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：章节管理",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：纠偏任务",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "写字台可打开",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "写字台审稿入口可见",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "写字台返回项目详情入口可见",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "浏览器 UI 基础验收完成",
-      "status": "pass",
-      "detail": "nodes=1593, text=7268"
+      "detail": "第 2 章定稿后 accepted=6, rejected=0"
     }
   ],
-  "timings": {
-    "projectLoadMs": 1586,
-    "writerChapter1LoadMs": 1301
-  },
+  "timings": {},
   "generated": {
-    "marketItems": 104,
+    "marketItems": 80,
     "directions": 4,
     "seeds": 1,
     "settingEvents": 12,
-    "acceptedSettings": 72,
+    "acceptedSettings": 24,
     "chaptersCreated": 400,
-    "finalizedChapters": 20,
-    "canonFacts": 70,
-    "chapterSettingChanges": 65,
-    "correctionTasks": 94,
+    "finalizedChapters": 2,
+    "canonFacts": 12,
+    "chapterSettingChanges": 12,
+    "correctionTasks": 9,
     "chapterWordCounts": [
       {
         "chapterNum": 1,
-        "count": 4823
+        "count": 6180,
+        "stage": "first_draft"
+      },
+      {
+        "chapterNum": 1,
+        "count": 6186,
+        "stage": "prose_rhythm_repair"
       },
       {
         "chapterNum": 2,
-        "count": 4763
+        "count": 5147,
+        "stage": "first_draft"
       },
       {
-        "chapterNum": 3,
-        "count": 5109
-      },
-      {
-        "chapterNum": 3,
-        "count": 7045
-      },
-      {
-        "chapterNum": 4,
-        "count": 4760
-      },
-      {
-        "chapterNum": 5,
-        "count": 5383
-      },
-      {
-        "chapterNum": 6,
-        "count": 4462
-      },
-      {
-        "chapterNum": 7,
-        "count": 5174
-      },
-      {
-        "chapterNum": 7,
-        "count": 3902
-      },
-      {
-        "chapterNum": 8,
-        "count": 6621
-      },
-      {
-        "chapterNum": 9,
-        "count": 4988
-      },
-      {
-        "chapterNum": 10,
-        "count": 4919
-      },
-      {
-        "chapterNum": 11,
-        "count": 6529
-      },
-      {
-        "chapterNum": 12,
-        "count": 3894
-      },
-      {
-        "chapterNum": 13,
-        "count": 5241
-      },
-      {
-        "chapterNum": 14,
-        "count": 5886
-      },
-      {
-        "chapterNum": 15,
-        "count": 6660
-      },
-      {
-        "chapterNum": 16,
-        "count": 6050
-      },
-      {
-        "chapterNum": 17,
-        "count": 6891
-      },
-      {
-        "chapterNum": 18,
-        "count": 3507
-      },
-      {
-        "chapterNum": 19,
-        "count": 5024
-      },
-      {
-        "chapterNum": 20,
-        "count": 4722
+        "chapterNum": 2,
+        "count": 5146,
+        "stage": "prose_rhythm_repair"
       }
     ],
-    "domStats": {
-      "nodes": 1593,
-      "textLength": 7268,
-      "memory": {
-        "usedJSHeapSize": 104888449,
-        "totalJSHeapSize": 139059045
+    "finalChapterWordCounts": [
+      {
+        "chapterNum": 1,
+        "count": 6390
+      },
+      {
+        "chapterNum": 2,
+        "count": 5086
       }
-    }
+    ],
+    "auditFailures": 0,
+    "multiChapterAcceptance": null
   },
   "browserConsole": [],
-  "screenshots": [
-    "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\project-detail.png",
-    "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\writer-chapter-1.png"
-  ],
+  "screenshots": [],
   "cleanup": "保留测试项目",
   "notes": [
-    "第 11 章事实提取首次失败，已启用紧凑重试：没有解析到 JSON：{\"facts\":[{\"factType\":\"plot\",\"content\":\"林默是第8次测试者，此前已有7次失败测试，每次失败后记忆被清除并重置。\",\"relatedCharacters\":[\"林默\",\"平衡者·健康\"],\"evidence\":\"天平显示‘代价回溯完成。天平模拟了7次失败路径。当前为第8次测试。’以及短信‘第8次测试...",
-    "第 13 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：```json\n{\n  \"summary\": \"第13章承接第12章结尾，林默在17小时倒计时中前往废弃医院找到母亲，但母亲已忘记他。林默试图通过对话唤醒母亲记忆，但代价链持续侵蚀，人性值在0和1之间波动。章节结尾林默陷入犹豫，首次出现程序错误般的停顿。整体延续了冷峻悬疑风格，但存在多处设定矛盾、逻辑漏洞和AI腔句式。\",\n  \"iss...",
-    "第 14 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：```json\n{\n  \"summary\": \"第14章承接第13章结尾，林默在自我认知仅剩8%的情况下，通过便利店线索返回废弃医院，在床垫下找到与母亲的合影。回收者·记忆出现，揭示第8次测试的真正最后路径是‘让母亲主动选择忘记儿子’。林默在中山公园找到母亲，母亲自愿选择忘记他，代价链暂停，林默自我认知恢复至50%。但平衡者·健康揭示测...",
-    "第 15 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：```json\n{\n  \"summary\": \"第15章承接第14章结尾，林默在13小时42分钟倒计时中前往废弃医院，通过代价回溯发现自己在第7次测试结束时设下的两条指令（让母亲选择忘记自己，以及记录母亲真实意愿以破解代价链），但指令2已被代价链抹除。平衡者·健康出现告知漏洞已被修复，林默在病房发现母亲的日记本，通过日记内容唤醒母亲的部...",
-    "第 17 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：```json\n{\n  \"summary\": \"第17章承接第16章结尾，林默被黑风衣男人带回家，进入‘儿子’角色。章节通过日常场景（吃饭、看电视）和记忆碎片闪回，推进‘角色锁定’和‘记忆剥离’设定。母亲逐渐觉醒并忘记林默，林默最终激活‘备份人格：旁观者’，代价是抹除自己的名字。整体氛围冷峻，但存在多处逻辑和设定矛盾。\",\n  \"iss...",
-    "第 20 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：```json\n{\n  \"summary\": \"第20章承接第19章结尾，林默在天平震动后坠入由母亲记忆碎片构成的迷宫。他在迷宫中遇到母亲记忆的集合体，被告知第11次测试的真相：天平上的两个选择（摧毁核心或成为平衡者）都是陷阱，真正的选择是在记忆迷宫中找到自己的名字。母亲告诉他乳名'小石头'，林默通过记住这个名字通过了测试，但代价是母亲..."
+    "LLM 请求失败，第 1/3 次后重试：The operation was aborted due to timeout",
+    "LLM 请求失败，第 1/3 次后重试：LLM 429: Concurrency limit exceeded: 该模型当前访问量过大",
+    "LLM 请求失败，第 2/3 次后重试：LLM 429: Concurrency limit exceeded: 该模型当前访问量过大",
+    "LLM 请求失败，第 1/3 次后重试：LLM 429: Concurrency limit exceeded: 该模型当前访问量过大",
+    "LLM 请求失败，第 1/3 次后重试：fetch failed"
   ],
-  "finishedAt": "2026-05-28T10:50:14.506Z",
+  "finishedAt": "2026-06-01T09:34:54.416Z",
   "summary": {
-    "totalChecks": 73,
-    "passedChecks": 71,
-    "failedChecks": 2,
+    "totalChecks": 26,
+    "passedChecks": 26,
+    "failedChecks": 0,
     "browserConsoleErrors": 0
   }
 }

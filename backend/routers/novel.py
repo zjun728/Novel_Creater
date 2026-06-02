@@ -1,7 +1,7 @@
 """创作圣经、滚动大纲、角色、伏笔、Canon事实、可能性池"""
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
 from .guards import ensure_project_without_chapter_content
@@ -16,7 +16,7 @@ class BibleUpdate(BaseModel):
     styleBible: str = ""
     themeBible: str = ""
     worldRules: str = ""
-    confirmedSettings: Optional[List[str]] = None
+    writingProfile: Optional[Any] = None
     forbiddenDirections: Optional[List[str]] = None
 
 
@@ -38,8 +38,8 @@ async def save_bible(pid: str, data: BibleUpdate):
     sets, args = [], []
     for k, v in data.dict().items():
         col = to_snake(k)
-        if isinstance(v, list):
-            sets.append(f"{col}=%s"); args.append(json.dumps(v))
+        if isinstance(v, (list, dict)):
+            sets.append(f"{col}=%s"); args.append(json.dumps(v, ensure_ascii=False))
         else:
             sets.append(f"{col}=%s"); args.append(v)
     if rows:
@@ -114,15 +114,16 @@ async def get_outline(pid: str):
 async def save_outline(pid: str, data: dict):
     now = int(time.time() * 1000)
     rows = await fetchall("SELECT * FROM rolling_outlines WHERE project_id=%s", (pid,))
-    far = json.dumps(data.get('farVision') or {})
-    vol = json.dumps(data.get('currentVolume') or {})
-    near = json.dumps(data.get('nearChapters') or [])
+    far = json.dumps(data.get('farVision') or {}, ensure_ascii=False)
+    vol = json.dumps(data.get('currentVolume') or {}, ensure_ascii=False)
+    near = json.dumps(data.get('nearChapters') or [], ensure_ascii=False)
     if rows:
         await execute("UPDATE rolling_outlines SET far_vision=%s, current_volume=%s, near_chapters=%s, updated_at=%s WHERE id=%s",
                       (far, vol, near, now, rows[0]['id']))
     else:
         await execute("INSERT INTO rolling_outlines (id, project_id, far_vision, current_volume, near_chapters, updated_at) VALUES (%s,%s,%s,%s,%s,%s)",
                       (str(uuid.uuid4()), pid, far, vol, near, now))
+    await touch_project(pid)
     return await get_outline(pid)
 
 # --- 角色 ---

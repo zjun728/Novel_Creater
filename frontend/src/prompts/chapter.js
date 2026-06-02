@@ -1,3 +1,5 @@
+import { formatProseRhythmAnalysis } from '../utils/proseRhythmGuard.js'
+
 /**
  * 章节生成 Prompt
  */
@@ -106,14 +108,31 @@ function formatSequenceRules(rules) {
   return rules.filter(hasText).map(rule => `- ${rule}`).join('\n')
 }
 
+function formatRecentChapterEndings(endings) {
+  if (!endings) return ''
+  if (typeof endings === 'string') return endings.trim()
+  if (!Array.isArray(endings)) return JSON.stringify(endings, null, 2)
+
+  return endings
+    .map((item, index) => {
+      if (typeof item === 'string') return `- 最近第 ${index + 1} 段结尾：${item.trim()}`
+      const chapterNum = item.chapterNum || item.chapter_num || item.num || '?'
+      const ending = item.ending || item.content || item.text || item.summary || ''
+      return hasText(ending) ? `- 第 ${chapterNum} 章结尾：${String(ending).trim()}` : ''
+    })
+    .filter(hasText)
+    .join('\n')
+}
+
 function formatWordTarget(target) {
   if (!target?.target) return ''
   return [
-    `- 本章目标约 ${target.target} 字，优先控制在 ${target.min}-${target.max} 字。`,
-    `- 如内容接近 ${target.hardMax} 字，必须主动收束场景，把未展开内容留作下一章钩子，不要继续新增场景或扩写设定。`,
-    `- 字数护栏服务章节节奏，不是机械截断；不得为了压字数省略关键动作、情绪转折或因果交代。`,
-    `- 如果内容自然超量，优先减少支线、旁白、重复描写或低效对白，而不是草草结尾。`,
-    `- 硬边界参考：尽量不要低于 ${target.hardMin} 字，也不要超过 ${target.hardMax} 字（最多上下浮动 20%）。`
+    `- 建议围绕约 ${target.target} 字设计场景密度，优先落在 ${target.min}-${target.max} 字；这是写作节奏参考，不是硬性截断线。`,
+    `- 质量优先级高于机械字数：不得为了压字数省略关键动作、情绪转折、人物反应、因果交代或章节钩子。`,
+    `- 如果内容自然超量，先判断是否把两章容量塞进了一章；能拆则在自然断点把支线、解释、余波或下一轮冲突留到下一章。`,
+    `- 如果明显超量，请减少支线、旁白、重复描写或低效对白；不要压掉关键动作、人物反应和因果交代。`,
+    `- 如果当前章核心动作无法安全拆分，可以略高于建议范围；但应减少重复描写、低效对白、纯旁白解释和无效支线。`,
+    `- 硬边界参考：尽量不要低于 ${target.hardMin} 字，也不要超过 ${target.hardMax} 字；越界时优先调整场景容量，而不是强行草草收尾或灌水。`
   ].join('\n')
 }
 
@@ -164,15 +183,26 @@ function formatStageItem(item) {
 export function cleanGeneratedChapterText(text) {
   if (!text) return ''
 
-  return String(text)
+  const isOpeningMetaLine = (line) => {
+    const trimmed = line.trim()
+    if (!trimmed) return true
+    const withoutMarkdown = trimmed.replace(/^#{1,6}\s*/, '').trim()
+    if (/^(以下是|下面是|正文如下|候选稿|章节正文)[：:]/.test(withoutMarkdown)) return true
+    if (/^(?:正文|章节正文|候选正文)\s*[：:]\s*$/.test(withoutMarkdown)) return true
+    return /^第\s*[\d一二三四五六七八九十百千万零〇两]+\s*章(?:\s*[：:、.\-—·]\s*.*|\s+\S{1,16})?$/.test(withoutMarkdown)
+  }
+
+  const lines = String(text)
     .replace(/^\s*```(?:markdown|md|text|txt)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .split('\n')
-    .filter((line, index) => {
+
+  let hasProseStarted = false
+  return lines
+    .filter(line => {
       const trimmed = line.trim()
-      if (index === 0 && /^#{1,6}\s+/.test(trimmed)) return false
-      if (/^第\s*\d+\s*章[：:、\s]/.test(trimmed)) return false
-      if (/^(以下是|下面是|正文如下|候选稿|章节正文)[：:]/.test(trimmed)) return false
+      if (!hasProseStarted && isOpeningMetaLine(line)) return false
+      if (trimmed) hasProseStarted = true
       return true
     })
     .join('\n')
@@ -333,7 +363,9 @@ export function cleanGeneratedChapterTitle(text) {
 
   if (!title) return ''
   if (/^(?:第\s*[\d一二三四五六七八九十百千万零〇两]+\s*章|无题|未命名)$/.test(title)) return ''
-  if (Array.from(title).length < 2 || Array.from(title).length > 14) return ''
+  if (/^[\u4e00-\u9fa5]{1,4}(?:在|被|把|将|让|向|从|给|对|随|带|进入|走进|回到|离开|看见|发现|听见|醒来)/.test(title)) return ''
+  if (/[，。！？；：、,.!?;:]/.test(title)) return ''
+  if (Array.from(title).length < 2 || Array.from(title).length > 10) return ''
   return title
 }
 
@@ -342,13 +374,15 @@ export function buildChapterTitleSystemPrompt() {
 
 命名原则：
 - 章名要贴合本章核心动作、情绪或悬念。
+- 章名是小说目录里的标题，不是剧情摘要，不要直接截取正文句子。
+- 不要写成“主角名 + 在/被/把/进入/发现 + 地点或动作”的流水句。
 - 不要剧透后续章节，不要泄露尚未揭开的终局真相。
 - 不要使用泛泛的“风暴将至”“新的开始”等空标题。
 - 标题应有画面感或钩子，但不要夸张营销腔。
 
 输出要求：
 - 只输出章名，不输出“第几章”、解释、引号、书名号、Markdown 或备选列表。
-- 章名控制在 2-14 个汉字之间。`
+- 章名控制在 2-10 个汉字之间，优先使用名词短语、意象短语或悬念短语。`
 }
 
 export function buildChapterTitlePrompt(context = {}) {
@@ -372,32 +406,24 @@ export function buildChapterTitlePrompt(context = {}) {
 }
 
 export function buildChapterSystemPrompt() {
-  return `你是一位专业小说作者，擅长长篇叙事。你的任务是撰写小说章节正文。
+  return `你是一位专业小说作者，擅长小说章节正文和长篇连载。
 
-创作原则：
-- 严格遵守已确认的世界规则和角色状态。
-- 在给定框架内发挥创造力，但不要推翻已有事实；可以制造反转，但必须以角色认知有限、隐藏真相揭示或误导解除的方式自然成立。
-- 人物行为要符合其性格、欲望和当前状态。
-- 每个重要场景都要有“人性动机”：人物想得到什么、害怕失去什么、为什么不能直接说出口、做出选择要付出什么代价，以及事件结束后的情绪残留。
-- 不要把人物写成推动剧情或解释设定的工具人；外部事件必须通过人物的欲望、恐惧、羞耻、亏欠、依赖、嫉妒、爱恨或自尊产生代入感。
-- 对话要有各自的声音，不要所有人说一样的话。
-- 场景要有画面感，但不要过度描写。
-- 每章要有推进感：情节、人物或悬念至少推进一项。
-- 设定、小纲和上下文是创作边界，不是写作模板；允许补充场景、对白、细节和意外，但不能无解释破坏既有因果。
-- 新增关键人物、势力、地点、物品或能力时，要让其在正文中有清晰作用，便于后续提取到设定库。
-- 降低 AI 腔硬约束：非对白叙述中尽量不要使用“不是X，而是Y”“不是X，是Y”结构；整章最多 2 次，超过就必须改写。
-- 禁止连续使用套路化反差句：包括“不是……而是……”“不是……是……”“像是……又像是……”“某种……”“仿佛有什么东西……”“终于意识到……”等。
-- 如果需要表达反差、压迫、心理变化，优先用具体动作、感官细节、物象变化、对白停顿或人物反应来呈现，不要用解释性判断句反复总结。
+核心职责：
+- 把已确认的世界规则、设定库、角色状态、上一章结尾和本章小纲当作创作边界。
+- 在边界内写出具体场景：人物要行动、观察、误判、选择，并承担后果。
+- 设定、真相和规则尽量通过证据、物件反应、行动失败、关系变化或付出代价自然显露。
+- 对话要符合角色身份和关系，不要让所有人说成同一种声音。
+- 可以补充细节、对白、过渡和合理意外，但不能无解释推翻已有事实。
+- 写作标准是气质和方法，不是逐条打卡；明显模板句式和节奏问题会在生成后单独审稿或润色。
 
 输出要求：
 - 只输出小说正文，不输出标题、Markdown 标题、提纲、解释、创作说明或“以下是正文”等提示语。
-- 第一行必须直接进入正文叙事。
-- 正文必须从本章小纲第一个节拍，或本章时间线最早的可写场景开始。
-- 不得用后续会议结论、追查结果、角色受伤或死亡后的余波、任务奖励、事后复盘作为开头。
-- 如果是第一章，必须从主角初始处境或创作种子的开局钩子开始，不要先写背景结论或势力反应。
-- 按自然时间顺序写场景，不要把结尾、设定说明、系统提示或任务奖励插入到开头。
-- 不要用项目符号、编号列表、元注释或作者旁白来代替正文。
-- 如果需要出现系统提示、任务面板、弹窗等内容，必须作为小说世界内角色实际看到或听到的内容自然写入。`
+- 不要输出“# 第N章”“第N章”“第十二章 章名”这类章节标题；章节标题由系统另行生成。
+- 第一行直接进入正文叙事。
+- 正文从本章小纲第一个节拍，或本章时间线最早的可写场景开始。
+- 如果是第一章，从主角初始处境或创作种子的开局钩子开始。
+- 按自然时间和因果顺序写场景，不要把结尾、设定说明、系统提示或任务奖励插入到开头。
+- 系统提示、任务面板、弹窗等内容只能作为小说世界内角色实际看到或听到的内容出现。`
 }
 
 export function buildChapterPrompt(context) {
@@ -406,16 +432,30 @@ export function buildChapterPrompt(context) {
   const bible = context.bible || {}
   const premise = bible.premise || context.premise
   const styleBible = bible.styleBible || context.styleBible
+  const styleMethodBrief = context.styleMethodBrief || ''
+  const styleStandardBrief = context.styleStandardBrief || bible.styleStandardBrief
   const worldRules = bible.worldRules || context.worldRules
-  const forbiddenDirections = bible.forbiddenDirections || context.forbiddenDirections
 
-  if (premise) parts.push(`## 作品定位\n${premise}`)
-  if (styleBible) parts.push(`## 风格要求\n${styleBible}`)
-  if (worldRules) parts.push(`## 世界规则（不可违背）\n${worldRules}`)
-  if (context.settingLibrary) parts.push(`## 设定库（不可违背）\n${context.settingLibrary}`)
+  if (context.creativeBoundary) {
+    parts.push(`## 本章创作边界摘要\n${context.creativeBoundary}`)
+  } else {
+    const boundaryLines = [
+      premise ? `作品方向：${premise}` : '',
+      worldRules ? `世界硬边界：${worldRules}` : ''
+    ].filter(hasText)
+    if (boundaryLines.length) parts.push(`## 本章创作边界摘要\n${boundaryLines.join('\n')}`)
+  }
+
+  const styleHints = [styleMethodBrief, !styleMethodBrief ? styleBible : '', !styleMethodBrief ? styleStandardBrief : '']
+    .filter(hasText)
+    .join('\n\n')
+  if (styleHints) parts.push(`## 写作气质\n${styleHints}`)
+
+  if (context.settingLibrary) parts.push(`## 关键设定边界\n${context.settingLibrary}`)
   if (context.recentSettingChanges) parts.push(`## 最近设定变化\n${context.recentSettingChanges}`)
-  if (context.activeCorrectionTasks) parts.push(`## 未完成纠偏任务（写作时优先避免继续扩大问题）\n${context.activeCorrectionTasks}`)
-  if (forbiddenDirections?.length) parts.push(`## 禁止方向\n${formatList(forbiddenDirections)}`)
+  if (context.softCorrectionAims) parts.push(`## 软过渡提醒\n${context.softCorrectionAims}`)
+
+  if (context.stateLedger) parts.push(`## 章节状态账本（硬状态优先）\n${context.stateLedger}`)
 
   const seedInfo = formatSeedContext(context.seed)
   if (seedInfo) parts.push(`## 创作种子\n${seedInfo}`)
@@ -425,10 +465,10 @@ export function buildChapterPrompt(context) {
   }
 
   const sequenceRules = formatSequenceRules(context.sequenceRules)
-  if (sequenceRules) parts.push(`## 顺序控制（必须遵守）\n${sequenceRules}`)
+  if (sequenceRules) parts.push(`## 顺序控制\n${sequenceRules}`)
 
   const wordTarget = formatWordTarget(context.wordTarget)
-  if (wordTarget) parts.push(`## 本章字数节奏（尽量遵守）\n${wordTarget}`)
+  if (wordTarget) parts.push(`## 本章字数节奏（质量优先）\n${wordTarget}`)
 
   if (context.previousChapterEnding) {
     parts.push(`## 上一章结尾原文（下一章必须承接）
@@ -440,8 +480,19 @@ ${context.previousChapterEnding}
 - 上一章结尾如果明显是未完成句、动作中断或危机未落地，本章开头必须先补足这个动作或危机，再进入本章小纲后续节拍。`)
   }
 
+  const recentChapterEndings = formatRecentChapterEndings(context.recentChapterEndings)
+  if (recentChapterEndings) {
+    parts.push(`## 最近章节结尾（避免重复模板）
+${recentChapterEndings}
+
+结尾反复规避：
+- 本章结尾不得复用最近章节的动作、意象或句式，不要连续用“抬头、转身、闭眼、握拳、走进黑暗、沉入黑暗、看天色、状态总结、内心独白收束”等模板。
+- 结尾优先落在具体动作未完成、关系变化、物件状态、误判代价、选择余波或下一章问题上，不要只做抽象总结。
+- 如果本章必须安静收束，也要换成具体的人物行为、物件细节或未被说出口的关系变化。`)
+  }
+
   const volumeStage = formatVolumeStage(context.volumeStage)
-  if (volumeStage) parts.push(`## 分卷阶段上下文（必须承接）\n${volumeStage}`)
+  if (volumeStage) parts.push(`## 分卷阶段参考\n${volumeStage}`)
 
   const chapterGoal = formatChapterGoal(context.chapterGoal)
   if (chapterGoal) parts.push(`## 本章目标\n${chapterGoal}`)
@@ -476,126 +527,188 @@ ${context.previousChapterEnding}
     parts.push(`## 当前草稿（请在此基础上续写或改写）\n${context.currentDraft}`)
   }
 
+  parts.push(`## 硬连续性边界（不可违背）
+- 承接上一章留下的动作、危险、承诺、伤势、物品状态和情绪余波。
+- 新出现的关键线索、道具、钱款、身份、法器、能力或情报，要有来源、交接、发现过程或代价。
+- 角色重大选择要来自当前欲望、压力、误判、利益牵引或关系变化。
+- 使用伏笔或回收线索时，要来自此前信息、误导解除或本章先行证据。
+- 如果剧情需要改变既有状态，在正文中写清因果，后续会进入设定或记忆提取。`)
+
   const beatPlan = formatChapterBeatPlan(context.beatPlan)
   if (beatPlan) {
     parts.push(`## 已确认本章小纲（优先执行）
 ${beatPlan}
 
 执行要求：
-- 请按小纲的自然顺序展开成正文。
-- 第一段正文必须对应小纲第 1 条，不要先写第 2 条之后的结果或余波。
-- 禁止把后续会议、追查余波、伤亡结论、任务奖励提前到开头。
-- 小纲是方向，不是模板；允许补充过渡、细节、对白和合理的意外，但不要推翻关键节点。
-- 允许把小纲写得更有想象力，但核心因果、人物目标和本章必须完成的剧情推进不能丢。
+- 按小纲的自然时间和因果顺序展开成正文。
+- 第一幕对应小纲第一个可写场景，不先写后续结论、余波或复盘。
+- 小纲是方向，不是模板；可以补充过渡、细节、对白和合理意外。
+- 核心因果、人物目标和本章必须完成的剧情推进不能丢。
 - 不要把小纲条目、编号或分析文字写进正文。`)
   }
 
-  parts.push(`## 人物代入感要求（必须执行）
-- 本章至少要让一个关键人物的内在动机变得可感：他想得到什么，害怕失去什么，为什么不能直接说出口。
-- 重要选择不能只因为“剧情需要”，必须让读者看见欲望、恐惧、误判、遮掩或自尊在推动选择。
-- 每个关键冲突都要有代价：失去某个关系、暴露弱点、承担误解、欠下人情、伤害别人或改变自我认知。
-- 情绪不要只用形容词说明，要通过动作、停顿、回避、细节选择、对白失控或沉默表现。
-- 场景结束时应留下情绪残留：愤怒未消、羞耻被压住、依赖被否认、信任裂开、希望变重等，让下一章有心理惯性。
-- 爽点要来自“人物在压力下做出选择”，不是只靠外部开挂、信息堆叠或华丽句子。`)
+  parts.push(`## 写作质量方向
+- 先让人物在场景里行动、观察、犹豫、误判和付出代价，再让读者从结果中理解设定。
+- 本章聚焦一个最关键的人物压力：他想要什么、怕失去什么、为什么此刻必须选择。
+- 信息释放尽量落在证据、失败尝试、道具反应、关系变化或行动后果上。
+- 信息揭示方式优先靠证据、动作失败、物件反应和人物选择，不要集中解释设定。
+- 人性变化不能写成开关；情绪、信任、恐惧、爱恨和立场变化要有迟疑、残留习惯、反复或自我辩解。
+- 配角自主性要留一点：关键配角可以有自己的小目标、口头习惯、误判或生活痕迹，不只负责解释和推动剧情。
+- 可以保留少量生活痕迹、口头习惯、迟疑和沉默，让人物不像只为剧情服务。
+- 输出前静默自检：结尾模板、工具人、信息倾倒和段首重复点名如果明显出现，先在正文内部自然调整。
+- 这些是写作方向，不是检查清单；自然叙事优先，生成后会另行审稿和润色。`)
 
   parts.push(`## 写作任务
 请撰写第 ${context.chapterNum || '?'} 章正文。
 ${context.instruction ? `特别要求：${context.instruction}\n` : ''}如果没有可见小纲，请先在心中按自然时间顺序排好本章场景，但不要输出小纲。
-请直接输出正文，不要输出标题和解释。
-
-## 输出前静默自检
-在最终输出前，请在心中快速检查并自行修正以下问题，但不要输出检查过程：
-- 开头是否自然承接上一章结尾或本章小纲第一条。
-- 是否完成了本章小纲的核心节点，同时保留合理发挥空间。
-- 是否无解释推翻了创作圣经、设定库、角色状态或已确认事实。
-- 新增人物、势力、地点、物品、能力是否有明确叙事作用。
-- 是否把结论、余波、任务奖励、系统说明或后续复盘提前到了开头。
-- 是否明显超过本章建议字数范围；如果超过，请减少支线、旁白、重复描写或低效对白，保留关键动作、情绪转折、因果交代和章节钩子。
-- 是否出现高频 AI 腔句式，如“不是……而是……”“不是……是……”“像是……又像是……”“某种……”。非对白叙述中“不是X，是/而是Y”整章最多 2 次；如果超过，请必须改成具体动作、感官、物象、对白停顿或人物反应。
-- 这一章是否能回答：关键人物想得到什么、害怕失去什么、为什么不能直说、这个选择要付出什么代价、结束后留下什么情绪残留。`)
+请直接输出正文，不要输出标题、Markdown 标题、“# 第N章”“第N章”和解释。`)
 
   return parts.join('\n\n')
 }
 
-export function buildChapterBeatSystemPrompt() {
-  return `你是一位长篇小说主笔兼章节策划，擅长在正式写正文前设计可执行的章前小纲。
+export function buildProseRhythmRepairSystemPrompt() {
+  return `你是长篇小说正文节奏修订编辑。任务是修正文稿中过密的短句独立段落、机械化“不是X，是Y”句式、段首重复点名和碎片化分镜感。
+硬性原则：
+- 只做句式节奏和段落组织修订，不要新增剧情、人物、道具、设定、结论或伏笔。
+- 保留原文事件顺序、人物选择、因果关系、对白含义、结尾钩子和已确认设定。
+- 常规叙事段落应自然合并为 2-5 句，包含动作因果、感官连续、人物观察和情绪余波。
+- 短句可以保留，但只能用于局部爆点、恐惧、断裂、反转或停顿；不要连续一行一句。
+- 去掉高频 AI 腔：减少“不是X，是Y/而是Y”“某种”“像是又像是”等模板句。
+- 降低段首重复点名：不要连续多段都以同一个主角姓名开头；能承接时改用动作、物件、环境、感官、对白、心理余波或代词起段，必要时才点名。
+- 输出完整正文，不要输出修改说明、标题、Markdown 小纲或 JSON。`
+}
 
-你的任务是生成“本章剧情节拍”，不是写正文。
+export function buildProseRhythmRepairPrompt({ chapterNum, content, analysis, beatPlan, context } = {}) {
+  const report = formatProseRhythmAnalysis(analysis)
+  const contextHints = [
+    context?.styleBible ? `风格要求：${context.styleBible}` : '',
+    context?.styleStandardBrief ? `题材/风格标准：\n${context.styleStandardBrief}` : '',
+    context?.stateLedger ? `章节状态账本：\n${context.stateLedger}` : '',
+    beatPlan ? `本章小纲：\n${formatChapterBeatPlan(beatPlan)}` : ''
+  ].filter(hasText).join('\n\n')
+
+  return `请对第 ${chapterNum || '?'} 章正文做一次“句式节奏修订”。
+
+## 当前节奏问题
+${report || '检测到连续短句或 AI 腔句式偏多。'}
+
+## 修订目标
+- 保留全部剧情事实，不要新增剧情，不要删掉关键动作、选择、代价和结尾钩子。
+- 把连续短句独立段落合并为自然叙事段落；常规推进段落尽量 2-5 句。
+- 允许保留少量短句作为局部节奏点，但不要形成连续短句堆叠。
+- 把机械句式改为具体动作、感官、物象、对白停顿或人物反应。
+- 调整段首重复点名：避免多段连续或高频使用同一个角色姓名起段，改用动作承接、物件状态、环境变化、感官细节、对白或代词起段；不要因此改变视角归属。
+- 修订后长度应接近原文，允许轻微浮动，不要大幅扩写或压缩。
+- 只输出修订后的完整正文，不要输出解释。
+
+${contextHints ? `## 参考约束\n${contextHints}\n\n` : ''}## 待修订正文
+${content || ''}`
+}
+
+export function buildChapterBeatSystemPrompt() {
+  return `你是一位长篇小说章节策划，负责在正式写正文前设计可执行的小纲。
+
+你的任务是规划本章路线，不是写正文，也不是审稿。
 
 规划原则：
-- 小纲必须服务长篇连载：本章要有开场牵引、冲突升级、信息释放、情绪变化和结尾钩子。
-- 严格遵守创作圣经、世界规则、角色状态和已确认事实。
-- 第一条节拍必须是正文第一幕，是读者真正看到的开场场景，不是背景说明、后续会议、结果总结或事后追查。
-- 保留想象力：只锁定关键节点，不要把每一句对白、每个动作都规定死。
-- 给正文生成留出发挥空间，但不能让大模型随意跑偏。
-- 小纲必须包含人物动机层：关键人物的欲望、恐惧、遮掩、选择、代价和情绪残留至少要落到 2-3 个节拍中。
+- 小纲只锁定关键场景、冲突、信息释放和结尾钩子。
+- 已确认事实、角色状态、上一章结尾和世界规则是边界。
+- 第一条节拍必须是读者真正看到的开场场景。
+- 给正文保留对白、细节、动作和临场发挥空间。
 
 输出要求：
 - 只输出章前小纲，不输出小说正文。
-- 使用清晰的 Markdown 文本，便于用户编辑。
-- 小纲节拍控制在 5-8 条，每条用一句话说明“发生什么”和“为什么推动故事”。
-- 不要输出 JSON，不要输出解释性废话。
-- 输出前先在心中自检并修正小纲，不要把自检过程写出来。`
+- 使用清晰 Markdown，便于用户编辑。
+- 小纲总长度控制在 700-1100 字，节拍控制在 4-6 条。
+- 不输出 JSON，不输出解释性废话。`
 }
 
 export function buildChapterBeatPrompt(context) {
-  const planningContext = buildChapterPrompt({ ...context, instruction: '' })
-    .replace(/## 写作任务[\s\S]*$/m, '')
-    .trim()
+  const parts = []
+  const bible = context.bible || {}
+  const premise = bible.premise || context.premise
+  const styleBible = bible.styleBible || context.styleBible
+  const styleStandardBrief = context.styleStandardBrief || bible.styleStandardBrief
+  const worldRules = bible.worldRules || context.worldRules
+  const forbiddenDirections = bible.forbiddenDirections || context.forbiddenDirections
 
-  return `${planningContext}
+  if (premise) parts.push(`## 作品定位\n${premise}`)
+  if (styleBible || styleStandardBrief) {
+    parts.push(`## 写作气质参考\n${[styleBible, styleStandardBrief].filter(hasText).join('\n\n')}`)
+  }
+  if (worldRules) parts.push(`## 世界规则（硬边界）\n${worldRules}`)
+  if (context.settingLibrary) parts.push(`## 设定库摘要（硬边界）\n${context.settingLibrary}`)
+  if (context.stateLedger) parts.push(`## 章节状态账本（硬边界）\n${context.stateLedger}`)
+
+  if (context.previousChapterEnding) {
+    parts.push(`## 上一章结尾（本章开场要承接）\n${context.previousChapterEnding}`)
+  }
+
+  const chapterGoal = formatChapterGoal(context.chapterGoal)
+  if (chapterGoal) parts.push(`## 本章目标\n${chapterGoal}`)
+
+  const nearOutline = formatNearOutline(context.nearOutline)
+  if (nearOutline) parts.push(`## 近景滚动规划（参考，不要逐条照抄）\n${nearOutline}`)
+
+  const volumeStage = formatVolumeStage(context.volumeStage)
+  if (volumeStage) parts.push(`## 分卷阶段上下文\n${volumeStage}`)
+
+  if (context.recentSummaries?.length) {
+    parts.push(`## 前情摘要\n${context.recentSummaries.map(s => `- 第${s.chapterNum}章：${s.summary}`).join('\n')}`)
+  }
+
+  if (context.recentFacts) parts.push(`## 已确认事实\n${context.recentFacts}`)
+  if (context.activeCorrectionTasks) parts.push(`## 未完成纠偏提醒（只处理会影响本章的硬问题）\n${context.activeCorrectionTasks}`)
+  if (forbiddenDirections?.length) parts.push(`## 禁止方向\n${formatList(forbiddenDirections)}`)
+
+  return `${parts.join('\n\n')}
 
 ## 规划任务
 请为第 ${context.chapterNum || '?'} 章生成“正式写作前确认的小纲”。
 
-${context.wordTarget?.target ? `本章按约 ${context.wordTarget.target} 字体量设计，优先服务 ${context.wordTarget.min}-${context.wordTarget.max} 字正文。小纲节拍应控制在一章可完成的范围内，不要规划成两章内容；如果剧情自然超量，应减少支线节拍，把后续冲突或余波留到下一章。` : ''}
+${context.wordTarget?.target ? `本章按约 ${context.wordTarget.target} 字体量设计，优先服务 ${context.wordTarget.min}-${context.wordTarget.max} 字正文；不要规划成两章内容，把后续冲突或余波留到下一章。` : ''}
 
 请按以下格式输出：
 
-### 本章核心目的
-- 用一句话说明本章必须完成的剧情推进。
+### 本章一句话目标
+- 本章要让读者看到什么变化：
 
-### 人物动机层
-- 本章关键人物想得到什么：
-- 本章关键人物害怕失去什么：
-- 他为什么不能直接说出口：
-- 本章选择需要付出的代价：
-- 本章结束后的情绪残留：
+### 必须承接
+- 上一章留下的动作、情绪、危险、物件或关系：
+- 本章不能写错的硬状态：
 
 ### 本章节拍
 1. [开场牵引] ...
 2. [目标浮现] ...
 3. [冲突升级] ...
-4. [信息释放] ...
-5. [人物选择] ...
-6. [转折/代价] ...
-7. [结尾钩子] ...
+4. [信息释放或误判解除] ...
+5. [人物选择/转折代价] ...
+6. [可选：余波或钩子] ...
 
-### 写作约束
-- 需要遵守的角色、设定、伏笔或禁忌。
+### 暂不解决
+- 本章只露出、不解释透的秘密或矛盾：
 
 ### 可发散空间
 - 正文生成时可以自由发挥的细节、场景、对白或意外。
 
+### 结尾钩子
+- 结尾形态：动作未完成 / 关系变化 / 物件状态改变 / 误判代价 / 下一章问题（任选其一，不要抽象总结）
+- 本章结尾落点：
+- 留给下一章的具体动作、关系变化、物件状态或问题：
+
 要求：
-- 节拍必须按自然时间顺序排列。
-- 第一条必须是正文第一幕，不要从后续会议、事后追查、伤亡结果或已经发生后的复盘开始。
+- 节拍按自然时间和因果顺序排列。
+- 第一条是正文第一幕，不要从后续会议、事后追查、伤亡结果或已经发生后的复盘开始。
 - 如果这是第 1 章，第一条必须来自开局锚点、创作种子或主角初始处境。
 - 每个节拍都要能转化为正文场景，不要写抽象口号。
-- 每个关键节拍至少说明一个“人物为什么这样做”的动机，不要只写事件发生。
+- 每个关键节拍写清“发生什么”和“为什么推动故事”。
+- 小纲只锁定关键路线，不规定具体句子和全部动作。
+- 小纲总长度控制在 700-1100 字。
+- 节拍控制在 4-6 条。
+- 本章结尾应是自然小钩子，可以留下动作、关系、物件或问题，不要写成抽象总结。
 - 不要把结尾反转放到开头。
 - 除非用户明确要求，不要把倒叙、插叙或闪回作为第一幕。
-- 不要写小说正文。
-
-## 小纲输出前静默自检
-请在最终输出小纲前，先在心中检查并自行修正以下问题，但不要输出检查过程：
-- 第一条是否自然承接上一章结尾、开局锚点或主角当前处境。
-- 节拍是否按自然时间和因果顺序推进，没有把结论、余波、任务奖励或后续复盘提前。
-- 是否无解释违背创作圣经、设定库、角色状态、已确认事实或未完成纠偏任务。
-- 人物行动是否符合当前欲望、关系和心理状态。
-- 是否明确了关键人物的欲望、恐惧、不能直说的原因、选择代价和情绪残留。
-- 是否完成本章核心目的，同时给正文生成保留对白、场景细节和合理意外的发挥空间。
-- 如果涉及隐藏真相或反转，是否能以角色认知有限、伏笔回收或误导解除自然成立。`
+- 不要写小说正文。`
 }
 
 /**
@@ -605,6 +718,7 @@ export function buildContinuePrompt(currentContent, instruction, context = {}) {
   const volumeStage = formatVolumeStage(context.volumeStage)
   const constraints = [
     context.styleBible ? `风格要求：${context.styleBible}` : '',
+    context.styleStandardBrief ? `题材/风格标准：\n${context.styleStandardBrief}` : '',
     context.settingLibrary ? `设定库：\n${context.settingLibrary}` : '',
     context.recentSettingChanges ? `最近设定变化：\n${context.recentSettingChanges}` : '',
     context.activeCorrectionTasks ? `未完成纠偏任务：\n${context.activeCorrectionTasks}` : '',
@@ -678,6 +792,7 @@ export function buildExpandPrompt(selectedText, context = {}) {
 
 ${volumeStage ? `## 分卷阶段上下文\n${volumeStage}\n` : ''}
 ${context.styleBible ? `## 风格要求\n${context.styleBible}\n` : ''}
+${context.styleStandardBrief ? `## 题材/风格标准\n${context.styleStandardBrief}\n` : ''}
 
 ---
 ${selectedText}

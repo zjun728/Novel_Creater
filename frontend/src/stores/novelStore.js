@@ -15,6 +15,12 @@ import {
   buildGlobalAuditSystemPrompt,
   buildGlobalAuditPrompt
 } from '@/prompts/globalAudit'
+import {
+  buildOutlinePrompt,
+  buildOutlineRepairPrompt,
+  buildRollingPlanReroutePrompt,
+  buildOutlineSystemPrompt
+} from '@/prompts/outline'
 import { useProviderStore } from './providerStore'
 import { useProjectStore } from './projectStore'
 
@@ -53,6 +59,35 @@ function parseGlobalAuditJson(text) {
   }
 }
 
+function normalizeOutlinePayload(data = {}) {
+  const farVision = data.farVision && typeof data.farVision === 'object'
+    ? data.farVision
+    : {}
+  const currentVolume = data.currentVolume && typeof data.currentVolume === 'object'
+    ? data.currentVolume
+    : {}
+  const nearChapters = Array.isArray(data.nearChapters)
+    ? data.nearChapters
+        .filter(item => item && typeof item === 'object')
+        .slice(0, 5)
+        .map(item => ({
+          chapterNum: Number(item.chapterNum || 0),
+          title: item.title || '',
+          goal: item.goal || '',
+          conflict: item.conflict || '',
+          turn: item.turn || '',
+          emotionalBeat: item.emotionalBeat || '',
+          requiredFacts: Array.isArray(item.requiredFacts) ? item.requiredFacts.filter(Boolean) : [],
+          doNotResolveYet: Array.isArray(item.doNotResolveYet) ? item.doNotResolveYet.filter(Boolean) : [],
+          optionalSurprises: Array.isArray(item.optionalSurprises) ? item.optionalSurprises.filter(Boolean) : [],
+          handoff: item.handoff || ''
+        }))
+        .filter(item => item.chapterNum > 0 || item.goal || item.title)
+    : []
+
+  return { farVision, currentVolume, nearChapters }
+}
+
 export const useNovelStore = defineStore('novel', () => {
   const bible = ref(null)
   const outline = ref(null)
@@ -64,6 +99,7 @@ export const useNovelStore = defineStore('novel', () => {
   const globalAuditing = ref(false)
   const loading = ref(false)
   const generatingBible = ref(false)
+  const outlineGenerating = ref(false)
 
   // === 创作圣经 ===
   async function loadBible(projectId) {
@@ -286,7 +322,7 @@ export const useNovelStore = defineStore('novel', () => {
   async function saveOutline(projectId, data) {
     loading.value = true
     try {
-      const result = await api.outline.save(projectId, data)
+      const result = await api.outline.save(projectId, normalizeOutlinePayload(data))
       outline.value = result
       return result
     } catch (e) {
@@ -294,6 +330,116 @@ export const useNovelStore = defineStore('novel', () => {
       throw e
     } finally {
       loading.value = false
+    }
+  }
+
+  async function generateOutline(projectId, context = {}) {
+    if (!projectId) throw new Error('项目不存在')
+    outlineGenerating.value = true
+    try {
+      const providerStore = useProviderStore()
+      await providerStore.ensureProvidersLoaded()
+      const bindings = await providerStore.getBindings(projectId)
+      const modelId = bindings?.outlineModelId || bindings?.summaryModelId || bindings?.writingModelId
+      const provider = modelId
+        ? providerStore.providers.find(p => p.id === modelId)
+        : providerStore.providers[0]
+
+      if (!provider) throw new Error('请先在设置中配置模型')
+
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: buildOutlineSystemPrompt() },
+        { role: 'user', content: buildOutlinePrompt(context) }
+      ], jsonOptions(provider, {
+        maxTokens: 4096,
+        temperature: 0.35
+      }))
+
+      const text = getCompletionText(result)
+      let data = parseGlobalAuditJson(text)
+      let repairText = ''
+
+      if (!data && text.trim()) {
+        const repairResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildOutlineRepairPrompt(text)
+          }
+        ], jsonOptions(provider, {
+          maxTokens: 4096,
+          temperature: 0
+        }))
+        repairText = getCompletionText(repairResult)
+        data = parseGlobalAuditJson(repairText)
+      }
+
+      if (!data) {
+        const raw = snippet(repairText) || snippet(text)
+        throw new Error(`AI 没有返回可解析的滚动规划 JSON${raw ? `。返回片段：${raw}` : ''}`)
+      }
+
+      return await saveOutline(projectId, normalizeOutlinePayload(data))
+    } finally {
+      outlineGenerating.value = false
+    }
+  }
+
+  async function rerouteOutlineAfterFinalization(projectId, context = {}) {
+    if (!projectId) throw new Error('项目不存在')
+    outlineGenerating.value = true
+    try {
+      const providerStore = useProviderStore()
+      await providerStore.ensureProvidersLoaded()
+      const bindings = await providerStore.getBindings(projectId)
+      const modelId = bindings?.outlineModelId || bindings?.summaryModelId || bindings?.writingModelId
+      const provider = modelId
+        ? providerStore.providers.find(p => p.id === modelId)
+        : providerStore.providers[0]
+
+      if (!provider) throw new Error('请先在设置中配置模型')
+
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: buildOutlineSystemPrompt() },
+        { role: 'user', content: buildRollingPlanReroutePrompt(context) }
+      ], jsonOptions(provider, {
+        maxTokens: 4096,
+        temperature: 0.3
+      }))
+
+      const text = getCompletionText(result)
+      let data = parseGlobalAuditJson(text)
+      let repairText = ''
+
+      if (!data && text.trim()) {
+        const repairResult = await chatCompletion(provider, [
+          {
+            role: 'system',
+            content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
+          },
+          {
+            role: 'user',
+            content: buildOutlineRepairPrompt(text)
+          }
+        ], jsonOptions(provider, {
+          maxTokens: 4096,
+          temperature: 0
+        }))
+        repairText = getCompletionText(repairResult)
+        data = parseGlobalAuditJson(repairText)
+      }
+
+      if (!data) {
+        const raw = snippet(repairText) || snippet(text)
+        throw new Error(`AI 没有返回可解析的定稿后滚动规划 JSON${raw ? `。返回片段：${raw}` : ''}`)
+      }
+
+      return await saveOutline(projectId, normalizeOutlinePayload(data))
+    } finally {
+      outlineGenerating.value = false
     }
   }
 
@@ -492,6 +638,7 @@ export const useNovelStore = defineStore('novel', () => {
     globalAuditReports,
     loading,
     generatingBible,
+    outlineGenerating,
     globalAuditing,
     loadBible,
     saveBible,
@@ -502,6 +649,8 @@ export const useNovelStore = defineStore('novel', () => {
     deleteGlobalAudit,
     loadOutline,
     saveOutline,
+    generateOutline,
+    rerouteOutlineAfterFinalization,
     loadCharacters,
     saveCharacter,
     deleteCharacter,

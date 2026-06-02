@@ -70,6 +70,68 @@
 - 重型爬虫、平台正文抓取、向量检索、复杂富文本编辑器暂不进入当前开发。
 - 新增功能必须服务当前长篇创作主流程，避免偏离“实用创作平台”目标。
 
+## 2026-06-02 - 长篇稳定性闭环增强
+
+### 背景
+- 外部评审建议将“设定库”和“状态账本/事实记忆”进一步分层，并为百万字长篇补上线索链检索、定稿后近景规划重路由、时空/视角硬约束和局部修订接缝管理。
+- 产品决策：不做旧版本兼容包袱，优先服务未来真实长篇写作质量和稳定性。
+
+### 本次完成
+- Canon 事实提取提示词新增 `threadTags`，要求为事实打上 `#主线推进`、`#主角身世线`、`#女主秘密线`、`#反派阴谋线`、`#关键道具线`、`#功法代价线`、`#势力斗争线`、`#感情关系线` 等线索标签。
+- 记忆归一化逻辑支持把 `threadTags`、`plotThreads`、`tags` 统一归并到 `relatedPlotThreads`，便于后续上下文按线索链检索。
+- 写作上下文新增“相关线索链事实”模块：根据当前章小纲、近景规划、当前卷目标和纠偏任务筛选历史 Canon 事实，避免只看最近章节导致早期伏笔遗忘。
+- 章节状态账本扩展时间、地点、视角、可知范围和分线约束，生成前明确提醒同一章必须尊重当前时间、地点、视角可见范围和人物/物品硬状态。
+- 本章审稿局部修订提示词新增前后滑窗和接缝要求，要求输出 `contextBefore` / `contextAfter`，避免只替换半句导致缝合感。
+- 小纲模块新增“定稿后近景滚动规划重路由”提示词；每章定稿后会基于真实正文、摘要、事实、待确认设定、当前卷和旧近景规划，校验并微调未来 3-5 章。
+- 写字台定稿后处理链路接入近景规划重路由；失败不阻断定稿，但会提示用户可手动重新规划。
+
+### 修改文件
+- `frontend/src/prompts/extraction.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/utils/chapterStateLedger.js`
+- `frontend/src/prompts/correctionPatch.js`
+- `frontend/src/utils/localRevisionPatch.js`
+- `frontend/src/prompts/outline.js`
+- `frontend/src/stores/novelStore.js`
+- `frontend/src/views/WriterView.vue`
+- `tmp/test_longform_stability_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp\test_longform_stability_contract.mjs` 通过。
+- `npm --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
+## 2026-05-31 - AI 痕迹专项护栏与最近结尾上下文
+
+### 背景
+- 40 章长篇测试稿外部审核认为：设定一致性较好，但存在明显 AI 生成痕迹，包括章节结尾模板化、情绪变化像开关、环境意象套话、对话功能化和配角工具人化。
+
+### 本次完成
+- 正文生成上下文新增最近 3-5 章结尾片段，生成提示词要求避免复用抬头、转身、闭眼、握拳、走进黑暗、状态总结、内心独白收束等模板。
+- 正文生成提示词新增“人性变化不能写成开关”“配角自主性”“信息揭示方式”三类质量护栏。
+- 小纲提示词新增“人性渐变与配角自主”“信息揭示方式”“结尾形态”字段，把容易 AI 化的问题前置到章前设计。
+- 本章审稿新增 AI 痕迹专项检查：章节结尾模板化、表层情绪、工具人、信息倾倒、套话意象。
+- 审稿问题类型白名单和 UI 中文标签同步补齐，避免新增类型被归并成普通质量问题。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/audit.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/utils/auditLabels.js`
+- `frontend/src/views/WriterView.vue`
+- `tmp/test_humanized_generation_prompt_contract.mjs`
+- `tmp/test_audit_ai_trace_contract.mjs`
+- `tmp/test_recent_chapter_endings_context_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- 已新增合同测试并完成红绿验证。
+- `Get-ChildItem tmp -Filter "test_*contract*.mjs"` 全量合同测试通过。
+- `npm --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
 ## 2026-05-24 - 本章审稿逐条修订面板
 
 ### 问题
@@ -3404,3 +3466,776 @@
 
 ### 下一步
 - 继续从真实流程测试项目续跑下一批章节时，每 20 章查看多章验收报告，重点判断上下章衔接、设定库同步、记忆事实覆盖和章节字数是否稳定。
+
+## 2026-05-29 - 真实流程 QA 31-40 章续跑与报告修正
+
+### 本次完成
+- 继续使用项目 `真实流程测试200万_20260528063230` 进行 200 万字规模真实流程测试，续跑第 31-40 章。
+- 每章按真实链路执行：生成小纲、生成正文、章节审稿、基于审稿局部修订、定稿、提取记忆事实、提取并模拟人工确认设定变更。
+- 修复续跑旧报告兼容问题：旧版报告缺少 `finalChapterWordCounts` 时会覆盖新字段默认值，导致续跑在记录定稿字数时异常；现在会先规范化旧报告结构。
+- 修复长文本坏 JSON 候选扫描可能卡住的问题：限制扫描长度、候选数量和单次解析耗时，避免模型返回截断 JSON 时导致 QA 进程长时间无响应。
+- 续跑过程中增加每章进度快照：每章定稿并完成记忆/设定提取后立即写入 `latest-realistic-report.json/md`，避免长流程中途异常时丢失阶段结果。
+- 修正报告统计口径：断点续跑时“已定稿章节”改为按项目章节表实时同步，不再只显示本次累计计数。
+
+### 31-40 章验收结果
+- 真实流程报告：`tmp/realistic-flow-qa/latest-realistic-report.json`、`tmp/realistic-flow-qa/latest-realistic-report.md`。
+- 项目地址：`http://127.0.0.1:5173/project/01abd042-0f56-4741-a4f4-be8fde0a7958`。
+- 当前项目已定稿到第 40 章，章节骨架 400 章，已确认设定 121 条，Canon 记忆事实 105 条，纠偏任务 152 条。
+- 第 21-40 章多章一致性验收通过：未发现阻塞继续生成的人物设定漂移、情节矛盾、时间线错乱、世界规则冲突、伏笔丢失、风格漂移或上下章断层。
+- 待确认设定变更为 0，说明“定稿 -> 提取记忆/设定 -> 人工确认 -> 下一章上下文”链路在本轮测试中能闭环。
+- 字数控制仍不稳定：第 21、22、24、28、29、30、31、33、36、37 章超出 4000-6000 字硬范围。提示词约束和小纲约束不足以稳定控制 5000 字章幅。
+- 审稿局部修订保护有效但需优化：多章出现修订候选大幅压缩正文并被回退，说明后续应改为更严格的“定位片段级补丁”，而不是允许模型重写过大正文块。
+
+### 修改文件
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_realistic_longform_acceptance_contract.mjs`
+- `tmp/realistic-flow-qa/latest-realistic-report.json`
+- `tmp/realistic-flow-qa/latest-realistic-report.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node --check tmp\run_realistic_longform_flow.mjs` 通过。
+- `node tmp\test_realistic_longform_acceptance_contract.mjs` 通过。
+- `Get-ChildItem tmp -Filter "test_*contract*.mjs" | ForEach-Object { node $_.FullName }` 全部通过。
+
+### 下一步
+- 优先优化章节字数稳定性：建议改为按节拍分段生成并累计字数，而不是单次生成整章后再依赖提示词限制。
+- 优先优化审稿局部修订：把审稿问题转换为可定位的片段补丁，限制每次只替换原文片段附近的内容，避免“修订候选”整体压缩章节。
+- 在继续 41-60 章之前，建议先处理字数和局部修订两个问题，否则长篇规模越大，章幅波动和修订回退会持续积累。
+
+## 2026-05-29 10:42 - 字数源头约束与审稿局部修订收窄
+
+### 本次完成
+- 强化章节正文提示词：正文以目标上下 10% 为主要体量，硬边界作为拆章线，而不是强行截断线。
+- 强化章前小纲提示词：小纲必须按单章体量设计，不得把两个大场景塞入同一章，超量内容留到下一章。
+- 审稿局部修订取消整章兜底重写：没有可安全应用补丁时直接提示用户定位原文/替换或手动选区改写。
+- 局部补丁增加范围保护：拒绝过宽、过度压缩、过度扩写的替换，避免候选版本把章节压成摘要或写成另一章。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/utils/localRevisionPatch.js`
+- `frontend/src/stores/writerStore.js`
+- `tmp/test_chapter_word_prompt_guard.mjs`
+- `tmp/test_local_revision_patch.mjs`
+- `tmp/test_audit_revision_fallback_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- 已按 TDD 先观察新增用例失败，再实现修复并跑通新增用例。
+- 关键验证：`test_chapter_word_prompt_guard`、`test_local_revision_patch`、`test_audit_revision_fallback_contract` 已转绿。
+
+### 当前决策
+- 字数控制优先从小纲和正文生成源头约束，不强行在生成后截断或自动压缩。
+- 本章审稿修订以局部补丁为主，补丁不可安全定位时宁可失败并提示人工操作，也不自动整章重写。
+
+### 未完成 / 阻塞
+- 需要继续运行全量合约测试与生产构建确认没有回归。
+- 需要继续真实长篇 QA 的 41-60 章验证，观察字数越界是否下降。
+
+### 下一步
+- 跑全量合约测试与构建。
+- 如验证通过，继续真实流程 QA 第 41-60 章，并重点记录字数、上下章衔接、设定同步和局部审稿修订表现。
+
+## 2026-05-29 11:55 - 真实流程 QA 字数门禁阻断
+
+### 本次完成
+- 继续真实流程 QA 项目 `真实流程测试200万_20260528063230`，使用当前配置模型 `联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash` 续跑第 41 章以后。
+- 第 41-43 章字数控制正常，定稿字数分别为 4501、4897、5076 字。
+- 第 44 章生成 2877 字，第 45 章生成 13466 字，说明单靠提示词源头约束仍不足以稳定百万级章节体量。
+- 暂停后台 QA 进程，避免继续消耗模型额度。
+- 为真实流程 QA 脚本增加硬性字数门禁：初稿保存为候选后，如果低于或高于硬范围，立即停止自动审稿、局部修订、定稿和记忆/设定提取。
+- 定稿函数也增加同样门禁，防止其他路径绕过字数检查直接写入正式定稿。
+- 断点续写前增加已定稿章节字数巡检；如果当前测试项目已经存在硬性越界定稿章节，会先停止续写，避免后续章节继续继承异常上下文。
+
+### 修改文件
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_realistic_qa_word_gate_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node --check tmp\run_realistic_longform_flow.mjs` 通过。
+- `node tmp\test_realistic_qa_word_gate_contract.mjs` 通过。
+- `Get-ChildItem tmp -Filter "test_*contract*.mjs" | ForEach-Object { node $_.FullName }` 全部通过。
+- `npm --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+- 使用同一测试项目尝试续跑到第 60 章时，脚本在模型生成前拦截：检测到第 3、7、8、10、11、12、15、16、17、18、21、22、24、28、29、30、31、33、36、37、44、45 章已定稿字数超出 4000-6000 硬范围，未继续消耗正文生成 token。
+
+### 当前决策
+- 字数越界章节不能进入自动定稿链路；此时应停在候选阶段，由用户选择重新生成、拆章、扩写或手动处理。
+- 仍不做自动硬压缩或强行截断，因为这会牺牲章节细节和自然收尾。
+
+### 未完成 / 阻塞
+- 第 44、45 章已经在测试项目中定稿为异常字数，保留作为 QA 暴露问题的数据；后续继续测试时应从修复后的新章节或清理测试项目后重新开始。
+- 当前测试项目早期章节也存在多处硬性字数越界；若要继续做 20 章一批的干净长篇验收，建议新建测试项目重新跑，或先手动清理异常测试章节。
+
+### 下一步
+- 下一轮建议新建测试项目重新跑一批 20 章，验证新增门禁能否在第一处异常章停止，并观察源头提示词对 5000 字目标的改善幅度。
+
+## 2026-05-29 12:30 - 四层滚动规划基础版
+
+### 本次完成
+- 将滚动规划从原“三层大纲”调整为四层结构：当前章小纲、近景滚动规划、当前卷规划、远景粗纲 / 长线蓝图。
+- 新增分卷规划页“规划蓝图”面板，支持展示和手动编辑长线蓝图、当前卷规划、未来 3-5 章近景规划。
+- 新增 AI 更新滚动规划入口，生成结果保存到 `rolling_outlines`，并刷新项目更新时间。
+- 写作上下文仍只注入 `nearOutline` 和 `currentVolume`；长线蓝图不进入每章正文生成，避免过度格式化和远景信息压垮单章创作。
+
+### 修改文件
+- `backend/database.py`
+- `backend/routers/novel.py`
+- `frontend/src/prompts/outline.js`
+- `frontend/src/stores/novelStore.js`
+- `frontend/src/views/ProjectView.vue`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/components/chapter/RollingPlanningPanel.vue`
+- `tmp/test_rolling_planning_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node tmp\test_rolling_planning_contract.mjs` 通过。
+- `node --check frontend\src\prompts\outline.js` 通过。
+- `node --check frontend\src\stores\novelStore.js` 通过。
+- `Get-ChildItem tmp -Filter "test_*contract*.mjs" | ForEach-Object { node $_.FullName }` 全部通过。
+- `npm --prefix frontend run build` 通过；仍保留 Vite 既有动态导入提示。
+
+### 下一步
+- 在真实浏览器中手工确认“AI 更新规划 / 编辑规划 / 保存规划”交互和展示文案。
+
+## 2026-05-29 09:20 - 干净项目 20 章真实流程 QA 与滚动规划进度锁
+
+### 本次完成
+- 新建干净测试项目 `真实流程测试200万_20260529053747`，项目 ID：`167da423-1c06-4ab2-a8d2-4008d0b7c2c7`。
+- 使用当前配置模型 `联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash` 按真实使用链路跑完第 1-20 章：热点抓取、方向建议、AI 选题、种子、圣经、设定初始化、分卷与章节骨架、逐章小纲、正文候选、审稿、局部修订、定稿、记忆事实提取、设定变更提取与确认、多章一致性验收。
+- 调整字数策略：真实长篇 QA 的硬边界改为目标字数上下浮动 30%，小纲压缩到单章体量，正文生成与多候选生成降低输出 token 上限，避免 8000-14000 字级别异常章节直接进入定稿链路。
+- 增加章节摘要失败兜底：摘要模型超时或解析异常时，使用本地首尾摘要兜底，避免长流程因摘要单点失败中断。
+- 验证新增四层滚动规划：真实调用模型生成并保存 `rolling_outlines`，确认长线蓝图、当前卷规划和未来 3-5 章近景规划能读写。
+- 修复滚动规划进度锁：`currentChapterNum` 明确为当前待写章节；近景规划必须从当前待写章节递增；禁止回退已写章节，禁止重新规划已经发生过的“首次”事件。
+- 修复滚动规划运行验收脚本的定稿识别：章节 API 以 `finalVersionId` / `final_version_id` / `status='final'` 表示定稿，不能用不存在的 `status='finalized'`，否则会把第 21 章误判为第 1 章。
+
+### 20 章 QA 结果
+- 项目地址：`http://127.0.0.1:5173/project/167da423-1c06-4ab2-a8d2-4008d0b7c2c7`。
+- 报告文件：`tmp/realistic-flow-qa/latest-realistic-report.json`、`tmp/realistic-flow-qa/latest-realistic-report.md`。
+- 已生成：热点数据 102 条、方向建议 4 条、创作种子 1 条、初始化设定 12 条、章节骨架 400 章、定稿章节 20 章、Canon 事实 68 条、章节设定变更 71 条、纠偏任务 88 条。
+- 待确认设定变更为 0，说明“定稿 -> 提取记忆/设定 -> 确认 -> 下一章上下文”的链路在本轮能闭环。
+- 第 1-20 章最终字数均在 3500-6500 硬边界内；无字数硬性越界定稿。
+- 浏览器基础验收通过：项目页可打开，DOM 能正常渲染，基础内存占用未出现异常。
+
+### 暴露问题
+- 多章一致性验收未完全通过：模型认为可继续，但发现 5 个问题，其中 2 个属于主要问题。
+- 主要问题 1：林尘的情感恢复/丧失状态前后表达不稳定，第 17 章出现“希望/温暖”，第 18-20 章又写成情感完全消失，需要区分“短暂回响”与“真实恢复”。
+- 主要问题 2：林尘左臂状态承接不够严谨，第 16-18 章已明确失去左臂，但后续动作描写没有持续体现单臂状态。
+- 次要问题包括胸口疤痕功能缺少过渡、苏晚角色定位偏工具人、代价之环规则需要区分“加点失去”和“封印阵剥离”。
+- 结论：接口和写作链路已经能跑通 20 章，但百万字稳定性还需要继续强化硬状态承接、软状态解释和近景规划进度锁。
+
+### 滚动规划复测
+- 第一次滚动规划真实生成能保存读回，但因运行脚本未正确识别已定稿章节，模型从第 1 章重新规划，暴露“进度锁不足 + 验收脚本状态字段错误”。
+- 修复后复测通过：近景规划从第 21 章开始，承接第 20 章的矿洞、红眼怪物、苏晚对林尘的判断等状态，不再回到“首次获得系统/首次加点”。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/outline.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/utils/chapterWordTarget.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/run_rolling_planning_runtime_check.mjs`
+- `tmp/test_chapter_beat_compaction_contract.mjs`
+- `tmp/test_chapter_generation_token_guard.mjs`
+- `tmp/test_realistic_qa_near_word_range_continue_contract.mjs`
+- `tmp/test_realistic_qa_summary_fallback_contract.mjs`
+- `tmp/test_rolling_planning_progress_lock_contract.mjs`
+- `tmp/test_rolling_planning_runtime_progress_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node tmp\test_rolling_planning_progress_lock_contract.mjs` 通过。
+- `node tmp\test_rolling_planning_runtime_progress_contract.mjs` 通过。
+- `node tmp\test_rolling_planning_contract.mjs` 通过。
+- `node --check frontend\src\prompts\outline.js` 通过。
+- `node --check tmp\run_rolling_planning_runtime_check.mjs` 通过。
+- `ROLLING_PLAN_PROJECT_ID=167da423-1c06-4ab2-a8d2-4008d0b7c2c7 node tmp\run_rolling_planning_runtime_check.mjs` 通过，保存并读回第 21-25 章近景规划。
+
+### 下一步
+- 暂停在 20 章检查点，等待用户确认是否继续第 21-40 章。
+- 若继续，下一批重点观察：第 21-25 章是否遵循最新近景规划；林尘左臂硬状态是否持续承接；情感短暂回响与真实恢复是否区分；苏晚是否从工具人转为有主动选择的人物。
+
+## 2026-05-29 17:05 - 第 21-40 章真实流程 QA 检查点
+
+### 本次完成
+- 继续测试项目 `真实流程测试200万_20260529053747`，项目 ID：`167da423-1c06-4ab2-a8d2-4008d0b7c2c7`，从第 21-40 章完成第二批真实长篇写作链路验收。
+- 修复真实流程 QA 脚本中的压缩候选选择问题：压缩进入可接受范围后立即停止循环；若压缩过短或过长，优先从已保存候选中选择最接近目标且不严重越界的完整版本。
+- 增加“质量保留容忍区”：单章略超 30% 时先警告并保留完整叙事，严重超量才阻断，避免为了字数把章节压成残稿。
+- 第 38-40 章最终完成定稿，字数分别为 5966、5123、6352 字；浏览器基础 UI 验收通过，项目详情页、写字台入口、审稿入口和返回项目详情入口均可见。
+
+### 修改文件
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_realistic_qa_compression_selection_contract.mjs`
+- `tmp/test_realistic_qa_compression_retry_contract.mjs`
+- `tmp/test_realistic_qa_word_quality_grace_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 验证结果
+- `node tmp\test_realistic_qa_chat_retry_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_audit_ultra_retry_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_beat_compact_floor_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_overexpanded_retry_compress_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_compression_retry_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_compression_selection_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_long_draft_compression_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_short_draft_retry_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_word_gate_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_word_quality_grace_contract.mjs` 通过。
+- `node tmp\test_realistic_qa_summary_fallback_contract.mjs` 通过。
+- `node --check tmp\run_realistic_longform_flow.mjs` 通过。
+- `RESUME_REALISTIC_QA_PROJECT_ID=167da423-1c06-4ab2-a8d2-4008d0b7c2c7 CONTINUE_REALISTIC_QA_TO_CHAPTER=40 node tmp\run_realistic_longform_flow.mjs` 完成到第 40 章，并生成报告 `tmp/realistic-flow-qa/latest-realistic-report.md`。
+
+### 当前决策
+- 本轮不建议继续第 41-60 章。多章一致性验收返回 `safeToContinue=false`，说明继续生成会放大已有设定偏差。
+- 字数控制现在能避免明显异常章节污染链路，但它不是核心瓶颈；真正的瓶颈是硬状态承接、代价规则、角色情感状态和关键物品状态。
+- 审稿后的整章修订仍不稳定，第 37、39、40 章都出现字数漂移过大的修订候选并被回退；后续应优先走审稿定位的局部替换候选，而不是整章重写。
+
+### 未完成 / 阻塞
+- 第 35 章事实记忆反复提取失败，导致多章验收提示 `missing=35`。这类后处理失败应阻断下一章生成，否则上下文缺口会持续放大。
+- 多章验收发现 8 个问题，其中 5 个硬问题：林尘情感状态反复、代价之环规则冲突、关键物品状态未继承、失去人性/苏晚追寻情节重复、代价机制与系统设定矛盾。
+- 第 21-40 章与设定库出现明显偏离，特别是林尘左臂缺失、容器/怪物身份、苏晚是否可成为代价承载者、身份牌使用后状态等没有稳定承接。
+
+### 下一步
+- 先修复“定稿后记忆事实提取失败必须阻断下一章”和“审稿后局部补丁替代整章修订”两类链路问题。
+- 基于多章验收报告创建或展示纠偏任务，先处理第 21-40 章的硬状态与世界规则偏差，再决定是否继续第 41-60 章。
+- 继续测试前建议保留当前项目作为问题样本；如果要验证修复后的干净效果，另建新项目从 1-20 章重新跑。
+## 2026-05-30  - 定稿后处理阻断与纠偏局部补丁修复
+
+### 本次完成
+- 修复定稿后处理失败仍可能继续生成后续章节的问题：章节定稿后的摘要、记忆事实、设定变更属于必需后处理；其中记忆事实提取为空也视为失败。
+- 写字台 AI 操作前会检查当前项目截至当前章的定稿后处理标记；若存在未完成或失败标记，会阻止小纲、正文、多候选、续写、扩写、选区改写等继续推进，避免下一章缺少最新记忆和设定。
+- 纠偏任务板的“生成章节修订候选 / 综合修订本章”改为调用局部补丁候选链路，只替换可安全定位的问题片段，不再调用整章重写修订。
+- 真实流程 QA 脚本同步调整：审稿后修订改为生成局部补丁并应用；定稿后事实记忆提取为空会中断后续章节生成。
+
+### 修改文件
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/components/correction/CorrectionTaskBoard.vue`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_finalization_generation_gate_contract.mjs`
+- `tmp/test_correction_task_local_patch_contract.mjs`
+- `tmp/test_realistic_qa_postprocess_gate_contract.mjs`
+- `tmp/test_realistic_qa_local_patch_revision_contract.mjs`
+- `tmp/test_chapter_beat_compaction_contract.mjs`
+- `tmp/test_realistic_qa_near_word_range_continue_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_finalization_generation_gate_contract.mjs`
+- `node tmp\test_correction_task_local_patch_contract.mjs`
+- `node tmp\test_realistic_qa_postprocess_gate_contract.mjs`
+- `node tmp\test_realistic_qa_local_patch_revision_contract.mjs`
+- `node --check tmp\run_realistic_longform_flow.mjs`
+- `node tmp\test_finalization_postprocess_contract.mjs`
+- `node tmp\test_writer_finalization_lock_contract.mjs`
+- `node tmp\test_audit_revision_fallback_contract.mjs`
+- `Get-ChildItem tmp -Filter "test_*contract*.mjs" | ForEach-Object { node $_.FullName; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }`
+- `node tmp\test_local_revision_patch.mjs`
+- `node --check frontend\src\stores\memoryStore.js`
+- `npm --prefix frontend run build`
+
+## 2026-05-31 - 写作风格与题材标准库 v1
+
+### 本次完成
+- 基于本地 `小说txt` 目录的题材分布、已有高质量样章经验和公开热门题材趋势，新增 `WRITING_STYLE_STANDARDS.md`。
+- 标准库第一版包含 14 套题材/风格标准：现实主义群像、历史正剧/庙堂、凡人流/慢热修仙、玄幻热血/史诗升级、仙侠宿命/情绪爆发、轻喜剧/反差网感、悬疑解谜/强钩子、知识体系/理性奇幻、民俗志怪/中式诡异、规则怪谈/无限流/生存博弈、都市异能/灵气复苏/幕后组织、女频成长/古言现言/逆袭、短剧爽文/强冲突反转、经营种田/美食生活/治愈。
+- 每套标准都沉淀为适用题材、读者期待、章节引擎、人物写法、信息释放、章节结尾、常见风险、简版提示词规则和审稿检查项。
+- 明确标准库边界：只抽象写作方法，不保存或复刻小说正文，不做仿写库，不把热门小说正文作为训练语料。
+- 同步更新 `PRODUCT_DEVELOPMENT_PLAN.md`，记录标准库的产品定位和后续接入方式。
+
+### 修改文件
+- `WRITING_STYLE_STANDARDS.md`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 第一阶段标准库先作为本地文档和人工参考，不直接接入生成链路，避免一次改动影响当前正文生成稳定性。
+- 后续可在项目配置中选择 1 套主写作标准和 0-1 套辅助风味，并在创作圣经、章节小纲、正文生成和本章审稿中注入简版规则。
+- 项目专属高质量样章应继续作为“风格基准卡”，与通用题材标准共同使用：通用标准管类型方法，样章基准管当前项目声音。
+
+### 下一步
+- 让用户审阅 14 套标准是否符合预期。
+- 确认后再开发标准库选择与提示词注入功能。
+
+## 2026-05-31 - 写作风格与题材标准库接入 v1.1
+
+### 本次完成
+- 新增前端标准库数据模块，沉淀 14 套题材/风格标准的简版规则和审稿重点。
+- 创作圣经编辑页新增“主写作标准”和“辅助风味”选择，标准配置保存到圣经一等字段 `writingProfile`。
+- 正文上下文构建器会把已选标准格式化为 `styleStandardBrief`，并注入小纲、正文、多候选、续写/扩写/选区改写和审稿提示词。
+- AI 上下文预览新增“题材/风格标准”模块，方便确认实际写作上下文是否读取标准库。
+- 后端创作圣经保存支持 `writingProfile` 以对象形式持久化，后续写作策略都围绕这个字段扩展。
+
+### 修改文件
+- `frontend/src/data/writingStyleStandards.js`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `frontend/src/components/writer/ContextPreviewModal.vue`
+- `frontend/src/prompts/bibleFromSeed.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/audit.js`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/views/WriterView.vue`
+- `backend/routers/novel.py`
+- `tmp/test_writing_style_standards_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_writing_style_standards_contract.mjs`
+- `npm --prefix frontend run build`
+- `python -m py_compile backend\routers\novel.py`
+
+### 当前决策
+- 标准库只作为写作方法约束，不做仿写、不保存小说正文、不要求模型模仿特定作者。
+- 当前版本只接入简版规则，避免把标准库变成过强模板；项目专属风格仍以风格试写/样章基准为主。
+
+### 下一步
+- 在真实写作测试中对比“有主写作标准/辅助风味”和“不选标准”的章节质量差异，重点观察章节结尾模板化、配角工具化、信息倾倒和题材承诺偏离是否下降。
+
+## 2026-05-31 - 写作策略字段重构 v1.2
+
+### 本次完成
+- 根据“平台尚未正式投入使用，不考虑旧版本兼容”的决策，将题材/风格标准从临时配置升级为创作圣经一等字段 `writingProfile`。
+- 产品概念从“主标准 / 副标准”调整为“主写作标准 / 辅助风味”：主写作标准决定核心章节引擎，辅助风味只补充局部气质，不允许推翻主标准。
+- 移除前端和后端写作链路对旧字段的读取，不再把标准选择藏在通用确认配置里。
+
+### 修改文件
+- `backend/schema.sql`
+- `backend/database.py`
+- `backend/routers/helpers.py`
+- `backend/routers/novel.py`
+- `frontend/src/data/writingStyleStandards.js`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `frontend/src/prompts/bibleFromSeed.js`
+- `frontend/src/utils/contextBuilder.js`
+- `tmp/test_writing_style_standards_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 不做旧测试项目兼容迁移；旧测试数据可以按需删除或重新生成。
+- 后续所有生成、审稿和上下文注入都以 `writingProfile.primaryStandard` 与 `writingProfile.secondaryFlavor` 为准。
+
+## 2026-05-31 - 写作标准接入后真实流程 QA 5 章验收
+
+### 本次完成
+- 清理旧自动化测试项目数据，避免历史测试项目干扰本轮验收。
+- 新建并保留验收项目 `WritingProfileQA200w_20260531113354`，项目 ID：`a7952220-e9d2-45a2-9eba-9b36c31184c0`，便于人工查看生成质量。
+- 使用当前配置模型 `联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash`，按 200 万字 / 400 章规模跑通真实流程前 5 章。
+- 主写作标准：`rational-fantasy`；辅助风味：`suspense-hook`。
+- 覆盖链路：热点抓取、方向建议、AI 选题、种子、圣经、设定初始化、分卷/章节骨架、逐章小纲、正文候选、审稿、局部修订、定稿、记忆事实、设定变更确认、多章一致性验收、浏览器基础 UI 验收。
+- 新增 `tmp/analyze_qa_project.mjs`，用于从 API 抽取定稿章节、设定事件、记忆事实、纠偏任务并输出二次质量分析。
+
+### 验收结果
+- 主报告：`tmp/realistic-flow-qa/latest-realistic-report.md`。
+- 二次分析：`tmp/realistic-flow-qa/standards-secondary-analysis.md`。
+- 主流程 75 项检查通过 72 项；浏览器控制台错误 0。
+- 生成热点 102 条、方向建议 4 条、种子 1 条、初始设定候选 12 条、章节骨架 8 卷 400 章、定稿 5 章。
+- API 二次分析显示：章节版本 13、Canon 事实 19、设定事件 31（accepted 30 / rejected 1）、设定实体 23、纠偏任务 18（pending 5 / ignored 13）。
+- 5 章字数分别为 3798、4704、4400、5140、3742；均在 3500-6500 硬范围内，但第 1、3、5 章低于 4500-5500 推荐区间。
+- 多章验收 `safeToContinue=true`，但发现 3 个问题，其中 1 个主要问题。
+
+### 暴露问题
+- 源头字数仍偏短：模型在部分章节会低于推荐区间，当前重试主要兜底硬下限，尚未对 4500 字软目标做更细的补足。
+- 章尾模板化仍存在：第 4-5 章结尾相似度较高，仍有“握紧 / 往前走 / 棋局运行 / 母亲还在下棋”等重复收束模式。
+- 去 AI 腔仍需继续前置：`不是X，是Y` 句式仍在多章中出现，尤其第 5 章较明显。
+- 第 4-5 章存在“母亲复活条件”矛盾：第 4 章暗示落子会让母亲永不复生，第 5 章又尝试借林墨棋力重写母亲死亡线，需要在设定层明确是不可逆代价、误判信息，还是后续软过渡伏笔。
+- 审稿局部修订 JSON 输出仍有脆弱点，自动 QA 中已加失败兜底，但产品侧仍需继续提升可用性。
+
+### 当前决策
+- 本轮只证明“写作标准 + 真实链路 + 后处理入库”可以跑通 5 章，不能证明 200 万字规模已经稳定。
+- 保留本次 QA 项目供人工阅读，不自动删除。
+- 下一步优先优化：软字数补足策略、章尾收束多样化、关键规则状态承接、局部修订 JSON 输出稳定性，再跑 10-20 章继续验证。
+## 2026-05-31 - 写作策略显性展示与章名质量修复
+
+### 问题
+- “主写作标准 / 辅助风味”虽然已经进入创作圣经、上下文和生成提示词，但前端展示不够显眼，用户在项目流程中容易误以为没有生效。
+- 定稿自动生成的章名可能直接截取正文片段，例如“林墨在棋院后山无人棋”，不像目录里的章节标题。
+- 写字台顶部、写字台左侧章节列表和项目详情章节列表对章名展示不充分，长章名容易被摘要或布局挤掉。
+
+### 本次完成
+- 创作圣经查看态新增固定“写作策略”区块，显示主写作标准、辅助风味和项目风格备注；未选择时给出显性提示。
+- 项目详情顶部同步显示当前写作策略标签，用户无需进入编辑态也能确认主写作标准和辅助风味是否已生效。
+- 章名生成提示词明确要求“章名不是剧情摘要，不要直接截取正文句子”，优先输出 2-10 个汉字的短章名。
+- 章名清洗新增流水句过滤：拒绝“主角名 + 在/被/把/进入/发现 + 动作地点”这类正文片段式标题；第一次失败后自动以更严格提示重试一次。
+- 写字台顶部改为保留“第 N 章 / 第 N 卷 / 已有小纲”等标签，并在下方单独展示《章名》。
+- 项目详情章节列表改为“章号 + 完整章名 + 摘要分行”布局，减少章名截断。
+
+### 修改文件
+- `frontend/src/components/bible/CreativeBible.vue`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/views/ProjectView.vue`
+- `tmp/test_chapter_title_generation.mjs`
+- `tmp/test_writing_style_standards_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `D:\Software\nodejs\node.exe tmp\test_chapter_title_generation.mjs` 通过。
+- `D:\Software\nodejs\node.exe tmp\test_writing_style_standards_contract.mjs` 通过。
+- `D:\Software\nodejs\node.exe tmp\test_chapter_display_title.mjs` 通过。
+- `npm --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
+## 2026-05-31 - 句式节奏护栏与纠偏任务降噪
+
+### 问题
+- 写作标准接入后，部分章节出现过度短句化和“一句一段”的分镜脚本感，虽然节奏强，但不像常规长篇小说自然段落。
+- 真实流程 QA 5 章产生 18 条纠偏任务，数量偏多；轻微风格建议如果全部进入写作上下文，会反向干扰后续章节生成。
+
+### 本次完成
+- 正文生成提示词新增句式节奏护栏：要求长中短句混合，普通叙事段落通常由 2-5 句组成，短句独段只用于局部危机、情绪断裂或章节钩子。
+- 小纲提示词新增句式节奏预设，要求小纲不要把整章设计成短句密集段，避免从源头诱导正文短句化。
+- 本章审稿提示词新增句式节奏检查：只有整章大量“一句一段”或连续短句独段影响阅读时，才作为 AI 痕迹或节奏问题提出。
+- 新增纠偏任务降噪工具：审稿问题转纠偏任务时按严重程度筛选、同类问题去重并限量。
+- 本章审稿最多转 3 条纠偏，分卷审稿最多转 5 条，全局审稿关键问题最多转 8 条，nextActions 最多转 3 条。
+- 写字台 AI 上下文只注入高优先级纠偏任务，优先当前章、阻断型、严重/主要问题；低优先级任务保留在任务板，不全文注入模型。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/audit.js`
+- `frontend/src/stores/correctionTaskStore.js`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/utils/correctionTaskDenoise.js`
+- `tmp/quality_guardrails_test.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp\quality_guardrails_test.mjs` 通过。
+
+### 当前决策
+- 句式节奏问题应优先从小纲和正文生成源头修正，不把“短句”本身当错误；只有整章短句化、段落过碎或明显 AI 分镜感才进入审稿问题。
+- 纠偏任务板只承载真正影响后续写作方向、一致性或阅读质量的问题；轻微建议留在审稿报告中，避免任务噪音过大。
+
+## 2026-06-01 - 句式节奏自动修订、章节状态账本与局部修订容错
+
+### 问题
+- 真实流程测试中，部分章节仍会出现连续短句独段和“一句一段”的分镜脚本感，需要在生成后自动发现并做轻量修订。
+- 长篇连载容易在人物伤势、物品归属、能力次数、境界、位置等硬状态上漂移，需要在每章上下文里加入更明确的状态账本。
+- 本章审稿后的局部修订有时因模型输出 JSON 尾逗号、截断或审稿 location 与正文标点不完全一致而失败。
+
+### 本次完成
+- 新增 `proseRhythmGuard`：检测短段落比例、连续短句独段、平均段落长度和高频 AI 腔反差句。
+- 正文生成链路接入生成后句式节奏检测；命中明显问题时自动调用“句式节奏修订”，只调整段落和句式，不新增剧情或设定。
+- 新增 `chapterStateLedger`：从已确认设定、已确认设定变更和 Canon 事实中提取硬状态，注入写作上下文。
+- 真实流程 QA 脚本同步接入状态账本和句式节奏修订，避免测试链路与产品链路脱节。
+- 局部修订补丁解析支持常见尾逗号、被截断但仍完整的单个补丁对象，以及标点差异唯一命中的安全替换。
+
+### 修改文件
+- `frontend/src/utils/proseRhythmGuard.js`
+- `frontend/src/utils/chapterStateLedger.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/utils/localRevisionPatch.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_prose_rhythm_guard.mjs`
+- `tmp/test_chapter_state_ledger.mjs`
+- `tmp/test_local_revision_patch.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_local_revision_patch.mjs`
+- `node tmp\test_prose_rhythm_guard.mjs`
+- `node tmp\test_chapter_state_ledger.mjs`
+- `node tmp\quality_guardrails_test.mjs`
+- `node tmp\test_human_motivation_prompts.mjs`
+- `node tmp\test_realistic_qa_local_patch_revision_contract.mjs`
+- `node tmp\test_realistic_longform_acceptance_contract.mjs`
+- `node tmp\test_recent_chapter_endings_context_contract.mjs`
+- `node tmp\test_chapter_word_prompt_guard.mjs`
+
+### 当前决策
+- 节奏修订只作为“生成后轻量整理”，不替代审稿，也不改变剧情事实。
+- 状态账本只采纳已确认或已定稿事实，不吸收待确认候选和审稿建议。
+- 局部修订继续坚持安全替换优先：无法唯一定位时宁可失败，不做语义猜测式替换。
+
+## 2026-06-01 - 硬状态提取补强
+
+### 问题
+- 3 章真实流程复测中，句式节奏修订已经生效，但多章验收仍发现交易次数、剩余寿命、冷却时间、物品价值和时间流速等硬状态没有稳定进入后续上下文。
+- 原因不是状态账本完全不可用，而是定稿后的 Canon 事实和设定变更提取提示词过于泛化，模型容易只提取剧情摘要，漏掉数值和规则状态。
+
+### 本次完成
+- Canon 事实提取提示词新增硬状态优先规则：交易次数、剩余寿命、冷却时间、隐性/显性消耗、物品价值/售价、时间流速、持有物数量、伤势、境界等级和当前位置必须保留精确数字与单位。
+- 设定变更提取提示词新增硬状态字段：`profile.transactionCount`、`profile.remainingLifespan`、`profile.cooldownUntil`、`profile.costRule`、`profile.valueLevel`、`profile.price`、`profile.timeFlowRule`、`profile.behaviorState`。
+- 章节状态账本扩展关键词和 profile 字段，能把交易、寿命、冷却、价值、售价、稀有度、时间流速、隐性消耗等内容注入后续章节上下文。
+- 真实流程 QA 脚本同步使用同一套硬状态提取要求，避免测试链路继续漏掉关键数值状态。
+
+### 已运行验证
+- `node tmp\test_chapter_state_ledger.mjs`
+- `node tmp\test_hard_state_extraction_prompts.mjs`
+- `node tmp\test_memory_extraction_json_resilience_contract.mjs`
+
+### 当前决策
+- 硬状态应作为长篇稳定性的核心数据，不依赖大模型在后续章节中“记得住”。
+- 普通摘要负责剧情理解，硬状态账本负责不可漂移的数值、位置、消耗、冷却、持有物、规则和人物状态。
+
+## 2026-06-01 - 硬状态补强后 3 章真实流程复测
+
+### 验收项目
+- 项目：`硬状态账本复测200万_20260601025650`
+- 项目 ID：`53fb4617-c62a-4ea6-ab8f-8ce80a4355ca`
+- 报告：`tmp/realistic-flow-qa/latest-realistic-report.md`
+- 使用模型：`联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash`
+
+### 通过项
+- 选题雷达、AI 方向建议、AI 选题顾问、种子、圣经、设定初始化、分卷/章节骨架、章节小纲、正文、审稿、局部修订、定稿、记忆事实、设定变更、浏览器 UI 验收均跑通。
+- 句式节奏修订显著生效：第 1 章短句独段比例 `0.51 -> 0.07`，第 2 章 `0.40 -> 0.03`，第 3 章 `0.53 -> 0.03`。
+- 字数稳定在可接受范围：第 1 章 4650 字，第 2 章 5034 字，第 3 章 5983 字，未触发硬性越界。
+- 定稿后处理链路无阻塞，3 章均有 Canon 事实，待确认设定变更已处理到 0。
+- 浏览器项目页和写字台可打开，控制台错误为 0。
+
+### 未通过项
+- 多章一致性验收未通过：`issues=5`，其中 `hard=4`，`safeToContinue=false`。
+- 主要问题集中在跨章因果，而不是 UI 或接口：
+  - 林渊明知代价法则后仍连续救人，但缺少策略调整和内心权衡。
+  - 秦墨“已被救下”与“三天后死于林渊剑下”的预知幻象需要明确“可能未来/必然未来”的规则边界。
+  - 修炼进度、选拔赛倒计时和神殿返回时间存在时间线压力。
+  - 痛苦作为临时货币、记忆作为永久货币的层级规则尚未在正文内澄清。
+  - 左肩伤势需要在后续 1-2 章持续影响行动。
+
+### 下一步判断
+- 本轮证明“节奏修订 + 字数约束 + 后处理门禁”有效，但百万字稳定性还需要增加“下一章生成前的规则澄清/纠偏承接”。
+- 下一步应把多章验收发现的硬问题转成下一章小纲和正文的必带约束，优先解决代价法则层级、预知幻象可变性、修炼时间线和伤势延续，而不是继续扩大章节数。
+
+## 2026-06-01 - 章节字数护栏与写作质量平衡调整
+
+### 背景
+- 实测发现过严字数约束会诱导模型压缩场景、跳过人物反应或把章节写成任务报告式短句；长篇小说生成应以章节质量、因果完整和人物代入感优先，字数只作为节奏护栏。
+- 用户确认：允许在保证质量前提下适度溢出，不为卡字数牺牲关键动作、情绪转折、人物反应、因果交代或章节钩子。
+
+### 本次完成
+- 单章字数默认建议范围从目标字数的 90%-110% 放宽为 90%-130%，硬边界从 80%-120% 放宽为 80%-140%。例如 300 万字 / 600 章时，目标约 5000 字，建议 4500-6500 字，硬边界 4000-7000 字。
+- 正文提示词明确“质量优先级高于机械字数”：不允许为了压字数省略关键动作、情绪转折、人物反应、因果交代或章节钩子；如果自然超量，优先判断是否把两章容量塞进一章，并在自然断点拆分。
+- 小纲提示词从“更密的小纲”调整为“700-1100 字、4-6 节拍”，只锁定核心场景、人物选择、代价和钩子，避免把两章内容规划进一章。
+- 正文生成、句式节奏修订和真实流程 QA 的输出 token 预算上调到 8192，降低 5000-6500 字章节被模型输出上限截断的概率。
+- 写作上下文中只注入阻断型、严重或主要纠偏任务；轻微建议保留在审稿/纠偏面板，不再全部压进正文生成上下文，避免提示词噪音过重影响创作自由度。
+
+### 修改文件
+- `frontend/src/utils/chapterWordTarget.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/utils/contextBuilder.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_chapter_word_target.mjs`
+- `tmp/test_chapter_word_prompt_guard.mjs`
+- `tmp/test_chapter_generation_token_guard.mjs`
+- `tmp/test_chapter_beat_compaction_contract.mjs`
+- `tmp/test_realistic_qa_word_gate_contract.mjs`
+- `tmp/test_realistic_qa_beat_compact_floor_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 字数是软节奏护栏，不是压缩质量的硬指令；只有明显低于硬下限或高于硬上限时才作为流程问题处理。
+- 后续真实流程测试需要重点观察：字数放宽后是否改善短句化、信息倾倒和情节跳跃，同时不能放任一章塞入两章内容。
+
+### 已运行验证
+- `node tmp\test_chapter_word_target.mjs`
+- `node tmp\test_chapter_word_prompt_guard.mjs`
+- `node tmp\test_correction_context_priority_contract.mjs`
+- `node tmp\test_chapter_generation_token_guard.mjs`
+- `node tmp\test_chapter_beat_compaction_contract.mjs`
+- `node tmp\test_realistic_qa_beat_compact_floor_contract.mjs`
+- `node tmp\test_realistic_qa_word_gate_contract.mjs`
+- `node tmp\quality_guardrails_test.mjs`
+- `node tmp\test_prose_rhythm_guard.mjs`
+- `node tmp\test_humanized_generation_prompt_contract.mjs`
+- `npm --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
+## 2026-06-01 - 生成前连续性防线与标题泄漏清洗
+
+### 背景
+- 真实流程 QA 发现章节审稿仍能抓出时间线、状态延续、道具来源和人物/伏笔铺垫类问题，说明这些规则不能只放在审稿后处理，需要前置到小纲和正文生成。
+- 测试章节中偶发 `# 第2章`、`# 第5章` 等 Markdown 标题泄漏，正文保存前需要清理，避免正文内重复章节标题。
+- 第 3 章小纲曾出现压缩后仍偏长但被记录为通过的情况，容易把两章容量塞进一章。
+
+### 本次完成
+- 正文生成 Prompt 新增“连续性防线”：时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫必须在输出前静默自检并补足。
+- 小纲 Prompt 新增“连续性自检”结构，并要求压缩后仍保留时间线、状态、道具、人物和伏笔五类提醒。
+- 正文清洗升级：能移除开头空行后的 Markdown 标题、中文数字章节标题和“正文如下”等说明，同时避免误删正文内部正常叙事句。
+- 小纲压缩改为最多两轮，只有压缩到 1300 字以内才记录为自动压缩通过；仍偏长时仅保留较短版本并记录警告。
+- 真实流程 QA 脚本同步上述提示词、清洗和小纲压缩门槛，保证自动验收与前端真实写作链路一致。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_chapter_generation_consistency_contract.mjs`
+- `tmp/test_realistic_qa_generation_consistency_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_chapter_generation_consistency_contract.mjs`
+- `node tmp\test_realistic_qa_generation_consistency_contract.mjs`
+- `node tmp\quality_guardrails_test.mjs`
+- `node tmp\test_humanized_generation_prompt_contract.mjs`
+- `node tmp\test_chapter_beat_compaction_contract.mjs`
+- `node tmp\test_realistic_qa_beat_compact_floor_contract.mjs`
+- `node tmp\test_prose_rhythm_guard.mjs`
+
+## 2026-06-01 - 真实流程 QA 定稿章名链路补齐
+
+### 背景
+- 用户在测试项目 `QualityBalanceQA200w_20260601064329` 中发现章节仍显示“未命名”或默认章号。
+- 排查确认：前端写字台定稿会在默认章名时调用章名生成，但真实流程 QA 脚本直接调用后端定稿接口，绕过了前端的章名生成流程；因此该测试项目属于修复前的历史测试数据，不会自动回填。
+
+### 本次完成
+- 真实流程 QA 脚本在定稿前复用前端同一套章名 Prompt 与清洗规则。
+- 如果章节标题仍是默认“第 N 章”，脚本会基于定稿正文、小纲和章节摘要生成 2-10 字目录式章名，并在后端定稿锁定前写入章节元数据。
+- 章名生成失败不阻断定稿，但会写入 QA 报告备注，避免测试流程因为辅助元数据失败而中断。
+
+### 修改文件
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_realistic_qa_chapter_title_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_realistic_qa_chapter_title_contract.mjs`
+- `node tmp\test_chapter_title_generation.mjs`
+- `node tmp\test_writing_style_standards_contract.mjs`
+- `npm --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+
+## 2026-06-01 - 真实流程 QA 章名链路复测进度
+
+### 背景
+- 用户要求使用真实操作流程继续 200 万字规模测试，并重点验证章名、字数、句式节奏、设定库/记忆提取和章节连续性。
+- 当前配置模型为 `联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash`，真实流程 QA 会实际消耗模型调用额度。
+
+### 本次进度
+- 新建并保留测试项目 `QualityBalanceQA200w_20260601090726`，项目 ID：`8eebea8a-f8fd-4fdd-9f76-1928d2b8afc1`。
+- 已完成选题雷达、AI 方向建议、AI 选题顾问生成种子、圣经、设定库初始化提取和 400 章骨架创建。
+- 第 1 章、第 2 章已完成“小纲 -> 正文 -> 句式节奏修订 -> 本章审稿 -> 审稿局部修订 -> 章名生成 -> 定稿 -> 记忆/设定提取 -> 待确认设定模拟处理”闭环。
+- 第 1 章章名生成结果为《灰白废星》，定稿 6390 字；第 2 章章名生成结果为《星阵织忆》，定稿 5086 字。章名不再是“未命名”或正文片段式长句。
+- 句式节奏修订已触发并生效：第 1 章短句独段比例从 0.37 降至 0，第 2 章从 0.18 降至 0。
+- 续跑到第 3-5 章时，Codex 当前真实调用额度被限制，提示需等待或补充额度；测试暂停，未继续消耗模型。
+
+### 当前观察
+- 章名链路修复有效，真实流程 QA 已与前端定稿链路对齐。
+- 字数放宽后两章都落在 4000-7000 的硬范围内，第 1 章接近建议上限但没有明显越界。
+- “不是X，是Y”句式仍需继续观察：本地统计第 2 章仍有 11 次，后续质量优化可继续降低该句式密度。
+- 真实流程测试目前只能证明前 2 章链路有效，不能证明 20 章或 200 万字规模稳定。
+
+### 报告位置
+- `tmp\realistic-flow-qa\latest-realistic-report.json`
+- `tmp\realistic-flow-qa\latest-realistic-report.md`
+
+## 2026-06-02 - 段首重复点名质量护栏
+
+### 背景
+- 用户在真实章节中发现大量段落以同一主角姓名开头，例如连续多段“陆鸣岐 + 动作”，阅读上会形成机械重置视角的 AI 痕迹。
+- 该问题不是某个具体设定错误，而是提示词缺少“段首主语变化”约束，模型为了保证单视角清晰和承接稳定，容易在每个自然段重新点名主角。
+
+### 本次完成
+- 正文生成、小纲规划、静默自检和去 AI 腔/润色提示词新增段首主语变化规则：多人场景可点名消歧，普通连续叙事需要用动作、物象、环境、感官、对白、心理余波、代词或省略主语自然承接。
+- 句式节奏检测新增“同一角色姓名高频段首点名”指标，记录最重复段首主语和重复次数。
+- 自动句式节奏修订现在会把段首重复点名作为触发条件之一，并在修订验收时接受“段首重复下降”的有效修订结果。
+- 真实流程 QA 脚本同步统计段首重复指标，避免自动验收漏掉机械段落模式。
+
+### 修改文件
+- `frontend/src/utils/proseRhythmGuard.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/rewrite.js`
+- `frontend/src/stores/writerStore.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_prose_rhythm_guard.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_prose_rhythm_guard.mjs`
+- `node tmp\test_humanized_generation_prompt_contract.mjs`
+- `node tmp\quality_guardrails_test.mjs`
+- `node tmp\test_realistic_qa_generation_consistency_contract.mjs`
+- `npm --prefix frontend run build` 通过；仅保留 Vite 既有动态导入提示。
+## 2026-06-02 - 写作质量提示词瘦身与标准注入重构
+
+### 背景
+- 前期为了压住 AI 腔、短句独段、模板结尾、人物工具化等问题，把大量审稿规则前置到了小纲和正文生成 Prompt。
+- 真实章节测试发现，规则过重会让正文像“执行检查清单”，容易出现段落过短、主角段首重复点名、情绪和设定被写成规则反馈，而不是自然小说叙事。
+- 用户确认当前平台不需要兼容旧测试项目，可以以最终小说质量为目标直接调整现有逻辑。
+
+### 本次完成
+- 正文系统 Prompt 改为轻量创作职责：只强调世界规则、设定库、角色状态、上一章结尾和小纲作为创作边界，要求通过行动、观察、误判、选择和后果写场景。
+- 正文生成 Prompt 移除大段“输出前静默自检”和硬性 AI 腔句式清单，保留硬连续性边界与写作质量方向，避免模型把正文写成审稿报告。
+- 小纲 Prompt 与正文 Prompt 职责拆开：小纲只规划本章关键场景、人物选择、信息释放、暂不解决项和结尾钩子，不再继承正文审稿清单。
+- 写作标准注入重构：`主写作标准 / 辅助风味` 不再输出“执行规则”和“审稿重点”，改为章节组织、人物方法、信息释放、语言节奏、结尾倾向和避免项。
+- 上下文预算收紧：减少设定库、最近设定变化、纠偏任务、角色和 Canon 事实的注入体量；纠偏任务只注入高优先级、会影响本章的任务，避免低优先级建议干扰正文生成。
+- 新增提示词质量测试，防止后续又把审稿清单塞回小纲或正文生成链路。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/data/writingStyleStandards.js`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/tests/promptQuality.test.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node --test frontend\tests\promptQuality.test.mjs`
+- `rg "执行规则|审稿重点|人物代入感要求|配角自主性|句式节奏预设|整章最多 2 次|禁止连续使用套路化反差句" frontend\src\prompts frontend\src\data frontend\src\utils`
+- `npm --prefix frontend run build`
+
+### 当前决策
+- 生成阶段只做“创作边界 + 写作方法 + 连续性硬约束”，不做审稿清单式硬压迫。
+- AI 腔、短句独段、段首重复点名、模板结尾等问题继续放在生成后审稿、节奏检测和去 AI 腔润色链路里处理。
+- 小纲负责规划一章容量，不负责提前规定具体句式和所有动作。
+
+### 下一步
+- 用真实模型重新生成 3-5 章，对比本次瘦身前后的段落节奏、人物代入感、章节结尾重复度和纠偏任务数量。
+- 如仍出现段首主角姓名高频重复，优先调整节奏修订和审稿提示，而不是继续加重正文生成 Prompt。
+
+## 2026-06-02 - 质量优先生成链路三项优化
+
+### 背景
+- 前一轮全面排查确认：正文质量问题不能只靠继续堆提示词解决，需要清理旧测试兜底、守住动态记忆门禁，并减少正文生成时的上下文噪音。
+- 当前平台尚未正式投入使用，不需要兼容旧测试项目；所有调整以长篇小说最终质量、上下文稳定和设定不污染为优先。
+
+### 本次完成
+- 创作圣经到设定库初始化提取的保守兜底已移除旧测试故事硬编码，不再内置“神仙工作群”“封渊君”“打破派”等固定人名、势力和世界观名词。
+- 设定兜底改为项目无关的通用抽取：只基于当前种子、圣经、主角名、组织后缀、世界规则和能力体系文本生成候选。
+- 写字台新增待确认 Canon 事实门禁：存在 `pending_review` 记忆事实时，阻止小纲、正文、多候选、续写、扩写、选区改写和多模型对比，避免下一章读取到不完整动态状态。
+- 正文生成上下文瘦身：正文只注入创作边界摘要、写作气质、关键设定边界、章节状态账本、上一章结尾、近景规划和当前小纲；完整圣经、完整禁忌清单、全量纠偏任务和审稿清单不再直接塞入正文生成。
+- 小纲提示词调整为单章容量规划：4-6 个节拍、700-1100 字，把后续冲突或余波留给下一章，避免一章塞成两章内容。
+
+### 修改文件
+- `frontend/src/prompts/settingsFromBible.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/prompts/chapter.js`
+- `tmp/test_quality_first_generation_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_quality_first_generation_contract.mjs`
+- `node tmp\test_chapter_word_prompt_guard.mjs`
+- `node tmp\test_humanized_generation_prompt_contract.mjs`
+- `node tmp\test_longform_stability_contract.mjs`
+- `node --test frontend\tests\promptQuality.test.mjs`
+- `rg "沈苍|吕岳|昴日|三界同僚|神仙工作群|打破派|封渊君" frontend/src/prompts/settingsFromBible.js`
+- `git diff --check -- frontend/src/prompts/settingsFromBible.js frontend/src/views/WriterView.vue frontend/src/utils/contextBuilder.js frontend/src/prompts/chapter.js tmp/test_quality_first_generation_contract.mjs`
+- `npm --prefix frontend run build`
+
+### 当前决策
+- 待确认设定变更和待确认 Canon 事实都属于下一章生成门禁；前者保护世界规则和人物关系，后者保护伤势、位置、物品、次数、代价和时间线。
+- 正文生成阶段不承担审稿职责，不再把 AI 腔检查、模板结尾检查和大量禁忌列表当作创作指令。
+- 审稿、句式节奏检测、去 AI 腔润色和局部替换继续负责生成后的质量修正。
+
+### 下一步
+- 用真实模型重新跑 3-5 章，重点观察章节读感、上下章衔接、待确认记忆门禁、设定兜底是否仍有测试故事残留。

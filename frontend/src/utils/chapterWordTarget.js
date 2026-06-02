@@ -23,9 +23,9 @@ export function buildChapterWordTarget(project = {}, volumeStage = null) {
   if (!target) return null
 
   const min = Math.max(800, Math.round(target * 0.9))
-  const max = Math.round(target * 1.1)
+  const max = Math.round(target * 1.3)
   const hardMin = Math.max(500, Math.round(target * 0.8))
-  const hardMax = Math.round(target * 1.2)
+  const hardMax = Math.round(target * 1.4)
 
   return { target, min, max, hardMin, hardMax }
 }
@@ -38,7 +38,7 @@ export function assessChapterWordCount(text, target) {
     return {
       count,
       level: 'hard_under',
-      message: `本章约 ${count} 字，明显低于目标 ${target.target} 字（建议 ${target.min}-${target.max} 字）。建议补足关键场景、人物反应或章节钩子。`
+      message: `本章约 ${count} 字，明显低于目标 ${target.target} 字（建议 ${target.min}-${target.max} 字）。建议补足关键场景、人物反应、因果交代或章节钩子。`
     }
   }
 
@@ -46,7 +46,7 @@ export function assessChapterWordCount(text, target) {
     return {
       count,
       level: 'hard_over',
-      message: `本章约 ${count} 字，明显超过目标 ${target.target} 字（建议 ${target.min}-${target.max} 字）。建议压缩或拆章。`
+      message: `本章约 ${count} 字，明显超过目标 ${target.target} 字（建议 ${target.min}-${target.max} 字）。建议检查是否塞入两章容量，优先在自然断点拆章。`
     }
   }
 
@@ -54,7 +54,7 @@ export function assessChapterWordCount(text, target) {
     return {
       count,
       level: 'over',
-      message: `本章约 ${count} 字，略高于建议范围 ${target.min}-${target.max} 字，可酌情压缩。`
+      message: `本章约 ${count} 字，略高于建议范围 ${target.min}-${target.max} 字；如章节情绪和因果完整，可保留。`
     }
   }
 

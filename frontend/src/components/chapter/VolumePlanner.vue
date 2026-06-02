@@ -20,6 +20,7 @@ import { auditIssueTypeLabel, auditSeverityLabel } from '@/utils/auditLabels'
 import { useVolumeStore, VOLUME_STATUS_OPTIONS } from '@/stores/volumeStore'
 import { useMemoryStore } from '@/stores/memoryStore'
 import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
+import RollingPlanningPanel from './RollingPlanningPanel.vue'
 
 const props = defineProps({
   project: { type: Object, required: true },
@@ -269,6 +270,8 @@ function summaryList(report, key) {
 
 <template>
   <section class="volume-planner">
+    <RollingPlanningPanel :project="project" :chapters="chapters" />
+
     <div class="volume-toolbar">
       <div>
         <h3>分卷规划</h3>

@@ -14,11 +14,16 @@ assert.equal(isDefaultChapterTitle('雨夜归人', 12), false)
 assert.equal(cleanGeneratedChapterTitle('《雨夜归人》'), '雨夜归人')
 assert.equal(cleanGeneratedChapterTitle('# 第十二章 雨夜归人'), '雨夜归人')
 assert.equal(cleanGeneratedChapterTitle('章名：雨夜归人'), '雨夜归人')
+assert.equal(cleanGeneratedChapterTitle('林墨在棋院后山无人棋'), '')
+assert.equal(cleanGeneratedChapterTitle('林墨被带进密室'), '')
+assert.equal(cleanGeneratedChapterTitle('后山无人棋'), '后山无人棋')
 assert.equal(cleanGeneratedChapterTitle('这是一个非常非常非常非常长的章节标题'), '')
 
 const systemPrompt = buildChapterTitleSystemPrompt()
 assert.match(systemPrompt, /章节命名/)
 assert.match(systemPrompt, /只输出章名/)
+assert.match(systemPrompt, /不是剧情摘要/)
+assert.match(systemPrompt, /不要直接截取正文句子/)
 
 const prompt = buildChapterTitlePrompt({
   chapterNum: 12,

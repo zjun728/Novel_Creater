@@ -8,7 +8,7 @@ BOOL_FIELDS = {'stream', 'supports_json', 'supports_streaming', 'is_hidden'}
 
 JSON_FIELDS = {
     'thinking',
-    'confirmed_settings',
+    'writing_profile',
     'forbidden_directions',
     'far_vision',
     'current_volume',

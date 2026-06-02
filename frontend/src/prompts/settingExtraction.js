@@ -14,12 +14,14 @@ export function buildSettingExtractionSystemPrompt() {
 - 修炼/能力体系：境界顺序、突破规则、功法品阶、法宝/丹药等级、禁忌规则。
 - 功法物品：功法、武器、法宝、丹药、信物等的持有者、能力、限制、状态变化。
 - 关系变化：亲属、师承、盟友、敌对、债务、误解、隐藏关系、势力关系。
+- 硬状态：交易次数、剩余寿命、冷却时间、隐性/显性消耗规则、物品价值/售价、时间流速、当前伤势、当前位置、持有物数量、能力等级。
 
 提取原则：
 - 只提取会影响后续创作连续性的设定，不提取一闪而过的路人或纯氛围描写。
 - 新实体必须判断是否有后续价值，不能把每个名字都当长期人物。
 - 优先更新已有实体和已有关系，避免重复创建。
 - 变更必须有原文证据。
+- 凡涉及数字、次数、寿命、价格、时间比例、冷却、消耗、等级、持有物数量，必须保留精确数字和单位。
 - 不确定时降低 confidence，不要编造原文没有的信息。
 - 输出必须是 JSON，不要输出解释。`
 }
@@ -47,11 +49,11 @@ ${relationText ? `## 已有关系（避免重复创建关系）\n${relationText}
       "entityType": "character|faction|location|power_system|technique|item",
       "entityName": "实体名称",
       "changeType": "new_entity|update_entity|relationship",
-      "fieldPath": "summary|category|profile.family|profile.sect|profile.faction|profile.nation|profile.rankTitle|profile.realm|profile.realmLevel|profile.techniques|profile.weapons|profile.location|profile.physicalStatus|profile.mentalState|profile.currentGoal|profile.leader|profile.territory|profile.resources|profile.controller|profile.realms|profile.breakthroughRules|profile.grade|profile.owner|profile.ability",
+      "fieldPath": "summary|category|profile.family|profile.sect|profile.faction|profile.nation|profile.rankTitle|profile.realm|profile.realmLevel|profile.techniques|profile.weapons|profile.location|profile.physicalStatus|profile.mentalState|profile.currentGoal|profile.leader|profile.territory|profile.resources|profile.controller|profile.realms|profile.breakthroughRules|profile.grade|profile.owner|profile.ability|profile.transactionCount|profile.remainingLifespan|profile.cooldownUntil|profile.costRule|profile.valueLevel|profile.price|profile.timeFlowRule|profile.behaviorState",
       "oldValue": "如果原文或已有设定能判断旧值，填写旧值；否则为空字符串",
       "newValue": "新的设定值；如果 changeType 是 relationship，则必须是一个对象",
       "profilePatch": {
-        "只在 new_entity 时填写": "可包含 realm、sect、family、location、owner、grade、ability 等字段"
+        "只在 new_entity 时填写": "可包含 realm、sect、family、location、owner、grade、ability、transactionCount、remainingLifespan、cooldownUntil、costRule、valueLevel、price、timeFlowRule 等字段"
       },
       "category": "可选分类，如 主角/宗门/秘境/境界体系",
       "summary": "一句话说明该实体或变化对后续创作的意义",
@@ -79,7 +81,8 @@ relationship 类型的 newValue 必须使用对象：
 2. 如果是已有实体变化，用 update_entity，不要重复 new_entity。
 3. 如果一个新人物同时有多个重要属性，可以输出一个 new_entity，并把属性放入 profilePatch。
 4. 如果只是人物短暂情绪，不影响后续，不要提取。
-5. 如果本章没有值得入库的设定变化，输出 {"settingChanges":[]}。`
+5. 如果本章发生交易、寿命/次数扣减、冷却变化、物品价值确认、时间流速确认、伤势/位置/持有物变化，必须作为 update_entity 或 new_entity 提取。
+6. 如果本章没有值得入库的设定变化，输出 {"settingChanges":[]}。`
 }
 
 export function buildSettingExtractionRepairPrompt(rawText) {
@@ -95,6 +98,7 @@ export function buildSettingExtractionRepairPrompt(rawText) {
 - 兼容原文中的 settings、changes、settingChanges、data、items 等字段，把它们统一放入 settingChanges。
 - 如果候选字段缺失，尽量按原文补齐字段名；不能判断的字段填空字符串。
 - relationship 的 newValue 必须保持对象。
+- 硬状态候选优先保留：交易次数、剩余寿命、冷却时间、物品价值、时间流速。
 - 如果原文没有任何可保存候选，输出 {"settingChanges":[]}。
 - 不要输出 Markdown，不要解释。
 

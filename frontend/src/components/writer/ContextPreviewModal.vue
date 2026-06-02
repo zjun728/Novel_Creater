@@ -84,6 +84,12 @@ const sections = computed(() => [
     type: 'text'
   },
   {
+    key: 'styleStandardBrief',
+    title: '题材/风格标准',
+    value: props.context.styleStandardBrief,
+    type: 'text'
+  },
+  {
     key: 'forbiddenDirections',
     title: '禁止方向',
     value: props.context.forbiddenDirections,

@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS creative_bible (
   style_bible TEXT DEFAULT NULL,
   theme_bible TEXT DEFAULT NULL,
   world_rules TEXT DEFAULT NULL,
-  confirmed_settings JSON DEFAULT NULL,
+  writing_profile JSON DEFAULT NULL,
   forbidden_directions JSON DEFAULT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE INDEX idx_bible_project (project_id)

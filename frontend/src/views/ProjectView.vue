@@ -32,6 +32,8 @@ import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { useVolumeStore } from '@/stores/volumeStore'
 import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
+import { formatChapterDisplayTitle, isDefaultChapterTitle } from '@/prompts/chapter'
+import { getSelectedWritingStyleStandards } from '@/data/writingStyleStandards'
 import SeedWorkbench from '@/components/seed/SeedWorkbench.vue'
 import CreativeBible from '@/components/bible/CreativeBible.vue'
 import MarketRadar from '@/components/market/MarketRadar.vue'
@@ -96,6 +98,7 @@ const activeChapterVolumeId = ref('')
 
 const selectedSeed = computed(() => seedStore.seeds.find(seed => seed.status === 'selected'))
 const bibleReady = computed(() => Boolean(novelStore.bible?.premise || novelStore.bible?.worldRules || novelStore.bible?.styleBible))
+const selectedStyleStandards = computed(() => getSelectedWritingStyleStandards(novelStore.bible?.writingProfile))
 const settingsReady = computed(() => settingStore.entities.length > 0)
 const pendingSettingChanges = computed(() =>
   settingStore.changeEvents.filter(event => event.status === 'pending_review').length
@@ -235,6 +238,7 @@ onMounted(async () => {
         writerStore.loadChapters(id),
         seedStore.loadSeeds(id),
         novelStore.loadBible(id),
+        novelStore.loadOutline(id),
         novelStore.loadCharacters(id),
         novelStore.loadPlotThreads(id),
         novelStore.loadCanonFacts(id),
@@ -616,6 +620,14 @@ function formatChapters(chapters) {
   ).join('\n')
 }
 
+function chapterTitleOnly(chapter) {
+  return formatChapterDisplayTitle(chapter, { includeNumber: false })
+}
+
+function hasChapterTitle(chapter) {
+  return !isDefaultChapterTitle(chapter?.title, chapter?.chapterNum || chapter?.chapter_num)
+}
+
 function formatSettings(entities, relations) {
   const entityLines = (entities || [])
     .filter(entity => entity.status !== 'archived')
@@ -676,6 +688,18 @@ function auditReport() {
           <span class="text-sm text-gray-400">
             目标 {{ project.targetWords ? (project.targetWords / 10000).toFixed(0) : '0' }} 万字 · {{ project.targetChapters || 0 }} 章
           </span>
+        </div>
+        <div v-if="selectedStyleStandards.length" class="flex items-center gap-2 mt-2 flex-wrap">
+          <span class="text-xs text-gray-400">写作策略</span>
+          <n-tag
+            v-for="item in selectedStyleStandards"
+            :key="`${item.role}-${item.standard.id}`"
+            size="small"
+            type="success"
+            :bordered="false"
+          >
+            {{ item.role }}：{{ item.standard.name }}
+          </n-tag>
         </div>
       </div>
       <div class="flex items-center gap-2">
@@ -845,19 +869,26 @@ function auditReport() {
             <div
               v-for="ch in visibleChapters"
               :key="ch.id"
-              class="flex items-center justify-between p-3 rounded border border-gray-200 hover:border-blue-300 cursor-pointer transition-colors"
+              class="flex items-start justify-between gap-3 p-3 rounded border border-gray-200 hover:border-blue-300 cursor-pointer transition-colors"
               @click="goToWriter(ch.chapterNum)"
             >
-              <div class="flex items-center gap-3">
-                <span class="text-sm font-medium text-gray-500 w-16">第 {{ ch.chapterNum }} 章</span>
-                <span class="text-sm text-gray-800">{{ ch.title || '未命名' }}</span>
-                <n-tag :type="chapterStatusColors[ch.status]" size="tiny" :bordered="false">
+              <div class="flex items-start gap-3 min-w-0 flex-1">
+                <span class="text-sm font-medium text-gray-500 w-16 flex-shrink-0">第 {{ ch.chapterNum }} 章</span>
+                <div class="project-chapter-title min-w-0 flex-1">
+                  <div class="text-sm text-gray-800 leading-5 break-words" :title="hasChapterTitle(ch) ? chapterTitleOnly(ch) : ''">
+                    <span v-if="hasChapterTitle(ch)">《{{ chapterTitleOnly(ch) }}》</span>
+                    <span v-else class="text-gray-400">未命名</span>
+                  </div>
+                  <div v-if="ch.summary" class="text-xs text-gray-400 mt-1 leading-5 break-words">
+                    {{ ch.summary }}
+                  </div>
+                </div>
+                <n-tag class="flex-shrink-0" :type="chapterStatusColors[ch.status]" size="tiny" :bordered="false">
                   {{ chapterStatusLabels[ch.status] || ch.status }}
                 </n-tag>
               </div>
-              <div class="flex items-center gap-3 text-xs text-gray-400">
+              <div class="flex items-center gap-3 text-xs text-gray-400 flex-shrink-0">
                 <span v-if="ch.wordCount">{{ ch.wordCount }} 字</span>
-                <span v-if="ch.summary" class="line-clamp-1 max-w-60">{{ ch.summary }}</span>
                 <n-button
                   size="tiny"
                   type="error"

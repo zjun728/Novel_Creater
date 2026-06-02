@@ -4,6 +4,7 @@ const BIBLE_FIELDS = [
   'styleBible',
   'themeBible',
   'worldRules',
+  'writingProfile',
   'forbiddenDirections'
 ]
 
@@ -65,6 +66,37 @@ function normalizeTags(value) {
     .map(item => item.trim())
     .filter(Boolean)
     .slice(0, 10)
+}
+
+function normalizeWritingProfilePayload(value) {
+  if (value == null || value === '') return {}
+
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) return {}
+    try {
+      return normalizeWritingProfilePayload(JSON.parse(text))
+    } catch {
+      return {}
+    }
+  }
+
+  if (Array.isArray(value)) {
+    const ids = value.map(item => normalizeText(item)).filter(Boolean)
+    return {
+      primaryStandard: ids[0] || '',
+      secondaryFlavor: ids[1] || '',
+      customStyleNotes: ''
+    }
+  }
+
+  if (typeof value !== 'object') return {}
+
+  return {
+    primaryStandard: String(value.primaryStandard || '').trim(),
+    secondaryFlavor: String(value.secondaryFlavor || '').trim(),
+    customStyleNotes: normalizeText(value.customStyleNotes)
+  }
 }
 
 function escapeRegExp(text) {
@@ -245,6 +277,12 @@ const BIBLE_FIELD_ALIASES = {
   worldview: 'worldRules',
   '世界规则': 'worldRules',
   '世界观规则': 'worldRules',
+  writingProfile: 'writingProfile',
+  writing_profile: 'writingProfile',
+  writingStrategy: 'writingProfile',
+  '写作策略': 'writingProfile',
+  '题材风格标准': 'writingProfile',
+  '写作标准': 'writingProfile',
   forbiddenDirections: 'forbiddenDirections',
   forbidden_directions: 'forbiddenDirections',
   forbidden: 'forbiddenDirections',
@@ -259,7 +297,10 @@ const BIBLE_LABELS = Object.keys(BIBLE_FIELD_ALIASES).sort((a, b) => b.length - 
 
 export function normalizeBiblePayload(raw = {}) {
   const payload = pickBiblePayload(raw) || {}
-  const normalized = Object.fromEntries(BIBLE_FIELDS.map(field => [field, field === 'forbiddenDirections' ? [] : '']))
+  const normalized = Object.fromEntries(BIBLE_FIELDS.map(field => [
+    field,
+    field === 'forbiddenDirections' ? [] : field === 'writingProfile' ? {} : ''
+  ]))
 
   for (const [key, value] of Object.entries(payload)) {
     const cleanKey = String(key).trim()
@@ -269,6 +310,9 @@ export function normalizeBiblePayload(raw = {}) {
     if (field === 'forbiddenDirections') {
       const tags = normalizeTags(value)
       if (tags.length) normalized.forbiddenDirections = tags
+    } else if (field === 'writingProfile') {
+      const profile = normalizeWritingProfilePayload(value)
+      if (Object.keys(profile).some(key => profile[key])) normalized.writingProfile = profile
     } else {
       const text = normalizeText(value)
       if (text) normalized[field] = text
@@ -285,6 +329,7 @@ function hasUsableBible(payload) {
     || payload.styleBible
     || payload.themeBible
     || payload.worldRules
+    || Object.keys(payload.writingProfile || {}).length
     || payload.forbiddenDirections.length
   )
 }

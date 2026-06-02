@@ -388,7 +388,16 @@ export const useMemoryStore = defineStore('memory', () => {
       const results = { summary: null, facts: [], settingChanges: [], audit: null, errors: [] }
 
       try { results.summary = await generateSummary(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'summary', e) }
-      try { results.facts = await extractFacts(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'facts', e) }
+      try {
+        results.facts = await extractFacts(projectId, chapterContent, chapterNum)
+        if (!results.facts?.length) {
+          recordFinalizationStepError(
+            results,
+            'facts',
+            new Error('没有提取到可保存的记忆事实；请重试定稿后处理，完成后再继续下一章。')
+          )
+        }
+      } catch (e) { recordFinalizationStepError(results, 'facts', e) }
       try { results.settingChanges = await extractSettingChanges(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'settingChanges', e) }
       if (includeAudit) {
         try { results.audit = await auditChapter(projectId, chapterContent, chapterNum) } catch (e) { recordFinalizationStepError(results, 'audit', e) }
@@ -651,7 +660,23 @@ function normalizeAuditIssue(issue) {
   if (!issue || typeof issue !== 'object') return null
   return {
     severity: pickEnum(issue.severity, ['critical', 'major', 'minor', 'suggestion'], 'suggestion'),
-    type: pickEnum(issue.type, ['contradiction', 'character_inconsistency', 'world_rule_violation', 'pacing', 'dialogue', 'logic', 'quality', 'human_motivation', 'emotional_logic', 'ai_tone'], 'quality'),
+    type: pickEnum(issue.type, [
+      'contradiction',
+      'character_inconsistency',
+      'world_rule_violation',
+      'pacing',
+      'dialogue',
+      'logic',
+      'quality',
+      'human_motivation',
+      'emotional_logic',
+      'ai_tone',
+      'template_ending',
+      'surface_emotion',
+      'tool_character',
+      'info_dump',
+      'cliche_imagery'
+    ], 'quality'),
     description: String(issue.description || issue.problem || issue.summary || '').trim(),
     location: String(issue.location || issue.evidence || issue.quote || '').trim(),
     suggestion: String(issue.suggestion || issue.fix || issue.advice || '').trim(),
@@ -679,6 +704,19 @@ function normalizeStringList(value) {
   if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
   if (typeof value === 'string') return value.split(/\n|；|;/).map(item => item.trim()).filter(Boolean)
   return []
+}
+
+function mergeStringLists(...values) {
+  const seen = new Set()
+  const merged = []
+  for (const value of values) {
+    for (const item of normalizeStringList(value)) {
+      if (seen.has(item)) continue
+      seen.add(item)
+      merged.push(item)
+    }
+  }
+  return merged
 }
 
 function parseFactExtractionText(text) {
@@ -728,7 +766,12 @@ function normalizeCanonFact(fact) {
     factType: pickEnum(fact.factType || fact.type, ['world', 'character', 'plot', 'relationship', 'timeline', 'style', 'setting'], 'plot'),
     content,
     relatedCharacters: normalizeStringList(fact.relatedCharacters || fact.characters),
-    relatedPlotThreads: normalizeStringList(fact.relatedPlotThreads || fact.plotThreads),
+    relatedPlotThreads: mergeStringLists(
+      fact.relatedPlotThreads,
+      fact.plotThreads,
+      fact.threadTags,
+      fact.tags
+    ),
     evidence: String(fact.evidence || fact.quote || '').trim(),
     confidence: clampConfidence(fact.confidence)
   }

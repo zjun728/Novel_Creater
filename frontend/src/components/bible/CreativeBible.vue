@@ -1,12 +1,17 @@
 <script setup>
 import { computed, h, ref, onMounted, watch } from 'vue'
-import { NButton, NCard, NInput, NSpace, NTag, NDynamicTags } from 'naive-ui'
+import { NButton, NCard, NInput, NSpace, NTag, NDynamicTags, NSelect } from 'naive-ui'
 import { useDialog } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useResetConfirmation } from '@/composables/useResetConfirmation'
 import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { normalizeBiblePayload } from '@/prompts/bibleFromSeed'
+import {
+  WRITING_STYLE_STANDARDS,
+  getSelectedWritingStyleStandards,
+  normalizeWritingProfile
+} from '@/data/writingStyleStandards'
 import { api } from '@/api/db/client'
 
 const props = defineProps({
@@ -22,6 +27,19 @@ const { confirmStageReset } = useResetConfirmation()
 const editing = ref(false)
 const displayBible = computed(() => novelStore.bible ? normalizeBiblePayload(novelStore.bible) : null)
 const bibleInitialized = computed(() => settingStore.hasBibleInitialization)
+const standardOptions = computed(() => WRITING_STYLE_STANDARDS.map(item => ({
+  label: item.name,
+  value: item.id
+})))
+const secondaryStandardOptions = computed(() => [
+  { label: '不选择辅助风味', value: '' },
+  ...WRITING_STYLE_STANDARDS
+    .filter(item => item.id !== formData.value.writingProfile?.primaryStandard)
+    .map(item => ({ label: item.name, value: item.id }))
+])
+const selectedStyleStandards = computed(() => getSelectedWritingStyleStandards(
+  displayBible.value?.writingProfile
+))
 
 function emptyBibleForm() {
   return {
@@ -30,6 +48,11 @@ function emptyBibleForm() {
     styleBible: '',
     themeBible: '',
     worldRules: '',
+    writingProfile: {
+      primaryStandard: '',
+      secondaryFlavor: '',
+      customStyleNotes: ''
+    },
     forbiddenDirections: []
   }
 }
@@ -43,12 +66,14 @@ function syncBibleToForm(bible = novelStore.bible) {
   }
 
   const normalized = normalizeBiblePayload(bible)
+  const writingProfile = normalizeWritingProfile(normalized.writingProfile)
   formData.value = {
     premise: normalized.premise || '',
     targetReader: normalized.targetReader || '',
     styleBible: normalized.styleBible || '',
     themeBible: normalized.themeBible || '',
     worldRules: normalized.worldRules || '',
+    writingProfile,
     forbiddenDirections: normalized.forbiddenDirections || []
   }
 }
@@ -79,6 +104,12 @@ watch(() => novelStore.bible, (value) => {
 }, { deep: true })
 
 async function handleSave() {
+  const writingProfile = normalizeWritingProfile(formData.value.writingProfile)
+  const payload = {
+    ...formData.value,
+    writingProfile
+  }
+
   const state = await api.projects.contentState(props.projectId)
   if (state.hasChapterContent) {
     const confirmed = await new Promise(resolve => {
@@ -95,7 +126,7 @@ async function handleSave() {
     })
     if (!confirmed) return
   }
-  await novelStore.saveBible(props.projectId, formData.value)
+  await novelStore.saveBible(props.projectId, payload)
   message.success('创作圣经已保存')
   editing.value = false
 }
@@ -189,6 +220,31 @@ async function handleDeleteBible() {
         <span class="font-medium text-gray-500">目标读者：</span>
         <span>{{ displayBible.targetReader }}</span>
       </div>
+      <div class="rounded border border-green-100 bg-green-50/60 p-3">
+        <div class="flex items-center justify-between gap-2">
+          <span class="font-medium text-gray-700">写作策略</span>
+          <span class="text-xs text-gray-400">生成小纲、正文和审稿时读取</span>
+        </div>
+        <n-space v-if="selectedStyleStandards.length" size="small" class="mt-2">
+          <n-tag
+            v-for="item in selectedStyleStandards"
+            :key="`${item.role}-${item.standard.id}`"
+            size="small"
+            type="success"
+          >
+            {{ item.role }}：{{ item.standard.name }}
+          </n-tag>
+        </n-space>
+        <div v-else class="mt-2 text-sm text-gray-500">
+          未选择主写作标准。建议编辑创作圣经，为本书选择一套核心写法，避免后续章节风格漂移。
+        </div>
+        <p class="mt-2 text-xs text-gray-500">
+          主写作标准决定核心写法，辅助风味只做局部气质补充，不会推翻主写作标准。
+        </p>
+        <p v-if="displayBible.writingProfile?.customStyleNotes" class="mt-2 text-xs text-gray-600 whitespace-pre-wrap">
+          {{ displayBible.writingProfile.customStyleNotes }}
+        </p>
+      </div>
       <div v-if="displayBible.styleBible">
         <span class="font-medium text-gray-500">风格要求：</span>
         <p class="text-gray-700 whitespace-pre-wrap">{{ displayBible.styleBible }}</p>
@@ -221,6 +277,34 @@ async function handleDeleteBible() {
       <div>
         <label class="text-xs text-gray-500 mb-1 block">目标读者</label>
         <n-input v-model:value="formData.targetReader" placeholder="如：男频 20-35 岁、喜欢节奏明快的读者" />
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">主写作标准</label>
+          <n-select
+            v-model:value="formData.writingProfile.primaryStandard"
+            :options="standardOptions"
+            clearable
+            placeholder="选择最贴近本书的核心写法"
+          />
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 mb-1 block">辅助风味</label>
+          <n-select
+            v-model:value="formData.writingProfile.secondaryFlavor"
+            :options="secondaryStandardOptions"
+            placeholder="可选：补充一个局部气质"
+          />
+        </div>
+      </div>
+      <div>
+        <label class="text-xs text-gray-500 mb-1 block">项目风格备注</label>
+        <n-input
+          v-model:value="formData.writingProfile.customStyleNotes"
+          type="textarea"
+          rows="2"
+          placeholder="可选：补充本书独有的叙述声音、章节结尾方式或需要特别避开的写法"
+        />
       </div>
       <div>
         <label class="text-xs text-gray-500 mb-1 block">风格要求</label>

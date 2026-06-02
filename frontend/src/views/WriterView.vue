@@ -117,6 +117,7 @@ const loadedEditorSnapshot = ref('')
 const pendingVersionToLoad = ref(null)
 const pendingFinalizeVersion = ref(null)
 const previousChapterEnding = ref('')
+const recentChapterEndings = ref([])
 const auditIssueActions = ref({})
 let autoSaveTimer = null
 
@@ -252,9 +253,20 @@ const currentVolume = computed(() =>
   )
 )
 
-const currentChapterDisplayTitle = computed(() =>
-  formatChapterDisplayTitle(writerStore.currentChapter || { chapterNum: chapterNum.value }, { chapterNum: chapterNum.value })
-)
+function findVolumeForChapter(targetChapterNum) {
+  const num = Number(targetChapterNum || 0)
+  return volumeStore.volumes.find(volume =>
+    num >= Number(volume.startChapter || 0) &&
+    num <= Number(volume.endChapter || 0)
+  )
+}
+
+const currentChapterTitleOnly = computed(() => {
+  const chapter = writerStore.currentChapter || { chapterNum: chapterNum.value }
+  return hasCustomChapterTitle(chapter)
+    ? formatChapterDisplayTitle(chapter, { includeNumber: false })
+    : ''
+})
 
 function chapterListTitle(chapter) {
   return formatChapterDisplayTitle(chapter, { includeNumber: false })
@@ -273,6 +285,10 @@ const aiContextReady = computed(() =>
 
 const pendingSettingChanges = computed(() =>
   settingStore.changeEvents.filter(event => (event.status || 'pending_review') === 'pending_review')
+)
+
+const pendingCanonFacts = computed(() =>
+  novelStore.canonFacts.filter(fact => (fact.status || 'accepted') === 'pending_review')
 )
 
 const aiContextStatusText = computed(() => {
@@ -307,6 +323,7 @@ watch(chapterNum, async (newNum) => {
   compareContext.value = {}
   compareBeatPlan.value = ''
   previousChapterEnding.value = ''
+  recentChapterEndings.value = []
   compareStore.clearComparison()
   await loadChapter()
   router.replace(`/writer/${projectId.value}/${newNum}`)
@@ -344,6 +361,7 @@ async function loadChapter() {
     beatPlanText.value = savedBeatPlan?.content || ''
     beatPlanSavedText.value = savedBeatPlan?.content || ''
     previousChapterEnding.value = await loadPreviousChapterEnding()
+    recentChapterEndings.value = await loadRecentChapterEndings()
 
     const draft = await writerStore.loadTempDraft(projectId.value, chapterNum.value)
     if (draft?.content) {
@@ -387,6 +405,46 @@ async function loadPreviousChapterEnding() {
     console.warn('加载上一章结尾失败:', e.message)
     return ''
   }
+}
+
+function extractChapterEndingSnippet(content, maxLength = 260) {
+  const paragraphs = String(content || '')
+    .split(/\n{2,}/)
+    .map(item => item.trim())
+    .filter(Boolean)
+  if (!paragraphs.length) return ''
+
+  const ending = paragraphs.slice(-2).join('\n\n')
+  return ending.length > maxLength ? ending.slice(-maxLength) : ending
+}
+
+async function loadRecentChapterEndings(limit = 5) {
+  if (chapterNum.value <= 1) return []
+  const previousChapters = writerStore.chapters
+    .filter(ch => Number(ch.chapterNum || ch.chapter_num || 0) < chapterNum.value)
+    .sort((a, b) => Number(b.chapterNum || b.chapter_num || 0) - Number(a.chapterNum || a.chapter_num || 0))
+    .slice(0, limit)
+
+  const endings = await Promise.all(previousChapters.map(async chapter => {
+    try {
+      const versions = await api.versions.list(projectId.value, chapter.id)
+      const finalVersionId = chapter.finalVersionId || chapter.final_version_id
+      const finalVersion = versions.find(version => version.id === finalVersionId || version.versionType === 'final')
+      const snippet = extractChapterEndingSnippet(finalVersion?.content)
+      if (!snippet) return null
+      return {
+        chapterNum: Number(chapter.chapterNum || chapter.chapter_num || 0),
+        ending: snippet
+      }
+    } catch (e) {
+      console.warn('加载最近章节结尾失败:', e.message)
+      return null
+    }
+  }))
+
+  return endings
+    .filter(Boolean)
+    .sort((a, b) => Number(a.chapterNum || 0) - Number(b.chapterNum || 0))
 }
 
 function handleSelectionChange() {
@@ -518,14 +576,67 @@ function buildSeedContext(seed) {
   }
 }
 
+function buildFinalizationRerouteContext(results, version, finalizedChapterNum) {
+  const nextChapterNum = Number(finalizedChapterNum || 0) + 1
+  const content = String(version?.content || '')
+  return {
+    projectInfo: projectStore.currentProject,
+    seedInfo: buildSeedContext(getSelectedSeed()),
+    bibleInfo: novelStore.bible,
+    finalizedChapterNum,
+    currentChapterNum: nextChapterNum,
+    finalizedChapterInfo: {
+      chapterNum: finalizedChapterNum,
+      title: writerStore.currentChapter?.title || '',
+      summary: results?.summary || null,
+      contentExcerpt: content.slice(0, 1800),
+      ending: content.slice(-900)
+    },
+    factInfo: {
+      extractedFacts: results?.facts || [],
+      acceptedFacts: (novelStore.canonFacts || []).filter(fact => (fact.status || 'accepted') === 'accepted')
+    },
+    settingInfo: {
+      pendingSettingChanges: results?.settingChanges || [],
+      activeEntities: (settingStore.entities || []).filter(entity => (entity.status || 'active') === 'active')
+    },
+    currentVolumeInfo: findVolumeForChapter(nextChapterNum) || currentVolume.value || null,
+    volumeInfo: volumeStore.volumes,
+    existingOutlineInfo: novelStore.outline
+  }
+}
+
 function buildBaseContext() {
   return buildBaseContextResult().context
+}
+
+function findBlockingFinalizationPending() {
+  const nums = new Set([Number(chapterNum.value)])
+  for (const chapter of writerStore.chapters || []) {
+    const num = Number(chapter.chapterNum || chapter.chapter_num || 0)
+    if (num > 0 && num <= Number(chapterNum.value)) nums.add(num)
+  }
+
+  for (const num of [...nums].sort((a, b) => a - b)) {
+    const marker = getChapterFinalizationPending(projectId.value, num)
+    if (marker) return marker
+  }
+  return null
 }
 
 async function ensureAiContextReady(actionName = 'AI 操作') {
   if (finalizationProcessingActive.value) {
     message.warning(
       `上一章或当前章节定稿后的记忆/设定提取仍在进行。请等待处理完成后再执行${actionName}，否则下一章可能读不到最新人物状态和设定变更。`,
+      { title: '定稿后处理未完成' }
+    )
+    return false
+  }
+
+  const blockingFinalization = findBlockingFinalizationPending()
+  if (blockingFinalization) {
+    message.warning(
+      `第 ${blockingFinalization.chapterNum} 章定稿后记忆/设定提取失败或未完成，已阻止${actionName}。请先处理该章的定稿后提取结果，再继续后续章节，避免人物状态、设定库和长期记忆断层。`,
       { title: '定稿后处理未完成' }
     )
     return false
@@ -573,6 +684,33 @@ async function ensureNoPendingSettingChanges(actionName = 'AI 写作') {
     message.warning(
       `设定库还有 ${pendingSettingChanges.value.length} 条待确认变更。请先确认或拒绝后再执行${actionName}。`,
       { title: '请先确认设定变更' }
+    )
+    return false
+  }
+
+  return true
+}
+
+async function ensureNoPendingStoryMemory(actionName = 'AI 写作') {
+  if (pendingCanonFacts.value.length > 0) {
+    message.warning(
+      `记忆里还有 ${pendingCanonFacts.value.length} 条待确认事实。${actionName}只会读取已确认事实，未确认的上一章事件、状态、伏笔或时间线不会进入下一章。请先到“记忆”确认或拒绝这些事实，再继续生成。`,
+      { title: '请先确认记忆事实' }
+    )
+    return false
+  }
+
+  try {
+    await novelStore.loadCanonFacts(projectId.value)
+  } catch (e) {
+    message.warning(`无法刷新待确认记忆事实，已阻止${actionName}：${e.message}`)
+    return false
+  }
+
+  if (pendingCanonFacts.value.length > 0) {
+    message.warning(
+      `记忆里还有 ${pendingCanonFacts.value.length} 条待确认事实。请先确认或拒绝后再执行${actionName}。`,
+      { title: '请先确认记忆事实' }
     )
     return false
   }
@@ -700,6 +838,9 @@ function buildBaseContextResult() {
   if (previousChapterEnding.value) {
     result.context.previousChapterEnding = previousChapterEnding.value
   }
+  if (recentChapterEndings.value.length) {
+    result.context.recentChapterEndings = recentChapterEndings.value
+  }
   const wordTarget = buildChapterWordTarget(projectStore.currentProject || {}, result.context.volumeStage)
   if (wordTarget) {
     result.context.wordTarget = wordTarget
@@ -776,6 +917,7 @@ async function ensureBeatPlan(force = false, options = {}) {
   if (!ensureCurrentChapterEditable('小纲生成')) return ''
   if (!await ensurePreviousChapterFinalized('小纲生成')) return ''
   if (!await ensureNoPendingSettingChanges('小纲生成')) return ''
+  if (!await ensureNoPendingStoryMemory('小纲生成')) return ''
   if (!await ensureCorrectionTasksAllowGeneration('小纲生成')) return ''
   beatPlanText.value = await writerStore.generateChapterBeatPlan(projectId.value, chapterNum.value, buildBaseContext())
   if (persist && beatPlanText.value.trim()) {
@@ -848,6 +990,7 @@ async function generateChapterFromPlan(confirmedPlan) {
   if (!ensureCurrentChapterEditable('正文生成')) return
   if (!await ensurePreviousChapterFinalized('正文生成')) return
   if (!await ensureNoPendingSettingChanges('正文生成')) return
+  if (!await ensureNoPendingStoryMemory('正文生成')) return
   if (!await ensureCorrectionTasksAllowGeneration('正文生成')) return
   try {
     activeWriterAction.value = 'chapter'
@@ -879,6 +1022,7 @@ async function generateMultiVariantsFromPlan(confirmedPlan) {
   if (!ensureCurrentChapterEditable('多候选生成')) return
   if (!await ensurePreviousChapterFinalized('多候选生成')) return
   if (!await ensureNoPendingSettingChanges('多候选生成')) return
+  if (!await ensureNoPendingStoryMemory('多候选生成')) return
   if (!await ensureCorrectionTasksAllowGeneration('多候选生成')) return
   const baselineDraft = editorContent.value?.trim()
   const hasBaselineDraft = !!baselineDraft
@@ -954,6 +1098,7 @@ async function handleContinue() {
   if (!ensureCurrentChapterEditable('续写')) return
   if (!await ensurePreviousChapterFinalized('续写')) return
   if (!await ensureNoPendingSettingChanges('续写')) return
+  if (!await ensureNoPendingStoryMemory('续写')) return
   if (!await ensureCorrectionTasksAllowGeneration('续写')) return
   try {
     activeWriterAction.value = 'continue'
@@ -979,6 +1124,7 @@ async function handleExpand() {
   if (!ensureCurrentChapterEditable('扩写')) return
   if (!await ensurePreviousChapterFinalized('扩写')) return
   if (!await ensureNoPendingSettingChanges('扩写')) return
+  if (!await ensureNoPendingStoryMemory('扩写')) return
   if (!await ensureCorrectionTasksAllowGeneration('扩写')) return
   try {
     activeWriterAction.value = 'expand'
@@ -1020,12 +1166,14 @@ async function handleRewrite(mode) {
   if (!ensureCurrentChapterEditable('选区改写')) return
   if (!await ensurePreviousChapterFinalized('选区改写')) return
   if (!await ensureNoPendingSettingChanges('选区改写')) return
+  if (!await ensureNoPendingStoryMemory('选区改写')) return
   if (!await ensureCorrectionTasksAllowGeneration('选区改写')) return
   try {
     activeWriterAction.value = 'rewrite'
     const baseContext = buildBaseContext()
     const result = await writerStore.rewriteSelection(selectedText.value, mode, {
       styleBible: novelStore.bible?.styleBible,
+      styleStandardBrief: baseContext.styleStandardBrief,
       characters: novelStore.characters,
       settingLibrary: baseContext.settingLibrary,
       recentFacts: baseContext.recentFacts,
@@ -1049,6 +1197,7 @@ async function openCompareWithPlan(confirmedPlan) {
   }
   if (!ensureCurrentChapterEditable('多模型对比')) return
   if (!await ensurePreviousChapterFinalized('多模型对比')) return
+  if (!await ensureNoPendingStoryMemory('多模型对比')) return
   if (!await ensureCorrectionTasksAllowGeneration('多模型对比')) return
   if (pendingSettingChanges.value.length > 0) {
     message.warning(
@@ -1356,6 +1505,16 @@ async function performFinalize(version) {
     showMemoryResult.value = true
     await loadContextData()
 
+    try {
+      await novelStore.rerouteOutlineAfterFinalization(
+        finalizedProjectId,
+        buildFinalizationRerouteContext(results, version, finalizedChapterNum)
+      )
+    } catch (e) {
+      console.warn('定稿后滚动规划刷新失败:', e.message)
+      message.warning(`定稿后滚动规划刷新失败，可在章节管理页手动重新生成：${e.message}`, { title: '滚动规划未刷新' })
+    }
+
     const factCount = results.facts?.length || 0
     const settingChangeCount = results.settingChanges?.length || 0
     finalizationCompleted = true
@@ -1469,17 +1628,22 @@ function handleContextNavigate(item) {
 <template>
   <div v-if="projectStore.currentProject" class="writer-desk h-full flex flex-col">
     <div class="flex items-center justify-between px-4 py-2 border-b bg-white">
-      <div class="flex items-center gap-3">
-        <h2 class="text-lg font-bold text-gray-800">{{ projectStore.currentProject.title }}</h2>
-        <n-tag size="small">{{ currentChapterDisplayTitle }}</n-tag>
-        <n-tag v-if="currentVolume" size="small" type="info" :bordered="false">
-          {{ currentVolume.title || `第 ${currentVolume.volumeNum} 卷` }}
-        </n-tag>
-        <n-tag v-if="beatPlanSavedText" size="small" type="success" :bordered="false">已有小纲</n-tag>
-        <n-tag v-if="!aiContextReady" size="small" type="warning" :bordered="false">
-          {{ aiContextStatusText }}
-        </n-tag>
-        <n-spin v-if="finalizationProcessingActive" size="tiny" />
+      <div class="min-w-0">
+        <div class="flex items-center gap-3 flex-wrap">
+          <h2 class="text-lg font-bold text-gray-800">{{ projectStore.currentProject.title }}</h2>
+          <n-tag size="small">第 {{ chapterNum }} 章</n-tag>
+          <n-tag v-if="currentVolume" size="small" type="info" :bordered="false">
+            {{ currentVolume.title || `第 ${currentVolume.volumeNum} 卷` }}
+          </n-tag>
+          <n-tag v-if="beatPlanSavedText" size="small" type="success" :bordered="false">已有小纲</n-tag>
+          <n-tag v-if="!aiContextReady" size="small" type="warning" :bordered="false">
+            {{ aiContextStatusText }}
+          </n-tag>
+          <n-spin v-if="finalizationProcessingActive" size="tiny" />
+        </div>
+        <div v-if="currentChapterTitleOnly" class="chapter-title-line" :title="currentChapterTitleOnly">
+          《{{ currentChapterTitleOnly }}》
+        </div>
       </div>
       <n-space>
         <n-button size="small" @click="router.push(`/project/${projectId}`)">项目详情</n-button>
@@ -1519,7 +1683,11 @@ function handleContextNavigate(item) {
             @click="goToChapter(ch.chapterNum)"
           >
             <span class="truncate block">第 {{ ch.chapterNum }} 章</span>
-            <span v-if="hasCustomChapterTitle(ch)" class="truncate block text-[11px] leading-4 text-gray-500">
+            <span
+              v-if="hasCustomChapterTitle(ch)"
+              class="truncate block text-[11px] leading-4 text-gray-500"
+              :title="chapterListTitle(ch)"
+            >
               {{ chapterListTitle(ch) }}
             </span>
             <div class="flex gap-1 mt-0.5">
@@ -2041,6 +2209,16 @@ function handleContextNavigate(item) {
 
 .editor-readonly-note span:first-child {
   font-weight: 600;
+}
+
+.chapter-title-line {
+  margin-top: 4px;
+  max-width: min(720px, 70vw);
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .audit-revision-panel {

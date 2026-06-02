@@ -728,94 +728,131 @@ function buildFallbackRawEvents(bible, seed) {
     })
   }
 
-  for (const name of extractKnownNames(text)) {
+  for (const candidate of extractCandidateEntityNames(text, protagonistName)) {
+    const { name, evidence, category, importance } = candidate
     if (name === protagonistName) continue
     events.push({
       entityType: 'character',
       entityName: name,
       changeType: 'new_entity',
       fieldPath: 'summary',
-      summary: inferCharacterSummary(name, text),
-      category: inferCharacterCategory(name),
-      importance: ['沈苍', '吕岳', '昴日星官', '昴日'].includes(name) ? 5 : 4,
+      summary: inferCharacterSummary(name, text, evidence),
+      category,
+      importance,
       profilePatch: {},
-      evidence: findSentenceContaining(text, name),
+      evidence,
       confidence: 0.72
     })
   }
 
-  if (/三界同僚工作群|神仙工作群/.test(text)) {
+  for (const faction of extractFactionCandidates(text)) {
     events.push({
       entityType: 'faction',
-      entityName: '三界同僚工作群',
+      entityName: faction.name,
       changeType: 'new_entity',
       fieldPath: 'summary',
-      summary: '连接天庭、地府、龙宫、灵山等神仙成员的核心群聊，也是主角被卷入主线的入口。',
-      category: '核心组织/信息入口',
-      importance: 5,
-      profilePatch: { 形式: '群聊', 作用: '主线入口与长期信息源' },
-      evidence: findSentenceContaining(text, '三界同僚工作群') || findSentenceContaining(text, '神仙工作群'),
-      confidence: 0.88
+      summary: summarizeText(faction.evidence, 150) || `${faction.name} 是作品中需要追踪的组织、势力或群体。`,
+      category: faction.category,
+      importance: faction.importance,
+      profilePatch: {},
+      evidence: faction.evidence,
+      confidence: 0.74
     })
   }
 
-  if (/封印|混沌|末法|灵气枯竭/.test(text)) {
+  const systemText = seed.coreConflict || seed.worldPressure || bible.worldRules || ''
+  if (systemText) {
     events.push({
       entityType: 'power_system',
-      entityName: '封印悖论与末法时代',
+      entityName: inferSystemName(systemText),
       changeType: 'new_entity',
       fieldPath: 'summary',
-      summary: '封印、混沌力、灵气枯竭和末法时代构成作品底层世界规则，是长篇主线矛盾。',
-      category: '世界底层规则',
+      summary: summarizeText(systemText, 180),
+      category: '世界规则/力量体系',
       importance: 5,
       profilePatch: {
-        核心矛盾: summarizeText(seed.coreConflict || bible.worldRules, 160),
-        风险: '维持封印等于慢性死亡，打破封印等于释放混沌。'
+        核心规则: summarizeText(systemText, 160)
       },
-      evidence: seed.coreConflict || bible.worldRules || findSentenceContaining(text, '封印'),
-      confidence: 0.86
-    })
-  }
-
-  if (/打破派/.test(text)) {
-    events.push({
-      entityType: 'faction',
-      entityName: '打破派',
-      changeType: 'new_entity',
-      fieldPath: 'summary',
-      summary: '主张加速封印破碎并在废墟上建立新纪元的理念派系，是中后期核心对立力量。',
-      category: '理念派系',
-      importance: 5,
-      profilePatch: { 立场: '打破旧封印，接管新纪元' },
-      evidence: findSentenceContaining(text, '打破派'),
+      evidence: systemText,
       confidence: 0.82
-    })
-  }
-
-  if (protagonistName && /封渊君|封渊神君|沈苍/.test(text)) {
-    events.push({
-      entityType: 'character',
-      entityName: protagonistName,
-      changeType: 'relationship',
-      fieldPath: '关系',
-      newValue: {
-        targetEntityName: '沈苍',
-        targetEntityType: 'character',
-        relationType: '血脉/传承',
-        stance: '亲近',
-        summary: `${protagonistName} 是封渊君沈苍的血脉后世，入群后激活沉寂神脉。`
-      },
-      evidence: findSentenceContaining(text, '沈苍') || findSentenceContaining(text, '封渊君'),
-      confidence: 0.78
     })
   }
 
   return events
 }
 
-function extractKnownNames(text) {
-  const candidates = ['沈苍', '吕岳', '昴日星官', '哪吒', '太白金星', '崔判官', '二郎神', '哮天犬']
-  return candidates.filter(name => text.includes(name))
+function extractCandidateEntityNames(text = '', protagonistName = '') {
+  const value = String(text || '')
+  const candidates = new Map()
+  const add = (name, score, evidence = '') => {
+    const normalized = normalizeCandidateName(name)
+    if (!normalized || normalized === protagonistName || isCommonNonName(normalized)) return
+    const prev = candidates.get(normalized)
+    if (!prev || prev.score < score) {
+      candidates.set(normalized, {
+        name: normalized,
+        score,
+        evidence: evidence || findSentenceContaining(value, normalized),
+        category: inferCharacterCategory(normalized, evidence || findSentenceContaining(value, normalized)),
+        importance: score >= 7 ? 5 : 4
+      })
+    }
+  }
+
+  const patterns = [
+    /(?:男主|女主|主角|配角|反派|关键人物|导师|师父|父亲|母亲|兄长|妹妹|同伴|盟友|敌人|宿敌|家主|宗主|掌门|长老|人物)[：:]\s*([\u4e00-\u9fa5]{2,5})/g,
+    /([\u4e00-\u9fa5]{2,5})[，,]\s*(?:\d{1,3}岁|男主|女主|主角|配角|反派|导师|师父|父亲|母亲|兄长|妹妹|同伴|盟友|敌人|宿敌|家主|宗主|掌门|长老)/g,
+    /(?:名叫|叫做|名为|化名|自称|代号|真名是|本名是)[“"']?([\u4e00-\u9fa5]{2,5})/g,
+    /([\u4e00-\u9fa5]{2,5})(?:的父亲|的母亲|的师父|的导师|的宿敌|的同伴|的盟友|的家主|的宗主|的掌门)/g
+  ]
+
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) {
+      add(match[1], 8, findSentenceContaining(value, match[1]))
+    }
+  }
+
+  return [...candidates.values()]
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name, 'zh-CN'))
+    .slice(0, 8)
+}
+
+function extractFactionCandidates(text = '') {
+  const value = String(text || '')
+  const candidates = new Map()
+  const pattern = /([\u4e00-\u9fa5]{2,10}(?:家|族|宗|门|派|宫|阁|司|局|会|院|城|国|军|盟|组织|集团|教团|书院|商会|帮|堂))(?:[，,。；;：:\s]|$)/g
+  for (const match of value.matchAll(pattern)) {
+    const name = normalizeCandidateName(match[1])
+    if (!name || isCommonNonName(name) || candidates.has(name)) continue
+    const evidence = findSentenceContaining(value, name)
+    candidates.set(name, {
+      name,
+      evidence,
+      category: inferFactionCategory(name, evidence),
+      importance: /主线|核心|敌|控制|追杀|统治|掌控|隐秘/.test(evidence) ? 5 : 4
+    })
+  }
+  return [...candidates.values()].slice(0, 4)
+}
+
+function normalizeCandidateName(name = '') {
+  return String(name || '')
+    .replace(/[“”"'《》、，。；：:（）()\[\]\s]/g, '')
+    .trim()
+}
+
+function isCommonNonName(name = '') {
+  if (!name || name.length < 2 || name.length > 10) return true
+  const common = new Set([
+    '主角', '男主', '女主', '配角', '反派', '人物', '角色', '读者', '作者',
+    '世界', '故事', '系统', '设定', '真相', '规则', '核心', '关键', '开局',
+    '前期', '中期', '后期', '终极', '能力', '功法', '势力', '家族', '宗门',
+    '父亲', '母亲', '师父', '导师', '敌人', '同伴', '盟友', '少年', '少女',
+    '老人', '男人', '女人', '凡人', '神仙', '皇帝', '读者们'
+  ])
+  if (common.has(name)) return true
+  if (/^(一个|一种|这个|那个|所有|当前|真正|隐藏|普通|关键|核心)/.test(name)) return true
+  return false
 }
 
 function extractLeadingChineseName(text = '') {
@@ -849,17 +886,36 @@ function summarizeText(text = '', limit = 120) {
   return `${value.slice(0, limit)}...`
 }
 
-function inferCharacterSummary(name, text) {
-  const sentence = findSentenceContaining(text, name)
-  if (name === '沈苍') return '封渊君相关核心人物，疑似残存代码或血脉传承源头，需要长期追踪。'
-  if (name === '吕岳') return '瘟神，前期疑点人物与沉默守护者线索，需要长期追踪其秘密和牺牲弧光。'
-  if (name === '昴日星官' || name === '昴日') return '司晨之神，隐藏观察者和打破派相关关键人物，需要长期追踪其立场变化。'
+function inferCharacterSummary(name, text, evidence = '') {
+  const sentence = evidence || findSentenceContaining(text, name)
   return summarizeText(sentence, 120) || `${name} 是种子中出现的长期角色候选。`
 }
 
-function inferCharacterCategory(name) {
-  if (name === '沈苍') return '前史关键人物'
-  if (name === '吕岳') return '关键配角/误导线'
-  if (name === '昴日星官' || name === '昴日') return '关键配角/隐藏观察者'
-  return '神仙群成员'
+function inferCharacterCategory(name, evidence = '') {
+  const text = `${name} ${evidence || ''}`
+  if (/主角|男主|女主/.test(text)) return '主角'
+  if (/反派|敌|宿敌|对立|追杀/.test(text)) return '对立人物'
+  if (/父|母|兄|妹|家主|亲属|血脉|家族/.test(text)) return '亲缘/家族人物'
+  if (/师|导师|长老|宗主|掌门|宗门/.test(text)) return '师承/宗门人物'
+  if (/同伴|盟友|朋友|队友|搭档/.test(text)) return '关键同伴'
+  return '长期角色候选'
+}
+
+function inferFactionCategory(name, evidence = '') {
+  const text = `${name} ${evidence || ''}`
+  if (/家|族/.test(name)) return '家族/血脉势力'
+  if (/宗|门|派|宫|阁|教/.test(name)) return '宗门/修行势力'
+  if (/司|局|院|军|国|城/.test(name)) return '官方/地域势力'
+  if (/组织|集团|商会|帮|堂|盟/.test(name)) return '组织/利益势力'
+  if (/敌|追杀|控制|隐秘|黑暗/.test(text)) return '对立势力'
+  return '势力/组织候选'
+}
+
+function inferSystemName(text = '') {
+  const value = String(text || '')
+  const explicit = value.match(/(?:力量体系|修炼体系|世界规则|核心规则|底层规则|核心矛盾|世界压力)[：:]\s*([\u4e00-\u9fa5A-Za-z0-9·\-]{2,16})/)
+  if (explicit?.[1]) return normalizeCandidateName(explicit[1]).slice(0, 16)
+  const named = value.match(/([\u4e00-\u9fa5]{2,12}(?:体系|规则|契约|循环|污染|封锁|诅咒|剧场|系统|灵脉|法则))/)
+  if (named?.[1] && !isCommonNonName(named[1])) return normalizeCandidateName(named[1]).slice(0, 16)
+  return '核心力量与世界规则'
 }

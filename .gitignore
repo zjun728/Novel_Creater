@@ -17,6 +17,13 @@ __pycache__/
 .env.*
 _check_db.py
 
+# Local novel corpus / reference texts
+小说txt/
+
+# QA browser/runtime artifacts
+tmp/realistic-flow-qa/chrome-profile/
+tmp/browser-qa/chrome-profile/
+
 # Logs
 *.log
 npm-debug.log*

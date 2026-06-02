@@ -15,6 +15,8 @@ import {
   buildMultiVariantPrompt,
   buildChapterTitleSystemPrompt,
   buildChapterTitlePrompt,
+  buildProseRhythmRepairSystemPrompt,
+  buildProseRhythmRepairPrompt,
   parseMultiVariantText,
   cleanGeneratedChapterText,
   cleanChapterBeatPlanText,
@@ -29,6 +31,7 @@ import {
   buildCorrectionPatchRetryPrompt
 } from '@/prompts/correctionPatch'
 import { applyLocalRevisionPatches, extractLocalRevisionPatches } from '@/utils/localRevisionPatch'
+import { analyzeProseRhythm, countCjkChars, shouldRepairProseRhythm } from '@/utils/proseRhythmGuard'
 
 export const useWriterStore = defineStore('writer', () => {
   const chapters = ref([])
@@ -48,6 +51,99 @@ export const useWriterStore = defineStore('writer', () => {
     if (result?.content) return result.content
     if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
     return result ? JSON.stringify(result) : ''
+  }
+
+  async function compactChapterBeatPlanIfNeeded(provider, chapterNum, content, context = {}) {
+    content = String(content || '').trim()
+    if (content.length <= 1300) return content
+
+    let best = content
+    try {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const messages = [
+          {
+            role: 'system',
+            content: '你是长篇小说分章小纲编辑。只负责压缩小纲，不写正文，不解释。'
+          },
+          {
+            role: 'user',
+            content: [
+              `请把第 ${chapterNum} 章小纲压缩为 700-1100 字，绝不能超过 1300 字。`,
+              '节拍控制在 4-6 条，保留本章核心目的、人物动机、关键选择、代价、结尾钩子、连续性自检和写作约束。',
+              '必须保留时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫的关键提醒，但用短句合并表达。',
+              '不要新增剧情，不要改变因果顺序，不要把两章容量塞进一章。',
+              context?.previousChapterEnding ? `上一章结尾：${context.previousChapterEnding}` : '',
+              attempt > 1 ? `上一次压缩仍过长（${best.length} 字符），请继续压缩。` : '',
+              `原小纲：\n${best}`
+            ].filter(Boolean).join('\n\n')
+          }
+        ]
+        const result = await chatCompletion(provider, messages, { maxTokens: 1400, temperature: 0.3 })
+        const compacted = cleanChapterBeatPlanText(extractAiContent(result))
+        if (compacted.length >= 500 && compacted.length < best.length) best = compacted
+        if (best.length <= 1300) return best
+      }
+
+      if (best.length < content.length) {
+        console.warn('压缩章节小纲后仍超过建议上限，保留较短版本:', {
+          before: content.length,
+          after: best.length
+        })
+        return best
+      }
+    } catch (e) {
+      console.warn('压缩章节小纲失败，保留原小纲:', e.message)
+    }
+    return content
+  }
+
+  async function repairProseRhythmIfNeeded(provider, chapterNum, content, context = {}) {
+    const original = String(content || '').trim()
+    const analysis = analyzeProseRhythm(original)
+    if (!shouldRepairProseRhythm(analysis)) return original
+
+    try {
+      const result = await chatCompletion(provider, [
+        { role: 'system', content: buildProseRhythmRepairSystemPrompt() },
+        {
+          role: 'user',
+          content: buildProseRhythmRepairPrompt({
+            chapterNum,
+            content: original,
+            analysis,
+            beatPlan: context?.beatPlan,
+            context
+          })
+        }
+      ], { maxTokens: 8192, temperature: 0.28 })
+
+      const repaired = cleanGeneratedChapterText(extractAiContent(result))
+      const repairedAnalysis = analyzeProseRhythm(repaired)
+      const originalCount = Math.max(countCjkChars(original), 1)
+      const repairedCount = countCjkChars(repaired)
+      const drift = repairedCount / originalCount
+      const improved =
+        repaired &&
+        repaired !== original &&
+        drift >= 0.78 &&
+        drift <= 1.22 &&
+        (
+          repairedAnalysis.shortParagraphRate < analysis.shortParagraphRate ||
+          repairedAnalysis.maxShortStreak < analysis.maxShortStreak ||
+          repairedAnalysis.aiContrastCount < analysis.aiContrastCount ||
+          repairedAnalysis.maxSameLeadingSubjectCount < analysis.maxSameLeadingSubjectCount
+        )
+
+      if (improved) return repaired
+      console.warn('正文节奏修订未带来稳定改善，保留原稿', {
+        before: analysis,
+        after: repairedAnalysis,
+        drift
+      })
+    } catch (e) {
+      console.warn('正文节奏修订失败，保留原稿:', e.message)
+    }
+    return original
   }
 
   async function resolveTaskProvider(projectId, bindingKeys = [], providerId = null) {
@@ -206,8 +302,29 @@ export const useWriterStore = defineStore('writer', () => {
       }
     ]
 
-    const result = await chatCompletion(resolvedProvider, messages, { maxTokens: 80, temperature: 0.45 })
-    const title = cleanGeneratedChapterTitle(extractAiContent(result))
+    const result = await chatCompletion(resolvedProvider, messages, { maxTokens: 80, temperature: 0.35 })
+    const rawTitle = extractAiContent(result)
+    let title = cleanGeneratedChapterTitle(rawTitle)
+    if (!title) {
+      const retryResult = await chatCompletion(resolvedProvider, [
+        { role: 'system', content: buildChapterTitleSystemPrompt() },
+        {
+          role: 'user',
+          content: [
+            '上一次输出不像章名，可能是正文片段或剧情摘要，请重新命名。',
+            `上一次输出：${rawTitle}`,
+            buildChapterTitlePrompt({
+              chapterNum,
+              chapterGoal: context?.chapterGoal,
+              beatPlan: context?.beatPlan,
+              content
+            }),
+            '请输出一个 2-10 个汉字的短章名，例如“旧宅无名”“后山无人棋”“雨夜归人”这种目录标题，不要输出句子。'
+          ].join('\n\n')
+        }
+      ], { maxTokens: 80, temperature: 0.25 })
+      title = cleanGeneratedChapterTitle(extractAiContent(retryResult))
+    }
     if (!title) return ''
 
     const updated = await api.chapters.update(projectId, chapter.id, { title })
@@ -369,8 +486,9 @@ export const useWriterStore = defineStore('writer', () => {
         { role: 'user', content: buildChapterBeatPrompt({ chapterNum, ...context }) }
       ]
 
-      const result = await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.72 })
-      const content = cleanChapterBeatPlanText(extractAiContent(result))
+      const result = await chatCompletion(provider, messages, { maxTokens: 1800, temperature: 0.6 })
+      let content = cleanChapterBeatPlanText(extractAiContent(result))
+      content = await compactChapterBeatPlanIfNeeded(provider, chapterNum, content, context)
       chapterBeatPlan.value = content
       return content
     } catch (e) {
@@ -414,6 +532,7 @@ export const useWriterStore = defineStore('writer', () => {
       }
 
       content = cleanGeneratedChapterText(content)
+      content = await repairProseRhythmIfNeeded(provider, chapterNum, content, context)
       generationStream.value = content
       if (onStream) onStream(content, '')
 
@@ -522,58 +641,14 @@ export const useWriterStore = defineStore('writer', () => {
         return { version, ...patchResult, mode: 'local_patch' }
       }
 
-      const fallback = await generateAuditRevisionFallbackDraft({
-        projectId,
-        chapterNum,
-        issues,
-        originalContent,
-        provider,
-        fallbackReason: patches.length
-          ? `局部补丁未能匹配当前正文：返回 ${patches.length} 个，跳过 ${patchResult.skipped.length} 个`
-          : 'AI 未返回可应用的局部补丁'
-      })
-      return {
-        version: fallback,
-        content: fallback.content,
-        applied: [],
-        skipped: patchResult.skipped,
-        mode: 'draft_fallback',
-        fallbackReason: fallback.promptBrief
-      }
+      const skippedReasons = patchResult.skipped
+        .map(item => item.reason)
+        .filter(Boolean)
+      const reasonText = skippedReasons.length ? `跳过原因：${[...new Set(skippedReasons)].join('、')}。` : ''
+      throw new Error(`AI 没有返回可安全应用的局部修订补丁，${reasonText}请使用审稿面板的“定位原文/替换”，或手动选区改写。`)
     } finally {
       generating.value = false
     }
-  }
-
-  async function generateAuditRevisionFallbackDraft({ projectId, chapterNum, issues, originalContent, provider, fallbackReason }) {
-    const tasks = normalizeAuditIssuesAsCorrectionTasks(issues)
-    const result = await chatCompletion(provider, [
-      {
-        role: 'user',
-        content: buildCorrectionDraftPrompt({
-          chapterNum,
-          originalContent,
-          tasks
-        })
-      }
-    ], { maxTokens: 8192, temperature: 0.45 })
-
-    const content = cleanGeneratedChapterText(extractAiContent(result))
-    if (!content || content.trim() === String(originalContent || '').trim()) {
-      throw new Error('局部补丁和兜底修订都没有产生有效变化，请改用手动选区改写。')
-    }
-
-    const chapter = await getOrCreateChapter(projectId, chapterNum)
-    const version = await createVersion(projectId, chapter.id, chapterNum, {
-      title: `第 ${chapterNum} 章 - 审稿修订候选`,
-      content,
-      versionType: 'correction_candidate',
-      sourceModelId: provider.id,
-      promptBrief: `本章审稿修订兜底：${fallbackReason}`
-    })
-    await syncProjectCurrentChapter(projectId, chapterNum)
-    currentVersion.value = version
-    return version
   }
 
   // === AI 续写 ===

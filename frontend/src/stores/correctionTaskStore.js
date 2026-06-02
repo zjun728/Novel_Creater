@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { api } from '@/api/db/client'
+import { filterIssuesForCorrectionTasks } from '@/utils/correctionTaskDenoise'
 
 export const CORRECTION_STATUS_OPTIONS = [
   { label: '待确认', value: 'pending' },
@@ -94,7 +95,7 @@ export const useCorrectionTaskStore = defineStore('correctionTask', () => {
   }
 
   function buildTasksFromVolumeAudit(volume, report) {
-    const issues = report?.issues || []
+    const issues = filterIssuesForCorrectionTasks(report?.issues || [], { maxTasks: 5 })
     return issues.map((issue, index) => ({
       sourceType: 'volume_audit',
       sourceId: volume?.id || null,
@@ -124,7 +125,7 @@ export const useCorrectionTaskStore = defineStore('correctionTask', () => {
   function buildTasksFromChapterAudit(chapterNum, report, options = {}) {
     const finalized = !!options.finalized
     const mode = finalized ? CORRECTION_MODES.SOFT : CORRECTION_MODES.HARD
-    const issues = report?.issues || []
+    const issues = filterIssuesForCorrectionTasks(report?.issues || [], { maxTasks: 3 })
     return issues.map((issue, index) => ({
       sourceType: 'chapter_audit',
       sourceId: options.sourceId || null,
@@ -155,7 +156,11 @@ export const useCorrectionTaskStore = defineStore('correctionTask', () => {
   function buildTasksFromGlobalAudit(reportRow) {
     const report = reportRow?.reportJson || reportRow?.report || reportRow
     const sourceId = reportRow?.id || null
-    const issueTasks = (report?.criticalIssues || []).map((issue, index) => ({
+    const criticalIssues = (report?.criticalIssues || []).map(issue => ({
+      ...issue,
+      severity: issue?.severity || 'major'
+    }))
+    const issueTasks = filterIssuesForCorrectionTasks(criticalIssues, { maxTasks: 8 }).map((issue, index) => ({
       sourceType: 'global_audit',
       sourceId,
       targetModule: inferTargetModule(issue.type),
@@ -175,7 +180,7 @@ export const useCorrectionTaskStore = defineStore('correctionTask', () => {
       }
     }))
 
-    const actionTasks = (report?.nextActions || []).map((action, index) => ({
+    const actionTasks = (report?.nextActions || []).slice(0, 3).map((action, index) => ({
       sourceType: 'global_audit',
       sourceId,
       targetModule: 'planning',
