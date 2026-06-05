@@ -20,9 +20,17 @@ import {
   shouldRepairProseRhythm
 } from '../frontend/src/utils/proseRhythmGuard.js'
 import { buildChapterStateLedger } from '../frontend/src/utils/chapterStateLedger.js'
+import { buildWritingContext } from '../frontend/src/utils/contextBuilder.js'
+import { buildChapterWordTarget } from '../frontend/src/utils/chapterWordTarget.js'
 import {
+  buildChapterBeatPrompt,
+  buildChapterBeatSystemPrompt,
+  buildChapterPrompt,
+  buildChapterSystemPrompt,
   buildChapterTitlePrompt,
   buildChapterTitleSystemPrompt,
+  cleanChapterBeatPlanText,
+  cleanGeneratedChapterText,
   cleanGeneratedChapterTitle,
   isDefaultChapterTitle
 } from '../frontend/src/prompts/chapter.js'
@@ -422,6 +430,52 @@ function trimText(text, max = 1600) {
   return `${value.slice(0, max)}...`
 }
 
+function normalizeApiList(value) {
+  if (Array.isArray(value)) return value
+  if (Array.isArray(value?.items)) return value.items
+  if (Array.isArray(value?.data)) return value.data
+  return []
+}
+
+function serializeBrief(value, max = 900) {
+  if (!value) return ''
+  if (typeof value === 'string') return trimText(value, max)
+  try {
+    return trimText(JSON.stringify(value, null, 2), max)
+  } catch {
+    return trimText(String(value), max)
+  }
+}
+
+function formatQaContextForPrompt(context, max = 3200) {
+  if (!context) return ''
+  if (typeof context === 'string') return trimText(context, max)
+
+  const sections = [
+    ['chapterGoal', context.chapterGoal],
+    ['creativeBoundary', context.creativeBoundary],
+    ['volumeStage', context.volumeStage],
+    ['stateLedger', context.stateLedger],
+    ['settingLibrary', context.settingLibrary],
+    ['recentSettingChanges', context.recentSettingChanges],
+    ['threadFacts', context.threadFacts],
+    ['recentFacts', context.recentFacts],
+    ['softCorrectionAims', context.softCorrectionAims],
+    ['previousChapterEnding', context.previousChapterEnding],
+    ['recentChapterEndings', context.recentChapterEndings],
+    ['nearOutline', context.nearOutline],
+    ['wordTarget', context.wordTarget],
+    ['seed', context.seed]
+  ]
+    .map(([label, value]) => {
+      const brief = serializeBrief(value, label === 'settingLibrary' ? 1200 : 700)
+      return brief ? `## ${label}\n${brief}` : ''
+    })
+    .filter(Boolean)
+
+  return trimText(sections.join('\n\n'), max)
+}
+
 function expectedChapterWordRange(project) {
   const targetWords = Number(project?.targetWords || 0)
   const targetChapters = Number(project?.targetChapters || 0)
@@ -776,6 +830,7 @@ async function compactBeatPlanIfNeeded(provider, chapterNum, text, context) {
 
   log(`第 ${chapterNum} 章小纲过长，开始压缩`)
   let best = text
+  const contextBrief = formatQaContextForPrompt(context, 2400)
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const compacted = await chat(provider, [
       { role: 'system', content: '你是长篇小说分章小纲编辑。只负责压缩小纲，不写正文，不解释。' },
@@ -787,7 +842,7 @@ async function compactBeatPlanIfNeeded(provider, chapterNum, text, context) {
           '必须保留时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫的关键提醒，但用短句合并表达。',
           '不要新增剧情，不要改变因果顺序，不要把两章容量塞进一章。',
           attempt > 1 ? `上一次压缩仍过长（${best.length} 字符），请继续压缩。` : '',
-          `上下文：\n${String(context || '').slice(0, 2400)}`,
+          `上下文：\n${contextBrief}`,
           `原小纲：\n${best}`
         ].filter(Boolean).join('\n\n')
       }
@@ -808,10 +863,10 @@ async function compactBeatPlanIfNeeded(provider, chapterNum, text, context) {
 async function generateBeatPlan(project, provider, chapterNum, context) {
   log(`开始生成第 ${chapterNum} 章小纲`)
   const rawText = await chat(provider, [
-    { role: 'system', content: '你是长篇小说分章小纲编辑。只输出正文小纲，不要 JSON。' },
-    { role: 'user', content: `为第 ${chapterNum} 章生成小纲。按 5000 字体量设计，建议 4500-6500 字，尽量不要规划成超过 7000 字的一章，更不得规划成两章内容。小纲总长度控制在 700-1100 字，节拍控制在 4-6 条，不要把两章容量塞进一章，超过 1300 字必须主动压缩。必须先自查是否偏离设定；如果上一章结尾未收束，要自然承接。小纲要包含：本章目标、情绪推进、关键场景、结尾钩子、写作约束、连续性自检。连续性自检必须覆盖时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫。若剧情密度较高，可以把支线、解释和余波留到下一章，不要为了塞满信息牺牲阅读质量。\n\n上下文：\n${context}` }
+    { role: 'system', content: buildChapterBeatSystemPrompt() },
+    { role: 'user', content: buildChapterBeatPrompt({ ...context, chapterNum }) }
   ], { maxTokens: 1800, temperature: 0.5 })
-  const text = await compactBeatPlanIfNeeded(provider, chapterNum, rawText, context)
+  const text = cleanChapterBeatPlanText(await compactBeatPlanIfNeeded(provider, chapterNum, rawText, context))
   await saveBeatPlan(project, chapterNum, text)
   assertCheck(text.length > 200, `第 ${chapterNum} 章小纲已生成`, `${text.length} chars`)
   return text
@@ -819,22 +874,12 @@ async function generateBeatPlan(project, provider, chapterNum, context) {
 
 async function generateChapterContent(project, provider, chapterNum, context, beatPlan) {
   log(`开始生成第 ${chapterNum} 章正文`)
+  const promptContext = { ...context, chapterNum, beatPlan }
   const content = await chat(provider, [
-    {
-      role: 'system',
-      content: [
-        '你是成熟的长篇网文作者。写作目标是有代入感的人性选择，不是堆设定。',
-        '正文要具体、可感、有行动和欲望；少用抽象总结。',
-        '严格减少“不是X，是Y”句式；本章出现次数不得超过 3 次。',
-        '只输出小说正文，不要输出标题、Markdown 标题、“# 第N章”或“第N章”。第一行直接进入场景。',
-        '生成前先检查时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫；这些问题必须在正文中自然补足，不要留到审稿阶段。',
-        '目标字数 5000 字，建议 4500-6500 字；如情节需要可自然延展，但优先控制在 4000-7000 字，不能为了字数强行收尾或砍掉关键细节。',
-        '如果内容超量，优先压缩解释性设定和重复心理描写，不压缩关键动作、选择和代价；如一章装不下，保留自然钩子交给下一章。'
-      ].join('\n')
-    },
-    { role: 'user', content: `根据上下文和小纲生成第 ${chapterNum} 章正文。不要输出标题，不要解释。\n\n上下文：\n${context}\n\n本章小纲：\n${beatPlan}` }
+    { role: 'system', content: buildChapterSystemPrompt() },
+    { role: 'user', content: buildChapterPrompt(promptContext) }
   ], { maxTokens: 8192, temperature: 0.72, timeoutMs: 360000 })
-  const cleaned = cleanQaGeneratedText(content)
+  const cleaned = cleanGeneratedChapterText(content)
   const count = wordCount(cleaned)
   report.generated.chapterWordCounts.push({ chapterNum, count, stage: 'first_draft' })
   assertCheck(count >= 3000, `第 ${chapterNum} 章正文已生成`, `${count} 字`)
@@ -873,6 +918,7 @@ async function repairProseRhythmForQa(project, provider, chapterNum, context, be
   const original = String(content || '').trim()
   const analysis = analyzeProseRhythm(original)
   if (!shouldRepairProseRhythm(analysis)) return original
+  const contextBrief = formatQaContextForPrompt(context, 2600)
 
   log(`第 ${chapterNum} 章触发句式节奏修订：${analysis.reasons.join('；')}`)
   const repaired = cleanQaGeneratedText(await chat(provider, [
@@ -891,7 +937,7 @@ async function repairProseRhythmForQa(project, provider, chapterNum, context, be
         `请修订第 ${chapterNum} 章的句式节奏。`,
         `节奏报告：\n${formatProseRhythmAnalysis(analysis)}`,
         '目标：减少连续短句独立段落，去掉机械“不是X，是Y”模板，保持剧情事实和字数体量基本不变。',
-        `上下文：\n${trimText(context, 2600)}`,
+        `上下文：\n${contextBrief}`,
         `小纲：\n${trimText(beatPlan, 1600)}`,
         `正文：\n${original}`
       ].join('\n\n')
@@ -924,6 +970,7 @@ async function repairProseRhythmForQa(project, provider, chapterNum, context, be
 async function expandShortChapterContent(project, provider, chapterNum, context, beatPlan, shortContent) {
   const range = expectedChapterWordRange(project)
   const currentCount = wordCount(shortContent)
+  const contextBrief = formatQaContextForPrompt(context, 3200)
   log(`第 ${chapterNum} 章初稿偏短，开始补足重试：${currentCount} 字`)
   const expanded = await chat(provider, [
     {
@@ -944,7 +991,7 @@ async function expandShortChapterContent(project, provider, chapterNum, context,
         `这次输出必须明显长于当前稿，至少补足到 ${range.hardMin + 200} 字以上。`,
         '只输出补足后的完整正文，不要标题，不要解释。',
         '',
-        `上下文：\n${context}`,
+        `上下文：\n${contextBrief}`,
         '',
         `本章小纲：\n${beatPlan}`,
         '',
@@ -958,6 +1005,7 @@ async function expandShortChapterContent(project, provider, chapterNum, context,
 async function compressLongChapterContent(project, provider, chapterNum, context, beatPlan, longContent, compressAttempt = 1) {
   const range = expectedChapterWordRange(project)
   const currentCount = wordCount(longContent)
+  const contextBrief = formatQaContextForPrompt(context, 3200)
   log(`第 ${chapterNum} 章稿件过长，开始压缩重试：${currentCount} 字`)
   const strictHint = compressAttempt > 1
     ? `这是第 ${compressAttempt} 次压缩，上一版仍过长。这次必须压到 ${range.softMin}-${range.softMax} 字，宁可把余波和解释留到下一章。`
@@ -979,7 +1027,7 @@ async function compressLongChapterContent(project, provider, chapterNum, context
         strictHint,
         '如果必须取舍，保留动作和因果，删减解释和重复句式。',
         '',
-        `上下文：\n${context}`,
+        `上下文：\n${contextBrief}`,
         '',
         `本章小纲：\n${beatPlan}`,
         '',
@@ -1014,11 +1062,12 @@ function auditChapterPayload(payload) {
 
 async function auditChapter(provider, chapterNum, content, context) {
   log(`开始审稿第 ${chapterNum} 章`)
+  const contextBrief = formatQaContextForPrompt(context, 3600)
   let audit = { summary: '', issues: [] }
   try {
     const result = await chatJson(provider, [
       { role: 'system', content: '你是小说一致性审稿人。只输出合法 JSON。问题要具体，location 尽量引用原文中真实存在的短片段。' },
-      { role: 'user', content: `审查第 ${chapterNum} 章，重点看：设定矛盾、人物动机、人性代入、数值计算、章节衔接、AI 腔句式。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文：${context}\n\n正文：\n${content}` }
+      { role: 'user', content: `审查第 ${chapterNum} 章，重点看：设定矛盾、人物动机、人性代入、数值计算、章节衔接、AI 腔句式。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文：${contextBrief}\n\n正文：\n${content}` }
     ], {
       maxTokens: 6000,
       repairMaxTokens: 6000,
@@ -1032,7 +1081,7 @@ async function auditChapter(provider, chapterNum, content, context) {
     try {
       const compact = await chatJson(provider, [
         { role: 'system', content: '你是小说一致性审稿人。只输出合法 JSON，不要解释。' },
-        { role: 'user', content: `审稿紧凑重试：审查第 ${chapterNum} 章，只保留 0-3 个最关键问题。每个字段必须短，location 必须是原文中真实存在的短片段。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文摘要：${trimText(context, 2200)}\n\n正文节选：\n${content.slice(0, 7000)}` }
+        { role: 'user', content: `审稿紧凑重试：审查第 ${chapterNum} 章，只保留 0-3 个最关键问题。每个字段必须短，location 必须是原文中真实存在的短片段。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文摘要：${trimText(contextBrief, 2200)}\n\n正文节选：\n${content.slice(0, 7000)}` }
       ], {
         maxTokens: 2600,
         repairMaxTokens: 2600,
@@ -1046,7 +1095,7 @@ async function auditChapter(provider, chapterNum, content, context) {
       try {
         const ultraCompact = await chatJson(provider, [
           { role: 'system', content: '你是小说一致性审稿人。只输出合法 JSON，不要解释。字段必须短。' },
-          { role: 'user', content: `审稿最终极简重试：审查第 ${chapterNum} 章，只保留 0-1 个最阻塞的问题；如果没有确定问题，输出空数组。每个字段少于 50 字，replacement 可为空，禁止长引用原文。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文摘要：${trimText(context, 900)}\n\n正文开头：\n${content.slice(0, 3200)}\n\n正文结尾：\n${content.slice(-1600)}` }
+          { role: 'user', content: `审稿最终极简重试：审查第 ${chapterNum} 章，只保留 0-1 个最阻塞的问题；如果没有确定问题，输出空数组。每个字段少于 50 字，replacement 可为空，禁止长引用原文。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文摘要：${trimText(contextBrief, 900)}\n\n正文开头：\n${content.slice(0, 3200)}\n\n正文结尾：\n${content.slice(-1600)}` }
         ], {
           maxTokens: 1400,
           repairMaxTokens: 1400,
@@ -1563,7 +1612,7 @@ async function runWritingFlow(project, provider, seed, bible) {
     `禁止方向：${(bible.forbiddenDirections || []).join('；')}`
   ].join('\n')
 
-  const ch1 = await runChapter(project, provider, 1, baseContext)
+  const ch1 = await runChapter(project, provider, 1, await buildContinuationContext(project, 1))
 
   const pendingAfterCh1 = await request('GET', `/projects/${project.id}/settings/change-events?status=pending_review`)
   assertCheck(pendingAfterCh1.length > 0, '第 1 章定稿后产生待确认设定变更', `pending=${pendingAfterCh1.length}`)
@@ -1575,8 +1624,7 @@ async function runWritingFlow(project, provider, seed, bible) {
   }
   pass('章节设定变更已人工确认/拒绝一部分', `handled=${Math.min(4, pendingAfterCh1.length)}`)
 
-  const ch2Context = `${baseContext}\n\n上一章摘要：${ch1.summary}\n上一章结尾：${ch1.ending}`
-  const ch2 = await runChapter(project, provider, 2, ch2Context)
+  const ch2 = await runChapter(project, provider, 2, await buildContinuationContext(project, 2))
 
   const chapter2 = await createOrGetChapter(project, 2)
   await request('POST', `/projects/${project.id}/chapters/${chapter2.id}/versions/${ch2.finalVersion.id}/finalize`, {
@@ -1668,64 +1716,116 @@ async function backfillMissingFinalizedPostprocess(project, provider, finalizedN
 }
 
 async function buildContinuationContext(project, chapterNum) {
-  const [seeds, bible, chapters, entities, facts, settingEvents] = await Promise.all([
-    request('GET', `/projects/${project.id}/seeds`).catch(() => []),
-    request('GET', `/projects/${project.id}/bible`).catch(() => null),
-    request('GET', `/projects/${project.id}/chapters`),
-    request('GET', `/projects/${project.id}/settings/entities`).catch(() => []),
-    request('GET', `/projects/${project.id}/canon-facts`).catch(() => []),
-    request('GET', `/projects/${project.id}/settings/change-events`).catch(() => [])
-  ])
+  {
+    const [
+      seedsRaw,
+      bible,
+      chaptersRaw,
+      entitiesRaw,
+      relationsRaw,
+      factsRaw,
+      settingEventsRaw,
+      volumesRaw,
+      correctionTasksRaw
+    ] = await Promise.all([
+      request('GET', `/projects/${project.id}/seeds`).catch(() => []),
+      request('GET', `/projects/${project.id}/bible`).catch(() => null),
+      request('GET', `/projects/${project.id}/chapters`).catch(() => []),
+      request('GET', `/projects/${project.id}/settings/entities`).catch(() => []),
+      request('GET', `/projects/${project.id}/settings/relations`).catch(() => []),
+      request('GET', `/projects/${project.id}/canon-facts`).catch(() => []),
+      request('GET', `/projects/${project.id}/settings/change-events`).catch(() => []),
+      request('GET', `/projects/${project.id}/volumes`).catch(() => []),
+      request('GET', `/projects/${project.id}/correction-tasks`).catch(() => [])
+    ])
 
-  const selectedSeed = seeds.find(seed => seed.status === 'selected') || seeds[0] || {}
-  const previousChapters = chapters
-    .filter(item => Number(item.chapterNum) < chapterNum && item.finalVersionId)
-    .sort((a, b) => Number(b.chapterNum) - Number(a.chapterNum))
-    .slice(0, 4)
+    const seeds = normalizeApiList(seedsRaw)
+    const chapters = normalizeApiList(chaptersRaw)
+    const entities = normalizeApiList(entitiesRaw)
+    const relations = normalizeApiList(relationsRaw)
+    const facts = normalizeApiList(factsRaw)
+    const settingEvents = normalizeApiList(settingEventsRaw)
+    const volumes = normalizeApiList(volumesRaw)
+    const correctionTasks = normalizeApiList(correctionTasksRaw)
+    const selectedSeed = seeds.find(seed => seed.status === 'selected') || seeds[0] || {}
 
-  const previousDetails = []
-  for (const chapter of previousChapters) {
-    const versions = await request('GET', `/projects/${project.id}/chapters/${chapter.id}/versions`)
-    const finalVersion = versions.find(item => item.id === chapter.finalVersionId)
-      || versions.find(item => item.versionType === 'final')
-    previousDetails.push([
-      `第 ${chapter.chapterNum} 章摘要：${chapter.summary || '暂无摘要'}`,
-      `第 ${chapter.chapterNum} 章结尾：${trimText(finalVersion?.content?.slice(-420) || '', 420)}`
-    ].join('\n'))
+    const previousChapters = chapters
+      .filter(item => Number(item.chapterNum) < chapterNum && item.finalVersionId)
+      .sort((a, b) => Number(b.chapterNum) - Number(a.chapterNum))
+      .slice(0, 4)
+
+    const recentSummaries = []
+    const recentChapterEndings = []
+    for (const chapter of previousChapters) {
+      const versions = await request('GET', `/projects/${project.id}/chapters/${chapter.id}/versions`).catch(() => [])
+      const finalVersion = versions.find(item => item.id === chapter.finalVersionId)
+        || versions.find(item => item.versionType === 'final')
+      recentSummaries.push({
+        chapterNum: Number(chapter.chapterNum),
+        summary: chapter.summary || trimText(finalVersion?.content || '', 260)
+      })
+      recentChapterEndings.push({
+        chapterNum: Number(chapter.chapterNum),
+        ending: trimText(finalVersion?.content?.slice(-520) || '', 520)
+      })
+    }
+
+    const nearChapters = chapters
+      .filter(item => Number(item.chapterNum) >= chapterNum && Number(item.chapterNum) <= chapterNum + 4)
+      .sort((a, b) => Number(a.chapterNum) - Number(b.chapterNum))
+      .map(item => ({
+        chapterNum: Number(item.chapterNum),
+        title: item.title && item.title !== `第 ${item.chapterNum} 章` ? item.title : '',
+        goal: item.summary || item.beatPlan || '',
+        conflict: '',
+        turn: ''
+      }))
+
+    const currentVolume = volumes.find(volume =>
+      Number(chapterNum) >= Number(volume.startChapter || 0) &&
+      Number(chapterNum) <= Number(volume.endChapter || 0)
+    )
+
+    const result = buildWritingContext(
+      {
+        bible: bible || {},
+        outline: {
+          currentVolume: currentVolume || null,
+          nearChapters
+        },
+        characters: [],
+        plotThreads: [],
+        canonFacts: facts
+      },
+      chapterNum,
+      undefined,
+      { entities, relations, changeEvents: settingEvents },
+      { volumes },
+      { tasks: correctionTasks }
+    )
+
+    const context = result.context || {}
+    context.chapterNum = chapterNum
+    context.seed = selectedSeed
+    context.wordTarget = buildChapterWordTarget(project, context.volumeStage)
+    context.recentSummaries = recentSummaries
+    context.recentChapterEndings = recentChapterEndings
+    context.previousChapterEnding = recentChapterEndings[0]?.ending || ''
+    context.sequenceRules = [
+      `生成第 ${chapterNum} 章时必须承接上一章结尾，不允许跳场、跳状态或让角色无代价恢复。`,
+      '上一章已经定稿的事实只能向后软过渡，不回头改写。',
+      '如果当前章信息量过高，支线解释和余波可以自然留到下一章。'
+    ]
+    if (chapterNum === 1 && selectedSeed.openingHook) {
+      context.openingAnchor = selectedSeed.openingHook
+    }
+    context.__qaMeta = {
+      usedTokens: result.usedTokens,
+      maxTokens: result.maxTokens,
+      previousChaptersLoaded: previousChapters.length
+    }
+    return context
   }
-
-  const settingSummary = entities.slice(0, 30).map(item =>
-    `${item.entityType || item.type}｜${item.entityName || item.name}｜${item.category || ''}｜${trimText(item.summary || '', 120)}`
-  ).join('\n')
-
-  const factSummary = facts.slice(0, 25).map(item =>
-    `第${item.chapterNum || '?'}章｜${item.factType || 'plot'}｜${trimText(item.content || '', 120)}`
-  ).join('\n')
-
-  const acceptedChanges = settingEvents
-    .filter(item => item.status === 'accepted')
-    .slice(0, 20)
-    .map(item => `${item.entityName} ${item.fieldPath}: ${trimText(item.newValue || '', 120)}`)
-    .join('\n')
-  const stateLedger = buildChapterStateLedger({
-    chapterNum,
-    settingEntities: entities,
-    settingChangeEvents: settingEvents,
-    canonFacts: facts,
-    maxLines: 24
-  })
-
-  return [
-    `章节状态账本（硬状态）：\n${stateLedger || '暂无'}`,
-    `项目目标：${project.targetWords || 2000000} 字 / ${project.targetChapters || 400} 章，单章约 5000 字。`,
-    `当前任务：生成第 ${chapterNum} 章，必须自然承接上一章结尾，避免跳场和断层。`,
-    `创作种子：${JSON.stringify(selectedSeed)}`,
-    `创作圣经：${JSON.stringify(bible || {})}`,
-    `最近章节：\n${previousDetails.join('\n\n')}`,
-    `设定库：\n${settingSummary || '暂无'}`,
-    `已确认记忆事实：\n${factSummary || '暂无'}`,
-    `已确认设定变更：\n${acceptedChanges || '暂无'}`
-  ].join('\n\n')
 }
 
 async function loadFinalizedChapters(project, startChapter = 1, endChapter = Number.MAX_SAFE_INTEGER) {

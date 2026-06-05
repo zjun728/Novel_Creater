@@ -2,8 +2,8 @@ import {
   correctionTaskMode,
   isCorrectionTaskActiveForContext,
   isCorrectionTaskBlockingForGeneration
-} from '@/stores/correctionTaskStore'
-import { formatWritingStyleStandardsForPrompt } from '@/data/writingStyleStandards'
+} from './correctionTaskRules.js'
+import { formatWritingStyleStandardsForPrompt } from '../data/writingStyleStandards.js'
 import { buildChapterStateLedger } from './chapterStateLedger.js'
 
 /**

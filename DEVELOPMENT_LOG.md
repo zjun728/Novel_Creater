@@ -4239,3 +4239,38 @@
 
 ### 下一步
 - 用真实模型重新跑 3-5 章，重点观察章节读感、上下章衔接、待确认记忆门禁、设定兜底是否仍有测试故事残留。
+
+## 2026-06-02 - 真实流程 QA 与生产写作链路对齐
+
+### 背景
+- 继续排查百万字级别真实流程测试时发现，`tmp/run_realistic_longform_flow.mjs` 虽然能跑完整接口链路，但章节小纲、正文生成和续写上下文是脚本内手写的。
+- 这会导致 QA 脚本测试的是“另一套写作链路”，不能代表前端写字台真实使用的 `buildWritingContext`、小纲 Prompt 和正文 Prompt。
+
+### 本次完成
+- 新增契约测试 `tmp/test_realistic_qa_frontend_context_contract.mjs`，固定真实流程 QA 必须复用前端写作上下文和章节提示词构造器。
+- 将真实流程 QA 的小纲生成切换为 `buildChapterBeatSystemPrompt` + `buildChapterBeatPrompt`。
+- 将真实流程 QA 的正文生成切换为 `buildChapterSystemPrompt` + `buildChapterPrompt`，并复用前端正文清洗逻辑。
+- 将 QA 续写上下文改为调用 `buildWritingContext`，按生产链路注入创作边界、设定库、状态账本、Canon 事实、近景规划、上一章结尾和纠偏任务。
+- 移除 QA 续写上下文中的完整种子 JSON 和完整圣经 JSON 直塞，避免测试脚本造成上下文噪音和注意力污染。
+- 辅助审稿、扩写、压缩、句式节奏修订统一使用格式化后的 QA 上下文摘要，避免对象被拼接成无意义文本。
+
+### 修改文件
+- `frontend/src/utils/correctionTaskRules.js`
+- `frontend/src/stores/correctionTaskStore.js`
+- `frontend/src/utils/contextBuilder.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_realistic_qa_frontend_context_contract.mjs`
+
+### 已运行验证
+- `node tmp\test_realistic_qa_frontend_context_contract.mjs`
+- `node tmp\test_quality_first_generation_contract.mjs`
+- `node --test frontend\tests\promptQuality.test.mjs`
+- `node --check tmp\run_realistic_longform_flow.mjs`
+- `npm --prefix frontend run build`
+
+### 当前决策
+- 以后真实流程 QA 不允许自建一套章节生成 Prompt 或全量上下文拼接；必须复用生产写字台的上下文构造与提示词构造。
+- 如果 QA 需要额外验收信息，只能作为测试报告或辅助检查上下文，不得影响章节正文生成链路。
+
+### 下一步
+- 用真实模型重新跑 3-5 章短链路，观察对齐生产 Prompt 后的章节读感、上下章衔接、设定库/记忆门禁和纠偏任务数量。
