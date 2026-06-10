@@ -21,6 +21,11 @@ import {
   buildAuditRepairPrompt
 } from '@/prompts/audit'
 import {
+  buildAiTraceReviewSystemPrompt,
+  buildAiTraceReviewPrompt
+} from '@/prompts/aiTraceReview'
+import { AI_TRACE_ISSUE_TYPES } from '@/qualityRules/aiTraceRules'
+import {
   buildStyleSystemPrompt,
   buildStyleAnalysisPrompt
 } from '@/prompts/style'
@@ -176,8 +181,9 @@ export const useMemoryStore = defineStore('memory', () => {
       const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 4096, temperature: 0.25 }))
       const text = getCompletionText(result)
       const data = await parseAuditResult(provider, text)
-      lastAuditResult.value = data
-      return data
+      const reviewedData = await reviewAiTraceIssuesIfNeeded(provider, data, chapterContent, chapterNum, context)
+      lastAuditResult.value = reviewedData
+      return reviewedData
     } catch (e) {
       console.error('审稿失败:', e.message)
       throw e
@@ -639,6 +645,154 @@ async function parseAuditResult(provider, text) {
   return buildFallbackAuditResult(text)
 }
 
+const AI_TRACE_DIRECT_TYPES = new Set([
+  'ai_tone',
+  'template_ending',
+  'surface_emotion',
+  'tool_character',
+  'info_dump',
+  'cliche_imagery',
+  'sensory_checklist',
+  'decorative_number',
+  'emotion_label',
+  'overfunctional_density',
+  'skipped_loss'
+].filter(type => type === 'ai_tone' || AI_TRACE_ISSUE_TYPES.includes(type)))
+const AI_TRACE_SOFT_TYPES = new Set(['quality', 'pacing', 'human_motivation', 'emotional_logic'])
+const AI_TRACE_TEXT_PATTERN = /AI|ai|模板|短句|句式|功能|情绪|感官|数字|说明|工具人|交底|套话|失去|段首|结尾|五感|计划书|两难/
+const AI_TRACE_REVIEW_DECISIONS = [
+  'ignore',
+  'local_window_revision',
+  'paragraph_polish',
+  'outline_replan',
+  'full_regenerate'
+]
+
+async function reviewAiTraceIssuesIfNeeded(provider, auditResult, chapterContent, chapterNum, context = {}) {
+  const issues = Array.isArray(auditResult?.issues) ? auditResult.issues : []
+  const candidates = issues
+    .map((issue, index) => ({ issue, index }))
+    .filter(({ issue }) => isAiTraceReviewCandidate(issue))
+
+  if (!candidates.length) return auditResult
+
+  try {
+    const issuesForReview = candidates.map(({ issue, index }, issueIndex) => ({
+      ...issue,
+      issueIndex,
+      originalIssueIndex: index
+    }))
+    const messages = [
+      { role: 'system', content: buildAiTraceReviewSystemPrompt() },
+      {
+        role: 'user',
+        content: buildAiTraceReviewPrompt({
+          chapterNum,
+          chapterContent,
+          issues: issuesForReview,
+          context
+        })
+      }
+    ]
+    const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 2048, temperature: 0.15 }))
+    const text = getCompletionText(result)
+    const reviewPayload = parseJsonCandidates(text)
+      .map(normalizeAiTraceReviewPayload)
+      .find(Boolean)
+
+    if (!reviewPayload) return auditResult
+
+    const reviewsByOriginalIndex = new Map()
+    reviewPayload.reviews.forEach((review, reviewIndex) => {
+      const originalIndex = resolveAiTraceReviewOriginalIndex(review, reviewIndex, candidates)
+      if (Number.isFinite(originalIndex)) {
+        reviewsByOriginalIndex.set(originalIndex, review)
+      }
+    })
+
+    let dismissedCount = 0
+    const reviewedIssues = issues
+      .map((issue, index) => {
+        const review = reviewsByOriginalIndex.get(index)
+        return review ? { ...issue, aiTraceReview: review } : issue
+      })
+      .filter((issue, index) => {
+        const review = reviewsByOriginalIndex.get(index)
+        if (review?.decision === 'ignore') {
+          dismissedCount += 1
+          return false
+        }
+        return true
+      })
+
+    return {
+      ...auditResult,
+      issues: reviewedIssues,
+      aiTraceReview: {
+        reviewedCount: reviewPayload.reviews.length,
+        dismissedCount,
+        overallDecision: reviewPayload.overallDecision,
+        summary: reviewPayload.summary,
+        reviews: reviewPayload.reviews
+      }
+    }
+  } catch (e) {
+    console.warn('AI 痕迹二审失败，保留一审结果:', e.message)
+    return auditResult
+  }
+}
+
+function isAiTraceReviewCandidate(issue) {
+  if (!issue || typeof issue !== 'object') return false
+  if (AI_TRACE_DIRECT_TYPES.has(issue.type)) return true
+  if (!AI_TRACE_SOFT_TYPES.has(issue.type)) return false
+  return AI_TRACE_TEXT_PATTERN.test([
+    issue.description,
+    issue.location,
+    issue.suggestion,
+    issue.replacement,
+    issue.reason
+  ].filter(Boolean).join(' '))
+}
+
+function normalizeAiTraceReviewPayload(value) {
+  const payload = Array.isArray(value) ? { reviews: value } : value
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.reviews)) return null
+  return {
+    reviews: payload.reviews.map(normalizeAiTraceReviewItem).filter(Boolean),
+    overallDecision: pickEnum(payload.overallDecision, AI_TRACE_REVIEW_DECISIONS, 'local_window_revision'),
+    summary: String(payload.summary || '').trim()
+  }
+}
+
+function normalizeAiTraceReviewItem(item) {
+  if (!item || typeof item !== 'object') return null
+  return {
+    issueIndex: normalizeOptionalNumber(item.issueIndex),
+    originalIssueIndex: normalizeOptionalNumber(item.originalIssueIndex),
+    decision: pickEnum(item.decision, AI_TRACE_REVIEW_DECISIONS, 'local_window_revision'),
+    confidence: clampConfidence(item.confidence),
+    sourceLevel: String(item.sourceLevel || '').trim(),
+    repairScope: String(item.repairScope || '').trim(),
+    evidence: String(item.evidence || '').trim(),
+    counterEvidence: String(item.counterEvidence || '').trim(),
+    nextAction: String(item.nextAction || '').trim()
+  }
+}
+
+function resolveAiTraceReviewOriginalIndex(review, reviewIndex, candidates) {
+  const originalIndex = normalizeOptionalNumber(review?.originalIssueIndex)
+  if (originalIndex !== null) return originalIndex
+  const issueIndex = normalizeOptionalNumber(review?.issueIndex)
+  if (issueIndex !== null && candidates[issueIndex]) return candidates[issueIndex].index
+  return candidates[reviewIndex]?.index
+}
+
+function normalizeOptionalNumber(value) {
+  const num = Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
 function normalizeAuditResult(value) {
   const payload = Array.isArray(value) ? { issues: value } : value
   if (!payload || typeof payload !== 'object') return null
@@ -675,7 +829,12 @@ function normalizeAuditIssue(issue) {
       'surface_emotion',
       'tool_character',
       'info_dump',
-      'cliche_imagery'
+      'cliche_imagery',
+      'sensory_checklist',
+      'decorative_number',
+      'emotion_label',
+      'overfunctional_density',
+      'skipped_loss'
     ], 'quality'),
     description: String(issue.description || issue.problem || issue.summary || '').trim(),
     location: String(issue.location || issue.evidence || issue.quote || '').trim(),

@@ -1,474 +1,82 @@
 {
-  "startedAt": "2026-06-02T06:36:29.456Z",
+  "startedAt": "2026-06-10T06:29:27.210Z",
   "project": {
-    "id": "f467e166-b950-4ffa-956b-7e9d3a17f4b9",
-    "title": "QualitySlimQA200w_20260602060323",
+    "id": "389e6bbd-ebbd-4c97-9792-a2d138258b03",
+    "title": "写作标准验收200万_20260610062933",
     "targetWords": 2000000,
     "targetChapters": 400,
-    "url": "http://127.0.0.1:5173/project/f467e166-b950-4ffa-956b-7e9d3a17f4b9"
+    "url": "http://127.0.0.1:5173/project/389e6bbd-ebbd-4c97-9792-a2d138258b03"
   },
   "provider": {
-    "name": "联通云-DeepSeek-V4-Flash",
-    "model": "DeepSeek-V4-Flash",
+    "name": "联通云-kimi-k2.6",
+    "model": "kimi-k2.6",
     "baseURL": "https://aigw-gzgy2.cucloud.cn:8443/v1",
     "apiKey": "sk-sp-...VS1o",
-    "maxContextTokens": 1000000,
-    "maxOutputTokens": 380000
+    "maxContextTokens": 5000000,
+    "maxOutputTokens": 2000000
   },
   "phases": [],
   "checks": [
     {
-      "name": "后端服务可用",
+      "name": "后端服务已由脚本启动",
       "status": "pass",
       "detail": ""
     },
     {
-      "name": "前端服务可用",
+      "name": "前端服务已由脚本启动",
       "status": "pass",
       "detail": ""
     },
     {
       "name": "模型配置已读取",
       "status": "pass",
-      "detail": "联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash / sk-sp-...VS1o"
+      "detail": "联通云-kimi-k2.6 / kimi-k2.6 / sk-sp-...VS1o"
     },
     {
-      "name": "续跑已有测试项目",
+      "name": "已新建 200 万字规模项目",
       "status": "pass",
-      "detail": "QualitySlimQA200w_20260602060323"
+      "detail": "写作标准验收200万_20260610062933 / 400 章"
     },
     {
-      "name": "第 4 章小纲压缩到建议上限内",
+      "name": "选题雷达有热点数据",
+      "status": "pass",
+      "detail": "items=102"
+    },
+    {
+      "name": "真实流程测试执行失败",
       "status": "fail",
-      "detail": "2527 -> 1406 chars"
-    },
-    {
-      "name": "第 4 章小纲已生成",
-      "status": "pass",
-      "detail": "1406 chars"
-    },
-    {
-      "name": "第 4 章正文已生成",
-      "status": "pass",
-      "detail": "4817 字"
-    },
-    {
-      "name": "第 4 章初稿字数在可接受范围",
-      "status": "pass",
-      "detail": "4817 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
-    },
-    {
-      "name": "第 4 章节奏修订已采用",
-      "status": "pass",
-      "detail": "短句率 0.36 -> 0.25，连续 3 -> 3，段首重复 10 -> 8"
-    },
-    {
-      "name": "第 4 章句式节奏修订稿字数在可接受范围",
-      "status": "pass",
-      "detail": "4782 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
-    },
-    {
-      "name": "第 4 章审稿完成",
-      "status": "pass",
-      "detail": "issues=3"
-    },
-    {
-      "name": "第 4 章定稿字数在可接受范围",
-      "status": "pass",
-      "detail": "4879 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
-    },
-    {
-      "name": "第 4 章章名已生成",
-      "status": "pass",
-      "detail": "玉佩碎"
-    },
-    {
-      "name": "第 4 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "4879 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 4 章定稿后 accepted=6, rejected=0"
-    },
-    {
-      "name": "第 5 章小纲已自动压缩",
-      "status": "pass",
-      "detail": "1757 -> 881 chars"
-    },
-    {
-      "name": "第 5 章小纲已生成",
-      "status": "pass",
-      "detail": "881 chars"
-    },
-    {
-      "name": "第 5 章正文已生成",
-      "status": "pass",
-      "detail": "7513 字"
-    },
-    {
-      "name": "第 5 章压缩重试已进入可接受范围",
-      "status": "pass",
-      "detail": "7513 -> 5830 字"
-    },
-    {
-      "name": "第 5 章补足稿字数在可接受范围",
-      "status": "pass",
-      "detail": "5830 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
-    },
-    {
-      "name": "第 5 章节奏修订已采用",
-      "status": "pass",
-      "detail": "短句率 0.39 -> 0.00，连续 6 -> 0，段首重复 20 -> 6"
-    },
-    {
-      "name": "第 5 章句式节奏修订稿字数在可接受范围",
-      "status": "pass",
-      "detail": "5817 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
-    },
-    {
-      "name": "第 5 章审稿完成",
-      "status": "pass",
-      "detail": "issues=6"
-    },
-    {
-      "name": "第 5 章定稿字数在可接受范围",
-      "status": "pass",
-      "detail": "5890 字；目标 5000，建议 4500-6500，硬范围 4000-7000"
-    },
-    {
-      "name": "第 5 章章名已生成",
-      "status": "pass",
-      "detail": "断念换剑"
-    },
-    {
-      "name": "第 5 章已定稿并完成记忆/设定提取",
-      "status": "pass",
-      "detail": "5890 字"
-    },
-    {
-      "name": "待确认设定变更已模拟人工处理",
-      "status": "pass",
-      "detail": "第 5 章定稿后 accepted=6, rejected=0"
-    },
-    {
-      "name": "真实流程续写到目标章数",
-      "status": "pass",
-      "detail": "第 4-5 章，最后一章 5890 字"
-    },
-    {
-      "name": "多章验收：定稿章节均有记忆事实",
-      "status": "pass",
-      "detail": "chapters=5"
-    },
-    {
-      "name": "多章验收：无待确认设定变更阻塞后续生成",
-      "status": "pass",
-      "detail": "pending=0"
-    },
-    {
-      "name": "多章验收：定稿章节字数未硬性越界",
-      "status": "pass",
-      "detail": "range=4000-7000"
-    },
-    {
-      "name": "多章一致性验收通过",
-      "status": "fail",
-      "detail": "issues=6, hard=5"
-    },
-    {
-      "name": "项目级审稿已保存",
-      "status": "pass",
-      "detail": "issues=5"
-    },
-    {
-      "name": "项目详情页可打开",
-      "status": "pass",
-      "detail": "QualitySlimQA200w_20260602060323"
-    },
-    {
-      "name": "项目详情页显示模块：选题雷达",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：创作种子",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：创作圣经",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：设定库",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：章节管理",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "项目详情页显示模块：纠偏任务",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "写字台可打开",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "写字台审稿入口可见",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "写字台返回项目详情入口可见",
-      "status": "pass",
-      "detail": ""
-    },
-    {
-      "name": "浏览器 UI 基础验收完成",
-      "status": "pass",
-      "detail": "nodes=1572, text=4864"
+      "detail": "TimeoutError: The operation was aborted due to timeout\n    at node:internal/deps/undici/undici:16416:13\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async chat (file:///D:/Projects/Novel_Creater/tmp/run_realistic_longform_flow.mjs:269:19)\n    at async chatJson (file:///D:/Projects/Novel_Creater/tmp/run_realistic_longform_flow.mjs:301:17)\n    at async runMarketAndSeed (file:///D:/Projects/Novel_Creater/tmp/run_realistic_longform_flow.mjs:739:27)\n    at async main (file:///D:/Projects/Novel_Creater/tmp/run_realistic_longform_flow.mjs:2431:24)"
     }
   ],
-  "timings": {
-    "projectLoadMs": 1515,
-    "writerChapter1LoadMs": 1335
-  },
+  "timings": {},
   "generated": {
-    "marketItems": 104,
-    "directions": 4,
-    "seeds": 1,
-    "settingEvents": 12,
-    "acceptedSettings": 37,
-    "chaptersCreated": 400,
-    "finalizedChapters": 5,
-    "canonFacts": 29,
-    "chapterSettingChanges": 30,
-    "correctionTasks": 24,
-    "chapterWordCounts": [
-      {
-        "chapterNum": 1,
-        "count": 5896,
-        "stage": "first_draft"
-      },
-      {
-        "chapterNum": 1,
-        "count": 5896,
-        "stage": "prose_rhythm_repair"
-      },
-      {
-        "chapterNum": 2,
-        "count": 5485,
-        "stage": "first_draft"
-      },
-      {
-        "chapterNum": 2,
-        "count": 5485,
-        "stage": "prose_rhythm_repair"
-      },
-      {
-        "chapterNum": 3,
-        "count": 8483,
-        "stage": "first_draft"
-      },
-      {
-        "chapterNum": 3,
-        "count": 6952,
-        "stage": "compressed_retry",
-        "attempt": 1
-      },
-      {
-        "chapterNum": 3,
-        "count": 6955,
-        "stage": "prose_rhythm_repair"
-      },
-      {
-        "chapterNum": 4,
-        "count": 4817,
-        "stage": "first_draft"
-      },
-      {
-        "chapterNum": 4,
-        "count": 4782,
-        "stage": "prose_rhythm_repair"
-      },
-      {
-        "chapterNum": 5,
-        "count": 7513,
-        "stage": "first_draft"
-      },
-      {
-        "chapterNum": 5,
-        "count": 5830,
-        "stage": "compressed_retry",
-        "attempt": 1
-      },
-      {
-        "chapterNum": 5,
-        "count": 5817,
-        "stage": "prose_rhythm_repair"
-      }
-    ],
-    "finalChapterWordCounts": [
-      {
-        "chapterNum": 1,
-        "count": 6050
-      },
-      {
-        "chapterNum": 2,
-        "count": 5603
-      },
-      {
-        "chapterNum": 3,
-        "count": 6955
-      },
-      {
-        "chapterNum": 4,
-        "count": 4879
-      },
-      {
-        "chapterNum": 5,
-        "count": 5890
-      }
-    ],
+    "marketItems": 102,
+    "directions": 0,
+    "seeds": 0,
+    "settingEvents": 0,
+    "acceptedSettings": 0,
+    "chaptersCreated": 0,
+    "finalizedChapters": 0,
+    "canonFacts": 0,
+    "chapterSettingChanges": 0,
+    "correctionTasks": 0,
+    "chapterWordCounts": [],
+    "finalChapterWordCounts": [],
     "auditFailures": 0,
-    "multiChapterAcceptance": {
-      "startChapter": 1,
-      "endChapter": 5,
-      "finalizedChapters": 5,
-      "wordRange": {
-        "target": 5000,
-        "softMin": 4500,
-        "softMax": 6500,
-        "hardMin": 4000,
-        "hardMax": 7000
-      },
-      "missingFactChapters": [],
-      "pendingSettingEvents": 0,
-      "wordOutliers": [],
-      "overall": "前5章建立了清晰的代价天平核心设定和人物动机，但存在多处设定矛盾与逻辑漏洞，需修复后方可安全续写。",
-      "safeToContinue": false,
-      "checks": {
-        "character_drift": "fail",
-        "plot_contradiction": "fail",
-        "timeline": "fail",
-        "world_rule": "fail",
-        "foreshadowing": "pass",
-        "repetition": "pass",
-        "style_drift": "pass",
-        "state_carryover": "fail",
-        "boundary_continuity": "pass",
-        "setting_sync": "fail"
-      },
-      "issues": [
-        {
-          "severity": "critical",
-          "type": "plot_contradiction",
-          "chapters": [
-            3,
-            5
-          ],
-          "title": "叶尘修为状态矛盾",
-          "detail": "第3章结尾叶尘主动召唤代价天平进行第三次交易，要求换取力量；第5章摘要明确写叶尘修为停留在炼气一层，但第5章正文中又写叶尘第四次交易后修为达到炼气三层。且第3章交易内容未明确执行，第4章交易内容为玉佩换感知领域，第5章交易内容为思念换战力，中间缺少第三次交易的明确结果。",
-          "suggestedAction": "统一第三次交易的结果：要么在第3章明确交易完成并给出修为变化，要么删除第5章中'第四次交易'的表述，重新编号交易次数。"
-        },
-        {
-          "severity": "critical",
-          "type": "state_carryover",
-          "chapters": [
-            4,
-            5
-          ],
-          "title": "叶尘失去玉佩后状态未延续",
-          "detail": "第4章叶尘用玉佩换取感知领域，玉佩碎裂，母亲气息消失。但第5章中叶尘的感知领域从十丈扩大到十五丈再到二十丈，且能使用灵气短剑，这些能力来源未与失去玉佩的代价关联。第4章结尾叶尘吃下第二枚丹药获得记忆碎片，但第5章中丹药效果未体现。",
-          "suggestedAction": "明确感知领域和灵气短剑的能力来源：是玉佩碎裂后残留的力量，还是丹药的持续效果，或是新的交易结果。"
-        },
-        {
-          "severity": "major",
-          "type": "timeline",
-          "chapters": [
-            4,
-            5
-          ],
-          "title": "时间线跳跃不连贯",
-          "detail": "第4章结尾叶尘刚逃入密道，叶家强大气息苏醒；第5章开头叶尘已在树林中跑了三里路，左臂受伤。中间缺少叶尘如何受伤、如何逃出密道、如何被追杀的过渡描写。且第5章中阿牛在山洞住了五天，但第4章结尾到第5章开头的时间跨度未交代。",
-          "suggestedAction": "在第4章和第5章之间增加过渡段落，说明叶尘受伤原因、密道出口位置、以及遇到阿牛的时间点。"
-        },
-        {
-          "severity": "major",
-          "type": "world_rule",
-          "chapters": [
-            2,
-            4,
-            5
-          ],
-          "title": "代价天平规则不一致",
-          "detail": "第2章设定代价天平交易代价逐次翻倍（第一次十年记忆，第二次七岁前全部记忆）；第4章叶尘用玉佩换取感知领域，代价未明确是否翻倍；第5章第四次交易代价为失去对母亲的思念，但第3章叶尘已失去七岁前记忆（包括母亲面容和童谣细节），第5章再次失去对母亲的思念，逻辑上矛盾——已失去的记忆无法再次失去。",
-          "suggestedAction": "重新定义代价翻倍规则：明确每次交易的具体代价类型（记忆、情感、寿命等），确保已失去的内容不会重复出现。建议将第5章的代价改为失去对母亲的'情感连接'而非'思念'。"
-        },
-        {
-          "severity": "major",
-          "type": "character_drift",
-          "chapters": [
-            4,
-            5
-          ],
-          "title": "叶凌角色动机矛盾",
-          "detail": "第4章叶凌用三年记忆换取叶尘母亲死因消息，并帮助叶尘逃离，表现出牺牲和善意。但第1-3章中叶凌一直对叶尘充满敌意、监视和试探，第4章结尾神秘老人说'你做得很好'，暗示叶凌可能是卧底或另有目的。然而第5章中叶凌完全消失，其动机和立场未得到解释，后续20章难以延续这一复杂角色。",
-          "suggestedAction": "在第5章中增加叶凌的后续行动或暗示，明确其立场（是友是敌？是受神秘老人指使？还是另有图谋？），否则后续章节中叶凌的回归会显得突兀。"
-        },
-        {
-          "severity": "minor",
-          "type": "setting_sync",
-          "chapters": [
-            1,
-            5
-          ],
-          "title": "叶家追杀力度与家族实力不匹配",
-          "detail": "第1章设定叶家是'以实力为尊的修真家族'，族长叶震天是筑基强者。第5章中叶尘杀死一名炼气三层执事后，叶家只派出一名筑基强者追击，但叶尘只是炼气三层的外门弃子，叶家应派出更多人手或更高战力。且第4章中苏醒的强大气息（筑基以上）在第5章中未明确是否就是追击者。",
-          "suggestedAction": "明确追击者的身份和数量，或解释为何叶家只派一人追击（如叶凌暗中阻拦、神秘老人干预等）。"
-        }
-      ]
-    },
-    "domStats": {
-      "nodes": 1572,
-      "textLength": 4864,
-      "memory": {
-        "usedJSHeapSize": 98304916,
-        "totalJSHeapSize": 133202668
-      }
-    }
+    "multiChapterAcceptance": null
   },
   "browserConsole": [],
-  "screenshots": [
-    "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\project-detail.png",
-    "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\writer-chapter-1.png"
-  ],
-  "cleanup": "保留测试项目",
+  "screenshots": [],
+  "cleanup": null,
   "notes": [
-    "第 1 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：{\n  \"summary\": \"第1章建立了主角叶尘的绝脉困境、成年礼上的屈辱、与代价天平的首次交易（用十年记忆换取下品灵脉），以及玉佩的异常反应和叶凌的怀疑。整体节奏紧凑，情感张力足，但存在若干设定和逻辑问题。\",\n  \"issues\": [\n    {\n      \"severity\": \"major\",\n      \"type\":...",
-    "第 3 章补足稿字数略偏离建议范围：6952 字；目标 5000，建议 4500-6500，硬范围 4000-7000",
-    "第 3 章句式节奏修订稿字数略偏离建议范围：6955 字；目标 5000，建议 4500-6500，硬范围 4000-7000",
-    "第 3 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：```json\n{\n  \"summary\": \"第3章承接第2章结尾，叶尘清晨醒来后与叶凌短暂交锋，领取杂役任务时遭遇张铁挑衅，使用代价选择术预知暴露后果后隐忍。后山采药时遇铁背狼袭击，玉佩首次释放剑形光刃击退妖兽，但剑形图案变淡、天平图案变清晰。返回途中发现张铁被叶凌打晕并留下'小心长老'纸条。回到住处后，从残卷夹层发现母亲纸条'若玉...",
-    "第 3 章局部修订跳过 2 条不安全补丁。",
-    "第 3 章定稿字数略偏离建议范围：6955 字；目标 5000，建议 4500-6500，硬范围 4000-7000",
-    "第 4 章小纲压缩后仍偏长：2527 -> 1406",
-    "第 4 章审稿首次失败，已启用审稿紧凑重试：没有解析到 JSON：```json\n{\n  \"summary\": \"第4章承接第3章结尾，叶尘在代价天平空间中进行第三次交易，天平要求以玉佩为代价。通过交易，叶尘获得感知领域能力，并得知母亲曾与天平交易、母亲被族长所杀等真相。叶凌协助叶尘逃离，并透露自己用三年记忆换取信息。叶尘吃下母亲留下的丹药，获得更多记忆碎片，最终从密道逃至镇外树林，感知到叶家强大气息...",
-    "第 5 章局部修订跳过 1 条不安全补丁。"
+    "LLM 请求失败，第 1/3 次后重试：LLM 429: Concurrency limit exceeded",
+    "LLM 请求失败，第 2/3 次后重试：LLM 429: Concurrency limit exceeded"
   ],
-  "finishedAt": "2026-06-02T06:52:53.770Z",
+  "finishedAt": "2026-06-10T06:33:39.521Z",
   "summary": {
-    "totalChecks": 44,
-    "passedChecks": 42,
-    "failedChecks": 2,
+    "totalChecks": 6,
+    "passedChecks": 5,
+    "failedChecks": 1,
     "browserConsoleErrors": 0
   }
 }

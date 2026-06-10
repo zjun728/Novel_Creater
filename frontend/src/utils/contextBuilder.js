@@ -145,7 +145,15 @@ function collectThreadLabels({ plotThreads = [], nearChapter = null, outline = n
     ['planted', 'developing', 'active', 'accepted', 'in_progress'].includes(thread?.status || 'developing')
   )
 
+  const planningText = JSON.stringify({
+    nearChapter,
+    nearChapters: outline?.nearChapters,
+    currentVolume: outline?.currentVolume,
+    volumeContext
+  })
+
   for (const thread of activeThreads) {
+    if (!threadMatchesFocus(thread, { text: planningText })) continue
     const title = thread?.title || thread?.name
     if (title) labels.add(normalizeThreadLabel(title))
     for (const tag of normalizeThreadList(thread?.tags || thread?.threadTags || thread?.relatedPlotThreads)) {
@@ -153,19 +161,144 @@ function collectThreadLabels({ plotThreads = [], nearChapter = null, outline = n
     }
   }
 
-  const planningText = JSON.stringify({
-    nearChapter,
-    nearChapters: outline?.nearChapters,
-    currentVolume: outline?.currentVolume,
-    volumeContext
-  })
   addThreadKeywordLabels(planningText, labels)
 
   return labels
 }
 
+function buildContextFocus({ chapterNum, nearChapter, outline, volumeContext, plotThreads = [], settingEntities = [] } = {}) {
+  const text = [
+    chapterNum ? `chapter:${chapterNum}` : '',
+    nearChapter?.title,
+    nearChapter?.goal,
+    nearChapter?.conflict,
+    nearChapter?.turn,
+    nearChapter?.emotionalBeat,
+    outline?.currentVolume?.title,
+    outline?.currentVolume?.goal,
+    outline?.currentVolume?.mainConflict,
+    volumeContext?.title,
+    volumeContext?.coreGoal,
+    volumeContext?.mainConflict,
+    volumeContext?.currentSummary,
+    volumeContext?.stageSummary,
+    ...(volumeContext?.keyCharacters || []),
+    ...(volumeContext?.completedBeats || []),
+    ...(volumeContext?.openQuestions || []),
+    ...(volumeContext?.handoffToNext || []),
+    ...(volumeContext?.continuityNotes || [])
+  ].map(value => typeof value === 'string' ? value : JSON.stringify(value || '')).filter(Boolean).join('\n')
+
+  const keywords = extractFocusKeywords(text)
+  const threadLabels = collectThreadLabels({ plotThreads, nearChapter, outline, volumeContext })
+  const focus = { text, keywords, threadLabels, entityNames: new Set() }
+
+  for (const entity of settingEntities || []) {
+    if ((entity?.status || 'active') !== 'active') continue
+    if (!entityMatchesFocus(entity, focus) && !alwaysCarryEntity(entity)) continue
+    const aliases = Array.isArray(entity?.aliases) ? entity.aliases : []
+    for (const name of [entity?.name, ...aliases]) {
+      if (String(name || '').trim()) focus.entityNames.add(String(name).trim())
+    }
+  }
+
+  return focus
+}
+
+function extractFocusKeywords(text) {
+  const source = String(text || '')
+  const tokens = new Set()
+  const matches = source.match(/[#A-Za-z0-9_\u4e00-\u9fa5·-]{2,24}/g) || []
+  for (const raw of matches) {
+    const token = raw.replace(/^[,，。；;：:\s]+|[,，。；;：:\s]+$/g, '').trim()
+    if (token.length < 2) continue
+    if (/^(chapter|goal|title|conflict|turn)$/i.test(token)) continue
+    tokens.add(token)
+  }
+  return tokens
+}
+
+function focusHasText(focus, value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  return String(focus?.text || '').includes(text)
+}
+
+function textMatchesFocus(text, focus) {
+  const source = String(text || '')
+  if (!source.trim()) return false
+  if (!focus?.text && !focus?.keywords?.size && !focus?.threadLabels?.size && !focus?.entityNames?.size) return true
+  if (focus?.entityNames) {
+    for (const name of focus.entityNames) {
+      if (String(name || '').length >= 2 && source.includes(name)) return true
+    }
+  }
+  if (focus?.keywords) {
+    for (const keyword of focus.keywords) {
+      if (keyword.length >= 2 && source.includes(keyword)) return true
+    }
+  }
+  if (focus?.threadLabels) {
+    for (const label of focus.threadLabels) {
+      const clean = String(label || '').replace(/^#/, '')
+      if (clean && source.includes(clean)) return true
+    }
+  }
+  return false
+}
+
+function entityMatchesFocus(entity, focus) {
+  if (!focus?.text && !focus?.keywords?.size) return true
+  const profile = entity?.profile || {}
+  const aliases = Array.isArray(entity?.aliases) ? entity.aliases : []
+  const names = [entity?.name, ...aliases].filter(Boolean)
+  if (names.some(name => focusHasText(focus, name))) return true
+  if (Array.isArray(entity?.tags) && entity.tags.some(tag => textMatchesFocus(tag, focus))) return true
+  const profileText = Object.values(profile).map(value => typeof value === 'string' ? value : JSON.stringify(value || '')).join('\n')
+  return textMatchesFocus(profileText, focus)
+}
+
+function alwaysCarryEntity(entity) {
+  const category = String(entity?.category || '')
+  const summary = String(entity?.summary || '')
+  const importance = Number(entity?.importance || 0)
+  return importance >= 10 && /主角|protagonist|核心/.test(`${category}\n${summary}`)
+}
+
+function settingChangeMatchesFocus(event, focus) {
+  if (!focus?.text && !focus?.keywords?.size) return true
+  const text = [
+    event?.entityName,
+    event?.targetEntityName,
+    event?.fieldPath,
+    event?.changeType,
+    event?.newValue,
+    event?.summary,
+    event?.content
+  ].filter(Boolean).join('\n')
+  return textMatchesFocus(text, focus)
+}
+
+function factMatchesFocus(fact, focus) {
+  if (!focus?.text && !focus?.keywords?.size && !focus?.threadLabels?.size && !focus?.entityNames?.size) return true
+  const factTags = normalizeThreadList(fact?.relatedPlotThreads || fact?.related_plot_threads || fact?.threadTags || fact?.tags)
+  if (factTags.length && focus?.threadLabels?.size && factTags.some(tag => focus.threadLabels.has(tag))) return true
+  const text = [fact?.content, fact?.summary, fact?.fact, fact?.factType, fact?.fact_type].filter(Boolean).join('\n')
+  return textMatchesFocus(text, focus)
+}
+
+function threadMatchesFocus(thread, focus) {
+  if (!focus?.text && !focus?.keywords?.size && !focus?.threadLabels?.size) return true
+  const title = thread?.title || thread?.name || ''
+  const tags = normalizeThreadList(thread?.tags || thread?.threadTags || thread?.relatedPlotThreads)
+  if (title && focusHasText(focus, title)) return true
+  if (tags.some(tag => focus?.threadLabels?.has(tag) || focusHasText(focus, tag.replace(/^#/, '')))) return true
+  const text = [title, thread?.content, thread?.summary, thread?.description, ...tags].filter(Boolean).join('\n')
+  return textMatchesFocus(text, focus)
+}
+
 function summarizeThreadFacts(canonFacts = [], plotThreads = [], options = {}) {
-  const labels = collectThreadLabels({
+  const labels = options.focus?.threadLabels || collectThreadLabels({
     plotThreads,
     nearChapter: options.nearChapter,
     outline: options.outline,
@@ -183,11 +316,11 @@ function summarizeThreadFacts(canonFacts = [], plotThreads = [], options = {}) {
   if (!acceptedTaggedFacts.length) return ''
 
   let selected = acceptedTaggedFacts.filter(item => {
-    if (!labels.size) return true
-    return item.tags.some(tag => labels.has(tag))
+    if (labels.size && item.tags.some(tag => labels.has(tag))) return true
+    return factMatchesFocus(item.fact, options.focus)
   })
 
-  if (!selected.length) {
+  if (!selected.length && !options.focus?.text) {
     selected = acceptedTaggedFacts.slice(-12)
   }
 
@@ -226,6 +359,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
 
   // P1.5: 分卷阶段上下文（长篇连续创作的中间锚点）
   const volumeContext = buildVolumeStageContext(volumes, chapterNum)
+  const contextFocus = buildContextFocus({ chapterNum, nearChapter, outline, volumeContext, plotThreads, settingEntities })
   const creativeBoundary = buildCreativeBoundary({ bible, outline, volumeContext })
   if (creativeBoundary) {
     builder.add('creativeBoundary', creativeBoundary, { priority: 1, required: true, maxTokens: 650 })
@@ -278,13 +412,14 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     chapterNum,
     nearChapter,
     volumeContext,
-    settingChangeEvents
+    settingChangeEvents,
+    focus: contextFocus
   })
   if (settingLibrary) {
     builder.add('settingLibrary', settingLibrary, { priority: 3, maxTokens: 1900 })
   }
 
-  const recentSettingChanges = summarizeSettingChanges(settingChangeEvents, chapterNum)
+  const recentSettingChanges = summarizeSettingChanges(settingChangeEvents, chapterNum, contextFocus)
   if (recentSettingChanges) {
     builder.add('recentSettingChanges', recentSettingChanges, { priority: 4, maxTokens: 650 })
   }
@@ -293,13 +428,14 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     chapterNum,
     settingEntities,
     settingChangeEvents,
-    canonFacts
+    canonFacts,
+    focus: contextFocus
   })
   if (stateLedger) {
     builder.add('stateLedger', stateLedger, { priority: 2, required: true, maxTokens: 1400 })
   }
 
-  const activeCorrectionTasks = summarizeCorrectionTasks(correctionTasks, chapterNum)
+  const activeCorrectionTasks = summarizeCorrectionTasks(correctionTasks, chapterNum, contextFocus)
   if (activeCorrectionTasks) {
     builder.add('softCorrectionAims', activeCorrectionTasks, { priority: 6, maxTokens: 420 })
   }
@@ -307,7 +443,8 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const threadFacts = summarizeThreadFacts(canonFacts, plotThreads, {
     nearChapter,
     outline,
-    volumeContext
+    volumeContext,
+    focus: contextFocus
   })
   if (threadFacts) {
     builder.add('threadFacts', threadFacts, { priority: 4, maxTokens: 900 })
@@ -334,16 +471,16 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   }
 
   // P8: 最近已确认事实
-  const recentFacts = canonFacts
-    .filter(f => f.status === 'accepted')
-    .slice(-20)
+  const recentFacts = summarizeRecentFacts(canonFacts, chapterNum, contextFocus)
   if (recentFacts.length > 0) {
-    const summary = recentFacts.map(f => `[${f.factType}] ${f.content}`).join('\n')
+    const summary = recentFacts.map(f => `[${f.factType || f.fact_type || 'fact'}] ${f.content || f.summary || f.fact || ''}`).join('\n')
     builder.add('recentFacts', summary, { priority: 5, maxTokens: 900 })
   }
 
   // P9: 进行中的伏笔
-  const activeThreads = plotThreads.filter(t => t.status === 'planted' || t.status === 'developing')
+  const activeThreads = plotThreads
+    .filter(t => t.status === 'planted' || t.status === 'developing')
+    .filter(t => threadMatchesFocus(t, contextFocus))
   if (activeThreads.length > 0) {
     const threadSummary = activeThreads.map(t => `${t.title}: ${t.content}`).join('\n')
     builder.add('plotThreads', threadSummary, { priority: 6, maxTokens: 800 })
@@ -365,8 +502,8 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
 }
 
 function summarizeSettingLibrary(entities, relations, options = {}) {
-  const { chapterNum, nearChapter, volumeContext, settingChangeEvents } = options
-  const activeEntities = (entities || [])
+  const { chapterNum, nearChapter, volumeContext, settingChangeEvents, focus } = options
+  const scoredEntities = (entities || [])
     .filter(e => (e.status || 'active') === 'active')
     .map(entity => ({
       entity,
@@ -378,8 +515,19 @@ function summarizeSettingLibrary(entities, relations, options = {}) {
       })
     }))
     .sort((a, b) => b.relevance - a.relevance || Number(b.entity.importance || 3) - Number(a.entity.importance || 3))
-    .slice(0, 36)
+
+  let activeEntities = scoredEntities
+    .filter(item => {
+      const hasFocusedContext = Boolean(focus?.keywords?.size || focus?.threadLabels?.size || focus?.entityNames?.size)
+      if (!hasFocusedContext) return item.relevance >= 22 || entityMatchesFocus(item.entity, focus) || alwaysCarryEntity(item.entity)
+      return entityMatchesFocus(item.entity, focus) || alwaysCarryEntity(item.entity)
+    })
+    .slice(0, 24)
     .map(item => item.entity)
+
+  if (!activeEntities.length && !(focus?.keywords?.size || focus?.threadLabels?.size || focus?.entityNames?.size)) {
+    activeEntities = scoredEntities.slice(0, 12).map(item => item.entity)
+  }
 
   if (!activeEntities.length) return ''
 
@@ -394,7 +542,11 @@ function summarizeSettingLibrary(entities, relations, options = {}) {
 
   const selectedIds = new Set(activeEntities.map(entity => entity.id))
   const relationLines = (relations || [])
-    .filter(r => r.status !== 'archived' && (selectedIds.has(r.sourceEntityId) || selectedIds.has(r.targetEntityId)))
+    .filter(r => {
+      if (r.status === 'archived') return false
+      const bothSelected = selectedIds.has(r.sourceEntityId) && selectedIds.has(r.targetEntityId)
+      return bothSelected
+    })
     .map(relation => ({
       relation,
       relevance: scoreSettingRelation(relation, selectedIds, entityMap)
@@ -489,17 +641,34 @@ function containsAny(texts, needle) {
   return (texts || []).some(text => String(text || '').includes(value))
 }
 
-function summarizeSettingChanges(events, chapterNum) {
+function summarizeSettingChanges(events, chapterNum, focus = null) {
   const recent = (events || [])
     .filter(e => e.status === 'accepted')
     .filter(e => !chapterNum || !e.chapterNum || e.chapterNum <= chapterNum)
+    .filter(e => settingChangeMatchesFocus(e, focus))
     .sort((a, b) => Number(b.chapterNum || 0) - Number(a.chapterNum || 0))
-    .slice(0, 12)
+    .slice(0, 8)
 
   if (!recent.length) return ''
   return recent.map(e =>
     `- 第${e.chapterNum || '?'}章：${e.entityName || settingTypeLabel(e.entityType)} 的 ${e.fieldPath || e.changeType || '设定'} 变为「${e.newValue || ''}」`
   ).join('\n')
+}
+
+function summarizeRecentFacts(canonFacts, chapterNum, focus = null) {
+  const accepted = (canonFacts || [])
+    .filter(f => (f.status || 'accepted') === 'accepted')
+    .filter(f => {
+      const factChapter = Number(f.chapterNum || f.chapter_num || 0)
+      return !chapterNum || !factChapter || factChapter <= Number(chapterNum)
+    })
+
+  let selected = accepted.filter(f => factMatchesFocus(f, focus))
+  if (!selected.length && !focus?.text) selected = accepted
+
+  return selected
+    .sort((a, b) => Number(b.chapterNum || b.chapter_num || 0) - Number(a.chapterNum || a.chapter_num || 0))
+    .slice(0, 12)
 }
 
 function buildVolumeStageContext(volumes, chapterNum) {
@@ -555,12 +724,14 @@ function buildVolumeStageContext(volumes, chapterNum) {
   }
 }
 
-function summarizeCorrectionTasks(tasks, chapterNum) {
+function summarizeCorrectionTasks(tasks, chapterNum, focus = null) {
   const ranked = (tasks || [])
     .filter(isCorrectionTaskActiveForContext)
     .filter(task => {
       const refs = normalizeChapterRefs(task.chapterRefs)
-      return !refs.length || refs.includes(Number(chapterNum)) || task.sourceType === 'global_audit'
+      if (refs.includes(Number(chapterNum))) return true
+      if (refs.length) return false
+      return task.sourceType === 'global_audit' && correctionTaskMatchesFocus(task, focus)
     })
     .filter(isCorrectionTaskHighPriorityForWriting)
     .sort((a, b) => correctionContextRank(a, chapterNum) - correctionContextRank(b, chapterNum))
@@ -584,6 +755,21 @@ function summarizeCorrectionTasks(tasks, chapterNum) {
 function isCorrectionTaskHighPriorityForWriting(task) {
   if (isCorrectionTaskBlockingForGeneration(task)) return true
   return ['critical', 'major'].includes(task?.severity)
+}
+
+function correctionTaskMatchesFocus(task, focus) {
+  if (!focus?.text && !focus?.keywords?.size && !focus?.threadLabels?.size) return true
+  const text = [
+    task?.title,
+    task?.description,
+    task?.suggestedAction,
+    task?.targetModule,
+    task?.issueType,
+    task?.sourceType,
+    task?.metadata?.threadLabel,
+    task?.metadata?.plotThread
+  ].filter(Boolean).join('\n')
+  return textMatchesFocus(text, focus)
 }
 
 function correctionContextRank(task, chapterNum) {

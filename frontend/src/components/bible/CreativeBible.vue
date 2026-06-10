@@ -8,8 +8,9 @@ import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { normalizeBiblePayload } from '@/prompts/bibleFromSeed'
 import {
-  WRITING_STYLE_STANDARDS,
+  getAllWritingStyleStandards,
   getSelectedWritingStyleStandards,
+  getWritingStrategyDisplayCards,
   normalizeWritingProfile
 } from '@/data/writingStyleStandards'
 import { api } from '@/api/db/client'
@@ -27,17 +28,21 @@ const { confirmStageReset } = useResetConfirmation()
 const editing = ref(false)
 const displayBible = computed(() => novelStore.bible ? normalizeBiblePayload(novelStore.bible) : null)
 const bibleInitialized = computed(() => settingStore.hasBibleInitialization)
-const standardOptions = computed(() => WRITING_STYLE_STANDARDS.map(item => ({
+const writingStyleStandards = computed(() => getAllWritingStyleStandards())
+const standardOptions = computed(() => writingStyleStandards.value.map(item => ({
   label: item.name,
   value: item.id
 })))
 const secondaryStandardOptions = computed(() => [
   { label: '不选择辅助风味', value: '' },
-  ...WRITING_STYLE_STANDARDS
+  ...writingStyleStandards.value
     .filter(item => item.id !== formData.value.writingProfile?.primaryStandard)
     .map(item => ({ label: item.name, value: item.id }))
 ])
 const selectedStyleStandards = computed(() => getSelectedWritingStyleStandards(
+  displayBible.value?.writingProfile
+))
+const writingStrategyCards = computed(() => getWritingStrategyDisplayCards(
   displayBible.value?.writingProfile
 ))
 
@@ -241,9 +246,32 @@ async function handleDeleteBible() {
         <p class="mt-2 text-xs text-gray-500">
           主写作标准决定核心写法，辅助风味只做局部气质补充，不会推翻主写作标准。
         </p>
-        <p v-if="displayBible.writingProfile?.customStyleNotes" class="mt-2 text-xs text-gray-600 whitespace-pre-wrap">
-          {{ displayBible.writingProfile.customStyleNotes }}
-        </p>
+        <div v-if="writingStrategyCards.length" class="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div
+            v-for="card in writingStrategyCards"
+            :key="`${card.role}-${card.id}`"
+            class="rounded border border-green-100 bg-white/75 p-3"
+          >
+            <div class="flex items-center gap-2">
+              <n-tag size="small" type="success">{{ card.role }}</n-tag>
+              <span class="font-medium text-gray-800">{{ card.name }}</span>
+              <span class="text-xs text-gray-400">{{ card.category }}</span>
+            </div>
+            <p class="mt-2 text-xs text-gray-500">{{ card.positioning }}</p>
+            <div class="mt-2 space-y-1.5">
+              <p
+                v-for="section in card.sections"
+                :key="`${card.id}-${section.key}`"
+                class="text-xs leading-relaxed text-gray-600"
+              >
+                <span class="font-medium text-gray-700">{{ section.label }}：</span>{{ section.text }}
+              </p>
+            </div>
+            <p v-if="card.note" class="mt-2 text-xs text-gray-600 whitespace-pre-wrap">
+              <span class="font-medium text-gray-700">项目备注：</span>{{ card.note }}
+            </p>
+          </div>
+        </div>
       </div>
       <div v-if="displayBible.styleBible">
         <span class="font-medium text-gray-500">风格要求：</span>

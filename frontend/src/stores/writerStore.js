@@ -5,10 +5,14 @@ import { chatCompletion, chatCompletionStream } from '@/api/ai'
 import { useProviderStore } from './providerStore'
 import { useProjectStore } from './projectStore'
 import {
-  buildChapterSystemPrompt,
-  buildChapterPrompt,
-  buildChapterBeatSystemPrompt,
-  buildChapterBeatPrompt,
+  buildDraftSystemPrompt as buildChapterSystemPrompt,
+  buildDraftPrompt as buildChapterPrompt
+} from '@/prompts/chapterDraftPrompt'
+import {
+  buildScenePlanSystemPrompt as buildChapterBeatSystemPrompt,
+  buildScenePlanPrompt as buildChapterBeatPrompt
+} from '@/prompts/chapterPlanPrompt'
+import {
   buildContinuePrompt,
   buildExpandPrompt,
   buildCompressPrompt,
@@ -85,16 +89,17 @@ export const useWriterStore = defineStore('writer', () => {
       }
 
       if (best.length < content.length) {
-        console.warn('压缩章节小纲后仍超过建议上限，保留较短版本:', {
+        console.warn('压缩章节小纲后仍超过建议上限，已阻止继续生成正文:', {
           before: content.length,
           after: best.length
         })
-        return best
+        throw new Error(`第 ${chapterNum} 章小纲压缩后仍超过上限（${content.length} -> ${best.length} 字符），请重新生成或手动删减后再生成正文。`)
       }
     } catch (e) {
-      console.warn('压缩章节小纲失败，保留原小纲:', e.message)
+      console.warn('压缩章节小纲失败，已阻止继续生成正文:', e.message)
+      throw e
     }
-    return content
+    throw new Error(`第 ${chapterNum} 章小纲超过上限（${content.length} 字符），请重新生成或手动删减后再生成正文。`)
   }
 
   async function repairProseRhythmIfNeeded(provider, chapterNum, content, context = {}) {

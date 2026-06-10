@@ -1,0 +1,29 @@
+{
+  "steps": [
+    {
+      "step": "backend ready",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "frontend ready",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "open home",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "home buttons",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "flow exception",
+      "ok": false,
+      "detail": "Page.click: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator(\"button:has-text(\\\"????\\\")\")\n"
+    }
+  ]
+}

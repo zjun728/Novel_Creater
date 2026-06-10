@@ -49,6 +49,24 @@ assert.equal(repeatedLeadSubjectAnalysis.maxSameLeadingSubjectCount, 5)
 assert.ok(repeatedLeadSubjectAnalysis.reasons.includes('段首重复点名偏多'))
 assert.equal(shouldRepairProseRhythm(repeatedLeadSubjectAnalysis), true)
 
+const lightContrastText = Array.from({ length: 24 }, (_, index) => {
+  if (index === 5) return '门后的响动不是脚步，是旧木头被雨泡胀后自己裂开的声音。'
+  if (index === 17) return '他没有立刻回头，只把手里的账册往袖口里推了一寸。'
+  return `雨从瓦缝里落下来，打在柜台边缘。第 ${index} 次水声之后，掌柜才把灯芯拨亮。`
+}).join('\n\n')
+const lightContrastAnalysis = analyzeProseRhythm(lightContrastText)
+assert.equal(lightContrastAnalysis.aiContrastCount, 1)
+assert.equal(shouldRepairProseRhythm(lightContrastAnalysis), false)
+
+const denseContrastText = Array.from({ length: 30 }, (_, index) => {
+  if (index % 4 === 0) return `那不是风，是第 ${index} 道符在墙后松开的声音。`
+  return `雨水沿着门槛往里爬，鞋底的泥一点点散开，掌柜把账册翻到空白页。`
+}).join('\n\n')
+const denseContrastAnalysis = analyzeProseRhythm(denseContrastText)
+assert.ok(denseContrastAnalysis.aiContrastCount > 6)
+assert.ok(denseContrastAnalysis.reasons.includes('套路化反差句偏多'))
+assert.equal(shouldRepairProseRhythm(denseContrastAnalysis), true)
+
 const repairSystem = buildProseRhythmRepairSystemPrompt()
 assert.match(repairSystem, /不要新增剧情/)
 assert.match(repairSystem, /短句/)

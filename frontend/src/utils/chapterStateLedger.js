@@ -152,6 +152,118 @@ function isAccepted(item) {
   return (item?.status || 'accepted') === 'accepted'
 }
 
+function hasFocus(focus) {
+  return Boolean(focus?.text || focus?.keywords?.size || focus?.threadLabels?.size)
+}
+
+function focusTextContains(focus, value) {
+  const text = String(value || '').trim()
+  if (!text) return false
+  return String(focus?.text || '').includes(text)
+}
+
+function valueToSearchText(value) {
+  if (value == null) return ''
+  if (Array.isArray(value)) return value.map(valueToSearchText).filter(Boolean).join('\n')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+function textMatchesFocus(text, focus) {
+  const source = valueToSearchText(text)
+  if (!source.trim()) return false
+  if (!hasFocus(focus)) return true
+
+  if (focus?.keywords) {
+    for (const keyword of focus.keywords) {
+      if (String(keyword || '').length >= 2 && source.includes(keyword)) return true
+    }
+  }
+
+  if (focus?.threadLabels) {
+    for (const label of focus.threadLabels) {
+      const clean = String(label || '').replace(/^#/, '')
+      if (clean && source.includes(clean)) return true
+    }
+  }
+
+  return false
+}
+
+function listMatchesFocus(values, focus) {
+  return (values || [])
+    .filter(Boolean)
+    .some(value => focusTextContains(focus, value) || textMatchesFocus(value, focus))
+}
+
+function entityMatchesFocus(entity, focus) {
+  if (!hasFocus(focus)) return true
+
+  const profile = entity?.profile || {}
+  const aliases = Array.isArray(entity?.aliases) ? entity.aliases : []
+  const tags = Array.isArray(entity?.tags) ? entity.tags : []
+  const names = [entity?.name, ...aliases].filter(Boolean)
+  if (listMatchesFocus(names, focus)) return true
+  if (listMatchesFocus(tags, focus)) return true
+
+  return textMatchesFocus([
+    entity?.entityType,
+    entity?.category,
+    entity?.summary,
+    profile
+  ], focus)
+}
+
+function changeMatchesFocus(change, focus) {
+  if (!hasFocus(focus)) return true
+  const names = [
+    change?.entityName,
+    change?.entity_name,
+    change?.targetEntityName,
+    change?.target_entity_name
+  ]
+  if (listMatchesFocus(names, focus)) return true
+  return textMatchesFocus([
+    change?.fieldPath,
+    change?.field_path,
+    change?.changeType,
+    change?.change_type,
+    change?.newValue,
+    change?.new_value,
+    change?.summary,
+    change?.content,
+    change?.evidence
+  ], focus)
+}
+
+function factMatchesFocus(fact, focus) {
+  if (!hasFocus(focus)) return true
+
+  const tags = [
+    ...(Array.isArray(fact?.tags) ? fact.tags : []),
+    ...(Array.isArray(fact?.threadTags) ? fact.threadTags : []),
+    ...(Array.isArray(fact?.relatedPlotThreads) ? fact.relatedPlotThreads : []),
+    ...(Array.isArray(fact?.related_plot_threads) ? fact.related_plot_threads : [])
+  ]
+
+  if (focus?.threadLabels?.size && tags.some(tag => {
+    const normalized = String(tag || '').startsWith('#') ? String(tag) : `#${tag}`
+    return focus.threadLabels.has(normalized)
+  })) {
+    return true
+  }
+
+  if (listMatchesFocus(tags, focus)) return true
+  return textMatchesFocus([
+    fact?.factType,
+    fact?.fact_type,
+    fact?.content,
+    fact?.summary,
+    fact?.fact,
+    fact?.evidence
+  ], focus)
+}
+
 function entityTypeLabel(type) {
   return TYPE_LABELS[type] || type || '设定'
 }
@@ -195,15 +307,18 @@ export function buildChapterStateLedger({
   settingEntities = [],
   settingChangeEvents = [],
   canonFacts = [],
+  focus = null,
   maxLines = 24
 } = {}) {
   const entityLines = (settingEntities || [])
     .filter(entity => (entity?.status || 'active') === 'active')
+    .filter(entity => entityMatchesFocus(entity, focus))
     .map(formatEntityLine)
     .filter(Boolean)
 
   const changeLines = (settingChangeEvents || [])
     .filter(change => isAccepted(change) && chapterBefore(change, chapterNum))
+    .filter(change => changeMatchesFocus(change, focus))
     .slice()
     .sort((a, b) => Number(b.chapterNum || b.chapter_num || 0) - Number(a.chapterNum || a.chapter_num || 0))
     .map(formatChangeLine)
@@ -211,6 +326,7 @@ export function buildChapterStateLedger({
 
   const factLines = (canonFacts || [])
     .filter(fact => isAccepted(fact) && chapterBefore(fact, chapterNum))
+    .filter(fact => factMatchesFocus(fact, focus))
     .slice()
     .sort((a, b) => Number(b.chapterNum || b.chapter_num || 0) - Number(a.chapterNum || a.chapter_num || 0))
     .map(formatFactLine)

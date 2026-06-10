@@ -45,15 +45,13 @@ const LOG_FILE = join(REPORT_DIR, 'run.log')
 const KEEP_PROJECT = process.env.DELETE_REALISTIC_QA_PROJECT !== '1'
 const CONTINUE_TO_CHAPTER = Number(process.env.CONTINUE_REALISTIC_QA_TO_CHAPTER || 0)
 const INITIAL_TO_CHAPTER = Number(process.env.REALISTIC_QA_INITIAL_TO_CHAPTER || 0)
-const QA_PROJECT_PREFIX = process.env.REALISTIC_QA_PROJECT_PREFIX || '写作标准验收200万'
+const QA_PROJECT_PREFIX = process.env.REALISTIC_QA_PROJECT_PREFIX || 'RealisticQAFlow'
 const QA_PRIMARY_STANDARD = process.env.REALISTIC_QA_PRIMARY_STANDARD || 'rational-fantasy'
 const QA_SECONDARY_FLAVOR = process.env.REALISTIC_QA_SECONDARY_FLAVOR || 'suspense-hook'
-const QA_STYLE_NOTES = process.env.REALISTIC_QA_STYLE_NOTES || '本轮重点验证：知识体系必须参与行动和判断；悬疑钩子通过证据、误导和新问题递进；减少模板化章尾、信息倾倒和“不是X，是Y”句式。'
-const QA_PROVIDER_NAME = process.env.REALISTIC_QA_PROVIDER_NAME || ''
-const QA_PROVIDER_MODEL = process.env.REALISTIC_QA_PROVIDER_MODEL || ''
-const QA_PROVIDER_ID = process.env.REALISTIC_QA_PROVIDER_ID || ''
+const QA_STYLE_NOTES = process.env.REALISTIC_QA_STYLE_NOTES || 'Keep scene control, emotional realism, and narrative momentum balanced. Avoid rigid templated sentence patterns.'
 const MAX_JSON_SCAN_CHARS = 30000
 const MAX_JSON_CANDIDATES = 8
+const IGNORE_WORD_COUNT_GATE = process.env.IGNORE_WORD_COUNT_GATE === '1' || process.env.IGNORE_WORD_COUNT_GATE === 'true'
 
 mkdirSync(REPORT_DIR, { recursive: true })
 writeFileSync(LOG_FILE, '', 'utf8')
@@ -84,7 +82,7 @@ const report = {
   },
   browserConsole: [],
   screenshots: [],
-  cleanup: KEEP_PROJECT ? '保留测试项目' : null,
+  cleanup: KEEP_PROJECT ? '淇濈暀娴嬭瘯椤圭洰' : null,
   notes: []
 }
 
@@ -139,7 +137,7 @@ function assertCheck(condition, name, detail = '') {
 }
 
 function maskKey(key = '') {
-  if (!key) return '未配置'
+  if (!key) return '鏈厤缃?
   return `${String(key).slice(0, 6)}...${String(key).slice(-4)}`
 }
 
@@ -160,7 +158,7 @@ async function waitForHttp(url, timeoutMs = 30000) {
     }
     await sleep(500)
   }
-  throw new Error(`等待服务超时：${url}；最后错误：${lastError}`)
+  throw new Error(`绛夊緟鏈嶅姟瓒呮椂锛?{url}锛涙渶鍚庨敊璇細${lastError}`)
 }
 
 async function request(method, path, body, expectedStatuses = [200]) {
@@ -184,10 +182,10 @@ async function request(method, path, body, expectedStatuses = [200]) {
 async function ensureBackend() {
   try {
     await waitForHttp(`${API_BASE}/health`, 2500)
-    pass('后端服务可用')
+    pass('鍚庣鏈嶅姟鍙敤')
     return
   } catch {
-    log('后端未启动，尝试启动 uvicorn')
+    log('鍚庣鏈惎鍔紝灏濊瘯鍚姩 uvicorn')
     const out = openSync(join(REPORT_DIR, 'backend.log'), 'a')
     const err = openSync(join(REPORT_DIR, 'backend.err.log'), 'a')
     const proc = spawn('D:/Software/Python/Python312/python.exe', ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8000'], {
@@ -197,17 +195,17 @@ async function ensureBackend() {
     })
     started.push({ proc, out, err, name: 'backend' })
     await waitForHttp(`${API_BASE}/health`, 45000)
-    pass('后端服务已由脚本启动')
+    pass('鍚庣鏈嶅姟宸茬敱鑴氭湰鍚姩')
   }
 }
 
 async function ensureFrontend() {
   try {
     await waitForHttp(APP_URL, 2500)
-    pass('前端服务可用')
+    pass('鍓嶇鏈嶅姟鍙敤')
     return
   } catch {
-    log('前端未启动，尝试启动 Vite')
+    log('鍓嶇鏈惎鍔紝灏濊瘯鍚姩 Vite')
     const out = openSync(join(REPORT_DIR, 'frontend.log'), 'a')
     const err = openSync(join(REPORT_DIR, 'frontend.err.log'), 'a')
     const proc = spawn('D:/Software/nodejs/node.exe', ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '5173'], {
@@ -217,24 +215,16 @@ async function ensureFrontend() {
     })
     started.push({ proc, out, err, name: 'frontend' })
     await waitForHttp(APP_URL, 45000)
-    pass('前端服务已由脚本启动')
+    pass('鍓嶇鏈嶅姟宸茬敱鑴氭湰鍚姩')
   }
 }
 
 async function getPreferredProvider() {
   const providers = await request('GET', '/providers')
-  const normalizedName = QA_PROVIDER_NAME.trim().toLowerCase()
-  const normalizedModel = QA_PROVIDER_MODEL.trim().toLowerCase()
-  const normalizedId = QA_PROVIDER_ID.trim().toLowerCase()
-  const preferred = (
-    (normalizedId && providers.find(item => String(item.id || '').toLowerCase() === normalizedId))
-      || (normalizedName && providers.find(item => String(item.name || '').toLowerCase() === normalizedName))
-      || (normalizedModel && providers.find(item => String(item.model || '').toLowerCase().includes(normalizedModel)))
-      || providers.find(item => item.name === '联通云-DeepSeek-V4-Flash')
-      || providers.find(item => /DeepSeek-V4-Flash/i.test(item.model || ''))
-  )
+  const preferred = providers.find(item => item.name === '鑱旈€氫簯-DeepSeek-V4-Flash')
+    || providers.find(item => /DeepSeek-V4-Flash/i.test(item.model || ''))
     || providers[0]
-  if (!preferred) throw new Error('没有可用 Provider')
+  if (!preferred) throw new Error('娌℃湁鍙敤 Provider')
   report.provider = {
     name: preferred.name,
     model: preferred.model,
@@ -243,7 +233,7 @@ async function getPreferredProvider() {
     maxContextTokens: preferred.maxContextTokens,
     maxOutputTokens: preferred.maxOutputTokens
   }
-  pass('模型配置已读取', `${preferred.name} / ${preferred.model} / ${maskKey(preferred.apiKey)}`)
+  pass('妯″瀷閰嶇疆宸茶鍙?, `${preferred.name} / ${preferred.model} / ${maskKey(preferred.apiKey)}`)
   return preferred
 }
 
@@ -290,21 +280,21 @@ async function chat(provider, messages, options = {}) {
         || error.name === 'AbortError'
         || error.message.includes('fetch failed')
       if (!retryable || attempt >= attempts) throw error
-      report.notes.push(`LLM 请求失败，第 ${attempt}/${attempts} 次后重试：${trimText(error.message, 160)}`)
+      report.notes.push(`LLM 璇锋眰澶辫触锛岀 ${attempt}/${attempts} 娆″悗閲嶈瘯锛?{trimText(error.message, 160)}`)
       await sleep(1000 * attempt)
     }
   }
   throw lastError || new Error('LLM request failed')
 }
 
-async function chatJson(provider, messages, options = {}, repairHint = '请把上一次内容整理成合法 JSON。') {
+async function chatJson(provider, messages, options = {}, repairHint = '璇锋妸涓婁竴娆″唴瀹规暣鐞嗘垚鍚堟硶 JSON銆?) {
   const first = await chat(provider, messages, { ...options, json: true })
   try {
     return { payload: parseJsonPayload(first), raw: first, repaired: false }
   } catch (firstError) {
     const repair = await chat(provider, [
-      { role: 'system', content: '你是 JSON 修复器。只能输出合法 JSON，不要解释，不要 Markdown。' },
-      { role: 'user', content: `${repairHint}\n\n原始内容：\n${first.slice(0, 12000)}` }
+      { role: 'system', content: '浣犳槸 JSON 淇鍣ㄣ€傚彧鑳借緭鍑哄悎娉?JSON锛屼笉瑕佽В閲婏紝涓嶈 Markdown銆? },
+      { role: 'user', content: `${repairHint}\n\n鍘熷鍐呭锛歕n${first.slice(0, 12000)}` }
     ], {
       json: true,
       maxTokens: options.repairMaxTokens || options.maxTokens || 4096,
@@ -332,8 +322,8 @@ function cleanJsonCandidate(candidate) {
     .replace(/^```(?:json)?/i, '')
     .replace(/```$/i, '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
+    .replace(/[鈥溾€漖/g, '"')
+    .replace(/[鈥樷€橾/g, "'")
     .replace(/,\s*([}\]])/g, '$1')
     .trim()
 }
@@ -383,68 +373,19 @@ function parseJsonPayload(text) {
     ...collectBalanced(text, '[', ']')
   ]
   for (const item of candidates) {
-    const candidate = cleanJsonCandidate(item)
-    if (!candidate) continue
     try {
-      return JSON.parse(candidate)
-    } catch {
-      // continue
-    }
-
-    const repaired = autoCloseJson(candidate)
-    if (!repaired || repaired === candidate) continue
-    try {
-      return JSON.parse(repaired)
+      return JSON.parse(cleanJsonCandidate(item))
     } catch {
       // continue
     }
   }
-  throw new Error(`没有解析到 JSON：${text.slice(0, 260)}`)
-}
-
-function autoCloseJson(text) {
-  const trimmed = String(text || '').trim()
-  if (!trimmed) return trimmed
-
-  const first = trimmed[0]
-  if (first !== '{' && first !== '[') return trimmed
-
-  let depth = 0
-  let inString = false
-  let escaped = false
-
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const ch = trimmed[i]
-    if (inString) {
-      if (escaped) {
-        escaped = false
-        continue
-      }
-      if (ch === '\\') escaped = true
-      else if (ch === '"') inString = false
-      continue
-    }
-
-    if (ch === '"') {
-      inString = true
-      continue
-    }
-    if (ch === '{' || ch === '[') {
-      depth += 1
-      continue
-    }
-    if ((ch === '}' || ch === ']') && depth > 0) {
-      depth -= 1
-    }
-  }
-  if (depth <= 0) return trimmed
-  return `${trimmed}${first === '{' ? '}'.repeat(depth) : ']'.repeat(depth)}`
+  throw new Error(`娌℃湁瑙ｆ瀽鍒?JSON锛?{text.slice(0, 260)}`)
 }
 
 function normalizeSeed(raw) {
   return {
-    title: String(raw.title || raw.name || '未命名测试种子').trim(),
-    genre: String(raw.genre || raw.category || '玄幻悬疑').trim(),
+    title: String(raw.title || raw.name || '鏈懡鍚嶆祴璇曠瀛?).trim(),
+    genre: String(raw.genre || raw.category || '鐜勫够鎮枒').trim(),
     logline: String(raw.logline || raw.premise || '').trim(),
     protagonist: String(raw.protagonist || '').trim(),
     desire: String(raw.desire || '').trim(),
@@ -557,22 +498,22 @@ function upsertCount(list, chapterNum, patch) {
   else list.push({ chapterNum, ...patch })
 }
 
-function assessChapterWordCount(project, chapterNum, count, stage = '正文') {
+function assessChapterWordCount(project, chapterNum, count, stage = '姝ｆ枃') {
   const range = expectedChapterWordRange(project)
-  const detail = `${count} 字；目标 ${range.target}，建议 ${range.softMin}-${range.softMax}，硬范围 ${range.hardMin}-${range.hardMax}`
+  const detail = `${count} 瀛楋紱鐩爣 ${range.target}锛屽缓璁?${range.softMin}-${range.softMax}锛岀‖鑼冨洿 ${range.hardMin}-${range.hardMax}`
   if (isChapterWordCountTooFarForQaStop(project, count)) {
-    fail(`第 ${chapterNum} 章${stage}字数越界`, detail)
+    fail(`绗?${chapterNum} 绔?{stage}瀛楁暟瓒婄晫`, detail)
     return false
   }
   if (!isChapterWordCountInHardRange(project, count)) {
-    report.notes.push(`第 ${chapterNum} 章${stage}字数进入质量保留容忍区：${detail}`)
-    pass(`第 ${chapterNum} 章${stage}字数进入质量保留容忍区`, detail)
+    report.notes.push(`绗?${chapterNum} 绔?{stage}瀛楁暟杩涘叆璐ㄩ噺淇濈暀瀹瑰繊鍖猴細${detail}`)
+    pass(`绗?${chapterNum} 绔?{stage}瀛楁暟杩涘叆璐ㄩ噺淇濈暀瀹瑰繊鍖篳, detail)
     return true
   }
   if (count < range.softMin || count > range.softMax) {
-    report.notes.push(`第 ${chapterNum} 章${stage}字数略偏离建议范围：${detail}`)
+    report.notes.push(`绗?${chapterNum} 绔?{stage}瀛楁暟鐣ュ亸绂诲缓璁寖鍥达細${detail}`)
   }
-  pass(`第 ${chapterNum} 章${stage}字数在可接受范围`, detail)
+  pass(`绗?${chapterNum} 绔?{stage}瀛楁暟鍦ㄥ彲鎺ュ彈鑼冨洿`, detail)
   return true
 }
 
@@ -631,6 +572,16 @@ function buildChapterWordGateError(project, chapterNum, count, stage = 'chapter'
   return error
 }
 
+function enforceWordCountGate(project, chapterNum, count, stage = 'chapter') {
+  const ok = assessChapterWordCount(project, chapterNum, count, stage)
+  if (ok) return true
+  if (IGNORE_WORD_COUNT_GATE) {
+    report.notes.push(`IGNORED_WORD_COUNT_GATE: chapter ${chapterNum} ${stage} count ${count} outside hard range.`)
+    return false
+  }
+  throw buildChapterWordGateError(project, chapterNum, count, stage)
+}
+
 function findFinalizedWordOutliers(project, finalizedChapters = []) {
   return finalizedChapters
     .filter(item => isChapterWordCountTooFarForQaStop(project, item?.wordCount))
@@ -642,7 +593,7 @@ function assertNoFinalizedWordOutliers(project, finalizedChapters = [], scope = 
   if (!outliers.length) return
   const range = expectedChapterWordRange(project)
   fail(
-    '续写前发现已定稿章节字数硬性越界',
+    '缁啓鍓嶅彂鐜板凡瀹氱绔犺妭瀛楁暟纭€ц秺鐣?,
     `range=${range.hardMin}-${range.hardMax}, outliers=${JSON.stringify(outliers)}`
   )
   const error = new Error(
@@ -667,8 +618,8 @@ function validateRevisionWordDrift(project, chapterNum, originalContent, revised
   const outsideHardRange = revisedCount < range.hardMin || revisedCount > range.hardMax
   if (tooMuchDrift || outsideHardRange) {
     fail(
-      `第 ${chapterNum} 章审稿修订字数漂移过大`,
-      `原 ${originalCount} 字，修订 ${revisedCount} 字，比例 ${ratio.toFixed(2)}；已回退到修订前正文`
+      `绗?${chapterNum} 绔犲绋夸慨璁㈠瓧鏁版紓绉昏繃澶,
+      `鍘?${originalCount} 瀛楋紝淇 ${revisedCount} 瀛楋紝姣斾緥 ${ratio.toFixed(2)}锛涘凡鍥為€€鍒颁慨璁㈠墠姝ｆ枃`
     )
     return { ok: false, originalCount, revisedCount, reason: tooMuchDrift ? 'drift' : 'word_range' }
   }
@@ -683,15 +634,15 @@ function recordFinalChapterWordCount(chapterNum, count) {
 }
 
 function chapterTitle(chapterNum, name = '') {
-  return name ? `第 ${chapterNum} 章 · ${name}` : `第 ${chapterNum} 章`
+  return name ? `绗?${chapterNum} 绔?路 ${name}` : `绗?${chapterNum} 绔燻
 }
 
 async function createProject(provider) {
   const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)
   const project = await request('POST', '/projects', {
     title: `${QA_PROJECT_PREFIX}_${stamp}`,
-    genre: '玄幻悬疑 / 人性选择',
-    description: '自动化真实流程测试项目：按 200 万字、400 章规模规划，真实调用网络抓取和大模型生成前几章内容。',
+    genre: '鐜勫够鎮枒 / 浜烘€ч€夋嫨',
+    description: '鑷姩鍖栫湡瀹炴祦绋嬫祴璇曢」鐩細鎸?200 涓囧瓧銆?00 绔犺妯¤鍒掞紝鐪熷疄璋冪敤缃戠粶鎶撳彇鍜屽ぇ妯″瀷鐢熸垚鍓嶅嚑绔犲唴瀹广€?,
     targetWords: 2000000,
     targetChapters: 400
   })
@@ -712,52 +663,52 @@ async function createProject(provider) {
     marketModelId: provider.id,
     polishModelId: provider.id
   })
-  pass('已新建 200 万字规模项目', `${project.title} / 400 章`)
+  pass('宸叉柊寤?200 涓囧瓧瑙勬ā椤圭洰', `${project.title} / 400 绔燻)
   return project
 }
 
 async function runMarketAndSeed(project, provider) {
-  log('开始选题雷达：网络抓取热门题材')
+  log('寮€濮嬮€夐闆疯揪锛氱綉缁滄姄鍙栫儹闂ㄩ鏉?)
   let scrapeResult = null
   try {
     scrapeResult = await request('POST', '/market/scrape', {
       projectId: project.id,
-      keywords: '玄幻 悬疑 人性 热门小说'
+      keywords: '鐜勫够 鎮枒 浜烘€?鐑棬灏忚'
     })
   } catch (error) {
-    report.notes.push(`网络抓取失败：${error.message}`)
-    fail('网络抓取热门小说', error.message)
+    report.notes.push(`缃戠粶鎶撳彇澶辫触锛?{error.message}`)
+    fail('缃戠粶鎶撳彇鐑棬灏忚', error.message)
   }
   const marketItems = await request('GET', `/market/items?projectId=${project.id}`)
   report.generated.marketItems = marketItems.length
-  assertCheck(marketItems.length > 0, '选题雷达有热点数据', `items=${marketItems.length}${scrapeResult?.fallback ? ' / fallback' : ''}`)
+  assertCheck(marketItems.length > 0, '閫夐闆疯揪鏈夌儹鐐规暟鎹?, `items=${marketItems.length}${scrapeResult?.fallback ? ' / fallback' : ''}`)
 
-  log('开始 AI 方向建议')
+  log('寮€濮?AI 鏂瑰悜寤鸿')
   const marketBrief = marketItems.slice(0, 12).map((item, index) =>
-    `${index + 1}. ${item.title}｜${item.platform || ''}｜${item.category || ''}｜${item.intro || ''}`
+    `${index + 1}. ${item.title}锝?{item.platform || ''}锝?{item.category || ''}锝?{item.intro || ''}`
   ).join('\n')
   const directionResult = await chatJson(provider, [
-    { role: 'system', content: '你是网文选题策划编辑。必须输出合法 JSON，不要 Markdown。' },
-    { role: 'user', content: `基于这些热点数据，给出 4 个适合长篇原创小说的方向。输出 {"directions":[{"title":"","genre":"","readerExpectation":"","whyNow":"","seedAngle":"","risks":"","discussionPrompt":""}]}。\n\n热点数据：\n${marketBrief}` }
-  ], { maxTokens: 3500, temperature: 0.6 }, '修复为 {"directions":[...]} 格式。')
+    { role: 'system', content: '浣犳槸缃戞枃閫夐绛栧垝缂栬緫銆傚繀椤昏緭鍑哄悎娉?JSON锛屼笉瑕?Markdown銆? },
+    { role: 'user', content: `鍩轰簬杩欎簺鐑偣鏁版嵁锛岀粰鍑?4 涓€傚悎闀跨瘒鍘熷垱灏忚鐨勬柟鍚戙€傝緭鍑?{"directions":[{"title":"","genre":"","readerExpectation":"","whyNow":"","seedAngle":"","risks":"","discussionPrompt":""}]}銆俓n\n鐑偣鏁版嵁锛歕n${marketBrief}` }
+  ], { maxTokens: 3500, temperature: 0.6 }, '淇涓?{"directions":[...]} 鏍煎紡銆?)
   const directionsPayload = directionResult.payload
   const directions = Array.isArray(directionsPayload.directions) ? directionsPayload.directions : []
   report.generated.directions = directions.length
   await request('POST', '/market/directions', {
     projectId: project.id,
-    keywords: '玄幻 悬疑 人性 热门小说',
+    keywords: '鐜勫够 鎮枒 浜烘€?鐑棬灏忚',
     directions,
     sourceItems: marketItems.slice(0, 20)
   })
-  assertCheck(directions.length >= 2, 'AI 方向建议可解析', `directions=${directions.length}`)
+  assertCheck(directions.length >= 2, 'AI 鏂瑰悜寤鸿鍙В鏋?, `directions=${directions.length}`)
 
-  const userQuestion = `我想选一个适合 200 万字长篇、重点写人性选择和代价的题材，请基于方向建议生成一个完整创作种子，并保留结局锚点。`
+  const userQuestion = `鎴戞兂閫変竴涓€傚悎 200 涓囧瓧闀跨瘒銆侀噸鐐瑰啓浜烘€ч€夋嫨鍜屼唬浠风殑棰樻潗锛岃鍩轰簬鏂瑰悜寤鸿鐢熸垚涓€涓畬鏁村垱浣滅瀛愶紝骞朵繚鐣欑粨灞€閿氱偣銆俙
   await request('POST', '/market/chat', { projectId: project.id, role: 'user', content: userQuestion, metadata: {} })
-  log('开始 AI 选题顾问生成种子')
+  log('寮€濮?AI 閫夐椤鹃棶鐢熸垚绉嶅瓙')
   const seedResult = await chatJson(provider, [
-    { role: 'system', content: '你是资深网文选题顾问。只输出合法 JSON。只生成 1 个种子，每个字段不超过 120 个中文字符，避免 JSON 过长被截断。' },
-    { role: 'user', content: `${userQuestion}\n\n方向建议：\n${JSON.stringify(directions, null, 2)}\n\n必须输出 {"seeds":[{"title":"","genre":"","logline":"","protagonist":"","desire":"","coreConflict":"","worldPressure":"","openingHook":"","emotionalPromise":"","differentiation":"","styleTarget":"","riskNotes":"","endingAnchor":""}]}。只输出 JSON。` }
-  ], { maxTokens: 8000, retryMaxTokens: 12000, repairMaxTokens: 8000, temperature: 0.65 }, '修复为 {"seeds":[{...}]} 格式；只保留 1 个完整种子。')
+    { role: 'system', content: '浣犳槸璧勬繁缃戞枃閫夐椤鹃棶銆傚彧杈撳嚭鍚堟硶 JSON銆傚彧鐢熸垚 1 涓瀛愶紝姣忎釜瀛楁涓嶈秴杩?120 涓腑鏂囧瓧绗︼紝閬垮厤 JSON 杩囬暱琚埅鏂€? },
+    { role: 'user', content: `${userQuestion}\n\n鏂瑰悜寤鸿锛歕n${JSON.stringify(directions, null, 2)}\n\n蹇呴』杈撳嚭 {"seeds":[{"title":"","genre":"","logline":"","protagonist":"","desire":"","coreConflict":"","worldPressure":"","openingHook":"","emotionalPromise":"","differentiation":"","styleTarget":"","riskNotes":"","endingAnchor":""}]}銆傚彧杈撳嚭 JSON銆俙 }
+  ], { maxTokens: 6000, retryMaxTokens: 7000, repairMaxTokens: 6000, temperature: 0.65 }, '淇涓?{"seeds":[{...}]} 鏍煎紡锛涘彧淇濈暀 1 涓畬鏁寸瀛愩€?)
   const seedPayload = seedResult.payload
   const seeds = (Array.isArray(seedPayload.seeds) ? seedPayload.seeds : Array.isArray(seedPayload) ? seedPayload : [seedPayload])
     .map(normalizeSeed)
@@ -769,20 +720,20 @@ async function runMarketAndSeed(project, provider) {
     content: seedResult.raw,
     metadata: { seeds }
   })
-  assertCheck(seeds.length >= 1, 'AI 选题顾问生成可保存种子', `seeds=${seeds.length}`)
+  assertCheck(seeds.length >= 1, 'AI 閫夐椤鹃棶鐢熸垚鍙繚瀛樼瀛?, `seeds=${seeds.length}`)
 
   const seed = await request('POST', `/projects/${project.id}/seeds`, seeds[0])
   const selectedSeed = await request('PUT', `/projects/${project.id}/seeds/${seed.id}`, { status: 'selected' })
-  pass('种子已保存并设为当前种子', selectedSeed.title)
+  pass('绉嶅瓙宸蹭繚瀛樺苟璁句负褰撳墠绉嶅瓙', selectedSeed.title)
 
   return { marketItems, directions, seed: selectedSeed }
 }
 
 async function runBibleAndSettings(project, provider, seed) {
-  log('开始从种子生成创作圣经')
+  log('寮€濮嬩粠绉嶅瓙鐢熸垚鍒涗綔鍦ｇ粡')
   const bibleText = await chat(provider, [
-    { role: 'system', content: '你是长篇小说总编。必须输出合法 JSON，不要 Markdown。创作圣经是后续大纲、设定和正文必须遵守的蓝图。' },
-    { role: 'user', content: `根据种子生成创作圣经。输出 {"premise":"","targetReader":"","styleBible":[],"themeBible":[],"worldRules":[],"forbiddenDirections":[]}。\n要求：保留想象力，但把硬规则写清楚；明确避免 AI 腔，少用“不是X，是Y”句式；长期目标是 200 万字。\n\n种子：\n${JSON.stringify(seed, null, 2)}` }
+    { role: 'system', content: '浣犳槸闀跨瘒灏忚鎬荤紪銆傚繀椤昏緭鍑哄悎娉?JSON锛屼笉瑕?Markdown銆傚垱浣滃湥缁忔槸鍚庣画澶х翰銆佽瀹氬拰姝ｆ枃蹇呴』閬靛畧鐨勮摑鍥俱€? },
+    { role: 'user', content: `鏍规嵁绉嶅瓙鐢熸垚鍒涗綔鍦ｇ粡銆傝緭鍑?{"premise":"","targetReader":"","styleBible":[],"themeBible":[],"worldRules":[],"forbiddenDirections":[]}銆俓n瑕佹眰锛氫繚鐣欐兂璞″姏锛屼絾鎶婄‖瑙勫垯鍐欐竻妤氾紱鏄庣‘閬垮厤 AI 鑵旓紝灏戠敤鈥滀笉鏄疿锛屾槸Y鈥濆彞寮忥紱闀挎湡鐩爣鏄?200 涓囧瓧銆俓n\n绉嶅瓙锛歕n${JSON.stringify(seed, null, 2)}` }
   ], { json: true, maxTokens: 4096, temperature: 0.55 })
   const bible = normalizeBible(parseJsonPayload(bibleText))
   bible.writingProfile = {
@@ -792,15 +743,15 @@ async function runBibleAndSettings(project, provider, seed) {
   }
   bible.styleBible = [
     bible.styleBible,
-    `写作策略标准：主写作标准=${QA_PRIMARY_STANDARD}；辅助风味=${QA_SECONDARY_FLAVOR}；${QA_STYLE_NOTES}`
+    `鍐欎綔绛栫暐鏍囧噯锛氫富鍐欎綔鏍囧噯=${QA_PRIMARY_STANDARD}锛涜緟鍔╅鍛?${QA_SECONDARY_FLAVOR}锛?{QA_STYLE_NOTES}`
   ].filter(Boolean).join('\n')
   await request('PUT', `/projects/${project.id}/bible`, bible)
-  assertCheck(Boolean(bible.premise && bible.styleBible && bible.worldRules), '创作圣经已生成并保存', bible.premise.slice(0, 60))
+  assertCheck(Boolean(bible.premise && bible.styleBible && bible.worldRules), '鍒涗綔鍦ｇ粡宸茬敓鎴愬苟淇濆瓨', bible.premise.slice(0, 60))
 
-  log('开始从圣经提取设定候选')
+  log('寮€濮嬩粠鍦ｇ粡鎻愬彇璁惧畾鍊欓€?)
   const settingsText = await chat(provider, [
-    { role: 'system', content: '你是长篇小说设定库整理员。只输出合法 JSON。不要重复同名同类型实体；关系变化用独立事件表达。' },
-    { role: 'user', content: `从创作种子和圣经中提取 8-12 个初始设定候选，输出 {"settings":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary","newValue":"","evidence":"","confidence":0.9}]}。\n\n种子：${JSON.stringify(seed)}\n\n圣经：${JSON.stringify(bible)}` }
+    { role: 'system', content: '浣犳槸闀跨瘒灏忚璁惧畾搴撴暣鐞嗗憳銆傚彧杈撳嚭鍚堟硶 JSON銆備笉瑕侀噸澶嶅悓鍚嶅悓绫诲瀷瀹炰綋锛涘叧绯诲彉鍖栫敤鐙珛浜嬩欢琛ㄨ揪銆? },
+    { role: 'user', content: `浠庡垱浣滅瀛愬拰鍦ｇ粡涓彁鍙?8-12 涓垵濮嬭瀹氬€欓€夛紝杈撳嚭 {"settings":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary","newValue":"","evidence":"","confidence":0.9}]}銆俓n\n绉嶅瓙锛?{JSON.stringify(seed)}\n\n鍦ｇ粡锛?{JSON.stringify(bible)}` }
   ], { json: true, maxTokens: 4096, temperature: 0.2 })
   const settingsPayload = parseJsonPayload(settingsText)
   const settings = Array.isArray(settingsPayload.settings) ? settingsPayload.settings : []
@@ -821,41 +772,41 @@ async function runBibleAndSettings(project, provider, seed) {
       oldValue: '',
       newValue: item.newValue || item.summary || '',
       chapterNum: null,
-      evidence: `创作圣经初始化：${item.evidence || bible.premise}`,
+      evidence: `鍒涗綔鍦ｇ粡鍒濆鍖栵細${item.evidence || bible.premise}`,
       confidence: Number(item.confidence || 0.9),
       status: 'pending_review'
     })
     createdEvents.push(saved)
   }
   report.generated.settingEvents = createdEvents.length
-  assertCheck(createdEvents.length >= 4, '圣经提取到设定候选', `events=${createdEvents.length}`)
+  assertCheck(createdEvents.length >= 4, '鍦ｇ粡鎻愬彇鍒拌瀹氬€欓€?, `events=${createdEvents.length}`)
 
   for (const event of createdEvents) {
     await request('POST', `/projects/${project.id}/settings/change-events/${event.id}/accept`)
     report.generated.acceptedSettings += 1
   }
-  pass('初始设定候选已全部确认入库', `accepted=${report.generated.acceptedSettings}`)
+  pass('鍒濆璁惧畾鍊欓€夊凡鍏ㄩ儴纭鍏ュ簱', `accepted=${report.generated.acceptedSettings}`)
 
   const entities = await request('GET', `/projects/${project.id}/settings/entities`)
-  assertCheck(entities.length >= 4, '设定库实体已生成', `entities=${entities.length}`)
+  assertCheck(entities.length >= 4, '璁惧畾搴撳疄浣撳凡鐢熸垚', `entities=${entities.length}`)
   return { bible, entities }
 }
 
 async function createVolumesAndChapters(project) {
-  log('开始创建 200 万字分卷与章节骨架')
+  log('寮€濮嬪垱寤?200 涓囧瓧鍒嗗嵎涓庣珷鑺傞鏋?)
   const volumes = []
   for (let i = 1; i <= 8; i += 1) {
     const start = (i - 1) * 50 + 1
     const volume = await request('POST', `/projects/${project.id}/volumes`, {
       volumeNum: i,
-      title: `第 ${i} 卷`,
+      title: `绗?${i} 鍗穈,
       startChapter: start,
       endChapter: start + 49,
       targetWords: 250000,
-      coreGoal: `第 ${i} 卷推动主角对愿望代价的理解升级`,
-      mainConflict: '个人愿望、家族真相与逐愿规则之间的冲突',
+      coreGoal: `绗?${i} 鍗锋帹鍔ㄤ富瑙掑鎰挎湜浠ｄ环鐨勭悊瑙ｅ崌绾,
+      mainConflict: '涓汉鎰挎湜銆佸鏃忕湡鐩镐笌閫愭効瑙勫垯涔嬮棿鐨勫啿绐?,
       keyCharacters: [],
-      summary: '自动化测试创建的长篇分卷规划。',
+      summary: '鑷姩鍖栨祴璇曞垱寤虹殑闀跨瘒鍒嗗嵎瑙勫垝銆?,
       status: 'planned'
     })
     volumes.push(volume)
@@ -865,17 +816,17 @@ async function createVolumesAndChapters(project) {
   for (let i = 1; i <= 400; i += 1) {
     await request('POST', `/projects/${project.id}/chapters`, {
       chapterNum: i,
-      title: `第 ${i} 章`
+      title: `绗?${i} 绔燻
     })
     chaptersCreated += 1
   }
   report.generated.chaptersCreated = chaptersCreated
-  assertCheck(volumes.length === 8 && chaptersCreated === 400, '200 万字章节骨架已创建', `volumes=${volumes.length}, chapters=${chaptersCreated}`)
+  assertCheck(volumes.length === 8 && chaptersCreated === 400, '200 涓囧瓧绔犺妭楠ㄦ灦宸插垱寤?, `volumes=${volumes.length}, chapters=${chaptersCreated}`)
 
   const chapter4 = (await request('GET', `/projects/${project.id}/chapters`)).find(item => Number(item.chapterNum) === 4)
   await request('DELETE', `/projects/${project.id}/chapters/${chapter4.id}`)
-  await request('POST', `/projects/${project.id}/chapters`, { chapterNum: 4, title: '第 4 章' })
-  pass('空章节删除后可重新创建', '第 4 章')
+  await request('POST', `/projects/${project.id}/chapters`, { chapterNum: 4, title: '绗?4 绔? })
+  pass('绌虹珷鑺傚垹闄ゅ悗鍙噸鏂板垱寤?, '绗?4 绔?)
 
   return { volumes }
 }
@@ -888,52 +839,52 @@ async function compactBeatPlanIfNeeded(provider, chapterNum, text, context) {
   text = String(text || '').trim()
   if (text.length <= 1300) return text
 
-  log(`第 ${chapterNum} 章小纲过长，开始压缩`)
+  log(`绗?${chapterNum} 绔犲皬绾茶繃闀匡紝寮€濮嬪帇缂ー)
   let best = text
   const contextBrief = formatQaContextForPrompt(context, 2400)
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const compacted = await chat(provider, [
-      { role: 'system', content: '你是长篇小说分章小纲编辑。只负责压缩小纲，不写正文，不解释。' },
+      { role: 'system', content: '浣犳槸闀跨瘒灏忚鍒嗙珷灏忕翰缂栬緫銆傚彧璐熻矗鍘嬬缉灏忕翰锛屼笉鍐欐鏂囷紝涓嶈В閲娿€? },
       {
         role: 'user',
         content: [
-          `请把第 ${chapterNum} 章小纲压缩为 700-1100 字，绝不能超过 1300 字。`,
-          '节拍控制在 4-6 条，保留本章核心目的、人物动机、关键选择、代价、结尾钩子、连续性自检和写作约束。',
-          '必须保留时间线连续性、状态延续、道具来源、人物铺垫和伏笔铺垫的关键提醒，但用短句合并表达。',
-          '不要新增剧情，不要改变因果顺序，不要把两章容量塞进一章。',
-          attempt > 1 ? `上一次压缩仍过长（${best.length} 字符），请继续压缩。` : '',
-          `上下文：\n${contextBrief}`,
-          `原小纲：\n${best}`
+          `璇锋妸绗?${chapterNum} 绔犲皬绾插帇缂╀负 700-1100 瀛楋紝缁濅笉鑳借秴杩?1300 瀛椼€俙,
+          '鑺傛媿鎺у埗鍦?4-6 鏉★紝淇濈暀鏈珷鏍稿績鐩殑銆佷汉鐗╁姩鏈恒€佸叧閿€夋嫨銆佷唬浠枫€佺粨灏鹃挬瀛愩€佽繛缁€ц嚜妫€鍜屽啓浣滅害鏉熴€?,
+          '蹇呴』淇濈暀鏃堕棿绾胯繛缁€с€佺姸鎬佸欢缁€侀亾鍏锋潵婧愩€佷汉鐗╅摵鍨拰浼忕瑪閾哄灚鐨勫叧閿彁閱掞紝浣嗙敤鐭彞鍚堝苟琛ㄨ揪銆?,
+          '涓嶈鏂板鍓ф儏锛屼笉瑕佹敼鍙樺洜鏋滈『搴忥紝涓嶈鎶婁袱绔犲閲忓杩涗竴绔犮€?,
+          attempt > 1 ? `涓婁竴娆″帇缂╀粛杩囬暱锛?{best.length} 瀛楃锛夛紝璇风户缁帇缂┿€俙 : '',
+          `涓婁笅鏂囷細\n${contextBrief}`,
+          `鍘熷皬绾诧細\n${best}`
         ].filter(Boolean).join('\n\n')
       }
     ], { maxTokens: 1400, temperature: 0.3, timeoutMs: 240000 })
     const cleaned = compacted.trim()
     if (cleaned.length >= 600 && cleaned.length < best.length) best = cleaned
     if (best.length <= 1300) {
-      pass(`第 ${chapterNum} 章小纲已自动压缩`, `${text.length} -> ${best.length} chars`)
+      pass(`绗?${chapterNum} 绔犲皬绾插凡鑷姩鍘嬬缉`, `${text.length} -> ${best.length} chars`)
       return best
     }
   }
 
-  report.notes.push(`第 ${chapterNum} 章小纲压缩后仍偏长：${text.length} -> ${best.length}`)
-  assertCheck(best.length <= 1300, `第 ${chapterNum} 章小纲压缩到建议上限内`, `${text.length} -> ${best.length} chars`)
+  report.notes.push(`绗?${chapterNum} 绔犲皬绾插帇缂╁悗浠嶅亸闀匡細${text.length} -> ${best.length}`)
+  assertCheck(best.length <= 1300, `绗?${chapterNum} 绔犲皬绾插帇缂╁埌寤鸿涓婇檺鍐卄, `${text.length} -> ${best.length} chars`)
   return best.length < text.length ? best : text
 }
 
 async function generateBeatPlan(project, provider, chapterNum, context) {
-  log(`开始生成第 ${chapterNum} 章小纲`)
+  log(`寮€濮嬬敓鎴愮 ${chapterNum} 绔犲皬绾瞏)
   const rawText = await chat(provider, [
     { role: 'system', content: buildChapterBeatSystemPrompt() },
     { role: 'user', content: buildChapterBeatPrompt({ ...context, chapterNum }) }
   ], { maxTokens: 1800, temperature: 0.5 })
   const text = cleanChapterBeatPlanText(await compactBeatPlanIfNeeded(provider, chapterNum, rawText, context))
   await saveBeatPlan(project, chapterNum, text)
-  assertCheck(text.length > 200, `第 ${chapterNum} 章小纲已生成`, `${text.length} chars`)
+  assertCheck(text.length > 200, `绗?${chapterNum} 绔犲皬绾插凡鐢熸垚`, `${text.length} chars`)
   return text
 }
 
 async function generateChapterContent(project, provider, chapterNum, context, beatPlan) {
-  log(`开始生成第 ${chapterNum} 章正文`)
+  log(`寮€濮嬬敓鎴愮 ${chapterNum} 绔犳鏂嘸)
   const promptContext = { ...context, chapterNum, beatPlan }
   const content = await chat(provider, [
     { role: 'system', content: buildChapterSystemPrompt() },
@@ -942,7 +893,7 @@ async function generateChapterContent(project, provider, chapterNum, context, be
   const cleaned = cleanGeneratedChapterText(content)
   const count = wordCount(cleaned)
   report.generated.chapterWordCounts.push({ chapterNum, count, stage: 'first_draft' })
-  assertCheck(count >= 3000, `第 ${chapterNum} 章正文已生成`, `${count} 字`)
+  assertCheck(count >= 3000, `绗?${chapterNum} 绔犳鏂囧凡鐢熸垚`, `${count} 瀛梎)
   return cleaned
 }
 
@@ -951,9 +902,9 @@ function cleanQaGeneratedText(text) {
     const trimmed = line.trim()
     if (!trimmed) return true
     const withoutMarkdown = trimmed.replace(/^#{1,6}\s*/, '').trim()
-    if (/^(以下是|下面是|正文如下|候选稿|章节正文)[：:]/.test(withoutMarkdown)) return true
-    if (/^(?:正文|章节正文|候选正文)\s*[：:]\s*$/.test(withoutMarkdown)) return true
-    return /^第\s*[\d一二三四五六七八九十百千万零〇两]+\s*章(?:\s*[：:、.\-—·]\s*.*|\s+\S{1,16})?$/.test(withoutMarkdown)
+    if (/^(浠ヤ笅鏄瘄涓嬮潰鏄瘄姝ｆ枃濡備笅|鍊欓€夌|绔犺妭姝ｆ枃)[锛?]/.test(withoutMarkdown)) return true
+    if (/^(?:姝ｆ枃|绔犺妭姝ｆ枃|鍊欓€夋鏂?\s*[锛?]\s*$/.test(withoutMarkdown)) return true
+    return /^绗琝s*[\d涓€浜屼笁鍥涗簲鍏竷鍏節鍗佺櫨鍗冧竾闆躲€囦袱]+\s*绔??:\s*[锛?銆?\-鈥斅穄\s*.*|\s+\S{1,16})?$/.test(withoutMarkdown)
   }
 
   const lines = String(text || '')
@@ -980,26 +931,26 @@ async function repairProseRhythmForQa(project, provider, chapterNum, context, be
   if (!shouldRepairProseRhythm(analysis)) return original
   const contextBrief = formatQaContextForPrompt(context, 2600)
 
-  log(`第 ${chapterNum} 章触发句式节奏修订：${analysis.reasons.join('；')}`)
+  log(`绗?${chapterNum} 绔犺Е鍙戝彞寮忚妭濂忎慨璁細${analysis.reasons.join('锛?)}`)
   const repaired = cleanQaGeneratedText(await chat(provider, [
     {
       role: 'system',
       content: [
-        '你是长篇小说正文节奏修订编辑。只修正文稿中过密的短句独立段落、机械化 AI 腔句式和碎片化分镜感。',
-        '不要新增剧情、人物、设定或结论；保留事件顺序、人物选择、对白含义、结尾钩子和已确认设定。',
-        '常规叙事段落自然合并为 2-5 句；短句只能保留在局部爆点、恐惧、断裂、反转或停顿。',
-        '输出完整正文，不要标题，不要解释，不要 JSON。'
+        '浣犳槸闀跨瘒灏忚姝ｆ枃鑺傚淇缂栬緫銆傚彧淇鏂囩涓繃瀵嗙殑鐭彞鐙珛娈佃惤銆佹満姊板寲 AI 鑵斿彞寮忓拰纰庣墖鍖栧垎闀滄劅銆?,
+        '涓嶈鏂板鍓ф儏銆佷汉鐗┿€佽瀹氭垨缁撹锛涗繚鐣欎簨浠堕『搴忋€佷汉鐗╅€夋嫨銆佸鐧藉惈涔夈€佺粨灏鹃挬瀛愬拰宸茬‘璁よ瀹氥€?,
+        '甯歌鍙欎簨娈佃惤鑷劧鍚堝苟涓?2-5 鍙ワ紱鐭彞鍙兘淇濈暀鍦ㄥ眬閮ㄧ垎鐐广€佹亹鎯с€佹柇瑁傘€佸弽杞垨鍋滈】銆?,
+        '杈撳嚭瀹屾暣姝ｆ枃锛屼笉瑕佹爣棰橈紝涓嶈瑙ｉ噴锛屼笉瑕?JSON銆?
       ].join('\n')
     },
     {
       role: 'user',
       content: [
-        `请修订第 ${chapterNum} 章的句式节奏。`,
-        `节奏报告：\n${formatProseRhythmAnalysis(analysis)}`,
-        '目标：减少连续短句独立段落，去掉机械“不是X，是Y”模板，保持剧情事实和字数体量基本不变。',
-        `上下文：\n${contextBrief}`,
-        `小纲：\n${trimText(beatPlan, 1600)}`,
-        `正文：\n${original}`
+        `璇蜂慨璁㈢ ${chapterNum} 绔犵殑鍙ュ紡鑺傚銆俙,
+        `鑺傚鎶ュ憡锛歕n${formatProseRhythmAnalysis(analysis)}`,
+        '鐩爣锛氬噺灏戣繛缁煭鍙ョ嫭绔嬫钀斤紝鍘绘帀鏈烘鈥滀笉鏄疿锛屾槸Y鈥濇ā鏉匡紝淇濇寔鍓ф儏浜嬪疄鍜屽瓧鏁颁綋閲忓熀鏈笉鍙樸€?,
+        `涓婁笅鏂囷細\n${contextBrief}`,
+        `灏忕翰锛歕n${trimText(beatPlan, 1600)}`,
+        `姝ｆ枃锛歕n${original}`
       ].join('\n\n')
     }
   ], { maxTokens: 5200, temperature: 0.28, timeoutMs: 300000 }))
@@ -1019,11 +970,11 @@ async function repairProseRhythmForQa(project, provider, chapterNum, context, be
     )
 
   if (!improved) {
-    report.notes.push(`第 ${chapterNum} 章句式节奏修订未采用：drift=${drift.toFixed(2)}；before=${analysis.shortParagraphRate.toFixed(2)}/${analysis.maxShortStreak}/lead${analysis.maxSameLeadingSubjectCount || 0}；after=${repairedAnalysis.shortParagraphRate.toFixed(2)}/${repairedAnalysis.maxShortStreak}/lead${repairedAnalysis.maxSameLeadingSubjectCount || 0}`)
+    report.notes.push(`绗?${chapterNum} 绔犲彞寮忚妭濂忎慨璁㈡湭閲囩敤锛歞rift=${drift.toFixed(2)}锛沚efore=${analysis.shortParagraphRate.toFixed(2)}/${analysis.maxShortStreak}/lead${analysis.maxSameLeadingSubjectCount || 0}锛沘fter=${repairedAnalysis.shortParagraphRate.toFixed(2)}/${repairedAnalysis.maxShortStreak}/lead${repairedAnalysis.maxSameLeadingSubjectCount || 0}`)
     return original
   }
 
-  pass(`第 ${chapterNum} 章节奏修订已采用`, `短句率 ${analysis.shortParagraphRate.toFixed(2)} -> ${repairedAnalysis.shortParagraphRate.toFixed(2)}，连续 ${analysis.maxShortStreak} -> ${repairedAnalysis.maxShortStreak}，段首重复 ${analysis.maxSameLeadingSubjectCount || 0} -> ${repairedAnalysis.maxSameLeadingSubjectCount || 0}`)
+  pass(`绗?${chapterNum} 绔犺妭濂忎慨璁㈠凡閲囩敤`, `鐭彞鐜?${analysis.shortParagraphRate.toFixed(2)} -> ${repairedAnalysis.shortParagraphRate.toFixed(2)}锛岃繛缁?${analysis.maxShortStreak} -> ${repairedAnalysis.maxShortStreak}锛屾棣栭噸澶?${analysis.maxSameLeadingSubjectCount || 0} -> ${repairedAnalysis.maxSameLeadingSubjectCount || 0}`)
   return repaired
 }
 
@@ -1031,31 +982,31 @@ async function expandShortChapterContent(project, provider, chapterNum, context,
   const range = expectedChapterWordRange(project)
   const currentCount = wordCount(shortContent)
   const contextBrief = formatQaContextForPrompt(context, 3200)
-  log(`第 ${chapterNum} 章初稿偏短，开始补足重试：${currentCount} 字`)
+  log(`绗?${chapterNum} 绔犲垵绋垮亸鐭紝寮€濮嬭ˉ瓒抽噸璇曪細${currentCount} 瀛梎)
   const expanded = await chat(provider, [
     {
       role: 'system',
       content: [
-        '你是长篇网文补稿编辑。任务是保留原文主体，只补足缺失的场景、行动、动机、过渡和感官细节。',
-        '不要推翻原剧情，不要另起炉灶，不要总结式扩写；补足后输出完整正文。',
-        '如果当前稿仍明显偏短，至少新增一到两个完整场景或完整行动段，不要只补几句说明。',
-        '目标字数 5000 字，建议 4500-6500 字；必须至少达到硬下限，但不能为了凑字重复解释或灌水。',
-        '如果小纲内容不足，优先展开人物选择、阻力、代价、场景推进和章末钩子。'
+        '浣犳槸闀跨瘒缃戞枃琛ョ缂栬緫銆備换鍔℃槸淇濈暀鍘熸枃涓讳綋锛屽彧琛ヨ冻缂哄け鐨勫満鏅€佽鍔ㄣ€佸姩鏈恒€佽繃娓″拰鎰熷畼缁嗚妭銆?,
+        '涓嶈鎺ㄧ炕鍘熷墽鎯咃紝涓嶈鍙﹁捣鐐夌伓锛屼笉瑕佹€荤粨寮忔墿鍐欙紱琛ヨ冻鍚庤緭鍑哄畬鏁存鏂囥€?,
+        '濡傛灉褰撳墠绋夸粛鏄庢樉鍋忕煭锛岃嚦灏戞柊澧炰竴鍒颁袱涓畬鏁村満鏅垨瀹屾暣琛屽姩娈碉紝涓嶈鍙ˉ鍑犲彞璇存槑銆?,
+        '鐩爣瀛楁暟 5000 瀛楋紝寤鸿 4500-6500 瀛楋紱蹇呴』鑷冲皯杈惧埌纭笅闄愶紝浣嗕笉鑳戒负浜嗗噾瀛楅噸澶嶈В閲婃垨鐏屾按銆?,
+        '濡傛灉灏忕翰鍐呭涓嶈冻锛屼紭鍏堝睍寮€浜虹墿閫夋嫨銆侀樆鍔涖€佷唬浠枫€佸満鏅帹杩涘拰绔犳湯閽╁瓙銆?
       ].join('\n')
     },
     {
       role: 'user',
       content: [
-        `第 ${chapterNum} 章初稿只有 ${currentCount} 字，低于硬下限 ${range.hardMin} 字。`,
-        `请在不改变核心情节的前提下补足为完整章节，尽量靠近 ${range.target} 字，允许 ${range.hardMin}-${range.hardMax} 字。`,
-        `这次输出必须明显长于当前稿，至少补足到 ${range.hardMin + 200} 字以上。`,
-        '只输出补足后的完整正文，不要标题，不要解释。',
+        `绗?${chapterNum} 绔犲垵绋垮彧鏈?${currentCount} 瀛楋紝浣庝簬纭笅闄?${range.hardMin} 瀛椼€俙,
+        `璇峰湪涓嶆敼鍙樻牳蹇冩儏鑺傜殑鍓嶆彁涓嬭ˉ瓒充负瀹屾暣绔犺妭锛屽敖閲忛潬杩?${range.target} 瀛楋紝鍏佽 ${range.hardMin}-${range.hardMax} 瀛椼€俙,
+        `杩欐杈撳嚭蹇呴』鏄庢樉闀夸簬褰撳墠绋匡紝鑷冲皯琛ヨ冻鍒?${range.hardMin + 200} 瀛椾互涓娿€俙,
+        '鍙緭鍑鸿ˉ瓒冲悗鐨勫畬鏁存鏂囷紝涓嶈鏍囬锛屼笉瑕佽В閲娿€?,
         '',
-        `上下文：\n${contextBrief}`,
+        `涓婁笅鏂囷細\n${contextBrief}`,
         '',
-        `本章小纲：\n${beatPlan}`,
+        `鏈珷灏忕翰锛歕n${beatPlan}`,
         '',
-        `当前初稿：\n${shortContent}`
+        `褰撳墠鍒濈锛歕n${shortContent}`
       ].join('\n')
     }
   ], { maxTokens: 6500, temperature: 0.66, timeoutMs: 360000 })
@@ -1066,32 +1017,32 @@ async function compressLongChapterContent(project, provider, chapterNum, context
   const range = expectedChapterWordRange(project)
   const currentCount = wordCount(longContent)
   const contextBrief = formatQaContextForPrompt(context, 3200)
-  log(`第 ${chapterNum} 章稿件过长，开始压缩重试：${currentCount} 字`)
+  log(`绗?${chapterNum} 绔犵浠惰繃闀匡紝寮€濮嬪帇缂╅噸璇曪細${currentCount} 瀛梎)
   const strictHint = compressAttempt > 1
-    ? `这是第 ${compressAttempt} 次压缩，上一版仍过长。这次必须压到 ${range.softMin}-${range.softMax} 字，宁可把余波和解释留到下一章。`
-    : `请压缩到 ${range.softMin}-${range.softMax} 字附近，最多不要超过 ${range.hardMax} 字。`
+    ? `杩欐槸绗?${compressAttempt} 娆″帇缂╋紝涓婁竴鐗堜粛杩囬暱銆傝繖娆″繀椤诲帇鍒?${range.softMin}-${range.softMax} 瀛楋紝瀹佸彲鎶婁綑娉㈠拰瑙ｉ噴鐣欏埌涓嬩竴绔犮€俙
+    : `璇峰帇缂╁埌 ${range.softMin}-${range.softMax} 瀛楅檮杩戯紝鏈€澶氫笉瑕佽秴杩?${range.hardMax} 瀛椼€俙
   const compressed = await chat(provider, [
     {
       role: 'system',
       content: [
-        '你是长篇网文压缩编辑。任务是把超长章节压回目标区间，同时保留关键事件、人物选择、代价、转折和章末钩子。',
-        '优先删除重复解释、重复心理、过长设定说明、重复环境描写；不要删掉造成下一章衔接所需的因果信息。',
-        '如果信息量过大，必须用自然钩子把部分解释、余波或支线推迟到下一章。',
-        '输出必须是完整正文，不要标题，不要解释，不要列提纲。'
+        '浣犳槸闀跨瘒缃戞枃鍘嬬缉缂栬緫銆備换鍔℃槸鎶婅秴闀跨珷鑺傚帇鍥炵洰鏍囧尯闂达紝鍚屾椂淇濈暀鍏抽敭浜嬩欢銆佷汉鐗╅€夋嫨銆佷唬浠枫€佽浆鎶樺拰绔犳湯閽╁瓙銆?,
+        '浼樺厛鍒犻櫎閲嶅瑙ｉ噴銆侀噸澶嶅績鐞嗐€佽繃闀胯瀹氳鏄庛€侀噸澶嶇幆澧冩弿鍐欙紱涓嶈鍒犳帀閫犳垚涓嬩竴绔犺鎺ユ墍闇€鐨勫洜鏋滀俊鎭€?,
+        '濡傛灉淇℃伅閲忚繃澶э紝蹇呴』鐢ㄨ嚜鐒堕挬瀛愭妸閮ㄥ垎瑙ｉ噴銆佷綑娉㈡垨鏀嚎鎺ㄨ繜鍒颁笅涓€绔犮€?,
+        '杈撳嚭蹇呴』鏄畬鏁存鏂囷紝涓嶈鏍囬锛屼笉瑕佽В閲婏紝涓嶈鍒楁彁绾层€?
       ].join('\n')
     },
     {
       role: 'user',
       content: [
-        `第 ${chapterNum} 章当前 ${currentCount} 字，超过硬上限 ${range.hardMax} 字。`,
+        `绗?${chapterNum} 绔犲綋鍓?${currentCount} 瀛楋紝瓒呰繃纭笂闄?${range.hardMax} 瀛椼€俙,
         strictHint,
-        '如果必须取舍，保留动作和因果，删减解释和重复句式。',
+        '濡傛灉蹇呴』鍙栬垗锛屼繚鐣欏姩浣滃拰鍥犳灉锛屽垹鍑忚В閲婂拰閲嶅鍙ュ紡銆?,
         '',
-        `上下文：\n${contextBrief}`,
+        `涓婁笅鏂囷細\n${contextBrief}`,
         '',
-        `本章小纲：\n${beatPlan}`,
+        `鏈珷灏忕翰锛歕n${beatPlan}`,
         '',
-        `当前超长正文：\n${longContent}`
+        `褰撳墠瓒呴暱姝ｆ枃锛歕n${longContent}`
       ].join('\n')
     }
   ], { maxTokens: compressAttempt > 1 ? 4300 : 5000, temperature: compressAttempt > 1 ? 0.18 : 0.28, timeoutMs: 360000 })
@@ -1121,54 +1072,54 @@ function auditChapterPayload(payload) {
 }
 
 async function auditChapter(provider, chapterNum, content, context) {
-  log(`开始审稿第 ${chapterNum} 章`)
+  log(`寮€濮嬪绋跨 ${chapterNum} 绔燻)
   const contextBrief = formatQaContextForPrompt(context, 3600)
   let audit = { summary: '', issues: [] }
   try {
     const result = await chatJson(provider, [
-      { role: 'system', content: '你是小说一致性审稿人。只输出合法 JSON。问题要具体，location 尽量引用原文中真实存在的短片段。' },
-      { role: 'user', content: `审查第 ${chapterNum} 章，重点看：设定矛盾、人物动机、人性代入、数值计算、章节衔接、AI 腔句式。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文：${contextBrief}\n\n正文：\n${content}` }
+      { role: 'system', content: '浣犳槸灏忚涓€鑷存€у绋夸汉銆傚彧杈撳嚭鍚堟硶 JSON銆傞棶棰樿鍏蜂綋锛宭ocation 灏介噺寮曠敤鍘熸枃涓湡瀹炲瓨鍦ㄧ殑鐭墖娈点€? },
+      { role: 'user', content: `瀹℃煡绗?${chapterNum} 绔狅紝閲嶇偣鐪嬶細璁惧畾鐭涚浘銆佷汉鐗╁姩鏈恒€佷汉鎬т唬鍏ャ€佹暟鍊艰绠椼€佺珷鑺傝鎺ャ€丄I 鑵斿彞寮忋€傝緭鍑?{"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}銆俓n\n涓婁笅鏂囷細${contextBrief}\n\n姝ｆ枃锛歕n${content}` }
     ], {
       maxTokens: 6000,
       repairMaxTokens: 6000,
       retryMaxTokens: 6000,
       temperature: 0.2,
       timeoutMs: 300000
-    }, '请修复为 {"summary":"","issues":[...]} 格式；最多保留 6 个最重要的问题；所有字段必须完整。')
+    }, '璇蜂慨澶嶄负 {"summary":"","issues":[...]} 鏍煎紡锛涙渶澶氫繚鐣?6 涓渶閲嶈鐨勯棶棰橈紱鎵€鏈夊瓧娈靛繀椤诲畬鏁淬€?)
     audit = auditChapterPayload(result.payload)
   } catch (error) {
-    report.notes.push(`第 ${chapterNum} 章审稿首次失败，已启用审稿紧凑重试：${trimText(error.message, 180)}`)
+    report.notes.push(`绗?${chapterNum} 绔犲绋块娆″け璐ワ紝宸插惎鐢ㄥ绋跨揣鍑戦噸璇曪細${trimText(error.message, 180)}`)
     try {
       const compact = await chatJson(provider, [
-        { role: 'system', content: '你是小说一致性审稿人。只输出合法 JSON，不要解释。' },
-        { role: 'user', content: `审稿紧凑重试：审查第 ${chapterNum} 章，只保留 0-3 个最关键问题。每个字段必须短，location 必须是原文中真实存在的短片段。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文摘要：${trimText(contextBrief, 2200)}\n\n正文节选：\n${content.slice(0, 7000)}` }
+        { role: 'system', content: '浣犳槸灏忚涓€鑷存€у绋夸汉銆傚彧杈撳嚭鍚堟硶 JSON锛屼笉瑕佽В閲娿€? },
+        { role: 'user', content: `瀹＄绱у噾閲嶈瘯锛氬鏌ョ ${chapterNum} 绔狅紝鍙繚鐣?0-3 涓渶鍏抽敭闂銆傛瘡涓瓧娈靛繀椤荤煭锛宭ocation 蹇呴』鏄師鏂囦腑鐪熷疄瀛樺湪鐨勭煭鐗囨銆傝緭鍑?{"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}銆俓n\n涓婁笅鏂囨憳瑕侊細${trimText(contextBrief, 2200)}\n\n姝ｆ枃鑺傞€夛細\n${content.slice(0, 7000)}` }
       ], {
         maxTokens: 2600,
         repairMaxTokens: 2600,
         retryMaxTokens: 3000,
         temperature: 0.15,
         timeoutMs: 240000
-      }, '审稿紧凑重试修复为 {"summary":"","issues":[...]} 格式；最多保留 3 个短问题。')
+      }, '瀹＄绱у噾閲嶈瘯淇涓?{"summary":"","issues":[...]} 鏍煎紡锛涙渶澶氫繚鐣?3 涓煭闂銆?)
       audit = auditChapterPayload(compact.payload)
     } catch (retryError) {
-      report.notes.push(`第 ${chapterNum} 章审稿紧凑重试失败，已启用最终极简重试：${trimText(retryError.message, 180)}`)
+      report.notes.push(`绗?${chapterNum} 绔犲绋跨揣鍑戦噸璇曞け璐ワ紝宸插惎鐢ㄦ渶缁堟瀬绠€閲嶈瘯锛?{trimText(retryError.message, 180)}`)
       try {
         const ultraCompact = await chatJson(provider, [
-          { role: 'system', content: '你是小说一致性审稿人。只输出合法 JSON，不要解释。字段必须短。' },
-          { role: 'user', content: `审稿最终极简重试：审查第 ${chapterNum} 章，只保留 0-1 个最阻塞的问题；如果没有确定问题，输出空数组。每个字段少于 50 字，replacement 可为空，禁止长引用原文。输出 {"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}。\n\n上下文摘要：${trimText(contextBrief, 900)}\n\n正文开头：\n${content.slice(0, 3200)}\n\n正文结尾：\n${content.slice(-1600)}` }
+          { role: 'system', content: '浣犳槸灏忚涓€鑷存€у绋夸汉銆傚彧杈撳嚭鍚堟硶 JSON锛屼笉瑕佽В閲娿€傚瓧娈靛繀椤荤煭銆? },
+          { role: 'user', content: `瀹＄鏈€缁堟瀬绠€閲嶈瘯锛氬鏌ョ ${chapterNum} 绔狅紝鍙繚鐣?0-1 涓渶闃诲鐨勯棶棰橈紱濡傛灉娌℃湁纭畾闂锛岃緭鍑虹┖鏁扮粍銆傛瘡涓瓧娈靛皯浜?50 瀛楋紝replacement 鍙负绌猴紝绂佹闀垮紩鐢ㄥ師鏂囥€傝緭鍑?{"summary":"","issues":[{"severity":"critical|major|minor|suggestion","type":"contradiction|logic|motivation|pacing|ai_tone|continuity","location":"","issue":"","suggestion":"","replacement":""}]}銆俓n\n涓婁笅鏂囨憳瑕侊細${trimText(contextBrief, 900)}\n\n姝ｆ枃寮€澶达細\n${content.slice(0, 3200)}\n\n姝ｆ枃缁撳熬锛歕n${content.slice(-1600)}` }
         ], {
           maxTokens: 1400,
           repairMaxTokens: 1400,
           retryMaxTokens: 1800,
           temperature: 0.1,
           timeoutMs: 240000
-        }, '审稿最终极简重试修复为 {"summary":"","issues":[...]} 格式；最多 1 个短问题。')
+        }, '瀹＄鏈€缁堟瀬绠€閲嶈瘯淇涓?{"summary":"","issues":[...]} 鏍煎紡锛涙渶澶?1 涓煭闂銆?)
         audit = auditChapterPayload(ultraCompact.payload)
       } catch (finalRetryError) {
-        fail(`第 ${chapterNum} 章审稿结构化失败`, trimText(finalRetryError.message, 240))
+        fail(`绗?${chapterNum} 绔犲绋跨粨鏋勫寲澶辫触`, trimText(finalRetryError.message, 240))
         report.generated.auditFailures += 1
         return {
-          summary: '审稿结构化失败，已作为质量门禁失败记录。',
+          summary: '瀹＄缁撴瀯鍖栧け璐ワ紝宸蹭綔涓鸿川閲忛棬绂佸け璐ヨ褰曘€?,
           issues: [],
           auditFailed: true,
           error: trimText(finalRetryError.message, 240)
@@ -1176,13 +1127,13 @@ async function auditChapter(provider, chapterNum, content, context) {
       }
     }
   }
-  pass(`第 ${chapterNum} 章审稿完成`, `issues=${audit.issues.length}`)
+  pass(`绗?${chapterNum} 绔犲绋垮畬鎴恅, `issues=${audit.issues.length}`)
   return audit
 }
 
 async function reviseChapter(project, provider, chapterNum, content, audit) {
   if (!audit.issues.length) return content
-  log(`开始基于审稿局部修订第 ${chapterNum} 章`)
+  log(`寮€濮嬪熀浜庡绋垮眬閮ㄤ慨璁㈢ ${chapterNum} 绔燻)
   const issues = audit.issues.slice(0, 5).map((item, index) => ({
     issueIndex: index + 1,
     severity: item.severity || 'minor',
@@ -1198,16 +1149,16 @@ async function reviseChapter(project, provider, chapterNum, content, audit) {
     rawPatchText = await chat(provider, [
     {
       role: 'system',
-      content: '你是小说局部修订助手。只输出合法 JSON，不要解释。只能给局部补丁，不能整章重写。'
+      content: '浣犳槸灏忚灞€閮ㄤ慨璁㈠姪鎵嬨€傚彧杈撳嚭鍚堟硶 JSON锛屼笉瑕佽В閲娿€傚彧鑳界粰灞€閮ㄨˉ涓侊紝涓嶈兘鏁寸珷閲嶅啓銆?
     },
     {
       role: 'user',
       content: [
-        `请根据审稿问题生成第 ${chapterNum} 章的局部补丁。`,
-        '输出格式：{"patches":[{"issueIndex":1,"originalText":"必须从原文中逐字复制、可唯一命中的短片段","replacementText":"只替换该片段的修订文本","reason":"","confidence":0.8}]}。',
-        '硬性规则：originalText 必须是原文中的连续短片段；不要使用概括、改写后的原文或整段大范围替换；replacementText 只覆盖同一处局部问题；无安全补丁则输出 {"patches":[]}。',
-        `审稿问题：\n${JSON.stringify(issues, null, 2)}`,
-        `原文：\n${content}`
+        `璇锋牴鎹绋块棶棰樼敓鎴愮 ${chapterNum} 绔犵殑灞€閮ㄨˉ涓併€俙,
+        '杈撳嚭鏍煎紡锛歿"patches":[{"issueIndex":1,"originalText":"蹇呴』浠庡師鏂囦腑閫愬瓧澶嶅埗銆佸彲鍞竴鍛戒腑鐨勭煭鐗囨","replacementText":"鍙浛鎹㈣鐗囨鐨勪慨璁㈡枃鏈?,"reason":"","confidence":0.8}]}銆?,
+        '纭€ц鍒欙細originalText 蹇呴』鏄師鏂囦腑鐨勮繛缁煭鐗囨锛涗笉瑕佷娇鐢ㄦ鎷€佹敼鍐欏悗鐨勫師鏂囨垨鏁存澶ц寖鍥存浛鎹紱replacementText 鍙鐩栧悓涓€澶勫眬閮ㄩ棶棰橈紱鏃犲畨鍏ㄨˉ涓佸垯杈撳嚭 {"patches":[]}銆?,
+        `瀹＄闂锛歕n${JSON.stringify(issues, null, 2)}`,
+        `鍘熸枃锛歕n${content}`
       ].join('\n\n')
     }
   ], {
@@ -1216,7 +1167,7 @@ async function reviseChapter(project, provider, chapterNum, content, audit) {
     retryMaxTokens: 4200,
     temperature: 0.25,
     timeoutMs: 300000
-  }, '请修复为 {"patches":[{"issueIndex":1,"originalText":"","replacementText":"","reason":"","confidence":0.8}]} 格式。')
+  }, '璇蜂慨澶嶄负 {"patches":[{"issueIndex":1,"originalText":"","replacementText":"","reason":"","confidence":0.8}]} 鏍煎紡銆?)
 
   } catch (error) {
     const detail = trimText(error.message || String(error), 240)
@@ -1228,11 +1179,11 @@ async function reviseChapter(project, provider, chapterNum, content, audit) {
   const patches = extractLocalRevisionPatches(rawPatchText)
   const patchResult = applyLocalRevisionPatches(content, patches)
   if (!patchResult.applied.length) {
-    fail(`第 ${chapterNum} 章审稿局部修订未应用`, `AI 未返回可安全应用的局部补丁，跳过自动修订。`)
+    fail(`绗?${chapterNum} 绔犲绋垮眬閮ㄤ慨璁㈡湭搴旂敤`, `AI 鏈繑鍥炲彲瀹夊叏搴旂敤鐨勫眬閮ㄨˉ涓侊紝璺宠繃鑷姩淇銆俙)
     return content
   }
   if (patchResult.skipped.length) {
-    report.notes.push(`第 ${chapterNum} 章局部修订跳过 ${patchResult.skipped.length} 条不安全补丁。`)
+    report.notes.push(`绗?${chapterNum} 绔犲眬閮ㄤ慨璁㈣烦杩?${patchResult.skipped.length} 鏉′笉瀹夊叏琛ヤ竵銆俙)
   }
   const drift = validateRevisionWordDrift(project, chapterNum, content, patchResult.content)
   return drift.ok ? patchResult.content : content
@@ -1240,23 +1191,23 @@ async function reviseChapter(project, provider, chapterNum, content, audit) {
 
 function buildLocalChapterSummaryFallback(chapterNum, content) {
   const text = String(content || '').replace(/\s+/g, ' ').trim()
-  if (!text) return `第 ${chapterNum} 章摘要生成失败，正文为空。`
+  if (!text) return `绗?${chapterNum} 绔犳憳瑕佺敓鎴愬け璐ワ紝姝ｆ枃涓虹┖銆俙
   const head = text.slice(0, 120)
   const tail = text.length > 240 ? text.slice(-120) : ''
-  return [`第 ${chapterNum} 章本地摘要兜底：`, head, tail ? `...${tail}` : ''].filter(Boolean).join('')
+  return [`绗?${chapterNum} 绔犳湰鍦版憳瑕佸厹搴曪細`, head, tail ? `...${tail}` : ''].filter(Boolean).join('')
 }
 
 async function summarizeChapter(provider, chapterNum, content) {
   try {
     const text = await chat(provider, [
-      { role: 'system', content: '你是长篇小说记忆压缩助手。输出 120-180 字中文摘要，不要 JSON。' },
-      { role: 'user', content: `总结第 ${chapterNum} 章，保留人物选择、设定变化、结尾状态。\n\n正文：\n${content.slice(0, 7000)}` }
+      { role: 'system', content: '浣犳槸闀跨瘒灏忚璁板繂鍘嬬缉鍔╂墜銆傝緭鍑?120-180 瀛椾腑鏂囨憳瑕侊紝涓嶈 JSON銆? },
+      { role: 'user', content: `鎬荤粨绗?${chapterNum} 绔狅紝淇濈暀浜虹墿閫夋嫨銆佽瀹氬彉鍖栥€佺粨灏剧姸鎬併€俓n\n姝ｆ枃锛歕n${content.slice(0, 7000)}` }
     ], { maxTokens: 500, temperature: 0.2, timeoutMs: 120000 })
     return text.trim() || buildLocalChapterSummaryFallback(chapterNum, content)
   } catch (error) {
     const fallback = buildLocalChapterSummaryFallback(chapterNum, content)
-    report.notes.push(`第 ${chapterNum} 章摘要生成失败，已启用本地兜底摘要：${error.message}`)
-    log(`NOTE 第 ${chapterNum} 章摘要生成失败，已启用本地兜底摘要：${error.message}`)
+    report.notes.push(`绗?${chapterNum} 绔犳憳瑕佺敓鎴愬け璐ワ紝宸插惎鐢ㄦ湰鍦板厹搴曟憳瑕侊細${error.message}`)
+    log(`NOTE 绗?${chapterNum} 绔犳憳瑕佺敓鎴愬け璐ワ紝宸插惎鐢ㄦ湰鍦板厹搴曟憳瑕侊細${error.message}`)
     return fallback
   }
 }
@@ -1283,40 +1234,40 @@ async function extractCanonFacts(provider, project, chapterNum, content) {
   let facts = []
   try {
     const result = await chatJson(provider, [
-      { role: 'system', content: '你是小说事实记忆提取器。只输出合法 JSON。' },
-      { role: 'user', content: `从第 ${chapterNum} 章提取 2-6 条后续必须记住的事实，输出 {"facts":[{"factType":"plot|character|setting|relationship|timeline","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}。
+      { role: 'system', content: '浣犳槸灏忚浜嬪疄璁板繂鎻愬彇鍣ㄣ€傚彧杈撳嚭鍚堟硶 JSON銆? },
+      { role: 'user', content: `浠庣 ${chapterNum} 绔犳彁鍙?2-6 鏉″悗缁繀椤昏浣忕殑浜嬪疄锛岃緭鍑?{"facts":[{"factType":"plot|character|setting|relationship|timeline","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}銆?
 
-硬状态优先：凡正文出现交易次数、剩余寿命、冷却时间、隐性/显性消耗、物品价值/售价、时间流速、持有物数量、伤势、境界等级、当前位置，必须保留精确数字和单位。
-如果出现“首次/第二次/第三次交易”“剩余多少寿命/次数”“下次何时可用”“某物价值或售价”“不同世界时间比例”，必须提取为短事实。
+纭姸鎬佷紭鍏堬細鍑℃鏂囧嚭鐜颁氦鏄撴鏁般€佸墿浣欏鍛姐€佸喎鍗存椂闂淬€侀殣鎬?鏄炬€ф秷鑰椼€佺墿鍝佷环鍊?鍞环銆佹椂闂存祦閫熴€佹寔鏈夌墿鏁伴噺銆佷激鍔裤€佸鐣岀瓑绾с€佸綋鍓嶄綅缃紝蹇呴』淇濈暀绮剧‘鏁板瓧鍜屽崟浣嶃€?
+濡傛灉鍑虹幇鈥滈娆?绗簩娆?绗笁娆′氦鏄撯€濃€滃墿浣欏灏戝鍛?娆℃暟鈥濃€滀笅娆′綍鏃跺彲鐢ㄢ€濃€滄煇鐗╀环鍊兼垨鍞环鈥濃€滀笉鍚屼笘鐣屾椂闂存瘮渚嬧€濓紝蹇呴』鎻愬彇涓虹煭浜嬪疄銆?
 
-正文：
+姝ｆ枃锛?
 ${content.slice(0, 10000)}` }
     ], {
       maxTokens: 2400,
       repairMaxTokens: 2400,
       retryMaxTokens: 3000,
       temperature: 0.2
-    }, '请修复为 {"facts":[...]} 格式；最多保留 6 条事实，硬状态优先。')
+    }, '璇蜂慨澶嶄负 {"facts":[...]} 鏍煎紡锛涙渶澶氫繚鐣?6 鏉′簨瀹烇紝纭姸鎬佷紭鍏堛€?)
     facts = extractCanonFactsPayload(result.payload)
   } catch (error) {
-    report.notes.push(`第 ${chapterNum} 章事实提取首次失败，已启用紧凑重试：${trimText(error.message, 180)}`)
+    report.notes.push(`绗?${chapterNum} 绔犱簨瀹炴彁鍙栭娆″け璐ワ紝宸插惎鐢ㄧ揣鍑戦噸璇曪細${trimText(error.message, 180)}`)
     try {
       const compact = await chatJson(provider, [
-        { role: 'system', content: '你是小说事实记忆提取器。只输出合法 JSON，不要解释。' },
-        { role: 'user', content: `紧凑重试：从第 ${chapterNum} 章只提取 0-3 条最重要事实。每条 content 和 evidence 都必须少于 80 字。输出 {"facts":[{"factType":"plot|character|setting|relationship|timeline","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}。
-硬状态不得漏：交易次数、剩余寿命、冷却时间、物品价值、时间流速如果明确出现，优先提取。没有则输出 {"facts":[]}。
+        { role: 'system', content: '浣犳槸灏忚浜嬪疄璁板繂鎻愬彇鍣ㄣ€傚彧杈撳嚭鍚堟硶 JSON锛屼笉瑕佽В閲娿€? },
+        { role: 'user', content: `绱у噾閲嶈瘯锛氫粠绗?${chapterNum} 绔犲彧鎻愬彇 0-3 鏉℃渶閲嶈浜嬪疄銆傛瘡鏉?content 鍜?evidence 閮藉繀椤诲皯浜?80 瀛椼€傝緭鍑?{"facts":[{"factType":"plot|character|setting|relationship|timeline","content":"","relatedCharacters":[],"evidence":"","confidence":0.9}]}銆?
+纭姸鎬佷笉寰楁紡锛氫氦鏄撴鏁般€佸墿浣欏鍛姐€佸喎鍗存椂闂淬€佺墿鍝佷环鍊笺€佹椂闂存祦閫熷鏋滄槑纭嚭鐜帮紝浼樺厛鎻愬彇銆傛病鏈夊垯杈撳嚭 {"facts":[]}銆?
 
-正文节选：
+姝ｆ枃鑺傞€夛細
 ${content.slice(0, 8000)}` }
       ], {
         maxTokens: 1400,
         repairMaxTokens: 1400,
         retryMaxTokens: 1800,
         temperature: 0.1
-      }, '紧凑重试修复为 {"facts":[...]} 格式；最多保留 3 条短事实，硬状态优先。')
+      }, '绱у噾閲嶈瘯淇涓?{"facts":[...]} 鏍煎紡锛涙渶澶氫繚鐣?3 鏉＄煭浜嬪疄锛岀‖鐘舵€佷紭鍏堛€?)
       facts = extractCanonFactsPayload(compact.payload)
     } catch (retryError) {
-      fail(`第 ${chapterNum} 章事实提取失败`, trimText(retryError.message, 240))
+      fail(`绗?${chapterNum} 绔犱簨瀹炴彁鍙栧け璐, trimText(retryError.message, 240))
       return []
     }
   }
@@ -1361,39 +1312,39 @@ async function extractChapterSettingChanges(provider, project, chapterNum, conte
   let changes = []
   try {
     const result = await chatJson(provider, [
-      { role: 'system', content: '你是设定变更提取器。只输出合法 JSON。仅提取本章之后仍会影响后文的变化，不要把普通描写当设定。硬状态必须优先保留。' },
-      { role: 'user', content: `从第 ${chapterNum} 章提取 0-6 条待确认设定变更，输出 {"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary|profile.transactionCount|profile.remainingLifespan|profile.cooldownUntil|profile.costRule|profile.valueLevel|profile.price|profile.timeFlowRule|profile.physicalStatus|profile.location","newValue":"","evidence":"","confidence":0.8}]}。
+      { role: 'system', content: '浣犳槸璁惧畾鍙樻洿鎻愬彇鍣ㄣ€傚彧杈撳嚭鍚堟硶 JSON銆備粎鎻愬彇鏈珷涔嬪悗浠嶄細褰卞搷鍚庢枃鐨勫彉鍖栵紝涓嶈鎶婃櫘閫氭弿鍐欏綋璁惧畾銆傜‖鐘舵€佸繀椤讳紭鍏堜繚鐣欍€? },
+      { role: 'user', content: `浠庣 ${chapterNum} 绔犳彁鍙?0-6 鏉″緟纭璁惧畾鍙樻洿锛岃緭鍑?{"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary|profile.transactionCount|profile.remainingLifespan|profile.cooldownUntil|profile.costRule|profile.valueLevel|profile.price|profile.timeFlowRule|profile.physicalStatus|profile.location","newValue":"","evidence":"","confidence":0.8}]}銆?
 
-硬状态优先：交易次数、剩余寿命、冷却时间、隐性/显性消耗规则、物品价值/售价、时间流速、持有物数量、伤势、当前位置、境界等级，一旦发生变化必须提取并保留精确数字和单位。
+纭姸鎬佷紭鍏堬細浜ゆ槗娆℃暟銆佸墿浣欏鍛姐€佸喎鍗存椂闂淬€侀殣鎬?鏄炬€ф秷鑰楄鍒欍€佺墿鍝佷环鍊?鍞环銆佹椂闂存祦閫熴€佹寔鏈夌墿鏁伴噺銆佷激鍔裤€佸綋鍓嶄綅缃€佸鐣岀瓑绾э紝涓€鏃﹀彂鐢熷彉鍖栧繀椤绘彁鍙栧苟淇濈暀绮剧‘鏁板瓧鍜屽崟浣嶃€?
 
-正文：
+姝ｆ枃锛?
 ${content.slice(0, 10000)}` }
     ], {
       maxTokens: 3000,
       repairMaxTokens: 3000,
       retryMaxTokens: 3600,
       temperature: 0.2
-    }, '请修复为 {"changes":[...]} 格式；最多保留 6 条真正影响后文的设定变更，硬状态优先。')
+    }, '璇蜂慨澶嶄负 {"changes":[...]} 鏍煎紡锛涙渶澶氫繚鐣?6 鏉＄湡姝ｅ奖鍝嶅悗鏂囩殑璁惧畾鍙樻洿锛岀‖鐘舵€佷紭鍏堛€?)
     changes = extractSettingChangesPayloadForQa(result.payload)
   } catch (error) {
-    report.notes.push(`第 ${chapterNum} 章设定变更提取首次失败，已启用紧凑重试：${trimText(error.message, 180)}`)
+    report.notes.push(`绗?${chapterNum} 绔犺瀹氬彉鏇存彁鍙栭娆″け璐ワ紝宸插惎鐢ㄧ揣鍑戦噸璇曪細${trimText(error.message, 180)}`)
     try {
       const compact = await chatJson(provider, [
-        { role: 'system', content: '你是设定变更提取器。只输出合法 JSON，不要解释。' },
-        { role: 'user', content: `紧凑重试：从第 ${chapterNum} 章提取 0-3 条后续必须同步的设定变更。每条 newValue 和 evidence 少于 100 字。输出 {"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary|profile.transactionCount|profile.remainingLifespan|profile.cooldownUntil|profile.costRule|profile.valueLevel|profile.price|profile.timeFlowRule","newValue":"","evidence":"","confidence":0.8}]}。
-硬状态不得漏：交易次数、剩余寿命、冷却时间、物品价值、时间流速如果明确出现，优先提取。没有则输出 {"changes":[]}。
+        { role: 'system', content: '浣犳槸璁惧畾鍙樻洿鎻愬彇鍣ㄣ€傚彧杈撳嚭鍚堟硶 JSON锛屼笉瑕佽В閲娿€? },
+        { role: 'user', content: `绱у噾閲嶈瘯锛氫粠绗?${chapterNum} 绔犳彁鍙?0-3 鏉″悗缁繀椤诲悓姝ョ殑璁惧畾鍙樻洿銆傛瘡鏉?newValue 鍜?evidence 灏戜簬 100 瀛椼€傝緭鍑?{"changes":[{"entityType":"character|faction|location|power_system|technique|item","entityName":"","changeType":"new_entity|update|relation_change","fieldPath":"summary|profile.transactionCount|profile.remainingLifespan|profile.cooldownUntil|profile.costRule|profile.valueLevel|profile.price|profile.timeFlowRule","newValue":"","evidence":"","confidence":0.8}]}銆?
+纭姸鎬佷笉寰楁紡锛氫氦鏄撴鏁般€佸墿浣欏鍛姐€佸喎鍗存椂闂淬€佺墿鍝佷环鍊笺€佹椂闂存祦閫熷鏋滄槑纭嚭鐜帮紝浼樺厛鎻愬彇銆傛病鏈夊垯杈撳嚭 {"changes":[]}銆?
 
-正文节选：
+姝ｆ枃鑺傞€夛細
 ${content.slice(0, 8000)}` }
       ], {
         maxTokens: 1600,
         repairMaxTokens: 1600,
         retryMaxTokens: 1800,
         temperature: 0.1
-      }, '紧凑重试修复为 {"changes":[...]} 格式；最多保留 3 条短设定变更，硬状态优先。')
+      }, '绱у噾閲嶈瘯淇涓?{"changes":[...]} 鏍煎紡锛涙渶澶氫繚鐣?3 鏉＄煭璁惧畾鍙樻洿锛岀‖鐘舵€佷紭鍏堛€?)
       changes = extractSettingChangesPayloadForQa(compact.payload)
     } catch (retryError) {
-      fail(`第 ${chapterNum} 章设定变更提取失败`, trimText(retryError.message, 240))
+      fail(`绗?${chapterNum} 绔犺瀹氬彉鏇存彁鍙栧け璐, trimText(retryError.message, 240))
       return []
     }
   }
@@ -1408,7 +1359,7 @@ ${content.slice(0, 8000)}` }
       oldValue: '',
       newValue: change.newValue,
       chapterNum,
-      evidence: change.evidence || `第 ${chapterNum} 章自动提取`,
+      evidence: change.evidence || `绗?${chapterNum} 绔犺嚜鍔ㄦ彁鍙朻,
       confidence: Number(change.confidence || 0.8),
       status: 'pending_review'
     })
@@ -1420,10 +1371,10 @@ ${content.slice(0, 8000)}` }
 async function createOrGetChapter(project, chapterNum) {
   const chapters = await request('GET', `/projects/${project.id}/chapters`)
   return chapters.find(item => Number(item.chapterNum) === chapterNum)
-    || request('POST', `/projects/${project.id}/chapters`, { chapterNum, title: `第 ${chapterNum} 章` })
+    || request('POST', `/projects/${project.id}/chapters`, { chapterNum, title: `绗?${chapterNum} 绔燻 })
 }
 
-async function saveCandidate(project, chapter, title, content, type = 'ai_candidate', promptBrief = '真实流程测试') {
+async function saveCandidate(project, chapter, title, content, type = 'ai_candidate', promptBrief = '鐪熷疄娴佺▼娴嬭瘯') {
   return request('POST', `/projects/${project.id}/chapters/${chapter.id}/versions`, {
     title,
     content,
@@ -1458,10 +1409,10 @@ async function generateRealisticQaChapterTitle(project, provider, chapter, versi
         {
           role: 'user',
           content: [
-            '上一次输出不像小说目录章名，可能是正文片段、剧情摘要或流水句，请重新命名。',
-            `上一次输出：${rawTitle}`,
+            '涓婁竴娆¤緭鍑轰笉鍍忓皬璇寸洰褰曠珷鍚嶏紝鍙兘鏄鏂囩墖娈点€佸墽鎯呮憳瑕佹垨娴佹按鍙ワ紝璇烽噸鏂板懡鍚嶃€?,
+            `涓婁竴娆¤緭鍑猴細${rawTitle}`,
             buildChapterTitlePrompt(promptContext),
-            '只输出一个 2-10 个汉字的短章名，优先名词短语、意象短语或悬念短语，不要输出句子。'
+            '鍙緭鍑轰竴涓?2-10 涓眽瀛楃殑鐭珷鍚嶏紝浼樺厛鍚嶈瘝鐭銆佹剰璞＄煭璇垨鎮康鐭锛屼笉瑕佽緭鍑哄彞瀛愩€?
           ].join('\n\n')
         }
       ], { maxTokens: 80, temperature: 0.25, attempts: 2 })
@@ -1469,25 +1420,23 @@ async function generateRealisticQaChapterTitle(project, provider, chapter, versi
     }
 
     if (!title) {
-      report.notes.push(`第 ${chapterNum} 章章名生成结果不合格，保留默认章名。`)
+      report.notes.push(`绗?${chapterNum} 绔犵珷鍚嶇敓鎴愮粨鏋滀笉鍚堟牸锛屼繚鐣欓粯璁ょ珷鍚嶃€俙)
       return ''
     }
 
     const updated = await request('PUT', `/projects/${project.id}/chapters/${chapter.id}`, { title })
     chapter.title = updated?.title || title
-    pass(`第 ${chapterNum} 章章名已生成`, chapter.title)
+    pass(`绗?${chapterNum} 绔犵珷鍚嶅凡鐢熸垚`, chapter.title)
     return chapter.title
   } catch (error) {
-    report.notes.push(`第 ${chapterNum} 章章名生成失败，保留默认章名：${trimText(error.message, 180)}`)
+    report.notes.push(`绗?${chapterNum} 绔犵珷鍚嶇敓鎴愬け璐ワ紝淇濈暀榛樿绔犲悕锛?{trimText(error.message, 180)}`)
     return ''
   }
 }
 
 async function finalizeChapter(project, provider, chapter, version, summary, beatPlan = '') {
   const count = wordCount(version.content)
-  if (!assessChapterWordCount(project, chapter.chapterNum, count, '定稿')) {
-    throw buildChapterWordGateError(project, chapter.chapterNum, count, 'final_draft')
-  }
+  enforceWordCountGate(project, chapter.chapterNum, count, 'final_draft')
   await generateRealisticQaChapterTitle(project, provider, chapter, version, summary, beatPlan)
   await request('POST', `/projects/${project.id}/chapters/${chapter.id}/versions/${version.id}/finalize`, {
     summary,
@@ -1501,7 +1450,7 @@ async function runChapter(project, provider, chapterNum, context) {
   const chapter = await createOrGetChapter(project, chapterNum)
   const beatPlan = await generateBeatPlan(project, provider, chapterNum, context)
   const firstContent = await generateChapterContent(project, provider, chapterNum, context, beatPlan)
-  const firstVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章候选稿`, firstContent, 'ai_candidate', '按小纲生成章节')
+  const firstVersion = await saveCandidate(project, chapter, `绗?${chapterNum} 绔犲€欓€夌`, firstContent, 'ai_candidate', '鎸夊皬绾茬敓鎴愮珷鑺?)
   let draftContent = firstContent
   let draftVersion = firstVersion
   let draftCount = wordCount(draftContent)
@@ -1509,28 +1458,31 @@ async function runChapter(project, provider, chapterNum, context) {
   for (let expandAttempt = 1; expandAttempt <= 2; expandAttempt += 1) {
     if (draftCount >= range.hardMin) break
     const expandedContent = await expandShortChapterContent(project, provider, chapterNum, context, beatPlan, draftContent)
-    const expandedVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章补足稿 ${expandAttempt}`, expandedContent, 'ai_candidate', '初稿偏短后补足重试')
+    const expandedVersion = await saveCandidate(project, chapter, `绗?${chapterNum} 绔犺ˉ瓒崇 ${expandAttempt}`, expandedContent, 'ai_candidate', '鍒濈鍋忕煭鍚庤ˉ瓒抽噸璇?)
     const expandedCount = wordCount(expandedContent)
     report.generated.chapterWordCounts.push({ chapterNum, count: expandedCount, stage: 'expanded_retry', attempt: expandAttempt })
-    if (isChapterWordCountInHardRange(project, expandedCount)) {
-      pass(`第 ${chapterNum} 章补足重试已进入可接受范围`, `${draftCount} -> ${expandedCount} 字`)
-      draftContent = expandedContent
-      draftVersion = expandedVersion
-      draftCount = expandedCount
-      break
-    }
     if (expandedCount > range.hardMax) {
-      report.notes.push(`第 ${chapterNum} 章补足稿超过硬上限，转入压缩重试：${expandedCount} 字。`)
+      report.notes.push(`绗?${chapterNum} 绔犺ˉ瓒崇瓒呰繃纭笂闄愶紝杞叆鍘嬬缉閲嶈瘯锛?{expandedCount} 瀛椼€俙)
       draftContent = expandedContent
       draftVersion = expandedVersion
       draftCount = expandedCount
       break
     }
-    if (expandAttempt === 2) {
-      report.notes.push(`第 ${chapterNum} 章补足稿仍然字数硬性越界，QA 停止自动审稿/修订/定稿，避免污染长篇链路。`)
-      throw buildChapterWordGateError(project, chapterNum, expandedCount, 'expanded_retry')
+
+    if (isChapterWordCountInHardRange(project, expandedCount)) {
+      pass(`绗?${chapterNum} 绔犺ˉ瓒抽噸璇曞凡杩涘叆鍙帴鍙楄寖鍥碻, `${draftCount} -> ${expandedCount} 瀛梎)
+      draftContent = expandedContent
+      draftVersion = expandedVersion
+      draftCount = expandedCount
+      break
     }
-    report.notes.push(`第 ${chapterNum} 章第 ${expandAttempt} 次补足后仍偏短：${expandedCount} 字，继续第二轮补足。`)
+
+    if (expandAttempt === 2 && !enforceWordCountGate(project, chapterNum, expandedCount, 'expanded_retry')) {
+      report.notes.push(`绗?${chapterNum} 绔犺ˉ瓒崇浠嶇劧瀛楁暟纭€ц秺鐣岋紝QA 鍋滄鑷姩瀹＄/淇/瀹氱锛岄伩鍏嶆薄鏌撻暱绡囬摼璺€俙)
+      break
+    }
+
+    report.notes.push(`绗?${chapterNum} 绔犵 ${expandAttempt} 娆¤ˉ瓒冲悗浠嶅亸鐭細${expandedCount} 瀛楋紝缁х画绗簩杞ˉ瓒炽€俙)
     draftContent = expandedContent
     draftVersion = expandedVersion
     draftCount = expandedCount
@@ -1541,19 +1493,19 @@ async function runChapter(project, provider, chapterNum, context) {
       compressionCandidates = [{ content: draftContent, version: draftVersion, count: draftCount, stage: 'pre_compression' }]
     }
     const compressedContent = await compressLongChapterContent(project, provider, chapterNum, context, beatPlan, draftContent, compressAttempt)
-    const compressedVersion = await saveCandidate(project, chapter, compressAttempt === 1 ? `第 ${chapterNum} 章压缩稿` : `第 ${chapterNum} 章压缩稿 ${compressAttempt}`, compressedContent, 'ai_candidate', '超长稿压缩重试')
+    const compressedVersion = await saveCandidate(project, chapter, compressAttempt === 1 ? `绗?${chapterNum} 绔犲帇缂╃` : `绗?${chapterNum} 绔犲帇缂╃ ${compressAttempt}`, compressedContent, 'ai_candidate', '瓒呴暱绋垮帇缂╅噸璇?)
     const compressedCount = wordCount(compressedContent)
     compressionCandidates.push({ content: compressedContent, version: compressedVersion, count: compressedCount, stage: 'compressed_retry', attempt: compressAttempt })
     report.generated.chapterWordCounts.push({ chapterNum, count: compressedCount, stage: 'compressed_retry', attempt: compressAttempt })
     if (isChapterWordCountInHardRange(project, compressedCount)) {
-      pass(`第 ${chapterNum} 章压缩重试已进入可接受范围`, `${draftCount} -> ${compressedCount} 字`)
+      pass(`绗?${chapterNum} 绔犲帇缂╅噸璇曞凡杩涘叆鍙帴鍙楄寖鍥碻, `${draftCount} -> ${compressedCount} 瀛梎)
       draftContent = compressedContent
       draftVersion = compressedVersion
       draftCount = compressedCount
       break
     }
     if (compressedCount > range.hardMax && compressAttempt < 2) {
-      report.notes.push(`第 ${chapterNum} 章第 ${compressAttempt} 次压缩后仍过长：${compressedCount} 字，继续第二轮压缩。`)
+      report.notes.push(`绗?${chapterNum} 绔犵 ${compressAttempt} 娆″帇缂╁悗浠嶈繃闀匡細${compressedCount} 瀛楋紝缁х画绗簩杞帇缂┿€俙)
       draftContent = compressedContent
       draftVersion = compressedVersion
       draftCount = compressedCount
@@ -1565,28 +1517,34 @@ async function runChapter(project, provider, chapterNum, context) {
     const selectedCandidate = chooseBestChapterCandidate(project, compressionCandidates)
     if (!selectedCandidate) {
       const lastCandidate = compressionCandidates[compressionCandidates.length - 1] || { count: draftCount }
-      report.notes.push(`第 ${chapterNum} 章压缩稿仍然字数硬性越界，QA 停止自动审稿/修订/定稿，避免污染长篇链路。`)
-      throw buildChapterWordGateError(project, chapterNum, lastCandidate.count, 'compressed_retry')
+      report.notes.push(`绗?${chapterNum} 绔犲帇缂╃浠嶇劧瀛楁暟纭€ц秺鐣岋紝QA 鍋滄鑷姩瀹＄/淇/瀹氱锛岄伩鍏嶆薄鏌撻暱绡囬摼璺€俙)
+      if (!enforceWordCountGate(project, chapterNum, lastCandidate.count, 'compressed_retry')) {
+        report.notes.push('章节 ' + chapterNum + ' 压缩稿仍超限，保留当前最新压缩候选。')
+      }
+      draftContent = lastCandidate.content
+      draftVersion = lastCandidate.version
+      draftCount = lastCandidate.count
+    } else {
+      draftContent = selectedCandidate.content
+      draftVersion = selectedCandidate.version
+      draftCount = selectedCandidate.count
+      if (selectedCandidate.selectionReason === 'quality_grace') {
+        report.notes.push(`绗?${chapterNum} 绔犲帇缂╁€欓€夋帴杩戠‖涓婇檺浣嗘湭涓ラ噸瓒婄晫锛屼紭鍏堜繚鐣欒川閲忔洿瀹屾暣鐗堟湰锛?{draftCount} 瀛椼€俙)
+      }
+      pass(`绗?${chapterNum} 绔犲帇缂╁€欓€夊凡鎷╀紭鍥為€€`, `${selectedCandidate.stage || 'candidate'} -> ${draftCount} 瀛梎)
     }
-    draftContent = selectedCandidate.content
-    draftVersion = selectedCandidate.version
-    draftCount = selectedCandidate.count
-    if (selectedCandidate.selectionReason === 'quality_grace') {
-      report.notes.push(`第 ${chapterNum} 章压缩候选接近硬上限但未严重越界，优先保留质量更完整版本：${draftCount} 字。`)
-    }
-    pass(`第 ${chapterNum} 章压缩候选已择优回退`, `${selectedCandidate.stage || 'candidate'} -> ${draftCount} 字`)
   }
-  if (!assessChapterWordCount(project, chapterNum, draftCount, draftVersion.id === firstVersion.id ? '初稿' : '补足稿')) {
-    throw buildChapterWordGateError(project, chapterNum, draftCount, draftVersion.id === firstVersion.id ? 'first_draft' : 'expanded_retry')
+  if (!enforceWordCountGate(project, chapterNum, draftCount, draftVersion.id === firstVersion.id ? 'first_draft' : 'expanded_retry')) {
+    report.notes.push('章节 ' + chapterNum + ' 基础稿字数不在硬范围内，继续尝试定稿流程')
   }
   const rhythmContent = await repairProseRhythmForQa(project, provider, chapterNum, context, beatPlan, draftContent)
   if (rhythmContent && rhythmContent !== draftContent) {
     draftContent = rhythmContent
-    draftVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章句式节奏修订稿`, draftContent, 'ai_candidate', '正文生成后句式节奏修订')
+    draftVersion = await saveCandidate(project, chapter, `绗?${chapterNum} 绔犲彞寮忚妭濂忎慨璁㈢`, draftContent, 'ai_candidate', '姝ｆ枃鐢熸垚鍚庡彞寮忚妭濂忎慨璁?)
     draftCount = wordCount(draftContent)
     report.generated.chapterWordCounts.push({ chapterNum, count: draftCount, stage: 'prose_rhythm_repair' })
-    if (!assessChapterWordCount(project, chapterNum, draftCount, '句式节奏修订稿')) {
-      throw buildChapterWordGateError(project, chapterNum, draftCount, 'prose_rhythm_repair')
+    if (!enforceWordCountGate(project, chapterNum, draftCount, 'prose_rhythm_repair')) {
+      report.notes.push('章节 ' + chapterNum + ' 调整后仍偏离硬范围，继续后续流程')
     }
   }
 
@@ -1595,18 +1553,18 @@ async function runChapter(project, provider, chapterNum, context) {
     const task = await request('POST', `/projects/${project.id}/correction-tasks`, {
       sourceType: 'chapter_audit',
       targetModule: 'chapter',
-      title: `第 ${chapterNum} 章审稿结构化失败`,
-      description: audit.error || 'AI 审稿没有返回可解析结构，不能视为本章无问题。',
+      title: `绗?${chapterNum} 绔犲绋跨粨鏋勫寲澶辫触`,
+      description: audit.error || 'AI 瀹＄娌℃湁杩斿洖鍙В鏋愮粨鏋勶紝涓嶈兘瑙嗕负鏈珷鏃犻棶棰樸€?,
       severity: 'major',
       issueType: 'audit_json_failed',
       chapterRefs: [chapterNum],
       relatedItems: [],
-      suggestedAction: '重新审稿或人工检查本章后再继续判断质量。',
+      suggestedAction: '閲嶆柊瀹＄鎴栦汉宸ユ鏌ユ湰绔犲悗鍐嶇户缁垽鏂川閲忋€?,
       status: 'pending',
       metadata: { auditFailed: true }
     })
     report.generated.correctionTasks += 1
-    fail(`第 ${chapterNum} 章审稿质量门禁未通过`, '审稿结构化失败，已记录纠偏任务，不能当作零问题章节。')
+    fail(`绗?${chapterNum} 绔犲绋胯川閲忛棬绂佹湭閫氳繃`, '瀹＄缁撴瀯鍖栧け璐ワ紝宸茶褰曠籂鍋忎换鍔★紝涓嶈兘褰撲綔闆堕棶棰樼珷鑺傘€?)
     const auditGateError = new Error(
       `AUDIT_GATE: chapter ${chapterNum} audit could not be parsed; ` +
         'candidate was saved, but QA stopped before revision/finalize.'
@@ -1621,7 +1579,7 @@ async function runChapter(project, provider, chapterNum, context) {
     const task = await request('POST', `/projects/${project.id}/correction-tasks`, {
       sourceType: 'chapter_audit',
       targetModule: 'chapter',
-      title: issue.issue || `第 ${chapterNum} 章审稿问题`,
+      title: issue.issue || `绗?${chapterNum} 绔犲绋块棶棰榒,
       description: issue.suggestion || '',
       severity: issue.severity || 'minor',
       issueType: issue.type || 'general',
@@ -1638,17 +1596,17 @@ async function runChapter(project, provider, chapterNum, context) {
   const revisedContent = await reviseChapter(project, provider, chapterNum, draftContent, audit)
   let finalVersion = draftVersion
   if (revisedContent && revisedContent !== draftContent) {
-    finalVersion = await saveCandidate(project, chapter, `第 ${chapterNum} 章审稿修订候选`, revisedContent, 'ai_candidate', '审稿后局部修订')
+    finalVersion = await saveCandidate(project, chapter, `绗?${chapterNum} 绔犲绋夸慨璁㈠€欓€塦, revisedContent, 'ai_candidate', '瀹＄鍚庡眬閮ㄤ慨璁?)
   }
   const summary = await summarizeChapter(provider, chapterNum, finalVersion.content)
   await finalizeChapter(project, provider, chapter, finalVersion, summary, beatPlan)
   await request('PUT', `/projects/${project.id}/chapters/${chapter.id}/summary`, { summary })
   const extractedFacts = await extractCanonFacts(provider, project, chapterNum, finalVersion.content)
   if (!extractedFacts.length) {
-    throw new Error(`第 ${chapterNum} 章定稿后没有提取到记忆事实，停止生成下一章。`)
+    throw new Error(`绗?${chapterNum} 绔犲畾绋垮悗娌℃湁鎻愬彇鍒拌蹇嗕簨瀹烇紝鍋滄鐢熸垚涓嬩竴绔犮€俙)
   }
   await extractChapterSettingChanges(provider, project, chapterNum, finalVersion.content)
-  pass(`第 ${chapterNum} 章已定稿并完成记忆/设定提取`, `${wordCount(finalVersion.content)} 字`)
+  pass(`绗?${chapterNum} 绔犲凡瀹氱骞跺畬鎴愯蹇?璁惧畾鎻愬彇`, `${wordCount(finalVersion.content)} 瀛梎)
 
   return {
     chapter,
@@ -1661,28 +1619,28 @@ async function runChapter(project, provider, chapterNum, context) {
 
 async function runWritingFlow(project, provider, seed, bible) {
   const baseContext = [
-    `项目目标：200 万字 / 400 章，单章约 5000 字。`,
-    `种子：${seed.title}｜${seed.logline}`,
-    `主角：${seed.protagonist}`,
-    `核心矛盾：${seed.coreConflict}`,
-    `圣经定位：${bible.premise}`,
-    `风格规则：${bible.styleBible}`,
-    `写作策略：${JSON.stringify(bible.writingProfile || {})}`,
-    `世界规则：${bible.worldRules}`,
-    `禁止方向：${(bible.forbiddenDirections || []).join('；')}`
+    `椤圭洰鐩爣锛?00 涓囧瓧 / 400 绔狅紝鍗曠珷绾?5000 瀛椼€俙,
+    `绉嶅瓙锛?{seed.title}锝?{seed.logline}`,
+    `涓昏锛?{seed.protagonist}`,
+    `鏍稿績鐭涚浘锛?{seed.coreConflict}`,
+    `鍦ｇ粡瀹氫綅锛?{bible.premise}`,
+    `椋庢牸瑙勫垯锛?{bible.styleBible}`,
+    `鍐欎綔绛栫暐锛?{JSON.stringify(bible.writingProfile || {})}`,
+    `涓栫晫瑙勫垯锛?{bible.worldRules}`,
+    `绂佹鏂瑰悜锛?{(bible.forbiddenDirections || []).join('锛?)}`
   ].join('\n')
 
   const ch1 = await runChapter(project, provider, 1, await buildContinuationContext(project, 1))
 
   const pendingAfterCh1 = await request('GET', `/projects/${project.id}/settings/change-events?status=pending_review`)
-  assertCheck(pendingAfterCh1.length > 0, '第 1 章定稿后产生待确认设定变更', `pending=${pendingAfterCh1.length}`)
+  assertCheck(pendingAfterCh1.length > 0, '绗?1 绔犲畾绋垮悗浜х敓寰呯‘璁よ瀹氬彉鏇?, `pending=${pendingAfterCh1.length}`)
   for (const event of pendingAfterCh1.slice(0, 3)) {
     await request('POST', `/projects/${project.id}/settings/change-events/${event.id}/accept`)
   }
   if (pendingAfterCh1.length > 3) {
     await request('POST', `/projects/${project.id}/settings/change-events/${pendingAfterCh1[3].id}/reject`)
   }
-  pass('章节设定变更已人工确认/拒绝一部分', `handled=${Math.min(4, pendingAfterCh1.length)}`)
+  pass('绔犺妭璁惧畾鍙樻洿宸蹭汉宸ョ‘璁?鎷掔粷涓€閮ㄥ垎', `handled=${Math.min(4, pendingAfterCh1.length)}`)
 
   const ch2 = await runChapter(project, provider, 2, await buildContinuationContext(project, 2))
 
@@ -1691,15 +1649,15 @@ async function runWritingFlow(project, provider, seed, bible) {
     summary: ch2.summary,
     wordCount: wordCount(ch2.finalVersion.content)
   }, [200])
-  pass('重复点击同一定稿版本具备幂等性', '同 finalVersionId 再次定稿成功')
+  pass('閲嶅鐐瑰嚮鍚屼竴瀹氱鐗堟湰鍏峰骞傜瓑鎬?, '鍚?finalVersionId 鍐嶆瀹氱鎴愬姛')
 
   const chapter3 = await createOrGetChapter(project, 3)
-  const tempVersion = await saveCandidate(project, chapter3, '第 3 章临时候选', '这是一段用于测试候选删除的临时内容。', 'ai_candidate', '删除测试')
+  const tempVersion = await saveCandidate(project, chapter3, '绗?3 绔犱复鏃跺€欓€?, '杩欐槸涓€娈电敤浜庢祴璇曞€欓€夊垹闄ょ殑涓存椂鍐呭銆?, 'ai_candidate', '鍒犻櫎娴嬭瘯')
   await request('DELETE', `/projects/${project.id}/chapters/${chapter3.id}/versions/${tempVersion.id}`)
-  pass('未定稿章节候选版本可删除', '第 3 章临时候选')
+  pass('鏈畾绋跨珷鑺傚€欓€夌増鏈彲鍒犻櫎', '绗?3 绔犱复鏃跺€欓€?)
 
   await request('DELETE', `/projects/${project.id}/chapters/${chapter3.id}`)
-  pass('未定稿且无资产章节可删除', '第 3 章')
+  pass('鏈畾绋夸笖鏃犺祫浜х珷鑺傚彲鍒犻櫎', '绗?3 绔?)
 
   return { ch1, ch2 }
 }
@@ -1738,7 +1696,7 @@ async function handlePendingSettingChanges(project, reason = '') {
       rejected += 1
     }
   }
-  pass('待确认设定变更已模拟人工处理', `${reason} accepted=${accepted}, rejected=${rejected}`)
+  pass('寰呯‘璁よ瀹氬彉鏇村凡妯℃嫙浜哄伐澶勭悊', `${reason} accepted=${accepted}, rejected=${rejected}`)
   return { accepted, rejected }
 }
 
@@ -1751,25 +1709,25 @@ async function backfillMissingFinalizedPostprocess(project, provider, finalizedN
     if (!finalized?.finalVersion?.content) continue
 
     if (!factChapters.has(chapterNum)) {
-      log(`第 ${chapterNum} 章已定稿但缺少事实记忆，开始补提取`)
+      log(`绗?${chapterNum} 绔犲凡瀹氱浣嗙己灏戜簨瀹炶蹇嗭紝寮€濮嬭ˉ鎻愬彇`)
       const extractedFacts = await extractCanonFacts(provider, project, chapterNum, finalized.finalVersion.content)
       if (extractedFacts.length) {
-        pass('补齐已定稿章节事实记忆', `第 ${chapterNum} 章 facts=${extractedFacts.length}`)
+        pass('琛ラ綈宸插畾绋跨珷鑺備簨瀹炶蹇?, `绗?${chapterNum} 绔?facts=${extractedFacts.length}`)
       } else {
-        fail('补齐已定稿章节事实记忆', `第 ${chapterNum} 章没有提取到事实`)
-        throw new Error(`第 ${chapterNum} 章定稿后没有提取到记忆事实，停止继续生成。`)
+        fail('琛ラ綈宸插畾绋跨珷鑺備簨瀹炶蹇?, `绗?${chapterNum} 绔犳病鏈夋彁鍙栧埌浜嬪疄`)
+        throw new Error(`绗?${chapterNum} 绔犲畾绋垮悗娌℃湁鎻愬彇鍒拌蹇嗕簨瀹烇紝鍋滄缁х画鐢熸垚銆俙)
       }
     }
 
     const events = await request('GET', `/projects/${project.id}/settings/change-events?chapterNum=${chapterNum}`)
     if (!events.length) {
-      log(`第 ${chapterNum} 章已定稿但缺少设定变更记录，开始补提取`)
+      log(`绗?${chapterNum} 绔犲凡瀹氱浣嗙己灏戣瀹氬彉鏇磋褰曪紝寮€濮嬭ˉ鎻愬彇`)
       const changes = await extractChapterSettingChanges(provider, project, chapterNum, finalized.finalVersion.content)
       if (changes.length) {
-        pass('补齐已定稿章节设定变更', `第 ${chapterNum} 章 changes=${changes.length}`)
-        await handlePendingSettingChanges(project, `补齐第 ${chapterNum} 章定稿后处理`)
+        pass('琛ラ綈宸插畾绋跨珷鑺傝瀹氬彉鏇?, `绗?${chapterNum} 绔?changes=${changes.length}`)
+        await handlePendingSettingChanges(project, `琛ラ綈绗?${chapterNum} 绔犲畾绋垮悗澶勭悊`)
       } else {
-        pass('补齐已定稿章节设定变更', `第 ${chapterNum} 章无必要设定变更`)
+        pass('琛ラ綈宸插畾绋跨珷鑺傝瀹氬彉鏇?, `绗?${chapterNum} 绔犳棤蹇呰璁惧畾鍙樻洿`)
       }
     }
   }
@@ -1835,7 +1793,7 @@ async function buildContinuationContext(project, chapterNum) {
       .sort((a, b) => Number(a.chapterNum) - Number(b.chapterNum))
       .map(item => ({
         chapterNum: Number(item.chapterNum),
-        title: item.title && item.title !== `第 ${item.chapterNum} 章` ? item.title : '',
+        title: item.title && item.title !== `绗?${item.chapterNum} 绔燻 ? item.title : '',
         goal: item.summary || item.beatPlan || '',
         conflict: '',
         turn: ''
@@ -1872,9 +1830,9 @@ async function buildContinuationContext(project, chapterNum) {
     context.recentChapterEndings = recentChapterEndings
     context.previousChapterEnding = recentChapterEndings[0]?.ending || ''
     context.sequenceRules = [
-      `生成第 ${chapterNum} 章时必须承接上一章结尾，不允许跳场、跳状态或让角色无代价恢复。`,
-      '上一章已经定稿的事实只能向后软过渡，不回头改写。',
-      '如果当前章信息量过高，支线解释和余波可以自然留到下一章。'
+      `鐢熸垚绗?${chapterNum} 绔犳椂蹇呴』鎵挎帴涓婁竴绔犵粨灏撅紝涓嶅厑璁歌烦鍦恒€佽烦鐘舵€佹垨璁╄鑹叉棤浠ｄ环鎭㈠銆俙,
+      '涓婁竴绔犲凡缁忓畾绋跨殑浜嬪疄鍙兘鍚戝悗杞繃娓★紝涓嶅洖澶存敼鍐欍€?,
+      '濡傛灉褰撳墠绔犱俊鎭噺杩囬珮锛屾敮绾胯В閲婂拰浣欐尝鍙互鑷劧鐣欏埌涓嬩竴绔犮€?
     ]
     if (chapterNum === 1 && selectedSeed.openingHook) {
       context.openingAnchor = selectedSeed.openingHook
@@ -1943,15 +1901,15 @@ function normalizeAcceptancePayload(payload) {
 }
 
 async function runMultiChapterAcceptance(project, provider, startChapter = 1, endChapter = 20) {
-  log(`开始多章一致性验收：第 ${startChapter}-${endChapter} 章`)
+  log(`寮€濮嬪绔犱竴鑷存€ч獙鏀讹細绗?${startChapter}-${endChapter} 绔燻)
   const finalized = await loadFinalizedChapters(project, startChapter, endChapter)
   if (finalized.length < 2) {
     report.generated.multiChapterAcceptance = {
       skipped: true,
-      reason: '少于 2 个已定稿章节',
+      reason: '灏戜簬 2 涓凡瀹氱绔犺妭',
       chapters: finalized.length
     }
-    pass('多章一致性验收跳过', `finalized=${finalized.length}`)
+    pass('澶氱珷涓€鑷存€ч獙鏀惰烦杩?, `finalized=${finalized.length}`)
     return report.generated.multiChapterAcceptance
   }
 
@@ -1968,21 +1926,21 @@ async function runMultiChapterAcceptance(project, provider, startChapter = 1, en
     .filter(item => item.wordCount < range.hardMin || item.wordCount > range.hardMax)
     .map(item => ({ chapterNum: item.chapterNum, count: item.wordCount }))
 
-  assertCheck(missingFactChapters.length === 0, '多章验收：定稿章节均有记忆事实', missingFactChapters.length ? `missing=${missingFactChapters.join(',')}` : `chapters=${finalized.length}`)
-  assertCheck(pendingEvents.length === 0, '多章验收：无待确认设定变更阻塞后续生成', `pending=${pendingEvents.length}`)
-  assertCheck(wordOutliers.length === 0, '多章验收：定稿章节字数未硬性越界', wordOutliers.length ? JSON.stringify(wordOutliers) : `range=${range.hardMin}-${range.hardMax}`)
+  assertCheck(missingFactChapters.length === 0, '澶氱珷楠屾敹锛氬畾绋跨珷鑺傚潎鏈夎蹇嗕簨瀹?, missingFactChapters.length ? `missing=${missingFactChapters.join(',')}` : `chapters=${finalized.length}`)
+  assertCheck(pendingEvents.length === 0, '澶氱珷楠屾敹锛氭棤寰呯‘璁よ瀹氬彉鏇撮樆濉炲悗缁敓鎴?, `pending=${pendingEvents.length}`)
+  assertCheck(wordOutliers.length === 0, '澶氱珷楠屾敹锛氬畾绋跨珷鑺傚瓧鏁版湭纭€ц秺鐣?, wordOutliers.length ? JSON.stringify(wordOutliers) : `range=${range.hardMin}-${range.hardMax}`)
 
   const chapterBrief = finalized.slice(-20).map(item => [
-    `第 ${item.chapterNum} 章，${item.wordCount} 字`,
-    `摘要：${item.summary || '暂无'}`,
-    `开头：${item.opening}`,
-    `结尾：${item.ending}`
+    `绗?${item.chapterNum} 绔狅紝${item.wordCount} 瀛梎,
+    `鎽樿锛?{item.summary || '鏆傛棤'}`,
+    `寮€澶达細${item.opening}`,
+    `缁撳熬锛?{item.ending}`
   ].join('\n')).join('\n\n')
   const settingBrief = entities.slice(0, 40).map(item =>
-    `${item.entityType || item.type}:${item.entityName || item.name}｜${item.category || ''}｜${trimText(item.summary || '', 140)}`
+    `${item.entityType || item.type}:${item.entityName || item.name}锝?{item.category || ''}锝?{trimText(item.summary || '', 140)}`
   ).join('\n')
   const factBrief = facts.slice(-80).map(item =>
-    `第${item.chapterNum || '?'}章 ${item.factType || 'plot'}：${trimText(item.content || '', 140)}`
+    `绗?{item.chapterNum || '?'}绔?${item.factType || 'plot'}锛?{trimText(item.content || '', 140)}`
   ).join('\n')
 
   try {
@@ -1990,14 +1948,14 @@ async function runMultiChapterAcceptance(project, provider, startChapter = 1, en
       {
         role: 'system',
         content: [
-          '你是长篇小说多章验收编辑。只输出合法 JSON，不要 Markdown。',
-          '必须检查 character_drift、plot_contradiction、timeline、world_rule、foreshadowing、repetition、style_drift、state_carryover、boundary_continuity、setting_sync。',
-          '只记录会影响后续 20 章继续生成的问题，不要泛泛评价。'
+          '浣犳槸闀跨瘒灏忚澶氱珷楠屾敹缂栬緫銆傚彧杈撳嚭鍚堟硶 JSON锛屼笉瑕?Markdown銆?,
+          '蹇呴』妫€鏌?character_drift銆乸lot_contradiction銆乼imeline銆亀orld_rule銆乫oreshadowing銆乺epetition銆乻tyle_drift銆乻tate_carryover銆乥oundary_continuity銆乻etting_sync銆?,
+          '鍙褰曚細褰卞搷鍚庣画 20 绔犵户缁敓鎴愮殑闂锛屼笉瑕佹硾娉涜瘎浠枫€?
         ].join('\n')
       },
       {
         role: 'user',
-        content: `请验收第 ${startChapter}-${endChapter} 章是否适合继续写下去。输出 {"overall":"","safeToContinue":true,"checks":{"character_drift":"pass|warn|fail","plot_contradiction":"pass|warn|fail","timeline":"pass|warn|fail","world_rule":"pass|warn|fail","foreshadowing":"pass|warn|fail","repetition":"pass|warn|fail","style_drift":"pass|warn|fail","state_carryover":"pass|warn|fail","boundary_continuity":"pass|warn|fail","setting_sync":"pass|warn|fail"},"issues":[{"severity":"critical|major|minor|suggestion","type":"character_drift|plot_contradiction|timeline|world_rule|foreshadowing|repetition|style_drift|state_carryover|boundary_continuity|setting_sync","chapters":[1,2],"title":"","detail":"","suggestedAction":""}]}。\n\n章节材料：\n${chapterBrief}\n\n设定库：\n${settingBrief || '暂无'}\n\n记忆事实：\n${factBrief || '暂无'}`
+        content: `璇烽獙鏀剁 ${startChapter}-${endChapter} 绔犳槸鍚﹂€傚悎缁х画鍐欎笅鍘汇€傝緭鍑?{"overall":"","safeToContinue":true,"checks":{"character_drift":"pass|warn|fail","plot_contradiction":"pass|warn|fail","timeline":"pass|warn|fail","world_rule":"pass|warn|fail","foreshadowing":"pass|warn|fail","repetition":"pass|warn|fail","style_drift":"pass|warn|fail","state_carryover":"pass|warn|fail","boundary_continuity":"pass|warn|fail","setting_sync":"pass|warn|fail"},"issues":[{"severity":"critical|major|minor|suggestion","type":"character_drift|plot_contradiction|timeline|world_rule|foreshadowing|repetition|style_drift|state_carryover|boundary_continuity|setting_sync","chapters":[1,2],"title":"","detail":"","suggestedAction":""}]}銆俓n\n绔犺妭鏉愭枡锛歕n${chapterBrief}\n\n璁惧畾搴擄細\n${settingBrief || '鏆傛棤'}\n\n璁板繂浜嬪疄锛歕n${factBrief || '鏆傛棤'}`
       }
     ], {
       maxTokens: 5000,
@@ -2005,7 +1963,7 @@ async function runMultiChapterAcceptance(project, provider, startChapter = 1, en
       retryMaxTokens: 5000,
       temperature: 0.2,
       timeoutMs: 300000
-    }, '修复为 {"overall":"","safeToContinue":true,"checks":{},"issues":[...]} 格式；最多 10 个问题。')
+    }, '淇涓?{"overall":"","safeToContinue":true,"checks":{},"issues":[...]} 鏍煎紡锛涙渶澶?10 涓棶棰樸€?)
 
     const acceptance = normalizeAcceptancePayload(result.payload)
     const hardIssues = acceptance.issues.filter(item => ['critical', 'major'].includes(item.severity))
@@ -2019,7 +1977,7 @@ async function runMultiChapterAcceptance(project, provider, startChapter = 1, en
       wordOutliers,
       ...acceptance
     }
-    assertCheck(acceptance.safeToContinue && hardIssues.length === 0, '多章一致性验收通过', `issues=${acceptance.issues.length}, hard=${hardIssues.length}`)
+    assertCheck(acceptance.safeToContinue && hardIssues.length === 0, '澶氱珷涓€鑷存€ч獙鏀堕€氳繃', `issues=${acceptance.issues.length}, hard=${hardIssues.length}`)
     return report.generated.multiChapterAcceptance
   } catch (error) {
     report.generated.multiChapterAcceptance = {
@@ -2033,7 +1991,7 @@ async function runMultiChapterAcceptance(project, provider, startChapter = 1, en
       pendingSettingEvents: pendingEvents.length,
       wordOutliers
     }
-    fail('多章一致性验收结构化失败', trimText(error.message, 260))
+    fail('澶氱珷涓€鑷存€ч獙鏀剁粨鏋勫寲澶辫触', trimText(error.message, 260))
     return report.generated.multiChapterAcceptance
   }
 }
@@ -2054,25 +2012,25 @@ async function continueWritingFlow(project, provider, toChapter) {
   )
 
   if (toChapter < startChapter) {
-    pass('续写章节无需执行', `已定稿到第 ${maxFinalized} 章，目标第 ${toChapter} 章`)
+    pass('缁啓绔犺妭鏃犻渶鎵ц', `宸插畾绋垮埌绗?${maxFinalized} 绔狅紝鐩爣绗?${toChapter} 绔燻)
     return {
       ch1: await loadFinalizedChapter(project, 1),
       ch2: await loadFinalizedChapter(project, 2)
     }
   }
 
-  await handlePendingSettingChanges(project, `续写前，第 ${startChapter} 章之前`)
+  await handlePendingSettingChanges(project, `缁啓鍓嶏紝绗?${startChapter} 绔犱箣鍓峘)
 
   let lastResult = null
   for (let chapterNum = startChapter; chapterNum <= toChapter; chapterNum += 1) {
     const context = await buildContinuationContext(project, chapterNum)
     lastResult = await runChapter(project, provider, chapterNum, context)
-    await handlePendingSettingChanges(project, `第 ${chapterNum} 章定稿后`)
+    await handlePendingSettingChanges(project, `绗?${chapterNum} 绔犲畾绋垮悗`)
     await syncProjectChapterStats(project)
     writeReport()
   }
 
-  pass('真实流程续写到目标章数', `第 ${startChapter}-${toChapter} 章，最后一章 ${wordCount(lastResult?.finalVersion?.content || '')} 字`)
+  pass('鐪熷疄娴佺▼缁啓鍒扮洰鏍囩珷鏁?, `绗?${startChapter}-${toChapter} 绔狅紝鏈€鍚庝竴绔?${wordCount(lastResult?.finalVersion?.content || '')} 瀛梎)
   return {
     ch1: await loadFinalizedChapter(project, 1),
     ch2: await loadFinalizedChapter(project, 2),
@@ -2081,15 +2039,15 @@ async function continueWritingFlow(project, provider, toChapter) {
 }
 
 async function runGlobalAudit(project, provider, chapters) {
-  log('开始项目级审稿')
+  log('寮€濮嬮」鐩骇瀹＄')
   const result = await chatJson(provider, [
-    { role: 'system', content: '你是长篇小说全局审稿人。只输出合法 JSON。' },
-    { role: 'user', content: `基于当前前两章，做一次项目级审稿。输出 {"overall":"","issues":[{"severity":"major|minor|suggestion","type":"continuity|setting|pacing|motivation|ai_tone","title":"","description":"","suggestedAction":""}]}。\n\n第1章摘要：${chapters.ch1.summary}\n\n第2章摘要：${chapters.ch2.summary}` }
-  ], { maxTokens: 4000, repairMaxTokens: 4000, temperature: 0.25 }, '修复为 {"overall":"","issues":[...]} 格式；保留最多 5 个问题。')
+    { role: 'system', content: '浣犳槸闀跨瘒灏忚鍏ㄥ眬瀹＄浜恒€傚彧杈撳嚭鍚堟硶 JSON銆? },
+    { role: 'user', content: `鍩轰簬褰撳墠鍓嶄袱绔狅紝鍋氫竴娆￠」鐩骇瀹＄銆傝緭鍑?{"overall":"","issues":[{"severity":"major|minor|suggestion","type":"continuity|setting|pacing|motivation|ai_tone","title":"","description":"","suggestedAction":""}]}銆俓n\n绗?绔犳憳瑕侊細${chapters.ch1.summary}\n\n绗?绔犳憳瑕侊細${chapters.ch2.summary}` }
+  ], { maxTokens: 4000, repairMaxTokens: 4000, temperature: 0.25 }, '淇涓?{"overall":"","issues":[...]} 鏍煎紡锛涗繚鐣欐渶澶?5 涓棶棰樸€?)
   const payload = result.payload
   await request('POST', `/projects/${project.id}/global-audits`, {
     reportType: 'global',
-    title: '真实流程测试项目级审稿',
+    title: '鐪熷疄娴佺▼娴嬭瘯椤圭洰绾у绋?,
     report: payload
   })
   const issues = Array.isArray(payload.issues) ? payload.issues : []
@@ -2097,7 +2055,7 @@ async function runGlobalAudit(project, provider, chapters) {
     await request('POST', `/projects/${project.id}/correction-tasks`, {
       sourceType: 'global_audit',
       targetModule: 'global',
-      title: issue.title || issue.description || '项目级审稿问题',
+      title: issue.title || issue.description || '椤圭洰绾у绋块棶棰?,
       description: issue.description || '',
       severity: issue.severity || 'minor',
       issueType: issue.type || 'general',
@@ -2109,7 +2067,7 @@ async function runGlobalAudit(project, provider, chapters) {
     })
     report.generated.correctionTasks += 1
   }
-  pass('项目级审稿已保存', `issues=${issues.length}`)
+  pass('椤圭洰绾у绋垮凡淇濆瓨', `issues=${issues.length}`)
 }
 
 async function loadResumeChapters(project) {
@@ -2117,7 +2075,7 @@ async function loadResumeChapters(project) {
   const out = {}
   for (const chapterNum of [1, 2]) {
     const chapter = chapters.find(item => Number(item.chapterNum) === chapterNum)
-    if (!chapter) throw new Error(`续跑找不到第 ${chapterNum} 章`)
+    if (!chapter) throw new Error(`缁窇鎵句笉鍒扮 ${chapterNum} 绔燻)
     const versions = await request('GET', `/projects/${project.id}/chapters/${chapter.id}/versions`)
     const finalVersion = versions.find(item => item.id === chapter.finalVersionId)
       || versions.find(item => item.versionType === 'final')
@@ -2181,7 +2139,7 @@ class CdpClient {
       })
       const timer = setTimeout(() => {
         off()
-        reject(new Error(`等待 CDP 事件超时：${method}`))
+        reject(new Error(`绛夊緟 CDP 浜嬩欢瓒呮椂锛?{method}`))
       }, timeoutMs)
     })
   }
@@ -2192,7 +2150,7 @@ class CdpClient {
 }
 
 async function launchChrome() {
-  if (!existsSync(CHROME_PATH)) throw new Error(`未找到 Chrome：${CHROME_PATH}`)
+  if (!existsSync(CHROME_PATH)) throw new Error(`鏈壘鍒?Chrome锛?{CHROME_PATH}`)
   if (existsSync(PROFILE_DIR)) {
     try { rmSync(PROFILE_DIR, { recursive: true, force: true }) } catch {}
   }
@@ -2253,22 +2211,22 @@ async function screenshot(client, name) {
 }
 
 async function browserSmoke(project) {
-  log('开始浏览器 UI 验收')
+  log('寮€濮嬫祻瑙堝櫒 UI 楠屾敹')
   const client = await launchChrome()
   try {
     await navigate(client, `${APP_URL}/project/${project.id}`, 'projectLoadMs')
     let text = await evaluate(client, 'document.body.innerText')
-    assertCheck(text.includes(project.title), '项目详情页可打开', project.title)
-    for (const label of ['选题雷达', '创作种子', '创作圣经', '设定库', '章节管理', '纠偏任务']) {
-      assertCheck(text.includes(label), `项目详情页显示模块：${label}`)
+    assertCheck(text.includes(project.title), '椤圭洰璇︽儏椤靛彲鎵撳紑', project.title)
+    for (const label of ['閫夐闆疯揪', '鍒涗綔绉嶅瓙', '鍒涗綔鍦ｇ粡', '璁惧畾搴?, '绔犺妭绠＄悊', '绾犲亸浠诲姟']) {
+      assertCheck(text.includes(label), `椤圭洰璇︽儏椤垫樉绀烘ā鍧楋細${label}`)
     }
     await screenshot(client, 'project-detail')
 
     await navigate(client, `${APP_URL}/writer/${project.id}/1`, 'writerChapter1LoadMs')
     text = await evaluate(client, 'document.body.innerText')
-    assertCheck(text.includes(project.title), '写字台可打开')
-    assertCheck(text.includes('本章审稿') || text.includes('审稿'), '写字台审稿入口可见')
-    assertCheck(text.includes('项目详情'), '写字台返回项目详情入口可见')
+    assertCheck(text.includes(project.title), '鍐欏瓧鍙板彲鎵撳紑')
+    assertCheck(text.includes('鏈珷瀹＄') || text.includes('瀹＄'), '鍐欏瓧鍙板绋垮叆鍙ｅ彲瑙?)
+    assertCheck(text.includes('椤圭洰璇︽儏'), '鍐欏瓧鍙拌繑鍥為」鐩鎯呭叆鍙ｅ彲瑙?)
     await screenshot(client, 'writer-chapter-1')
 
     const domStats = await evaluate(client, `({
@@ -2280,7 +2238,7 @@ async function browserSmoke(project) {
       } : null
     })`)
     report.generated.domStats = domStats
-    pass('浏览器 UI 基础验收完成', `nodes=${domStats.nodes}, text=${domStats.textLength}`)
+    pass('娴忚鍣?UI 鍩虹楠屾敹瀹屾垚', `nodes=${domStats.nodes}, text=${domStats.textLength}`)
   } finally {
     client.close()
   }
@@ -2289,7 +2247,7 @@ async function browserSmoke(project) {
 async function cleanupProject(project) {
   if (!project?.id || KEEP_PROJECT) return
   await request('DELETE', `/projects/${project.id}`)
-  report.cleanup = `已删除测试项目 ${project.id}`
+  report.cleanup = `宸插垹闄ゆ祴璇曢」鐩?${project.id}`
 }
 
 function formatChapterWordCountReport() {
@@ -2298,30 +2256,30 @@ function formatChapterWordCountReport() {
   return counts
     .slice()
     .sort((a, b) => Number(a.chapterNum) - Number(b.chapterNum))
-    .map(item => `第${item.chapterNum}章 ${item.count}字`)
-    .join('；')
+    .map(item => `绗?{item.chapterNum}绔?${item.count}瀛梎)
+    .join('锛?)
 }
 
 function formatMultiChapterAcceptanceReport() {
   const acceptance = report.generated.multiChapterAcceptance
-  if (!acceptance) return ['- 尚未执行']
-  if (acceptance.skipped) return [`- 已跳过：${acceptance.reason}`]
+  if (!acceptance) return ['- 灏氭湭鎵ц']
+  if (acceptance.skipped) return [`- 宸茶烦杩囷細${acceptance.reason}`]
   if (acceptance.failed) return [
-    `- 结构化失败：${acceptance.error || ''}`,
-    `- 已定稿章节：${acceptance.finalizedChapters || 0}`,
-    `- 待确认设定：${acceptance.pendingSettingEvents ?? 0}`,
-    `- 字数越界：${JSON.stringify(acceptance.wordOutliers || [])}`
+    `- 缁撴瀯鍖栧け璐ワ細${acceptance.error || ''}`,
+    `- 宸插畾绋跨珷鑺傦細${acceptance.finalizedChapters || 0}`,
+    `- 寰呯‘璁よ瀹氾細${acceptance.pendingSettingEvents ?? 0}`,
+    `- 瀛楁暟瓒婄晫锛?{JSON.stringify(acceptance.wordOutliers || [])}`
   ]
   const issueLines = (acceptance.issues || []).length
-    ? acceptance.issues.map(item => `- [${item.severity}/${item.type}] 第${(item.chapters || []).join(',')}章：${item.title || item.detail || ''}；建议：${item.suggestedAction || ''}`)
-    : ['- 未发现阻塞继续生成的多章问题']
+    ? acceptance.issues.map(item => `- [${item.severity}/${item.type}] 绗?{(item.chapters || []).join(',')}绔狅細${item.title || item.detail || ''}锛涘缓璁細${item.suggestedAction || ''}`)
+    : ['- 鏈彂鐜伴樆濉炵户缁敓鎴愮殑澶氱珷闂']
   return [
-    `- 范围：第 ${acceptance.startChapter}-${acceptance.endChapter} 章`,
-    `- 是否适合继续：${acceptance.safeToContinue ? '是' : '否'}`,
-    `- 总评：${acceptance.overall || '暂无'}`,
-    `- 待确认设定：${acceptance.pendingSettingEvents ?? 0}`,
-    `- 缺少记忆章节：${(acceptance.missingFactChapters || []).join(',') || '无'}`,
-    `- 字数越界：${JSON.stringify(acceptance.wordOutliers || [])}`,
+    `- 鑼冨洿锛氱 ${acceptance.startChapter}-${acceptance.endChapter} 绔燻,
+    `- 鏄惁閫傚悎缁х画锛?{acceptance.safeToContinue ? '鏄? : '鍚?}`,
+    `- 鎬昏瘎锛?{acceptance.overall || '鏆傛棤'}`,
+    `- 寰呯‘璁よ瀹氾細${acceptance.pendingSettingEvents ?? 0}`,
+    `- 缂哄皯璁板繂绔犺妭锛?{(acceptance.missingFactChapters || []).join(',') || '鏃?}`,
+    `- 瀛楁暟瓒婄晫锛?{JSON.stringify(acceptance.wordOutliers || [])}`,
     ...issueLines
   ]
 }
@@ -2339,52 +2297,52 @@ function writeReport() {
   const mdFile = join(REPORT_DIR, 'latest-realistic-report.md')
   writeFileSync(jsonFile, JSON.stringify(report, null, 2), 'utf8')
   const md = [
-    '# Novel Creator 真实流程长篇测试报告',
+    '# Novel Creator 鐪熷疄娴佺▼闀跨瘒娴嬭瘯鎶ュ憡',
     '',
-    `- 时间：${report.startedAt} - ${report.finishedAt}`,
-    `- 项目：${report.project?.title || ''}`,
-    `- 项目地址：${report.project?.url || ''}`,
-    `- 目标规模：${report.project?.targetWords || 0} 字 / ${report.project?.targetChapters || 0} 章`,
-    `- 使用模型：${report.provider?.name || ''} / ${report.provider?.model || ''} / ${report.provider?.apiKey || ''}`,
-    `- 检查：${report.summary.passedChecks}/${report.summary.totalChecks} 通过`,
-    `- 浏览器控制台错误：${report.summary.browserConsoleErrors}`,
-    `- 项目处理：${report.cleanup}`,
+    `- 鏃堕棿锛?{report.startedAt} - ${report.finishedAt}`,
+    `- 椤圭洰锛?{report.project?.title || ''}`,
+    `- 椤圭洰鍦板潃锛?{report.project?.url || ''}`,
+    `- 鐩爣瑙勬ā锛?{report.project?.targetWords || 0} 瀛?/ ${report.project?.targetChapters || 0} 绔燻,
+    `- 浣跨敤妯″瀷锛?{report.provider?.name || ''} / ${report.provider?.model || ''} / ${report.provider?.apiKey || ''}`,
+    `- 妫€鏌ワ細${report.summary.passedChecks}/${report.summary.totalChecks} 閫氳繃`,
+    `- 娴忚鍣ㄦ帶鍒跺彴閿欒锛?{report.summary.browserConsoleErrors}`,
+    `- 椤圭洰澶勭悊锛?{report.cleanup}`,
     '',
-    '## 生成与数据量',
-    `- 热点数据：${report.generated.marketItems}`,
-    `- 方向建议：${report.generated.directions}`,
-    `- 种子：${report.generated.seeds}`,
-    `- 初始设定候选：${report.generated.settingEvents}`,
-    `- 已确认设定：${report.generated.acceptedSettings}`,
-    `- 章节骨架：${report.generated.chaptersCreated}`,
-    `- 已定稿章节：${report.generated.finalizedChapters}`,
-    `- 记忆事实：${report.generated.canonFacts}`,
-    `- 章节设定变更：${report.generated.chapterSettingChanges}`,
-    `- 纠偏任务：${report.generated.correctionTasks}`,
-    `- 章节字数：${formatChapterWordCountReport()}`,
-    `- 审稿结构化失败：${report.generated.auditFailures}`,
+    '## 鐢熸垚涓庢暟鎹噺',
+    `- 鐑偣鏁版嵁锛?{report.generated.marketItems}`,
+    `- 鏂瑰悜寤鸿锛?{report.generated.directions}`,
+    `- 绉嶅瓙锛?{report.generated.seeds}`,
+    `- 鍒濆璁惧畾鍊欓€夛細${report.generated.settingEvents}`,
+    `- 宸茬‘璁よ瀹氾細${report.generated.acceptedSettings}`,
+    `- 绔犺妭楠ㄦ灦锛?{report.generated.chaptersCreated}`,
+    `- 宸插畾绋跨珷鑺傦細${report.generated.finalizedChapters}`,
+    `- 璁板繂浜嬪疄锛?{report.generated.canonFacts}`,
+    `- 绔犺妭璁惧畾鍙樻洿锛?{report.generated.chapterSettingChanges}`,
+    `- 绾犲亸浠诲姟锛?{report.generated.correctionTasks}`,
+    `- 绔犺妭瀛楁暟锛?{formatChapterWordCountReport()}`,
+    `- 瀹＄缁撴瀯鍖栧け璐ワ細${report.generated.auditFailures}`,
     '',
-    '## 多章一致性验收',
+    '## 澶氱珷涓€鑷存€ч獙鏀?,
     ...formatMultiChapterAcceptanceReport(),
     '',
-    '## 检查项',
-    ...report.checks.map(item => `- ${item.status === 'pass' ? '[x]' : '[ ]'} ${item.name}${item.detail ? `：${item.detail}` : ''}`),
+    '## 妫€鏌ラ」',
+    ...report.checks.map(item => `- ${item.status === 'pass' ? '[x]' : '[ ]'} ${item.name}${item.detail ? `锛?{item.detail}` : ''}`),
     '',
-    '## 主要观察',
+    '## 涓昏瑙傚療',
     ...(
       report.notes.length
         ? report.notes.map(item => `- ${item}`)
-        : ['- 本轮重点验证真实流程可跑通，完整 200 万字正文没有一次性生成，避免不必要的 API 成本。']
+        : ['- 鏈疆閲嶇偣楠岃瘉鐪熷疄娴佺▼鍙窇閫氾紝瀹屾暣 200 涓囧瓧姝ｆ枃娌℃湁涓€娆℃€х敓鎴愶紝閬垮厤涓嶅繀瑕佺殑 API 鎴愭湰銆?]
     ),
     '',
-    '## 页面耗时',
+    '## 椤甸潰鑰楁椂',
     ...Object.entries(report.timings).map(([key, value]) => `- ${key}: ${value}ms`),
     '',
-    '## 截图',
+    '## 鎴浘',
     ...report.screenshots.map(file => `- ${file}`),
     '',
-    '## 浏览器控制台错误',
-    ...(report.browserConsole.length ? report.browserConsole.map(item => `- ${item.type}: ${item.text}`) : ['- 无'])
+    '## 娴忚鍣ㄦ帶鍒跺彴閿欒',
+    ...(report.browserConsole.length ? report.browserConsole.map(item => `- ${item.type}: ${item.text}`) : ['- 鏃?])
   ].join('\n')
   writeFileSync(mdFile, md, 'utf8')
   log(`REPORT_JSON ${jsonFile}`)
@@ -2421,7 +2379,7 @@ async function main() {
         targetChapters: project.targetChapters,
         url: `${APP_URL}/project/${project.id}`
       }
-      pass('续跑已有测试项目', project.title)
+      pass('缁窇宸叉湁娴嬭瘯椤圭洰', project.title)
       chapters = await loadResumeChapters(project)
       if (CONTINUE_TO_CHAPTER > 0) {
         chapters = await continueWritingFlow(project, provider, CONTINUE_TO_CHAPTER)
@@ -2447,7 +2405,7 @@ async function main() {
     await browserSmoke(project)
     await cleanupProject(project)
   } catch (error) {
-    fail('真实流程测试执行失败', error.stack || error.message)
+    fail('鐪熷疄娴佺▼娴嬭瘯鎵ц澶辫触', error.stack || error.message)
     throw error
   } finally {
     const files = writeReport()
@@ -2466,3 +2424,5 @@ async function main() {
 }
 
 main().catch(() => {})
+
+

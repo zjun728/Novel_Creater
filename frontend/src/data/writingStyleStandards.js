@@ -1,3 +1,5 @@
+import { buildWritingFingerprintSections } from './writingFingerprints.js'
+
 export const WRITING_STYLE_STANDARDS = [
   {
     id: 'realism-ensemble',
@@ -100,6 +102,7 @@ export const WRITING_STYLE_STANDARDS = [
 ]
 
 const STANDARD_BY_ID = Object.fromEntries(WRITING_STYLE_STANDARDS.map(item => [item.id, item]))
+export const CUSTOM_WRITING_STYLE_STANDARDS_KEY = 'novel_creator_official_writing_standards'
 
 const WRITING_GUIDANCE_BY_ID = {
   'realism-ensemble': {
@@ -216,19 +219,127 @@ const WRITING_GUIDANCE_BY_ID = {
   }
 }
 
-export function getWritingStyleStandard(id) {
-  return STANDARD_BY_ID[String(id || '').trim()] || null
+function getBrowserStorage() {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : null
+  } catch {
+    return null
+  }
+}
+
+function cleanText(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function readStoredList(storage, key) {
+  if (!storage?.getItem) return []
+  try {
+    const raw = storage.getItem(key)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writeStoredList(storage, key, list) {
+  if (!storage?.setItem) return
+  storage.setItem(key, JSON.stringify(list))
+}
+
+export function normalizeReviewedStandardAsWritingStyleStandard(standard = {}) {
+  const guidance = standard.guidance || {}
+  const id = cleanText(standard.id)
+  const name = cleanText(standard.name)
+  if (!id || !name || standard.noDirectImitation !== true) {
+    throw new Error('待接入标准缺少名称、ID 或禁止复刻标记')
+  }
+
+  return {
+    id,
+    name,
+    category: cleanText(standard.category) || '本地样本 / 人工审核',
+    shortRule: cleanText(guidance.chapterEngine) || cleanText(standard.shortRule) || '从本地真人样本抽象出的章节组织方法。',
+    auditFocus: Array.isArray(standard.auditFocus) ? standard.auditFocus : [],
+    guidance: {
+      chapterEngine: cleanText(guidance.chapterEngine),
+      dialogueMethod: cleanText(guidance.dialogueMethod),
+      characterMethod: cleanText(guidance.characterMethod),
+      ensembleMethod: cleanText(guidance.ensembleMethod),
+      challengeMethod: cleanText(guidance.challengeMethod),
+      emotionMethod: cleanText(guidance.emotionMethod),
+      informationMethod: cleanText(guidance.informationMethod),
+      proseRhythm: cleanText(guidance.proseRhythm),
+      endingPreference: cleanText(guidance.endingPreference),
+      avoid: cleanText(guidance.avoid)
+    },
+    source: 'reviewed_local_sample',
+    custom: true,
+    status: 'active',
+    auditRequired: false,
+    noDirectImitation: true,
+    sourceCardIds: Array.isArray(standard.sourceCardIds) ? standard.sourceCardIds.filter(Boolean) : []
+  }
+}
+
+export function loadCustomWritingStyleStandards(options = {}) {
+  const storage = options.storage || getBrowserStorage()
+  return readStoredList(storage, CUSTOM_WRITING_STYLE_STANDARDS_KEY)
+    .map(item => {
+      try {
+        return normalizeReviewedStandardAsWritingStyleStandard(item)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+}
+
+export function saveCustomWritingStyleStandard(standard, options = {}) {
+  const storage = options.storage || getBrowserStorage()
+  const normalized = normalizeReviewedStandardAsWritingStyleStandard(standard)
+  const existing = loadCustomWritingStyleStandards({ storage })
+  const next = [
+    normalized,
+    ...existing.filter(item => item.id !== normalized.id)
+  ].slice(0, 50)
+  writeStoredList(storage, CUSTOM_WRITING_STYLE_STANDARDS_KEY, next)
+  return normalized
+}
+
+export function getAllWritingStyleStandards(options = {}) {
+  return [
+    ...WRITING_STYLE_STANDARDS,
+    ...loadCustomWritingStyleStandards(options)
+  ]
+}
+
+export function getWritingStyleStandard(id, options = {}) {
+  const key = String(id || '').trim()
+  return STANDARD_BY_ID[key] || loadCustomWritingStyleStandards(options).find(item => item.id === key) || null
+}
+
+function expandWritingGuidance(standard, guidance = {}) {
+  return {
+    chapterEngine: standard.shortRule,
+    dialogueMethod: '对话要带身份、遮掩、停顿和言外之意，不让角色主动替作者交代设定。',
+    characterMethod: '让人物带着自身欲望、压力、误判和小动作进入场景。',
+    ensembleMethod: '关键配角至少拥有一个和主角不同的小目标、顾虑或代价。',
+    challengeMethod: '任务和关卡要靠选择代价、资源限制、误判后果或规则边界成立。',
+    emotionMethod: '情绪先落到动作、身体反应、迟疑和无用细节里，不急着替读者命名。',
+    informationMethod: '把信息放进行动、证据、关系变化和具体后果里。',
+    proseRhythm: '保持自然叙述节奏，允许长短句和闲笔变化，避免把标准写成逐条打卡。',
+    endingPreference: '结尾落在具体变化或下一章可承接的问题上。',
+    avoid: '避免机械套用题材标签、模板结尾、角色工具化和说明书式交底。',
+    ...guidance
+  }
 }
 
 function getWritingGuidance(standard) {
-  return WRITING_GUIDANCE_BY_ID[standard.id] || {
-    chapterEngine: standard.shortRule,
-    characterMethod: '让人物带着自身欲望、压力和误判进入场景。',
-    informationMethod: '把信息放进行动、证据、关系变化和具体后果里。',
-    proseRhythm: '保持自然叙述节奏，避免把标准写成逐条打卡。',
-    endingPreference: '结尾落在具体变化或下一章可承接的问题上。',
-    avoid: '避免机械套用题材标签。'
+  if (!standard) {
+    return expandWritingGuidance({ shortRule: '' })
   }
+  return expandWritingGuidance(standard, standard.guidance || WRITING_GUIDANCE_BY_ID[standard.id])
 }
 
 function parseMaybeJson(value) {
@@ -243,7 +354,7 @@ function parseMaybeJson(value) {
   }
 }
 
-export function normalizeWritingProfile(value = {}) {
+export function normalizeWritingProfile(value = {}, options = {}) {
   const parsed = parseMaybeJson(value)
   let config = parsed
 
@@ -251,17 +362,17 @@ export function normalizeWritingProfile(value = {}) {
     const ids = config
       .map(item => typeof item === 'string' ? item : item?.id || item?.value)
       .map(id => String(id || '').trim())
-      .filter(id => getWritingStyleStandard(id))
+      .filter(id => getWritingStyleStandard(id, options))
     config = { primaryStandard: ids[0] || '', secondaryFlavor: ids[1] || '' }
   }
 
   if (typeof config === 'string') {
     const id = String(config).trim()
-    config = getWritingStyleStandard(id) ? { primaryStandard: id, secondaryFlavor: '' } : {}
+    config = getWritingStyleStandard(id, options) ? { primaryStandard: id, secondaryFlavor: '' } : {}
   }
 
-  const primaryStandard = getWritingStyleStandard(config?.primaryStandard) ? String(config.primaryStandard).trim() : ''
-  const secondaryFlavor = getWritingStyleStandard(config?.secondaryFlavor) ? String(config.secondaryFlavor).trim() : ''
+  const primaryStandard = getWritingStyleStandard(config?.primaryStandard, options) ? String(config.primaryStandard).trim() : ''
+  const secondaryFlavor = getWritingStyleStandard(config?.secondaryFlavor, options) ? String(config.secondaryFlavor).trim() : ''
 
   return {
     primaryStandard,
@@ -270,17 +381,36 @@ export function normalizeWritingProfile(value = {}) {
   }
 }
 
-export function getSelectedWritingStyleStandards(config = {}) {
-  const normalized = normalizeWritingProfile(config)
+export function getSelectedWritingStyleStandards(config = {}, options = {}) {
+  const normalized = normalizeWritingProfile(config, options)
   return [
-    normalized.primaryStandard ? { role: '主写作标准', standard: getWritingStyleStandard(normalized.primaryStandard) } : null,
-    normalized.secondaryFlavor ? { role: '辅助风味', standard: getWritingStyleStandard(normalized.secondaryFlavor) } : null
+    normalized.primaryStandard ? { role: '主写作标准', standard: getWritingStyleStandard(normalized.primaryStandard, options) } : null,
+    normalized.secondaryFlavor ? { role: '辅助风味', standard: getWritingStyleStandard(normalized.secondaryFlavor, options) } : null
   ].filter(item => item?.standard)
 }
 
-export function formatWritingStyleStandardsForPrompt(config = {}) {
-  const selected = getSelectedWritingStyleStandards(config)
-  const profile = normalizeWritingProfile(config)
+export function getWritingStrategyDisplayCards(config = {}, options = {}) {
+  const profile = normalizeWritingProfile(config, options)
+  return getSelectedWritingStyleStandards(profile, options).map(({ role, standard }) => {
+    const guidance = getWritingGuidance(standard)
+    const isPrimary = role === '主写作标准'
+    return {
+      role,
+      id: standard.id,
+      name: standard.name,
+      category: standard.category,
+      positioning: isPrimary
+        ? '决定本书章节组织、人物方法和叙事气质的主轴。'
+        : '只补充局部风味和场景纹理，不推翻主写作标准。',
+      note: isPrimary ? profile.customStyleNotes : '',
+      sections: buildWritingFingerprintSections(guidance)
+    }
+  })
+}
+
+export function formatWritingStyleStandardsForPrompt(config = {}, options = {}) {
+  const selected = getSelectedWritingStyleStandards(config, options)
+  const profile = normalizeWritingProfile(config, options)
   const blocks = selected.map(({ role, standard }) => {
     const guidance = getWritingGuidance(standard)
     const isPrimary = role === '主写作标准'
@@ -291,7 +421,11 @@ export function formatWritingStyleStandardsForPrompt(config = {}) {
         ? '定位：作为本项目章节组织、人物方法和叙事气质的主轴。'
         : '定位：只提供局部风味和场景纹理，不改变主写作标准、人物逻辑和剧情方向。',
       `章节组织：${guidance.chapterEngine}`,
+      `对话方式：${guidance.dialogueMethod}`,
       `人物方法：${guidance.characterMethod}`,
+      `群像方法：${guidance.ensembleMethod}`,
+      `任务/挑战：${guidance.challengeMethod}`,
+      `情绪呈现：${guidance.emotionMethod}`,
       `信息释放：${guidance.informationMethod}`,
       `语言节奏：${guidance.proseRhythm}`,
       `结尾倾向：${guidance.endingPreference}`,

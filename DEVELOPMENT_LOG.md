@@ -70,6 +70,41 @@
 - 重型爬虫、平台正文抓取、向量检索、复杂富文本编辑器暂不进入当前开发。
 - 新增功能必须服务当前长篇创作主流程，避免偏离“实用创作平台”目标。
 
+## 2026-06-05 - AI 腔识别与人味增强标准升级
+
+### 背景
+- 多模型审稿反馈显示：平台生成的长篇可以保持设定自洽和情节骨架，但仍可能暴露 AI 写作痕迹，例如章节收尾模板化、五感打勾、无效数字、情绪贴标签、每段都过度功能化、重大失去一笔带过。
+- 产品决策：不再把“去 AI 腔”只理解为替换高频句式，而是升级为“让角色在真实处境里有欲望、恐惧、代价、残留和不必解释完的生活细节”。
+
+### 本次完成
+- 本章审稿新增 5 类 AI 痕迹问题：`sensory_checklist`（感官打勾）、`decorative_number`（无效数字）、`emotion_label`（情绪贴标签）、`overfunctional_density`（功能过满）、`skipped_loss`（失去跳过）。
+- 审稿提示词补充可操作判断标准：感官是否平均打勾、数字/术语是否影响剧情、情绪是否只被命名、段落是否每句都有功能、失去是否缺少过程。
+- 正文生成提示词补充轻量人味方法：允许少量非功能但真实的细节，数字和专业术语必须影响风险/选择/代价/误判，感官写一两处最关键的，重大失去必须有落空、残留或迟来的疼。
+- 小纲提示词新增人物动机层，要求章前明确核心人物欲望、恐惧、选择、代价和情绪残留，避免正文只执行设定和剧情任务。
+- 去 AI 腔/润色提示词升级为“角色化体验修订”，不追求华丽辞藻，重点修掉五感打勾、无效数字、情绪贴标签、功能过满和失去跳过。
+- 功能清单和产品规划同步调整：生成阶段允许保留轻量质量护栏，但不得把完整审稿清单整段塞入正文生成。
+
+### 修改文件
+- `frontend/src/prompts/audit.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/rewrite.js`
+- `frontend/src/utils/auditLabels.js`
+- `tmp/test_ai_tone_human_trace_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp/test_ai_tone_human_trace_contract.mjs` 通过。
+- `node tmp/test_audit_ai_trace_contract.mjs` 通过。
+- `node tmp/test_humanized_generation_prompt_contract.mjs` 通过。
+- `node tmp/test_human_motivation_prompts.mjs` 通过。
+- `node tmp/test_prose_rhythm_guard.mjs` 通过。
+
+### 当前决策
+- “AI 腔”按三层识别：语言痕迹、叙事功能过满、人性体验缺失。
+- 生成阶段做轻量预防，审稿和去 AI 腔/润色负责细修；不把审稿报告式清单完整压进正文生成上下文。
+
 ## 2026-06-02 - 长篇稳定性闭环增强
 
 ### 背景
@@ -4274,3 +4309,338 @@
 
 ### 下一步
 - 用真实模型重新跑 3-5 章短链路，观察对齐生产 Prompt 后的章节读感、上下章衔接、设定库/记忆门禁和纠偏任务数量。
+
+## 2026-06-05 - 真实模型 5 章验收与质量链路收口
+
+### 背景
+- 按 200 万字、400 章规模新建真实测试项目 `HumanTraceQA200w_20260605081413`，使用当前模型 `联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash` 跑通选题雷达、AI 顾问、种子、圣经、设定初始化、章节骨架、正文生成、审稿、局部修订、定稿和浏览器 UI 验收。
+- 测试报告显示基础链路 `86/88` 通过，浏览器控制台错误为 0；但多章一致性验收未通过，前 5 章出现 7 个跨章问题，其中 5 个为硬问题。
+
+### 发现问题
+- 第 2 章小纲压缩后仍为 1605 字，超过 1300 字上限，但 QA 脚本仍继续生成正文；这会让“一章容量过满”的小纲污染正文生成。
+- 第 4、5 章短稿补足从偏短直接膨胀到 9251/9895 字，再依赖压缩回落；说明补足提示词会诱导模型重写整章或新增完整场景，成本高且容易引入设定漂移。
+- 多章验收发现身体状态、规则数值和势力存灭类硬状态跳变：断臂位置、灵毒扩散、冷却时间、青云宗存灭等跨章不一致。
+- 句式节奏修订能降低短句独段，但第 5 章段首主角名重复仍从 24 只降到 15，后续需要继续用审稿/节奏修订处理。
+
+### 本次完成
+- 真实流程 QA 小纲压缩失败后改为硬门禁：压缩两轮仍超过 1300 字时直接停止本章生成，不再带病进入正文。
+- 前端写字台小纲压缩失败后同样弹出错误并阻止继续生成正文，提示用户重新生成或手动删减小纲。
+- 短章补足提示词从“新增一到两个完整场景”改为“局部补足缺口”，限制新增内容约 700-1400 字，最多不超过 1800 字，避免补足变整章扩写。
+- 正文生成和小纲提示词补充硬状态保护：身体状态/伤势/断臂位置、规则数值/冷却时间/使用次数、宗门家族/势力存灭与立场不得突然跳变；如必须改变，需先写出发现、验证、代价或误判解除过程。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_realistic_qa_quality_flow_contract.mjs`
+- `tmp/test_chapter_hard_state_guard_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_realistic_qa_quality_flow_contract.mjs`
+- `node tmp\test_chapter_hard_state_guard_contract.mjs`
+- `node tmp\test_realistic_qa_beat_compact_floor_contract.mjs`
+- `node tmp\test_realistic_qa_short_draft_retry_contract.mjs`
+- `node tmp\test_realistic_qa_overexpanded_retry_compress_contract.mjs`
+- `node tmp\test_realistic_qa_compression_retry_contract.mjs`
+- `node tmp\test_realistic_qa_compression_selection_contract.mjs`
+- `node tmp\test_quality_first_generation_contract.mjs`
+- `node tmp\test_ai_tone_human_trace_contract.mjs`
+- `node tmp\test_prose_rhythm_guard.mjs`
+
+### 当前决策
+- 小纲是正文质量的上游门禁：过长小纲不能继续生成正文，必须重新生成或人工压缩。
+- 补足短章只做局部缺口修补，不把后续冲突、余波或解释提前塞进本章。
+- 身体状态、规则数值和势力存灭属于硬连续性，不允许靠“后续软过渡”随意修；生成前要明确防止突变。
+
+### 下一步
+- 跑前端构建并做一次短链路复测，重点观察第 4、5 章是否仍出现补足膨胀，以及多章验收中的硬状态问题是否下降。
+
+## 2026-06-05 - 修复后真实模型 5 章复测通过
+
+### 背景
+- 在小纲门禁、短章补足、硬状态连续性和生产写作链路对齐后，重新使用真实模型跑 200 万字规模项目短链路复测。
+- 测试项目保留为 `HumanTraceRetestQA200w_20260605092140`，项目 ID 为 `831fcd75-c588-4f5c-bb22-6995d7bdb962`，方便人工继续检查生成质量。
+
+### 复测结果
+- 模型：`联通云-DeepSeek-V4-Flash / DeepSeek-V4-Flash`。
+- 基础链路检查：`87/89` 通过，最终 `failures=[]`，浏览器控制台错误为 0。
+- 完成选题雷达、AI 顾问、种子生成、创作圣经、设定初始化、章节骨架、正文生成、审稿、局部修订、定稿、记忆/设定后处理和浏览器 UI 验收。
+- 已定稿 5 章，字数分别为 6653、4565、6580、5433、4402，全部处于 4000-7000 字硬边界内。
+- 定稿后提取 Canon 事实 26 条，章节设定变更 30 条；待确认设定处理完成后剩余 0 条。
+- 多章一致性验收通过：人物设定、情节逻辑、时间线、世界规则、伏笔、重复冗余、风格漂移、状态延续、上下章衔接和设定同步均为 `pass`，`safeToContinue=true`。
+
+### 改善点
+- 小纲压缩门禁生效：前 5 章初始小纲均偏长，但都被压缩到 1300 字以内后再进入正文生成。
+- 短章补足不再膨胀到 9000 字以上，补足后仍能落在硬字数边界内。
+- 句式节奏修订明显降低短句独段和段首主角名重复，例如第 1 章短独段比例从 0.52 降到 0。
+- 硬状态连续性相比上一轮明显改善，多章验收未再发现断臂位置、规则数值、势力存灭等硬跳变问题。
+
+### 剩余风险
+- 小纲源头仍偏长，虽然压缩门禁能兜住，但会增加调用成本，也可能在压缩中损失细节。
+- 审稿、事实提取等结构化 JSON 仍偶尔需要重试或兜底，后续应继续提升结构化输出稳定性。
+- 局部修订在少数章节仍会因为补丁不安全而跳过，需要继续优化“定位原文 + 滑窗替换”的稳定性。
+- 5 章产生 21 个纠偏任务，数量仍偏高；后续需要降低低置信度、风格类和重复类纠偏噪音。
+- 章节标题已不再是整句摘抄，但仍偏功能化，例如 `苏醒·囚笼`、`暗号与接缝`，后续可继续提升章名文学性。
+
+### 下一步
+- 先收敛小纲源头长度、结构化 JSON 稳定性和纠偏任务噪音，再继续跑 10-20 章验收。
+- 20 章验收重点检查：长线规划是否滚动更新、伏笔/线索链是否被带入、设定库是否按需筛选、状态账本是否持续准确、AI 腔是否继续降低。
+
+## 2026-06-05 - AI 腔源头生成控制前移
+
+### 背景
+- 用户指出如果只在审稿阶段判断 AI 腔，最多只能发现“已经写成 AI 风格”的文本，不能从源头减少生成。
+- 结合多模型对 AI 写作特征的分析，本次把 AI 腔控制从单一句式检查升级为小纲和正文生成源头控制。
+
+### 本次完成
+- 小纲生成增加“信息释放方式”“有效选择”“人味与节奏呼吸”字段，要求章前先规划信息如何被发现、选择的真实损失、闲笔/生活痕迹和节奏低点。
+- 正文系统提示词增加源头写作控制：动作后不马上翻译情绪、反派/老人/系统/导师/旁白不主动长篇交底、危机内心不写成干净计划书、环境保留真实但不直接服务剧情的生活细节、两难选择必须带来不同损失。
+- 正文写作质量方向补充：有效选择、信息被发现、危机内心打断、不同选择代价、套路化反差句只是风险信号，不再替读者下解释结论。
+- 审稿提示词从“不是X，是Y超过 2 次必须报问题”改为综合判断：句式重复只有和解释过度、情绪贴标签、信息倾倒、节奏均匀、功能过满等共同出现时，才作为 AI 腔问题。
+- 节奏检测工具把“不是X，是Y”改名为“套路化反差句”，并提高触发阈值，避免少量正常反差句误伤。
+- 真实流程 QA 脚本同步更新，不再把“不是X，是Y”作为显眼单项判断，而是检查情绪解释、反派交底、计划书内心、功能化环境、节奏均匀和套路化反差句的综合表现。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/prompts/audit.js`
+- `frontend/src/utils/proseRhythmGuard.js`
+- `frontend/tests/promptQuality.test.mjs`
+- `tmp/test_ai_tone_human_trace_contract.mjs`
+- `tmp/test_human_motivation_prompts.mjs`
+- `tmp/test_prose_rhythm_guard.mjs`
+- `tmp/run_realistic_longform_flow.mjs`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node --test frontend\tests\promptQuality.test.mjs`
+- `node tmp\test_human_motivation_prompts.mjs`
+- `node tmp\test_ai_tone_human_trace_contract.mjs`
+- `node tmp\test_prose_rhythm_guard.mjs`
+- `node tmp\test_humanized_generation_prompt_contract.mjs`
+- `node --check tmp\run_realistic_longform_flow.mjs`
+- `npm --prefix frontend run build`
+
+### 当前决策
+- “不是X，是Y”只作为套路化反差句风险指标，不再作为 AI 腔硬诊断。
+- AI 腔控制以源头写作方法为主，审稿和润色作为兜底。
+- 小纲负责提前规划人味、信息发现、有效选择和节奏呼吸；正文负责自然执行，不把这些写成检查清单。
+
+### 下一步
+- 用真实模型跑 3-5 章短链路，重点观察情绪解释、反派交底、计划书内心、功能化环境和假两难是否明显下降。
+
+## 2026-06-05 - AI 痕迹二审接入本章审稿链路
+
+### 背景
+- 前一轮已经把 AI 腔控制前移到小纲和正文生成，但如果只靠一审审稿，仍容易把“风格噪声”和“硬连续性问题”混在一起。
+- 需要让审稿具备二次判断能力：AI 痕迹类问题可以复核和降噪，但设定冲突、时间线、状态账本、世界规则、情节因果等硬问题不能被当成“风格问题”忽略。
+
+### 本次完成
+- 新增 AI 痕迹二审 Prompt：针对感官打勾、无效数字、情绪贴标签、功能过满、失去跳过、模板化结尾、表层情绪、工具人、信息倾倒、套话意象等问题做二次判断。
+- 本章审稿结果返回后，会在前端 `memoryStore.auditChapter` 中对 AI 痕迹候选问题执行二审。
+- 二审支持 `ignore`、`local_window_revision`、`paragraph_polish`、`outline_replan`、`full_regenerate` 等处理策略。
+- 二审成功且判定 `ignore` 时，只移除低价值风格误报；二审失败时保留一审结果，不阻断审稿。
+- 二审直接处理范围已收窄：不会把普通 `logic`、`pacing` 等泛化问题全部送去 AI 痕迹二审，避免硬问题被误吞。
+
+### 修改文件
+- `frontend/src/prompts/aiTraceReview.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/qualityRules/aiTraceRules.js`
+- `tmp/test_ai_trace_review_prompt.mjs`
+- `tmp/test_ai_trace_review_integration_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- AI 痕迹二审是审稿降噪层，不是新的生成规则清单；正文生成仍保持轻预防，不把完整 AI 腔检查表塞回 Prompt。
+- 硬连续性问题必须优先进入纠偏或人工确认：设定冲突、状态跳变、世界规则冲突、时间线错乱和情节因果断裂不允许被二审忽略。
+- 本地小说原文目录只作为抽象写作标准和风格方法的参考来源，不把原文塞进正文生成或二审 Prompt，也不复制文本。
+
+### 已运行验证
+- `node tmp\test_ai_trace_review_integration_contract.mjs`
+- `node tmp\test_ai_trace_review_prompt.mjs`
+- `node tmp\test_quality_chain_contract.mjs`
+- `node tmp\test_prompt_boundary_modules.mjs`
+- `node tmp\test_writer_store_prompt_boundaries.mjs`
+- `node tmp\test_ai_tone_human_trace_contract.mjs`
+- `node tmp\test_human_motivation_prompts.mjs`
+- `node tmp\test_prose_rhythm_guard.mjs`
+- `node tmp\test_audit_ai_trace_contract.mjs`
+- `node tmp\test_humanized_generation_prompt_contract.mjs`
+- `node tmp\test_chapter_hard_state_guard_contract.mjs`
+- `node tmp\test_quality_first_generation_contract.mjs`
+- `node tmp\test_realistic_qa_frontend_context_contract.mjs`
+- `node tmp\test_realistic_qa_quality_flow_contract.mjs`
+- `node tmp\test_writing_style_standards_contract.mjs`
+- `node --test frontend\tests\promptQuality.test.mjs`
+- `npm --prefix frontend run build`
+- `git diff --check`
+
+### 验证备注
+- `test_writing_style_standards_contract.mjs` 原先把 `avoid:` 中的 `id:` 子串误识别为标准 ID，已改为只匹配行首 `id:` 字段；标准库实际仍为 14 套主标准。
+- `npm run build` 通过；Vite 仅提示 `writerStore.js` 同时静态和动态导入导致动态导入不会拆分 chunk，不影响本次功能正确性。
+- `git diff --check` 通过；仅提示 Windows 下 LF 后续可能转 CRLF。
+
+## 2026-06-06 - 真人写作指纹层 v1
+
+### 背景
+- 用户希望本地 `小说txt` 目录中的真人小说样本不要只作为“题材参考”，而是能沉淀为写作风格、叙事方法、人物对话、群像和任务设计等可复用方法。
+- 当前阶段不考虑旧版本兼容，一切以提升生成小说质量、降低 AI 痕迹为优先。
+
+### 本次完成
+- 新增写作指纹卡数据结构：只记录抽象写法方法，不保存或注入小说原文长段。
+- 指纹卡字段覆盖章节进入、章节结尾、对话方式、人物方法、群像方法、任务/挑战、情绪呈现、信息释放、语言节奏、避免项和禁止复刻要求。
+- 写作标准库的 Prompt 注入从“标签式风格”扩展为“方法卡式风格”：加入对话、群像、任务/挑战和情绪呈现等维度。
+- 创作圣经页的“写作策略”展示从两个标签扩展为可读方法卡，让用户能看到主写作标准和辅助风味具体如何影响正文生成。
+- 产品文档补充后续规划：本地小说样本可离线分析为写作样本卡/写作指纹卡，多卡可合并为写作标准卡；未审核的单书样本卡不直接进入生产写作链路。
+
+### 修改文件
+- `frontend/src/data/writingFingerprints.js`
+- `frontend/src/data/writingStyleStandards.js`
+- `frontend/src/components/bible/CreativeBible.vue`
+- `tmp/test_writing_fingerprint_cards_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 本地小说样本只能用于抽象方法提炼，不能仿写、复刻专有名词、原句、连续表达、标志性比喻或独有段落结构。
+- 创作圣经中的 `writingProfile` 仍然是写作策略入口：主写作标准决定核心写法，辅助风味只做局部补充。
+- 正文生成提示词只接收压缩后的写作方法摘要，不接收小说原文。
+
+### 已运行验证
+- `node tmp\test_writing_fingerprint_cards_contract.mjs`
+- `node tmp\test_writing_style_standards_contract.mjs`
+- `node --test frontend\tests\promptQuality.test.mjs`
+- `npm --prefix frontend run build`
+- `git diff --check`
+
+### 下一步
+- 继续补离线样本分析器：从 `小说txt` 或上传文本中抽取样本卡，支持人工审核、合并、删除和生成写作标准卡。
+- 继续真实模型短链路测试，观察写作策略方法卡是否能改善段首机械点名、短句过密、功能化对话和章节结尾模板化。
+
+## 2026-06-06 - 离线样本分析器 v1
+
+### 本次完成
+- 新增 `frontend/src/data/writingSampleAnalyzer.js`，提供本地文本抽样、写作指纹卡生成、合并写作标准候选和 Markdown 报告格式化能力。
+- 新增 `tmp/analyze_writing_samples.mjs`，支持读取单个 `.txt` 文件或本地 `小说txt` 目录，输出结构化 JSON 与 Markdown 报告。
+- 离线分析器只保留抽象写法方法和统计特征，不保存 `rawExcerpt`、`sourceText` 或原文长段；输出卡片默认 `noDirectImitation: true`。
+- 针对同名样本补充稳定 ID 生成，避免多个本地文件分析时卡片 ID 语义冲突。
+- 将章节标题单段判断从全局正则改成非全局正则，避免 `lastIndex` 状态污染导致开头段落偶发误判。
+- 已用本地 `小说txt` 目录 46 个 `.txt` 样本生成第一版报告，输出到 `tmp/writing-sample-analysis/writing-sample-analysis.json` 和 `tmp/writing-sample-analysis/writing-sample-analysis.md`。
+
+### 修改文件
+- `frontend/src/data/writingSampleAnalyzer.js`
+- `frontend/src/data/writingFingerprints.js`
+- `tmp/analyze_writing_samples.mjs`
+- `tmp/test_writing_sample_analyzer_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 当前决策
+- 离线样本分析器 v1 是“标准沉淀工具”，不是仿写工具；它不会自动把单书样本卡写入创作圣经。
+- 当前版本先做本地启发式抽样和统计分析；后续可再接 AI 深度分析，但也必须输出抽象方法卡，禁止输出可复刻原文。
+- 前端上传、人工审核、合并成正式写作标准卡仍属于下一阶段。
+
+### 已运行验证
+- `node tmp\test_writing_sample_analyzer_contract.mjs`
+- `node tmp\analyze_writing_samples.mjs --input "小说txt" --output tmp\writing-sample-analysis --standard-id local-human-sample-standard --standard-name 本地真人样本写作标准`
+
+### 下一步
+- 做前端“样本卡审核/合并”入口，让用户能查看离线分析结果，人工确认后合并为可选写作标准。
+- 继续真实模型短链路测试，比较接入真人写作指纹层前后的 AI 腔、配角工具化、章节结尾模板化和段落节奏问题是否下降。
+
+## 2026-06-06 - 写作样本审核入口 v1
+
+### 本次完成
+- 新增 `frontend/src/data/writingSampleReview.js`，提供样本报告规范化、审核卡筛选、统计摘要和合并待审核标准候选能力。
+- 新增 `frontend/src/data/localWritingSampleReport.json`，内置上一轮从本地 `小说txt` 目录生成的 46 本样本抽象分析报告。
+- 新增 `frontend/src/components/settings/WritingSampleReview.vue`，在设置页展示“写作样本审核”区块：可查看统计、勾选单书样本卡、合并为待审核标准候选、复制候选 JSON。
+- 修改 `frontend/src/views/SettingsView.vue`，将写作样本审核入口接入设置页。
+- 新增 `tmp/test_writing_sample_review_contract.mjs`，覆盖未审核样本不自动进入生产链路、合并候选保持 `draft` 和 `auditRequired`、本地报告不包含原文长段等契约。
+
+### 当前决策
+- 当前合并结果只保存到浏览器本地审核池 `novel_creator_reviewed_writing_standards`，不自动进入创作圣经下拉选项。
+- 后续需要单独做“标准库接入/人工确认”步骤，才能把审核后的候选标准转成正式可选写作标准。
+- 该入口只展示抽象写法方法，不展示、复制或注入小说原文。
+
+### 已运行验证
+- `node tmp\test_writing_sample_review_contract.mjs`
+
+### 下一步
+- 做“审核标准候选 -> 正式写作标准库”的接入策略：人工确认后才进入创作圣经选项，且仍只注入压缩方法摘要。
+- 继续真实模型短链路测试，观察真人写作指纹层对 AI 腔、工具人配角和章节结尾模板化的改善幅度。
+
+## 2026-06-06 - 审核标准候选接入正式写作标准库
+
+### 本次完成
+- 扩展 `frontend/src/data/writingStyleStandards.js`：新增正式自定义写作标准的规范化、读取、保存和合并读取能力。
+- 新增本地正式标准库存储键 `novel_creator_official_writing_standards`。写入前会校验 ID、名称和 `noDirectImitation`，并把候选转为 `active` / `auditRequired: false`。
+- `formatWritingStyleStandardsForPrompt`、`getSelectedWritingStyleStandards`、`getWritingStrategyDisplayCards` 支持读取正式自定义标准，确保创作圣经选择后能进入正文生成和审稿上下文。
+- `CreativeBible.vue` 的主写作标准/辅助风味下拉从固定内置标准改为“内置标准 + 已确认本地自定义标准”。
+- `WritingSampleReview.vue` 新增“确认加入正式标准库”按钮和已确认正式标准列表。待审核候选不会自动进入创作圣经选项，必须用户手动确认。
+- 新增 `tmp/test_reviewed_standard_activation_contract.mjs`，覆盖候选标准正式化、存储、Prompt 注入、创作圣经选项和设置页确认入口。
+
+### 当前决策
+- 正式接入仍使用本地存储，符合当前本地版定位；后续 SaaS 化时再迁移到数据库表。
+- `draft` 候选和 `active` 正式标准严格分离，防止未审核样本直接影响正文生成。
+- 自定义标准只保存抽象写法方法和来源卡 ID，不保存小说原文或可复刻表达。
+
+### 已运行验证
+- `node tmp\test_reviewed_standard_activation_contract.mjs`
+
+### 下一步
+- 真实操作验收设置页：勾选样本卡、合并候选、确认加入正式标准库，再到创作圣经下拉选择该标准，生成一章短样章观察写法是否进入 Prompt。
+- 根据真实验收结果，再决定是否需要做“删除自定义标准 / 导出导入标准库 / 上传新小说生成样本卡”。
+
+## 2026-06-06 - 当前章焦点上下文与源头质量护栏
+
+### 背景
+- 真实流程测试暴露出一个更底层的问题：长篇上下文如果把大量无关设定、历史事实、远期伏笔和低优先级纠偏任务都塞进模型，会让正文生成提前交代、串线、人物状态污染，并增加 AI 腔和功能化叙事。
+- 本轮不做旧版本兼容，以生产写字台链路质量为优先，直接收紧上下文构造与小纲/正文源头约束。
+
+### 本次完成
+- `buildWritingContext` 新增当前章焦点构造：由当前章小纲、近景规划、当前卷/分卷阶段上下文、线索标签和相关设定实体共同决定本章上下文范围。
+- 设定库摘要、章节状态账本、最近设定变更、Canon 事实、伏笔线索和纠偏任务均按当前章焦点筛选，避免无关人物、远期支线和低价值建议污染正文生成。
+- 章节状态账本支持焦点过滤，只携带当前章相关的伤势、位置、道具、剩余次数、冷却、规则数值、势力立场等硬状态。
+- 纠偏任务进入写作上下文的门槛收紧：同章任务优先；跨章任务默认不注入；全局任务必须匹配当前章焦点且属于阻断/严重/主要问题。
+- 小纲和正文提示词补强连续性标签：时间线连续性、状态延续、规则数值延续、道具来源、人物铺垫、伏笔铺垫、势力连续性。
+- 正文源头补充句式节奏护栏：长中短句混合，普通叙事段落不要拆成连续短句独段；小纲也不能规划成短句密集动作清单。
+
+### 修改文件
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/utils/chapterStateLedger.js`
+- `frontend/src/utils/correctionTaskRules.js`
+- `frontend/src/prompts/chapter.js`
+- `tmp/test_context_relevance_filter_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `DEVELOPMENT_LOG.md`
+- `docs/REALISTIC_FLOW_QA_2026-06-06.md`
+
+### 当前决策
+- 上下文相关性是长篇稳定性的前置条件，不是后期审稿能补救的问题；后续真实流程 QA 必须先确认上下文干净，再评价模型文本质量。
+- 轻微 AI 腔、低优先级风格建议和远期软纠偏不再全量进入正文生成；它们保留在审稿/纠偏界面，由用户或局部修订链路处理。
+- 源头提示词只做轻量预防和连续性硬约束，不把完整审稿清单塞回正文生成，避免模型被规则压死。
+
+### 已运行验证
+- `node tmp\test_context_relevance_filter_contract.mjs`
+- `node tmp\test_chapter_state_ledger.mjs`
+- `node tmp\test_correction_context_priority_contract.mjs`
+- `node tmp\test_realistic_qa_frontend_context_contract.mjs`
+- `node tmp\test_longform_stability_contract.mjs`
+- `node tmp\test_chapter_generation_consistency_contract.mjs`
+- `node tmp\test_quality_first_generation_contract.mjs`
+- `node tmp\quality_guardrails_test.mjs`
+- `node tmp\test_realistic_qa_quality_flow_contract.mjs`
+- `node --check frontend\src\utils\contextBuilder.js`
+- `node --check frontend\src\utils\chapterStateLedger.js`
+- `node --check frontend\src\utils\correctionTaskRules.js`
+- `node --check frontend\src\prompts\chapter.js`
+
+### 下一步
+- 继续真实流程小规模测试，重点观察上下章承接、设定库相关性、状态账本准确性、纠偏任务数量、段首重复点名和短句独段是否继续下降。

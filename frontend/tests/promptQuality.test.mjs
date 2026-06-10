@@ -7,7 +7,7 @@ import {
 } from '../src/prompts/chapter.js'
 import { formatWritingStyleStandardsForPrompt } from '../src/data/writingStyleStandards.js'
 
-test('chapter beat prompt stays a planning prompt instead of inheriting chapter draft checklists', () => {
+test('chapter beat prompt plans human trace and reveal method without becoming prose or audit', () => {
   const prompt = buildChapterBeatPrompt({
     chapterNum: 2,
     previousChapterEnding: '他推开门，看见桌上那枚旧铜钱正在发烫。',
@@ -22,19 +22,27 @@ test('chapter beat prompt stays a planning prompt instead of inheriting chapter 
   })
 
   assert.match(prompt, /## 规划任务/)
+  assert.match(prompt, /人物动机层/)
+  assert.match(prompt, /信息如何被发现/)
+  assert.match(prompt, /有效选择/)
+  assert.match(prompt, /闲笔/)
+  assert.match(prompt, /节奏呼吸/)
   assert.doesNotMatch(prompt, /## 写作任务/)
-  assert.doesNotMatch(prompt, /人物代入感要求/)
-  assert.doesNotMatch(prompt, /配角自主性/)
-  assert.doesNotMatch(prompt, /信息揭示方式/)
-  assert.doesNotMatch(prompt, /句式节奏预设/)
   assert.doesNotMatch(prompt, /输出前静默自检/)
 })
 
-test('chapter system prompt keeps creative guidance light and leaves AI-tone policing to audit or repair', () => {
+test('chapter system prompt uses source writing controls instead of single-pattern hard policing', () => {
   const prompt = buildChapterSystemPrompt()
 
   assert.match(prompt, /小说章节正文/)
   assert.match(prompt, /已确认/)
+  assert.match(prompt, /写了动作或反应后/)
+  assert.match(prompt, /不要马上翻译成情绪结论/)
+  assert.match(prompt, /反派、老人、系统、导师或旁白/)
+  assert.match(prompt, /不能主动长篇交底/)
+  assert.match(prompt, /不要写成干净的计划书/)
+  assert.match(prompt, /真实但不直接服务剧情/)
+  assert.match(prompt, /不同选择必须带来不同损失/)
   assert.doesNotMatch(prompt, /整章最多\s*2\s*次/)
   assert.doesNotMatch(prompt, /禁止连续使用套路化反差句/)
   assert.doesNotMatch(prompt, /连续短句独段/)

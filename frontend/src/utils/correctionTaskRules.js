@@ -30,7 +30,9 @@ export function correctionTaskMode(task) {
 export function isCorrectionTaskBlockingForGeneration(task) {
   if (!isCorrectionTaskActiveForContext(task)) return false
   const metadata = task?.metadata || {}
-  return metadata.blocking === true || correctionTaskMode(task) === CORRECTION_MODES.HARD
+  if (metadata.blocking === true) return true
+  if (correctionTaskMode(task) !== CORRECTION_MODES.HARD) return false
+  return ['critical', 'major'].includes(task?.severity)
 }
 
 export function isCorrectionTaskSoftForContext(task) {

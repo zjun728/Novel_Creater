@@ -98,8 +98,8 @@ export function analyzeProseRhythm(text, options = {}) {
   if (paragraphCount >= 30 && avgParagraphCjkLength > 0 && avgParagraphCjkLength < 24) {
     reasons.push('平均段落过短')
   }
-  if (aiContrastCount > 3) {
-    reasons.push('“不是X，是Y”句式过密')
+  if (aiContrastCount > 6) {
+    reasons.push('套路化反差句偏多')
   }
   if (paragraphCount >= 6 && maxSameLeadingSubjectCount >= 5 && leadingSubjectRate >= 0.28) {
     reasons.push('段首重复点名偏多')
@@ -137,7 +137,7 @@ export function formatProseRhythmAnalysis(analysis) {
     `短句独立段落：${analysis.shortParagraphCount || 0}（${rate}）`,
     `最长连续短句独立段落：${analysis.maxShortStreak || 0}`,
     `平均段落汉字数：${Math.round(analysis.avgParagraphCjkLength || 0)}`,
-    `“不是X，是Y”句式：${analysis.aiContrastCount || 0} 次`,
+    `套路化反差句：${analysis.aiContrastCount || 0} 次`,
     analysis.maxSameLeadingSubjectCount
       ? `最重复段首主语：${analysis.repeatedLeadingSubjects?.[0]?.subject || '-'}（${analysis.maxSameLeadingSubjectCount} 段）`
       : '',

@@ -7,10 +7,11 @@ const standardsPath = 'frontend/src/data/writingStyleStandards.js'
 assert.ok(fs.existsSync(standardsPath), 'writing style standards data module should exist')
 
 const standardsSource = read(standardsPath)
-const ids = [...standardsSource.matchAll(/id:\s*'([^']+)'/g)].map(match => match[1])
+const ids = [...standardsSource.matchAll(/^\s*id:\s*'([^']+)'/gm)].map(match => match[1])
 assert.equal(ids.length, 14, 'standards module should expose 14 style/genre standards')
 assert.ok(standardsSource.includes('formatWritingStyleStandardsForPrompt'), 'standards module should format prompt brief')
 assert.ok(standardsSource.includes('normalizeWritingProfile'), 'standards module should normalize writingProfile')
+assert.ok(standardsSource.includes('getAllWritingStyleStandards'), 'standards module should expose built-in plus custom standards')
 assert.ok(standardsSource.includes('主写作标准'), 'standards module should use primary writing standard wording')
 assert.ok(standardsSource.includes('辅助风味'), 'standards module should use secondary flavor wording')
 
@@ -21,7 +22,8 @@ assert.ok(!biblePrompt.includes('confirmedSettings'), 'creative bible normalizer
 
 const bibleUi = read('frontend/src/components/bible/CreativeBible.vue')
 assert.ok(bibleUi.includes('NSelect'), 'creative bible editor should use select controls for standards')
-assert.ok(bibleUi.includes('WRITING_STYLE_STANDARDS'), 'creative bible editor should list standards')
+assert.ok(bibleUi.includes('getAllWritingStyleStandards'), 'creative bible editor should list built-in plus confirmed custom standards')
+assert.ok(!bibleUi.includes('WRITING_STYLE_STANDARDS.map'), 'creative bible editor should not hardcode built-in-only standards')
 assert.ok(bibleUi.includes('主写作标准'), 'creative bible editor should expose primary writing standard')
 assert.ok(bibleUi.includes('辅助风味'), 'creative bible editor should expose secondary flavor')
 assert.ok(bibleUi.includes('写作策略'), 'creative bible viewer should expose writing strategy as a visible section')
