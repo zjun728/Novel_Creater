@@ -46,6 +46,7 @@ import {
   buildVolumeSummarySystemPrompt,
   buildVolumeSummaryPrompt
 } from '@/prompts/volumeSummary'
+import { buildFallbackCanonFacts } from '@/utils/canonFactFallback'
 
 export const useMemoryStore = defineStore('memory', () => {
   const processing = ref(false)
@@ -110,6 +111,7 @@ export const useMemoryStore = defineStore('memory', () => {
 
   // === Canon 事实提取 ===
   async function extractFacts(projectId, chapterContent, chapterNum) {
+    let lastRawText = ''
     try {
       const provider = await getProvider(projectId, 'extractionModelId')
       const novelStore = useNovelStore()
@@ -121,6 +123,7 @@ export const useMemoryStore = defineStore('memory', () => {
       ]
       const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 3000, temperature: 0.25 }))
       const text = getCompletionText(result)
+      lastRawText = text
       let parsed = parseFactExtractionText(text)
       let repairText = ''
       let compactText = ''
@@ -132,6 +135,7 @@ export const useMemoryStore = defineStore('memory', () => {
             { role: 'user', content: buildExtractionRepairPrompt(text) }
           ], jsonOptions(provider, { maxTokens: 3000, temperature: 0 }))
           repairText = getCompletionText(repairResult)
+          lastRawText = repairText || lastRawText
           parsed = parseFactExtractionText(repairText)
         } catch (repairError) {
           console.warn('事实提取 JSON 修复失败:', repairError.message)
@@ -144,6 +148,7 @@ export const useMemoryStore = defineStore('memory', () => {
           { role: 'user', content: buildCompactExtractionPrompt(chapterContent, chapterNum, existingFacts, repairText || text) }
         ], jsonOptions(provider, { maxTokens: 3000, temperature: 0.15 }))
         compactText = getCompletionText(compactResult)
+        lastRawText = compactText || lastRawText
         parsed = parseFactExtractionText(compactText)
       }
 
@@ -152,10 +157,18 @@ export const useMemoryStore = defineStore('memory', () => {
         throw new Error(`AI 没有返回可解析的记忆事实 JSON。返回片段：${snippet}`)
       }
 
-      lastExtractions.value = parsed.facts
-      return parsed.facts
+      const facts = parsed.facts?.length
+        ? parsed.facts
+        : buildFallbackCanonFacts({ chapterNum, chapterContent })
+      lastExtractions.value = facts
+      return facts
     } catch (e) {
       console.error('事实提取失败:', e.message)
+      const fallback = buildFallbackCanonFacts({ chapterNum, chapterContent, summary: lastRawText })
+      if (fallback.length) {
+        lastExtractions.value = fallback
+        return fallback
+      }
       throw e
     }
   }
@@ -386,6 +399,14 @@ export const useMemoryStore = defineStore('memory', () => {
     console.warn(`定稿后处理步骤失败(${step}):`, item.message)
   }
 
+  function canonFactDedupKey(fact) {
+    return [
+      Number(fact?.chapterNum || fact?.chapter_num || 0),
+      String(fact?.factType || fact?.fact_type || 'plot').trim(),
+      String(fact?.content || '').replace(/\s+/g, ' ').trim()
+    ].join('|')
+  }
+
   // === 批量处理：定稿后自动执行记忆和设定提取 ===
   async function processChapterFinalization(projectId, chapterContent, chapterNum, options = {}) {
     const includeAudit = options.includeAudit === true
@@ -412,7 +433,13 @@ export const useMemoryStore = defineStore('memory', () => {
 
       const novelStore = useNovelStore()
       const settingStore = useSettingStore()
+      await novelStore.loadCanonFacts(projectId)
+      const existingFactKeys = new Set(
+        (novelStore.canonFacts || []).map(fact => canonFactDedupKey(fact))
+      )
       for (const f of results.facts) {
+        const factKey = canonFactDedupKey({ ...f, chapterNum })
+        if (existingFactKeys.has(factKey)) continue
         await novelStore.saveCanonFact({
           projectId,
           chapterNum,
@@ -422,8 +449,9 @@ export const useMemoryStore = defineStore('memory', () => {
           relatedPlotThreads: f.relatedPlotThreads || [],
           evidence: f.evidence || '',
           confidence: f.confidence || 0.8,
-          status: 'pending_review'
+          status: f.status || 'accepted'
         })
+        existingFactKeys.add(factKey)
       }
 
       if (results.summary?.characterChanges?.length) {
@@ -1087,7 +1115,7 @@ function clampConfidence(value) {
 
 function hasDuplicatePendingChange(events, payload) {
   return (events || []).some(event =>
-    event.status === 'pending_review' &&
+    event.status !== 'rejected' &&
     event.entityType === payload.entityType &&
     event.entityName === payload.entityName &&
     event.changeType === payload.changeType &&

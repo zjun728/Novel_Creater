@@ -101,6 +101,8 @@ const auditRunning = ref(false)
 const auditRevisionGenerating = ref(false)
 const finalizeAuditInFlight = ref(false)
 const finalizeSubmitting = ref(false)
+const finalizationRetrying = ref(false)
+const chapterTitleGenerating = ref(false)
 const beatPlanText = ref('')
 const beatPlanSavedText = ref('')
 const beatPlanIntent = ref('single')
@@ -230,7 +232,7 @@ const writerActionLabels = {
 }
 
 const finalizationProcessingActive = computed(() =>
-  finalizeSubmitting.value || memoryProcessing.value || !!memoryStore.processing
+  finalizeSubmitting.value || finalizationRetrying.value || memoryProcessing.value || !!memoryStore.processing
 )
 
 const finalizationActionBusy = computed(() =>
@@ -268,6 +270,10 @@ const currentChapterTitleOnly = computed(() => {
     : ''
 })
 
+const chapterTitleActionText = computed(() =>
+  currentChapterTitleOnly.value ? '重生成章名' : '生成章名'
+)
+
 function chapterListTitle(chapter) {
   return formatChapterDisplayTitle(chapter, { includeNumber: false })
 }
@@ -290,6 +296,8 @@ const pendingSettingChanges = computed(() =>
 const pendingCanonFacts = computed(() =>
   novelStore.canonFacts.filter(fact => (fact.status || 'accepted') === 'pending_review')
 )
+
+const blockingFinalizationPending = computed(() => findBlockingFinalizationPending())
 
 const aiContextStatusText = computed(() => {
   if (finalizationProcessingActive.value) return '正在提取定稿后的记忆和设定'
@@ -461,6 +469,45 @@ function handleContentChange() {
   autoSaveTimer = setTimeout(async () => {
     await writerStore.saveTempDraft(projectId.value, chapterNum.value, editorContent.value)
   }, 2000)
+}
+
+async function handleGenerateChapterTitle() {
+  if (chapterTitleGenerating.value || finalizationActionBusy.value) return
+  const chapter = writerStore.currentChapter
+  const content = editorContent.value.trim()
+  if (!chapter?.id) {
+    message.warning('当前章节还未加载完成，暂时不能生成章名')
+    return
+  }
+  if (!content) {
+    message.warning('当前正文为空，无法生成章名')
+    return
+  }
+
+  chapterTitleGenerating.value = true
+  try {
+    const title = await writerStore.generateDefaultChapterTitle(
+      projectId.value,
+      chapter,
+      chapterNum.value,
+      content,
+      {
+        chapterGoal: contextPreview.value?.context?.chapterGoal,
+        beatPlan: beatPlanSavedText.value || beatPlanText.value
+      },
+      null,
+      { force: true }
+    )
+    if (!title) {
+      message.warning('AI 没有生成合格章名，请稍后重试或手动编辑章节标题')
+      return
+    }
+    message.success(`章名已更新为《${title}》`)
+  } catch (e) {
+    message.error('生成章名失败：' + e.message)
+  } finally {
+    chapterTitleGenerating.value = false
+  }
 }
 
 function auditIssueKey(issue, idx) {
@@ -1532,6 +1579,75 @@ async function performFinalize(version) {
   }
 }
 
+async function loadFinalizedVersionForPostprocess(targetChapterNum) {
+  let chapter = writerStore.chapters.find(ch => Number(ch.chapterNum || ch.chapter_num || 0) === Number(targetChapterNum))
+  if (!chapter) {
+    await writerStore.loadChapters(projectId.value)
+    chapter = writerStore.chapters.find(ch => Number(ch.chapterNum || ch.chapter_num || 0) === Number(targetChapterNum))
+  }
+  if (!chapter?.id) throw new Error(`找不到第 ${targetChapterNum} 章`)
+
+  const versions = await api.versions.list(projectId.value, chapter.id)
+  const finalVersionId = chapter.finalVersionId || chapter.final_version_id
+  const finalVersion = versions.find(version => version.id === finalVersionId)
+    || versions.find(version => (version.versionType || version.version_type) === 'final')
+  if (!finalVersion?.content?.trim()) {
+    throw new Error(`第 ${targetChapterNum} 章没有可用于提取的最终正文`)
+  }
+  return { chapter, version: finalVersion }
+}
+
+async function retryFinalizationPostprocess(targetChapterNum) {
+  const num = Number(targetChapterNum || blockingFinalizationPending.value?.chapterNum || chapterNum.value)
+  if (!num || finalizationProcessingActive.value) return
+
+  const marker = getChapterFinalizationPending(projectId.value, num)
+  if (!marker) {
+    message.info(`第 ${num} 章没有待重试的定稿后处理`)
+    return
+  }
+
+  let finalizationRun = null
+  let completed = false
+  finalizationRetrying.value = true
+  memoryProcessing.value = true
+  try {
+    const { version } = await loadFinalizedVersionForPostprocess(num)
+    finalizationRun = beginChapterFinalizationRun(projectId.value, num, version.id, { allowExistingPending: true })
+    if (!finalizationRun.started) {
+      throw new Error(finalizationRun.reason === 'already_running'
+        ? '该章节定稿后处理正在执行中，请等待当前处理完成'
+        : '无法接管定稿后处理，请刷新页面后重试')
+    }
+
+    message.info(`正在重试第 ${num} 章定稿后的记忆和设定提取...`)
+    const results = await memoryStore.processChapterFinalization(projectId.value, version.content, num)
+    const requiredFailures = (results.errors || []).filter(error => error.required)
+    if (requiredFailures.length) {
+      throw new Error(requiredFailures.map(error => `${error.step}: ${error.message}`).join('；'))
+    }
+
+    memoryResult.value = results
+    showMemoryResult.value = true
+    await loadContextData()
+
+    if (num === chapterNum.value) {
+      await loadChapter()
+    }
+
+    completed = true
+    message.success(`第 ${num} 章定稿后处理已重试完成：记忆 ${results.facts?.length || 0} 条，设定候选 ${results.settingChanges?.length || 0} 条`)
+  } catch (e) {
+    message.error(`重试第 ${num} 章定稿后处理失败：${e.message}`)
+  } finally {
+    if (finalizationRun?.started) {
+      endChapterFinalizationRun(finalizationRun.runKey, projectId.value, num, { keepPending: !completed })
+    }
+    finalizationRetrying.value = false
+    memoryProcessing.value = false
+  }
+}
+
 async function handleForceFinalizePending() {
   const version = pendingFinalizeVersion.value
   if (!version) return
@@ -1647,6 +1763,26 @@ function handleContextNavigate(item) {
       </div>
       <n-space>
         <n-button size="small" @click="router.push(`/project/${projectId}`)">项目详情</n-button>
+        <n-button
+          size="small"
+          secondary
+          :loading="chapterTitleGenerating"
+          :disabled="finalizationActionBusy || !editorContent.trim()"
+          @click="handleGenerateChapterTitle"
+        >
+          {{ chapterTitleActionText }}
+        </n-button>
+        <n-button
+          v-if="blockingFinalizationPending"
+          size="small"
+          type="warning"
+          secondary
+          :loading="finalizationRetrying"
+          :disabled="finalizationActionBusy"
+          @click="retryFinalizationPostprocess(blockingFinalizationPending.chapterNum)"
+        >
+          重试第 {{ blockingFinalizationPending.chapterNum }} 章定稿后提取
+        </n-button>
         <n-button size="small" @click="handleAudit" :loading="auditRunning">本章审稿</n-button>
         <n-button
           size="small"

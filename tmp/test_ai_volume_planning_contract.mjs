@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+const volumeStore = readFileSync('frontend/src/stores/volumeStore.js', 'utf8')
+const volumePlanner = readFileSync('frontend/src/components/chapter/VolumePlanner.vue', 'utf8')
+const contextBuilder = readFileSync('frontend/src/utils/contextBuilder.js', 'utf8')
+const volumePrompt = readFileSync('frontend/src/prompts/volumePlan.js', 'utf8')
+const volumesRouter = readFileSync('backend/routers/volumes.py', 'utf8')
+const database = readFileSync('backend/database.py', 'utf8')
+const helpers = readFileSync('backend/routers/helpers.py', 'utf8')
+
+assert.match(volumeStore, /generateVolumePlanByAI/)
+assert.match(volumeStore, /initializeEmptyByProject/)
+assert.match(volumeStore, /buildVolumePlanPrompt/)
+assert.match(volumeStore, /chatCompletion/)
+assert.match(volumeStore, /coreGoal/)
+assert.match(volumeStore, /mainConflict/)
+assert.match(volumeStore, /summary/)
+assert.match(volumeStore, /keyCharacters/)
+assert.match(volumeStore, /foreshadowingPlan/)
+assert.match(volumeStore, /unresolvedItems/)
+assert.match(volumeStore, /handoffPoint/)
+
+assert.match(volumePrompt, /foreshadowingPlan/)
+assert.match(volumePrompt, /unresolvedItems/)
+assert.match(volumePrompt, /handoffPoint/)
+
+assert.match(volumesRouter, /foreshadowingPlan:\s*list\[str\]/)
+assert.match(volumesRouter, /unresolvedItems:\s*list\[str\]/)
+assert.match(volumesRouter, /handoffPoint:\s*str/)
+assert.match(database, /foreshadowing_plan JSON DEFAULT NULL/)
+assert.match(database, /unresolved_items JSON DEFAULT NULL/)
+assert.match(database, /handoff_point TEXT DEFAULT NULL/)
+assert.match(helpers, /'foreshadowing_plan'/)
+assert.match(helpers, /'unresolved_items'/)
+
+assert.match(volumePlanner, /AI 生成分卷规划/)
+assert.match(volumePlanner, /仅创建空分卷骨架/)
+assert.match(volumePlanner, /handleGenerateVolumePlan/)
+assert.match(volumePlanner, /handleCreateEmptySkeleton/)
+
+assert.match(contextBuilder, /nextVolumePreview/)
+assert.match(contextBuilder, /previousVolumeSummaries/)
+assert.match(contextBuilder, /foreshadowingPlan/)
+assert.match(contextBuilder, /unresolvedItems/)
+assert.match(contextBuilder, /handoffPoint/)
+assert.match(contextBuilder, /builder\.add\('volumeStage'/)
+assert.doesNotMatch(contextBuilder, /builder\.add\('allVolumes'/)
+
+console.log('AI volume planning contract passed')

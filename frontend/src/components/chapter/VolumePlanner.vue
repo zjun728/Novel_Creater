@@ -42,6 +42,7 @@ const showSummaryModal = ref(false)
 const saving = ref(false)
 const auditingId = ref('')
 const summarizingId = ref('')
+const initializingSkeleton = ref(false)
 const activeAuditVolume = ref(null)
 const activeAuditReport = ref(null)
 const activeSummaryVolume = ref(null)
@@ -82,6 +83,9 @@ function emptyVolume() {
     mainConflict: '',
     keyCharacters: '',
     summary: '',
+    foreshadowingPlan: '',
+    unresolvedItems: '',
+    handoffPoint: '',
     status: 'planned'
   }
 }
@@ -102,7 +106,9 @@ function openCreate() {
 function openEdit(volume) {
   formValue.value = {
     ...volume,
-    keyCharacters: (volume.keyCharacters || []).join('、')
+    keyCharacters: (volume.keyCharacters || []).join('、'),
+    foreshadowingPlan: (volume.foreshadowingPlan || []).join('\n'),
+    unresolvedItems: (volume.unresolvedItems || []).join('\n')
   }
   showEditor.value = true
 }
@@ -129,16 +135,38 @@ async function handleSave() {
   }
 }
 
-async function handleInitialize() {
+async function ensureNoExistingVolumes() {
   if (volumeStore.volumes.length > 0) {
     message.warning('当前项目已经有分卷规划。如需重新规划，请先手动删除旧分卷。')
-    return
+    return false
   }
+  return true
+}
+
+async function handleGenerateVolumePlan() {
+  if (!await ensureNoExistingVolumes()) return
   try {
-    const created = await volumeStore.initializeByProject(props.project)
-    message.success(`已自动生成 ${created.length} 个分卷规划`)
+    const created = await volumeStore.generateVolumePlanByAI(props.project)
+    message.success(`AI 已生成 ${created.length} 个分卷规划`)
   } catch (e) {
-    message.error('生成分卷规划失败：' + e.message)
+    dialog.warning({
+      title: 'AI 分卷规划失败',
+      content: `没有创建空分卷。你可以重试 AI 规划，或使用“仅创建空分卷骨架”先建立章节范围。错误：${e.message}`,
+      positiveText: '知道了'
+    })
+  }
+}
+
+async function handleCreateEmptySkeleton() {
+  if (!await ensureNoExistingVolumes()) return
+  initializingSkeleton.value = true
+  try {
+    const created = await volumeStore.initializeEmptyByProject(props.project)
+    message.success(`已创建 ${created.length} 个空分卷骨架`)
+  } catch (e) {
+    message.error('创建空分卷骨架失败：' + e.message)
+  } finally {
+    initializingSkeleton.value = false
   }
 }
 
@@ -278,7 +306,12 @@ function summaryList(report, key) {
         <p>把长篇拆成可管理的阶段，后续章节生成、阶段总结和伏笔回收都以此为锚。</p>
       </div>
       <n-space>
-        <n-button size="small" @click="handleInitialize">自动生成分卷规划</n-button>
+        <n-button size="small" type="primary" :loading="volumeStore.generating" @click="handleGenerateVolumePlan">
+          AI 生成分卷规划
+        </n-button>
+        <n-button size="small" secondary :loading="initializingSkeleton" @click="handleCreateEmptySkeleton">
+          仅创建空分卷骨架
+        </n-button>
         <n-button size="small" type="primary" @click="openCreate">新增分卷</n-button>
       </n-space>
     </div>
@@ -289,7 +322,14 @@ function summaryList(report, key) {
 
     <n-empty v-if="!volumeStore.volumes.length && !volumeStore.loading" description="暂无分卷规划">
       <template #action>
-        <n-button type="primary" secondary @click="handleInitialize">按项目目标快速初始化</n-button>
+        <n-space>
+          <n-button type="primary" :loading="volumeStore.generating" @click="handleGenerateVolumePlan">
+            AI 生成分卷规划
+          </n-button>
+          <n-button secondary :loading="initializingSkeleton" @click="handleCreateEmptySkeleton">
+            仅创建空分卷骨架
+          </n-button>
+        </n-space>
       </template>
     </n-empty>
 
@@ -337,6 +377,15 @@ function summaryList(report, key) {
         </p>
         <p v-if="volume.summary" class="volume-text">
           <strong>摘要：</strong>{{ volume.summary }}
+        </p>
+        <p v-if="volume.foreshadowingPlan?.length" class="volume-text">
+          <strong>伏笔计划：</strong>{{ volume.foreshadowingPlan.join('；') }}
+        </p>
+        <p v-if="volume.unresolvedItems?.length" class="volume-text">
+          <strong>暂不解决：</strong>{{ volume.unresolvedItems.join('；') }}
+        </p>
+        <p v-if="volume.handoffPoint" class="volume-text">
+          <strong>卷尾交接：</strong>{{ volume.handoffPoint }}
         </p>
 
         <div v-if="volume.keyCharacters?.length" class="volume-tags">
@@ -411,6 +460,15 @@ function summaryList(report, key) {
         </n-form-item>
         <n-form-item label="阶段摘要">
           <n-input v-model:value="formValue.summary" type="textarea" rows="3" placeholder="这一卷的大致剧情走向、高潮和收束点" />
+        </n-form-item>
+        <n-form-item label="伏笔计划">
+          <n-input v-model:value="formValue.foreshadowingPlan" type="textarea" rows="3" placeholder="每行一条：本卷要埋下或回收的伏笔" />
+        </n-form-item>
+        <n-form-item label="暂不解决">
+          <n-input v-model:value="formValue.unresolvedItems" type="textarea" rows="2" placeholder="每行一条：本卷暂时不解决、留给后续卷的内容" />
+        </n-form-item>
+        <n-form-item label="卷尾交接">
+          <n-input v-model:value="formValue.handoffPoint" type="textarea" rows="2" placeholder="本卷结束时交给下一卷的状态、压力或未完成选择" />
         </n-form-item>
       </n-form>
       <template #footer>

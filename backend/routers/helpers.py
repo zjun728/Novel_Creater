@@ -27,6 +27,8 @@ JSON_FIELDS = {
     'aliases',
     'profile',
     'key_characters',
+    'foreshadowing_plan',
+    'unresolved_items',
     'stage_summary_report',
     'audit_report',
     'report_json',

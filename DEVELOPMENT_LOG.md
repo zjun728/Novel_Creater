@@ -1,5 +1,35 @@
 # Novel Creator 开发记录
 
+## 2026-06-11 - 真实流程 QA 专项质量指标
+
+### 背景
+- 用户确认前面梳理的 8 个优先级需要继续执行，第八优先级是把真实流程测试变成可重复验收体系。
+- 真实流程 QA 过去已有多章一致性验收，但报告缺少固定的专项质量仪表盘，人工判断时仍需要翻日志。
+
+### 本次完成
+- 新增 `qaFindings` 结构化指标对象，固定记录：章名缺失、小纲异常、字数异常、设定变更失败、记忆缺失、分卷目标偏离、AI 腔指标。
+- Markdown 报告新增“专项质量指标”章节，每轮真实流程测试都会输出同一组质量项。
+- 多章一致性验收新增独立问题类型 `volume_target_drift`，用于区分“偏离当前卷目标”和普通连续性问题。
+- AI 腔指标改为综合采样：句式节奏检测、章节审稿、多章验收中出现的模板化、短句独段、段首重复、信息倾倒、情绪贴标签等都会进入统计。
+- 真实流程 QA 章名生成改走章节标题专用接口，避免测试脚本绕过生产链路。
+- 真实流程 QA 自动创建分卷时补入伏笔计划、暂不解决内容和卷尾交接点，减少空分卷测试带来的失真。
+
+### 修改文件
+- `tmp/run_realistic_longform_flow_fixed.mjs`
+- `tmp/test_realistic_qa_report_fields_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 已验证
+- `node tmp/test_realistic_qa_report_fields_contract.mjs`
+- `node tmp/test_realistic_longform_acceptance_contract.mjs`
+- `node tmp/test_realistic_qa_word_count_policy.mjs`
+- `node tmp/test_realistic_qa_frontend_context_contract.mjs`
+- `node tmp/test_realistic_qa_quality_flow_contract.mjs`
+- `node tmp/test_ai_volume_planning_contract.mjs`
+- `node --check tmp/run_realistic_longform_flow_fixed.mjs`
+
 本文件用于记录产品开发过程中的事实、决策、已完成内容和下一步任务。
 
 维护规则：
@@ -69,6 +99,260 @@
 - SaaS 化、多用户、计费、云同步暂不进入当前开发。
 - 重型爬虫、平台正文抓取、向量检索、复杂富文本编辑器暂不进入当前开发。
 - 新增功能必须服务当前长篇创作主流程，避免偏离“实用创作平台”目标。
+
+## 2026-06-11 - 分卷显式规划字段与章名元数据接口
+
+### 背景
+- 用户重新梳理 8 个优先级后确认：分卷规划不能只把伏笔、暂不解决内容和卷尾交接点塞进 summary；章名也不能继续走普通章节更新接口，否则已定稿章节的元数据补救和正文锁容易混在一起。
+- 产品决策：分卷规划字段显式化；章名作为目录元数据，使用专用后端接口，只更新标题，不触碰正文、小纲、候选版本、定稿状态、记忆或设定库。
+
+### 本次完成
+- 后端新增章节标题专用接口：`PUT /api/projects/{pid}/chapters/{cid}/title`，只更新 `chapters.title` 和 `updated_at`，不调用已定稿正文锁。
+- 前端 API 新增 `api.chapters.updateTitle`；写字台自动章名和手动“生成章名/重生成章名”改走专用元数据接口。
+- 分卷数据模型新增显式字段：`foreshadowingPlan`、`unresolvedItems`、`handoffPoint`。
+- MySQL 初始化和迁移补充 `foreshadowing_plan`、`unresolved_items`、`handoff_point`；后端分卷创建/更新接口支持保存这些字段。
+- AI 分卷规划 Prompt 改为要求独立输出伏笔计划、暂不解决内容和卷尾交接点，不再把这些内容混在阶段摘要里。
+- 写字台上下文和正文生成 Prompt 会读取当前卷显式字段；下一卷预览也带入少量粗方向和交接信息，不全量注入所有分卷。
+- 分卷规划 UI 支持展示和编辑伏笔计划、暂不解决内容、卷尾交接点。
+- 定稿后处理重试链路补强：设定变更候选去重不再只看 pending_review，同一章同一内容已存在且未被拒绝时不会重复生成。
+
+### 修改文件
+- `backend/routers/chapters.py`
+- `backend/routers/volumes.py`
+- `backend/database.py`
+- `backend/schema.sql`
+- `backend/routers/helpers.py`
+- `frontend/src/api/db/client.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/stores/volumeStore.js`
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/prompts/volumePlan.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/utils/contextBuilder.js`
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `tmp/test_chapter_title_metadata_endpoint_contract.mjs`
+- `tmp/test_ai_volume_planning_contract.mjs`
+- `tmp/test_finalization_retry_contract.mjs`
+
+### 验证
+- `node tmp/test_chapter_title_metadata_endpoint_contract.mjs` 通过。
+- `node tmp/test_manual_chapter_title_regen_contract.mjs` 通过。
+- `node tmp/test_chapter_title_generation.mjs` 通过。
+- `node tmp/test_finalization_retry_contract.mjs` 通过。
+- `node tmp/test_finalization_guard.mjs` 通过。
+- `node tmp/test_finalization_postprocess_contract.mjs` 通过。
+- `node tmp/test_ai_volume_planning_contract.mjs` 通过。
+
+## 2026-06-11 - 正文生成容量预算护栏
+
+### 背景
+- 真实流程 QA 中，章节超写和后期压缩依赖仍是风险点：模型容易把近景规划、支线展开、复盘解释或下一轮冲突一起塞进当前章。
+- 产品决策：不继续向正文 Prompt 塞完整审稿清单，而是补一个轻量“本章容量预算”，从源头提醒模型按单章体量组织场景。
+
+### 本次完成
+- 正文生成字数节奏块新增“本章容量预算”：根据目标字数推导主场景数量建议。
+- 例如 5000 字章节会提示主场景建议控制在 3-4 个，每个场景围绕明确压力、一次选择或一次信息揭示展开。
+- 新增边界提醒：不要把近景规划里的后续章节提前写进本章；支线展开、复盘解释和下一轮冲突优先留到下一章。
+- 保持质量优先原则：容量预算用于减少超写，不作为强行截断章节的硬命令。
+- 产品规划与功能验收清单已同步。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `tmp/test_chapter_word_prompt_guard.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp/test_chapter_word_prompt_guard.mjs` 通过。
+- `node tmp/test_quality_first_generation_contract.mjs` 通过。
+- `node tmp/test_humanized_generation_prompt_contract.mjs` 通过。
+- `node tmp/test_chapter_generation_consistency_contract.mjs` 通过。
+- `node --check frontend/src/prompts/chapter.js` 通过。
+- `npm --prefix frontend run build` 通过。
+
+## 2026-06-11 - 章名生成质量与兜底提炼
+
+### 背景
+- 真实流程测试中，部分章节定稿后没有章名，或模型容易返回“林墨在棋院后山无人棋”这类正文句式，不像小说目录标题。
+- 产品决策：章名是章节元数据，应保证目录感；但章名生成失败不能阻断定稿，也不能回改正文、候选版本、记忆或设定库。
+
+### 本次完成
+- 章名清洗规则继续拒绝“主角名 + 在/被/进入/发现 + 动作地点”的流水句，并补充常见叙事动词与句末“了/着/过”过滤，降低正文短句被当成章名的概率。
+- 新增 `deriveFallbackChapterTitle`：AI 两次命名都不合格时，从本章小纲和正文片段中提取地点、物象、悬念物件或情绪钩子组合成短章名。
+- 写字台定稿自动章名和手动“生成章名/重生成章名”入口均接入本地兜底；兜底成功只更新 `chapters.title`。
+- 合同测试新增“棋院后山/无人棋 -> 后山无人棋”场景，确保兜底标题更像目录标题，而不是正文句子。
+- 产品规划与功能验收清单已同步。
+
+### 修改文件
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/stores/writerStore.js`
+- `tmp/test_chapter_title_generation.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp/test_chapter_title_generation.mjs` 通过。
+- `node tmp/test_manual_chapter_title_regen_contract.mjs` 通过。
+- `node --check frontend/src/prompts/chapter.js` 通过。
+- `node --check frontend/src/stores/writerStore.js` 通过。
+- `npm --prefix frontend run build` 通过。
+
+## 2026-06-11 - 审稿局部修订上下文定位增强
+
+### 背景
+- 真实流程和手测中，审稿局部修订存在一种高频失败场景：`originalText` 在正文中重复出现时，系统只能判定为重复命中并跳过，即使模型已经返回了前后文线索。
+- 产品决策仍然保持安全优先：不能用语义猜测替换正文；但可以利用 `contextBefore/contextAfter` 前后滑窗做唯一定位。
+
+### 本次完成
+- `localRevisionPatch` 的补丁匹配增加上下文消歧：精确匹配、空白容错匹配、标点容错匹配如果命中多处，会尝试用前后 700 字窗口匹配 `contextBefore/contextAfter`。
+- 只有上下文过滤后唯一命中时才应用补丁，匹配类型会记录为 `contextual_exact`、`contextual_whitespace_tolerant` 或 `contextual_punctuation_tolerant`。
+- 没有上下文、上下文仍命中多处或上下文无法命中时，继续返回 `ambiguous_match`，不自动替换。
+- 真实流程 QA 局部修订合同测试已指向当前主脚本 `tmp/run_realistic_longform_flow_fixed.mjs`，避免继续检查旧包装入口。
+- 产品规划与功能验收清单已同步。
+
+### 修改文件
+- `frontend/src/utils/localRevisionPatch.js`
+- `tmp/test_local_revision_patch.mjs`
+- `tmp/test_realistic_qa_local_patch_revision_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp/test_local_revision_patch.mjs` 通过。
+- `node tmp/test_audit_revision_tools.mjs` 通过。
+- `node tmp/test_realistic_qa_local_patch_revision_contract.mjs` 通过。
+- `node --check frontend/src/utils/localRevisionPatch.js` 通过。
+- `npm --prefix frontend run build` 通过。
+
+## 2026-06-11 - AI 分卷规划主流程接入
+
+### 背景
+- 手测发现“自动分卷”只创建空白卷，无法提供每卷的大方向、核心冲突和接力点；如果直接进入章节生成，分卷层对长篇质量的帮助有限。
+- 产品决策：分卷主流程改为 AI 生成阶段规划，空骨架仅作为备用入口；不再把“创建了章节范围”视为完成分卷规划。
+
+### 本次完成
+- 分卷页新增主按钮“AI 生成分卷规划”，基于项目目标、当前选中种子、创作圣经和已有设定库生成每卷标题、阶段目标、核心冲突、关键人物和阶段摘要。
+- 保留“仅创建空分卷骨架”作为备用入口，只创建章节范围和目标字数，供 AI 失败、临时占位或用户手工填写使用。
+- AI 分卷规划失败时不再静默降级为空骨架，会弹窗提示用户重试或手动选择空骨架。
+- 新增分卷规划提示词与 JSON 修复提示词；系统会重新校准卷章节范围和目标字数，降低模型返回章节重叠、断档或越界的风险。
+- 章节写作上下文新增下一卷粗方向预览，同时继续注入当前卷阶段目标、核心冲突、关键人物、摘要和前卷摘要；不全量注入所有分卷，避免远景内容压住当前章。
+- 产品规划与功能验收清单已同步：明确 AI 分卷规划、空骨架备用、当前卷/前卷/下一卷上下文注入边界。
+
+### 修改文件
+- `frontend/src/components/chapter/VolumePlanner.vue`
+- `frontend/src/stores/volumeStore.js`
+- `frontend/src/prompts/volumePlan.js`
+- `frontend/src/prompts/chapter.js`
+- `frontend/src/utils/contextBuilder.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+- `tmp/test_ai_volume_planning_contract.mjs`
+
+### 验证
+- `node tmp/test_ai_volume_planning_contract.mjs` 通过。
+- `node tmp/test_rolling_planning_contract.mjs` 通过。
+- `git diff --check` 通过，仅有 Windows 换行提示。
+- `npm --prefix frontend run build` 通过；Vite 仍提示 `writerStore.js` 动态导入无法拆包，这是既有构建警告，不影响本次功能。
+
+### 当前决策
+- “AI 生成分卷规划”是默认推荐路径；“仅创建空分卷骨架”不是高质量写作入口，只是备用占位能力。
+- 分卷摘要需要承担高层走向、主要悬念/伏笔、未解决问题和下一卷接力点，后续章节生成必须能读到当前卷约束。
+- 下一卷粗方向只能作为自然接力提醒，不能要求当前章提前展开下一卷主线。
+
+## 2026-06-11 - 写字台章名补生成入口
+
+### 背景
+- 手测发现部分章节定稿后仍可能没有生成合格章名；此前自动章名只在定稿时尝试一次，失败后缺少可见补救入口。
+- 产品决策：章名属于章节元数据，允许在写字台手动生成或重生成；该操作不修改正文、候选版本、定稿状态、记忆或设定库。
+
+### 本次完成
+- 写字台顶部新增“生成章名 / 重生成章名”按钮：无自定义章名时显示“生成章名”，已有章名时显示“重生成章名”。
+- 章名生成复用现有章节命名 Prompt、清洗规则和任务模型映射，并允许手动入口强制覆盖已有章名。
+- 手动章名生成只更新 `chapters.title`，不触发定稿、审稿、记忆提取或设定变更提取。
+- 产品规划和功能验收清单已同步章名补救规则。
+
+### 修改文件
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/stores/writerStore.js`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+- `tmp/test_manual_chapter_title_regen_contract.mjs`
+
+### 验证
+- `node tmp/test_manual_chapter_title_regen_contract.mjs` 通过。
+- `node tmp/test_chapter_title_generation.mjs` 通过。
+- `node tmp/test_writing_style_standards_contract.mjs` 通过。
+- `node --check frontend/src/stores/writerStore.js` 通过；`.vue` 文件无法用 `node --check` 检查，需以 Vite build 验证。
+
+## 2026-06-11 - 小纲质量闸补强
+
+### 背景
+- 20 章真实流程 QA 暴露出小纲过长、压缩无效或小纲信息不足时，后续正文容易把两章容量塞进一章，或让模型自行补结构导致跑偏。
+- 产品决策：小纲是正文生成前的容量和因果闸门；过短和过长都不能带病进入正文生成。
+
+### 本次完成
+- `writerStore` 新增统一小纲质量闸：`ensureChapterBeatPlanQuality`。
+- 小纲少于 500 字时，会尝试扩展为 700-1100 字的可执行小纲，补足人物动机、场景摩擦、选择代价、信息释放、连续性和章末钩子。
+- 小纲超过 1300 字时，继续走压缩流程；压缩或扩展后仍不合格则阻断正文生成。
+- AI 生成小纲后立即执行质量闸；生成正文前也会复检当前确认小纲，覆盖用户手填小纲、旧小纲或异常小纲。
+- 真实流程 QA 主脚本同步同一套小纲质量闸，继续保持测试链路与生产写字台链路一致。
+- 产品规划与功能验收清单已同步。
+
+### 修改文件
+- `frontend/src/stores/writerStore.js`
+- `tmp/run_realistic_longform_flow_fixed.mjs`
+- `tmp/test_chapter_beat_quality_gate_contract.mjs`
+- `tmp/test_chapter_beat_compaction_contract.mjs`
+- `tmp/test_realistic_qa_generation_consistency_contract.mjs`
+- `tmp/test_realistic_qa_frontend_context_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp/test_chapter_beat_quality_gate_contract.mjs` 通过。
+- `node tmp/test_chapter_beat_compaction_contract.mjs` 通过。
+- `node tmp/test_realistic_qa_generation_consistency_contract.mjs` 通过。
+- `node tmp/test_realistic_qa_frontend_context_contract.mjs` 通过。
+- `node --check frontend/src/stores/writerStore.js` 通过。
+- `node --check tmp/run_realistic_longform_flow_fixed.mjs` 通过。
+
+## 2026-06-11 - 节奏修订采用策略收紧
+
+### 背景
+- 真实流程 QA 中，正文生成后的句式节奏修订可能出现“某个指标改善，但其他指标恶化或字数漂移过大”的情况。
+- 产品决策：节奏修订是低风险润色层，不能为了降低短句率而引入更多 AI 反差句、段首重复或字数漂移。
+
+### 本次完成
+- `proseRhythmGuard` 新增 `shouldAcceptProseRhythmRepair`，统一判断修订稿是否值得采用。
+- 采用条件收紧为：字数漂移在安全范围内，短句独段比例、连续短句、AI 反差句、段首重复点名等指标至少一项改善，且其他关键指标不恶化。
+- 前端 `writerStore` 的正文节奏修订改用统一采用函数，不再用宽松的 OR 判断。
+- 真实流程 QA 脚本同步同一采用函数，保持生产链路和测试链路一致。
+- QA 短章补足提示词同步收紧为“局部补足”，删除“至少新增一到两个完整场景”的膨胀诱导，并加入最多 1800 字的补足上限。
+- 产品规划与功能验收清单已同步。
+
+### 修改文件
+- `frontend/src/utils/proseRhythmGuard.js`
+- `frontend/src/stores/writerStore.js`
+- `tmp/run_realistic_longform_flow_fixed.mjs`
+- `tmp/test_prose_rhythm_repair_acceptance.mjs`
+- `tmp/test_realistic_qa_quality_flow_contract.mjs`
+- `PRODUCT_DEVELOPMENT_PLAN.md`
+- `FUNCTION_TEST_CHECKLIST.md`
+- `DEVELOPMENT_LOG.md`
+
+### 验证
+- `node tmp/test_prose_rhythm_repair_acceptance.mjs` 通过。
+- `node tmp/test_prose_rhythm_guard.mjs` 通过。
+- `node tmp/test_realistic_qa_quality_flow_contract.mjs` 通过。
+- `node --check frontend/src/utils/proseRhythmGuard.js` 通过。
+- `node --check frontend/src/stores/writerStore.js` 通过。
+- `node --check tmp/run_realistic_longform_flow_fixed.mjs` 通过。
 
 ## 2026-06-05 - AI 腔识别与人味增强标准升级
 
@@ -4644,3 +4928,72 @@
 
 ### 下一步
 - 继续真实流程小规模测试，重点观察上下章承接、设定库相关性、状态账本准确性、纠偏任务数量、段首重复点名和短句独段是否继续下降。
+## 2026-06-11 - 定稿后提取失败恢复入口
+
+### 问题
+- 手测发现：章节点击定稿后，如果记忆/设定提取过程中设定库提取失败，章节已经进入定稿状态，但定稿后处理 pending 标记会继续阻断下一章小纲/正文生成。
+- 由于已定稿章节禁止重复定稿，用户无法再次触发记忆/设定提取，导致流程卡死。
+
+### 本次完成
+- `finalizationGuard` 支持显式 `allowExistingPending`，用于“重试定稿后处理”接管已有 pending 标记。
+- 写字台顶部在检测到当前章或上一章存在定稿后 pending 标记时，显示“重试第 N 章定稿后提取”按钮。
+- 重试流程只重新执行定稿后记忆/设定提取，不修改正文、不重新定稿、不改最终版本。
+- 重试成功后清除 pending 标记并刷新记忆、设定库和上下文；重试失败则继续保留阻断，避免下一章读取不完整上下文。
+- 定稿后保存 Canon 事实前增加同章同类型同内容去重，避免第一次失败前已保存的记忆在重试时重复入库。
+
+### 修改文件
+- `frontend/src/utils/finalizationGuard.js`
+- `frontend/src/views/WriterView.vue`
+- `frontend/src/stores/memoryStore.js`
+- `tmp/test_finalization_guard.mjs`
+- `tmp/test_finalization_retry_contract.mjs`
+- `DEVELOPMENT_LOG.md`
+
+### 已运行验证
+- `node tmp\test_finalization_guard.mjs`
+- `node tmp\test_finalization_retry_contract.mjs`
+- `node --check frontend\src\utils\finalizationGuard.js`
+- `node --check frontend\src\stores\memoryStore.js`
+- `npm --prefix frontend run build`
+
+## 2026-06-11 - 20 章真实流程长篇 QA 与链路护栏
+
+### 本次完成
+- 完成 `QualityBalanceQA200w_20260610Run20 _20260610075312` 项目的 20 章真实流程测试，覆盖章节生成、审稿、修订、定稿、记忆提取、设定变更、多章一致性验收和浏览器冒烟验收。
+- 新增 Canon 事实本地兜底，模型未返回可解析事实时仍能生成最小可用记忆，避免后续章节失去上下文。
+- 定稿事实缺省按 `accepted` 入库，修正事实提取成功但不进入后续上下文的问题。
+- 调整真实流程 QA 的字数验收策略：以章节完整度优先，阻断阈值放宽为目标字数约 `70%-150%`，但继续记录建议范围外章节。
+- 增加空正文保护，正文生成、正文压缩和纠偏草案返回空内容时不再保存为空候选。
+- 增加压缩过度恢复流程，压缩后过短时基于原稿重新平衡压缩，必要时补足情节因果和场景反应。
+- 新增本轮详细报告：`docs/REALISTIC_FLOW_QA_2026-06-11.md`。
+
+### 修改文件
+- `frontend/src/stores/memoryStore.js`
+- `frontend/src/stores/writerStore.js`
+- `frontend/src/utils/canonFactFallback.js`
+- `tmp/run_realistic_longform_flow_fixed.mjs`
+- `tmp/run_realistic_longform_flow.mjs`
+- `tmp/test_canon_fact_fallback_contract.mjs`
+- `tmp/test_realistic_qa_word_count_policy.mjs`
+- `docs/REALISTIC_FLOW_QA_2026-06-11.md`
+- `DEVELOPMENT_LOG.md`
+
+### 工程整理
+- `tmp/run_realistic_longform_flow.mjs` 已改为轻量入口，执行时转发到当前主脚本 `tmp/run_realistic_longform_flow_fixed.mjs`，避免维护两份重复的真实流程 QA 脚本。
+
+### 验收结果
+- 检查项总数 63，通过 59，非通过 4。
+- 20 章均完成定稿。
+- 20 章均存在可用 Canon 事实。
+- 待确认设定变更为 0。
+- 多章一致性验收通过。
+- 浏览器冒烟验收通过，浏览器控制台错误数为 0。
+- 项目级审稿报告已保存，记录 5 个项目级问题。
+- 非通过项集中在：第 17 章压缩空内容已被丢弃、第 17/19 章审稿局部修订未应用、第 20 章小纲压缩未降低长度。
+
+### 下一步
+- 修复小纲质量闸：小纲过短、过长、压缩无效时必须重试或阻断。
+- 修复节奏修订采用策略：只采用指标改善或至少不恶化的修订稿。
+- 修复审稿局部修订定位：提升滑窗匹配和替换稳定性。
+- 优化章名生成：避免把正文短句截成章节名。
+- 继续降低正文源头超写和 AI 腔，减少后期压缩依赖。

@@ -129,6 +129,23 @@ export function shouldRepairProseRhythm(analysisOrText) {
   return Boolean(analysis?.shouldRepair)
 }
 
+export function shouldAcceptProseRhythmRepair(before, after, drift = 1) {
+  if (!before || !after) return false
+  if (drift < 0.78 || drift > 1.22) return false
+
+  const metrics = [
+    'shortParagraphRate',
+    'maxShortStreak',
+    'aiContrastCount',
+    'maxSameLeadingSubjectCount'
+  ]
+
+  const worsened = metrics.some(key => Number(after[key] || 0) > Number(before[key] || 0))
+  if (worsened) return false
+
+  return metrics.some(key => Number(after[key] || 0) < Number(before[key] || 0))
+}
+
 export function formatProseRhythmAnalysis(analysis) {
   if (!analysis) return ''
   const rate = `${Math.round((analysis.shortParagraphRate || 0) * 100)}%`

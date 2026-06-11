@@ -692,6 +692,22 @@ function buildVolumeStageContext(volumes, chapterNum) {
       summary: volume.stageSummaryReport?.compactSummary || volume.summary || volume.stageSummaryReport?.stageSummary || ''
     }))
 
+  const next = volumes
+    .filter(volume => Number(volume.startChapter || 0) > Number(current.endChapter || 0))
+    .sort((a, b) => Number(a.startChapter || 0) - Number(b.startChapter || 0))[0]
+
+  const nextVolumePreview = next
+    ? {
+        title: next.title || `第 ${next.volumeNum || '?'} 卷`,
+        range: `第${next.startChapter}-${next.endChapter}章`,
+        coreGoal: next.coreGoal || '',
+        mainConflict: next.mainConflict || '',
+        unresolvedItems: next.unresolvedItems || [],
+        handoffPoint: next.handoffPoint || '',
+        handoffHint: next.summary || ''
+      }
+    : null
+
   const report = current.stageSummaryReport || null
   const audit = current.auditReport || null
   return {
@@ -704,6 +720,9 @@ function buildVolumeStageContext(volumes, chapterNum) {
     mainConflict: current.mainConflict || '',
     keyCharacters: current.keyCharacters || [],
     currentSummary: report?.compactSummary || current.summary || '',
+    foreshadowingPlan: current.foreshadowingPlan || [],
+    unresolvedItems: current.unresolvedItems || [],
+    handoffPoint: current.handoffPoint || '',
     stageSummary: report?.stageSummary || '',
     completedBeats: report?.completedBeats || [],
     openQuestions: report?.openQuestions || [],
@@ -720,7 +739,8 @@ function buildVolumeStageContext(volumes, chapterNum) {
       description: issue.description,
       suggestion: issue.suggestion
     })),
-    previousVolumeSummaries: previousSummaries
+    previousVolumeSummaries: previousSummaries,
+    nextVolumePreview
   }
 }
 

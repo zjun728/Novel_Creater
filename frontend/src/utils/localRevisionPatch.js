@@ -140,29 +140,69 @@ function findPunctuationTolerantMatches(content, needle) {
   return matches
 }
 
-function findUniquePatchMatch(content, originalText) {
-  const exactMatches = findAllIndexes(content, originalText)
-  if (exactMatches.length === 1) {
-    return {
-      type: 'exact',
-      startIndex: exactMatches[0],
-      endIndex: exactMatches[0] + originalText.length,
-      matchedText: originalText
-    }
+function hasContextValue(patch) {
+  return Boolean(normalizePatchText(patch?.contextBefore) || normalizePatchText(patch?.contextAfter))
+}
+
+function contextTextContains(windowText, contextText) {
+  const window = String(windowText || '')
+  const context = normalizePatchText(contextText)
+  if (!context) return true
+  if (window.includes(context)) return true
+
+  const compactContext = compactWithMap(context).text
+  if (compactContext.length >= 4 && compactWithMap(window).text.includes(compactContext)) {
+    return true
   }
-  if (exactMatches.length > 1) return { type: 'ambiguous', count: exactMatches.length }
+
+  const looseContext = looseCompactWithMap(context).text
+  return looseContext.length >= 4 && looseCompactWithMap(window).text.includes(looseContext)
+}
+
+function matchFitsContext(content, match, patch) {
+  const before = normalizePatchText(patch?.contextBefore)
+  const after = normalizePatchText(patch?.contextAfter)
+  if (!before && !after) return true
+
+  const source = String(content || '')
+  const beforeWindow = source.slice(Math.max(0, match.startIndex - 700), match.startIndex)
+  const afterWindow = source.slice(match.endIndex, Math.min(source.length, match.endIndex + 700))
+
+  return contextTextContains(beforeWindow, before) && contextTextContains(afterWindow, after)
+}
+
+function resolveMatchesWithContext(content, matches, patch, type) {
+  if (matches.length === 1) return { type, ...matches[0] }
+  if (!hasContextValue(patch)) return { type: 'ambiguous', count: matches.length }
+
+  const contextualMatches = matches.filter(match => matchFitsContext(content, match, patch))
+  if (contextualMatches.length === 1) {
+    return { type: `contextual_${type}`, ...contextualMatches[0] }
+  }
+  if (contextualMatches.length > 1) {
+    return { type: 'ambiguous', count: contextualMatches.length }
+  }
+  return { type: 'ambiguous', count: matches.length }
+}
+
+function findUniquePatchMatch(content, originalText, patch = {}) {
+  const exactMatches = findAllIndexes(content, originalText)
+    .map(index => ({
+      startIndex: index,
+      endIndex: index + originalText.length,
+      matchedText: originalText
+    }))
+  if (exactMatches.length > 0) return resolveMatchesWithContext(content, exactMatches, patch, 'exact')
 
   const whitespaceMatches = findWhitespaceTolerantMatches(content, originalText)
-  if (whitespaceMatches.length === 1) {
-    return { type: 'whitespace_tolerant', ...whitespaceMatches[0] }
+  if (whitespaceMatches.length > 0) {
+    return resolveMatchesWithContext(content, whitespaceMatches, patch, 'whitespace_tolerant')
   }
-  if (whitespaceMatches.length > 1) return { type: 'ambiguous', count: whitespaceMatches.length }
 
   const punctuationMatches = findPunctuationTolerantMatches(content, originalText)
-  if (punctuationMatches.length === 1) {
-    return { type: 'punctuation_tolerant', ...punctuationMatches[0] }
+  if (punctuationMatches.length > 0) {
+    return resolveMatchesWithContext(content, punctuationMatches, patch, 'punctuation_tolerant')
   }
-  if (punctuationMatches.length > 1) return { type: 'ambiguous', count: punctuationMatches.length }
 
   return null
 }
@@ -193,7 +233,7 @@ export function applyLocalRevisionPatches(originalContent, patches = []) {
       continue
     }
 
-    const match = findUniquePatchMatch(content, originalText)
+    const match = findUniquePatchMatch(content, originalText, patch)
     if (!match) {
       skipped.push({ ...patch, issueIndex, reason: 'no_match' })
       continue

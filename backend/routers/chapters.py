@@ -24,6 +24,9 @@ class ChapterUpdate(BaseModel):
 class ChapterSummaryUpdate(BaseModel):
     summary: str = ""
 
+class ChapterTitleUpdate(BaseModel):
+    title: str = ""
+
 class VersionCreate(BaseModel):
     title: str = ""
     content: str = ""
@@ -99,6 +102,22 @@ async def update_chapter(pid: str, cid: str, data: ChapterUpdate):
     args.append(cid)
     await execute(f"UPDATE chapters SET {', '.join(sets)} WHERE id=%s", args)
     return convert_row(await fetchone("SELECT * FROM chapters WHERE id=%s", (cid,)))
+
+@router.put("/projects/{pid}/chapters/{cid}/title")
+async def update_chapter_title(pid: str, cid: str, data: ChapterTitleUpdate):
+    current = await _chapter_by_id(pid, cid)
+    if not current:
+        raise HTTPException(404, "章节不存在")
+    title = (data.title or "").strip()
+    if not title:
+        raise HTTPException(400, "章节标题不能为空")
+    now = int(time.time() * 1000)
+    await execute(
+        "UPDATE chapters SET title=%s, updated_at=%s WHERE project_id=%s AND id=%s",
+        (title, now, pid, cid),
+    )
+    await touch_project(pid)
+    return convert_row(await fetchone("SELECT * FROM chapters WHERE project_id=%s AND id=%s", (pid, cid)))
 
 @router.put("/projects/{pid}/chapters/{cid}/summary")
 async def update_chapter_summary(pid: str, cid: str, data: ChapterSummaryUpdate):

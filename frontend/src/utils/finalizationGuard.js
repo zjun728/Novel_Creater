@@ -70,7 +70,7 @@ export function beginChapterFinalizationRun(projectId, chapterNum, versionId = '
   }
 
   const existingMarker = getChapterFinalizationPending(projectId, chapterNum, options)
-  if (existingMarker) {
+  if (existingMarker && !options.allowExistingPending) {
     return {
       started: false,
       reason: 'pending_marker',

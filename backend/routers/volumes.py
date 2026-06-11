@@ -21,6 +21,9 @@ class VolumeBase(BaseModel):
     mainConflict: str = ""
     keyCharacters: list[str] = []
     summary: str = ""
+    foreshadowingPlan: list[str] = []
+    unresolvedItems: list[str] = []
+    handoffPoint: str = ""
     status: str = "planned"
 
 
@@ -34,6 +37,9 @@ class VolumeUpdate(BaseModel):
     mainConflict: Optional[str] = None
     keyCharacters: Optional[list[str]] = None
     summary: Optional[str] = None
+    foreshadowingPlan: Optional[list[str]] = None
+    unresolvedItems: Optional[list[str]] = None
+    handoffPoint: Optional[str] = None
     status: Optional[str] = None
 
 
@@ -96,8 +102,9 @@ async def create_volume(pid: str, data: VolumeBase):
         INSERT INTO project_volumes (
           id, project_id, volume_num, title, start_chapter, end_chapter,
           target_words, core_goal, main_conflict, key_characters, summary,
+          foreshadowing_plan, unresolved_items, handoff_point,
           status, created_at, updated_at
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             vid,
@@ -111,6 +118,9 @@ async def create_volume(pid: str, data: VolumeBase):
             data.mainConflict,
             json.dumps(data.keyCharacters or [], ensure_ascii=False),
             data.summary,
+            json.dumps(data.foreshadowingPlan or [], ensure_ascii=False),
+            json.dumps(data.unresolvedItems or [], ensure_ascii=False),
+            data.handoffPoint,
             data.status,
             now,
             now,
@@ -174,7 +184,7 @@ async def update_volume(pid: str, vid: str, data: VolumeUpdate):
     sets, args = [], []
     for key, value in incoming.items():
         sets.append(f"{to_snake(key)}=%s")
-        if key == "keyCharacters":
+        if key in ("keyCharacters", "foreshadowingPlan", "unresolvedItems"):
             value = json.dumps(value or [], ensure_ascii=False)
         args.append(value)
 

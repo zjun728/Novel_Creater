@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const qaScript = readFileSync('tmp/run_realistic_longform_flow.mjs', 'utf8')
+const qaScript = readFileSync('tmp/run_realistic_longform_flow_fixed.mjs', 'utf8')
 
 assert.match(
   qaScript,

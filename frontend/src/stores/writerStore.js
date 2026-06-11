@@ -25,6 +25,7 @@ import {
   cleanGeneratedChapterText,
   cleanChapterBeatPlanText,
   cleanGeneratedChapterTitle,
+  deriveFallbackChapterTitle,
   isDefaultChapterTitle
 } from '@/prompts/chapter'
 import { buildRewriteSystemPrompt, buildRewritePrompt } from '@/prompts/rewrite'
@@ -35,7 +36,12 @@ import {
   buildCorrectionPatchRetryPrompt
 } from '@/prompts/correctionPatch'
 import { applyLocalRevisionPatches, extractLocalRevisionPatches } from '@/utils/localRevisionPatch'
-import { analyzeProseRhythm, countCjkChars, shouldRepairProseRhythm } from '@/utils/proseRhythmGuard'
+import {
+  analyzeProseRhythm,
+  countCjkChars,
+  shouldAcceptProseRhythmRepair,
+  shouldRepairProseRhythm
+} from '@/utils/proseRhythmGuard'
 
 export const useWriterStore = defineStore('writer', () => {
   const chapters = ref([])
@@ -102,6 +108,69 @@ export const useWriterStore = defineStore('writer', () => {
     throw new Error(`第 ${chapterNum} 章小纲超过上限（${content.length} 字符），请重新生成或手动删减后再生成正文。`)
   }
 
+  async function expandChapterBeatPlanIfNeeded(provider, chapterNum, content, context = {}) {
+    content = String(content || '').trim()
+    if (content.length >= 500) return content
+
+    let best = content
+    try {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const messages = [
+          {
+            role: 'system',
+            content: '你是长篇小说分章小纲编辑。只负责把过短小纲扩展成可执行小纲，不写正文，不解释。'
+          },
+          {
+            role: 'user',
+            content: [
+              `请把第 ${chapterNum} 章小纲扩展为 700-1100 字，控制在 4-6 个节拍，绝不能超过 1300 字。`,
+              '必须补足：本章核心目的、场景摩擦、人物欲望/恐惧/遮掩、关键选择、选择代价、信息释放方式、状态延续、道具来源、伏笔铺垫和章末钩子。',
+              '只扩展可执行节拍，不写正文句子，不新增完整大场景，不把下一章冲突提前塞进本章。',
+              context?.previousChapterEnding ? `上一章结尾：${context.previousChapterEnding}` : '',
+              context?.chapterGoal ? `本章目标：${JSON.stringify(context.chapterGoal).slice(0, 800)}` : '',
+              attempt > 1 ? `上一次扩展仍过短或不合格（${best.length} 字符），请补足可执行节拍。` : '',
+              `原小纲：\n${best || '只有空白或极短提示，请根据本章上下文补成可执行小纲。'}`
+            ].filter(Boolean).join('\n\n')
+          }
+        ]
+        const result = await chatCompletion(provider, messages, { maxTokens: 1800, temperature: 0.35 })
+        const expanded = cleanChapterBeatPlanText(extractAiContent(result))
+        if (expanded.length > best.length && expanded.length <= 1300) best = expanded
+        if (best.length >= 500 && best.length <= 1300) return best
+      }
+    } catch (e) {
+      console.warn('扩展章节小纲失败，已阻止继续生成正文:', e.message)
+      throw e
+    }
+
+    throw new Error(`第 ${chapterNum} 章小纲过短（${content.length} 字符），请重新生成或手动补足人物动机、场景摩擦、选择代价和章末钩子后再生成正文。`)
+  }
+
+  async function ensureChapterBeatPlanQuality(provider, chapterNum, content, context = {}) {
+    content = cleanChapterBeatPlanText(String(content || '').trim())
+    if (!content) {
+      throw new Error(`第 ${chapterNum} 章小纲为空，请先生成或填写本章小纲。`)
+    }
+
+    if (content.length > 1300) {
+      content = await compactChapterBeatPlanIfNeeded(provider, chapterNum, content, context)
+    }
+    if (content.length < 500) {
+      content = await expandChapterBeatPlanIfNeeded(provider, chapterNum, content, context)
+    }
+    if (content.length > 1300) {
+      content = await compactChapterBeatPlanIfNeeded(provider, chapterNum, content, context)
+    }
+
+    if (content.length < 500) {
+      throw new Error(`第 ${chapterNum} 章小纲过短（${content.length} 字符），请重新生成或手动补足后再生成正文。`)
+    }
+    if (content.length > 1300) {
+      throw new Error(`第 ${chapterNum} 章小纲超过上限（${content.length} 字符），请重新生成或手动删减后再生成正文。`)
+    }
+    return content
+  }
+
   async function repairProseRhythmIfNeeded(provider, chapterNum, content, context = {}) {
     const original = String(content || '').trim()
     const analysis = analyzeProseRhythm(original)
@@ -130,14 +199,7 @@ export const useWriterStore = defineStore('writer', () => {
       const improved =
         repaired &&
         repaired !== original &&
-        drift >= 0.78 &&
-        drift <= 1.22 &&
-        (
-          repairedAnalysis.shortParagraphRate < analysis.shortParagraphRate ||
-          repairedAnalysis.maxShortStreak < analysis.maxShortStreak ||
-          repairedAnalysis.aiContrastCount < analysis.aiContrastCount ||
-          repairedAnalysis.maxSameLeadingSubjectCount < analysis.maxSameLeadingSubjectCount
-        )
+        shouldAcceptProseRhythmRepair(analysis, repairedAnalysis, drift)
 
       if (improved) return repaired
       console.warn('正文节奏修订未带来稳定改善，保留原稿', {
@@ -289,9 +351,9 @@ export const useWriterStore = defineStore('writer', () => {
     }
   }
 
-  async function generateDefaultChapterTitle(projectId, chapter, chapterNum, content, context, provider) {
+  async function generateDefaultChapterTitle(projectId, chapter, chapterNum, content, context, provider, options = {}) {
     if (!projectId || !chapter?.id || !content) return ''
-    if (!isDefaultChapterTitle(chapter.title, chapterNum)) return chapter.title || ''
+    if (!options.force && !isDefaultChapterTitle(chapter.title, chapterNum)) return chapter.title || ''
     const resolvedProvider = provider || await resolveTaskProvider(projectId, ['summaryModelId', 'writingModelId'])
 
     const messages = [
@@ -330,9 +392,16 @@ export const useWriterStore = defineStore('writer', () => {
       ], { maxTokens: 80, temperature: 0.25 })
       title = cleanGeneratedChapterTitle(extractAiContent(retryResult))
     }
+    if (!title) {
+      title = deriveFallbackChapterTitle({
+        chapterGoal: context?.chapterGoal,
+        beatPlan: context?.beatPlan,
+        content
+      })
+    }
     if (!title) return ''
 
-    const updated = await api.chapters.update(projectId, chapter.id, { title })
+    const updated = await api.chapters.updateTitle(projectId, chapter.id, { title })
     const idx = chapters.value.findIndex(c => c.id === chapter.id)
     if (idx !== -1) chapters.value[idx] = { ...chapters.value[idx], ...updated }
     if (currentChapter.value?.id === chapter.id) currentChapter.value = { ...currentChapter.value, ...updated }
@@ -493,7 +562,7 @@ export const useWriterStore = defineStore('writer', () => {
 
       const result = await chatCompletion(provider, messages, { maxTokens: 1800, temperature: 0.6 })
       let content = cleanChapterBeatPlanText(extractAiContent(result))
-      content = await compactChapterBeatPlanIfNeeded(provider, chapterNum, content, context)
+      content = await ensureChapterBeatPlanQuality(provider, chapterNum, content, context)
       chapterBeatPlan.value = content
       return content
     } catch (e) {
@@ -510,6 +579,9 @@ export const useWriterStore = defineStore('writer', () => {
     generationStream.value = ''
     try {
       const provider = await resolveTaskProvider(projectId, ['writingModelId'], providerId)
+      if (context?.beatPlan) {
+        context = { ...context, beatPlan: await ensureChapterBeatPlanQuality(provider, chapterNum, context.beatPlan, context) }
+      }
 
       const messages = [
         { role: 'system', content: buildChapterSystemPrompt() },
@@ -538,6 +610,9 @@ export const useWriterStore = defineStore('writer', () => {
 
       content = cleanGeneratedChapterText(content)
       content = await repairProseRhythmIfNeeded(provider, chapterNum, content, context)
+      if (!content.trim()) {
+        throw new Error('AI 生成正文为空，请重新生成或切换模型后重试。')
+      }
       generationStream.value = content
       if (onStream) onStream(content, '')
 
@@ -574,6 +649,9 @@ export const useWriterStore = defineStore('writer', () => {
       ], { maxTokens: 8192, temperature: 0.62 })
 
       const content = cleanGeneratedChapterText(extractAiContent(result))
+      if (!content.trim()) {
+        throw new Error('AI 生成纠偏草案为空，请重新生成或切换模型后重试。')
+      }
       const chapter = await getOrCreateChapter(projectId, chapterNum)
       const taskCount = normalizeCorrectionTasks(taskOrTasks).length
       const version = await createVersion(projectId, chapter.id, chapterNum, {

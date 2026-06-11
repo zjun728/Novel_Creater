@@ -74,4 +74,21 @@ const projectId = 'project-1'
   assert.equal(run.reason, 'pending_marker')
 }
 
+{
+  const storage = createStorage()
+  markChapterFinalizationPending(projectId, 8, { storage, now: 1000 })
+  const retry = beginChapterFinalizationRun(projectId, 8, 'version-c', {
+    storage,
+    now: 2000,
+    allowExistingPending: true
+  })
+
+  assert.equal(retry.started, true)
+  assert.equal(retry.reason, '')
+  assert.equal(getChapterFinalizationPending(projectId, 8, { storage, now: 2001 })?.startedAt, 2000)
+
+  endChapterFinalizationRun(retry.runKey, projectId, 8, { storage })
+  assert.equal(getChapterFinalizationPending(projectId, 8, { storage, now: 2002 }), null)
+}
+
 console.log('finalization guard tests passed')

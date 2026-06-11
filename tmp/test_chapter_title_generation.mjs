@@ -3,6 +3,7 @@ import {
   buildChapterTitlePrompt,
   buildChapterTitleSystemPrompt,
   cleanGeneratedChapterTitle,
+  deriveFallbackChapterTitle,
   isDefaultChapterTitle
 } from '../frontend/src/prompts/chapter.js'
 
@@ -18,6 +19,14 @@ assert.equal(cleanGeneratedChapterTitle('林墨在棋院后山无人棋'), '')
 assert.equal(cleanGeneratedChapterTitle('林墨被带进密室'), '')
 assert.equal(cleanGeneratedChapterTitle('后山无人棋'), '后山无人棋')
 assert.equal(cleanGeneratedChapterTitle('这是一个非常非常非常非常长的章节标题'), '')
+
+assert.equal(
+  deriveFallbackChapterTitle({
+    beatPlan: '林墨进入棋院后山，发现一局没有执棋人的残局。',
+    content: '风从棋院后山吹下来。石桌上那局无人棋还在，黑子压着一枚旧铜钱。'
+  }),
+  '后山无人棋'
+)
 
 const systemPrompt = buildChapterTitleSystemPrompt()
 assert.match(systemPrompt, /章节命名/)

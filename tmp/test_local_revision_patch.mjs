@@ -43,6 +43,41 @@ const ambiguous = applyLocalRevisionPatches('重复句。\n重复句。', [
 assert.equal(ambiguous.applied.length, 0)
 assert.equal(ambiguous.skipped[0].reason, 'ambiguous_match')
 
+const contextualAmbiguous = applyLocalRevisionPatches(
+  [
+    'Rain fell on the first gate.',
+    'The same line stood here.',
+    'The lamp went out.',
+    '',
+    'Footsteps stopped behind the second gate.',
+    'The same line stood here.',
+    'The door opened.'
+  ].join('\n'),
+  [
+    {
+      originalText: 'The same line stood here.',
+      replacementText: 'The second line changed quietly.',
+      contextBefore: 'Footsteps stopped behind the second gate.',
+      contextAfter: 'The door opened.'
+    }
+  ]
+)
+
+assert.equal(contextualAmbiguous.applied.length, 1)
+assert.equal(contextualAmbiguous.applied[0].matchType, 'contextual_exact')
+assert.equal(
+  contextualAmbiguous.content,
+  [
+    'Rain fell on the first gate.',
+    'The same line stood here.',
+    'The lamp went out.',
+    '',
+    'Footsteps stopped behind the second gate.',
+    'The second line changed quietly.',
+    'The door opened.'
+  ].join('\n')
+)
+
 const quoted = applyLocalRevisionPatches('“老钱。”他说。', [
   { originalText: '“老钱。”他说。', replacementText: '“老钱，别急。”他说。' }
 ])

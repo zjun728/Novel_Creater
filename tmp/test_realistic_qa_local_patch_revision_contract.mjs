@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const script = readFileSync('tmp/run_realistic_longform_flow.mjs', 'utf8')
+const script = readFileSync('tmp/run_realistic_longform_flow_fixed.mjs', 'utf8')
 
 const reviseBlock = script.match(/async function reviseChapter\([\s\S]*?\n\}/)?.[0] || ''
 assert.match(reviseBlock, /extractLocalRevisionPatches|applyLocalRevisionPatches/)

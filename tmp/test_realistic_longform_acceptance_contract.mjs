@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const flow = readFileSync('tmp/run_realistic_longform_flow.mjs', 'utf8')
+const flow = readFileSync('tmp/run_realistic_longform_flow_fixed.mjs', 'utf8')
 
 assert.match(flow, /finalChapterWordCounts:\s*\[\]/, 'report should track final chapter word counts separately from candidate counts')
 assert.match(flow, /multiChapterAcceptance:\s*null/, 'report should persist multi-chapter acceptance output')

@@ -1,23 +1,36 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const source = readFileSync('tmp/run_realistic_longform_flow.mjs', 'utf8')
+const source = readFileSync('tmp/run_realistic_longform_flow_fixed.mjs', 'utf8')
 
 const compactStart = source.indexOf('async function compactBeatPlanIfNeeded(')
-const generateBeatStart = source.indexOf('async function generateBeatPlan(', compactStart)
+const qualityGateStart = source.indexOf('async function ensureBeatPlanQuality(', compactStart)
 assert.ok(compactStart > -1, 'compactBeatPlanIfNeeded should exist')
-assert.ok(generateBeatStart > compactStart, 'generateBeatPlan should follow beat compaction')
+assert.ok(qualityGateStart > compactStart, 'ensureBeatPlanQuality should follow beat compaction')
 
-const compactBlock = source.slice(compactStart, generateBeatStart)
+const compactBlock = source.slice(compactStart, qualityGateStart)
 assert.match(
   compactBlock,
-  /throw buildBeatPlanGateError/,
-  'beat plan compaction should stop the flow when compressed outline remains over the hard limit'
+  /assertCheck\(best\.length <= 1300/,
+  'beat plan compaction should record a failed hard-limit check when compressed outline remains over the limit'
 )
 assert.doesNotMatch(
   compactBlock,
   /return best\.length < text\.length \? best : text/,
   'beat plan compaction should not silently return an overlong outline after a failed compression'
+)
+
+const generateBeatStart = source.indexOf('async function generateBeatPlan(', qualityGateStart)
+const qualityGateBlock = source.slice(qualityGateStart, generateBeatStart)
+assert.match(
+  qualityGateBlock,
+  /result\.length >= 500/,
+  'beat plan quality gate should enforce a minimum usable length'
+)
+assert.match(
+  qualityGateBlock,
+  /result\.length <= 1300/,
+  'beat plan quality gate should enforce the hard maximum before drafting'
 )
 
 const expandStart = source.indexOf('async function expandShortChapterContent(')

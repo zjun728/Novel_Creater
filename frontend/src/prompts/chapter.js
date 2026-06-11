@@ -126,8 +126,17 @@ function formatRecentChapterEndings(endings) {
 
 function formatWordTarget(target) {
   if (!target?.target) return ''
+  const sceneBudget = (() => {
+    const words = Number(target.target || 0)
+    if (words <= 2800) return '1-2 个'
+    if (words <= 4200) return '2-3 个'
+    if (words <= 6200) return '3-4 个'
+    return '4-5 个'
+  })()
   return [
     `- 建议围绕约 ${target.target} 字设计场景密度，优先落在 ${target.min}-${target.max} 字；这是写作节奏参考，不是硬性截断线。`,
+    `- 本章容量预算：主场景建议控制在 ${sceneBudget}，每个主场景围绕一个明确压力、一次选择或一次信息揭示展开。`,
+    `- 不要把近景规划里的后续章节提前写进本章；本章只完成当前小纲的核心推进，支线展开、复盘解释和下一轮冲突优先留到下一章。`,
     `- 质量优先级高于机械字数：不得为了压字数省略关键动作、情绪转折、人物反应、因果交代或章节钩子。`,
     `- 如果内容自然超量，先判断是否把两章容量塞进了一章；能拆则在自然断点把支线、解释、余波或下一轮冲突留到下一章。`,
     `- 如果明显超量，请减少支线、旁白、重复描写或低效对白；不要压掉关键动作、人物反应和因果交代。`,
@@ -148,6 +157,9 @@ function formatVolumeStage(stage) {
     stage.mainConflict ? `- 分卷核心冲突：${stage.mainConflict}` : '',
     stage.keyCharacters?.length ? `- 分卷关键人物：${stage.keyCharacters.join('、')}` : '',
     stage.currentSummary ? `- 当前阶段短摘要：${stage.currentSummary}` : '',
+    stage.foreshadowingPlan?.length ? `- 本卷伏笔计划：${stage.foreshadowingPlan.map(formatStageItem).join('；')}` : '',
+    stage.unresolvedItems?.length ? `- 本卷暂不解决：${stage.unresolvedItems.map(formatStageItem).join('；')}` : '',
+    stage.handoffPoint ? `- 本卷卷尾交接点：${stage.handoffPoint}` : '',
     stage.stageSummary ? `- 阶段总结：${stage.stageSummary}` : '',
     stage.completedBeats?.length ? `- 已完成节点：${stage.completedBeats.map(formatStageItem).join('；')}` : '',
     stage.openQuestions?.length ? `- 未解问题：${stage.openQuestions.map(formatStageItem).join('；')}` : '',
@@ -160,6 +172,9 @@ function formatVolumeStage(stage) {
     stage.auditIssues?.length ? `- 审稿待处理：${stage.auditIssues.map(formatStageItem).join('；')}` : '',
     stage.previousVolumeSummaries?.length
       ? `- 前卷摘要：${stage.previousVolumeSummaries.map(item => `${item.title || item.range}：${item.summary}`).join('；')}`
+      : '',
+    stage.nextVolumePreview
+      ? `- 下一卷粗方向：${stage.nextVolumePreview.title || stage.nextVolumePreview.range || '后续卷'}；目标：${stage.nextVolumePreview.coreGoal || '未填写'}；冲突：${stage.nextVolumePreview.mainConflict || '未填写'}`
       : ''
   ].filter(hasText)
 
@@ -364,9 +379,128 @@ export function cleanGeneratedChapterTitle(text) {
   if (!title) return ''
   if (/^(?:第\s*[\d一二三四五六七八九十百千万零〇两]+\s*章|无题|未命名)$/.test(title)) return ''
   if (/^[\u4e00-\u9fa5]{1,4}(?:在|被|把|将|让|向|从|给|对|随|带|进入|走进|回到|离开|看见|发现|听见|醒来)/.test(title)) return ''
+  if (/(发现|看见|听见|进入|走进|回到|来到|抵达|离开|醒来|带进|打开|拿起|放下|说道|问道|站在|坐在|吹下来|压着|握住|落在|看着)/.test(title)) return ''
+  if (/[了着过]$/.test(title)) return ''
   if (/[，。！？；：、,.!?;:]/.test(title)) return ''
   if (Array.from(title).length < 2 || Array.from(title).length > 10) return ''
   return title
+}
+
+const FALLBACK_TITLE_LOCATIONS = [
+  '后山',
+  '旧宅',
+  '雨夜',
+  '雪夜',
+  '灯下',
+  '桥头',
+  '祠堂',
+  '古井',
+  '暗河',
+  '山门',
+  '旧城',
+  '荒院',
+  '密室',
+  '棋院',
+  '矿洞',
+  '龙宫',
+  '地府',
+  '群聊',
+  '渡口',
+  '庭院',
+  '书房',
+  '巷口'
+]
+
+const FALLBACK_TITLE_IMAGES = [
+  '无人棋',
+  '无名',
+  '归人',
+  '残碑',
+  '旧案',
+  '暗河',
+  '灯火',
+  '故人',
+  '血书',
+  '空城',
+  '断桥',
+  '旧债',
+  '遗愿',
+  '铜钱',
+  '残局',
+  '白骨',
+  '封印',
+  '雨声',
+  '潮声',
+  '旧谱',
+  '缺名'
+]
+
+function collectChapterTitleSource(context = {}) {
+  return [
+    context.chapterGoal?.goal,
+    context.chapterGoal?.summary,
+    context.chapterGoal,
+    context.beatPlan,
+    context.content
+  ]
+    .filter(Boolean)
+    .map(value => typeof value === 'string' ? value : JSON.stringify(value))
+    .join('\n')
+}
+
+function makeFallbackTitleCandidate(candidate) {
+  return cleanGeneratedChapterTitle(String(candidate || '').replace(/\s+/g, ''))
+}
+
+function deriveKnownPairTitle(source) {
+  for (const location of FALLBACK_TITLE_LOCATIONS) {
+    if (!source.includes(location)) continue
+    for (const image of FALLBACK_TITLE_IMAGES) {
+      if (!source.includes(image)) continue
+      const candidate = image.includes(location) ? image : `${location}${image}`
+      const title = makeFallbackTitleCandidate(candidate)
+      if (title) return title
+    }
+  }
+  return ''
+}
+
+function trimNarrativeLead(value) {
+  let text = String(value || '')
+  for (let i = 0; i < 2; i += 1) {
+    text = text
+      .replace(/^[\u4e00-\u9fa5]{1,4}(?:在|于|被|把|将|让|向|从|给|对|随|带|进入|走进|回到|来到|抵达|离开|看见|发现|听见|醒来)/, '')
+      .replace(/^(?:进入|走进|回到|来到|抵达|发现|看见|听见|一局|那局|这局|没有|一座|那座|这座)/, '')
+  }
+  return text
+}
+
+function deriveSequenceTitle(source) {
+  const runs = String(source || '').match(/[\u4e00-\u9fa5]{2,18}/g) || []
+  for (const run of runs) {
+    const trimmed = trimNarrativeLead(run)
+    for (const location of FALLBACK_TITLE_LOCATIONS) {
+      const index = trimmed.indexOf(location)
+      if (index === -1) continue
+      const candidate = makeFallbackTitleCandidate(trimmed.slice(index, index + 8))
+      if (candidate && FALLBACK_TITLE_IMAGES.some(image => candidate.includes(image) || source.includes(image))) {
+        return candidate
+      }
+    }
+    for (const image of FALLBACK_TITLE_IMAGES) {
+      const index = trimmed.indexOf(image)
+      if (index === -1) continue
+      const candidate = makeFallbackTitleCandidate(trimmed.slice(Math.max(0, index - 2), index + image.length))
+      if (candidate) return candidate
+    }
+  }
+  return ''
+}
+
+export function deriveFallbackChapterTitle(context = {}) {
+  const source = collectChapterTitleSource(context)
+  if (!source.trim()) return ''
+  return deriveKnownPairTitle(source) || deriveSequenceTitle(source)
 }
 
 export function buildChapterTitleSystemPrompt() {
