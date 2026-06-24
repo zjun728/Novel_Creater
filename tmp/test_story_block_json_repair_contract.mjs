@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+const store = readFileSync('frontend/src/stores/storyBlockStore.js', 'utf8')
+const prompt = readFileSync('frontend/src/prompts/storyBlockPrompt.js', 'utf8')
+
+assert.match(prompt, /buildStoryBlockPlanningRepairPrompt/)
+assert.match(prompt, /只修复为合法 JSON/)
+assert.match(prompt, /不新增剧情/)
+assert.match(prompt, /不扩写正文/)
+assert.match(prompt, /stagePlan/)
+assert.match(prompt, /不要 Markdown/)
+assert.match(prompt, /优先缩短字段/)
+
+assert.match(store, /buildStoryBlockPlanningRepairPrompt/)
+assert.match(store, /async function repairStoryBlockPlanningJson/)
+assert.match(store, /repairTriggered/)
+assert.match(store, /repairSucceeded/)
+assert.match(store, /lastPlanningDiagnostics/)
+assert.match(store, /providerId/)
+assert.match(store, /modelName/)
+assert.match(store, /supportsJSON/)
+assert.match(store, /promptChars/)
+assert.match(store, /promptTokensApprox/)
+assert.match(store, /rawHead/)
+assert.match(store, /rawTail/)
+assert.match(store, /containsMarkdownCodeBlock/)
+assert.match(store, /likelyTruncated/)
+assert.match(store, /maxTokens:\s*3[0-2]00/)
+assert.match(store, /chatCompletion\(provider,\s*repairMessages/)
+assert.match(store, /function assertUsableStoryBlockPlanningRoot/)
+assert.match(store, /diagnostics\.likelyTruncated[\s\S]{0,160}throw new Error/)
+assert.match(store, /assertUsableStoryBlockPlanningRoot\(parsed\)/)
+assert.match(store, /assertUsableStoryBlockPlanningRoot\(repair\.parsed\)/)
+
+console.log('story block JSON repair contract tests passed')

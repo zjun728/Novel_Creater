@@ -186,13 +186,78 @@ async def ensure_schema():
           id VARCHAR(80) PRIMARY KEY,
           project_id CHAR(36) NOT NULL,
           chapter_num INT NOT NULL,
+          story_block_id CHAR(36) DEFAULT NULL,
+          block_stage_id VARCHAR(80) DEFAULT NULL,
+          block_stage_snapshot JSON DEFAULT NULL,
+          beat_plan_source VARCHAR(64) DEFAULT NULL,
+          derived_from_story_block TINYINT(1) DEFAULT 0,
+          derived_reason TEXT DEFAULT NULL,
           content MEDIUMTEXT DEFAULT NULL,
           created_at BIGINT NOT NULL,
           updated_at BIGINT NOT NULL,
           UNIQUE KEY uniq_chapter_beat_plan (project_id, chapter_num),
-          INDEX idx_chapter_beat_plans_project (project_id, chapter_num)
+          INDEX idx_chapter_beat_plans_project (project_id, chapter_num),
+          INDEX idx_chapter_beat_plans_story_block (project_id, story_block_id),
+          INDEX idx_chapter_beat_plans_stage (project_id, story_block_id, block_stage_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
+        """
+        CREATE TABLE IF NOT EXISTS story_blocks (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          volume_id CHAR(36) DEFAULT NULL,
+          block_num INT NOT NULL DEFAULT 1,
+          status VARCHAR(30) DEFAULT 'active',
+          title VARCHAR(200) DEFAULT '',
+          goal TEXT DEFAULT NULL,
+          story_function VARCHAR(120) DEFAULT '',
+          entry_state TEXT DEFAULT NULL,
+          exit_target TEXT DEFAULT NULL,
+          main_pressure TEXT DEFAULT NULL,
+          key_characters JSON DEFAULT NULL,
+          stage_plan JSON DEFAULT NULL,
+          completed_stages JSON DEFAULT NULL,
+          next_stage_suggestion TEXT DEFAULT NULL,
+          unresolved_questions JSON DEFAULT NULL,
+          dont_advance_yet JSON DEFAULT NULL,
+          carry_over_to_next_chapter JSON DEFAULT NULL,
+          capacity_assessment VARCHAR(40) DEFAULT 'normal',
+          chapter_refs JSON DEFAULT NULL,
+          lock_state JSON DEFAULT NULL,
+          review_history JSON DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          CHECK (status IN ('active','completed','paused','closed')),
+          INDEX idx_story_blocks_project (project_id, block_num),
+          INDEX idx_story_blocks_status (project_id, status),
+          INDEX idx_story_blocks_volume (project_id, volume_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS story_block_reviews (
+          id CHAR(36) PRIMARY KEY,
+          project_id CHAR(36) NOT NULL,
+          story_block_id CHAR(36) NOT NULL,
+          chapter_num INT DEFAULT NULL,
+          decision VARCHAR(60) NOT NULL DEFAULT 'continue_current_block',
+          review_json JSON DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          CHECK (decision IN ('continue_current_block','adjust_remaining_stages','split_unfinalized_content','complete_current_block','open_new_block')),
+          INDEX idx_story_block_reviews_project (project_id, story_block_id, created_at),
+          INDEX idx_story_block_reviews_decision (project_id, decision)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        "ALTER TABLE chapters ADD COLUMN story_block_id CHAR(36) DEFAULT NULL AFTER title",
+        "ALTER TABLE chapters ADD INDEX idx_chapters_story_block (project_id, story_block_id)",
+        "ALTER TABLE chapter_beat_plans ADD COLUMN story_block_id CHAR(36) DEFAULT NULL AFTER chapter_num",
+        "ALTER TABLE chapter_beat_plans ADD COLUMN block_stage_id VARCHAR(80) DEFAULT NULL AFTER story_block_id",
+        "ALTER TABLE chapter_beat_plans ADD COLUMN block_stage_snapshot JSON DEFAULT NULL AFTER block_stage_id",
+        "ALTER TABLE chapter_beat_plans ADD COLUMN beat_plan_source VARCHAR(64) DEFAULT NULL AFTER block_stage_snapshot",
+        "ALTER TABLE chapter_beat_plans ADD COLUMN derived_from_story_block TINYINT(1) DEFAULT 0 AFTER beat_plan_source",
+        "ALTER TABLE chapter_beat_plans ADD COLUMN derived_reason TEXT DEFAULT NULL AFTER derived_from_story_block",
+        "ALTER TABLE story_blocks ADD COLUMN carry_over_to_next_chapter JSON DEFAULT NULL AFTER dont_advance_yet",
+        "ALTER TABLE chapter_beat_plans ADD INDEX idx_chapter_beat_plans_story_block (project_id, story_block_id)",
+        "ALTER TABLE chapter_beat_plans ADD INDEX idx_chapter_beat_plans_stage (project_id, story_block_id, block_stage_id)",
         "ALTER TABLE project_volumes ADD COLUMN stage_summary_report JSON DEFAULT NULL AFTER summary",
         "ALTER TABLE project_volumes ADD COLUMN foreshadowing_plan JSON DEFAULT NULL AFTER summary",
         "ALTER TABLE project_volumes ADD COLUMN unresolved_items JSON DEFAULT NULL AFTER foreshadowing_plan",
@@ -204,6 +269,10 @@ async def ensure_schema():
         "ALTER TABLE creative_seeds MODIFY style_target TEXT DEFAULT NULL",
         "ALTER TABLE creative_seeds ADD COLUMN ending_anchor TEXT DEFAULT NULL AFTER risk_notes",
         "ALTER TABLE creative_bible ADD COLUMN writing_profile JSON DEFAULT NULL AFTER world_rules",
+        "ALTER TABLE task_model_bindings ADD COLUMN inherited_from_project_id CHAR(36) DEFAULT NULL AFTER polish_model_id",
+        "ALTER TABLE task_model_bindings ADD COLUMN inherited_from_project_title VARCHAR(200) DEFAULT '' AFTER inherited_from_project_id",
+        "ALTER TABLE task_model_bindings ADD COLUMN inherited_from_updated_at BIGINT DEFAULT NULL AFTER inherited_from_project_title",
+        "ALTER TABLE task_model_bindings ADD INDEX idx_bindings_updated (updated_at)",
     ]
     for sql in statements:
         try:
@@ -211,7 +280,13 @@ async def ensure_schema():
         except Exception as exc:
             # MySQL 5.7 does not support ADD COLUMN IF NOT EXISTS.
             # Duplicate column errors are safe during local schema upgrades.
-            if "Duplicate column" not in str(exc) and "1060" not in str(exc):
+            duplicate_schema_change = (
+                "Duplicate column" in str(exc)
+                or "Duplicate key name" in str(exc)
+                or "1060" in str(exc)
+                or "1061" in str(exc)
+            )
+            if not duplicate_schema_change:
                 raise
 
 

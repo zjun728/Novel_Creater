@@ -56,7 +56,7 @@ export class AnthropicAdapter extends AdapterBase {
   }
 
   async chatCompletion(messages, options = {}) {
-    this.validate()
+    this.validateDirectProviderAccess()
 
     const baseURL = this.getBaseURL().replace(/\/+$/, '')
     const url = baseURL.endsWith('/v1/messages')

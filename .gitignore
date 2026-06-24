@@ -21,8 +21,23 @@ _check_db.py
 小说txt/
 
 # QA browser/runtime artifacts
+.playwright-cli/
 tmp/realistic-flow-qa/chrome-profile/
 tmp/browser-qa/chrome-profile/
+tmp/browser-qa/
+tmp/browser_acceptance/
+tmp/browser-qa*/
+tmp/archive/
+tmp/writing-sample-analysis/
+tmp/db-backups/
+tmp/live-server-logs/
+tmp/realistic-flow-qa/*.png
+tmp/realistic-flow-qa/*.log
+tmp/realistic-flow-qa/*.pid
+tmp/realistic-flow-qa/live-service-pids.txt
+tmp/realistic-flow-qa/latest-realistic-report.*
+tmp/realistic-flow-qa/latest-story-block-report.*
+tmp/realistic-flow-qa/standards-secondary-analysis.*
 
 # Logs
 *.log

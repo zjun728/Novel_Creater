@@ -207,6 +207,42 @@ function findUniquePatchMatch(content, originalText, patch = {}) {
   return null
 }
 
+function pickIssueOriginalText(issue) {
+  return normalizePatchText(
+    issue?.originalText ||
+    issue?.quote ||
+    issue?.location ||
+    issue?.evidence ||
+    issue?.matchedText
+  )
+}
+
+function pickIssueReplacementText(issue) {
+  return normalizePatchText(
+    issue?.replacementText ||
+    issue?.replacement ||
+    issue?.rewrite ||
+    issue?.fixedText ||
+    issue?.newText
+  )
+}
+
+export function buildLocalRevisionPatchesFromIssues(issues = []) {
+  return (Array.isArray(issues) ? issues : [])
+    .map((issue, index) => {
+      const originalText = pickIssueOriginalText(issue)
+      const replacementText = pickIssueReplacementText(issue)
+      return {
+        issueIndex: Number(issue?.issueIndex || issue?.index || index + 1),
+        originalText,
+        replacementText,
+        contextBefore: normalizePatchText(issue?.contextBefore || issue?.before),
+        contextAfter: normalizePatchText(issue?.contextAfter || issue?.after)
+      }
+    })
+    .filter(patch => patch.originalText && patch.replacementText && patch.originalText !== patch.replacementText)
+}
+
 export function applyLocalRevisionPatches(originalContent, patches = []) {
   let content = String(originalContent || '')
   const applied = []

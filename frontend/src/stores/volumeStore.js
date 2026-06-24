@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { api } from '@/api/db/client'
 import { chatCompletion } from '@/api/ai'
 import {
+  buildCompactVolumePlanRetryPrompt,
   buildVolumePlanPrompt,
   buildVolumePlanRepairPrompt,
   buildVolumePlanSystemPrompt
@@ -20,15 +21,20 @@ export const VOLUME_STATUS_OPTIONS = [
   { label: '暂缓', value: 'paused' }
 ]
 
+const VOLUME_PLAN_DIAGNOSTICS_PREFIX = 'volume-plan-diagnostics'
+
 export const useVolumeStore = defineStore('volume', () => {
   const volumes = ref([])
   const loading = ref(false)
   const generating = ref(false)
+  const volumePlanQualityWarnings = ref([])
+  const lastPlanningDiagnostics = ref(null)
 
   async function loadVolumes(projectId) {
     loading.value = true
     try {
       volumes.value = await api.volumes.list(projectId)
+      volumePlanQualityWarnings.value = detectVolumePlanPlaceholders(volumes.value)
       return volumes.value
     } catch (e) {
       console.error('加载分卷规划失败:', e.message)
@@ -48,6 +54,7 @@ export const useVolumeStore = defineStore('volume', () => {
     if (idx === -1) volumes.value.push(result)
     else volumes.value[idx] = result
     sortVolumes()
+    volumePlanQualityWarnings.value = detectVolumePlanPlaceholders(volumes.value)
     await refreshProject(projectId)
     return result
   }
@@ -71,6 +78,7 @@ export const useVolumeStore = defineStore('volume', () => {
   async function deleteVolume(projectId, volumeId) {
     await api.volumes.delete(projectId, volumeId)
     volumes.value = volumes.value.filter(v => v.id !== volumeId)
+    volumePlanQualityWarnings.value = detectVolumePlanPlaceholders(volumes.value)
     await refreshProject(projectId)
   }
 
@@ -130,22 +138,81 @@ export const useVolumeStore = defineStore('volume', () => {
       ])
 
       const seed = (seedStore.seeds || []).find(item => item.status === 'selected') || seedStore.seeds?.[0] || null
+      lastPlanningDiagnostics.value = null
+      saveVolumePlanningDiagnostics(project.id, null)
+      const updateDiagnostics = (patch = {}) => {
+        lastPlanningDiagnostics.value = {
+          ...(lastPlanningDiagnostics.value || {}),
+          ...patch
+        }
+        saveVolumePlanningDiagnostics(project.id, lastPlanningDiagnostics.value)
+        return lastPlanningDiagnostics.value
+      }
       const planned = await requestVolumePlan(provider, {
         project,
         seed,
         bible: novelStore.bible,
         settings: settingStore.entities
+      }, diagnostics => {
+        lastPlanningDiagnostics.value = diagnostics
+        saveVolumePlanningDiagnostics(project.id, diagnostics)
       })
 
-      const normalized = normalizeGeneratedVolumes(planned, project)
+      const normalizedResult = normalizeGeneratedVolumesWithDiagnostics(planned, project)
+      const normalized = normalizedResult.volumes
+      updateDiagnostics({
+        parsedVolumeCount: Array.isArray(planned) ? planned.length : 0,
+        normalizedVolumeCount: normalized.length,
+        droppedVolumes: normalizedResult.droppedVolumes,
+        failureStage: normalized.length ? '' : 'normalize_empty'
+      })
       if (!normalized.length) {
-        throw new Error('AI 没有返回可保存的分卷规划')
+        const error = new Error('AI 返回的分卷规划归一化后为空，无法保存。')
+        error.code = 'volume_plan_normalize_empty'
+        error.volumePlanDiagnostics = lastPlanningDiagnostics.value
+        throw error
       }
+      const warnings = detectVolumePlanPlaceholders(normalized)
 
       const created = []
+      updateDiagnostics({
+        saveAttempted: true,
+        savedVolumeCount: 0,
+        saveErrors: [],
+        failureStage: ''
+      })
       for (const volume of normalized) {
-        created.push(await saveVolume(project.id, volume))
+        try {
+          created.push(await saveVolume(project.id, volume))
+          updateDiagnostics({ savedVolumeCount: created.length })
+        } catch (saveError) {
+          const saveErrors = [
+            ...(lastPlanningDiagnostics.value?.saveErrors || []),
+            {
+              volumeNum: volume.volumeNum,
+              title: volume.title,
+              message: saveError.message || String(saveError)
+            }
+          ]
+          updateDiagnostics({
+            saveErrors,
+            failureStage: 'save_failed'
+          })
+          const error = new Error(`分卷规划保存失败：${saveError.message || String(saveError)}`)
+          error.code = 'volume_plan_save_failed'
+          error.volumePlanDiagnostics = lastPlanningDiagnostics.value
+          throw error
+        }
       }
+      updateDiagnostics({
+        saveAttempted: true,
+        savedVolumeCount: created.length,
+        saveErrors: [],
+        failureStage: ''
+      })
+      volumePlanQualityWarnings.value = warnings.length
+        ? warnings
+        : detectVolumePlanPlaceholders(created)
       return created
     } finally {
       generating.value = false
@@ -169,6 +236,8 @@ export const useVolumeStore = defineStore('volume', () => {
     volumes,
     loading,
     generating,
+    volumePlanQualityWarnings,
+    lastPlanningDiagnostics,
     loadVolumes,
     saveVolume,
     saveAudit,
@@ -180,16 +249,43 @@ export const useVolumeStore = defineStore('volume', () => {
   }
 })
 
+export function detectVolumePlanPlaceholders(items = []) {
+  const placeholderPattern = /摘要不完整|TODO|待补充|略|待完善|TBD|\[(?:摘要)?不完整\]/i
+  return (Array.isArray(items) ? items : [])
+    .flatMap((volume, index) => {
+      const fields = [
+        ['title', volume?.title],
+        ['coreGoal', volume?.coreGoal],
+        ['mainConflict', volume?.mainConflict],
+        ['summary', volume?.summary],
+        ['handoffPoint', volume?.handoffPoint],
+        ['foreshadowingPlan', volume?.foreshadowingPlan],
+        ['unresolvedItems', volume?.unresolvedItems]
+      ]
+      return fields
+        .filter(([, value]) => placeholderPattern.test(stringifyVolumeField(value)))
+        .map(([field, value]) => ({
+          volumeNum: volume?.volumeNum || index + 1,
+          title: volume?.title || `第 ${index + 1} 卷`,
+          field,
+          value: stringifyVolumeField(value).slice(0, 120)
+        }))
+    })
+}
+
+function stringifyVolumeField(value) {
+  if (Array.isArray(value)) return value.join(' ')
+  if (value && typeof value === 'object') return JSON.stringify(value)
+  return String(value || '')
+}
+
 async function resolveVolumePlanningProvider(projectId) {
   const providerStore = useProviderStore()
-  await providerStore.ensureProvidersLoaded()
-  const bindings = await providerStore.getBindings(projectId)
-  const modelId = bindings?.outlineModelId || bindings?.brainstormModelId || bindings?.writingModelId
-  const provider = modelId
-    ? providerStore.providers.find(item => item.id === modelId)
-    : providerStore.providers[0]
-  if (!provider) throw new Error('请先在设置中配置大模型')
-  return provider
+  return providerStore.resolveTaskProvider({
+    projectId,
+    bindingKeys: ['outlineModelId', 'brainstormModelId', 'writingModelId'],
+    taskName: 'volume_planning'
+  })
 }
 
 function getCompletionText(result) {
@@ -205,37 +301,111 @@ function jsonOptions(provider, options = {}) {
     : { ...options, responseFormat: 'json' }
 }
 
-async function requestVolumePlan(provider, context) {
+async function requestVolumePlan(provider, context, onDiagnostics = () => {}) {
   const messages = [
     { role: 'system', content: buildVolumePlanSystemPrompt() },
     { role: 'user', content: buildVolumePlanPrompt(context) }
   ]
-  const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 6000, temperature: 0.45 }))
-  const text = getCompletionText(result)
-  let parsed = parseVolumePlan(text)
+  const diagnostics = createVolumePlanningDiagnostics({
+    provider,
+    messages,
+    maxTokens: 10000
+  })
 
-  if (!parsed?.volumes?.length && text.trim()) {
-    const repair = await chatCompletion(provider, [
-      { role: 'system', content: '你是 JSON 修复器。只输出合法 JSON，不要解释，不要 Markdown。' },
-      { role: 'user', content: buildVolumePlanRepairPrompt(text, context.project) }
-    ], jsonOptions(provider, { maxTokens: 5000, temperature: 0 }))
-    parsed = parseVolumePlan(getCompletionText(repair))
-  }
+  let text = ''
+  let repairText = ''
+  let compactText = ''
+  let parsed = null
 
-  if (!parsed?.volumes?.length) {
-    throw new Error(`AI 没有返回可解析的分卷规划 JSON。返回片段：${String(text || '').slice(0, 300)}`)
+  try {
+    const result = await chatCompletion(provider, messages, jsonOptions(provider, {
+      maxTokens: 10000,
+      temperature: 0.35,
+      returnRaw: true
+    }))
+    text = getCompletionText(result)
+    updateVolumePlanningDiagnosticsFromResult(diagnostics, result, text)
+    parsed = parseVolumePlan(text)
+    diagnostics.parsedVolumeCount = parsed?.volumes?.length || 0
+
+    if (!parsed?.volumes?.length) {
+      diagnostics.parseError = text.trim() ? '无法解析分卷规划 JSON' : '模型返回内容为空'
+      diagnostics.failureStage = text.trim() ? 'parse_failed' : 'empty_response'
+      if (text.trim()) {
+        diagnostics.repairTriggered = true
+        try {
+          const repair = await chatCompletion(provider, [
+            { role: 'system', content: '你是 JSON 修复器。只输出合法 JSON，不要解释，不要 Markdown。' },
+            { role: 'user', content: buildVolumePlanRepairPrompt(text, context.project) }
+          ], jsonOptions(provider, { maxTokens: 8000, temperature: 0, returnRaw: true }))
+          repairText = getCompletionText(repair)
+          diagnostics.repairSucceeded = Boolean(parseVolumePlan(repairText)?.volumes?.length)
+          diagnostics.repairRawHead = snippet(repairText || stringifyModelResult(repair), 1500)
+          diagnostics.repairRawTail = tailSnippet(repairText || stringifyModelResult(repair), 800)
+          diagnostics.repairFinishReason = getFinishReason(repair)
+          diagnostics.repairUsage = normalizeUsage(getUsage(repair))
+          parsed = parseVolumePlan(repairText)
+          diagnostics.parsedVolumeCount = parsed?.volumes?.length || diagnostics.parsedVolumeCount || 0
+          if (parsed?.volumes?.length) diagnostics.failureStage = ''
+        } catch (repairError) {
+          diagnostics.repairSucceeded = false
+          diagnostics.repairError = repairError.message || String(repairError)
+        }
+      }
+    }
+
+    if (!parsed?.volumes?.length) {
+      diagnostics.compactRetryTriggered = true
+      try {
+        const compact = await chatCompletion(provider, [
+          { role: 'system', content: '你是长篇小说分卷规划编辑。只输出精简合法 JSON，不要解释，不要 Markdown。' },
+          { role: 'user', content: buildCompactVolumePlanRetryPrompt(context, [text, repairText].filter(Boolean).join('\n\n')) }
+        ], jsonOptions(provider, { maxTokens: 10000, temperature: 0.25, returnRaw: true }))
+        compactText = getCompletionText(compact)
+        diagnostics.compactRetrySucceeded = Boolean(parseVolumePlan(compactText)?.volumes?.length)
+        diagnostics.compactRawHead = snippet(compactText || stringifyModelResult(compact), 1500)
+        diagnostics.compactRawTail = tailSnippet(compactText || stringifyModelResult(compact), 800)
+        diagnostics.compactFinishReason = getFinishReason(compact)
+        diagnostics.compactUsage = normalizeUsage(getUsage(compact))
+        parsed = parseVolumePlan(compactText)
+        diagnostics.parsedVolumeCount = parsed?.volumes?.length || diagnostics.parsedVolumeCount || 0
+        if (parsed?.volumes?.length) diagnostics.failureStage = ''
+      } catch (compactError) {
+        diagnostics.compactRetrySucceeded = false
+        diagnostics.compactError = compactError.message || String(compactError)
+      }
+    }
+
+    diagnostics.endedAt = new Date().toISOString()
+    onDiagnostics(compactVolumePlanningDiagnostics(diagnostics))
+
+    if (!parsed?.volumes?.length) {
+      const raw = snippet(compactText, 300) || snippet(repairText, 300) || snippet(text, 300)
+      const error = new Error(`AI 没有返回可解析的分卷规划 JSON${raw ? `。返回片段：${raw}` : '。返回片段为空'}`)
+      error.code = 'volume_plan_parse_failed'
+      diagnostics.failureStage = diagnostics.failureStage || 'parse_failed'
+      error.volumePlanDiagnostics = compactVolumePlanningDiagnostics(diagnostics)
+      throw error
+    }
+    return parsed.volumes
+  } catch (error) {
+    diagnostics.error = error.message || String(error)
+    diagnostics.endedAt = diagnostics.endedAt || new Date().toISOString()
+    const compactDiagnostics = error.volumePlanDiagnostics || compactVolumePlanningDiagnostics(diagnostics)
+    onDiagnostics(compactDiagnostics)
+    error.volumePlanDiagnostics = compactDiagnostics
+    throw error
   }
-  return parsed.volumes
 }
 
 function parseVolumePlan(text) {
   const cleaned = String(text || '')
     .replace(/^\uFEFF/, '')
-    .replace(/^```(?:json)?/i, '')
-    .replace(/```$/i, '')
     .trim()
   const candidates = [
     cleaned,
+    cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim(),
+    ...findBalancedJsonCandidates(cleaned),
     cleaned.match(/\{[\s\S]*\}/)?.[0],
     cleaned.match(/\[[\s\S]*\]/)?.[0]
   ].filter(Boolean)
@@ -250,37 +420,289 @@ function parseVolumePlan(text) {
   return null
 }
 
-function normalizeGeneratedVolumes(items, project) {
-  const targetChapters = Number(project?.targetChapters || 100)
-  const targetWords = Number(project?.targetWords || 100000)
-  const count = Math.max(1, items.length)
-  const ranges = buildVolumeRanges(targetChapters, targetWords, count)
+function findBalancedJsonCandidates(text) {
+  const candidates = []
+  const source = String(text || '')
+  for (let start = 0; start < source.length; start += 1) {
+    const open = source[start]
+    if (open !== '{' && open !== '[') continue
+    const stack = [open === '{' ? '}' : ']']
+    let inString = false
+    let escaped = false
+    for (let index = start + 1; index < source.length; index += 1) {
+      const char = source[index]
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === '\\') {
+        escaped = true
+        continue
+      }
+      if (char === '"') {
+        inString = !inString
+        continue
+      }
+      if (inString) continue
+      if (char === '{') stack.push('}')
+      else if (char === '[') stack.push(']')
+      else if (char === stack[stack.length - 1]) {
+        stack.pop()
+        if (!stack.length) {
+          candidates.push(source.slice(start, index + 1))
+          break
+        }
+      }
+    }
+  }
+  return candidates
+}
 
-  return items
+function createVolumePlanningDiagnostics({ provider, messages = [], maxTokens = 0 } = {}) {
+  const promptChars = messages.reduce((sum, message) => sum + String(message.content || '').length, 0)
+  return {
+    providerId: provider?.id || '',
+    modelName: provider?.model || provider?.modelName || provider?.name || '',
+    supportsJSON: provider?.supportsJSON !== false,
+    promptChars,
+    promptTokensApprox: Math.ceil(promptChars / 2),
+    maxTokens,
+    startedAt: new Date().toISOString(),
+    endedAt: '',
+    finishReason: '',
+    usage: null,
+    rawHead: '',
+    rawTail: '',
+    containsMarkdownCodeBlock: false,
+    likelyTruncated: false,
+    parsedVolumeCount: 0,
+    normalizedVolumeCount: 0,
+    droppedVolumes: [],
+    saveAttempted: false,
+    savedVolumeCount: 0,
+    saveErrors: [],
+    failureStage: '',
+    parseError: '',
+    repairTriggered: false,
+    repairSucceeded: false,
+    repairRawHead: '',
+    repairRawTail: '',
+    repairFinishReason: '',
+    repairUsage: null,
+    repairError: '',
+    compactRetryTriggered: false,
+    compactRetrySucceeded: false,
+    compactRawHead: '',
+    compactRawTail: '',
+    compactFinishReason: '',
+    compactUsage: null,
+    compactError: '',
+    error: ''
+  }
+}
+
+function updateVolumePlanningDiagnosticsFromResult(diagnostics, result, text = '') {
+  const raw = text || stringifyModelResult(result)
+  diagnostics.finishReason = getFinishReason(result)
+  diagnostics.usage = normalizeUsage(getUsage(result))
+  diagnostics.rawHead = snippet(raw, 1500)
+  diagnostics.rawTail = tailSnippet(raw, 800)
+  diagnostics.containsMarkdownCodeBlock = /```/.test(String(raw || ''))
+  diagnostics.likelyTruncated = diagnostics.finishReason === 'length' || isLikelyTruncatedVolumePlan(raw)
+}
+
+function compactVolumePlanningDiagnostics(diagnostics = {}) {
+  return {
+    providerId: diagnostics.providerId || '',
+    modelName: diagnostics.modelName || '',
+    supportsJSON: diagnostics.supportsJSON !== false,
+    promptChars: diagnostics.promptChars || 0,
+    promptTokensApprox: diagnostics.promptTokensApprox || 0,
+    maxTokens: diagnostics.maxTokens || 0,
+    startedAt: diagnostics.startedAt || '',
+    endedAt: diagnostics.endedAt || '',
+    finishReason: diagnostics.finishReason || '',
+    usage: diagnostics.usage || null,
+    rawHead: diagnostics.rawHead || '',
+    rawTail: diagnostics.rawTail || '',
+    containsMarkdownCodeBlock: Boolean(diagnostics.containsMarkdownCodeBlock),
+    likelyTruncated: Boolean(diagnostics.likelyTruncated),
+    parsedVolumeCount: diagnostics.parsedVolumeCount || 0,
+    normalizedVolumeCount: diagnostics.normalizedVolumeCount || 0,
+    droppedVolumes: Array.isArray(diagnostics.droppedVolumes) ? diagnostics.droppedVolumes : [],
+    saveAttempted: Boolean(diagnostics.saveAttempted),
+    savedVolumeCount: diagnostics.savedVolumeCount || 0,
+    saveErrors: Array.isArray(diagnostics.saveErrors) ? diagnostics.saveErrors : [],
+    failureStage: diagnostics.failureStage || '',
+    parseError: diagnostics.parseError || '',
+    repairTriggered: Boolean(diagnostics.repairTriggered),
+    repairSucceeded: Boolean(diagnostics.repairSucceeded),
+    repairRawHead: diagnostics.repairRawHead || '',
+    repairRawTail: diagnostics.repairRawTail || '',
+    repairFinishReason: diagnostics.repairFinishReason || '',
+    repairUsage: diagnostics.repairUsage || null,
+    repairError: diagnostics.repairError || '',
+    compactRetryTriggered: Boolean(diagnostics.compactRetryTriggered),
+    compactRetrySucceeded: Boolean(diagnostics.compactRetrySucceeded),
+    compactRawHead: diagnostics.compactRawHead || '',
+    compactRawTail: diagnostics.compactRawTail || '',
+    compactFinishReason: diagnostics.compactFinishReason || '',
+    compactUsage: diagnostics.compactUsage || null,
+    compactError: diagnostics.compactError || '',
+    error: diagnostics.error || ''
+  }
+}
+
+function saveVolumePlanningDiagnostics(projectId, diagnostics) {
+  if (typeof window === 'undefined' || !window.localStorage || !projectId) return
+  const key = `${VOLUME_PLAN_DIAGNOSTICS_PREFIX}:${projectId}`
+  if (!diagnostics) {
+    window.localStorage.removeItem(key)
+    return
+  }
+  window.localStorage.setItem(key, JSON.stringify(diagnostics))
+}
+
+function isLikelyTruncatedVolumePlan(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  if (/```/.test(value) && !/```\s*$/.test(value) && (value.match(/```/g) || []).length % 2 === 1) return true
+  const last = value[value.length - 1]
+  if (last && !['}', ']'].includes(last)) return true
+  let balance = 0
+  let inString = false
+  let escaped = false
+  for (const char of value) {
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"') {
+      inString = !inString
+      continue
+    }
+    if (inString) continue
+    if (char === '{' || char === '[') balance += 1
+    if (char === '}' || char === ']') balance -= 1
+  }
+  return balance > 0 || inString
+}
+
+function getFinishReason(result) {
+  return result?.choices?.[0]?.finish_reason || result?.finishReason || ''
+}
+
+function getUsage(result) {
+  return result?.usage || null
+}
+
+function normalizeUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null
+  return {
+    promptTokens: usage.prompt_tokens ?? usage.promptTokens ?? null,
+    completionTokens: usage.completion_tokens ?? usage.completionTokens ?? null,
+    totalTokens: usage.total_tokens ?? usage.totalTokens ?? null,
+    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens ?? usage.reasoningTokens ?? null
+  }
+}
+
+function stringifyModelResult(result) {
+  try {
+    return JSON.stringify(result || '')
+  } catch {
+    return String(result || '')
+  }
+}
+
+function snippet(value, max = 300) {
+  return String(value || '').slice(0, max)
+}
+
+function tailSnippet(value, max = 800) {
+  return String(value || '').slice(-max)
+}
+
+function normalizeGeneratedVolumes(items, project) {
+  return normalizeGeneratedVolumesWithDiagnostics(items, project).volumes
+}
+
+function normalizeGeneratedVolumesWithDiagnostics(items, project) {
+  const sourceItems = Array.isArray(items) ? items : []
+  const targetChapters = Number(project?.targetChapters || project?.target_chapters || 100)
+  const targetWords = Number(project?.targetWords || project?.target_words || 100000)
+  const count = Math.max(1, sourceItems.length)
+  const ranges = buildVolumeRanges(targetChapters, targetWords, count)
+  const droppedVolumes = []
+
+  const volumes = sourceItems
     .map((item, index) => {
+      if (!item || typeof item !== 'object') {
+        droppedVolumes.push({
+          volumeNum: index + 1,
+          title: '',
+          dropReason: 'invalid_volume_object'
+        })
+        return null
+      }
       const range = ranges[index]
-      return normalizeVolume({
+      const modelStart = Number(item.startChapter || item.start_chapter || 0)
+      const modelEnd = Number(item.endChapter || item.end_chapter || 0)
+      const startChapter = modelStart > 0 ? modelStart : range.startChapter
+      const endChapter = modelEnd >= startChapter ? modelEnd : range.endChapter
+      const normalized = normalizeVolume({
         volumeNum: Number(item.volumeNum || item.volume_num || index + 1),
-        title: item.title || `第 ${index + 1} 卷`,
-        startChapter: range.startChapter,
-        endChapter: range.endChapter,
-        targetWords: range.targetWords,
-        coreGoal: item.coreGoal || item.core_goal || '',
-        mainConflict: item.mainConflict || item.main_conflict || '',
-        keyCharacters: item.keyCharacters || item.key_characters || [],
-        summary: item.summary || '',
-        foreshadowingPlan: item.foreshadowingPlan || item.foreshadowing_plan || item.foreshadowing || [],
-        unresolvedItems: item.unresolvedItems || item.unresolved_items || item.deferredItems || [],
-        handoffPoint: item.handoffPoint || item.handoff_point || item.handoff || '',
+        title: truncateVolumeField(item.title || `第 ${index + 1} 卷`, 80),
+        startChapter,
+        endChapter,
+        targetWords: Number(item.targetWords || item.target_words || range.targetWords || 0),
+        coreGoal: truncateVolumeField(item.coreGoal || item.core_goal || '', 220),
+        mainConflict: truncateVolumeField(item.mainConflict || item.main_conflict || '', 220),
+        keyCharacters: normalizeVolumeList(item.keyCharacters || item.key_characters || [], 4, 40),
+        summary: truncateVolumeField(item.summary || '', 360),
+        foreshadowingPlan: normalizeVolumeList(item.foreshadowingPlan || item.foreshadowing_plan || item.foreshadowing || [], 3, 120),
+        unresolvedItems: normalizeVolumeList(item.unresolvedItems || item.unresolved_items || item.deferredItems || [], 3, 120),
+        handoffPoint: truncateVolumeField(item.handoffPoint || item.handoff_point || item.handoff || '', 220),
         status: index === 0 ? 'active' : 'planned'
       })
+      const dropReason = getVolumeDropReason(normalized, targetChapters)
+      if (dropReason) {
+        droppedVolumes.push({
+          volumeNum: normalized.volumeNum || index + 1,
+          title: normalized.title || '',
+          dropReason
+        })
+        return null
+      }
+      return normalized
     })
-    .filter(volume =>
-      volume.title &&
-      volume.startChapter <= volume.endChapter &&
-      (volume.coreGoal || volume.mainConflict || volume.summary)
-    )
+    .filter(Boolean)
     .sort((a, b) => a.volumeNum - b.volumeNum)
+
+  return { volumes, droppedVolumes }
+}
+
+function getVolumeDropReason(volume, targetChapters = 0) {
+  if (!volume.title) return 'missing_title'
+  if (!Number.isFinite(volume.startChapter) || !Number.isFinite(volume.endChapter)) return 'invalid_chapter_range'
+  if (volume.startChapter < 1 || volume.endChapter < volume.startChapter) return 'invalid_chapter_range'
+  if (targetChapters && volume.startChapter > targetChapters) return 'range_outside_project'
+  return ''
+}
+
+function truncateVolumeField(value, max = 200) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
+function normalizeVolumeList(value, maxItems = 3, maxChars = 80) {
+  const list = Array.isArray(value) ? value : splitList(value)
+  return list
+    .map(item => truncateVolumeField(item, maxChars))
+    .filter(Boolean)
+    .slice(0, maxItems)
 }
 
 function buildVolumeRanges(targetChapters, targetWords, count) {

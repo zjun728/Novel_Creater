@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake
+from .providers import inherit_latest_task_model_bindings
 
 router = APIRouter(tags=["projects"])
 
@@ -48,6 +49,7 @@ async def create_project(data: ProjectCreate):
         """,
         (pid, data.title, data.genre, data.description, data.targetWords, data.targetChapters, now, now),
     )
+    await inherit_latest_task_model_bindings(pid)
     return convert_row(await fetchone("SELECT * FROM projects WHERE id=%s", (pid,)))
 
 

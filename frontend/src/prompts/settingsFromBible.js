@@ -22,6 +22,12 @@ const ENTITY_TYPE_ALIASES = new Map([
   ['城市', 'location'],
   ['power_system', 'power_system'],
   ['powersystem', 'power_system'],
+  ['world_rule', 'power_system'],
+  ['world_rules', 'power_system'],
+  ['rule', 'power_system'],
+  ['rules', 'power_system'],
+  ['system', 'power_system'],
+  ['ability_system', 'power_system'],
   ['体系', 'power_system'],
   ['世界规则', 'power_system'],
   ['能力体系', 'power_system'],
@@ -91,6 +97,11 @@ const CATEGORY_KEYS = new Map([
   ['power_systems', 'power_system'],
   ['powerSystem', 'power_system'],
   ['power_system', 'power_system'],
+  ['worldRule', 'power_system'],
+  ['worldRules', 'power_system'],
+  ['world_rule', 'power_system'],
+  ['world_rules', 'power_system'],
+  ['rules', 'power_system'],
   ['体系', 'power_system'],
   ['世界规则', 'power_system'],
   ['techniques', 'technique'],
@@ -234,6 +245,58 @@ function formatExistingEvents(events = []) {
     .join('\n')
 }
 
+function compactText(value, limit = 900) {
+  const text = dedupeRepeatedSentences(asText(value).replace(/\s+/g, ' ').trim())
+  if (text.length <= limit) return text
+  return `${text.slice(0, limit)}...`
+}
+
+function dedupeRepeatedSentences(text = '') {
+  const parts = String(text || '').split(/(?<=[。！？!?；;])/)
+  if (parts.length < 3) return text
+  const seen = new Set()
+  const result = []
+  for (const part of parts) {
+    const normalized = part.trim()
+    if (!normalized) continue
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    result.push(normalized)
+  }
+  return result.join('')
+}
+
+export function buildCompactBibleContext({ bible = {}, seed = {}, group } = {}) {
+  const safeGroup = group || SETTING_INITIALIZATION_GROUPS[0]
+  const common = [
+    ['作品定位', bible.premise, 700],
+    ['目标读者', bible.targetReader, 220],
+    ['创作种子', formatSeed(seed), 700]
+  ]
+  const groupFields = []
+
+  if (safeGroup.key === 'characters' || safeGroup.key === 'relationships') {
+    groupFields.push(['人物相关线索', [seed.protagonist, seed.desire, seed.coreConflict, bible.themeBible].filter(Boolean).join('\n'), 1100])
+  }
+  if (safeGroup.key === 'factions' || safeGroup.key === 'relationships') {
+    groupFields.push(['势力/组织线索', [seed.worldPressure, seed.coreConflict, bible.worldRules, bible.themeBible].filter(Boolean).join('\n'), 1100])
+  }
+  if (safeGroup.key === 'worldRules') {
+    groupFields.push(['世界规则/能力体系线索', [bible.worldRules, seed.worldPressure, seed.coreConflict, bible.themeBible].filter(Boolean).join('\n'), 1300])
+  }
+  if (safeGroup.key === 'locationsItems') {
+    groupFields.push(['地点/物品线索', [seed.openingHook, seed.worldPressure, bible.worldRules, seed.differentiation].filter(Boolean).join('\n'), 1100])
+  }
+  if (safeGroup.key === 'relationships') {
+    groupFields.push(['长期关系线索', [seed.protagonist, seed.coreConflict, seed.emotionalPromise, bible.themeBible].filter(Boolean).join('\n'), 1200])
+  }
+
+  return [...common, ['本组目标', safeGroup.label, 120], ['本组关注', safeGroup.focus, 500], ...groupFields]
+    .filter(([, value]) => asText(value))
+    .map(([label, value, limit]) => `## ${label}\n${compactText(value, limit)}`)
+    .join('\n\n')
+}
+
 export function buildSettingsFromBibleSystemPrompt() {
   return `你是长篇小说设定库编辑，负责从“创作圣经”和“创作种子”中提取初始设定候选。
 你的任务不是扩写剧情，也不是写百科大全，而是找出后续长篇写作必须长期追踪的设定：人物、势力、地点、世界规则、能力体系、功法、物品、关系。
@@ -292,21 +355,19 @@ relationship 的 newValue 必须是对象：
 8. profilePatch 每个字段值必须短，不要整段复制原文；长说明放入 summary 或 evidence。`
 }
 
-export function buildSettingsFromBibleSegmentPrompt({ bible, seed, existingSettings = [], existingEvents = [], group }) {
+export function buildSettingsFromBibleSegmentPrompt({ bible, bibleContext, seed, existingSettings = [], existingEvents = [], group }) {
   const safeGroup = group || SETTING_INITIALIZATION_GROUPS[0]
   const allowedTypes = (safeGroup.entityTypes || Array.from(VALID_ENTITY_TYPES)).join('|')
   const typeRule = safeGroup.relationshipOnly
     ? '本轮只允许输出 relationship；不要输出 new_entity。关系两端如果尚未在已提取候选中出现，也可以按名称写入 targetEntityName，但不要补写实体档案。'
     : `本轮主要输出 new_entity；entityType 只能是 ${allowedTypes}。除非关系是理解该实体不可缺少的信息，否则不要在本轮输出 relationship。`
+  const compactContext = bibleContext || buildCompactBibleContext({ bible, seed, group: safeGroup })
 
   return `请从下面的创作圣经和创作种子中，分批提取“${safeGroup.label}”设定候选。
 这一轮只处理：${safeGroup.focus}
 
-## 创作圣经
-${formatBible(bible) || '无'}
-
-## 创作种子
-${formatSeed(seed) || '无'}
+## 紧凑圣经上下文
+${compactContext || '无'}
 
 ${existingSettings?.length ? `## 已有正式设定库（避免重复创建）\n${formatExistingSettings(existingSettings)}` : ''}
 
@@ -481,6 +542,12 @@ function normalizeEvent(raw = {}) {
     '组织名称',
     '地点名称',
     '体系名称',
+    '规则名称',
+    '能力体系名称',
+    'ruleName',
+    'rule_name',
+    'systemName',
+    'system_name',
     '功法名称',
     '物品名称',
     '人物',
@@ -660,6 +727,26 @@ export function dedupeSettingInitializationEvents(events = [], existingSettings 
   return deduped
 }
 
+export function buildSettingInitializationDedupKey(event = {}) {
+  if (event.changeType === 'relationship') {
+    const relation = parseRelationValue(event.newValue)
+    return relationKey(
+      event.entityType,
+      event.entityName,
+      relation.targetEntityType,
+      relation.targetEntityName,
+      relation.relationType
+    )
+  }
+
+  return [
+    entityKey(event.entityType, event.entityName),
+    event.changeType || 'new_entity',
+    event.fieldPath || 'summary',
+    String(event.newValue || '').trim()
+  ].join('::')
+}
+
 function entityKey(entityType, entityName) {
   return `${String(entityType || 'character').trim()}::${String(entityName || '').trim()}`
 }
@@ -778,6 +865,21 @@ function buildFallbackRawEvents(bible, seed) {
     })
   }
 
+  for (const candidate of extractLocationItemCandidates({ bible, seed, text })) {
+    events.push({
+      entityType: candidate.entityType,
+      entityName: candidate.name,
+      changeType: 'new_entity',
+      fieldPath: 'summary',
+      summary: candidate.summary,
+      category: candidate.category,
+      importance: candidate.importance,
+      profilePatch: candidate.profilePatch,
+      evidence: candidate.evidence,
+      confidence: candidate.confidence
+    })
+  }
+
   return events
 }
 
@@ -832,6 +934,70 @@ function extractFactionCandidates(text = '') {
       importance: /主线|核心|敌|控制|追杀|统治|掌控|隐秘/.test(evidence) ? 5 : 4
     })
   }
+  return [...candidates.values()].slice(0, 4)
+}
+
+function extractLocationItemCandidates({ bible = {}, seed = {}, text = '' } = {}) {
+  const value = String(text || '')
+  const candidates = new Map()
+  const add = (entityType, name, evidence, options = {}) => {
+    const normalized = normalizeCandidateName(name)
+    if (!normalized || isCommonNonName(normalized)) return
+    const key = `${entityType}::${normalized}`
+    if (candidates.has(key)) return
+    candidates.set(key, {
+      entityType,
+      name: normalized,
+      evidence: summarizeText(evidence, 180) || summarizeText(value, 180),
+      summary: options.summary || summarizeText(evidence, 150) || `${normalized} 是创作圣经初始化识别出的${entityType === 'location' ? '地点' : '物品'}候选，需要人工确认。`,
+      category: options.category || (entityType === 'location' ? '地点' : '关键物品'),
+      importance: options.importance || 4,
+      profilePatch: options.profilePatch || {},
+      confidence: options.confidence || 0.66
+    })
+  }
+
+  const openingHook = asText(seed.openingHook)
+  const worldRules = asText(bible.worldRules)
+  const differentiation = asText(seed.differentiation)
+  const coreConflict = asText(seed.coreConflict)
+
+  for (const match of openingHook.matchAll(/([\u4e00-\u9fa5]{2,10}(?:当铺|城|镇|村|街|巷|楼|阁|司|府|院|港|渡|山|谷|河|湖|域|界|坊|铺))/g)) {
+    add('location', match[1], findSentenceContaining(openingHook, match[1]) || openingHook, {
+      category: '开局地点',
+      importance: 4,
+      profilePatch: { 来源: '开局钩子' },
+      confidence: 0.68
+    })
+  }
+
+  if (/当铺/.test(openingHook) && ![...candidates.keys()].some(key => key.includes('当铺'))) {
+    add('location', '雨夜当铺', openingHook, {
+      summary: '开局清账场景，承接父亲新账线索，需要人工确认正式名称。',
+      category: '开局地点',
+      importance: 4,
+      profilePatch: { 来源: '开局钩子', 状态: '名称待确认' },
+      confidence: 0.58
+    })
+  }
+
+  for (const itemName of ['星账', '账本']) {
+    const evidence = [openingHook, worldRules, differentiation, coreConflict]
+      .find(textPart => asText(textPart).includes(itemName))
+    if (evidence) {
+      add('item', itemName === '账本' && /星账/.test(value) ? '星账' : itemName, evidence, {
+        summary: `${itemName === '账本' && /星账/.test(value) ? '星账' : itemName}承载主线线索和代价机制，需要长期追踪持有、使用和限制。`,
+        category: '关键物品',
+        importance: 5,
+        profilePatch: {
+          功能: summarizeText(worldRules || differentiation || coreConflict, 120),
+          初次线索: summarizeText(openingHook, 100)
+        },
+        confidence: 0.72
+      })
+    }
+  }
+
   return [...candidates.values()].slice(0, 4)
 }
 

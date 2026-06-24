@@ -3,12 +3,12 @@ Novel Creator — FastAPI 后端入口
 """
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from database import get_pool, close_pool, ensure_schema
-from routers import projects, providers, chapters, seeds, novel, export, market, settings_library, volumes, correction_tasks
+from routers import projects, providers, chapters, seeds, novel, export, market, settings_library, volumes, correction_tasks, story_blocks, ai_proxy
 
 
 @asynccontextmanager
@@ -25,6 +25,7 @@ app = FastAPI(title="Novel Creator API", version="0.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,6 +42,8 @@ app.include_router(market.router, prefix="/api")
 app.include_router(settings_library.router, prefix="/api")
 app.include_router(volumes.router, prefix="/api")
 app.include_router(correction_tasks.router, prefix="/api")
+app.include_router(story_blocks.router, prefix="/api")
+app.include_router(ai_proxy.router, prefix="/api")
 
 
 @app.get("/api/health")
@@ -61,6 +64,8 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{path:path}")
     async def serve_frontend(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
         file_path = FRONTEND_DIST / path
         if file_path.is_file():
             return FileResponse(file_path)

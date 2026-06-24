@@ -4,6 +4,8 @@ from pydantic import BaseModel
 from typing import Optional
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
+import json
+import re
 import uuid, time
 
 router = APIRouter(tags=["chapters"])
@@ -27,6 +29,33 @@ class ChapterSummaryUpdate(BaseModel):
 class ChapterTitleUpdate(BaseModel):
     title: str = ""
 
+
+CHAPTER_TITLE_PRONOUN_FRAGMENT_RE = re.compile(r"^(你|我|他|她|它|谁|这|那|嗯|啊|哦|呀|喂|哈|嘿)[—\-…~，。！？!?,]*$")
+
+
+def _is_semantic_title_char(ch: str) -> bool:
+    return ch.isalnum() or ("\u4e00" <= ch <= "\u9fff")
+
+
+def _chapter_title_invalid_reason(title: str) -> str:
+    text = (title or "").strip()
+    if not text:
+        return "empty"
+    if len(text) > 30 or "\n" in text or "\r" in text:
+        return "too_long_or_multiline"
+    chars = [ch for ch in text if not ch.isspace()]
+    semantic_count = sum(1 for ch in chars if _is_semantic_title_char(ch))
+    symbol_count = sum(1 for ch in chars if not _is_semantic_title_char(ch))
+    if semantic_count == 0:
+        return "symbol_fragment"
+    if symbol_count >= semantic_count and symbol_count > 0:
+        return "punctuation_dominant"
+    if CHAPTER_TITLE_PRONOUN_FRAGMENT_RE.match(text):
+        return "dialogue_fragment"
+    if re.fullmatch(r"[{}\[\]()`#>*_+=|\\/\"'“”‘’《》「」『』【】（）()]+", text):
+        return "markup_or_json_fragment"
+    return ""
+
 class VersionCreate(BaseModel):
     title: str = ""
     content: str = ""
@@ -46,6 +75,12 @@ class VersionFinalize(BaseModel):
 
 class BeatPlanSave(BaseModel):
     content: str = ""
+    storyBlockId: Optional[str] = None
+    blockStageId: Optional[str] = None
+    blockStageSnapshot: Optional[dict] = None
+    beatPlanSource: Optional[str] = None
+    derivedFromStoryBlock: Optional[bool] = False
+    derivedReason: Optional[str] = None
 
 
 async def _chapter_by_id(pid: str, cid: str):
@@ -111,6 +146,9 @@ async def update_chapter_title(pid: str, cid: str, data: ChapterTitleUpdate):
     title = (data.title or "").strip()
     if not title:
         raise HTTPException(400, "章节标题不能为空")
+    invalid_reason = _chapter_title_invalid_reason(title)
+    if invalid_reason:
+        raise HTTPException(400, f"章节标题不合法：{invalid_reason}")
     now = int(time.time() * 1000)
     await execute(
         "UPDATE chapters SET title=%s, updated_at=%s WHERE project_id=%s AND id=%s",
@@ -291,20 +329,61 @@ async def get_chapter_beat_plan(pid: str, cnum: int):
 @router.put("/projects/{pid}/chapter-beat-plan/{cnum}")
 async def save_chapter_beat_plan(pid: str, cnum: int, data: BeatPlanSave):
     _raise_if_finalized(await _chapter_by_num(pid, cnum))
+    await _validate_story_block_reference(pid, data, cnum)
     plan_id = f"{pid}_{cnum}"
     now = int(time.time() * 1000)
+    snapshot = json.dumps(data.blockStageSnapshot or None, ensure_ascii=False)
+    beat_plan_source = (data.beatPlanSource or "").strip() or None
+    derived_from_story_block = 1 if data.derivedFromStoryBlock else 0
+    derived_reason = data.derivedReason or None
     existing = await fetchone("SELECT id FROM chapter_beat_plans WHERE id=%s", (plan_id,))
     if existing:
         await execute(
-            "UPDATE chapter_beat_plans SET content=%s, updated_at=%s WHERE id=%s",
-            (data.content, now, plan_id),
+            """
+            UPDATE chapter_beat_plans
+            SET content=%s, story_block_id=%s, block_stage_id=%s,
+                block_stage_snapshot=%s, beat_plan_source=%s,
+                derived_from_story_block=%s, derived_reason=%s, updated_at=%s
+            WHERE id=%s
+            """,
+            (
+                data.content,
+                data.storyBlockId,
+                data.blockStageId,
+                snapshot,
+                beat_plan_source,
+                derived_from_story_block,
+                derived_reason,
+                now,
+                plan_id,
+            ),
         )
     else:
         await execute(
             """INSERT INTO chapter_beat_plans
-               (id, project_id, chapter_num, content, created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s)""",
-            (plan_id, pid, cnum, data.content, now, now),
+               (id, project_id, chapter_num, story_block_id, block_stage_id,
+                block_stage_snapshot, beat_plan_source, derived_from_story_block,
+                derived_reason, content, created_at, updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                plan_id,
+                pid,
+                cnum,
+                data.storyBlockId,
+                data.blockStageId,
+                snapshot,
+                beat_plan_source,
+                derived_from_story_block,
+                derived_reason,
+                data.content,
+                now,
+                now,
+            ),
+        )
+    if data.storyBlockId:
+        await execute(
+            "UPDATE chapters SET story_block_id=%s, updated_at=%s WHERE project_id=%s AND chapter_num=%s",
+            (data.storyBlockId, now, pid, cnum),
         )
     row = await fetchone("SELECT * FROM chapter_beat_plans WHERE id=%s", (plan_id,))
     return convert_row(row)
@@ -321,3 +400,199 @@ async def delete_chapter_beat_plan(pid: str, cnum: int):
 async def _count(sql: str, args: tuple) -> int:
     row = await fetchone(sql, args)
     return int((row or {}).get("c") or 0)
+
+
+async def _validate_story_block_reference(pid: str, data: BeatPlanSave, cnum: int | None = None):
+    if not data.storyBlockId or not data.blockStageId or not data.blockStageSnapshot:
+        raise HTTPException(400, "小纲必须绑定 storyBlockId、blockStageId 和 blockStageSnapshot")
+
+    block = await fetchone(
+        "SELECT * FROM story_blocks WHERE project_id=%s AND id=%s",
+        (pid, data.storyBlockId),
+    )
+    if not block:
+        raise HTTPException(404, "故事块不存在或不属于当前项目")
+    if block.get("status") != "active":
+        raise HTTPException(409, "只能引用 active 故事块生成当前章小纲")
+
+    stage = _find_stage_by_id(block.get("stage_plan"), data.blockStageId)
+    stage_ids = {
+        str(stage.get("id"))
+        for stage in _stage_list(block.get("stage_plan"))
+        if stage.get("id")
+    }
+    if data.blockStageId not in stage_ids:
+        raise HTTPException(400, "blockStageId 不属于该故事块的 stagePlan")
+    if await _is_story_block_stage_unusable_for_beat_plan(pid, block, stage, data.blockStageId, cnum):
+        raise HTTPException(
+            409,
+            {
+                "code": "story_block_stage_reuse_detected",
+                "message": "该故事块阶段已完成、锁定或已绑定章节，不能用于新章节小纲。",
+                "storyBlockId": data.storyBlockId,
+                "blockStageId": data.blockStageId,
+                "chapterNum": cnum,
+            },
+        )
+
+    snapshot = data.blockStageSnapshot or {}
+    if snapshot.get("storyBlockId") != data.storyBlockId:
+        raise HTTPException(400, "blockStageSnapshot.storyBlockId 与 storyBlockId 不一致")
+    if snapshot.get("stageId") != data.blockStageId:
+        raise HTTPException(400, "blockStageSnapshot.stageId 与 blockStageId 不一致")
+    await _validate_story_block_snapshot_fields(block, stage, snapshot)
+
+
+async def _validate_story_block_snapshot_fields(block, stage, snapshot: dict):
+    checks = [
+        ("blockGoal", block.get("goal")),
+        ("entryState", block.get("entry_state")),
+        ("storyFunction", block.get("story_function")),
+        ("mainPressure", block.get("main_pressure")),
+        ("stagePurpose", _pick_stage_value(stage, "purpose", "stagePurpose", "goal")),
+        ("stageAction", _pick_stage_value(stage, "sceneOrAction", "action", "description")),
+        ("stageChoice", _pick_stage_value(stage, "choice")),
+        ("stageCostOrConsequence", _pick_stage_value(stage, "costOrConsequence", "consequence", "cost")),
+    ]
+    for field, expected in checks:
+        actual = _normalize_snapshot_value(snapshot.get(field))
+        if not actual:
+            continue
+        if actual != _normalize_snapshot_value(expected):
+            raise HTTPException(400, f"blockStageSnapshot.{field} 与故事块当前阶段不一致")
+
+
+async def _is_story_block_stage_unusable_for_beat_plan(pid: str, block: dict, stage: dict, stage_id: str, cnum: int | None):
+    sid = str(stage_id or "").strip()
+    if not sid:
+        return True
+    if cnum and await _has_stage_continuation_basis(pid, block.get("id"), sid, cnum):
+        return False
+    if sid in _completed_stage_ids(block):
+        return True
+    if sid in await _locked_stage_ids(pid, block.get("id"), cnum):
+        return True
+    if str(stage.get("status") or "") in {"completed", "closed", "skipped", "closed_unexecuted", "skipped_by_block_close", "invalidated"}:
+        return True
+    if stage.get("locked") or stage.get("lockedByBeatPlan") or stage.get("lockedByFinalChapter"):
+        return True
+    if _list(stage.get("chapterRefs")):
+        return True
+    return False
+
+
+async def _has_stage_continuation_basis(pid: str, story_block_id: str, stage_id: str, cnum: int):
+    if not story_block_id or not stage_id or not cnum or cnum <= 1:
+        return False
+    row = await fetchone(
+        """
+        SELECT review_json
+        FROM story_block_reviews
+        WHERE project_id=%s AND story_block_id=%s AND chapter_num=%s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (pid, story_block_id, cnum - 1),
+    )
+    review = _dict((row or {}).get("review_json"))
+    snapshot = _dict(review.get("blockStageSnapshot"))
+    return bool(
+        review.get("stageContinues") is True
+        and str(snapshot.get("stageId") or review.get("blockStageId") or "") == str(stage_id)
+        and _stage_continue_reason(review)
+    )
+
+
+def _stage_continue_reason(review: dict) -> str:
+    return str(
+        review.get("stageContinueReason")
+        or review.get("stage_continue_reason")
+        or review.get("reason")
+        or ""
+    ).strip()
+
+
+def _find_stage_by_id(stage_plan, stage_id: str):
+    for stage in _stage_list(stage_plan):
+        if str(stage.get("id") or "") == str(stage_id or ""):
+            return stage
+    return {}
+
+
+def _pick_stage_value(stage: dict, *keys):
+    for key in keys:
+        value = stage.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return ""
+
+
+def _normalize_snapshot_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return str(value).strip()
+
+
+def _completed_stage_ids(block) -> set[str]:
+    ids = set()
+    for stage in _stage_list(block.get("stage_plan")):
+        if stage.get("status") == "completed" and stage.get("id"):
+            ids.add(str(stage["id"]))
+    for stage in _list(block.get("completed_stages")):
+        if isinstance(stage, dict) and stage.get("id"):
+            ids.add(str(stage["id"]))
+        elif stage:
+            ids.add(str(stage))
+    return ids
+
+
+async def _locked_stage_ids(pid: str, bid: str, exclude_chapter_num: int | None = None) -> set[str]:
+    params = [pid, bid]
+    exclude_clause = ""
+    if exclude_chapter_num is not None:
+        exclude_clause = " AND chapter_num<>%s"
+        params.append(exclude_chapter_num)
+    rows = await fetchall(
+        f"""
+        SELECT DISTINCT block_stage_id
+        FROM chapter_beat_plans
+        WHERE project_id=%s AND story_block_id=%s AND block_stage_id IS NOT NULL
+        {exclude_clause}
+        """,
+        tuple(params),
+    )
+    return {str(row.get("block_stage_id")) for row in rows if row.get("block_stage_id")}
+
+
+def _stage_list(value) -> list[dict]:
+    return [item for item in _list(value) if isinstance(item, dict)]
+
+
+def _list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except ValueError:
+            return []
+    return []
+
+
+def _dict(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            return {}
+    return {}

@@ -3,7 +3,7 @@
  * 统一通过后端 HTTP API 访问本地 MySQL 数据层。
  */
 
-const BASE = 'http://localhost:8000/api'
+const BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
@@ -71,6 +71,7 @@ export const api = {
   // === 任务模型绑定 ===
   bindings: {
     get: (projectId) => get(`/projects/${projectId}/bindings`),
+    status: (projectId) => get(`/projects/${projectId}/bindings/status`),
     save: (projectId, data) => put(`/projects/${projectId}/bindings`, data),
   },
 
@@ -103,8 +104,20 @@ export const api = {
   // === 章节小纲 ===
   beatPlans: {
     get: (projectId, chapterNum) => get(`/projects/${projectId}/chapter-beat-plan/${chapterNum}`),
-    save: (projectId, chapterNum, content) => put(`/projects/${projectId}/chapter-beat-plan/${chapterNum}`, { content }),
+    save: (projectId, chapterNum, content, metadata = {}) => put(`/projects/${projectId}/chapter-beat-plan/${chapterNum}`, { content, ...metadata }),
     delete: (projectId, chapterNum) => del(`/projects/${projectId}/chapter-beat-plan/${chapterNum}`),
+  },
+
+  // === 故事块 ===
+  storyBlocks: {
+    list: (projectId) => get(`/projects/${projectId}/story-blocks`),
+    active: (projectId) => get(`/projects/${projectId}/story-blocks/active`),
+    create: (projectId, data) => post(`/projects/${projectId}/story-blocks`, data),
+    updateRemainingStages: (projectId, blockId, data) => put(`/projects/${projectId}/story-blocks/${blockId}/remaining-stages`, data),
+    close: (projectId, blockId, data = {}) => post(`/projects/${projectId}/story-blocks/${blockId}/close`, data),
+    complete: (projectId, blockId, data = {}) => post(`/projects/${projectId}/story-blocks/${blockId}/complete`, data),
+    confirmReview: (projectId, blockId, data = {}) => post(`/projects/${projectId}/story-blocks/${blockId}/confirm-review`, data),
+    createReview: (projectId, blockId, data) => post(`/projects/${projectId}/story-blocks/${blockId}/reviews`, data),
   },
 
   // === 创作种子 ===
@@ -225,7 +238,7 @@ export const api = {
       },
       create: (projectId, data) => post(`/projects/${projectId}/settings/change-events`, data),
       update: (projectId, eventId, data) => put(`/projects/${projectId}/settings/change-events/${eventId}`, data),
-      accept: (projectId, eventId) => post(`/projects/${projectId}/settings/change-events/${eventId}/accept`),
+      accept: (projectId, eventId, data) => post(`/projects/${projectId}/settings/change-events/${eventId}/accept`, data),
       reject: (projectId, eventId) => post(`/projects/${projectId}/settings/change-events/${eventId}/reject`),
       delete: (projectId, eventId) => del(`/projects/${projectId}/settings/change-events/${eventId}`),
     },

@@ -262,7 +262,7 @@ function renderListItem(item) {
       <div>
         <h3>规划蓝图</h3>
         <p>
-          当前章小纲负责落地写作；近景滚动规划进入章节上下文；长线蓝图只保留在分卷层，建议在每卷完成或阶段总结后低频更新。
+          先建立分卷规划，再创建当前卷故事块。当前章小纲从故事块阶段生成；长线蓝图只保留卷级方向，不直接进入正文生成。
         </p>
       </div>
       <n-space>
@@ -277,7 +277,7 @@ function renderListItem(item) {
 
     <n-empty v-if="!hasOutline" description="暂无滚动规划">
       <template #extra>
-        先按分卷建立粗结构，再用 AI 生成未来 3-5 章近景规划和长线蓝图。
+        先建立分卷规划，再创建当前卷故事块。这里仅保留卷级蓝图和方向参考，不作为章节生成主入口。
       </template>
     </n-empty>
 
@@ -318,8 +318,8 @@ function renderListItem(item) {
 
       <section class="planning-block">
         <div class="block-title">
-          <span>近景滚动规划</span>
-          <n-tag size="tiny" type="success" :bordered="false">进入章节生成</n-tag>
+          <span>方向参考</span>
+          <n-tag size="tiny" type="success" :bordered="false">仅作参考</n-tag>
         </div>
         <div v-if="nearChapters.length" class="near-list">
           <div v-for="item in nearChapters" :key="`${item.chapterNum}-${item.title}`" class="near-item">
@@ -331,7 +331,7 @@ function renderListItem(item) {
             <p v-if="item.handoff" class="handoff">接力：{{ item.handoff }}</p>
           </div>
         </div>
-        <n-empty v-else description="暂无未来 3-5 章规划" size="small" />
+        <n-empty v-else description="暂无方向参考" size="small" />
       </section>
     </div>
   </n-card>
@@ -381,7 +381,7 @@ function renderListItem(item) {
           <n-input v-model:value="formValue.mustNotAdvanceYetText" type="textarea" rows="3" placeholder="暂不推进，每行一条" />
         </div>
       </n-form-item>
-      <n-form-item label="近景滚动规划（每行：章号｜标题｜目标｜冲突｜转折｜情绪｜接力）">
+      <n-form-item label="方向参考（每行：章号｜标题｜目标｜冲突｜转折｜情绪｜接力；不作为章节生成主依据）">
         <n-input v-model:value="formValue.nearChaptersText" type="textarea" rows="6" />
       </n-form-item>
     </n-form>

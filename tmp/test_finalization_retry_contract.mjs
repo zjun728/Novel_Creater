@@ -9,7 +9,11 @@ assert.match(finalizationGuard, /allowExistingPending/)
 assert.match(finalizationGuard, /existingMarker && !options\.allowExistingPending/)
 
 assert.match(writerView, /const finalizationRetrying = ref\(false\)/)
-assert.match(writerView, /const blockingFinalizationPending = computed\(\(\) => findBlockingFinalizationPending\(\)\)/)
+assert.match(writerView, /const finalizationMarkerVersion = ref\(0\)/)
+assert.match(
+  writerView,
+  /const blockingFinalizationPending = computed\(\(\) => \{[\s\S]*finalizationMarkerVersion\.value[\s\S]*return findBlockingFinalizationPending\(\)[\s\S]*\}\)/
+)
 assert.match(writerView, /async function loadFinalizedVersionForPostprocess\(targetChapterNum\)/)
 assert.match(writerView, /async function retryFinalizationPostprocess\(targetChapterNum\)/)
 assert.match(writerView, /allowExistingPending:\s*true/)

@@ -1,4 +1,5 @@
-import { AI_TRACE_ISSUE_TYPES, formatAiTraceRulesForAudit } from '../qualityRules/aiTraceRules.js'
+import { AI_TRACE_ISSUE_TYPES } from '../quality/writingQualityStandard.js'
+import { buildChapterAuditQualityRubric } from '../quality/writingQualityPrompt.js'
 
 export const AI_TRACE_REVIEW_DECISIONS = [
   'ignore',
@@ -58,7 +59,7 @@ ${safeJson(aiIssues)}
 ${chapterContent || ''}
 ---
 
-${formatAiTraceRulesForAudit()}
+${buildChapterAuditQualityRubric()}
 
 ## 处理决策
 只能使用以下 decision：

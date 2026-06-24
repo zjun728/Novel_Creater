@@ -32,6 +32,7 @@ import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { useVolumeStore } from '@/stores/volumeStore'
 import { useCorrectionTaskStore } from '@/stores/correctionTaskStore'
+import { useStoryBlockStore } from '@/stores/storyBlockStore'
 import { formatChapterDisplayTitle, isDefaultChapterTitle } from '@/prompts/chapter'
 import { getSelectedWritingStyleStandards } from '@/data/writingStyleStandards'
 import SeedWorkbench from '@/components/seed/SeedWorkbench.vue'
@@ -41,6 +42,7 @@ import CharacterArcView from '@/components/bible/CharacterArcView.vue'
 import PlotThreadBoard from '@/components/bible/PlotThreadBoard.vue'
 import SettingLibrary from '@/components/settings-library/SettingLibrary.vue'
 import VolumePlanner from '@/components/chapter/VolumePlanner.vue'
+import StoryBlockList from '@/components/story-block/StoryBlockList.vue'
 import CorrectionTaskBoard from '@/components/correction/CorrectionTaskBoard.vue'
 
 const route = useRoute()
@@ -52,6 +54,7 @@ const novelStore = useNovelStore()
 const settingStore = useSettingStore()
 const volumeStore = useVolumeStore()
 const correctionTaskStore = useCorrectionTaskStore()
+const storyBlockStore = useStoryBlockStore()
 const message = useAppMessage()
 const dialog = useDialog()
 
@@ -95,6 +98,11 @@ const globalAuditStartChapter = ref(1)
 const globalAuditEndChapter = ref(null)
 const creatingEmptyChapters = ref(false)
 const activeChapterVolumeId = ref('')
+const closeStoryBlockTarget = ref(null)
+const closeStoryBlockReason = ref('user_manual_close')
+const closeStoryBlockNote = ref('')
+const closeStoryBlockOpenNewAfter = ref(false)
+const closingStoryBlock = ref(false)
 
 const selectedSeed = computed(() => seedStore.seeds.find(seed => seed.status === 'selected'))
 const bibleReady = computed(() => Boolean(novelStore.bible?.premise || novelStore.bible?.worldRules || novelStore.bible?.styleBible))
@@ -175,6 +183,12 @@ const visibleChapters = computed(() => {
   })
 })
 
+const currentVolumeStoryBlocks = computed(() => {
+  const volume = activeChapterVolume.value
+  if (!volume) return storyBlockStore.blocks
+  return storyBlockStore.blocks.filter(block => storyBlockBelongsToVolume(block, volume))
+})
+
 const settingsDeleteLocked = computed(() => {
   if (projectContentState.value?.hasChapterContent) return true
   return writerStore.chapters.some(ch => Number(ch.wordCount || 0) > 0 || ch.finalVersionId || ch.status === 'final')
@@ -248,6 +262,7 @@ onMounted(async () => {
         settingStore.loadRelations(id),
         settingStore.loadChangeEvents(id),
         volumeStore.loadVolumes(id),
+        storyBlockStore.loadBlocks(id),
         api.projects.contentState(id)
           .then(state => {
             projectContentState.value = state
@@ -272,6 +287,14 @@ watch(() => route.query.tab, tab => {
 watch(activeTab, tab => {
   if (projectTabs.has(tab) && route.query.tab !== tab) {
     router.replace({ query: { ...route.query, tab } })
+  }
+})
+
+watch(activeTab, async tab => {
+  if (tab === 'chapters' && project.value?.id) {
+    await storyBlockStore.loadBlocks(project.value.id).catch(() => {
+      message.error('加载故事块失败')
+    })
   }
 })
 
@@ -305,6 +328,14 @@ const chapterStatusColors = {
   final: 'success'
 }
 
+const storyBlockCloseReasonOptions = [
+  { label: '剧情方向变化', value: 'direction_changed' },
+  { label: '当前块过长', value: 'stages_merged' },
+  { label: '当前块质量不理想', value: 'plan_abandoned' },
+  { label: '手动结束', value: 'user_manual_close' },
+  { label: '其他', value: 'unknown' }
+]
+
 async function handleExportSelect(key) {
   const title = project.value?.title || 'novel'
   try {
@@ -329,6 +360,134 @@ async function handleExportSelect(key) {
 function goToWriter(chapterNum) {
   if (project.value) {
     router.push(`/writer/${project.value.id}/${chapterNum || 1}`)
+  }
+}
+
+function storyBlockBelongsToVolume(block, volume) {
+  if (!block || !volume) return false
+  if (block.volumeId && String(block.volumeId) === String(volume.id)) return true
+  if (block.volumeId) return false
+
+  const start = Number(volume.startChapter || 0)
+  const end = Number(volume.endChapter || start)
+  return (block.chapterRefs || []).some(ref => {
+    const chapterNum = Number(ref?.chapterNum || ref)
+    return chapterNum >= start && chapterNum <= end
+  })
+}
+
+async function refreshStoryBlockChapterView() {
+  if (!project.value?.id) return
+  await Promise.all([
+    storyBlockStore.loadBlocks(project.value.id),
+    writerStore.loadChapters(project.value.id)
+  ])
+}
+
+async function handleConfirmStoryBlock(block) {
+  if (!project.value?.id || !block?.id) return
+  try {
+    await storyBlockStore.confirmStoryBlockReview(project.value.id, block.id, {
+      reason: '章节管理页确认故事块'
+    })
+    await refreshStoryBlockChapterView()
+    message.success('故事块已确认')
+  } catch (e) {
+    message.error('确认故事块失败：' + e.message)
+  }
+}
+
+async function handleUpdateStoryBlockRemainingStages(block) {
+  if (!project.value?.id || !block?.id) return
+  try {
+    await storyBlockStore.updateRemainingStages(project.value.id, block.id, {
+      stagePlan: block.stagePlan || [],
+      nextStageSuggestion: block.nextStageSuggestion || '',
+      unresolvedQuestions: block.unresolvedQuestions || [],
+      dontAdvanceYet: block.dontAdvanceYet || [],
+      carryOverToNextChapter: block.carryOverToNextChapter || [],
+      capacityAssessment: block.capacityAssessment || 'normal'
+    })
+    await refreshStoryBlockChapterView()
+    message.success('后续阶段已按后端锁定规则同步')
+  } catch (e) {
+    message.error('更新后续阶段失败：' + e.message)
+  }
+}
+
+async function handleSaveStoryBlockStageEdit({ block, stageId, patch }) {
+  if (!project.value?.id || !block?.id || !stageId) return
+  const nextStagePlan = (block.stagePlan || []).map(stage => {
+    const currentId = stage.id || stage.stageId
+    if (String(currentId) !== String(stageId)) return stage
+    return {
+      ...stage,
+      purpose: patch.purpose || '',
+      sceneOrAction: patch.sceneOrAction || '',
+      choice: patch.choice || '',
+      costOrConsequence: patch.costOrConsequence || '',
+      status: stage.status || 'planned'
+    }
+  })
+  try {
+    await storyBlockStore.updateRemainingStages(project.value.id, block.id, {
+      stagePlan: nextStagePlan,
+      nextStageSuggestion: block.nextStageSuggestion || '',
+      unresolvedQuestions: block.unresolvedQuestions || [],
+      dontAdvanceYet: block.dontAdvanceYet || [],
+      carryOverToNextChapter: block.carryOverToNextChapter || [],
+      capacityAssessment: block.capacityAssessment || 'normal'
+    })
+    await refreshStoryBlockChapterView()
+    message.success('未执行阶段已保存')
+  } catch (e) {
+    message.error('保存阶段失败：' + e.message)
+  }
+}
+
+function handleCloseStoryBlock(block) {
+  if (!project.value?.id || !block?.id) return
+  closeStoryBlockTarget.value = block
+  closeStoryBlockReason.value = 'user_manual_close'
+  closeStoryBlockNote.value = ''
+  closeStoryBlockOpenNewAfter.value = false
+}
+
+function handleOpenNewStoryBlock(block) {
+  if (block?.status === 'active') {
+    closeStoryBlockTarget.value = block
+    closeStoryBlockReason.value = 'direction_changed'
+    closeStoryBlockNote.value = ''
+    closeStoryBlockOpenNewAfter.value = true
+    return
+  }
+  const startChapter = activeChapterVolume.value?.startChapter || block?.chapterRefs?.[0] || project.value?.currentChapterNum || 1
+  message.info('请在写字台继续，系统会在生成小纲前走 AI 故事块规划创建新故事块。')
+  goToWriter(Number(startChapter) || 1)
+}
+
+async function confirmCloseStoryBlock() {
+  const block = closeStoryBlockTarget.value
+  if (!project.value?.id || !block?.id) return
+  closingStoryBlock.value = true
+  try {
+    await storyBlockStore.closeBlock(project.value.id, block.id, {
+      reason: closeStoryBlockNote.value || '章节管理页提前结束当前块',
+      closeReason: closeStoryBlockReason.value || 'unknown',
+      chapterRefs: block.chapterRefs || []
+    })
+    await refreshStoryBlockChapterView()
+    message.success('当前故事块已提前结束')
+    closeStoryBlockTarget.value = null
+    if (closeStoryBlockOpenNewAfter.value) {
+      const startChapter = activeChapterVolume.value?.startChapter || project.value?.currentChapterNum || 1
+      message.info('请在写字台继续，系统会在生成小纲前走 AI 故事块规划创建新故事块。')
+      goToWriter(Number(startChapter) || 1)
+    }
+  } catch (e) {
+    message.error('提前结束当前块失败：' + e.message)
+  } finally {
+    closingStoryBlock.value = false
   }
 }
 
@@ -815,6 +974,18 @@ function auditReport() {
             @select-volume="activeChapterVolumeId = $event"
           />
 
+          <StoryBlockList
+            :blocks="currentVolumeStoryBlocks"
+            :active-volume="activeChapterVolume"
+            :chapters="visibleChapters"
+            :loading="storyBlockStore.loading"
+            @confirm-block="handleConfirmStoryBlock"
+            @update-remaining-stages="handleUpdateStoryBlockRemainingStages"
+            @close-block="handleCloseStoryBlock"
+            @open-new-block="handleOpenNewStoryBlock"
+            @save-stage-edit="handleSaveStoryBlockStageEdit"
+          />
+
           <div class="flex items-center justify-between mb-4">
             <div>
               <h3 class="text-lg font-semibold text-gray-700">
@@ -929,6 +1100,43 @@ function auditReport() {
         </div>
       </n-tab-pane>
     </n-tabs>
+
+    <n-modal
+      :show="Boolean(closeStoryBlockTarget)"
+      preset="card"
+      title="提前结束当前块"
+      style="width: 560px; max-width: 92vw;"
+      :mask-closable="!closingStoryBlock"
+      :close-on-esc="!closingStoryBlock"
+      @update:show="value => { if (!value && !closingStoryBlock) closeStoryBlockTarget = null }"
+    >
+      <div class="space-y-3">
+        <n-alert type="warning" :show-icon="false">
+          提前结束只会让故事块向前滚动：不会回改已定稿章节，不会回改已保存小纲快照；未完成阶段会标记为“随块结束/跳过”，后续需要开启新故事块承接。
+        </n-alert>
+        <label class="block text-sm text-gray-600">
+          <span class="block mb-1">结束原因</span>
+          <n-select v-model:value="closeStoryBlockReason" :options="storyBlockCloseReasonOptions" />
+        </label>
+        <label class="block text-sm text-gray-600">
+          <span class="block mb-1">补充说明</span>
+          <n-input
+            v-model:value="closeStoryBlockNote"
+            type="textarea"
+            placeholder="可填写本次提前结束的具体原因"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+          />
+        </label>
+      </div>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <n-button size="small" :disabled="closingStoryBlock" @click="closeStoryBlockTarget = null">取消</n-button>
+          <n-button size="small" type="warning" :loading="closingStoryBlock" @click="confirmCloseStoryBlock">
+            {{ closeStoryBlockOpenNewAfter ? '结束并开启新块' : '提前结束当前块' }}
+          </n-button>
+        </div>
+      </template>
+    </n-modal>
 
     <n-modal v-model:show="showProjectEditModal" preset="card" title="编辑项目信息" style="width: 560px">
       <n-form :model="projectEditForm">

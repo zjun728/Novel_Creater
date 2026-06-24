@@ -162,13 +162,11 @@ export const useNovelStore = defineStore('novel', () => {
     globalAuditing.value = true
     try {
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const bindings = await providerStore.getBindings(project.id)
-      const modelId = bindings?.auditModelId || bindings?.summaryModelId || bindings?.writingModelId
-      const provider = modelId
-        ? providerStore.providers.find(p => p.id === modelId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId: project.id,
+        bindingKeys: ['auditModelId', 'summaryModelId', 'writingModelId'],
+        taskName: 'global_audit'
+      })
 
       const result = await chatCompletion(provider, [
         { role: 'system', content: buildGlobalAuditSystemPrompt() },
@@ -255,14 +253,11 @@ export const useNovelStore = defineStore('novel', () => {
       }
 
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const bindings = await providerStore.getBindings(projectId)
-      const modelId = bindings?.brainstormModelId || bindings?.writingModelId
-      const provider = modelId
-        ? providerStore.providers.find(p => p.id === modelId)
-        : providerStore.providers[0]
-
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId,
+        bindingKeys: ['brainstormModelId', 'writingModelId'],
+        taskName: 'bible_from_seed'
+      })
 
       const result = await chatCompletion(provider, [
         { role: 'system', content: buildBibleFromSeedSystemPrompt() },
@@ -338,14 +333,11 @@ export const useNovelStore = defineStore('novel', () => {
     outlineGenerating.value = true
     try {
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const bindings = await providerStore.getBindings(projectId)
-      const modelId = bindings?.outlineModelId || bindings?.summaryModelId || bindings?.writingModelId
-      const provider = modelId
-        ? providerStore.providers.find(p => p.id === modelId)
-        : providerStore.providers[0]
-
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId,
+        bindingKeys: ['outlineModelId', 'summaryModelId', 'writingModelId'],
+        taskName: 'rolling_blueprint'
+      })
 
       const result = await chatCompletion(provider, [
         { role: 'system', content: buildOutlineSystemPrompt() },
@@ -393,14 +385,11 @@ export const useNovelStore = defineStore('novel', () => {
     outlineGenerating.value = true
     try {
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const bindings = await providerStore.getBindings(projectId)
-      const modelId = bindings?.outlineModelId || bindings?.summaryModelId || bindings?.writingModelId
-      const provider = modelId
-        ? providerStore.providers.find(p => p.id === modelId)
-        : providerStore.providers[0]
-
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId,
+        bindingKeys: ['outlineModelId', 'summaryModelId', 'writingModelId'],
+        taskName: 'rolling_blueprint_reroute'
+      })
 
       const result = await chatCompletion(provider, [
         { role: 'system', content: buildOutlineSystemPrompt() },

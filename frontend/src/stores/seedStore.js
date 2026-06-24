@@ -145,11 +145,11 @@ export const useSeedStore = defineStore('seed', () => {
       }
 
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const bindings = await providerStore.getBindings(projectId)
-      const modelId = bindings?.brainstormModelId || bindings?.writingModelId
-      const provider = providerStore.providers.find(p => p.id === modelId) || providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId,
+        bindingKeys: ['brainstormModelId', 'writingModelId'],
+        taskName: 'seed_generation'
+      })
 
       const messages = [
         { role: 'system', content: buildSeedSystemPrompt() },

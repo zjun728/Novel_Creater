@@ -73,11 +73,12 @@ export const useCompareStore = defineStore('compare', () => {
   async function fuseFragments(projectId, chapterNum, fragments, providerId) {
     try {
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      const provider = providerId
-        ? providerStore.providers.find(p => p.id === providerId)
-        : providerStore.providers[0]
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId,
+        bindingKeys: ['polishModelId', 'writingModelId'],
+        providerId,
+        taskName: 'fragment_fusion'
+      })
 
       const result = await chatCompletion(provider, [
         { role: 'user', content: buildFusionPrompt(fragments, { chapterNum }) }

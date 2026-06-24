@@ -44,7 +44,7 @@ function formatSettings(entities = []) {
 export function buildVolumePlanSystemPrompt() {
   return `你是长篇小说分卷规划编辑。你只负责生成中层结构，不写正文。
 分卷规划用于约束未来 30-60 章的大方向，必须粗粒度、可执行、可滚动调整。
-只输出合法 JSON，不要 Markdown，不要解释。`
+字段必须短，只输出合法 JSON，不要 Markdown，不要解释。`
 }
 
 export function buildVolumePlanPrompt({ project, seed, bible, settings, volumeCount, chapterSize } = {}) {
@@ -81,13 +81,13 @@ ${formatSettings(settings)}
       "startChapter": 1,
       "endChapter": 50,
       "targetWords": 250000,
-      "coreGoal": "本卷阶段目标，说明主角和主线必须发生的变化",
-      "mainConflict": "本卷核心冲突，不要写成空泛主题",
-      "keyCharacters": ["主角", "关键配角或对手"],
-      "summary": "本卷大方向和阶段概要，不要细化到单章剧情。",
-      "foreshadowingPlan": ["本卷需要埋下的伏笔", "本卷需要回收的伏笔"],
-      "unresolvedItems": ["本卷暂不解决、必须留到后续卷的问题"],
-      "handoffPoint": "卷尾交接点：本卷结束时交给下一卷的状态、压力或未完成选择"
+      "coreGoal": "80字内，本卷阶段目标",
+      "mainConflict": "80字内，本卷核心冲突",
+      "keyCharacters": ["最多4个"],
+      "summary": "120字内，本卷大方向，不细化到单章。",
+      "foreshadowingPlan": ["最多3条，每条24字内"],
+      "unresolvedItems": ["最多3条，每条24字内"],
+      "handoffPoint": "60字内，卷尾交接状态"
     }
   ]
 }
@@ -99,7 +99,9 @@ ${formatSettings(settings)}
 4. foreshadowingPlan 只写本卷要埋或要回收的伏笔；unresolvedItems 只写本卷暂不解决的内容；handoffPoint 只写卷尾交接点。
 5. 前几卷可以稍细，后几卷保持粗粒度，不要细化到单章剧情。
 6. 不要提前解决终局矛盾；后续卷只给方向，不剧透完整解法。
-7. 不要生成正文、小纲或章节列表。`
+7. 每个字段必须短：coreGoal/mainConflict 各 80 字内，summary 120 字内，handoffPoint 60 字内，数组最多 3 条。
+8. 如果内容过多，优先缩短字段，不要破坏 JSON。
+9. 不要生成正文、小纲或章节列表。`
 }
 
 export function buildVolumePlanRepairPrompt(rawText, project) {
@@ -109,4 +111,60 @@ export function buildVolumePlanRepairPrompt(rawText, project) {
 
 原始内容：
 ${String(rawText || '').slice(0, 12000)}`
+}
+
+export function buildCompactVolumePlanRetryPrompt({ project, seed, bible, settings, volumeCount, chapterSize } = {}, rawText = '') {
+  const targetChapters = Number(project?.targetChapters || 100)
+  const targetWords = Number(project?.targetWords || 100000)
+  const count = Number(volumeCount || Math.max(1, Math.ceil(targetChapters / Number(chapterSize || 60))))
+  const size = Number(chapterSize || Math.ceil(targetChapters / count))
+
+  return `上一轮分卷规划 JSON 为空、被截断或不可解析。请重新生成一个精简版合法 JSON。
+只输出 JSON，不要 Markdown，不要解释，不要写正文。
+
+## 项目信息
+- 项目名：${project?.title || '未命名项目'}
+- 题材：${project?.genre || '未填写'}
+- 目标字数：${targetWords}
+- 目标章节数：${targetChapters}
+- 分卷数：${count}
+- 每卷约 ${size} 章
+
+## 当前创作种子
+${formatSeed(seed)}
+
+## 创作圣经摘要
+${formatBible(bible)}
+
+## 已确认设定摘要
+${formatSettings(settings)}
+
+## 必须输出
+{
+  "volumes": [
+    {
+      "volumeNum": 1,
+      "title": "第一卷 卷名",
+      "startChapter": 1,
+      "endChapter": ${Math.min(size, targetChapters)},
+      "targetWords": ${Math.round(targetWords / Math.max(1, count))},
+      "coreGoal": "80字内",
+      "mainConflict": "80字内",
+      "keyCharacters": ["最多4个"],
+      "summary": "120字内",
+      "foreshadowingPlan": ["最多3条，每条24字内"],
+      "unresolvedItems": ["最多3条，每条24字内"],
+      "handoffPoint": "60字内"
+    }
+  ]
+}
+
+## 硬约束
+1. volumes 必须正好 ${count} 项，覆盖第 1 章到第 ${targetChapters} 章。
+2. 章节范围连续且不重叠。
+3. 字段必须短。如果内容过多，优先缩短字段，不要破坏 JSON。
+4. 不要输出解释、推理、编号列表或代码块。
+
+## 上轮不可用片段，仅供避免重复错误
+${String(rawText || '').slice(0, 3000)}`
 }

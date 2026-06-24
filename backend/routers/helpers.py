@@ -34,6 +34,16 @@ JSON_FIELDS = {
     'report_json',
     'chapter_refs',
     'related_items',
+    'key_characters',
+    'stage_plan',
+    'completed_stages',
+    'unresolved_questions',
+    'dont_advance_yet',
+    'carry_over_to_next_chapter',
+    'lock_state',
+    'review_history',
+    'review_json',
+    'block_stage_snapshot',
 }
 
 # 首字母缩写映射：snake_case 部分 → camelCase 中正确的大小写

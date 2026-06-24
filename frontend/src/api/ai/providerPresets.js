@@ -24,10 +24,10 @@ export const providerPresets = [
     maxContextTokens: 200000
   },
   {
-    name: 'DeepSeek',
+    name: 'deepseek-v4-flash',
     providerType: 'openai-compatible',
     baseURL: 'https://api.deepseek.com',
-    model: 'deepseek-v4-pro',
+    model: 'deepseek-v4-flash',
     maxContextTokens: 128000,
     maxOutputTokens: 8192,
     temperature: 0.8,

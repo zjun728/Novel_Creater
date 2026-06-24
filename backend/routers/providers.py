@@ -8,6 +8,31 @@ import uuid, time, json
 
 router = APIRouter(tags=["providers"])
 
+MODEL_BINDING_FIELDS = [
+    "writing_model_id",
+    "brainstorm_model_id",
+    "outline_model_id",
+    "audit_model_id",
+    "summary_model_id",
+    "extraction_model_id",
+    "market_model_id",
+    "polish_model_id",
+]
+
+MODEL_BINDING_CAMEL_FIELDS = [
+    "writingModelId",
+    "brainstormModelId",
+    "outlineModelId",
+    "auditModelId",
+    "summaryModelId",
+    "extractionModelId",
+    "marketModelId",
+    "polishModelId",
+]
+
+DEFAULT_TASK_PROVIDER_NAME = "deepseek-v4-flash"
+DEFAULT_TASK_MODEL_NAME = "deepseek-v4-flash"
+
 class ProviderCreate(BaseModel):
     name: str
     providerType: str = "openai-compatible"
@@ -105,6 +130,26 @@ async def get_bindings(pid: str):
     r = convert_rows(rows)
     return r[0] if r else None
 
+@router.get("/projects/{pid}/bindings/status")
+async def get_bindings_status(pid: str):
+    project = await fetchone("SELECT * FROM projects WHERE id=%s", (pid,))
+    if not project:
+        raise HTTPException(404, "项目不存在")
+
+    row = await fetchone("SELECT * FROM task_model_bindings WHERE project_id=%s", (pid,))
+    binding = convert_row(row)
+    has_binding = bool(row and _has_any_model_binding(row))
+    return {
+        "projectId": pid,
+        "hasBinding": has_binding,
+        "binding": binding,
+        "inherited": bool(row and row.get("inherited_from_project_id")),
+        "inheritedFromProjectId": row.get("inherited_from_project_id") if row else None,
+        "inheritedFromProjectTitle": row.get("inherited_from_project_title") if row else "",
+        "inheritedFromUpdatedAt": row.get("inherited_from_updated_at") if row else None,
+        "message": _binding_status_message(row),
+    }
+
 @router.put("/projects/{pid}/bindings")
 async def save_bindings(pid: str, data: BindingsUpdate):
     now = int(time.time() * 1000)
@@ -112,12 +157,117 @@ async def save_bindings(pid: str, data: BindingsUpdate):
     d = data.dict()
     if rows:
         sets = [f"{to_snake(k)}=%s" for k in d]
+        sets.extend([
+            "inherited_from_project_id=%s",
+            "inherited_from_project_title=%s",
+            "inherited_from_updated_at=%s",
+        ])
         if sets:
             sets.append("updated_at=%s")
-            args = list(d.values()) + [now, rows[0]['id']]
+            args = list(d.values()) + [None, "", None, now, rows[0]['id']]
             await execute(f"UPDATE task_model_bindings SET {', '.join(sets)} WHERE id=%s", args)
     else:
         bid = str(uuid.uuid4())
-        vals = [bid, pid] + [d.get(k) for k in ['writingModelId','brainstormModelId','outlineModelId','auditModelId','summaryModelId','extractionModelId','marketModelId','polishModelId']]
-        await execute(f"INSERT INTO task_model_bindings (id, project_id, writing_model_id, brainstorm_model_id, outline_model_id, audit_model_id, summary_model_id, extraction_model_id, market_model_id, polish_model_id, created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", vals + [now, now])
+        vals = [bid, pid] + [d.get(k) for k in MODEL_BINDING_CAMEL_FIELDS]
+        await execute(
+            """
+            INSERT INTO task_model_bindings
+              (id, project_id, writing_model_id, brainstorm_model_id, outline_model_id, audit_model_id,
+               summary_model_id, extraction_model_id, market_model_id, polish_model_id,
+               inherited_from_project_id, inherited_from_project_title, inherited_from_updated_at,
+               created_at, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            vals + [None, "", None, now, now],
+        )
     return await get_bindings(pid)
+
+
+async def find_latest_saved_task_model_binding(exclude_project_id: Optional[str] = None):
+    where = [
+        "(" + " OR ".join([f"b.{field} IS NOT NULL" for field in MODEL_BINDING_FIELDS]) + ")"
+    ]
+    args = []
+    if exclude_project_id:
+        where.append("b.project_id<>%s")
+        args.append(exclude_project_id)
+    row = await fetchone(
+        f"""
+        SELECT b.*, p.title AS source_project_title
+        FROM task_model_bindings b
+        LEFT JOIN projects p ON p.id=b.project_id
+        WHERE {' AND '.join(where)}
+        ORDER BY b.updated_at DESC
+        LIMIT 1
+        """,
+        tuple(args),
+    )
+    return row
+
+
+async def inherit_latest_task_model_bindings(pid: str):
+    latest = await find_latest_saved_task_model_binding(exclude_project_id=pid)
+    default_provider = await find_default_task_model_provider()
+    if not latest and not default_provider:
+        return None
+
+    now = int(time.time() * 1000)
+    bid = str(uuid.uuid4())
+    values = [default_provider.get("id") for _ in MODEL_BINDING_FIELDS] if default_provider else [latest.get(field) for field in MODEL_BINDING_FIELDS]
+    await execute(
+        """
+        INSERT INTO task_model_bindings
+          (id, project_id, writing_model_id, brainstorm_model_id, outline_model_id, audit_model_id,
+           summary_model_id, extraction_model_id, market_model_id, polish_model_id,
+           inherited_from_project_id, inherited_from_project_title, inherited_from_updated_at,
+           created_at, updated_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        [bid, pid] + values + [
+            latest.get("project_id") if latest else None,
+            latest.get("source_project_title") if latest else "",
+            latest.get("updated_at") if latest else None,
+            now,
+            now,
+        ],
+    )
+    return await get_bindings(pid)
+
+
+async def find_default_task_model_provider():
+    provider = await fetchone(
+        """
+        SELECT *
+        FROM provider_profiles
+        WHERE model=%s AND name=%s
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (DEFAULT_TASK_MODEL_NAME, DEFAULT_TASK_PROVIDER_NAME),
+    )
+    if provider:
+        return provider
+    return await fetchone(
+        """
+        SELECT *
+        FROM provider_profiles
+        WHERE model=%s
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (DEFAULT_TASK_MODEL_NAME,),
+    )
+
+
+def _has_any_model_binding(row: dict) -> bool:
+    return any(row.get(field) for field in MODEL_BINDING_FIELDS)
+
+
+def _binding_status_message(row: Optional[dict]) -> str:
+    if not row or not _has_any_model_binding(row):
+        return "当前项目未配置任务模型映射：请先配置模型。"
+    if row.get("inherited_from_project_id"):
+        title = row.get("inherited_from_project_title") or "上一个项目"
+        updated_at = row.get("inherited_from_updated_at") or ""
+        return f"已继承上一个项目模型配置：{title} / {updated_at}"
+    return "当前项目已配置任务模型映射。"

@@ -61,6 +61,8 @@ const totalVolumeWords = computed(() =>
   volumeStore.volumes.reduce((sum, volume) => sum + Number(volume.targetWords || 0), 0)
 )
 
+const volumePlanQualityWarnings = computed(() => volumeStore.volumePlanQualityWarnings || [])
+
 onMounted(() => loadData())
 
 watch(() => props.project.id, () => loadData())
@@ -168,6 +170,21 @@ async function handleCreateEmptySkeleton() {
   } finally {
     initializingSkeleton.value = false
   }
+}
+
+function handleRepairVolumePlan() {
+  const warning = volumePlanQualityWarnings.value[0]
+  const target = volumeStore.volumes.find(volume =>
+    Number(volume.volumeNum || 0) === Number(warning?.volumeNum || 0)
+  ) || volumeStore.volumes[0]
+  if (target) {
+    openEdit(target)
+    message.warning('分卷规划存在占位文本，请补全后保存。', { title: '规划质量问题' })
+  }
+}
+
+function handleRegenerateVolumePlanWarning() {
+  message.warning('当前已有分卷规划。重新生成分卷规划前，请先人工确认是否删除旧分卷，避免误覆盖长篇结构。')
 }
 
 async function handleAudit(volume) {
@@ -318,6 +335,31 @@ function summaryList(report, key) {
 
     <n-alert v-if="volumeStore.volumes.length" type="info" :bordered="false" class="mb-3">
       已规划 {{ volumeStore.volumes.length }} 卷，目标合计 {{ (totalVolumeWords / 10000).toFixed(1) }} 万字。分卷是创作阶段锚点，不会直接改动章节正文。
+    </n-alert>
+
+    <n-alert
+      v-if="volumePlanQualityWarnings.length"
+      type="warning"
+      :bordered="false"
+      class="mb-3"
+    >
+      <div class="volume-warning-content">
+        <div>
+          <strong>规划质量问题</strong>
+          <p>
+            检测到 {{ volumePlanQualityWarnings.length }} 处“摘要不完整 / TODO / 待补充 / 略”等占位文本，
+            当前分卷规划不能视为完整通过。
+          </p>
+        </div>
+        <n-space>
+          <n-button size="tiny" type="warning" secondary @click="handleRepairVolumePlan">
+            修复分卷规划
+          </n-button>
+          <n-button size="tiny" secondary @click="handleRegenerateVolumePlanWarning">
+            重新生成分卷规划
+          </n-button>
+        </n-space>
+      </div>
     </n-alert>
 
     <n-empty v-if="!volumeStore.volumes.length && !volumeStore.loading" description="暂无分卷规划">
@@ -659,6 +701,20 @@ function summaryList(report, key) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 12px;
+}
+
+.volume-warning-content {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.volume-warning-content p {
+  margin: 4px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .volume-card {

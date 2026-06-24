@@ -12,6 +12,7 @@ const message = useAppMessage()
 const LAST_BINDING_PROJECT_KEY = 'novel_creator_last_binding_project_id'
 
 const bindings = ref(providerStore.emptyBindings())
+const bindingStatus = ref(null)
 const selectedProjectId = ref(null)
 const loadingBindings = ref(false)
 const saving = ref(false)
@@ -77,6 +78,7 @@ async function loadProjectBindings(projectId) {
   try {
     const existing = await providerStore.getBindings(projectId)
     bindings.value = providerStore.normalizeBindings(existing)
+    bindingStatus.value = await providerStore.getBindingStatus(projectId)
     writeLastProjectId(projectId)
   } catch (e) {
     message.error('加载模型映射失败：' + e.message)
@@ -113,6 +115,7 @@ async function handleSave() {
   saving.value = true
   try {
     await providerStore.saveBindings(selectedProjectId.value, bindings.value)
+    bindingStatus.value = await providerStore.getBindingStatus(selectedProjectId.value)
     message.success('任务模型映射保存成功')
   } catch (e) {
     message.error('保存失败：' + e.message)
@@ -133,6 +136,24 @@ async function handleSave() {
     </n-alert>
 
     <n-form v-if="providerStore.providers.length > 0 && projectOptions.length > 0">
+      <n-alert
+        v-if="bindingStatus?.inherited"
+        type="success"
+        class="mb-4"
+        :show-icon="false"
+      >
+        已继承上一个项目模型配置：{{ bindingStatus.inheritedFromProjectTitle || '未命名项目' }}
+        <span v-if="bindingStatus.inheritedFromUpdatedAt"> / {{ bindingStatus.inheritedFromUpdatedAt }}</span>
+      </n-alert>
+      <n-alert
+        v-else-if="bindingStatus && !bindingStatus.hasBinding"
+        type="warning"
+        class="mb-4"
+        :show-icon="false"
+      >
+        当前项目未配置任务模型映射：请先配置模型。
+      </n-alert>
+
       <n-form-item label="当前配置项目">
         <n-select
           v-model:value="selectedProjectId"

@@ -35,4 +35,20 @@ assert.match(
   'writer desk should render a visible title generation button'
 )
 
+assert.match(
+  writerView,
+  /showChapterTitleEditor/,
+  'writer desk should expose a manual chapter title editor modal'
+)
+assert.match(
+  writerView,
+  /handleSaveManualChapterTitle/,
+  'writer desk should save manual chapter titles through the metadata-only endpoint'
+)
+assert.match(
+  writerView,
+  /编辑章名/,
+  'writer desk should render a visible manual chapter title edit button'
+)
+
 console.log('manual chapter title regeneration contract passed')

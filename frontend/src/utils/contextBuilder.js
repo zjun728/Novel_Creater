@@ -332,7 +332,7 @@ function summarizeThreadFacts(canonFacts = [], plotThreads = [], options = {}) {
 }
 
 // === 正文生成上下文 ===
-export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null, correctionTaskStore = null) {
+export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null, correctionTaskStore = null, storyBlockContext = null) {
   const builder = new ContextBuilder(maxTokens || BUDGETS.writing)
   const bible = novelStore.bible?.value || novelStore.bible
   const outline = novelStore.outline?.value || novelStore.outline
@@ -345,16 +345,24 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const volumes = volumeStore?.volumes?.value || volumeStore?.volumes || []
   const correctionTasks = getContextCorrectionTasks(correctionTaskStore)
 
-  // P1: 本章目标（必须）
+  const blockStageSnapshot = storyBlockContext?.blockStageSnapshot || null
+  if (blockStageSnapshot) {
+    builder.add('blockStageSnapshot', blockStageSnapshot, { priority: 1, required: true, maxTokens: 900 })
+  }
+  if (storyBlockContext?.storyBlock) {
+    builder.add('storyBlock', storyBlockContext.storyBlock, { priority: 2, maxTokens: 1000 })
+  }
+
+  // 旧 nearChapters 只作为方向参考；当前章任务以 story block snapshot 和小纲为准。
   const nearChapter = outline?.nearChapters?.find(n => n.chapterNum === chapterNum)
   if (nearChapter) {
-    builder.add('chapterGoal', {
+    builder.add('directionReference', {
       title: nearChapter.title,
       goal: nearChapter.goal,
       conflict: nearChapter.conflict,
       turn: nearChapter.turn,
       emotionalBeat: nearChapter.emotionalBeat
-    }, { priority: 1, required: true })
+    }, { priority: 8, maxTokens: 360 })
   }
 
   // P1.5: 分卷阶段上下文（长篇连续创作的中间锚点）
@@ -378,9 +386,9 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     builder.add('currentVolume', outline.currentVolume, { priority: 5, maxTokens: 500 })
   }
 
-  // P3: 近景大纲
+  // P8: 方向参考，低优先级，不作为正文生成主依据。
   if (outline?.nearChapters?.length) {
-    builder.add('nearOutline', outline.nearChapters.filter(n => n.chapterNum >= chapterNum), { priority: 2, maxTokens: 800 })
+    builder.add('nearOutline', outline.nearChapters.filter(n => n.chapterNum >= chapterNum), { priority: 8, maxTokens: 500 })
   }
 
   // P4: 世界规则摘要
@@ -827,8 +835,8 @@ function pickProfileFacts(type, profile) {
     faction: ['leader', 'territory', 'hierarchy', 'resources', 'allies', 'enemies', 'goal'],
     location: ['parentLocation', 'geography', 'resources', 'controller', 'dangerLevel', 'restrictions'],
     power_system: ['realms', 'breakthroughRules', 'techniqueGrades', 'itemGrades', 'forbiddenBreaks', 'limits'],
-    technique: ['techniqueType', 'grade', 'origin', 'owner', 'requirements', 'effects', 'limitations'],
-    item: ['itemType', 'grade', 'owner', 'ability', 'limitation', 'itemStatus']
+    technique: ['techniqueType', 'grade', 'origin', 'owner', 'currentHolder', 'possessionStatus', 'requirements', 'effects', 'limitations'],
+    item: ['itemType', 'grade', 'owner', 'currentHolder', 'possessionStatus', 'contactStatus', 'accessState', 'ability', 'limitation', 'itemStatus']
   }
   const keys = keysByType[type] || []
   return keys
@@ -885,7 +893,11 @@ function profileLabel(key) {
     techniqueType: '类型',
     grade: '品阶',
     origin: '来源',
-    owner: '持有者',
+    owner: '稳定归属',
+    currentHolder: '当前持有者',
+    possessionStatus: '持有状态',
+    contactStatus: '接触状态',
+    accessState: '取用状态',
     requirements: '要求',
     effects: '效果',
     limitations: '限制',

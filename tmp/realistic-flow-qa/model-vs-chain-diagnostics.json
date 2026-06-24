@@ -1,0 +1,174 @@
+{
+  "mode": "live_diagnostics",
+  "createdAt": "2026-06-19T01:59:28.539Z",
+  "usesArchivedReports": false,
+  "project": {
+    "id": "75d4fbb5-a3b1-4624-9de8-dbfda5714d84",
+    "title": "LongformBrowser240w_20260619_080949"
+  },
+  "inputSummary": {
+    "openingHook": "陆沉舟在雨夜当铺清账时，发现死去三年的父亲名字出现在当天新账上。",
+    "openingAnchor": "陆沉舟在雨夜当铺清账时，发现死去三年的父亲名字出现在当天新账上。",
+    "currentVolumeTitle": "第一卷 雨夜账痕",
+    "currentVolumeCoreGoal": "陆沉舟被逐出巡天司后，在雨夜当铺发现父亲名字出现在新账上，开始追查第一条线索。",
+    "currentVolumeHandoffPoint": "陆沉舟带着星账和当铺老板给的旧地图，离开雨夜城，前往巡天司驻地外围的旧案档案库。",
+    "activeStoryBlockTitle": "潜入档案库",
+    "activeStoryBlockEntryState": "陆沉舟离开雨夜城，手持旧地图，视力因星账代价模糊，巡天司已派人追捕。",
+    "activeStoryBlockStage1": {
+      "id": "stage-1",
+      "choice": "是否使用星账记录巡逻队长的代价以获取情报",
+      "status": "planned",
+      "purpose": "躲避追捕，接近档案库",
+      "sceneOrAction": "陆沉舟利用旧地图走偏僻山路，遭遇巡天司巡逻队，用账目洞察伪造通行凭证脱身。",
+      "costOrConsequence": "若使用，视力进一步模糊；若不使用，绕路耗时增加风险。"
+    },
+    "promptContextHead": "{\n  \"chapterNum\": 1,\n  \"seed\": {\n    \"title\": \"尘星账本\",\n    \"genre\": \"长篇网文\",\n    \"logline\": \"被逐出巡天司的少年，用一本会记债的星账追查诸天灵脉衰竭真相。\",\n    \"protagonist\": \"陆沉舟，十八岁，前巡天司见习星吏，擅长从账目和旧案里发现漏洞。\",\n    \"desire\": \"洗清父亲旧案，找回被封存的巡天司名籍，同时弄清星账为什么只记录活人的代价。\",\n    \"coreConflict\": \"巡天司、商盟和隐秘星债会都想控制星账；每次使用星账都要付出现实代价。\",\n    \"worldPressure\": \"九州灵脉逐年枯竭，修士寿元、粮价和城防都被灵脉账目绑定，底层百姓最先承压。\",\n    \"openingHook\": \"陆沉舟在雨夜当铺清账时，发现死去三年的父亲名字出现在当天新账上。\",\n    \"openingAnchor\": \"陆沉舟在雨夜当铺清账时，发现死去三年的父亲名字出现在当天新账上。\",\n    \"styleTarget\": \"通俗顺畅，行动推进强，少解释，多场景。\",\n    \"differentiation\": \"用账本、债务和灵脉账目推动长线剧情，不靠规则表解释世界。\",\n    \"endingAnchor\": \"陆沉舟最终公开诸天总账，让修行代价回到每个选择者自己身上。\"\n  },\n  \"openingHook\": \"陆沉舟在雨夜当铺清账时，发现死去三年的父亲名字出现在当天新账上。\",\n  \"openingAnchor\": \"陆沉舟在雨夜当铺清账时，发现死去三年的父亲名字出现在当天新账上。\",\n  \"bible\": {\n    \"id\": \"d4f76989-687a-4b4d-9548-d26a9b33bc24\",\n    \"projectId\": \"75d4fbb5-a3b1-4624-9de8-dbfda5714d84\",\n    \"premise\": \"被逐出巡天司的少年陆沉舟，手持一本记录活人代价的星账，在灵脉枯竭的九州追查父亲旧案与诸天真相。\",\n    \"targetReader\": \"喜欢悬疑推理与底层逆袭的网文读者，偏好聪明主角用逻辑破局而非武力碾压，享受每次选择都带代价的紧张感，追求长线伏笔与世界观揭秘的爽点。\",\n    \"styleBible\": \"叙述口吻冷静克制，多用行动和场景推进。\\n对话简短有力，避免长篇解释性对白。\\n每章结尾留一个悬念钩子，推动下一章。\\n幽默与沉重比例约为1:4，以沉重底色为主。\\n视角始终锁定陆沉舟，不随意切换。\\n节奏紧凑，每三章内至少有一个小反转。\",\n    \"themeBible\": \"反复追问代价与选择的关系，每个决定都有后果。\\n主角弧光从追查真相到主动承担代价。\\n情感底色是压抑中的微光，不渲染绝望。\\n结局锚点：公开总账让修行代价回归个人。\\n探讨公平与特权，底层承受最多代价。\\n亲情与正义的冲突贯穿主线。\",\n    \"worldRules\": \"灵脉枯竭导致修士寿元、粮价、城防被账目绑定。\\n星账只能记录活人付出的代价，不记死人。\\n每次使用星账，陆沉舟必须付出现实代价。\\n巡天司、商盟、星债会三方争夺星账控制权。\\n父亲名字出现在新账上，意味着他可能未死。\\n九州灵脉账目公开后，修行代价由个人承担。\\n星账的代价形式随机且不可预测。\\n灵脉账目影响底层百姓最直接、最严重。\",\n    \"writingProfile\": {},\n    \"confirmedSettings\": null,\n    \"forbiddenDirections\": [\n      \"不要写成设定百科，避免大段解释规则。\",\n      \"不要让神秘人长篇交底，用行动揭示信息。\",\n      \"不要机械按字数切分章节，以剧情节点为准。\",\n      \"不要把群聊或对话写成纯外挂工具。\",\n      \"不要让反派脸谱化，赋予其合理动机。\",\n      \"不要依赖规则表解释世界，用场景展示。\",\n      \"不要削弱代价的严肃性，避免随意化解。\",\n      \"不要偏离主角视角，避免多线叙事。\"\n    ],\n    \"updatedAt\": 1781827814153\n  },\n  \"currentVolume\": {\n    \"id\": \"7f1fc97a-7921-4601-a0bf-68a22231df67\",\n    \"projectId\": \"75d4fbb5-a3b1-4624-9de8-dbfda5714d84\",\n    \"volumeNum\": 1,\n    \"title\": \"第一卷 雨夜账痕\",\n    \"startChapter\": 1,\n    \"endChapter\": 60,\n    \"targetWords\": 300000,\n    \"coreGoal\": \"陆沉舟被逐出巡天司后，在雨夜当铺发现父亲名字出现在新账上，开始追查第一条线索。\",\n    \"mainConflict\": \"巡天司封锁父亲旧案，陆沉舟使用星账探查当铺账目，首次付出代价，与巡天司底层吏员冲突。\",\n    \"keyCharacters\": [\n      \"陆沉舟\",\n      \"当铺老板\",\n      \"巡天司吏员\"\n    ],\n    \"summary\": \"陆沉舟被逐后栖身雨夜当铺，清账时发现死去三年的父亲名字出现在当天新账上。他使用星账追查，付出视力模糊的代价，获得当铺老板的模糊线索。巡天司派人搜查，陆沉舟逃脱，决定前往父亲旧案封存地。\",\n    \"foreshadowingPlan\": [\n      \"父亲名字出现在新账暗示未死\",\n      \"星账代价形式随机且不可逆\",\n      \"当铺老板与巡天司有旧怨\"\n    ],\n    \"unresolvedItems\": [\n      \"父亲真实状态未知\",\n      \"星账为何记录活人代价\",\n      \"巡天司封存旧案原因\"\n    ],\n    \"handoffPoint\": \"陆沉舟带着星账和当铺老板给的旧地图，离开雨夜城，前往巡天司驻地外围的旧案档案库。\",\n    \"stageSummaryReport\": null,\n    \"summaryUpdatedAt\": null,\n    \"auditReport\": null,\n    \"auditUpdatedAt\": null,\n    \"status\": \"active\",\n    \"createdAt\": 1781827996379,\n    \"updatedAt\": 1781827996379\n  },\n  \"volumeStage\": {\n    \"id\": \"7f1fc97a-7921-4601-a0bf-68a22231df67\",\n    \"projectId\": \"75d4fbb5-a3b1-4624-9de8-dbfda5714d84\",\n    \"volumeNum\": 1,\n    \"title\": \"第一卷 雨夜账痕\"\n...[truncated 20523]"
+  },
+  "diagnostics": [
+    {
+      "task": "story_block_planning",
+      "providerId": "d2efbcb0-676c-42ba-a017-7d35fc6c8d89",
+      "providerName": "联通云-DeepSeek-V4-Flash",
+      "modelName": "DeepSeek-V4-Flash",
+      "promptChars": 21621,
+      "rawHead": "{\n  \"title\": \"雨夜账痕\",\n  \"goal\": \"陆沉舟在雨夜当铺发现父亲名字出现在新账上，使用星账追查，付出代价，获得线索，躲避巡天司搜查，决定前往档案库。\",\n  \"storyFunction\": \"揭示+施压\",\n  \"entryState\": \"陆沉舟在雨夜当铺清账，发现死去三年的父亲名字出现在当天新账上。\",\n  \"exitTarget\": \"陆沉舟带着星账和当铺老板给的旧地图，离开雨夜城，前往巡天司驻地外围的旧案档案库。\",\n  \"mainPressure\": \"巡天司封锁父亲旧案，当铺老板隐瞒关键信息，星账代价威胁。\",\n  \"keyCharacters\": [\"陆沉舟\", \"当铺老板\", \"巡天司吏员\"],\n  \"stagePlan\": [\n    {\n      \"id\": \"stage-1\",\n      \"purpose\": \"发现异常\",\n      \"sceneOrAction\": \"陆沉舟清账时看到父亲名字出现在新账上，使用星账探查，视力模糊。\",\n      \"choice\": \"是否使用星账探查父亲条目\",\n      \"costOrConsequence\": \"视力模糊代价，引起当铺老板注意\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-2\",\n      \"purpose\": \"获取线索\",\n      \"sceneOrAction\": \"陆沉舟质问当铺老板，老板给出模糊线索和旧地图。\",\n      \"choice\": \"相信老板还是自行调查\",\n      \"costOrConsequence\": \"老板可能隐瞒关键信息，地图指向未知风险\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-3\",\n      \"purpose\": \"巡天司搜查\",\n      \"sceneOrAction\": \"巡天司吏员突然搜查当铺，陆沉舟必须逃脱。\",\n      \"choice\": \"正面冲突还是潜逃\",\n      \"costOrConsequence\": \"暴露行踪或受伤，当铺老板被牵连\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-4\",\n      \"purpose\": \"决定方向\",\n      \"sceneOrAction\": \"陆沉舟逃脱后，根据地图决定前往档案库。\",\n      \"choice\": \"立即出发还是先休整\",\n      \"costOrConsequence\": \"时间紧迫，星账代价累积，巡天司可能封锁路线\",\n      \"status\": \"planned\"\n    }\n  ],\n  \"nextStageSuggestion\": \"stage-2\",\n  \"unresolvedQuestions\": [\"父亲真实状态未知\", \"星账为何记录活人代价\", \"巡天司封存旧案原因\"],\n  \"dontAdvanceYet\": [\"不要揭示父亲未死真相\", \"不要引入星债会\", \"不要过早暴露当铺老板与巡天司旧怨\"],\n  \"capacityAssessment\": \"normal\"\n}",
+      "rawTail": "获取线索\",\n      \"sceneOrAction\": \"陆沉舟质问当铺老板，老板给出模糊线索和旧地图。\",\n      \"choice\": \"相信老板还是自行调查\",\n      \"costOrConsequence\": \"老板可能隐瞒关键信息，地图指向未知风险\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-3\",\n      \"purpose\": \"巡天司搜查\",\n      \"sceneOrAction\": \"巡天司吏员突然搜查当铺，陆沉舟必须逃脱。\",\n      \"choice\": \"正面冲突还是潜逃\",\n      \"costOrConsequence\": \"暴露行踪或受伤，当铺老板被牵连\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-4\",\n      \"purpose\": \"决定方向\",\n      \"sceneOrAction\": \"陆沉舟逃脱后，根据地图决定前往档案库。\",\n      \"choice\": \"立即出发还是先休整\",\n      \"costOrConsequence\": \"时间紧迫，星账代价累积，巡天司可能封锁路线\",\n      \"status\": \"planned\"\n    }\n  ],\n  \"nextStageSuggestion\": \"stage-2\",\n  \"unresolvedQuestions\": [\"父亲真实状态未知\", \"星账为何记录活人代价\", \"巡天司封存旧案原因\"],\n  \"dontAdvanceYet\": [\"不要揭示父亲未死真相\", \"不要引入星债会\", \"不要过早暴露当铺老板与巡天司旧怨\"],\n  \"capacityAssessment\": \"normal\"\n}",
+      "cleanedLength": 1410,
+      "jsonParseSucceeded": true,
+      "parseError": "",
+      "repairTriggered": false,
+      "repairSucceeded": false,
+      "finishReason": "stop",
+      "usage": {
+        "completion_tokens": 1542,
+        "prompt_tokens": 9560,
+        "prompt_tokens_details": null,
+        "total_tokens": 11102
+      },
+      "openingHookHit": true,
+      "handoffPointHit": true,
+      "plannedTitle": "雨夜账痕",
+      "plannedEntryState": "陆沉舟在雨夜当铺清账，发现死去三年的父亲名字出现在当天新账上。",
+      "plannedStage1": {
+        "id": "stage-1",
+        "purpose": "发现异常",
+        "sceneOrAction": "陆沉舟清账时看到父亲名字出现在新账上，使用星账探查，视力模糊。",
+        "choice": "是否使用星账探查父亲条目",
+        "costOrConsequence": "视力模糊代价，引起当铺老板注意",
+        "status": "planned"
+      },
+      "savedChapterBeatPlan": false
+    },
+    {
+      "task": "chapter_1_beat_plan",
+      "providerId": "d2efbcb0-676c-42ba-a017-7d35fc6c8d89",
+      "providerName": "联通云-DeepSeek-V4-Flash",
+      "modelName": "DeepSeek-V4-Flash",
+      "promptChars": 6266,
+      "rawHead": "{\n  \"chapterEvent\": \"陆沉舟在前往巡天司驻地外围旧案档案库的途中，利用星账获取巡逻队情报，通过废弃矿道接近档案库，发现父亲留下的标记，最终进入档案库后门，但追兵可能已从另一条路逼近。\",\n  \"characterGoal\": \"陆沉舟必须在天黑前潜入档案库，获取父亲旧案线索，同时避免被巡天司巡逻队捕获。\",\n  \"coreConflict\": \"巡天司巡逻队封锁山路，旧地图因视力模糊难以辨认，矿道入口被碎石堵塞，追兵从后方逼近。\",\n  \"externalPressure\": \"第一队巡逻队队长携带搜查令，正在搜索旧矿道方向；第二队追兵从后方快速接近，脚步声和火把光已可察觉。\",\n  \"costOrLoss\": \"陆沉舟使用星账记录巡逻队长的代价（失去晋升机会），导致视力进一步模糊，需更长时间恢复；清理碎石时手指被划伤，体力消耗。\",\n  \"irreversibleChange\": \"矿道入口被碎石塌落封死，陆沉舟无法原路返回；确认父亲曾在矿道巡查点留下刻痕标记，证明父亲确实来过此地。\",\n  \"endingHandoff\": \"陆沉舟推开档案库后门，进入昏暗的库房，但身后传来脚步声和金属碰撞声——追兵已从另一条通道进入档案库，下一章需应对库内搜索与线索查找。\"\n}",
+      "rawTail": "{\n  \"chapterEvent\": \"陆沉舟在前往巡天司驻地外围旧案档案库的途中，利用星账获取巡逻队情报，通过废弃矿道接近档案库，发现父亲留下的标记，最终进入档案库后门，但追兵可能已从另一条路逼近。\",\n  \"characterGoal\": \"陆沉舟必须在天黑前潜入档案库，获取父亲旧案线索，同时避免被巡天司巡逻队捕获。\",\n  \"coreConflict\": \"巡天司巡逻队封锁山路，旧地图因视力模糊难以辨认，矿道入口被碎石堵塞，追兵从后方逼近。\",\n  \"externalPressure\": \"第一队巡逻队队长携带搜查令，正在搜索旧矿道方向；第二队追兵从后方快速接近，脚步声和火把光已可察觉。\",\n  \"costOrLoss\": \"陆沉舟使用星账记录巡逻队长的代价（失去晋升机会），导致视力进一步模糊，需更长时间恢复；清理碎石时手指被划伤，体力消耗。\",\n  \"irreversibleChange\": \"矿道入口被碎石塌落封死，陆沉舟无法原路返回；确认父亲曾在矿道巡查点留下刻痕标记，证明父亲确实来过此地。\",\n  \"endingHandoff\": \"陆沉舟推开档案库后门，进入昏暗的库房，但身后传来脚步声和金属碰撞声——追兵已从另一条通道进入档案库，下一章需应对库内搜索与线索查找。\"\n}",
+      "extractedLength": 551,
+      "cleanedLength": 551,
+      "jsonParseSucceeded": true,
+      "repairTriggered": false,
+      "repairSucceeded": false,
+      "qualityGatePassed": true,
+      "qualityIssues": {
+        "missingRequiredFields": [],
+        "volumeGoalHandoffStatus": "pass",
+        "turnDecisionStatus": "pass",
+        "issues": []
+      },
+      "finishReason": "stop",
+      "usage": {
+        "completion_tokens": 1109,
+        "prompt_tokens": 3645,
+        "prompt_tokens_details": null,
+        "total_tokens": 4754
+      },
+      "savedChapterBeatPlan": false
+    },
+    {
+      "task": "story_block_planning",
+      "providerId": "30767f7b-0f67-4690-a123-62abb070dae1",
+      "providerName": "deepseek-v4-pro",
+      "modelName": "deepseek-v4-pro",
+      "promptChars": 21621,
+      "rawHead": "{\n  \"title\": \"雨夜惊账\",\n  \"goal\": \"陆沉舟发现父亲名字出现在新账，首次使用星账追查，付出代价并获取线索，避开巡天司搜查，决定离城追查。\",\n  \"storyFunction\": \"揭示\",\n  \"entryState\": \"陆沉舟在雨夜当铺清账，发现死去三年的父亲名字出现在当天新账上。\",\n  \"exitTarget\": \"陆沉舟决定前往巡天司外围旧案档案库，准备离开雨夜城。\",\n  \"mainPressure\": \"巡天司追查与星账代价风险\",\n  \"keyCharacters\": [\n    \"陆沉舟\",\n    \"当铺老板\",\n    \"巡天司吏员\"\n  ],\n  \"stagePlan\": [\n    {\n      \"id\": \"stage-1\",\n      \"purpose\": \"引入钩子，建立核心悬念\",\n      \"sceneOrAction\": \"雨夜当铺内，陆沉舟清账时发现父亲名字，反复核对并回忆旧案，怀疑父亲未死。\",\n      \"choice\": \"是忽略异常继续清账，还是冒险追查？选择追查，调用星账。\",\n      \"costOrConsequence\": \"触动星账机制，后续将付出未知代价。\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-2\",\n      \"purpose\": \"揭示星账规则，获取初始线索\",\n      \"sceneOrAction\": \"陆沉舟用星账追溯父亲名字的账目关联，眼前浮现模糊景象，得知当铺老板与父亲有过接触。\",\n      \"choice\": \"承受代价换取更多信息，还是中断？选择继续，付出视力模糊的代价。\",\n      \"costOrConsequence\": \"视力暂时模糊，获得模糊线索：老板知道一些内情。\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-3\",\n      \"purpose\": \"获取情报，引入外部压力\",\n      \"sceneOrAction\": \"陆沉舟带伤追问老板，老板要求以旧物交换情报，透露父亲旧案被巡天司封存，并给出旧地图。巡天司吏员突然上门搜查。\",\n      \"choice\": \"是交出星账保命，还是藏匿应对？藏起星账和地图，配合搜查。\",\n      \"costOrConsequence\": \"险被识破，吏员起疑，搜查后离开但暗中监视。\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-4\",\n      \"purpose\": \"摆脱追踪，做出重大决定\",\n      \"sceneOrAction\": \"陆沉舟借故离开当铺，发现被吏员跟踪，利用雨夜暗巷甩掉尾巴。在城边废弃小屋整理线索，决定前往巡天司外围档案库。\",\n      \"choice\": \"是立即出城还是先躲藏观望？决定连夜出城，主动追查。\",\n      \"costOrConsequence\": \"被巡天司列为可疑目标，未来追捕将升级。\",\n      \"status\": \"planned\"\n    }\n  ],\n  \"nextStageSuggestion\": \"stage-2\",\n  \"unresolvedQuestions\": [\n    \"父亲是否还活着\",\n    \"星账代价的具体机制\",\n    \"巡天司为何急于封存旧案\"",
+      "rawTail": "tus\": \"planned\"\n    },\n    {\n      \"id\": \"stage-3\",\n      \"purpose\": \"获取情报，引入外部压力\",\n      \"sceneOrAction\": \"陆沉舟带伤追问老板，老板要求以旧物交换情报，透露父亲旧案被巡天司封存，并给出旧地图。巡天司吏员突然上门搜查。\",\n      \"choice\": \"是交出星账保命，还是藏匿应对？藏起星账和地图，配合搜查。\",\n      \"costOrConsequence\": \"险被识破，吏员起疑，搜查后离开但暗中监视。\",\n      \"status\": \"planned\"\n    },\n    {\n      \"id\": \"stage-4\",\n      \"purpose\": \"摆脱追踪，做出重大决定\",\n      \"sceneOrAction\": \"陆沉舟借故离开当铺，发现被吏员跟踪，利用雨夜暗巷甩掉尾巴。在城边废弃小屋整理线索，决定前往巡天司外围档案库。\",\n      \"choice\": \"是立即出城还是先躲藏观望？决定连夜出城，主动追查。\",\n      \"costOrConsequence\": \"被巡天司列为可疑目标，未来追捕将升级。\",\n      \"status\": \"planned\"\n    }\n  ],\n  \"nextStageSuggestion\": \"stage-2\",\n  \"unresolvedQuestions\": [\n    \"父亲是否还活着\",\n    \"星账代价的具体机制\",\n    \"巡天司为何急于封存旧案\"\n  ],\n  \"dontAdvanceYet\": [\n    \"过早揭示父亲下落\",\n    \"直接与巡天司高层冲突\",\n    \"获得星账完整规则\"\n  ],\n  \"capacityAssessment\": \"normal\"\n}",
+      "cleanedLength": 1616,
+      "jsonParseSucceeded": true,
+      "parseError": "",
+      "repairTriggered": false,
+      "repairSucceeded": false,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 9580,
+        "completion_tokens": 2541,
+        "total_tokens": 12121,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 1777
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 9580
+      },
+      "openingHookHit": true,
+      "handoffPointHit": true,
+      "plannedTitle": "雨夜惊账",
+      "plannedEntryState": "陆沉舟在雨夜当铺清账，发现死去三年的父亲名字出现在当天新账上。",
+      "plannedStage1": {
+        "id": "stage-1",
+        "purpose": "引入钩子，建立核心悬念",
+        "sceneOrAction": "雨夜当铺内，陆沉舟清账时发现父亲名字，反复核对并回忆旧案，怀疑父亲未死。",
+        "choice": "是忽略异常继续清账，还是冒险追查？选择追查，调用星账。",
+        "costOrConsequence": "触动星账机制，后续将付出未知代价。",
+        "status": "planned"
+      },
+      "savedChapterBeatPlan": false
+    },
+    {
+      "task": "chapter_1_beat_plan",
+      "providerId": "30767f7b-0f67-4690-a123-62abb070dae1",
+      "providerName": "deepseek-v4-pro",
+      "modelName": "deepseek-v4-pro",
+      "promptChars": 6266,
+      "rawHead": "{\n  \"chapterEvent\": \"陆沉舟在视力模糊的状态下抵达巡天司旧案档案库外围，遭遇巡逻队的盘查。他被迫使用星账记录巡逻队长的代价以伪造通行凭证，但星账在此刻展示出意料之外的信息——巡逻队长曾参与封存父亲旧案。陆沉舟在视力进一步受损的情况下潜入档案库，却发现档案已被提前转移，只留下半张烧焦的调令残页，上面有父亲的签名。\",\n  \"characterGoal\": \"陆沉舟必须进入旧案档案库获取父亲案件的原始卷宗，因为这是当铺老板提供的唯一线索，也是他查明父亲生死与星账真相的第一个实质突破口。\",\n  \"coreConflict\": \"巡天司已预判陆沉舟的行动路线并提前转移档案，同时巡逻队长的代价记录揭示巡天司内部有人封存旧案，形成追捕与隐瞒的双重阻力。\",\n  \"externalPressure\": \"巡逻队在山道设卡盘查；陆沉舟视力模糊导致误判地形，险些暴露行踪；档案库内遗留的调令残页显示档案被转移至未知地点，倒逼他必须在巡天司全面封锁前找到新方向。\",\n  \"costOrLoss\": \"陆沉舟使用星账探查巡逻队长的代价，导致视力从模糊恶化为间歇性失明，右眼在关键时刻丧失视觉，且星账上新增一行未完全显示的代价条目，暗示代价仍在累积。\",\n  \"irreversibleChange\": \"旧案档案库被证实已空，物理证据消失；陆沉舟获得巡逻队长参与封档的关键情报，敌我关系从单方面追捕升级为巡天司内部有人主动销毁证据；视力损伤进入新阶段，影响后续行动能力。\",\n  \"endingHandoff\": \"陆沉舟带着半张烧焦的调令残页和巡逻队长的代价记录撤离档案库，调令上父亲的签名与转移日期指向巡天司更高层级的秘密档案室，但视力已无法支撑他继续赶路，他必须在附近寻找藏身处，同时躲避已经察觉异常的巡逻队回马枪。\"\n}",
+      "rawTail": "{\n  \"chapterEvent\": \"陆沉舟在视力模糊的状态下抵达巡天司旧案档案库外围，遭遇巡逻队的盘查。他被迫使用星账记录巡逻队长的代价以伪造通行凭证，但星账在此刻展示出意料之外的信息——巡逻队长曾参与封存父亲旧案。陆沉舟在视力进一步受损的情况下潜入档案库，却发现档案已被提前转移，只留下半张烧焦的调令残页，上面有父亲的签名。\",\n  \"characterGoal\": \"陆沉舟必须进入旧案档案库获取父亲案件的原始卷宗，因为这是当铺老板提供的唯一线索，也是他查明父亲生死与星账真相的第一个实质突破口。\",\n  \"coreConflict\": \"巡天司已预判陆沉舟的行动路线并提前转移档案，同时巡逻队长的代价记录揭示巡天司内部有人封存旧案，形成追捕与隐瞒的双重阻力。\",\n  \"externalPressure\": \"巡逻队在山道设卡盘查；陆沉舟视力模糊导致误判地形，险些暴露行踪；档案库内遗留的调令残页显示档案被转移至未知地点，倒逼他必须在巡天司全面封锁前找到新方向。\",\n  \"costOrLoss\": \"陆沉舟使用星账探查巡逻队长的代价，导致视力从模糊恶化为间歇性失明，右眼在关键时刻丧失视觉，且星账上新增一行未完全显示的代价条目，暗示代价仍在累积。\",\n  \"irreversibleChange\": \"旧案档案库被证实已空，物理证据消失；陆沉舟获得巡逻队长参与封档的关键情报，敌我关系从单方面追捕升级为巡天司内部有人主动销毁证据；视力损伤进入新阶段，影响后续行动能力。\",\n  \"endingHandoff\": \"陆沉舟带着半张烧焦的调令残页和巡逻队长的代价记录撤离档案库，调令上父亲的签名与转移日期指向巡天司更高层级的秘密档案室，但视力已无法支撑他继续赶路，他必须在附近寻找藏身处，同时躲避已经察觉异常的巡逻队回马枪。\"\n}",
+      "extractedLength": 770,
+      "cleanedLength": 770,
+      "jsonParseSucceeded": true,
+      "repairTriggered": false,
+      "repairSucceeded": false,
+      "qualityGatePassed": true,
+      "qualityIssues": {
+        "missingRequiredFields": [],
+        "volumeGoalHandoffStatus": "pass",
+        "turnDecisionStatus": "pass",
+        "issues": []
+      },
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 3645,
+        "completion_tokens": 1026,
+        "total_tokens": 4671,
+        "prompt_tokens_details": {
+          "cached_tokens": 3584
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 568
+        },
+        "prompt_cache_hit_tokens": 3584,
+        "prompt_cache_miss_tokens": 61
+      },
+      "savedChapterBeatPlan": false
+    }
+  ],
+  "assessment": {
+    "modelStabilityRisk": false,
+    "platformPromptContextRisk": false,
+    "v4ProAvailable": true
+  }
+}

@@ -1,24 +1,20 @@
 /**
- * 四层规划 Prompt
+ * 卷级蓝图 Prompt
  *
- * 当前章小纲由 chapter.js 负责；这里负责更高一层的滚动规划：
- * - 近景滚动规划：未来 3-5 章，进入章节生成上下文。
- * - 当前卷规划：当前卷 10-60 章的大结构，和分卷规划互相校准。
- * - 长线蓝图：后续几卷粗颗粒方向，不细化到章节，也不直接进入每章正文生成。
+ * 正式主链路是：分卷规划 -> 故事块滚动规划 -> 当前章小纲 -> 正文生成。
+ * 这里只维护卷级方向和少量方向参考，不生成当前章小纲，也不把未来章节计划作为正文依据。
  */
 
 export function buildOutlineSystemPrompt() {
-  return `你是一位长篇小说结构设计师，负责维护可滚动迭代的创作规划。
-
+  return `你是一位长篇小说结构设计师，负责维护卷级蓝图和长线方向参考。
 核心原则：
-- 当前章小纲不在这里生成，当前章小纲由单章写作流程单独确认。
-- 近景滚动规划只规划未来 3-5 章，用于防止上下章断层、人物状态跳变和伏笔遗忘。
-- 当前卷规划负责本卷大结构：阶段目标、核心冲突、人物弧光、关键反转和卷尾状态。
-- 长线蓝图负责后续几卷的大方向，不细化到章节，不写成几十章详细大纲。
-- 远景模糊，近景清晰；规划是可能路线，不是把故事写死。
-- 每次更新都要尊重已经写出的正文、创作圣经、设定库、已确认事实和当前卷实际进展。
-- 进度锁：不得回退到已写章节之前，不得重写、重排或撤销已经定稿的正文。
-- 不能重新规划已经发生过的“首次”事件，例如首次获得系统、首次加点、首次突破、首次进入宗门、首次发现核心秘密等；已经发生的事件只能承接后果。
+- 当前章小纲不在这里生成；当前章小纲必须从当前故事块阶段生成。
+- 分卷规划负责卷目标、核心冲突、关键人物、线索伏笔和卷尾交接点。
+- 故事块是分卷与章节之间的正式规划层，负责接下来一段连续剧情，不固定章节数。
+- nearChapters 仅作为方向参考，用于提醒可能的接力关系；它不能优先于故事块，也不能作为正文生成主依据。
+- 长线蓝图只保留卷级方向，不细化成未来具体章节。
+- 每次更新都要尊重已定稿正文、创作圣经、设定库、已确认事实和当前卷实际进展。
+- 进度锁：不得重写、重排或撤销已定稿正文。
 - 输出必须是合法 JSON，不要输出 Markdown、解释、寒暄或代码块。`
 }
 
@@ -33,7 +29,7 @@ function formatContextBlock(value, emptyText = '无') {
 }
 
 export function buildOutlinePrompt(context = {}) {
-  return `请根据以下资料，更新小说的滚动规划。
+  return `请根据以下资料，更新小说的卷级蓝图和方向参考。
 
 ## 项目信息
 ${formatContextBlock(context.projectInfo)}
@@ -45,15 +41,14 @@ ${formatContextBlock(context.seedInfo)}
 ${formatContextBlock(context.bibleInfo)}
 
 ## 当前进度
-当前章节：第 ${context.currentChapterNum || 1} 章
+当前待写章节：第 ${context.currentChapterNum || 1} 章
 ${formatContextBlock(context.currentVolumeInfo, '')}
 
-## 进度锁
-- currentChapterNum 表示当前待写章节，不是已经写完的章节。
-- nearChapters 的 chapterNum 必须从当前待写章节开始递增，只规划 currentChapterNum 到 currentChapterNum+4 之间的未来 3-5 章。
-- 不得回退到已写章节之前，不得重写、重排或撤销已定稿正文。
-- 不能重新规划已经发生过的“首次”事件，例如首次获得系统、首次加点、首次突破、首次进入宗门、首次发现核心秘密等；如果这些事件已经在已写章节摘要、设定库或事实中出现，只能承接后果。
-- 如模型发现当前卷规划/长线蓝图与已写正文冲突，必须以已写正文、设定库和已确认事实为准，给出滚动后的新规划。
+## 职责边界
+- 分卷规划只管卷级大方向：卷目标、核心冲突、关键人物、线索伏笔、卷尾交接点。
+- 故事块负责连续剧情推进；当前章小纲必须从当前故事块阶段生成。
+- nearChapters 只能作为方向参考，不得覆盖故事块阶段，不得直接驱动正文生成。
+- 如卷级蓝图与已写正文冲突，以已写正文、设定库和已确认事实为准。
 
 ## 分卷规划
 ${formatContextBlock(context.volumeInfo, '暂无分卷规划')}
@@ -65,14 +60,14 @@ ${formatContextBlock(context.chapterInfo, '暂无已写章节')}
 ${formatContextBlock(context.factInfo, '暂无')}
 ${formatContextBlock(context.settingInfo, '')}
 
-## 现有滚动规划
+## 现有蓝图
 ${formatContextBlock(context.existingOutlineInfo, '暂无')}
 
 请只输出以下 JSON：
 {
   "farVision": {
     "theme": "长线蓝图的核心主题或终局方向",
-    "finalPressure": "后期会持续逼近主角和世界的终局压力",
+    "finalPressure": "后期持续逼近主角和世界的终局压力",
     "futureVolumes": [
       {
         "volume": "后续卷名或阶段名",
@@ -91,34 +86,32 @@ ${formatContextBlock(context.existingOutlineInfo, '暂无')}
     "emotionalArc": "本卷主要人物情绪/关系变化",
     "expectedChapterRange": [1, 60],
     "mustKeep": ["本卷必须保留的关键点"],
-    "mustNotAdvanceYet": ["本卷或近几章暂时不能提前写掉的内容"]
+    "mustNotAdvanceYet": ["本卷暂时不能提前写掉的内容"]
   },
   "nearChapters": [
     {
       "chapterNum": 1,
-      "title": "章节临时标题",
-      "goal": "本章必须完成的推进",
-      "conflict": "本章核心冲突",
-      "turn": "本章转折",
-      "emotionalBeat": "人物动机、恐惧、代价或情绪残留",
-      "requiredFacts": ["必须承接或写入的事实"],
-      "doNotResolveYet": ["本章不能提前解决的内容"],
-      "handoff": "交给下一章的接力点"
+      "title": "参考标题",
+      "goal": "方向参考，不作为当前章小纲",
+      "conflict": "可能冲突",
+      "turn": "可能转折",
+      "emotionalBeat": "可能的人物情绪或代价残留",
+      "requiredFacts": ["必须尊重的事实"],
+      "doNotResolveYet": ["不能提前解决的内容"],
+      "handoff": "可能的接力点"
     }
   ]
 }
 
 要求：
-- nearChapters 只规划未来 3-5 章，从当前待写章节开始。
-- nearChapters 的 chapterNum 必须从 currentChapterNum 开始递增，不能填写已写章节编号。
-- nearChapters 要能服务当前章小纲生成，但不要把每句对白、每个动作规定死。
-- currentVolume 要和分卷规划保持一致，如实际正文已经改变，应给出更贴近当前正文的阶段修正。
-- farVision 是长线蓝图，只保留后续几卷粗颗粒方向，不细化到章节。
-- 如果现有规划和已写正文冲突，以已写正文、设定库和已确认事实为准，给出滚动后的新规划。`
+- currentVolume 要和分卷规划保持一致；如实际正文已经改变，应给出更贴近当前正文的阶段修正。
+- farVision 只保留后续几卷粗颗粒方向，不细化到章节。
+- nearChapters 是低优先级方向参考；当前章仍以 block_stage_snapshot 和故事块阶段为准。
+- 如果现有蓝图和已写正文冲突，以已写正文、设定库和已确认事实为准。`
 }
 
 export function buildRollingPlanReroutePrompt(context = {}) {
-  return `请在每章定稿后，校验剩余近景规划，并微调近景滚动规划。
+  return `请在章节定稿后，校验卷级蓝图和方向参考是否需要轻微校准。
 
 ## 已定稿章节
 第 ${context.finalizedChapterNum || context.currentChapterNum || '?'} 章
@@ -128,28 +121,27 @@ ${formatContextBlock(context.finalizedChapterInfo || context.chapterInfo, '暂�
 ${formatContextBlock(context.factInfo, '暂无')}
 ${formatContextBlock(context.settingInfo, '')}
 
-## 原近景规划
+## 原蓝图
 ${formatContextBlock(context.existingOutlineInfo, '暂无')}
 
 ## 当前卷规划
 ${formatContextBlock(context.currentVolumeInfo || context.volumeInfo, '暂无')}
 
 任务：
-1. 检查本章实际写出来的事件、人物状态、代价、线索推进，是否让剩余近景规划的前提失效。
-2. 只校验并微调未来 3-5 章 nearChapters，不得重写已定稿章节，不得撤销已发生事实。
-3. 如果角色做出了合理但超出原规划的选择，优先顺着已定稿正文重路由，而不是强行拉回旧规划。
-4. 当前卷规划和长线蓝图只做必要的轻微校准；远景保持粗颗粒，不细化到章节。
+1. 检查本章实际事件、人物状态、代价和线索推进，是否让卷级方向参考的前提失效。
+2. 只允许校准未写内容；不得重写已定稿章节，不得撤销已发生事实。
+3. 如角色做出合理但超出原参考的选择，优先顺着已定稿正文重路由。
+4. 当前卷规划和长线蓝图只做必要轻微校准；远景保持粗颗粒，不细化到章节。
 
-请只输出合法 JSON，字段结构与滚动规划一致：farVision、currentVolume、nearChapters。`
+请只输出合法 JSON，字段结构保持：farVision、currentVolume、nearChapters。`
 }
 
 export function buildOutlineRepairPrompt(text) {
-  return `下面是一次滚动规划生成结果，但它不是合法 JSON。请修复为合法 JSON，并保持字段结构不变。
-
+  return `下面是一次卷级蓝图生成结果，但它不是合法 JSON。请修复为合法 JSON，并保持字段结构不变。
 要求：
 - 只输出 JSON。
 - 必须包含 farVision、currentVolume、nearChapters。
-- nearChapters 必须是数组。
+- nearChapters 必须是数组，但它只是方向参考。
 - 不要输出 Markdown 或解释。
 
 原始内容：

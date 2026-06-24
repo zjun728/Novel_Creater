@@ -22,6 +22,13 @@ import {
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useResetConfirmation } from '@/composables/useResetConfirmation'
 import { ENTITY_TYPES, useSettingStore } from '@/stores/settingStore'
+import {
+  SETTING_CHANGE_CLASSIFICATIONS,
+  classifySettingChangeRisk,
+  isBatchAcceptableSettingChange,
+  settingChangeRiskLabel,
+  sortSettingEventsForConfirmation
+} from '@/utils/settingChangeRisk'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -253,14 +260,22 @@ async function deleteRelation(relationId) {
 
 async function markChangeEvent(eventId, status) {
   try {
+    let forceHardConflict = false
     if (status === 'accepted') {
+      await ensureChangeRiskContext()
       const event = settingStore.changeEvents.find(item => item.id === eventId)
-      const conflicts = getConflictWarnings(event)
-      if (conflicts.length) {
+      const risk = getChangeRisk(event)
+      if (risk.classification === SETTING_CHANGE_CLASSIFICATIONS.hardConflict) {
+        const conflicts = risk.conflictWarnings
         const confirmed = await confirmConflictAccept(conflicts)
         if (!confirmed) return
+        forceHardConflict = true
       }
-      const result = await settingStore.acceptChangeEvent(props.projectId, eventId)
+      const result = await settingStore.acceptChangeEvent(
+        props.projectId,
+        eventId,
+        forceHardConflict ? { forceHardConflict: true } : undefined
+      )
       if (result?.entity) {
         activeType.value = result.entity.entityType || activeType.value
         selectEntity(result.entity)
@@ -276,28 +291,39 @@ async function markChangeEvent(eventId, status) {
 }
 
 async function acceptAllPendingChanges() {
-  const events = [...settingStore.pendingChangeEvents]
-  if (!events.length) {
-    message.warning('暂无待确认设定变更')
-    return
-  }
   batchAcceptingChanges.value = true
   let success = 0
-  const safeEvents = events.filter(event => !getConflictWarnings(event).length)
-  const skipped = events.length - safeEvents.length
   try {
+    await ensureChangeRiskContext()
+    const events = sortSettingEventsForConfirmation(settingStore.pendingChangeEvents)
+    if (!events.length) {
+      message.warning('暂无待确认设定变更')
+      return
+    }
+    const safeEvents = events.filter(event => isBatchAcceptableChangeEvent(event))
+    const skipped = events.length - safeEvents.length
     for (const event of safeEvents) {
       await settingStore.acceptChangeEvent(props.projectId, event.id)
       success += 1
     }
-    message.success(skipped
-      ? `已确认 ${success} 条低风险设定变更，跳过 ${skipped} 条冲突风险项，请逐条确认`
-      : `已确认 ${success} 条设定变更`)
+    if (skipped) {
+      message.warning(`已确认 ${success} 条低风险/揭示类设定变更。仍有硬冲突设定需要逐条确认，处理后才能进入下一章。`)
+    } else {
+      message.success(`已确认 ${success} 条设定变更`)
+    }
   } catch (e) {
     message.error(`批量确认中断：已确认 ${success} 条，失败原因：${e.message}`)
   } finally {
     batchAcceptingChanges.value = false
   }
+}
+
+async function ensureChangeRiskContext() {
+  await Promise.all([
+    settingStore.loadEntities(props.projectId),
+    settingStore.loadRelations(props.projectId),
+    settingStore.loadChangeEvents(props.projectId)
+  ])
 }
 
 function confirmConflictAccept(conflicts) {
@@ -445,43 +471,73 @@ function displayEventValue(value) {
 }
 
 function getConflictWarnings(event) {
-  if (!event) return []
-  if (event.changeType === 'relationship') return getRelationConflictWarnings(event)
-  return getEntityConflictWarnings(event)
+  const risk = getChangeRisk(event)
+  return risk.classification === SETTING_CHANGE_CLASSIFICATIONS.hardConflict
+    ? risk.conflictWarnings
+    : []
 }
 
-function getEntityConflictWarnings(event) {
-  const warnings = []
+function getChangeRisk(event) {
+  if (!event) return classifySettingChangeRisk({})
+  const enriched = enrichEventForRisk(event)
   const entity = findEntityForEvent(event)
-  const newValue = parseMaybeJson(event.newValue)
-
-  if (event.changeType === 'new_entity' && entity) {
-    warnings.push(`已存在同名${typeLabel(entity.entityType)}「${entity.name}」，确认后会更新已有档案，而不是创建全新实体。`)
-  }
-
-  if (!entity) return warnings
-  const fieldPath = normalizeEventFieldPath(event.fieldPath, event.changeType)
-  const existingValue = readEntityField(entity, fieldPath)
-  const incomingValue = stringifyDisplayValue(
-    event.changeType === 'new_entity' && newValue?.summary ? newValue.summary : event.newValue
-  )
-
-  if (isHardSettingField(fieldPath) && existingValue && incomingValue && existingValue !== incomingValue) {
-    warnings.push(`硬设定字段「${fieldLabel(fieldPath)}」将从「${existingValue}」变为「${incomingValue}」。`)
-  }
-
-  if (event.changeType === 'new_entity' && newValue?.profile && typeof newValue.profile === 'object') {
-    for (const [key, value] of Object.entries(newValue.profile)) {
-      const profilePath = `profile.${key}`
-      const current = readEntityField(entity, profilePath)
-      const next = stringifyDisplayValue(value)
-      if (isHardSettingField(profilePath) && current && next && current !== next) {
-        warnings.push(`硬设定字段「${fieldLabel(profilePath)}」将从「${current}」变为「${next}」。`)
-      }
+  const risk = classifySettingChangeRisk(enriched, { existingEntity: entity })
+  const structuralWarnings = event.changeType === 'relationship'
+    ? getRelationConflictWarnings(event)
+    : []
+  if (structuralWarnings.length && risk.classification === SETTING_CHANGE_CLASSIFICATIONS.lowRiskUpdate) {
+    return {
+      ...risk,
+      classification: SETTING_CHANGE_CLASSIFICATIONS.hardConflict,
+      label: settingChangeRiskLabel(SETTING_CHANGE_CLASSIFICATIONS.hardConflict),
+      conflictWarnings: structuralWarnings,
+      batchAcceptable: false
     }
   }
+  if (risk.classification === SETTING_CHANGE_CLASSIFICATIONS.hardConflict && structuralWarnings.length) {
+    return {
+      ...risk,
+      conflictWarnings: [...risk.conflictWarnings, ...structuralWarnings]
+    }
+  }
+  return risk
+}
 
-  return warnings
+function getChangeRiskLabel(event) {
+  return getChangeRisk(event).label
+}
+
+function getChangeRiskTagType(event) {
+  const classification = getChangeRisk(event).classification
+  if (classification === SETTING_CHANGE_CLASSIFICATIONS.hardConflict) return 'error'
+  if (classification === SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement) return 'warning'
+  return 'success'
+}
+
+function shouldShowRiskTag(event) {
+  const risk = getChangeRisk(event)
+  return risk.classification !== SETTING_CHANGE_CLASSIFICATIONS.lowRiskUpdate || Boolean(risk.conflictWarnings?.length)
+}
+
+function isBatchAcceptableChangeEvent(event) {
+  const risk = getChangeRisk(event)
+  return isBatchAcceptableSettingChange(risk) && risk.batchAcceptable
+}
+
+function getAdvisoryWarnings(event) {
+  const risk = getChangeRisk(event)
+  return risk.classification === SETTING_CHANGE_CLASSIFICATIONS.hardConflict
+    ? []
+    : (risk.conflictWarnings || [])
+}
+
+function enrichEventForRisk(event) {
+  const entity = findEntityForEvent(event)
+  const fieldPath = normalizeEventFieldPath(event.fieldPath, event.changeType)
+  return {
+    ...event,
+    oldValue: event.oldValue || readEntityField(entity, fieldPath)
+  }
 }
 
 function getRelationConflictWarnings(event) {
@@ -556,14 +612,6 @@ function stringifyDisplayValue(value) {
   if (value == null) return ''
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value).trim()
-}
-
-function isHardSettingField(fieldPath) {
-  return HARD_SETTING_FIELDS.has(fieldPath)
-}
-
-function fieldLabel(fieldPath) {
-  return FIELD_LABELS[fieldPath] || fieldPath
 }
 
 function createBlankDraft(type = 'character') {
@@ -646,62 +694,6 @@ function eventToChangeDraft(event = {}) {
   }
 }
 
-const HARD_SETTING_FIELDS = new Set([
-  'summary',
-  'category',
-  'status',
-  'profile.family',
-  'profile.sect',
-  'profile.faction',
-  'profile.nation',
-  'profile.rankTitle',
-  'profile.realm',
-  'profile.realmLevel',
-  'profile.techniques',
-  'profile.weapons',
-  'profile.location',
-  'profile.physicalStatus',
-  'profile.currentGoal',
-  'profile.leader',
-  'profile.territory',
-  'profile.resources',
-  'profile.controller',
-  'profile.realms',
-  'profile.breakthroughRules',
-  'profile.grade',
-  'profile.owner',
-  'profile.ability',
-  'profile.itemStatus'
-])
-
-const FIELD_LABELS = {
-  summary: '概要',
-  category: '分类',
-  status: '状态',
-  'profile.family': '家族',
-  'profile.sect': '宗门/门派',
-  'profile.faction': '阵营',
-  'profile.nation': '国家',
-  'profile.rankTitle': '身份/职位',
-  'profile.realm': '境界',
-  'profile.realmLevel': '境界层级',
-  'profile.techniques': '功法',
-  'profile.weapons': '武器/法宝',
-  'profile.location': '当前位置',
-  'profile.physicalStatus': '身体状态',
-  'profile.currentGoal': '当前目标',
-  'profile.leader': '掌权者',
-  'profile.territory': '控制范围',
-  'profile.resources': '资源',
-  'profile.controller': '控制者',
-  'profile.realms': '境界顺序',
-  'profile.breakthroughRules': '突破规则',
-  'profile.grade': '品阶',
-  'profile.owner': '持有者',
-  'profile.ability': '能力',
-  'profile.itemStatus': '物品状态'
-}
-
 const PROFILE_FIELDS = {
   character: [
     ['family', '家族'],
@@ -762,7 +754,9 @@ const PROFILE_FIELDS = {
     ['techniqueType', '类型'],
     ['grade', '品阶'],
     ['origin', '来源'],
-    ['owner', '持有者/传承'],
+    ['owner', '稳定归属/传承'],
+    ['currentHolder', '当前持有者'],
+    ['possessionStatus', '持有状态'],
     ['requirements', '修炼要求'],
     ['effects', '效果'],
     ['limitations', '限制/代价']
@@ -770,7 +764,11 @@ const PROFILE_FIELDS = {
   item: [
     ['itemType', '类型'],
     ['grade', '品阶'],
-    ['owner', '当前持有者'],
+    ['owner', '稳定归属/所有者'],
+    ['currentHolder', '当前持有者'],
+    ['possessionStatus', '持有状态'],
+    ['contactStatus', '接触状态'],
+    ['accessState', '取用状态'],
     ['origin', '来源'],
     ['ability', '能力'],
     ['limitation', '限制/代价'],
@@ -1013,8 +1011,8 @@ const PROFILE_FIELDS = {
                 <div>
                   <div class="change-title">
                     <n-tag size="tiny">{{ typeLabel(event.entityType) }}</n-tag>
-                    <n-tag v-if="getConflictWarnings(event).length" size="tiny" type="error" :bordered="false">
-                      冲突风险
+                    <n-tag v-if="shouldShowRiskTag(event)" size="tiny" :type="getChangeRiskTagType(event)" :bordered="false">
+                      {{ getChangeRiskLabel(event) }}
                     </n-tag>
                     <strong>{{ changeEventTitle(event) }}</strong>
                     <span>{{ changeEventMeta(event) }}</span>
@@ -1027,6 +1025,20 @@ const PROFILE_FIELDS = {
                     <strong>确认前请检查：</strong>
                     <ul>
                       <li v-for="warning in getConflictWarnings(event)" :key="warning">{{ warning }}</li>
+                    </ul>
+                  </div>
+                  <div
+                    v-else-if="getChangeRisk(event).classification === SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement"
+                    class="refinement-box"
+                  >
+                    隐藏信息揭示/旧设定细化：可随批量确认进入设定库，后续章节会把它作为已揭示信息使用。
+                    <ul v-if="getAdvisoryWarnings(event).length">
+                      <li v-for="warning in getAdvisoryWarnings(event)" :key="warning">{{ warning }}</li>
+                    </ul>
+                  </div>
+                  <div v-else-if="getAdvisoryWarnings(event).length" class="refinement-box">
+                    <ul>
+                      <li v-for="warning in getAdvisoryWarnings(event)" :key="warning">{{ warning }}</li>
                     </ul>
                   </div>
                 </div>
@@ -1353,6 +1365,22 @@ label span,
 }
 
 .conflict-box ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.refinement-box {
+  margin-top: 8px;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  background: #fff7ed;
+  padding: 8px 10px;
+  color: #9a3412;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.refinement-box ul {
   margin: 4px 0 0;
   padding-left: 18px;
 }

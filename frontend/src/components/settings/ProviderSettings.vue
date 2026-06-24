@@ -89,7 +89,7 @@ async function handleTest(provider) {
 
     <n-alert type="warning" class="mb-4">
       <template #header>API Key 安全提示</template>
-      API Key 保存在本地 MySQL 数据库中。AI 请求从浏览器直连供应商，不经过后端代理。
+      API Key 保存在本地 MySQL 数据库中。AI 请求默认由后端代理发起，浏览器请求不会携带 API Key。
     </n-alert>
 
     <n-empty v-if="providerStore.providers.length === 0" description="还没有配置 AI Provider" class="py-8" />

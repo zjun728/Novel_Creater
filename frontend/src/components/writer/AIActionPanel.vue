@@ -88,9 +88,9 @@ const emit = defineEmits([
 
     <n-divider style="margin: 8px 0" />
 
-    <!-- 续写与调整 -->
+    <!-- 续写与拆分 -->
     <div class="mb-3">
-      <p class="text-xs text-gray-400 mb-1">续写与调整</p>
+      <p class="text-xs text-gray-400 mb-1">续写与拆分</p>
       <n-space vertical size="small">
         <n-button
           size="small"
@@ -114,7 +114,7 @@ const emit = defineEmits([
           :disabled="!hasSelection || generating || chapterFinalized"
           @click="emit('compress')"
         >
-          📏 压缩场景
+          拆分未定稿内容
         </n-button>
       </n-space>
     </div>

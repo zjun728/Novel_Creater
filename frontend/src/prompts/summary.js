@@ -43,3 +43,30 @@ ${chapterContent}
 }
 \`\`\``
 }
+
+export function buildSummaryRepairPrompt(rawText) {
+  return `请把下面内容修复为合法 JSON。
+
+要求：
+- 只输出 JSON，不要 Markdown、解释或代码块。
+- 不新增剧情，不扩写正文，只修复字段和标点。
+- 字段固定为：
+{
+  "summary": "50字以内章节摘要",
+  "keyEvents": ["关键事件"],
+  "characterChanges": [{"character": "角色名", "change": "状态变化"}],
+  "newElements": {
+    "characters": [],
+    "settings": [],
+    "plotThreads": []
+  },
+  "emotionalTone": "情感基调",
+  "pacingNote": "节奏说明"
+}
+- 如果原内容不完整，保留能确定的信息，缺失字段用空数组或空字符串。
+
+待修复内容：
+---
+${rawText}
+---`
+}

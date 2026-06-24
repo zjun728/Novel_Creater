@@ -7,7 +7,8 @@ import { useNovelStore } from './novelStore'
 import { useSettingStore } from './settingStore'
 import {
   buildSummarySystemPrompt,
-  buildSummaryPrompt
+  buildSummaryPrompt,
+  buildSummaryRepairPrompt
 } from '@/prompts/summary'
 import {
   buildExtractionSystemPrompt,
@@ -24,7 +25,8 @@ import {
   buildAiTraceReviewSystemPrompt,
   buildAiTraceReviewPrompt
 } from '@/prompts/aiTraceReview'
-import { AI_TRACE_ISSUE_TYPES } from '@/qualityRules/aiTraceRules'
+import { AI_TRACE_ISSUE_TYPES } from '@/quality/writingQualityStandard'
+import { scoreChapterWritingQuality } from '@/quality/writingQualityScoring'
 import {
   buildStyleSystemPrompt,
   buildStyleAnalysisPrompt
@@ -83,12 +85,11 @@ export const useMemoryStore = defineStore('memory', () => {
 
   async function getProvider(projectId, preferredKey = 'summaryModelId') {
     const providerStore = useProviderStore()
-    await providerStore.ensureProvidersLoaded()
-    const bindings = await providerStore.getBindings(projectId)
-    const modelId = bindings?.[preferredKey] || bindings?.summaryModelId || bindings?.writingModelId
-    const provider = providerStore.providers.find(p => p.id === modelId) || providerStore.providers[0]
-    if (!provider) throw new Error('请先在设置中配置模型')
-    return provider
+    return providerStore.resolveTaskProvider({
+      projectId,
+      bindingKeys: [preferredKey, 'summaryModelId', 'writingModelId'],
+      taskName: `memory_${preferredKey}`
+    })
   }
 
   // === 章节摘要生成 ===
@@ -99,13 +100,17 @@ export const useMemoryStore = defineStore('memory', () => {
         { role: 'system', content: buildSummarySystemPrompt() },
         { role: 'user', content: buildSummaryPrompt(chapterContent, chapterNum) }
       ]
-      const result = await chatCompletion(provider, messages, { maxTokens: 1024, temperature: 0.3 })
-      const data = parseAIJson(result)
+      const result = await chatCompletion(provider, messages, jsonOptions(provider, { maxTokens: 1200, temperature: 0.3 }))
+      const data = await parseSummaryResult(provider, getCompletionText(result), chapterContent, chapterNum)
       lastSummary.value = data
       return data
     } catch (e) {
       console.error('摘要生成失败:', e.message)
-      throw e
+      const fallback = buildFallbackChapterSummary(chapterContent, chapterNum, {
+        summaryGenerationError: e.message
+      })
+      lastSummary.value = fallback
+      return fallback
     }
   }
 
@@ -174,7 +179,7 @@ export const useMemoryStore = defineStore('memory', () => {
   }
 
   // === 一致性审稿 ===
-  async function auditChapter(projectId, chapterContent, chapterNum) {
+  async function auditChapter(projectId, chapterContent, chapterNum, options = {}) {
     try {
       const provider = await getProvider(projectId, 'auditModelId')
       const novelStore = useNovelStore()
@@ -184,7 +189,10 @@ export const useMemoryStore = defineStore('memory', () => {
         bible: novelStore.bible,
         characters: novelStore.characters,
         canonFacts: novelStore.canonFacts?.filter(f => f.status === 'accepted') || [],
-        plotThreads: novelStore.plotThreads?.filter(t => t.status === 'planted' || t.status === 'developing') || []
+        plotThreads: novelStore.plotThreads?.filter(t => t.status === 'planted' || t.status === 'developing') || [],
+        beatPlan: options.beatPlan || options.chapterBeatPlan || '',
+        blockStageSnapshot: options.blockStageSnapshot || null,
+        previousChapterEnding: options.previousChapterEnding || ''
       }
 
       const messages = [
@@ -387,7 +395,7 @@ export const useMemoryStore = defineStore('memory', () => {
     }
   }
 
-  const requiredFinalizationSteps = new Set(['summary', 'facts', 'settingChanges'])
+  const requiredFinalizationSteps = new Set(['facts', 'settingChanges'])
 
   function recordFinalizationStepError(results, step, error) {
     const item = {
@@ -647,6 +655,121 @@ function jsonOptions(provider, options = {}) {
     : { ...options, responseFormat: 'json' }
 }
 
+async function parseSummaryResult(provider, text, chapterContent, chapterNum) {
+  const rawText = getCompletionText(text)
+  let parseError = ''
+  for (const item of parseJsonCandidates(rawText)) {
+    const normalized = normalizeSummaryResult(item, chapterNum)
+    if (normalized) return normalized
+  }
+
+  try {
+    JSON.parse(String(rawText || '').trim())
+  } catch (error) {
+    parseError = error.message
+  }
+
+  if (String(rawText || '').trim()) {
+    try {
+      const repairResult = await chatCompletion(provider, [
+        { role: 'system', content: '你是 JSON 修复器。只输出合法 JSON，不要解释。' },
+        { role: 'user', content: buildSummaryRepairPrompt(rawText) }
+      ], jsonOptions(provider, { maxTokens: 1200, temperature: 0 }))
+      const repairedText = getCompletionText(repairResult)
+      for (const item of parseJsonCandidates(repairedText)) {
+        const normalized = normalizeSummaryResult(item, chapterNum, {
+          summaryParseError: parseError || 'initial summary JSON parse failed',
+          summaryRepairTriggered: true
+        })
+        if (normalized) return normalized
+      }
+      return buildFallbackChapterSummary(chapterContent, chapterNum, {
+        summaryParseError: parseError || 'initial summary JSON parse failed',
+        summaryRepairTriggered: true,
+        summaryRepairError: 'repair output was not usable summary JSON',
+        rawHead: rawText.slice(0, 800),
+        rawTail: rawText.slice(-500)
+      })
+    } catch (repairError) {
+      console.warn('摘要 JSON 修复失败:', repairError.message)
+      return buildFallbackChapterSummary(chapterContent, chapterNum, {
+        summaryParseError: parseError || 'initial summary JSON parse failed',
+        summaryRepairTriggered: true,
+        summaryRepairError: repairError.message,
+        rawHead: rawText.slice(0, 800),
+        rawTail: rawText.slice(-500)
+      })
+    }
+  }
+
+  return buildFallbackChapterSummary(chapterContent, chapterNum, {
+    summaryParseError: parseError || 'AI returned empty summary JSON'
+  })
+}
+
+function normalizeSummaryResult(payload, chapterNum, diagnostics = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const keyEvents = normalizeStringList(payload.keyEvents || payload.events || payload.plotEvents)
+  const characterChanges = normalizeCharacterChanges(payload.characterChanges || payload.character_changes)
+  const newElements = normalizeSummaryNewElements(payload.newElements || payload.new_elements)
+  const summary = String(payload.summary || payload.chapterSummary || payload.overview || '').trim()
+  if (!summary && !keyEvents.length && !characterChanges.length) return null
+  return {
+    summary: summary || buildSummaryFromEvents(chapterNum, keyEvents),
+    keyEvents,
+    characterChanges,
+    newElements,
+    emotionalTone: String(payload.emotionalTone || payload.tone || '').trim(),
+    pacingNote: String(payload.pacingNote || payload.pacing || '').trim(),
+    ...diagnostics
+  }
+}
+
+function normalizeCharacterChanges(value) {
+  const list = Array.isArray(value) ? value : []
+  return list
+    .map(item => {
+      if (typeof item === 'string') return { character: '', change: item.trim() }
+      if (!item || typeof item !== 'object') return null
+      const character = String(item.character || item.name || item.role || '').trim()
+      const change = String(item.change || item.stateChange || item.description || item.summary || '').trim()
+      if (!character && !change) return null
+      return { character, change }
+    })
+    .filter(Boolean)
+}
+
+function normalizeSummaryNewElements(value = {}) {
+  const payload = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  return {
+    characters: normalizeStringList(payload.characters || payload.roles),
+    settings: normalizeStringList(payload.settings || payload.worldRules || payload.items || payload.locations),
+    plotThreads: normalizeStringList(payload.plotThreads || payload.foreshadows || payload.threads)
+  }
+}
+
+function buildSummaryFromEvents(chapterNum, keyEvents) {
+  const eventText = keyEvents.length ? keyEvents.slice(0, 2).join('；') : '本章完成关键剧情推进'
+  return `第${chapterNum}章：${eventText}`
+}
+
+function buildFallbackChapterSummary(chapterContent, chapterNum, diagnostics = {}) {
+  const clean = String(chapterContent || '').replace(/\s+/g, ' ').trim()
+  const summaryText = clean
+    ? `第${chapterNum}章：${truncateText(clean, 140)}`
+    : `第${chapterNum}章已定稿，但摘要模型未返回可解析内容。`
+  return {
+    summary: summaryText,
+    keyEvents: clean ? [truncateText(clean, 120)] : [],
+    characterChanges: [],
+    newElements: { characters: [], settings: [], plotThreads: [] },
+    emotionalTone: '',
+    pacingNote: '',
+    source: 'fallback_after_summary_json_failure',
+    ...diagnostics
+  }
+}
+
 async function parseAuditResult(provider, text) {
   const parsed = parseJsonCandidates(text)
   for (const item of parsed) {
@@ -675,17 +798,8 @@ async function parseAuditResult(provider, text) {
 
 const AI_TRACE_DIRECT_TYPES = new Set([
   'ai_tone',
-  'template_ending',
-  'surface_emotion',
-  'tool_character',
-  'info_dump',
-  'cliche_imagery',
-  'sensory_checklist',
-  'decorative_number',
-  'emotion_label',
-  'overfunctional_density',
-  'skipped_loss'
-].filter(type => type === 'ai_tone' || AI_TRACE_ISSUE_TYPES.includes(type)))
+  ...AI_TRACE_ISSUE_TYPES
+])
 const AI_TRACE_SOFT_TYPES = new Set(['quality', 'pacing', 'human_motivation', 'emotional_logic'])
 const AI_TRACE_TEXT_PATTERN = /AI|ai|模板|短句|句式|功能|情绪|感官|数字|说明|工具人|交底|套话|失去|段首|结尾|五感|计划书|两难/
 const AI_TRACE_REVIEW_DECISIONS = [
@@ -829,12 +943,34 @@ function normalizeAuditResult(value) {
     : Array.isArray(payload.problems)
       ? payload.problems
       : []
-  return {
+  const result = {
     issues: rawIssues.map(normalizeAuditIssue).filter(Boolean),
+    aiTraceLevel: pickEnum(payload.aiTraceLevel, ['low', 'medium', 'high', 'severe'], ''),
+    humanTextureLevel: pickEnum(payload.humanTextureLevel, ['low', 'medium', 'high', 'severe'], ''),
+    aiTraceDimensions: normalizeStringList(payload.aiTraceDimensions),
+    humanTextureDimensions: normalizeStringList(payload.humanTextureDimensions),
+    topQualityRisks: normalizeStringList(payload.topQualityRisks),
+    qualityAdvice: normalizeStringList(payload.qualityAdvice),
+    storyTaskConsistency: pickEnum(payload.storyTaskConsistency, ['pass', 'warning', 'fail'], ''),
+    blockAlignment: pickEnum(payload.blockAlignment, ['pass', 'warning', 'fail'], ''),
+    overAdvance: pickEnum(payload.overAdvance, ['none', 'minor', 'major'], 'none'),
+    underDelivery: pickEnum(payload.underDelivery, ['none', 'minor', 'major'], 'none'),
+    validDeviation: pickEnum(payload.validDeviation, ['none', 'acceptable', 'risky'], 'none'),
+    readingBurden: pickEnum(payload.readingBurden, ['low', 'medium', 'high', 'severe'], ''),
     overallAssessment: String(payload.overallAssessment || payload.assessment || payload.summary || '本章审稿完成，未发现模型可结构化输出的总体评价。'),
     styleConsistency: String(payload.styleConsistency || payload.style || '暂无风格一致性评价。'),
     characterConsistency: String(payload.characterConsistency || payload.character || '暂无角色一致性评价。'),
     recommendations: normalizeStringList(payload.recommendations || payload.suggestions || payload.nextSteps)
+  }
+  const qualityScore = scoreChapterWritingQuality(result)
+  return {
+    ...result,
+    aiTraceLevel: result.aiTraceLevel || qualityScore.aiTraceLevel,
+    humanTextureLevel: result.humanTextureLevel || qualityScore.humanTextureLevel,
+    aiTraceDimensions: result.aiTraceDimensions.length ? result.aiTraceDimensions : qualityScore.aiTraceDimensions,
+    humanTextureDimensions: result.humanTextureDimensions.length ? result.humanTextureDimensions : qualityScore.humanTextureDimensions,
+    topQualityRisks: result.topQualityRisks.length ? result.topQualityRisks : qualityScore.topQualityRisks.map(item => `${item.label}:${item.count}`),
+    qualityAdvice: result.qualityAdvice.length ? result.qualityAdvice : qualityScore.qualityAdvice
   }
 }
 
@@ -862,7 +998,11 @@ function normalizeAuditIssue(issue) {
       'decorative_number',
       'emotion_label',
       'overfunctional_density',
-      'skipped_loss'
+      'skipped_loss',
+      'not_x_but_y',
+      'repetitive_subject_opening',
+      'prose_rhythm_flat',
+      'system_or_villain_monologue'
     ], 'quality'),
     description: String(issue.description || issue.problem || issue.summary || '').trim(),
     location: String(issue.location || issue.evidence || issue.quote || '').trim(),
@@ -875,6 +1015,12 @@ function normalizeAuditIssue(issue) {
 function buildFallbackAuditResult(rawText) {
   return {
     issues: [],
+    aiTraceLevel: 'low',
+    humanTextureLevel: 'low',
+    aiTraceDimensions: [],
+    humanTextureDimensions: [],
+    topQualityRisks: [],
+    qualityAdvice: [],
     overallAssessment: '审稿模型返回内容未能解析为结构化 JSON，本次未生成可保存的问题列表。建议重新审稿，或复制模型返回片段排查模型格式稳定性。',
     styleConsistency: '未能解析。',
     characterConsistency: '未能解析。',

@@ -28,6 +28,10 @@ const { confirmStageReset } = useResetConfirmation()
 const editing = ref(false)
 const displayBible = computed(() => novelStore.bible ? normalizeBiblePayload(novelStore.bible) : null)
 const bibleInitialized = computed(() => settingStore.hasBibleInitialization)
+const settingInitializationProgress = computed(() => settingStore.bibleInitializationProgress || null)
+const canRetryFailedSettingGroups = computed(() =>
+  Boolean(displayBible.value && settingStore.failedGroups?.length && !settingStore.initializingFromBible)
+)
 const writingStyleStandards = computed(() => getAllWritingStyleStandards())
 const standardOptions = computed(() => writingStyleStandards.value.map(item => ({
   label: item.name,
@@ -93,6 +97,7 @@ async function loadPageData(projectId) {
     novelStore.loadBible(projectId),
     settingStore.loadChangeEvents(projectId)
   ])
+  settingStore.loadBibleInitializationProgress(projectId)
   syncBibleToForm()
 }
 
@@ -158,9 +163,27 @@ async function handleInitializeSettings() {
 
   try {
     const created = await settingStore.initializeFromBible(props.projectId, displayBible.value)
-    message.success(`已提取 ${created.length} 条待确认设定，请到设定库确认入库`)
+    if (settingStore.failedGroups.length) {
+      message.warning(`已提取 ${created.length} 条待确认设定，部分分组失败后可重试失败分组`)
+    } else {
+      message.success(`已提取 ${created.length} 条待确认设定，请到设定库确认入库`)
+    }
   } catch (e) {
-    message.error('提取设定失败：' + e.message)
+    message.error('提取设定失败：' + e.message + '。可重试失败分组。')
+  }
+}
+
+async function handleRetryFailedSettingGroups() {
+  if (!displayBible.value) return
+  try {
+    const created = await settingStore.retryFailedBibleInitializationGroups(props.projectId, displayBible.value)
+    if (settingStore.failedGroups.length) {
+      message.warning(`已继续提取 ${created.length} 条待确认设定，仍有分组失败后可重试`)
+    } else {
+      message.success(`失败分组已重试，新增 ${created.length} 条待确认设定`)
+    }
+  } catch (e) {
+    message.error('重试失败分组失败：' + e.message)
   }
 }
 
@@ -206,17 +229,64 @@ async function handleDeleteBible() {
           v-if="!editing"
           size="tiny"
           type="primary"
-          :disabled="!displayBible || bibleInitialized"
+          :disabled="!displayBible || bibleInitialized || settingStore.initializingFromBible"
           :loading="settingStore.initializingFromBible"
           @click="handleInitializeSettings"
         >
           {{ bibleInitialized ? '已提取到设定库' : '提取到设定库' }}
+        </n-button>
+        <n-button
+          v-if="canRetryFailedSettingGroups"
+          size="tiny"
+          type="warning"
+          secondary
+          :loading="settingStore.initializingFromBible"
+          @click="handleRetryFailedSettingGroups"
+        >
+          继续提取/重试失败分组
         </n-button>
         <n-button size="tiny" @click="toggleEditing">{{ editing ? '取消' : '编辑' }}</n-button>
       </n-space>
     </template>
 
     <div v-if="!editing && displayBible" class="space-y-3 text-sm">
+      <div
+        v-if="settingInitializationProgress"
+        class="rounded border border-blue-100 bg-blue-50/70 p-3 text-sm text-blue-900"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="font-medium">
+            正在提取设定库：{{ settingStore.currentGroupLabel || '等待下一组' }}
+          </span>
+          <span class="text-xs">
+            已完成 {{ settingInitializationProgress.completedGroups }}/{{ settingInitializationProgress.totalGroups }} 组，
+            已生成 {{ settingInitializationProgress.generatedCandidates }} 个候选
+          </span>
+        </div>
+        <div class="mt-2 grid grid-cols-1 md:grid-cols-5 gap-2 text-xs">
+          <div
+            v-for="group in Object.values(settingInitializationProgress.groups || {})"
+            :key="group.key"
+            class="rounded border border-blue-100 bg-white/80 px-2 py-1"
+          >
+            <div class="font-medium">{{ group.label }}</div>
+            <div>
+              {{
+                group.status === 'success'
+                  ? `完成，保存 ${group.savedCount || 0} 条`
+                  : group.status === 'failed'
+                    ? '失败，可重试失败分组'
+                    : group.status === 'running'
+                      ? '提取中'
+                      : '等待'
+              }}
+            </div>
+          </div>
+        </div>
+        <p v-if="settingStore.failedGroups.length" class="mt-2 text-xs text-orange-700">
+          部分分组失败后可重试；已保存的待确认设定不会丢失，重试会去重。
+        </p>
+      </div>
       <div v-if="displayBible.premise">
         <span class="font-medium text-gray-500">作品定位：</span>
         <p class="text-gray-700">{{ displayBible.premise }}</p>

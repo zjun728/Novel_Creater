@@ -160,9 +160,11 @@ export const useMarketStore = defineStore('market', () => {
     if (!item) return null
 
     const providerStore = useProviderStore()
-    await providerStore.ensureProvidersLoaded()
-    const provider = providerStore.providers[0]
-    if (!provider) throw new Error('请先在设置中配置模型')
+    const provider = await providerStore.resolveTaskProvider({
+      projectId: item.projectId || item.project_id || useProjectStore().currentProject?.id,
+      bindingKeys: ['marketModelId', 'brainstormModelId', 'writingModelId'],
+      taskName: 'market_item_analysis'
+    })
 
     const messages = [
       {
@@ -231,23 +233,11 @@ export const useMarketStore = defineStore('market', () => {
       const systemPrompt = buildMarketChatSystemPrompt(context)
 
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      let bindings
-      try {
-        bindings = await providerStore.getBindings(projectId)
-      } catch {
-        bindings = null
-      }
-
-      const modelId = bindings?.marketModelId
-        || bindings?.brainstormModelId
-        || bindings?.writingModelId
-
-      const provider = modelId
-        ? providerStore.providers.find(p => p.id === modelId)
-        : providerStore.providers[0]
-
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId,
+        bindingKeys: ['marketModelId', 'brainstormModelId', 'writingModelId'],
+        taskName: 'market_chat'
+      })
 
       const messages = [
         { role: 'system', content: systemPrompt },
@@ -458,23 +448,11 @@ export const useMarketStore = defineStore('market', () => {
     directionsLoading.value = true
     try {
       const providerStore = useProviderStore()
-      await providerStore.ensureProvidersLoaded()
-      let bindings
-      try {
-        bindings = await providerStore.getBindings(projectId)
-      } catch {
-        bindings = null
-      }
-
-      const modelId = bindings?.marketModelId
-        || bindings?.brainstormModelId
-        || bindings?.writingModelId
-
-      const provider = modelId
-        ? providerStore.providers.find(p => p.id === modelId)
-        : providerStore.providers[0]
-
-      if (!provider) throw new Error('请先在设置中配置模型')
+      const provider = await providerStore.resolveTaskProvider({
+        projectId,
+        bindingKeys: ['marketModelId', 'brainstormModelId', 'writingModelId'],
+        taskName: 'market_directions'
+      })
 
       const projectStore = useProjectStore()
       const prompt = buildMarketDirectionPrompt({

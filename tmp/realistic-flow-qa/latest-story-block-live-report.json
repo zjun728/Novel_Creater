@@ -1,0 +1,315 @@
+{
+  "mode": "live",
+  "createdAt": "2026-06-17T10:18:12.769Z",
+  "createdCleanProject": true,
+  "usesArchivedReports": false,
+  "targetChapters": 3,
+  "project": {
+    "id": "4e06cc19-58f3-4771-bb3b-04b29fdc685f",
+    "title": "StoryBlockLiveV1_20260617101814"
+  },
+  "provider": {
+    "id": "984fa702-0533-42df-b29e-5a60687a798d",
+    "name": "deepseek-v4-flash",
+    "model": "deepseek-v4-flash",
+    "providerType": "openai-compatible",
+    "baseURL": "https://api.deepseek.com"
+  },
+  "environment": {
+    "apiBase": "http://127.0.0.1:8000/api",
+    "frontendPort": 5173,
+    "backendPort": 8000
+  },
+  "setup": {
+    "healthOk": true,
+    "providerCallOk": true,
+    "seedCreated": true,
+    "bibleSaved": true,
+    "volumeCreated": true,
+    "settingBaseCreated": true,
+    "storyBlockPlanningAiCalled": true,
+    "storyBlockCreated": true
+  },
+  "chapters": [
+    {
+      "chapterNum": 1,
+      "storyBlockId": "56958175-d5af-4a41-a639-de2b078ff02e",
+      "blockStageId": "stage-1",
+      "blockStageSnapshot": {
+        "storyBlockId": "56958175-d5af-4a41-a639-de2b078ff02e",
+        "blockTitle": "旧塔首探",
+        "blockGoal": "林澈进入旧塔，发现残缺记录，并在救人、保留证据、逃离追捕之间做出第一次重要选择。",
+        "storyFunction": "揭示",
+        "entryState": "林澈刚到达旧塔外围，身份尚未暴露，但时间紧迫，追兵随时可能到来。",
+        "exitTarget": "林澈带着残缺记录从旧塔脱身，但自身身份已经暴露，被迫转入地下。",
+        "mainPressure": "必须在有限时间内同时完成：搜索记录、救助塔内被困人员、避开塔外巡逻人员的耳目。",
+        "stageId": "stage-1",
+        "stagePurpose": "林澈潜入旧塔，与许问青汇合，初步了解塔内情况。",
+        "stageAction": "林澈从通风管道或隐蔽入口进入旧塔，在底层遇到同样潜伏进来的许问青，二人交换信息：塔内还有第三波势力在搜寻记录，且塔内电力即将恢复。",
+        "stageChoice": "林澈决定先找记录还是先帮助受伤的许问青？",
+        "stageCostOrConsequence": "如果先帮许问青，可能错过记录取出窗口；如果先找记录，许问青可能被后续敌人发现。",
+        "nextStageSuggestion": "stage-3",
+        "unresolvedQuestions": [
+          "谁删改了记录？",
+          "父亲为何出现在广播中？",
+          "许问青的后续命运？",
+          "平民证人知道多少内情？"
+        ],
+        "dontAdvanceYet": [],
+        "capacityAssessment": "normal",
+        "locked": false,
+        "capturedAt": 1781691506381
+      },
+      "outlineFromActiveStoryBlock": true,
+      "draftReadSnapshotBoundary": true,
+      "storyBlockReviewDecision": "open_new_block",
+      "updatedUnexecutedStages": false,
+      "requiresReviewBlocker": false,
+      "multipleActiveStoryBlocks": false,
+      "liveDatabaseOrApiErrors": [],
+      "savedBeatPlan": {
+        "id": "4e06cc19-58f3-4771-bb3b-04b29fdc685f_1",
+        "storyBlockId": "56958175-d5af-4a41-a639-de2b078ff02e",
+        "blockStageId": "stage-1",
+        "hasSnapshot": true
+      },
+      "draftCharCount": 6522,
+      "audit": {
+        "storyTaskConsistency": "pass",
+        "blockAlignment": "pass",
+        "readingBurden": "low",
+        "issueCount": 3
+      },
+      "finalized": {
+        "chapterId": "cd5c9c8a-3cd9-4f28-8634-62a17d1c0e13",
+        "versionId": "f377f3c9-2f95-4a1e-997e-565944eee854",
+        "status": "final"
+      },
+      "memoryExtraction": {
+        "factsCreated": 6,
+        "settingChangesCreated": 6
+      },
+      "storyBlockReview": {
+        "decision": "open_new_block",
+        "completedStageIds": [
+          "stage-1"
+        ],
+        "remainingStages": [],
+        "nextStageSuggestion": "林澈需从旧塔废墟脱身，前往邮局寄存柜R-7取备份",
+        "unresolvedQuestions": [
+          "许问青是否幸存？",
+          "谁删改了记录？",
+          "父亲为何出现在广播中？"
+        ],
+        "carryOverToNextChapter": [
+          "林澈持有封套（6张光盘+纸条），当前藏身旧塔东南角废墟，追兵已至",
+          "许问青在配电室方向传来三声枪响，生死不明"
+        ],
+        "newBlockSeed": {
+          "title": "逃离旧塔",
+          "goal": "林澈从旧塔废墟脱身，摆脱追捕，前往邮局取回备份",
+          "entryState": "林澈藏身旧塔东南角废墟，持有黑色封套，追兵已包围旧塔区域，许问青失踪或死亡",
+          "storyFunction": "转折"
+        },
+        "reason": "实际情节与stage计划严重偏离（未下载数据、无平民证人），且exitTarget未达成，需开启新块承接后续脱身与邮局线。"
+      },
+      "forwardOnlyRollingObserved": true
+    },
+    {
+      "chapterNum": 2,
+      "storyBlockId": "b60f5949-7fe1-4499-8840-218a6e068386",
+      "blockStageId": "stage-1",
+      "blockStageSnapshot": {
+        "storyBlockId": "b60f5949-7fe1-4499-8840-218a6e068386",
+        "blockTitle": "逃离旧塔",
+        "blockGoal": "林澈从旧塔废墟脱身，摆脱追兵，前往邮局取回备份",
+        "storyFunction": "转折",
+        "entryState": "林澈藏身旧塔东南角废墟，持有黑色封套，追兵已包围旧塔区域，许问青失踪或死亡，林澈听到了三声枪响",
+        "exitTarget": "林澈成功避开追捕，离开旧塔区域，抵达邮局所在地点或附近，并决定进入取货",
+        "mainPressure": "追兵地毯式搜索，旧塔区域出口被封锁，不确定许问青是否还活着",
+        "stageId": "stage-1",
+        "stagePurpose": "确认许问青安危并决定是否折返",
+        "stageAction": "林澈在废墟中聆听外部动静，尝试从缝隙观察，看到追兵正在配电室方向搜索。他权衡是否冒险回去查看许问青。",
+        "stageChoice": "选择折返救援 vs 选择继续逃离",
+        "stageCostOrConsequence": "折返可能暴露自己并失去逃生机会；继续逃离则可能许问青必死，且失去目击者",
+        "nextStageSuggestion": "下一章优先写阶段1和阶段2，即判断枪声和规划逃离路线",
+        "unresolvedQuestions": [
+          "许问青是死是活？",
+          "追兵是哪一方势力？",
+          "马科长是否在场？"
+        ],
+        "dontAdvanceYet": [
+          "不要揭示邮局内部情况",
+          "不要揭示密码是否有效",
+          "不要让林澈与许问青再次相遇"
+        ],
+        "capacityAssessment": "normal",
+        "locked": false,
+        "capturedAt": 1781691702230
+      },
+      "outlineFromActiveStoryBlock": true,
+      "draftReadSnapshotBoundary": true,
+      "storyBlockReviewDecision": "continue_current_block",
+      "updatedUnexecutedStages": false,
+      "requiresReviewBlocker": false,
+      "multipleActiveStoryBlocks": false,
+      "liveDatabaseOrApiErrors": [],
+      "savedBeatPlan": {
+        "id": "4e06cc19-58f3-4771-bb3b-04b29fdc685f_2",
+        "storyBlockId": "b60f5949-7fe1-4499-8840-218a6e068386",
+        "blockStageId": "stage-1",
+        "hasSnapshot": true
+      },
+      "draftCharCount": 2685,
+      "audit": {
+        "storyTaskConsistency": "pass",
+        "blockAlignment": "pass",
+        "readingBurden": "low",
+        "issueCount": 4
+      },
+      "finalized": {
+        "chapterId": "2e0273be-9fd3-4607-8a05-14c1034c02fe",
+        "versionId": "5e181f97-efca-4786-b262-facd63607bd1",
+        "status": "final"
+      },
+      "memoryExtraction": {
+        "factsCreated": 5,
+        "settingChangesCreated": 5
+      },
+      "storyBlockReview": {
+        "decision": "continue_current_block",
+        "completedStageIds": [
+          "stage-1",
+          "stage-2",
+          "stage-3"
+        ],
+        "remainingStages": [
+          {
+            "id": "stage-4",
+            "purpose": "应对邮局门口的监视人员，设法进入邮局取货",
+            "choice": "选择等待监视者离开 vs 选择制造调虎离山",
+            "sceneOrAction": "林澈在报刊亭内观察邮局门口三名可疑人员，思考如何突破监视进入邮局取回寄存柜R-7的备份。",
+            "costOrConsequence": "等待可能错过时机或暴露；调虎离山可能引起更大围捕。"
+          }
+        ],
+        "nextStageSuggestion": "下一章应从林澈在报刊亭内策划如何应对邮局监视开始，考虑是否利用夜色或制造声音引诱监视者离开。",
+        "unresolvedQuestions": [
+          "追兵是哪一方势力？",
+          "马科长是否在场？"
+        ],
+        "carryOverToNextChapter": [
+          "邮局门口有三名监视者，其中一人腰后疑似有武器，林澈无法直接进入。"
+        ],
+        "newBlockSeed": null,
+        "reason": "第2章完成了确认许问青死亡、规划逃离路线并实际突破追捕抵达邮局附近三个阶段，但尚未解决邮局监视问题，故继续当前块并调整剩余阶段plan。"
+      },
+      "forwardOnlyRollingObserved": true
+    },
+    {
+      "chapterNum": 3,
+      "storyBlockId": "b60f5949-7fe1-4499-8840-218a6e068386",
+      "blockStageId": "stage-4",
+      "blockStageSnapshot": {
+        "storyBlockId": "b60f5949-7fe1-4499-8840-218a6e068386",
+        "blockTitle": "逃离旧塔",
+        "blockGoal": "林澈从旧塔废墟脱身，摆脱追兵，前往邮局取回备份",
+        "storyFunction": "转折",
+        "entryState": "林澈藏身旧塔东南角废墟，持有黑色封套，追兵已包围旧塔区域，许问青失踪或死亡，林澈听到了三声枪响",
+        "exitTarget": "林澈成功避开追捕，离开旧塔区域，抵达邮局所在地点或附近，并决定进入取货",
+        "mainPressure": "追兵地毯式搜索，旧塔区域出口被封锁，不确定许问青是否还活着",
+        "stageId": "stage-4",
+        "stagePurpose": "利用交通工具或步行前往邮局",
+        "stageAction": "林澈成功脱离旧塔区域，按照记忆前往最近的邮局。途中他检查黑色封套和纸条，思考父亲留下的密码是什么意思。",
+        "stageChoice": "选择直接前往邮局 vs 选择先回家取东西",
+        "stageCostOrConsequence": "直接前往可能邮局有未知风险；回家可能耽误时间且暴露行踪",
+        "nextStageSuggestion": "下一章应从林澈在报刊亭内策划如何应对邮局监视开始，考虑是否利用夜色或制造声音引诱监视者离开。",
+        "unresolvedQuestions": [
+          "追兵是哪一方势力？",
+          "马科长是否在场？"
+        ],
+        "dontAdvanceYet": [
+          "不要揭示邮局内部情况",
+          "不要揭示密码是否有效",
+          "不要让林澈与许问青再次相遇"
+        ],
+        "capacityAssessment": "normal",
+        "locked": false,
+        "capturedAt": 1781691829733
+      },
+      "outlineFromActiveStoryBlock": true,
+      "draftReadSnapshotBoundary": true,
+      "storyBlockReviewDecision": "open_new_block",
+      "updatedUnexecutedStages": false,
+      "requiresReviewBlocker": false,
+      "multipleActiveStoryBlocks": false,
+      "liveDatabaseOrApiErrors": [],
+      "savedBeatPlan": {
+        "id": "4e06cc19-58f3-4771-bb3b-04b29fdc685f_3",
+        "storyBlockId": "b60f5949-7fe1-4499-8840-218a6e068386",
+        "blockStageId": "stage-4",
+        "hasSnapshot": true
+      },
+      "draftCharCount": 3479,
+      "audit": {
+        "storyTaskConsistency": "pass",
+        "blockAlignment": "pass",
+        "readingBurden": "low",
+        "issueCount": 4
+      },
+      "finalized": {
+        "chapterId": "ed5d769a-2f38-40e6-8696-b69a74b6285a",
+        "versionId": "2388d412-7ba0-46c5-ad35-39140d44226c",
+        "status": "final"
+      },
+      "memoryExtraction": {
+        "factsCreated": 5,
+        "settingChangesCreated": 2
+      },
+      "storyBlockReview": {
+        "decision": "open_new_block",
+        "completedStageIds": [
+          "stage-4"
+        ],
+        "remainingStages": [],
+        "nextStageSuggestion": "林澈需在邮局后墙巷子里寻找处理摄像头的方法或替代工具，或考虑其他入口，最终决定如何进入邮局获取备份。",
+        "unresolvedQuestions": [
+          "追兵是哪一方势力？",
+          "马科长是否在场？",
+          "邮局内部寄存柜区域的具体布局？",
+          "摄像头是否连接到监控中心？"
+        ],
+        "carryOverToNextChapter": [
+          "林澈在邮局后墙巷子里，丢失撬片，小臂有伤。",
+          "密码盘确认需6位密码，推测1217开头，但摄像头覆盖密码盘区域。",
+          "广播确认目标持有旧塔记录，追兵可能在扩大搜索。"
+        ],
+        "newBlockSeed": {
+          "title": "潜入邮局",
+          "goal": "林澈成功进入邮局寄存柜区域，输入密码取出备份，并在不被发现的情况下离开。",
+          "entryState": "林澈蹲在邮局后墙的巷子阴影里，已发现铁窗内的电子锁和摄像头，工具丢失，密码待定。夜灯即将亮起。",
+          "storyFunction": "冒险"
+        },
+        "reason": "本章完成了前往邮局的阶段，但后续潜入取货方向明确，且新挑战（摄像头、丢失工具）导致情节变化较大，应开启新块承接。"
+      },
+      "forwardOnlyRollingObserved": true
+    }
+  ],
+  "blockers": [],
+  "acceptance": {
+    "passed": true,
+    "completedChapters": 3,
+    "criteria": {
+      "realLiveMode": true,
+      "cleanProject": true,
+      "storyBlockCreatedByAi": true,
+      "outlinesFromActiveStoryBlock": true,
+      "snapshotsSaved": true,
+      "draftsReadSnapshotBoundary": true,
+      "storyBlockReviewsAfterFinalize": true,
+      "forwardOnlyRollingObserved": true,
+      "noRequiresReviewBypass": true,
+      "noMultipleActiveBlocks": true,
+      "noArchivedReportsUsed": true
+    }
+  }
+}

@@ -1,7 +1,12 @@
 /**
  * 一致性审稿 Prompt
  */
-import { formatAiTraceRulesForAudit } from '../qualityRules/aiTraceRules.js'
+import { buildChapterAuditQualityRubric } from '../quality/writingQualityPrompt.js'
+
+function formatBlockStageSnapshot(snapshot = {}) {
+  if (!snapshot || !Object.keys(snapshot).length) return ''
+  return JSON.stringify(snapshot, null, 2)
+}
 
 export function buildAuditSystemPrompt() {
   return `你是一位专业小说审稿编辑，负责检查章节的一致性、逻辑和写作质量。
@@ -38,6 +43,21 @@ ${context.canonFacts?.length ? `### 已确认事实\n${context.canonFacts.map(f 
 
 ${context.plotThreads?.length ? `### 进行中的伏笔\n${context.plotThreads.filter(t => t.status === 'planted' || t.status === 'developing').map(t => `- ${t.title}`).join('\n')}` : ''}
 
+${context.previousChapterEnding ? `### 上一章定稿摘要/结尾\n${context.previousChapterEnding}` : ''}
+
+${context.beatPlan ? `### 当前章小纲\n${context.beatPlan}` : ''}
+
+${context.blockStageSnapshot ? `### block_stage_snapshot\n${formatBlockStageSnapshot(context.blockStageSnapshot)}` : ''}
+
+## 故事任务一致性检查
+- storyTaskConsistency：正文是否完成当前章小纲和 block_stage_snapshot 指向的故事任务。
+- blockAlignment：正文是否服务当前故事块目标和故事功能。
+- overAdvance：正文是否提前写掉后续阶段或新故事块内容。
+- underDelivery：正文是否没有完成本章应有的行动、选择、代价或状态变化。
+- validDeviation：如果正文偏离小纲但更好地服务当前故事任务，可以判定为可接受偏离。
+- readingBurden：读者是否需要做不必要的阅读理解才能说清发生了什么。
+- 审稿目标不是机械要求正文逐条贴合小纲，而是判断故事任务是否完成、是否偏离故事块、是否提前写掉后续内容。
+
 ## 人物动机与代入感检查
 - 关键人物是否有清晰欲望、恐惧、遮掩或不能直说的东西。
 - 关键选择是否由人物内在动机推动，而不是为了推动剧情或解释设定。
@@ -56,7 +76,7 @@ ${context.plotThreads?.length ? `### 进行中的伏笔\n${context.plotThreads.f
 - location 必须从正文中逐字复制原文，不能改标点、不能合并句子、不能转述；优先给完整句或完整段，不要只给半句。
 - replacement 的粒度必须和 location 一致：location 是半句时，replacement 也只能替换半句；replacement 是完整句/完整段时，location 也必须是对应完整句/完整段。
 
-${formatAiTraceRulesForAudit()}
+${buildChapterAuditQualityRubric()}
 
 ## AI 痕迹与文学质感专项检查
 - 章节结尾模板化：是否连续用抬头、转身、闭眼、握拳、走进黑暗、状态总结或内心独白收尾。
@@ -76,7 +96,7 @@ ${formatAiTraceRulesForAudit()}
   "issues": [
     {
       "severity": "critical|major|minor|suggestion",
-      "type": "contradiction|character_inconsistency|world_rule_violation|pacing|dialogue|logic|quality|human_motivation|emotional_logic|ai_tone|template_ending|surface_emotion|tool_character|info_dump|cliche_imagery|sensory_checklist|decorative_number|emotion_label|overfunctional_density|skipped_loss",
+      "type": "contradiction|character_inconsistency|world_rule_violation|pacing|dialogue|logic|quality|human_motivation|emotional_logic|ai_tone|template_ending|surface_emotion|tool_character|info_dump|cliche_imagery|sensory_checklist|decorative_number|emotion_label|overfunctional_density|skipped_loss|not_x_but_y|repetitive_subject_opening|prose_rhythm_flat|system_or_villain_monologue",
       "description": "问题描述",
       "location": "从正文逐字复制的原文引用，优先完整句或完整段",
       "suggestion": "修改建议",
@@ -84,6 +104,18 @@ ${formatAiTraceRulesForAudit()}
       "reason": "为什么这是个问题"
     }
   ],
+  "aiTraceLevel": "low|medium|high|severe",
+  "humanTextureLevel": "low|medium|high|severe",
+  "aiTraceDimensions": ["emotionalPresentation|informationReveal|innerActivity|rhythmStructure|languageTexture"],
+  "humanTextureDimensions": ["realScene|characterReaction|costProcess|naturalBlank|imperfectHumanFlavor|informationReveal|relationshipFriction|rhythmBreath"],
+  "topQualityRisks": ["最需要关注的质量风险"],
+  "qualityAdvice": ["不回改正文前提下的具体质量建议"],
+  "storyTaskConsistency": "pass|warning|fail",
+  "blockAlignment": "pass|warning|fail",
+  "overAdvance": "none|minor|major",
+  "underDelivery": "none|minor|major",
+  "validDeviation": "none|acceptable|risky",
+  "readingBurden": "low|medium|high|severe",
   "overallAssessment": "总体评价（100字以内）",
   "styleConsistency": "风格一致性评价",
   "characterConsistency": "角色一致性评价",
@@ -100,7 +132,7 @@ export function buildAuditRepairPrompt(rawText) {
   "issues": [
     {
       "severity": "critical|major|minor|suggestion",
-      "type": "contradiction|character_inconsistency|world_rule_violation|pacing|dialogue|logic|quality|human_motivation|emotional_logic|ai_tone|template_ending|surface_emotion|tool_character|info_dump|cliche_imagery|sensory_checklist|decorative_number|emotion_label|overfunctional_density|skipped_loss",
+      "type": "contradiction|character_inconsistency|world_rule_violation|pacing|dialogue|logic|quality|human_motivation|emotional_logic|ai_tone|template_ending|surface_emotion|tool_character|info_dump|cliche_imagery|sensory_checklist|decorative_number|emotion_label|overfunctional_density|skipped_loss|not_x_but_y|repetitive_subject_opening|prose_rhythm_flat|system_or_villain_monologue",
       "description": "问题描述",
       "location": "从正文逐字复制的原文引用，优先完整句或完整段",
       "suggestion": "修改建议",
@@ -108,6 +140,12 @@ export function buildAuditRepairPrompt(rawText) {
       "reason": "为什么这是个问题"
     }
   ],
+  "aiTraceLevel": "low|medium|high|severe",
+  "humanTextureLevel": "low|medium|high|severe",
+  "aiTraceDimensions": ["emotionalPresentation|informationReveal|innerActivity|rhythmStructure|languageTexture"],
+  "humanTextureDimensions": ["realScene|characterReaction|costProcess|naturalBlank|imperfectHumanFlavor|informationReveal|relationshipFriction|rhythmBreath"],
+  "topQualityRisks": ["最需要关注的质量风险"],
+  "qualityAdvice": ["具体质量建议"],
   "overallAssessment": "总体评价",
   "styleConsistency": "风格一致性评价",
   "characterConsistency": "角色一致性评价",

@@ -99,13 +99,12 @@ export const useCorrectionTaskStore = defineStore('correctionTask', () => {
   }
 
   function buildTasksFromChapterAudit(chapterNum, report, options = {}) {
-    const finalized = !!options.finalized
-    const mode = finalized ? CORRECTION_MODES.SOFT : CORRECTION_MODES.HARD
+    if (options.finalized) return []
     const issues = filterIssuesForCorrectionTasks(report?.issues || [], { maxTasks: 3 })
     return issues.map((issue, index) => ({
       sourceType: 'chapter_audit',
       sourceId: options.sourceId || null,
-      targetModule: finalized ? inferTargetModule(issue.type) : 'chapter',
+      targetModule: 'chapter',
       title: issue.description || `第 ${chapterNum} 章纠偏任务 ${index + 1}`,
       description: [
         issue.location ? `位置：${issue.location}` : '',
@@ -118,12 +117,10 @@ export const useCorrectionTaskStore = defineStore('correctionTask', () => {
       suggestedAction: issue.suggestion || '',
       status: 'pending',
       metadata: {
-        correctionMode: mode,
-        blocking: !finalized,
-        sourceFinalized: finalized,
-        handlingAdvice: finalized
-          ? '本章已定稿，不回改正文；作为后续章节软过渡和补解释任务处理。'
-          : '本章未定稿，可生成章节修订候选或直接在当前草稿中修正；处理前不建议定稿。',
+        correctionMode: CORRECTION_MODES.HARD,
+        blocking: true,
+        sourceFinalized: false,
+        handlingAdvice: '本章未定稿，可生成章节修订候选或直接在当前草稿中修正；处理前不建议定稿。',
         rawIssue: issue
       }
     }))

@@ -81,7 +81,7 @@ function sourceBrief(version) {
 
         <div class="text-gray-600 line-clamp-2">{{ previewText(version.content) }}</div>
 
-        <div class="flex justify-end gap-1 mt-1">
+        <div class="flex justify-end gap-1 mt-1" @click.stop>
           <n-button
             size="tiny"
             quaternary
@@ -105,7 +105,7 @@ function sourceBrief(version) {
             @positive-click="emit('finalize', version)"
           >
             <template #trigger>
-              <n-button size="tiny" quaternary type="success" :disabled="finalizeDisabled" @click.stop>定稿</n-button>
+              <n-button size="tiny" quaternary type="success" :disabled="finalizeDisabled">定稿</n-button>
             </template>
             确认将此版本设为定稿？
           </n-popconfirm>
@@ -123,7 +123,7 @@ function sourceBrief(version) {
             @positive-click="emit('delete', version)"
           >
             <template #trigger>
-              <n-button size="tiny" quaternary type="error" @click.stop>删除</n-button>
+              <n-button size="tiny" quaternary type="error">删除</n-button>
             </template>
             确认删除此版本？
           </n-popconfirm>
