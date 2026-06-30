@@ -12,7 +12,12 @@ for (const field of [
   'saveAttempted',
   'savedVolumeCount',
   'saveErrors',
-  'failureStage'
+  'failureStage',
+  'parsedCandidateSource',
+  'parsedCandidateType',
+  'parsedFirstItemType',
+  'parsedFirstItemKeys',
+  'rejectedParsedCandidates'
 ]) {
   assert.match(store, new RegExp(field), `volume planning diagnostics should include ${field}`)
 }
@@ -71,6 +76,24 @@ assert.match(
   store,
   /diagnostics\.parsedVolumeCount\s*=\s*parsed\?\.volumes\?\.length/,
   'parse diagnostics should record the actual number of parsed volumes, including legal 8-volume JSON'
+)
+for (const reason of [
+  'nested_array_not_volume_plan',
+  'array_items_not_volume_objects',
+  'object_missing_volumes',
+  'volume_like_validation_failed'
+]) {
+  assert.match(store, new RegExp(reason), `parser diagnostics should record ${reason}`)
+}
+assert.match(
+  store,
+  /validateVolumePlanRoot/,
+  'parser should validate candidate root shape before accepting it as a volume plan'
+)
+assert.match(
+  store,
+  /isVolumeLikeObject/,
+  'parser should reject arrays whose items do not look like volume objects'
 )
 
 console.log('volume plan diagnostics contract tests passed')

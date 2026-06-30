@@ -27,6 +27,7 @@ export function buildStoryBlockPlanningSystemPrompt() {
 - 不允许为了每章生成一个新块；块完成必须基于剧情任务自然完成、失败、重大转向或外力打断。
 - 不把表层 AI 句式指标当作规划中心。
 - stagePlan 通常建议 3-6 个可推进阶段，每个字段必须短；大型任务可以更多，秘境、潜入、追杀、攻防、大案、比赛等可以持续 10 章以上。
+- 关系任务字段只辅助故事变好看：记录一段人物关系如何轻微变化，不作为审稿硬闸，不扩写成正文。
 - 开局、过渡或短冲突块可以少于 3 个阶段，但必须说明短块原因，并给出后续可承接方向。
 - 如果内容过多，优先缩短字段，不要破坏 JSON。
 只输出合法 JSON，不要 Markdown，不要解释，不要编号列表。`
@@ -74,6 +75,11 @@ ${compactJson(context.newBlockSeed || {})}
   "exitTarget": "自然完成时的目标状态",
   "mainPressure": "主要阻力",
   "keyCharacters": ["人物"],
+  "relationshipFocus": "本块重点人物关系，如陆沉舟/小九",
+  "relationshipStart": "关系起点，用短句说明当前信任、误会或亏欠",
+  "relationshipTask": "本块关系任务：误会|信任|亏欠|交易|救助|隐瞒|背叛之一或相近变化",
+  "relationshipEndHint": "期望关系变化，不写成结论保证",
+  "sceneVarietyHint": "本块玩法变化，不能只连续潜入/追逃；可选关系对峙、代价后果、信息验证、市井/组织规则观察、主动布局、失败后的修补或低压喘息",
   "stagePlan": [
     {
       "id": "stage-1",
@@ -97,6 +103,10 @@ ${compactJson(context.newBlockSeed || {})}
 - stagePlan 通常写 3-6 个阶段；大型任务可以更多；短过渡、开局或短冲突可以更少，但必须写 shortBlockReason。
 - stagePlan 是剧情推进阶段，不等于章节；一章可以完成一个阶段，也可以跨阶段。
 - 每个字段用短句，不写正文，不展开对白。
+- relationshipFocus、relationshipStart、relationshipTask、relationshipEndHint、sceneVarietyHint 是轻量规划辅助；缺少可靠人物关系时可短写“待定”，不要为了字段扩写剧情。
+- relationshipTask 优先让人物产生误会、信任、亏欠、交易、救助、隐瞒或背叛，不要只写“共同找线索”。
+- sceneVarietyHint 要给出和连续潜入/追逃不同的场景玩法，例如处理伤口、吃饭、交易、静态压迫、吵架、分赃或小人物闲话。
+- 如果近期连续追逃/搜查/撤离占主导，后续阶段优先安排主动布局、关系对峙、代价后果或信息验证之一作为骨架。
 - 如果 chapterNum=1 或当前没有近期章节，首个故事块必须从 openingHook/openingAnchor 对应的读者可见开场事件开始。
 - 首个故事块的 entryState 和 stage-1 必须是第 1 章实际会看到的开局场景；不得把当前卷 handoffPoint 当作 entryState 或 stage-1。
 - 第 1 章首块应围绕开局钩子、主角初始处境、第一处压力、首次异常或第一条线索推进；不要直接跳到卷尾交接点。
@@ -122,6 +132,11 @@ export function buildStoryBlockPlanningRepairPrompt(rawText = '') {
   "exitTarget": "",
   "mainPressure": "",
   "keyCharacters": [],
+  "relationshipFocus": "",
+  "relationshipStart": "",
+  "relationshipTask": "",
+  "relationshipEndHint": "",
+  "sceneVarietyHint": "",
   "stagePlan": [
     {
       "id": "stage-1",
@@ -156,6 +171,7 @@ export function buildStoryBlockReviewSystemPrompt() {
 - 阶段耗尽但块目标未完成时，应补充或调整未执行阶段，而不是直接结束块。
 - 如果当前块只覆盖 1 章就结束，不硬拒绝，但必须输出 singleChapterBlockReason。
 - 如果输出 stageContinues=true，必须同时输出 stageContinueReason；stageContinueReason 必须说明本阶段为什么没有完成、下一章继续完成哪个具体动作/冲突/选择、本章已经完成了什么且剩下什么。
+- 判断阶段是否完成时看故事功能，不逐字验收原阶段措辞；错误信任、低估敌人、被反制、小九被绑、星账代价加剧、行动选择受限等已经完成同等故事功能时，应关闭当前阶段。
 
 允许的 decision 只能是：
 ${ALLOWED_STORY_BLOCK_REVIEW_DECISIONS.map(item => `- ${item}`).join('\n')}
@@ -180,6 +196,13 @@ ${storyBlockSnapshotBrief(context.blockStageSnapshot || {}) || '无'}
 ## 当前 live story block（只用于判断未执行阶段，不用于改写历史小纲）
 ${compactJson(context.storyBlock || {})}
 
+## stage continuation diagnostics
+${compactJson({
+  stageContinuationDepth: context.stageContinuationDepth ?? 0,
+  previousOpenStageId: context.previousOpenStageId || '',
+  stageContinuationLimit: 2
+})}
+
 ## 定稿后提取
 ${compactJson({
   facts: context.facts || [],
@@ -188,9 +211,12 @@ ${compactJson({
 
 判断要求：
 - 如果本章完成了 snapshot 当前阶段，可把该阶段记为完成。
+- 故事功能等价完成只能关闭 snapshot 当前阶段：不要求正文逐字写出“判断失误”。如果本章已经通过误信/错误信任、低估敌人、被反制、小九被绑、星账代价加剧、行动选择受限、关系或局势不可逆变化等方式完成同等功能，返回 stageContinues=false，并写 settlementDecision="completed_by_equivalent_story_function"、equivalentCompletionScope="current_stage_only"。
+- 如果正文触碰了后续 stage 内容，只记录 futureStageTouched=true、futureStageEvidence、replanRemainingStages=true，不得把后续 stage 一并写入 completedStageIds。
 - 如果还在当前目标内，返回 continue_current_block；默认含义是当前 snapshot 阶段已完成，下一章进入下一个未完成阶段。
 - 只有当前阶段需要跨章继续时，才允许继续同一阶段，并必须输出 "stageContinues": true 和明确 "stageContinueReason"。
 - stageContinueReason 必须具体说明：本阶段为什么没有完成；下一章继续完成哪个具体动作、冲突或选择；本章已经完成了什么，剩下什么。
+- 如果 stageContinuationDepth >= 2，不得继续返回同一阶段的 stageContinues=true；只能选择 completed_by_equivalent_story_function、split_remaining_stage、opened_new_block_for_residue 或 blocked_for_manual_review。
 - 如果只需要改变未执行、未引用、未定稿依赖的后续阶段，返回 adjust_remaining_stages。
 - 已定稿章节不得返回 split_unfinalized_content；如发现内容过载，只能返回 continue_current_block、adjust_remaining_stages 或 open_new_block，并把顺延建议写入 carryOverToNextChapter。
 - 不能因为一章结束就返回 complete_current_block 或 open_new_block。
@@ -218,6 +244,17 @@ ${compactJson({
   },
   "completionEvidence": "仅 complete_current_block/open_new_block 必填：任务完成/失败/转向/自然结束/外力打断/新态势证据",
   "singleChapterBlockReason": "若当前块只覆盖 1 章就结束，说明为什么允许短块；否则留空",
+  "stageContinuationDepth": 0,
+  "previousOpenStageId": "",
+  "settlementDecision": "",
+  "settlementEvidence": [],
+  "equivalentCompletionScope": "",
+  "futureStageTouched": false,
+  "futureStageEvidence": [],
+  "futureStageOverClosed": false,
+  "needsFutureStageReplan": false,
+  "replanRemainingStages": false,
+  "whetherStageClosedBeforeNextBeatPlan": false,
   "closedBy": "ai_review",
   "reason": "100字以内"
 }`
@@ -250,6 +287,17 @@ export function buildStoryBlockReviewRepairPrompt(rawText = '') {
   },
   "completionEvidence": "",
   "singleChapterBlockReason": "",
+  "stageContinuationDepth": 0,
+  "previousOpenStageId": "",
+  "settlementDecision": "",
+  "settlementEvidence": [],
+  "equivalentCompletionScope": "",
+  "futureStageTouched": false,
+  "futureStageEvidence": [],
+  "futureStageOverClosed": false,
+  "needsFutureStageReplan": false,
+  "replanRemainingStages": false,
+  "whetherStageClosedBeforeNextBeatPlan": false,
   "closedBy": "ai_review",
   "reason": ""
 }
@@ -273,6 +321,17 @@ export function normalizeStoryBlockReviewResult(raw = {}) {
     newBlockSeed: raw.newBlockSeed && typeof raw.newBlockSeed === 'object' ? raw.newBlockSeed : null,
     completionEvidence: raw.completionEvidence || raw.completion_evidence || '',
     singleChapterBlockReason: raw.singleChapterBlockReason || raw.single_chapter_block_reason || '',
+    stageContinuationDepth: Number(raw.stageContinuationDepth ?? raw.stage_continuation_depth ?? 0) || 0,
+    previousOpenStageId: raw.previousOpenStageId || raw.previous_open_stage_id || '',
+    settlementDecision: raw.settlementDecision || raw.settlement_decision || '',
+    settlementEvidence: Array.isArray(raw.settlementEvidence) ? raw.settlementEvidence : [],
+    equivalentCompletionScope: raw.equivalentCompletionScope || raw.equivalent_completion_scope || '',
+    futureStageTouched: raw.futureStageTouched === true || raw.future_stage_touched === true,
+    futureStageEvidence: Array.isArray(raw.futureStageEvidence) ? raw.futureStageEvidence : (Array.isArray(raw.future_stage_evidence) ? raw.future_stage_evidence : []),
+    futureStageOverClosed: raw.futureStageOverClosed === true || raw.future_stage_over_closed === true,
+    needsFutureStageReplan: raw.needsFutureStageReplan === true || raw.needs_future_stage_replan === true,
+    replanRemainingStages: raw.replanRemainingStages === true || raw.replan_remaining_stages === true,
+    whetherStageClosedBeforeNextBeatPlan: raw.whetherStageClosedBeforeNextBeatPlan === true || raw.whether_stage_closed_before_next_beat_plan === true,
     closedBy: raw.closedBy || raw.closed_by || 'ai_review',
     storyBlockStalled: raw.storyBlockStalled === true || raw.story_block_stalled === true,
     reason: raw.reason || '',
@@ -288,6 +347,9 @@ export function buildStoryBlockReviewSemanticRepairPrompt(review = {}, context =
 修复目标：
 - 如果 stageContinues=true，必须填写 stageContinueReason。
 - stageContinueReason 必须说明：本阶段为什么没有完成；下一章继续完成哪个具体动作/冲突/选择；本章已经完成了什么，剩下什么。
+- 如果本章已经用错误信任、低估敌人、被反制、小九被绑、星账代价加剧或行动选择受限完成了故事功能等价完成，则把 stageContinues 改为 false，并填写 settlementDecision="completed_by_equivalent_story_function"；completedStageIds 只允许包含当前 snapshot stage。
+- 如果本章文本碰到后续 stage，只写 futureStageTouched/futureStageEvidence/replanRemainingStages，不要把未来 stage 算 completed。
+- 如果 stageContinuationDepth >= 2，不得继续返回同一阶段 stageContinues=true；关闭当前阶段，把残余动作拆成未来未锁定阶段或标记 blocked_for_manual_review。
 - 如果无法给出具体 stageContinueReason，则把 stageContinues 改为 false，并让下一章进入下一可执行阶段。
 - 不新增大剧情，只根据本章摘要、结尾、stage snapshot 和原 JSON 修复。
 
@@ -302,6 +364,12 @@ ${compactJson(context.blockStageSnapshot || {})}
 
 当前 story block：
 ${compactJson(context.storyBlock || {})}
+
+stage continuation diagnostics：
+${compactJson({
+  stageContinuationDepth: context.stageContinuationDepth ?? 0,
+  previousOpenStageId: context.previousOpenStageId || ''
+})}
 
 原 JSON：
 ${compactJson(review || {})}`

@@ -2,7 +2,16 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const writerView = readFileSync('frontend/src/views/WriterView.vue', 'utf8')
+const finalizationCommand = readFileSync('frontend/src/application/writer-flow/finalization-command.js', 'utf8')
 const liveScript = readFileSync('tmp/run_longform_browser_240w_phase1.mjs', 'utf8')
+
+function blockBetween(source, startNeedle, endNeedle) {
+  const start = source.indexOf(startNeedle)
+  assert.notEqual(start, -1, `missing block start: ${startNeedle}`)
+  const end = source.indexOf(endNeedle, start + startNeedle.length)
+  assert.notEqual(end, -1, `missing block end: ${endNeedle}`)
+  return source.slice(start, end)
+}
 
 assert.match(
   writerView,
@@ -12,7 +21,7 @@ assert.match(
 assert.match(
   writerView,
   /ensureChapterAboveHardWordMinBeforeFinalize/,
-  'WriterView should validate hard word floor before calling finalizeVersion'
+  'WriterView should validate hard word floor before starting finalization'
 )
 assert.match(
   writerView,
@@ -20,9 +29,19 @@ assert.match(
   'WriterView should show a clear hard-min failure message'
 )
 assert.match(
-  writerView,
-  /await ensureChapterAboveHardWordMinBeforeFinalize\(version\)[\s\S]*await writerStore\.finalizeVersion\(version\)/,
-  'hard word floor check must run before finalizeVersion'
+  blockBetween(writerView, 'async function handleFinalize(version)', 'async function performFinalize(version)'),
+  /await ensureChapterAboveHardWordMinBeforeFinalize\(version\)[\s\S]*await performFinalize\(version\)/,
+  'hard word floor check must run before performFinalize starts the finalization command'
+)
+assert.match(
+  blockBetween(writerView, 'async function performFinalize(version)', 'async function performStoryBlockReviewAfterFinalize'),
+  /runFinalizeChapterCommand[\s\S]*finalizeVersion:\s*writerStore\.finalizeVersion/,
+  'performFinalize must pass writerStore.finalizeVersion into the application command'
+)
+assert.match(
+  finalizationCommand,
+  /const finalizeVersion = requiredFunction\(input,\s*'finalizeVersion'\)[\s\S]*await finalizeVersion\(version\)/,
+  'finalization command must call the injected finalizeVersion only after UI preflight has passed'
 )
 
 assert.match(

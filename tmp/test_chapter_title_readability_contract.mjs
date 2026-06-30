@@ -6,7 +6,7 @@ import {
   getChapterTitleQuality
 } from '../frontend/src/prompts/chapter.js'
 
-for (const title of ['巡', '追']) {
+for (const title of ['巡']) {
   const policy = evaluateChapterTitlePolicy(title)
   assert.notEqual(policy.status, 'pass', `${title} should not pass as a generic single-character title`)
   assert.equal(policy.status, 'warning', `${title} should be a warning, not a hard fail`)
@@ -15,6 +15,10 @@ for (const title of ['巡', '追']) {
   assert.equal(quality.status, 'warning', `${title} quality should report warning`)
   assert.ok(quality.reason, `${title} warning reason should be reported`)
 }
+
+const singleActionPolicy = evaluateChapterTitlePolicy('追')
+assert.equal(singleActionPolicy.status, 'fail', 'single action fragment should hard fail')
+assert.equal(getChapterTitleQuality('追').titleValid, false, 'single action fragment should be rejected')
 
 for (const title of ['这边', '那边', '来一张', '干什么', '怎么说', '你爹挖的']) {
   const policy = evaluateChapterTitlePolicy(title)

@@ -1,4 +1,11 @@
 <script setup>
+import {
+  runSaveBeatPlanCommand,
+} from '@/application/writer-flow/save-beat-plan-command'
+import {
+  runGenerateFromBeatPlanCommand,
+} from '@/application/writer-flow/draft-generation-command'
+import { runCreateVersionCommand } from '@/application/writer-flow/version-creation-command'
 import { ref, onMounted, watch, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -60,6 +67,10 @@ import {
   storyBlockStageId
 } from '@/utils/storyBlockGranularity'
 import {
+  buildStageContinuationDiagnostics,
+  enforceStageContinuationSettlement
+} from '@/utils/storyBlockStageSettlement'
+import {
   applyAuditReplacement,
   cleanAuditQuote,
   getAuditReplacement,
@@ -72,6 +83,28 @@ import {
   endChapterFinalizationRun,
   getChapterFinalizationPending,
 } from '@/utils/finalizationGuard'
+import {
+  checkChapterHardWordMinimum,
+  checkCorrectionTaskBlocker,
+  checkCurrentChapterWritable,
+  checkPendingSettingChanges,
+  checkPendingStoryMemory,
+  checkPreviousChapterFinalized
+} from '@/application/writer-flow/preconditions'
+import {
+  normalizeManualChapterTitle,
+  runGenerateChapterTitleCommand,
+  runSaveManualChapterTitleCommand,
+  validateGenerateChapterTitleInput,
+  validateManualChapterTitle
+} from '@/application/writer-flow/chapter-title-command'
+import {
+  runLoadWriterChapterSession,
+  runLoadWriterContextData
+} from '@/application/writer-flow/context-session'
+import { runEnsureBeatPlanCommand } from '@/application/writer-flow/beat-plan-command'
+import { runFinalizeChapterCommand } from '@/application/writer-flow/finalization-command'
+import { getFinalizationMarkerAction } from '@/application/writer-flow/finalization-marker-action'
 import { normalizeStoryBlockReviewResult } from '@/prompts/storyBlockPrompt'
 
 const route = useRoute()
@@ -394,8 +427,16 @@ const blockingFinalizationPending = computed(() => {
   return findBlockingFinalizationPending()
 })
 
+const finalizationMarkerAction = computed(() =>
+  getFinalizationMarkerAction(blockingFinalizationPending.value)
+)
+
 const postFinalizeFailed = computed(() =>
-  Boolean(blockingFinalizationPending.value?.postFinalizeFailed || blockingFinalizationPending.value?.retryablePostprocessFailure)
+  Boolean(
+    blockingFinalizationPending.value?.postFinalizeFailed ||
+    blockingFinalizationPending.value?.retryablePostprocessFailure ||
+    blockingFinalizationPending.value?.storyBlockSettlementFailure
+  )
 )
 
 const aiContextStatusText = computed(() => {
@@ -443,20 +484,23 @@ async function loadContextData() {
   contextLoadError.value = ''
   contextLoading.value = true
   try {
-    await Promise.all([
-      novelStore.loadBible(projectId.value),
-      novelStore.loadOutline(projectId.value),
-      novelStore.loadCharacters(projectId.value),
-      novelStore.loadPlotThreads(projectId.value),
-      novelStore.loadCanonFacts(projectId.value),
-      settingStore.loadEntities(projectId.value),
-      settingStore.loadRelations(projectId.value),
-      settingStore.loadChangeEvents(projectId.value),
-      volumeStore.loadVolumes(projectId.value),
-      storyBlockStore.loadBlocks(projectId.value),
-      correctionTaskStore.loadTasks(projectId.value),
-      seedStore.loadSeeds(projectId.value)
-    ])
+    await runLoadWriterContextData({
+      projectId: projectId.value,
+      loaders: {
+        loadBible: novelStore.loadBible,
+        loadOutline: novelStore.loadOutline,
+        loadCharacters: novelStore.loadCharacters,
+        loadPlotThreads: novelStore.loadPlotThreads,
+        loadCanonFacts: novelStore.loadCanonFacts,
+        loadSettingEntities: settingStore.loadEntities,
+        loadSettingRelations: settingStore.loadRelations,
+        loadSettingChangeEvents: settingStore.loadChangeEvents,
+        loadVolumes: volumeStore.loadVolumes,
+        loadStoryBlocks: storyBlockStore.loadBlocks,
+        loadCorrectionTasks: correctionTaskStore.loadTasks,
+        loadSeeds: seedStore.loadSeeds
+      }
+    })
     contextDataLoaded.value = true
   } catch (e) {
     contextDataLoaded.value = false
@@ -471,34 +515,29 @@ async function loadContextData() {
 async function loadChapter() {
   chapterLoading.value = true
   try {
-    await writerStore.loadChapters(projectId.value)
-    await storyBlockStore.loadBlocks(projectId.value)
-    const chapter = await writerStore.getOrCreateChapter(projectId.value, chapterNum.value)
-    await writerStore.loadVersions(projectId.value, chapter.id)
-    const savedBeatPlan = await writerStore.loadChapterBeatPlan(projectId.value, chapterNum.value)
-    beatPlanText.value = savedBeatPlan?.content || ''
-    beatPlanSavedText.value = savedBeatPlan?.content || ''
-    beatPlanStageSnapshot.value = savedBeatPlan?.blockStageSnapshot || null
-    previousChapterEnding.value = await loadPreviousChapterEnding()
-    recentChapterEndings.value = await loadRecentChapterEndings()
-
-    const draft = await writerStore.loadTempDraft(projectId.value, chapterNum.value)
-    if (draft?.content) {
-      editorContent.value = draft.content
-      loadedEditorSnapshot.value = draft.content
-    } else if (chapter.finalVersionId) {
-      const final = writerStore.versions.find(version => version.id === chapter.finalVersionId)
-      editorContent.value = final?.content || ''
-      writerStore.currentVersion = final || null
-      loadedEditorSnapshot.value = editorContent.value
-    } else if (writerStore.versions.length > 0) {
-      writerStore.currentVersion = writerStore.versions[0]
-      editorContent.value = writerStore.versions[0].content
-      loadedEditorSnapshot.value = editorContent.value
-    } else {
-      editorContent.value = ''
-      writerStore.currentVersion = null
-      loadedEditorSnapshot.value = ''
+    const session = await runLoadWriterChapterSession({
+      projectId: projectId.value,
+      chapterNum: chapterNum.value,
+      loaders: {
+        loadChapters: writerStore.loadChapters,
+        loadBlocks: storyBlockStore.loadBlocks,
+        getOrCreateChapter: writerStore.getOrCreateChapter,
+        loadVersions: writerStore.loadVersions,
+        loadChapterBeatPlan: writerStore.loadChapterBeatPlan,
+        loadPreviousChapterEnding,
+        loadRecentChapterEndings,
+        loadTempDraft: writerStore.loadTempDraft
+      }
+    })
+    beatPlanText.value = session.beatPlanText
+    beatPlanSavedText.value = session.beatPlanSavedText
+    beatPlanStageSnapshot.value = session.beatPlanStageSnapshot
+    previousChapterEnding.value = session.previousChapterEnding
+    recentChapterEndings.value = session.recentChapterEndings
+    editorContent.value = session.editorContent
+    loadedEditorSnapshot.value = session.loadedEditorSnapshot
+    if (session.shouldUpdateCurrentVersion) {
+      writerStore.currentVersion = session.currentVersion
     }
   } catch (e) {
     message.error('加载章节失败：' + e.message)
@@ -586,35 +625,42 @@ async function handleGenerateChapterTitle() {
   if (chapterTitleGenerating.value || finalizationActionBusy.value) return
   const chapter = writerStore.currentChapter
   const content = editorContent.value.trim()
-  if (!chapter?.id) {
+  const validation = validateGenerateChapterTitleInput({ chapter, content })
+  if (!validation.ok && validation.code === 'chapterNotReady') {
     message.warning('当前章节还未加载完成，暂时不能生成章名')
     return
   }
-  if (!content) {
+  if (!validation.ok && validation.code === 'emptyContent') {
     message.warning('当前正文为空，无法生成章名')
     return
   }
 
   chapterTitleGenerating.value = true
   try {
-    const title = await writerStore.generateDefaultChapterTitle(
-      projectId.value,
+    const result = await runGenerateChapterTitleCommand({
+      projectId: projectId.value,
       chapter,
-      chapterNum.value,
+      chapterNum: chapterNum.value,
       content,
-      {
-        chapterGoal: contextPreview.value?.context?.chapterGoal,
-        beatPlan: beatPlanSavedText.value || beatPlanText.value
-      },
-      null,
-      { force: true }
-    )
-    if (!title) {
+      chapterGoal: contextPreview.value?.context?.chapterGoal,
+      beatPlan: beatPlanSavedText.value || beatPlanText.value,
+      generateDefaultChapterTitle: writerStore.generateDefaultChapterTitle
+    })
+    if (!result.ok && result.code === 'chapterNotReady') {
+      message.warning('当前章节还未加载完成，暂时不能生成章名')
+      return
+    }
+    if (!result.ok && result.code === 'emptyContent') {
+      message.warning('当前正文为空，无法生成章名')
+      return
+    }
+    if (!result.ok && result.openEditor) {
       message.warning('AI 没有生成合格章名，请稍后重试或手动编辑章节标题')
       openChapterTitleEditor()
       return
     }
-    message.success(`章名已更新为《${title}》`)
+    if (!result.ok) return
+    message.success(`章名已更新为《${result.title}》`)
   } catch (e) {
     message.error('生成章名失败：' + e.message)
   } finally {
@@ -632,30 +678,43 @@ function openChapterTitleEditor() {
 
 async function handleSaveManualChapterTitle() {
   const chapter = writerStore.currentChapter
-  const title = chapterTitleDraft.value.trim().replace(/\s+/g, ' ')
-  if (!chapter?.id) {
+  const title = normalizeManualChapterTitle(chapterTitleDraft.value)
+  const validation = validateManualChapterTitle({
+    chapter,
+    chapterNum: chapterNum.value,
+    title: chapterTitleDraft.value,
+    assessTitle: getChapterTitleQuality
+  })
+  if (!validation.ok && validation.code === 'chapterNotReady') {
     message.warning('当前章节还未加载完成，暂时不能编辑章名')
     return
   }
-  if (!title) {
+  if (!validation.ok && validation.code === 'emptyTitle') {
     message.warning('章节标题不能为空')
     return
   }
-  if (Array.from(title).length > 30 || /[\r\n]/.test(title)) {
+  if (!validation.ok && validation.code === 'invalidManualTitleShape') {
     message.warning('章节标题建议控制在 30 个字以内，且不能换行')
     return
   }
-  const titleQuality = getChapterTitleQuality(title, { chapterNum: chapterNum.value })
-  if (!titleQuality.titleValid) {
-    message.warning(`章节标题不可用：${titleQuality.titleInvalidReason || '非法标题'}`)
+  if (!validation.ok && validation.code === 'invalidTitlePolicy') {
+    message.warning(`章节标题不可用：${validation.details.reason || '非法标题'}`)
     return
   }
 
   chapterTitleSaving.value = true
   try {
-    await writerStore.updateChapterTitle(projectId.value, chapter.id, title)
+    const result = await runSaveManualChapterTitleCommand({
+      projectId: projectId.value,
+      chapter,
+      chapterNum: chapterNum.value,
+      draftTitle: chapterTitleDraft.value,
+      assessTitle: getChapterTitleQuality,
+      updateChapterTitle: writerStore.updateChapterTitle
+    })
+    if (!result.ok) return
     showChapterTitleEditor.value = false
-    message.success(`章节标题已更新为《${title}》`)
+    message.success(`章节标题已更新为《${result.title || title}》`)
   } catch (e) {
     message.error('保存章节标题失败：' + e.message)
   } finally {
@@ -905,9 +964,10 @@ async function ensureAiContextReady(actionName = 'AI 操作') {
 }
 
 async function ensureNoPendingSettingChanges(actionName = 'AI 写作') {
-  if (pendingSettingChanges.value.length > 0) {
+  let pendingResult = checkPendingSettingChanges({ pendingSettingChanges: pendingSettingChanges.value })
+  if (!pendingResult.ok) {
     message.warning(
-      `设定库还有 ${pendingSettingChanges.value.length} 条待确认变更。${actionName}只会读取已确认的设定库和已确认事实，未确认的上一章人物状态、关系、地点、能力变化不会作为硬设定进入下一章。请先到“记忆/设定库”确认或拒绝这些变更，再继续生成，避免后续章节错乱。`,
+      `设定库还有 ${pendingResult.details.count} 条待确认变更。${actionName}只会读取已确认的设定库和已确认事实，未确认的上一章人物状态、关系、地点、能力变化不会作为硬设定进入下一章。请先到“记忆/设定库”确认或拒绝这些变更，再继续生成，避免后续章节错乱。`,
       { title: '请先确认设定变更' }
     )
     return false
@@ -920,9 +980,10 @@ async function ensureNoPendingSettingChanges(actionName = 'AI 写作') {
     return false
   }
 
-  if (pendingSettingChanges.value.length > 0) {
+  pendingResult = checkPendingSettingChanges({ pendingSettingChanges: pendingSettingChanges.value })
+  if (!pendingResult.ok) {
     message.warning(
-      `设定库还有 ${pendingSettingChanges.value.length} 条待确认变更。请先确认或拒绝后再执行${actionName}。`,
+      `设定库还有 ${pendingResult.details.count} 条待确认变更。请先确认或拒绝后再执行${actionName}。`,
       { title: '请先确认设定变更' }
     )
     return false
@@ -932,9 +993,10 @@ async function ensureNoPendingSettingChanges(actionName = 'AI 写作') {
 }
 
 async function ensureNoPendingStoryMemory(actionName = 'AI 写作') {
-  if (pendingCanonFacts.value.length > 0) {
+  let pendingResult = checkPendingStoryMemory({ pendingCanonFacts: pendingCanonFacts.value })
+  if (!pendingResult.ok) {
     message.warning(
-      `记忆里还有 ${pendingCanonFacts.value.length} 条待确认事实。${actionName}只会读取已确认事实，未确认的上一章事件、状态、伏笔或时间线不会进入下一章。请先到“记忆”确认或拒绝这些事实，再继续生成。`,
+      `记忆里还有 ${pendingResult.details.count} 条待确认事实。${actionName}只会读取已确认事实，未确认的上一章事件、状态、伏笔或时间线不会进入下一章。请先到“记忆”确认或拒绝这些事实，再继续生成。`,
       { title: '请先确认记忆事实' }
     )
     return false
@@ -947,9 +1009,10 @@ async function ensureNoPendingStoryMemory(actionName = 'AI 写作') {
     return false
   }
 
-  if (pendingCanonFacts.value.length > 0) {
+  pendingResult = checkPendingStoryMemory({ pendingCanonFacts: pendingCanonFacts.value })
+  if (!pendingResult.ok) {
     message.warning(
-      `记忆里还有 ${pendingCanonFacts.value.length} 条待确认事实。请先确认或拒绝后再执行${actionName}。`,
+      `记忆里还有 ${pendingResult.details.count} 条待确认事实。请先确认或拒绝后再执行${actionName}。`,
       { title: '请先确认记忆事实' }
     )
     return false
@@ -970,9 +1033,10 @@ async function ensureCorrectionTasksAllowGeneration(actionName = 'AI 写作') {
   const blockers = activeTasks.filter(task =>
     isCorrectionTaskBlockingForGeneration(task) && correctionTaskAppliesToChapter(task, chapterNum.value)
   )
-  if (blockers.length) {
+  const blockerResult = checkCorrectionTaskBlocker({ blockers })
+  if (!blockerResult.ok) {
     message.warning(
-      `当前存在 ${blockers.length} 条阻断型纠偏任务未处理。请先到「项目详情 > 6 纠偏任务」确认、完成或忽略后，再继续${actionName}。`,
+      `当前存在 ${blockerResult.details.blockerCount} 条阻断型纠偏任务未处理。请先到「项目详情 > 6 纠偏任务」确认、完成或忽略后，再继续${actionName}。`,
       { title: '请先处理关键纠偏' }
     )
     return false
@@ -1016,7 +1080,8 @@ function isChapterFinalized(chapter) {
 }
 
 function ensureCurrentChapterEditable(actionName = 'AI 写作') {
-  if (!currentChapterFinalized.value) return true
+  const result = checkCurrentChapterWritable({ currentChapterFinalized: currentChapterFinalized.value })
+  if (result.ok) return true
   message.warning(
     `本章已经定稿，不能再执行${actionName}。定稿后的正文、小纲和版本已锁定，避免记忆、设定库和后续章节上下文发生错乱。`,
     { title: '本章已定稿' }
@@ -1038,7 +1103,11 @@ async function ensurePreviousChapterFinalized(actionName = 'AI 写作') {
     }
   }
 
-  if (!isChapterFinalized(previousChapter)) {
+  const finalizedResult = checkPreviousChapterFinalized({
+    chapterNum: chapterNum.value,
+    previousChapter
+  })
+  if (!finalizedResult.ok) {
     message.warning(
       `第 ${chapterNum.value - 1} 章还没有定稿，不能继续执行第 ${chapterNum.value} 章的${actionName}。请先回到上一章选择最终版本并定稿，再继续生成下一章，避免章节衔接和人物状态断层。`,
       { title: '请先定稿上一章' }
@@ -1047,7 +1116,12 @@ async function ensurePreviousChapterFinalized(actionName = 'AI 写作') {
   }
 
   const previousProcessing = getChapterFinalizationPending(projectId.value, chapterNum.value - 1)
-  if (previousProcessing) {
+  const pendingResult = checkPreviousChapterFinalized({
+    chapterNum: chapterNum.value,
+    previousChapter,
+    previousFinalizationPending: previousProcessing
+  })
+  if (!pendingResult.ok) {
     const reconciled = await reconcileCompletedFinalizationMarker(previousProcessing, actionName)
     if (!reconciled) {
       message.warning(
@@ -1066,6 +1140,27 @@ async function ensurePreviousChapterFinalized(actionName = 'AI 写作') {
   }
 
   return true
+}
+
+function writeWriterContextDiagnostics(context = {}) {
+  if (typeof window === 'undefined') return
+  const companionVoiceCards = String(context.companionVoiceCards || '')
+  window.__LONGFORM_WRITER_CONTEXT_DIAGNOSTICS__ = {
+    chapterNum: Number(chapterNum.value),
+    companionVoiceCardsInjected: Boolean(companionVoiceCards.trim()),
+    companionVoiceCardNames: ['老陈', '小九', '老太太', '灰衣人', '徐主簿', '徐正清', '乙十七']
+      .filter(name => companionVoiceCards.includes(name)),
+    companionVoiceCardsLength: companionVoiceCards.length,
+    sampleCardInjected: false,
+    sampleCardId: '',
+    sampleCardTitle: '',
+    sampleCardType: '',
+    sampleInjectionReason: '',
+    microDemoChars: 0,
+    sourceFieldsStripped: true,
+    sampleLeakageDetected: false,
+    updatedAt: new Date().toISOString()
+  }
 }
 
 function buildBaseContextResult() {
@@ -1105,16 +1200,19 @@ function buildBaseContextResult() {
   if (wordTarget) {
     result.context.wordTarget = wordTarget
   }
+  writeWriterContextDiagnostics(result.context)
   return result
 }
 
 function buildConfirmedChapterContext(confirmedPlan) {
-  return {
+  const context = {
     ...buildBaseContext(),
     beatPlan: confirmedPlan,
     beatPlanConfirmedByUser: true,
     blockStageSnapshot: beatPlanStageSnapshot.value
   }
+  writeWriterContextDiagnostics(context)
+  return context
 }
 
 function buildPlanningContext() {
@@ -1155,9 +1253,9 @@ function notifyGeneratedVersionsWordCount(versions, wordTarget = buildBaseContex
 async function ensureChapterAboveHardWordMinBeforeFinalize(version) {
   const wordTarget = buildBaseContext().wordTarget
   const assessment = assessChapterWordCount(version?.content || '', wordTarget)
-  if (assessment.level !== 'hard_under') return true
-  const hardMin = wordTarget?.hardMin || 0
-  const error = new Error(`正文低于硬下限，请扩写或重新生成。本章约 ${assessment.count} 字，硬下限 ${hardMin} 字。`)
+  const result = checkChapterHardWordMinimum({ assessment, wordTarget })
+  if (result.ok) return true
+  const error = new Error(`正文低于硬下限，请扩写或重新生成。本章约 ${result.details.count} 字，硬下限 ${result.details.hardMin} 字。`)
   error.code = 'chapter_below_hard_min'
   message.error(error.message, { title: '正文低于硬下限' })
   return false
@@ -1190,6 +1288,9 @@ async function ensureStoryBlockReady(actionName = '小纲生成') {
     message.warning('当前故事块是 AI 规划失败后的人工占位，需要先审阅并确认故事块后再继续。', { title: '请先确认故事块' })
     return null
   }
+  if (block) {
+    block = await settleOpenStageContinuationBeforeBeatPlan(block, actionName) || block
+  }
   if (block && findNextEditableStage(block)) return block
   if (block) {
     const extendedBlock = await ensureActiveBlockHasForwardStages(block, actionName)
@@ -1206,6 +1307,98 @@ async function ensureStoryBlockReady(actionName = '小纲生成') {
 
 function isStoryBlockReviewRequired(block) {
   return Boolean(block?.lockState?.requiresReview)
+}
+
+async function settleOpenStageContinuationBeforeBeatPlan(block = {}, actionName = '小纲生成') {
+  if (!block?.id || !projectId.value) return block
+  const stage = findNextEditableStage(block)
+  const stageId = storyBlockStageId(stage)
+  if (!stageId) return block
+  const diagnostics = buildStageContinuationDiagnostics({
+    currentStageId: stageId,
+    previousOpenStageId: stageId,
+    reviewHistory: block.reviewHistory || block.review_history || []
+  })
+  if (!diagnostics.requiresSettlementBeforeNextBeatPlan) return block
+
+  const snapshot = buildBlockStageSnapshot(block, stage, {
+    capturedAt: Date.now(),
+    settlementGuard: true
+  })
+  const settlementContext = {
+    chapterNum: diagnostics.lastOpenChapterNum || Math.max(1, Number(chapterNum.value || 1) - 1),
+    stageContinuationDepth: diagnostics.stageContinuationDepth,
+    previousOpenStageId: diagnostics.previousOpenStageId,
+    blockStageSnapshot: snapshot,
+    storyBlock: block,
+    finalizedSummary: buildStageSettlementSummary(block),
+    previousChapterEnding: previousChapterEnding.value || ''
+  }
+  const settlementReview = enforceStageContinuationSettlement({
+    decision: 'continue_current_block',
+    completedStageIds: [],
+    stageContinues: true,
+    stageContinueReason: block.nextStageSuggestion || '同一故事块阶段已连续跨章继续，需要在生成下一章小纲前先结算。',
+    reason: block.nextStageSuggestion || '同一故事块阶段已连续跨章继续，需要在生成下一章小纲前先结算。',
+    remainingStages: [],
+    carryOverToNextChapter: block.carryOverToNextChapter || [],
+    closedBy: 'stage_continuation_guard'
+  }, settlementContext)
+
+  if (settlementReview.requiresReview || settlementReview.settlementDecision === 'blocked_for_manual_review') {
+    message.warning('同一故事块阶段连续挂起过久，需要人工复核后再生成小纲。', { title: '故事块阶段需复核' })
+    return {
+      ...block,
+      lockState: {
+        ...(block.lockState || {}),
+        requiresReview: true,
+        reviewReason: 'stage_continuation_guard_blocked_for_manual_review'
+      }
+    }
+  }
+
+  await storyBlockStore.saveBlockReview(projectId.value, block.id, {
+    chapterNum: settlementContext.chapterNum,
+    decision: settlementReview.decision,
+    review: {
+      ...settlementReview,
+      label: STORY_BLOCK_REVIEW_DECISION_LABELS[settlementReview.decision] || settlementReview.decision,
+      blockStageSnapshot: snapshot,
+      finalizedSummary: settlementContext.finalizedSummary,
+      closedBy: settlementReview.closedBy || 'stage_continuation_guard'
+    }
+  })
+
+  let reviewedBlock = await loadStoryBlockAfterReview(block.id, projectId.value) || block
+  if (settlementReview.decision === 'adjust_remaining_stages') {
+    const mergedStagePlan = mergeForwardStagePlan(reviewedBlock, settlementReview, snapshot)
+    await storyBlockStore.updateRemainingStages(projectId.value, block.id, {
+      stagePlan: extractEditableFutureStageUpdates(reviewedBlock, mergedStagePlan, settlementReview, snapshot),
+      stagePlanPatchMode: 'editable_future_only',
+      nextStageSuggestion: deriveNextStageSuggestion(reviewedBlock, settlementReview, snapshot) || settlementReview.nextStageSuggestion || reviewedBlock.nextStageSuggestion || '',
+      unresolvedQuestions: settlementReview.unresolvedQuestions?.length ? settlementReview.unresolvedQuestions : (reviewedBlock.unresolvedQuestions || []),
+      dontAdvanceYet: reviewedBlock.dontAdvanceYet || [],
+      carryOverToNextChapter: settlementReview.carryOverToNextChapter || reviewedBlock.carryOverToNextChapter || [],
+      capacityAssessment: reviewedBlock.capacityAssessment || 'normal'
+    })
+    reviewedBlock = await loadStoryBlockAfterReview(block.id, projectId.value) || reviewedBlock
+  }
+
+  message.info('已在生成小纲前结算连续开放的故事块阶段，后续从新阶段承接。', { title: '故事块阶段已结算' })
+  return reviewedBlock
+}
+
+function buildStageSettlementSummary(block = {}) {
+  const currentNum = Number(chapterNum.value || 0)
+  const recentSummaries = (writerStore.chapters || [])
+    .filter(chapter => Number(chapter.chapterNum || chapter.chapter_num || 0) < currentNum)
+    .slice(-3)
+    .map(chapter => `第 ${chapter.chapterNum || chapter.chapter_num} 章：${chapter.summary || ''}`)
+  const recentReviewReasons = (block.reviewHistory || block.review_history || [])
+    .slice(-4)
+    .map(item => item.stageContinueReason || item.reason || item.completionEvidence || '')
+    .filter(Boolean)
+  return [...recentSummaries, ...recentReviewReasons, previousChapterEnding.value || ''].filter(Boolean).join('\n')
 }
 
 async function createStoryBlockWithAI(actionName = '故事块规划', options = {}) {
@@ -1318,8 +1511,56 @@ function buildStoryBlockPlanningContext(options = {}) {
     recentSummaries,
     recentChapterEndings: recentChapterEndings.value,
     previousChapterEnding: previousChapterEnding.value || '',
+    chaseLoopDiagnostics: buildChaseLoopDiagnosticsForBeatPlan(),
     newBlockSeed: options.seed || null
   }
+}
+
+const CHASE_LOOP_DIAGNOSTIC_TERMS = ['追兵', '搜查', '撤离', '潜入', '地道', '追捕', '封锁', '逃', '躲']
+const NON_CHASE_DIAGNOSTIC_TERMS = ['对峙', '谈判', '质问', '代价', '包扎', '休整', '设局', '布局', '核验', '验证', '规矩', '商盟']
+
+function buildChaseLoopDiagnosticsForBeatPlan() {
+  const recent = (writerStore.chapters || [])
+    .filter(chapter => Number(chapter.chapterNum || chapter.chapter_num || 0) < Number(chapterNum.value))
+    .slice(-3)
+    .map(chapter => {
+      const text = [
+        chapter.title,
+        chapter.summary,
+        chapter.finalSummary,
+        chapter.final_summary,
+        chapter.ending,
+        chapter.chapterEnding
+      ].filter(Boolean).join(' ')
+      const chaseCount = countDiagnosticTerms(text, CHASE_LOOP_DIAGNOSTIC_TERMS)
+      const nonChaseCount = countDiagnosticTerms(text, NON_CHASE_DIAGNOSTIC_TERMS)
+      return {
+        chapterNum: chapter.chapterNum || chapter.chapter_num,
+        chaseDominant: chaseCount > 0 && chaseCount >= nonChaseCount,
+        chaseCount,
+        nonChaseCount
+      }
+    })
+  let consecutiveChaseDominant = 0
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    if (!recent[index].chaseDominant) break
+    consecutiveChaseDominant += 1
+  }
+  return {
+    consecutiveChaseDominant,
+    recentChapters: recent,
+    preferredSceneFunctions: consecutiveChaseDominant >= 3
+      ? ['active_setup', 'relationship_confrontation', 'consequence_scene', 'information_verification']
+      : ['relationship_confrontation', 'consequence_scene', 'information_verification'],
+    reason: consecutiveChaseDominant >= 3
+      ? '最近三章疑似由追逃、搜查或撤离主导，下一章需要换成主动布局、关系对峙、代价后果或信息验证。'
+      : ''
+  }
+}
+
+function countDiagnosticTerms(text = '', terms = []) {
+  const source = String(text || '')
+  return terms.reduce((sum, term) => sum + source.split(term).length - 1, 0)
 }
 
 function captureCurrentBlockStageSnapshot(block = activeStoryBlock.value) {
@@ -1330,42 +1571,42 @@ function captureCurrentBlockStageSnapshot(block = activeStoryBlock.value) {
 }
 
 async function ensureBeatPlan(force = false, options = {}) {
-  const { persist = true } = options
-  if (!await ensureAiContextReady('小纲生成')) return ''
-  const existingPlan = beatPlanText.value.trim()
-  if (existingPlan && !force) {
-    if (!beatPlanStageSnapshot.value) {
-      const storyBlock = await ensureStoryBlockReady('小纲生成')
-      if (!storyBlock) return ''
-      beatPlanStageSnapshot.value = captureCurrentBlockStageSnapshot(storyBlock)
-      if (persist) {
-        await writerStore.saveChapterBeatPlan(projectId.value, chapterNum.value, existingPlan, buildBeatPlanStoryBlockMetadata())
-        beatPlanSavedText.value = existingPlan
+  const result = await runEnsureBeatPlanCommand({
+    projectId: projectId.value,
+    chapterNum: chapterNum.value,
+    existingPlan: beatPlanText.value,
+    force,
+    beatPlanStageSnapshot: beatPlanStageSnapshot.value,
+    options,
+    callbacks: {
+      ensureAiContextReady,
+      ensureCurrentChapterEditable,
+      ensurePreviousChapterFinalized,
+      ensureNoPendingSettingChanges,
+      ensureNoPendingStoryMemory,
+      ensureCorrectionTasksAllowGeneration,
+      ensureStoryBlockReady,
+      captureCurrentBlockStageSnapshot,
+      setBeatPlanStageSnapshot: (snapshot) => {
+        beatPlanStageSnapshot.value = snapshot
+      },
+      buildBaseContext,
+      buildChaseLoopDiagnosticsForBeatPlan,
+      generateChapterBeatPlan: writerStore.generateChapterBeatPlan,
+      setBeatPlanText: (text) => {
+        beatPlanText.value = text
+      },
+      saveChapterBeatPlan: writerStore.saveChapterBeatPlan,
+      buildBeatPlanStoryBlockMetadata,
+      setBeatPlanSavedText: (text) => {
+        beatPlanSavedText.value = text
       }
     }
-    return existingPlan
-  }
-  if (!ensureCurrentChapterEditable('小纲生成')) return ''
-  if (!await ensurePreviousChapterFinalized('小纲生成')) return ''
-  if (!await ensureNoPendingSettingChanges('小纲生成')) return ''
-  if (!await ensureNoPendingStoryMemory('小纲生成')) return ''
-  if (!await ensureCorrectionTasksAllowGeneration('小纲生成')) return ''
-  const storyBlock = await ensureStoryBlockReady('小纲生成')
-  if (!storyBlock) return ''
-  beatPlanStageSnapshot.value = captureCurrentBlockStageSnapshot(storyBlock)
-  beatPlanText.value = await writerStore.generateChapterBeatPlan(projectId.value, chapterNum.value, {
-    ...buildBaseContext(),
-    storyBlock,
-    blockStageSnapshot: beatPlanStageSnapshot.value
   })
-  if (writerStore.beatPlanQualityNotice?.source === 'local_safety_rebuild') {
+  if (result.code === 'generatedPlan' && writerStore.beatPlanQualityNotice?.source === 'local_safety_rebuild') {
     message.warning('AI 小纲质量不足，已生成安全小纲，请审阅后再生成正文。', { duration: 6000 })
   }
-  if (persist && beatPlanText.value.trim()) {
-    await writerStore.saveChapterBeatPlan(projectId.value, chapterNum.value, beatPlanText.value, buildBeatPlanStoryBlockMetadata())
-    beatPlanSavedText.value = beatPlanText.value.trim()
-  }
-  return beatPlanText.value
+  return result.plan || ''
 }
 
 function buildBeatPlanStoryBlockMetadata() {
@@ -1463,27 +1704,30 @@ async function handleOpenNewStoryBlock() {
 }
 
 async function saveCurrentBeatPlan(showMessage = true) {
-  if (!ensureCurrentChapterEditable('保存小纲')) return false
-  const content = beatPlanText.value.trim()
-  if (!content) {
-    message.warning('请先生成或填写本章小纲')
-    return false
-  }
-  try {
-    if (!beatPlanStageSnapshot.value) {
-      const block = await ensureStoryBlockReady('保存小纲')
-      if (!block) return false
-      beatPlanStageSnapshot.value = captureCurrentBlockStageSnapshot(block)
-    }
-    await writerStore.saveChapterBeatPlan(projectId.value, chapterNum.value, content, buildBeatPlanStoryBlockMetadata())
-    beatPlanText.value = content
-    beatPlanSavedText.value = content
-    if (showMessage) message.success('本章小纲已保存')
-    return true
-  } catch (e) {
-    message.error('保存小纲失败：' + e.message)
-    return false
-  }
+  return runSaveBeatPlanCommand({
+    showMessage,
+    getBeatPlanText: () => beatPlanText.value,
+    getBeatPlanStageSnapshot: () => beatPlanStageSnapshot.value,
+    getProjectId: () => projectId.value,
+    getChapterNum: () => chapterNum.value,
+    ensureCurrentChapterEditable,
+    ensureStoryBlockReady,
+    captureCurrentBlockStageSnapshot,
+    setBeatPlanStageSnapshot: (snapshot) => {
+      beatPlanStageSnapshot.value = snapshot
+    },
+    saveChapterBeatPlan: (...args) => writerStore.saveChapterBeatPlan(...args),
+    buildBeatPlanStoryBlockMetadata,
+    setBeatPlanText: (content) => {
+      beatPlanText.value = content
+    },
+    setBeatPlanSavedText: (content) => {
+      beatPlanSavedText.value = content
+    },
+    warning: message.warning,
+    success: message.success,
+    error: message.error,
+  })
 }
 
 async function handlePlanBeats() {
@@ -1626,22 +1870,19 @@ async function generateMultiVariantsFromPlan(confirmedPlan) {
 }
 
 async function handleGenerateFromBeatPlan() {
-  if (!ensureCurrentChapterEditable(beatPlanIntent.value === 'multi' ? '多候选生成' : beatPlanIntent.value === 'compare' ? '多模型对比' : '正文生成')) return
-  const confirmedPlan = beatPlanText.value.trim()
-  if (!confirmedPlan) {
-    message.warning('请先生成或填写本章小纲')
-    return
-  }
-  const saved = await saveCurrentBeatPlan(false)
-  if (!saved) return
-  showBeatPlanModal.value = false
-  if (beatPlanIntent.value === 'multi') {
-    await generateMultiVariantsFromPlan(confirmedPlan)
-  } else if (beatPlanIntent.value === 'compare') {
-    await openCompareWithPlan(confirmedPlan)
-  } else {
-    await generateChapterFromPlan(confirmedPlan)
-  }
+  return runGenerateFromBeatPlanCommand({
+    getBeatPlanIntent: () => beatPlanIntent.value,
+    getBeatPlanText: () => beatPlanText.value,
+    ensureCurrentChapterEditable,
+    warning: message.warning,
+    saveCurrentBeatPlan,
+    setShowBeatPlanModal: (value) => {
+      showBeatPlanModal.value = value
+    },
+    generateMultiVariantsFromPlan,
+    openCompareWithPlan,
+    generateChapterFromPlan,
+  })
 }
 
 async function handleMultiVariant() {
@@ -1944,13 +2185,17 @@ async function saveEditorAsVersion() {
   }
   const chapter = writerStore.currentChapter || await writerStore.getOrCreateChapter(projectId.value, chapterNum.value)
   const sourceTitle = writerStore.currentVersion?.title || `第 ${chapterNum.value} 章`
-  const version = await writerStore.createVersion(projectId.value, chapter.id, chapterNum.value, {
+  const { version } = await runCreateVersionCommand({
+    projectId: projectId.value,
+    chapter,
+    chapterNum: chapterNum.value,
     title: `${sourceTitle} - 用户草稿`,
     content,
     versionType: 'user_draft',
     promptBrief: writerStore.currentVersion?.id
       ? `基于版本「${sourceTitle}」手动编辑后另存`
-      : '手动编辑后另存'
+      : '手动编辑后另存',
+    createVersion: writerStore.createVersion
   })
   writerStore.currentVersion = version
   loadedEditorSnapshot.value = content
@@ -2041,76 +2286,64 @@ async function performFinalize(version) {
   if (!version || finalizedVersionId.value) return
   const finalizedProjectId = projectId.value
   const finalizedChapterNum = chapterNum.value
-  const finalizationRun = beginChapterFinalizationRun(finalizedProjectId, finalizedChapterNum, version.id)
-  if (!finalizationRun.started) {
-    message.warning('本章定稿或定稿后入库正在处理中，请不要重复点击。', { title: '定稿处理中' })
-    return
-  }
   const correctionTaskIds = extractCorrectionTaskIds(version)
-  let chapterFinalized = false
-  let finalizationCompleted = false
   finalizeSubmitting.value = true
   memoryProcessing.value = true
   try {
-    await writerStore.finalizeVersion(version)
-    chapterFinalized = true
-    pendingFinalizeVersion.value = null
-    showAuditModal.value = false
-    message.success('已定稿，正在提取记忆和设定变更...')
-
-    try {
-      await finishLinkedCorrectionTasks(correctionTaskIds)
-    } catch (e) {
-      console.warn('关联纠偏任务状态更新失败:', e.message)
-    }
-    try {
-      await writerStore.clearTempDraft(finalizedProjectId, finalizedChapterNum)
-    } catch (e) {
-      console.warn('临时草稿清理失败:', e.message)
-    }
-    const results = await memoryStore.processChapterFinalization(finalizedProjectId, version.content, finalizedChapterNum)
-    if (results.errors?.length) {
-      const requiredFailures = results.errors.filter(error => error.required)
-      if (requiredFailures.length) {
-        throw new Error(requiredFailures.map(error => `${error.step}: ${error.message}`).join('；'))
+    const result = await runFinalizeChapterCommand({
+      projectId: finalizedProjectId,
+      chapterNum: finalizedChapterNum,
+      version,
+      correctionTaskIds,
+      beginFinalizationRun: beginChapterFinalizationRun,
+      finalizeVersion: writerStore.finalizeVersion,
+      finishLinkedCorrectionTasks,
+      clearTempDraft: writerStore.clearTempDraft,
+      processChapterFinalization: memoryStore.processChapterFinalization,
+      loadContextData,
+      performStoryBlockReviewAfterFinalize,
+      rerouteOutlineAfterFinalization: novelStore.rerouteOutlineAfterFinalization,
+      buildRerouteContext: buildFinalizationRerouteContext,
+      markFinalizationFailure: markChapterFinalizationFailure,
+      endFinalizationRun: endChapterFinalizationRun,
+      onVersionFinalized: () => {
+        pendingFinalizeVersion.value = null
+        showAuditModal.value = false
+        message.success('已定稿，正在提取记忆和设定变更...')
+      },
+      onLinkedCorrectionTaskFailure: (e) => {
+        console.warn('关联纠偏任务状态更新失败:', e.message)
+      },
+      onClearTempDraftFailure: (e) => {
+        console.warn('临时草稿清理失败:', e.message)
+      },
+      onMemoryProcessed: (results) => {
+        memoryResult.value = results
+        showMemoryResult.value = true
+      },
+      onStoryBlockReviewFailure: (e) => {
+        console.warn('定稿后故事块回看失败:', e.message)
+        message.warning(`定稿后故事块回看失败，可稍后在故事块面板继续：${e.message}`, { title: '故事块回看未完成' })
+      },
+      onRerouteWarning: (e) => {
+        console.warn('定稿后滚动规划刷新失败:', e.message)
+        message.warning(`定稿后滚动规划刷新失败，可在章节管理页手动重新生成：${e.message}`, { title: '滚动规划未刷新' })
+      },
+      onPostFinalizeFailure: () => {
+        finalizationMarkerVersion.value += 1
       }
-    }
-    memoryResult.value = results
-    showMemoryResult.value = true
-    await loadContextData()
+    })
 
-    try {
-      await performStoryBlockReviewAfterFinalize(results, version, finalizedChapterNum, finalizedProjectId)
-    } catch (e) {
-      console.warn('定稿后故事块回看失败:', e.message)
-      message.warning(`定稿后故事块回看失败，可稍后在故事块面板继续：${e.message}`, { title: '故事块回看未完成' })
-      throw e
-    }
-
-    try {
-      await novelStore.rerouteOutlineAfterFinalization(
-        finalizedProjectId,
-        buildFinalizationRerouteContext(results, version, finalizedChapterNum)
-      )
-    } catch (e) {
-      console.warn('定稿后滚动规划刷新失败:', e.message)
-      message.warning(`定稿后滚动规划刷新失败，可在章节管理页手动重新生成：${e.message}`, { title: '滚动规划未刷新' })
-    }
-
-    const factCount = results.facts?.length || 0
-    const settingChangeCount = results.settingChanges?.length || 0
-    finalizationCompleted = true
-    message.success(`定稿后处理完成：提取 ${factCount} 条记忆事实，生成 ${settingChangeCount} 条待确认设定变更`)
-  } catch (e) {
-    if (chapterFinalized) {
-      markChapterFinalizationFailure(finalizedProjectId, finalizedChapterNum, e)
-      finalizationMarkerVersion.value += 1
-      message.warning('定稿后处理失败，已保留阻断标记，避免下一章读取不完整上下文：' + e.message)
+    if (result.ok) {
+      message.success(`定稿后处理完成：提取 ${result.factCount || 0} 条记忆事实，生成 ${result.settingChangeCount || 0} 条待确认设定变更`)
+    } else if (result.code === 'finalization_run_blocked') {
+      message.warning('本章定稿或定稿后入库正在处理中，请不要重复点击。', { title: '定稿处理中' })
+    } else if (result.chapterFinalized) {
+      message.warning('定稿后处理失败，已保留阻断标记，避免下一章读取不完整上下文：' + (result.message || result.error?.message || '未知错误'))
     } else {
-      message.error('定稿失败：' + e.message)
+      message.error('定稿失败：' + (result.message || result.error?.message || '未知错误'))
     }
   } finally {
-    endChapterFinalizationRun(finalizationRun.runKey, finalizedProjectId, finalizedChapterNum, { keepPending: chapterFinalized && !finalizationCompleted })
     finalizeSubmitting.value = false
     memoryProcessing.value = false
   }
@@ -2128,6 +2361,11 @@ async function performStoryBlockReviewAfterFinalize(results, version, finalizedC
 
   const blocks = await storyBlockStore.loadBlocks(finalizedProjectId).catch(() => storyBlockStore.blocks || [])
   const liveBlock = blocks.find(block => block.id === blockId) || activeStoryBlock.value || {}
+  const stageContinuationDiagnostics = buildStageContinuationDiagnostics({
+    currentStageId: snapshot.stageId,
+    previousOpenStageId: snapshot.stageId,
+    reviewHistory: liveBlock.reviewHistory || liveBlock.review_history || []
+  })
   let rawReview = null
   try {
     rawReview = await storyBlockStore.reviewStoryBlockWithAI(finalizedProjectId, {
@@ -2136,6 +2374,9 @@ async function performStoryBlockReviewAfterFinalize(results, version, finalizedC
       chapterEnding: (version?.content || '').slice(-900),
       blockStageSnapshot: snapshot,
       storyBlock: liveBlock,
+      stageContinuationDepth: stageContinuationDiagnostics.stageContinuationDepth,
+      previousOpenStageId: stageContinuationDiagnostics.previousOpenStageId,
+      stageContinuationDiagnostics,
       facts: results?.facts || [],
       settingChanges: results?.settingChanges || []
     })
@@ -2171,8 +2412,10 @@ async function performStoryBlockReviewAfterFinalize(results, version, finalizedC
   const reviewedBlock = await loadStoryBlockAfterReview(blockId, finalizedProjectId) || liveBlock
 
   if (review.decision === 'adjust_remaining_stages') {
+    const mergedStagePlan = mergeForwardStagePlan(reviewedBlock, review, snapshot)
     await storyBlockStore.updateRemainingStages(finalizedProjectId, blockId, {
-      stagePlan: mergeForwardStagePlan(reviewedBlock, review, snapshot),
+      stagePlan: extractEditableFutureStageUpdates(reviewedBlock, mergedStagePlan, review, snapshot),
+      stagePlanPatchMode: 'editable_future_only',
       nextStageSuggestion: deriveNextStageSuggestion(reviewedBlock, review, snapshot) || reviewedBlock.nextStageSuggestion || '',
       unresolvedQuestions: review.unresolvedQuestions?.length ? review.unresolvedQuestions : (reviewedBlock.unresolvedQuestions || []),
       dontAdvanceYet: reviewedBlock.dontAdvanceYet || [],
@@ -2181,7 +2424,6 @@ async function performStoryBlockReviewAfterFinalize(results, version, finalizedC
     })
   } else if (review.decision === 'continue_current_block') {
     await storyBlockStore.updateRemainingStages(finalizedProjectId, blockId, {
-      stagePlan: reviewedBlock.stagePlan || [],
       nextStageSuggestion: deriveNextStageSuggestion(reviewedBlock, review, snapshot) || reviewedBlock.nextStageSuggestion || '',
       unresolvedQuestions: review.unresolvedQuestions?.length ? review.unresolvedQuestions : (reviewedBlock.unresolvedQuestions || []),
       dontAdvanceYet: reviewedBlock.dontAdvanceYet || [],
@@ -2191,7 +2433,6 @@ async function performStoryBlockReviewAfterFinalize(results, version, finalizedC
   } else if (review.decision === 'split_unfinalized_content') {
     const carryOverToNextChapter = normalizeCarryOverReviewItems(review, reviewedBlock)
     await storyBlockStore.updateRemainingStages(finalizedProjectId, blockId, {
-      stagePlan: reviewedBlock.stagePlan || [],
       nextStageSuggestion: review.nextStageSuggestion || reviewedBlock.nextStageSuggestion || '本章已定稿，拆分建议转入后续章节承接。',
       unresolvedQuestions: review.unresolvedQuestions?.length ? review.unresolvedQuestions : (reviewedBlock.unresolvedQuestions || []),
       dontAdvanceYet: reviewedBlock.dontAdvanceYet || [],
@@ -2288,7 +2529,23 @@ function normalizeReviewForStageProgress(review = {}, snapshot = {}, block = {})
     normalized.nextStageSuggestion = deriveNextStageSuggestion(block, normalized, snapshot) || normalized.nextStageSuggestion || ''
   }
   normalized.completedStageIds = filterExecutedCompletedStageIds(normalized, block, snapshot)
-  return normalized
+  return clampEquivalentCompletionReview(normalized, snapshot)
+}
+
+function clampEquivalentCompletionReview(review = {}, snapshot = {}) {
+  if (review.settlementDecision !== 'completed_by_equivalent_story_function') return review
+  const currentStageId = String(snapshot?.stageId || review.blockStageId || '').trim()
+  const attemptedIds = Array.isArray(review.completedStageIds) ? review.completedStageIds.map(String).filter(Boolean) : []
+  const attemptedFutureClose = attemptedIds.some(stageId => currentStageId && stageId !== currentStageId)
+  return {
+    ...review,
+    completedStageIds: currentStageId ? [currentStageId] : [],
+    equivalentCompletionScope: 'current_stage_only',
+    futureStageOverClosed: false,
+    preventedFutureStageOverClose: Boolean(review.preventedFutureStageOverClose || attemptedFutureClose),
+    needsFutureStageReplan: Boolean(review.needsFutureStageReplan || review.futureStageTouched || attemptedFutureClose),
+    replanRemainingStages: Boolean(review.replanRemainingStages || review.futureStageTouched || attemptedFutureClose)
+  }
 }
 
 function getStoryBlockStageContinueReason(review = {}) {
@@ -2348,7 +2605,7 @@ function normalizeStoryBlockReviewForGranularity(review = {}, snapshot = {}, blo
       normalized.singleChapterBlockReason = normalized.completionEvidence || normalized.reason || '短过渡或短冲突块已自然结束。'
     }
   }
-  return normalized
+  return clampEquivalentCompletionReview(normalized, snapshot)
 }
 
 function hasStoryBlockCompletionEvidence(review = {}) {
@@ -2434,6 +2691,7 @@ function appendForwardStagesForActiveBlock(block = {}, snapshot = {}, actionName
 }
 
 function sanitizeStageSeed(block = {}, snapshot = {}, actionName = '故事块推进') {
+  snapshot = snapshot || {}
   const goal = block.goal || snapshot.stagePurpose || '推进当前故事块目标'
   const pressure = block.mainPressure || snapshot.externalPressure || '当前压力继续升级'
   const exitTarget = block.exitTarget || '形成清晰的任务结果或下一段承接点'
@@ -2527,6 +2785,22 @@ function mergeForwardStagePlan(block = {}, review = {}, snapshot = {}) {
   return merged.length ? merged : existingStages
 }
 
+function extractEditableFutureStageUpdates(block = {}, mergedStagePlan = [], review = {}, snapshot = {}) {
+  const existingStages = Array.isArray(block.stagePlan) ? block.stagePlan : []
+  const existingById = new Map(existingStages.filter(stage => stage?.id).map(stage => [String(stage.id), stage]))
+  const lockedStageIds = new Set([
+    snapshot?.stageId,
+    ...(Array.isArray(review.completedStageIds) ? review.completedStageIds : [])
+  ].filter(Boolean).map(String))
+  return (Array.isArray(mergedStagePlan) ? mergedStagePlan : [])
+    .filter(stage => {
+      const stageId = String(stage?.id || '')
+      const existing = existingById.get(stageId)
+      if (!existing) return true
+      return canEditStoryBlockStageForReview(existing, lockedStageIds)
+    })
+}
+
 function normalizeReviewRemainingStages(stages = []) {
   return stages
     .map((stage, index) => {
@@ -2581,6 +2855,14 @@ async function retryFinalizationPostprocess(targetChapterNum) {
   }
   if (await reconcileCompletedFinalizationMarker(marker, '后续章节生成')) {
     message.success(`第 ${num} 章定稿后处理状态已确认完成，残留标记已清理`)
+    return
+  }
+  const markerAction = getFinalizationMarkerAction(marker)
+  if (!markerAction.canRetryPostprocess) {
+    message.warning(
+      markerAction.warning || `第 ${num} 章定稿后处理不能通过通用记忆/设定重试恢复，请先处理阻断来源。`,
+      { title: '定稿后处理不可通用重试' }
+    )
     return
   }
 
@@ -2747,7 +3029,7 @@ function handleContextNavigate(item) {
             {{ aiContextStatusText }}
           </n-tag>
           <n-tag v-if="postFinalizeFailed" size="small" type="error" :bordered="false">
-            定稿后处理待重试
+            {{ finalizationMarkerAction.tagText || '定稿后处理待重试' }}
           </n-tag>
           <n-spin v-if="finalizationProcessingActive" size="tiny" />
         </div>
@@ -2780,7 +3062,7 @@ function handleContextNavigate(item) {
           编辑章名
         </n-button>
         <n-button
-          v-if="blockingFinalizationPending"
+          v-if="blockingFinalizationPending && finalizationMarkerAction.canRetryPostprocess"
           size="small"
           type="warning"
           secondary
@@ -2788,7 +3070,7 @@ function handleContextNavigate(item) {
           :disabled="finalizationActionBusy"
           @click="retryFinalizationPostprocess(blockingFinalizationPending.chapterNum)"
         >
-          重试第 {{ blockingFinalizationPending.chapterNum }} 章定稿后提取
+          {{ finalizationMarkerAction.buttonText }}
         </n-button>
         <n-button size="small" @click="handleAudit" :loading="auditRunning">{{ auditButtonText }}</n-button>
         <n-button

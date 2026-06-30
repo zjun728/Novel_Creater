@@ -8,10 +8,15 @@ assert.ok(fs.existsSync(standardsPath), 'writing style standards data module sho
 
 const standardsSource = read(standardsPath)
 const ids = [...standardsSource.matchAll(/^\s*id:\s*'([^']+)'/gm)].map(match => match[1])
-assert.equal(ids.length, 14, 'standards module should expose 14 style/genre standards')
+const styleIds = ids.filter(id => !id.startsWith('system-'))
+const systemFormalIds = ids.filter(id => id.startsWith('system-'))
+assert.equal(styleIds.length, 14, 'standards module should expose 14 style/genre standards')
+assert.equal(systemFormalIds.length, 6, 'standards module should expose 6 system formal writing standard blueprints')
 assert.ok(standardsSource.includes('formatWritingStyleStandardsForPrompt'), 'standards module should format prompt brief')
+assert.ok(standardsSource.includes('formatActiveWritingStandardLowDoseForPrompt'), 'standards module should format low-dose active formal standard prompt')
 assert.ok(standardsSource.includes('normalizeWritingProfile'), 'standards module should normalize writingProfile')
 assert.ok(standardsSource.includes('getAllWritingStyleStandards'), 'standards module should expose built-in plus custom standards')
+assert.ok(standardsSource.includes('getSelectableWritingStyleStandards'), 'standards module should expose active formal standards for project selection')
 assert.ok(standardsSource.includes('主写作标准'), 'standards module should use primary writing standard wording')
 assert.ok(standardsSource.includes('辅助风味'), 'standards module should use secondary flavor wording')
 
@@ -22,12 +27,12 @@ assert.ok(!biblePrompt.includes('confirmedSettings'), 'creative bible normalizer
 
 const bibleUi = read('frontend/src/components/bible/CreativeBible.vue')
 assert.ok(bibleUi.includes('NSelect'), 'creative bible editor should use select controls for standards')
-assert.ok(bibleUi.includes('getAllWritingStyleStandards'), 'creative bible editor should list built-in plus confirmed custom standards')
+assert.ok(bibleUi.includes('getSelectableWritingStyleStandards'), 'creative bible editor should list only active formal writing standards')
 assert.ok(!bibleUi.includes('WRITING_STYLE_STANDARDS.map'), 'creative bible editor should not hardcode built-in-only standards')
-assert.ok(bibleUi.includes('主写作标准'), 'creative bible editor should expose primary writing standard')
-assert.ok(bibleUi.includes('辅助风味'), 'creative bible editor should expose secondary flavor')
+assert.ok(bibleUi.includes('正式写作标准（可选 1-3 条）'), 'creative bible editor should allow selecting 1-3 formal writing standards')
+assert.ok(bibleUi.includes('这里只显示激活的正式写作标准'), 'creative bible editor should hide inactive standards from project selection')
 assert.ok(bibleUi.includes('写作策略'), 'creative bible viewer should expose writing strategy as a visible section')
-assert.ok(bibleUi.includes('未选择主写作标准'), 'creative bible viewer should make missing writing standard visible')
+assert.ok(bibleUi.includes('未选择正式写作标准'), 'creative bible viewer should make missing writing standard visible')
 assert.ok(bibleUi.includes('writingProfile'), 'creative bible editor should store writingProfile')
 assert.ok(!bibleUi.includes('confirmedSettings'), 'creative bible editor should not store standards in confirmedSettings')
 
@@ -41,6 +46,8 @@ assert.ok(projectView.includes('project-chapter-title'), 'project chapter list s
 
 const contextBuilder = read('frontend/src/utils/contextBuilder.js')
 assert.ok(contextBuilder.includes('formatWritingStyleStandardsForPrompt'), 'context builder should import style standard formatter')
+assert.ok(contextBuilder.includes('getSelectedWritingStyleStandards'), 'context builder should resolve project-enabled formal standards')
+assert.ok(contextBuilder.includes('activeWritingStandards'), 'writing context should pass active formal standards to draft prompt')
 assert.ok(contextBuilder.includes('styleStandardBrief'), 'writing context should expose selected style standard brief')
 assert.ok(contextBuilder.includes('bible?.writingProfile'), 'context builder should read writingProfile')
 assert.ok(!contextBuilder.includes('confirmedSettings'), 'context builder should not read legacy confirmedSettings')

@@ -4,7 +4,7 @@ import re
 import time
 
 # 布尔字段列表（snake_case），MySQL TINYINT → Python bool
-BOOL_FIELDS = {'stream', 'supports_json', 'supports_streaming', 'is_hidden'}
+BOOL_FIELDS = {'stream', 'supports_json', 'supports_streaming', 'is_hidden', 'no_direct_imitation'}
 
 JSON_FIELDS = {
     'thinking',
@@ -44,6 +44,17 @@ JSON_FIELDS = {
     'review_history',
     'review_json',
     'block_stage_snapshot',
+    'chunk_ids',
+    'genre_tags',
+    'avoid_patterns',
+    'abstract_notes_json',
+    'metrics_json',
+    'safety_flags',
+    'source_card_ids',
+    'merged_guidance',
+    'audit_focus',
+    'safety_policy',
+    'guidance_json',
 }
 
 # 首字母缩写映射：snake_case 部分 → camelCase 中正确的大小写

@@ -3,8 +3,14 @@ import {
   isCorrectionTaskActiveForContext,
   isCorrectionTaskBlockingForGeneration
 } from './correctionTaskRules.js'
-import { formatWritingStyleStandardsForPrompt } from '../data/writingStyleStandards.js'
+import {
+  formatWritingStyleStandardsForPrompt,
+  getSelectedWritingStyleStandards,
+  sanitizeWritingStyleStandardForPrompt
+} from '../data/writingStyleStandards.js'
 import { buildChapterStateLedger } from './chapterStateLedger.js'
+import { filterSettingEntitiesForGeneration } from './settingEntityFilters.js'
+import { buildIdentityKnowledgeNote, normalizeCharacterName } from './characterFactMatcher.js'
 
 /**
  * 上下文构建器
@@ -127,6 +133,159 @@ function normalizeThreadList(value) {
   if (Array.isArray(value)) return value.map(normalizeThreadLabel).filter(Boolean)
   if (typeof value === 'string') return value.split(/\n|；|;|,|，/).map(normalizeThreadLabel).filter(Boolean)
   return []
+}
+
+function parseObjectValue(value) {
+  if (!value) return {}
+  if (typeof value === 'object' && !Array.isArray(value)) return value
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {}
+  }
+  return {}
+}
+
+function parseNameList(value) {
+  if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      if (Array.isArray(parsed)) return parsed.map(item => String(item || '').trim()).filter(Boolean)
+    } catch {}
+    return value.split(/[，,；;]/).map(item => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+function identityNamesForEntity(entity = {}) {
+  const profile = parseObjectValue(entity.profile)
+  const personas = Array.isArray(profile.personas) ? profile.personas : parseNameList(profile.personas)
+  return [
+    entity.name,
+    entity.canonicalName,
+    profile.canonicalName,
+    ...parseNameList(entity.aliases || entity.alias),
+    ...parseNameList(profile.aliases || profile.alias),
+    ...personas.map(item => typeof item === 'string' ? item : item?.name)
+  ].filter(Boolean)
+}
+
+function identityEntityMatchesCharacter(entity = {}, character = {}) {
+  const characterNames = [
+    character.name,
+    character.canonicalName,
+    ...parseNameList(character.aliases || character.alias)
+  ].map(normalizeCharacterName).filter(Boolean)
+  if (!characterNames.length) return false
+  return identityNamesForEntity(entity).some(name => {
+    const normalized = normalizeCharacterName(name)
+    return normalized && characterNames.some(characterName =>
+      normalized === characterName ||
+      (normalized.length >= 2 && characterName.includes(normalized)) ||
+      (characterName.length >= 2 && normalized.includes(characterName))
+    )
+  })
+}
+
+const COMPANION_VOICE_CARD_PRESETS = [
+  {
+    name: '老陈',
+    aliases: ['陈掌柜', '陈叔'],
+    speakingHabit: '话短，先递东西或安排退路，再说正事。',
+    hidden: '欠陆家旧情，也怕牵连街坊。',
+    attitude: '护着陆沉舟，但不哄他。',
+    stageGoal: '把陆沉舟从送死式追查里拉回能活的路。'
+  },
+  {
+    name: '小九',
+    aliases: ['阿九', '老九家丫头'],
+    speakingHabit: '嘴硬，短促，常用吃食、动作或打岔代替安慰。',
+    hidden: '担心自己家也被陆家旧账拖进去。',
+    attitude: '不服陆沉舟逞强，但会跟上去补漏。',
+    stageGoal: '确认陆沉舟没有把她当成顺手可用的人。'
+  },
+  {
+    name: '老太太',
+    aliases: ['灶边老太太', '老妪'],
+    speakingHabit: '慢声慢气，手上不停做活，关键处只说半句。',
+    hidden: '知道旧案里有人没死，也不敢明说名字。',
+    attitude: '怜他，也试探他能不能扛住代价。',
+    stageGoal: '让陆沉舟先学会付代价前看清后果。'
+  },
+  {
+    name: '灰衣人',
+    aliases: ['灰衣旧部', '灰衣客'],
+    speakingHabit: '少说背景，多留物件和暗号，说完就走。',
+    hidden: '自己也可能是旧案幸存者或替罪线。',
+    attitude: '帮陆沉舟，但不愿把命押给他。',
+    stageGoal: '确认陆沉舟是否值得交出下一段旧证。'
+  },
+  {
+    name: '徐主簿/徐正清',
+    aliases: ['徐主簿', '徐正清'],
+    speakingHabit: '官腔平稳，喜欢说按例、账目无误、名籍不存。',
+    hidden: '真正怕账册把程序背后的私债翻出来。',
+    attitude: '把陆沉舟当可处理的账目，不当人。',
+    stageGoal: '用程序和替罪羊封住第三密栈外泄。'
+  },
+  {
+    name: '乙十七',
+    aliases: ['乙十七'],
+    speakingHabit: '数字化称呼多，少评价，多执行。',
+    hidden: '知道自己只是被派来试探的一枚小钉子。',
+    attitude: '对陆沉舟有戒备，也有一点同病相怜。',
+    stageGoal: '在不暴露上级的情况下完成一次试探或放行。'
+  }
+]
+
+function buildCompanionVoiceCards({ characters = [], settingEntities = [], canonFacts = [], focus = null } = {}) {
+  const sourceNames = new Set()
+  const sourceTextParts = [focus?.text || '']
+  for (const character of characters || []) {
+    for (const name of [character?.name, character?.canonicalName, ...parseNameList(character?.aliases || character?.alias)]) {
+      if (name) sourceNames.add(normalizeCharacterName(name))
+    }
+    sourceTextParts.push(character?.name, character?.relationshipNotes, character?.softState?.emotion, character?.softState?.currentDesire)
+  }
+  for (const entity of settingEntities || []) {
+    const profile = parseObjectValue(entity?.profile)
+    for (const name of [
+      entity?.name,
+      entity?.canonicalName,
+      profile.canonicalName,
+      ...parseNameList(entity?.aliases || entity?.alias),
+      ...parseNameList(profile.aliases || profile.alias)
+    ]) {
+      if (name) sourceNames.add(normalizeCharacterName(name))
+    }
+    sourceTextParts.push(entity?.name, entity?.summary, profile.canonicalName)
+  }
+  for (const fact of (canonFacts || []).filter(item => (item?.status || 'accepted') === 'accepted').slice(-24)) {
+    sourceTextParts.push(
+      fact?.content,
+      fact?.summary,
+      fact?.fact,
+      ...(Array.isArray(fact?.relatedCharacters) ? fact.relatedCharacters : [])
+    )
+  }
+  const sourceText = sourceTextParts.filter(Boolean).join('\n')
+  const hasPresetEvidence = preset => [preset.name, ...(preset.aliases || [])].some(name => {
+    const normalized = normalizeCharacterName(name)
+    return (
+      sourceNames.has(normalized) ||
+      (normalized.length >= 2 && [...sourceNames].some(sourceName => sourceName.includes(normalized) || normalized.includes(sourceName))) ||
+      sourceText.includes(name)
+    )
+  })
+
+  const lines = COMPANION_VOICE_CARD_PRESETS
+    .filter(hasPresetEvidence)
+    .slice(0, 6)
+    .map(card => `- ${card.name}：说话习惯：${card.speakingHabit}；不愿说出口的事：${card.hidden}；对陆沉舟的态度：${card.attitude}；本阶段小目标：${card.stageGoal}`)
+
+  return lines.join('\n').slice(0, 880)
 }
 
 function addThreadKeywordLabels(text, labels) {
@@ -340,6 +499,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const plotThreads = novelStore.plotThreads?.value || novelStore.plotThreads || []
   const canonFacts = novelStore.canonFacts?.value || novelStore.canonFacts || []
   const settingEntities = settingStore?.entities?.value || settingStore?.entities || []
+  const generationSettingEntities = filterSettingEntitiesForGeneration(settingEntities)
   const settingRelations = settingStore?.relations?.value || settingStore?.relations || []
   const settingChangeEvents = settingStore?.changeEvents?.value || settingStore?.changeEvents || []
   const volumes = volumeStore?.volumes?.value || volumeStore?.volumes || []
@@ -367,7 +527,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
 
   // P1.5: 分卷阶段上下文（长篇连续创作的中间锚点）
   const volumeContext = buildVolumeStageContext(volumes, chapterNum)
-  const contextFocus = buildContextFocus({ chapterNum, nearChapter, outline, volumeContext, plotThreads, settingEntities })
+  const contextFocus = buildContextFocus({ chapterNum, nearChapter, outline, volumeContext, plotThreads, settingEntities: generationSettingEntities })
   const creativeBoundary = buildCreativeBoundary({ bible, outline, volumeContext })
   if (creativeBoundary) {
     builder.add('creativeBoundary', creativeBoundary, { priority: 1, required: true, maxTokens: 650 })
@@ -406,7 +566,15 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     builder.add('styleBible', bible.styleBible, { priority: 5, maxTokens: 320 })
   }
 
-  const styleStandardBrief = formatWritingStyleStandardsForPrompt(bible?.writingProfile)
+  const writingStandardContext = {
+    chapterGoal: nearChapter?.goal,
+    directionReference: nearChapter,
+    storyBlock: storyBlockContext?.storyBlock,
+    blockStageSnapshot
+  }
+  const styleStandardBrief = formatWritingStyleStandardsForPrompt(bible?.writingProfile, { context: writingStandardContext })
+  const activeWritingStandards = getSelectedWritingStyleStandards(bible?.writingProfile)
+    .map(({ standard }) => sanitizeWritingStyleStandardForPrompt(standard))
   const styleMethodBrief = buildStyleMethodBrief(bible?.styleBible, styleStandardBrief)
   if (styleMethodBrief) {
     builder.add('styleMethodBrief', styleMethodBrief, { priority: 3, maxTokens: 420 })
@@ -416,7 +584,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   }
 
   // P6.5: 结构化设定库，优先注入与本章/分卷相关的实体和关系
-  const settingLibrary = summarizeSettingLibrary(settingEntities, settingRelations, {
+  const settingLibrary = summarizeSettingLibrary(generationSettingEntities, settingRelations, {
     chapterNum,
     nearChapter,
     volumeContext,
@@ -434,7 +602,7 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
 
   const stateLedger = buildChapterStateLedger({
     chapterNum,
-    settingEntities,
+    settingEntities: generationSettingEntities,
     settingChangeEvents,
     canonFacts,
     focus: contextFocus
@@ -464,6 +632,11 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     c.hardState?.location || c.softState?.emotion
   )
   if (keyChars.length > 0) {
+    const identityEntityForCharacter = character => generationSettingEntities.find(entity => {
+      const type = entity.entityType || entity.entity_type
+      if (type && type !== 'character') return false
+      return identityEntityMatchesCharacter(entity, character)
+    })
     const simplified = keyChars.map(c => ({
       name: c.name,
       role: c.role,
@@ -473,7 +646,8 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
       location: c.hardState?.location,
       physicalStatus: c.hardState?.physicalStatus,
       emotion: c.softState?.emotion,
-      currentDesire: c.softState?.currentDesire
+      currentDesire: c.softState?.currentDesire,
+      identityKnowledge: buildIdentityKnowledgeNote(identityEntityForCharacter(c), ['陆沉舟', '主角'])
     }))
     builder.add('characters', simplified, { priority: 4, maxTokens: 1000 })
   }
@@ -501,9 +675,24 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
     builder.add('relationships', relSummary, { priority: 7, maxTokens: 500 })
   }
 
+  const companionVoiceCards = buildCompanionVoiceCards({
+    characters,
+    settingEntities: generationSettingEntities,
+    canonFacts,
+    focus: contextFocus
+  })
+  if (companionVoiceCards) {
+    builder.add('companionVoiceCards', companionVoiceCards, { priority: 6, maxTokens: 520 })
+  }
+
   // 额外：传入当前草稿（由调用者提供）
+  const context = builder.getContext()
+  if (activeWritingStandards.length) {
+    context.activeWritingStandards = activeWritingStandards
+  }
+
   return {
-    context: builder.getContext(),
+    context,
     usedTokens: builder.getUsedTokens(),
     maxTokens: builder.maxTokens
   }
@@ -513,6 +702,7 @@ function summarizeSettingLibrary(entities, relations, options = {}) {
   const { chapterNum, nearChapter, volumeContext, settingChangeEvents, focus } = options
   const scoredEntities = (entities || [])
     .filter(e => (e.status || 'active') === 'active')
+    .filter(e => !isSyntheticRelationPlaceholderEntity(e))
     .map(entity => ({
       entity,
       relevance: scoreSettingEntity(entity, {
@@ -551,7 +741,11 @@ function summarizeSettingLibrary(entities, relations, options = {}) {
   const selectedIds = new Set(activeEntities.map(entity => entity.id))
   const relationLines = (relations || [])
     .filter(r => {
-      if (r.status === 'archived') return false
+      if ((r.status || 'active') !== 'active') return false
+      if (r.sourceEntityId && r.sourceEntityId === r.targetEntityId) return false
+      const sourceEntity = entityMap.get(r.sourceEntityId)
+      const targetEntity = entityMap.get(r.targetEntityId)
+      if (isSyntheticRelationPlaceholderEntity(sourceEntity) || isSyntheticRelationPlaceholderEntity(targetEntity)) return false
       const bothSelected = selectedIds.has(r.sourceEntityId) && selectedIds.has(r.targetEntityId)
       return bothSelected
     })
@@ -572,6 +766,22 @@ function summarizeSettingLibrary(entities, relations, options = {}) {
     lines.join('\n'),
     relationLines.length ? `\n### 关键关系\n${relationLines.join('\n')}` : ''
   ].filter(Boolean).join('\n')
+}
+
+function isSyntheticRelationEntityName(name = '') {
+  return String(name || '').trim().includes('_')
+}
+
+function isSyntheticRelationPlaceholderEntity(entity) {
+  if (!entity) return false
+  const name = String(entity.name || '')
+  if (!isSyntheticRelationEntityName(name)) return false
+  const entityType = String(entity.entityType || entity.entity_type || '')
+  const summary = String(entity.summary || '')
+  const tags = Array.isArray(entity.tags) ? entity.tags : []
+  return entityType === 'character' ||
+    tags.includes('AI识别') ||
+    /自动识别的设定|错误占位|已合并/.test(summary)
 }
 
 function scoreSettingEntity(entity, context) {

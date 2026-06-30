@@ -313,7 +313,7 @@ async def accept_setting_change_event(pid: str, cid: str, data: dict | None = Bo
 
     await execute(
         "UPDATE setting_change_events SET status=%s, entity_id=%s, updated_at=%s WHERE project_id=%s AND id=%s",
-        ("accepted", entity.get("id") if entity else event.get("entity_id"), int(time.time() * 1000), pid, cid),
+        ("accepted", entity.get("id") if entity else relation.get("source_entity_id") if relation else event.get("entity_id"), int(time.time() * 1000), pid, cid),
     )
     updated_event = convert_row(await fetchone(
         "SELECT * FROM setting_change_events WHERE project_id=%s AND id=%s",
@@ -408,6 +408,13 @@ DYNAMIC_STATE_FIELDS = {
     "profile.internalMechanisms",
     "profile.chapterEvidence",
     "profile.hiddenStance",
+    "profile.hiddenAffiliation",
+    "profile.affiliationClaims",
+    "profile.currentRole",
+    "profile.identityReveal",
+    "profile.identityReveals",
+    "profile.identityClaims",
+    "profile.mistakenIdentities",
     "profile.currentAction",
     "profile.currentHolder",
     "profile.possessionStatus",
@@ -425,7 +432,9 @@ OBSERVED_CAPABILITY_FIELDS = {
 RULE_INSTANCE_REHOME_FIELD = "profile.observedCosts"
 SUMMARY_CHAPTER_FACT_REHOME_FIELD = "profile.observedFacts"
 HARD_FIELD_BEHAVIOR_REHOME_FIELD = "profile.hiddenStance"
+FACTION_AFFILIATION_REVEAL_REHOME_FIELD = "profile.hiddenAffiliation"
 OWNER_POSSESSION_REHOME_FIELD = "profile.possessionStatus"
+ORG_RULE_SUMMARY_REHOME_FIELD = "profile.internalMechanisms"
 
 HARD_FIELD_ALIASES = {
     "identity": "profile.identity",
@@ -459,6 +468,13 @@ HARD_FIELD_ALIASES = {
     "internalMechanisms": "profile.internalMechanisms",
     "chapterEvidence": "profile.chapterEvidence",
     "hiddenStance": "profile.hiddenStance",
+    "hiddenAffiliation": "profile.hiddenAffiliation",
+    "affiliationClaims": "profile.affiliationClaims",
+    "currentRole": "profile.currentRole",
+    "identityReveal": "profile.identityReveal",
+    "identityReveals": "profile.identityReveals",
+    "identityClaims": "profile.identityClaims",
+    "mistakenIdentities": "profile.mistakenIdentities",
     "currentAction": "profile.currentAction",
     "physicalStatus": "profile.physicalStatus",
     "itemStatus": "profile.itemStatus",
@@ -510,6 +526,13 @@ HARD_FIELD_LABELS = {
     "profile.internalMechanisms": "内部机制",
     "profile.chapterEvidence": "章节证据",
     "profile.hiddenStance": "隐藏立场",
+    "profile.hiddenAffiliation": "隐藏/揭示隶属",
+    "profile.affiliationClaims": "隶属说法",
+    "profile.currentRole": "当前角色",
+    "profile.identityReveal": "身份揭示",
+    "profile.identityReveals": "身份揭示记录",
+    "profile.identityClaims": "身份说法",
+    "profile.mistakenIdentities": "误认记录",
     "profile.currentAction": "当前行为",
 }
 
@@ -534,13 +557,17 @@ SUMMARY_CURRENT_ACTION_RE = re.compile(
 )
 UNCERTAIN_SUMMARY_FRAGMENT_RE = re.compile(r"(可能|疑似|或许|也许|未确认|不明|下落不明|传闻|据说|暗示|线索|疑点)")
 DESCRIPTIVE_PLACEHOLDER_NAME_RE = re.compile(r"(老人|老头|老者|男子|女人|女子|少年|少女|孩童|灰袍|黑袍|白衣|黑斗笠|斗笠|面具|蒙面|木门后|门后|卖.+的|守门|账房|追踪者|陌生人|来客|掌柜|伙计)$")
-UNCERTAIN_IDENTITY_RE = re.compile(r"(可能|疑似|像是|看起来|身份不明|身份未明|未确认|不明|关键情报源|旧识|父亲旧识|线索人物|知情人|神秘|陌生)")
+UNCERTAIN_IDENTITY_RE = re.compile(r"(可能|疑似|像是|看起来|身份不明|身份未明|未确认|不明|关键情报源|旧识|父亲旧识|线索人物|知情人|神秘|陌生|自称|后续可能|掌握线索|掌握.*细节|交易内幕)")
+SUMMARY_IDENTITY_BACKGROUND_DETAIL_RE = re.compile(r"(玉虚峰|矿区|矿工|账房|暗线|执事|长老|供奉|弟子|掌柜|管事|跟班|旧识|亲信|内应|身份|本名|真名|曾是|曾任|前任|认识|知道|掌握|提供|留下|线索|证据|逃跑路线|欠条|账册|那本账)")
+SUMMARY_IDENTITY_BACKGROUND_EVIDENCE_RE = re.compile(r"(我给|我不是|我是|认识|你爹|生前|那本账|承认|说过|当了|曾任|拿出|信物|证实|证明|供认|透露|指出|提供)")
 FORMAL_IDENTITY_RE = re.compile(r"(?:^|[，,。；;\s])(?:[一-龥]{2,4})(?:[，,。；;\s]|$)|(?:名叫|叫作|叫做|本名|真名|姓名|自称|承认自己叫).{0,8}[一-龥]{2,4}|(?:前|曾任|现任|原为|任).{0,16}(账房|星吏|官|吏|司主|掌柜|管事|弟子|长老|供奉|执事)")
 SUMMARY_IDENTITY_REWRITE_RE = re.compile(r"(其实|并非|不是|不再是|变成|改为|本质上|根本上|真实身份|实际是).{0,24}(非官方|不是官方|商盟|分部|公开官署|官署|秘密组织|公开机构|官方机构|民间组织|商业联盟|商会|伪装|伪造)")
 OFFICIAL_ORG_RE = re.compile(r"(官方机构|朝廷|官署|巡查|缉拿|执法|官府|公门)")
 SECRET_ORG_RE = re.compile(r"(秘密组织|隐秘组织|暗中|地下|外围|暗号|秘密结社)")
 PUBLIC_ORG_RE = re.compile(r"(公开官署|公开机构|官方机构|正式登记|朝廷设立)")
 HIDDEN_BEHAVIOR_RE = re.compile(r"(暗中|秘密|私下|表面|伪装|但|却|当前|正在|帮助|追捕|调查|保护|掩护|背离|隐藏|短期|暂时|见习|卧底|内应)")
+WEAK_FACTION_INFERENCE_RE = re.compile(r"(未知势力|与.{1,18}同一势力|可能(?:属于|与.{1,18}有关)|疑似(?:属于)?|替.{1,16}(?:办事|做事|效力)|为.{1,16}(?:办事|做事)|行为上协同|协同|配合|跟随|同伙|一伙|受.{1,16}指使|帮.{1,16}(?:办事|做事)|看似属于|像是.{1,12}的人)")
+AFFILIATION_REVEAL_RE = re.compile(r"(暗哨|内线|密探|卧底|伪装身份|暗线|隐藏身份|令牌|拿出.{0,12}令牌|出示.{0,12}令牌|自称.{0,16}(?:巡天司|星债会|商盟|缺指男人)|身份揭示|真实身份|巡天司.{0,8}(?:暗哨|内线|密探))")
 OWNER_UNSTABLE_OR_DYNAMIC_RE = re.compile(r"(未知|不明|疑似|可能|未确认|已接触|接触|未取出|取出|暂时|临时|当前|拿到|拿走|带走|携带|保管|藏在|收起|夺走|抢走|被夺|归还|交还|触碰|持有)")
 OWNER_POSSESSION_ACTION_RE = re.compile(r"(已接触|接触|触碰|未取出|取出|暂时|临时|当前|拿到|拿走|带走|携带|保管|藏在|收起|夺走|抢走|被夺|归还|交还|持有|怀里|身上|掌中|手中)")
 OWNER_POSSESSION_NEGATION_RE = re.compile(r"(无|没有|未|并未|并无|缺少|不具备|不能证明|未证明|没有证明).{0,18}(接触|取出|拿到|拿走|带走|携带|持有|保管|夺走|抢走|被夺|归还|交还|触碰)")
@@ -552,6 +579,15 @@ OWNER_TRANSFER_RE = re.compile(
     r"(?:当众|明确).{0,12}(转让|移交|赠与|交割)"
 )
 OWNER_TRANSFER_NEGATION_RE = re.compile(r"(无|没有|未|并未|并无|缺少|不具备|不能证明|未证明|没有证明).{0,18}(转让|移交|交割|继承|赠与|归还|交还|所有权|归属|拥有权|法理|永久|长期)")
+ORG_ENTITY_TYPE_RE = re.compile(r"(faction|organization|organisation|sect|guild|agency|institution|force|group|势力|组织|机构|宗门|门派|商会|官署)", re.I)
+ORG_NAME_OR_SUMMARY_RE = re.compile(r"(会|司|盟|宗|门|阁|堂|府|衙|院|组织|机构|势力|商会|官署)")
+ORG_RULE_DETAIL_RE = re.compile(r"(准入|通行证|欠条|债本|抵押|规矩|不对外人开放|不与外人做交易|交易限制|口令|凭证|入内|入门|入会|门槛|问询权|活人的债|铜扣|玉牌)")
+ORG_STABLE_RELATION_NEGATION_RE = re.compile(
+    r"(与.{0,24}(星账|阵眼玉|母亲|旧债).{0,12}(无关|不相关|没有关系|不涉及)|"
+    r"不再涉及.{0,24}(星账|阵眼玉|母亲|旧债)|"
+    r"(星账|阵眼玉|母亲|旧债).{0,12}(无关|不相关|删除|反转|推翻)|"
+    r"只是.{0,12}(无关|普通|临时起名).{0,12}(势力|组织|茶楼|店铺)|无关势力)"
+)
 INVALID_ENTITY_NAME_RE = re.compile(r"(^第\s*(?:\?|[一二三四五六七八九十百千万\d]+)\s*章|死去\s*[一二三四五六七八九十百千万\d]+年|现死去|^\d+$)")
 HARD_PROFILE_STABLE_FIELDS = {
     "profile.identity",
@@ -606,11 +642,17 @@ async def _collect_hard_setting_conflicts(pid: str, event: dict):
         return []
     if field_path == "summary" and _is_descriptive_placeholder_identity_reveal(entity.get("name") or event.get("entity_name"), existing_value, incoming_value, event.get("evidence")):
         return []
+    if field_path == "summary" and _is_summary_identity_background_reveal(existing_value, incoming_value, event.get("evidence")):
+        return []
+    if field_path == "summary" and _is_org_rule_summary_refinement(entity.get("entity_type") or event.get("entity_type"), entity.get("name") or event.get("entity_name"), existing_value, incoming_value, event.get("evidence")):
+        return []
     if field_path == "summary" and _is_summary_chapter_fact_supplement(existing_value, incoming_value, event.get("evidence")):
         return []
     if field_path == "profile.owner" and _is_owner_possession_rehome_change(field_path, existing_value, incoming_value, event.get("evidence")):
         return []
     if field_path == "profile.owner" and _has_stable_owner_transfer_evidence(existing_value, incoming_value, event.get("evidence")):
+        return []
+    if _is_faction_affiliation_reveal_rehome_change(field_path, existing_value, incoming_value, event.get("evidence")):
         return []
     if _is_hard_field_behavior_supplement(field_path, existing_value, incoming_value, event.get("evidence")):
         return []
@@ -664,6 +706,10 @@ def _collect_duplicate_entity_hard_conflicts(event: dict, entity: dict):
                 continue
             if field_path == "summary" and _is_descriptive_placeholder_identity_reveal(entity.get("name") or event.get("entity_name"), existing_value, incoming_value, event.get("evidence")):
                 continue
+            if field_path == "summary" and _is_summary_identity_background_reveal(existing_value, incoming_value, event.get("evidence")):
+                continue
+            if field_path == "summary" and _is_org_rule_summary_refinement(entity.get("entity_type") or event.get("entity_type"), entity.get("name") or event.get("entity_name"), existing_value, incoming_value, event.get("evidence")):
+                continue
             if field_path == "summary" and _is_summary_chapter_fact_supplement(existing_value, incoming_value, event.get("evidence")):
                 continue
             if field_path == "profile.owner" and _is_owner_possession_rehome_change(field_path, existing_value, incoming_value, event.get("evidence")):
@@ -693,6 +739,8 @@ def _collect_duplicate_entity_hard_conflicts(event: dict, entity: dict):
             if field_path == "profile.owner" and _is_owner_possession_rehome_change(field_path, existing_value, incoming_value, event.get("evidence")):
                 continue
             if field_path == "profile.owner" and _has_stable_owner_transfer_evidence(existing_value, incoming_value, event.get("evidence")):
+                continue
+            if _is_faction_affiliation_reveal_rehome_change(field_path, existing_value, incoming_value, event.get("evidence")):
                 continue
             if _is_hard_field_behavior_supplement(field_path, existing_value, incoming_value, event.get("evidence")):
                 continue
@@ -732,22 +780,123 @@ def _entity_has_chapter_dependency(entity: dict):
     )
 
 
+def _relationship_payload(event: dict):
+    payload = _decode_json((event or {}).get("new_value")) or {}
+    return payload if isinstance(payload, dict) else {"summary": (event or {}).get("new_value") or ""}
+
+
+def _relationship_target_name(payload: dict):
+    return _clean_text(payload.get("targetEntityName") or payload.get("targetName") or payload.get("target") or "")
+
+
+RELATIONSHIP_ORG_NAME_RE = re.compile(r"(星债会|巡天司|商盟|会|司|盟|宗|门派|宗门|商会|官署|机构|组织|势力|帮|阁|堂|府|衙|院)$")
+RELATIONSHIP_ORG_TYPE_RE = re.compile(r"(faction|organization|organisation|org|sect|guild|agency|institution|force|group|势力|组织|机构|宗门|门派|商会|官署)", re.I)
+
+
+def _normalize_relationship_entity_type(entity_type: str, name: str = ""):
+    raw_type = _clean_text(entity_type or "")
+    raw_name = _clean_text(name or "")
+    if RELATIONSHIP_ORG_TYPE_RE.search(raw_type):
+        return "faction"
+    if raw_type in {"location", "power_system", "technique", "item", "character", "faction"}:
+        if raw_type == "character" and RELATIONSHIP_ORG_NAME_RE.search(raw_name):
+            return "faction"
+        return raw_type
+    if RELATIONSHIP_ORG_NAME_RE.search(raw_name):
+        return "faction"
+    return raw_type or "character"
+
+
+def _split_relationship_composite_name(entity_name: str, target_name: str = ""):
+    source = _clean_text(entity_name)
+    target = _clean_text(target_name)
+    if not source or "_" not in source:
+        return source, target
+    if target:
+        suffix = f"_{target}"
+        if source.endswith(suffix) and len(source) > len(suffix):
+            return source[: -len(suffix)].strip(), target
+    parts = [part.strip() for part in source.split("_") if part.strip()]
+    if len(parts) >= 2:
+        if target and target in parts:
+            target_index = parts.index(target)
+            if target_index > 0:
+                return parts[target_index - 1], target
+        return parts[0], target or parts[1]
+    return source, target
+
+
+def _relationship_target_type(payload: dict):
+    raw_type = _clean_text(payload.get("targetEntityType") or payload.get("targetType") or "character") or "character"
+    return _normalize_relationship_entity_type(raw_type, _relationship_target_name(payload))
+
+
+def _relationship_source_name_from_event(event: dict, payload: dict):
+    explicit = _clean_text(payload.get("sourceEntityName") or payload.get("sourceName") or payload.get("source") or "")
+    if explicit:
+        return explicit
+    entity_name = _clean_text((event or {}).get("entity_name") or (event or {}).get("entityName") or "")
+    target_name = _relationship_target_name(payload)
+    source_name, _ = _split_relationship_composite_name(entity_name, target_name)
+    return source_name or "未命名主体"
+
+
+def _relationship_target_name_from_event(event: dict, payload: dict):
+    target_name = _relationship_target_name(payload)
+    if target_name:
+        return target_name
+    _, parsed_target = _split_relationship_composite_name((event or {}).get("entity_name") or (event or {}).get("entityName") or "", "")
+    return parsed_target
+
+
+def _relationship_source_type_from_event(event: dict, payload: dict):
+    raw_type = _clean_text(payload.get("sourceEntityType") or payload.get("sourceType") or (event or {}).get("entity_type") or (event or {}).get("entityType") or "character") or "character"
+    return _normalize_relationship_entity_type(raw_type, _relationship_source_name_from_event(event, payload))
+
+
+def _relationship_entity_lookup_event(event: dict):
+    lookup_event = dict(event or {})
+    lookup_event.pop("entity_id", None)
+    lookup_event.pop("entityId", None)
+    return lookup_event
+
+
+def _normalized_relationship_relation_type(payload: dict, event: dict):
+    relation_type = _clean_text(payload.get("relationType") or payload.get("relation_type") or (event or {}).get("field_path") or "关系")
+    summary = _clean_text(payload.get("summary") or "")
+    evidence = _clean_text((event or {}).get("evidence") or "")
+    combined = f"{relation_type} {summary} {evidence}"
+    if "问询权" in combined and "债" in combined and relation_type != "债务/问询权":
+        return "债务/问询权"
+    return relation_type or "关系"
+
+
+def _normalized_relationship_summary(payload: dict, event: dict, source_name: str, target_name: str):
+    summary = _clean_text(payload.get("summary") or (event or {}).get("evidence") or "")
+    evidence = _clean_text((event or {}).get("evidence") or "")
+    combined = f"{source_name} {target_name} {summary} {evidence}"
+    if source_name == "陆沉舟" and target_name == "星债会" and "问询权" in combined and "债" in combined:
+        return "陆沉舟通过铜扣继承父亲与星债会的问询权/债务关系，本章已使用一次问询权，后续仍需偿还或承担等价债务。"
+    return summary
+
+
 async def _collect_relationship_conflicts(pid: str, event: dict):
-    payload = _decode_json(event.get("new_value")) or {}
-    if not isinstance(payload, dict):
+    payload = _relationship_payload(event)
+    source_name = _relationship_source_name_from_event(event, payload)
+    source_type = _relationship_source_type_from_event(event, payload)
+    target_name = _relationship_target_name_from_event(event, payload)
+    target_type = _relationship_target_type(payload)
+    if not source_name or not target_name:
         return []
-    source = await _find_existing_entity_for_event(pid, event)
-    target_name = payload.get("targetEntityName") or payload.get("targetName") or payload.get("target") or ""
-    target_type = payload.get("targetEntityType") or payload.get("targetType") or "character"
-    if not source or not target_name:
+    source = await _find_existing_entity_by_name(pid, source_name, source_type)
+    if not source:
         return []
-    target = await fetchone(
-        "SELECT * FROM setting_entities WHERE project_id=%s AND entity_type=%s AND name=%s LIMIT 1",
-        (pid, target_type, target_name),
-    )
+    target = await _find_existing_entity_by_name(pid, target_name, target_type)
     if not target:
         return []
-    relation_type = payload.get("relationType") or event.get("field_path") or "关系"
+    if source.get("id") == target.get("id") or source.get("name") == target.get("name"):
+        return []
+    relation_type = _normalized_relationship_relation_type(payload, event)
     existing = await fetchone(
         """
         SELECT * FROM setting_relations
@@ -833,7 +982,14 @@ def _allows_layered_hard_field_reveal(existing_value, incoming_value, evidence):
     old_text = _clean_text(existing_value)
     new_text = _clean_text(incoming_value)
     evidence_text = _clean_text(evidence)
-    return bool(old_text and new_text and old_text in new_text and RESERVATION_RE.search(f"{new_text} {evidence_text}"))
+    return bool(
+        old_text
+        and new_text
+        and (
+            (old_text in new_text and RESERVATION_RE.search(f"{new_text} {evidence_text}"))
+            or _is_summary_identity_background_reveal(old_text, new_text, evidence_text)
+        )
+    )
 
 
 def _is_ability_core_conflict(existing_value, incoming_value, evidence):
@@ -914,11 +1070,58 @@ def _is_descriptive_placeholder_identity_reveal(entity_name, existing_value, inc
     return True
 
 
+def _is_summary_identity_background_reveal(existing_value, incoming_value, evidence):
+    old_text = _clean_text(existing_value)
+    new_text = _clean_text(incoming_value)
+    evidence_text = _clean_text(evidence)
+    combined = f"{new_text} {evidence_text}"
+    if not old_text or not new_text or old_text == new_text:
+        return False
+    if _is_placeholder_summary(old_text):
+        return False
+    if _is_hard_summary_rewrite(old_text, new_text):
+        return False
+    if not UNCERTAIN_IDENTITY_RE.search(old_text):
+        return False
+    if not SUMMARY_IDENTITY_BACKGROUND_DETAIL_RE.search(combined):
+        return False
+    if not evidence_text or not SUMMARY_IDENTITY_BACKGROUND_EVIDENCE_RE.search(evidence_text):
+        return False
+    return True
+
+
+def _is_org_rule_summary_refinement(entity_type, entity_name, existing_value, incoming_value, evidence):
+    type_text = _clean_text(entity_type)
+    name_text = _clean_text(entity_name)
+    old_text = _clean_text(existing_value)
+    new_text = _clean_text(incoming_value)
+    evidence_text = _clean_text(evidence)
+    combined = f"{new_text} {evidence_text}"
+    if not old_text or not new_text or old_text == new_text:
+        return False
+    org_like = bool(
+        ORG_ENTITY_TYPE_RE.search(type_text)
+        or ORG_NAME_OR_SUMMARY_RE.search(name_text)
+        or ORG_NAME_OR_SUMMARY_RE.search(old_text)
+    )
+    if not org_like:
+        return False
+    if not ORG_RULE_DETAIL_RE.search(combined):
+        return False
+    if _is_hard_summary_rewrite(old_text, new_text):
+        return False
+    if ORG_STABLE_RELATION_NEGATION_RE.search(combined):
+        return False
+    return True
+
+
 def _is_hard_summary_rewrite(existing_value, incoming_value):
     old_text = _clean_text(existing_value)
     new_text = _clean_text(incoming_value)
     if not old_text or not new_text:
         return False
+    if ORG_STABLE_RELATION_NEGATION_RE.search(new_text) and re.search(r"(星账|阵眼玉|母亲|旧债|神秘组织|秘密组织|组织|势力)", old_text):
+        return True
     if SUMMARY_IDENTITY_REWRITE_RE.search(new_text):
         return True
     if re.search(r"(其实|并非|不是|不再是).{0,12}(商业联盟|商会|组织|机构|势力)", new_text):
@@ -946,6 +1149,23 @@ def _is_hard_field_behavior_supplement(field_path, existing_value, incoming_valu
     if not HIDDEN_BEHAVIOR_RE.search(combined):
         return False
     return old_text in new_text or _strip_parenthetical_segments(new_text) == old_text
+
+
+def _is_faction_affiliation_reveal_rehome_change(field_path, existing_value, incoming_value, evidence):
+    normalized = _normalize_hard_field_path(field_path)
+    if normalized != "profile.faction":
+        return False
+    old_text = _clean_text(existing_value)
+    new_text = _clean_text(incoming_value)
+    evidence_text = _clean_text(evidence)
+    combined = f"{new_text} {evidence_text}"
+    if not old_text or not new_text or old_text == new_text:
+        return False
+    if not WEAK_FACTION_INFERENCE_RE.search(old_text):
+        return False
+    if not AFFILIATION_REVEAL_RE.search(combined):
+        return False
+    return True
 
 
 def _is_owner_possession_rehome_change(field_path, existing_value, incoming_value, evidence):
@@ -1054,6 +1274,119 @@ def _merge_aliases(existing_aliases, *values):
     return normalized
 
 
+def _append_unique_profile_item(profile: dict, field_name: str, item: dict, unique_keys=("name", "chapterNum", "evidence")):
+    existing = profile.get(field_name)
+    if not isinstance(existing, list):
+        existing = []
+    def key_of(value):
+        return tuple(value.get(key) for key in unique_keys if key in value)
+    item_key = key_of(item)
+    if not any(isinstance(value, dict) and key_of(value) == item_key for value in existing):
+        existing.append(item)
+    profile[field_name] = existing
+
+
+def _ensure_identity_profile(profile: dict, canonical_name: str):
+    name = _clean_text(canonical_name)
+    if name and not profile.get("canonicalName"):
+        profile["canonicalName"] = name
+
+
+def _identity_known_by_from_event(event: dict):
+    value = event.get("knownBy") or event.get("known_by") or event.get("revealedTo") or event.get("revealed_to")
+    decoded = _decode_json(value) if isinstance(value, str) else value
+    if isinstance(decoded, list):
+        return [_clean_text(item) for item in decoded if _clean_text(item)]
+    return []
+
+
+def _append_identity_persona(profile: dict, *, name: str, canonical_name: str, event: dict, persona_type="alias", status="revealed", evidence=""):
+    persona_name = _clean_text(name)
+    if not persona_name:
+        return
+    chapter = event.get("chapter_num") or event.get("chapterNum")
+    item = {
+        "name": persona_name,
+        "type": persona_type,
+        "firstSeenChapter": chapter,
+        "revealedChapter": chapter if status == "revealed" else None,
+        "status": status,
+        "knownBy": _identity_known_by_from_event(event),
+        "evidence": evidence or event.get("evidence") or "",
+    }
+    _append_unique_profile_item(profile, "personas", item, unique_keys=("name", "type"))
+    _ensure_identity_profile(profile, canonical_name)
+
+
+def _append_identity_reveal(profile: dict, *, from_name: str, to_canonical_name: str, event: dict, evidence=""):
+    reveal = {
+        "chapterNum": event.get("chapter_num") or event.get("chapterNum"),
+        "fromName": _clean_text(from_name),
+        "toCanonicalName": _clean_text(to_canonical_name),
+        "revealedTo": _identity_known_by_from_event(event),
+        "confidence": event.get("confidence"),
+        "evidence": evidence or event.get("evidence") or "",
+    }
+    _append_unique_profile_item(profile, "identityReveals", reveal, unique_keys=("chapterNum", "fromName", "toCanonicalName"))
+    _ensure_identity_profile(profile, to_canonical_name)
+
+
+def _extract_identity_reveal_pair(entity_name, incoming_summary, allow_formal_fallback=True):
+    text = _clean_text(incoming_summary)
+    old_name = _clean_text(entity_name)
+    patterns = [
+        r"(?P<from>[一-龥A-Za-z0-9·]{1,16})(?:其实|实为|就是|乃是|真实身份|真身)(?:是)?(?P<to>[一-龥]{2,4})",
+        r"(?P<from>[一-龥A-Za-z0-9·]{1,16}).{0,8}(?:化名|代号|马甲).{0,8}(?P<to>[一-龥]{2,4})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return _clean_text(match.group("from") or old_name), _clean_text(match.group("to"))
+    if allow_formal_fallback:
+        formal_name = _extract_formal_name_from_identity_text(incoming_summary)
+        if formal_name and formal_name != old_name:
+            return old_name, formal_name
+    return old_name, ""
+
+
+def _record_identity_claim_or_mistake(profile: dict, updates: dict, event: dict, text, entity_name=None):
+    source = _clean_text(text)
+    current_name = _clean_text(entity_name or event.get("entity_name") or "")
+    disprove = re.search(r"(?P<from>[一-龥A-Za-z0-9·]{1,16})(?:并非|不是|并不是|绝非)(?P<target>[一-龥]{2,4})", source)
+    if disprove:
+        from_name = _clean_text(disprove.group("from") or current_name)
+        target = _clean_text(disprove.group("target"))
+        _ensure_identity_profile(profile, current_name or from_name)
+        item = {
+            "chapterNum": event.get("chapter_num") or event.get("chapterNum"),
+            "name": from_name,
+            "mistakenAs": target,
+            "status": "disproved",
+            "evidence": event.get("evidence") or source,
+            "confidence": event.get("confidence"),
+        }
+        _append_unique_profile_item(profile, "mistakenIdentities", item, unique_keys=("chapterNum", "name", "mistakenAs"))
+        return True
+
+    claim = re.search(r"(?:以为|误以为|认作|错认|怀疑)(?P<from>[一-龥A-Za-z0-9·]{1,16})是(?P<target>[一-龥]{2,4})", source)
+    if claim:
+        from_name = _clean_text(claim.group("from") or current_name)
+        target = _clean_text(claim.group("target"))
+        _ensure_identity_profile(profile, current_name or from_name)
+        item = {
+            "chapterNum": event.get("chapter_num") or event.get("chapterNum"),
+            "name": from_name,
+            "claimedAs": target,
+            "claimedBy": _identity_known_by_from_event(event) or ["未标注"],
+            "status": "claim",
+            "evidence": event.get("evidence") or source,
+            "confidence": event.get("confidence"),
+        }
+        _append_unique_profile_item(profile, "identityClaims", item, unique_keys=("chapterNum", "name", "claimedAs"))
+        return True
+    return False
+
+
 def _is_core_rule_rewrite(existing_value, incoming_value):
     old_text = _clean_text(existing_value)
     new_text = _clean_text(incoming_value)
@@ -1112,12 +1445,43 @@ def _rehome_summary_chapter_fact_update(profile: dict, updates: dict, event: dic
     updates.pop("summary", None)
 
 
+def _rehome_org_rule_summary_update(profile: dict, updates: dict, event: dict, existing_summary, incoming_summary):
+    entry = {
+        "value": _stringify_value(incoming_summary),
+        "evidence": event.get("evidence") or "",
+        "chapterNum": event.get("chapter_num") or event.get("chapterNum"),
+        "confidence": event.get("confidence"),
+        "sourceField": "summary",
+        "preservedSummary": _stringify_value(existing_summary),
+        "rehomeReason": "org_rule_refinement",
+    }
+    field_name = ORG_RULE_SUMMARY_REHOME_FIELD.split(".", 1)[1]
+    _append_profile_dynamic_entry(profile, field_name, entry, event)
+    updates.pop("summary", None)
+
+
 def _apply_descriptive_identity_reveal_update(entity: dict, profile: dict, updates: dict, event: dict, existing_summary, incoming_summary):
     old_name = _clean_text(entity.get("name") or event.get("entity_name"))
-    formal_name = _extract_formal_name_from_identity_text(incoming_summary)
+    from_name, formal_name = _extract_identity_reveal_pair(old_name, incoming_summary)
     if formal_name and formal_name != old_name:
         updates["name"] = formal_name
         updates["aliases"] = _json(_merge_aliases(entity.get("aliases"), old_name))
+        _append_identity_persona(
+            profile,
+            name=old_name,
+            canonical_name=formal_name,
+            event=event,
+            persona_type="alias",
+            status="revealed",
+            evidence=event.get("evidence") or _stringify_value(incoming_summary),
+        )
+        _append_identity_reveal(
+            profile,
+            from_name=from_name or old_name,
+            to_canonical_name=formal_name,
+            event=event,
+            evidence=event.get("evidence") or _stringify_value(incoming_summary),
+        )
 
     updates["summary"] = _stringify_value(incoming_summary)
     reveal = {
@@ -1150,6 +1514,65 @@ def _apply_descriptive_identity_reveal_update(entity: dict, profile: dict, updat
     _append_profile_dynamic_entry(profile, "observedFacts", observed, event)
 
 
+def _apply_identity_background_reveal_update(entity: dict, profile: dict, updates: dict, event: dict, existing_summary, incoming_summary):
+    entity_name = _clean_text(entity.get("name") or event.get("entity_name"))
+    from_name, canonical_name = _extract_identity_reveal_pair(entity_name, incoming_summary, allow_formal_fallback=False)
+    if canonical_name and canonical_name != entity_name:
+        updates["name"] = canonical_name
+        updates["aliases"] = _json(_merge_aliases(entity.get("aliases"), entity_name, from_name))
+        _append_identity_persona(
+            profile,
+            name=from_name or entity_name,
+            canonical_name=canonical_name,
+            event=event,
+            persona_type="codename" if re.search(r"(先生|代号|化名|马甲)", from_name or entity_name) else "alias",
+            status="revealed",
+            evidence=event.get("evidence") or _stringify_value(incoming_summary),
+        )
+        _append_identity_reveal(
+            profile,
+            from_name=from_name or entity_name,
+            to_canonical_name=canonical_name,
+            event=event,
+            evidence=event.get("evidence") or _stringify_value(incoming_summary),
+        )
+    updates["summary"] = _stringify_value(incoming_summary)
+    reveal = {
+        "value": _stringify_value(incoming_summary),
+        "evidence": event.get("evidence") or "",
+        "chapterNum": event.get("chapter_num") or event.get("chapterNum"),
+        "confidence": event.get("confidence"),
+        "sourceField": "summary",
+        "previousName": entity_name,
+        "previousSummary": _stringify_value(existing_summary),
+    }
+    existing = profile.get("identityReveal")
+    if isinstance(existing, list):
+        if not any(isinstance(item, dict) and item.get("value") == reveal["value"] for item in existing):
+            existing.append(reveal)
+        profile["identityReveal"] = existing
+    elif existing:
+        profile["identityReveal"] = (
+            f"{existing}；旧不确定摘要「{_stringify_value(existing_summary)}」揭示为："
+            f"{_stringify_value(incoming_summary)}"
+        )
+    else:
+        profile["identityReveal"] = (
+            f"旧不确定摘要「{_stringify_value(existing_summary)}」揭示为："
+            f"{_stringify_value(incoming_summary)}"
+        )
+
+    observed = {
+        "value": f"身份/背景揭示：{_stringify_value(incoming_summary)}",
+        "evidence": event.get("evidence") or "",
+        "chapterNum": event.get("chapter_num") or event.get("chapterNum"),
+        "confidence": event.get("confidence"),
+        "sourceField": "summary",
+        "preservedSummary": _stringify_value(existing_summary),
+    }
+    _append_profile_dynamic_entry(profile, "observedFacts", observed, event)
+
+
 def _rehome_hard_field_behavior_update(profile: dict, updates: dict, event: dict, field_path, existing_value, incoming_value):
     target_field = _choose_hard_field_behavior_rehome_field(incoming_value, event.get("evidence"))
     field_name = target_field.split(".", 1)[1]
@@ -1162,6 +1585,64 @@ def _rehome_hard_field_behavior_update(profile: dict, updates: dict, event: dict
         "preservedValue": _stringify_value(existing_value),
     }
     _append_profile_dynamic_entry(profile, field_name, entry, event)
+    updates.pop("profile", None)
+
+
+def _rehome_faction_affiliation_reveal_update(profile: dict, updates: dict, event: dict, field_path, existing_value, incoming_value):
+    normalized = _normalize_hard_field_path(field_path)
+    old_text = _stringify_value(existing_value)
+    new_text = _stringify_value(incoming_value)
+    evidence = event.get("evidence") or ""
+    chapter = event.get("chapter_num") or event.get("chapterNum")
+    confidence = event.get("confidence")
+    entry = {
+        "value": new_text,
+        "evidence": evidence,
+        "chapterNum": chapter,
+        "confidence": confidence,
+        "sourceField": normalized,
+        "preservedValue": old_text,
+        "revealType": "affiliation_reveal",
+    }
+    _append_profile_dynamic_entry(profile, "hiddenAffiliation", entry, event)
+    _append_profile_dynamic_entry(profile, "affiliationClaims", {
+        **entry,
+        "value": f"身份/隶属揭示：{new_text}",
+    }, event)
+    _append_profile_dynamic_entry(profile, "observedFacts", {
+        **entry,
+        "value": f"暗哨/隶属揭示：{new_text}；原阵营记录保留为「{old_text}」",
+    }, event)
+    if re.search(r"(暗哨|内线|密探|卧底)", new_text):
+        profile["currentRole"] = new_text
+        meta = profile.get("_dynamicStateMeta")
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["currentRole"] = _change_event_meta(event)
+        profile["_dynamicStateMeta"] = meta
+    existing_reveal = profile.get("identityReveal")
+    reveal_text = f"第 {chapter} 章身份/隶属揭示：{new_text}（证据：{evidence}）"
+    if isinstance(existing_reveal, list):
+        if not any(isinstance(item, dict) and item.get("value") == reveal_text for item in existing_reveal):
+            existing_reveal.append({
+                "value": reveal_text,
+                "evidence": evidence,
+                "chapterNum": chapter,
+                "confidence": confidence,
+                "sourceField": normalized,
+                "preservedValue": old_text,
+            })
+        profile["identityReveal"] = existing_reveal
+    elif existing_reveal:
+        if reveal_text not in str(existing_reveal):
+            profile["identityReveal"] = f"{existing_reveal}；{reveal_text}"
+    else:
+        profile["identityReveal"] = reveal_text
+    meta = profile.get("_dynamicStateMeta")
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["identityReveal"] = _change_event_meta(event)
+    profile["_dynamicStateMeta"] = meta
     updates.pop("profile", None)
 
 
@@ -1203,6 +1684,9 @@ def _apply_profile_payload_update(profile: dict, payload: dict, event: dict):
         existing_value = profile.get(profile_key)
         if _is_owner_possession_rehome_change(field_path, existing_value, incoming_value, event.get("evidence")):
             _rehome_owner_possession_update(profile, {}, event, field_path, existing_value, incoming_value)
+            continue
+        if _is_faction_affiliation_reveal_rehome_change(field_path, existing_value, incoming_value, event.get("evidence")):
+            _rehome_faction_affiliation_reveal_update(profile, {}, event, field_path, existing_value, incoming_value)
             continue
         if _is_hard_field_behavior_supplement(field_path, existing_value, incoming_value, event.get("evidence")):
             _rehome_hard_field_behavior_update(profile, {}, event, field_path, existing_value, incoming_value)
@@ -1367,12 +1851,18 @@ async def _apply_entity_event(pid: str, event: dict):
             if payload.get("summary"):
                 existing_summary = entity.get("summary")
                 incoming_summary = payload.get("summary")
-                if existing_summary and _is_placeholder_summary(existing_summary):
+                if _record_identity_claim_or_mistake(profile, updates, event, incoming_summary, entity.get("name") or entity_name):
+                    pass
+                elif existing_summary and _is_placeholder_summary(existing_summary):
                     _apply_placeholder_summary_completion(entity, updates, incoming_summary)
                 elif existing_summary and _is_rule_instance_summary_supplement(existing_summary, incoming_summary, event.get("evidence")):
                     _rehome_rule_instance_summary_update(profile, updates, event, entity.get("summary"), payload.get("summary"))
                 elif existing_summary and _is_descriptive_placeholder_identity_reveal(entity.get("name") or entity_name, existing_summary, incoming_summary, event.get("evidence")):
                     _apply_descriptive_identity_reveal_update(entity, profile, updates, event, existing_summary, incoming_summary)
+                elif existing_summary and _is_summary_identity_background_reveal(existing_summary, incoming_summary, event.get("evidence")):
+                    _apply_identity_background_reveal_update(entity, profile, updates, event, existing_summary, incoming_summary)
+                elif existing_summary and _is_org_rule_summary_refinement(entity.get("entity_type") or entity_type, entity.get("name") or entity_name, existing_summary, incoming_summary, event.get("evidence")):
+                    _rehome_org_rule_summary_update(profile, updates, event, existing_summary, incoming_summary)
                 elif existing_summary and _is_summary_chapter_fact_supplement(existing_summary, incoming_summary, event.get("evidence")):
                     _rehome_summary_chapter_fact_update(profile, updates, event, existing_summary, incoming_summary)
                 else:
@@ -1402,6 +1892,8 @@ async def _apply_entity_event(pid: str, event: dict):
             incoming_value = _stringify_value(event.get("new_value"))
             if _is_owner_possession_rehome_change(normalized, existing_value, incoming_value, event.get("evidence")):
                 _rehome_owner_possession_update(profile, updates, event, normalized, existing_value, incoming_value)
+            elif _is_faction_affiliation_reveal_rehome_change(normalized, existing_value, incoming_value, event.get("evidence")):
+                _rehome_faction_affiliation_reveal_update(profile, updates, event, normalized, existing_value, incoming_value)
             elif _is_hard_field_behavior_supplement(normalized, existing_value, incoming_value, event.get("evidence")):
                 _rehome_hard_field_behavior_update(profile, updates, event, normalized, existing_value, incoming_value)
             else:
@@ -1418,12 +1910,18 @@ async def _apply_entity_event(pid: str, event: dict):
                     meta = {}
                 meta[key] = _change_event_meta(event)
                 profile["_observedCapabilityMeta"] = meta
+    elif field_path == "summary" and _record_identity_claim_or_mistake(profile, updates, event, event.get("new_value"), entity.get("name") or entity_name):
+        pass
     elif field_path == "summary" and _is_placeholder_summary(entity.get("summary")):
         _apply_placeholder_summary_completion(entity, updates, event.get("new_value"))
     elif field_path == "summary" and _is_rule_instance_summary_supplement(entity.get("summary"), event.get("new_value"), event.get("evidence")):
         _rehome_rule_instance_summary_update(profile, updates, event, entity.get("summary"), event.get("new_value"))
     elif field_path == "summary" and _is_descriptive_placeholder_identity_reveal(entity.get("name") or entity_name, entity.get("summary"), event.get("new_value"), event.get("evidence")):
         _apply_descriptive_identity_reveal_update(entity, profile, updates, event, entity.get("summary"), event.get("new_value"))
+    elif field_path == "summary" and _is_summary_identity_background_reveal(entity.get("summary"), event.get("new_value"), event.get("evidence")):
+        _apply_identity_background_reveal_update(entity, profile, updates, event, entity.get("summary"), event.get("new_value"))
+    elif field_path == "summary" and _is_org_rule_summary_refinement(entity.get("entity_type") or entity_type, entity.get("name") or entity_name, entity.get("summary"), event.get("new_value"), event.get("evidence")):
+        _rehome_org_rule_summary_update(profile, updates, event, entity.get("summary"), event.get("new_value"))
     elif field_path == "summary" and _is_summary_chapter_fact_supplement(entity.get("summary"), event.get("new_value"), event.get("evidence")):
         _rehome_summary_chapter_fact_update(profile, updates, event, entity.get("summary"), event.get("new_value"))
     elif field_path == "status":
@@ -1443,24 +1941,30 @@ async def _apply_entity_event(pid: str, event: dict):
 
 
 async def _apply_relationship_event(pid: str, event: dict):
-    payload = _decode_json(event.get("new_value")) or {}
-    if not isinstance(payload, dict):
-        payload = {"summary": event.get("new_value") or ""}
+    payload = _relationship_payload(event)
+    lookup_event = _relationship_entity_lookup_event(event)
+    source_name = _relationship_source_name_from_event(event, payload)
+    source_type = _relationship_source_type_from_event(event, payload)
+    target_name = _relationship_target_name_from_event(event, payload) or "未命名客体"
+    target_type = _relationship_target_type(payload)
 
     source = await _find_or_create_entity(
         pid,
-        event.get("entity_type") or "character",
-        event.get("entity_name") or "未命名主体",
-        event,
+        source_type,
+        source_name,
+        lookup_event,
     )
     target = await _find_or_create_entity(
         pid,
-        payload.get("targetEntityType") or payload.get("targetType") or "character",
-        payload.get("targetEntityName") or payload.get("targetName") or payload.get("target") or "未命名客体",
-        event,
+        target_type,
+        target_name,
+        lookup_event,
     )
 
-    relation_type = payload.get("relationType") or event.get("field_path") or "关系"
+    relation_type = _normalized_relationship_relation_type(payload, event)
+    if source.get("id") == target.get("id") or source.get("name") == target.get("name"):
+        return await _rehome_self_relationship_event(pid, event, source, target, payload, relation_type)
+
     existing = await fetchone(
         """
         SELECT * FROM setting_relations
@@ -1471,7 +1975,7 @@ async def _apply_relationship_event(pid: str, event: dict):
     now = int(time.time() * 1000)
     values = {
         "stance": payload.get("stance") or "",
-        "summary": payload.get("summary") or event.get("evidence") or "",
+        "summary": _normalized_relationship_summary(payload, event, source.get("name") or source_name, target.get("name") or target_name),
         "evidence": event.get("evidence") or "",
         "chapter_num": event.get("chapter_num"),
         "status": "active",
@@ -1495,7 +1999,85 @@ async def _apply_relationship_event(pid: str, event: dict):
     return await fetchone("SELECT * FROM setting_relations WHERE project_id=%s AND id=%s", (pid, rid))
 
 
+async def _find_existing_entity_by_name(pid: str, name: str, preferred_type: str = ""):
+    clean_name = _clean_text(name)
+    clean_type = _normalize_relationship_entity_type(preferred_type, clean_name)
+    if not clean_name:
+        return None
+    if clean_type:
+        existing = await fetchone(
+            "SELECT * FROM setting_entities WHERE project_id=%s AND entity_type=%s AND name=%s LIMIT 1",
+            (pid, clean_type, clean_name),
+        )
+        if existing:
+            return existing
+    return await fetchone(
+        "SELECT * FROM setting_entities WHERE project_id=%s AND name=%s LIMIT 1",
+        (pid, clean_name),
+    )
+
+
+def _choose_self_relationship_rehome_field(relation_type: str, summary: str, evidence: str):
+    text = f"{relation_type} {summary} {evidence}"
+    if re.search(r"(行动|正在|已|试图|追|问|查|带|拿|逃|躲|守|等|偿还|承担|使用)", text):
+        return "currentActions"
+    if re.search(r"(机制|规则|规矩|债本|账本|问询权|通行证|凭证|铜扣|欠条)", text):
+        return "internalMechanisms"
+    return "observedFacts"
+
+
+async def _rehome_self_relationship_event(pid: str, event: dict, source: dict, target: dict, payload: dict, relation_type: str):
+    profile = _decode_json(source.get("profile")) or {}
+    summary = _normalized_relationship_summary(
+        payload,
+        event,
+        source.get("name") or _relationship_source_name_from_event(event, payload),
+        target.get("name") or _relationship_target_name_from_event(event, payload),
+    )
+    evidence = event.get("evidence") or ""
+    field_name = _choose_self_relationship_rehome_field(relation_type, summary, evidence)
+    entry = {
+        "value": summary,
+        "evidence": evidence,
+        "chapterNum": event.get("chapter_num") or event.get("chapterNum"),
+        "confidence": event.get("confidence"),
+        "sourceField": "relationship",
+        "relationType": relation_type,
+        "targetEntityName": target.get("name") or source.get("name") or "",
+    }
+    _append_profile_dynamic_entry(profile, field_name, entry, event)
+    now = int(time.time() * 1000)
+    await _update_by_columns(
+        "setting_entities",
+        {
+            "profile": _json(profile),
+            "last_chapter": event.get("chapter_num") or event.get("chapterNum"),
+            "updated_at": now,
+        },
+        "project_id=%s AND id=%s",
+        (pid, source["id"]),
+    )
+    return {
+        "id": f"self-relationship-rehome:{event.get('id') or source.get('id')}",
+        "project_id": pid,
+        "source_entity_id": source.get("id"),
+        "target_entity_id": target.get("id"),
+        "relation_type": relation_type,
+        "stance": payload.get("stance") or "",
+        "summary": summary,
+        "evidence": evidence,
+        "chapter_num": event.get("chapter_num") or event.get("chapterNum"),
+        "status": "rehomed_to_entity_profile",
+    }
+
+
 async def _find_or_create_entity(pid: str, entity_type: str, name: str, event: dict):
+    if event.get("change_type") == "relationship":
+        entity_type = _normalize_relationship_entity_type(entity_type, name)
+        existing = await _find_existing_entity_by_name(pid, name, entity_type)
+        if existing:
+            return existing
+
     entity_id = event.get("entity_id")
     if entity_id:
         existing = await fetchone(

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const writerView = readFileSync('frontend/src/views/WriterView.vue', 'utf8')
+const contextSession = readFileSync('frontend/src/application/writer-flow/context-session.js', 'utf8')
 
 const ensureReadyMatch = writerView.match(/async function ensureStoryBlockReady[\s\S]*?\n}\n\nfunction isStoryBlockReviewRequired/)
 assert.ok(ensureReadyMatch, 'WriterView must define ensureStoryBlockReady')
@@ -25,8 +26,18 @@ const loadChapterMatch = writerView.match(/async function loadChapter[\s\S]*?\n}
 assert.ok(loadChapterMatch, 'WriterView must define loadChapter')
 assert.match(
   loadChapterMatch[0],
-  /await storyBlockStore\.loadBlocks\(projectId\.value\)/,
-  '切换章节/加载章节时必须刷新 story blocks，避免下一章沿用旧 active block'
+  /runLoadWriterChapterSession/,
+  'loadChapter must delegate chapter-session loading through the writer-flow application boundary'
+)
+assert.match(
+  loadChapterMatch[0],
+  /loadBlocks:\s*storyBlockStore\.loadBlocks/,
+  'loadChapter must pass storyBlockStore.loadBlocks into the chapter-session loader'
+)
+assert.match(
+  contextSession,
+  /await requireLoader\(loaders,\s*'loadBlocks'\)\(projectId\)[\s\S]*getOrCreateChapter/,
+  'runLoadWriterChapterSession must refresh story blocks before loading or creating the chapter'
 )
 
 const captureMatch = writerView.match(/function captureCurrentBlockStageSnapshot[\s\S]*?\n}\n\nasync function ensureBeatPlan/)

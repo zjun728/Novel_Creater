@@ -33,11 +33,18 @@ const menuOptions = computed(() => {
     )
   }
 
-  options.push({
-    label: '设置',
-    key: '/settings',
-    icon: () => '⚙️'
-  })
+  options.push(
+    {
+      label: '创作经验卡',
+      key: '/experience-cards',
+      icon: () => '🧭'
+    },
+    {
+      label: '设置',
+      key: '/settings',
+      icon: () => '⚙️'
+    }
+  )
 
   return options
 })

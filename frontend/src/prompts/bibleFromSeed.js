@@ -84,19 +84,35 @@ function normalizeWritingProfilePayload(value) {
   if (Array.isArray(value)) {
     const ids = value.map(item => normalizeText(item)).filter(Boolean)
     return {
+      selectedStandards: ids.slice(0, 3),
       primaryStandard: ids[0] || '',
       secondaryFlavor: ids[1] || '',
+      additionalStandards: ids.slice(2, 3),
       customStyleNotes: ''
     }
   }
 
   if (typeof value !== 'object') return {}
 
-  return {
-    primaryStandard: String(value.primaryStandard || '').trim(),
-    secondaryFlavor: String(value.secondaryFlavor || '').trim(),
+  const selectedStandards = Array.isArray(value.selectedStandards)
+    ? value.selectedStandards.map(item => normalizeText(item)).filter(Boolean).slice(0, 3)
+    : [
+        value.primaryStandard,
+        value.secondaryFlavor,
+        ...(Array.isArray(value.additionalStandards) ? value.additionalStandards : [])
+      ].map(item => normalizeText(item)).filter(Boolean).slice(0, 3)
+  const standardSnapshots = value.standardSnapshots && typeof value.standardSnapshots === 'object' && !Array.isArray(value.standardSnapshots)
+    ? value.standardSnapshots
+    : null
+  const normalized = {
+    selectedStandards,
+    primaryStandard: selectedStandards[0] || String(value.primaryStandard || '').trim(),
+    secondaryFlavor: selectedStandards[1] || String(value.secondaryFlavor || '').trim(),
+    additionalStandards: selectedStandards.slice(2),
     customStyleNotes: normalizeText(value.customStyleNotes)
   }
+  if (standardSnapshots && Object.keys(standardSnapshots).length) normalized.standardSnapshots = standardSnapshots
+  return normalized
 }
 
 function escapeRegExp(text) {

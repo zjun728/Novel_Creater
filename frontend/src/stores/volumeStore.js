@@ -325,7 +325,7 @@ async function requestVolumePlan(provider, context, onDiagnostics = () => {}) {
     }))
     text = getCompletionText(result)
     updateVolumePlanningDiagnosticsFromResult(diagnostics, result, text)
-    parsed = parseVolumePlan(text)
+    parsed = parseVolumePlan(text, diagnostics)
     diagnostics.parsedVolumeCount = parsed?.volumes?.length || 0
 
     if (!parsed?.volumes?.length) {
@@ -339,12 +339,12 @@ async function requestVolumePlan(provider, context, onDiagnostics = () => {}) {
             { role: 'user', content: buildVolumePlanRepairPrompt(text, context.project) }
           ], jsonOptions(provider, { maxTokens: 8000, temperature: 0, returnRaw: true }))
           repairText = getCompletionText(repair)
-          diagnostics.repairSucceeded = Boolean(parseVolumePlan(repairText)?.volumes?.length)
           diagnostics.repairRawHead = snippet(repairText || stringifyModelResult(repair), 1500)
           diagnostics.repairRawTail = tailSnippet(repairText || stringifyModelResult(repair), 800)
           diagnostics.repairFinishReason = getFinishReason(repair)
           diagnostics.repairUsage = normalizeUsage(getUsage(repair))
-          parsed = parseVolumePlan(repairText)
+          parsed = parseVolumePlan(repairText, diagnostics)
+          diagnostics.repairSucceeded = Boolean(parsed?.volumes?.length)
           diagnostics.parsedVolumeCount = parsed?.volumes?.length || diagnostics.parsedVolumeCount || 0
           if (parsed?.volumes?.length) diagnostics.failureStage = ''
         } catch (repairError) {
@@ -362,12 +362,12 @@ async function requestVolumePlan(provider, context, onDiagnostics = () => {}) {
           { role: 'user', content: buildCompactVolumePlanRetryPrompt(context, [text, repairText].filter(Boolean).join('\n\n')) }
         ], jsonOptions(provider, { maxTokens: 10000, temperature: 0.25, returnRaw: true }))
         compactText = getCompletionText(compact)
-        diagnostics.compactRetrySucceeded = Boolean(parseVolumePlan(compactText)?.volumes?.length)
         diagnostics.compactRawHead = snippet(compactText || stringifyModelResult(compact), 1500)
         diagnostics.compactRawTail = tailSnippet(compactText || stringifyModelResult(compact), 800)
         diagnostics.compactFinishReason = getFinishReason(compact)
         diagnostics.compactUsage = normalizeUsage(getUsage(compact))
-        parsed = parseVolumePlan(compactText)
+        parsed = parseVolumePlan(compactText, diagnostics)
+        diagnostics.compactRetrySucceeded = Boolean(parsed?.volumes?.length)
         diagnostics.parsedVolumeCount = parsed?.volumes?.length || diagnostics.parsedVolumeCount || 0
         if (parsed?.volumes?.length) diagnostics.failureStage = ''
       } catch (compactError) {
@@ -398,26 +398,187 @@ async function requestVolumePlan(provider, context, onDiagnostics = () => {}) {
   }
 }
 
-function parseVolumePlan(text) {
+function parseVolumePlan(text, diagnostics = null) {
   const cleaned = String(text || '')
     .replace(/^\uFEFF/, '')
     .trim()
-  const candidates = [
-    cleaned,
-    cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim(),
-    ...findBalancedJsonCandidates(cleaned),
-    cleaned.match(/\{[\s\S]*\}/)?.[0],
-    cleaned.match(/\[[\s\S]*\]/)?.[0]
-  ].filter(Boolean)
+  const rejectedParsedCandidates = []
+  const candidates = buildVolumePlanParseCandidates(cleaned)
 
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate)
-      if (Array.isArray(parsed)) return { volumes: parsed }
-      if (Array.isArray(parsed?.volumes)) return parsed
+      const parsed = JSON.parse(candidate.text)
+      const validation = validateVolumePlanRoot(parsed, candidate.source)
+      if (validation.ok) {
+        assignVolumePlanParseDiagnostics(diagnostics, {
+          parsed,
+          volumes: validation.volumes,
+          source: candidate.source,
+          rejectedParsedCandidates
+        })
+        return { ...(validation.sourceObject || {}), volumes: validation.volumes }
+      }
+      rejectedParsedCandidates.push(describeRejectedVolumePlanCandidate(parsed, candidate.source, validation.reason))
     } catch {}
   }
+  assignVolumePlanParseDiagnostics(diagnostics, { rejectedParsedCandidates })
   return null
+}
+
+function buildVolumePlanParseCandidates(cleaned) {
+  const candidates = []
+  const seen = new Set()
+  const addCandidate = (source, text) => {
+    const value = String(text || '').trim()
+    if (!value || seen.has(value)) return
+    seen.add(value)
+    candidates.push({ source, text: value })
+  }
+  const codeFenceStripped = cleaned
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim()
+
+  addCandidate('cleaned_json', cleaned)
+  addCandidate('code_fence_stripped_json', codeFenceStripped)
+  addCandidate('largest_outer_object', findLargestBalancedJsonCandidate(cleaned, '{'))
+  addCandidate('largest_outer_object_code_fence_stripped', findLargestBalancedJsonCandidate(codeFenceStripped, '{'))
+
+  for (const candidate of findBalancedJsonCandidates(cleaned)) {
+    addCandidate('balanced_candidate', candidate)
+  }
+  if (codeFenceStripped !== cleaned) {
+    for (const candidate of findBalancedJsonCandidates(codeFenceStripped)) {
+      addCandidate('balanced_candidate_code_fence_stripped', candidate)
+    }
+  }
+  return candidates
+}
+
+function findLargestBalancedJsonCandidate(text, openChar = '{') {
+  return findBalancedJsonCandidates(text)
+    .filter(candidate => candidate.trim().startsWith(openChar))
+    .sort((a, b) => b.length - a.length)[0] || ''
+}
+
+function validateVolumePlanRoot(parsed, source = '') {
+  if (Array.isArray(parsed)) {
+    const validation = validateVolumeArray(parsed, source)
+    return validation.ok
+      ? { ok: true, volumes: parsed, sourceObject: { volumes: parsed } }
+      : validation
+  }
+  if (parsed && typeof parsed === 'object') {
+    if (!Object.prototype.hasOwnProperty.call(parsed, 'volumes')) {
+      return { ok: false, reason: 'object_missing_volumes' }
+    }
+    const validation = validateVolumeArray(parsed.volumes, source)
+    return validation.ok
+      ? { ok: true, volumes: parsed.volumes, sourceObject: parsed }
+      : validation
+  }
+  return { ok: false, reason: 'volume_like_validation_failed' }
+}
+
+function validateVolumeArray(value, source = '') {
+  if (!Array.isArray(value)) return { ok: false, reason: 'volume_like_validation_failed' }
+  if (!value.length) return { ok: false, reason: 'volume_like_validation_failed' }
+  if (!value.every(item => item && typeof item === 'object' && !Array.isArray(item))) {
+    return {
+      ok: false,
+      reason: source.startsWith('balanced_candidate')
+        ? 'nested_array_not_volume_plan'
+        : 'array_items_not_volume_objects'
+    }
+  }
+  if (!value.every(isVolumeLikeObject)) return { ok: false, reason: 'volume_like_validation_failed' }
+  return { ok: true }
+}
+
+function isVolumeLikeObject(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+  const hasTitleOrNumber = hasMeaningfulValue(item.title) ||
+    hasMeaningfulValue(item.volumeNum) ||
+    hasMeaningfulValue(item.volume_num) ||
+    hasMeaningfulValue(item.volumeNumber)
+  const hasPurpose = hasMeaningfulValue(item.coreGoal) ||
+    hasMeaningfulValue(item.core_goal) ||
+    hasMeaningfulValue(item.mainConflict) ||
+    hasMeaningfulValue(item.main_conflict) ||
+    hasMeaningfulValue(item.summary)
+  return hasTitleOrNumber && hasPurpose && getVolumeLikeFeatureCount(item) >= 4
+}
+
+function getVolumeLikeFeatureCount(item) {
+  const checks = [
+    item.volumeNum,
+    item.volume_num,
+    item.volumeNumber,
+    item.title,
+    item.startChapter,
+    item.start_chapter,
+    item.endChapter,
+    item.end_chapter,
+    item.coreGoal,
+    item.core_goal,
+    item.mainConflict,
+    item.main_conflict,
+    item.summary
+  ]
+  return checks.reduce((count, value) => count + (hasMeaningfulValue(value) ? 1 : 0), 0)
+}
+
+function hasMeaningfulValue(value) {
+  if (value === null || value === undefined) return false
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'number') return Number.isFinite(value)
+  return String(value).trim().length > 0
+}
+
+function assignVolumePlanParseDiagnostics(diagnostics, payload = {}) {
+  if (!diagnostics || typeof diagnostics !== 'object') return
+  const volumes = Array.isArray(payload.volumes) ? payload.volumes : []
+  const firstItem = volumes[0]
+  diagnostics.parsedCandidateSource = payload.source || diagnostics.parsedCandidateSource || ''
+  diagnostics.parsedCandidateType = describeParsedVolumeCandidateType(payload.parsed)
+  diagnostics.parsedFirstItemType = describeVolumePlanValueType(firstItem)
+  diagnostics.parsedFirstItemKeys = firstItem && typeof firstItem === 'object' && !Array.isArray(firstItem)
+    ? Object.keys(firstItem).slice(0, 20)
+    : []
+  diagnostics.rejectedParsedCandidates = Array.isArray(payload.rejectedParsedCandidates)
+    ? payload.rejectedParsedCandidates
+    : []
+}
+
+function describeRejectedVolumePlanCandidate(parsed, source, reason) {
+  const firstItem = getVolumePlanFirstItem(parsed)
+  return {
+    source,
+    reason,
+    candidateType: describeParsedVolumeCandidateType(parsed),
+    firstItemType: describeVolumePlanValueType(firstItem),
+    firstItemKeys: firstItem && typeof firstItem === 'object' && !Array.isArray(firstItem)
+      ? Object.keys(firstItem).slice(0, 20)
+      : []
+  }
+}
+
+function getVolumePlanFirstItem(parsed) {
+  if (Array.isArray(parsed)) return parsed[0]
+  if (Array.isArray(parsed?.volumes)) return parsed.volumes[0]
+  return null
+}
+
+function describeParsedVolumeCandidateType(value) {
+  if (Array.isArray(value)) return 'array'
+  if (value && typeof value === 'object' && Array.isArray(value.volumes)) return 'object_with_volumes'
+  return describeVolumePlanValueType(value)
+}
+
+function describeVolumePlanValueType(value) {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
 }
 
 function findBalancedJsonCandidates(text) {
@@ -475,6 +636,11 @@ function createVolumePlanningDiagnostics({ provider, messages = [], maxTokens = 
     rawTail: '',
     containsMarkdownCodeBlock: false,
     likelyTruncated: false,
+    parsedCandidateSource: '',
+    parsedCandidateType: '',
+    parsedFirstItemType: '',
+    parsedFirstItemKeys: [],
+    rejectedParsedCandidates: [],
     parsedVolumeCount: 0,
     normalizedVolumeCount: 0,
     droppedVolumes: [],
@@ -527,6 +693,15 @@ function compactVolumePlanningDiagnostics(diagnostics = {}) {
     rawTail: diagnostics.rawTail || '',
     containsMarkdownCodeBlock: Boolean(diagnostics.containsMarkdownCodeBlock),
     likelyTruncated: Boolean(diagnostics.likelyTruncated),
+    parsedCandidateSource: diagnostics.parsedCandidateSource || '',
+    parsedCandidateType: diagnostics.parsedCandidateType || '',
+    parsedFirstItemType: diagnostics.parsedFirstItemType || '',
+    parsedFirstItemKeys: Array.isArray(diagnostics.parsedFirstItemKeys)
+      ? diagnostics.parsedFirstItemKeys
+      : [],
+    rejectedParsedCandidates: Array.isArray(diagnostics.rejectedParsedCandidates)
+      ? diagnostics.rejectedParsedCandidates
+      : [],
     parsedVolumeCount: diagnostics.parsedVolumeCount || 0,
     normalizedVolumeCount: diagnostics.normalizedVolumeCount || 0,
     droppedVolumes: Array.isArray(diagnostics.droppedVolumes) ? diagnostics.droppedVolumes : [],

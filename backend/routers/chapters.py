@@ -31,10 +31,46 @@ class ChapterTitleUpdate(BaseModel):
 
 
 CHAPTER_TITLE_PRONOUN_FRAGMENT_RE = re.compile(r"^(你|我|他|她|它|谁|这|那|嗯|啊|哦|呀|喂|哈|嘿)[—\-…~，。！？!?,]*$")
+CHAPTER_TITLE_ORAL_FRAGMENT_RE = re.compile(r"^(放|搁|摆|丢|扔)(这儿|这里|那儿|那里|这边|那边)$")
+CHAPTER_TITLE_DIALOGUE_FRAGMENT_RE = re.compile(
+    r"^(别管我|别动|别问|别说|别碰|闭嘴|住手|快走|谁派你来的|怎么了|怎么回事)$"
+)
+CHAPTER_TITLE_DIRECTION_FRAGMENT_RE = re.compile(
+    r"^(里面|外面|这边|那边|这里|那里|这儿|那儿|前面|后面|前头|后头|左边|右边|上面|下面)$"
+)
+CHAPTER_TITLE_ROUTE_QUESTION_RE = re.compile(
+    r"^(还(有|要)?多远|多远了?|走多久|要走多久|还有多久|多久到|到哪了?|到了没|到没到)$"
+)
+CHAPTER_TITLE_DIRECTION_QUESTION_RE = re.compile(
+    r"^(这(通向|通到|通往)哪(儿|里)?|往哪(儿|里)?走|向哪(儿|里)?走|从哪(儿|里)?走|哪(儿|里)?走|去哪(儿|里)?|去哪|怎么走)$"
+)
+CHAPTER_TITLE_LOCATION_POINTER_RE = re.compile(r"^(就是|就在|就)(这里|这儿|这边|那里|那儿|那边|里面|外面|前头|后头)$")
+CHAPTER_TITLE_ORAL_JUDGMENT_RE = re.compile(r"^(不一定|可支撑|也许吧|可能吧|假的|真的)$")
+CHAPTER_TITLE_SINGLE_ACTION_RE = re.compile(r"^(坐|走|追|看|等|跑|停|开|关)$")
+CHAPTER_TITLE_LOCATION_REMAINDER_RE = re.compile(
+    r"^(这边|那边|这儿|那儿|这里|那里|里面|外面|前头|后头|前面|后面)(也)?有([\u4e00-\u9fff]{0,4})?$"
+)
+CHAPTER_TITLE_INTERNAL_FIELD_RE = re.compile(
+    r"^(reason|title|stage|chapter|draft|final|summary|outline|beat|scene|key|value|type|content|message|error|result|status|prompt|quality|analysis)([_-]?(id|name|text|reason|summary|title|type|status))?$",
+    re.IGNORECASE,
+)
+CHAPTER_TITLE_LATIN_FRAGMENT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]{0,40}$")
+CHAPTER_TITLE_KEY_VALUE_FRAGMENT_RE = re.compile(
+    r"^\s*[\"']?(reason|title|stage|chapter|draft|final|summary|outline|beat|scene|key|value|type|content|message|error|result|status|prompt|quality|analysis)[\"']?\s*[:=]\s*.+$",
+    re.IGNORECASE,
+)
+CHAPTER_TITLE_JSON_OR_CODE_FRAGMENT_RE = re.compile(
+    r"^\s*([\{\[\]\}]|[\"']?(reason|title|summary|content)[\"']?\s*:|(const|let|var|return|function|if|else)\b|`{1,3})",
+    re.IGNORECASE,
+)
 
 
 def _is_semantic_title_char(ch: str) -> bool:
     return ch.isalnum() or ("\u4e00" <= ch <= "\u9fff")
+
+
+def _strip_title_fragment_edge_punctuation(title: str) -> str:
+    return re.sub(r"[.…—\-，。！？!?,、；;：:\s]+$", "", re.sub(r"^[…—\-，。！？!?,、；;：:\s]+", "", title or "")).strip()
 
 
 def _chapter_title_invalid_reason(title: str) -> str:
@@ -43,6 +79,12 @@ def _chapter_title_invalid_reason(title: str) -> str:
         return "empty"
     if len(text) > 30 or "\n" in text or "\r" in text:
         return "too_long_or_multiline"
+    if CHAPTER_TITLE_KEY_VALUE_FRAGMENT_RE.match(text) or CHAPTER_TITLE_JSON_OR_CODE_FRAGMENT_RE.match(text):
+        return "json_or_key_value_fragment"
+    if CHAPTER_TITLE_INTERNAL_FIELD_RE.fullmatch(text):
+        return "internal_field"
+    if CHAPTER_TITLE_LATIN_FRAGMENT_RE.fullmatch(text):
+        return "latin_fragment"
     chars = [ch for ch in text if not ch.isspace()]
     semantic_count = sum(1 for ch in chars if _is_semantic_title_char(ch))
     symbol_count = sum(1 for ch in chars if not _is_semantic_title_char(ch))
@@ -50,8 +92,33 @@ def _chapter_title_invalid_reason(title: str) -> str:
         return "symbol_fragment"
     if symbol_count >= semantic_count and symbol_count > 0:
         return "punctuation_dominant"
+    fragment_text = _strip_title_fragment_edge_punctuation(text)
     if CHAPTER_TITLE_PRONOUN_FRAGMENT_RE.match(text):
         return "dialogue_fragment"
+    if CHAPTER_TITLE_DIALOGUE_FRAGMENT_RE.match(fragment_text):
+        return "dialogue_fragment"
+    if re.fullmatch(r"别(管我|动|问|说|碰|过来|追|回头|看|吵|喊|理我?)", fragment_text):
+        return "dialogue_fragment"
+    if re.fullmatch(r"谁.{0,5}(派|让|叫).{0,4}(来|来的|去|去的)", fragment_text):
+        return "dialogue_fragment"
+    if CHAPTER_TITLE_DIRECTION_FRAGMENT_RE.match(fragment_text):
+        return "direction_fragment"
+    if re.fullmatch(r"(前|后|左|右|里|外|上|下)(面|边|头)", fragment_text):
+        return "direction_fragment"
+    if CHAPTER_TITLE_ROUTE_QUESTION_RE.match(fragment_text):
+        return "route_question_fragment"
+    if CHAPTER_TITLE_DIRECTION_QUESTION_RE.match(fragment_text):
+        return "direction_question_fragment"
+    if CHAPTER_TITLE_LOCATION_POINTER_RE.match(fragment_text):
+        return "location_pointer_fragment"
+    if CHAPTER_TITLE_ORAL_JUDGMENT_RE.match(fragment_text):
+        return "oral_judgment_fragment"
+    if CHAPTER_TITLE_SINGLE_ACTION_RE.match(fragment_text):
+        return "single_character_action_fragment"
+    if CHAPTER_TITLE_LOCATION_REMAINDER_RE.match(fragment_text):
+        return "location_fragment"
+    if CHAPTER_TITLE_ORAL_FRAGMENT_RE.match(text):
+        return "oral_fragment"
     if re.fullmatch(r"[{}\[\]()`#>*_+=|\\/\"'“”‘’《》「」『』【】（）()]+", text):
         return "markup_or_json_fragment"
     return ""
@@ -423,6 +490,20 @@ async def _validate_story_block_reference(pid: str, data: BeatPlanSave, cnum: in
     }
     if data.blockStageId not in stage_ids:
         raise HTTPException(400, "blockStageId 不属于该故事块的 stagePlan")
+    if cnum:
+        continuation_depth = await _stage_continuation_depth(pid, data.storyBlockId, data.blockStageId, cnum)
+        if continuation_depth >= 2:
+            raise HTTPException(
+                409,
+                {
+                    "code": "story_block_stage_continuation_limit",
+                    "message": "同一故事块阶段已经连续跨章继续两次，生成下一章小纲前必须先完成、拆分残余动作或开启新故事块。",
+                    "storyBlockId": data.storyBlockId,
+                    "blockStageId": data.blockStageId,
+                    "chapterNum": cnum,
+                    "stageContinuationDepth": continuation_depth,
+                },
+            )
     if await _is_story_block_stage_unusable_for_beat_plan(pid, block, stage, data.blockStageId, cnum):
         raise HTTPException(
             409,
@@ -484,6 +565,7 @@ async def _is_story_block_stage_unusable_for_beat_plan(pid: str, block: dict, st
 async def _has_stage_continuation_basis(pid: str, story_block_id: str, stage_id: str, cnum: int):
     if not story_block_id or not stage_id or not cnum or cnum <= 1:
         return False
+    depth = await _stage_continuation_depth(pid, story_block_id, stage_id, cnum)
     row = await fetchone(
         """
         SELECT review_json
@@ -495,12 +577,58 @@ async def _has_stage_continuation_basis(pid: str, story_block_id: str, stage_id:
         (pid, story_block_id, cnum - 1),
     )
     review = _dict((row or {}).get("review_json"))
-    snapshot = _dict(review.get("blockStageSnapshot"))
     return bool(
         review.get("stageContinues") is True
-        and str(snapshot.get("stageId") or review.get("blockStageId") or "") == str(stage_id)
+        and _review_stage_id(review) == str(stage_id)
         and _stage_continue_reason(review)
+        and depth < 2
     )
+
+
+async def _stage_continuation_depth(pid: str, story_block_id: str, stage_id: str, cnum: int):
+    if not story_block_id or not stage_id or not cnum or cnum <= 1:
+        return 0
+    rows = await fetchall(
+        """
+        SELECT chapter_num, review_json
+        FROM story_block_reviews
+        WHERE project_id=%s AND story_block_id=%s AND chapter_num<%s
+        ORDER BY chapter_num DESC, created_at DESC
+        LIMIT 8
+        """,
+        (pid, story_block_id, cnum),
+    )
+    depth = 0
+    seen_chapters = set()
+    for row in rows:
+        chapter_num = row.get("chapter_num")
+        if chapter_num in seen_chapters:
+            continue
+        seen_chapters.add(chapter_num)
+        review = _dict(row.get("review_json"))
+        review_stage_id = _review_stage_id(review)
+        if (
+            review.get("stageContinues") is True
+            and _stage_continue_reason(review)
+            and (not review_stage_id or review_stage_id == str(stage_id))
+        ):
+            depth += 1
+            continue
+        break
+    return depth
+
+
+def _review_stage_id(review: dict) -> str:
+    snapshot = _dict(review.get("blockStageSnapshot"))
+    return str(
+        snapshot.get("stageId")
+        or snapshot.get("id")
+        or review.get("blockStageId")
+        or review.get("block_stage_id")
+        or review.get("stageId")
+        or review.get("stage_id")
+        or ""
+    ).strip()
 
 
 def _stage_continue_reason(review: dict) -> str:

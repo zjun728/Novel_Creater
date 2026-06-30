@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 
 const guard = readFileSync('frontend/src/utils/finalizationGuard.js', 'utf8')
 const writerView = readFileSync('frontend/src/views/WriterView.vue', 'utf8')
+const markerAction = readFileSync('frontend/src/application/writer-flow/finalization-marker-action.js', 'utf8')
 
 assert.match(
   guard,
@@ -32,8 +33,13 @@ assert.match(
 )
 assert.match(
   writerView,
-  /重试第 \{\{ blockingFinalizationPending\.chapterNum \}\} 章定稿后/,
-  'WriterView must keep a user-visible retry postprocess entry'
+  /finalizationMarkerAction\.buttonText/,
+  'WriterView must render the user-visible retry postprocess action from marker action state'
+)
+assert.match(
+  markerAction,
+  /重试第 \$\{chapterNum \|\| ''\} 章定稿后提取/,
+  'marker action must keep a user-visible retry postprocess label'
 )
 assert.match(
   writerView,

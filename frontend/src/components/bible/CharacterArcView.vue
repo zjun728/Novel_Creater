@@ -1,30 +1,34 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { NTag, NSelect, NPopover } from 'naive-ui'
+import { buildCanonicalCharacterRows, buildCharacterAliasIndex, characterFactsForChapter } from '@/utils/characterFactMatcher'
 
 const props = defineProps({
   characters: { type: Array, default: () => [] },
   chapters: { type: Array, default: () => [] },
-  canonFacts: { type: Array, default: () => [] }
+  canonFacts: { type: Array, default: () => [] },
+  settingEntities: { type: Array, default: () => [] }
 })
 
 const filterCharId = ref(null)
 
+const canonicalCharacters = computed(() => buildCanonicalCharacterRows(props.characters, props.settingEntities))
+
 const filteredCharacters = computed(() => {
   if (filterCharId.value) {
-    return props.characters.filter(c => c.id === filterCharId.value)
+    return canonicalCharacters.value.filter(c => c.id === filterCharId.value)
   }
-  return props.characters
+  return canonicalCharacters.value
 })
 
 const charOptions = computed(() =>
-  props.characters.map(c => ({ label: c.name, value: c.id }))
+  canonicalCharacters.value.map(c => ({ label: c.name, value: c.id }))
 )
 
+const aliasIndex = computed(() => buildCharacterAliasIndex(canonicalCharacters.value, props.settingEntities))
+
 function charChapterInfo(character, chapter) {
-  const facts = props.canonFacts.filter(
-    f => f.chapterNum === chapter.chapterNum && f.relatedCharacters?.includes(character.id)
-  )
+  const facts = characterFactsForChapter(character, chapter, props.canonFacts, aliasIndex.value)
   const hardChanged = character.hardState?.lastUpdatedChapter === chapter.chapterNum
   const softChanged = character.softState?.lastUpdatedChapter === chapter.chapterNum
   return { facts, hardChanged, softChanged }
@@ -68,7 +72,7 @@ function getCellTitle(character, chapter) {
       />
     </div>
 
-    <div v-if="!characters.length" class="text-center text-gray-400 text-sm py-8">
+    <div v-if="!canonicalCharacters.length" class="text-center text-gray-400 text-sm py-8">
       暂无角色数据
     </div>
 

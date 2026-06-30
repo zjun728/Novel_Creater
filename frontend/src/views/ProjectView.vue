@@ -103,6 +103,7 @@ const closeStoryBlockReason = ref('user_manual_close')
 const closeStoryBlockNote = ref('')
 const closeStoryBlockOpenNewAfter = ref(false)
 const closingStoryBlock = ref(false)
+const syncingPlotThreads = ref(false)
 
 const selectedSeed = computed(() => seedStore.seeds.find(seed => seed.status === 'selected'))
 const bibleReady = computed(() => Boolean(novelStore.bible?.premise || novelStore.bible?.worldRules || novelStore.bible?.styleBible))
@@ -241,6 +242,54 @@ const workflowSteps = computed(() => [
   }
 ])
 
+function normalizeThreadList(value) {
+  if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) return []
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) return parsed.map(item => String(item || '').trim()).filter(Boolean)
+    } catch {}
+    return text.split(/[，,；;]/).map(item => item.trim()).filter(Boolean)
+  }
+  return []
+}
+
+const acceptedCanonFactsWithThreadTags = computed(() =>
+  (novelStore.canonFacts || []).filter(fact =>
+    (fact.status || 'accepted') === 'accepted' &&
+    normalizeThreadList(fact.relatedPlotThreads || fact.related_plot_threads || fact.threadTags || fact.tags).length > 0
+  )
+)
+
+async function syncPlotThreadsFromCanonFacts({ silent = false } = {}) {
+  if (!project.value?.id || syncingPlotThreads.value) return null
+  syncingPlotThreads.value = true
+  try {
+    const result = await novelStore.syncPlotThreadsFromCanonFacts(project.value.id)
+    if (!silent) {
+      message.success(`伏笔看板已同步：${result?.plotThreads?.length || novelStore.plotThreads.length} 条`)
+    }
+    return result
+  } catch (e) {
+    if (!silent) message.error('同步伏笔看板失败：' + e.message)
+    throw e
+  } finally {
+    syncingPlotThreads.value = false
+  }
+}
+
+async function autoBackfillPlotThreadsIfNeeded() {
+  if (
+    project.value?.id &&
+    !novelStore.plotThreads.length &&
+    acceptedCanonFactsWithThreadTags.value.length
+  ) {
+    await syncPlotThreadsFromCanonFacts({ silent: true }).catch(() => {})
+  }
+}
+
 onMounted(async () => {
   const id = route.params.id
   try {
@@ -271,6 +320,9 @@ onMounted(async () => {
             projectContentState.value = null
           })
       ])
+      if (activeTab.value === 'plotThreads') {
+        await autoBackfillPlotThreadsIfNeeded()
+      }
     }
   } catch (e) {
     message.error('加载项目数据失败：' + e.message)
@@ -295,6 +347,9 @@ watch(activeTab, async tab => {
     await storyBlockStore.loadBlocks(project.value.id).catch(() => {
       message.error('加载故事块失败')
     })
+  }
+  if (tab === 'plotThreads') {
+    await autoBackfillPlotThreadsIfNeeded()
   }
 })
 
@@ -1087,6 +1142,7 @@ function auditReport() {
             :characters="novelStore.characters"
             :chapters="writerStore.chapters"
             :canon-facts="novelStore.canonFacts"
+            :setting-entities="settingStore.entities"
           />
         </div>
       </n-tab-pane>
@@ -1096,6 +1152,10 @@ function auditReport() {
           <PlotThreadBoard
             :plot-threads="novelStore.plotThreads"
             :chapters="writerStore.chapters"
+            :canon-facts="novelStore.canonFacts"
+            :current-volume="activeChapterVolume"
+            :syncing="syncingPlotThreads"
+            @sync="syncPlotThreadsFromCanonFacts"
           />
         </div>
       </n-tab-pane>

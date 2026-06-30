@@ -247,6 +247,115 @@ async def ensure_schema():
           INDEX idx_story_block_reviews_decision (project_id, decision)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         """,
+        """
+        CREATE TABLE IF NOT EXISTS sample_source (
+          id CHAR(36) PRIMARY KEY,
+          source_type VARCHAR(40) NOT NULL DEFAULT 'local_report',
+          title VARCHAR(300) NOT NULL DEFAULT '',
+          author VARCHAR(120) DEFAULT '',
+          file_name VARCHAR(300) DEFAULT '',
+          file_hash VARCHAR(120) DEFAULT '',
+          source_note TEXT DEFAULT NULL,
+          status VARCHAR(30) DEFAULT 'imported',
+          imported_at BIGINT DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          INDEX idx_sample_source_type (source_type),
+          INDEX idx_sample_source_status (status),
+          INDEX idx_sample_source_title (title)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sample_chunk (
+          id CHAR(36) PRIMARY KEY,
+          source_id CHAR(36) NOT NULL,
+          chunk_order INT NOT NULL DEFAULT 0,
+          chapter_label VARCHAR(200) DEFAULT '',
+          window_role VARCHAR(80) DEFAULT 'report_card',
+          abstract_notes_json JSON DEFAULT NULL,
+          metrics_json JSON DEFAULT NULL,
+          raw_hash VARCHAR(120) DEFAULT '',
+          status VARCHAR(30) DEFAULT 'imported',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          INDEX idx_sample_chunk_source (source_id, chunk_order),
+          INDEX idx_sample_chunk_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS experience_card (
+          id CHAR(36) PRIMARY KEY,
+          source_id CHAR(36) DEFAULT NULL,
+          source_card_ref VARCHAR(200) DEFAULT '',
+          source_title VARCHAR(300) DEFAULT '',
+          title VARCHAR(300) NOT NULL DEFAULT '',
+          status VARCHAR(30) NOT NULL DEFAULT 'candidate',
+          card_type VARCHAR(60) DEFAULT 'imported_sample',
+          chapter_skeleton TEXT DEFAULT NULL,
+          story_block_span TEXT DEFAULT NULL,
+          protagonist_progression TEXT DEFAULT NULL,
+          supporting_character_method TEXT DEFAULT NULL,
+          emotional_dwell TEXT DEFAULT NULL,
+          scene_dwell TEXT DEFAULT NULL,
+          dialogue_naturalness TEXT DEFAULT NULL,
+          setting_exposure TEXT DEFAULT NULL,
+          answers_and_suspense TEXT DEFAULT NULL,
+          anti_ai_notes TEXT DEFAULT NULL,
+          genre_tags JSON DEFAULT NULL,
+          avoid_patterns JSON DEFAULT NULL,
+          chunk_ids JSON DEFAULT NULL,
+          metrics_json JSON DEFAULT NULL,
+          safety_flags JSON DEFAULT NULL,
+          review_note TEXT DEFAULT NULL,
+          reviewed_at BIGINT DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          CHECK (status IN ('candidate','reviewed','rejected','merged','archived')),
+          INDEX idx_experience_card_status (status),
+          INDEX idx_experience_card_source (source_id),
+          INDEX idx_experience_card_title (title)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS writing_standard_candidate (
+          id CHAR(36) PRIMARY KEY,
+          name VARCHAR(200) NOT NULL DEFAULT '',
+          category VARCHAR(120) DEFAULT '样本库 / 人工审核',
+          status VARCHAR(30) NOT NULL DEFAULT 'draft',
+          source_card_ids JSON DEFAULT NULL,
+          merged_guidance JSON DEFAULT NULL,
+          audit_focus JSON DEFAULT NULL,
+          safety_policy JSON DEFAULT NULL,
+          review_note TEXT DEFAULT NULL,
+          promoted_standard_id CHAR(36) DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          CHECK (status IN ('draft','reviewing','approved','rejected','promoted')),
+          INDEX idx_standard_candidate_status (status),
+          INDEX idx_standard_candidate_promoted (promoted_standard_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS writing_standard (
+          id CHAR(36) PRIMARY KEY,
+          name VARCHAR(200) NOT NULL DEFAULT '',
+          category VARCHAR(120) DEFAULT '样本库 / 人工审核',
+          version VARCHAR(40) DEFAULT 'v1',
+          short_rule TEXT DEFAULT NULL,
+          guidance_json JSON DEFAULT NULL,
+          audit_focus JSON DEFAULT NULL,
+          source_candidate_id CHAR(36) DEFAULT NULL,
+          source_type VARCHAR(40) DEFAULT 'experience_card',
+          status VARCHAR(30) DEFAULT 'active',
+          no_direct_imitation TINYINT(1) DEFAULT 1,
+          safety_flags JSON DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          INDEX idx_writing_standard_status (status),
+          INDEX idx_writing_standard_source_candidate (source_candidate_id),
+          INDEX idx_writing_standard_name (name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
         "ALTER TABLE chapters ADD COLUMN story_block_id CHAR(36) DEFAULT NULL AFTER title",
         "ALTER TABLE chapters ADD INDEX idx_chapters_story_block (project_id, story_block_id)",
         "ALTER TABLE chapter_beat_plans ADD COLUMN story_block_id CHAR(36) DEFAULT NULL AFTER chapter_num",

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { cleanGeneratedChapterTitle } from '../frontend/src/prompts/chapter.js'
 
-const eventPreferred = cleanGeneratedChapterTitle(JSON.stringify({
+const concreteCatalogPreferred = cleanGeneratedChapterTitle(JSON.stringify({
   candidates: [
     { title: '母亲核心冷光', type: 'item', reason: '物象状态' },
     { title: '审问', type: 'event', reason: '本章核心事件' },
@@ -12,7 +12,7 @@ const eventPreferred = cleanGeneratedChapterTitle(JSON.stringify({
   content: '母亲核心冷光还在墙上。审问发生在火灶房。第七封信被留在桌上。'
 })
 
-assert.equal(eventPreferred, '审问')
+assert.equal(concreteCatalogPreferred, '第七封信')
 
 const naturalNounPreferred = cleanGeneratedChapterTitle(JSON.stringify({
   candidates: [
@@ -28,10 +28,10 @@ assert.ok(['火灶房', '金龙宝行'].includes(naturalNounPreferred), `${natur
 
 const stillUsableWhenOnlyAverage = cleanGeneratedChapterTitle(JSON.stringify({
   candidates: [
-    { title: '母亲核心冷光', type: 'item', reason: '物象状态' }
+    { title: '铁盒冷光', type: 'item', reason: '物件状态' }
   ]
 }))
 
-assert.equal(stillUsableWhenOnlyAverage, '母亲核心冷光')
+assert.equal(stillUsableWhenOnlyAverage, '铁盒冷光')
 
 console.log('CHAPTER_TITLE_CANDIDATE_RANKING_CONTRACT_OK')

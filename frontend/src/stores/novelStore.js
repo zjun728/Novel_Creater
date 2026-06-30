@@ -490,6 +490,19 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
+  async function syncPlotThreadsFromCanonFacts(projectId) {
+    try {
+      const result = await api.plotThreads.syncFromCanonFacts(projectId)
+      plotThreads.value = Array.isArray(result?.plotThreads)
+        ? result.plotThreads
+        : await api.plotThreads.list(projectId)
+      return result
+    } catch (e) {
+      console.error('同步伏笔看板失败:', e.message)
+      throw e
+    }
+  }
+
   async function savePlotThread(data) {
     try {
       const pid = data.projectId || data.project_id
@@ -534,16 +547,25 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function saveCanonFact(data) {
+  async function saveCanonFact(data, options = {}) {
     try {
       const pid = data.projectId || data.project_id
       if (data.id) {
         const updated = await api.canonFacts.update(pid, data.id, data)
         const idx = canonFacts.value.findIndex(f => f.id === data.id)
         if (idx !== -1) canonFacts.value[idx] = updated
+        if (!options.skipPlotThreadSync && (updated.status || data.status) === 'accepted') {
+          await syncPlotThreadsFromCanonFacts(pid)
+        }
       } else {
-        const created = await api.canonFacts.create(pid, data)
+        const payload = options.skipPlotThreadSync
+          ? { ...data, skipPlotThreadSync: true }
+          : data
+        const created = await api.canonFacts.create(pid, payload)
         canonFacts.value.push(created)
+        if (!options.skipPlotThreadSync && (created.status || data.status) === 'accepted') {
+          await syncPlotThreadsFromCanonFacts(pid)
+        }
       }
     } catch (e) {
       console.error('保存Canon事实失败:', e.message)
@@ -558,6 +580,7 @@ export const useNovelStore = defineStore('novel', () => {
         const pid = fact.projectId || fact.project_id
         fact.status = 'accepted'
         await api.canonFacts.update(pid, id, { status: 'accepted' })
+        await syncPlotThreadsFromCanonFacts(pid)
       }
     } catch (e) {
       console.error('确认Canon事实失败:', e.message)
@@ -646,6 +669,7 @@ export const useNovelStore = defineStore('novel', () => {
     loadPlotThreads,
     savePlotThread,
     deletePlotThread,
+    syncPlotThreadsFromCanonFacts,
     loadCanonFacts,
     saveCanonFact,
     confirmCanonFact,

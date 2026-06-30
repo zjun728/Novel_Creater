@@ -23,11 +23,13 @@ const prompt = buildChapterTitlePrompt({
 assert.match(prompt, /本章正文/)
 assert.match(prompt, /简短小纲/)
 assert.match(prompt, /最近 5 个章名/)
-assert.match(prompt, /可以直接使用第一次出现的重要人物、功法、武器、组织、地点或道具名/)
+assert.match(prompt, /可以直接使用第一次出现的重要人物、功法、武器、组织、地点、房间、密室或道具名/)
+assert.match(prompt, /关键事件、突破境界、功法级别、法力等级/)
+assert.match(prompt, /短事件词或短结构/)
 assert.doesNotMatch(prompt, /物象 \+ 状态/)
 assert.doesNotMatch(prompt, /必须换标题结构/)
 
-for (const title of ['审问', '火灶房', '侯小妹', '炼灵', '黄金棺材', '金龙宝行', '服软']) {
+for (const title of ['审问', '交易', '中毒', '破禁', '恶斗（上）', '火灶房', '侯小妹', '炼灵', '筑基中期', '炼灵二重', '法力三重', '剑诀之威', '韩某与黑衣人', '黄金棺材', '金龙宝行', '服软']) {
   assert.equal(cleanGeneratedChapterTitle(title), title, `${title} should be accepted as a simple catalog title`)
 }
 

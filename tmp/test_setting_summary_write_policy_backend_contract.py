@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import asyncio
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -12,12 +13,89 @@ def assert_equal(actual, expected, message):
         raise AssertionError(f"{message}: expected {expected!r}, got {actual!r}")
 
 
+async def assert_miner_creditor_accept_has_no_hard_conflict():
+    original_fetchone = settings_library.fetchone
+
+    async def fake_fetchone(sql, args=None):
+        if "FROM setting_entities" in sql:
+            return {
+                "id": "entity-miner-creditor",
+                "project_id": "project-1",
+                "entity_type": "character",
+                "name": "矿山债主",
+                "summary": MINER_CREDITOR_OLD_SUMMARY,
+                "profile": settings_library._json({}),
+                "aliases": settings_library._json([]),
+            }
+        return None
+
+    settings_library.fetchone = fake_fetchone
+    try:
+        conflicts = await settings_library._collect_hard_setting_conflicts("project-1", {
+            "id": "event-1",
+            "entity_id": "entity-miner-creditor",
+            "entity_name": "矿山债主",
+            "entity_type": "character",
+            "change_type": "update_entity",
+            "field_path": "summary",
+            "old_value": MINER_CREDITOR_OLD_SUMMARY,
+            "new_value": MINER_CREDITOR_NEW_SUMMARY,
+            "evidence": MINER_CREDITOR_EVIDENCE,
+            "chapter_num": 2,
+            "confidence": 0.9,
+        })
+    finally:
+        settings_library.fetchone = original_fetchone
+
+    assert_equal(conflicts, [], "backend accept hard conflict collection")
+
+
+async def assert_affiliation_reveal_accept_has_no_hard_conflict():
+    original_fetchone = settings_library.fetchone
+
+    async def fake_fetchone(sql, args=None):
+        if "FROM setting_entities" in sql:
+            return {
+                "id": "entity-toothpick",
+                "project_id": "project-1",
+                "entity_type": "character",
+                "name": "剔牙男人",
+                "summary": "跟在陆沉舟后方的剔牙男人。",
+                "profile": settings_library._json({"faction": "与缺指男人同一势力"}),
+                "aliases": settings_library._json([]),
+            }
+        return None
+
+    settings_library.fetchone = fake_fetchone
+    try:
+        conflicts = await settings_library._collect_hard_setting_conflicts("project-1", {
+            "id": "event-affiliation-reveal",
+            "entity_id": "entity-toothpick",
+            "entity_name": "剔牙男人",
+            "entity_type": "character",
+            "change_type": "update_entity",
+            "field_path": "profile.faction",
+            "old_value": "与缺指男人同一势力",
+            "new_value": "巡天司（暗哨）",
+            "evidence": "剔牙男人拿出巡天司暗哨令牌。",
+            "chapter_num": 43,
+            "confidence": 0.86,
+        })
+    finally:
+        settings_library.fetchone = original_fetchone
+
+    assert_equal(conflicts, [], "faction weak inference plus dark-post reveal should not hard conflict")
+
+
 OFFICIAL_ORG_SUMMARY = "巡天司是大靖朝廷设立的官方机构，负责巡查九州异象、缉拿违规修士，并掌握部分旧档案。"
 OFFICIAL_ORG_WITH_FACTS = "巡天司是大靖朝廷设立的官方机构，负责巡查九州异象、缉拿违规修士，并掌握部分旧档案。第 2 章揭示其存在内部处决机制，司主正在追捕陆沉舟，方鹤暗中帮助陆沉舟。"
 SECRET_ORG_SUMMARY = "星债会是围绕星账债务运转的秘密组织，暗中收集债务线索并操纵欠债者。"
 SECRET_ORG_REWRITE = "星债会不再是秘密组织，而是公开官署，负责正式登记所有星账债务。"
 DESCRIPTIVE_PLACEHOLDER_SUMMARY = "在矿城西区木门后出现的老人，知道陆沉舟父亲和庚子账，主动引陆沉舟进入，可能是父亲旧识或关键情报源。"
 FORMAL_IDENTITY_SUMMARY = "宋怀安，前矿北账务所账房，与陆怀安共事大半年，陆怀安留信物与他，掌握庚子账线索。"
+MINER_CREDITOR_OLD_SUMMARY = "自称替陆沉舟父亲收债的神秘矿工，可能掌握父亲债务的细节或与玉虚峰矿山的交易内幕，后续可能引导调查或成为敌对。"
+MINER_CREDITOR_NEW_SUMMARY = "自称替私人债主收债的玉虚峰丙七矿区矿工，曾是陆沉舟父亲的跟班矿工，认识巡天司北城执事赵鹤，知道星账在陆沉舟手中，并提供了逃跑路线和欠条。"
+MINER_CREDITOR_EVIDENCE = "“我给他当了两年跟班矿工。”“我不是债主——我是来替他收债的。”“你认识赵鹤？”“你爹生前跟我说过那本账。”"
 
 
 assert_equal(settings_library._is_placeholder_summary("第 1 章自动识别的设定"), True, "numbered placeholder")
@@ -32,6 +110,11 @@ for field_path in [
     "profile.chapterEvidence",
     "profile.hiddenStance",
     "profile.currentAction",
+    "profile.affiliationClaims",
+    "profile.hiddenAffiliation",
+    "profile.currentRole",
+    "profile.identityReveal",
+    "profile.identityReveals",
 ]:
     assert_equal(settings_library._field_tier(field_path), "dynamicState", f"{field_path} tier")
     assert_equal(settings_library._is_hard_setting_field(field_path), False, f"{field_path} not hard")
@@ -56,6 +139,24 @@ assert_equal(
     "descriptive placeholder identity reveal should be detected",
 )
 assert_equal(
+    settings_library._is_summary_identity_background_reveal(
+        MINER_CREDITOR_OLD_SUMMARY,
+        MINER_CREDITOR_NEW_SUMMARY,
+        MINER_CREDITOR_EVIDENCE,
+    ),
+    True,
+    "uncertain summary plus concrete identity/background evidence should be reveal",
+)
+assert_equal(
+    settings_library._allows_layered_hard_field_reveal(
+        MINER_CREDITOR_OLD_SUMMARY,
+        MINER_CREDITOR_NEW_SUMMARY,
+        MINER_CREDITOR_EVIDENCE,
+    ),
+    True,
+    "background reveal should suppress hard summary rewrite warning",
+)
+assert_equal(
     settings_library._is_descriptive_placeholder_identity_reveal(
         "陆远之",
         "陆远之，陆沉舟的父亲，曾任巡天司星吏，三年前在北境矿案后失踪。",
@@ -64,6 +165,15 @@ assert_equal(
     ),
     False,
     "stable formal name rewrite should not be treated as identity reveal",
+)
+assert_equal(
+    settings_library._is_summary_identity_background_reveal(
+        "张三，巡天司执事，长期负责北城旧档。",
+        "李四，商盟长老，长期负责资源交易。",
+        "无伪装、化名或误认证据。",
+    ),
+    False,
+    "stable identity replacement without reveal evidence should still block",
 )
 assert_equal(
     settings_library._is_hard_summary_rewrite(
@@ -92,6 +202,36 @@ assert_equal(
     settings_library._is_hard_field_behavior_supplement("profile.faction", "巡天司", "商盟", ""),
     False,
     "direct faction replacement must not be treated as behavior supplement",
+)
+assert_equal(
+    settings_library._is_faction_affiliation_reveal_rehome_change(
+        "profile.faction",
+        "与缺指男人同一势力",
+        "巡天司（暗哨）",
+        "剔牙男人拿出巡天司暗哨令牌。",
+    ),
+    True,
+    "weak inferred faction plus explicit dark-post evidence should be rehomed",
+)
+assert_equal(
+    settings_library._is_faction_affiliation_reveal_rehome_change(
+        "profile.faction",
+        "未知势力，可能与巡天司或商盟有关",
+        "巡天司",
+        "缺指男人指挥巡天司暗哨设伏，瘦高个巡天司领队听从其命令。",
+    ),
+    True,
+    "unknown possible faction plus command evidence should be rehomed as affiliation reveal",
+)
+assert_equal(
+    settings_library._is_faction_affiliation_reveal_rehome_change(
+        "profile.faction",
+        "巡天司",
+        "星债会核心成员",
+        "无卧底、伪装、暗线或身份揭示证据。",
+    ),
+    False,
+    "stable faction rewrite should remain a hard conflict",
 )
 
 profile = {}
@@ -130,6 +270,34 @@ if not profile.get("hiddenStance"):
     raise AssertionError("hidden behavior should append profile.hiddenStance")
 assert "暗中帮助陆沉舟" in profile["hiddenStance"][-1]["value"]
 assert_equal(profile["_dynamicStateMeta"]["hiddenStance"]["chapterNum"], 2, "hiddenStance meta")
+
+profile = {"faction": "与缺指男人同一势力"}
+updates = {}
+event = {
+    "entity_name": "剔牙男人",
+    "field_path": "profile.faction",
+    "new_value": "巡天司（暗哨）",
+    "evidence": "剔牙男人拿出巡天司暗哨令牌。",
+    "chapter_num": 43,
+    "confidence": 0.86,
+}
+settings_library._rehome_faction_affiliation_reveal_update(
+    profile,
+    updates,
+    event,
+    "profile.faction",
+    "与缺指男人同一势力",
+    "巡天司（暗哨）",
+)
+assert_equal(profile["faction"], "与缺指男人同一势力", "hard faction should not be overwritten by dark-post reveal")
+if not profile.get("hiddenAffiliation"):
+    raise AssertionError("dark-post reveal should append profile.hiddenAffiliation")
+if not profile.get("affiliationClaims"):
+    raise AssertionError("dark-post reveal should append profile.affiliationClaims")
+if not profile.get("observedFacts"):
+    raise AssertionError("dark-post reveal should append profile.observedFacts")
+assert "巡天司" in profile["hiddenAffiliation"][-1]["value"]
+assert_equal(profile["_dynamicStateMeta"]["hiddenAffiliation"]["chapterNum"], 43, "hiddenAffiliation meta")
 
 entity = {
     "summary": "第 1 章自动识别的设定",
@@ -172,8 +340,42 @@ if "木门后老人" not in aliases:
 if "旧描述" not in identity_profile.get("identityReveal", "") and "木门后老人" not in identity_profile.get("identityReveal", ""):
     raise AssertionError("identity reveal details should be preserved in profile.identityReveal")
 
+background_entity = {
+    "name": "矿山债主",
+    "summary": MINER_CREDITOR_OLD_SUMMARY,
+    "aliases": settings_library._json([]),
+}
+background_profile = {}
+background_updates = {}
+background_event = {
+    "entity_name": "矿山债主",
+    "field_path": "summary",
+    "new_value": MINER_CREDITOR_NEW_SUMMARY,
+    "evidence": MINER_CREDITOR_EVIDENCE,
+    "chapter_num": 2,
+    "confidence": 0.9,
+}
+settings_library._apply_identity_background_reveal_update(
+    background_entity,
+    background_profile,
+    background_updates,
+    background_event,
+    MINER_CREDITOR_OLD_SUMMARY,
+    MINER_CREDITOR_NEW_SUMMARY,
+)
+if "name" in background_updates:
+    raise AssertionError("background reveal without formal name must not change canonicalName")
+assert_equal(background_updates["summary"], MINER_CREDITOR_NEW_SUMMARY, "specific background reveal may update summary")
+if not background_profile.get("identityReveal"):
+    raise AssertionError("background reveal should be preserved in profile.identityReveal")
+if "神秘矿工" not in background_profile.get("identityReveal", ""):
+    raise AssertionError("old uncertain clue should be preserved in identityReveal")
+
 assert_equal(settings_library._is_invalid_entity_name("陆沉舟-方鹤"), True, "relation-like name should be invalid")
 assert_equal(settings_library._is_invalid_entity_name("死去三年"), True, "time/phrase name should be invalid")
 assert_equal(settings_library._is_invalid_entity_name("陆远之"), False, "normal name should be valid")
+
+asyncio.run(assert_miner_creditor_accept_has_no_hard_conflict())
+asyncio.run(assert_affiliation_reveal_accept_has_no_hard_conflict())
 
 print("setting summary write policy backend contract tests passed")

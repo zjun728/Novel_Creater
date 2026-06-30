@@ -24,14 +24,14 @@ export const providerPresets = [
     maxContextTokens: 200000
   },
   {
-    name: 'deepseek-v4-flash',
+    name: '联通云-DeepSeek-V4-Flash',
     providerType: 'openai-compatible',
-    baseURL: 'https://api.deepseek.com',
-    model: 'deepseek-v4-flash',
-    maxContextTokens: 128000,
-    maxOutputTokens: 8192,
+    baseURL: 'https://aigw-gzgy2.cucloud.cn:8443/v1',
+    model: 'DeepSeek-V4-Flash',
+    maxContextTokens: 1000000,
+    maxOutputTokens: 380000,
     temperature: 0.8,
-    thinking: { type: 'enabled', reasoning_effort: 'high' }
+    topP: 0.9
   },
   {
     name: '通义千问 / Qwen',

@@ -74,6 +74,8 @@ import {
   shouldAcceptNarrativeReadabilityRepair,
   validateBeatPlanProgressionGate
 } from '@/quality/writingQualityScoring'
+import { extractAiContent } from '@/domain/chapter-draft/ai-content'
+import { runDraftRepairPipeline } from '@/application/writer-flow/draft-repair-pipeline'
 
 const CHAPTER_DRAFT_MAX_TOKENS = 5000
 const BEAT_PLAN_INITIAL_MAX_TOKENS = 1800
@@ -96,17 +98,6 @@ export const useWriterStore = defineStore('writer', () => {
   const beatPlanDiagnostics = ref(null)
   const beatPlanQualityDiagnostics = ref(null)
   const generationStream = ref('')
-
-  function extractAiContent(result) {
-    if (typeof result === 'string') return result
-    if (result && typeof result === 'object') {
-      if (Object.prototype.hasOwnProperty.call(result, 'content')) return result.content || ''
-      if (Array.isArray(result.choices)) {
-        return result.choices?.[0]?.message?.content || result.choices?.[0]?.text || ''
-      }
-    }
-    return result ? JSON.stringify(result) : ''
-  }
 
   function estimatePromptTokens(text = '') {
     return Math.ceil(String(text || '').length / 2)
@@ -448,6 +439,20 @@ export const useWriterStore = defineStore('writer', () => {
 
   function summarizeBeatPlanGateResult(result = null) {
     if (!result) return null
+    const volumeGoalHandoff = result.freshness?.volumeGoalHandoff || null
+    const volumeGoalHandoffDiagnostic = volumeGoalHandoff
+      ? {
+          status: volumeGoalHandoff.status || '',
+          missing: Boolean(volumeGoalHandoff.missing),
+          derived: Boolean(volumeGoalHandoff.derived),
+          source: volumeGoalHandoff.source || '',
+          matchedTerms: volumeGoalHandoff.matchedTerms || [],
+          derivedHandoffText: volumeGoalHandoff.derivedHandoffText || '',
+          derivableChangeTypes: volumeGoalHandoff.derivableChangeTypes || [],
+          evidence: volumeGoalHandoff.evidence || null,
+          warning: volumeGoalHandoff.warning || ''
+        }
+      : null
     return {
       gate: result.gate || '',
       passed: Boolean(result.passed),
@@ -460,7 +465,8 @@ export const useWriterStore = defineStore('writer', () => {
       irreversibleChange: result.irreversibleChange || '',
       irreversibleChangeTypes: result.irreversibleChangeTypes || [],
       loopExit: result.loopExit ?? null,
-      freshnessGate: result.freshnessGate || ''
+      freshnessGate: result.freshnessGate || '',
+      volumeGoalHandoffDiagnostic
     }
   }
 
@@ -472,8 +478,12 @@ export const useWriterStore = defineStore('writer', () => {
     const structuredIssues = parseError
       ? { missingRequiredFields: [], placeholderFields: [], issues: [] }
       : collectStructuredBeatPlanIssues(parsedCandidate, { nearTurnDecisionCard })
-    const hasMissingFields = Boolean(structuredIssues.missingRequiredFields?.length || structuredIssues.placeholderFields?.length)
-    const qualityGateInput = (!parseError && !hasMissingFields)
+    const hasBlockingStructuredIssues = Boolean(
+      structuredIssues.missingRequiredFields?.length ||
+      structuredIssues.placeholderFields?.length ||
+      structuredIssues.toolingLeakFields?.length
+    )
+    const qualityGateInput = (!parseError && !hasBlockingStructuredIssues)
       ? compactStructuredBeatPlanForLength(formatStructuredBeatPlan(parsedCandidate))
       : ''
     const qualityGateResult = qualityGateInput
@@ -481,7 +491,9 @@ export const useWriterStore = defineStore('writer', () => {
       : null
     const failureCode = parseError
       ? 'beat_plan_parse_failed'
-      : (hasMissingFields ? 'beat_plan_missing_fields' : (qualityGateResult && !qualityGateResult.passed ? 'beat_plan_quality_failed' : ''))
+      : (structuredIssues.toolingLeakFields?.length
+          ? 'beat_plan_requires_review'
+          : (hasBlockingStructuredIssues ? 'beat_plan_missing_fields' : (qualityGateResult && !qualityGateResult.passed ? 'beat_plan_quality_failed' : '')))
     return {
       candidateRaw: candidateRaw.slice(0, 4000),
       parsedCandidate,
@@ -497,15 +509,18 @@ export const useWriterStore = defineStore('writer', () => {
   function hasBlockingBeatPlanQualityIssues(issues = {}) {
     return Boolean(
       issues.missingRequiredFields?.length ||
-      issues.placeholderFields?.length
+      issues.placeholderFields?.length ||
+      issues.toolingLeakFields?.length
     )
   }
 
   function throwBeatPlanQualityError(chapterNum, issues = {}, content = '', options = {}) {
     const candidateDiagnostics = buildBeatPlanCandidateDiagnostics(chapterNum, content, options.context || {})
-    const failureCode = candidateDiagnostics.candidateFailureCode === 'beat_plan_parse_failed'
-      ? 'beat_plan_parse_failed'
-      : 'beat_plan_missing_fields'
+    const failureCode = issues.toolingLeakFields?.length
+      ? 'beat_plan_requires_review'
+      : (candidateDiagnostics.candidateFailureCode === 'beat_plan_parse_failed'
+          ? 'beat_plan_parse_failed'
+          : 'beat_plan_missing_fields')
     const diagnostics = buildBeatPlanQualityDiagnostics(chapterNum, issues, {
       ...options,
       ...candidateDiagnostics,
@@ -513,8 +528,11 @@ export const useWriterStore = defineStore('writer', () => {
       finalBeatPlanLength: String(content || '').length
     })
     beatPlanQualityDiagnostics.value = diagnostics
-    const fields = [...diagnostics.missingFields, ...diagnostics.placeholderFields].filter(Boolean).join(', ') || 'unknown'
-    const error = new Error(`第 ${chapterNum} 章小纲字段缺失或占位：${fields}。请重新生成或补齐真实剧情字段后再生成正文。`)
+    const toolingFields = (issues.toolingLeakFields || []).filter(Boolean)
+    const fields = [...diagnostics.missingFields, ...diagnostics.placeholderFields, ...toolingFields].filter(Boolean).join(', ') || 'unknown'
+    const error = new Error(failureCode === 'beat_plan_requires_review'
+      ? `beat_plan_requires_review: 第 ${chapterNum} 章小纲仍含模板话术字段：${fields}。请重新生成自然小纲后再生成正文。`
+      : `第 ${chapterNum} 章小纲字段缺失或占位：${fields}。请重新生成或补齐真实剧情字段后再生成正文。`)
     error.code = failureCode
     error.diagnostics = diagnostics
     throw error
@@ -527,6 +545,7 @@ export const useWriterStore = defineStore('writer', () => {
     let previousIssues = options.previousIssues || currentIssues.issues || []
     const mustRepair = currentIssues.missingRequiredFields?.length ||
       currentIssues.placeholderFields?.length ||
+      currentIssues.toolingLeakFields?.length ||
       currentIssues.volumeGoalHandoffStatus === 'fail' ||
       currentIssues.turnDecisionStatus === 'fail' ||
       previousIssues.length
@@ -543,7 +562,7 @@ export const useWriterStore = defineStore('writer', () => {
       const prompt = buildChapterBeatPlanRepairPrompt({
         chapterNum,
         originalBeatPlan: currentStructured,
-        missingRequiredFields: [...new Set([...(currentIssues.missingRequiredFields || []), ...(currentIssues.placeholderFields || [])])],
+        missingRequiredFields: [...new Set([...(currentIssues.missingRequiredFields || []), ...(currentIssues.placeholderFields || []), ...(currentIssues.toolingLeakFields || [])])],
         previousIssues,
         nearTurnDecisionCard,
         volumeGoal: getVolumeGoalForBeatPlanRepair(context, nearTurnDecisionCard)
@@ -597,7 +616,20 @@ export const useWriterStore = defineStore('writer', () => {
     content = cleanChapterBeatPlanText(String(content || '').trim())
     beatPlanQualityDiagnostics.value = null
     if (!content) {
-      throw new Error(`第 ${chapterNum} 章小纲为空，请先生成或填写本章小纲。`)
+      const diagnostics = buildBeatPlanQualityDiagnostics(chapterNum, {}, {
+        failureCode: 'beat_plan_empty_after_quality_cleaning',
+        candidateRaw: content,
+        finalBeatPlanLength: 0,
+        qualityGateResult: {
+          passed: false,
+          issues: [{ type: 'empty_after_quality_cleaning' }]
+        }
+      })
+      beatPlanQualityDiagnostics.value = diagnostics
+      const error = new Error(`第 ${chapterNum} 章小纲为空，请先生成或填写本章小纲。`)
+      error.code = 'beat_plan_empty_after_quality_cleaning'
+      error.diagnostics = diagnostics
+      throw error
     }
 
     const nearTurnDecisionCard = context?.nearTurnDecisionCard || buildNearTurnDecisionCard({ ...context, chapterNum })
@@ -620,6 +652,7 @@ export const useWriterStore = defineStore('writer', () => {
     let structuredIssues = collectStructuredBeatPlanIssues(parseStructuredBeatPlan(content), { nearTurnDecisionCard })
     if (structuredIssues.missingRequiredFields.length ||
       structuredIssues.placeholderFields?.length ||
+      structuredIssues.toolingLeakFields?.length ||
       structuredIssues.volumeGoalHandoffStatus === 'fail' ||
       structuredIssues.turnDecisionStatus === 'fail') {
       const repaired = await repairChapterBeatPlanIfNeeded(provider, chapterNum, content, context, {
@@ -637,7 +670,7 @@ export const useWriterStore = defineStore('writer', () => {
     if (content.length > 1300) {
       content = await compactChapterBeatPlanIfNeeded(provider, chapterNum, content, context)
       structuredIssues = collectStructuredBeatPlanIssues(parseStructuredBeatPlan(content), { nearTurnDecisionCard })
-      if (structuredIssues.missingRequiredFields.length || structuredIssues.placeholderFields?.length || structuredIssues.volumeGoalHandoffStatus === 'fail') {
+      if (structuredIssues.missingRequiredFields.length || structuredIssues.placeholderFields?.length || structuredIssues.toolingLeakFields?.length || structuredIssues.volumeGoalHandoffStatus === 'fail') {
         const repaired = await repairChapterBeatPlanIfNeeded(provider, chapterNum, content, context, {
           nearTurnDecisionCard,
           structuredIssues
@@ -1680,6 +1713,33 @@ export const useWriterStore = defineStore('writer', () => {
       saveBeatPlanDiagnostics(projectId, chapterNum, diagnostics)
       return content
     } catch (e) {
+      if (diagnostics && e?.code === 'beat_plan_empty_after_quality_cleaning') {
+        Object.assign(diagnostics, {
+          failureStage: 'beat_plan_empty_after_quality_cleaning',
+          candidateFailureCode: 'beat_plan_empty_after_quality_cleaning',
+          candidateRaw: e.diagnostics?.candidateRaw || diagnostics.candidateRaw || '',
+          qualityGateInput: e.diagnostics?.qualityGateInput || diagnostics.qualityGateInput || '',
+          qualityGateResult: e.diagnostics?.qualityGateResult || diagnostics.qualityGateResult || null,
+          beatPlanQualityDiagnostics: e.diagnostics || diagnostics.beatPlanQualityDiagnostics || null
+        })
+        const derived = applyDerivedBeatPlanFallback(
+          chapterNum,
+          context,
+          diagnostics,
+          'beat_plan_empty_after_quality_cleaning',
+          diagnostics.candidateRaw || ''
+        )
+        diagnostics.failureStage = derived.allowed ? '' : 'beat_plan_requires_review'
+        if (!derived.allowed) diagnostics.finalFailureAfterRecovery = true
+        saveBeatPlanDiagnostics(projectId, chapterNum, diagnostics)
+        if (derived.allowed) return derived.content
+        const error = new Error(`beat_plan_requires_review: 第 ${chapterNum} 章小纲为空，且故事块阶段快照不足以自动派生。`)
+        error.code = BEAT_PLAN_REQUIRES_REVIEW
+        error.diagnostics = diagnostics
+        error.localSafetyBeatPlan = derived.localSafetyDraft
+        error.requiresReview = true
+        throw error
+      }
       if (diagnostics && e?.diagnostics) {
         Object.assign(diagnostics, {
           failureStage: e.code || e.diagnostics.failureCode || diagnostics.failureStage || '',
@@ -1753,18 +1813,17 @@ export const useWriterStore = defineStore('writer', () => {
       } catch (streamErr) {
         console.warn('流式请求失败，回退到非流式:', streamErr.message)
         const result = await chatCompletion(provider, messages, { maxTokens: CHAPTER_DRAFT_MAX_TOKENS, temperature: 0.64 })
-        if (typeof result === 'string') content = result
-        else if (result?.content) content = result.content
-        else if (result?.choices?.[0]?.message?.content) content = result.choices[0].message.content
+        content = extractAiContent(result, { preferOwnContent: false, unknownFallback: '' })
       }
 
-      content = cleanGeneratedChapterText(content)
-      content = await repairProseRhythmIfNeeded(provider, chapterNum, content, context)
-      content = await repairNotXButYIfNeeded(provider, chapterNum, content, context)
-      content = await repairParagraphRepetitionIfNeeded(provider, chapterNum, content, context)
-      if (!content.trim()) {
-        throw new Error('AI 生成正文为空，请重新生成或切换模型后重试。')
-      }
+      content = await runDraftRepairPipeline({
+        rawContent: content,
+        cleaner: cleanGeneratedChapterText,
+        repairProseRhythm: draft => repairProseRhythmIfNeeded(provider, chapterNum, draft, context),
+        repairNotXButY: draft => repairNotXButYIfNeeded(provider, chapterNum, draft, context),
+        repairParagraphRepetition: draft => repairParagraphRepetitionIfNeeded(provider, chapterNum, draft, context),
+        emptyDraftErrorMessage: 'AI 生成正文为空，请重新生成或切换模型后重试。'
+      })
       generationStream.value = content
       if (onStream) onStream(content, '')
 
@@ -1931,10 +1990,7 @@ export const useWriterStore = defineStore('writer', () => {
         { role: 'user', content: buildMultiVariantPrompt({ chapterNum, ...context }) }
       ]
       const result = await chatCompletion(provider, messages, { maxTokens: 8192, temperature: 0.85 })
-      let content = ''
-      if (typeof result === 'string') content = result
-      else if (result?.content) content = result.content
-      else if (result?.choices?.[0]?.message?.content) content = result.choices[0].message.content
+      const content = extractAiContent(result, { preferOwnContent: false, unknownFallback: '' })
 
       const results = []
       const chapter = await getOrCreateChapter(projectId, chapterNum)
@@ -1966,10 +2022,7 @@ export const useWriterStore = defineStore('writer', () => {
         { role: 'user', content: buildRewritePrompt(selectedText, mode, context) }
       ]
       const result = await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.7 })
-      if (typeof result === 'string') return result
-      if (result?.content) return result.content
-      if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
-      return result
+      return extractAiContent(result, { preferOwnContent: false, stringifyUnknown: false })
     } finally {
       generating.value = false
     }
@@ -1982,10 +2035,7 @@ export const useWriterStore = defineStore('writer', () => {
       const provider = await resolveTaskProvider(context?.projectId, ['polishModelId', 'writingModelId'])
       const messages = [{ role: 'user', content: buildExpandPrompt(selectedText, context) }]
       const result = await chatCompletion(provider, messages, { maxTokens: 2048, temperature: 0.7 })
-      if (typeof result === 'string') return result
-      if (result?.content) return result.content
-      if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
-      return result
+      return extractAiContent(result, { preferOwnContent: false, stringifyUnknown: false })
     } finally {
       generating.value = false
     }
@@ -1998,10 +2048,7 @@ export const useWriterStore = defineStore('writer', () => {
       const provider = await resolveTaskProvider(null, ['polishModelId', 'summaryModelId', 'writingModelId'])
       const messages = [{ role: 'user', content: buildCompressPrompt(selectedText) }]
       const result = await chatCompletion(provider, messages, { maxTokens: 1024, temperature: 0.5 })
-      if (typeof result === 'string') return result
-      if (result?.content) return result.content
-      if (result?.choices?.[0]?.message?.content) return result.choices[0].message.content
-      return result
+      return extractAiContent(result, { preferOwnContent: false, stringifyUnknown: false })
     } finally {
       generating.value = false
     }

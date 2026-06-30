@@ -7,6 +7,7 @@ dist/
 frontend/dist/
 .vite/
 frontend/.vite/
+output/
 
 # Python caches
 __pycache__/
@@ -22,15 +23,22 @@ _check_db.py
 
 # QA browser/runtime artifacts
 .playwright-cli/
+.pytest_cache/
 tmp/realistic-flow-qa/chrome-profile/
+tmp/realistic-flow-qa/*
+!tmp/realistic-flow-qa/README.md
 tmp/browser-qa/chrome-profile/
 tmp/browser-qa/
 tmp/browser_acceptance/
 tmp/browser-qa*/
+tmp/architecture-governance/
 tmp/archive/
 tmp/writing-sample-analysis/
 tmp/db-backups/
 tmp/live-server-logs/
+tmp/live-qa-contract-output/
+tmp/playwright-run/
+tmp/__pycache__/
 tmp/realistic-flow-qa/*.png
 tmp/realistic-flow-qa/*.log
 tmp/realistic-flow-qa/*.pid

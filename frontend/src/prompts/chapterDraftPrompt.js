@@ -3,8 +3,19 @@ import {
   buildChapterSystemPrompt,
   formatDraftContinuityText
 } from './chapter.js'
+import { formatActiveWritingStandardLowDoseForPrompt } from '../data/writingStyleStandards.js'
 import { buildGenerationQualityBrief } from '../quality/writingQualityPrompt.js'
 import { storyBlockSnapshotBrief } from '../utils/storyBlockSnapshot.js'
+
+export function buildHumanityDraftBrief() {
+  return `## 故事性与人物血肉轻量提示
+- 用大白话讲清楚故事，别为了高级感绕远。
+- 情绪靠动作、选择、停顿、隐瞒、误会露出来。
+- 对话不要每问必答，可以打岔、遮掩、嘴硬、说半句。
+- 设定先写行动和后果：尝试、出事、付代价、旁人反应，主角再总结一点点。
+- 若上文连续由追捕/撤离推动，本章优先让主角通过主动布局、关系对峙、代价后果或规则观察推进剧情；不要只靠追兵逼近和换地点制造推进。
+- 每章至少让一个人物关系或主角选择发生小变化。`
+}
 
 export function buildDraftSystemPrompt() {
   return `你是一位长篇小说正文生成作者。
@@ -18,8 +29,16 @@ ${buildGenerationQualityBrief()}`
 }
 
 export function buildDraftPrompt(context = {}) {
-  const fingerprint = context.writingFingerprint || context.styleStandardBrief || context.styleBible || '按本书已确认风格执行。'
   const blockSnapshot = storyBlockSnapshotBrief(context.blockStageSnapshot || {})
+  const formalStandardLowDosePrompt = formatActiveWritingStandardLowDoseForPrompt(context.activeWritingStandards || [], context)
+  const fingerprint = context.writingFingerprint || (formalStandardLowDosePrompt ? context.styleBible : context.styleStandardBrief) || context.styleBible || '按本书已确认风格执行。'
+  const chapterPromptContext = formalStandardLowDosePrompt
+    ? {
+        ...context,
+        styleStandardBrief: '',
+        styleMethodBrief: context.styleBible ? `本书风格：${context.styleBible}` : ''
+      }
+    : context
   const continuity = context.continuityConstraints || [
     context.previousChapterEnding ? `上一章结尾事实：${formatDraftContinuityText(context.previousChapterEnding, 360)}` : '',
     context.stateLedger ? `状态账本：${context.stateLedger}` : '',
@@ -33,7 +52,9 @@ export function buildDraftPrompt(context = {}) {
     blockSnapshot
       ? `## 故事块执行边界\n本章只执行 block_stage_snapshot 中的当前阶段，不读取后续滚动后的 live stage 来判断历史任务。不要提前写掉后续阶段；如果剧情容量过大，停在自然停顿点，把未写内容顺延到下一章。`
       : '',
-    buildChapterPrompt({ ...context, includeGenerationQualityBrief: false }),
+    buildHumanityDraftBrief(),
+    formalStandardLowDosePrompt,
+    buildChapterPrompt({ ...chapterPromptContext, includeGenerationQualityBrief: false }),
     '请直接输出正文，不要输出标题、审稿报告、解释、小纲或 Markdown 结构。'
   ].filter(Boolean).join('\n\n')
 }

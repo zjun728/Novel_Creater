@@ -58,7 +58,8 @@ class StoryBlockCreate(BaseModel):
 
 
 class RemainingStagesUpdate(BaseModel):
-    stagePlan: list[dict] = []
+    stagePlan: Optional[list[dict]] = None
+    stagePlanPatchMode: str = ""
     nextStageSuggestion: str = ""
     unresolvedQuestions: list[Any] = []
     dontAdvanceYet: list[Any] = []
@@ -161,29 +162,16 @@ async def update_remaining_stages(pid: str, bid: str, data: RemainingStagesUpdat
         raise HTTPException(409, "只有 active 故事块允许更新后续阶段")
     locked_stage_ids = await _locked_stage_ids(pid, bid)
     existing_stages = _stage_list(block.get("stage_plan"))
-    incoming_stages = _stage_list(data.stagePlan)
     completed_ids = _completed_stage_ids(block)
     closed_ids = _closed_stage_ids(block)
-
-    existing_by_id = {str(stage.get("id") or ""): stage for stage in existing_stages if stage.get("id")}
-    merged = []
-    for incoming in incoming_stages:
-        stage_id = str(incoming.get("id") or "")
-        existing = existing_by_id.get(stage_id)
-        if stage_id and (stage_id in locked_stage_ids or stage_id in completed_ids or stage_id in closed_ids):
-            if existing is None:
-                raise HTTPException(409, "已锁定阶段不能被删除或替换")
-            if _compact_json(existing) != _compact_json(incoming):
-                raise HTTPException(409, "已被小纲或定稿章节引用的阶段不能回改")
-            merged.append(existing)
-        else:
-            merged.append(incoming)
-
-    incoming_ids = {str(stage.get("id") or "") for stage in incoming_stages if stage.get("id")}
-    for existing in existing_stages:
-        stage_id = str(existing.get("id") or "")
-        if stage_id and (stage_id in locked_stage_ids or stage_id in completed_ids or stage_id in closed_ids) and stage_id not in incoming_ids:
-            merged.append(existing)
+    merged = _merge_remaining_stage_update(
+        existing_stages,
+        data.stagePlan,
+        locked_stage_ids=locked_stage_ids,
+        completed_ids=completed_ids,
+        closed_ids=closed_ids,
+        patch_mode=data.stagePlanPatchMode or "",
+    )
 
     now = int(time.time() * 1000)
     await execute(
@@ -229,6 +217,13 @@ async def create_story_block_review(pid: str, bid: str, data: StoryBlockReviewCr
     rid = str(uuid.uuid4())
     review = {**(data.review or {}), "decision": data.decision, "chapterNum": data.chapterNum}
     _validate_stage_continuation_reason(review)
+    stage_id = _review_stage_id(review)
+    continuation_depth = _stage_continuation_depth(block, stage_id)
+    if continuation_depth:
+        review["stageContinuationDepth"] = max(int(review.get("stageContinuationDepth") or 0), continuation_depth)
+        if stage_id and not str(review.get("previousOpenStageId") or "").strip():
+            review["previousOpenStageId"] = stage_id
+    _validate_stage_continuation_limit(review, continuation_depth, stage_id)
     completed_stage_ids = _filter_executed_completed_stage_ids(
         block,
         review,
@@ -247,12 +242,36 @@ async def create_story_block_review(pid: str, bid: str, data: StoryBlockReviewCr
 
     history = _list(block.get("review_history"))
     history_item = {"id": rid, "decision": data.decision, "chapterNum": data.chapterNum, "createdAt": now}
+    if stage_id:
+        history_item["blockStageId"] = stage_id
     if review.get("aiReviewFallback") is True:
         history_item["aiReviewFallback"] = True
     if review.get("stageContinues") is True:
         history_item["stageContinues"] = True
         history_item["stageContinueReason"] = _stage_continue_reason(review)
         history_item["reason"] = _stage_continue_reason(review)
+    if review.get("stageContinuationDepth") is not None:
+        history_item["stageContinuationDepth"] = int(review.get("stageContinuationDepth") or 0)
+    if review.get("previousOpenStageId"):
+        history_item["previousOpenStageId"] = str(review.get("previousOpenStageId"))[:80]
+    if review.get("settlementDecision"):
+        history_item["settlementDecision"] = str(review.get("settlementDecision"))[:80]
+    if review.get("settlementEvidence"):
+        history_item["settlementEvidence"] = _string_list(review.get("settlementEvidence"))[:8]
+    if review.get("equivalentCompletionScope"):
+        history_item["equivalentCompletionScope"] = str(review.get("equivalentCompletionScope"))[:80]
+    if "futureStageTouched" in review:
+        history_item["futureStageTouched"] = bool(review.get("futureStageTouched"))
+    if review.get("futureStageEvidence"):
+        history_item["futureStageEvidence"] = _string_list(review.get("futureStageEvidence"))[:8]
+    if "futureStageOverClosed" in review:
+        history_item["futureStageOverClosed"] = bool(review.get("futureStageOverClosed"))
+    if "needsFutureStageReplan" in review:
+        history_item["needsFutureStageReplan"] = bool(review.get("needsFutureStageReplan"))
+    if "replanRemainingStages" in review:
+        history_item["replanRemainingStages"] = bool(review.get("replanRemainingStages"))
+    if review.get("whetherStageClosedBeforeNextBeatPlan") is not None:
+        history_item["whetherStageClosedBeforeNextBeatPlan"] = bool(review.get("whetherStageClosedBeforeNextBeatPlan"))
     if review.get("aiReviewError"):
         history_item["aiReviewError"] = str(review.get("aiReviewError"))[:240]
     if review.get("completionEvidence"):
@@ -470,6 +489,51 @@ def _stage_continue_reason(review: dict) -> str:
     ).strip()
 
 
+def _review_stage_id(review: dict) -> str:
+    snapshot = _dict(review.get("blockStageSnapshot"))
+    return str(
+        snapshot.get("stageId")
+        or snapshot.get("id")
+        or review.get("blockStageId")
+        or review.get("block_stage_id")
+        or review.get("stageId")
+        or review.get("stage_id")
+        or ""
+    ).strip()
+
+
+def _history_stage_id(item: dict) -> str:
+    snapshot = _dict(item.get("blockStageSnapshot"))
+    return str(
+        item.get("blockStageId")
+        or item.get("block_stage_id")
+        or item.get("storyBlockStageId")
+        or item.get("stageId")
+        or item.get("stage_id")
+        or snapshot.get("stageId")
+        or snapshot.get("id")
+        or ""
+    ).strip()
+
+
+def _stage_continuation_depth(block, stage_id: str) -> int:
+    sid = str(stage_id or "").strip()
+    depth = 0
+    for item in reversed(_list(block.get("review_history"))):
+        if not isinstance(item, dict):
+            continue
+        item_stage_id = _history_stage_id(item)
+        if (
+            item.get("stageContinues") is True
+            and _stage_continue_reason(item)
+            and (not sid or not item_stage_id or item_stage_id == sid)
+        ):
+            depth += 1
+            continue
+        break
+    return depth
+
+
 def _validate_stage_continuation_reason(review: dict):
     if review.get("stageContinues") is not True:
         return
@@ -486,6 +550,28 @@ def _validate_stage_continuation_reason(review: dict):
     review["stageContinueReason"] = reason
     if not str(review.get("reason") or "").strip():
         review["reason"] = reason
+
+
+def _validate_stage_continuation_limit(review: dict, continuation_depth: int, stage_id: str):
+    if review.get("stageContinues") is not True:
+        return
+    if int(continuation_depth or 0) < 2:
+        return
+    raise HTTPException(
+        409,
+        {
+            "code": "story_block_stage_continuation_limit",
+            "message": "同一故事块阶段已经连续跨章继续两次，下一次回看不得继续返回同一 stageContinues=true；请先完成、拆分残余动作、开启新故事块或标记人工复核。",
+            "blockStageId": stage_id,
+            "stageContinuationDepth": int(continuation_depth or 0),
+            "settlementDecisionRequired": [
+                "completed_by_equivalent_story_function",
+                "split_remaining_stage",
+                "opened_new_block_for_residue",
+                "blocked_for_manual_review",
+            ],
+        },
+    )
 
 
 def _default_completed_stage_ids_for_review(decision: str, review: dict) -> list[str]:
@@ -513,6 +599,22 @@ def _filter_executed_completed_stage_ids(block, review: dict, completed_stage_id
     stage_plan = _stage_list(block.get("stage_plan"))
     current_snapshot = _dict(review.get("blockStageSnapshot"))
     current_stage_id = str(current_snapshot.get("stageId") or review.get("blockStageId") or "").strip()
+    if review.get("settlementDecision") == "completed_by_equivalent_story_function":
+        review["equivalentCompletionScope"] = "current_stage_only"
+        review["futureStageOverClosed"] = False
+        if current_stage_id:
+            future_attempts = [
+                str(stage_id or "").strip()
+                for stage_id in completed_stage_ids or []
+                if str(stage_id or "").strip() and str(stage_id or "").strip() != current_stage_id
+            ]
+            if future_attempts:
+                review["futureStageTouched"] = True
+                review["needsFutureStageReplan"] = True
+                review["replanRemainingStages"] = True
+                review["preventedFutureStageOverClose"] = True
+            return [current_stage_id]
+        return []
     already_completed = _completed_stage_ids(block)
     stage_by_id = {
         str(stage.get("id") or ""): stage
@@ -556,6 +658,100 @@ def _apply_completed_stage_ids_to_plan(stage_plan, completed_by_id: dict[str, di
                 item["chapterRefs"] = chapter_refs
         updated.append(item)
     return updated
+
+
+def _merge_remaining_stage_update(
+    existing_stages,
+    incoming_stages,
+    locked_stage_ids: set[str] | None = None,
+    completed_ids: set[str] | None = None,
+    closed_ids: set[str] | None = None,
+    patch_mode: str = "",
+) -> list[dict]:
+    existing = _stage_list(existing_stages)
+    if incoming_stages is None:
+        return existing
+
+    locked_stage_ids = locked_stage_ids or set()
+    completed_ids = completed_ids or set()
+    closed_ids = closed_ids or set()
+    incoming = _stage_list(incoming_stages)
+    mode = str(patch_mode or "").strip()
+    if mode == "editable_future_only":
+        return _merge_editable_future_stage_patch(existing, incoming, locked_stage_ids, completed_ids, closed_ids)
+    return _merge_full_stage_plan_replace(existing, incoming, locked_stage_ids, completed_ids, closed_ids)
+
+
+def _merge_full_stage_plan_replace(
+    existing_stages: list[dict],
+    incoming_stages: list[dict],
+    locked_stage_ids: set[str],
+    completed_ids: set[str],
+    closed_ids: set[str],
+) -> list[dict]:
+    existing_by_id = {str(stage.get("id") or ""): stage for stage in existing_stages if stage.get("id")}
+    merged = []
+    for incoming in incoming_stages:
+        stage_id = str(incoming.get("id") or "")
+        existing = existing_by_id.get(stage_id)
+        if stage_id and _is_protected_stage(existing or incoming, stage_id, locked_stage_ids, completed_ids, closed_ids):
+            if existing is None:
+                raise HTTPException(409, "已锁定阶段不能被删除或替换")
+            if _compact_json(existing) != _compact_json(incoming):
+                raise HTTPException(409, "已被小纲或定稿章节引用的阶段不能回改")
+            merged.append(existing)
+        else:
+            merged.append(incoming)
+
+    incoming_ids = {str(stage.get("id") or "") for stage in incoming_stages if stage.get("id")}
+    for existing in existing_stages:
+        stage_id = str(existing.get("id") or "")
+        if stage_id and _is_protected_stage(existing, stage_id, locked_stage_ids, completed_ids, closed_ids) and stage_id not in incoming_ids:
+            merged.append(existing)
+    return merged
+
+
+def _merge_editable_future_stage_patch(
+    existing_stages: list[dict],
+    incoming_stages: list[dict],
+    locked_stage_ids: set[str],
+    completed_ids: set[str],
+    closed_ids: set[str],
+) -> list[dict]:
+    merged = [dict(stage) for stage in existing_stages]
+    index_by_id = {str(stage.get("id") or ""): index for index, stage in enumerate(merged) if stage.get("id")}
+    existing_by_id = {str(stage.get("id") or ""): stage for stage in existing_stages if stage.get("id")}
+
+    for incoming in incoming_stages:
+        stage_id = str(incoming.get("id") or "")
+        existing = existing_by_id.get(stage_id)
+        if stage_id and existing and _is_protected_stage(existing, stage_id, locked_stage_ids, completed_ids, closed_ids):
+            if _compact_json(existing) != _compact_json(incoming):
+                raise HTTPException(409, "已被小纲或定稿章节引用的阶段不能回改")
+            continue
+        if stage_id and stage_id in index_by_id:
+            merged[index_by_id[stage_id]] = incoming
+        else:
+            merged.append(incoming)
+    return merged
+
+
+def _is_protected_stage(
+    stage: dict | None,
+    stage_id: str,
+    locked_stage_ids: set[str],
+    completed_ids: set[str],
+    closed_ids: set[str],
+) -> bool:
+    item = stage or {}
+    return (
+        stage_id in locked_stage_ids
+        or stage_id in completed_ids
+        or stage_id in closed_ids
+        or item.get("status") == "completed"
+        or item.get("status") in {"closed", "skipped", CLOSED_UNEXECUTED_STAGE_STATUS, SKIPPED_BY_BLOCK_CLOSE_STATUS, INVALIDATED_STAGE_STATUS}
+        or _stage_has_outline_or_chapter_refs(item)
+    )
 
 
 def _archive_unfinished_stages_for_closed_block(

@@ -62,6 +62,10 @@ function sourceBrief(version) {
       <div
         v-for="version in versions"
         :key="version.id"
+        :data-version-id="version.id"
+        :data-current-version="version.id === currentVersionId ? 'true' : 'false'"
+        :data-version-type="version.versionType || version.version_type || ''"
+        :data-version-word-count="String((version.content || '').length)"
         :class="[
           'p-2 rounded border text-xs cursor-pointer transition-colors',
           version.id === currentVersionId ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
@@ -105,7 +109,15 @@ function sourceBrief(version) {
             @positive-click="emit('finalize', version)"
           >
             <template #trigger>
-              <n-button size="tiny" quaternary type="success" :disabled="finalizeDisabled">定稿</n-button>
+              <n-button
+                size="tiny"
+                quaternary
+                type="success"
+                :disabled="finalizeDisabled"
+                :data-finalize-version-id="version.id"
+              >
+                定稿
+              </n-button>
             </template>
             确认将此版本设为定稿？
           </n-popconfirm>

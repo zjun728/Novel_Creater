@@ -1,3 +1,5 @@
+import { filterSettingEntitiesForGeneration } from './settingEntityFilters.js'
+
 const HARD_STATE_KEYWORDS = [
   '剩余',
   '已用',
@@ -310,7 +312,9 @@ export function buildChapterStateLedger({
   focus = null,
   maxLines = 24
 } = {}) {
-  const entityLines = (settingEntities || [])
+  const safeSettingEntities = filterSettingEntitiesForGeneration(settingEntities)
+
+  const entityLines = safeSettingEntities
     .filter(entity => (entity?.status || 'active') === 'active')
     .filter(entity => entityMatchesFocus(entity, focus))
     .map(formatEntityLine)

@@ -19,7 +19,9 @@ assert.match(writerView, /async function retryFinalizationPostprocess\(targetCha
 assert.match(writerView, /allowExistingPending:\s*true/)
 assert.match(writerView, /processChapterFinalization\(projectId\.value, version\.content, num\)/)
 assert.match(writerView, /keepPending:\s*!completed/)
-assert.match(writerView, /v-if="blockingFinalizationPending"/)
+assert.match(writerView, /getFinalizationMarkerAction/)
+assert.match(writerView, /finalizationMarkerAction\.canRetryPostprocess/)
+assert.match(writerView, /v-if="blockingFinalizationPending && finalizationMarkerAction\.canRetryPostprocess"/)
 assert.match(writerView, /retryFinalizationPostprocess\(blockingFinalizationPending\.chapterNum\)/)
 
 assert.match(memoryStore, /function canonFactDedupKey\(fact\)/)

@@ -5,6 +5,7 @@ import { useAppMessage } from '@/composables/useAppMessage'
 import { useCompareStore } from '@/stores/compareStore'
 import { useProviderStore } from '@/stores/providerStore'
 import { useWriterStore } from '@/stores/writerStore'
+import { runCreateVersionCommand } from '@/application/writer-flow/version-creation-command'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -61,13 +62,16 @@ async function saveFusedVersion() {
   try {
     const chapter = writerStore.chapters.find(c => c.chapterNum === props.chapterNum)
     if (!chapter) { message.error('章节不存在'); return }
-    await writerStore.createVersion(props.projectId, chapter.id, {
+    await runCreateVersionCommand({
+      projectId: props.projectId,
+      chapter,
       chapterNum: props.chapterNum,
       title: chapter.title || `第 ${props.chapterNum} 章`,
       content: fusedContent.value,
       versionType: 'ai_candidate',
       sourceModelId: selectedProviderId.value || '',
-      promptBrief: '多模型融合版'
+      promptBrief: '多模型融合版',
+      createVersion: writerStore.createVersion
     })
     await writerStore.loadVersions(props.projectId, chapter.id)
     message.success('融合版本已保存')

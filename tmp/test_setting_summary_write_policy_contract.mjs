@@ -17,6 +17,9 @@ const secretOrgSummary = '星债会是围绕星账债务运转的秘密组织，
 const secretOrgWithClues = '星债会是围绕星账债务运转的秘密组织，暗中收集债务线索并操纵欠债者。第 2 章新增线索：陆父曾调查星债会，铜牌与暗号可接触其外围。'
 const descriptivePlaceholderSummary = '在矿城西区木门后出现的老人，知道陆沉舟父亲和庚子账，主动引陆沉舟进入，可能是父亲旧识或关键情报源。'
 const formalIdentitySummary = '宋怀安，前矿北账务所账房，与陆怀安共事大半年，陆怀安留信物与他，掌握庚子账线索。'
+const minerCreditorOldSummary = '自称替陆沉舟父亲收债的神秘矿工，可能掌握父亲债务的细节或与玉虚峰矿山的交易内幕，后续可能引导调查或成为敌对。'
+const minerCreditorNewSummary = '自称替私人债主收债的玉虚峰丙七矿区矿工，曾是陆沉舟父亲的跟班矿工，认识巡天司北城执事赵鹤，知道星账在陆沉舟手中，并提供了逃跑路线和欠条。'
+const minerCreditorEvidence = '“我给他当了两年跟班矿工。”“我不是债主——我是来替他收债的。”“你认识赵鹤？”“你爹生前跟我说过那本账。”'
 
 assert.equal(isPlaceholderSummary('第 1 章自动识别的设定'), true)
 assert.equal(isPlaceholderSummary('第 ? 章自动识别的设定'), true)
@@ -70,6 +73,31 @@ assert.equal(identityRevealRisk.classification, SETTING_CHANGE_CLASSIFICATIONS.r
 assert.equal(identityRevealRisk.batchAcceptable, true)
 assert.equal(identityRevealRisk.fieldTier, SETTING_FIELD_TIERS.hardSetting)
 assert.match(identityRevealRisk.conflictWarnings.join('\n'), /身份揭示|正式姓名|aliases/)
+
+const backgroundRevealRisk = classifySettingChangeRisk({
+  entityName: '矿山债主',
+  entityType: 'character',
+  changeType: 'update_entity',
+  fieldPath: 'summary',
+  oldValue: minerCreditorOldSummary,
+  newValue: minerCreditorNewSummary,
+  evidence: minerCreditorEvidence,
+  confidence: 0.9,
+  chapterNum: 2
+}, {
+  existingEntity: {
+    entityType: 'character',
+    name: '矿山债主',
+    summary: minerCreditorOldSummary,
+    aliases: [],
+    profile: {}
+  }
+})
+assert.equal(backgroundRevealRisk.classification, SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement)
+assert.equal(backgroundRevealRisk.batchAcceptable, true)
+assert.equal(backgroundRevealRisk.fieldTier, SETTING_FIELD_TIERS.hardSetting)
+assert.doesNotMatch(backgroundRevealRisk.whyBlocked || '', /硬设定字段/)
+assert.match(backgroundRevealRisk.conflictWarnings.join('\n'), /身份|背景|线索|揭示|旧设定细化/)
 
 const stableNameRewriteRisk = classifySettingChangeRisk({
   entityName: '陆远之',
@@ -146,6 +174,51 @@ assert.equal(factionBehaviorRisk.fieldTier, SETTING_FIELD_TIERS.hardSetting)
 assert.equal(factionBehaviorRisk.rehomeTargetField, 'profile.hiddenStance')
 assert.equal(factionBehaviorRisk.rehomeTargetTier, SETTING_FIELD_TIERS.dynamicState)
 
+const affiliationRevealRisk = classifySettingChangeRisk({
+  entityName: '剔牙男人',
+  entityType: 'character',
+  changeType: 'update_entity',
+  fieldPath: 'profile.faction',
+  oldValue: '与缺指男人同一势力',
+  newValue: '巡天司（暗哨）',
+  evidence: '剔牙男人拿出巡天司暗哨令牌。',
+  confidence: 0.86,
+  chapterNum: 43
+}, {
+  existingEntity: {
+    entityType: 'character',
+    name: '剔牙男人',
+    profile: { faction: '与缺指男人同一势力' }
+  }
+})
+assert.equal(affiliationRevealRisk.classification, SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement)
+assert.equal(affiliationRevealRisk.batchAcceptable, true)
+assert.equal(affiliationRevealRisk.fieldTier, SETTING_FIELD_TIERS.hardSetting)
+assert.equal(affiliationRevealRisk.rehomeTargetField, 'profile.hiddenAffiliation')
+assert.equal(affiliationRevealRisk.rehomeTargetTier, SETTING_FIELD_TIERS.dynamicState)
+assert.doesNotMatch(affiliationRevealRisk.whyBlocked || '', /硬设定字段/)
+
+const unknownFactionRevealRisk = classifySettingChangeRisk({
+  entityName: '缺指男人',
+  entityType: 'character',
+  changeType: 'update_entity',
+  fieldPath: 'profile.faction',
+  oldValue: '未知势力，可能与巡天司或商盟有关',
+  newValue: '巡天司',
+  evidence: '缺指男人指挥巡天司暗哨设伏，瘦高个巡天司领队听从其命令。',
+  confidence: 0.8,
+  chapterNum: 44
+}, {
+  existingEntity: {
+    entityType: 'character',
+    name: '缺指男人',
+    profile: { faction: '未知势力，可能与巡天司或商盟有关' }
+  }
+})
+assert.equal(unknownFactionRevealRisk.classification, SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement)
+assert.equal(unknownFactionRevealRisk.batchAcceptable, true)
+assert.equal(unknownFactionRevealRisk.rehomeTargetField, 'profile.hiddenAffiliation')
+
 for (const fieldPath of [
   'profile.observedFacts',
   'profile.revealedClues',
@@ -153,7 +226,12 @@ for (const fieldPath of [
   'profile.internalMechanisms',
   'profile.chapterEvidence',
   'profile.hiddenStance',
-  'profile.currentAction'
+  'profile.currentAction',
+  'profile.affiliationClaims',
+  'profile.hiddenAffiliation',
+  'profile.currentRole',
+  'profile.identityReveal',
+  'profile.identityReveals'
 ]) {
   assert.equal(getSettingFieldTier(fieldPath), SETTING_FIELD_TIERS.dynamicState, `${fieldPath} should be dynamicState`)
   assert.equal(isHardSettingField(fieldPath), false, `${fieldPath} should not be hardSetting`)
@@ -220,13 +298,35 @@ const factionRewriteRisk = classifySettingChangeRisk({
 assert.equal(factionRewriteRisk.classification, SETTING_CHANGE_CLASSIFICATIONS.hardConflict)
 assert.equal(factionRewriteRisk.batchAcceptable, false)
 
+const stableFactionRewriteRisk = classifySettingChangeRisk({
+  entityName: '方鹤',
+  entityType: 'character',
+  changeType: 'update_entity',
+  fieldPath: 'profile.faction',
+  oldValue: '巡天司',
+  newValue: '星债会核心成员',
+  evidence: '无卧底、伪装、暗线或身份揭示证据。',
+  confidence: 0.9,
+  chapterNum: 43
+}, {
+  existingEntity: {
+    entityType: 'character',
+    name: '方鹤',
+    profile: { faction: '巡天司' }
+  }
+})
+assert.equal(stableFactionRewriteRisk.classification, SETTING_CHANGE_CLASSIFICATIONS.hardConflict)
+assert.equal(stableFactionRewriteRisk.batchAcceptable, false)
+
 const frontendRiskSource = readFileSync('frontend/src/utils/settingChangeRisk.js', 'utf8')
 const backendSettingsSource = readFileSync('backend/routers/settings_library.py', 'utf8')
 assert.match(frontendRiskSource, /SUMMARY_CHAPTER_FACT_REHOME_FIELD[\s\S]*profile\.observedFacts/)
 assert.match(frontendRiskSource, /HARD_FIELD_BEHAVIOR_REHOME_FIELD[\s\S]*profile\.hiddenStance/)
+assert.match(frontendRiskSource, /FACTION_AFFILIATION_REVEAL_REHOME_FIELD[\s\S]*profile\.hiddenAffiliation/)
 assert.match(frontendRiskSource, /isDescriptivePlaceholderIdentityReveal/)
 assert.match(backendSettingsSource, /SUMMARY_CHAPTER_FACT_REHOME_FIELD[\s\S]*profile\.observedFacts/)
 assert.match(backendSettingsSource, /HARD_FIELD_BEHAVIOR_REHOME_FIELD[\s\S]*profile\.hiddenStance/)
+assert.match(backendSettingsSource, /FACTION_AFFILIATION_REVEAL_REHOME_FIELD[\s\S]*profile\.hiddenAffiliation/)
 assert.match(backendSettingsSource, /_is_descriptive_placeholder_identity_reveal/)
 
 console.log('setting summary write policy frontend contract tests passed')

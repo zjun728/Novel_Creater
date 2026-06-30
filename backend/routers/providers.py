@@ -30,8 +30,8 @@ MODEL_BINDING_CAMEL_FIELDS = [
     "polishModelId",
 ]
 
-DEFAULT_TASK_PROVIDER_NAME = "deepseek-v4-flash"
-DEFAULT_TASK_MODEL_NAME = "deepseek-v4-flash"
+DEFAULT_TASK_PROVIDER_NAME = "联通云-DeepSeek-V4-Flash"
+DEFAULT_TASK_MODEL_NAME = "DeepSeek-V4-Flash"
 
 class ProviderCreate(BaseModel):
     name: str

@@ -64,6 +64,7 @@ export function buildLightweightScenePlanContext(context = {}, options = {}) {
     recentFacts: compactRecentFacts(context.recentFacts, forceMinimal ? 3 : 5),
     settingLibrary: compactSettingBrief(context.settingLibrary, context.settings, forceMinimal ? 600 : 1000),
     stateLedger: compactStateLedger(context.stateLedger, forceMinimal ? 500 : 900),
+    chaseLoopDiagnostics: compactChaseLoopDiagnostics(context.chaseLoopDiagnostics, { forceMinimal }),
     forbiddenDirections: compactList(context.forbiddenDirections, 3, 80)
   }
 }
@@ -90,6 +91,7 @@ function buildLightweightScenePlanPrompt(context = {}, options = {}) {
     '- 信息释放：关键内容优先通过证据、行动失败、物件反应、关系变化或旁人遮掩被发现。',
     '- 有效选择：关键选择必须有不同损失；如果不是两难，要写清真正压力来自哪里。',
     '- 人味呼吸：预留一处沉默、跑题对白、生活痕迹或无用但真实的细节。',
+    buildSceneFunctionVarietyBrief(context.chaseLoopDiagnostics),
     options.forceMinimal
       ? '## 空响应重试约束\n- 上一次模型返回空内容；这次只使用极简上下文，必须输出完整 JSON 小纲。'
       : '',
@@ -133,6 +135,7 @@ function buildScenePlanContextDiagnostics(originalContext = {}, lightweightConte
     promptSoftLimit: BEAT_PLAN_PROMPT_SOFT_LIMIT,
     promptHardLimit: BEAT_PLAN_PROMPT_HARD_LIMIT,
     forceMinimal: Boolean(options.forceMinimal),
+    chaseLoopDiagnostics: lightweightContext.chaseLoopDiagnostics || null,
     storyBlockId: snapshot?.storyBlockId || storyBlock?.id || '',
     blockStageId: snapshot?.stageId || '',
     activeStoryBlockExists: Boolean(storyBlock && storyBlock.status === 'active'),
@@ -148,6 +151,33 @@ function buildScenePlanContextDiagnostics(originalContext = {}, lightweightConte
       hasStoryBlockDiagnostics: Boolean(lightweightContext.storyBlock?.planningDiagnostics || lightweightContext.storyBlock?.reviewHistory)
     }
   }
+}
+
+function compactChaseLoopDiagnostics(value = null, options = {}) {
+  if (!value || typeof value !== 'object') return null
+  const forceMinimal = Boolean(options.forceMinimal)
+  const consecutiveChaseDominant = Number(value.consecutiveChaseDominant || 0) || 0
+  const preferredSceneFunctions = compactList(value.preferredSceneFunctions, forceMinimal ? 2 : 4, 40)
+  return {
+    consecutiveChaseDominant,
+    preferredSceneFunctions,
+    reason: compactText(value.reason || '', forceMinimal ? 80 : 160)
+  }
+}
+
+function buildSceneFunctionVarietyBrief(chaseLoopDiagnostics = null) {
+  const consecutive = Number(chaseLoopDiagnostics?.consecutiveChaseDominant || 0) || 0
+  const preferred = Array.isArray(chaseLoopDiagnostics?.preferredSceneFunctions) && chaseLoopDiagnostics.preferredSceneFunctions.length
+    ? chaseLoopDiagnostics.preferredSceneFunctions
+    : ['active_setup', 'relationship_confrontation', 'consequence_scene', 'information_verification']
+  const preferredText = preferred.join('、')
+  const pressureLine = consecutive >= 3
+    ? `- 最近三章连续由追逃/搜查/撤离主导；本章优先从 ${preferredText} 里选一种做主骨架，不能继续以追兵逼近、撤离、潜入、搜查为主骨架。`
+    : '- 若前文追捕压力偏密，本章可从主动布局、关系对峙、代价后果或信息验证里选一种换骨架。'
+  return `## 场景功能多样性
+- 可选故事功能：relationship_confrontation（关系对峙）、consequence_scene（代价后果）、information_verification（信息验证）、organization_rules（市井/组织规则观察）、active_setup（主动布局）、repair_after_failure（失败后的修补）、recovery_rest（低压喘息）。
+- 注意底层推进模式：即使本章是代价后果或调查，也不要只写成追捕逼近、拿到线索后立刻换地点；优先让主动布局、关系谈判、行动后果或组织规则观察改变局势。
+${pressureLine}`
 }
 
 function estimatePromptTokens(charsOrText = '') {
@@ -179,6 +209,7 @@ function detectOversizedInputs(context = {}) {
 
 function compactStoryBlockForBeatPlan(block = null, options = {}) {
   if (!block) return null
+  const humanity = pickStoryBlockHumanity(block)
   const stages = Array.isArray(block.stagePlan) ? block.stagePlan : []
   const snapshotStageId = options.blockStageSnapshot?.stageId || ''
   const currentStage = snapshotStageId
@@ -196,6 +227,11 @@ function compactStoryBlockForBeatPlan(block = null, options = {}) {
     storyFunction: compactText(block.storyFunction || block.story_function, 120),
     entryState: compactText(block.entryState || block.entry_state, options.forceMinimal ? 120 : 180),
     mainPressure: compactText(block.mainPressure || block.main_pressure, options.forceMinimal ? 120 : 180),
+    relationshipFocus: compactText(humanity.relationshipFocus, 100),
+    relationshipStart: compactText(humanity.relationshipStart, 120),
+    relationshipTask: compactText(humanity.relationshipTask, 120),
+    relationshipEndHint: compactText(humanity.relationshipEndHint, 120),
+    sceneVarietyHint: compactText(humanity.sceneVarietyHint, 120),
     nextStageSuggestion: compactText(block.nextStageSuggestion || block.next_stage_suggestion, options.forceMinimal ? 120 : 180),
     unresolvedQuestions: compactList(block.unresolvedQuestions || block.unresolved_questions, options.forceMinimal ? 2 : 4, 90),
     stagePlan: selectedStages.map(stage => ({
@@ -206,6 +242,25 @@ function compactStoryBlockForBeatPlan(block = null, options = {}) {
       choice: compactText(stage?.choice, 110),
       costOrConsequence: compactText(stage?.costOrConsequence || stage?.consequence || stage?.cost, 120)
     }))
+  }
+}
+
+function pickStoryBlockHumanity(block = {}) {
+  const nested = block.lockState?.storyHumanity || block.storyHumanity || {}
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = block[key] ?? nested[key]
+      const text = String(value || '').replace(/\s+/g, ' ').trim()
+      if (text) return text
+    }
+    return ''
+  }
+  return {
+    relationshipFocus: pick('relationshipFocus', 'relationship_focus'),
+    relationshipStart: pick('relationshipStart', 'relationship_start'),
+    relationshipTask: pick('relationshipTask', 'relationship_task'),
+    relationshipEndHint: pick('relationshipEndHint', 'relationship_end_hint', 'relationshipEnd'),
+    sceneVarietyHint: pick('sceneVarietyHint', 'scene_variety_hint')
   }
 }
 
@@ -361,11 +416,17 @@ function formatStoryBlockForPlanning(block = null) {
   if (!block) return ''
   const stages = Array.isArray(block.stagePlan) ? block.stagePlan : []
   const nextStage = stages.find(stage => stage?.status !== 'completed') || stages[0] || null
+  const humanity = pickStoryBlockHumanity(block)
   return [
     block.title ? `故事块：${block.title}` : '',
     block.goal ? `目标：${block.goal}` : '',
     block.storyFunction ? `故事功能：${block.storyFunction}` : '',
     block.entryState ? `入场状态：${block.entryState}` : '',
+    humanity.relationshipFocus ? `relationshipFocus：${humanity.relationshipFocus}` : '',
+    humanity.relationshipStart ? `relationshipStart：${humanity.relationshipStart}` : '',
+    humanity.relationshipTask ? `relationshipTask：${humanity.relationshipTask}` : '',
+    humanity.relationshipEndHint ? `relationshipEndHint：${humanity.relationshipEndHint}` : '',
+    humanity.sceneVarietyHint ? `sceneVarietyHint：${humanity.sceneVarietyHint}` : '',
     block.nextStageSuggestion ? `下一阶段建议：${block.nextStageSuggestion}` : '',
     nextStage?.purpose ? `当前阶段目的：${nextStage.purpose}` : '',
     nextStage?.sceneOrAction ? `当前阶段行动：${nextStage.sceneOrAction}` : '',

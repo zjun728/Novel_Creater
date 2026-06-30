@@ -9,8 +9,8 @@ import routers.providers as providers  # noqa: E402
 
 
 async def main():
-    assert providers.DEFAULT_TASK_PROVIDER_NAME == "deepseek-v4-flash"
-    assert providers.DEFAULT_TASK_MODEL_NAME == "deepseek-v4-flash"
+    assert providers.DEFAULT_TASK_PROVIDER_NAME == "联通云-DeepSeek-V4-Flash"
+    assert providers.DEFAULT_TASK_MODEL_NAME == "DeepSeek-V4-Flash"
 
     original_fetchone = providers.fetchone
     original_execute = providers.execute
@@ -20,11 +20,11 @@ async def main():
 
     async def fake_fetchone(sql, args=()):
         if "FROM provider_profiles" in sql and "model=%s" in sql:
-            assert args == ("deepseek-v4-flash", "deepseek-v4-flash")
+            assert args == ("DeepSeek-V4-Flash", "联通云-DeepSeek-V4-Flash")
             return {
                 "id": "provider-default",
-                "name": "deepseek-v4-flash",
-                "model": "deepseek-v4-flash",
+                "name": "联通云-DeepSeek-V4-Flash",
+                "model": "DeepSeek-V4-Flash",
                 "updated_at": 123,
             }
         if "FROM task_model_bindings" in sql:

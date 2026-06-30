@@ -70,8 +70,7 @@ test('multiple fingerprint cards are compacted and capped before entering prompt
 
 test('writing strategy display exposes full fingerprint methods for the frontend', () => {
   const cards = getWritingStrategyDisplayCards({
-    primaryStandard: 'rational-fantasy',
-    secondaryFlavor: 'suspense-hook',
+    selectedStandards: ['system-character-humanity', 'system-dialogue-realism'],
     customStyleNotes: '本书更重考据细节和父子情感。'
   })
 

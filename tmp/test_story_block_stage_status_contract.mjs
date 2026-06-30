@@ -48,7 +48,13 @@ assert.match(reviewFn, /normalizeReviewForStageProgress/)
 assert.match(reviewFn, /stageContinues/)
 assert.match(reviewFn, /deriveNextStageSuggestion/)
 assert.match(reviewFn, /const reviewedBlock = await loadStoryBlockAfterReview/)
-assert.match(reviewFn, /review\.decision === 'continue_current_block'[\s\S]*stagePlan: reviewedBlock\.stagePlan/)
+const continueBranch = reviewFn.match(/review\.decision === 'continue_current_block'[\s\S]*?\} else if \(review\.decision === 'split_unfinalized_content'\)/)?.[0] || ''
+assert.ok(continueBranch, 'continue_current_block branch must remain explicit')
+assert.doesNotMatch(
+  continueBranch,
+  /stagePlan\s*:/,
+  'continue_current_block must not resend full stagePlan after backend review locks the current stage'
+)
 assert.match(reviewFn, /review\.decision === 'adjust_remaining_stages'[\s\S]*mergeForwardStagePlan\(reviewedBlock/)
 assert.match(reviewFn, /review\.decision === 'open_new_block'[\s\S]*closeBlock/)
 

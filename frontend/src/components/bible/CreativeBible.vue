@@ -8,7 +8,8 @@ import { useNovelStore } from '@/stores/novelStore'
 import { useSettingStore } from '@/stores/settingStore'
 import { normalizeBiblePayload } from '@/prompts/bibleFromSeed'
 import {
-  getAllWritingStyleStandards,
+  createWritingProfileStandardSnapshots,
+  getSelectableWritingStyleStandards,
   getSelectedWritingStyleStandards,
   getWritingStrategyDisplayCards,
   normalizeWritingProfile
@@ -26,28 +27,26 @@ const dialog = useDialog()
 const { confirmStageReset } = useResetConfirmation()
 
 const editing = ref(false)
+const backendWritingStandards = ref([])
 const displayBible = computed(() => novelStore.bible ? normalizeBiblePayload(novelStore.bible) : null)
 const bibleInitialized = computed(() => settingStore.hasBibleInitialization)
 const settingInitializationProgress = computed(() => settingStore.bibleInitializationProgress || null)
 const canRetryFailedSettingGroups = computed(() =>
   Boolean(displayBible.value && settingStore.failedGroups?.length && !settingStore.initializingFromBible)
 )
-const writingStyleStandards = computed(() => getAllWritingStyleStandards())
+const writingStyleOptions = computed(() => ({ backendStandards: backendWritingStandards.value }))
+const writingStyleStandards = computed(() => getSelectableWritingStyleStandards(writingStyleOptions.value))
 const standardOptions = computed(() => writingStyleStandards.value.map(item => ({
-  label: item.name,
+  label: `${item.name} · ${item.sourceKind === 'system' ? '系统内置标准' : '我的写作标准'}`,
   value: item.id
 })))
-const secondaryStandardOptions = computed(() => [
-  { label: '不选择辅助风味', value: '' },
-  ...writingStyleStandards.value
-    .filter(item => item.id !== formData.value.writingProfile?.primaryStandard)
-    .map(item => ({ label: item.name, value: item.id }))
-])
 const selectedStyleStandards = computed(() => getSelectedWritingStyleStandards(
-  displayBible.value?.writingProfile
+  displayBible.value?.writingProfile,
+  writingStyleOptions.value
 ))
 const writingStrategyCards = computed(() => getWritingStrategyDisplayCards(
-  displayBible.value?.writingProfile
+  displayBible.value?.writingProfile,
+  writingStyleOptions.value
 ))
 
 function emptyBibleForm() {
@@ -58,8 +57,10 @@ function emptyBibleForm() {
     themeBible: '',
     worldRules: '',
     writingProfile: {
+      selectedStandards: [],
       primaryStandard: '',
       secondaryFlavor: '',
+      additionalStandards: [],
       customStyleNotes: ''
     },
     forbiddenDirections: []
@@ -68,6 +69,28 @@ function emptyBibleForm() {
 
 const formData = ref(emptyBibleForm())
 
+const selectedWritingStandardValues = computed({
+  get() {
+    return Array.isArray(formData.value.writingProfile?.selectedStandards)
+      ? formData.value.writingProfile.selectedStandards
+      : [
+          formData.value.writingProfile?.primaryStandard,
+          formData.value.writingProfile?.secondaryFlavor,
+          ...(Array.isArray(formData.value.writingProfile?.additionalStandards) ? formData.value.writingProfile.additionalStandards : [])
+        ].filter(Boolean)
+  },
+  set(value) {
+    const ids = Array.from(new Set((Array.isArray(value) ? value : []).filter(Boolean))).slice(0, 3)
+    formData.value.writingProfile = {
+      ...(formData.value.writingProfile || {}),
+      selectedStandards: ids,
+      primaryStandard: ids[0] || '',
+      secondaryFlavor: ids[1] || '',
+      additionalStandards: ids.slice(2)
+    }
+  }
+})
+
 function syncBibleToForm(bible = novelStore.bible) {
   if (!bible) {
     formData.value = emptyBibleForm()
@@ -75,7 +98,10 @@ function syncBibleToForm(bible = novelStore.bible) {
   }
 
   const normalized = normalizeBiblePayload(bible)
-  const writingProfile = normalizeWritingProfile(normalized.writingProfile)
+  const writingProfile = normalizeWritingProfile(normalized.writingProfile, {
+    ...writingStyleOptions.value,
+    preserveUnknown: true
+  })
   formData.value = {
     premise: normalized.premise || '',
     targetReader: normalized.targetReader || '',
@@ -93,10 +119,14 @@ function toggleEditing() {
 }
 
 async function loadPageData(projectId) {
-  await Promise.allSettled([
+  const [, , standardsResult] = await Promise.allSettled([
     novelStore.loadBible(projectId),
-    settingStore.loadChangeEvents(projectId)
+    settingStore.loadChangeEvents(projectId),
+    api.experienceCards.standards.list()
   ])
+  if (standardsResult.status === 'fulfilled') {
+    backendWritingStandards.value = Array.isArray(standardsResult.value) ? standardsResult.value : []
+  }
   settingStore.loadBibleInitializationProgress(projectId)
   syncBibleToForm()
 }
@@ -114,7 +144,14 @@ watch(() => novelStore.bible, (value) => {
 }, { deep: true })
 
 async function handleSave() {
-  const writingProfile = normalizeWritingProfile(formData.value.writingProfile)
+  const writingProfile = normalizeWritingProfile(formData.value.writingProfile, {
+    ...writingStyleOptions.value,
+    preserveUnknown: true
+  })
+  const standardSnapshots = createWritingProfileStandardSnapshots(writingProfile, writingStyleStandards.value)
+  if (Object.keys(standardSnapshots).length) {
+    writingProfile.standardSnapshots = standardSnapshots
+  }
   const payload = {
     ...formData.value,
     writingProfile
@@ -311,10 +348,10 @@ async function handleDeleteBible() {
           </n-tag>
         </n-space>
         <div v-else class="mt-2 text-sm text-gray-500">
-          未选择主写作标准。建议编辑创作圣经，为本书选择一套核心写法，避免后续章节风格漂移。
+          未选择正式写作标准。建议编辑创作圣经，为本书选择 1-3 条已激活标准，避免后续章节风格漂移。
         </div>
         <p class="mt-2 text-xs text-gray-500">
-          主写作标准决定核心写法，辅助风味只做局部气质补充，不会推翻主写作标准。
+          正文生成只读取这里启用并保存的正式写作标准；经验卡和候选标准不会直接进入正文。
         </p>
         <div v-if="writingStrategyCards.length" class="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div
@@ -376,24 +413,19 @@ async function handleDeleteBible() {
         <label class="text-xs text-gray-500 mb-1 block">目标读者</label>
         <n-input v-model:value="formData.targetReader" placeholder="如：男频 20-35 岁、喜欢节奏明快的读者" />
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div>
-          <label class="text-xs text-gray-500 mb-1 block">主写作标准</label>
-          <n-select
-            v-model:value="formData.writingProfile.primaryStandard"
-            :options="standardOptions"
-            clearable
-            placeholder="选择最贴近本书的核心写法"
-          />
-        </div>
-        <div>
-          <label class="text-xs text-gray-500 mb-1 block">辅助风味</label>
-          <n-select
-            v-model:value="formData.writingProfile.secondaryFlavor"
-            :options="secondaryStandardOptions"
-            placeholder="可选：补充一个局部气质"
-          />
-        </div>
+      <div>
+        <label class="text-xs text-gray-500 mb-1 block">正式写作标准（可选 1-3 条）</label>
+        <n-select
+          v-model:value="selectedWritingStandardValues"
+          :options="standardOptions"
+          multiple
+          clearable
+          :max-tag-count="3"
+          placeholder="选择已激活的正式写作标准"
+        />
+        <p class="mt-1 text-xs text-gray-400">
+          这里只显示激活的正式写作标准；取消激活后不会出现在项目选择和正文生成上下文里。
+        </p>
       </div>
       <div>
         <label class="text-xs text-gray-500 mb-1 block">项目风格备注</label>

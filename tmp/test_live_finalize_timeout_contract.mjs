@@ -41,15 +41,29 @@ for (const field of [
   'markerPresent',
   'postFinalizeFailed',
   'activeAction',
-  'recentAiProxy'
+  'recentAiProxy',
+  'selectedVersionId',
+  'selectedVersionWordCount',
+  'selectedVersionHash',
+  'latestCandidateVersionId',
+  'latestCandidateWordCount',
+  'latestCandidateHash',
+  'modalCandidateWordCount',
+  'modalStale',
+  'blockerSource'
 ]) {
   assert.match(liveScript, new RegExp(field), `finalizeDiagnostics should include ${field}`)
 }
 
 assert.match(
   liveScript,
-  /await dismissAppDialogs\(page\)[\s\S]*markChapterFlowEvent\(chapterNum, 'finalize_click_started'\)/,
-  'audit modal should be reliably dismissed before clicking finalize'
+  /await dismissAppDialogs\(page\)[\s\S]*ensureLatestHardPassCandidateSelectedForFinalize\(page, chapterNum\)[\s\S]*markChapterFlowEvent\(chapterNum, 'finalize_click_started'/,
+  'audit modal should be dismissed before finalization version preflight and clicking finalize'
+)
+assert.match(
+  liveScript,
+  /clickFinalizeForLatestHardPassCandidate/,
+  'live finalization should click the latest hard-pass candidate, not a generic stale version button'
 )
 
 assert.match(

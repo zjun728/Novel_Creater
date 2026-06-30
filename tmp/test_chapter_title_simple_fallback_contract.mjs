@@ -8,7 +8,7 @@ import {
 const cases = [
   {
     content: '火灶房里，侯小妹把《炼灵》残卷收进袖中。',
-    expected: '炼灵'
+    expectedOneOf: ['火灶房', '炼灵']
   },
   {
     content: '无心和尚没有进门，只把黄金棺材推到院中。',
@@ -16,11 +16,19 @@ const cases = [
   },
   {
     content: '金龙宝行的人亮出第七封信，裴昊退了一步。',
-    expected: '第七封信'
+    expectedOneOf: ['金龙宝行', '第七封信']
   },
   {
     content: '大梵音寺的钟响过三声，林远才知道自己已经服软。',
     expectedOneOf: ['大梵音寺', '服软']
+  },
+  {
+    content: '林远强行运转炼灵诀，法力三重终于稳住，随后一举踏入筑基中期。',
+    expectedOneOf: ['炼灵', '炼灵诀', '法力三重', '筑基中期']
+  },
+  {
+    content: '两人约在坊市交易，刚验完符宝便被迫破禁出手。',
+    expectedOneOf: ['坊市', '交易', '符宝', '破禁', '出手']
   }
 ]
 

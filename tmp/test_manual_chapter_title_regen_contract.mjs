@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 
 const writerStore = readFileSync('frontend/src/stores/writerStore.js', 'utf8')
 const writerView = readFileSync('frontend/src/views/WriterView.vue', 'utf8')
+const chapterTitleCommand = readFileSync('frontend/src/application/writer-flow/chapter-title-command.js', 'utf8')
 
 assert.match(
   writerStore,
@@ -26,8 +27,13 @@ assert.match(
 )
 assert.match(
   writerView,
-  /generateDefaultChapterTitle\([\s\S]*force:\s*true/,
-  'manual title handler should force metadata-only regeneration'
+  /runGenerateChapterTitleCommand[\s\S]*generateDefaultChapterTitle:\s*writerStore\.generateDefaultChapterTitle/,
+  'manual title handler should delegate metadata-only regeneration to the chapter-title command'
+)
+assert.match(
+  chapterTitleCommand,
+  /generateDefaultChapterTitle\([\s\S]*\{\s*force:\s*true\s*\}/,
+  'chapter-title command should force metadata-only regeneration'
 )
 assert.match(
   writerView,

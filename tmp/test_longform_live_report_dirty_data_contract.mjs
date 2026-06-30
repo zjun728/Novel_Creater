@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const liveScript = readFileSync('tmp/run_longform_browser_240w_phase1.mjs', 'utf8')
+const runtimeConfig = readFileSync('tmp/live-qa/runners/live-runner-runtime-config.mjs', 'utf8')
 
 assert.match(
   liveScript,
@@ -25,8 +26,13 @@ assert.match(
 )
 assert.match(
   liveScript,
-  /process\.env\.PHASE_TARGET/,
-  'live script must allow a temporary smaller phase target for 1-3 chapter post-fix validation while keeping 20 as default'
+  /const PHASE_TARGET = runtimeConfig\.phaseTarget/,
+  'live script must use centralized runtime config for temporary smaller phase targets'
+)
+assert.match(
+  runtimeConfig,
+  /env\.PHASE_TARGET/,
+  'runtime config must allow a temporary smaller phase target for 1-3 chapter post-fix validation while keeping default target centralized'
 )
 assert.doesNotMatch(
   liveScript,

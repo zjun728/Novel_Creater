@@ -458,9 +458,10 @@ export const useMemoryStore = defineStore('memory', () => {
           evidence: f.evidence || '',
           confidence: f.confidence || 0.8,
           status: f.status || 'accepted'
-        })
+        }, { skipPlotThreadSync: true })
         existingFactKeys.add(factKey)
       }
+      await novelStore.syncPlotThreadsFromCanonFacts(projectId)
 
       if (results.summary?.characterChanges?.length) {
         await novelStore.loadCharacters(projectId)

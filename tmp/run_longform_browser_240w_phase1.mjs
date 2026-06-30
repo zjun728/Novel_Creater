@@ -1,6 +1,17 @@
 import { chromium } from './playwright-run/node_modules/playwright/index.mjs'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import {
+  assertChapterRangeFreeze,
+  assertNoUnexpectedChapterStarted,
+  assertSettingsAndRelationHealth,
+  collectFreezeGuardSummary
+} from './live-qa/guards/live-run-freeze-guards.mjs'
+import { collectProjectHealthSnapshotFromApi } from './live-qa/audits/project-health-api-snapshot.mjs'
+import { summarizeProjectHealthSnapshot } from './live-qa/audits/project-health-audit.mjs'
+import { writeLiveReport } from './live-qa/reports/live-report-writer.mjs'
+import { buildLiveRunnerRuntimeConfig } from './live-qa/runners/live-runner-runtime-config.mjs'
 import {
   SETTING_CHANGE_CLASSIFICATIONS,
   classifySettingChangeRisk,
@@ -8,20 +19,32 @@ import {
   isPlaceholderSettingEntity,
   sortSettingEventsForConfirmation as sortSettingEventsByConfirmationOrder
 } from '../frontend/src/utils/settingChangeRisk.js'
-import { getChapterTitleQuality } from '../frontend/src/prompts/chapter.js'
+import {
+  assessChapterWordCount,
+  buildChapterWordTarget
+} from '../frontend/src/utils/chapterWordTarget.js'
+import { cleanGeneratedChapterText, getChapterTitleQuality } from '../frontend/src/prompts/chapter.js'
 
 const FRONTEND = 'http://127.0.0.1:5173'
 const API_BASE = 'http://127.0.0.1:8000/api'
 const OUT_DIR = 'tmp/realistic-flow-qa'
-const REPORT_JSON = path.join(OUT_DIR, 'latest-longform-browser-live-report.json')
-const REPORT_MD = path.join(OUT_DIR, 'latest-longform-browser-live-report.md')
+const REPORT_JSON = process.env.LIVE_REPORT_JSON || path.join(OUT_DIR, 'latest-longform-browser-live-report.json')
+const REPORT_MD = process.env.LIVE_REPORT_MD || path.join(OUT_DIR, 'latest-longform-browser-live-report.md')
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-const DEFAULT_PHASE_TARGET = 20
+const runtimeConfig = buildLiveRunnerRuntimeConfig({
+  env: process.env
+})
+const EXISTING_PROJECT_ID = runtimeConfig.existingProjectId
+const EXISTING_PROJECT_NAME = runtimeConfig.existingProjectName
+const START_CHAPTER = runtimeConfig.startChapter
+const STAGE_SETTLEMENT_DIAGNOSTICS = process.env.STAGE_SETTLEMENT_DIAGNOSTICS || path.join(OUT_DIR, `stage-continuation-settlement-before-${START_CHAPTER}.json`)
+const RESUME_CHAPTER_WINDOW = runtimeConfig.resumeChapterWindow
+const DEFAULT_PHASE_TARGET = runtimeConfig.defaultPhaseTarget
+const MAX_PHASE_TARGET = runtimeConfig.maxPhaseTarget
 const SETTING_CONFIRMATION_ORDER = ['new_entity', 'update_entity', 'relationship']
-const PHASE_TARGET = Math.min(
-  DEFAULT_PHASE_TARGET,
-  Math.max(1, Number(process.env.PHASE_TARGET || DEFAULT_PHASE_TARGET) || DEFAULT_PHASE_TARGET)
-)
+const PHASE_TARGET = runtimeConfig.phaseTarget
+const RUN_CHAPTER_COUNT = runtimeConfig.runChapterCount
+const FREEZE_FORBIDDEN_CHAPTERS = runtimeConfig.forbiddenChapters
 const FINALIZATION_TIMEOUT_MS = Math.max(
   600000,
   Number(process.env.FINALIZATION_TIMEOUT_MS || 600000) || 600000
@@ -41,12 +64,31 @@ const DRAFT_ENTRY_LABELS = [
   '生成正文',
   '开始生成本章'
 ]
+const DRAFT_REGENERATION_ENTRY_LABELS = [
+  '重新生成正文',
+  '重新生成本章',
+  '重生成正文',
+  '重新生成',
+  ...DRAFT_ENTRY_LABELS
+]
 const DRAFT_GENERATION_ENTRY_LABELS = DRAFT_MODAL_ENTRY_LABELS
 const DRAFT_GENERATION_PREP_LABELS = BEAT_PLAN_ENTRY_LABELS
 const DRAFT_GENERATION_PAGE_ENTRY_LABELS = DRAFT_ENTRY_LABELS
-const EXPECTED_PROVIDER_NAME = 'deepseek-v4-flash'
-const EXPECTED_MODEL_NAME = 'deepseek-v4-flash'
-const EXPECTED_PROVIDER_ID = process.env.EXPECTED_PROVIDER_ID || ''
+const EXPECTED_PROVIDER_NAME = '联通云-DeepSeek-V4-Flash'
+const EXPECTED_MODEL_NAME = 'DeepSeek-V4-Flash'
+const EXPECTED_PROVIDER_ID = runtimeConfig.expectedProviderId
+
+function loadStageSettlementDiagnostics() {
+  if (!STAGE_SETTLEMENT_DIAGNOSTICS || !existsSync(STAGE_SETTLEMENT_DIAGNOSTICS)) return null
+  try {
+    return JSON.parse(readFileSync(STAGE_SETTLEMENT_DIAGNOSTICS, 'utf8'))
+  } catch (error) {
+    return {
+      source: STAGE_SETTLEMENT_DIAGNOSTICS,
+      error: error.message
+    }
+  }
+}
 
 const projectName = `LongformBrowser240w_${timestamp()}`
 const liveConsoleErrors = []
@@ -56,16 +98,19 @@ const postFinalizeSettlementByChapter = new Map()
 const report = {
   mode: 'live',
   createdAt: new Date().toISOString(),
-  createdCleanProject: true,
+  createdCleanProject: runtimeConfig.createCleanProject,
   usesArchivedReports: false,
   target: {
     targetWords: 2400000,
     targetChapters: 480,
-    phaseTargetChapters: PHASE_TARGET
+    phaseTargetChapters: PHASE_TARGET,
+    startChapter: START_CHAPTER,
+    endChapter: PHASE_TARGET,
+    runChapterCount: RUN_CHAPTER_COUNT
   },
   project: {
-    id: '',
-    name: projectName,
+    id: EXISTING_PROJECT_ID,
+    name: EXISTING_PROJECT_NAME || projectName,
     failedSampleKept: 'LongformBrowser240w_20260618011942',
     failedSampleId: 'e39cc9f1-4697-402b-a32c-564bee7d1e36'
   },
@@ -75,6 +120,14 @@ const report = {
     fixedPortsReused: true,
     browser: 'Chrome via Playwright'
   },
+  serviceCleanupDiagnostics: {
+    source: null,
+    killedPids: [],
+    skippedStalePids: [],
+    skippedReason: [],
+    pending: true
+  },
+  stageContinuationSettlementDiagnostics: loadStageSettlementDiagnostics(),
   aiProxy: {
     aiProxyUsed: false,
     providerId: '',
@@ -157,6 +210,8 @@ const report = {
   beatPlanQualityRebuilds: [],
   chapterReports: [],
   hardFailWordCountChapters: [],
+  pendingSettingsCount: 0,
+  freezeGuardSummary: null,
   blocker: null,
   acceptance: {
     passed: false,
@@ -238,6 +293,35 @@ function latestPostFinalizeAiProxyFailureText() {
     }) || ''
 }
 
+function classifyPostFinalizeMarkerFailure(marker = {}, fallbackText = '') {
+  if (!marker?.retryablePostprocessFailure && !marker?.storyBlockSettlementFailure && !marker?.postFinalizeFailed) return null
+  const storyBlockFailure = marker.storyBlockSettlementFailure || null
+  const retryableFailure = marker.retryablePostprocessFailure || null
+  const detail = storyBlockFailure || retryableFailure || {}
+  const message = detail.message || fallbackText || '定稿后处理失败。'
+  const conflictText = `${marker.status || ''} ${detail.code || ''} ${message}`
+  if (storyBlockFailure || /story_block_stage_update_conflict|已被小纲或定稿章节引用的阶段不能回改|已锁定阶段不能被删除或替换/i.test(conflictText)) {
+    return {
+      code: 'post_finalize_story_block_settlement_failed',
+      conflictCode: 'story_block_stage_update_conflict',
+      stage: 'post_finalize_story_block_settlement_failed',
+      reasonKey: 'story_block_settlement_failure',
+      message: `定稿后故事块结算失败：${message}`,
+      detail,
+      retryable: false
+    }
+  }
+  return {
+    code: 'post_finalize_ai_proxy_failed',
+    conflictCode: '',
+    stage: 'post_finalize_ai_proxy_failed',
+    reasonKey: 'retryable_postprocess_failure',
+    message: `定稿后 AI 代理请求失败：${message || '后处理需要重试。'}`,
+    detail,
+    retryable: detail.retryable !== false
+  }
+}
+
 function promotePostFinalizeAiProxyFailureFromConsole() {
   if (report.blocker) return false
   const failureText = latestPostFinalizeAiProxyFailureText()
@@ -272,14 +356,33 @@ function promoteFinalizeFailureFromFlowEvents() {
   for (const chapter of report.chapterReports) {
     const failed = chapter.flowEvents?.finalize_failed
     if (!failed) continue
-    const code = failed.code || 'finalize_timed_out'
+    const belowHardMinModal = Boolean(failed.finalizeDiagnostics?.belowHardMinModal) ||
+      isBelowHardMinModalText(failed.finalizeDiagnostics?.modalText || '') ||
+      (Array.isArray(failed.finalizeDiagnostics?.dialogTexts) && failed.finalizeDiagnostics.dialogTexts.some(isBelowHardMinModalText))
+    const staleBelowHardMinModal = Boolean(failed.finalizeDiagnostics?.modalStale) ||
+      failed.finalizeDiagnostics?.blockerSource === 'stale_modal'
+    const selectedVersionStale = Boolean(failed.finalizeDiagnostics?.selectedVersionStale) ||
+      failed.finalizeDiagnostics?.blockerSource === 'selected_version_stale'
+    const code = staleBelowHardMinModal
+      ? 'stale_below_hard_min_modal'
+      : (selectedVersionStale
+          ? 'selected_version_stale'
+          : (belowHardMinModal ? 'chapter_below_hard_min' : (failed.code || 'finalize_timed_out')))
     const isTimeout = code === 'finalize_timed_out'
-    const message = isTimeout
+    const message = code === 'stale_below_hard_min_modal'
+      ? `第 ${chapter.chapterNum} 章旧低字数弹窗阻断定稿。`
+      : code === 'selected_version_stale'
+      ? `第 ${chapter.chapterNum} 章最新候选已过硬线，但页面仍选中旧候选。`
+      : code === 'chapter_below_hard_min'
+      ? `第 ${chapter.chapterNum} 章低于硬下限，未进入定稿。`
+      : isTimeout
       ? `第 ${chapter.chapterNum} 章定稿超时：${failed.message || 'finalize timed out'}`
       : `第 ${chapter.chapterNum} 章定稿失败：${failed.message || code}`
     report.blocker = {
       blocked: true,
-      stage: 'finalize',
+      stage: code === 'selected_version_stale'
+        ? 'finalize_version_selection'
+        : (code === 'chapter_below_hard_min' || code === 'stale_below_hard_min_modal' ? 'word_count_quality_gate' : 'finalize'),
       code,
       chapterNum: chapter.chapterNum,
       message,
@@ -294,6 +397,7 @@ function promoteFinalizeFailureFromFlowEvents() {
 
 function syncReportBlockerFromFlowEvents() {
   if (syncHardWordCountBlocker()) return
+  if (promoteChapterBelowHardMinFromFlowEvents()) return
   if (report.blocker) {
     if (!report.acceptance.reason) {
       report.acceptance.reason = report.blocker.message || report.blocker.code || '流程已阻断。'
@@ -332,6 +436,44 @@ function syncReportBlockerFromFlowEvents() {
   }
 }
 
+function promoteChapterBelowHardMinFromFlowEvents() {
+  if (report.blocker) return false
+  for (const chapter of report.chapterReports) {
+    const failed = chapter.flowEvents?.chapter_below_hard_min
+    if (!failed) continue
+    const hardFailWordCountChapters = failed.hardFailWordCountChapters || [{
+      chapterNum: chapter.chapterNum,
+      title: chapter.title || '',
+      wordCount: chapter.wordCount || failed.candidateWordCount || 0,
+      cjkCharCount: chapter.cjkCharCount || 0,
+      status: chapter.wordCountPolicy?.status || 'below_hard_min',
+      hardMin: failed.liveHardMin || failed.appHardMin || chapter.wordCountPolicy?.hardMin || null,
+      softMin: chapter.wordCountPolicy?.softMin || null,
+      targetRange: chapter.wordCountPolicy?.targetRange || null
+    }]
+    report.hardFailWordCountChapters = hardFailWordCountChapters
+    report.blocker = {
+      blocked: true,
+      stage: 'word_count_quality_gate',
+      code: 'chapter_below_hard_min',
+      chapterNum: chapter.chapterNum,
+      message: `第 ${chapter.chapterNum} 章低于硬下限，未进入定稿。`,
+      hardFailWordCountChapters,
+      appHardMin: failed.appHardMin || null,
+      liveHardMin: failed.liveHardMin || null,
+      wordTarget: failed.wordTarget || chapter.wordTarget || null,
+      candidateWordCount: failed.candidateWordCount || chapter.wordCount || 0,
+      modalText: failed.modalText || '',
+      regenerateAttempted: Boolean(failed.regenerateAttempted),
+      regenerateSucceeded: Boolean(failed.regenerateSucceeded)
+    }
+    report.acceptance.passed = false
+    report.acceptance.reason = report.blocker.message
+    return true
+  }
+  return false
+}
+
 function syncHardWordCountBlocker() {
   const hardFailWordCountChapters = report.chapterReports
     .filter(chapter => chapter.finalized && chapter.wordCountPolicy && chapter.wordCountPolicy.hardPass === false)
@@ -345,6 +487,12 @@ function syncHardWordCountBlocker() {
       softMin: chapter.wordCountPolicy.softMin,
       targetRange: chapter.wordCountPolicy.targetRange
     }))
+  if (!hardFailWordCountChapters.length && report.blocker?.code === 'chapter_below_hard_min') {
+    report.hardFailWordCountChapters = Array.isArray(report.blocker.hardFailWordCountChapters)
+      ? report.blocker.hardFailWordCountChapters
+      : report.hardFailWordCountChapters
+    return false
+  }
   report.hardFailWordCountChapters = hardFailWordCountChapters
   if (!hardFailWordCountChapters.length) return false
 
@@ -364,103 +512,76 @@ function syncHardWordCountBlocker() {
 
 function writeReport() {
   syncReportBlockerFromFlowEvents()
-  writeFileSync(REPORT_JSON, JSON.stringify(report, null, 2), 'utf8')
-  const lines = [
-    '# 240 万字长篇真实浏览器第一阶段报告',
-    '',
-    `- mode: ${report.mode}`,
-    `- createdCleanProject: ${report.createdCleanProject}`,
-    `- usesArchivedReports: ${report.usesArchivedReports}`,
-    `- 项目: ${report.project.name} (${report.project.id || '未创建'})`,
-    `- 完成章节: ${report.acceptance.completedChapters}/${PHASE_TARGET}`,
-    `- 通过: ${report.acceptance.passed}`,
-    `- 原因: ${report.acceptance.reason || '进行中'}`,
-    '',
-    '## AI 代理',
-    `- aiProxyUsed: ${report.aiProxy.aiProxyUsed}`,
-    `- providerId: ${report.aiProxy.providerId || '未记录'}`,
-    `- providerName: ${report.aiProxy.providerName || '未记录'}`,
-    `- modelName: ${report.aiProxy.modelName || '未记录'}`,
-    `- browserConsoleCorsErrors: ${report.aiProxy.browserConsoleCorsErrors}`,
-    `- backendAiRequests: ${report.aiProxy.backendAiRequests}`,
-    `- browserProviderChatCompletions: ${report.aiProxy.providerChatCompletionUrls.length}`,
-    '```json',
-    JSON.stringify(report.aiProxy.realRequestStages.slice(-30), null, 2),
-    '```',
-    '',
-    '## 模型继承',
-    `- hasBinding: ${report.modelBinding.status?.hasBinding ?? false}`,
-    `- inherited: ${report.modelBinding.status?.inherited ?? false}`,
-    `- inheritedFrom: ${report.modelBinding.status?.inheritedFromProjectTitle || '无'}`,
-    `- 设置页显示继承来源: ${report.modelBinding.settingsPageShowsInheritance}`,
-    `- expectedProviderName: ${report.modelBinding.expectedProviderName}`,
-    `- expectedModelName: ${report.modelBinding.expectedModelName}`,
-    `- expectedProviderId: ${report.modelBinding.expectedProviderId || '未指定'}`,
-    `- 期望模型匹配: ${report.modelBinding.inheritedProviderMatched}`,
-    `- actualProviderModelMatched: ${report.modelBinding.actualProviderModelMatched}`,
-    `- deepseek-v4-pro 兜底: ${report.modelBinding.usedDeepseekV4ProFallback}`,
-    '```json',
-    JSON.stringify(report.modelBinding.taskProviders, null, 2),
-    '```',
-    '',
-    '## 规划层级',
-    `- 章节管理页检查: ${report.planningHierarchy.projectChaptersPageChecked}`,
-    `- 旧主链路文案残留: ${report.planningHierarchy.legacyTextFound.join(', ') || '无'}`,
-    '',
-    '## 步骤',
-    ...report.stepsCompleted.map(step => `- ${step}`),
-    '',
-    '## 设定初始化',
-    `- 分组进度可见: ${report.settingInitialization.groupedProgressVisible}`,
-    `- 待确认候选: ${report.settingInitialization.pendingCandidatesCreated}`,
-    `- 已确认候选: ${report.settingInitialization.acceptedCandidates}`,
-    `- 失败分组: ${report.settingInitialization.failedGroups.join(', ') || '无'}`,
-    '',
-    '## 分卷规划',
-    `- 已生成: ${report.volumePlanning.generated}`,
-    `- 占位文本风险: ${report.volumePlanning.placeholderWarnings.length}`,
-    report.volumePlanning.diagnostics
-      ? '```json\n' + JSON.stringify(report.volumePlanning.diagnostics, null, 2) + '\n```'
-      : '- 诊断: 无',
-    '',
-    '## 章节',
-    ...report.chapterReports.map(ch => `- 第 ${ch.chapterNum} 章《${ch.title || '未命名'}》 ${ch.wordCount || 0} 字，wordPolicy=${ch.wordCountPolicyStatus || '未记录'}，titleValid=${ch.titleQuality?.titleValid ?? '未记录'}，titleReason=${ch.titleQuality?.titleInvalidReason || '无'}，block=${ch.storyBlockId || '缺失'} stage=${ch.blockStageId || '缺失'}，stagePurpose=${ch.blockStageSnapshot?.stagePurpose || '未记录'}，上一章回看=${ch.previousStoryBlockReviewDecision || '无'}，上一章stageContinues=${ch.previousStoryBlockStageContinues ?? '无'}，review=${ch.storyBlockReviewDecision || '未记录'}，postFinalizeWaitPassed=${ch.postFinalizeWaitPassed ?? false}，postFinalizeFailed=${ch.postFinalizeFailed ?? false}，markerClearedAt=${ch.finalizationMarkerClearedAt || '未记录'}，stageContinues=${ch.storyBlockStageContinues} ${ch.storyBlockStageContinueReason || ''}，completedStages=${formatCompletedStageIds(ch.currentBlockCompletedStages)}`),
-    '',
-    '## 故事块摘要',
-    `- blocksCreated: ${report.storyBlockGranularity.blocksCreated}`,
-    `- averageChaptersPerBlock: ${report.storyBlockGranularity.averageChaptersPerBlock}`,
-    `- singleChapterBlockCount: ${report.storyBlockGranularity.singleChapterBlockCount}`,
-    `- consecutiveSingleChapterBlocks: ${report.storyBlockGranularity.consecutiveSingleChapterBlocks}`,
-    `- storyBlockGranularityWarning: ${report.storyBlockGranularity.storyBlockGranularityWarning || '无'}`,
-    `- storyBlockGranularityQualityHold: ${report.storyBlockGranularity.storyBlockGranularityQualityHold || '无'}`,
-    `- storyBlockStalledWarning: ${report.storyBlockGranularity.storyBlockStalledWarning || '无'}`,
-    `- activeBlockRemainingStages: ${report.storyBlockGranularity.activeBlockRemainingStages.length}`,
-    ...(report.storyBlockSummaries.length
-      ? report.storyBlockSummaries.map(block => `- ${block.id} ${block.status} 覆盖章节=${block.coveredChapterCount} executed=${block.executedStageCount} completed=${block.completedStageCount}/${block.stageCount} closedUnexecuted=${block.closedUnexecutedStageCount} invalidated=${block.invalidatedStageCount} 剩余阶段=${block.remainingStageCount} blockCloseReasonType=${block.blockCloseReasonType || '无'} earlyCloseAllowed=${block.earlyCloseAllowed ?? '无'} 单章完成=${block.singleChapterCompletedWholeBlock} completionEvidence=${block.completionEvidence || '无'} singleChapterBlockReason=${block.singleChapterBlockReason || '无'}`)
-      : ['无']),
-    '```json',
-    JSON.stringify(report.storyBlockGranularity, null, 2),
-    '```',
-    '',
-    '## 质量观察',
-    ...(report.qualityWarnings.length
-      ? report.qualityWarnings.map(item => `- ${item.code}: ${item.message}`)
-      : ['无']),
-    '',
-    '## 质量 Backlog',
-    ...(report.qualityBacklog.length
-      ? report.qualityBacklog.map(item => `- ${item.code}: ${item.message}`)
-      : ['无']),
-    '',
-    '## 小纲质量重建',
-    ...(report.beatPlanQualityRebuilds.length
-      ? report.beatPlanQualityRebuilds.map(item => `- 第 ${item.chapterNum} 章第 ${item.retry} 次：${item.message}`)
-      : ['无']),
-    '',
-    '## 阻断',
-    report.blocker ? '```json\n' + JSON.stringify(report.blocker, null, 2) + '\n```' : '无'
-  ]
-  writeFileSync(REPORT_MD, lines.join('\n'), 'utf8')
+  return writeLiveReport({
+    report,
+    jsonPath: REPORT_JSON,
+    mdPath: REPORT_MD,
+    phaseTarget: PHASE_TARGET,
+    formatCompletedStageIds
+  })
+}
+
+function expectedRelationRiskFromReport() {
+  return {
+    activeRelationCount: report.relationshipAudit?.activeRelationCount,
+    activeSyntheticRelationCount: 0,
+    activeSelfRelationCount: 0,
+    activeWrongLayerRelationCount: 0,
+    activeMissingEndpointRelationCount: 0
+  }
+}
+
+async function refreshProjectHealthAuditForFreezeGuard() {
+  if (!report.project.id) {
+    report.projectHealthAudit = {
+      ok: false,
+      skipped: true,
+      skippedReason: 'projectIdMissing',
+      relationshipAudit: null,
+      pendingSettingsCount: report.pendingSettingsCount ?? 0
+    }
+    return report.projectHealthAudit
+  }
+  const snapshot = await collectProjectHealthSnapshotFromApi({
+    api,
+    projectId: report.project.id
+  })
+  const health = summarizeProjectHealthSnapshot(snapshot, {
+    projectId: report.project.id,
+    forbiddenChapters: FREEZE_FORBIDDEN_CHAPTERS
+  })
+  report.projectHealthAudit = health
+  report.relationshipAudit = health.relationshipAudit
+  report.pendingSettingsCount = health.pendingSettingsCount
+  return health
+}
+
+async function runFreezeGuards() {
+  await refreshProjectHealthAuditForFreezeGuard()
+  const unexpectedChapterNum = PHASE_TARGET + 1
+  const expectedRelationRisk = expectedRelationRiskFromReport()
+  assertChapterRangeFreeze({
+    report,
+    startChapter: START_CHAPTER,
+    endChapter: PHASE_TARGET,
+    forbiddenChapters: FREEZE_FORBIDDEN_CHAPTERS
+  })
+  assertNoUnexpectedChapterStarted({ report, chapterNum: unexpectedChapterNum })
+  assertSettingsAndRelationHealth({
+    report,
+    expectedPendingCount: 0,
+    expectedRelationRisk
+  })
+  report.freezeGuardSummary = collectFreezeGuardSummary({
+    report,
+    startChapter: START_CHAPTER,
+    endChapter: PHASE_TARGET,
+    forbiddenChapters: FREEZE_FORBIDDEN_CHAPTERS,
+    unexpectedChapterNum,
+    expectedPendingCount: 0,
+    expectedRelationRisk
+  })
+  return report.freezeGuardSummary
 }
 
 async function api(pathname, options = {}) {
@@ -762,6 +883,7 @@ async function collectDraftGenerationEntryDiagnostics(page, chapterNum, chapterI
 async function collectWriterContextDiagnostics(page, chapterNum, contextWaitStartedAtMs = 0, writerEnteredAtMs = contextWaitStartedAtMs) {
   const chapterId = await currentChapterId(chapterNum).catch(() => '')
   const entryDiagnostics = await collectDraftGenerationEntryDiagnostics(page, chapterNum, chapterId)
+  const writerHumanityContextDiagnostics = await readWriterHumanityContextDiagnostics(page, chapterNum)
   const messages = await visibleMessageTexts(page)
   const eventWindowStartedAtMs = Number(writerEnteredAtMs || contextWaitStartedAtMs || 0)
   const labels = Array.from(new Set([
@@ -823,7 +945,18 @@ async function collectWriterContextDiagnostics(page, chapterNum, contextWaitStar
     recentConsoleContextFailures,
     staleConsoleErrorsIgnored,
     currentContextFailures,
-    contextFailureMessages
+    contextFailureMessages,
+    writerHumanityContextDiagnostics,
+    companionVoiceCardsInjected: writerHumanityContextDiagnostics?.companionVoiceCardsInjected ?? null,
+    companionVoiceCardNames: writerHumanityContextDiagnostics?.companionVoiceCardNames || [],
+    sampleCardInjected: writerHumanityContextDiagnostics?.sampleCardInjected ?? false,
+    sampleCardId: writerHumanityContextDiagnostics?.sampleCardId || '',
+    sampleCardTitle: writerHumanityContextDiagnostics?.sampleCardTitle || '',
+    sampleCardType: writerHumanityContextDiagnostics?.sampleCardType || '',
+    sampleInjectionReason: writerHumanityContextDiagnostics?.sampleInjectionReason || '',
+    microDemoChars: writerHumanityContextDiagnostics?.microDemoChars || 0,
+    sourceFieldsStripped: writerHumanityContextDiagnostics?.sourceFieldsStripped ?? true,
+    sampleLeakageDetected: writerHumanityContextDiagnostics?.sampleLeakageDetected ?? false
   }
 }
 
@@ -968,6 +1101,22 @@ async function clickDraftEntry(page, chapterNum, options = {}) {
   }
 }
 
+async function clickDraftRegenerationEntry(page, chapterNum, options = {}) {
+  const clicked = await clickGenerationEntryByLabels(page, chapterNum, DRAFT_REGENERATION_ENTRY_LABELS, {
+    ...options,
+    errorCode: 'draft_regeneration_entry_not_found',
+    errorMessage: `第 ${chapterNum} 章找不到正文重生入口。`
+  })
+  return {
+    ...clicked,
+    generationEntryLabel: clicked.label,
+    draftGenerationEntryLabel: clicked.label,
+    draftGenerationStartedAt: clicked.clickedAt,
+    regenerateEntryLabel: clicked.label,
+    regenerateStartedAt: clicked.clickedAt
+  }
+}
+
 async function clickDraftGenerationEntry(page, chapterNum, options = {}) {
   return clickDraftEntry(page, chapterNum, options)
 }
@@ -1003,6 +1152,215 @@ async function collectDialogAndMessageTexts(page) {
     .catch(() => [])
 }
 
+function isBelowHardMinModalText(text = '') {
+  return /正文低于硬下限|低于硬下限，请扩写或重新生成/i.test(String(text || ''))
+}
+
+async function findBelowHardMinModalText(page) {
+  const texts = await collectDialogAndMessageTexts(page)
+  return texts.find(isBelowHardMinModalText) || ''
+}
+
+function modalCandidateWordCount(text = '') {
+  const source = String(text || '')
+  const preferred = source.match(/本章约\s*(\d{3,6})\s*字/)
+  if (preferred) return Number(preferred[1])
+  const fallback = source.match(/(?:正文约|当前约|约)\s*(\d{3,6})\s*字/)
+  if (fallback) return Number(fallback[1])
+  const any = source.match(/(\d{3,6})\s*字/)
+  return any ? Number(any[1]) : 0
+}
+
+function summarizeFinalizeVersion(version = null, wordTarget = buildLiveChapterWordTarget()) {
+  if (!version) {
+    return {
+      versionId: '',
+      wordCount: 0,
+      contentHash: '',
+      hardPass: false,
+      policy: wordCountPolicy(0, wordTarget)
+    }
+  }
+  const wordCount = versionWordCount(version)
+  const policy = wordCountPolicy(wordCount, wordTarget)
+  return {
+    versionId: String(version.id || ''),
+    wordCount,
+    contentHash: contentHash(version.content || ''),
+    hardPass: Boolean(policy.hardPass),
+    policy
+  }
+}
+
+function buildFinalizeVersionStateDiagnostics({
+  selectedVersion = null,
+  latestCandidate = null,
+  modalText = '',
+  wordTarget = buildLiveChapterWordTarget()
+} = {}) {
+  const selected = summarizeFinalizeVersion(selectedVersion, wordTarget)
+  const latest = summarizeFinalizeVersion(latestCandidate, wordTarget)
+  const modalWordCount = modalCandidateWordCount(modalText)
+  const latestCandidateHardPass = Boolean(latest.versionId && latest.hardPass)
+  const selectedVersionStale = Boolean(
+    selected.versionId &&
+    latest.versionId &&
+    selected.versionId !== latest.versionId &&
+    latestCandidateHardPass
+  )
+  const modalStale = Boolean(
+    modalText &&
+    modalWordCount > 0 &&
+    latestCandidateHardPass &&
+    modalWordCount < Number(wordTarget?.hardMin || latest.policy?.hardMin || 0) &&
+    modalWordCount !== latest.wordCount
+  )
+  const currentCandidateBelowHardMin = Boolean(selected.versionId && selected.hardPass === false)
+  const blockerSource = modalStale
+    ? 'stale_modal'
+    : (selectedVersionStale ? 'selected_version_stale' : (currentCandidateBelowHardMin ? 'current_candidate' : ''))
+  return {
+    selectedVersionId: selected.versionId,
+    selectedVersionWordCount: selected.wordCount,
+    selectedVersionHash: selected.contentHash,
+    selectedVersionHardPass: selected.hardPass,
+    latestCandidateVersionId: latest.versionId,
+    latestCandidateWordCount: latest.wordCount,
+    latestCandidateHash: latest.contentHash,
+    latestCandidateHardPass,
+    modalText,
+    modalCandidateWordCount: modalWordCount,
+    modalStale,
+    selectedVersionStale,
+    blockerSource,
+    appHardMin: Number(wordTarget?.hardMin || 0),
+    liveHardMin: Number(wordTarget?.hardMin || 0),
+    wordTarget,
+    selectedVersionPolicy: selected.policy,
+    latestCandidatePolicy: latest.policy
+  }
+}
+
+async function selectedVersionIdFromPage(page) {
+  return page.locator('[data-current-version="true"][data-version-id]')
+    .first()
+    .getAttribute('data-version-id')
+    .catch(() => '')
+}
+
+async function finalizationVersionDiagnostics(page, chapterNum, modalText = '') {
+  const chapter = await findChapter(chapterNum).catch(() => null)
+  const chapterId = chapter?.id || await currentChapterId(chapterNum).catch(() => '')
+  const versions = chapterId
+    ? await api(`/projects/${report.project.id}/chapters/${chapterId}/versions`).catch(() => [])
+    : []
+  const wordTarget = buildLiveChapterWordTarget()
+  const latestCandidate = latestHardPassCandidateVersion(versions, wordTarget) || latestCandidateVersion(versions)
+  const selectedVersionId = await selectedVersionIdFromPage(page)
+  const selectedVersion = (versions || []).find(version => String(version.id || '') === String(selectedVersionId || '')) ||
+    latestCandidate ||
+    null
+  return {
+    chapterId,
+    versions,
+    ...buildFinalizeVersionStateDiagnostics({
+      selectedVersion,
+      latestCandidate,
+      modalText,
+      wordTarget
+    })
+  }
+}
+
+async function closeBelowHardMinModal(page) {
+  const closeButton = page.locator('.n-dialog, .n-modal, .n-message, .n-notification, .app-message-dialog-content')
+    .filter({ hasText: /正文低于硬下限|低于硬下限，请扩写或重新生成/ })
+    .last()
+    .getByRole('button', { name: /^关闭$|^确定$|^知道了$/ })
+    .last()
+  if (await closeButton.isVisible().catch(() => false)) {
+    await closeButton.click({ timeout: 5000 }).catch(() => {})
+  } else {
+    await page.keyboard.press('Escape').catch(() => {})
+  }
+  await page.waitForTimeout(500)
+  const remainingText = await findBelowHardMinModalText(page)
+  return !remainingText
+}
+
+function setLiveBlocker(code, chapterNum, message, diagnostics = {}) {
+  report.blocker = {
+    blocked: true,
+    stage: code === 'selected_version_stale' ? 'finalize_version_selection' : 'word_count_quality_gate',
+    code,
+    chapterNum,
+    message,
+    ...diagnostics
+  }
+  report.acceptance.passed = false
+  report.acceptance.reason = message
+  writeReport()
+}
+
+function throwStaleBelowHardMinModal(chapterNum, diagnostics = {}) {
+  const message = `第 ${chapterNum} 章低字数旧弹窗未能关闭，未进入定稿。`
+  setLiveBlocker('stale_below_hard_min_modal', chapterNum, message, diagnostics)
+  markChapterFlowEvent(chapterNum, 'stale_below_hard_min_modal', diagnostics)
+  const error = new Error(`stale_below_hard_min_modal: ${message}`)
+  error.code = 'stale_below_hard_min_modal'
+  error.liveDiagnostics = diagnostics
+  throw error
+}
+
+function throwSelectedVersionStale(chapterNum, diagnostics = {}) {
+  const message = `第 ${chapterNum} 章最新候选已过硬线，但页面仍选中旧低字数候选。`
+  setLiveBlocker('selected_version_stale', chapterNum, message, diagnostics)
+  markChapterFlowEvent(chapterNum, 'selected_version_stale', diagnostics)
+  const error = new Error(`selected_version_stale: ${message}`)
+  error.code = 'selected_version_stale'
+  error.liveDiagnostics = diagnostics
+  throw error
+}
+
+async function dismissStaleBelowHardMinModalIfSafe(page, chapterNum, stage = 'below_hard_min_modal_check', details = {}) {
+  const modalText = await findBelowHardMinModalText(page)
+  if (!modalText) {
+    return { modalPresent: false, modalStale: false, modalText: '' }
+  }
+  const versionDiagnostics = await finalizationVersionDiagnostics(page, chapterNum, modalText)
+  const maskCountBeforeDismiss = await page.locator('.n-modal-mask').count().catch(() => 0)
+  const diagnostics = {
+    stage,
+    ...versionDiagnostics,
+    ...details,
+    modalText,
+    modalStale: versionDiagnostics.modalStale,
+    closeBelowHardMinModalAttempted: Boolean(versionDiagnostics.modalStale),
+    closeBelowHardMinModalSucceeded: false,
+    maskCountBeforeDismiss,
+    maskCountAfterDismiss: maskCountBeforeDismiss
+  }
+  if (!versionDiagnostics.modalStale) {
+    return {
+      modalPresent: true,
+      modalStale: false,
+      diagnostics
+    }
+  }
+  const closed = await closeBelowHardMinModal(page)
+  const maskCountAfterDismiss = await page.locator('.n-modal-mask').count().catch(() => 0)
+  diagnostics.closeBelowHardMinModalSucceeded = closed
+  diagnostics.maskCountAfterDismiss = maskCountAfterDismiss
+  markChapterFlowEvent(chapterNum, closed ? 'stale_below_hard_min_modal_dismissed' : 'stale_below_hard_min_modal_close_failed', diagnostics)
+  if (!closed) throwStaleBelowHardMinModal(chapterNum, diagnostics)
+  return {
+    modalPresent: true,
+    modalStale: true,
+    closeBelowHardMinModalSucceeded: true,
+    diagnostics
+  }
+}
+
 async function readPageBusyState(page) {
   const bodyText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '')
   return {
@@ -1018,11 +1376,22 @@ async function collectPostDraftDiagnostics(page, chapterNum, stage) {
   const versions = chapter?.id
     ? await api(`/projects/${report.project.id}/chapters/${chapter.id}/versions`).catch(() => [])
     : []
+  const dialogTexts = await collectDialogAndMessageTexts(page)
+  const belowHardMinModalText = dialogTexts.find(isBelowHardMinModalText) || ''
+  const chapterEntry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum)) || null
   return {
     stage,
     url: page.url(),
     visibleButtonStates: await visibleButtonStates(page),
-    dialogTexts: await collectDialogAndMessageTexts(page),
+    dialogTexts,
+    belowHardMinModal: Boolean(belowHardMinModalText),
+    modalText: belowHardMinModalText,
+    appHardMin: chapterEntry?.wordCountPolicy?.appHardMin || chapterEntry?.wordCountPolicy?.hardMin || null,
+    liveHardMin: chapterEntry?.wordCountPolicy?.liveHardMin || chapterEntry?.wordCountPolicy?.hardMin || null,
+    wordTarget: chapterEntry?.wordTarget || chapterEntry?.wordCountPolicy?.wordTarget || null,
+    candidateWordCount: chapterEntry?.wordCount || chapter?.wordCount || chapter?.word_count || 0,
+    regenerateAttempted: Boolean(chapterEntry?.flowEvents?.below_hard_min_auto_regenerate_started),
+    regenerateSucceeded: Boolean(chapterEntry?.flowEvents?.below_hard_min_auto_regenerate_succeeded),
     messages: await visibleMessageTexts(page),
     pageState: await readPageBusyState(page),
     chapterStatus: chapter?.status || '',
@@ -1034,7 +1403,7 @@ async function collectPostDraftDiagnostics(page, chapterNum, stage) {
     finalVersionCount: Array.isArray(versions)
       ? versions.filter(version => (version.versionType || version.version_type || version.type) === 'final').length
       : 0,
-    ...summarizeAuditTexts(await collectDialogAndMessageTexts(page)),
+    ...summarizeAuditTexts(dialogTexts),
     consoleErrors: liveConsoleErrors.slice(-12),
     visible: await collectVisibleDiagnostics(page)
   }
@@ -1076,6 +1445,7 @@ function classifySettingEvents(events = [], settingEntities = []) {
       suggestedRehomeTarget: risk.rehomeTargetField || risk.suggestedRehomeTarget || '',
       conflictWarnings: risk.conflictWarnings || [],
       whyBlocked: risk.whyBlocked || '',
+      classificationConflictDiagnostic: settingClassificationConflictDiagnostic(risk),
       existingEntity: existingEntity ? {
         id: existingEntity.id || '',
         entityType: existingEntity.entityType || '',
@@ -1104,8 +1474,28 @@ function pendingHardConflictDiagnostics(events = [], settingEntities = []) {
       classification: item.classification,
       fieldTier: item.fieldTier,
       suggestedRehomeTarget: item.suggestedRehomeTarget || '',
-      whyBlocked: item.whyBlocked || item.conflictWarnings.join('；') || '硬冲突设定需要逐条确认'
+      whyBlocked: item.whyBlocked || item.conflictWarnings.join('；') || '硬冲突设定需要逐条确认',
+      classificationConflictDiagnostic: item.classificationConflictDiagnostic || null
     }))
+}
+
+function settingClassificationConflictDiagnostic(risk = {}) {
+  const text = [
+    risk.whyBlocked,
+    ...(Array.isArray(risk.conflictWarnings) ? risk.conflictWarnings : [])
+  ].filter(Boolean).join('；')
+  if (
+    risk.classification === SETTING_CHANGE_CLASSIFICATIONS.hardConflict &&
+    /隐藏信息揭示|旧设定细化|身份揭示|背景揭示|线索揭示|reveal_or_refinement/i.test(text)
+  ) {
+    return {
+      code: 'classification_priority_conflict',
+      message: '该设定同时包含 reveal/refinement 诊断与 hard_conflict 分类，请检查硬字段结构性风险是否覆盖了揭示优先级。',
+      whyBlocked: risk.whyBlocked || '',
+      conflictWarnings: risk.conflictWarnings || []
+    }
+  }
+  return null
 }
 
 function syncHardConflictBlockerFromFlow(chapterNum, code, error, pending = [], settingEntities = []) {
@@ -1129,6 +1519,25 @@ function splitSettingEventsByRisk(events = [], settingEntities = []) {
     classified,
     hardConflicts: classified.filter(item => item.classification === SETTING_CHANGE_CLASSIFICATIONS.hardConflict),
     batchAcceptable: classified.filter(item => item.classification !== SETTING_CHANGE_CLASSIFICATIONS.hardConflict)
+  }
+}
+
+function detectUnconfirmedAutoAcceptableRelationshipSettings(events = [], settingEntities = []) {
+  const split = splitSettingEventsByRisk(events, settingEntities)
+  if (split.hardConflicts.length) return null
+  const stuck = split.batchAcceptable.filter(item => {
+    const changeType = String(item.changeType || item.change_type || '').trim()
+    const pendingHardConflicts = Array.isArray(item.pendingHardConflicts) ? item.pendingHardConflicts : []
+    return changeType === 'relationship' &&
+      pendingHardConflicts.length === 0 &&
+      isBatchAcceptableSettingChange(item)
+  })
+  if (!stuck.length) return null
+  return {
+    code: 'relationship_auto_confirm_failed',
+    message: '低风险关系设定未能自动确认，请检查关系归位或批量确认流程。',
+    pendingSettingIds: stuck.map(item => item.id).filter(Boolean),
+    pendingSettings: stuck
   }
 }
 
@@ -1214,6 +1623,9 @@ async function collectFinalizationDiagnostics(page, chapterNum) {
     .evaluateAll(nodes => nodes.map(node => node.innerText || node.textContent || '').filter(Boolean).slice(-12))
     .catch(() => [])
   const auditSummary = summarizeAuditTexts(dialogTexts)
+  const belowHardMinModalText = dialogTexts.find(isBelowHardMinModalText) || ''
+  const chapterEntry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum)) || null
+  const versionDiagnostics = await finalizationVersionDiagnostics(page, chapterNum, belowHardMinModalText).catch(() => null)
   return {
     stage: `chapter_${chapterNum}_finalization`,
     url: page.url(),
@@ -1221,6 +1633,15 @@ async function collectFinalizationDiagnostics(page, chapterNum) {
     finalVersionId: chapter?.finalVersionId || chapter?.final_version_id || null,
     finalVersionType: finalVersion?.versionType || finalVersion?.version_type || finalVersion?.type || '',
     wordCount: chapter?.wordCount || chapter?.word_count || 0,
+    belowHardMinModal: Boolean(belowHardMinModalText),
+    modalText: belowHardMinModalText,
+    ...(versionDiagnostics || {}),
+    appHardMin: chapterEntry?.wordCountPolicy?.appHardMin || chapterEntry?.wordCountPolicy?.hardMin || null,
+    liveHardMin: chapterEntry?.wordCountPolicy?.liveHardMin || chapterEntry?.wordCountPolicy?.hardMin || null,
+    wordTarget: chapterEntry?.wordTarget || chapterEntry?.wordCountPolicy?.wordTarget || null,
+    candidateWordCount: chapterEntry?.wordCount || chapter?.wordCount || chapter?.word_count || 0,
+    regenerateAttempted: Boolean(chapterEntry?.flowEvents?.below_hard_min_auto_regenerate_started),
+    regenerateSucceeded: Boolean(chapterEntry?.flowEvents?.below_hard_min_auto_regenerate_succeeded),
     versionCount: Array.isArray(versions) ? versions.length : 0,
     candidateVersionCount: Array.isArray(versions)
       ? versions.filter(version => (version.versionType || version.version_type || version.type) === 'ai_candidate').length
@@ -1233,7 +1654,7 @@ async function collectFinalizationDiagnostics(page, chapterNum) {
     storyBlockReviewCount,
     markerPresent: Boolean(marker),
     marker,
-    postFinalizeFailed: Boolean(marker?.retryablePostprocessFailure || marker?.postFinalizeFailed),
+    postFinalizeFailed: Boolean(marker?.retryablePostprocessFailure || marker?.storyBlockSettlementFailure || marker?.postFinalizeFailed),
     activeAction: visibleDiagnostics.activeAction || [],
     loading: visibleDiagnostics.activeAction || [],
     finalizeApiEvents,
@@ -1377,6 +1798,18 @@ async function readBeatPlanDiagnostics(page, chapterNum) {
   }, { projectId: report.project.id, chapterNum }).catch(() => null)
 }
 
+async function readWriterHumanityContextDiagnostics(page, chapterNum) {
+  return page.evaluate(({ chapterNum }) => {
+    try {
+      const diagnostics = window.__LONGFORM_WRITER_CONTEXT_DIAGNOSTICS__ || null
+      if (!diagnostics || Number(diagnostics.chapterNum || 0) !== Number(chapterNum)) return null
+      return diagnostics
+    } catch {
+      return null
+    }
+  }, { chapterNum }).catch(() => null)
+}
+
 function summarizeBeatPlanPromptDiagnostics(diagnostics = null) {
   if (!diagnostics) {
     return {
@@ -1454,6 +1887,662 @@ function latestAiProxyTimingSince(startedAtMs = 0) {
   }
 }
 
+function contentHash(value = '') {
+  return createHash('sha1').update(String(value || '')).digest('hex').slice(0, 16)
+}
+
+function versionTimestampMs(version = {}) {
+  const values = [
+    version.updatedAt,
+    version.updated_at,
+    version.createdAt,
+    version.created_at
+  ]
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && /^\d{10,}$/.test(value.trim())) return Number(value.trim())
+    const parsed = Date.parse(value || '')
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return 0
+}
+
+function versionFingerprint(version = {}) {
+  const content = String(version?.content || '')
+  return {
+    id: String(version?.id || ''),
+    contentHash: contentHash(content),
+    contentLength: content.length,
+    wordCount: Number(version?.wordCount || version?.word_count || content.length || 0),
+    createdAt: version?.createdAt || version?.created_at || '',
+    updatedAt: version?.updatedAt || version?.updated_at || '',
+    timestampMs: versionTimestampMs(version)
+  }
+}
+
+function candidateVersionFingerprints(versions = []) {
+  return (Array.isArray(versions) ? versions : [])
+    .filter(version => String(version?.content || '').length > 500)
+    .map(versionFingerprint)
+}
+
+function summarizeVersionFingerprint(fingerprint = null) {
+  if (!fingerprint) return null
+  return {
+    id: fingerprint.id,
+    contentHash: fingerprint.contentHash,
+    contentLength: fingerprint.contentLength,
+    wordCount: fingerprint.wordCount,
+    createdAt: fingerprint.createdAt,
+    updatedAt: fingerprint.updatedAt
+  }
+}
+
+function latestCandidateFingerprint(versions = []) {
+  const fingerprints = candidateVersionFingerprints(versions)
+  return fingerprints
+    .slice()
+    .sort((a, b) => (b.timestampMs || 0) - (a.timestampMs || 0))
+    .at(0) || null
+}
+
+function latestCandidateVersion(versions = []) {
+  return (Array.isArray(versions) ? versions : [])
+    .filter(version => String(version?.content || '').length > 500)
+    .slice()
+    .sort((a, b) => (versionTimestampMs(b) || 0) - (versionTimestampMs(a) || 0))
+    .at(0) || null
+}
+
+function versionWordCount(version = {}) {
+  const content = String(version?.content || '')
+  return Number(version?.wordCount || version?.word_count || content.length || 0)
+}
+
+function latestHardPassCandidateVersion(versions = [], wordTarget = buildLiveChapterWordTarget()) {
+  return (Array.isArray(versions) ? versions : [])
+    .filter(version => String(version?.content || '').length > 500)
+    .filter(version => wordCountPolicy(versionWordCount(version), wordTarget).hardPass)
+    .slice()
+    .sort((a, b) => (versionTimestampMs(b) || 0) - (versionTimestampMs(a) || 0))
+    .at(0) || null
+}
+
+const SHORT_DRAFT_EXPANSION_MIN = 2500
+const SHORT_DRAFT_EXPANSION_MAX = 3999
+const SHORT_DRAFT_EXPANSION_TARGET = '4500-5200'
+const SHORT_DRAFT_TOP_UP_MIN = 3500
+const SHORT_DRAFT_TOP_UP_MAX = 3999
+const SHORT_DRAFT_TOP_UP_TARGET = '300-900'
+const SHORT_DRAFT_REQUIRED_BEAT_SECTIONS = [
+  '本章事件',
+  '人物目标',
+  '核心冲突',
+  '外部压力',
+  '代价或损失',
+  '不可逆变化',
+  '结尾交接',
+  '主角即时欲望',
+  '情绪锚点',
+  '误解或恐惧',
+  '关系轻微变化',
+  '给读者的阶段答案'
+]
+
+const SHORT_DRAFT_FACT_GROUPS = [
+  { label: 'protagonist', terms: ['陆沉舟'] },
+  { label: 'xiaojiu', terms: ['小九'] },
+  { label: 'father_thread', terms: ['父亲', '陆沉舟之父'] },
+  { label: 'star_account_or_debt', terms: ['星账', '星债'] },
+  { label: 'injury_cost', terms: ['左肩', '肩伤', '伤口'] },
+  { label: 'secret_room', terms: ['密室', '庚七密室', '庚七'] },
+  { label: 'escape_route', terms: ['排水渠', '排水道', '暗渠', '地道', '密道', '秘密通道'] },
+  { label: 'inn', terms: ['平安客栈', '客栈'] },
+  { label: 'tree_or_back_alley', terms: ['槐树', '后巷'] },
+  { label: 'key_or_copper', terms: ['钥匙', '旧铜钥匙', '铜钥匙'] },
+  { label: 'token_or_badge', terms: ['令牌', '玉牌', '暗哨令牌'] },
+  { label: 'toothpick_man', terms: ['剔牙男人'] },
+  { label: 'fingerless_man', terms: ['缺指男人'] },
+  { label: 'patrol_office', terms: ['巡天司'] },
+  { label: 'zhao_geng', terms: ['赵庚'] },
+  { label: 'ma_san', terms: ['马三'] }
+]
+
+const SHORT_DRAFT_ENDING_GROUPS = [
+  { label: 'star_account_or_debt', terms: ['星账', '星债', '玉牌', '令牌'] },
+  { label: 'inn_or_back_alley', terms: ['平安客栈', '客栈', '后巷'] },
+  { label: 'tree_or_key', terms: ['槐树', '钥匙', '旧铜钥匙', '铜钥匙'] },
+  { label: 'toothpick_or_hidden_affiliation', terms: ['剔牙男人', '暗哨', '巡天司'] },
+  { label: 'next_pressure', terms: ['三日', '茶楼', '缺指男人'] }
+]
+
+function isCompleteBeatPlanForShortDraftExpansion(beatPlanRecord = null) {
+  const content = typeof beatPlanRecord === 'string'
+    ? beatPlanRecord
+    : String(beatPlanRecord?.content || '')
+  const missingSections = SHORT_DRAFT_REQUIRED_BEAT_SECTIONS.filter(label => !content.includes(label))
+  return {
+    complete: content.trim().length >= 300 && missingSections.length === 0,
+    contentLength: content.length,
+    missingSections
+  }
+}
+
+function compactPromptText(text = '', maxLength = 9000) {
+  const value = String(text || '').trim()
+  if (value.length <= maxLength) return value
+  const head = value.slice(0, Math.floor(maxLength * 0.55))
+  const tail = value.slice(-Math.floor(maxLength * 0.4))
+  return `${head}\n\n[中间内容略去，扩写时不得改变已给短稿的事实顺序]\n\n${tail}`
+}
+
+function groupPresentInText(group, text = '') {
+  const source = String(text || '')
+  return (group.terms || []).some(term => source.includes(term))
+}
+
+function buildShortDraftFactDriftCheck({ beatPlanContent = '', originalContent = '', expandedContent = '' } = {}) {
+  const source = `${beatPlanContent}\n${originalContent}`
+  const requiredGroups = SHORT_DRAFT_FACT_GROUPS
+    .filter(group => groupPresentInText(group, source))
+    .map(group => ({
+      label: group.label,
+      terms: group.terms
+    }))
+  const missingGroups = requiredGroups.filter(group => !groupPresentInText(group, expandedContent))
+  return {
+    passed: missingGroups.length === 0,
+    requiredGroups: requiredGroups.map(group => group.label),
+    missingGroups: missingGroups.map(group => group.label)
+  }
+}
+
+function checkShortDraftEndingPreserved(originalContent = '', expandedContent = '') {
+  const originalEnding = String(originalContent || '').slice(-900)
+  const expandedEnding = String(expandedContent || '').slice(-1200)
+  const requiredGroups = SHORT_DRAFT_ENDING_GROUPS
+    .filter(group => groupPresentInText(group, originalEnding))
+    .map(group => ({
+      label: group.label,
+      terms: group.terms
+    }))
+  const missingGroups = requiredGroups.filter(group => !groupPresentInText(group, expandedEnding))
+  return {
+    passed: requiredGroups.length === 0 || missingGroups.length === 0,
+    requiredGroups: requiredGroups.map(group => group.label),
+    missingGroups: missingGroups.map(group => group.label)
+  }
+}
+
+function buildShortDraftEndingGuard(originalContent = '') {
+  const endingExcerpt = String(originalContent || '').slice(-900).trim()
+  const requiredGroups = SHORT_DRAFT_ENDING_GROUPS
+    .filter(group => groupPresentInText(group, endingExcerpt))
+    .map(group => ({
+      label: group.label,
+      terms: group.terms
+    }))
+  const requiredSignals = requiredGroups
+    .map(group => `${group.label}: ${group.terms.join(' / ')}`)
+    .join('\n')
+  return {
+    endingExcerpt,
+    requiredSignals: requiredSignals || '无额外结尾信号，但仍必须保留原短稿最后一个情节落点。'
+  }
+}
+
+function collectDraftTemplateWordingHits(text = '') {
+  const source = String(text || '')
+  const patterns = [
+    /stage-\d+/ig,
+    /stage-x/ig,
+    /第\s*\d+\s*章发生一件读者能复述的事/g,
+    /本章关系变化落在/g,
+    /不能只把配角当线索出口/g,
+    /主角要完成[^。\n]{0,60}并把结果接到/g
+  ]
+  return patterns
+    .flatMap(pattern => source.match(pattern) || [])
+    .slice(0, 8)
+}
+
+function buildShortDraftExpansionMessages({
+  chapterNum,
+  beatPlanRecord,
+  originalContent,
+  stageSnapshot
+} = {}) {
+  const beatPlanContent = String(beatPlanRecord?.content || '')
+  const stageText = stageSnapshot ? JSON.stringify(stageSnapshot, null, 2) : ''
+  const endingGuard = buildShortDraftEndingGuard(originalContent)
+  return [
+    {
+      role: 'system',
+      content: '你负责把低字数章节短稿扩写成同一章正文。只输出小说正文，不输出说明。'
+    },
+    {
+      role: 'user',
+      content: [
+        `请把第 ${chapterNum} 章短稿扩写到 ${SHORT_DRAFT_EXPANSION_TARGET} 字。`,
+        '',
+        '要求：',
+        '1. 保留原剧情事实、事件顺序、人物选择和结尾落点。',
+        '2. 只补足场景行动、人物对话、代价后果、环境阻力、关系反应。',
+        '3. 不新增大反转，不提前消耗后续故事块，不改变最后一个情节落点。',
+        '4. 用通俗清楚的叙事写正文，不要写分析、清单或小纲字段。',
+        '',
+        '## 本章小纲',
+        compactPromptText(beatPlanContent, 2600),
+        '',
+        '## 当前故事块 stage snapshot',
+        compactPromptText(stageText, 1200),
+        '',
+        '## 必须保留的结尾交接',
+        compactPromptText(endingGuard.endingExcerpt, 1200),
+        '',
+        '## 结尾必须继续包含的事实信号',
+        endingGuard.requiredSignals,
+        '',
+        '## 原短稿',
+        compactPromptText(originalContent, 9000)
+      ].join('\n')
+    }
+  ]
+}
+
+function buildShortDraftTopUpMessages({
+  chapterNum,
+  beatPlanRecord,
+  originalContent,
+  firstExpandedContent,
+  stageSnapshot
+} = {}) {
+  const beatPlanContent = String(beatPlanRecord?.content || '')
+  const stageText = stageSnapshot ? JSON.stringify(stageSnapshot, null, 2) : ''
+  const endingGuard = buildShortDraftEndingGuard(originalContent)
+  return [
+    {
+      role: 'system',
+      content: '你负责把已经保住事实和结尾、但仍偏短的章节扩写稿做二段补足。只输出补足后的完整小说正文，不输出说明。'
+    },
+    {
+      role: 'user',
+      content: [
+        `请对第 ${chapterNum} 章扩写稿做二段补足，最终正文控制在 ${SHORT_DRAFT_EXPANSION_TARGET} 字，最低不少于 4000 字。`,
+        `本次只补 ${SHORT_DRAFT_TOP_UP_TARGET} 字左右。`,
+        '',
+        '补足要求：',
+        '1. 不改原剧情事实、事件顺序、人物选择和结尾交接。',
+        '2. 不新增关键线索，不替换人物选择，不提前消耗后续故事块。',
+        '3. 只在动作细节、人物反应、对话缝隙、场景停留、后果反馈处补足。',
+        '4. 输出完整正文，不要写分析、清单、标题、JSON 或小纲字段。',
+        '',
+        '## 本章小纲',
+        compactPromptText(beatPlanContent, 2200),
+        '',
+        '## 当前故事块 stage snapshot',
+        compactPromptText(stageText, 1000),
+        '',
+        '## 必须保留的结尾交接',
+        compactPromptText(endingGuard.endingExcerpt, 1200),
+        '',
+        '## 结尾必须继续包含的事实信号',
+        endingGuard.requiredSignals,
+        '',
+        '## 原短稿事实基底',
+        compactPromptText(originalContent, 4200),
+        '',
+        '## 第一次扩写稿',
+        compactPromptText(firstExpandedContent, 11000)
+      ].join('\n')
+    }
+  ]
+}
+
+function shouldTopUpShortDraftExpansion({
+  expandedWordCount = 0,
+  factDriftCheck = null,
+  endingPreserved = null,
+  templateWordingHits = []
+} = {}) {
+  return expandedWordCount >= SHORT_DRAFT_TOP_UP_MIN &&
+    expandedWordCount <= SHORT_DRAFT_TOP_UP_MAX &&
+    factDriftCheck.passed &&
+    endingPreserved.passed &&
+    templateWordingHits.length === 0
+}
+
+function extractChatCompletionContent(result = null) {
+  if (typeof result === 'string') return result
+  if (result?.content) return result.content
+  return result?.choices?.[0]?.message?.content || result?.choices?.[0]?.text || ''
+}
+
+async function resolveWritingProviderForRunner() {
+  let provider = report.modelBinding.taskProviders?.writing || null
+  if (!provider?.id) {
+    const resolved = await resolveTaskProvidersForReport(report.project.id)
+    report.modelBinding.status = resolved.status
+    report.modelBinding.taskProviders = resolved.taskProviders
+    report.modelBinding.inheritedProviderMatched = resolved.inheritedProviderMatched
+    report.modelBinding.actualProviderModelMatched = resolved.actualProviderModelMatched
+    report.modelBinding.usedDeepseekV4ProFallback = resolved.usedDeepseekV4ProFallback
+    updateAiProxyProviderFromBinding(resolved.taskProviders)
+    provider = resolved.taskProviders?.writing || null
+  }
+  if (!provider?.id) {
+    throw new Error('短稿扩写无法解析 writing 模型供应商。')
+  }
+  return provider
+}
+
+async function runnerChatCompletion(messages, {
+  taskName = 'expand_short_draft',
+  maxTokens = 9000,
+  temperature = 0.46
+} = {}) {
+  const provider = await resolveWritingProviderForRunner()
+  const url = `${API_BASE}/ai/chat-completions`
+  const payload = {
+    providerId: provider.id,
+    projectId: report.project.id,
+    model: provider.model || null,
+    taskName,
+    messages,
+    maxTokens,
+    temperature,
+    stream: false,
+    includeUsage: true
+  }
+  report.aiProxy.aiProxyUsed = true
+  report.aiProxy.backendAiRequests += 1
+  pushAiProxyStage({ kind: 'request', url, method: 'POST', taskName })
+  const startedMs = Date.now()
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  const text = await response.text()
+  pushAiProxyStage({
+    kind: 'response',
+    url,
+    status: response.status,
+    taskName,
+    elapsedMs: Date.now() - startedMs
+  })
+  if (!response.ok) {
+    throw new Error(`AI proxy ${response.status}: ${text.slice(0, 500)}`)
+  }
+  return text ? JSON.parse(text) : null
+}
+
+async function topUpShortDraftExpansion({
+  chapterNum,
+  beatPlanRecord,
+  originalContent,
+  firstExpandedContent
+} = {}) {
+  const messages = buildShortDraftTopUpMessages({
+    chapterNum,
+    beatPlanRecord,
+    originalContent,
+    firstExpandedContent,
+    stageSnapshot: beatPlanRecord?.blockStageSnapshot || null
+  })
+  const result = await runnerChatCompletion(messages, {
+    taskName: 'top_up_expand_short_draft',
+    maxTokens: 10000,
+    temperature: 0.42
+  })
+  const rawContent = extractChatCompletionContent(result)
+  return cleanGeneratedChapterText(rawContent)
+}
+
+async function saveExpandedDraftVersion(chapterId, chapterNum, content, provider, {
+  title = `第 ${chapterNum} 章 - 短稿扩写候选`,
+  promptBrief = `expand_short_draft: 保留短稿事实和结尾扩写至 ${SHORT_DRAFT_EXPANSION_TARGET}`
+} = {}) {
+  return api(`/projects/${report.project.id}/chapters/${chapterId}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title,
+      content,
+      versionType: 'ai_candidate',
+      sourceModelId: provider?.id || null,
+      promptBrief
+    })
+  })
+}
+
+async function refreshWriterPageForSavedVersion(page, chapterNum) {
+  const writerEnteredAtMs = Date.now()
+  await page.goto(`${FRONTEND}/writer/${report.project.id}/${chapterNum}`, { waitUntil: 'domcontentloaded' })
+  await page.getByText(`第 ${chapterNum} 章`).first().waitFor({ state: 'visible', timeout: 60000 })
+  const writerContextDiagnostics = await waitForWriterContextReady(page, chapterNum, {
+    timeoutMs: 180000,
+    writerEnteredAtMs
+  }).catch(error => ({ error: error.message }))
+  markChapterFlowEvent(chapterNum, 'writer_page_refreshed_after_short_draft_expansion', {
+    contextReadyByEnabledEntry: Boolean(writerContextDiagnostics.contextReadyByEnabledEntry),
+    enabledDraftEntryLabels: writerContextDiagnostics.enabledDraftEntryLabels || [],
+    disabledDraftEntryLabels: writerContextDiagnostics.disabledDraftEntryLabels || [],
+    contextApiFailures: writerContextDiagnostics.contextApiFailures || [],
+    error: writerContextDiagnostics.error || ''
+  })
+}
+
+async function expandShortDraftCandidate({
+  page,
+  chapterNum,
+  chapterId,
+  originalCandidate,
+  beatPlanRecord,
+  wordTarget
+} = {}) {
+  const provider = await resolveWritingProviderForRunner()
+  const originalContent = String(originalCandidate?.content || '')
+  const beatPlanContent = String(beatPlanRecord?.content || '')
+  const messages = buildShortDraftExpansionMessages({
+    chapterNum,
+    beatPlanRecord,
+    originalContent,
+    stageSnapshot: beatPlanRecord?.blockStageSnapshot || null
+  })
+  const result = await runnerChatCompletion(messages, {
+    taskName: 'expand_short_draft',
+    maxTokens: 9000,
+    temperature: 0.46
+  })
+  const rawContent = extractChatCompletionContent(result)
+  const expandedContent = cleanGeneratedChapterText(rawContent)
+  const expandedWordCount = expandedContent.length
+  const expandedPolicy = wordCountPolicy(expandedWordCount, wordTarget)
+  const factDriftCheck = buildShortDraftFactDriftCheck({
+    beatPlanContent,
+    originalContent,
+    expandedContent
+  })
+  const endingPreserved = checkShortDraftEndingPreserved(originalContent, expandedContent)
+  const templateWordingHits = collectDraftTemplateWordingHits(expandedContent)
+  const expansionPasses = [{
+    taskName: 'expand_short_draft',
+    wordCount: expandedWordCount,
+    hardPass: expandedPolicy.hardPass,
+    factDriftPassed: factDriftCheck.passed,
+    endingPreservedPassed: endingPreserved.passed,
+    templateWordingHits
+  }]
+
+  let finalContent = expandedContent
+  let finalWordCount = expandedWordCount
+  let finalPolicy = expandedPolicy
+  let finalFactDriftCheck = factDriftCheck
+  let finalEndingPreserved = endingPreserved
+  let finalTemplateWordingHits = templateWordingHits
+  let topUpExpandedWordCount = 0
+  let topUpUsed = false
+  let expansionRejectedReason = [
+    expandedContent.trim() ? '' : 'empty_expansion',
+    expandedPolicy.hardPass ? '' : 'expanded_below_hard_min',
+    factDriftCheck.passed ? '' : 'fact_drift',
+    endingPreserved.passed ? '' : 'ending_changed',
+    templateWordingHits.length ? 'template_wording' : ''
+  ].filter(Boolean).join('|')
+
+  if (expansionRejectedReason === 'expanded_below_hard_min' && shouldTopUpShortDraftExpansion({
+    expandedWordCount,
+    factDriftCheck,
+    endingPreserved,
+    templateWordingHits
+  })) {
+    markChapterFlowEvent(chapterNum, 'below_hard_min_top_up_expand_short_draft_started', {
+      shortDraftStrategy: 'expand_existing',
+      firstExpandedWordCount: expandedWordCount,
+      topUpTarget: SHORT_DRAFT_TOP_UP_TARGET,
+      finalTarget: SHORT_DRAFT_EXPANSION_TARGET
+    })
+    finalContent = await topUpShortDraftExpansion({
+      chapterNum,
+      beatPlanRecord,
+      originalContent,
+      firstExpandedContent: expandedContent
+    })
+    topUpUsed = true
+    topUpExpandedWordCount = finalContent.length
+    finalWordCount = topUpExpandedWordCount
+    finalPolicy = wordCountPolicy(finalWordCount, wordTarget)
+    finalFactDriftCheck = buildShortDraftFactDriftCheck({
+      beatPlanContent,
+      originalContent,
+      expandedContent: finalContent
+    })
+    finalEndingPreserved = checkShortDraftEndingPreserved(originalContent, finalContent)
+    finalTemplateWordingHits = collectDraftTemplateWordingHits(finalContent)
+    expansionPasses.push({
+      taskName: 'top_up_expand_short_draft',
+      wordCount: topUpExpandedWordCount,
+      hardPass: finalPolicy.hardPass,
+      factDriftPassed: finalFactDriftCheck.passed,
+      endingPreservedPassed: finalEndingPreserved.passed,
+      templateWordingHits: finalTemplateWordingHits
+    })
+    expansionRejectedReason = [
+      finalContent.trim() ? '' : 'empty_top_up_expansion',
+      finalPolicy.hardPass ? '' : 'top_up_below_hard_min',
+      finalFactDriftCheck.passed ? '' : 'top_up_fact_drift',
+      finalEndingPreserved.passed ? '' : 'top_up_ending_changed',
+      finalTemplateWordingHits.length ? 'top_up_template_wording' : ''
+    ].filter(Boolean).join('|')
+    markChapterFlowEvent(
+      chapterNum,
+      expansionRejectedReason ? 'below_hard_min_top_up_expand_short_draft_rejected' : 'below_hard_min_top_up_expand_short_draft_done',
+      {
+        shortDraftStrategy: 'expand_existing',
+        firstExpandedWordCount: expandedWordCount,
+        topUpExpandedWordCount,
+        finalCandidateWordCount: finalWordCount,
+        expansionRejectedReason,
+        factDriftCheck: finalFactDriftCheck,
+        endingPreserved: finalEndingPreserved
+      }
+    )
+  }
+
+  const diagnostics = {
+    shortDraftStrategy: 'expand_existing',
+    originalWordCount: versionWordCount(originalCandidate),
+    firstExpandedWordCount: expandedWordCount,
+    topUpExpandedWordCount,
+    expandedWordCount: finalWordCount,
+    finalCandidateWordCount: finalWordCount,
+    expansionPasses,
+    topUpUsed,
+    expansionAccepted: !expansionRejectedReason,
+    expansionRejectedReason,
+    factDriftCheck: finalFactDriftCheck,
+    endingPreserved: finalEndingPreserved,
+    templateWordingHits: finalTemplateWordingHits,
+    targetRange: wordTarget?.targetRange || null,
+    hardMin: wordTarget?.hardMin || wordTarget?.min || 0
+  }
+
+  if (expansionRejectedReason) {
+    return {
+      accepted: false,
+      savedVersion: null,
+      expandedContent: finalContent,
+      diagnostics
+    }
+  }
+
+  const savedVersion = await saveExpandedDraftVersion(chapterId, chapterNum, finalContent, provider, topUpUsed
+    ? {
+        title: `第 ${chapterNum} 章 - 短稿二段补足候选`,
+        promptBrief: `top_up_expand_short_draft: 保留短稿事实和结尾补足至 ${SHORT_DRAFT_EXPANSION_TARGET}`
+      }
+    : {})
+  await refreshWriterPageForSavedVersion(page, chapterNum)
+  return {
+    accepted: true,
+    savedVersion,
+    expandedContent: finalContent,
+    diagnostics: {
+      ...diagnostics,
+      savedVersionId: savedVersion?.id || '',
+      savedContentHash: contentHash(finalContent)
+    }
+  }
+}
+
+function hasNewGeneratedVersionCandidate(versions = [], {
+  expectNewVersion = false,
+  minVersionCountAfter = 0,
+  previousVersionIds = [],
+  previousContentHashes = [],
+  previousVersionFingerprints = [],
+  draftGenerationStartedAt = ''
+} = {}) {
+  const fingerprints = candidateVersionFingerprints(versions)
+  const orderedFingerprints = fingerprints
+    .slice()
+    .sort((a, b) => (b.timestampMs || 0) - (a.timestampMs || 0))
+  if (!fingerprints.length) {
+    return { matched: false, reason: 'no_candidate_versions', fingerprints, candidate: null }
+  }
+  if (!expectNewVersion) {
+    return { matched: true, reason: 'existing_candidate_allowed', fingerprints, candidate: orderedFingerprints.at(0) || null }
+  }
+
+  const previousIdSet = new Set((previousVersionIds || []).map(String).filter(Boolean))
+  const previousHashSet = new Set((previousContentHashes || []).map(String).filter(Boolean))
+  const previousFingerprintList = Array.isArray(previousVersionFingerprints) ? previousVersionFingerprints : []
+  const previousLengthSet = new Set(previousFingerprintList.map(item => Number(item.contentLength || 0)).filter(Boolean))
+  const startedAtMs = Date.parse(draftGenerationStartedAt || '')
+  const requiredCount = Number(minVersionCountAfter || 0)
+  const countIncreased = requiredCount > 0 && Array.isArray(versions) && versions.length >= requiredCount
+
+  for (const fingerprint of orderedFingerprints) {
+    const isNewId = Boolean(fingerprint.id) && !previousIdSet.has(fingerprint.id)
+    const isNewHash = Boolean(fingerprint.contentHash) && !previousHashSet.has(fingerprint.contentHash)
+    const lengthChanged = previousLengthSet.size > 0 && Boolean(fingerprint.contentLength) && !previousLengthSet.has(fingerprint.contentLength)
+    const timestampAfterStart = Number.isFinite(startedAtMs) && startedAtMs > 0 && fingerprint.timestampMs >= startedAtMs
+    if (isNewId || isNewHash || lengthChanged || timestampAfterStart) {
+      return {
+        matched: true,
+        reason: isNewId ? 'new_version_id' : (isNewHash ? 'new_content_hash' : (lengthChanged ? 'content_length_changed' : 'version_timestamp_after_start')),
+        fingerprints,
+        candidate: fingerprint
+      }
+    }
+  }
+  if (countIncreased) {
+    return { matched: true, reason: 'version_count_increased', fingerprints, candidate: orderedFingerprints.at(0) || null }
+  }
+  return { matched: false, reason: 'no_new_candidate_detected', fingerprints, candidate: orderedFingerprints.at(0) || null }
+}
+
 function visibleDraftErrorMessages(messages = []) {
   return (messages || []).filter(text =>
     /正文候选保存失败|draft_save_failed|按小纲生成失败|生成正文失败|AI 生成正文为空|Failed to fetch|供应商返回失败|后端 AI 代理请求失败/i.test(String(text || ''))
@@ -1463,6 +2552,12 @@ function visibleDraftErrorMessages(messages = []) {
 function classifyDraftGenerationFailure(diagnostics = {}) {
   const visibleErrors = diagnostics.visibleErrorMessages || []
   if (visibleErrors.some(text => /正文候选保存失败|draft_save_failed/i.test(text))) return 'draft_save_failed'
+  if (diagnostics.expectNewVersion && !diagnostics.newVersionDetected) {
+    if (diagnostics.draftGenerationStartedAt && !diagnostics.streamStarted && Number(diagnostics.versionCountAfter || 0) <= Number(diagnostics.versionCountBefore || 0)) {
+      return 'draft_regeneration_not_started'
+    }
+    return 'draft_regeneration_no_new_candidate'
+  }
   if (diagnostics.draftGenerationStartedAt && !diagnostics.streamStarted && Number(diagnostics.versionCountAfter || 0) <= Number(diagnostics.versionCountBefore || 0)) {
     return 'draft_generation_not_started'
   }
@@ -1479,6 +2574,11 @@ async function collectDraftGenerationWaitDiagnostics(page, chapterNum, chapterId
   draftEntryClickedAfterBeatPlan = false,
   startedAtMs = 0,
   versionCountBefore = 0,
+  expectNewVersion = false,
+  minVersionCountAfter = 0,
+  previousVersionIds = [],
+  previousContentHashes = [],
+  previousVersionFingerprints = [],
   qualityRebuildRetries = 0,
   beatPlanReviewConfirmations = 0,
   generationEntryLabel = '',
@@ -1502,6 +2602,15 @@ async function collectDraftGenerationWaitDiagnostics(page, chapterNum, chapterId
     : previousEntryDiagnostics
   const aiTiming = latestAiProxyTimingSince(startedAtMs)
   const effectiveDraftGenerationEntryLabel = draftGenerationEntryLabel || generationEntryLabel
+  const versionFreshness = hasNewGeneratedVersionCandidate(versions, {
+    expectNewVersion,
+    minVersionCountAfter,
+    previousVersionIds,
+    previousContentHashes,
+    previousVersionFingerprints,
+    draftGenerationStartedAt
+  })
+  const fingerprints = candidateVersionFingerprints(versions)
   return {
     beatPlanStartedAt,
     beatPlanEntryLabel,
@@ -1513,8 +2622,19 @@ async function collectDraftGenerationWaitDiagnostics(page, chapterNum, chapterId
     draftStreamRequestCount: aiTiming.streamRequestCount,
     draftStreamResponseCount: aiTiming.streamResponseCount,
     activeAction: visible.activeAction || [],
+    expectNewVersion,
+    minVersionCountAfter,
+    previousVersionIds,
+    previousContentHashes,
+    previousVersionFingerprints,
+    newVersionDetected: versionFreshness.matched,
+    newVersionReason: versionFreshness.reason,
+    newVersionCandidate: summarizeVersionFingerprint(versionFreshness.candidate),
     versionCountBefore,
     versionCountAfter: Array.isArray(versions) ? versions.length : 0,
+    versionIds: (versions || []).map(version => version.id || '').filter(Boolean),
+    contentHashes: fingerprints.map(item => item.contentHash),
+    versionFingerprints: fingerprints.map(summarizeVersionFingerprint),
     versionLengths: (versions || []).map(version => String(version.content || '').length),
     chapterStatus: chapter?.status || '',
     visibleErrorMessages: visibleDraftErrorMessages([...messages, ...(visible.messages || [])]),
@@ -1548,7 +2668,7 @@ async function waitForSavedBeatPlan(page, chapterNum, timeoutMs = 300000) {
     }
     const messages = await visibleMessageTexts(page).catch(() => [])
     const beatPlanFailure = messages.find(text =>
-      text.includes('生成章前小纲失败') || text.includes('小纲准备失败') || text.includes('小纲生成返回空内容') || text.includes('小纲过短') || text.includes('小纲质量闸未通过')
+      text.includes('生成章前小纲失败') || text.includes('小纲生成失败') || text.includes('小纲准备失败') || text.includes('小纲生成返回空内容') || text.includes('小纲为空') || text.includes('小纲过短') || text.includes('小纲质量闸未通过')
     )
     lastDiagnostics = {
       messages,
@@ -1559,6 +2679,7 @@ async function waitForSavedBeatPlan(page, chapterNum, timeoutMs = 300000) {
       const summarizedBeatPlanDiagnostics = summarizeBeatPlanPromptDiagnostics(beatPlanPromptDiagnostics)
       const isSaveFailure = /保存小纲失败|保存章节小纲失败|小纲保存失败/.test(beatPlanFailure)
       const isQualityFailure = /质量闸未通过|占位字段|未填写|待补充|TODO|小纲质量/.test(beatPlanFailure)
+      const isEmptyBeatPlanFailure = /小纲为空|空小纲|返回空内容/.test(beatPlanFailure)
       const diagnosticFailureCode = beatPlanPromptDiagnostics?.candidateFailureCode || beatPlanPromptDiagnostics?.beatPlanQualityDiagnostics?.failureCode || ''
       const isRequiresReview = summarizedBeatPlanDiagnostics.beatPlanSource === 'local_safety_requires_review' ||
         beatPlanPromptDiagnostics?.failureStage === 'beat_plan_requires_review' ||
@@ -1569,7 +2690,7 @@ async function waitForSavedBeatPlan(page, chapterNum, timeoutMs = 300000) {
             ? 'beat_plan_requires_review'
             : (['beat_plan_parse_failed', 'beat_plan_missing_fields', 'beat_plan_quality_failed'].includes(diagnosticFailureCode)
                 ? diagnosticFailureCode
-                : (isQualityFailure ? 'beat_plan_quality_failed' : 'beat_plan_generation_failed')))
+                : (isEmptyBeatPlanFailure ? 'beat_plan_empty_after_quality_cleaning' : (isQualityFailure ? 'beat_plan_quality_failed' : 'beat_plan_generation_failed'))))
       const error = new Error(`${code}: chapter ${chapterNum} beat plan failed before draft: ${beatPlanFailure}`)
       error.code = code
       error.liveDiagnostics = {
@@ -1578,6 +2699,12 @@ async function waitForSavedBeatPlan(page, chapterNum, timeoutMs = 300000) {
         hasSavedBeatPlan: false,
         messages,
         ...summarizedBeatPlanDiagnostics,
+        promptChars: summarizedBeatPlanDiagnostics.promptChars,
+        promptTokensApprox: summarizedBeatPlanDiagnostics.promptTokensApprox,
+        finalFailureAfterRecovery: summarizedBeatPlanDiagnostics.finalFailureAfterRecovery,
+        derivedFallbackTriggered: summarizedBeatPlanDiagnostics.derivedFallbackTriggered,
+        derivedFallbackSucceeded: summarizedBeatPlanDiagnostics.derivedFallbackSucceeded,
+        qualityGateResult: summarizedBeatPlanDiagnostics.qualityGateResult,
         page: lastDiagnostics.page
       }
       throw error
@@ -1587,11 +2714,20 @@ async function waitForSavedBeatPlan(page, chapterNum, timeoutMs = 300000) {
 
   const error = new Error(`beat_plan_saved_failed: chapter ${chapterNum} beat plan was not saved after clicking beat plan entry`)
   error.code = 'beat_plan_saved_failed'
+  const beatPlanPromptDiagnostics = await readBeatPlanDiagnostics(page, chapterNum)
+  const summarizedBeatPlanDiagnostics = summarizeBeatPlanPromptDiagnostics(beatPlanPromptDiagnostics)
   error.liveDiagnostics = {
     stage: 'beat_plan_saved_failed',
     chapterNum,
     hasSavedBeatPlan: false,
     waitDurationMs: Date.now() - started,
+    ...summarizedBeatPlanDiagnostics,
+    promptChars: summarizedBeatPlanDiagnostics.promptChars,
+    promptTokensApprox: summarizedBeatPlanDiagnostics.promptTokensApprox,
+    finalFailureAfterRecovery: summarizedBeatPlanDiagnostics.finalFailureAfterRecovery,
+    derivedFallbackTriggered: summarizedBeatPlanDiagnostics.derivedFallbackTriggered,
+    derivedFallbackSucceeded: summarizedBeatPlanDiagnostics.derivedFallbackSucceeded,
+    qualityGateResult: summarizedBeatPlanDiagnostics.qualityGateResult,
     ...lastDiagnostics
   }
   throw error
@@ -1611,16 +2747,39 @@ async function waitForGeneratedChapterVersion(page, chapterNum, options = {}) {
   let generationEntryDiagnostics = options.draftGenerationEntryDiagnostics || options.generationEntryDiagnostics || null
   let generationEntryAttempts = options.generationEntryAttempts || 0
   const initialVersions = await api(`/projects/${report.project.id}/chapters/${chapterId}/versions`).catch(() => [])
+  const expectNewVersion = Boolean(options.expectNewVersion)
+  const previousVersionFingerprints = Array.isArray(options.previousVersionFingerprints)
+    ? options.previousVersionFingerprints
+    : candidateVersionFingerprints(initialVersions)
+  const previousVersionIds = Array.isArray(options.previousVersionIds)
+    ? options.previousVersionIds
+    : previousVersionFingerprints.map(item => item.id).filter(Boolean)
+  const previousContentHashes = Array.isArray(options.previousContentHashes)
+    ? options.previousContentHashes
+    : previousVersionFingerprints.map(item => item.contentHash).filter(Boolean)
   const versionCountBefore = Number.isFinite(options.versionCountBefore)
     ? options.versionCountBefore
     : (Array.isArray(initialVersions) ? initialVersions.length : 0)
+  const minVersionCountAfter = Number.isFinite(options.minVersionCountAfter)
+    ? options.minVersionCountAfter
+    : (expectNewVersion ? versionCountBefore + 1 : 0)
+  const draftRegenerationNotStartedCode = 'draft_regeneration_not_started'
+  const draftRegenerationNoNewCandidateCode = 'draft_regeneration_no_new_candidate'
   let qualityRebuildRetries = 0
   let beatPlanReviewConfirmations = 0
   let lastDiagnostics = null
 
   while (Date.now() - started < timeoutMs) {
     const versions = await api(`/projects/${report.project.id}/chapters/${chapterId}/versions`).catch(() => [])
-    if (versions?.some(version => String(version.content || '').length > 500)) {
+    const versionFreshness = hasNewGeneratedVersionCandidate(versions, {
+      expectNewVersion,
+      minVersionCountAfter,
+      previousVersionIds,
+      previousContentHashes,
+      previousVersionFingerprints,
+      draftGenerationStartedAt
+    })
+    if (versionFreshness.matched) {
       return versions
     }
 
@@ -1636,6 +2795,11 @@ async function waitForGeneratedChapterVersion(page, chapterNum, options = {}) {
         draftEntryClickedAfterBeatPlan,
         startedAtMs: draftGenerationStartedAt ? Date.parse(draftGenerationStartedAt) : started,
         versionCountBefore,
+        expectNewVersion,
+        minVersionCountAfter,
+        previousVersionIds,
+        previousContentHashes,
+        previousVersionFingerprints,
         qualityRebuildRetries,
         beatPlanReviewConfirmations,
         generationEntryLabel,
@@ -1807,6 +2971,11 @@ async function waitForGeneratedChapterVersion(page, chapterNum, options = {}) {
       draftEntryClickedAfterBeatPlan,
       startedAtMs: draftGenerationStartedAt ? Date.parse(draftGenerationStartedAt) : started,
       versionCountBefore,
+      expectNewVersion,
+      minVersionCountAfter,
+      previousVersionIds,
+      previousContentHashes,
+      previousVersionFingerprints,
       qualityRebuildRetries,
       beatPlanReviewConfirmations,
       generationEntryLabel,
@@ -1864,6 +3033,11 @@ async function waitForGeneratedChapterVersion(page, chapterNum, options = {}) {
     draftEntryClickedAfterBeatPlan,
     startedAtMs: draftGenerationStartedAt ? Date.parse(draftGenerationStartedAt) : started,
     versionCountBefore,
+    expectNewVersion,
+    minVersionCountAfter,
+    previousVersionIds,
+    previousContentHashes,
+    previousVersionFingerprints,
     qualityRebuildRetries,
     beatPlanReviewConfirmations,
     generationEntryLabel,
@@ -1871,9 +3045,12 @@ async function waitForGeneratedChapterVersion(page, chapterNum, options = {}) {
     generationEntryDiagnostics,
     draftGenerationEntryDiagnostics: generationEntryDiagnostics
   })
-  const draftFailureCode = !draftGenerationStartedAt && finalDiagnostics.hasSavedBeatPlan
-    ? 'draft_generation_entry_not_found'
-    : classifyDraftGenerationFailure(finalDiagnostics)
+  const draftFailureCode = expectNewVersion && !finalDiagnostics.newVersionDetected
+    ? (classifyDraftGenerationFailure(finalDiagnostics) ||
+        (finalDiagnostics.draftGenerationStartedAt ? draftRegenerationNoNewCandidateCode : draftRegenerationNotStartedCode))
+    : (!draftGenerationStartedAt && finalDiagnostics.hasSavedBeatPlan
+        ? 'draft_generation_entry_not_found'
+        : classifyDraftGenerationFailure(finalDiagnostics))
   const error = new Error(missingBeatPlan
     ? `${missingBeatPlanCode}: chapter ${chapterNum} beat plan was not generated or saved`
     : (draftFailureCode === 'draft_generation_entry_not_found'
@@ -2002,13 +3179,14 @@ async function isFinalizationMaskVisible(page) {
 
 async function throwIfPostFinalizeAiProxyFailure(page, chapterNum, stage = 'post_finalize_ai_proxy_failed') {
   const marker = await readFinalizationMarker(page, chapterNum)
-  if (!marker?.retryablePostprocessFailure && !marker?.postFinalizeFailed) return
-  const message = marker?.retryablePostprocessFailure?.message || latestPostFinalizeAiProxyFailureText() || '定稿后 AI 代理请求失败，后处理需要重试。'
-  const error = new Error(`post_finalize_ai_proxy_failed: ${message}`)
-  error.code = 'post_finalize_ai_proxy_failed'
+  const failure = classifyPostFinalizeMarkerFailure(marker, latestPostFinalizeAiProxyFailureText())
+  if (!failure) return
+  const error = new Error(`${failure.code}: ${failure.message}`)
+  error.code = failure.code
   error.liveDiagnostics = {
-    stage,
+    stage: failure.stage || stage,
     marker,
+    postFinalizeFailure: failure,
     consoleErrors: liveConsoleErrors.slice(-12),
     page: await collectVisibleDiagnostics(page)
   }
@@ -2058,7 +3236,8 @@ async function waitForPostFinalizeSettlement(page, chapterNum, timeoutMs = 60000
 
     const reasons = []
     if (marker) reasons.push('finalization_marker_present')
-    if (marker?.retryablePostprocessFailure || marker?.postFinalizeFailed) reasons.push('retryable_postprocess_failure')
+    const markerFailure = classifyPostFinalizeMarkerFailure(marker)
+    if (markerFailure) reasons.push(markerFailure.reasonKey)
     if (finalizationMaskVisible) reasons.push('finalization_mask_visible')
     if (!state.storyBlockReviewSaved) reasons.push('story_block_review_not_saved')
     if (!state.pendingSettingsReadable) reasons.push('pending_settings_unreadable')
@@ -2068,8 +3247,10 @@ async function waitForPostFinalizeSettlement(page, chapterNum, timeoutMs = 60000
       finalizationMarkerBeforeNextChapter,
       finalizationMarkerClearedAt,
       finalizationMaskVisible,
-      postFinalizeFailed: Boolean(marker?.retryablePostprocessFailure || marker?.postFinalizeFailed),
+      postFinalizeFailed: Boolean(marker?.retryablePostprocessFailure || marker?.storyBlockSettlementFailure || marker?.postFinalizeFailed),
       retryablePostprocessFailure: marker?.retryablePostprocessFailure || null,
+      storyBlockSettlementFailure: marker?.storyBlockSettlementFailure || null,
+      postFinalizeFailureCode: markerFailure?.code || '',
       postFinalizeWaitReason: reasons.join(', ') || 'settled',
       postFinalizeWaitPassed: reasons.length === 0,
       navigatedToSettingsAfterMarkerCleared: false,
@@ -2081,12 +3262,13 @@ async function waitForPostFinalizeSettlement(page, chapterNum, timeoutMs = 60000
     writeReport()
 
     if (lastSnapshot.postFinalizeFailed) {
-      const message = marker?.retryablePostprocessFailure?.message || '定稿后 AI 代理请求失败，后处理需要重试。'
-      const error = new Error(`post_finalize_ai_proxy_failed: ${message}`)
-      error.code = 'post_finalize_ai_proxy_failed'
+      const failure = classifyPostFinalizeMarkerFailure(marker, latestPostFinalizeAiProxyFailureText())
+      const error = new Error(`${failure?.code || 'post_finalize_failed'}: ${failure?.message || '定稿后处理失败。'}`)
+      error.code = failure?.code || 'post_finalize_failed'
       error.liveDiagnostics = {
-        stage: 'post_finalize_ai_proxy_failed',
+        stage: failure?.stage || 'post_finalize_failed',
         marker,
+        postFinalizeFailure: failure,
         ...lastSnapshot,
         consoleErrors: liveConsoleErrors.slice(-12)
       }
@@ -2153,6 +3335,19 @@ async function createProject(page) {
   await page.goto(`${FRONTEND}/project/${report.project.id}`, { waitUntil: 'domcontentloaded' })
   await page.locator('.n-modal-mask').waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {})
   mark('created_clean_project_in_browser')
+}
+
+async function openExistingProject(page) {
+  if (!EXISTING_PROJECT_ID) return
+  report.project.id = EXISTING_PROJECT_ID
+  report.project.name = EXISTING_PROJECT_NAME || report.project.name || EXISTING_PROJECT_ID
+  await page.goto(`${FRONTEND}/project/${EXISTING_PROJECT_ID}`, { waitUntil: 'domcontentloaded' })
+  await page.locator('.n-modal-mask').waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {})
+  await waitFor('existing project reachable', async () => {
+    const chapters = await api(`/projects/${EXISTING_PROJECT_ID}/chapters`).catch(() => null)
+    return Array.isArray(chapters)
+  }, 60000, 2000)
+  mark('opened_existing_project_in_browser')
 }
 
 async function createAndSelectSeed(page) {
@@ -2314,6 +3509,10 @@ async function confirmAllSettings(page) {
   }
   const pending = (await api(`/projects/${report.project.id}/settings/change-events?status=pending_review`).catch(() => [])) || []
   const settingEntities = await api(`/projects/${report.project.id}/settings/entities`).catch(() => [])
+  const relationshipAutoFailure = detectUnconfirmedAutoAcceptableRelationshipSettings(pending, settingEntities)
+  if (relationshipAutoFailure) {
+    throw createSettingReviewRequiredError(relationshipAutoFailure.code, pending, settingEntities)
+  }
   throw createSettingReviewRequiredError('manual_setting_review_required', pending, settingEntities)
 }
 
@@ -2330,9 +3529,12 @@ async function resolveHardConflictSettingsIfConfigured(events = [], settingEntit
 function createSettingReviewRequiredError(code, pending = [], settingEntities = []) {
   const details = classifySettingEvents(pending, settingEntities)
   const pendingHardConflicts = pendingHardConflictDiagnostics(pending, settingEntities)
-  const error = new Error(code === 'hard_conflict_setting_review_required'
+  const message = code === 'hard_conflict_setting_review_required'
     ? '仍有硬冲突设定需要逐条确认，处理后才能进入下一章。'
-    : '仍有待确认设定需要人工处理，处理后才能进入下一章。')
+    : code === 'relationship_auto_confirm_failed'
+      ? '低风险关系设定未能自动确认，请检查关系归位或批量确认流程。'
+      : '仍有待确认设定需要人工处理，处理后才能进入下一章。'
+  const error = new Error(message)
   error.code = code
   error.settingReview = {
     stage: code,
@@ -2661,32 +3863,52 @@ function countCjkChars(text = '') {
   return (String(text || '').match(/[\u3400-\u9fff]/g) || []).length
 }
 
-function wordCountPolicyStatus(cjkCharCount, targetRange = { min: 4500, max: 6000 }) {
-  return wordCountPolicy(cjkCharCount, targetRange).status
+function wordCountPolicyStatus(wordCount, wordTarget = buildLiveChapterWordTarget()) {
+  return wordCountPolicy(wordCount, wordTarget).status
 }
 
-function wordCountPolicy(cjkCharCount, targetRange = { min: 4500, max: 6000 }) {
-  const count = Number(cjkCharCount || 0)
-  const hardMin = 3500
-  const softMin = 4000
-  const targetMin = Number(targetRange.min || 4500)
-  const targetMax = Number(targetRange.max || 6000)
+function buildLiveChapterWordTarget(volumeStage = null) {
+  return buildChapterWordTarget({
+    targetWords: report.target.targetWords,
+    targetChapters: report.target.targetChapters
+  }, volumeStage) || {
+    target: 5000,
+    min: 4500,
+    max: 6500,
+    hardMin: 4000,
+    hardMax: 7000
+  }
+}
+
+function wordCountPolicy(wordCount, wordTarget = buildLiveChapterWordTarget()) {
+  const count = Number(wordCount || 0)
+  const target = wordTarget?.target ? wordTarget : buildLiveChapterWordTarget()
+  const hardMin = Number(target.hardMin || 0)
+  const softMin = Number(target.min || 0)
+  const targetMin = Number(target.min || 0)
+  const targetMax = Number(target.max || 0)
+  const assessment = assessChapterWordCount('字'.repeat(Math.max(0, count)), target)
+  const base = {
+    hardMin,
+    liveHardMin: hardMin,
+    appHardMin: hardMin,
+    softMin,
+    wordTarget: target,
+    targetRange: { min: targetMin, max: targetMax }
+  }
   if (!count) {
-    return { status: 'missing', hardPass: false, hardMin, softMin, targetRange: { min: targetMin, max: targetMax } }
+    return { status: 'missing', hardPass: false, ...base }
   }
-  if (count < hardMin) {
-    return { status: 'below_hard_min', hardPass: false, hardMin, softMin, targetRange: { min: targetMin, max: targetMax } }
+  if (assessment.level === 'hard_under') {
+    return { status: 'below_hard_min', hardPass: false, ...base }
   }
-  if (count < softMin) {
-    return { status: 'soft_floor_warning', hardPass: true, hardMin, softMin, targetRange: { min: targetMin, max: targetMax } }
+  if (assessment.level === 'under') {
+    return { status: 'soft_floor_warning', hardPass: true, ...base }
   }
-  if (count < targetMin) {
-    return { status: 'below_target_warning', hardPass: true, hardMin, softMin, targetRange: { min: targetMin, max: targetMax } }
+  if (assessment.level === 'over' || assessment.level === 'hard_over') {
+    return { status: 'above_target_warning', hardPass: true, ...base }
   }
-  if (count > targetMax) {
-    return { status: 'above_target_warning', hardPass: true, hardMin, softMin, targetRange: { min: targetMin, max: targetMax } }
-  }
-  return { status: 'within_target', hardPass: true, hardMin, softMin, targetRange: { min: targetMin, max: targetMax } }
+  return { status: 'within_target', hardPass: true, ...base }
 }
 
 function analyzeBeatPlanQualityForReport(content = '') {
@@ -2735,6 +3957,7 @@ function markChapterFlowEvent(chapterNum, event, details = {}) {
 }
 
 async function recordChapterDraftProgress(page, chapterNum, stage = 'draft_generated') {
+  const existingReport = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum)) || {}
   const chapter = await findChapter(chapterNum).catch(() => null)
   const beat = await api(`/projects/${report.project.id}/chapter-beat-plan/${chapterNum}`).catch(() => null)
   const versions = chapter?.id
@@ -2743,12 +3966,14 @@ async function recordChapterDraftProgress(page, chapterNum, stage = 'draft_gener
   const candidateVersions = Array.isArray(versions)
     ? versions.filter(version => String(version.content || '').length > 500)
     : []
-  const candidateContent = String(candidateVersions.at(-1)?.content || '')
+  const latestCandidate = latestCandidateVersion(candidateVersions)
+  const candidateContent = String(latestCandidate?.content || '')
   const rawContentLength = candidateContent.length
   const effectiveCjkCharCount = countCjkChars(candidateContent)
-  const reportedWordCount = Number(chapter?.wordCount || rawContentLength || effectiveCjkCharCount || 0)
-  const targetRange = { min: 4500, max: 6000 }
-  const wordPolicy = wordCountPolicy(reportedWordCount, targetRange)
+  const reportedWordCount = Number(rawContentLength || effectiveCjkCharCount || chapter?.wordCount || 0)
+  const wordTarget = buildLiveChapterWordTarget()
+  const targetRange = { min: wordTarget.min, max: wordTarget.max }
+  const wordPolicy = wordCountPolicy(reportedWordCount, wordTarget)
   const titleQuality = getChapterTitleQuality(chapter?.title || '', {
     chapterNum,
     content: candidateContent,
@@ -2758,6 +3983,11 @@ async function recordChapterDraftProgress(page, chapterNum, stage = 'draft_gener
   const beatPlanQuality = analyzeBeatPlanQualityForReport(beat?.content || '')
   const beatPlanPromptDiagnostics = page ? await readBeatPlanDiagnostics(page, chapterNum) : null
   const summarizedBeatPlanDiagnostics = summarizeBeatPlanPromptDiagnostics(beatPlanPromptDiagnostics)
+  const writerHumanityContextDiagnostics = page ? await readWriterHumanityContextDiagnostics(page, chapterNum) : null
+  const sampleCardInjected = writerHumanityContextDiagnostics?.sampleCardInjected === true || existingReport.sampleCardInjected === true
+  const sampleSource = writerHumanityContextDiagnostics?.sampleCardInjected === true
+    ? writerHumanityContextDiagnostics
+    : existingReport
   upsertChapterReport({
     chapterNum,
     title: chapter?.title || '',
@@ -2765,9 +3995,10 @@ async function recordChapterDraftProgress(page, chapterNum, stage = 'draft_gener
     cjkCharCount: effectiveCjkCharCount,
     rawContentLength,
     targetRange,
+    wordTarget,
     wordCountPolicy: wordPolicy,
     wordCountPolicyStatus: wordPolicy.status,
-    wordCountPolicyBasis: 'chapter.wordCount',
+    wordCountPolicyBasis: candidateContent ? 'latest_candidate_content' : 'chapter.wordCount',
     titleQuality,
     storyBlockId: beat?.storyBlockId || chapter?.storyBlockId || '',
     blockStageId: beat?.blockStageId || '',
@@ -2779,6 +4010,18 @@ async function recordChapterDraftProgress(page, chapterNum, stage = 'draft_gener
     derivedReason: beat?.derivedReason || summarizedBeatPlanDiagnostics.derivedReason || '',
     stageSnapshotFields: summarizedBeatPlanDiagnostics.stageSnapshotFields,
     whetherAllowedToContinue: summarizedBeatPlanDiagnostics.whetherAllowedToContinue,
+    writerContextDiagnostics: writerHumanityContextDiagnostics,
+    companionVoiceCardsInjected: writerHumanityContextDiagnostics?.companionVoiceCardsInjected ?? null,
+    companionVoiceCardNames: writerHumanityContextDiagnostics?.companionVoiceCardNames || [],
+    companionVoiceCardsLength: writerHumanityContextDiagnostics?.companionVoiceCardsLength || 0,
+    sampleCardInjected,
+    sampleCardId: sampleCardInjected ? (sampleSource.sampleCardId || '') : '',
+    sampleCardTitle: sampleCardInjected ? (sampleSource.sampleCardTitle || '') : '',
+    sampleCardType: sampleCardInjected ? (sampleSource.sampleCardType || '') : '',
+    sampleInjectionReason: sampleCardInjected ? (sampleSource.sampleInjectionReason || '') : '',
+    microDemoChars: sampleCardInjected ? (sampleSource.microDemoChars || 0) : 0,
+    sourceFieldsStripped: sampleSource.sourceFieldsStripped ?? true,
+    sampleLeakageDetected: Boolean(sampleSource.sampleLeakageDetected),
     outlineFromActiveStoryBlock: Boolean(beat?.storyBlockId),
     draftReadSnapshotBoundary: Boolean(beat?.blockStageSnapshot),
     draftGenerated: candidateVersions.length > 0,
@@ -2788,11 +4031,18 @@ async function recordChapterDraftProgress(page, chapterNum, stage = 'draft_gener
     taskProviders: report.modelBinding.taskProviders
   })
   const titleWarningCode = `chapter_title_invalid:${chapterNum}`
+  const titleSoftWarningCode = `chapter_title_warning:${chapterNum}`
   report.qualityWarnings = report.qualityWarnings.filter(item => item.code !== titleWarningCode)
+  report.qualityWarnings = report.qualityWarnings.filter(item => item.code !== titleSoftWarningCode)
   if (!titleQuality.titleValid) {
     report.qualityWarnings.push({
       code: titleWarningCode,
       message: `第 ${chapterNum} 章标题《${chapter?.title || ''}》不合法：${titleQuality.titleInvalidReason || '非法标题'}。`
+    })
+  } else if (titleQuality.status === 'warning') {
+    report.qualityWarnings.push({
+      code: titleSoftWarningCode,
+      message: `第 ${chapterNum} 章标题《${chapter?.title || ''}》偏弱：${titleQuality.reason || 'weak_title'}。`
     })
   }
   const wordWarningCode = `chapter_word_count_policy:${chapterNum}`
@@ -2807,9 +4057,39 @@ async function recordChapterDraftProgress(page, chapterNum, stage = 'draft_gener
   writeReport()
 }
 
-function throwIfChapterBelowHardMin(chapterNum, stage = 'word_count_quality_gate') {
+function throwIfChapterTitleInvalid(chapterNum, stage = 'chapter_title_quality_gate') {
+  const entry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum))
+  if (!entry?.titleQuality || entry.titleQuality.titleValid !== false) return
+  const error = new Error(`chapter_title_invalid: 第 ${entry.chapterNum} 章标题《${entry.title || ''}》不合法，未继续小跑。`)
+  error.code = 'chapter_title_invalid'
+  error.liveDiagnostics = {
+    stage,
+    chapterNum: entry.chapterNum,
+    title: entry.title || '',
+    titleInvalidReason: entry.titleQuality.titleInvalidReason || entry.titleQuality.reason || '非法标题',
+    titleQuality: entry.titleQuality,
+    message: '章节标题命中硬门：纯英文/内部字段/JSON 或代码残片不得进入最终标题。'
+  }
+  report.blocker = {
+    blocked: true,
+    stage,
+    code: 'chapter_title_invalid',
+    chapterNum: entry.chapterNum,
+    title: entry.title || '',
+    titleInvalidReason: error.liveDiagnostics.titleInvalidReason,
+    message: error.message
+  }
+  report.acceptance.passed = false
+  report.acceptance.reason = error.message
+  markChapterFlowEvent(chapterNum, 'chapter_title_invalid', error.liveDiagnostics)
+  writeReport()
+  throw error
+}
+
+function throwIfChapterBelowHardMin(chapterNum, stage = 'word_count_quality_gate', details = {}) {
   const entry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum))
   if (!entry?.wordCountPolicy || entry.wordCountPolicy.hardPass !== false) return
+  const wordTarget = entry.wordTarget || entry.wordCountPolicy.wordTarget || buildLiveChapterWordTarget()
   const hardFailWordCountChapters = [{
     chapterNum: entry.chapterNum,
     title: entry.title || '',
@@ -2821,12 +4101,21 @@ function throwIfChapterBelowHardMin(chapterNum, stage = 'word_count_quality_gate
     targetRange: entry.wordCountPolicy.targetRange
   }]
   report.hardFailWordCountChapters = hardFailWordCountChapters
-  const error = new Error(`chapter_below_hard_min: 第 ${entry.chapterNum} 章正文低于硬下限，请扩写或重新生成。`)
+  const error = new Error(`chapter_below_hard_min: 第 ${entry.chapterNum} 章低于硬下限，未进入定稿。`)
   error.code = 'chapter_below_hard_min'
   error.liveDiagnostics = {
     stage,
     hardFailWordCountChapters,
-    message: '正文低于硬下限，请扩写或重新生成'
+    appHardMin: entry.wordCountPolicy.appHardMin || entry.wordCountPolicy.hardMin,
+    liveHardMin: entry.wordCountPolicy.liveHardMin || entry.wordCountPolicy.hardMin,
+    wordTarget,
+    candidateWordCount: entry.wordCount || 0,
+    modalText: details.modalText || '',
+    regenerateAttempted: Boolean(details.regenerateAttempted ?? entry.flowEvents?.below_hard_min_auto_regenerate_started),
+    regenerateSucceeded: Boolean(details.regenerateSucceeded ?? entry.flowEvents?.below_hard_min_auto_regenerate_succeeded),
+    finalizeApiEvents: details.finalizeApiEvents || [],
+    message: '正文低于硬下限，请扩写或重新生成',
+    ...details
   }
   markChapterFlowEvent(chapterNum, 'chapter_below_hard_min', error.liveDiagnostics)
   report.blocker = {
@@ -2834,8 +4123,23 @@ function throwIfChapterBelowHardMin(chapterNum, stage = 'word_count_quality_gate
     stage: 'word_count_quality_gate',
     code: 'chapter_below_hard_min',
     chapterNum: entry.chapterNum,
-    message: `第 ${entry.chapterNum} 章正文低于硬下限，请扩写或重新生成后再定稿。`,
-    hardFailWordCountChapters
+    message: `第 ${entry.chapterNum} 章低于硬下限，未进入定稿。`,
+    hardFailWordCountChapters,
+    appHardMin: error.liveDiagnostics.appHardMin,
+    liveHardMin: error.liveDiagnostics.liveHardMin,
+    wordTarget,
+    candidateWordCount: error.liveDiagnostics.candidateWordCount,
+    modalText: error.liveDiagnostics.modalText,
+    regenerateAttempted: error.liveDiagnostics.regenerateAttempted,
+    regenerateSucceeded: error.liveDiagnostics.regenerateSucceeded,
+    shortDraftStrategy: error.liveDiagnostics.shortDraftStrategy || '',
+    originalWordCount: error.liveDiagnostics.originalWordCount || 0,
+    expandedWordCount: error.liveDiagnostics.expandedWordCount || 0,
+    finalCandidateWordCount: error.liveDiagnostics.finalCandidateWordCount || error.liveDiagnostics.candidateWordCount || 0,
+    expansionAccepted: Boolean(error.liveDiagnostics.expansionAccepted),
+    expansionRejectedReason: error.liveDiagnostics.expansionRejectedReason || '',
+    factDriftCheck: error.liveDiagnostics.factDriftCheck || null,
+    endingPreserved: error.liveDiagnostics.endingPreserved || null
   }
   report.acceptance.passed = false
   report.acceptance.reason = report.blocker.message
@@ -2843,22 +4147,202 @@ function throwIfChapterBelowHardMin(chapterNum, stage = 'word_count_quality_gate
   throw error
 }
 
+async function throwIfBelowHardMinModalVisible(page, chapterNum, stage = 'word_count_quality_gate', details = {}) {
+  const modalText = await findBelowHardMinModalText(page)
+  if (!modalText) return false
+  const staleResolution = await dismissStaleBelowHardMinModalIfSafe(page, chapterNum, stage, details)
+  if (staleResolution.modalStale && staleResolution.closeBelowHardMinModalSucceeded) {
+    return false
+  }
+  await recordChapterDraftProgress(page, chapterNum, stage)
+  const finalizeDiagnostics = await collectFinalizationDiagnostics(page, chapterNum).catch(() => null)
+  const entry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum))
+  const versionDiagnostics = await finalizationVersionDiagnostics(page, chapterNum, modalText).catch(() => null)
+  if (versionDiagnostics?.selectedVersionStale && versionDiagnostics?.latestCandidateHardPass) {
+    throwSelectedVersionStale(chapterNum, {
+      ...(finalizeDiagnostics || {}),
+      ...(versionDiagnostics || {}),
+      ...details,
+      modalText,
+      belowHardMinModal: true
+    })
+  }
+  if (entry?.wordCountPolicy?.hardPass === false) {
+    throwIfChapterBelowHardMin(chapterNum, stage, {
+      ...(finalizeDiagnostics || {}),
+      ...(versionDiagnostics || {}),
+      ...details,
+      belowHardMinModal: true,
+      modalText,
+      blockerSource: versionDiagnostics?.blockerSource || 'current_candidate',
+      regenerateAttempted: Boolean(details.regenerateAttempted ?? entry.flowEvents?.below_hard_min_auto_regenerate_started),
+      regenerateSucceeded: Boolean(details.regenerateSucceeded ?? entry.flowEvents?.below_hard_min_auto_regenerate_succeeded),
+      finalizeApiEvents: finalizeDiagnostics?.finalizeApiEvents || []
+    })
+  }
+  return false
+}
+
 async function ensureDraftAboveHardMinOrRegenerate(page, chapterNum) {
   await recordChapterDraftProgress(page, chapterNum, 'draft_generated')
   let entry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum))
   if (!entry?.wordCountPolicy || entry.wordCountPolicy.hardPass !== false) return entry
 
+  const chapterId = await currentChapterId(chapterNum)
+  const originalVersions = await api(`/projects/${report.project.id}/chapters/${chapterId}/versions`).catch(() => [])
+  const originalFingerprints = candidateVersionFingerprints(originalVersions)
+  const originalFingerprint = latestCandidateFingerprint(originalVersions)
+  const originalVersionIds = originalFingerprints.map(item => item.id).filter(Boolean)
+  const originalContentHashes = originalFingerprints.map(item => item.contentHash).filter(Boolean)
+  const originalVersionCount = Array.isArray(originalVersions) ? originalVersions.length : 0
+  const originalWordCount = entry.wordCount || originalFingerprint?.wordCount || 0
+  const originalContentHash = originalFingerprint?.contentHash || ''
+  const originalCandidate = latestCandidateVersion(originalVersions)
+  const beatPlanRecord = await api(`/projects/${report.project.id}/chapter-beat-plan/${chapterNum}`).catch(() => null)
+  const beatPlanExpansionReadiness = isCompleteBeatPlanForShortDraftExpansion(beatPlanRecord)
+  let shortDraftExpansionDiagnostics = {
+    shortDraftStrategy: '',
+    originalWordCount,
+    expandedWordCount: 0,
+    finalCandidateWordCount: originalWordCount,
+    expansionAccepted: false,
+    expansionRejectedReason: '',
+    factDriftCheck: null,
+    endingPreserved: null
+  }
+
+  const shortDraftExpansionEligible = Boolean(
+    originalWordCount >= SHORT_DRAFT_EXPANSION_MIN &&
+    originalWordCount < 4000 &&
+    originalWordCount < SHORT_DRAFT_EXPANSION_MAX + 1 &&
+    originalCandidate?.content &&
+    beatPlanExpansionReadiness.complete
+  )
+
+  if (shortDraftExpansionEligible) {
+    markChapterFlowEvent(chapterNum, 'below_hard_min_expand_short_draft_started', {
+      shortDraftStrategy: 'expand_existing',
+      originalWordCount,
+      wordCountPolicy: entry.wordCountPolicy,
+      originalVersionCount,
+      originalVersionIds,
+      originalContentHash,
+      originalContentHashes,
+      originalVersionFingerprints: originalFingerprints.map(summarizeVersionFingerprint),
+      beatPlanExpansionReadiness
+    })
+    try {
+      const expansion = await expandShortDraftCandidate({
+        page,
+        chapterNum,
+        chapterId,
+        originalCandidate,
+        beatPlanRecord,
+        wordTarget: entry.wordTarget || buildLiveChapterWordTarget()
+      })
+      shortDraftExpansionDiagnostics = {
+        ...shortDraftExpansionDiagnostics,
+        ...expansion.diagnostics
+      }
+      markChapterFlowEvent(
+        chapterNum,
+        expansion.accepted ? 'below_hard_min_expand_short_draft_done' : 'below_hard_min_expand_short_draft_rejected',
+        {
+          ...shortDraftExpansionDiagnostics,
+          originalVersionCount,
+          originalVersionIds,
+          originalContentHash,
+          originalContentHashes,
+          savedVersionId: expansion.savedVersion?.id || ''
+        }
+      )
+      if (expansion.accepted) {
+        await recordChapterDraftProgress(page, chapterNum, 'below_hard_min_expand_short_draft_done')
+        entry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum))
+        shortDraftExpansionDiagnostics.finalCandidateWordCount = entry?.wordCount || shortDraftExpansionDiagnostics.expandedWordCount || 0
+        if (entry?.wordCountPolicy?.hardPass !== false) {
+          markChapterFlowEvent(chapterNum, 'below_hard_min_expand_short_draft_succeeded', {
+            ...shortDraftExpansionDiagnostics,
+            wordCount: entry?.wordCount || 0,
+            wordCountPolicy: entry?.wordCountPolicy || null,
+            regenerateAttempted: false,
+            regenerateSucceeded: false
+          })
+          return entry
+        }
+        shortDraftExpansionDiagnostics = {
+          ...shortDraftExpansionDiagnostics,
+          expansionAccepted: false,
+          expansionRejectedReason: shortDraftExpansionDiagnostics.expansionRejectedReason || 'saved_expansion_still_below_hard_min'
+        }
+      }
+    } catch (error) {
+      shortDraftExpansionDiagnostics = {
+        ...shortDraftExpansionDiagnostics,
+        shortDraftStrategy: 'expand_existing',
+        expansionAccepted: false,
+        expansionRejectedReason: `expand_short_draft_failed: ${error.message}`,
+        finalCandidateWordCount: originalWordCount
+      }
+      markChapterFlowEvent(chapterNum, 'below_hard_min_expand_short_draft_failed', {
+        ...shortDraftExpansionDiagnostics,
+        originalVersionCount,
+        originalVersionIds,
+        originalContentHash,
+        originalContentHashes,
+        beatPlanExpansionReadiness
+      })
+    }
+    throwIfChapterBelowHardMin(chapterNum, 'below_hard_min_expand_short_draft_failed', {
+      ...shortDraftExpansionDiagnostics,
+      shortDraftStrategy: 'expand_existing',
+      regenerateAttempted: false,
+      regenerateSucceeded: false,
+      originalVersionCount,
+      originalVersionIds,
+      originalWordCount,
+      originalContentHash,
+      originalContentHashes,
+      finalCandidateWordCount: shortDraftExpansionDiagnostics.finalCandidateWordCount || originalWordCount,
+      beatPlanExpansionReadiness
+    })
+  } else {
+    shortDraftExpansionDiagnostics = {
+      ...shortDraftExpansionDiagnostics,
+      shortDraftStrategy: 'full_regenerate',
+      expansionRejectedReason: beatPlanExpansionReadiness.complete
+        ? 'short_draft_not_in_expand_range'
+        : 'beat_plan_incomplete_for_expansion',
+      beatPlanExpansionReadiness
+    }
+  }
+
   markChapterFlowEvent(chapterNum, 'below_hard_min_auto_regenerate_started', {
+    ...shortDraftExpansionDiagnostics,
+    shortDraftStrategy: 'full_regenerate',
     wordCount: entry.wordCount || 0,
-    wordCountPolicy: entry.wordCountPolicy
+    wordCountPolicy: entry.wordCountPolicy,
+    regenerateAttempted: true,
+    originalVersionCount,
+    originalVersionIds,
+    originalWordCount,
+    originalContentHash,
+    originalContentHashes,
+    originalVersionFingerprints: originalFingerprints.map(summarizeVersionFingerprint)
   })
 
   await dismissAppDialogs(page)
   let draftEntry
+  let regeneratedVersions = []
   try {
-    draftEntry = await clickDraftEntry(page, chapterNum, { clickTimeoutMs: 60000 })
+    draftEntry = await clickDraftRegenerationEntry(page, chapterNum, { chapterId, clickTimeoutMs: 60000 })
     await clickStartGenerationIfPrompted(page, chapterNum)
-    await waitForGeneratedChapterVersion(page, chapterNum, {
+    regeneratedVersions = await waitForGeneratedChapterVersion(page, chapterNum, {
+      expectNewVersion: true,
+      minVersionCountAfter: originalVersionCount + 1,
+      previousVersionIds: originalVersionIds,
+      previousContentHashes: originalContentHashes,
+      previousVersionFingerprints: originalFingerprints,
       draftGenerationStartedAt: draftEntry.draftGenerationStartedAt,
       draftGenerationEntryLabel: draftEntry.draftGenerationEntryLabel,
       generationEntryLabel: draftEntry.draftGenerationEntryLabel,
@@ -2867,50 +4351,337 @@ async function ensureDraftAboveHardMinOrRegenerate(page, chapterNum) {
         ...(draftEntry.diagnostics || {}),
         belowHardMinRecovery: true,
         previousWordCount: entry.wordCount || 0,
-        previousWordCountPolicy: entry.wordCountPolicy
+        previousWordCountPolicy: entry.wordCountPolicy,
+        originalVersionCount,
+        originalVersionIds,
+        originalWordCount,
+        originalContentHash,
+        originalContentHashes
       }
     })
   } catch (error) {
+    const diagnostics = await collectDraftGenerationWaitDiagnostics(page, chapterNum, chapterId, {
+      draftGenerationStartedAt: draftEntry?.draftGenerationStartedAt || '',
+      draftGenerationEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
+      generationEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
+      generationEntryAttempts: draftEntry ? 1 : 0,
+      generationEntryDiagnostics: draftEntry?.diagnostics || null,
+      draftGenerationEntryDiagnostics: draftEntry?.diagnostics || null,
+      startedAtMs: draftEntry?.draftGenerationStartedAt ? Date.parse(draftEntry.draftGenerationStartedAt) : Date.now(),
+      versionCountBefore: originalVersionCount,
+      expectNewVersion: true,
+      minVersionCountAfter: originalVersionCount + 1,
+      previousVersionIds: originalVersionIds,
+      previousContentHashes: originalContentHashes,
+      previousVersionFingerprints: originalFingerprints
+    }).catch(() => null)
+    const regenerationFailureCode = ['draft_regeneration_not_started', 'draft_regeneration_no_new_candidate', 'draft_regeneration_entry_not_found'].includes(error.code)
+      ? error.code
+      : (diagnostics ? classifyDraftGenerationFailure(diagnostics) : (error.code || 'draft_regeneration_no_new_candidate'))
     markChapterFlowEvent(chapterNum, 'below_hard_min_auto_regenerate_failed', {
+      ...shortDraftExpansionDiagnostics,
+      shortDraftStrategy: 'full_regenerate',
       message: error.message,
-      code: error.code || '',
+      code: regenerationFailureCode,
+      regenerationFailureCode,
+      regenerateAttempted: true,
+      regenerateStartedAt: draftEntry?.draftGenerationStartedAt || '',
+      regenerateEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
       previousWordCount: entry.wordCount || 0,
-      previousWordCountPolicy: entry.wordCountPolicy
+      previousWordCountPolicy: entry.wordCountPolicy,
+      originalVersionCount,
+      originalVersionIds,
+      originalWordCount,
+      originalContentHash,
+      originalContentHashes,
+      newVersionCount: diagnostics?.versionCountAfter ?? originalVersionCount,
+      newVersionIds: diagnostics?.versionIds || originalVersionIds,
+      newContentHash: diagnostics?.newVersionCandidate?.contentHash || originalContentHash,
+      newWordCount: diagnostics?.newVersionCandidate?.wordCount || originalWordCount,
+      streamRequestCount: diagnostics?.streamRequestCount || diagnostics?.draftStreamRequestCount || 0,
+      streamResponseCount: diagnostics?.streamResponseCount || diagnostics?.draftStreamResponseCount || 0,
+      aiProxyRequest: diagnostics?.lastAiProxyRequestAt || '',
+      aiProxyResponse: diagnostics?.lastAiProxyResponseAt || '',
+      diagnostics
     })
     await recordChapterDraftProgress(page, chapterNum, 'below_hard_min_auto_regenerate_failed')
-    throwIfChapterBelowHardMin(chapterNum, 'below_hard_min_auto_regenerate_failed')
+    if (['draft_regeneration_not_started', 'draft_regeneration_no_new_candidate', 'draft_regeneration_entry_not_found'].includes(regenerationFailureCode)) {
+      report.blocker = {
+        blocked: true,
+        stage: 'draft_regeneration',
+        code: regenerationFailureCode,
+        chapterNum,
+        message: regenerationFailureCode === 'draft_regeneration_no_new_candidate'
+          ? `第 ${chapterNum} 章低字数自动重生未产生新候选。`
+          : `第 ${chapterNum} 章低字数自动重生未启动。`,
+        ...shortDraftExpansionDiagnostics,
+        shortDraftStrategy: 'full_regenerate',
+        regenerateAttempted: true,
+        regenerateStartedAt: draftEntry?.draftGenerationStartedAt || '',
+        regenerateEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
+        originalVersionCount,
+        newVersionCount: diagnostics?.versionCountAfter ?? originalVersionCount,
+        originalVersionIds,
+        newVersionIds: diagnostics?.versionIds || originalVersionIds,
+        originalWordCount,
+        newWordCount: diagnostics?.newVersionCandidate?.wordCount || originalWordCount,
+        originalContentHash,
+        newContentHash: diagnostics?.newVersionCandidate?.contentHash || originalContentHash,
+        streamRequestCount: diagnostics?.streamRequestCount || diagnostics?.draftStreamRequestCount || 0,
+        streamResponseCount: diagnostics?.streamResponseCount || diagnostics?.draftStreamResponseCount || 0,
+        aiProxyRequest: diagnostics?.lastAiProxyRequestAt || '',
+        aiProxyResponse: diagnostics?.lastAiProxyResponseAt || '',
+        diagnostics
+      }
+      report.acceptance.passed = false
+      report.acceptance.reason = report.blocker.message
+      writeReport()
+      error.code = regenerationFailureCode
+      error.liveDiagnostics = report.blocker
+      throw error
+    }
+    throwIfChapterBelowHardMin(chapterNum, 'below_hard_min_auto_regenerate_failed', {
+      ...shortDraftExpansionDiagnostics,
+      shortDraftStrategy: 'full_regenerate',
+      regenerateAttempted: true,
+      regenerateSucceeded: false,
+      regenerationFailureCode,
+      originalVersionCount,
+      originalVersionIds,
+      originalWordCount,
+      originalContentHash,
+      originalContentHashes,
+      newVersionCount: diagnostics?.versionCountAfter ?? originalVersionCount,
+      newVersionIds: diagnostics?.versionIds || originalVersionIds,
+      finalCandidateWordCount: diagnostics?.newVersionCandidate?.wordCount || originalWordCount
+    })
     throw error
   }
 
   await recordChapterDraftProgress(page, chapterNum, 'below_hard_min_auto_regenerate_done')
   entry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum))
+  const newFingerprints = candidateVersionFingerprints(regeneratedVersions)
+  const regenerationFreshness = hasNewGeneratedVersionCandidate(regeneratedVersions, {
+    expectNewVersion: true,
+    minVersionCountAfter: originalVersionCount + 1,
+    previousVersionIds: originalVersionIds,
+    previousContentHashes: originalContentHashes,
+    previousVersionFingerprints: originalFingerprints,
+    draftGenerationStartedAt: draftEntry?.draftGenerationStartedAt || ''
+  })
+  const newFingerprint = regenerationFreshness.candidate || latestCandidateFingerprint(regeneratedVersions)
+  const newVersionIds = newFingerprints.map(item => item.id).filter(Boolean)
+  const newVersionCount = Array.isArray(regeneratedVersions) ? regeneratedVersions.length : 0
+  const newWordCount = entry?.wordCount || newFingerprint?.wordCount || 0
+  const newContentHash = newFingerprint?.contentHash || ''
+  const regenerateStartedAtMs = draftEntry?.draftGenerationStartedAt ? Date.parse(draftEntry.draftGenerationStartedAt) : 0
+  const aiTiming = latestAiProxyTimingSince(regenerateStartedAtMs)
   if (entry?.wordCountPolicy?.hardPass !== false) {
     markChapterFlowEvent(chapterNum, 'below_hard_min_auto_regenerate_succeeded', {
+      ...shortDraftExpansionDiagnostics,
+      shortDraftStrategy: 'full_regenerate',
       wordCount: entry?.wordCount || 0,
       wordCountPolicy: entry?.wordCountPolicy || null,
-      draftGenerationEntryLabel: draftEntry?.draftGenerationEntryLabel || ''
+      draftGenerationEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
+      regenerateAttempted: true,
+      regenerateSucceeded: true,
+      regenerateStartedAt: draftEntry?.draftGenerationStartedAt || '',
+      regenerateEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
+      originalVersionCount,
+      newVersionCount,
+      originalVersionIds,
+      newVersionIds,
+      originalWordCount,
+      newWordCount,
+      finalCandidateWordCount: newWordCount,
+      originalContentHash,
+      newContentHash,
+      originalContentHashes,
+      newContentHashes: newFingerprints.map(item => item.contentHash),
+      regenerationFreshnessReason: regenerationFreshness.reason,
+      streamRequestCount: aiTiming.streamRequestCount,
+      streamResponseCount: aiTiming.streamResponseCount,
+      aiProxyRequest: aiTiming.lastAiProxyRequestAt,
+      aiProxyResponse: aiTiming.lastAiProxyResponseAt
     })
     return entry
   }
 
   markChapterFlowEvent(chapterNum, 'below_hard_min_auto_regenerate_failed', {
+    ...shortDraftExpansionDiagnostics,
+    shortDraftStrategy: 'full_regenerate',
     wordCount: entry?.wordCount || 0,
     wordCountPolicy: entry?.wordCountPolicy || null,
-    message: '自动重生后仍低于硬下限'
+    message: '自动重生后新候选仍低于硬下限',
+    regenerateAttempted: true,
+    regenerateSucceeded: false,
+    regenerateStartedAt: draftEntry?.draftGenerationStartedAt || '',
+    regenerateEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
+    regenerationFailureCode: 'chapter_below_hard_min',
+    originalVersionCount,
+    newVersionCount,
+    originalVersionIds,
+    newVersionIds,
+    originalWordCount,
+    newWordCount,
+    finalCandidateWordCount: newWordCount,
+    originalContentHash,
+    newContentHash,
+    originalContentHashes,
+    newContentHashes: newFingerprints.map(item => item.contentHash),
+    regenerationFreshnessReason: regenerationFreshness.reason,
+    streamRequestCount: aiTiming.streamRequestCount,
+    streamResponseCount: aiTiming.streamResponseCount,
+    aiProxyRequest: aiTiming.lastAiProxyRequestAt,
+    aiProxyResponse: aiTiming.lastAiProxyResponseAt
   })
-  throwIfChapterBelowHardMin(chapterNum, 'below_hard_min_auto_regenerate_failed')
+  throwIfChapterBelowHardMin(chapterNum, 'below_hard_min_auto_regenerate_failed', {
+    ...shortDraftExpansionDiagnostics,
+    shortDraftStrategy: 'full_regenerate',
+    regenerateAttempted: true,
+    regenerateSucceeded: false,
+    regenerateStartedAt: draftEntry?.draftGenerationStartedAt || '',
+    regenerateEntryLabel: draftEntry?.draftGenerationEntryLabel || '',
+    regenerationFailureCode: 'chapter_below_hard_min',
+    originalVersionCount,
+    newVersionCount,
+    originalVersionIds,
+    newVersionIds,
+    originalWordCount,
+    newWordCount,
+    finalCandidateWordCount: newWordCount,
+    originalContentHash,
+    newContentHash,
+    regenerationFreshnessReason: regenerationFreshness.reason,
+    streamRequestCount: aiTiming.streamRequestCount,
+    streamResponseCount: aiTiming.streamResponseCount,
+    aiProxyRequest: aiTiming.lastAiProxyRequestAt,
+    aiProxyResponse: aiTiming.lastAiProxyResponseAt
+  })
   return entry
 }
 
+function versionCardSelector(versionId = '') {
+  const escaped = String(versionId || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `[data-version-id="${escaped}"]`
+}
+
+async function clickUnsavedSwitchConfirmationIfPresent(page) {
+  const dialogText = (await collectDialogAndMessageTexts(page)).join('\n')
+  if (!/当前编辑尚未另存为版本/.test(dialogText)) return false
+  const switchButton = exactButton(page, '不另存，直接切换').last()
+  if (await switchButton.isVisible().catch(() => false)) {
+    await switchButton.click({ timeout: 5000 }).catch(() => {})
+    await page.waitForTimeout(500)
+    return true
+  }
+  return false
+}
+
+async function clickFinalizeForLatestHardPassCandidate(page, chapterNum, preflight = null) {
+  const diagnostics = preflight || await ensureLatestHardPassCandidateSelectedForFinalize(page, chapterNum)
+  const versionId = diagnostics.latestCandidateVersionId || diagnostics.selectedVersionId
+  if (!versionId) {
+    const error = new Error(`selected_version_stale: 第 ${chapterNum} 章没有可定稿的过线候选。`)
+    error.code = 'selected_version_stale'
+    error.liveDiagnostics = diagnostics
+    throw error
+  }
+  const card = page.locator(versionCardSelector(versionId)).first()
+  await card.waitFor({ state: 'visible', timeout: 30000 })
+  const finalizeButton = card.getByRole('button', { name: /^定稿$/ }).first()
+  await finalizeButton.waitFor({ state: 'visible', timeout: 30000 })
+  await waitFor(`latest hard-pass version finalize button enabled`, async () => finalizeButton.isEnabled(), 30000, 500)
+  await finalizeButton.click({ timeout: 30000 })
+  markChapterFlowEvent(chapterNum, 'finalize_clicked_latest_hard_pass_candidate', {
+    selectedVersionId: diagnostics.selectedVersionId,
+    selectedVersionWordCount: diagnostics.selectedVersionWordCount,
+    selectedVersionHash: diagnostics.selectedVersionHash,
+    latestCandidateVersionId: diagnostics.latestCandidateVersionId,
+    latestCandidateWordCount: diagnostics.latestCandidateWordCount,
+    latestCandidateHash: diagnostics.latestCandidateHash
+  })
+  return diagnostics
+}
+
+async function ensureLatestHardPassCandidateSelectedForFinalize(page, chapterNum) {
+  await recordChapterDraftProgress(page, chapterNum, 'finalize_version_preflight')
+  let diagnostics = await finalizationVersionDiagnostics(page, chapterNum)
+  if (!diagnostics.latestCandidateVersionId || !diagnostics.latestCandidateHardPass) {
+    throwIfChapterBelowHardMin(chapterNum, 'finalize_version_preflight', {
+      ...diagnostics,
+      blockerSource: 'current_candidate'
+    })
+  }
+  if (diagnostics.selectedVersionId !== diagnostics.latestCandidateVersionId) {
+    const targetCard = page.locator(versionCardSelector(diagnostics.latestCandidateVersionId)).first()
+    if (!await targetCard.isVisible().catch(() => false)) {
+      throwSelectedVersionStale(chapterNum, {
+        ...diagnostics,
+        selectedVersionSwitchAttempted: true,
+        selectedVersionSwitchSucceeded: false,
+        message: 'latest hard-pass version card not visible'
+      })
+    }
+    await targetCard.click({ timeout: 10000 }).catch(async error => {
+      await clickUnsavedSwitchConfirmationIfPresent(page)
+      if (!await targetCard.isVisible().catch(() => false)) throw error
+      await targetCard.click({ timeout: 10000 })
+    })
+    await clickUnsavedSwitchConfirmationIfPresent(page)
+    await waitFor(`latest hard-pass version selected`, async () => {
+      const selectedId = await selectedVersionIdFromPage(page)
+      return selectedId === diagnostics.latestCandidateVersionId
+    }, 30000, 500).catch(() => null)
+    const afterSwitch = await finalizationVersionDiagnostics(page, chapterNum)
+    diagnostics = {
+      ...afterSwitch,
+      selectedVersionSwitchAttempted: true,
+      selectedVersionSwitchSucceeded: afterSwitch.selectedVersionId === afterSwitch.latestCandidateVersionId
+    }
+    if (diagnostics.selectedVersionId !== diagnostics.latestCandidateVersionId) {
+      throwSelectedVersionStale(chapterNum, diagnostics)
+    }
+  } else {
+    diagnostics.selectedVersionSwitchAttempted = false
+    diagnostics.selectedVersionSwitchSucceeded = true
+  }
+  markChapterFlowEvent(chapterNum, 'finalize_version_preflight_passed', diagnostics)
+  return diagnostics
+}
+
 async function runChapter(page, chapterNum) {
+  markChapterFlowEvent(chapterNum, 'chapter_run_started')
   const writerEnteredAtMs = Date.now()
   await page.goto(`${FRONTEND}/writer/${report.project.id}/${chapterNum}`, { waitUntil: 'domcontentloaded' })
   await page.getByText(`第 ${chapterNum} 章`).first().waitFor({ state: 'visible', timeout: 60000 })
+  markChapterFlowEvent(chapterNum, 'writer_page_visible')
   const writerContextDiagnostics = await waitForWriterContextReady(page, chapterNum, {
     timeoutMs: 180000,
     writerEnteredAtMs
   })
   const initialBeatPlan = await api(`/projects/${report.project.id}/chapter-beat-plan/${chapterNum}`).catch(() => null)
+  markChapterFlowEvent(chapterNum, 'writer_context_ready', {
+    contextReadyByEnabledEntry: Boolean(writerContextDiagnostics.contextReadyByEnabledEntry),
+    contextLoadingVisible: Boolean(writerContextDiagnostics.contextLoadingVisible),
+    enabledDraftEntryLabels: writerContextDiagnostics.enabledDraftEntryLabels || [],
+    disabledDraftEntryLabels: writerContextDiagnostics.disabledDraftEntryLabels || [],
+    contextApiFailures: writerContextDiagnostics.contextApiFailures || [],
+    hasSavedBeatPlan: Boolean(initialBeatPlan?.content),
+    chapterBeatPlanId: initialBeatPlan?.id || '',
+    activeAction: writerContextDiagnostics.activeAction || [],
+    visibleErrorMessages: writerContextDiagnostics.visibleErrorMessages || [],
+    companionVoiceCardsInjected: writerContextDiagnostics.companionVoiceCardsInjected ?? null,
+    companionVoiceCardNames: writerContextDiagnostics.companionVoiceCardNames || [],
+    sampleCardInjected: writerContextDiagnostics.sampleCardInjected ?? false,
+    sampleCardId: writerContextDiagnostics.sampleCardId || '',
+    sampleCardTitle: writerContextDiagnostics.sampleCardTitle || '',
+    sampleCardType: writerContextDiagnostics.sampleCardType || '',
+    sampleInjectionReason: writerContextDiagnostics.sampleInjectionReason || '',
+    microDemoChars: writerContextDiagnostics.microDemoChars || 0,
+    sourceFieldsStripped: writerContextDiagnostics.sourceFieldsStripped ?? true,
+    sampleLeakageDetected: writerContextDiagnostics.sampleLeakageDetected ?? false
+  })
   let beatPlanStartedAt = ''
   let beatPlanEntryLabel = ''
   let beatPlanSavedAt = initialBeatPlan?.content ? new Date().toISOString() : ''
@@ -2919,6 +4690,7 @@ async function runChapter(page, chapterNum) {
   let draftEntryClickedAfterBeatPlan = false
   let generationEntryAttempts = 0
   let generationEntryDiagnostics = null
+  let existingShortDraftRecovered = false
 
   if (!initialBeatPlan?.content) {
     const beatPlanEntry = await clickBeatPlanEntry(page, chapterNum, { clickTimeoutMs: 60000 })
@@ -2926,6 +4698,16 @@ async function runChapter(page, chapterNum) {
     beatPlanEntryLabel = beatPlanEntry.beatPlanEntryLabel
     const savedBeatPlan = await waitForSavedBeatPlan(page, chapterNum)
     beatPlanSavedAt = savedBeatPlan.beatPlanSavedAt
+    markChapterFlowEvent(chapterNum, 'new_beat_plan_saved', {
+      hasSavedBeatPlan: true,
+      beatPlanStartedAt,
+      beatPlanEntryLabel,
+      beatPlanSavedAt,
+      chapterBeatPlanId: savedBeatPlan.beatPlanRecord?.id || '',
+      beatPlanSource: savedBeatPlan.beatPlanRecord?.beatPlanSource || '',
+      storyBlockId: savedBeatPlan.beatPlanRecord?.storyBlockId || '',
+      blockStageId: savedBeatPlan.beatPlanRecord?.blockStageId || ''
+    })
     await dismissAppDialogs(page)
     const draftEntry = await clickDraftEntry(page, chapterNum, { clickTimeoutMs: 60000 })
     draftGenerationStartedAt = draftEntry.draftGenerationStartedAt
@@ -2933,34 +4715,104 @@ async function runChapter(page, chapterNum) {
     draftEntryClickedAfterBeatPlan = true
     generationEntryAttempts = 1
     generationEntryDiagnostics = draftEntry.diagnostics
+    markChapterFlowEvent(chapterNum, 'draft_entry_clicked_after_new_beat_plan', {
+      hasSavedBeatPlan: true,
+      draftGenerationStartedAt,
+      draftGenerationEntryLabel,
+      draftEntryClickedAfterBeatPlan,
+      generationEntryAttempts,
+      generationEntryDiagnostics
+    })
   } else {
-    const draftEntry = await clickDraftEntry(page, chapterNum, { clickTimeoutMs: 60000 })
-    draftGenerationStartedAt = draftEntry.draftGenerationStartedAt
-    draftGenerationEntryLabel = draftEntry.draftGenerationEntryLabel
-    generationEntryAttempts = 1
-    generationEntryDiagnostics = draftEntry.diagnostics
+    markChapterFlowEvent(chapterNum, 'existing_beat_plan_detected', {
+      hasSavedBeatPlan: true,
+      chapterBeatPlanId: initialBeatPlan.id || '',
+      beatPlanSource: initialBeatPlan.beatPlanSource || '',
+      storyBlockId: initialBeatPlan.storyBlockId || '',
+      blockStageId: initialBeatPlan.blockStageId || '',
+      hasBlockStageSnapshot: Boolean(initialBeatPlan.blockStageSnapshot),
+      contentLength: String(initialBeatPlan.content || '').length
+    })
+    await recordChapterDraftProgress(page, chapterNum, 'existing_candidate_preflight')
+    const existingEntry = report.chapterReports.find(item => Number(item.chapterNum) === Number(chapterNum))
+    if (existingEntry?.candidateVersionCount > 0 && existingEntry?.wordCountPolicy?.hardPass === false) {
+      const recoveredEntry = await ensureDraftAboveHardMinOrRegenerate(page, chapterNum)
+      if (recoveredEntry?.wordCountPolicy?.hardPass !== false) {
+        existingShortDraftRecovered = true
+        draftGenerationStartedAt = new Date().toISOString()
+        draftGenerationEntryLabel = 'existing_short_draft_recovered'
+        generationEntryAttempts = 0
+        generationEntryDiagnostics = {
+          existingCandidatePreflight: true,
+          recoveredWordCount: recoveredEntry?.wordCount || 0,
+          shortDraftStrategy: recoveredEntry?.flowEvents?.below_hard_min_expand_short_draft_succeeded?.shortDraftStrategy || 'expand_existing'
+        }
+        markChapterFlowEvent(chapterNum, 'existing_short_draft_recovered', {
+          hasSavedBeatPlan: true,
+          previousWordCount: existingEntry.wordCount || 0,
+          recoveredWordCount: recoveredEntry?.wordCount || 0,
+          wordCountPolicy: recoveredEntry?.wordCountPolicy || null,
+          generationEntryDiagnostics
+        })
+      }
+    }
+    if (!existingShortDraftRecovered) {
+      const draftEntry = await clickDraftEntry(page, chapterNum, { clickTimeoutMs: 60000 })
+      draftGenerationStartedAt = draftEntry.draftGenerationStartedAt
+      draftGenerationEntryLabel = draftEntry.draftGenerationEntryLabel
+      draftEntryClickedAfterBeatPlan = true
+      generationEntryAttempts = 1
+      generationEntryDiagnostics = draftEntry.diagnostics
+      markChapterFlowEvent(chapterNum, 'draft_entry_clicked_after_existing_beat_plan', {
+        hasSavedBeatPlan: true,
+        draftGenerationStartedAt,
+        draftGenerationEntryLabel,
+        draftEntryClickedAfterBeatPlan,
+        generationEntryAttempts,
+        generationEntryDiagnostics
+      })
+    }
   }
-  await clickStartGenerationIfPrompted(page, chapterNum)
-  try {
-    await waitForGeneratedChapterVersion(page, chapterNum, {
+  if (!existingShortDraftRecovered) {
+    await clickStartGenerationIfPrompted(page, chapterNum)
+    markChapterFlowEvent(chapterNum, 'draft_generation_wait_started', {
+      hasSavedBeatPlan: true,
       beatPlanStartedAt,
       beatPlanEntryLabel,
       beatPlanSavedAt,
       draftGenerationStartedAt,
       draftGenerationEntryLabel,
       draftEntryClickedAfterBeatPlan,
-      generationEntryLabel: draftGenerationEntryLabel,
       generationEntryAttempts,
-      generationEntryDiagnostics: {
-        ...writerContextDiagnostics,
-        ...(generationEntryDiagnostics || {}),
-        writerContext: writerContextDiagnostics
-      }
     })
-    await ensureDraftAboveHardMinOrRegenerate(page, chapterNum)
-  } catch (error) {
-    error.liveDiagnostics ||= { page: await collectVisibleDiagnostics(page) }
-    throw error
+    try {
+      await waitForGeneratedChapterVersion(page, chapterNum, {
+        beatPlanStartedAt,
+        beatPlanEntryLabel,
+        beatPlanSavedAt,
+        draftGenerationStartedAt,
+        draftGenerationEntryLabel,
+        draftEntryClickedAfterBeatPlan,
+        generationEntryLabel: draftGenerationEntryLabel,
+        generationEntryAttempts,
+        generationEntryDiagnostics: {
+          ...writerContextDiagnostics,
+          ...(generationEntryDiagnostics || {}),
+          writerContext: writerContextDiagnostics
+        }
+      })
+      await ensureDraftAboveHardMinOrRegenerate(page, chapterNum)
+    } catch (error) {
+      error.liveDiagnostics ||= { page: await collectVisibleDiagnostics(page) }
+      throw error
+    }
+  } else {
+    markChapterFlowEvent(chapterNum, 'draft_generation_wait_skipped_after_existing_short_draft_recovered', {
+      hasSavedBeatPlan: true,
+      draftGenerationStartedAt,
+      draftGenerationEntryLabel,
+      generationEntryDiagnostics
+    })
   }
 
   await dismissAppDialogs(page)
@@ -2987,6 +4839,8 @@ async function runChapter(page, chapterNum) {
     if (titleGenerated) markChapterFlowEvent(chapterNum, 'title_generation_done')
     else markChapterFlowEvent(chapterNum, 'title_generation_failed', { message: 'title generation did not produce a non-default title before timeout' })
   }
+  await recordChapterDraftProgress(page, chapterNum, 'title_quality_pre_audit')
+  throwIfChapterTitleInvalid(chapterNum, 'title_quality_pre_audit')
 
   markChapterFlowEvent(chapterNum, 'audit_click_started')
   try {
@@ -3018,21 +4872,47 @@ async function runChapter(page, chapterNum) {
   await dismissAppDialogs(page)
   await page.waitForTimeout(1000)
 
-  markChapterFlowEvent(chapterNum, 'finalize_click_started')
+  let finalizeVersionPreflight = await ensureLatestHardPassCandidateSelectedForFinalize(page, chapterNum)
+  await dismissStaleBelowHardMinModalIfSafe(page, chapterNum, 'before_finalize_click', finalizeVersionPreflight)
+  markChapterFlowEvent(chapterNum, 'finalize_click_started', finalizeVersionPreflight)
   try {
-    await clickButton(page, '定稿', 60000)
+    await clickFinalizeForLatestHardPassCandidate(page, chapterNum, finalizeVersionPreflight)
   } catch (error) {
-    markChapterFlowEvent(chapterNum, 'finalize_failed', { code: 'finalize_not_started', message: error.message })
-    error.code = 'finalize_not_started'
-    error.liveDiagnostics = await collectPostDraftDiagnostics(page, chapterNum, 'finalize_not_started')
-    throw error
+    const staleResolution = await dismissStaleBelowHardMinModalIfSafe(page, chapterNum, 'finalize_click_blocked_by_stale_modal', {
+      ...finalizeVersionPreflight,
+      originalError: error.message
+    }).catch(err => { throw err })
+    if (staleResolution.modalStale && staleResolution.closeBelowHardMinModalSucceeded) {
+      finalizeVersionPreflight = await ensureLatestHardPassCandidateSelectedForFinalize(page, chapterNum)
+      await clickFinalizeForLatestHardPassCandidate(page, chapterNum, finalizeVersionPreflight)
+    } else if (await throwIfBelowHardMinModalVisible(page, chapterNum, 'finalize_below_hard_min_modal', {
+      ...finalizeVersionPreflight,
+      originalError: error.message
+    }).catch(err => { throw err })) return
+    else {
+      markChapterFlowEvent(chapterNum, 'finalize_failed', { code: 'finalize_not_started', message: error.message, finalizeVersionPreflight })
+      error.code = 'finalize_not_started'
+      error.liveDiagnostics = await collectPostDraftDiagnostics(page, chapterNum, 'finalize_not_started')
+      throw error
+    }
   }
+  const staleAfterFinalizeClick = await dismissStaleBelowHardMinModalIfSafe(page, chapterNum, 'after_finalize_click', finalizeVersionPreflight)
+  if (staleAfterFinalizeClick.modalStale && staleAfterFinalizeClick.closeBelowHardMinModalSucceeded) {
+    finalizeVersionPreflight = await ensureLatestHardPassCandidateSelectedForFinalize(page, chapterNum)
+    markChapterFlowEvent(chapterNum, 'finalize_click_retry_after_stale_modal', finalizeVersionPreflight)
+    await clickFinalizeForLatestHardPassCandidate(page, chapterNum, finalizeVersionPreflight)
+  }
+  await throwIfBelowHardMinModalVisible(page, chapterNum, 'finalize_below_hard_min_modal', finalizeVersionPreflight)
   const confirmVisible = await exactButton(page, '确认').last().isVisible().catch(() => false)
   if (confirmVisible) markChapterFlowEvent(chapterNum, 'finalize_dialog_visible')
+  let finalizeConfirmClicked = false
   await clickButton(page, '确认', 60000).then(() => {
+    finalizeConfirmClicked = true
     markChapterFlowEvent(chapterNum, 'finalize_confirm_clicked')
   }).catch(() => {})
+  await throwIfBelowHardMinModalVisible(page, chapterNum, 'finalize_below_hard_min_modal')
   await clickFinalizeContinuationIfPrompted(page).catch(() => '')
+  await throwIfBelowHardMinModalVisible(page, chapterNum, 'finalize_below_hard_min_modal')
   try {
     markChapterFlowEvent(chapterNum, 'finalize_started')
     await waitFor(`chapter ${chapterNum} finalized`, async () => {
@@ -3043,13 +4923,25 @@ async function runChapter(page, chapterNum) {
     markChapterFlowEvent(chapterNum, 'finalize_done')
   } catch (error) {
     const finalizeDiagnostics = await collectFinalizationDiagnostics(page, chapterNum)
+    if (finalizeDiagnostics.belowHardMinModal) {
+      upsertChapterReport({ chapterNum, finalizeDiagnostics })
+      if (finalizeDiagnostics.modalStale || finalizeDiagnostics.blockerSource === 'stale_modal') {
+        throwStaleBelowHardMinModal(chapterNum, finalizeDiagnostics)
+      }
+      if (finalizeDiagnostics.selectedVersionStale || finalizeDiagnostics.blockerSource === 'selected_version_stale') {
+        throwSelectedVersionStale(chapterNum, finalizeDiagnostics)
+      }
+      throwIfChapterBelowHardMin(chapterNum, 'finalize_below_hard_min_modal', finalizeDiagnostics)
+    }
+    const finalizeStarted = finalizeConfirmClicked || (finalizeDiagnostics.finalizeApiEvents || []).length > 0
+    const failureCode = finalizeStarted ? 'finalize_timed_out' : 'finalize_not_started'
     upsertChapterReport({ chapterNum, finalizeDiagnostics })
     markChapterFlowEvent(chapterNum, 'finalize_failed', {
-      code: 'finalize_timed_out',
+      code: failureCode,
       message: error.message,
       finalizeDiagnostics
     })
-    error.code = 'finalize_timed_out'
+    error.code = failureCode
     error.liveDiagnostics = finalizeDiagnostics
     throw error
   }
@@ -3126,6 +5018,9 @@ async function runChapter(page, chapterNum) {
   const activeBlocks = (blocks || []).filter(item => item.status === 'active')
   const classifiedChapterSettingChanges = classifySettingEvents(chapterSettingChanges, settingEntities)
   const postFinalizeReportFields = postFinalizeSettlementByChapter.get(Number(chapterNum)) || {}
+  const preRunStageSettlement = Number(chapterNum) === Number(START_CHAPTER)
+    ? (report.stageContinuationSettlementDiagnostics || {})
+    : {}
 
   const entry = {
     chapterNum,
@@ -3142,6 +5037,17 @@ async function runChapter(page, chapterNum) {
     storyBlockReviewFallback: Boolean(latestReview?.aiReviewFallback || latestReview?.ai_review_fallback),
     storyBlockStageContinues: Boolean(latestReview?.stageContinues || latestReview?.stage_continues),
     storyBlockStageContinueReason: latestReview?.stageContinueReason || latestReview?.stage_continue_reason || latestReview?.reason || '',
+    stageContinuationDepth: Number(latestReview?.stageContinuationDepth || latestReview?.stage_continuation_depth || preRunStageSettlement.stageContinuationDepth || 0) || 0,
+    previousOpenStageId: latestReview?.previousOpenStageId || latestReview?.previous_open_stage_id || preRunStageSettlement.previousOpenStageId || '',
+    settlementDecision: latestReview?.settlementDecision || latestReview?.settlement_decision || preRunStageSettlement.settlementDecision || '',
+    settlementEvidence: toList(latestReview?.settlementEvidence || latestReview?.settlement_evidence || preRunStageSettlement.settlementEvidence || []),
+    equivalentCompletionScope: latestReview?.equivalentCompletionScope || latestReview?.equivalent_completion_scope || preRunStageSettlement.equivalentCompletionScope || '',
+    futureStageTouched: Boolean(latestReview?.futureStageTouched || latestReview?.future_stage_touched || preRunStageSettlement.futureStageTouched),
+    futureStageEvidence: toList(latestReview?.futureStageEvidence || latestReview?.future_stage_evidence || preRunStageSettlement.futureStageEvidence || []),
+    futureStageOverClosed: Boolean(latestReview?.futureStageOverClosed || latestReview?.future_stage_over_closed || preRunStageSettlement.futureStageOverClosed),
+    needsFutureStageReplan: Boolean(latestReview?.needsFutureStageReplan || latestReview?.needs_future_stage_replan || preRunStageSettlement.needsFutureStageReplan),
+    replanRemainingStages: Boolean(latestReview?.replanRemainingStages || latestReview?.replan_remaining_stages || preRunStageSettlement.replanRemainingStages),
+    whetherStageClosedBeforeNextBeatPlan: Boolean(latestReview?.whetherStageClosedBeforeNextBeatPlan || latestReview?.whether_stage_closed_before_next_beat_plan || preRunStageSettlement.whetherStageClosedBeforeNextBeatPlan),
     storyBlockStatus: block.status || '',
     multipleActiveStoryBlocks: activeBlocks.length > 1,
     missingStoryBlockReviewDecision: !latestReview?.decision,
@@ -3156,6 +5062,8 @@ async function runChapter(page, chapterNum) {
     finalized: chapter.status === 'final',
     ...postFinalizeReportFields
   }
+  report.pendingSettingsCount = pendingSettings.length
+  await runFreezeGuards()
   upsertChapterReport(entry)
   report.acceptance.completedChapters = report.chapterReports.filter(item => item.finalized).length
   await refreshStoryBlockSummaries()
@@ -3377,25 +5285,34 @@ async function main() {
   })
 
   try {
-    await createProject(page)
-    await validateModelInheritance(page)
-    writeReport()
-    await createAndSelectSeed(page)
-    writeReport()
-    await createBibleAndSettings(page)
-    writeReport()
-    await generateVolumes(page)
-    await validatePlanningHierarchyText(page)
-    writeReport()
-
-    for (let chapterNum = 1; chapterNum <= PHASE_TARGET; chapterNum += 1) {
-      await runChapter(page, chapterNum)
+    if (EXISTING_PROJECT_ID) {
+      await openExistingProject(page)
+      await validateModelInheritance(page)
+      await validatePlanningHierarchyText(page)
+      writeReport()
+    } else {
+      await createProject(page)
+      await validateModelInheritance(page)
+      writeReport()
+      await createAndSelectSeed(page)
+      writeReport()
+      await createBibleAndSettings(page)
+      writeReport()
+      await generateVolumes(page)
+      await validatePlanningHierarchyText(page)
+      writeReport()
     }
 
-    report.acceptance.passed = report.acceptance.completedChapters >= PHASE_TARGET
+    await runFreezeGuards()
+    for (let chapterNum = START_CHAPTER; chapterNum <= PHASE_TARGET; chapterNum += 1) {
+      await runChapter(page, chapterNum)
+    }
+    await runFreezeGuards()
+
+    report.acceptance.passed = report.acceptance.completedChapters >= RUN_CHAPTER_COUNT
     report.acceptance.reason = report.acceptance.passed
-      ? `真实浏览器流程完成前 ${PHASE_TARGET} 章。`
-      : `仅完成 ${report.acceptance.completedChapters} 章。`
+      ? `真实浏览器流程完成第 ${START_CHAPTER}-${PHASE_TARGET} 章。`
+      : `第 ${START_CHAPTER}-${PHASE_TARGET} 章仅完成 ${report.acceptance.completedChapters}/${RUN_CHAPTER_COUNT} 章。`
     writeReport()
   } catch (error) {
     await fail(report.stepsCompleted.at(-1) || 'startup', error)

@@ -14,7 +14,9 @@ export const SETTING_FIELD_TIERS = {
 export const RULE_INSTANCE_REHOME_FIELD = 'profile.observedCosts'
 export const SUMMARY_CHAPTER_FACT_REHOME_FIELD = 'profile.observedFacts'
 export const HARD_FIELD_BEHAVIOR_REHOME_FIELD = 'profile.hiddenStance'
+export const FACTION_AFFILIATION_REVEAL_REHOME_FIELD = 'profile.hiddenAffiliation'
 export const OWNER_POSSESSION_REHOME_FIELD = 'profile.possessionStatus'
+export const ORG_RULE_SUMMARY_REHOME_FIELD = 'profile.internalMechanisms'
 
 export const SETTING_CHANGE_CLASSIFICATION_LABELS = {
   hard_conflict: '硬冲突',
@@ -82,6 +84,13 @@ export const DYNAMIC_STATE_FIELDS = new Set([
   'profile.internalMechanisms',
   'profile.chapterEvidence',
   'profile.hiddenStance',
+  'profile.hiddenAffiliation',
+  'profile.affiliationClaims',
+  'profile.currentRole',
+  'profile.identityReveal',
+  'profile.identityReveals',
+  'profile.identityClaims',
+  'profile.mistakenIdentities',
   'profile.currentAction',
   'profile.currentHolder',
   'profile.possessionStatus',
@@ -128,6 +137,13 @@ const HARD_FIELD_ALIASES = {
   internalMechanisms: 'profile.internalMechanisms',
   chapterEvidence: 'profile.chapterEvidence',
   hiddenStance: 'profile.hiddenStance',
+  hiddenAffiliation: 'profile.hiddenAffiliation',
+  affiliationClaims: 'profile.affiliationClaims',
+  currentRole: 'profile.currentRole',
+  identityReveal: 'profile.identityReveal',
+  identityReveals: 'profile.identityReveals',
+  identityClaims: 'profile.identityClaims',
+  mistakenIdentities: 'profile.mistakenIdentities',
   currentAction: 'profile.currentAction',
   physicalStatus: 'profile.physicalStatus',
   itemStatus: 'profile.itemStatus',
@@ -181,6 +197,13 @@ const FIELD_LABELS = {
   'profile.internalMechanisms': '内部机制',
   'profile.chapterEvidence': '章节证据',
   'profile.hiddenStance': '隐藏立场',
+  'profile.hiddenAffiliation': '隐藏/揭示隶属',
+  'profile.affiliationClaims': '隶属说法',
+  'profile.currentRole': '当前角色',
+  'profile.identityReveal': '身份揭示',
+  'profile.identityReveals': '身份揭示记录',
+  'profile.identityClaims': '身份说法',
+  'profile.mistakenIdentities': '误认记录',
   'profile.currentAction': '当前行为'
 }
 
@@ -198,18 +221,28 @@ const SUMMARY_CHAPTER_FACT_PATTERN = /(第\s*[一二三四五六七八九十百�
 const SUMMARY_CURRENT_ACTION_PATTERN = /(已派人|派人|尾随|盯上|拉拢|收购|交换|交易|威胁|封锁|设伏|搜查|试图|索要|逼迫|交换条件|暗中.{0,8}拉拢|已.{0,8}追踪|正在.{0,8}(追踪|尾随|盯上|拉拢|交换|交易|威胁|封锁|设伏|搜查|索要|逼迫)|试图.{0,8}(交换|交易|索要|逼迫|收购|拉拢))/
 const UNCERTAIN_SUMMARY_FRAGMENT_PATTERN = /(可能|疑似|或许|也许|未确认|不明|下落不明|传闻|据说|暗示|线索|疑点)/
 const DESCRIPTIVE_PLACEHOLDER_NAME_PATTERN = /(老人|老头|老者|男子|女人|女子|少年|少女|孩童|灰袍|黑袍|白衣|黑斗笠|斗笠|面具|蒙面|木门后|门后|卖.+的|守门|账房|追踪者|陌生人|来客|掌柜|伙计)$/
-const UNCERTAIN_IDENTITY_PATTERN = /(可能|疑似|像是|看起来|身份不明|身份未明|未确认|不明|关键情报源|旧识|父亲旧识|线索人物|知情人|神秘|陌生)/
+const UNCERTAIN_IDENTITY_PATTERN = /(可能|疑似|像是|看起来|身份不明|身份未明|未确认|不明|关键情报源|旧识|父亲旧识|线索人物|知情人|神秘|陌生|自称|后续可能|掌握线索|掌握.*细节|交易内幕)/
+const SUMMARY_IDENTITY_BACKGROUND_DETAIL_PATTERN = /(玉虚峰|矿区|矿工|账房|暗线|执事|长老|供奉|弟子|掌柜|管事|跟班|旧识|亲信|内应|身份|本名|真名|曾是|曾任|前任|认识|知道|掌握|提供|留下|线索|证据|逃跑路线|欠条|账册|那本账)/
+const SUMMARY_IDENTITY_BACKGROUND_EVIDENCE_PATTERN = /(我给|我不是|我是|认识|你爹|生前|那本账|承认|说过|当了|曾任|拿出|信物|证实|证明|供认|透露|指出|提供)/
 const FORMAL_IDENTITY_PATTERN = /(?:^|[，,。；;\s])(?:[一-龥]{2,4})(?:[，,。；;\s]|$)|(?:名叫|叫作|叫做|本名|真名|姓名|自称|承认自己叫).{0,8}[一-龥]{2,4}|(?:前|曾任|现任|原为|任).{0,16}(账房|星吏|官|吏|司主|掌柜|管事|弟子|长老|供奉|执事)/
 const SUMMARY_IDENTITY_REWRITE_PATTERN = /(其实|并非|不是|不再是|变成|改为|本质上|根本上|真实身份|实际是).{0,24}(非官方|不是官方|商盟|分部|公开官署|官署|秘密组织|公开机构|官方机构|民间组织|商业联盟|商会|伪装|伪造)/
+const STABLE_IDENTITY_TERMS = ['巡天司', '星债会', '商盟', '账务所', '账房', '主簿', '执事', '长老', '会主', '司主', '掌柜', '管事', '弟子', '供奉', '暗线', '矿工', '跟班', '杀父凶手']
+const IDENTITY_REVEAL_MARKER_PATTERN = /(其实|真实身份|真身|本名|真名|化名|马甲|伪装|卧底|暗线|身份揭示|揭示|承认|证实|证明|误认|误以为|以为|错认|并非|不是)/
 const OFFICIAL_ORG_PATTERN = /(官方机构|朝廷|官署|巡查|缉拿|执法|官府|公门)/
 const SECRET_ORG_PATTERN = /(秘密组织|隐秘组织|暗中|地下|外围|暗号|秘密结社)/
 const PUBLIC_ORG_PATTERN = /(公开官署|公开机构|官方机构|正式登记|朝廷设立)/
 const HIDDEN_BEHAVIOR_PATTERN = /(暗中|秘密|私下|表面|伪装|但|却|当前|正在|帮助|追捕|调查|保护|掩护|背离|隐藏|短期|暂时|见习|卧底|内应)/
+const WEAK_FACTION_INFERENCE_PATTERN = /(未知势力|与.{1,18}同一势力|可能(?:属于|与.{1,18}有关)|疑似(?:属于)?|替.{1,16}(?:办事|做事|效力)|为.{1,16}(?:办事|做事)|行为上协同|协同|配合|跟随|同伙|一伙|受.{1,16}指使|帮.{1,16}(?:办事|做事)|看似属于|像是.{1,12}的人)/
+const AFFILIATION_REVEAL_PATTERN = /(暗哨|内线|密探|卧底|伪装身份|暗线|隐藏身份|令牌|拿出.{0,12}令牌|出示.{0,12}令牌|自称.{0,16}(?:巡天司|星债会|商盟|缺指男人)|身份揭示|真实身份|巡天司.{0,8}(?:暗哨|内线|密探))/
 const OWNER_UNSTABLE_OR_DYNAMIC_PATTERN = /(未知|不明|疑似|可能|未确认|已接触|接触|未取出|取出|暂时|临时|当前|拿到|拿走|带走|携带|保管|藏在|收起|夺走|抢走|被夺|归还|交还|触碰|持有)/
 const OWNER_POSSESSION_ACTION_PATTERN = /(已接触|接触|触碰|未取出|取出|暂时|临时|当前|拿到|拿走|带走|携带|保管|藏在|收起|夺走|抢走|被夺|归还|交还|持有|怀里|身上|掌中|手中)/
 const OWNER_POSSESSION_NEGATION_PATTERN = /(无|没有|未|并未|并无|缺少|不具备|不能证明|未证明|没有证明).{0,18}(接触|取出|拿到|拿走|带走|携带|持有|保管|夺走|抢走|被夺|归还|交还|触碰)/
 const OWNER_TRANSFER_PATTERN = /(正式|法理|长期|永久|真正|确认|明确|所有权|归属|拥有权|转让|移交|交割|继承|赠与|交给|交还|归还).{0,18}(归属|所有|拥有|主人|持有人|所有权|拥有权|移交|转让|继承|赠与|交割|交给|交还|归还)|(?:归属|所有权|拥有权).{0,18}(转移|移交|确认|改归|属于|归于)|(?:正式|法理|长期|永久|真正).{0,18}(属于|拥有|持有|归属)|(?:当众|明确).{0,12}(转让|移交|赠与|交割)/
 const OWNER_TRANSFER_NEGATION_PATTERN = /(无|没有|未|并未|并无|缺少|不具备|不能证明|未证明|没有证明).{0,18}(转让|移交|交割|继承|赠与|归还|交还|所有权|归属|拥有权|法理|永久|长期)/
+const ORG_ENTITY_TYPE_PATTERN = /(faction|organization|organisation|sect|guild|agency|institution|force|group|势力|组织|机构|宗门|门派|商会|官署)/i
+const ORG_NAME_OR_SUMMARY_PATTERN = /(会|司|盟|宗|门|阁|堂|府|衙|院|组织|机构|势力|商会|官署)/
+const ORG_RULE_DETAIL_PATTERN = /(准入|通行证|欠条|债本|抵押|规矩|不对外人开放|不与外人做交易|交易限制|口令|凭证|入内|入门|入会|门槛|问询权|活人的债|铜扣|玉牌)/
+const ORG_STABLE_RELATION_NEGATION_PATTERN = /(与.{0,24}(星账|阵眼玉|母亲|旧债).{0,12}(无关|不相关|没有关系|不涉及)|不再涉及.{0,24}(星账|阵眼玉|母亲|旧债)|(星账|阵眼玉|母亲|旧债).{0,12}(无关|不相关|删除|反转|推翻)|只是.{0,12}(无关|普通|临时起名).{0,12}(势力|组织|茶楼|店铺)|无关势力)/
 const HARD_PROFILE_STABLE_FIELDS = new Set([
   'profile.identity',
   'profile.affiliation',
@@ -279,6 +312,28 @@ export function classifySettingChangeRisk(event = {}, context = {}) {
     return risk
   }
 
+  if (fieldPath === 'summary' && isMistakenIdentityClaim(newText, evidenceText)) {
+    risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement, [
+      '身份误认/未确认身份说法：记录为 identityClaims，不合并实体，不覆盖 canonicalName。'
+    ], fieldTier, {
+      identityAction: 'record_identity_claim',
+      rehomeTargetField: 'profile.identityClaims',
+      rehomeTargetTier: SETTING_FIELD_TIERS.dynamicState
+    })
+    return applyStructuralRisk(event, context, risk, structuralWarnings)
+  }
+
+  if (fieldPath === 'summary' && isMistakenIdentityDisproved(newText, evidenceText)) {
+    risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement, [
+      '身份误认证伪：记录为 mistakenIdentities，保留独立实体，不自动归并到被误认者。'
+    ], fieldTier, {
+      identityAction: 'record_mistaken_identity',
+      rehomeTargetField: 'profile.mistakenIdentities',
+      rehomeTargetTier: SETTING_FIELD_TIERS.dynamicState
+    })
+    return applyStructuralRisk(event, context, risk, structuralWarnings)
+  }
+
   if (fieldPath === 'summary' && isPlaceholderSummary(oldText)) {
     risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement, [
       '占位 summary 补全：旧概要没有有效信息，新 summary 可作为完整设定补全。'
@@ -291,6 +346,23 @@ export function classifySettingChangeRisk(event = {}, context = {}) {
       '身份揭示/描述性占位实体补全：旧描述名应进入 aliases，新正式姓名可作为 canonicalName，旧 summary 未被推翻的信息保留到身份揭示记录。'
     ], fieldTier)
     return applyStructuralRisk(event, context, risk, structuralWarnings)
+  }
+
+  if (fieldPath === 'summary' && isSummaryIdentityBackgroundReveal(oldText, newText, evidenceText)) {
+    risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement, [
+      '身份/背景/线索揭示补全：旧 summary 含不确定身份或线索描述，新 summary 给出更具体身份、地点、关系或证据，按旧设定细化处理。'
+    ], fieldTier)
+    return applyStructuralRisk(event, context, risk, structuralWarnings)
+  }
+
+  if (fieldPath === 'summary' && isOrgRuleSummaryRefinement(event.entityType || context.existingEntity?.entityType, event.entityName || context.existingEntity?.name, oldText, newText, evidenceText)) {
+    risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement, [
+      `组织规则/准入制度揭示：保留原 summary，新增准入、通行证、欠条、债本、抵押或交易限制应归位到 ${ORG_RULE_SUMMARY_REHOME_FIELD}。`
+    ], fieldTier, {
+      rehomeTargetField: ORG_RULE_SUMMARY_REHOME_FIELD,
+      rehomeTargetTier: getSettingFieldTier(ORG_RULE_SUMMARY_REHOME_FIELD)
+    })
+    return risk
   }
 
   if (fieldPath === 'summary' && isSummaryChapterFactSupplement(oldText, newText, evidenceText)) {
@@ -312,6 +384,17 @@ export function classifySettingChangeRisk(event = {}, context = {}) {
       rehomeTargetTier: getSettingFieldTier(OWNER_POSSESSION_REHOME_FIELD),
       rehomeTargetValue: buildOwnerPossessionRehomeValue(oldText, newText, evidenceText),
       stableOwnerValue: stableOwnerValueFromMixed(oldText)
+    })
+    return applyStructuralRisk(event, context, risk, structuralWarnings)
+  }
+
+  if (isFactionAffiliationRevealRehomeChange(fieldPath, oldText, newText, evidenceText)) {
+    risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.revealOrRefinement, [
+      `阵营弱推断遇到暗哨/隶属揭示：保留 ${fieldLabel(fieldPath)} 的旧推断，不直接覆盖 profile.faction，新增暗哨、内线或伪装隶属证据应归位到 ${FACTION_AFFILIATION_REVEAL_REHOME_FIELD}。`
+    ], fieldTier, {
+      rehomeTargetField: FACTION_AFFILIATION_REVEAL_REHOME_FIELD,
+      rehomeTargetTier: getSettingFieldTier(FACTION_AFFILIATION_REVEAL_REHOME_FIELD),
+      identityAction: 'record_affiliation_reveal'
     })
     return applyStructuralRisk(event, context, risk, structuralWarnings)
   }
@@ -348,6 +431,13 @@ export function classifySettingChangeRisk(event = {}, context = {}) {
   if (directContradiction) {
     risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.hardConflict, [
       '硬冲突：新设定直接否定旧设定，且没有传闻、官方结论或疑似等保留空间。'
+    ], fieldTier)
+    return applyStructuralRisk(event, context, risk, structuralWarnings)
+  }
+
+  if (fieldPath === 'summary' && isStableIdentityHardRewrite(oldText, newText, evidenceText)) {
+    risk = buildRisk(SETTING_CHANGE_CLASSIFICATIONS.hardConflict, [
+      `稳定身份硬改：旧 summary 已是稳定身份/阵营结论「${oldText}」，新 summary 改为另一套身份/阵营「${newText}」，且没有化名、误认或身份揭示证据。`
     ], fieldTier)
     return applyStructuralRisk(event, context, risk, structuralWarnings)
   }
@@ -479,9 +569,12 @@ function collectStructuralHardFieldWarnings(event = {}, context = {}) {
   if (fieldPath === 'summary' && isRuleInstanceSummarySupplement(existingValue, incomingValue, cleanText(event.evidence))) return []
   if (fieldPath === 'summary' && isPlaceholderSummary(existingValue)) return []
   if (fieldPath === 'summary' && isDescriptivePlaceholderIdentityReveal(entity.name || event.entityName, existingValue, incomingValue, cleanText(event.evidence))) return []
+  if (fieldPath === 'summary' && isSummaryIdentityBackgroundReveal(existingValue, incomingValue, cleanText(event.evidence))) return []
+  if (fieldPath === 'summary' && isOrgRuleSummaryRefinement(event.entityType || entity.entityType, entity.name || event.entityName, existingValue, incomingValue, cleanText(event.evidence))) return []
   if (fieldPath === 'summary' && isSummaryChapterFactSupplement(existingValue, incomingValue, cleanText(event.evidence))) return []
   if (fieldPath === 'profile.owner' && isOwnerPossessionRehomeChange(fieldPath, existingValue, incomingValue, cleanText(event.evidence))) return []
   if (fieldPath === 'profile.owner' && hasStableOwnerTransferEvidence(existingValue, incomingValue, cleanText(event.evidence))) return []
+  if (isFactionAffiliationRevealRehomeChange(fieldPath, existingValue, incomingValue, cleanText(event.evidence))) return []
   if (isHardFieldBehaviorSupplement(fieldPath, existingValue, incomingValue, cleanText(event.evidence))) return []
   return [`硬设定字段「${fieldLabel(fieldPath)}」将从「${existingValue}」变为「${incomingValue}」。`]
 }
@@ -499,6 +592,8 @@ function collectProfileHardFieldWarnings(event, entity) {
     if (fieldPath === 'summary' && isRuleInstanceSummarySupplement(existingValue, incomingValue, cleanText(event.evidence))) continue
     if (fieldPath === 'summary' && isPlaceholderSummary(existingValue)) continue
     if (fieldPath === 'summary' && isDescriptivePlaceholderIdentityReveal(entity.name || event.entityName, existingValue, incomingValue, cleanText(event.evidence))) continue
+    if (fieldPath === 'summary' && isSummaryIdentityBackgroundReveal(existingValue, incomingValue, cleanText(event.evidence))) continue
+    if (fieldPath === 'summary' && isOrgRuleSummaryRefinement(event.entityType || entity.entityType, entity.name || event.entityName, existingValue, incomingValue, cleanText(event.evidence))) continue
     if (fieldPath === 'summary' && isSummaryChapterFactSupplement(existingValue, incomingValue, cleanText(event.evidence))) continue
     warnings.push(`硬设定字段「${fieldLabel(fieldPath)}」将从「${existingValue}」变为「${incomingValue}」。`)
   }
@@ -521,6 +616,7 @@ function collectProfileHardFieldWarnings(event, entity) {
     if (!isHardSettingField(fieldPath)) continue
     if (fieldPath === 'profile.owner' && isOwnerPossessionRehomeChange(fieldPath, existingValue, incomingValue, cleanText(event.evidence))) continue
     if (fieldPath === 'profile.owner' && hasStableOwnerTransferEvidence(existingValue, incomingValue, cleanText(event.evidence))) continue
+    if (isFactionAffiliationRevealRehomeChange(fieldPath, existingValue, incomingValue, cleanText(event.evidence))) continue
     if (isHardFieldBehaviorSupplement(fieldPath, existingValue, incomingValue, cleanText(event.evidence))) continue
     warnings.push(`硬设定字段「${fieldLabel(fieldPath)}」将从「${existingValue}」变为「${incomingValue}」。`)
   }
@@ -543,8 +639,13 @@ function allowsLayeredHardFieldReveal(event = {}, context = {}) {
   const evidenceText = cleanText(event.evidence)
   return Boolean(existingValue) &&
     Boolean(incomingValue) &&
-    RESERVATION_PATTERN.test(`${incomingValue} ${evidenceText}`) &&
-    incomingValue.includes(existingValue)
+    (
+      (
+        RESERVATION_PATTERN.test(`${incomingValue} ${evidenceText}`) &&
+        incomingValue.includes(existingValue)
+      ) ||
+      isSummaryIdentityBackgroundReveal(existingValue, incomingValue, evidenceText)
+    )
 }
 
 function isAbilityCoreConflict(existingValue = '', incomingValue = '', evidence = '') {
@@ -602,10 +703,70 @@ export function isDescriptivePlaceholderIdentityReveal(entityName = '', existing
   return true
 }
 
+export function isSummaryIdentityBackgroundReveal(existingValue = '', incomingValue = '', evidence = '') {
+  const oldText = cleanText(existingValue)
+  const newText = cleanText(incomingValue)
+  const evidenceText = cleanText(evidence)
+  const combined = `${newText} ${evidenceText}`
+  if (!oldText || !newText || oldText === newText) return false
+  if (isPlaceholderSummary(oldText)) return false
+  if (isHardSummaryRewrite(oldText, newText)) return false
+  if (!UNCERTAIN_IDENTITY_PATTERN.test(oldText)) return false
+  if (!SUMMARY_IDENTITY_BACKGROUND_DETAIL_PATTERN.test(combined)) return false
+  if (!evidenceText || !SUMMARY_IDENTITY_BACKGROUND_EVIDENCE_PATTERN.test(evidenceText)) return false
+  return true
+}
+
+export function isOrgRuleSummaryRefinement(entityType = '', entityName = '', existingValue = '', incomingValue = '', evidence = '') {
+  const type = cleanText(entityType)
+  const name = cleanText(entityName)
+  const oldText = cleanText(existingValue)
+  const newText = cleanText(incomingValue)
+  const evidenceText = cleanText(evidence)
+  const combined = `${newText} ${evidenceText}`
+  if (!oldText || !newText || oldText === newText) return false
+  const orgLike = ORG_ENTITY_TYPE_PATTERN.test(type) ||
+    ORG_NAME_OR_SUMMARY_PATTERN.test(name) ||
+    ORG_NAME_OR_SUMMARY_PATTERN.test(oldText)
+  if (!orgLike) return false
+  if (!ORG_RULE_DETAIL_PATTERN.test(combined)) return false
+  if (isHardSummaryRewrite(oldText, newText)) return false
+  if (ORG_STABLE_RELATION_NEGATION_PATTERN.test(combined)) return false
+  return true
+}
+
+export function isStableIdentityHardRewrite(existingValue = '', incomingValue = '', evidence = '') {
+  const oldText = cleanText(existingValue)
+  const newText = cleanText(incomingValue)
+  const evidenceText = cleanText(evidence)
+  const combined = `${newText} ${evidenceText}`
+  if (!oldText || !newText) return false
+  if (UNCERTAIN_IDENTITY_PATTERN.test(oldText)) return false
+  if (IDENTITY_REVEAL_MARKER_PATTERN.test(combined)) return false
+  if (isSummaryIdentityBackgroundReveal(oldText, newText, evidenceText)) return false
+  const oldTerms = STABLE_IDENTITY_TERMS.filter(term => oldText.includes(term))
+  const newTerms = STABLE_IDENTITY_TERMS.filter(term => newText.includes(term))
+  if (!oldTerms.length || !newTerms.length) return false
+  const preserved = oldTerms.some(term => newTerms.includes(term) || newText.includes(term))
+  if (preserved) return false
+  return true
+}
+
+export function isMistakenIdentityClaim(incomingValue = '', evidence = '') {
+  const text = `${cleanText(incomingValue)} ${cleanText(evidence)}`
+  return /(?:以为|误以为|认作|错认|怀疑).{1,20}是[一-龥]{2,4}/.test(text)
+}
+
+export function isMistakenIdentityDisproved(incomingValue = '', evidence = '') {
+  const text = `${cleanText(incomingValue)} ${cleanText(evidence)}`
+  return /[一-龥A-Za-z0-9·]{1,16}(?:并非|不是|并不是|绝非)[一-龥]{2,4}/.test(text)
+}
+
 export function isHardSummaryRewrite(existingValue = '', incomingValue = '') {
   const oldText = cleanText(existingValue)
   const newText = cleanText(incomingValue)
   if (!oldText || !newText) return false
+  if (ORG_STABLE_RELATION_NEGATION_PATTERN.test(newText) && /(星账|阵眼玉|母亲|旧债|神秘组织|秘密组织|组织|势力)/.test(oldText)) return true
   if (SUMMARY_IDENTITY_REWRITE_PATTERN.test(newText)) return true
   if (/(其实|并非|不是|不再是).{0,12}(商业联盟|商会|组织|机构|势力)/.test(newText)) return true
   if (/(星债会).{0,12}(伪装|分部)|(?:伪装|分部).{0,12}(星债会)/.test(newText)) return true
@@ -631,6 +792,19 @@ export function isHardFieldBehaviorSupplement(fieldPath = '', existingValue = ''
   if (!oldText || !newText || oldText === newText) return false
   if (!HIDDEN_BEHAVIOR_PATTERN.test(combined)) return false
   return newText.includes(oldText) || stripParentheticalSegments(newText) === oldText
+}
+
+export function isFactionAffiliationRevealRehomeChange(fieldPath = '', existingValue = '', incomingValue = '', evidence = '') {
+  const normalized = normalizeProfileFieldPath(fieldPath)
+  if (normalized !== 'profile.faction') return false
+  const oldText = cleanText(existingValue)
+  const newText = cleanText(incomingValue)
+  const evidenceText = cleanText(evidence)
+  const combined = `${newText} ${evidenceText}`
+  if (!oldText || !newText || oldText === newText) return false
+  if (!WEAK_FACTION_INFERENCE_PATTERN.test(oldText)) return false
+  if (!AFFILIATION_REVEAL_PATTERN.test(combined)) return false
+  return true
 }
 
 export function isOwnerPossessionRehomeChange(fieldPath = '', existingValue = '', incomingValue = '', evidence = '') {

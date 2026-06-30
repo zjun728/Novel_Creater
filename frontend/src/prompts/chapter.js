@@ -10,6 +10,16 @@ import {
   extractNarrativeTermStats,
   filterNarrativeEvidenceLabels
 } from '../quality/writingQualityScoring.js'
+import {
+  cleanGeneratedChapterTitle as selectDomainGeneratedChapterTitle,
+  collectChapterTitleMaterials,
+  deriveFallbackChapterTitle as deriveDomainFallbackChapterTitle,
+  evaluateChapterTitlePolicy as evaluateDomainChapterTitlePolicy,
+  getChapterTitleQuality as getDomainChapterTitleQuality,
+  isChapterTitleDuplicate as isDomainChapterTitleDuplicate,
+  isDefaultChapterTitle as isDomainDefaultChapterTitle,
+  normalizeChapterTitleKey as normalizeDomainChapterTitleKey
+} from '../domain/chapter-title/index.js'
 
 /**
  * 章节生成 Prompt
@@ -339,7 +349,7 @@ export function buildNearTurnDecisionCard(context = {}) {
     : '最近章节没有明显高频循环，但下一章仍需给出可见事件增量。'
   const requiredChange = `下一章必须至少引入一个明确转向：新地点、具体人物行动、新敌我态势、外部压力、关系摩擦、旧线索阶段性结论、道具失效或规则证伪。`
   const forbiddenWriting = `禁止继续围绕${repeatedObjectText}反复${repeatedActionText}；不要把“更理解、更清楚、又变化”当作剧情推进。`
-  const requiredPlotIncrement = `完成一个读者能复述的真实事件：围绕“${currentGoal}”产生可见行动、阻力、代价和不可逆结果；同时推进卷目标缺口“${volumeGoalGap || currentVolumeGoal || '当前卷目标'}”。`
+  const requiredPlotIncrement = `让“${currentGoal}”通过一次具体行动出现可见阻力、代价和不可逆结果；同时推进卷目标缺口“${volumeGoalGap || currentVolumeGoal || '当前卷目标'}”。`
   const handoffTarget = inferHandoffTargetForTurnCard(context)
   const numberedSequenceCount = countRecentNumberedScenePatterns(recentChapters)
   const numberedSequenceStatus = numberedSequenceCount >= 3 ? 'must_break' : (numberedSequenceCount >= 2 ? 'watch' : 'none')
@@ -399,6 +409,11 @@ export const BEAT_PLAN_STRUCTURE_FIELDS = [
   { key: 'costOrLoss', label: '代价或损失', required: true, markdownHeading: '代价或损失' },
   { key: 'irreversibleChange', label: '不可逆变化', required: true, markdownHeading: '不可逆变化' },
   { key: 'endingHandoff', label: '结尾交接', required: true, markdownHeading: '结尾交接' },
+  { key: 'protagonistImmediateWant', label: '主角即时欲望', required: false, internal: true, markdownHeading: '主角即时欲望' },
+  { key: 'emotionalAnchor', label: '情绪锚点', required: false, internal: true, markdownHeading: '情绪锚点' },
+  { key: 'misbeliefOrFear', label: '误解或恐惧', required: false, internal: true, markdownHeading: '误解或恐惧' },
+  { key: 'relationshipDelta', label: '关系轻微变化', required: false, internal: true, markdownHeading: '关系轻微变化' },
+  { key: 'stageAnswerForReader', label: '给读者的阶段答案', required: false, internal: true, markdownHeading: '给读者的阶段答案' },
   { key: 'entryScene', label: '场景入口', required: false, internal: true, markdownHeading: '场景入口' },
   { key: 'relationshipFriction', label: '关系摩擦', required: false, internal: true, markdownHeading: '关系摩擦' },
   { key: 'keyAction', label: '关键行动', required: false, internal: true, markdownHeading: '关键行动' },
@@ -412,6 +427,14 @@ export const BEAT_PLAN_STRUCTURE_FIELDS = [
   { key: 'nextProgress', label: '本章下一步推进', required: false, internal: true }
 ]
 
+export const BEAT_PLAN_HUMANITY_FIELD_KEYS = [
+  'protagonistImmediateWant',
+  'emotionalAnchor',
+  'misbeliefOrFear',
+  'relationshipDelta',
+  'stageAnswerForReader'
+]
+
 const BEAT_PLAN_FIELD_ALIASES = {
   chapterEvent: ['chapterEvent', 'realEvent', 'event', '本章具体事件', '本章一句话事件', '本章真实事件', '本章真实发生的事件'],
   entryScene: ['entryScene', 'sceneEntry', '场景入口'],
@@ -422,6 +445,11 @@ const BEAT_PLAN_FIELD_ALIASES = {
   keyAction: ['keyAction', '关键行动'],
   costOrLoss: ['costOrLoss', 'cost', 'loss', '代价或损失'],
   irreversibleChange: ['irreversibleChange', 'irreversibleResult', '不可逆结果', '本章不可逆变化'],
+  protagonistImmediateWant: ['protagonistImmediateWant', '主角即时欲望', '主角本章最想要什么'],
+  emotionalAnchor: ['emotionalAnchor', '情绪锚点', '本章情绪锚点'],
+  misbeliefOrFear: ['misbeliefOrFear', '误解或恐惧', '主角误解', '主角害怕', '嘴硬或不愿承认'],
+  relationshipDelta: ['relationshipDelta', '关系轻微变化', '人物关系轻微变化'],
+  stageAnswerForReader: ['stageAnswerForReader', '给读者的阶段答案', '阶段性答案'],
   loopExit: ['loopExit', 'breakLoop', '如何离开上一循环', '本章离开上一循环的方式'],
   volumeGoalHandoff: ['volumeGoalHandoff', 'volumeHandoff', '本章推进卷目标缺口', '如何接力当前卷目标'],
   endingHandoff: ['endingHandoff', 'handoff', '本章结尾交接点', '结尾交接点'],
@@ -517,6 +545,9 @@ export function collectStructuredBeatPlanIssues(plan = {}, options = {}) {
   const placeholderFields = BEAT_PLAN_STRUCTURE_FIELDS
     .filter(field => field.required && isBeatPlanPlaceholder(normalized[field.key]))
     .map(field => field.key)
+  const toolingLeakFields = BEAT_PLAN_STRUCTURE_FIELDS
+    .filter(field => hasText(normalized[field.key]) && containsBeatPlanToolingLeak(normalized[field.key]))
+    .map(field => field.key)
   const issues = []
   if (missingRequiredFields.length) {
     issues.push({
@@ -530,6 +561,14 @@ export function collectStructuredBeatPlanIssues(plan = {}, options = {}) {
       type: 'structured_beat_plan_placeholder_fields',
       severity: 'major',
       placeholderFields
+    })
+  }
+  if (toolingLeakFields.length) {
+    issues.push({
+      type: 'structured_beat_plan_tooling_leak',
+      severity: 'major',
+      toolingLeakFields,
+      detail: '小纲字段含有 stage-x、读者复述、围绕、关系任务或机械交接等工具话术，需要改成自然剧情小纲。'
     })
   }
   const loopExitText = String(normalized.loopExit || '')
@@ -584,6 +623,7 @@ export function collectStructuredBeatPlanIssues(plan = {}, options = {}) {
   return {
     missingRequiredFields,
     placeholderFields,
+    toolingLeakFields,
     volumeGoalHandoffStatus,
     turnDecisionStatus,
     issues
@@ -609,6 +649,10 @@ export function compactStructuredBeatPlanFields(plan = {}, options = {}) {
 export function formatStructuredBeatPlan(plan = {}) {
   const normalized = parseStructuredBeatPlan(plan)
   const line = key => normalizeBeatPlanFieldValue(normalized[key]) || '未填写'
+  const optionalSection = (key, heading) => {
+    const value = normalizeBeatPlanFieldValue(normalized[key])
+    return value ? `\n\n### ${heading}\n${value}` : ''
+  }
   return cleanChapterBeatPlanText(`
 ### 本章事件
 ${line('chapterEvent')}
@@ -630,6 +674,11 @@ ${line('irreversibleChange')}
 
 ### 结尾交接
 ${line('endingHandoff')}
+${optionalSection('protagonistImmediateWant', '主角即时欲望')}
+${optionalSection('emotionalAnchor', '情绪锚点')}
+${optionalSection('misbeliefOrFear', '误解或恐惧')}
+${optionalSection('relationshipDelta', '关系轻微变化')}
+${optionalSection('stageAnswerForReader', '给读者的阶段答案')}
   `)
 }
 
@@ -637,6 +686,11 @@ function structuredBeatPlanJsonSchemaText() {
   const example = {}
   for (const field of BEAT_PLAN_STRUCTURE_FIELDS.filter(field => field.required && !field.internal)) {
     example[field.key] = field.key === 'usedTurnDecision' ? true : field.label
+  }
+  for (const field of BEAT_PLAN_STRUCTURE_FIELDS.filter(field =>
+    ['protagonistImmediateWant', 'emotionalAnchor', 'misbeliefOrFear', 'relationshipDelta', 'stageAnswerForReader'].includes(field.key)
+  )) {
+    example[field.key] = field.label
   }
   return JSON.stringify(example, null, 2)
 }
@@ -880,6 +934,19 @@ function compactFallbackText(value, max = 180) {
     .slice(0, max)
 }
 
+export function containsBeatPlanToolingLeak(text = '') {
+  const source = String(text || '')
+  return /第\s*\d+\s*章发生一件读者能复述的事/.test(source) ||
+    /读者能复述的事/.test(source) ||
+    /人物目标：围绕/.test(source) ||
+    /围绕“[^”]+”/.test(source) ||
+    /本章关系变化落在/.test(source) ||
+    /不能只把配角当线索出口/.test(source) ||
+    /下一阶段\s*[：:]\s*stage-[\dx]+/i.test(source) ||
+    /主角要完成[\s\S]{0,80}并把结果接到/.test(source) ||
+    /\bstage-(?:\d+|x)\b/i.test(source)
+}
+
 function cleanFallbackGoalText(value) {
   return sanitizePromptInstructionText(formatDraftContinuityText(value, 160))
     .replace(/^[-：:；;\s]+/, '')
@@ -937,12 +1004,78 @@ function enrichLocalFallbackBeatPlan(plan = {}, context = {}) {
   }
 }
 
+function relationshipHintFromFallbackContext(context = {}, fallback = '') {
+  const storyBlock = context.storyBlock || context.currentStoryBlock || context.block || {}
+  const task = compactFallbackText(
+    storyBlock.relationshipTask ||
+    storyBlock.relationshipEndHint ||
+    context.relationshipTask ||
+    context.relationshipDelta ||
+    fallback,
+    120
+  )
+  const focus = compactFallbackText(storyBlock.relationshipFocus || context.relationshipFocus || '', 80)
+  if (task && focus) return `${focus}因为“${task}”出现一次小变化。`
+  if (task) return `陆沉舟和相关角色因为“${task}”出现一次能看见的态度变化。`
+  return '陆沉舟和同行者因隐瞒、交易、救助或条件合作出现轻微变化。'
+}
+
+function humanityFallbackFields({
+  stageChoice = '',
+  stageCost = '',
+  blockGoal = '',
+  stageAction = '',
+  mainPressure = '',
+  nextStage = '',
+  context = {},
+  goal = '',
+  requiredChange = '',
+  handoffTarget = '',
+  unresolved = ''
+} = {}) {
+  return {
+    protagonistImmediateWant: compactFallbackText(
+      stageChoice || goal || blockGoal || requiredChange || '先处理眼前危险，再保住能继续追查的证据或同伴。',
+      120
+    ),
+    emotionalAnchor: compactFallbackText(
+      stageCost
+        ? `他在“${stageCost}”之后仍要强撑，情绪落在代价、父亲线索和不愿示弱之间。`
+        : '他嘴上先处理正事，心里仍被父亲线索、失忆代价或同伴安危牵住。',
+      140
+    ),
+    misbeliefOrFear: compactFallbackText(
+      mainPressure
+        ? `他怕“${mainPressure}”证明自己判断错了，于是会嘴硬、隐瞒或先做选择再解释。`
+        : '他怕自己拖累别人或被父亲旧局牵着走，容易把真实担心藏成一句没事。',
+      140
+    ),
+    relationshipDelta: compactFallbackText(
+      relationshipHintFromFallbackContext(context, stageCost || requiredChange),
+      140
+    ),
+    stageAnswerForReader: compactFallbackText(
+      nextStage || handoffTarget || stageAction || unresolved || '本章至少确认一个具体去向、物件状态或关系条件，让读者知道这一段推进到哪里。',
+      140
+    )
+  }
+}
+
 function normalizeStageReferenceText(value) {
   return String(value ?? '').replace(/\s+/g, '').trim().toLowerCase()
 }
 
 function isBareStageReference(value) {
-  return /^stage-\d+$/i.test(String(value ?? '').trim())
+  return /^stage-\d+(?:\b|[（(:：\s_-])/i.test(String(value ?? '').trim())
+}
+
+function stageReferenceLabel(value = '') {
+  const text = String(value ?? '').trim()
+  const parenMatch = text.match(/^stage-\d+\s*[（(]\s*([^）)]+)\s*[）)]\s*$/i)
+  if (parenMatch?.[1]) return parenMatch[1].trim()
+  const suffixMatch = text.match(/^stage-\d+\s*[-_:：]\s*(.+)$/i)
+  if (suffixMatch?.[1]) return suffixMatch[1].trim()
+  return ''
 }
 
 export function resolveMeaningfulHandoffSource(snapshot = {}) {
@@ -951,8 +1084,17 @@ export function resolveMeaningfulHandoffSource(snapshot = {}) {
   const stageId = String(snapshot?.stageId ?? '').trim()
   const normalizedNext = normalizeStageReferenceText(nextStageSuggestion)
   const normalizedStageId = normalizeStageReferenceText(stageId)
+  const nextStageLabel = stageReferenceLabel(nextStageSuggestion)
   const nextIsStagePointer = isBareStageReference(nextStageSuggestion) ||
     (normalizedNext && normalizedStageId && normalizedNext === normalizedStageId)
+
+  if (nextStageLabel && !isDerivedBeatPlanPlaceholder(nextStageLabel)) {
+    return {
+      sourceField: 'nextStageSuggestion.label',
+      value: nextStageLabel,
+      rejectedNextStageSuggestion: nextStageSuggestion
+    }
+  }
 
   if (hasText(nextStageSuggestion) && !nextIsStagePointer && !isDerivedBeatPlanPlaceholder(nextStageSuggestion)) {
     return {
@@ -991,10 +1133,20 @@ export function buildLocalChapterBeatPlanFallback(context = {}, chapterNum = con
       Array.isArray(snapshot.unresolvedQuestions) ? snapshot.unresolvedQuestions.join('；') : snapshot.unresolvedQuestions,
       120
     )
+    const humanityFields = humanityFallbackFields({
+      stageChoice,
+      stageCost,
+      blockGoal,
+      stageAction,
+      mainPressure,
+      nextStage,
+      context,
+      unresolved
+    })
     const concretePlan = {
-      chapterEvent: `第 ${chapterNum || '?'} 章发生一件读者能复述的事：${stageAction || blockGoal}。`,
+      chapterEvent: `${stageAction || blockGoal || '陆沉舟承接上一章压力，完成一次能改变局面的当场行动。'}。`,
       entryScene: `从当前故事块入场状态进入：${compactFallbackText(snapshot.entryState || '主角处在上一段剧情压力中', 120)}。`,
-      characterGoal: `人物目标：围绕“${blockGoal || snapshot.stagePurpose || '当前故事块目标'}”，主角要在本章完成“${stageChoice || '一次明确选择'}”。`,
+      characterGoal: `陆沉舟先做出“${stageChoice || '一次明确选择'}”，让这一步直接推动“${blockGoal || snapshot.stagePurpose || '当前故事块目标'}”。`,
       coreConflict: `核心冲突：${mainPressure || '外部压力逼近'}当场阻断主角，让他不能只观察或等待，必须行动。`,
       externalPressure: `外部压力：${mainPressure || '追兵、规则或地点秩序进入场景'}，打断安全选择并压缩行动时间。`,
       relationshipFriction: '相关人物带着利益、怀疑或追捕压力进入，不替作者解释设定。',
@@ -1009,7 +1161,8 @@ export function buildLocalChapterBeatPlanFallback(context = {}, chapterNum = con
       usedTurnDecision: true,
       breaksPattern: '用具体行动、外部压力和代价离开原地观察。',
       volumeGoalGap: blockGoal || snapshot.stagePurpose || '当前卷阶段目标',
-      nextProgress: nextStage || stageAction || '进入下一阶段剧情'
+      nextProgress: nextStage || stageAction || '进入下一阶段剧情',
+      ...humanityFields
     }
     for (const maxFieldChars of [150, 130, 110, 92, 76]) {
       const formatted = formatStructuredBeatPlan(compactStructuredBeatPlanFields(concretePlan, { maxFieldChars }))
@@ -1056,8 +1209,19 @@ export function buildLocalChapterBeatPlanFallback(context = {}, chapterNum = con
   const volumeGoalGap = compactFallbackText(turnCard?.volumeGoalGap || volumeGoal, 96)
   const nextProgress = compactFallbackText(turnCard?.requiredPlotIncrement || eventLine, 110)
   const loopExit = compactFallbackText(`离开旧观察或编号结构，转入“${requiredChange}”，用可见行动、外部阻力和交接点“${handoffTarget}”打破停滞。`, 150)
+  const humanityFields = humanityFallbackFields({
+    context,
+    goal,
+    requiredChange,
+    handoffTarget,
+    stageAction: eventLine,
+    stageCost: requiredChange,
+    mainPressure: stagnationPoint,
+    nextStage: handoffTarget,
+    unresolved
+  })
   const plan = {
-    chapterEvent: `第 ${chapterNum || '?'} 章发生一件读者能复述的事：${eventLine}`,
+    chapterEvent: eventLine || '陆沉舟承接上一章压力，做出一次会改变后续走向的当场选择。',
     entryScene: `从“${previousEnding}”进入，不跳时空，不重置人物状态。`,
     characterGoal: `只服务“${goal}”，并推进当前卷目标“${volumeGoal}”的一个可验证小结果。`,
     coreConflict: `${requiredChange} 这股阻力迫使主角行动，不能只靠观察、触摸、确认或理解。`,
@@ -1074,7 +1238,8 @@ export function buildLocalChapterBeatPlanFallback(context = {}, chapterNum = con
     usedTurnDecision: true,
     breaksPattern: breakPattern,
     volumeGoalGap,
-    nextProgress
+    nextProgress,
+    ...humanityFields
   }
   const enrichedPlan = enrichLocalFallbackBeatPlan(plan, {
     previousEnding,
@@ -1157,6 +1322,9 @@ function derivedBeatPlanContentIssues(content = '', snapshot = {}, context = {})
     nearTurnDecisionCard: context.nearTurnDecisionCard || null
   })
   const issues = []
+  if (containsBeatPlanToolingLeak(content)) {
+    issues.push('tooling phrasing leaked into derived beat plan')
+  }
   for (const field of BEAT_PLAN_STRUCTURE_FIELDS.filter(field => field.required && !field.internal)) {
     const value = parsed[field.key]
     if (!hasText(value)) issues.push(`missing beatPlan.${field.key}`)
@@ -1432,11 +1600,7 @@ export function cleanChapterBeatPlanText(text) {
 }
 
 export function isDefaultChapterTitle(title, chapterNum) {
-  const text = String(title || '').trim()
-  if (!text || text === '未命名') return true
-  const num = String(chapterNum || '').trim()
-  if (!num) return /^第\s*\d+\s*章$/.test(text)
-  return new RegExp(`^第\\s*${num}\\s*章$`).test(text)
+  return isDomainDefaultChapterTitle(title, chapterNum)
 }
 
 export function formatChapterDisplayTitle(chapter = {}, options = {}) {
@@ -1448,399 +1612,45 @@ export function formatChapterDisplayTitle(chapter = {}, options = {}) {
   return `${numberTitle} · ${title}`
 }
 
-const TITLE_MOJIBAKE_PATTERN = /[\u6d63\u6b10\u4fef\u93c6\u6940\u5f7f\u7441\u509c\u68d4\u951f\ufffd\u9286\u7ed7\u9351\u93cb\u9428\u93c4\u6d93\u699b\u5997\u7039\u93b4\u93c3\u935a\u9366\u95c2]/
-
-function normalizeCatalogTitleText(value = '') {
-  return String(value || '')
-    .replace(/^\s*```(?:json|markdown|md|text|txt)?\s*/i, '')
-    .replace(/\s*```\s*$/i, '')
-    .trim()
-}
-
-function normalizeCatalogTitleCandidate(value = '') {
-  return normalizeCatalogTitleText(value)
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .find(Boolean)
-    ?.replace(/^[-*]\s*/, '')
-    .replace(/^#{1,6}\s*/, '')
-    .replace(/^(?:章名|标题|章节标题|title)\s*[：:]\s*/i, '')
-    .replace(/^第\s*[\d一二三四五六七八九十百千万零〇两]+\s*章\s*[：:、，.\-—]?\s*/, '')
-    .replace(/^[《“"「『【\[]+/, '')
-    .replace(/[》”"」』】\]]+$/, '')
-    .replace(/[。！？!?,，；;：:、\s]+$/g, '')
-    .replace(/\s+/g, '')
-    .trim() || ''
-}
-
-function parseChapterTitleCandidates(text) {
-  const raw = normalizeCatalogTitleText(text)
-  if (!raw) return []
-  const jsonText = raw.match(/\{[\s\S]*\}/)?.[0] || raw
-  try {
-    const parsed = JSON.parse(jsonText)
-    const values = Array.isArray(parsed?.candidates)
-      ? parsed.candidates
-      : [parsed?.title ? parsed : null]
-    return values
-      .map((item, index) => {
-        if (typeof item === 'string') return { title: item, type: '', reason: '', index }
-        return {
-          title: item?.title || '',
-          type: item?.type || '',
-          reason: item?.reason || '',
-          index
-        }
-      })
-      .filter(item => item.title)
-  } catch {
-    return raw.split(/\r?\n/)
-      .filter(Boolean)
-      .map((title, index) => ({ title, type: '', reason: '', index }))
-  }
-}
-
-function titleCharLength(title) {
-  return Array.from(String(title || '')).length
-}
-
-function isCompleteSentenceLikeTitle(title) {
-  const text = String(title || '')
-  if (titleCharLength(text) > 8) return true
-  return /^[\u4e00-\u9fa5]{1,4}(?:站在|坐在|走进|进入|回到|离开|发现|看见|听见|想起|拿起|放下|说道|问道|按住|推开)/.test(text)
-}
-
-function countChapterTitleChars(title) {
-  const chars = Array.from(String(title || '').replace(/\s+/g, ''))
-  let semantic = 0
-  let punctuationOrSymbol = 0
-  for (const char of chars) {
-    if (/[\p{Letter}\p{Number}]/u.test(char)) semantic += 1
-    else if (/[\p{Punctuation}\p{Symbol}]/u.test(char)) punctuationOrSymbol += 1
-  }
-  return { total: chars.length, semantic, punctuationOrSymbol }
-}
-
-function detectIllegalChapterTitleFragment(title) {
-  const text = String(title || '').trim()
-  if (!text) return 'empty'
-  if (/^[\p{Punctuation}\p{Symbol}]+$/u.test(text)) return 'symbol_fragment'
-  if (/^[{}[\]()`#>*_+=|\\/]+$/u.test(text)) return 'markup_or_json_fragment'
-  if (/^[《》“”"「」『』【】\[\]{}()（）]+$/u.test(text)) return 'quote_fragment'
-  const counts = countChapterTitleChars(text)
-  if (counts.semantic === 0) return 'symbol_fragment'
-  if (counts.punctuationOrSymbol >= counts.semantic && counts.punctuationOrSymbol > 0) return 'punctuation_dominant'
-  if (/^(?:你|我|他|她|它|谁|这|那|嗯|啊|哦|呀|喂|哈|嘿)[—\-…~，。！？!?,]*$/u.test(text)) {
-    return 'dialogue_fragment'
-  }
-  return ''
-}
-
-function normalizeChapterTitleKey(title) {
-  return String(title || '')
-    .replace(/\s+/g, '')
-    .replace(/^第[\d一二三四五六七八九十百千万零〇两]+章[·:：、，.\-—]?/, '')
-    .trim()
-}
-
-function collectExistingChapterTitleKeys(context = {}) {
-  const values = [
-    ...(Array.isArray(context.existingTitles) ? context.existingTitles : []),
-    ...(Array.isArray(context.existingChapterTitles) ? context.existingChapterTitles : [])
-  ]
-  return new Set(values.map(normalizeChapterTitleKey).filter(Boolean))
-}
-
 export function isChapterTitleDuplicate(title, context = {}) {
-  const key = normalizeChapterTitleKey(title)
-  if (!key) return false
-  return collectExistingChapterTitleKeys(context).has(key)
+  return isDomainChapterTitleDuplicate(title, context)
 }
 
 export function evaluateChapterTitlePolicy(title, context = {}) {
-  const normalized = normalizeCatalogTitleCandidate(title)
-  if (!normalized) return { status: 'fail', reason: 'empty', title: '' }
-  if (TITLE_MOJIBAKE_PATTERN.test(normalized)) return { status: 'fail', reason: 'mojibake', title: normalized }
-  if (isDefaultChapterTitle(normalized, context.chapterNum)) return { status: 'fail', reason: 'default_title', title: normalized }
-  const illegalFragmentReason = detectIllegalChapterTitleFragment(normalized)
-  if (illegalFragmentReason) return { status: 'fail', reason: illegalFragmentReason, title: normalized }
-  if (/[，。！？；：、,.!?;:]/.test(normalized)) return { status: 'fail', reason: 'punctuation', title: normalized }
-  if (isCompleteSentenceLikeTitle(normalized)) return { status: 'fail', reason: 'sentence_like', title: normalized }
-  if (isLikelyOralFragmentTitle(normalized)) return { status: 'fail', reason: 'oral_fragment', title: normalized }
-  const length = titleCharLength(normalized)
-  if (length < 1) return { status: 'fail', reason: 'empty', title: normalized }
-  if (length > 8) return { status: 'fail', reason: 'too_long', title: normalized }
-  if (isChapterTitleDuplicate(normalized, context)) return { status: 'fail', reason: 'duplicate', title: normalized }
-  if (length === 1 && !SHORT_TITLE_PROPER_NOUNS.has(normalized)) {
-    return { status: 'warning', reason: 'single_character_weak_title', title: normalized }
-  }
-  if (length > 6) return { status: 'warning', reason: 'natural_long_title', title: normalized }
-  return { status: 'pass', reason: 'simple_catalog_title', title: normalized }
+  return evaluateDomainChapterTitlePolicy(title, context)
 }
 
 export function getChapterTitleQuality(title, context = {}) {
-  const policy = evaluateChapterTitlePolicy(title, context)
-  return {
-    titleValid: policy.status !== 'fail',
-    titleInvalidReason: policy.status === 'fail' ? policy.reason : '',
-    titleSource: context.titleSource || 'unknown',
-    fallbackUsed: Boolean(context.fallbackUsed),
-    normalizedTitle: policy.title,
-    status: policy.status,
-    reason: policy.reason
-  }
-}
-
-const CHAPTER_TITLE_TYPE_PRIORITY = new Map([
-  ['event', 120],
-  ['conflict', 116],
-  ['result', 112],
-  ['person', 96],
-  ['place', 96],
-  ['skill', 94],
-  ['weapon', 94],
-  ['organization', 94],
-  ['item', 90]
-])
-
-const SIMPLE_EVENT_TITLE_WORDS = ['审问', '争夺', '惊变', '服软', '一穿三', '背叛', '追击', '对峙', '交易', '回收', '归还', '失约', '离场', '入局', '破局', '救人', '反悔', '伏击', '烧信', '验信', '开门', '关门']
-const TITLE_STATE_TAILS = ['冷光', '裂痕', '裂纹', '余温', '暗号', '微光', '白光', '黑光', '字迹', '凭证', '残页', '倒计时']
-const ABSTRACT_TITLE_SUBJECT_PARTS = ['核心', '规则', '系统', '真相', '答案', '线索', '记忆', '意识', '结构']
-const PLACE_TITLE_TAILS = ['房', '室', '堂', '殿', '院', '庄', '寺', '阁', '楼', '城', '寨', '谷', '山', '门']
-const ITEM_TITLE_TAILS = ['信', '书', '牌', '令', '符', '钥匙', '玉牌', '凭证', '棺材', '灵髓', '残卷']
-const SHORT_TITLE_PROPER_NOUNS = new Set([
-  '星账',
-  '河坊巷',
-  '后门',
-  '丁字库',
-  '黑铁令',
-  '巡天司'
-])
-const ORAL_FRAGMENT_TITLES = new Set([
-  '这边',
-  '那边',
-  '来一张',
-  '干什么',
-  '怎么说',
-  '你爹挖的'
-])
-
-function inferChapterTitleType(title = '') {
-  const text = String(title || '')
-  if (SIMPLE_EVENT_TITLE_WORDS.includes(text)) return 'event'
-  if (/和尚|道人|道士|师兄|师姐|师妹|师弟|掌柜|先生|夫人|小姐|长老|真人|婆婆|姑娘$/.test(text)) return 'person'
-  if (/功|功法|心法|身法|剑法|刀法|秘术|灵术|炼灵|长生功$/.test(text)) return 'skill'
-  if (/宝行|商行|寺|庙|宗|门派|帮|会|阁|楼|院|书院|镖局$/.test(text)) return 'organization'
-  if (PLACE_TITLE_TAILS.some(tail => text.endsWith(tail))) return 'place'
-  if (ITEM_TITLE_TAILS.some(tail => text.endsWith(tail))) return 'item'
-  return ''
-}
-
-function isAbstractStateLikeTitle(title = '') {
-  const text = String(title || '')
-  if (titleCharLength(text) < 4) return false
-  const tail = TITLE_STATE_TAILS.find(item => text.endsWith(item))
-  if (!tail) return false
-  const subject = text.slice(0, -tail.length)
-  return ABSTRACT_TITLE_SUBJECT_PARTS.some(part => subject.includes(part))
-}
-
-function isLabelPairLikeTitle(title = '') {
-  const text = String(title || '')
-  if (titleCharLength(text) < 4 || titleCharLength(text) > 8) return false
-  const endsWithItem = ITEM_TITLE_TAILS.some(tail => text.endsWith(tail))
-  const startsWithPlace = PLACE_TITLE_TAILS.some(tail => {
-    const index = text.indexOf(tail)
-    return index >= 1 && index < text.length - 1
-  })
-  return endsWithItem && startsWithPlace
-}
-
-function isLikelyOralFragmentTitle(title = '') {
-  const text = String(title || '').trim()
-  if (!text) return false
-  if (ORAL_FRAGMENT_TITLES.has(text)) return true
-  if (/^(?:这边|那边|这儿|那儿|这里|那里)$/.test(text)) return true
-  if (/^(?:来|给|拿|看|说|问|走|跑|开|关|让|把)[一二三四五六七八九十百千万零〇两0-9]?[个张句下把回眼]?$/u.test(text)) return true
-  if (/^(?:你|我|他|她|它|咱|咱们|你们|我们|他们|她们).{1,5}(?:的|呢|吗|吧|啊|呀|么)?$/u.test(text)) return true
-  if (/^(?:怎么|咋|干嘛|干什么|凭什么|为什么).{0,4}$/u.test(text)) return true
-  return false
-}
-
-function firstOccurrenceBonus(title, context = {}) {
-  const content = String(context.content || '')
-  if (!content || !title || !content.includes(title)) return 0
-  const index = content.indexOf(title)
-  return Math.max(1, 12 - Math.floor(index / 120))
-}
-
-function scoreChapterTitleCandidate(candidate, context = {}, policy) {
-  const title = policy.title
-  const type = String(candidate.type || '').trim() || inferChapterTitleType(title)
-  const length = titleCharLength(title)
-  let score = CHAPTER_TITLE_TYPE_PRIORITY.get(type) || 70
-
-  if (length >= 1 && length <= 6) score += 18
-  else if (length <= 8) score += 4
-
-  score += firstOccurrenceBonus(title, context)
-  score -= (candidate.index || 0) * 0.01
-
-  if (policy.status === 'warning') score -= 8
-  if (isLikelyOralFragmentTitle(title)) score -= 80
-  if (isAbstractStateLikeTitle(title)) score -= 45
-  if (isLabelPairLikeTitle(title)) score -= 32
-  if (/^[\u4e00-\u9fa5]{2,4}(?:冷光|裂痕|裂纹|余温|暗号)$/.test(title)) score -= 12
-
-  return score
+  return getDomainChapterTitleQuality(title, context)
 }
 
 export function cleanGeneratedChapterTitle(text, context = {}) {
-  const ranked = parseChapterTitleCandidates(text)
-    .map((candidate, index) => {
-      const policy = evaluateChapterTitlePolicy(candidate.title, context)
-      return {
-        candidate: { ...candidate, index },
-        policy,
-        score: policy.status === 'fail' ? -Infinity : scoreChapterTitleCandidate({ ...candidate, index }, context, policy)
-      }
-    })
-    .filter(item => item.policy.status !== 'fail')
-    .sort((left, right) => right.score - left.score)
-
-  return ranked[0]?.policy.title || ''
+  return selectDomainGeneratedChapterTitle(text, context)
 }
 
-function collectChapterTitleSource(context = {}) {
-  return [
-    context.chapterGoal?.goal,
-    context.chapterGoal?.summary,
-    context.chapterGoal,
-    context.narrativeReadability?.irreversibleChange,
-    context.narrativeProgression?.irreversibleChange,
-    context.irreversibleChange,
-    context.beatPlan,
-    context.content
-  ]
-    .filter(Boolean)
-    .map(value => typeof value === 'string' ? value : JSON.stringify(value))
-    .join('\n')
-}
-
-function uniqueCatalogCandidates(candidates = []) {
-  const seen = new Set()
-  return candidates.filter(candidate => {
-    const key = normalizeChapterTitleKey(candidate)
-    if (!key || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
-function cleanExtractedTitleTerm(value) {
-  const text = String(value || '')
-    .replace(/^[，。！？；：、,.!?;:\s]+/, '')
-    .replace(/[，。！？；：、,.!?;:\s]+$/, '')
-    .replace(/^(?:只把|把|将|被|在|从|向|和|与|对|没有|已经|才知道|才明白|风从|雨落在|雪落在|灯照着|光落在)/, '')
-    .trim()
-  const numberedObject = text.match(/[一二三四五六七八九十百千万零〇两0-9]{1,3}号(?:门|画布|房间|空间)/)
-  if (numberedObject) return numberedObject[0]
-  const directPlace = text.match(/(?:火灶房|档案室|柴房|书房|后院|山门|山庄|客栈|祠堂|地牢|密室|钟楼|棋院|院|房|室|堂|殿|谷|城|寨)$/)
-  if (directPlace) return directPlace[0]
-  const directItem = text.match(/(?:第[一二三四五六七八九十百千万零〇两0-9]{1,3}封信|黄金棺材|天晶灵髓|玉牌|钥匙|凭证|黑卡|尾号|地址|信件|短讯|残卷|旧书|铜钱)$/)
-  if (directItem) return directItem[0]
-  return text
-}
-
-function collectQuotedTitleCandidates(text) {
-  const candidates = []
-  for (const match of String(text || '').matchAll(/[《“"「『【]([^》”"」』】\n]{1,8})[》”"」』】]/g)) {
-    candidates.push(cleanExtractedTitleTerm(match[1]))
-  }
-  return uniqueCatalogCandidates(candidates)
-}
-
-function collectSimpleFallbackTitleCandidates(source) {
-  const text = String(source || '')
-  const candidates = []
-
-  const directTerms = [
-    '旧货市场',
-    '北境矿场',
-    '三号矿道',
-    '父亲账册',
-    '巡天司追兵',
-    '黄金棺材',
-    '天晶灵髓',
-    '第七封信',
-    '凭证',
-    '黑卡',
-    '玉牌',
-    '钥匙',
-    '尾号',
-    '火灶房',
-    '档案室',
-    '棋院',
-    '金龙宝行',
-    '大梵音寺'
-  ]
-  for (const term of directTerms) {
-    if (text.includes(term)) candidates.push(term)
-  }
-
-  for (const match of text.matchAll(/[一二三四五六七八九十百千万零〇两0-9]{1,3}号(?:门|画布|房间|空间)/g)) {
-    candidates.push(match[0])
-  }
-
-  const itemPatterns = [
-    /(?:第[一二三四五六七八九十百千万零〇两0-9]{1,3}封信|[\u4e00-\u9fa5一二三四五六七八九十百千万零〇两0-9]{1,8}(?:棺材|灵髓|玉牌|钥匙|凭证|黑卡|尾号|地址|信|刀|剑|枪|符|令牌|玉简|芯片|骨片|残卷|书|环))/g,
-    /[\u4e00-\u9fa5一二三四五六七八九十百千万零〇两0-9]{1,8}(?:长生功|功法|心法|身法|剑法|刀法|秘术|灵术|炼灵|术|诀|法)/g,
-    /[\u4e00-\u9fa5一二三四五六七八九十百千万零〇两0-9]{1,8}(?:宝行|商行|寺|庙|宗|门派|帮|会|阁|楼|院|书院|镖局)/g,
-    /[\u4e00-\u9fa5一二三四五六七八九十百千万零〇两0-9]{1,8}(?:火灶房|档案室|柴房|书房|后院|山门|山庄|客栈|祠堂|地牢|密室|钟楼|院|房|室|堂|殿|谷|城|寨)/g,
-    /[\u4e00-\u9fa5]{1,4}(?:和尚|道士|师兄|师姐|师妹|师弟|掌柜|先生|夫人|小姐|长老|真人|婆婆|姑娘)/g
-  ]
-
-  for (const pattern of itemPatterns) {
-    for (const match of text.matchAll(pattern)) candidates.push(cleanExtractedTitleTerm(match[0]))
-  }
-
-  for (const word of SIMPLE_EVENT_TITLE_WORDS) {
-    if (text.includes(word)) candidates.push(word)
-  }
-
-  return uniqueCatalogCandidates(candidates)
-}
-
-function deriveSimpleFallbackChapterTitle(source, context = {}) {
-  for (const quoted of collectQuotedTitleCandidates(source)) {
-    const policy = evaluateChapterTitlePolicy(quoted, context)
-    if (policy.status !== 'fail') return policy.title
-  }
-
-  for (const title of collectSimpleFallbackTitleCandidates(source)) {
-    const policy = evaluateChapterTitlePolicy(title, context)
-    if (policy.status !== 'fail') return policy.title
-  }
-  return ''
+export function collectPositiveChapterTitleCandidates(context = {}) {
+  return collectChapterTitleMaterials(context)
 }
 
 export function deriveFallbackChapterTitle(context = {}) {
-  const source = collectChapterTitleSource(context)
-  if (!source.trim()) return ''
-  return deriveSimpleFallbackChapterTitle(source, context)
+  return deriveDomainFallbackChapterTitle(context)
 }
 
 export function buildChapterTitleSystemPrompt() {
   return `你是一位长篇小说目录编辑，只负责给本章起一个真实网文目录里会出现的朴素章名。
 
 章名原则：
-- 章名是本章目录标签，目标是让读者能回忆这一章。
-- 不追求高级，不追求玄，不追求文学化；朴素、直接、好记优先。
+- 章名是通俗易懂的目录标签，目标是让读者能回忆这一章。
+- 不追求高级，不追求玄，不追求文学化；简单、直白、土一点的具体名词也可以。
 - 优先 1-6 个汉字；少数自然标题可以 7-8 个汉字。
 - 可以直接使用第一次出现的重要人物、功法、武器、组织、地点或道具名。
-- 可以用事件、地点、人物、功法、武器、道具、组织、冲突或结果命名。
+- 可以直接使用关键场景、房间、密室、账册、钥匙、纸条、证据等具体名词。
+- 可以用当前章节的关键事件、突破境界、功法级别、法力等级、地点、人物、功法、武器、道具、组织、冲突或结果命名。
+- 修仙/玄幻目录可以很朴素：交易、中毒、返回、出手、破禁、恶斗、试毒、谈判这类关键事件词可以直接用。
+- 可以使用短并列或对抗结构，例如“甲与乙”“甲对乙”“符宝之秘”“剑诀之威”；连续斗法可用“恶斗（上）/（中）/（下）”。
+- 候选优先级：核心地点/关键事件 > 关键物证/道具 > 突破境界/功法级别/法力等级 > 不可逆代价/行动后果 > 阶段答案/转折事件 > 人物/组织。
 - 不要输出完整句子，不要输出剧情摘要，不要为了避重造奇怪词。
-- 不要输出单字虚标题、代词短语或对白残片，例如“巡”“追”“这边”“来一张”。
+- 不要输出单字虚标题、代词短语、对白碎片、口语判断残片、方向/位置残片或为避重造出的怪词，例如“巡”“追”“别动”“谁派你来的”“不一定”“里面”“这边”。
 
 输出 JSON，生成 3-5 个候选：
 {
@@ -1866,7 +1676,7 @@ export function buildChapterTitlePrompt(context = {}) {
     ...(Array.isArray(context.existingTitles) ? context.existingTitles : []),
     ...(Array.isArray(context.existingChapterTitles) ? context.existingChapterTitles : [])
   ]
-    .map(normalizeChapterTitleKey)
+    .map(normalizeDomainChapterTitleKey)
     .filter(Boolean)
     .slice(-5)
   if (existingTitles.length) {
@@ -1893,8 +1703,12 @@ export function buildChapterTitlePrompt(context = {}) {
 
 候选要像真实网文目录：朴素、直接、好记。优先 1-6 字。
 type 只能是 event|place|person|skill|weapon|item|organization|conflict|result。
-可以直接使用第一次出现的重要人物、功法、武器、组织、地点或道具名。
-不要输出完整句子、单字虚标题、代词短语、对白残片或剧情摘要，不要为了避重而造奇怪词。`)
+可以直接使用第一次出现的重要人物、功法、武器、组织、地点、房间、密室或道具名。
+可以直接用账册、钥匙、纸条、证据等具体物件；简单直白的具体名词优先于漂亮但虚的词。
+可以直接用本章关键事件、突破境界、功法级别、法力等级取题，例如“审问”“筑基中期”“炼灵二重”“法力三重”。
+修仙/玄幻目录可以用短事件词或短结构，例如“交易”“中毒”“破禁”“出手”“恶斗（上）”“符宝之秘”“剑诀之威”。
+优先从本章核心地点、关键事件、关键物证、突破境界、不可逆代价、阶段答案里取题。
+不要输出完整句子、单字虚标题、代词短语、对白碎片、方向/位置残片或剧情摘要，不要为了避重而造奇怪词。`)
   return parts.join('\n\n')
 }
 
@@ -2027,6 +1841,10 @@ ${context.recentSummaries.map(s => `- 第${s.chapterNum}章：${sanitizePromptIn
     parts.push(`## 角色关系\n${context.relationships}`)
   }
 
+  if (context.companionVoiceCards) {
+    parts.push(`## 配角声音卡（短量参考，不是人物档案）\n${context.companionVoiceCards}`)
+  }
+
   if (context.currentDraft) {
     parts.push(`## 当前草稿（请在此基础上续写或改写）\n${context.currentDraft}`)
   }
@@ -2131,9 +1949,30 @@ export function buildChapterBeatSystemPrompt() {
 输出要求：
 - 只输出章前小纲，不输出小说正文。
 - 只输出合法 JSON，不要 Markdown，不要解释前缀。
-- 只保留 chapterEvent、characterGoal、coreConflict、externalPressure、costOrLoss、irreversibleChange、endingHandoff 这 7 个字段；每个字段控制在 60-120 个中文字符以内。
+- 必须保留 chapterEvent、characterGoal、coreConflict、externalPressure、costOrLoss、irreversibleChange、endingHandoff 这 7 个核心字段；可补充少量情绪锚点辅助字段。
 - 小纲总长度控制在 500-900 字，节拍控制在 4-6 条。
 - JSON 字段必须完整、具体、可校验；不要用“更理解规则”“线索更清楚”这类抽象话代替事件。`
+}
+
+function formatStoryBlockHumanityTaskForBeatPlan(block = null) {
+  if (!block) return ''
+  const nested = block.lockState?.storyHumanity || block.storyHumanity || {}
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = block[key] ?? nested[key]
+      const text = String(value || '').replace(/\s+/g, ' ').trim()
+      if (text) return text
+    }
+    return ''
+  }
+  const lines = [
+    pick('relationshipFocus', 'relationship_focus') ? `relationshipFocus：${pick('relationshipFocus', 'relationship_focus')}` : '',
+    pick('relationshipStart', 'relationship_start') ? `relationshipStart：${pick('relationshipStart', 'relationship_start')}` : '',
+    pick('relationshipTask', 'relationship_task') ? `relationshipTask：${pick('relationshipTask', 'relationship_task')}` : '',
+    pick('relationshipEndHint', 'relationship_end_hint', 'relationshipEnd') ? `relationshipEndHint：${pick('relationshipEndHint', 'relationship_end_hint', 'relationshipEnd')}` : '',
+    pick('sceneVarietyHint', 'scene_variety_hint') ? `sceneVarietyHint：${pick('sceneVarietyHint', 'scene_variety_hint')}` : ''
+  ].filter(Boolean)
+  return lines.join('\n')
 }
 
 export function buildChapterBeatPrompt(context) {
@@ -2159,6 +1998,11 @@ export function buildChapterBeatPrompt(context) {
 
   const chapterGoal = formatChapterGoal(context.chapterGoal)
   if (chapterGoal) parts.push(`## 本章目标\n${chapterGoal}`)
+
+  const storyBlockHumanityTask = formatStoryBlockHumanityTaskForBeatPlan(context.storyBlock)
+  if (storyBlockHumanityTask) {
+    parts.push(`## 故事块人物关系任务（轻量参考）\n${storyBlockHumanityTask}`)
+  }
 
   const nearOutline = formatNearOutline(context.nearOutline)
   if (nearOutline) parts.push(`## 卷级方向参考（低优先级，nearOutline 仅供参考）\n${nearOutline}`)
@@ -2196,6 +2040,8 @@ ${context.wordTarget?.target ? `本章按约 ${context.wordTarget.target} 字体
 - 如果最近章节已经反复使用编号门、编号凭证、编号画布或编号档案，编号序列必须合并、跳过、反转、关闭，或让敌方/现实地点/关系变化打断它。
 - 不要把一章写成“进入编号对象 -> 观看/感知 -> 选择 -> 离开”的重复流程；让外部压力、人物行动、关系摩擦或阶段性答案推动故事。
 - 卷目标接力落在本章发生的证据、阻挠、追击、封锁、关系破裂、道具失效或代价兑现上。
+- 可补充轻量人物锚点：protagonistImmediateWant、emotionalAnchor、misbeliefOrFear、relationshipDelta、stageAnswerForReader。它们帮助规划人物欲望、嘴硬/害怕、关系变化和读者阶段答案，不是煽情任务。
+- 设定呈现优先按行动后果走：人物尝试 -> 出事 -> 付代价 -> 别人反应 -> 主角只总结一点点。
 
 输出格式必须是严格合法 JSON，不要 Markdown；只输出 JSON，不要解释：
 
@@ -2209,7 +2055,12 @@ ${structuredBeatPlanJsonSchemaText()}
 - costOrLoss：选择造成什么损失、牺牲或后遗症。
 - irreversibleChange：关系、线索、地点、目标、代价或敌我态势至少有一项发生可验证变化。
 - endingHandoff：结尾把动作、关系、物件状态或问题交给下一章。
-- 每个字段 60-120 个中文字符以内；不要把字段写成长段正文，不要补充 schema 外字段。
+- protagonistImmediateWant：主角本章最想要什么，写眼下欲望，不写抽象使命。
+- emotionalAnchor：本章情绪锚点，可以是父亲、亏欠、害怕失去、嘴硬或不愿承认的事。
+- misbeliefOrFear：主角误解、害怕、嘴硬或想隐瞒的点。
+- relationshipDelta：本章人物关系发生的轻微变化。
+- stageAnswerForReader：本章给读者的阶段性答案，避免只抛新问题。
+- 每个字段 60-120 个中文字符以内；不要把字段写成长段正文，辅助字段可短写或省略。
 
 要求：
 - 时间线连续性：节拍按自然时间和因果顺序排列。

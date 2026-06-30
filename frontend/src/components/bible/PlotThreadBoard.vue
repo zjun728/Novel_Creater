@@ -1,11 +1,21 @@
 <script setup>
-import { computed } from 'vue'
-import { NCard, NTag, NCollapse, NCollapseItem } from 'naive-ui'
+import { computed, ref } from 'vue'
+import { NButton, NCard, NTag, NCollapse, NCollapseItem } from 'naive-ui'
+import {
+  classifyPlotThreads,
+  latestPlotThreadChapter,
+  latestPlotThreadSummary,
+  plotThreadNodeSummary
+} from '@/utils/plotThreadClassifier'
 
 const props = defineProps({
   plotThreads: { type: Array, default: () => [] },
-  chapters: { type: Array, default: () => [] }
+  chapters: { type: Array, default: () => [] },
+  canonFacts: { type: Array, default: () => [] },
+  currentVolume: { type: Object, default: null },
+  syncing: { type: Boolean, default: false }
 })
+defineEmits(['sync'])
 
 const statusConfig = {
   candidate: { label: '候选', color: 'default' },
@@ -16,122 +26,309 @@ const statusConfig = {
   abandoned: { label: '已放弃', color: 'default' }
 }
 
-const columns = ['planted', 'developing', 'resolved', 'abandoned']
+const typeConfig = {
+  mainline: { label: '主线', color: 'error' },
+  character: { label: '人物', color: 'info' },
+  prop: { label: '道具', color: 'warning' },
+  faction: { label: '势力', color: 'default' },
+  setting: { label: '设定', color: 'success' },
+  other: { label: '其他', color: 'default' }
+}
 
-const threadsByStatus = computed(() => {
-  const map = {}
-  for (const col of columns) {
-    map[col] = props.plotThreads.filter(t => t.status === col)
+const selectedFilter = ref('all')
+
+function normalizeThreadList(value) {
+  if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (!text) return []
+    try {
+      const parsed = JSON.parse(text)
+      if (Array.isArray(parsed)) return parsed.map(item => String(item || '').trim()).filter(Boolean)
+    } catch {}
+    return text.split(/[，,；;]/).map(item => item.trim()).filter(Boolean)
   }
-  // catch-all for other statuses
-  map._other = props.plotThreads.filter(t => !columns.includes(t.status))
-  return map
+  return []
+}
+
+const hasUnsyncedCanonThreadTags = computed(() =>
+  !props.plotThreads.length &&
+  props.canonFacts.some(fact =>
+    (fact.status || 'accepted') === 'accepted' &&
+    normalizeThreadList(fact.relatedPlotThreads || fact.related_plot_threads || fact.threadTags || fact.tags).length > 0
+  )
+)
+
+const classifiedThreads = computed(() => classifyPlotThreads(props.plotThreads))
+
+function threadStatus(thread) {
+  return statusConfig[thread.status] || { label: thread.status || '未知', color: 'default' }
+}
+
+function threadType(thread) {
+  return typeConfig[thread.threadType || thread.thread_type || 'other'] || typeConfig.other
+}
+
+function plantedChapter(thread) {
+  return Number(thread.plantedChapter || thread.planted_chapter || 0)
+}
+
+function resolvedChapter(thread) {
+  return Number(thread.resolvedChapter || thread.resolved_chapter || 0)
+}
+
+function relatedCharacters(thread) {
+  return normalizeThreadList(thread.relatedCharacters || thread.related_characters)
+}
+
+function inCurrentVolume(thread) {
+  if (!props.currentVolume) return true
+  const start = Number(props.currentVolume.startChapter || props.currentVolume.start_chapter || 0)
+  const end = Number(props.currentVolume.endChapter || props.currentVolume.end_chapter || 0)
+  if (!start || !end) return true
+  const chapters = [plantedChapter(thread), latestPlotThreadChapter(thread), resolvedChapter(thread)].filter(Boolean)
+  return chapters.some(chapterNum => chapterNum >= start && chapterNum <= end)
+}
+
+function sortThreads(threads) {
+  const statusOrder = { developing: 0, planted: 1, resolved: 2, transformed: 3, abandoned: 4, candidate: 5 }
+  return [...threads].sort((a, b) =>
+    (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9) ||
+    Number(latestPlotThreadChapter(b) || 0) - Number(latestPlotThreadChapter(a) || 0) ||
+    String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hans-CN')
+  )
+}
+
+const stats = computed(() => {
+  const real = classifiedThreads.value.filter(thread => thread.threadClass === 'real_thread')
+  const future = classifiedThreads.value.filter(thread => thread.threadClass === 'future_candidate')
+  const system = classifiedThreads.value.filter(thread => thread.threadClass === 'system_tag')
+  return {
+    total: classifiedThreads.value.length,
+    real: real.length,
+    future: future.length,
+    system: system.length,
+    planted: real.filter(thread => thread.status === 'planted').length,
+    developing: real.filter(thread => thread.status === 'developing').length,
+    resolved: real.filter(thread => thread.status === 'resolved').length,
+    current: real.filter(inCurrentVolume).length
+  }
 })
 
-function chapterDots(thread) {
-  if (!props.chapters.length) return []
-  return props.chapters.map(ch => {
-    const planted = thread.plantedChapter === ch.chapterNum
-    const resolved = thread.resolvedChapter === ch.chapterNum
-    return { chapterNum: ch.chapterNum, planted, resolved }
+const filterOptions = computed(() => [
+  { key: 'all', label: '全部', count: stats.value.real },
+  { key: 'current', label: '当前卷', count: stats.value.current },
+  { key: 'planted', label: '已埋设', count: stats.value.planted },
+  { key: 'developing', label: '推进中', count: stats.value.developing },
+  { key: 'resolved', label: '已回收', count: stats.value.resolved },
+  { key: 'future', label: '未来候选', count: stats.value.future },
+  { key: 'system', label: '系统标签', count: stats.value.system }
+])
+
+const visibleThreads = computed(() => {
+  const selected = selectedFilter.value
+  const threads = classifiedThreads.value.filter(thread => {
+    if (selected === 'future') return thread.threadClass === 'future_candidate'
+    if (selected === 'system') return thread.threadClass === 'system_tag'
+    if (thread.threadClass !== 'real_thread') return false
+    if (selected === 'current') return inCurrentVolume(thread)
+    if (['planted', 'developing', 'resolved'].includes(selected)) return thread.status === selected
+    return true
   })
-}
+  return sortThreads(threads)
+})
+
+const visibleTitle = computed(() => {
+  const option = filterOptions.value.find(item => item.key === selectedFilter.value)
+  return option?.label || '全部'
+})
 </script>
 
 <template>
   <div>
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="text-lg font-semibold text-gray-700">伏笔看板</h3>
-      <span class="text-xs text-gray-400">{{ plotThreads.length }} 条伏笔</span>
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+      <div>
+        <h3 class="text-lg font-semibold text-gray-700">伏笔看板</h3>
+        <p v-if="plotThreads.length" class="text-xs text-gray-400 mt-0.5">
+          默认显示 {{ stats.real }} 条真实伏笔；{{ stats.future }} 条未来候选、{{ stats.system }} 条系统标签已折叠
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-gray-400">总计 {{ stats.total }} 条</span>
+        <n-button size="tiny" :loading="syncing" @click="$emit('sync')">重新同步</n-button>
+      </div>
     </div>
 
     <div v-if="!plotThreads.length" class="text-center text-gray-400 text-sm py-8">
-      暂无伏笔数据，定稿章节后系统会自动提取伏笔
+      <template v-if="hasUnsyncedCanonThreadTags">
+        <div>已有线索标签，尚未同步到伏笔看板</div>
+        <n-button size="small" class="mt-3" :loading="syncing" @click="$emit('sync')">
+          同步伏笔看板
+        </n-button>
+      </template>
+      <template v-else>
+        暂无伏笔数据
+      </template>
     </div>
 
-    <div v-else class="overflow-x-auto">
-      <!-- 章节时间线 -->
-      <div v-if="chapters.length" class="flex items-center gap-0.5 mb-4 px-1">
-        <span class="text-xs text-gray-400 w-12 flex-shrink-0">章节</span>
-        <div
-          v-for="ch in chapters"
-          :key="ch.id"
-          class="w-5 text-center text-[10px] text-gray-400"
+    <div v-else>
+      <div class="flex flex-wrap gap-2 mb-4">
+        <button
+          v-for="option in filterOptions"
+          :key="option.key"
+          type="button"
+          :class="[
+            'filter-chip',
+            selectedFilter === option.key ? 'filter-chip--active' : ''
+          ]"
+          @click="selectedFilter = option.key"
         >
-          {{ ch.chapterNum }}
-        </div>
+          <span>{{ option.label }}</span>
+          <span class="filter-chip__count">{{ option.count }}</span>
+        </button>
       </div>
 
-      <!-- Kanban 列 -->
-      <div class="flex gap-3" style="min-width: 720px">
-        <div
-          v-for="col in columns"
-          :key="col"
-          class="flex-1 min-w-0"
+      <div v-if="!visibleThreads.length" class="text-center text-gray-400 text-sm py-8">
+        {{ visibleTitle }}暂无可显示条目
+      </div>
+
+      <div v-else class="thread-grid">
+        <n-card
+          v-for="thread in visibleThreads"
+          :key="thread.id || thread.title"
+          size="small"
+          class="thread-card"
         >
-          <div class="flex items-center gap-1 mb-2">
-            <n-tag :type="statusConfig[col].color" size="tiny" :bordered="false">
-              {{ statusConfig[col].label }}
-            </n-tag>
-            <span class="text-xs text-gray-400">{{ threadsByStatus[col].length }}</span>
-          </div>
-
-          <div class="space-y-2">
-            <n-card
-              v-for="thread in threadsByStatus[col]"
-              :key="thread.id"
-              size="small"
-              class="thread-card"
-            >
-              <div class="text-sm font-medium text-gray-700 truncate">{{ thread.title }}</div>
-              <p class="text-xs text-gray-500 mt-1 line-clamp-2">{{ thread.content }}</p>
-
-              <div class="flex items-center gap-1 mt-2 flex-wrap">
-                <n-tag
-                  v-for="(ch, i) in (thread.relatedCharacters || [])"
-                  :key="i"
-                  size="tiny"
-                  :bordered="true"
-                >
-                  {{ ch }}
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="text-sm font-semibold text-gray-700 truncate">{{ thread.title }}</div>
+              <div class="flex items-center gap-1 mt-1 flex-wrap">
+                <n-tag :type="threadType(thread).color" size="tiny" :bordered="false">
+                  {{ threadType(thread).label }}
+                </n-tag>
+                <n-tag :type="threadStatus(thread).color" size="tiny" :bordered="false">
+                  {{ threadStatus(thread).label }}
                 </n-tag>
               </div>
-
-              <!-- 章节标记点 -->
-              <div class="flex items-center gap-0.5 mt-2">
-                <div
-                  v-for="dot in chapterDots(thread)"
-                  :key="dot.chapterNum"
-                  :class="[
-                    'w-3 h-3 rounded-full',
-                    dot.planted && dot.resolved ? 'bg-purple-400' :
-                    dot.planted ? 'bg-blue-400' :
-                    dot.resolved ? 'bg-green-400' : 'bg-gray-100'
-                  ]"
-                  :title="`第${dot.chapterNum}章${dot.planted ? ' (埋设)' : ''}${dot.resolved ? ' (回收)' : ''}`"
-                />
-              </div>
-
-              <!-- 展开详情 -->
-              <n-collapse v-if="thread.plantedChapter || thread.resolvedChapter || thread.notes" class="mt-1">
-                <n-collapse-item title="详情" name="detail">
-                  <div class="text-xs text-gray-500 space-y-1">
-                    <div v-if="thread.plantedChapter">埋设章节：第 {{ thread.plantedChapter }} 章</div>
-                    <div v-if="thread.resolvedChapter">回收章节：第 {{ thread.resolvedChapter }} 章</div>
-                    <div v-if="thread.notes">备注：{{ thread.notes }}</div>
-                  </div>
-                </n-collapse-item>
-              </n-collapse>
-            </n-card>
+            </div>
+            <span v-if="latestPlotThreadChapter(thread)" class="chapter-badge">
+              第 {{ latestPlotThreadChapter(thread) }} 章
+            </span>
           </div>
-        </div>
+
+          <div class="thread-meta">
+            <span v-if="plantedChapter(thread)">首次：第 {{ plantedChapter(thread) }} 章</span>
+            <span v-if="latestPlotThreadChapter(thread)">最近：第 {{ latestPlotThreadChapter(thread) }} 章</span>
+            <span v-if="resolvedChapter(thread)">回收：第 {{ resolvedChapter(thread) }} 章</span>
+          </div>
+
+          <p class="thread-summary">
+            {{ latestPlotThreadSummary(thread) || thread.content || '暂无推进摘要' }}
+          </p>
+
+          <div v-if="plotThreadNodeSummary(thread)" class="node-summary">
+            {{ plotThreadNodeSummary(thread) }}
+          </div>
+
+          <div v-if="relatedCharacters(thread).length" class="flex items-center gap-1 mt-2 flex-wrap">
+            <n-tag
+              v-for="character in relatedCharacters(thread)"
+              :key="character"
+              size="tiny"
+              :bordered="true"
+            >
+              {{ character }}
+            </n-tag>
+          </div>
+
+          <n-collapse v-if="thread.content || thread.notes" class="mt-2">
+            <n-collapse-item title="详情" name="detail">
+              <div class="text-xs text-gray-500 space-y-1 leading-relaxed">
+                <div v-if="thread.content">内容：{{ thread.content }}</div>
+                <div v-if="thread.notes">备注：{{ thread.notes }}</div>
+              </div>
+            </n-collapse-item>
+          </n-collapse>
+        </n-card>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #4b5563;
+  background: #fff;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.filter-chip--active {
+  border-color: #2563eb;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.filter-chip__count {
+  color: #9ca3af;
+}
+
+.thread-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
 .thread-card {
   cursor: default;
+  border-radius: 6px;
+}
+
+.chapter-badge {
+  flex-shrink: 0;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #64748b;
+  background: #f1f5f9;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.thread-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.thread-summary {
+  min-height: 36px;
+  margin-top: 8px;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.node-summary {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: #475569;
+  background: #f8fafc;
+  font-size: 12px;
+  line-height: 1.4;
 }
 </style>

@@ -18,6 +18,7 @@ import {
   buildStoryBlockReviewSemanticRepairPrompt,
   normalizeStoryBlockReviewResult
 } from '@/prompts/storyBlockPrompt'
+import { enforceStageContinuationSettlement } from '@/utils/storyBlockStageSettlement'
 
 const STORY_BLOCK_REVIEW_TIMEOUT_MS = 240000
 const STORY_BLOCK_REVIEW_REPAIR_TIMEOUT_MS = 90000
@@ -73,14 +74,20 @@ export const useStoryBlockStore = defineStore('storyBlock', () => {
   }
 
   async function updateRemainingStages(projectId, blockId, payload = {}) {
-    const result = await api.storyBlocks.updateRemainingStages(projectId, blockId, {
-      stagePlan: payload.stagePlan || [],
+    const body = {
       nextStageSuggestion: payload.nextStageSuggestion || '',
       unresolvedQuestions: normalizeList(payload.unresolvedQuestions),
       dontAdvanceYet: normalizeList(payload.dontAdvanceYet),
       carryOverToNextChapter: normalizeList(payload.carryOverToNextChapter),
       capacityAssessment: payload.capacityAssessment || 'normal'
-    })
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'stagePlan')) {
+      body.stagePlan = payload.stagePlan || []
+    }
+    if (payload.stagePlanPatchMode) {
+      body.stagePlanPatchMode = payload.stagePlanPatchMode
+    }
+    const result = await api.storyBlocks.updateRemainingStages(projectId, blockId, body)
     upsertBlock(result)
     if (activeBlock.value?.id === result.id) activeBlock.value = result
     return result
@@ -265,6 +272,16 @@ export const useStoryBlockStore = defineStore('storyBlock', () => {
 })
 
 function normalizeStoryBlockPayload(payload = {}) {
+  const storyHumanity = normalizeStoryBlockHumanity(payload)
+  const lockState = {
+    ...(payload.lockState || {})
+  }
+  if (Object.keys(storyHumanity).length) {
+    lockState.storyHumanity = {
+      ...(lockState.storyHumanity || {}),
+      ...storyHumanity
+    }
+  }
   return {
     volumeId: payload.volumeId || null,
     blockNum: payload.blockNum,
@@ -284,8 +301,28 @@ function normalizeStoryBlockPayload(payload = {}) {
     carryOverToNextChapter: normalizeList(payload.carryOverToNextChapter),
     capacityAssessment: payload.capacityAssessment || 'normal',
     chapterRefs: normalizeList(payload.chapterRefs),
-    lockState: payload.lockState || {}
+    lockState
   }
+}
+
+function normalizeStoryBlockHumanity(payload = {}) {
+  const nested = payload.lockState?.storyHumanity || payload.storyHumanity || {}
+  return Object.fromEntries([
+    ['relationshipFocus', pickStoryBlockHumanityField(payload, nested, 'relationshipFocus', 'relationship_focus')],
+    ['relationshipStart', pickStoryBlockHumanityField(payload, nested, 'relationshipStart', 'relationship_start')],
+    ['relationshipTask', pickStoryBlockHumanityField(payload, nested, 'relationshipTask', 'relationship_task')],
+    ['relationshipEndHint', pickStoryBlockHumanityField(payload, nested, 'relationshipEndHint', 'relationship_end_hint', 'relationshipEnd')],
+    ['sceneVarietyHint', pickStoryBlockHumanityField(payload, nested, 'sceneVarietyHint', 'scene_variety_hint')]
+  ].filter(([, value]) => value))
+}
+
+function pickStoryBlockHumanityField(payload = {}, nested = {}, ...keys) {
+  for (const key of keys) {
+    const value = payload[key] ?? nested[key]
+    const text = String(value || '').replace(/\s+/g, ' ').trim()
+    if (text) return text.slice(0, 160)
+  }
+  return ''
 }
 
 function resolveSingleActiveBlock(blocksToCheck = []) {
@@ -338,7 +375,9 @@ async function reviewStoryBlockJsonWithRepair(provider, rawText, diagnostics = {
 
 async function ensureValidStoryBlockReview(provider, review = {}, context = {}, diagnostics = {}) {
   const normalized = normalizeStageContinueReason(review)
-  if (!isInvalidStageContinuationReview(normalized)) return normalized
+  if (!isInvalidStageContinuationReview(normalized)) {
+    return enforceStoryBlockStageSettlement(normalized, context, diagnostics)
+  }
 
   diagnostics.semanticRepairTriggered = true
   diagnostics.semanticRepairIssue = 'stage_continue_reason_missing'
@@ -349,10 +388,10 @@ async function ensureValidStoryBlockReview(provider, review = {}, context = {}, 
     diagnostics.semanticRepairRawTail = repair.rawText.slice(-800)
     const repaired = normalizeStageContinueReason(normalizeStoryBlockReviewResult(repair.parsed))
     if (!isInvalidStageContinuationReview(repaired)) {
-      return {
+      return enforceStoryBlockStageSettlement({
         ...repaired,
         semanticRepairApplied: true
-      }
+      }, context, diagnostics)
     }
     diagnostics.semanticRepairSucceeded = false
     diagnostics.semanticRepairError = 'stage_continue_reason_missing_after_repair'
@@ -361,7 +400,26 @@ async function ensureValidStoryBlockReview(provider, review = {}, context = {}, 
     diagnostics.semanticRepairError = error.message || String(error)
   }
 
-  return degradeInvalidStageContinuationReview(normalized)
+  return enforceStoryBlockStageSettlement(degradeInvalidStageContinuationReview(normalized), context, diagnostics)
+}
+
+function enforceStoryBlockStageSettlement(review = {}, context = {}, diagnostics = {}) {
+  const settled = enforceStageContinuationSettlement(review, context)
+  if (settled.settlementDecision) {
+    diagnostics.stageSettlementApplied = true
+    diagnostics.settlementDecision = settled.settlementDecision
+    diagnostics.stageContinuationDepth = settled.stageContinuationDepth || 0
+    diagnostics.previousOpenStageId = settled.previousOpenStageId || ''
+    diagnostics.settlementEvidence = settled.settlementEvidence || []
+    diagnostics.equivalentCompletionScope = settled.equivalentCompletionScope || ''
+    diagnostics.futureStageTouched = Boolean(settled.futureStageTouched)
+    diagnostics.futureStageEvidence = settled.futureStageEvidence || []
+    diagnostics.futureStageOverClosed = Boolean(settled.futureStageOverClosed)
+    diagnostics.needsFutureStageReplan = Boolean(settled.needsFutureStageReplan)
+    diagnostics.replanRemainingStages = Boolean(settled.replanRemainingStages)
+    diagnostics.whetherStageClosedBeforeNextBeatPlan = Boolean(settled.whetherStageClosedBeforeNextBeatPlan)
+  }
+  return settled
 }
 
 function normalizeStageContinueReason(review = {}) {
@@ -715,6 +773,11 @@ function normalizeStoryBlockPlanningResult(raw = {}, context = {}) {
     exitTarget: raw.exitTarget || raw.exit_target || '',
     mainPressure: raw.mainPressure || raw.main_pressure || '',
     keyCharacters: raw.keyCharacters || raw.key_characters || [],
+    relationshipFocus: raw.relationshipFocus || raw.relationship_focus || '',
+    relationshipStart: raw.relationshipStart || raw.relationship_start || '',
+    relationshipTask: raw.relationshipTask || raw.relationship_task || '',
+    relationshipEndHint: raw.relationshipEndHint || raw.relationship_end_hint || raw.relationshipEnd || '',
+    sceneVarietyHint: raw.sceneVarietyHint || raw.scene_variety_hint || '',
     stagePlan: stagePlan.length ? stagePlan : [{ id: 'stage-1', purpose: raw.nextStageSuggestion || '承接当前剧情', status: 'planned' }],
     completedStages: [],
     nextStageSuggestion: raw.nextStageSuggestion || raw.next_stage_suggestion || '',

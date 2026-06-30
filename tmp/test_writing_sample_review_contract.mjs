@@ -93,14 +93,17 @@ test('summarizeWritingSampleReport exposes counts for frontend review cards', ()
   assert.deepEqual(summary.genreTags, ['修仙', '悬疑'])
 })
 
-test('settings page exposes writing sample review entry and local report is bundled safely', () => {
+test('settings page no longer exposes the legacy writing sample review panel', () => {
   const settings = fs.readFileSync('frontend/src/views/SettingsView.vue', 'utf8')
-  const component = fs.readFileSync('frontend/src/components/settings/WritingSampleReview.vue', 'utf8')
+  const router = fs.readFileSync('frontend/src/router/index.js', 'utf8')
+  const sidebar = fs.readFileSync('frontend/src/components/layout/Sidebar.vue', 'utf8')
+  const legacyComponentPath = 'frontend/src/components/settings/WritingSampleReview.vue'
   const reportJson = JSON.parse(fs.readFileSync('frontend/src/data/localWritingSampleReport.json', 'utf8'))
 
-  assert.match(settings, /WritingSampleReview/)
-  assert.match(component, /写作样本审核/)
-  assert.match(component, /合并为待审核标准/)
+  assert.doesNotMatch(settings, /WritingSampleReview/)
+  assert.equal(fs.existsSync(legacyComponentPath), false)
+  assert.match(router, /\/experience-cards/)
+  assert.match(sidebar, /创作经验卡/)
   assert.ok(reportJson.cards.length >= 1)
   assert.equal(['rawExcerpt', 'sourceText'].some(key => Object.hasOwn(reportJson.cards[0], key)), false)
 })

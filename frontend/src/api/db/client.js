@@ -46,6 +46,15 @@ const post = (path, body) => request('POST', path, body)
 const put = (path, body) => request('PUT', path, body)
 const del = (path) => request('DELETE', path)
 
+function queryString(params = {}) {
+  const qs = new URLSearchParams()
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') qs.set(key, value)
+  })
+  const query = qs.toString()
+  return query ? `?${query}` : ''
+}
+
 export const api = {
   // === 健康检查 ===
   health: () => get('/health'),
@@ -185,6 +194,7 @@ export const api = {
   // === 伏笔 ===
   plotThreads: {
     list: (projectId) => get(`/projects/${projectId}/plot-threads`),
+    syncFromCanonFacts: (projectId) => post(`/projects/${projectId}/plot-threads/sync-canon-facts`),
     create: (projectId, data) => post(`/projects/${projectId}/plot-threads`, data),
     update: (projectId, threadId, data) => put(`/projects/${projectId}/plot-threads/${threadId}`, data),
     delete: (projectId, threadId) => del(`/projects/${projectId}/plot-threads/${threadId}`),
@@ -243,6 +253,46 @@ export const api = {
       delete: (projectId, eventId) => del(`/projects/${projectId}/settings/change-events/${eventId}`),
     },
     clear: (projectId) => del(`/projects/${projectId}/settings`),
+  },
+
+  // === 创作经验卡 / 样本库 ===
+  experienceCards: {
+    seedLocalReport: () => post('/experience-cards/seed-local-report'),
+    seedPromptInjectableCards: () => post('/experience-cards/seed-prompt-injectable-cards'),
+    sources: {
+      list: (params = {}) => get(`/experience-cards/sources${queryString(params)}`),
+    },
+    cards: {
+      list: (params = {}) => get(`/experience-cards/cards${queryString(params)}`),
+      productList: (params = {}) => get(`/experience-cards/product/cards${queryString(params)}`),
+      create: (data) => post('/experience-cards/cards', data),
+      update: (cardId, data = {}) => put(`/experience-cards/cards/${cardId}`, data),
+      delete: (cardId) => del(`/experience-cards/cards/${cardId}`),
+      toggleActive: (cardId, data = {}) => post(`/experience-cards/cards/${cardId}/toggle-active`, data),
+      copy: (cardId, data = {}) => post(`/experience-cards/cards/${cardId}/copy`, data),
+      review: (cardId, data = {}) => post(`/experience-cards/cards/${cardId}/review`, data),
+      reject: (cardId, data = {}) => post(`/experience-cards/cards/${cardId}/reject`, data),
+      archive: (cardId, data = {}) => post(`/experience-cards/cards/${cardId}/archive`, data),
+    },
+    candidates: {
+      list: (params = {}) => get(`/experience-cards/candidates${queryString(params)}`),
+      create: (data) => post('/experience-cards/candidates', data),
+      update: (candidateId, data = {}) => put(`/experience-cards/candidates/${candidateId}`, data),
+      delete: (candidateId) => del(`/experience-cards/candidates/${candidateId}`),
+      addCards: (candidateId, data = {}) => post(`/experience-cards/candidates/${candidateId}/cards`, data),
+      removeCard: (candidateId, cardId) => del(`/experience-cards/candidates/${candidateId}/cards/${cardId}`),
+      generateStandard: (candidateId, data = {}) => post(`/experience-cards/candidates/${candidateId}/generate-standard`, data),
+      approve: (candidateId, data = {}) => post(`/experience-cards/candidates/${candidateId}/approve`, data),
+      reject: (candidateId, data = {}) => post(`/experience-cards/candidates/${candidateId}/reject`, data),
+      promote: (candidateId, data = {}) => post(`/experience-cards/candidates/${candidateId}/promote`, data),
+    },
+    standards: {
+      list: (params = {}) => get(`/experience-cards/standards${queryString(params)}`),
+      update: (standardId, data = {}) => put(`/experience-cards/standards/${standardId}`, data),
+      delete: (standardId) => del(`/experience-cards/standards/${standardId}`),
+      toggleActive: (standardId, data = {}) => post(`/experience-cards/standards/${standardId}/toggle-active`, data),
+      copy: (standardId, data = {}) => post(`/experience-cards/standards/${standardId}/copy`, data),
+    },
   },
 
   // === 导入导出 ===

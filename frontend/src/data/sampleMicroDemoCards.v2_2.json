@@ -1,0 +1,201 @@
+{
+  "version": "v2.2",
+  "promptReadyCardIds": [
+    "dialogue-v2_2-01-tough-care",
+    "dialogue-v2_2-02-old-debt",
+    "dialogue-v2_2-04-bargain",
+    "dialogue-v2_2-06-market-gossip",
+    "dialogue-v2_2-07-silence-deflection",
+    "dialogue-v2_2-09-failure-blame",
+    "dialogue-v2_2-10-intimate-useless-talk",
+    "dialogue-v2_2-11-fear-nonsense"
+  ],
+  "backendReferenceOnlyCardIds": [
+    "dialogue-v2_2-03-interrogate-back",
+    "dialogue-v2_2-05-threat-timer",
+    "dialogue-v2_2-08-bad-lie",
+    "dialogue-v2_2-12-status-distance"
+  ],
+  "dialoguePromptInjectableCards": [
+    {
+      "cardId": "dialogue-v2_2-01-tough-care",
+      "cardTitle": "嘴硬关心：嫌弃话里藏照顾",
+      "dialogueType": "嘴硬关心",
+      "promptInjectionSafeVersion": "关心先伪装成嫌弃、顺手、找借口，话不要说满。",
+      "originalMicroDemo": "她把药包扔过去：“别死在我门口，晦气。”他没接稳，药滚到脚边。她啧了一声，又蹲下替他捡：“手也坏了？”",
+      "antiSkeletonEffect": "避免直接说我担心你；让动作比嘴诚实一点。",
+      "originalMicroDemoCharCount": 58,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-02-old-debt",
+      "cardTitle": "旧识旧账：寒暄里翻旧债",
+      "dialogueType": "旧识旧账",
+      "promptInjectionSafeVersion": "旧识见面不要先解释关系，让旧称呼、旧习惯和一句翻账露出过去。",
+      "originalMicroDemo": "掌柜看了他半晌：“还这么会挑坏时候。”陆沉舟说：“你也还这么会装不认识。”掌柜把门闩往上提：“进来。欠你爹的账，不欠你站在街上挨刀。”",
+      "antiSkeletonEffect": "避免用回忆说明旧关系；让旧账在当前选择里出现。",
+      "originalMicroDemoCharCount": 73,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-03-interrogate-back",
+      "cardTitle": "审问反打：答话先问对方",
+      "dialogueType": "审问反打",
+      "promptInjectionSafeVersion": "被审问者不一定直接回答，可以抓住对方问题里的漏洞反问。",
+      "originalMicroDemo": "男人问：“账本在哪？”陆沉舟看着他袖口的泥：“你从东门来？”男人皱眉：“我问你账本。”陆沉舟说：“那你先告诉我，东门今晚为什么没人守。”",
+      "antiSkeletonEffect": "避免审问变成一问一答；让信息在攻防里漏出。",
+      "originalMicroDemoCharCount": 69,
+      "safetyCheck": {
+        "directImitationRisk": "medium",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-04-bargain",
+      "cardTitle": "讨价还价：谁更急谁先输",
+      "dialogueType": "讨价还价",
+      "promptInjectionSafeVersion": "交易对白先比谁更急，价格之外要有时间、风险和退路。",
+      "originalMicroDemo": "车夫伸出三根手指。青鸾说：“一根。”车夫看她袖口的血：“那你们走过去。”陆沉舟把玉牌压在桌上：“两根，另加一句实话。”车夫的眼神这才从血挪到玉牌上。",
+      "antiSkeletonEffect": "避免交易只报价格；让筹码改变双方姿态。",
+      "originalMicroDemoCharCount": 78,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-05-threat-timer",
+      "cardTitle": "威胁倒计时：话短但时间在动",
+      "dialogueType": "威胁倒计时",
+      "promptInjectionSafeVersion": "威胁不要长篇炫耀，给出时间、条件和一个能被验证的小动作。",
+      "originalMicroDemo": "缺指男人把香插进杯里：“烧到一半，人归我。”陆沉舟说：“太急了。”他笑笑，掐掉香头一截：“现在不急了。”",
+      "antiSkeletonEffect": "避免反派解释计划；让倒计时直接压缩选择。",
+      "originalMicroDemoCharCount": 55,
+      "safetyCheck": {
+        "directImitationRisk": "medium",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-06-market-gossip",
+      "cardTitle": "市井闲话：废话里漏线索",
+      "dialogueType": "市井闲话",
+      "promptInjectionSafeVersion": "闲话先服务说话人的日常抱怨，线索顺手漏出来，不要像汇报。",
+      "originalMicroDemo": "卖饼的说：“东城这两日别去，连挑水的都绕路。”伙计问：“闹鬼？”他翻面饼子：“比鬼麻烦，鬼不收过路钱。”",
+      "antiSkeletonEffect": "避免路人像公告牌；先有闲话的生活来源。",
+      "originalMicroDemoCharCount": 55,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-07-silence-deflection",
+      "cardTitle": "沉默岔开：半截话比解释重",
+      "dialogueType": "沉默岔开",
+      "promptInjectionSafeVersion": "人物不想回答时，用沉默、转移物件、改问旁事来暴露压力。",
+      "originalMicroDemo": "青鸾问：“你早知道这钥匙不对？”陆沉舟把灯芯拨低，没有看她：“先把窗关上。”她站着没动。他又说：“外头风大。”",
+      "antiSkeletonEffect": "避免每个问题都被完整回答；回避本身也是信息。",
+      "originalMicroDemoCharCount": 59,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-08-bad-lie",
+      "cardTitle": "撒谎太差：破绽先被熟人听见",
+      "dialogueType": "拙劣撒谎",
+      "promptInjectionSafeVersion": "亲近关系里的谎话可以很笨，重点是对方听见破绽却暂时放过。",
+      "originalMicroDemo": "小九说：“我没疼。”话刚出口，她就吸了口气。陆沉舟看她一眼：“嗯，门槛疼。”她瞪他：“你最好闭嘴。”他果然闭了嘴，只把步子放慢。",
+      "antiSkeletonEffect": "避免隐瞒写成智斗；熟人会从小破绽里读出真实状态。",
+      "originalMicroDemoCharCount": 67,
+      "safetyCheck": {
+        "directImitationRisk": "medium",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-09-failure-blame",
+      "cardTitle": "失败后互相埋怨：边怪边补救",
+      "dialogueType": "失败后互相埋怨",
+      "promptInjectionSafeVersion": "失败后的埋怨不要停在吵架，嘴上怪人，手上一起收拾残局。",
+      "originalMicroDemo": "锁断了。青鸾说：“你就不能轻一点？”陆沉舟把断片从门缝里抠出来：“你刚才说快一点。”小九已经拖来木箱：“两位，能不能等门开了再分清谁比较蠢？”",
+      "antiSkeletonEffect": "避免失败后集体复盘；补救动作能让争执更活。",
+      "originalMicroDemoCharCount": 75,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-10-intimate-useless-talk",
+      "cardTitle": "亲近关系无效废话：多留一会儿",
+      "dialogueType": "亲近关系无效废话",
+      "promptInjectionSafeVersion": "亲近关系里可以有没用的话，它承担拖延、陪伴和不想走。",
+      "originalMicroDemo": "陆沉舟说：“灯快灭了。”小九说：“我看见了。”他又说：“油不多。”她看他：“你要是想坐，就坐，别拿灯当借口。”他停了停，还是坐下了。",
+      "antiSkeletonEffect": "避免熟人对话全是信息交换；没用的话能露出关系需求。",
+      "originalMicroDemoCharCount": 65,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-11-fear-nonsense",
+      "cardTitle": "恐惧里的胡扯：跑题是在撑住",
+      "dialogueType": "恐惧里的胡扯",
+      "promptInjectionSafeVersion": "人在害怕时不一定尖叫，可能胡扯、跑题、重复小事来撑住。",
+      "originalMicroDemo": "地下传来第二声响，小九忽然问：“你吃过冷馄饨吗？”青鸾愣住。她又说：“不好吃，皮会糊。”陆沉舟把刀横过来：“等出去，吃热的。”她点头，声音小了些：“那你别死。”",
+      "antiSkeletonEffect": "避免恐惧只有喊叫和说明；跑题能让害怕更像真人。",
+      "originalMicroDemoCharCount": 86,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "dialogue-v2_2-12-status-distance",
+      "cardTitle": "身份距离：称呼先划线",
+      "dialogueType": "身份距离",
+      "promptInjectionSafeVersion": "身份差异先体现在称呼、停顿和能不能坐下，不要用设定说明。",
+      "originalMicroDemo": "管事没有请他们坐，只把茶盏推到桌角：“二位问话可以，问完就走。”陆沉舟看着那只没倒茶的杯子：“看来我们还不算客。”管事笑了笑：“也还没算账。”",
+      "antiSkeletonEffect": "避免身份关系靠介绍；礼数本身能写出距离。",
+      "originalMicroDemoCharCount": 72,
+      "safetyCheck": {
+        "directImitationRisk": "medium",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    }
+  ]
+}

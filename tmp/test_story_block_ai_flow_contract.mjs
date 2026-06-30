@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 const store = readFileSync('frontend/src/stores/storyBlockStore.js', 'utf8')
 const writer = readFileSync('frontend/src/views/WriterView.vue', 'utf8')
 const prompt = readFileSync('frontend/src/prompts/storyBlockPrompt.js', 'utf8')
+const finalizationCommand = readFileSync('frontend/src/application/writer-flow/finalization-command.js', 'utf8')
 
 const legacyAdjust = ['adjust', 'current', 'block'].join('_')
 const obsoleteStatus = ['super', 'seded'].join('')
@@ -45,7 +46,12 @@ assert.match(reviewFn, /await storyBlockStore\.reviewStoryBlockWithAI/)
 assert.match(reviewFn, /loadChapterBeatPlan\(finalizedProjectId,\s*finalizedChapterNum\)/)
 assert.doesNotMatch(reviewFn, /if \(!blockId\) return null/)
 assert.match(reviewFn, /if \(!blockId[\s\S]{0,240}throw new Error/)
-assert.match(finalizeFn, /performStoryBlockReviewAfterFinalize[\s\S]{0,420}throw e/)
+assert.match(finalizeFn, /runFinalizeChapterCommand[\s\S]*performStoryBlockReviewAfterFinalize/)
+assert.match(
+  finalizationCommand,
+  /performStoryBlockReviewAfterFinalize\(results,\s*version,\s*chapterNum,\s*projectId\)[\s\S]*onStoryBlockReviewFailure[\s\S]*throw normalized/,
+  'finalization command must propagate story-block review failures after recording the callback'
+)
 assert.doesNotMatch(reviewFn, new RegExp(obsoleteAuditHint))
 assert.match(reviewFn, /review\.decision === 'adjust_remaining_stages'[\s\S]*storyBlockStore\.updateRemainingStages/)
 assert.match(reviewFn, /review\.decision === 'continue_current_block'[\s\S]*storyBlockStore\.updateRemainingStages/)

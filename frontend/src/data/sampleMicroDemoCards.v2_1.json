@@ -1,0 +1,249 @@
+{
+  "version": "v2.1",
+  "promptReadyCardIds": [
+    "scene-v2_1-01-supporting-life",
+    "scene-v2_1-02-scene-three-beats",
+    "scene-v2_1-03-small-answer-consequence",
+    "scene-v2_1-04-look-before-touch",
+    "scene-v2_1-05-relationship-half-step",
+    "scene-v2_1-06-wound-occupies-hand",
+    "scene-v2_1-07-object-forces-choice",
+    "scene-v2_1-08-rule-fails-once",
+    "scene-v2_1-09-idle-detail-pressure",
+    "scene-v2_1-10-old-debt-action",
+    "scene-v2_1-11-failure-repair",
+    "scene-v2_1-12-small-business",
+    "scene-v2_1-13-exit-has-price",
+    "scene-v2_1-14-emotion-without-name",
+    "scene-v2_1-15-answer-new-question",
+    "scene-v2_1-16-ending-on-action"
+  ],
+  "backendReferenceOnlyCardIds": [],
+  "promptInjectableCards": [
+    {
+      "cardId": "scene-v2_1-01-supporting-life",
+      "cardTitle": "配角先有自己的今天",
+      "promptInjectionSafeVersion": "配角帮忙前先露出自己的小目标、难处或损失，让帮助带着生活成本。",
+      "originalMicroDemo": "茶摊老板听完来意，先把锅盖压好：“问路可以，别站在我摊前问。刚赊出去两碗茶，再丢一个客人，我今晚就白忙。”他抹了抹手，朝巷口一偏下巴：“看见卖伞的没有？他知道，但他要先收摊。”",
+      "antiSkeletonEffect": "防止配角只负责递线索；先给他一个正在过的日子。",
+      "originalMicroDemoCharCount": 104,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-02-scene-three-beats",
+      "cardTitle": "场景三拍",
+      "promptInjectionSafeVersion": "场景停留按秩序、摩擦、微变三拍写，让地点改变角色判断。",
+      "originalMicroDemo": "药铺门口排着三个人，最前头的妇人攥着铜钱不松，伙计也不催。陆沉舟刚要插话，掌柜先把算盘扣住：“急症走后门，找人走侧门，买药排队。”话音落下，柜台下的小抽屉轻轻响了一声。",
+      "antiSkeletonEffect": "避免只堆气味和颜色；场景细节必须参与推进。",
+      "originalMicroDemoCharCount": 99,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-03-small-answer-consequence",
+      "cardTitle": "给一个小答案，再让后果开门",
+      "promptInjectionSafeVersion": "章节中段交付阶段答案，随后立刻让答案带出代价或新压力。",
+      "originalMicroDemo": "账页是真的，缺的却不是名字，而是一列日期。青鸾刚松一口气，陆沉舟把纸翻到背面：“日期能对上，说明有人按时收账。”他没再说下去，因为门外的脚步忽然停在了他们这一间。",
+      "antiSkeletonEffect": "避免线索只制造下一个任务；答案本身要带来后果。",
+      "originalMicroDemoCharCount": 91,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-04-look-before-touch",
+      "cardTitle": "先看一眼再伸手",
+      "promptInjectionSafeVersion": "高风险物件先观察、试探、问一个无害问题，再让角色做选择。",
+      "originalMicroDemo": "铁匣摆在桌下，锁眼干净得不像旧物。陆沉舟没碰，先把灯挪远半寸，又用筷子拨了拨匣边灰线。灰没断，桌腿却轻轻偏了一下。青鸾压低声：“你看锁？”他说：“我看的是谁舍不得让它沾灰。”",
+      "antiSkeletonEffect": "避免人物像执行任务一样伸手拿关键物；用观察体现谨慎和信息差。",
+      "originalMicroDemoCharCount": 106,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-05-relationship-half-step",
+      "cardTitle": "关系多停半步",
+      "promptInjectionSafeVersion": "关系变化不靠总结，靠多等半步、少问一句、递错又收回的动作落地。",
+      "originalMicroDemo": "小九说不用扶，话没落稳，手已经按在墙上。陆沉舟伸手，又在半路停住，只把灯递过去：“拿着，别照我。”她接得很快，嘴上还嫌：“你走路也碍事。”两人都没再提刚才那刀。",
+      "antiSkeletonEffect": "避免直接写两人关系缓和；让读者从动作里看见松动。",
+      "originalMicroDemoCharCount": 95,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-06-wound-occupies-hand",
+      "cardTitle": "伤口先占一只手",
+      "promptInjectionSafeVersion": "伤病和代价要持续占用动作，让人物选择变窄，而不是只在段落里被提到。",
+      "originalMicroDemo": "青鸾要去翻账册，右手刚抬起就停住，袖口又湿了一圈。她换左手，纸页翻得慢，最薄的一张反而粘在指尖。陆沉舟没有催，只把砚台往她那边推了推：“压着翻。”",
+      "antiSkeletonEffect": "避免伤势成为一次性说明；让伤口改变节奏和选择。",
+      "originalMicroDemoCharCount": 88,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-07-object-forces-choice",
+      "cardTitle": "物件带出选择",
+      "promptInjectionSafeVersion": "关键物件不只证明事实，还要迫使人物在保护、交换、销毁或带走之间选一边。",
+      "originalMicroDemo": "玉牌放在掌心很轻，背面的七个数字却像压住了屋里的气。掌柜问：“带走，还是让我替你烧掉？”陆沉舟看了一眼青鸾的伤，又看向门缝外的车影：“烧了能救人吗？”掌柜摇头。他把玉牌收进袖里。",
+      "antiSkeletonEffect": "避免道具只当线索标签；让物件立刻改变下一步行动。",
+      "originalMicroDemoCharCount": 103,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-08-rule-fails-once",
+      "cardTitle": "规则先用坏一次",
+      "promptInjectionSafeVersion": "新规则先通过一次失败、疼痛、让路或损失显形，再补最短解释。",
+      "originalMicroDemo": "令牌递过去后，门房没有接，反而往后退了半步。陆沉舟以为递错了面，刚要翻转，指尖忽然被铜边烫了一下。门房这才开口：“玉牌认的是时辰，不认人。过了三更，拿着就是债。”",
+      "antiSkeletonEffect": "避免站在原地背设定；先让规则碰到人。",
+      "originalMicroDemoCharCount": 95,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-09-idle-detail-pressure",
+      "cardTitle": "闲笔带压力",
+      "promptInjectionSafeVersion": "闲笔不要只装饰气氛，要暗暗提示时间、危险、身份或代价。",
+      "originalMicroDemo": "屋角的水盆一滴一滴漏，伙计每听三滴就看一次后门。青鸾以为他胆小，直到第四次时，门缝里伸进一只手，把盆往旁边挪了寸许。水声停了，外头的人也不再装路过。",
+      "antiSkeletonEffect": "避免生活细节漂浮；闲笔要让压力变得可见。",
+      "originalMicroDemoCharCount": 89,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-10-old-debt-action",
+      "cardTitle": "旧账换一个动作",
+      "promptInjectionSafeVersion": "旧恩旧怨少用解释，先让人物多做或少做一个不合常理的动作。",
+      "originalMicroDemo": "老头说不认识陆长庚，手却先把最靠里的凳子踢出来。陆沉舟坐下时，凳脚刚好避开地上的暗扣。青鸾看了他一眼，老头端茶的手稳得很：“我这人记性不好，只记得谁救过命。”",
+      "antiSkeletonEffect": "避免用长篇回忆讲旧关系；让旧账先变成当前选择。",
+      "originalMicroDemoCharCount": 96,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-11-failure-repair",
+      "cardTitle": "失败后先补救",
+      "promptInjectionSafeVersion": "行动失败后别急着复盘，先写人物如何遮掩、收拾残局或互相埋怨。",
+      "originalMicroDemo": "锁簧断在里面，三个人同时静了一下。小九先骂：“谁让你用蛮力？”陆沉舟把断针塞进袖口：“你刚才说快。”青鸾已经蹲下去扫地上的铜屑：“吵完了吗？还有一扇窗可以坏。”",
+      "antiSkeletonEffect": "避免失败只成为下一轮任务提示；补救动作会产生真人感。",
+      "originalMicroDemoCharCount": 91,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-12-small-business",
+      "cardTitle": "小人物自己的买卖",
+      "promptInjectionSafeVersion": "市井人物帮忙时保留他的生意、账本、规矩和怕惹麻烦的边界。",
+      "originalMicroDemo": "车夫听见要去东城，先把马嚼子摘下来：“夜路加钱，带伤的人再加。”陆沉舟还没开口，他又补一句：“不是讹你，马也会怕血味。”青鸾笑了一声，车夫立刻别开脸：“笑也加钱。”",
+      "antiSkeletonEffect": "避免小人物全员热心；生活算盘能让世界更稳。",
+      "originalMicroDemoCharCount": 92,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-13-exit-has-price",
+      "cardTitle": "退路先说价",
+      "promptInjectionSafeVersion": "退路不要免费出现，先标出它的价格、风险或会伤到谁。",
+      "originalMicroDemo": "暗门能走，但只开半炷香。掌柜把钥匙搁在桌上，没有推过来：“出去以后别回头，回头门会锁死。”陆沉舟问：“你呢？”掌柜笑了一下：“我这把老骨头不值钱，值钱的是你们别把追兵带回街上。”",
+      "antiSkeletonEffect": "避免临时出口像作者救场；退路要有现实成本。",
+      "originalMicroDemoCharCount": 101,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-14-emotion-without-name",
+      "cardTitle": "情绪不报名字",
+      "promptInjectionSafeVersion": "不急着写害怕、愧疚或动摇，用手上动作、视线停顿和错误选择表现。",
+      "originalMicroDemo": "陆沉舟听见小九的名字，先把账页折错了一角。他又慢慢抚平，像那点折痕比消息更要紧。青鸾没有催，只问：“要我念第二遍吗？”他说不用，声音却比刚才低了一截。",
+      "antiSkeletonEffect": "避免情绪标签化；让身体先说话。",
+      "originalMicroDemoCharCount": 88,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-15-answer-new-question",
+      "cardTitle": "短答案带新问题",
+      "promptInjectionSafeVersion": "解开一个疑点后，马上露出更具体的新问题，而不是只喊更大阴谋。",
+      "originalMicroDemo": "账房承认玉牌能进商盟，却不肯说第七个数字。陆沉舟把纸推回去：“前六个够开门？”账房点头。青鸾问：“第七个呢？”他看向窗外那辆没挂灯的车：“第七个是出来以后用的。”",
+      "antiSkeletonEffect": "避免章尾空泛悬念；新问题要具体到物件、时间或选择。",
+      "originalMicroDemoCharCount": 96,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    },
+    {
+      "cardId": "scene-v2_1-16-ending-on-action",
+      "cardTitle": "章尾落动作",
+      "promptInjectionSafeVersion": "章节结尾落在一个可承接动作上，少用总结句替代余波。",
+      "originalMicroDemo": "青鸾把最后一页账折进衣襟，手指在伤口旁停了一下。陆沉舟已经推开后窗，外头的雨声比刚才密。她没有问去哪，只把灯吹灭一半：“剩下半盏，留给回来的人。”",
+      "antiSkeletonEffect": "避免用总结宣告关系或局势变化；动作能把下一章接住。",
+      "originalMicroDemoCharCount": 88,
+      "safetyCheck": {
+        "directImitationRisk": "low",
+        "containsSourceNameInPromptText": false,
+        "containsSourceCharacters": false,
+        "containsLongQuote": false
+      }
+    }
+  ],
+  "dialoguePromptInjectableCards": []
+}

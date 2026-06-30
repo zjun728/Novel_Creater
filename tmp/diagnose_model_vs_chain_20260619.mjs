@@ -16,8 +16,8 @@ import {
 
 const API_BASE = 'http://127.0.0.1:8000/api'
 const PROJECT_ID = process.env.PROJECT_ID || '75d4fbb5-a3b1-4624-9de8-dbfda5714d84'
-const EXPECTED_PROVIDER_NAME = 'deepseek-v4-flash'
-const EXPECTED_MODEL_NAME = 'deepseek-v4-flash'
+const EXPECTED_PROVIDER_NAME = '联通云-DeepSeek-V4-Flash'
+const EXPECTED_MODEL_NAME = 'DeepSeek-V4-Flash'
 const OUT_DIR = 'tmp/realistic-flow-qa'
 const REPORT_JSON = path.join(OUT_DIR, 'model-vs-chain-diagnostics.json')
 const REPORT_MD = path.join(OUT_DIR, 'model-vs-chain-diagnostics.md')

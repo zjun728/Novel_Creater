@@ -12,10 +12,16 @@ for (const field of [
   'classification',
   'fieldTier',
   'suggestedRehomeTarget',
-  'whyBlocked'
+  'whyBlocked',
+  'classificationConflictDiagnostic'
 ]) {
   assert.match(liveScript, new RegExp(field), `hard conflict report must include ${field}`)
 }
+assert.match(
+  liveScript,
+  /function settingClassificationConflictDiagnostic/,
+  'live report must diagnose hard_conflict entries whose whyBlocked already describes reveal/refinement'
+)
 
 assert.match(liveScript, /function syncHardConflictBlockerFromFlow/)
 assert.match(

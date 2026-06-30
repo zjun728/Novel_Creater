@@ -29,6 +29,13 @@ export const IRREVERSIBLE_CHANGE_RULES = [
   { type: 'cost_paid', label: '代价兑现', pattern: /代价|烧掉|烧毁|失去|扣除|交出|付出|疼|伤|冷却|寿命|永久失效|换取/ },
   { type: 'enemy_state_change', label: '敌我态势变化', pattern: /追踪|追击|袭击|主动出手|暴露|包围|敌|威胁|警报|封锁|退后|打断|回收/ }
 ]
+const VOLUME_HANDOFF_DERIVABLE_CHANGE_TYPES = new Set([
+  'clue_progress',
+  'location_change',
+  'goal_change',
+  'cost_paid',
+  'enemy_state_change'
+])
 
 const LOOP_ACTION_MARKERS = ['观察', '看着', '盯着', '确认', '触摸', '感受', '感觉', '理解', '意识']
 const EXTERNAL_ACTION_MARKERS = ['离开', '进入', '抵达', '前往', '打开', '关上', '烧毁', '摔碎', '交出', '拒绝', '换取', '拉住', '推开', '退后', '冲进', '走出', '藏起', '撕开', '锁死', '打断', '追上', '追击', '袭击', '包围', '封锁', '公开', '否认']
@@ -600,6 +607,139 @@ function detectVolumeGoalHandoffMissing(source = '', options = {}, numberedSeque
   return { missing, volumeGoal, hitTerms, strongHitTerms, evidenceSentences, terms }
 }
 
+function addUsefulHandoffTerm(target, term = '') {
+  const value = String(term || '')
+    .replace(/^(?:抵达|寻找|潜入|前往|确认|获得|查明|追查|使用|利用|打探|进入|离开|转入|暴露|推动)/, '')
+    .replace(/(?:位置|地点|入口|来源|方向|风险|压力|缺口|目标)$/g, '')
+    .trim()
+  if (value.length < 2 || value.length > 16) return
+  if (STOP_TERMS.has(value) || COMMON_ACTION_EVIDENCE_STOP_TERMS.has(value)) return
+  if (/^(继续|下一个|编号结构|局部编号|当前卷)$/.test(value)) return
+  target.add(value)
+}
+
+function extractHandoffTerms(text = '') {
+  const source = String(text || '')
+  const terms = new Set()
+  const directPatterns = [
+    /[\u4e00-\u9fa5]{1,8}城/g,
+    /[\u4e00-\u9fa5]{1,8}矿山/g,
+    /[\u4e00-\u9fa5]{1,5}号巷道/g,
+    /[\u4e00-\u9fa5]{0,6}(?:星账|账册|账页|线索|证据|地图|坐标|地址|入口|父亲|母亲|记忆|追兵|巡天司|商盟|土匪|探子|暴露|潜入|代价)[\u4e00-\u9fa5]{0,4}/g
+  ]
+  for (const pattern of directPatterns) {
+    for (const match of source.matchAll(pattern)) addUsefulHandoffTerm(terms, match[0])
+  }
+  for (const part of source.split(/[，。！？；、,;\s]+/)) {
+    const value = part.trim()
+    if (!/(城|矿|巷道|入口|星账|账|线索|证据|地图|坐标|地址|追兵|巡天司|商盟|土匪|探子|父亲|母亲|记忆|代价|暴露|潜入|封锁|追击|追踪)/.test(value)) continue
+    addUsefulHandoffTerm(terms, value)
+  }
+  return [...terms]
+}
+
+function collectVolumeHandoffContextTerms(options = {}, volumeGoal = '') {
+  const card = deriveFreshnessCardFromOptions(options)
+  const snapshot = options.blockStageSnapshot || options.stageSnapshot || options.storyBlockStageSnapshot || {}
+  const snapshotText = [
+    snapshot.stagePurpose,
+    snapshot.stageAction,
+    snapshot.stageChoice,
+    snapshot.stageCostOrConsequence,
+    snapshot.exitTarget,
+    snapshot.mainPressure,
+    Array.isArray(snapshot.unresolvedQuestions) ? snapshot.unresolvedQuestions.join('；') : snapshot.unresolvedQuestions
+  ].filter(Boolean).join('；')
+  const volumeText = [
+    volumeGoal,
+    card?.currentVolumeGoal,
+    card?.requiredChange,
+    options.volumeStage?.coreGoal,
+    options.volumeStage?.mainConflict,
+    options.volumeStage?.handoffPoint,
+    options.currentVolume?.goal,
+    options.currentVolume?.mainConflict,
+    options.currentVolume?.handoffPoint
+  ].filter(Boolean).join('；')
+  return unique([
+    ...extractHandoffTerms(snapshotText),
+    ...extractHandoffTerms(volumeText),
+    ...importantVolumeTerms(volumeText)
+  ]).filter(term => !isWeakVolumeGoalHandoffTerm(term))
+}
+
+function hasConcreteCostOrLoss(source = '') {
+  return /代价|损失|失去|付出|牺牲|永久|受伤|扭伤|疼|伤口|暴露|风险|记忆|扣除|反噬/.test(String(source || ''))
+}
+
+function hasConcreteHandoff(source = '') {
+  const text = String(source || '')
+  return Boolean(text.trim()) && (
+    hasConcreteAction(text) ||
+    /必须|潜入|追查|打探|获得|确认|暴露|包围|掌握|前往|进入|抵达|下一章|后续|交接|线索/.test(text)
+  )
+}
+
+function firstSentenceWithTerms(source = '', terms = []) {
+  const sentences = splitSentences(source)
+  return sentences.find(sentence => terms.some(term => sentence.includes(term))) || sentences[0] || ''
+}
+
+function deriveVolumeGoalHandoffDiagnostic(source = '', options = {}, volumeGoalHandoff = {}, irreversible = null) {
+  const storyText = stripUnresolvedSection(source)
+  const chapterEvent = extractMarkdownSection(storyText, /本章(?:真实|具体)?事件/) || ''
+  const externalPressure = extractMarkdownSection(storyText, /外部(?:压力|阻力)/) || ''
+  const costOrLoss = extractMarkdownSection(storyText, /(?:代价|损失)/) || ''
+  const irreversibleSection = extractMarkdownSection(storyText, /(?:本章)?不可逆(?:变化|结果)/) || ''
+  const endingHandoff = extractMarkdownSection(storyText, /结尾(?:交接|交接点|钩子)/) || ''
+  const irreversibleResult = irreversible || inferIrreversibleChange(storyText)
+  const derivableTypes = (irreversibleResult.irreversibleChangeTypes || [])
+    .filter(type => VOLUME_HANDOFF_DERIVABLE_CHANGE_TYPES.has(type))
+  const contextTerms = collectVolumeHandoffContextTerms(options, volumeGoalHandoff.volumeGoal || '')
+  const matchedTerms = contextTerms.filter(term => storyText.includes(term)).slice(0, 12)
+  const matchedInEnding = matchedTerms.filter(term => endingHandoff.includes(term))
+  const matchedInIrreversible = matchedTerms.filter(term => irreversibleSection.includes(term))
+  const matchedInEvent = matchedTerms.filter(term => chapterEvent.includes(term))
+  const evidence = {
+    hasConcreteEvent: hasConcreteExternalEvent(chapterEvent || storyText),
+    hasConcreteAction: hasConcreteAction(chapterEvent || storyText),
+    hasExternalPressure: hasConcreteExternalEvent(externalPressure) || /追兵|敌|盘查|拦路|搜身|威胁|封锁|追踪|暴露|包围|土匪|商盟|巡天司/.test(externalPressure || storyText),
+    hasCostOrLoss: hasConcreteCostOrLoss(costOrLoss || storyText),
+    hasIrreversibleChange: derivableTypes.length >= 2,
+    hasEndingHandoff: hasConcreteHandoff(endingHandoff),
+    derivableChangeTypeCount: derivableTypes.length
+  }
+  const hasCompleteConcreteHandoff = evidence.hasConcreteEvent &&
+    evidence.hasConcreteAction &&
+    evidence.hasExternalPressure &&
+    evidence.hasCostOrLoss &&
+    evidence.hasIrreversibleChange &&
+    evidence.hasEndingHandoff
+  const sourceField = matchedInEnding.length
+    ? 'endingHandoff'
+    : matchedInIrreversible.length
+      ? 'irreversibleChange'
+      : matchedInEvent.length
+        ? 'chapterEvent'
+        : (matchedTerms.length ? 'stageSnapshot' : (hasCompleteConcreteHandoff ? 'endingHandoff' : ''))
+  const sourceText = sourceField === 'irreversibleChange'
+    ? irreversibleSection
+    : sourceField === 'chapterEvent'
+      ? chapterEvent
+      : endingHandoff || irreversibleSection || chapterEvent
+  const derived = hasCompleteConcreteHandoff && (matchedTerms.length > 0 || hasConcreteHandoff(sourceText))
+  return {
+    status: derived ? 'derived_pass' : 'missing',
+    derived,
+    source: sourceField,
+    matchedTerms,
+    derivedHandoffText: derived ? firstSentenceWithTerms(sourceText, matchedTerms) : '',
+    derivableChangeTypes: derivableTypes,
+    evidence,
+    contextTerms: contextTerms.slice(0, 16)
+  }
+}
+
 export function detectBeatPlanTemplateFallbackRisk(text = '') {
   const source = String(text || '')
   const templatePhrases = [
@@ -637,7 +777,10 @@ export function validateBeatPlanFreshnessGate(text = '', options = {}) {
   const externalActionCount = countMarkers(sourceWithoutGuidance, EXTERNAL_ACTION_MARKERS)
   const hasFreshTurn = FRESH_TURN_PATTERNS.some(pattern => patternHasNonNegatedMatch(sourceWithoutGuidance, pattern))
   const numberedSequence = detectNumberedSequenceLoop(sourceWithoutGuidance, options)
+  const irreversible = inferIrreversibleChange(sourceWithoutGuidance)
   const volumeGoalHandoff = detectVolumeGoalHandoffMissing(sourceWithoutGuidance, options, numberedSequence)
+  const volumeGoalHandoffDiagnostic = deriveVolumeGoalHandoffDiagnostic(source, options, volumeGoalHandoff, irreversible)
+  Object.assign(volumeGoalHandoff, volumeGoalHandoffDiagnostic)
   const cardRequiresNumberedBreak = card?.numberedSequenceStatus === 'must_break'
   const actionableText = stripNegatedGuidance(sourceWithoutGuidance)
   const numberedBreakOptionsHit = /合并编号序列|跳过编号流程|规则失效|敌方打断|切到现实地点|关系背叛|目标改变|阶段性结论|关闭编号|终止编号|打断编号|切回现实|封锁.*编号|敌方.*中断|敌方.*封锁/.test(actionableText)
@@ -708,16 +851,33 @@ export function validateBeatPlanFreshnessGate(text = '', options = {}) {
   }
 
   if (volumeGoalHandoff.missing) {
-    issues.push(issue(
-      'volume_goal_handoff_missing',
-      'major',
-      '小纲继续局部编号结构，但没有推进当前卷目标缺口或切回主线压力。',
-      {
-        volumeGoal: volumeGoalHandoff.volumeGoal,
-        hitTerms: volumeGoalHandoff.hitTerms,
-        expectedTerms: volumeGoalHandoff.terms
-      }
-    ))
+    if (volumeGoalHandoff.derived) {
+      issues.push(issue(
+        'volume_goal_handoff_missing_downgraded',
+        'warning',
+        '小纲未显式写出卷目标接力字段，但结尾交接、不可逆变化和故事块阶段已形成可派生接力。',
+        {
+          volumeGoal: volumeGoalHandoff.volumeGoal,
+          hitTerms: volumeGoalHandoff.hitTerms,
+          expectedTerms: volumeGoalHandoff.terms,
+          volumeGoalHandoffDiagnostic
+        }
+      ))
+      volumeGoalHandoff.warning = 'volume_goal_handoff_missing_downgraded'
+      volumeGoalHandoff.missing = false
+    } else {
+      issues.push(issue(
+        'volume_goal_handoff_missing',
+        'major',
+        '小纲继续局部编号结构，但没有推进当前卷目标缺口或切回主线压力。',
+        {
+          volumeGoal: volumeGoalHandoff.volumeGoal,
+          hitTerms: volumeGoalHandoff.hitTerms,
+          expectedTerms: volumeGoalHandoff.terms,
+          volumeGoalHandoffDiagnostic
+        }
+      ))
+    }
   }
 
   const templateRisk = detectBeatPlanTemplateFallbackRisk(source)
