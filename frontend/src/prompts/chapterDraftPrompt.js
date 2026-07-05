@@ -34,6 +34,17 @@ ${buildGenerationQualityBrief()}`
 export function buildDraftPrompt(context = {}) {
   const blockSnapshot = storyBlockSnapshotBrief(context.blockStageSnapshot || {})
   const formalStandardLowDosePrompt = formatActiveWritingStandardLowDoseForPrompt(context.activeWritingStandards || [], context)
+  const realCorpusOptionInput = context.realCorpusExperienceOptions || {}
+  const realCorpusMaxCards = context.enableRealCorpusExperienceCards
+    ? Math.min(Number(realCorpusOptionInput.maxCards || 2), formalStandardLowDosePrompt ? 1 : 2)
+    : Number(realCorpusOptionInput.maxCards || 0)
+  const realCorpusExperienceOptions = context.enableRealCorpusExperienceCards
+    ? {
+        ...realCorpusOptionInput,
+        maxCards: realCorpusMaxCards,
+        maxSectionChars: Number(realCorpusOptionInput.maxSectionChars || (formalStandardLowDosePrompt ? 760 : 1000))
+      }
+    : realCorpusOptionInput
   const fingerprint = context.writingFingerprint ||
     (context.narrativeVoiceContract
       ? '以 Narrative Voice Contract 的表达约束为准；风格只影响写法，不改变事实和阶段边界。'
@@ -43,10 +54,14 @@ export function buildDraftPrompt(context = {}) {
   const chapterPromptContext = formalStandardLowDosePrompt
     ? {
         ...context,
+        realCorpusExperienceOptions,
         styleStandardBrief: '',
         styleMethodBrief: context.styleBible ? `本书风格：${context.styleBible}` : ''
       }
-    : context
+    : {
+        ...context,
+        realCorpusExperienceOptions
+      }
   const continuity = context.continuityConstraints || [
     context.previousChapterEnding ? `上一章结尾事实：${formatDraftContinuityText(context.previousChapterEnding, 360)}` : '',
     context.stateLedger ? `状态账本：${context.stateLedger}` : '',

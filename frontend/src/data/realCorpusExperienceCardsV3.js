@@ -237,11 +237,61 @@ export function buildExpressionHelperFromRealCorpusCards(cards = [], sceneCard =
 export function detectRealCorpusPromptLeakage(text = '', cards = []) {
   const source = String(text || '')
   const sourceTitle = (cards || []).find(card => hasText(card.sourceTitle) && source.includes(card.sourceTitle))?.sourceTitle || ''
-  const forbiddenToken = ['sourceTitle', 'sourceFileHash', 'sourceWindowHashes', 'rawExcerpt', 'sourceText', 'sourceCardIds', 'stateAuthority', 'guardSnapshot', 'futureRoadmap']
+  const sourceNameToken = (cards || [])
+    .flatMap(sourceNameTokensForCard)
+    .find(token => source.includes(token)) || ''
+  const forbiddenToken = [
+    'sourceTitle',
+    'sourceFileHash',
+    'sourceWindowHashes',
+    'sourceAuditOnly',
+    'rawExcerpt',
+    'sourceText',
+    'sourceCardIds',
+    'stateAuthority',
+    'guardSnapshot',
+    'futureRoadmap'
+  ]
     .find(token => source.includes(token)) || ''
   return {
-    detected: Boolean(sourceTitle || forbiddenToken),
+    detected: Boolean(sourceTitle || sourceNameToken || forbiddenToken),
     sourceTitle,
+    sourceNameToken,
     forbiddenToken
   }
+}
+
+export function formatRealCorpusExperienceForPrompt(sceneCard = {}, cards = [], options = {}) {
+  const maxCards = Math.max(0, Math.min(Number(options.maxCards || options.limit || 2), 2))
+  const maxSectionChars = Math.max(360, Math.min(Number(options.maxSectionChars || 1000), 1400))
+  const selected = (options.selectedCards || retrieveRealCorpusExperienceCards(sceneCard, cards, { limit: maxCards }))
+    .filter(card => card?.promptReadiness === REAL_CORPUS_PROMPT_READY)
+    .slice(0, maxCards)
+  if (!selected.length) return ''
+
+  const desiredTags = inferSceneFunctionTags(sceneCard)
+  if (!desiredTags.length) return ''
+
+  const lines = [
+    '## Real Corpus Experience Helper',
+    '- 用途：只作表达手法参考；不改变事实、设定、角色关系、阶段边界、停靠点或外部校验。',
+    `- 命中场景功能：${desiredTags.slice(0, 4).join(', ')}`
+  ]
+
+  selected.forEach((card, index) => {
+    const candidateLines = [
+      `- Helper ${index + 1}：${compact(card.promptInjectionSafeVersion, 150)}`,
+      `  写法：${compact(card.writingMethod, 140)}`,
+      `  安全微示范：${compact(card.originalMicroDemo, 120)}`,
+      `  反 AI 提醒：${compact(card.antiAiReminder, 100)}`
+    ]
+    for (const line of candidateLines) {
+      const next = [...lines, line].join('\n')
+      if (next.length <= maxSectionChars) lines.push(line)
+    }
+  })
+
+  const helper = lines.join('\n')
+  const leakage = detectRealCorpusPromptLeakage(helper, selected)
+  return leakage.detected ? '' : helper
 }

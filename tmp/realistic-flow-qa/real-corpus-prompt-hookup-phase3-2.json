@@ -1,0 +1,421 @@
+{
+  "schemaVersion": "real-corpus-prompt-hookup-phase3-2-v1",
+  "status": "completed",
+  "generatedAt": "2026-07-05T00:00:00.000Z",
+  "branch": {
+    "current": "codex/novel-creater-sample-library-v3-prompt-hookup",
+    "baseCommit": "a326c7d",
+    "headCommit": "a326c7d"
+  },
+  "boundary": {
+    "serviceStarted": false,
+    "realDbConnection": false,
+    "realProjectTouched": false,
+    "liveGenerationRun": false,
+    "projectStateWritten": false,
+    "modelRun": false,
+    "providerAdapterEntered": false,
+    "pushOrPrCreated": false,
+    "productionPromptDefaultEnabled": false
+  },
+  "hookupDesign": {
+    "promptEntryPoint": "frontend/src/prompts/chapterDraftPrompt.js buildDraftPrompt -> frontend/src/prompts/chapter.js buildChapterPrompt",
+    "insertionPoint": "after Scene Execution Card and Narrative Voice Contract, before state/fact-heavy prompt sections",
+    "formatter": "frontend/src/data/realCorpusExperienceCardsV3.js formatRealCorpusExperienceForPrompt",
+    "optInFlag": "enableRealCorpusExperienceCards",
+    "cardInput": "context.realCorpusExperienceCards",
+    "expressionOnly": true,
+    "doesNotEnterStateAuthority": true,
+    "defaultProductionEnabled": false
+  },
+  "formatterBudget": {
+    "maxSections": 1,
+    "maxCardsWithoutFormalStandard": 2,
+    "maxCardsWithFormalStandard": 1,
+    "defaultMaxSectionChars": 1000,
+    "formalStandardMaxSectionChars": 760,
+    "hardMaxSectionChars": 1400
+  },
+  "scenes": [
+    {
+      "id": "interrogation_negotiation",
+      "title": "审讯/谈判",
+      "expectedTags": [
+        "dialogue_conflict",
+        "emotion_variation",
+        "character_humanity"
+      ],
+      "selectedCardCount": 2,
+      "selectedCardPromptReadiness": [
+        "prompt-ready-low-dose",
+        "prompt-ready-low-dose"
+      ],
+      "selectedSceneFunctionTags": [
+        "action_burst",
+        "dialogue_conflict",
+        "emotion_variation",
+        "character_humanity"
+      ],
+      "expectedTagHit": true,
+      "helperChars": 659,
+      "promptBudgetDelta": 661,
+      "promptBudgetViolation": false,
+      "noSampleSignals": {
+        "dialogueConflict": 27,
+        "emotionalTurn": 12,
+        "sceneDwell": 8,
+        "characterHumanity": 22,
+        "settingNaturalization": 33,
+        "actionBurst": 16,
+        "helperSections": 0
+      },
+      "sampleSignals": {
+        "dialogueConflict": 31,
+        "emotionalTurn": 12,
+        "sceneDwell": 14,
+        "characterHumanity": 29,
+        "settingNaturalization": 36,
+        "actionBurst": 30,
+        "helperSections": 1
+      },
+      "noSampleScore": 118,
+      "sampleScore": 152,
+      "signalLift": 34,
+      "sourceLeak": false,
+      "leakageEvidence": {
+        "detected": false,
+        "auditFieldToken": "",
+        "nameTokenDetected": false
+      },
+      "futureLeak": false,
+      "regressed": false,
+      "promptEvidence": {
+        "noSampleHasHelper": false,
+        "sampleHasHelper": true,
+        "sampleHasSceneExecutionCard": true,
+        "sampleHasNarrativeVoiceContract": true,
+        "sampleHasStopPoint": true
+      }
+    },
+    {
+      "id": "conflict_dialogue",
+      "title": "冲突对白",
+      "expectedTags": [
+        "dialogue_conflict",
+        "character_humanity"
+      ],
+      "selectedCardCount": 2,
+      "selectedCardPromptReadiness": [
+        "prompt-ready-low-dose",
+        "prompt-ready-low-dose"
+      ],
+      "selectedSceneFunctionTags": [
+        "action_burst",
+        "dialogue_conflict",
+        "emotion_variation",
+        "character_humanity"
+      ],
+      "expectedTagHit": true,
+      "helperChars": 659,
+      "promptBudgetDelta": 661,
+      "promptBudgetViolation": false,
+      "noSampleSignals": {
+        "dialogueConflict": 27,
+        "emotionalTurn": 12,
+        "sceneDwell": 9,
+        "characterHumanity": 22,
+        "settingNaturalization": 32,
+        "actionBurst": 16,
+        "helperSections": 0
+      },
+      "sampleSignals": {
+        "dialogueConflict": 31,
+        "emotionalTurn": 12,
+        "sceneDwell": 15,
+        "characterHumanity": 29,
+        "settingNaturalization": 35,
+        "actionBurst": 30,
+        "helperSections": 1
+      },
+      "noSampleScore": 118,
+      "sampleScore": 152,
+      "signalLift": 34,
+      "sourceLeak": false,
+      "leakageEvidence": {
+        "detected": false,
+        "auditFieldToken": "",
+        "nameTokenDetected": false
+      },
+      "futureLeak": false,
+      "regressed": false,
+      "promptEvidence": {
+        "noSampleHasHelper": false,
+        "sampleHasHelper": true,
+        "sampleHasSceneExecutionCard": true,
+        "sampleHasNarrativeVoiceContract": true,
+        "sampleHasStopPoint": true
+      }
+    },
+    {
+      "id": "chase_action_burst",
+      "title": "追逐/动作爆发",
+      "expectedTags": [
+        "action_burst",
+        "aftermath",
+        "emotion_variation"
+      ],
+      "selectedCardCount": 2,
+      "selectedCardPromptReadiness": [
+        "prompt-ready-low-dose",
+        "prompt-ready-low-dose"
+      ],
+      "selectedSceneFunctionTags": [
+        "action_burst",
+        "dialogue_conflict",
+        "emotion_variation",
+        "character_humanity"
+      ],
+      "expectedTagHit": true,
+      "helperChars": 659,
+      "promptBudgetDelta": 661,
+      "promptBudgetViolation": false,
+      "noSampleSignals": {
+        "dialogueConflict": 27,
+        "emotionalTurn": 14,
+        "sceneDwell": 8,
+        "characterHumanity": 22,
+        "settingNaturalization": 32,
+        "actionBurst": 23,
+        "helperSections": 0
+      },
+      "sampleSignals": {
+        "dialogueConflict": 31,
+        "emotionalTurn": 14,
+        "sceneDwell": 14,
+        "characterHumanity": 29,
+        "settingNaturalization": 35,
+        "actionBurst": 37,
+        "helperSections": 1
+      },
+      "noSampleScore": 126,
+      "sampleScore": 160,
+      "signalLift": 34,
+      "sourceLeak": false,
+      "leakageEvidence": {
+        "detected": false,
+        "auditFieldToken": "",
+        "nameTokenDetected": false
+      },
+      "futureLeak": false,
+      "regressed": false,
+      "promptEvidence": {
+        "noSampleHasHelper": false,
+        "sampleHasHelper": true,
+        "sampleHasSceneExecutionCard": true,
+        "sampleHasNarrativeVoiceContract": true,
+        "sampleHasStopPoint": true
+      }
+    },
+    {
+      "id": "intimate_fracture",
+      "title": "亲密关系裂隙",
+      "expectedTags": [
+        "emotion_variation",
+        "character_humanity",
+        "scene_dwell"
+      ],
+      "selectedCardCount": 2,
+      "selectedCardPromptReadiness": [
+        "prompt-ready-low-dose",
+        "prompt-ready-low-dose"
+      ],
+      "selectedSceneFunctionTags": [
+        "action_burst",
+        "dialogue_conflict",
+        "emotion_variation",
+        "character_humanity"
+      ],
+      "expectedTagHit": true,
+      "helperChars": 679,
+      "promptBudgetDelta": 681,
+      "promptBudgetViolation": false,
+      "noSampleSignals": {
+        "dialogueConflict": 29,
+        "emotionalTurn": 11,
+        "sceneDwell": 6,
+        "characterHumanity": 25,
+        "settingNaturalization": 32,
+        "actionBurst": 16,
+        "helperSections": 0
+      },
+      "sampleSignals": {
+        "dialogueConflict": 33,
+        "emotionalTurn": 11,
+        "sceneDwell": 12,
+        "characterHumanity": 32,
+        "settingNaturalization": 35,
+        "actionBurst": 30,
+        "helperSections": 1
+      },
+      "noSampleScore": 119,
+      "sampleScore": 153,
+      "signalLift": 34,
+      "sourceLeak": false,
+      "leakageEvidence": {
+        "detected": false,
+        "auditFieldToken": "",
+        "nameTokenDetected": false
+      },
+      "futureLeak": false,
+      "regressed": false,
+      "promptEvidence": {
+        "noSampleHasHelper": false,
+        "sampleHasHelper": true,
+        "sampleHasSceneExecutionCard": true,
+        "sampleHasNarrativeVoiceContract": true,
+        "sampleHasStopPoint": true
+      }
+    },
+    {
+      "id": "before_reveal",
+      "title": "信息揭露前夜",
+      "expectedTags": [
+        "setting_naturalization",
+        "longform_rhythm",
+        "scene_dwell"
+      ],
+      "selectedCardCount": 2,
+      "selectedCardPromptReadiness": [
+        "prompt-ready-low-dose",
+        "prompt-ready-low-dose"
+      ],
+      "selectedSceneFunctionTags": [
+        "character_humanity",
+        "dialogue_conflict",
+        "setting_naturalization",
+        "aftermath",
+        "action_burst"
+      ],
+      "expectedTagHit": true,
+      "helperChars": 687,
+      "promptBudgetDelta": 689,
+      "promptBudgetViolation": false,
+      "noSampleSignals": {
+        "dialogueConflict": 27,
+        "emotionalTurn": 11,
+        "sceneDwell": 8,
+        "characterHumanity": 22,
+        "settingNaturalization": 41,
+        "actionBurst": 16,
+        "helperSections": 0
+      },
+      "sampleSignals": {
+        "dialogueConflict": 34,
+        "emotionalTurn": 12,
+        "sceneDwell": 13,
+        "characterHumanity": 29,
+        "settingNaturalization": 49,
+        "actionBurst": 23,
+        "helperSections": 1
+      },
+      "noSampleScore": 125,
+      "sampleScore": 160,
+      "signalLift": 35,
+      "sourceLeak": false,
+      "leakageEvidence": {
+        "detected": false,
+        "auditFieldToken": "",
+        "nameTokenDetected": false
+      },
+      "futureLeak": false,
+      "regressed": false,
+      "promptEvidence": {
+        "noSampleHasHelper": false,
+        "sampleHasHelper": true,
+        "sampleHasSceneExecutionCard": true,
+        "sampleHasNarrativeVoiceContract": true,
+        "sampleHasStopPoint": true
+      }
+    },
+    {
+      "id": "failure_aftermath",
+      "title": "失败余波",
+      "expectedTags": [
+        "aftermath",
+        "character_humanity",
+        "longform_rhythm"
+      ],
+      "selectedCardCount": 2,
+      "selectedCardPromptReadiness": [
+        "prompt-ready-low-dose",
+        "prompt-ready-low-dose"
+      ],
+      "selectedSceneFunctionTags": [
+        "aftermath",
+        "dialogue_conflict",
+        "emotion_variation",
+        "character_humanity",
+        "action_burst"
+      ],
+      "expectedTagHit": true,
+      "helperChars": 673,
+      "promptBudgetDelta": 675,
+      "promptBudgetViolation": false,
+      "noSampleSignals": {
+        "dialogueConflict": 27,
+        "emotionalTurn": 11,
+        "sceneDwell": 7,
+        "characterHumanity": 22,
+        "settingNaturalization": 34,
+        "actionBurst": 16,
+        "helperSections": 0
+      },
+      "sampleSignals": {
+        "dialogueConflict": 30,
+        "emotionalTurn": 11,
+        "sceneDwell": 10,
+        "characterHumanity": 30,
+        "settingNaturalization": 40,
+        "actionBurst": 25,
+        "helperSections": 1
+      },
+      "noSampleScore": 117,
+      "sampleScore": 146,
+      "signalLift": 29,
+      "sourceLeak": false,
+      "leakageEvidence": {
+        "detected": false,
+        "auditFieldToken": "",
+        "nameTokenDetected": false
+      },
+      "futureLeak": false,
+      "regressed": false,
+      "promptEvidence": {
+        "noSampleHasHelper": false,
+        "sampleHasHelper": true,
+        "sampleHasSceneExecutionCard": true,
+        "sampleHasNarrativeVoiceContract": true,
+        "sampleHasStopPoint": true
+      }
+    }
+  ],
+  "summary": {
+    "sceneCount": 6,
+    "helperScenes": 6,
+    "futureLeaks": 0,
+    "sourceLeaks": 0,
+    "lowSignalSelectedCards": 0,
+    "promptBudgetViolations": 0,
+    "sampleV3PromptRegressions": 0,
+    "averageNoSampleScore": 120.5,
+    "averageSampleScore": 153.83,
+    "averageSignalLift": 33.33
+  },
+  "modelAssistedValidation": {
+    "used": false,
+    "reason": "Phase 3.2 request forbids model runs; deterministic no-model prompt assembly evidence is the hard gate.",
+    "model": null,
+    "temperature": null,
+    "top_p": null
+  }
+}

@@ -28,6 +28,7 @@ import {
   buildSceneExecutionCard,
   formatSceneExecutionCardForPrompt
 } from '../utils/sceneExecutionContract.js'
+import { formatRealCorpusExperienceForPrompt } from '../data/realCorpusExperienceCardsV3.js'
 
 /**
  * 章节生成 Prompt
@@ -1787,6 +1788,18 @@ export function buildChapterPrompt(context) {
     parts.push(narrativeVoicePrompt)
   } else if (styleHints) {
     parts.push(`## 写作气质\n${styleHints}`)
+  }
+
+  if (context.enableRealCorpusExperienceCards) {
+    const realCorpusCards = Array.isArray(context.realCorpusExperienceCards?.cards)
+      ? context.realCorpusExperienceCards.cards
+      : (Array.isArray(context.realCorpusExperienceCards) ? context.realCorpusExperienceCards : [])
+    const realCorpusPrompt = formatRealCorpusExperienceForPrompt(
+      sceneExecutionCard,
+      realCorpusCards,
+      context.realCorpusExperienceOptions || {}
+    )
+    if (realCorpusPrompt) parts.push(realCorpusPrompt)
   }
 
   if (context.settingLibrary) parts.push(`## 关键设定边界\n${context.settingLibrary}`)
