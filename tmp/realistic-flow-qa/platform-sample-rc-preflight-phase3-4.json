@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "platform-sample-rc-preflight-phase3-4-v1",
+  "status": "completed",
+  "generatedAt": "2026-07-05T00:00:00.000Z",
+  "outputs": {
+    "jsonPath": "tmp/realistic-flow-qa/platform-sample-rc-preflight-phase3-4.json",
+    "reportPath": "tmp/realistic-flow-qa/platform-sample-rc-preflight-phase3-4-report.md"
+  },
+  "branch": {
+    "current": "codex/novel-creater-sample-library-v3-prompt-hookup",
+    "headCommit": "66553ee",
+    "basePlatformCommit": "d45a64c",
+    "sampleCandidateCommit": "a326c7d",
+    "promptHelperCommit": "66553ee"
+  },
+  "commitChain": {
+    "containsPlatformRcIntegration": true,
+    "containsSampleV3Candidate": true,
+    "containsPromptHelperGate": true,
+    "sampleDeltaFiles": [
+      "frontend/src/data/realCorpusExperienceCards.v3.json",
+      "frontend/src/data/realCorpusExperienceCardsV3.js",
+      "frontend/src/prompts/chapter.js",
+      "frontend/src/prompts/chapterDraftPrompt.js",
+      "tmp/realistic-flow-qa/real-corpus-experience-cards-phase3-0-report.md",
+      "tmp/realistic-flow-qa/real-corpus-experience-cards-phase3-0.json",
+      "tmp/realistic-flow-qa/real-corpus-prompt-hookup-phase3-2-report.md",
+      "tmp/realistic-flow-qa/real-corpus-prompt-hookup-phase3-2.json",
+      "tmp/run_real_corpus_experience_cards_phase3_0.mjs",
+      "tmp/run_real_corpus_prompt_hookup_phase3_2.mjs",
+      "tmp/test_real_corpus_experience_cards_phase3_0.mjs",
+      "tmp/test_real_corpus_prompt_hookup_phase3_2.mjs"
+    ]
+  },
+  "worktree": {
+    "entries": [
+      {
+        "status": "A",
+        "path": "tmp/realistic-flow-qa/platform-sample-rc-preflight-phase3-4-report.md"
+      },
+      {
+        "status": "A",
+        "path": "tmp/realistic-flow-qa/platform-sample-rc-preflight-phase3-4.json"
+      },
+      {
+        "status": "AM",
+        "path": "tmp/run_platform_sample_rc_preflight_phase3_4.mjs"
+      },
+      {
+        "status": "AM",
+        "path": "tmp/test_platform_sample_rc_preflight_phase3_4.mjs"
+      }
+    ],
+    "dirtyCount": 4,
+    "dirtyOutsidePhase34": [],
+    "nonIgnoredDirtyOutsidePhase34Count": 0
+  },
+  "boundary": {
+    "serviceStarted": false,
+    "realDbConnection": false,
+    "realProjectTouched": false,
+    "liveGenerationRun": false,
+    "projectStateWritten": false,
+    "modelRun": false,
+    "providerAdapterEntered": false,
+    "pushOrPrCreated": false
+  },
+  "preflight": {
+    "requiredCommandLabels": [
+      "phase2_7_platform_rc_preflight",
+      "phase2_7_platform_rc_contract",
+      "phase3_0_real_corpus_cards_contract",
+      "phase3_2_real_corpus_prompt_hookup_contract",
+      "writing_standard_prompt_boundary",
+      "sample_micro_demo_injection",
+      "writing_sample_library_frontend",
+      "writing_sample_library_backend",
+      "narrative_voice_scene_phase2",
+      "offline_narrative_quality_regression_phase2_1"
+    ],
+    "total": 10,
+    "failed": 0,
+    "results": [
+      {
+        "label": "phase2_7_platform_rc_preflight",
+        "command": "node -e import run_platform_rc_preflight_phase2_7.mjs read-only",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 2020,
+        "stdoutTail": "",
+        "stderrTail": ""
+      },
+      {
+        "label": "phase2_7_platform_rc_contract",
+        "command": "node -e validate platform-rc-preflight-phase2-7 JSON/report",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 109,
+        "stdoutTail": "",
+        "stderrTail": ""
+      },
+      {
+        "label": "phase3_0_real_corpus_cards_contract",
+        "command": "node tmp\\test_real_corpus_experience_cards_phase3_0.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 2523,
+        "stdoutTail": "real corpus experience cards phase3.0 contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "phase3_2_real_corpus_prompt_hookup_contract",
+        "command": "node tmp\\test_real_corpus_prompt_hookup_phase3_2.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 381,
+        "stdoutTail": "real corpus prompt hookup phase3.2 contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "writing_standard_prompt_boundary",
+        "command": "node tmp\\test_writing_standard_prompt_boundary_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 105,
+        "stdoutTail": "writing standard prompt boundary contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "sample_micro_demo_injection",
+        "command": "node tmp\\test_sample_micro_demo_injection_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 107,
+        "stdoutTail": "sample micro demo formal-standard contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "writing_sample_library_frontend",
+        "command": "node tmp\\test_writing_sample_library_frontend_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 97,
+        "stdoutTail": "",
+        "stderrTail": ""
+      },
+      {
+        "label": "writing_sample_library_backend",
+        "command": "python tmp\\test_writing_sample_library_backend_contract.py",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 500,
+        "stdoutTail": "",
+        "stderrTail": ""
+      },
+      {
+        "label": "narrative_voice_scene_phase2",
+        "command": "node tmp\\test_narrative_voice_scene_contract_phase2.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 110,
+        "stdoutTail": "NarrativeVoiceContract + SceneExecutionContract Phase 2 no-model fixtures passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "offline_narrative_quality_regression_phase2_1",
+        "command": "node tmp\\test_offline_narrative_quality_regression_phase2_1.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 107,
+        "stdoutTail": "offline narrative quality regression phase2.1 no-model contract passed",
+        "stderrTail": ""
+      }
+    ]
+  },
+  "alignment": {
+    "requiredLabels": [
+      "platform_rc_phase2_7",
+      "real_corpus_phase3_0",
+      "real_corpus_prompt_hookup_phase3_2"
+    ],
+    "total": 3,
+    "failed": 0,
+    "results": [
+      {
+        "label": "platform_rc_phase2_7",
+        "jsonPath": "tmp/realistic-flow-qa/platform-rc-preflight-phase2-7.json",
+        "reportPath": "tmp/realistic-flow-qa/platform-rc-preflight-phase2-7-report.md",
+        "status": "passed",
+        "durationMs": 2,
+        "error": ""
+      },
+      {
+        "label": "real_corpus_phase3_0",
+        "jsonPath": "tmp/realistic-flow-qa/real-corpus-experience-cards-phase3-0.json",
+        "reportPath": "tmp/realistic-flow-qa/real-corpus-experience-cards-phase3-0-report.md",
+        "status": "passed",
+        "durationMs": 2,
+        "error": ""
+      },
+      {
+        "label": "real_corpus_prompt_hookup_phase3_2",
+        "jsonPath": "tmp/realistic-flow-qa/real-corpus-prompt-hookup-phase3-2.json",
+        "reportPath": "tmp/realistic-flow-qa/real-corpus-prompt-hookup-phase3-2-report.md",
+        "status": "passed",
+        "durationMs": 2,
+        "error": ""
+      }
+    ]
+  },
+  "leakage": {
+    "sourceLeaks": 0,
+    "futureLeaks": 0,
+    "guardStateLeaks": 0,
+    "lowSignalSelectedCards": 0,
+    "promptBudgetViolations": 0,
+    "sampleV3PromptRegressions": 0
+  },
+  "v3PromptHelper": {
+    "optIn": true,
+    "expressionOnly": true,
+    "doesNotEnterStateAuthority": true,
+    "productionDefaultEnabled": false,
+    "sampleV3PromptHelperCommitted": true,
+    "maxCardsWithoutFormalStandard": 2,
+    "maxCardsWithFormalStandard": 1,
+    "helperScenes": 6,
+    "averageSignalLift": 33.33
+  },
+  "acceptanceMatrix": {
+    "readyForRealProjectReadOnlyHealthCheck": true,
+    "readyForDisposableRealDbMigrationDryRun": true,
+    "readyForLiveGeneration": false,
+    "readyForLiveGenerationReason": "仍未完成真实项目只读健康检查、一次性 disposable/backup preflight、provider/runtime smoke，因此 live generation 必须保持 no-go。",
+    "realDbTouched": false,
+    "liveTouched": false,
+    "modelUsed": false,
+    "productionDefaultV3Enabled": false,
+    "sampleV3PromptHelperCommitted": true
+  },
+  "summary": {
+    "combinedPreflightPassed": true,
+    "boundaryClean": true,
+    "platformRcIncluded": true,
+    "sampleV3CandidateIncluded": true,
+    "promptHelperGateIncluded": true,
+    "nonIgnoredDirtyOutsidePhase34Count": 0,
+    "preflightFailures": 0,
+    "alignmentFailures": 0
+  },
+  "nextRecommendedStage": "Real Project Read-Only Health Check & Disposable Backup Preflight",
+  "remainingRisks": [
+    "No real project read-only health check has run.",
+    "No real DB migration, cleanup, quarantine, or purge has run.",
+    "No live generation/canary has run.",
+    "No model/provider runtime smoke has run.",
+    "V3 helper remains opt-in and not production-default enabled."
+  ],
+  "review": null
+}
