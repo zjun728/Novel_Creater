@@ -11,6 +11,10 @@ import {
 import { buildChapterStateLedger } from './chapterStateLedger.js'
 import { filterSettingEntitiesForGeneration } from './settingEntityFilters.js'
 import { buildIdentityKnowledgeNote, normalizeCharacterName } from './characterFactMatcher.js'
+import {
+  buildContextPackV2,
+  buildCreativeContextFromPack
+} from './contextPackV2.js'
 
 /**
  * 上下文构建器
@@ -491,8 +495,9 @@ function summarizeThreadFacts(canonFacts = [], plotThreads = [], options = {}) {
 }
 
 // === 正文生成上下文 ===
-export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null, correctionTaskStore = null, storyBlockContext = null) {
+export function buildWritingContext(novelStore, chapterNum, maxTokens, settingStore = null, volumeStore = null, correctionTaskStore = null, contextOptions = {}) {
   const builder = new ContextBuilder(maxTokens || BUDGETS.writing)
+  const normalizedContextOptions = contextOptions && typeof contextOptions === 'object' ? contextOptions : {}
   const bible = novelStore.bible?.value || novelStore.bible
   const outline = novelStore.outline?.value || novelStore.outline
   const characters = novelStore.characters?.value || novelStore.characters || []
@@ -504,6 +509,17 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   const settingChangeEvents = settingStore?.changeEvents?.value || settingStore?.changeEvents || []
   const volumes = volumeStore?.volumes?.value || volumeStore?.volumes || []
   const correctionTasks = getContextCorrectionTasks(correctionTaskStore)
+  const storyBlockContext = normalizedContextOptions?.storyBlock || normalizedContextOptions?.blockStageSnapshot
+    ? normalizedContextOptions
+    : (normalizedContextOptions?.storyBlockContext || null)
+  const contextPack = buildContextPackV2({
+    novelStore,
+    chapterNum,
+    settingStore,
+    volumeStore,
+    correctionTaskStore,
+    contextOptions: normalizedContextOptions
+  })
 
   const blockStageSnapshot = storyBlockContext?.blockStageSnapshot || null
   if (blockStageSnapshot) {
@@ -686,15 +702,31 @@ export function buildWritingContext(novelStore, chapterNum, maxTokens, settingSt
   }
 
   // 额外：传入当前草稿（由调用者提供）
-  const context = builder.getContext()
+  const legacyContext = builder.getContext()
   if (activeWritingStandards.length) {
-    context.activeWritingStandards = activeWritingStandards
+    legacyContext.activeWritingStandards = activeWritingStandards
   }
+  const creativeContext = buildCreativeContextFromPack(contextPack, { chapterNum })
+  if (legacyContext.styleStandardBrief && !creativeContext.styleStandardBrief) {
+    creativeContext.styleStandardBrief = legacyContext.styleStandardBrief
+  }
+  if (legacyContext.styleMethodBrief && !creativeContext.styleMethodBrief) {
+    creativeContext.styleMethodBrief = legacyContext.styleMethodBrief
+  }
+  if (legacyContext.premise) creativeContext.premise = legacyContext.premise
+  if (legacyContext.worldRules) creativeContext.worldRules = legacyContext.worldRules
+  if (legacyContext.currentVolume) creativeContext.currentVolume = legacyContext.currentVolume
 
   return {
-    context,
+    context: {
+      ...legacyContext,
+      ...creativeContext,
+      contextPackVersion: contextPack.schemaVersion
+    },
     usedTokens: builder.getUsedTokens(),
-    maxTokens: builder.maxTokens
+    maxTokens: builder.maxTokens,
+    contextPack,
+    healthCheck: contextPack.healthCheck
   }
 }
 

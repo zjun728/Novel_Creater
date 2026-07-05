@@ -13,6 +13,7 @@ import { useProviderStore } from './providerStore'
 import { useNovelStore } from './novelStore'
 import { useSeedStore } from './seedStore'
 import { useSettingStore } from './settingStore'
+import { normalizeStateProvenance } from '@/utils/stateProvenance'
 
 export const VOLUME_STATUS_OPTIONS = [
   { label: '规划中', value: 'planned' },
@@ -67,8 +68,17 @@ export const useVolumeStore = defineStore('volume', () => {
     return result
   }
 
-  async function saveStageSummary(projectId, volumeId, report) {
-    const result = await api.volumes.saveSummary(projectId, volumeId, report)
+  async function saveStageSummary(projectId, volumeId, report, options = {}) {
+    const provenance = normalizeStateProvenance(options.provenance || report?.snapshotProvenance || {})
+    const payload = {
+      ...(report || {}),
+      snapshotProvenance: provenance,
+      sourceExplanation: report?.sourceExplanation || {
+        sourceType: provenance.commitStatus === 'final' ? 'final_state' : 'degraded_fallback',
+        reason: provenance.commitStatus || 'unknown'
+      }
+    }
+    const result = await api.volumes.saveSummary(projectId, volumeId, payload)
     upsertVolume(result)
     sortVolumes()
     await refreshProject(projectId)
@@ -898,6 +908,7 @@ function buildVolumeRanges(targetChapters, targetWords, count) {
 }
 
 function normalizeVolume(data) {
+  const provenance = normalizeStateProvenance(data)
   return {
     volumeNum: Number(data.volumeNum || 1),
     title: data.title || '',
@@ -917,7 +928,13 @@ function normalizeVolume(data) {
       ? data.unresolvedItems
       : splitList(data.unresolvedItems),
     handoffPoint: data.handoffPoint || '',
-    status: data.status || 'planned'
+    status: data.status || 'planned',
+    sourceChapterNum: provenance.sourceChapterNum,
+    sourceVersionId: provenance.sourceVersionId,
+    runId: provenance.runId,
+    finalizationId: provenance.finalizationId,
+    commitStatus: provenance.commitStatus,
+    provenance
   }
 }
 

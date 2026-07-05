@@ -1,0 +1,309 @@
+{
+  "schemaVersion": "clean-synthetic-project-regression-phase2-2-v1",
+  "status": "completed",
+  "mode": "deterministic-no-live",
+  "timestamp": "2026-07-04T20:21:39.323Z",
+  "scope": "No-live synthetic readiness only; not a real project migration, cleanup, clean canary, or live chapter generation.",
+  "fixtureCoverage": {
+    "storyBlocks": 2,
+    "stages": 3,
+    "finalChapters": 14,
+    "chapterRange": "1-14",
+    "hasSavedBeatConflict": true,
+    "hasGuardOnlyFutureRoadmap": true,
+    "pollutionVariants": [
+      "failedCandidateSettingEntity",
+      "emptyChapterAcceptedEntity",
+      "unfinalizedActiveState",
+      "savedBeatConflict",
+      "futureRoadmapLeak",
+      "halfSuccessFinalizationMarker"
+    ]
+  },
+  "summary": {
+    "healthyReady": true,
+    "pollutedBlocked": true,
+    "guardLeaksToCreativeContext": 0,
+    "savedBeatConflictResolved": true,
+    "stageHandoffFromFinalState": true,
+    "finalizationHalfSuccessBlocked": true,
+    "narrativeVoiceSafe": true
+  },
+  "results": {
+    "healthyCleanProject": {
+      "ready": true,
+      "healthBlocked": false,
+      "warningIssueCodes": [
+        "saved_beat_plan_conflict"
+      ],
+      "creativeContextContainsFutureRoadmap": false,
+      "creativeBoundaryEvidence": {
+        "creativeBoundary": "本章目标：让叶珩在北桥坍塌前逼沈翎承认城防暗号藏在霜河钟楼。\n本章冲突：叶珩 vs 沈翎\n停靠点：沈翎只承认暗号在霜河钟楼，不能揭露霜塔城主身份。",
+        "stateLedger": "## ContextPack v2 stateAuthority\n- [artifact] 霜火罗盘：罗盘仍在叶珩手中，只剩一次转向。；owner=叶珩；usesLeft=1\n- [place] 霜河钟楼：沈翎知道城防暗号藏在钟楼铜钟背面。\n- 第14章：霜火罗盘.profile.owner -> 叶珩\n- 第14章[artifact] 第14章定稿确认霜火罗盘仍在叶珩手中，指针只剩一次转向。\n- 第10章[relationship] 第10章定稿确认沈翎仍欠叶珩一次说明。\n以上内容只来自定稿前序章节或带 trustLevel 标记的 legacy 记录；失败、未定稿、空章、tainted、quarantined 来源已排除。",
+        "settingLibrary": "### 可信设定实体\n- [artifact] 霜火罗盘：罗盘仍在叶珩手中，只剩一次转向。；owner=叶珩；usesLeft=1\n- [place] 霜河钟楼：沈翎知道城防暗号藏在钟楼铜钟背面。"
+      },
+      "contextPack": {
+        "stateAuthorityFacts": 3,
+        "guardFutureRoadmapCount": 1,
+        "creativeFactCount": 2
+      },
+      "sceneCard": {
+        "hasConflict": true,
+        "hasEmotionalTurn": true,
+        "hasStopPoint": true,
+        "trustedFactCount": 2,
+        "stopPoint": "沈翎只承认暗号在霜河钟楼，不能揭露霜塔城主身份。",
+        "allowedFacts": [
+          "第14章定稿确认霜火罗盘仍在叶珩手中，指针只剩一次转向。",
+          "第10章定稿确认沈翎仍欠叶珩一次说明。"
+        ]
+      }
+    },
+    "pollutedProject": {
+      "ready": false,
+      "healthBlocked": true,
+      "issueCodes": [
+        "finalization_pending",
+        "untrusted_source",
+        "empty_chapter_authority",
+        "saved_beat_plan_conflict",
+        "guard_snapshot_in_creative_context"
+      ],
+      "blockingIssues": [
+        {
+          "code": "finalization_pending",
+          "severity": "block",
+          "targetType": "finalization",
+          "target": "chapter:14",
+          "reason": "failed_after_chapter_commit",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "v14-final",
+          "runId": "run-half-14",
+          "finalizationId": "fin-half-14",
+          "commitStatus": "failed_after_chapter_commit"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-failed-entity",
+          "reason": "commit_failed",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "v14-failed-candidate",
+          "runId": "run-failed-14",
+          "finalizationId": "",
+          "commitStatus": "failed"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-empty-entity",
+          "reason": "source_chapter_not_final_or_empty",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "final"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-unfinalized-entity",
+          "reason": "commit_unfinalized",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "v14-unfinalized",
+          "runId": "run-unfinalized-14",
+          "finalizationId": "",
+          "commitStatus": "unfinalized"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_change_event",
+          "target": "polluted-empty-event",
+          "reason": "commit_empty_chapter",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "empty_chapter"
+        },
+        {
+          "code": "empty_chapter_authority",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-empty-entity",
+          "reason": "source_chapter_not_final_or_empty",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "final"
+        },
+        {
+          "code": "empty_chapter_authority",
+          "severity": "block",
+          "targetType": "setting_change_event",
+          "target": "polluted-empty-event",
+          "reason": "commit_empty_chapter",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "empty_chapter"
+        },
+        {
+          "code": "guard_snapshot_in_creative_context",
+          "severity": "block",
+          "targetType": "guard_snapshot",
+          "target": "霜塔城主其实是南线内应",
+          "reason": "guard_only_text_visible_to_creative_context",
+          "sourceChapterNum": null,
+          "sourceVersionId": "",
+          "runId": "",
+          "finalizationId": "",
+          "commitStatus": ""
+        }
+      ],
+      "warningIssues": [
+        {
+          "code": "saved_beat_plan_conflict",
+          "severity": "warn",
+          "targetType": "chapter_beat_plan",
+          "target": "chapter:14",
+          "reason": "plan_only",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "beat-14",
+          "runId": "run-beat-14",
+          "finalizationId": "",
+          "commitStatus": "plan_only"
+        }
+      ]
+    },
+    "savedBeatConflict": {
+      "finalFactWins": true,
+      "beatPlanAuthority": "plan_evidence_only",
+      "creativeContextContainsConflictingBeat": false,
+      "authorityFact": "第14章定稿确认霜火罗盘仍在叶珩手中，指针只剩一次转向。\n第11章定稿确认北桥会在三日内坍塌。\n第10章定稿确认沈翎仍欠叶珩一次说明。",
+      "rejectedPlanReasons": [
+        "plan_only"
+      ]
+    },
+    "stageHandoff": {
+      "activeStage": "Block 2 / Stage 3: Siege Choice",
+      "sourceType": "final_state",
+      "canRebuildFromFinalFacts": true,
+      "rebuildHint": "trusted_stage_snapshot",
+      "rebuildFinalChapterCount": 14,
+      "usesFailedCandidate": false
+    },
+    "finalizationHalfSuccess": {
+      "ready": false,
+      "marker": {
+        "sourceChapterNum": 14,
+        "sourceVersionId": "v14-final",
+        "runId": "run-half-14",
+        "finalizationId": "fin-half-14",
+        "commitStatus": "failed_after_chapter_commit"
+      },
+      "blockingIssueCodes": [
+        "finalization_pending",
+        "untrusted_source",
+        "empty_chapter_authority",
+        "guard_snapshot_in_creative_context"
+      ]
+    },
+    "narrativeVoice": {
+      "voiceScope": "expression_only",
+      "voiceLintOk": true,
+      "scenePromptContainsFutureRoadmap": false,
+      "scenePromptContainsGuardSnapshot": false,
+      "qualityPassed": true,
+      "qualityScore": 100,
+      "qualityIssueCodes": [
+        "prompt_documentary_prompt_tone"
+      ],
+      "promptQualityPassed": true,
+      "promptIssueCodes": [
+        "documentary_prompt_tone"
+      ],
+      "factOrStageOverridePresent": false
+    }
+  },
+  "review": {
+    "threadId": "019f2ecb-aa82-7b21-b1d4-fea01f41ddf9",
+    "critical": "None",
+    "important": "None",
+    "conclusion": "Fresh read-only review found Phase 2.2 satisfies no-live synthetic integration acceptance criteria; no JSON/report drift, no stale/duplicate evidence bypass, no full model-output persistence, and no boundary overrun. Real DB cleanup/migration, clean project regression, and live canary remain intentionally unrun."
+  },
+  "verification": {
+    "commands": [
+      {
+        "command": "node tmp\\run_clean_synthetic_project_regression_phase2_2.mjs",
+        "result": "passed; generated JSON/report"
+      },
+      {
+        "command": "node tmp\\test_context_pack_v2_phase1_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_state_provenance_phase1_2_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_narrative_voice_scene_contract_phase2.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_narrative_voice_phase2_evidence_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_offline_narrative_quality_regression_phase2_1.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_clean_synthetic_project_regression_phase2_2.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_quality_chain_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_quality_first_generation_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_prompt_boundary_modules.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_writer_store_prompt_boundaries.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_writing_style_standards_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_ai_trace_review_prompt.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_audit_ai_trace_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "Phase 2.2 strict JSON/report alignment probe",
+        "result": "passed"
+      },
+      {
+        "command": "npm --prefix frontend run build",
+        "result": "passed; existing Vite INEFFECTIVE_DYNAMIC_IMPORT warning only"
+      }
+    ]
+  }
+}

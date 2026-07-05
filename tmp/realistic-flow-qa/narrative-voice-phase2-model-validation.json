@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "narrative-voice-phase2-model-validation-v1",
+  "timestamp": "2026-07-04T18:28:26.959Z",
+  "preferredModelRequested": "联通云-DeepSeek-V4-Flash",
+  "status": "completed",
+  "reasonForFallback": "当前线程未暴露可用的联通云未脱敏 baseURL/apiKey；只使用环境中可见的 DeepSeek fallback key 做离线 QA。",
+  "provider": {
+    "name": "DeepSeek fallback",
+    "baseURL": "https://api.deepseek.com/v1",
+    "model": "deepseek-v4-pro",
+    "parameters": {
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "max_tokens": 900
+    }
+  },
+  "inputSummary": {
+    "oldPrompt": "代表旧创作入口：厚 AI-trace/写作质量清单 + 未配重风格短语 + 错误混入 guardSnapshot 未来路线。",
+    "newPrompt": "Phase 2 创作入口：Scene Execution Card + Narrative Voice Contract；guardSnapshot 不进入 creative prompt。",
+    "futureSecret": "顾闻舟是幕后人"
+  },
+  "attempts": [],
+  "results": {
+    "oldPrompt": {
+      "chars": 670,
+      "leakedFutureSecret": false,
+      "qualityScore": 100,
+      "passedEvaluator": true,
+      "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+      "issues": [
+        {
+          "code": "missing_short_interiority",
+          "severity": "warn",
+          "message": "缺少贴近当下的短内心或误判变化。"
+        }
+      ],
+      "issueCodes": [
+        "missing_short_interiority"
+      ],
+      "blockingIssueCodes": [],
+      "warningIssueCodes": [
+        "missing_short_interiority"
+      ],
+      "excerpt": "林遥推开审讯室的门，把一沓照片扔在桌上。 周岑没看照片。他盯着自己的手铐，拇指慢慢摩挲手腕上那道红痕。 “港口账本。”林遥没坐下，站在桌对面，“你藏哪儿了。” “我听不懂。” “你听得懂。”林遥把最上面那张照片推过去。照片里是一艘货轮，船号被红色记号笔圈出来，旁边印着日期戳。“这艘船在你名下挂了三年，报关单上写的是建材，实际装的是走私电子元件。海关那边我有全套提货记录，唯独少了去年十月的账本。” 周岑笑了一下，很轻，像叹气。 “林队，既然你什么都有，还问我干什么。” 林遥拉开椅子坐下，从口袋里摸出一支录音笔，搁在照片旁边。她按下播放键。 电流杂音里传出一个男人的声音：*“周老板说了，十月的走水路，不走账。”* 周岑的拇指停住了。 “"
+    },
+    "newPrompt": {
+      "chars": 629,
+      "leakedFutureSecret": false,
+      "qualityScore": 100,
+      "passedEvaluator": true,
+      "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+      "issues": [],
+      "issueCodes": [],
+      "blockingIssueCodes": [],
+      "warningIssueCodes": [],
+      "excerpt": "林遥把提货单的复印件甩在铁桌上。纸片滑到周岑手边，他没碰。 审讯室的日光灯在头顶嗡嗡作响，照得周岑脖子上的细汗发白。林遥没坐下，站在他对面，手指按住纸角，往前推了半寸。 “认得这个。” 周岑眼珠动了一下，没往纸上落。他的呼吸声在桌面上反弹回来，又短又浅。 “林队，该说的我都说了。” “你没说账本。”林遥的声音不大，压在日光灯的电流声下面，“港口那本。” 周岑的喉结滚了一下。他的右手搁在膝盖上，手指收紧又松开，裤管被揪出一道褶。 “什么账本？” 林遥盯着他的眼睛，等了两秒。这两秒里，周岑的眼皮跳了三次。 “旧码头，A区，十二号仓库。”她把复印件翻过来，背面是一串模糊的货号数字，“这张提货单是你的笔迹。你签的字，你的编码。” 周岑的下颌"
+    },
+    "conclusion": {
+      "guardLeakReduced": false,
+      "newPromptAvoidedFutureSecret": true,
+      "newPromptQualityAtLeastOld": true,
+      "newPromptPassedEvaluator": true,
+      "oldPromptPassedEvaluator": true,
+      "newPromptHasNoBlockingIssues": true
+    }
+  }
+}

@@ -1,0 +1,296 @@
+{
+  "schemaVersion": "production-schema-adapter-phase2-5-v1",
+  "status": "completed",
+  "timestamp": "2026-07-04T21:45:37.506Z",
+  "boundary": {
+    "touchesRealDb": false,
+    "startsService": false,
+    "usesRealProject": false,
+    "realDbDsnPresent": false
+  },
+  "disposableStore": {
+    "strategy": "disposable-json-store",
+    "path": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\tmp\\production-schema-adapter-phase2-5\\disposable-store.json",
+    "syntheticOnly": true,
+    "realDbConnection": false
+  },
+  "schema": {
+    "migrationPath": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\backend\\migrations\\20260705_state_provenance_phase1_2.sql",
+    "executedAgainstRealDb": false,
+    "parserMode": "mysql-ddl-parse-dry-run",
+    "tables": [
+      {
+        "table": "finalization_markers",
+        "hasProductionCreateTable": true,
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true,
+        "indexes": [
+          "UNIQUE KEY uniq_finalization_marker_run (project_id, chapter_num, run_id, finalization_id)",
+          "INDEX idx_finalization_markers_project_chapter (project_id, chapter_num, commit_status)",
+          "INDEX idx_finalization_markers_finalization (project_id, finalization_id)"
+        ],
+        "hasCommitStatusConstraint": true,
+        "columns": [
+          "id",
+          "project_id",
+          "chapter_num",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status",
+          "reason",
+          "provenance",
+          "started_at",
+          "updated_at",
+          "created_at"
+        ]
+      },
+      {
+        "table": "project_health_checks",
+        "hasProductionCreateTable": true,
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true,
+        "indexes": [
+          "UNIQUE KEY uniq_project_health_run (project_id, chapter_num, run_id)",
+          "INDEX idx_project_health_checks_project_chapter (project_id, chapter_num, blocked)",
+          "INDEX idx_project_health_checks_run (project_id, run_id)"
+        ],
+        "hasCommitStatusConstraint": true,
+        "columns": [
+          "id",
+          "project_id",
+          "chapter_num",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status",
+          "blocked",
+          "blocking_count",
+          "warning_count",
+          "result_json",
+          "issue_summary",
+          "provenance",
+          "created_at",
+          "updated_at"
+        ]
+      }
+    ],
+    "existingProvenanceTables": [
+      {
+        "table": "chapter_versions",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "canon_facts",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "setting_entities",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "setting_relations",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "setting_change_events",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "project_volumes",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "chapter_beat_plans",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      }
+    ],
+    "idempotence": {
+      "newTablesRepeatSafe": true,
+      "existingAlterRepeatSafe": false,
+      "productionApplyRequiresInspector": true,
+      "unavailableReason": "Existing provenance ALTER TABLE ADD COLUMN and CREATE INDEX statements are draft-only; production apply must use a schema inspector/migration runner that skips existing columns/indexes or a backup-verified one-shot migration."
+    },
+    "finalizationMarkersClosed": true,
+    "projectHealthChecksClosed": true
+  },
+  "rollback": {
+    "rollbackPath": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\backend\\migrations\\20260705_state_provenance_phase1_2_rollback.sql",
+    "supported": true,
+    "executedAgainstRealDb": false,
+    "requiresBackupBeforeRealRun": true,
+    "steps": [
+      "DROP TABLE IF EXISTS project_health_checks;",
+      "DROP TABLE IF EXISTS finalization_markers;"
+    ]
+  },
+  "adapters": {
+    "backend": {
+      "path": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\backend\\routers\\project_state.py",
+      "hasFinalizationMarkerRoutes": true,
+      "hasProjectHealthCheckRoutes": true,
+      "hasIdempotentMarkerUpsert": true,
+      "hasIdempotentHealthUpsert": true
+    },
+    "frontend": {
+      "path": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\frontend\\src\\api\\db\\client.js",
+      "readinessPath": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\frontend\\src\\views\\WriterView.vue",
+      "hasFinalizationMarkerClient": true,
+      "hasProjectHealthCheckClient": true,
+      "hasReadinessDurableMarkerLoad": true,
+      "hasContextDurableMarkerInjection": true
+    }
+  },
+  "results": {
+    "marker": {
+      "idempotent": true,
+      "readBackCount": 1,
+      "commitStatus": "failed_after_chapter_commit",
+      "provenanceComplete": true
+    },
+    "healthCheck": {
+      "idempotent": true,
+      "readBackCount": 1,
+      "creativeContextContainsHealthJson": false,
+      "entersStateAuthority": false,
+      "provenanceComplete": true
+    },
+    "halfSuccessReadinessBlocked": true,
+    "halfSuccessBlockingIssues": [
+      {
+        "code": "finalization_pending",
+        "severity": "block",
+        "targetType": "finalization",
+        "target": "chapter:14",
+        "reason": "failed_after_chapter_commit",
+        "sourceChapterNum": 14,
+        "sourceVersionId": "v14-final",
+        "runId": "run-half-14",
+        "finalizationId": "fin-half-14",
+        "commitStatus": "failed_after_chapter_commit"
+      }
+    ],
+    "unknownDegradedExcludedFromCreative": true,
+    "savedBeatConflictFinalFactWins": true,
+    "guardSnapshotLeakBlocked": true,
+    "disposableRollback": {
+      "removedCollections": true,
+      "postRollbackReadBlocked": true
+    }
+  },
+  "summary": {
+    "finalizationMarkersClosed": true,
+    "projectHealthChecksClosed": true,
+    "backendAdapterClosed": true,
+    "frontendAdapterClosed": true,
+    "disposableSchemaParserPassed": true,
+    "migrationIdempotenceReady": false,
+    "disposableRollbackDryRunPassed": true,
+    "readinessBlockedByHalfSuccess": true,
+    "creativeBoundaryClean": true
+  },
+  "review": {
+    "threadId": "019f2f18-b10f-7332-991b-f5efd412f137",
+    "previousThreadId": "019f2f11-b9df-78e3-a82e-ad75811f88f5",
+    "critical": 0,
+    "important": 0,
+    "conclusion": "Ready",
+    "note": "Re-review confirmed both prior Important findings are closed; durable retry/recovery UX remains a minor future product handling item."
+  },
+  "verification": {
+    "commands": [
+      {
+        "command": "node tmp\\test_production_schema_adapter_phase2_5.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "Phase 2.5 JSON/report alignment probe",
+        "result": "passed"
+      },
+      {
+        "command": "python -m py_compile backend\\main.py backend\\routers\\project_state.py backend\\routers\\helpers.py backend\\routers\\provenance_support.py",
+        "result": "passed"
+      },
+      {
+        "command": "git diff --check",
+        "result": "passed with LF-to-CRLF working-copy warnings only"
+      },
+      {
+        "command": "npm --prefix frontend run build",
+        "result": "passed with existing Vite INEFFECTIVE_DYNAMIC_IMPORT warning"
+      }
+    ]
+  }
+}

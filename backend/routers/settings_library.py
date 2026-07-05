@@ -3,6 +3,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, touch_project
 from .guards import ensure_project_without_chapter_content
+from .provenance_support import persist_provenance_if_columns
 import json
 import re
 import time
@@ -104,12 +105,14 @@ async def create_setting_entity(pid: str, data: dict):
         "updated_at": now,
     }
     await _insert("setting_entities", values)
+    await persist_provenance_if_columns("setting_entities", eid, data)
     return await get_setting_entity(pid, eid)
 
 
 @router.put("/projects/{pid}/settings/entities/{eid}")
 async def update_setting_entity(pid: str, eid: str, data: dict):
     await _update("setting_entities", ENTITY_FIELDS, data, "project_id=%s AND id=%s", (pid, eid))
+    await persist_provenance_if_columns("setting_entities", eid, data)
     return await get_setting_entity(pid, eid)
 
 
@@ -171,6 +174,7 @@ async def create_setting_relation(pid: str, data: dict):
         "updated_at": now,
     }
     await _insert("setting_relations", values)
+    await persist_provenance_if_columns("setting_relations", rid, data)
     return convert_row(await fetchone(
         "SELECT * FROM setting_relations WHERE project_id=%s AND id=%s",
         (pid, rid),
@@ -180,6 +184,7 @@ async def create_setting_relation(pid: str, data: dict):
 @router.put("/projects/{pid}/settings/relations/{rid}")
 async def update_setting_relation(pid: str, rid: str, data: dict):
     await _update("setting_relations", RELATION_FIELDS, data, "project_id=%s AND id=%s", (pid, rid))
+    await persist_provenance_if_columns("setting_relations", rid, data)
     return convert_row(await fetchone(
         "SELECT * FROM setting_relations WHERE project_id=%s AND id=%s",
         (pid, rid),
@@ -265,6 +270,12 @@ async def create_setting_change_event(pid: str, data: dict):
         return convert_row(duplicate)
 
     await _insert("setting_change_events", values)
+    await persist_provenance_if_columns(
+        "setting_change_events",
+        cid,
+        data,
+        {"sourceChapterNum": data.get("chapterNum"), "commitStatus": data.get("commitStatus") or "pending_review"},
+    )
     return convert_row(await fetchone(
         "SELECT * FROM setting_change_events WHERE project_id=%s AND id=%s",
         (pid, cid),
@@ -274,6 +285,7 @@ async def create_setting_change_event(pid: str, data: dict):
 @router.put("/projects/{pid}/settings/change-events/{cid}")
 async def update_setting_change_event(pid: str, cid: str, data: dict):
     await _update("setting_change_events", CHANGE_FIELDS, data, "project_id=%s AND id=%s", (pid, cid))
+    await persist_provenance_if_columns("setting_change_events", cid, data)
     return convert_row(await fetchone(
         "SELECT * FROM setting_change_events WHERE project_id=%s AND id=%s",
         (pid, cid),
@@ -315,6 +327,11 @@ async def accept_setting_change_event(pid: str, cid: str, data: dict | None = Bo
         "UPDATE setting_change_events SET status=%s, entity_id=%s, updated_at=%s WHERE project_id=%s AND id=%s",
         ("accepted", entity.get("id") if entity else relation.get("source_entity_id") if relation else event.get("entity_id"), int(time.time() * 1000), pid, cid),
     )
+    await persist_provenance_if_columns("setting_change_events", cid, event, {"commitStatus": event.get("commit_status") or "final"})
+    if entity:
+        await persist_provenance_if_columns("setting_entities", entity.get("id"), event, {"commitStatus": event.get("commit_status") or "final"})
+    if relation:
+        await persist_provenance_if_columns("setting_relations", relation.get("id"), event, {"commitStatus": event.get("commit_status") or "final"})
     updated_event = convert_row(await fetchone(
         "SELECT * FROM setting_change_events WHERE project_id=%s AND id=%s",
         (pid, cid),
@@ -1996,6 +2013,7 @@ async def _apply_relationship_event(pid: str, event: dict):
         "created_at": now,
     })
     await _insert("setting_relations", values)
+    await persist_provenance_if_columns("setting_relations", rid, event, {"sourceChapterNum": event.get("chapter_num"), "commitStatus": event.get("commit_status") or "final"})
     return await fetchone("SELECT * FROM setting_relations WHERE project_id=%s AND id=%s", (pid, rid))
 
 
@@ -2119,6 +2137,7 @@ async def _find_or_create_entity(pid: str, entity_type: str, name: str, event: d
         "created_at": now,
         "updated_at": now,
     })
+    await persist_provenance_if_columns("setting_entities", eid, event, {"sourceChapterNum": event.get("chapter_num"), "commitStatus": event.get("commit_status") or "final"})
     return await fetchone("SELECT * FROM setting_entities WHERE project_id=%s AND id=%s", (pid, eid))
 
 

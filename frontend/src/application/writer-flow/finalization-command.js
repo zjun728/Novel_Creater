@@ -21,6 +21,17 @@ async function invokeOptional(fn, ...args) {
   return undefined
 }
 
+function buildFinalizationProvenance(projectId, chapterNum, version, finalizationRun) {
+  return {
+    projectId,
+    sourceChapterNum: chapterNum,
+    sourceVersionId: version?.id || '',
+    runId: finalizationRun?.runId || '',
+    finalizationId: finalizationRun?.finalizationId || '',
+    commitStatus: 'final'
+  }
+}
+
 export async function runFinalizeChapterCommand(input = {}) {
   const {
     projectId,
@@ -47,6 +58,8 @@ export async function runFinalizeChapterCommand(input = {}) {
   const buildRerouteContext = requiredFunction(input, 'buildRerouteContext')
   const markFinalizationFailure = requiredFunction(input, 'markFinalizationFailure')
   const endFinalizationRun = requiredFunction(input, 'endFinalizationRun')
+  const saveDurableFinalizationMarker = input.saveDurableFinalizationMarker
+  const upsertDurableFinalizationMarker = input.upsertDurableFinalizationMarker
 
   const finalizationRun = await beginFinalizationRun(projectId, chapterNum, version?.id)
   if (!finalizationRun?.started) {
@@ -66,7 +79,8 @@ export async function runFinalizeChapterCommand(input = {}) {
   let results = null
 
   try {
-    await finalizeVersion(version)
+    const finalizationProvenance = buildFinalizationProvenance(projectId, chapterNum, version, finalizationRun)
+    await finalizeVersion(version, finalizationProvenance)
     chapterFinalized = true
     await invokeOptional(onVersionFinalized)
 
@@ -84,7 +98,7 @@ export async function runFinalizeChapterCommand(input = {}) {
       await invokeOptional(onClearTempDraftFailure, normalizeError(error))
     }
 
-    results = await processChapterFinalization(projectId, version?.content || '', chapterNum)
+    results = await processChapterFinalization(projectId, version?.content || '', chapterNum, finalizationProvenance)
     const requiredFailures = (results?.errors || []).filter(error => error.required)
     if (requiredFailures.length) {
       throw buildRequiredFailureError(requiredFailures)
@@ -124,8 +138,26 @@ export async function runFinalizeChapterCommand(input = {}) {
   } catch (error) {
     const normalized = normalizeError(error)
     if (chapterFinalized) {
-      await markFinalizationFailure(projectId, chapterNum, normalized)
-      await invokeOptional(onPostFinalizeFailure, normalized)
+      const failedProvenance = {
+        ...buildFinalizationProvenance(projectId, chapterNum, version, finalizationRun),
+        commitStatus: 'failed_after_chapter_commit'
+      }
+      await markFinalizationFailure(projectId, chapterNum, normalized, failedProvenance)
+      try {
+        const savedDurableMarker = await invokeOptional(saveDurableFinalizationMarker, chapterNum, {
+          sourceChapterNum: chapterNum,
+          sourceVersionId: version?.id || '',
+          runId: finalizationRun.runId || '',
+          finalizationId: finalizationRun.finalizationId || '',
+          commitStatus: 'failed_after_chapter_commit',
+          reason: 'chapter committed but finalization postprocess failed',
+          provenance: failedProvenance
+        })
+        if (savedDurableMarker) await invokeOptional(upsertDurableFinalizationMarker, savedDurableMarker)
+      } catch (durableSaveError) {
+        warnings.push({ code: 'durable_finalization_marker_save_failed', error: normalizeError(durableSaveError) })
+      }
+      await invokeOptional(onPostFinalizeFailure, normalized, failedProvenance)
     }
     return {
       ok: false,
@@ -138,7 +170,11 @@ export async function runFinalizeChapterCommand(input = {}) {
     }
   } finally {
     await endFinalizationRun(finalizationRun.runKey, projectId, chapterNum, {
-      keepPending: chapterFinalized && !finalizationCompleted
+      keepPending: chapterFinalized && !finalizationCompleted,
+      commitStatus: chapterFinalized && !finalizationCompleted ? 'failed_after_chapter_commit' : 'pending',
+      sourceVersionId: version?.id || '',
+      runId: finalizationRun.runId || '',
+      finalizationId: finalizationRun.finalizationId || ''
     })
   }
 }

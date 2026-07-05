@@ -20,6 +20,14 @@ import {
   isDefaultChapterTitle as isDomainDefaultChapterTitle,
   normalizeChapterTitleKey as normalizeDomainChapterTitleKey
 } from '../domain/chapter-title/index.js'
+import {
+  buildNarrativeVoiceContractV2,
+  formatNarrativeVoiceContractForPrompt
+} from '../utils/narrativeVoiceContract.js'
+import {
+  buildSceneExecutionCard,
+  formatSceneExecutionCardForPrompt
+} from '../utils/sceneExecutionContract.js'
 
 /**
  * 章节生成 Prompt
@@ -106,7 +114,8 @@ function formatCharacters(characters) {
   return characters.map(c => {
     const hardState = c.hardState || {}
     const softState = c.softState || {}
-    const lines = [`### ${c.name || '未命名角色'}（${c.role || '配角'}）`]
+    const trustLabel = c.trustLabel || (c.trustLevel && c.trustLevel !== 'trusted' ? ` [trustLevel=${c.trustLevel}]` : '')
+    const lines = [`### ${c.name || '未命名角色'}（${c.role || '配角'}）${trustLabel}`]
     if (c.personality) lines.push(`- 性格：${c.personality}`)
     if (c.desire) lines.push(`- 欲望：${c.desire}`)
     if (c.fear) lines.push(`- 恐惧：${c.fear}`)
@@ -1756,11 +1765,29 @@ export function buildChapterPrompt(context) {
     if (boundaryLines.length) parts.push(`## 本章创作边界摘要\n${boundaryLines.join('\n')}`)
   }
 
+  const sceneExecutionCard = context.sceneExecutionCard || buildSceneExecutionCard(context)
+  const sceneExecutionCardPrompt = formatSceneExecutionCardForPrompt(sceneExecutionCard)
+  if (sceneExecutionCardPrompt) parts.push(sceneExecutionCardPrompt)
+
   const styleHints = [styleMethodBrief, !styleMethodBrief ? styleBible : '', !styleMethodBrief ? styleStandardBrief : '']
     .filter(hasText)
     .map(sanitizePromptInstructionText)
     .join('\n\n')
-  if (styleHints) parts.push(`## 写作气质\n${styleHints}`)
+  const narrativeVoiceContract = context.narrativeVoiceContract || (styleHints
+    ? buildNarrativeVoiceContractV2({
+      styleBible,
+      styleMethodBrief,
+      styleStandardBrief
+    })
+    : null)
+  const narrativeVoicePrompt = narrativeVoiceContract
+    ? formatNarrativeVoiceContractForPrompt(narrativeVoiceContract)
+    : ''
+  if (narrativeVoicePrompt) {
+    parts.push(narrativeVoicePrompt)
+  } else if (styleHints) {
+    parts.push(`## 写作气质\n${styleHints}`)
+  }
 
   if (context.settingLibrary) parts.push(`## 关键设定边界\n${context.settingLibrary}`)
   if (context.recentSettingChanges) parts.push(`## 最近设定变化\n${context.recentSettingChanges}`)
@@ -1884,6 +1911,15 @@ ${beatPlan}
 
 这些是写作方向，不是检查清单；自然叙事优先，生成后会另行审稿和验收。`)
   }
+
+  parts.push(`## 戏剧执行底线
+- 每个主场景围绕一个可见压力展开：人物想要什么、怕失去什么、此刻为什么不能退。
+- 对白必须推进冲突或遮掩真相；简短不等于平直，要有逼问、回避、潜台词或权力变化。
+- 情绪转折要发生在场景里：由证据、错话、动作失败、关系代价或环境压力触发。
+- 动作必须改变局势、暴露意图或留下代价；不要只写位移、握拳、沉默和机械反应。
+- 描写只选最贴近压力的一两处表情、语气、身体反应或环境细节；少解释，不少临场感。
+- 信息释放优先靠证据、误判解除、物件反应、失败尝试和人物选择，不用旁白替读者总结。
+- 收束停在 Scene Execution Card 的停靠点，不提前写后续章真相、复盘或路线图。`)
 
   parts.push(`## 写作任务
 请撰写第 ${context.chapterNum || '?'} 章正文。

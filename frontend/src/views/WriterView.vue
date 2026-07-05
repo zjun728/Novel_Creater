@@ -38,6 +38,7 @@ import {
 } from '@/stores/correctionTaskStore'
 import { useCompareStore } from '@/stores/compareStore'
 import { buildWritingContext } from '@/utils/contextBuilder'
+import { assertContextPackHealthy } from '@/utils/contextPackV2'
 import { auditIssueTypeLabel, auditSeverityLabel } from '@/utils/auditLabels'
 import { api } from '@/api/db/client'
 import { downloadFile, exportTxt, exportMarkdown } from '@/utils/export'
@@ -153,6 +154,7 @@ const finalizeAuditInFlight = ref(false)
 const finalizeSubmitting = ref(false)
 const finalizationRetrying = ref(false)
 const finalizationMarkerVersion = ref(0)
+const durableFinalizationMarkers = ref([])
 const chapterTitleGenerating = ref(false)
 const showChapterTitleEditor = ref(false)
 const chapterTitleDraft = ref('')
@@ -501,6 +503,7 @@ async function loadContextData() {
         loadSeeds: seedStore.loadSeeds
       }
     })
+    await loadDurableFinalizationMarkers(projectId.value)
     contextDataLoaded.value = true
   } catch (e) {
     contextDataLoaded.value = false
@@ -870,16 +873,159 @@ function buildBaseContext() {
   return buildBaseContextResult().context
 }
 
+async function loadDurableFinalizationMarkers(pid = projectId.value) {
+  if (!pid) {
+    durableFinalizationMarkers.value = []
+    return []
+  }
+  try {
+    const rows = await api.projectState.finalizationMarkers.list(pid)
+    durableFinalizationMarkers.value = Array.isArray(rows) ? rows : []
+  } catch (error) {
+    if (isProjectStateMigrationUnavailable(error)) {
+      durableFinalizationMarkers.value = []
+      return []
+    }
+    throw error
+  }
+  return durableFinalizationMarkers.value
+}
+
+function isProjectStateMigrationUnavailable(error) {
+  const message = String(error?.message || error || '').toLowerCase()
+  const hasExplicitMigrationFlag = Boolean(error?.migrationUnavailable || error?.migration_unavailable)
+  const mentionsProjectStateTable = (
+    message.includes('finalization_markers') ||
+    message.includes('project_health_checks')
+  )
+  const missingProjectStateTableError = mentionsProjectStateTable && (
+    message.includes('no such table') ||
+    message.includes("doesn't exist") ||
+    message.includes('does not exist') ||
+    message.includes('unknown table') ||
+    message.includes('undefinedtable')
+  )
+  return (
+    hasExplicitMigrationFlag ||
+    message.includes('migrationunavailable') ||
+    message.includes('migration unavailable') ||
+    missingProjectStateTableError
+  )
+}
+
+async function saveDurableFinalizationMarker(targetChapterNum, marker) {
+  try {
+    return await api.projectState.finalizationMarkers.save(projectId.value, targetChapterNum, marker)
+  } catch (error) {
+    if (isProjectStateMigrationUnavailable(error)) {
+      return null
+    }
+    throw error
+  }
+}
+
+function finalizationMarkerChapterNum(marker) {
+  return Number(marker?.chapterNum || marker?.chapter_num || marker?.sourceChapterNum || marker?.source_chapter_num || 0)
+}
+
+function finalizationMarkerStatus(marker) {
+  return String(marker?.commitStatus || marker?.commit_status || marker?.status || 'pending').trim().toLowerCase()
+}
+
+function isBlockingFinalizationMarker(marker) {
+  const status = finalizationMarkerStatus(marker)
+  return ['pending', 'in_progress', 'started', 'validated', 'half_success', 'failed_after_chapter_commit'].includes(status)
+}
+
+function findDurableFinalizationPending(num) {
+  return (durableFinalizationMarkers.value || []).find(marker =>
+    finalizationMarkerChapterNum(marker) === Number(num) && isBlockingFinalizationMarker(marker)
+  ) || null
+}
+
+function durableFinalizationMarkerKey(marker) {
+  return [
+    finalizationMarkerChapterNum(marker),
+    marker?.runId || marker?.run_id || '',
+    marker?.finalizationId || marker?.finalization_id || ''
+  ].join('|')
+}
+
+function upsertDurableFinalizationMarker(marker) {
+  if (!marker) return
+  const markerKey = durableFinalizationMarkerKey(marker)
+  const existingIndex = durableFinalizationMarkers.value.findIndex(item =>
+    durableFinalizationMarkerKey(item) === markerKey
+  )
+  if (existingIndex >= 0) {
+    durableFinalizationMarkers.value.splice(existingIndex, 1, marker)
+  } else {
+    durableFinalizationMarkers.value.push(marker)
+  }
+}
+
+function removeDurableFinalizationMarker(targetChapterNum, marker) {
+  const markerKey = durableFinalizationMarkerKey(marker)
+  durableFinalizationMarkers.value = (durableFinalizationMarkers.value || []).filter(item => {
+    const sameChapter = finalizationMarkerChapterNum(item) === Number(targetChapterNum)
+    const sameMarker = markerKey === durableFinalizationMarkerKey(item)
+    return !(sameChapter && (sameMarker || isBlockingFinalizationMarker(item)))
+  })
+}
+
+function collectContextFinalizationMarkers() {
+  const markers = []
+  const markerNums = new Set([Number(chapterNum.value)])
+  for (const chapter of writerStore.chapters || []) {
+    const num = Number(chapter.chapterNum || chapter.chapter_num || 0)
+    if (num > 0 && num <= Number(chapterNum.value)) markerNums.add(num)
+  }
+  for (const marker of durableFinalizationMarkers.value || []) {
+    const num = finalizationMarkerChapterNum(marker)
+    if (num > 0 && num <= Number(chapterNum.value)) markerNums.add(num)
+  }
+
+  const seen = new Set()
+  const pushMarker = marker => {
+    if (!marker) return
+    const num = finalizationMarkerChapterNum(marker)
+    const key = [
+      num,
+      marker.runId || marker.run_id || '',
+      marker.finalizationId || marker.finalization_id || '',
+      finalizationMarkerStatus(marker)
+    ].join('|')
+    if (seen.has(key)) return
+    seen.add(key)
+    markers.push(marker)
+  }
+
+  for (const num of markerNums) {
+    pushMarker(getChapterFinalizationPending(projectId.value, num))
+  }
+  for (const marker of durableFinalizationMarkers.value || []) {
+    const num = finalizationMarkerChapterNum(marker)
+    if (num > 0 && num <= Number(chapterNum.value)) pushMarker(marker)
+  }
+  return markers
+}
+
 function findBlockingFinalizationPending() {
   const nums = new Set([Number(chapterNum.value)])
   for (const chapter of writerStore.chapters || []) {
     const num = Number(chapter.chapterNum || chapter.chapter_num || 0)
     if (num > 0 && num <= Number(chapterNum.value)) nums.add(num)
   }
+  for (const marker of durableFinalizationMarkers.value || []) {
+    const num = finalizationMarkerChapterNum(marker)
+    if (num > 0 && num <= Number(chapterNum.value)) nums.add(num)
+  }
 
   for (const num of [...nums].sort((a, b) => a - b)) {
     const marker = getChapterFinalizationPending(projectId.value, num)
     if (marker) return marker
+    const durableMarker = findDurableFinalizationPending(num)
+    if (durableMarker) return durableMarker
   }
   return null
 }
@@ -957,6 +1103,17 @@ async function ensureAiContextReady(actionName = 'AI 操作') {
 
   if (!contextDataLoaded.value) {
     message.warning(`创作上下文尚未就绪，已阻止${actionName}`)
+    return false
+  }
+
+  try {
+    const result = buildBaseContextResult()
+    assertContextPackHealthy(result.contextPack)
+  } catch (e) {
+    message.warning(
+      `ContextPack 健康检查未通过，已阻止${actionName}：${e.message}`,
+      { title: '创作上下文不可信' }
+    )
     return false
   }
 
@@ -1115,7 +1272,9 @@ async function ensurePreviousChapterFinalized(actionName = 'AI 写作') {
     return false
   }
 
-  const previousProcessing = getChapterFinalizationPending(projectId.value, chapterNum.value - 1)
+  const previousProcessing =
+    getChapterFinalizationPending(projectId.value, chapterNum.value - 1) ||
+    findDurableFinalizationPending(chapterNum.value - 1)
   const pendingResult = checkPreviousChapterFinalized({
     chapterNum: chapterNum.value,
     previousChapter,
@@ -1164,6 +1323,8 @@ function writeWriterContextDiagnostics(context = {}) {
 }
 
 function buildBaseContextResult() {
+  const finalizationMarkers = collectContextFinalizationMarkers()
+
   const result = buildWritingContext(
     novelStore,
     chapterNum.value,
@@ -1173,7 +1334,9 @@ function buildBaseContextResult() {
     correctionTaskStore,
     {
       storyBlock: activeStoryBlock.value,
-      blockStageSnapshot: beatPlanStageSnapshot.value
+      blockStageSnapshot: beatPlanStageSnapshot.value,
+      chapters: writerStore.chapters,
+      finalizationMarkers
     }
   )
   const seedContext = buildSeedContext(getSelectedSeed())
@@ -2306,6 +2469,8 @@ async function performFinalize(version) {
       buildRerouteContext: buildFinalizationRerouteContext,
       markFinalizationFailure: markChapterFinalizationFailure,
       endFinalizationRun: endChapterFinalizationRun,
+      saveDurableFinalizationMarker,
+      upsertDurableFinalizationMarker,
       onVersionFinalized: () => {
         pendingFinalizeVersion.value = null
         showAuditModal.value = false
@@ -2848,7 +3013,9 @@ async function retryFinalizationPostprocess(targetChapterNum) {
   const num = Number(targetChapterNum || blockingFinalizationPending.value?.chapterNum || chapterNum.value)
   if (!num || finalizationProcessingActive.value) return
 
-  const marker = getChapterFinalizationPending(projectId.value, num)
+  const localMarker = getChapterFinalizationPending(projectId.value, num)
+  const durableMarker = findDurableFinalizationPending(num)
+  const marker = localMarker || durableMarker
   if (!marker) {
     message.info(`第 ${num} 章没有待重试的定稿后处理`)
     return
@@ -2867,11 +3034,13 @@ async function retryFinalizationPostprocess(targetChapterNum) {
   }
 
   let finalizationRun = null
+  let retryVersionId = ''
   let completed = false
   finalizationRetrying.value = true
   memoryProcessing.value = true
   try {
     const { version } = await loadFinalizedVersionForPostprocess(num)
+    retryVersionId = version.id
     finalizationRun = beginChapterFinalizationRun(projectId.value, num, version.id, { allowExistingPending: true })
     if (!finalizationRun.started) {
       throw new Error(finalizationRun.reason === 'already_running'
@@ -2880,7 +3049,11 @@ async function retryFinalizationPostprocess(targetChapterNum) {
     }
 
     message.info(`正在重试第 ${num} 章定稿后的记忆和设定提取...`)
-    const results = await memoryStore.processChapterFinalization(projectId.value, version.content, num)
+    const results = await memoryStore.processChapterFinalization(projectId.value, version.content, num, {
+      sourceVersionId: version.id,
+      runId: finalizationRun.runId,
+      finalizationId: finalizationRun.finalizationId
+    })
     const requiredFailures = (results.errors || []).filter(error => error.required)
     if (requiredFailures.length) {
       throw new Error(requiredFailures.map(error => `${error.step}: ${error.message}`).join('；'))
@@ -2901,8 +3074,37 @@ async function retryFinalizationPostprocess(targetChapterNum) {
     finalizationMarkerVersion.value += 1
     message.error(`重试第 ${num} 章定稿后处理失败：${e.message}`)
   } finally {
+    const durableCloseoutRunId = marker.runId || marker.run_id || finalizationRun?.runId || ''
+    const durableCloseoutFinalizationId = marker.finalizationId || marker.finalization_id || finalizationRun?.finalizationId || ''
+    try {
+      const savedDurableMarker = await saveDurableFinalizationMarker(num, {
+        sourceChapterNum: num,
+        sourceVersionId: retryVersionId || marker.sourceVersionId || marker.source_version_id || '',
+        runId: durableCloseoutRunId,
+        finalizationId: durableCloseoutFinalizationId,
+        commitStatus: completed ? 'committed' : 'failed_after_chapter_commit',
+        reason: completed ? 'finalization postprocess retry completed' : 'finalization postprocess retry failed',
+        provenance: {
+          sourceChapterNum: num,
+          sourceVersionId: retryVersionId || marker.sourceVersionId || marker.source_version_id || '',
+          runId: durableCloseoutRunId,
+          finalizationId: durableCloseoutFinalizationId,
+          commitStatus: completed ? 'committed' : 'failed_after_chapter_commit'
+        }
+      })
+      if (savedDurableMarker) upsertDurableFinalizationMarker(savedDurableMarker)
+    } catch (durableSaveError) {
+      console.warn('Durable finalization marker save failed', durableSaveError)
+    }
+    if (completed) removeDurableFinalizationMarker(num, marker)
     if (finalizationRun?.started) {
-      endChapterFinalizationRun(finalizationRun.runKey, projectId.value, num, { keepPending: !completed })
+      endChapterFinalizationRun(finalizationRun.runKey, projectId.value, num, {
+        keepPending: !completed,
+        commitStatus: !completed ? 'failed_after_chapter_commit' : 'pending',
+        sourceVersionId: retryVersionId,
+        runId: finalizationRun.runId,
+        finalizationId: finalizationRun.finalizationId
+      })
     }
     finalizationRetrying.value = false
     memoryProcessing.value = false

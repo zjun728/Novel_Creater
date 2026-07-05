@@ -1,0 +1,896 @@
+{
+  "schemaVersion": "platform-rc-preflight-phase2-7-v1",
+  "status": "completed",
+  "timestamp": "2026-07-05T01:38:25.011Z",
+  "outputs": {
+    "jsonPath": "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\platform-rc-preflight-phase2-7.json",
+    "reportPath": "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\platform-rc-preflight-phase2-7-report.md"
+  },
+  "boundary": {
+    "realDbConnection": false,
+    "realProjectTouched": false,
+    "serviceStarted": false,
+    "liveGenerationRun": false,
+    "phase3Entered": false,
+    "commitOrPrCreated": false
+  },
+  "manifest": {
+    "generatedAt": "2026-07-05T01:38:22.571Z",
+    "totalFiles": 76,
+    "groups": {
+      "longTermCode": [
+        {
+          "path": ".gitignore",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/main.py",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/routers/chapters.py",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/routers/helpers.py",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/routers/novel.py",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/routers/settings_library.py",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/routers/volumes.py",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/package-lock.json",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/application/writer-flow/finalization-command.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        }
+      ],
+      "backendMigrationSchema": [
+        {
+          "path": "backend/migrations/20260705_state_provenance_phase1_2.sql",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/migrations/20260705_state_provenance_phase1_2_rollback.sql",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/routers/project_state.py",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "backend/routers/provenance_support.py",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        }
+      ],
+      "frontendContextProvenanceFinalization": [
+        {
+          "path": "frontend/src/api/db/client.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/stores/memoryStore.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/stores/settingStore.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/stores/volumeStore.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/stores/writerStore.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/contextBuilder.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/contextPackV2.js",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/finalizationGuard.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/finalizationProtocol.js",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/projectHealthCheck.js",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/stateProvenance.js",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/views/WriterView.vue",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        }
+      ],
+      "writingQuality": [
+        {
+          "path": "frontend/src/prompts/audit.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/prompts/chapter.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/prompts/chapterDraftPrompt.js",
+          "status": "M",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/literaryQualityEvaluator.js",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/narrativeVoiceContract.js",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        },
+        {
+          "path": "frontend/src/utils/sceneExecutionContract.js",
+          "status": "A",
+          "mergeRole": "long_term_code"
+        }
+      ],
+      "testsRunners": [
+        {
+          "path": "tmp/run_clean_synthetic_project_regression_phase2_2.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/run_ephemeral_persistence_regression_phase2_3.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/run_idempotent_migration_inspector_phase2_6.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/run_narrative_voice_phase2_model_validation.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/run_offline_narrative_quality_regression_phase2_1.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/run_platform_rc_preflight_phase2_7.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/run_production_schema_adapter_phase2_5.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_clean_synthetic_project_regression_phase2_2.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_context_pack_v2_phase1_contract.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_ephemeral_persistence_regression_phase2_3.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_finalization_guard.mjs",
+          "status": "M",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_finalization_postprocess_contract.mjs",
+          "status": "M",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_finalization_retry_contract.mjs",
+          "status": "M",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_finalize_endpoint_contract.mjs",
+          "status": "M",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_idempotent_migration_inspector_phase2_6.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_narrative_voice_phase2_evidence_contract.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_narrative_voice_scene_contract_phase2.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_offline_narrative_quality_regression_phase2_1.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_platform_rc_preflight_phase2_7.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_production_schema_adapter_phase2_5.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_state_provenance_phase1_2_contract.mjs",
+          "status": "A",
+          "mergeRole": "deterministic_test_or_runner"
+        },
+        {
+          "path": "tmp/test_writer_flow_finalization_command_contract.mjs",
+          "status": "M",
+          "mergeRole": "deterministic_test_or_runner"
+        }
+      ],
+      "qaReports": [
+        {
+          "path": "tmp/realistic-flow-qa/clean-synthetic-project-regression-phase2-2-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/clean-synthetic-project-regression-phase2-2.json",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/contextpack-v2-phase1-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/ephemeral-persistence-regression-phase2-3-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/ephemeral-persistence-regression-phase2-3.json",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/idempotent-migration-inspector-phase2-6-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/idempotent-migration-inspector-phase2-6.json",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/narrative-voice-phase2-model-validation.json",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/narrative-voice-scene-contract-phase2-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/offline-narrative-quality-regression-phase2-1-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/offline-narrative-quality-regression-phase2-1.json",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/phase1-2-1-merge-readiness-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/platform-rc-merge-readiness-phase2-4-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/platform-rc-preflight-phase2-7-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/platform-rc-preflight-phase2-7.json",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/production-schema-adapter-phase2-5-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/production-schema-adapter-phase2-5.json",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/rc-commit-handoff-phase2-8-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/rc-mainline-integration-phase2-9-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        },
+        {
+          "path": "tmp/realistic-flow-qa/state-provenance-phase1-2-report.md",
+          "status": "A",
+          "mergeRole": "qa_evidence"
+        }
+      ],
+      "generatedTempStores": [
+        {
+          "path": "tmp/ephemeral-persistence-phase2-3/",
+          "status": "ignored_generated",
+          "mergeRole": "generated_disposable_store"
+        },
+        {
+          "path": "tmp/production-schema-adapter-phase2-5/",
+          "status": "ignored_generated",
+          "mergeRole": "generated_disposable_store"
+        },
+        {
+          "path": "tmp/idempotent-migration-inspector-phase2-6/",
+          "status": "ignored_generated",
+          "mergeRole": "generated_disposable_store"
+        }
+      ]
+    },
+    "groupCounts": {
+      "longTermCode": 9,
+      "backendMigrationSchema": 4,
+      "frontendContextProvenanceFinalization": 12,
+      "writingQuality": 6,
+      "testsRunners": 22,
+      "qaReports": 20,
+      "generatedTempStores": 3
+    }
+  },
+  "artifactPolicy": {
+    "qaEvidence": [
+      {
+        "path": "tmp/realistic-flow-qa/clean-synthetic-project-regression-phase2-2-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/clean-synthetic-project-regression-phase2-2.json",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/contextpack-v2-phase1-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/ephemeral-persistence-regression-phase2-3-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/ephemeral-persistence-regression-phase2-3.json",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/idempotent-migration-inspector-phase2-6-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/idempotent-migration-inspector-phase2-6.json",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/narrative-voice-phase2-model-validation.json",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/narrative-voice-scene-contract-phase2-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/offline-narrative-quality-regression-phase2-1-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/offline-narrative-quality-regression-phase2-1.json",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/phase1-2-1-merge-readiness-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/platform-rc-merge-readiness-phase2-4-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/platform-rc-preflight-phase2-7-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/platform-rc-preflight-phase2-7.json",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/production-schema-adapter-phase2-5-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/production-schema-adapter-phase2-5.json",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/rc-commit-handoff-phase2-8-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/rc-mainline-integration-phase2-9-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      },
+      {
+        "path": "tmp/realistic-flow-qa/state-provenance-phase1-2-report.md",
+        "retainForAudit": true,
+        "shouldEnterProductionMerge": true,
+        "role": "qa_evidence_report_or_json"
+      }
+    ],
+    "generatedTempStores": [
+      {
+        "path": "tmp/ephemeral-persistence-phase2-3/",
+        "exists": true,
+        "shouldEnterProductionMerge": false,
+        "recommendedAction": "ignore_or_exclude_before_merge",
+        "evidenceMigratedToQaReport": true,
+        "retainedForLocalAuditUntilRcAccepted": true
+      },
+      {
+        "path": "tmp/production-schema-adapter-phase2-5/",
+        "exists": true,
+        "shouldEnterProductionMerge": false,
+        "recommendedAction": "ignore_or_exclude_before_merge",
+        "evidenceMigratedToQaReport": true,
+        "retainedForLocalAuditUntilRcAccepted": true
+      },
+      {
+        "path": "tmp/idempotent-migration-inspector-phase2-6/",
+        "exists": true,
+        "shouldEnterProductionMerge": false,
+        "recommendedAction": "ignore_or_exclude_before_merge",
+        "evidenceMigratedToQaReport": true,
+        "retainedForLocalAuditUntilRcAccepted": true
+      }
+    ],
+    "gitignoreCoversGeneratedStores": true
+  },
+  "boundaryScan": {
+    "productionHardcodedIssueIds": false,
+    "productionLongformBrowser": false,
+    "productionRealDbDsn": false,
+    "productionPageGoto": false,
+    "modelOutputStateWriteRisk": false,
+    "hits": []
+  },
+  "preflight": {
+    "requiredLabels": [
+      "context_pack_v2_phase1_contract",
+      "state_provenance_phase1_2_contract",
+      "narrative_voice_scene_phase2_contract",
+      "narrative_voice_phase2_evidence_contract",
+      "offline_narrative_quality_regression_phase2_1",
+      "clean_synthetic_project_regression_phase2_2",
+      "ephemeral_persistence_regression_phase2_3",
+      "production_schema_adapter_phase2_5",
+      "idempotent_migration_inspector_phase2_6",
+      "finalization_guard",
+      "finalization_postprocess",
+      "finalization_retry",
+      "finalize_endpoint",
+      "draft_prompt_humanity_brief",
+      "chase_variety_prompt",
+      "formal_writing_standard_closure",
+      "writing_standard_prompt_boundary",
+      "writer_flow_boundary_audit",
+      "writing_style_standards"
+    ],
+    "total": 19,
+    "failed": 0,
+    "results": [
+      {
+        "label": "context_pack_v2_phase1_contract",
+        "command": "node tmp\\test_context_pack_v2_phase1_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 229,
+        "stdoutTail": "context pack v2 phase1 contract tests passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "state_provenance_phase1_2_contract",
+        "command": "node tmp\\test_state_provenance_phase1_2_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 127,
+        "stdoutTail": "state provenance phase1.2 contract tests passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "narrative_voice_scene_phase2_contract",
+        "command": "node tmp\\test_narrative_voice_scene_contract_phase2.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 131,
+        "stdoutTail": "NarrativeVoiceContract + SceneExecutionContract Phase 2 no-model fixtures passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "narrative_voice_phase2_evidence_contract",
+        "command": "node tmp\\test_narrative_voice_phase2_evidence_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 121,
+        "stdoutTail": "narrative voice phase2 evidence contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "offline_narrative_quality_regression_phase2_1",
+        "command": "node tmp\\test_offline_narrative_quality_regression_phase2_1.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 132,
+        "stdoutTail": "offline narrative quality regression phase2.1 no-model contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "clean_synthetic_project_regression_phase2_2",
+        "command": "node tmp\\test_clean_synthetic_project_regression_phase2_2.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 112,
+        "stdoutTail": "clean synthetic project regression phase2.2 no-live contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "ephemeral_persistence_regression_phase2_3",
+        "command": "node tmp\\test_ephemeral_persistence_regression_phase2_3.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 168,
+        "stdoutTail": "ephemeral persistence regression phase2.3 contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "production_schema_adapter_phase2_5",
+        "command": "node tmp\\test_production_schema_adapter_phase2_5.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 134,
+        "stdoutTail": "production schema adapter phase2.5 contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "idempotent_migration_inspector_phase2_6",
+        "command": "node tmp\\test_idempotent_migration_inspector_phase2_6.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 109,
+        "stdoutTail": "idempotent migration inspector phase2.6 contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "finalization_guard",
+        "command": "node tmp\\test_finalization_guard.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 107,
+        "stdoutTail": "finalization guard tests passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "finalization_postprocess",
+        "command": "node tmp\\test_finalization_postprocess_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 98,
+        "stdoutTail": "finalization postprocess contract tests passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "finalization_retry",
+        "command": "node tmp\\test_finalization_retry_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 99,
+        "stdoutTail": "finalization retry contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "finalize_endpoint",
+        "command": "node tmp\\test_finalize_endpoint_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 102,
+        "stdoutTail": "finalize endpoint contract tests passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "draft_prompt_humanity_brief",
+        "command": "node tmp\\test_draft_prompt_humanity_brief_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 115,
+        "stdoutTail": "draft prompt humanity brief contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "chase_variety_prompt",
+        "command": "node tmp\\test_chase_variety_prompt_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 128,
+        "stdoutTail": "chase variety prompt contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "formal_writing_standard_closure",
+        "command": "node tmp\\test_formal_writing_standard_closure_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 182,
+        "stdoutTail": "FORMAL_WRITING_STANDARD_CLOSURE_CONTRACT_OK",
+        "stderrTail": ""
+      },
+      {
+        "label": "writing_standard_prompt_boundary",
+        "command": "node tmp\\test_writing_standard_prompt_boundary_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 134,
+        "stdoutTail": "writing standard prompt boundary contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "writer_flow_boundary_audit",
+        "command": "node tmp\\test_writer_flow_boundary_audit_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 77,
+        "stdoutTail": "writer flow boundary source contract passed",
+        "stderrTail": ""
+      },
+      {
+        "label": "writing_style_standards",
+        "command": "node tmp\\test_writing_style_standards_contract.mjs",
+        "status": "passed",
+        "exitCode": 0,
+        "durationMs": 92,
+        "stdoutTail": "",
+        "stderrTail": ""
+      }
+    ]
+  },
+  "alignment": {
+    "requiredLabels": [
+      "phase2_1_offline_narrative_regression",
+      "phase2_2_clean_synthetic_regression",
+      "phase2_3_ephemeral_persistence",
+      "phase2_5_production_schema_adapter",
+      "phase2_6_idempotent_migration_inspector"
+    ],
+    "total": 5,
+    "failed": 0,
+    "results": [
+      {
+        "label": "phase2_1_offline_narrative_regression",
+        "status": "passed",
+        "jsonPath": "tmp/realistic-flow-qa/offline-narrative-quality-regression-phase2-1.json",
+        "reportPath": "tmp/realistic-flow-qa/offline-narrative-quality-regression-phase2-1-report.md",
+        "durationMs": 2,
+        "error": ""
+      },
+      {
+        "label": "phase2_2_clean_synthetic_regression",
+        "status": "passed",
+        "jsonPath": "tmp/realistic-flow-qa/clean-synthetic-project-regression-phase2-2.json",
+        "reportPath": "tmp/realistic-flow-qa/clean-synthetic-project-regression-phase2-2-report.md",
+        "durationMs": 2,
+        "error": ""
+      },
+      {
+        "label": "phase2_3_ephemeral_persistence",
+        "status": "passed",
+        "jsonPath": "tmp/realistic-flow-qa/ephemeral-persistence-regression-phase2-3.json",
+        "reportPath": "tmp/realistic-flow-qa/ephemeral-persistence-regression-phase2-3-report.md",
+        "durationMs": 2,
+        "error": ""
+      },
+      {
+        "label": "phase2_5_production_schema_adapter",
+        "status": "passed",
+        "jsonPath": "tmp/realistic-flow-qa/production-schema-adapter-phase2-5.json",
+        "reportPath": "tmp/realistic-flow-qa/production-schema-adapter-phase2-5-report.md",
+        "durationMs": 2,
+        "error": ""
+      },
+      {
+        "label": "phase2_6_idempotent_migration_inspector",
+        "status": "passed",
+        "jsonPath": "tmp/realistic-flow-qa/idempotent-migration-inspector-phase2-6.json",
+        "reportPath": "tmp/realistic-flow-qa/idempotent-migration-inspector-phase2-6-report.md",
+        "durationMs": 3,
+        "error": ""
+      }
+    ]
+  },
+  "goNoGo": {
+    "realDbMigration": {
+      "status": "no_go_without_explicit_approval",
+      "requiresExplicitApproval": true,
+      "requiresBackupRestoreVerification": true,
+      "requiresTargetDbIdentity": true,
+      "requiresInspectorDryRunDiff": true,
+      "requiresRollbackOrRestorePlan": true
+    },
+    "realCleanProjectRegression": {
+      "status": "no_go_until_real_db_migration_gate_approved",
+      "prerequisites": [
+        "RC artifact policy accepted",
+        "real DB migration gate explicitly approved or deferred",
+        "disposable/clean fixture evidence retained",
+        "no production health-check/context boundary regressions"
+      ]
+    },
+    "liveCanary": {
+      "status": "no_go_until_clean_project_regression_passes",
+      "prerequisites": [
+        "real clean project regression passed",
+        "operator rollback and durable marker recovery playbook approved",
+        "no model output persisted outside approved live chain"
+      ]
+    },
+    "phase3ProviderAdapter": {
+      "status": "no_go_until_platform_rc_accepted",
+      "prerequisites": [
+        "platform RC merge accepted",
+        "provider adapter design reviewed separately"
+      ]
+    }
+  },
+  "knownWarnings": [
+    {
+      "source": "frontend build",
+      "warning": "Vite INEFFECTIVE_DYNAMIC_IMPORT for writerStore chunking remains a known non-blocking warning from earlier phases."
+    },
+    {
+      "source": "git diff --check",
+      "warning": "Windows CRLF normalization warnings may appear; no whitespace errors were observed in Phase 2.6 verification."
+    }
+  ],
+  "remainingRisks": [
+    "Real DB migration has not executed and still requires explicit approval.",
+    "Generated temp stores are local disposable artifacts and should not enter production merge.",
+    "Real project cleanup/quarantine/purge has not run.",
+    "Real clean project regression and live canary have not run.",
+    "Phase 3 provider/model adapter remains out of scope."
+  ],
+  "summary": {
+    "rcPreflightPassed": true,
+    "fullDiffManifestReady": true,
+    "artifactPolicyReady": true,
+    "boundaryClean": true,
+    "realApplyExecuted": false,
+    "readyForRealDbMigration": false,
+    "readyForLiveCanary": false
+  }
+}

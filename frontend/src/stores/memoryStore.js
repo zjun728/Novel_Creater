@@ -40,6 +40,7 @@ import {
   buildSettingExtractionPrompt,
   buildSettingExtractionRepairPrompt
 } from '@/prompts/settingExtraction'
+import { buildFinalizationProvenance, withStateProvenance } from '@/utils/stateProvenance'
 import {
   buildVolumeAuditSystemPrompt,
   buildVolumeAuditPrompt
@@ -418,6 +419,12 @@ export const useMemoryStore = defineStore('memory', () => {
   // === 批量处理：定稿后自动执行记忆和设定提取 ===
   async function processChapterFinalization(projectId, chapterContent, chapterNum, options = {}) {
     const includeAudit = options.includeAudit === true
+    const finalizationProvenance = buildFinalizationProvenance({
+      sourceChapterNum: chapterNum,
+      sourceVersionId: options.sourceVersionId || options.source_version_id || options.versionId || '',
+      runId: options.runId || options.run_id || '',
+      finalizationId: options.finalizationId || options.finalization_id || ''
+    })
     processing.value = true
     try {
       const results = { summary: null, facts: [], settingChanges: [], audit: null, errors: [] }
@@ -448,7 +455,7 @@ export const useMemoryStore = defineStore('memory', () => {
       for (const f of results.facts) {
         const factKey = canonFactDedupKey({ ...f, chapterNum })
         if (existingFactKeys.has(factKey)) continue
-        await novelStore.saveCanonFact({
+        await novelStore.saveCanonFact(withStateProvenance({
           projectId,
           chapterNum,
           factType: f.factType || 'plot',
@@ -458,7 +465,7 @@ export const useMemoryStore = defineStore('memory', () => {
           evidence: f.evidence || '',
           confidence: f.confidence || 0.8,
           status: f.status || 'accepted'
-        }, { skipPlotThreadSync: true })
+        }, finalizationProvenance), { skipPlotThreadSync: true })
         existingFactKeys.add(factKey)
       }
       await novelStore.syncPlotThreadsFromCanonFacts(projectId)
@@ -468,20 +475,22 @@ export const useMemoryStore = defineStore('memory', () => {
         for (const change of results.summary.characterChanges) {
           const existing = novelStore.characters.find(c => c.name === change.character)
           if (existing) {
-            await novelStore.saveCharacter({
+            await novelStore.saveCharacter(withStateProvenance({
               ...existing,
               projectId,
               id: existing.id,
               softState: {
                 ...existing.softState,
                 lastChange: change.change,
-                lastChangeChapter: chapterNum
+                lastChangeChapter: chapterNum,
+                lastStateProvenance: finalizationProvenance
               },
               hardState: {
                 ...existing.hardState,
-                lastUpdatedChapter: chapterNum
+                lastUpdatedChapter: chapterNum,
+                lastStateProvenance: finalizationProvenance
               }
-            })
+            }, finalizationProvenance))
           }
         }
       }
@@ -497,7 +506,7 @@ export const useMemoryStore = defineStore('memory', () => {
           const existingEntity = settingStore.entities.find(e =>
             e.entityType === entityType && e.name === entityName
           )
-          const payload = {
+          const payload = withStateProvenance({
             entityType,
             entityId: existingEntity?.id || null,
             entityName,
@@ -509,7 +518,7 @@ export const useMemoryStore = defineStore('memory', () => {
             evidence: change.evidence || '',
             confidence: change.confidence ?? 0.8,
             status: 'pending_review'
-          }
+          }, finalizationProvenance)
           if (!hasDuplicatePendingChange(settingStore.changeEvents, payload)) {
             await settingStore.saveChangeEvent(projectId, payload)
           }
@@ -519,7 +528,7 @@ export const useMemoryStore = defineStore('memory', () => {
           const existingEntity = settingStore.entities.find(e =>
             e.entityType === 'character' && e.name === change.character
           )
-          await settingStore.saveChangeEvent(projectId, {
+          await settingStore.saveChangeEvent(projectId, withStateProvenance({
             entityType: 'character',
             entityId: existingEntity?.id || null,
             entityName: change.character || '',
@@ -531,7 +540,7 @@ export const useMemoryStore = defineStore('memory', () => {
             evidence: results.summary?.summary || '',
             confidence: 0.7,
             status: 'pending_review'
-          })
+          }, finalizationProvenance))
         }
       }
 
@@ -541,7 +550,7 @@ export const useMemoryStore = defineStore('memory', () => {
             e.entityType === 'character' && e.name === charName
           )
           if (!exists) {
-            await settingStore.saveChangeEvent(projectId, {
+            await settingStore.saveChangeEvent(projectId, withStateProvenance({
               entityType: 'character',
               entityName: charName,
               changeType: 'new_entity',
@@ -551,7 +560,7 @@ export const useMemoryStore = defineStore('memory', () => {
               evidence: results.summary?.summary || '',
               confidence: 0.65,
               status: 'pending_review'
-            })
+            }, finalizationProvenance))
           }
         }
       }
@@ -560,12 +569,12 @@ export const useMemoryStore = defineStore('memory', () => {
         for (const charName of results.summary.newElements.characters) {
           const exists = novelStore.characters.find(c => c.name === charName)
           if (!exists) {
-            await novelStore.saveCharacter({
+            await novelStore.saveCharacter(withStateProvenance({
               projectId,
               name: charName,
               role: 'supporting',
-              hardState: { lastUpdatedChapter: chapterNum }
-            })
+              hardState: { lastUpdatedChapter: chapterNum, lastStateProvenance: finalizationProvenance }
+            }, finalizationProvenance))
           }
         }
       }

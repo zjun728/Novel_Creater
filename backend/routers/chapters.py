@@ -6,6 +6,7 @@ from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
 import json
 import re
+from .provenance_support import persist_provenance_if_columns
 import uuid, time
 
 router = APIRouter(tags=["chapters"])
@@ -129,6 +130,12 @@ class VersionCreate(BaseModel):
     versionType: str = "ai_candidate"
     sourceModelId: Optional[str] = None
     promptBrief: str = ""
+    sourceChapterNum: Optional[int] = None
+    sourceVersionId: str = ""
+    runId: str = ""
+    finalizationId: str = ""
+    commitStatus: str = ""
+    provenance: Optional[dict] = None
 
 class VersionUpdate(BaseModel):
     title: Optional[str] = None
@@ -139,6 +146,12 @@ class VersionUpdate(BaseModel):
 class VersionFinalize(BaseModel):
     summary: str = ""
     wordCount: Optional[int] = None
+    sourceChapterNum: Optional[int] = None
+    sourceVersionId: str = ""
+    runId: str = ""
+    finalizationId: str = ""
+    commitStatus: str = ""
+    provenance: Optional[dict] = None
 
 class BeatPlanSave(BaseModel):
     content: str = ""
@@ -148,6 +161,12 @@ class BeatPlanSave(BaseModel):
     beatPlanSource: Optional[str] = None
     derivedFromStoryBlock: Optional[bool] = False
     derivedReason: Optional[str] = None
+    sourceChapterNum: Optional[int] = None
+    sourceVersionId: str = ""
+    runId: str = ""
+    finalizationId: str = ""
+    commitStatus: str = ""
+    provenance: Optional[dict] = None
 
 
 async def _chapter_by_id(pid: str, cid: str):
@@ -304,6 +323,12 @@ async def create_version(pid: str, cid: str, data: VersionCreate):
              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
              (vid, pid, cid, cnum, data.title, data.content, data.versionType,
               data.sourceModelId, data.promptBrief, now, now))
+    await persist_provenance_if_columns(
+        "chapter_versions",
+        vid,
+        data,
+        {"sourceChapterNum": cnum, "sourceVersionId": vid, "commitStatus": data.versionType or "candidate"},
+    )
     return convert_row(await fetchone("SELECT * FROM chapter_versions WHERE id=%s", (vid,)))
 
 @router.put("/projects/{pid}/chapters/{cid}/versions/{vid}")
@@ -343,6 +368,16 @@ async def finalize_version(pid: str, cid: str, vid: str, data: VersionFinalize):
     await execute(
         "UPDATE chapter_versions SET version_type='final', updated_at=%s WHERE id=%s",
         (now, vid),
+    )
+    await persist_provenance_if_columns(
+        "chapter_versions",
+        vid,
+        data,
+        {
+            "sourceChapterNum": chapter.get("chapter_num"),
+            "sourceVersionId": vid,
+            "commitStatus": "final",
+        },
     )
     await execute(
         """UPDATE chapters SET final_version_id=%s, status='final', summary=%s,
@@ -452,6 +487,12 @@ async def save_chapter_beat_plan(pid: str, cnum: int, data: BeatPlanSave):
             "UPDATE chapters SET story_block_id=%s, updated_at=%s WHERE project_id=%s AND chapter_num=%s",
             (data.storyBlockId, now, pid, cnum),
         )
+    await persist_provenance_if_columns(
+        "chapter_beat_plans",
+        plan_id,
+        data,
+        {"sourceChapterNum": cnum, "sourceVersionId": plan_id, "commitStatus": "plan_only"},
+    )
     row = await fetchone("SELECT * FROM chapter_beat_plans WHERE id=%s", (plan_id,))
     return convert_row(row)
 

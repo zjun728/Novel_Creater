@@ -24,6 +24,9 @@ export function buildDraftSystemPrompt() {
 - 你负责写小说正文，不输出质量报告、规则清单、小纲或解释。
 - 你以已确认设定、状态账本、上一章结尾和本章小纲为边界。
 - 你应按写作指纹自然执行，而不是逐条打卡。
+- 你应优先执行 Scene Execution Card 和 Narrative Voice Contract；它们只约束当前场戏和表达方式，不能覆盖事实或阶段边界。
+- 你要写可见场景：对白交锋、行动选择、情绪转折、表情语气、环境压力和后果。
+- 不要把写作标准、质量规则或自检过程写进正文。
 
 ${buildGenerationQualityBrief()}`
 }
@@ -31,7 +34,12 @@ ${buildGenerationQualityBrief()}`
 export function buildDraftPrompt(context = {}) {
   const blockSnapshot = storyBlockSnapshotBrief(context.blockStageSnapshot || {})
   const formalStandardLowDosePrompt = formatActiveWritingStandardLowDoseForPrompt(context.activeWritingStandards || [], context)
-  const fingerprint = context.writingFingerprint || (formalStandardLowDosePrompt ? context.styleBible : context.styleStandardBrief) || context.styleBible || '按本书已确认风格执行。'
+  const fingerprint = context.writingFingerprint ||
+    (context.narrativeVoiceContract
+      ? '以 Narrative Voice Contract 的表达约束为准；风格只影响写法，不改变事实和阶段边界。'
+      : (formalStandardLowDosePrompt ? context.styleBible : context.styleStandardBrief)) ||
+    context.styleBible ||
+    '按本书已确认风格执行。'
   const chapterPromptContext = formalStandardLowDosePrompt
     ? {
         ...context,

@@ -51,6 +51,24 @@ const projectId = 'project-1'
 
 {
   const storage = createStorage()
+  markChapterFinalizationPending(projectId, 9, {
+    storage,
+    now: 1000,
+    commitStatus: 'failed_after_chapter_commit',
+    sourceVersionId: 'version-postprocess-failed',
+    finalizationId: 'fin-9'
+  })
+  const marker = getChapterFinalizationPending(projectId, 9, {
+    storage,
+    now: 1000 + 365 * 24 * 60 * 60 * 1000
+  })
+  assert.equal(marker?.chapterNum, 9)
+  assert.equal(marker?.commitStatus, 'failed_after_chapter_commit')
+  assert.equal(marker?.sourceVersionId, 'version-postprocess-failed')
+}
+
+{
+  const storage = createStorage()
   const first = beginChapterFinalizationRun(projectId, 6, 'version-a', { storage, now: 1000 })
   const second = beginChapterFinalizationRun(projectId, 6, 'version-a', { storage, now: 1001 })
 
@@ -89,6 +107,24 @@ const projectId = 'project-1'
 
   endChapterFinalizationRun(retry.runKey, projectId, 8, { storage })
   assert.equal(getChapterFinalizationPending(projectId, 8, { storage, now: 2002 }), null)
+}
+
+{
+  const storage = createStorage()
+  const run = beginChapterFinalizationRun(projectId, 10, 'version-d', { storage, now: 1000 })
+  endChapterFinalizationRun(run.runKey, projectId, 10, {
+    storage,
+    keepPending: true,
+    now: 2000,
+    commitStatus: 'failed_after_chapter_commit',
+    sourceVersionId: 'version-d'
+  })
+  const marker = getChapterFinalizationPending(projectId, 10, {
+    storage,
+    now: 2000 + 365 * 24 * 60 * 60 * 1000
+  })
+  assert.equal(marker?.commitStatus, 'failed_after_chapter_commit')
+  assert.equal(marker?.sourceVersionId, 'version-d')
 }
 
 console.log('finalization guard tests passed')

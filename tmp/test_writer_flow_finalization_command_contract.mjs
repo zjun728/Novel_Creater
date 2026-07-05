@@ -47,7 +47,7 @@ function createCommandInput(overrides = {}) {
     chapterNum: 88,
     version: { id: 'version-1', content: '正文内容' },
     correctionTaskIds: ['task-1'],
-    beginFinalizationRun: add('beginFinalizationRun', async () => ({ started: true, runKey: 'run-1' })),
+    beginFinalizationRun: add('beginFinalizationRun', async () => ({ started: true, runKey: 'run-1', runId: 'run-id-1', finalizationId: 'fin-id-1' })),
     finalizeVersion: add('finalizeVersion'),
     finishLinkedCorrectionTasks: add('finishLinkedCorrectionTasks'),
     clearTempDraft: add('clearTempDraft'),
@@ -68,10 +68,22 @@ function createCommandInput(overrides = {}) {
     onRerouteWarning: add('onRerouteWarning'),
     onPostFinalizeFailure: add('onPostFinalizeFailure'),
     onLinkedCorrectionTaskFailure: add('onLinkedCorrectionTaskFailure'),
-    onClearTempDraftFailure: add('onClearTempDraftFailure')
+    onClearTempDraftFailure: add('onClearTempDraftFailure'),
+    saveDurableFinalizationMarker: add('saveDurableFinalizationMarker', async (_chapterNum, marker) => ({ ...marker, id: 'durable-marker-1' })),
+    upsertDurableFinalizationMarker: add('upsertDurableFinalizationMarker')
   }
   Object.assign(input, overrides)
   return { input, calls }
+}
+
+function expectedEndOptions(keepPending) {
+  return {
+    keepPending,
+    commitStatus: keepPending ? 'failed_after_chapter_commit' : 'pending',
+    sourceVersionId: 'version-1',
+    runId: 'run-id-1',
+    finalizationId: 'fin-id-1'
+  }
 }
 
 assert.match(commandSource, /export async function runFinalizeChapterCommand/, 'command must export runFinalizeChapterCommand')
@@ -124,7 +136,7 @@ assert.doesNotMatch(
   assert.equal(result.code, 'finalization_failed')
   assert.equal(result.chapterFinalized, false)
   assert.equal(calls.markFinalizationFailure.count(), 0, 'pre-version failure must not mark post-finalize failure')
-  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, { keepPending: false }])
+  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, expectedEndOptions(false)])
 }
 
 {
@@ -140,7 +152,9 @@ assert.doesNotMatch(
   assert.equal(result.code, 'post_finalize_failed')
   assert.equal(result.chapterFinalized, true)
   assert.equal(calls.markFinalizationFailure.count(), 1)
-  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, { keepPending: true }])
+  assert.equal(calls.saveDurableFinalizationMarker.count(), 1)
+  assert.equal(calls.upsertDurableFinalizationMarker.count(), 1)
+  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, expectedEndOptions(true)])
 }
 
 {
@@ -153,7 +167,8 @@ assert.doesNotMatch(
   assert.equal(result.code, 'post_finalize_failed')
   assert.equal(calls.onStoryBlockReviewFailure.count(), 1)
   assert.equal(calls.markFinalizationFailure.count(), 1)
-  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, { keepPending: true }])
+  assert.equal(calls.saveDurableFinalizationMarker.count(), 1)
+  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, expectedEndOptions(true)])
 }
 
 {
@@ -167,7 +182,7 @@ assert.doesNotMatch(
   assert.equal(result.warnings.length, 1)
   assert.equal(calls.onRerouteWarning.count(), 1)
   assert.equal(calls.markFinalizationFailure.count(), 0)
-  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, { keepPending: false }])
+  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, expectedEndOptions(false)])
 }
 
 {
@@ -178,7 +193,15 @@ assert.doesNotMatch(
   assert.equal(result.factCount, 2)
   assert.equal(result.settingChangeCount, 1)
   assert.equal(calls.markFinalizationFailure.count(), 0)
-  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, { keepPending: false }])
+  assert.deepEqual(calls.finalizeVersion.last()[1], {
+    projectId: 'project-1',
+    sourceChapterNum: 88,
+    sourceVersionId: 'version-1',
+    runId: 'run-id-1',
+    finalizationId: 'fin-id-1',
+    commitStatus: 'final'
+  })
+  assert.deepEqual(calls.endFinalizationRun.last(), ['run-1', 'project-1', 88, expectedEndOptions(false)])
 }
 
 console.log('writer flow finalization command contract passed')

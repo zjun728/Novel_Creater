@@ -37,7 +37,7 @@ ${context.bible ? `### 世界规则\n${context.bible.worldRules || '无'}\n### �
 
 ${context.styleStandardBrief ? `### 题材/风格标准\n${context.styleStandardBrief}` : ''}
 
-${context.characters?.length ? `### 角色状态\n${context.characters.map(c => `- ${c.name}：位置=${c.hardState?.location || '未知'}，情绪=${c.softState?.emotion || '未知'}`).join('\n')}` : ''}
+${context.characters?.length ? `### 角色状态\n${context.characters.map(c => `- ${c.name}${c.trustLabel || (c.trustLevel && c.trustLevel !== 'trusted' ? ` [trustLevel=${c.trustLevel}]` : '')}：位置=${c.hardState?.location || c.location || '未知'}，情绪=${c.softState?.emotion || c.emotion || '未知'}`).join('\n')}` : ''}
 
 ${context.canonFacts?.length ? `### 已确认事实\n${context.canonFacts.map(f => `- [${f.factType}] ${f.content}`).join('\n')}` : ''}
 

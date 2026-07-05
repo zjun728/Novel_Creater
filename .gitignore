@@ -46,6 +46,9 @@ tmp/realistic-flow-qa/live-service-pids.txt
 tmp/realistic-flow-qa/latest-realistic-report.*
 tmp/realistic-flow-qa/latest-story-block-report.*
 tmp/realistic-flow-qa/standards-secondary-analysis.*
+tmp/ephemeral-persistence-phase2-3/
+tmp/production-schema-adapter-phase2-5/
+tmp/idempotent-migration-inspector-phase2-6/
 
 # Logs
 *.log

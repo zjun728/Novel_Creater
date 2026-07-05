@@ -19,6 +19,7 @@ import { useProviderStore } from './providerStore'
 import { useProjectStore } from './projectStore'
 import { useSeedStore } from './seedStore'
 import { findDuplicateSettingChangeEvent } from '@/utils/settingChangeDedup'
+import { normalizeStateProvenance } from '@/utils/stateProvenance'
 
 export const ENTITY_TYPES = [
   { value: 'character', label: '人物' },
@@ -112,9 +113,10 @@ export const useSettingStore = defineStore('setting', () => {
   }
 
   async function saveRelation(projectId, data) {
+    const payload = preserveProvenancePayload(data)
     const result = data.id
-      ? await api.settings.relations.update(projectId, data.id, data)
-      : await api.settings.relations.create(projectId, data)
+      ? await api.settings.relations.update(projectId, data.id, payload)
+      : await api.settings.relations.create(projectId, payload)
 
     const idx = relations.value.findIndex(r => r.id === result.id)
     if (idx === -1) relations.value.unshift(result)
@@ -136,9 +138,10 @@ export const useSettingStore = defineStore('setting', () => {
     const duplicate = findDuplicateSettingChangeEvent(changeEvents.value, data)
     if (!data.id && duplicate) return duplicate
 
+    const payload = preserveProvenancePayload(data)
     const result = data.id
-      ? await api.settings.changeEvents.update(projectId, data.id, data)
-      : await api.settings.changeEvents.create(projectId, data)
+      ? await api.settings.changeEvents.update(projectId, data.id, payload)
+      : await api.settings.changeEvents.create(projectId, payload)
 
     const idx = changeEvents.value.findIndex(e => e.id === result.id)
     if (idx === -1) changeEvents.value.unshift(result)
@@ -695,6 +698,13 @@ function jsonOptions(provider, options = {}) {
 }
 
 function normalizeEntityPayload(data) {
+  const provenance = normalizeStateProvenance(data)
+  const profile = {
+    ...(data.profile || {})
+  }
+  if (hasProvenance(provenance)) {
+    profile.provenance = provenance
+  }
   return {
     entityType: data.entityType || 'character',
     name: data.name || '',
@@ -704,10 +714,41 @@ function normalizeEntityPayload(data) {
     importance: Number(data.importance || 3),
     aliases: splitLines(data.aliases),
     tags: splitLines(data.tags),
-    profile: data.profile || {},
+    profile,
     firstChapter: numberOrNull(data.firstChapter),
-    lastChapter: numberOrNull(data.lastChapter)
+    lastChapter: numberOrNull(data.lastChapter),
+    sourceChapterNum: provenance.sourceChapterNum,
+    sourceVersionId: provenance.sourceVersionId,
+    runId: provenance.runId,
+    finalizationId: provenance.finalizationId,
+    commitStatus: provenance.commitStatus,
+    provenance
   }
+}
+
+function preserveProvenancePayload(data = {}) {
+  const provenance = normalizeStateProvenance(data)
+  return hasProvenance(provenance)
+    ? {
+        ...data,
+        sourceChapterNum: provenance.sourceChapterNum,
+        sourceVersionId: provenance.sourceVersionId,
+        runId: provenance.runId,
+        finalizationId: provenance.finalizationId,
+        commitStatus: provenance.commitStatus,
+        provenance
+      }
+    : data
+}
+
+function hasProvenance(provenance = {}) {
+  return Boolean(
+    provenance.sourceChapterNum ||
+    provenance.sourceVersionId ||
+    provenance.runId ||
+    provenance.finalizationId ||
+    (provenance.commitStatus && provenance.commitStatus !== 'unknown')
+  )
 }
 
 export function splitLines(value) {

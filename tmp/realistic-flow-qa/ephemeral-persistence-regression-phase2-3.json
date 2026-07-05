@@ -1,0 +1,513 @@
+{
+  "schemaVersion": "ephemeral-persistence-regression-phase2-3-v1",
+  "status": "completed",
+  "timestamp": "2026-07-04T20:44:46.843Z",
+  "persistence": {
+    "strategy": "ephemeral-json-store",
+    "storePath": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\tmp\\ephemeral-persistence-phase2-3\\project-store.json",
+    "touchesRealDb": false,
+    "isolationReason": "Store path is under tmp/ephemeral-persistence-phase2-3 and contains synthetic fixture data only; no database driver or production DSN is used."
+  },
+  "schemaDryRun": {
+    "mode": "migration-sql-parse-dry-run-plus-json-store-schema",
+    "migrationPath": "C:\\Users\\zhangjun\\.codex\\worktrees\\3e01\\Novel_Creater\\backend\\migrations\\20260705_state_provenance_phase1_2.sql",
+    "executedAgainstRealDb": false,
+    "notExecutedReason": "Migration draft is MySQL-oriented and explicitly marked dry-run; Phase 2.3 parses it and validates an isolated JSON store schema instead of connecting to any real DB.",
+    "tables": [
+      {
+        "table": "chapter_versions",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "chapter_beat_plans",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "canon_facts",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "characters",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "setting_entities",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "setting_relations",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "setting_change_events",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      },
+      {
+        "table": "project_volumes",
+        "provenanceFields": [
+          "provenance",
+          "source_chapter_num",
+          "source_version_id",
+          "run_id",
+          "finalization_id",
+          "commit_status"
+        ],
+        "hasAllProvenanceFields": true
+      }
+    ],
+    "adapterGaps": [
+      {
+        "collection": "finalization_markers",
+        "reason": "No production migration table in current draft; represented in ephemeral store and ContextPack contextOptions.finalizationMarkers.",
+        "minimalFix": "Add a durable finalization marker table or project-level finalization journal before real migration."
+      },
+      {
+        "collection": "project_health_checks",
+        "reason": "Health checks are computed dry-run artifacts, not migrated production state.",
+        "minimalFix": "If persistent health audit is desired, add a project_health_checks table with provenance columns."
+      }
+    ],
+    "ephemeralCollections": [
+      {
+        "collection": "finalization_markers",
+        "hasAllProvenanceFields": true,
+        "strategy": "ephemeral-json-store-normalized-provenance"
+      },
+      {
+        "collection": "project_health_checks",
+        "hasAllProvenanceFields": true,
+        "strategy": "ephemeral-json-store-normalized-provenance"
+      }
+    ]
+  },
+  "writeReadCoverage": [
+    {
+      "collection": "chapter_versions",
+      "wrote": 28,
+      "read": 28,
+      "provenanceComplete": true,
+      "readStrategy": "chapter_versions"
+    },
+    {
+      "collection": "canon_facts",
+      "wrote": 6,
+      "read": 6,
+      "provenanceComplete": true,
+      "readStrategy": "canon_facts"
+    },
+    {
+      "collection": "setting_entities",
+      "wrote": 7,
+      "read": 7,
+      "provenanceComplete": true,
+      "readStrategy": "setting_entities"
+    },
+    {
+      "collection": "setting_relations",
+      "wrote": 2,
+      "read": 2,
+      "provenanceComplete": true,
+      "readStrategy": "setting_relations"
+    },
+    {
+      "collection": "setting_change_events",
+      "wrote": 3,
+      "read": 3,
+      "provenanceComplete": true,
+      "readStrategy": "setting_change_events"
+    },
+    {
+      "collection": "project_volumes",
+      "wrote": 6,
+      "read": 6,
+      "provenanceComplete": true,
+      "readStrategy": "project_volumes"
+    },
+    {
+      "collection": "chapter_beat_plans",
+      "wrote": 2,
+      "read": 2,
+      "provenanceComplete": true,
+      "readStrategy": "chapter_beat_plans"
+    },
+    {
+      "collection": "finalization_markers",
+      "wrote": 1,
+      "read": 1,
+      "provenanceComplete": true,
+      "readStrategy": "finalization_markers"
+    },
+    {
+      "collection": "project_health_checks",
+      "wrote": 2,
+      "read": 2,
+      "provenanceComplete": true,
+      "readStrategy": "project_health_checks"
+    }
+  ],
+  "summary": {
+    "healthyReady": true,
+    "pollutedBlocked": true,
+    "savedBeatConflictResolved": true,
+    "stageHandoffFromFinalState": true,
+    "finalizationHalfSuccessBlocked": true,
+    "narrativeVoiceSafe": true
+  },
+  "results": {
+    "healthy": {
+      "ready": true,
+      "healthBlocked": false,
+      "warningIssueCodes": [
+        "saved_beat_plan_conflict"
+      ],
+      "creativeContextContainsFutureRoadmap": false,
+      "sceneCard": {
+        "hasConflict": true,
+        "hasEmotionalTurn": true,
+        "hasStopPoint": true,
+        "trustedFactCount": 2,
+        "stopPoint": "沈翎只承认暗号在霜河钟楼，不能揭露霜塔城主身份。"
+      }
+    },
+    "polluted": {
+      "ready": false,
+      "healthBlocked": true,
+      "issueCodes": [
+        "finalization_pending",
+        "untrusted_source",
+        "empty_chapter_authority",
+        "saved_beat_plan_conflict",
+        "guard_snapshot_in_creative_context"
+      ],
+      "blockingIssues": [
+        {
+          "code": "finalization_pending",
+          "severity": "block",
+          "targetType": "finalization",
+          "target": "chapter:14",
+          "reason": "failed_after_chapter_commit",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "v14-final",
+          "runId": "run-half-14",
+          "finalizationId": "fin-half-14",
+          "commitStatus": "failed_after_chapter_commit"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-failed-entity",
+          "reason": "commit_failed",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "v14-failed-candidate",
+          "runId": "run-failed-14",
+          "finalizationId": "",
+          "commitStatus": "failed"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-empty-entity",
+          "reason": "source_chapter_not_final_or_empty",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "final"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-unfinalized-entity",
+          "reason": "commit_unfinalized",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "v14-unfinalized",
+          "runId": "run-unfinalized-14",
+          "finalizationId": "",
+          "commitStatus": "unfinalized"
+        },
+        {
+          "code": "untrusted_source",
+          "severity": "block",
+          "targetType": "setting_change_event",
+          "target": "polluted-empty-event",
+          "reason": "commit_empty_chapter",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "empty_chapter"
+        },
+        {
+          "code": "empty_chapter_authority",
+          "severity": "block",
+          "targetType": "setting_entity",
+          "target": "polluted-empty-entity",
+          "reason": "source_chapter_not_final_or_empty",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "final"
+        },
+        {
+          "code": "empty_chapter_authority",
+          "severity": "block",
+          "targetType": "setting_change_event",
+          "target": "polluted-empty-event",
+          "reason": "commit_empty_chapter",
+          "sourceChapterNum": 12,
+          "sourceVersionId": "v12-empty",
+          "runId": "run-empty-12",
+          "finalizationId": "fin-empty-12",
+          "commitStatus": "empty_chapter"
+        },
+        {
+          "code": "guard_snapshot_in_creative_context",
+          "severity": "block",
+          "targetType": "guard_snapshot",
+          "target": "霜塔城主其实是南线内应",
+          "reason": "guard_only_text_visible_to_creative_context",
+          "sourceChapterNum": null,
+          "sourceVersionId": "",
+          "runId": "",
+          "finalizationId": "",
+          "commitStatus": ""
+        }
+      ],
+      "warningIssues": [
+        {
+          "code": "saved_beat_plan_conflict",
+          "severity": "warn",
+          "targetType": "chapter_beat_plan",
+          "target": "chapter:14",
+          "reason": "plan_only",
+          "sourceChapterNum": 14,
+          "sourceVersionId": "beat-14",
+          "runId": "run-beat-14",
+          "finalizationId": "",
+          "commitStatus": "plan_only"
+        }
+      ]
+    },
+    "savedBeatConflict": {
+      "finalFactWins": true,
+      "beatPlanAuthority": "plan_evidence_only",
+      "creativeContextContainsConflictingBeat": false,
+      "rejectedProjectionSources": 1
+    },
+    "stageHandoff": {
+      "activeStage": "Block 2 / Stage 3: Siege Choice",
+      "sourceType": "final_state",
+      "canRebuildFromFinalFacts": true,
+      "usesFailedCandidate": false,
+      "rebuildFinalChapterCount": 14
+    },
+    "finalizationHalfSuccess": {
+      "ready": false,
+      "marker": {
+        "sourceChapterNum": 14,
+        "sourceVersionId": "v14-final",
+        "runId": "run-half-14",
+        "finalizationId": "fin-half-14",
+        "commitStatus": "failed_after_chapter_commit"
+      },
+      "blockingIssueCodes": [
+        "finalization_pending",
+        "untrusted_source",
+        "empty_chapter_authority",
+        "guard_snapshot_in_creative_context"
+      ]
+    },
+    "narrativeVoice": {
+      "voiceScope": "expression_only",
+      "voiceLintOk": true,
+      "scenePromptContainsFutureRoadmap": false,
+      "factOrStageOverridePresent": false,
+      "qualityPassed": true,
+      "qualityScore": 100,
+      "qualityIssueCodes": [
+        "prompt_documentary_prompt_tone"
+      ],
+      "promptQualityPassed": true,
+      "promptIssueCodes": [
+        "documentary_prompt_tone"
+      ]
+    }
+  },
+  "cleanupDryRun": {
+    "mode": "dry-run-only",
+    "writesRealData": false,
+    "proposedActions": [
+      {
+        "action": "hold_generation",
+        "code": "finalization_pending",
+        "targetType": "finalization",
+        "target": "chapter:14",
+        "sourceChapterNum": 14,
+        "sourceVersionId": "v14-final",
+        "runId": "run-half-14",
+        "finalizationId": "fin-half-14"
+      },
+      {
+        "action": "quarantine",
+        "code": "untrusted_source",
+        "targetType": "setting_entity",
+        "target": "polluted-failed-entity",
+        "sourceChapterNum": 14,
+        "sourceVersionId": "v14-failed-candidate",
+        "runId": "run-failed-14",
+        "finalizationId": ""
+      },
+      {
+        "action": "quarantine",
+        "code": "untrusted_source",
+        "targetType": "setting_entity",
+        "target": "polluted-empty-entity",
+        "sourceChapterNum": 12,
+        "sourceVersionId": "v12-empty",
+        "runId": "run-empty-12",
+        "finalizationId": "fin-empty-12"
+      },
+      {
+        "action": "quarantine",
+        "code": "untrusted_source",
+        "targetType": "setting_entity",
+        "target": "polluted-unfinalized-entity",
+        "sourceChapterNum": 14,
+        "sourceVersionId": "v14-unfinalized",
+        "runId": "run-unfinalized-14",
+        "finalizationId": ""
+      },
+      {
+        "action": "quarantine",
+        "code": "untrusted_source",
+        "targetType": "setting_change_event",
+        "target": "polluted-empty-event",
+        "sourceChapterNum": 12,
+        "sourceVersionId": "v12-empty",
+        "runId": "run-empty-12",
+        "finalizationId": "fin-empty-12"
+      },
+      {
+        "action": "quarantine",
+        "code": "empty_chapter_authority",
+        "targetType": "setting_entity",
+        "target": "polluted-empty-entity",
+        "sourceChapterNum": 12,
+        "sourceVersionId": "v12-empty",
+        "runId": "run-empty-12",
+        "finalizationId": "fin-empty-12"
+      },
+      {
+        "action": "quarantine",
+        "code": "empty_chapter_authority",
+        "targetType": "setting_change_event",
+        "target": "polluted-empty-event",
+        "sourceChapterNum": 12,
+        "sourceVersionId": "v12-empty",
+        "runId": "run-empty-12",
+        "finalizationId": "fin-empty-12"
+      },
+      {
+        "action": "quarantine",
+        "code": "guard_snapshot_in_creative_context",
+        "targetType": "guard_snapshot",
+        "target": "霜塔城主其实是南线内应",
+        "sourceChapterNum": null,
+        "sourceVersionId": "",
+        "runId": "",
+        "finalizationId": ""
+      }
+    ],
+    "projectionRebuild": {
+      "finalChapters": 13,
+      "rejectedProjectionSources": 2
+    }
+  },
+  "review": {
+    "threadId": "019f2ee1-40eb-78e0-9e48-ae2aaf7f9dc0",
+    "critical": 0,
+    "important": 0,
+    "conclusion": "Ready",
+    "note": "Fresh read-only review found no Critical or Important findings; minor note to record review result before handoff was resolved here."
+  },
+  "verification": {
+    "commands": [
+      {
+        "command": "node tmp\\test_ephemeral_persistence_regression_phase2_3.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node Phase1-Phase2.3 no-model contract suite",
+        "result": "passed"
+      },
+      {
+        "command": "node Phase2.3 json/report alignment probe",
+        "result": "passed"
+      },
+      {
+        "command": "npm --prefix frontend run build",
+        "result": "passed with existing Vite INEFFECTIVE_DYNAMIC_IMPORT warning"
+      }
+    ]
+  }
+}

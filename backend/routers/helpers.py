@@ -55,6 +55,9 @@ JSON_FIELDS = {
     'audit_focus',
     'safety_policy',
     'guidance_json',
+    'provenance',
+    'result_json',
+    'issue_summary',
 }
 
 # 首字母缩写映射：snake_case 部分 → camelCase 中正确的大小写

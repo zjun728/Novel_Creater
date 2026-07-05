@@ -76,6 +76,7 @@ import {
 } from '@/quality/writingQualityScoring'
 import { extractAiContent } from '@/domain/chapter-draft/ai-content'
 import { runDraftRepairPipeline } from '@/application/writer-flow/draft-repair-pipeline'
+import { buildFinalizationProvenance, withStateProvenance } from '@/utils/stateProvenance'
 
 const CHAPTER_DRAFT_MAX_TOKENS = 5000
 const BEAT_PLAN_INITIAL_MAX_TOKENS = 1800
@@ -1342,15 +1343,25 @@ export const useWriterStore = defineStore('writer', () => {
     }
   }
 
-  async function createVersion(projectId, chapterId, chapterNum, data) {
+  async function createVersion(projectId, chapterId, chapterNumOrData, dataMaybe) {
+    const data = dataMaybe || chapterNumOrData || {}
+    const chapterNum = dataMaybe ? chapterNumOrData : data.chapterNum
+    const commitStatus = data.commitStatus || (data.versionType === 'final' ? 'final' : 'candidate')
     try {
-      const version = await api.versions.create(projectId, chapterId, {
+      const payload = withStateProvenance({
         title: data.title || '',
         content: data.content || '',
         versionType: data.versionType || 'ai_candidate',
         sourceModelId: data.sourceModelId || null,
         promptBrief: data.promptBrief || ''
+      }, {
+        sourceChapterNum: chapterNum,
+        sourceVersionId: data.sourceVersionId || '',
+        runId: data.runId || '',
+        finalizationId: data.finalizationId || '',
+        commitStatus
       })
+      const version = await api.versions.create(projectId, chapterId, payload)
       versions.value.unshift(version)
       return version
     } catch (e) {
@@ -1445,7 +1456,14 @@ export const useWriterStore = defineStore('writer', () => {
         ...metadata,
         beatPlanSource: metadata.beatPlanSource || beatPlanSource.value || null
       }
-      beatPlanRecord.value = await api.beatPlans.save(projectId, chapterNum, content, metadataWithSource)
+      const payload = withStateProvenance(metadataWithSource, {
+        sourceChapterNum: chapterNum,
+        sourceVersionId: metadata.sourceVersionId || '',
+        runId: metadata.runId || '',
+        finalizationId: metadata.finalizationId || '',
+        commitStatus: metadata.commitStatus || 'plan_only'
+      })
+      beatPlanRecord.value = await api.beatPlans.save(projectId, chapterNum, content, payload)
       chapterBeatPlan.value = beatPlanRecord.value?.content || content || ''
       beatPlanSource.value = beatPlanRecord.value?.beatPlanSource || metadataWithSource.beatPlanSource || ''
       return beatPlanRecord.value
@@ -2055,11 +2073,17 @@ export const useWriterStore = defineStore('writer', () => {
   }
 
   // === 确认定稿 ===
-  async function finalizeVersion(version) {
+  async function finalizeVersion(version, options = {}) {
     try {
       const pid = version.projectId || version.project_id
       const cid = version.chapterId || version.chapter_id
       const chapter = chapters.value.find(c => c.id === cid)
+      const provenance = buildFinalizationProvenance({
+        sourceChapterNum: chapter?.chapterNum || chapter?.chapter_num || version.chapterNum || version.chapter_num,
+        sourceVersionId: version.id,
+        runId: options.runId || version.runId || version.run_id || '',
+        finalizationId: options.finalizationId || version.finalizationId || version.finalization_id || ''
+      })
       if (chapter && isDefaultChapterTitle(chapter.title, chapter.chapterNum || chapter.chapter_num || version.chapterNum || version.chapter_num)) {
         try {
           await generateDefaultChapterTitle(
@@ -2075,7 +2099,9 @@ export const useWriterStore = defineStore('writer', () => {
       }
       const result = await api.versions.finalize(pid, cid, version.id, {
         summary: chapter?.summary || '',
-        wordCount: version.content?.length || 0
+        wordCount: version.content?.length || 0,
+        ...provenance,
+        provenance
       })
       const finalizedVersion = result?.version || { ...version, versionType: 'final' }
       const finalizedChapter = result?.chapter

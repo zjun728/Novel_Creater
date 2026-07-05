@@ -4,10 +4,22 @@ from pydantic import BaseModel
 from typing import Optional, List, Any
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
+from .provenance_support import persist_provenance_if_columns
 from .guards import ensure_project_without_chapter_content
 import uuid, time, json
 
 router = APIRouter(tags=["novel"])
+
+PROVENANCE_INPUT_KEYS = {
+    "provenance",
+    "sourceProvenance",
+    "snapshotProvenance",
+    "sourceChapterNum",
+    "sourceVersionId",
+    "runId",
+    "finalizationId",
+    "commitStatus",
+}
 
 # --- 创作圣经 ---
 class BibleUpdate(BaseModel):
@@ -142,6 +154,7 @@ async def create_character(pid: str, data: dict):
               data.get('personality',''), data.get('desire',''), data.get('fear',''), data.get('misbelief',''),
               data.get('secret',''), data.get('relationshipNotes',''), data.get('arcStage',''),
               json.dumps(data.get('hardState') or {}), json.dumps(data.get('softState') or {}), now, now))
+    await persist_provenance_if_columns("characters", cid, data)
     return convert_row(await fetchone("SELECT * FROM characters WHERE id=%s", (cid,)))
 
 @router.put("/projects/{pid}/characters/{cid}")
@@ -162,6 +175,7 @@ async def update_character(pid: str, cid: str, data: dict):
         return convert_row(await fetchone("SELECT * FROM characters WHERE id=%s", (cid,)))
     sets.append("updated_at=%s"); args.append(now); args.append(cid)
     await execute(f"UPDATE characters SET {', '.join(sets)} WHERE id=%s", args)
+    await persist_provenance_if_columns("characters", cid, data)
     return convert_row(await fetchone("SELECT * FROM characters WHERE id=%s", (cid,)))
 
 @router.delete("/projects/{pid}/characters/{cid}")
@@ -636,6 +650,12 @@ async def create_canon_fact(pid: str, data: dict):
               data.get('evidence',''), data.get('confidence',0.8), status, now, now))
     if status == 'accepted' and not data.get('skipPlotThreadSync'):
         await syncPlotThreadsFromCanonFacts(pid)
+    await persist_provenance_if_columns(
+        "canon_facts",
+        fid,
+        data,
+        {"sourceChapterNum": data.get("chapterNum"), "commitStatus": "final" if status == "accepted" else "pending_review"},
+    )
     return convert_row(await fetchone("SELECT * FROM canon_facts WHERE id=%s", (fid,)))
 
 @router.put("/projects/{pid}/canon-facts/{fid}")
@@ -645,15 +665,18 @@ async def update_canon_fact(pid: str, fid: str, data: dict):
     for k, v in data.items():
         if v is None: continue
         if k == "skipPlotThreadSync": continue
+        if k in PROVENANCE_INPUT_KEYS: continue
         col = to_snake(k)
         if k in ('relatedCharacters', 'relatedPlotThreads'):
             sets.append(f"{col}=%s"); args.append(json.dumps(v))
         else:
             sets.append(f"{col}=%s"); args.append(v)
     if not sets:
+        await persist_provenance_if_columns("canon_facts", fid, data)
         return convert_row(await fetchone("SELECT * FROM canon_facts WHERE id=%s", (fid,)))
     sets.append("updated_at=%s"); args.append(now); args.append(fid)
     await execute(f"UPDATE canon_facts SET {', '.join(sets)} WHERE id=%s", args)
+    await persist_provenance_if_columns("canon_facts", fid, data)
     row = await fetchone("SELECT * FROM canon_facts WHERE id=%s", (fid,))
     if row and row.get("status") == "accepted":
         await syncPlotThreadsFromCanonFacts(pid)

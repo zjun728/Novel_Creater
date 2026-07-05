@@ -59,6 +59,18 @@ export const api = {
   // === 健康检查 ===
   health: () => get('/health'),
 
+  // === 项目状态门禁 ===
+  projectState: {
+    finalizationMarkers: {
+      list: (projectId) => get(`/projects/${projectId}/finalization-markers`),
+      save: (projectId, chapterNum, marker) => put(`/projects/${projectId}/finalization-markers/${chapterNum}`, marker),
+    },
+    healthChecks: {
+      list: (projectId) => get(`/projects/${projectId}/health-checks`),
+      save: (projectId, chapterNum, result) => put(`/projects/${projectId}/health-checks/${chapterNum}`, result),
+    },
+  },
+
   // === 项目 ===
   projects: {
     list: () => get('/projects'),

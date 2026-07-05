@@ -10,7 +10,7 @@ assert.match(apiClient, /\/versions\/\$\{versionId\}\/finalize/)
 assert.match(chaptersRouter, /@router\.post\("\/projects\/\{pid\}\/chapters\/\{cid\}\/versions\/\{vid\}\/finalize"\)/)
 assert.match(chaptersRouter, /UPDATE chapters SET final_version_id=%s,\s*status='final'/)
 
-const finalizeBlock = writerStore.match(/async function finalizeVersion\(version\) \{[\s\S]*?\n  \}/)?.[0] || ''
+const finalizeBlock = writerStore.match(/async function finalizeVersion\(version(?:,\s*options\s*=\s*\{\})?\) \{[\s\S]*?\n  \}/)?.[0] || ''
 assert.match(finalizeBlock, /api\.versions\.finalize/)
 assert.doesNotMatch(finalizeBlock, /await updateChapter\(chapter\)/)
 

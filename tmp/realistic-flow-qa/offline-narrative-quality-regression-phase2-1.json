@@ -1,0 +1,714 @@
+{
+  "schemaVersion": "offline-narrative-quality-regression-phase2-1-v1",
+  "timestamp": "2026-07-04T19:31:13.766Z",
+  "status": "completed",
+  "mode": "offline-model",
+  "preferredModelRequested": "联通云-DeepSeek-V4-Flash",
+  "reasonForFallback": "当前线程未暴露可用的联通云未脱敏 baseURL/apiKey；使用环境中可见的 DeepSeek fallback key 做离线 QA。",
+  "provider": {
+    "name": "DeepSeek fallback",
+    "model": "deepseek-v4-pro",
+    "baseURL": "https://api.deepseek.com/v1",
+    "parameters": {
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "max_tokens": 850
+    },
+    "reasonForFallback": "当前线程未暴露可用的联通云未脱敏 baseURL/apiKey；使用环境中可见的 DeepSeek fallback key 做离线 QA。"
+  },
+  "fixtureCoverage": [
+    {
+      "id": "interrogation-negotiation",
+      "category": "interrogation_negotiation",
+      "title": "审讯/谈判",
+      "hasTrustedFacts": true,
+      "conflict": "林遥 vs 周岑",
+      "emotionalTurn": "林遥从压着怒意试探，转为意识到周岑是在保护另一个人。",
+      "stopPoint": "周岑只说出账本在旧码头三号仓，不说出买家。",
+      "hasGuardOnlyFutureSecret": true
+    },
+    {
+      "id": "conflict-dialogue",
+      "category": "conflict_dialogue",
+      "title": "冲突对白",
+      "hasTrustedFacts": true,
+      "conflict": "许砚 vs 夏弦",
+      "emotionalTurn": "许砚从公开指控，转为意识到夏弦删页是在替队伍挡一次清洗。",
+      "stopPoint": "夏弦承认删页，但不说盟约原件已经外流。",
+      "hasGuardOnlyFutureSecret": true
+    },
+    {
+      "id": "chase-action-burst",
+      "category": "chase_action_burst",
+      "title": "追逐/动作爆发",
+      "hasTrustedFacts": true,
+      "conflict": "白澈 vs 黑衣追逐者",
+      "emotionalTurn": "白澈从把对方当敌人，转为发现对方故意把他引离爆炸路线。",
+      "stopPoint": "白澈夺回腕包，但不能知道追逐者真实身份。",
+      "hasGuardOnlyFutureSecret": true
+    },
+    {
+      "id": "intimate-relationship-crack",
+      "category": "intimate_relationship裂隙",
+      "title": "亲密关系裂隙",
+      "hasTrustedFacts": true,
+      "conflict": "陆知白 vs 闻笙",
+      "emotionalTurn": "陆知白从质问她变心，转为意识到她在准备独自承担风险。",
+      "stopPoint": "闻笙承认要离开一段时间，但不说调令已经签好。",
+      "hasGuardOnlyFutureSecret": true
+    },
+    {
+      "id": "pre-reveal-night",
+      "category": "pre_reveal_night",
+      "title": "信息揭露前夜",
+      "hasTrustedFacts": true,
+      "conflict": "沈微 vs 档案管理员",
+      "emotionalTurn": "沈微从以为管理员失职，转为意识到管理员在替她拖延开盒时间。",
+      "stopPoint": "管理员承认有人调换编号，但不说档案盒真实身份。",
+      "hasGuardOnlyFutureSecret": true
+    },
+    {
+      "id": "post-battle-failure-aftermath",
+      "category": "post_battle_failure_aftermath",
+      "title": "战后/失败余波",
+      "hasTrustedFacts": true,
+      "conflict": "姜朔 vs 剩余队员秦澜",
+      "emotionalTurn": "姜朔从用命令压住愧疚，转为承认自己错判害队伍失去副队长。",
+      "stopPoint": "姜朔决定回收遗留装备，但不能发现撤退密码。",
+      "hasGuardOnlyFutureSecret": true
+    }
+  ],
+  "summary": {
+    "fixtureCount": 6,
+    "oldPromptPasses": 4,
+    "newPromptPasses": 6,
+    "oldPromptFutureLeaks": 0,
+    "newPromptFutureLeaks": 0,
+    "newPromptRegressions": 0,
+    "averageOldScore": 93,
+    "averageNewScore": 100,
+    "newPromptOverallNonRegression": true
+  },
+  "results": [
+    {
+      "fixtureId": "interrogation-negotiation",
+      "category": "interrogation_negotiation",
+      "title": "审讯/谈判",
+      "futureSecretLabel": "顾闻舟是幕后账本的真正买家",
+      "oldPrompt": {
+        "chars": 596,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [
+          "账本"
+        ],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 9,
+          "conflictDialogueLines": 1,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "林遥把文件夹拍在桌上，声音不大，周岑却像被烫了一下，肩膀往椅背上缩了半寸。 “周岑，你托运单上填的货物品名是‘废纸浆’，港口地磅记录显示集装箱净重四点三吨。”林遥没坐下，站在桌子对面，手指按着文件夹往前推了两寸，“废纸浆四点三吨，体积刚好填满一个二十尺柜。但你那个柜子里，海关开箱检查的时候，只有两吨半。” 周岑盯着桌面上那个文件夹，没伸手去拿。 “差了一点八吨。”林遥替她把数字说完，然后拉开对面的椅子坐下，手肘搁上桌面，身体微微前倾，“这中间够塞不少东西。比如，账本。” 周岑终于抬起眼，眼圈底下带着熬夜熬出来的青灰，口红也褪得只剩唇线边缘一圈残色。她看着林遥，忽然笑了一下，声音干得像砂纸蹭过墙面：“林队，一个重量差而已，说不定是地磅"
+      },
+      "newPrompt": {
+        "chars": 439,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [
+          "账本"
+        ],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 8,
+          "conflictDialogueLines": 3,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "审讯室的日光灯管一直在嗡鸣，那种频率刚好卡在让人后脑勺发紧的档位上。墙角录音笔的红点一明一暗，像只不会眨的眼睛。 林遥把半张提货单拍在铁灰色桌面上，指尖压着边角推过去。 “旧码头，上个月二十三号，你签的字。” 周岑看了一眼那张被水泡过又晾干的纸片，嘴角动了动，没说话。 “账本呢？” “什么账本。”周岑的声音很平，像在说今天食堂菜太咸了，“我就是去提了一批货，单子你也看到了，合规的。” “周岑。”林遥往前倾了倾身体，日光灯在她颧骨下方压出一道锐利的阴影，“你不是忘了账本，你是在替谁拖时间。” 周岑的喉结滚了一下。 那个动作很细微，但林遥看见了。她原本压着的怒意忽然被一个念头截住——周岑从进来到现在，所有的回避、否认、装傻，都带着一种近"
+      },
+      "comparison": {
+        "scoreDelta": 0,
+        "newPromptRegressed": false,
+        "newPromptAvoidedFutureSecret": true,
+        "oldPromptLeakedFutureSecret": false,
+        "newPromptHasNoBlockingIssues": true
+      }
+    },
+    {
+      "fixtureId": "conflict-dialogue",
+      "category": "conflict_dialogue",
+      "title": "冲突对白",
+      "futureSecretLabel": "夏弦已经把盟约原件交给敌方",
+      "oldPrompt": {
+        "chars": 677,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [
+          "夏弦"
+        ],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 79,
+        "passedEvaluator": false,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "low_dialogue_conflict",
+            "severity": "blocking",
+            "message": "缺少直接对白冲突、逼问、遮掩或潜台词。"
+          },
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "low_dialogue_conflict",
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [
+          "low_dialogue_conflict"
+        ],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 11,
+          "conflictDialogueLines": 0,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "会议室里只剩翻纸的声音。 许砚把名单复印件压在桌上，食指点了点倒数第三页的页码，没说话。页码还是热的，刚从机子里吐出来。 夏弦坐在他对面，双手交叉搁在膝上，姿态很端正。 “原件跟复印件对不上，”许砚把两份文件并排摊开，指尖从左划到右，“第十五页，整个联盟旧部的联络名录，复印件里是空白的。”他抬眼，“原件上那一页呢？” “我不知道许督察在说什么。” “一月十七号下午三点到四点，档案室只有你一个人进出过。”许砚翻过手腕，把登记表也亮了出来。没有多余的解释，只有三行签字记录，夏弦的名字在中间那栏，时间戳精确到秒。 夏弦没看登记表。她的视线落在许砚的领口偏左位置，像在打量一枚不存在的徽章。 “档案室的锁芯上个月刚换过，门禁卡权限只开到三级以"
+      },
+      "newPrompt": {
+        "chars": 641,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [
+          "夏弦"
+        ],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [],
+        "issueCodes": [],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [],
+        "signals": {
+          "dialogueLines": 11,
+          "conflictDialogueLines": 5,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": true,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "会议室玻璃墙外的橙色灯又跳了一下。 许砚把半份名单拍在桌上，纸张边缘卷起，第七页的撕口毛糙得像被人用指甲硬扯过。 “第七页不是丢了。”他盯着对面的夏弦，“是你撕的，对不对。” 夏弦没有立刻回答。她靠进椅背，手指平放在膝头，呼吸声轻得几乎被空调嗡鸣吞掉。 谭茹在角落掐灭了烟，没开口。 许砚把名单翻过来，撕口对着夏弦的方向，纸页残根上留着半行墨迹——“第七页 归”。 “只剩四分之一个字，”他说，“但这个字体是联盟卷册的专用刻版，别人仿不出来。你撕的时候太急，压断了纸。” 夏弦的睫毛动了一下。 “你也知道是急。”她终于抬起眼睛，“那你还问。” “我需要听到你承认。” “承认什么？”夏弦的声音平稳，但喉咙上提了一下，像是咽下了半句话，“承认"
+      },
+      "comparison": {
+        "scoreDelta": 21,
+        "newPromptRegressed": false,
+        "newPromptAvoidedFutureSecret": true,
+        "oldPromptLeakedFutureSecret": false,
+        "newPromptHasNoBlockingIssues": true
+      }
+    },
+    {
+      "fixtureId": "chase-action-burst",
+      "category": "chase_action_burst",
+      "title": "追逐/动作爆发",
+      "futureSecretLabel": "追逐者沈阙其实是内线保护人",
+      "oldPrompt": {
+        "chars": 547,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 79,
+        "passedEvaluator": false,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "low_dialogue_conflict",
+            "severity": "blocking",
+            "message": "缺少直接对白冲突、逼问、遮掩或潜台词。"
+          },
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "low_dialogue_conflict",
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [
+          "low_dialogue_conflict"
+        ],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 0,
+          "conflictDialogueLines": 0,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "手背上的血被雨水冲开了第三次。 白澈的右手死死攥着天桥栏杆的横杆，整个人翻到了外侧，踩在一根生了锈的排水管上。脚下的钢管发出令人牙酸的嘎吱声，雨水顺着铁锈的缝隙往下淌，混进七米之下浑浊的积水里。 他没往下看。 视线锁着天桥另一头——那个黑色卫衣的身影刚从护栏上翻了过去，动作利落得像剪开雨幕的一把刀。 白澈松手，落地，鞋底在水磨石地面上打了个滑，膝盖磕在台阶边缘，疼得他闷哼一声。但人已经弹起来了，借着这股往前冲的势头，三步并作两步扑向那个身影的侧后方。 距离够近的那一瞬间，白澈看到了对方右手腕上那个荧光绿的腕包。 芯片就在里面。 白澈的前臂撞上了对方的肩胛骨，力道大得两个人都往侧边倾了过去。黑衣人反应很快，反手一肘砸向他的太阳穴，被白"
+      },
+      "newPrompt": {
+        "chars": 611,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 4,
+          "conflictDialogueLines": 3,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "白澈的鞋底在天桥湿滑的钢板上打滑，他一把抓住扶手，冰冷的雨水顺着生锈的铁管往下淌，指节在撞击中闷响。在他前方，黑色的影子正翻过天桥护栏顶部，动作利落得像雨燕掠过水面。 他冲到了翻越点——天桥下方的货车正停在桥底过道处，油箱下方有一片覆着油膜的湿迹正在积水里扩散，空气里漂浮着刺鼻的汽油味。 白澈没犹豫，翻栏跳下。 落地的震动顺着膝盖震上来，他看见黑衣人的背影在五步外。 他伸手扣住那人肩膀，往侧一拽，对方反身甩肘，肘尖险险擦过他下颌。白澈偏头闪过，前掌蹬地欺身，一把攥住那人左腕——腕包就在那里，黑色的防水布搭扣露出一角。 攥住的瞬间，他指腹摸到腕包里硬片的形状。 “你到底把我往哪儿引？”白澈低喝。 雨幕打在两人之间，黑衣人的兜帽压得很低"
+      },
+      "comparison": {
+        "scoreDelta": 21,
+        "newPromptRegressed": false,
+        "newPromptAvoidedFutureSecret": true,
+        "oldPromptLeakedFutureSecret": false,
+        "newPromptHasNoBlockingIssues": true
+      }
+    },
+    {
+      "fixtureId": "intimate-relationship-crack",
+      "category": "intimate_relationship裂隙",
+      "title": "亲密关系裂隙",
+      "futureSecretLabel": "闻笙已经签下离开城市的调令",
+      "oldPrompt": {
+        "chars": 658,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [
+          "闻笙"
+        ],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 11,
+          "conflictDialogueLines": 1,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "陆知白在找咖啡豆。 橱柜第二层，往常放玻璃密封罐的位置，摸到一只没拆封的纸盒。他顿了一下，手指往里探，碰到一个冷硬的东西。 抽出来。 木质相框。他和闻笙去年在江边拍的合照，背景是轮渡码头，闻笙难得笑得露出牙齿，他侧着头看她，没看镜头。 这张照片原本立在客厅电视柜上。 陆知白把相框翻过来。背面朝上，压在咖啡豆袋子底下，塞在橱柜最深的角落。不是不小心碰倒的。是有人专门放进去的。 厨房门口传来拖鞋声，停住了。 他抬头。闻笙穿着他的旧T恤，头发随便扎着，脸色在晨光里显得很淡。她的目光落在他手里的相框上，没有惊讶，也没有慌张，只是安静地看着，像在等一道早就知道会来的题。 “什么时候收的。”陆知白问。 “前天。” “为什么。” 闻笙没回答。她走"
+      },
+      "newPrompt": {
+        "chars": 523,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [
+          "闻笙"
+        ],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 6,
+          "conflictDialogueLines": 3,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "陆知白推开厨房门的时候，粥已经凉透了。 砂锅搁在灶台上，表面凝了一层米脂，勺子斜插着，纹丝不动。他看了那锅粥一眼，视线挪到冰箱门上。 原本压着两人合照的位置，只剩一枚褪色的红色磁贴，孤零零地粘在门板上。照片没了。 他伸手碰了碰那个磁贴，指尖沾了一层薄灰。厨房里只有冰箱压缩机低沉的嗡鸣声，窗外天光还没亮透，闻笙背对他站在水槽边，正在擦一只早已干透的杯子。 “照片呢？” 闻笙的动作停了一瞬，然后继续擦杯子，棉布蹭着玻璃发出细小的吱嘎声。 “收起来了。” 她说得很快，快到像早有准备。陆知白盯着她的后脑勺，等她转过来，她没有。 “照片不是自己掉的。”他的声音压得很低，冰箱门还开着，冷气往外溢，贴着光脚踩在瓷砖上的脚背，“你为什么藏起来？” "
+      },
+      "comparison": {
+        "scoreDelta": 0,
+        "newPromptRegressed": false,
+        "newPromptAvoidedFutureSecret": true,
+        "oldPromptLeakedFutureSecret": false,
+        "newPromptHasNoBlockingIssues": true
+      }
+    },
+    {
+      "fixtureId": "pre-reveal-night",
+      "category": "pre_reveal_night",
+      "title": "信息揭露前夜",
+      "futureSecretLabel": "档案盒里的失踪者就是主角父亲",
+      "oldPrompt": {
+        "chars": 1064,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [
+          "档案盒"
+        ],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 19,
+          "conflictDialogueLines": 3,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "档案室的荧光灯管闪了第三下的时候，沈微把两个档案盒并排放在铁皮桌上。左边的盒脊标签写着“DL-7823”，右边的也写着“DL-7823”。同样的编号，同样的字迹，同样的褪色程度。 她没说话，只是把两个盒子同时推向前。桌对面的老韩眼皮跳了一下，手指还搭在保温杯盖上。 “这不可能。”他的声音干得像卷起的复印件边缘，“每个编号都是唯一的。” 沈微打开第一个盒子，抽出里面的牛皮纸袋，翻到最后一页，右下角用铅笔淡淡写着日期——去年三月的归档记录。她打开第二个，同一页，同一位置，日期变成了三周前。 她把两页纸同时举起来，对着灯光。老韩看见那道微微隆起的涂改痕迹，喉结滚了一下。 “有人来过。”沈微说。 “监控没——” “监控死角从消防通道绕过来只"
+      },
+      "newPrompt": {
+        "chars": 898,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [],
+        "issueCodes": [],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [],
+        "signals": {
+          "dialogueLines": 12,
+          "conflictDialogueLines": 4,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": true,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "档案室的感应灯忽明忽暗，像一只半睁半闭的眼睛。潮湿的纸味从铁柜缝隙里渗出来，混着樟脑和旧灰尘，压在鼻腔深处，让人本能想屏住呼吸。 沈微把缺角的旧钥匙搁在管理员的铁皮桌面上，指甲盖轻叩了一下。金属碰撞声在午夜的空旷里格外脆，管理员肩膀一抖，手里的登记簿差点滑脱。 “4B柜，我今晚就要开。”沈微的声音不大，但在逼仄的走廊里没有回音，像被纸吸走了。 管理员是个五十出头的女人，灰白头发在脑后绾成一个紧得扯眼角的小髻。她把登记簿翻得哗哗响，眼睛不抬，语气里堆着不耐烦：“你申请单填错了吧？4B柜的编号是昨晚刚调整过的，系统里还没更新，你肯定找不到对应的——” “编号不是旧损，是昨晚刚换过。” 沈微截断她，目光钉在对方翻页的手指上。那只手僵了一瞬"
+      },
+      "comparison": {
+        "scoreDelta": 0,
+        "newPromptRegressed": false,
+        "newPromptAvoidedFutureSecret": true,
+        "oldPromptLeakedFutureSecret": false,
+        "newPromptHasNoBlockingIssues": true
+      }
+    },
+    {
+      "fixtureId": "post-battle-failure-aftermath",
+      "category": "post_battle_failure_aftermath",
+      "title": "战后/失败余波",
+      "futureSecretLabel": "牺牲的副队长其实留下了撤退密码",
+      "oldPrompt": {
+        "chars": 679,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 9,
+          "conflictDialogueLines": 2,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "姜朔蹲在坍塌的通讯塔基座旁，手指抠进碎石缝里。血从指甲边缘渗出来，他没什么感觉。 身边那具躯体还温着。左颧骨上的伤口先凝住了，血痂沿着颌骨轮廓拉出一条暗线，像某种失败的签名。姜朔把对方腰间那串识别牌拽下来，绳扣崩裂的声音很轻，轻得像踩断一根枯枝。 “你翻够了没有。” 秦澜的声音从身后砸过来，不带问号。 姜朔没回头。他把身份牌攥进掌心，金属片硌着虎口。另一只手下意识地摸向胸口内袋，摸到那个硬质边缘——贺连生最后传回来的便携记录仪，第三相位数据还卡在百分之六十七。他本该在突袭发起前就校准完这条通道的。 他没校准。 “三光阵地丢了两组火力点。”秦澜的靴子碾过碎玻璃，停在他身后三步远，“二队撤不出来，施锐在等你的命令。” “没有命令了。” "
+      },
+      "newPrompt": {
+        "chars": 463,
+        "exactFutureSecretLeak": false,
+        "futureLeakRisk": false,
+        "futureLeakRiskTerms": [],
+        "futureLeakObservedTerms": [],
+        "futureLeakCheckMode": "exact-secret-or-risk-terms",
+        "leakedFutureSecret": false,
+        "qualityScore": 100,
+        "passedEvaluator": true,
+        "passRule": "passedEvaluator is true only when qualityScore >= 70 and blockingIssueCodes is empty; warningIssueCodes may still be present.",
+        "issues": [
+          {
+            "code": "missing_short_interiority",
+            "severity": "warn",
+            "message": "缺少贴近当下的短内心或误判变化。"
+          }
+        ],
+        "issueCodes": [
+          "missing_short_interiority"
+        ],
+        "blockingIssueCodes": [],
+        "warningIssueCodes": [
+          "missing_short_interiority"
+        ],
+        "signals": {
+          "dialogueLines": 8,
+          "conflictDialogueLines": 3,
+          "hasEmotionalTurn": true,
+          "hasShortInteriority": false,
+          "hasFaceVoice": true,
+          "hasEnvironmentalPressure": true,
+          "hasActionExpression": true,
+          "documentaryHits": 0,
+          "summaryHits": 0
+        },
+        "excerpt": "断墙还在往下掉渣。空气里是烧焦橡胶和冷却蜡的气味，混着铁锈一样腥甜的余烬。姜朔蹲在瓦砾堆边上，手里的战术手电筒光柱扫过那摊碎片——通讯器面板碎成了三块，电池仓炸开，外壳上还粘着半截已经被烧得卷曲的编号签。 秦澜站在他身后三步外，战术背心左边肩膀的搭扣没扣，带子翻卷着。她的呼吸粗重，每一次吸气都像在吞咽什么东西。 “别照了。”她说，声音被烟熏得发沙，“照也拼不回去。” 姜朔没回头。手电的光还钉在碎片上。“另外两个确认撤到集结点没有。” “到了。”秦澜往前走了一步，靴底踩碎一片瓦，声音脆得像咬断骨头。“三个人。就剩三个。” 姜朔站起来，膝盖咔嚓响了一声。他转过来，脸上全是灰，眼睛血红，像被人从水里捞起来之后又糊了一脸泥。他的表情很平，平"
+      },
+      "comparison": {
+        "scoreDelta": 0,
+        "newPromptRegressed": false,
+        "newPromptAvoidedFutureSecret": true,
+        "oldPromptLeakedFutureSecret": false,
+        "newPromptHasNoBlockingIssues": true
+      }
+    }
+  ],
+  "review": {
+    "threadId": "019f2eaf-9375-7be1-b705-368878a573b4",
+    "critical": "None",
+    "important": "None",
+    "conclusion": "Previous review 019f2e9d-8f4d-7553-8489-69389a6e4c91 found a row-level stale-value matcher gap; it was fixed locally with exact coverage/result row parsing and duplicate key rejection. Fresh Phase 2.1.1 review found no Critical/Important, no JSON/report drift, excerpt-only QA persistence, safe future-leak wording, and no boundary overrun."
+  },
+  "verification": {
+    "commands": [
+      {
+        "command": "node tmp\\test_context_pack_v2_phase1_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_state_provenance_phase1_2_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_narrative_voice_scene_contract_phase2.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_narrative_voice_phase2_evidence_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_offline_narrative_quality_regression_phase2_1.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_quality_chain_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_quality_first_generation_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_prompt_boundary_modules.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_writer_store_prompt_boundaries.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_writing_style_standards_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_ai_trace_review_prompt.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "node tmp\\test_audit_ai_trace_contract.mjs",
+        "result": "passed"
+      },
+      {
+        "command": "strict JSON/report alignment probe",
+        "result": "passed"
+      },
+      {
+        "command": "npm --prefix frontend run build",
+        "result": "passed; existing Vite INEFFECTIVE_DYNAMIC_IMPORT warning only"
+      }
+    ]
+  },
+  "reviewHistory": [
+    {
+      "threadId": "019f2e9d-8f4d-7553-8489-69389a6e4c91",
+      "result": "Important found: row-level stale+correct matcher bypass; fixed after review."
+    },
+    {
+      "threadId": "019f2eaf-9375-7be1-b705-368878a573b4",
+      "result": "No Critical/Important in current final state; minor provenance clarity fixed by replacing review metadata."
+    }
+  ]
+}
