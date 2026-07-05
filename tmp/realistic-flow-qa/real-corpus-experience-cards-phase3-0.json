@@ -1,0 +1,1231 @@
+{
+  "schemaVersion": "real-corpus-experience-cards-phase3-0-v1",
+  "status": "completed",
+  "generatedAt": "2026-07-05T02:25:04.702Z",
+  "branch": {
+    "currentBranch": "codex/novel-creater-sample-library-v3",
+    "baseCommit": "d45a64c",
+    "headCommit": "d45a64c"
+  },
+  "boundary": {
+    "serviceStarted": false,
+    "realDbConnection": false,
+    "realProjectTouched": false,
+    "liveGenerationRun": false,
+    "projectStateWritten": false,
+    "phase3ProviderAdapterEntered": false,
+    "pushOrPrCreated": false
+  },
+  "outputs": {
+    "jsonPath": "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\real-corpus-experience-cards-phase3-0.json",
+    "reportPath": "D:\\Projects\\Novel_Creater\\tmp\\realistic-flow-qa\\real-corpus-experience-cards-phase3-0-report.md",
+    "productionCandidatePath": "frontend/src/data/realCorpusExperienceCards.v3.json"
+  },
+  "corpusAudit": {
+    "localTxt": {
+      "directory": "小说txt",
+      "totalFiles": 49,
+      "totalReadable": 49,
+      "files": [
+        {
+          "fileName": "《大地》[美]赛珍珠.txt",
+          "relativePath": "小说txt/《大地》[美]赛珍珠.txt",
+          "size": 354608,
+          "hash": "2206f2e00b5f4c77e929736bb054fab85add08b3c96acb99063b4add128048ae",
+          "readable": true
+        },
+        {
+          "fileName": "《穆斯林的葬礼》.TXT",
+          "relativePath": "小说txt/《穆斯林的葬礼》.TXT",
+          "size": 927545,
+          "hash": "18779e42582f6a0ae93b033b03353a2a23b146b7af51a7be58c29d1a17596a47",
+          "readable": true
+        },
+        {
+          "fileName": "奥术神座.txt",
+          "relativePath": "小说txt/奥术神座.txt",
+          "size": 10097052,
+          "hash": "019bfb43611f85bf46512f0f1478944464e67e05d6591f70dec333b03d025b7e",
+          "readable": true
+        },
+        {
+          "fileName": "白夜行.txt",
+          "relativePath": "小说txt/白夜行.txt",
+          "size": 629139,
+          "hash": "c91af5f77c9c72a378d3162db51ed2648f0c46058230c530453f1374185884c5",
+          "readable": true
+        },
+        {
+          "fileName": "大道争锋.txt",
+          "relativePath": "小说txt/大道争锋.txt",
+          "size": 24158925,
+          "hash": "53925fbe0590024c21ec68695faa847a683999f7877af12f28d8e03d5feb1085",
+          "readable": true
+        },
+        {
+          "fileName": "大奉打更人.txt",
+          "relativePath": "小说txt/大奉打更人.txt",
+          "size": 12651387,
+          "hash": "4616f06f8ad6deed334b5350f65cc0a80730b199b65189558f1107a03d67897b",
+          "readable": true
+        },
+        {
+          "fileName": "大明文魁.txt",
+          "relativePath": "小说txt/大明文魁.txt",
+          "size": 13175628,
+          "hash": "c6bf4c7437ec35cf2d00de34392a4835b429e2da997ce91c2215e62c158dd1e3",
+          "readable": true
+        },
+        {
+          "fileName": "道门法则.txt",
+          "relativePath": "小说txt/道门法则.txt",
+          "size": 11982100,
+          "hash": "ccf4573dfeebc0e5ae93335ee5ccf09247a3797293655bbd4fea4adfbb8bbebc",
+          "readable": true
+        },
+        {
+          "fileName": "道士不好惹.txt",
+          "relativePath": "小说txt/道士不好惹.txt",
+          "size": 28328347,
+          "hash": "6b85a5865a7f6ed9d935d42ebd6cd1734ffc13e2e2790aaf67151477494e117a",
+          "readable": true
+        },
+        {
+          "fileName": "东方.txt",
+          "relativePath": "小说txt/东方.txt",
+          "size": 1988485,
+          "hash": "2767f0183df2dc6f374fc0f2b9e636b58e83b14112b9f3b2653c506351a3093f",
+          "readable": true
+        },
+        {
+          "fileName": "冬天里的春天.txt",
+          "relativePath": "小说txt/冬天里的春天.txt",
+          "size": 1544650,
+          "hash": "67be72ad50b7e61390e882efc765f3baabe6e17614967d801f97a4e2e4f5890f",
+          "readable": true
+        },
+        {
+          "fileName": "斗破苍穹.txt",
+          "relativePath": "小说txt/斗破苍穹.txt",
+          "size": 10714188,
+          "hash": "8cdb8354e78494ccb843ca0eb4038556149211c5c946567dc919dbfb27bec060",
+          "readable": true
+        },
+        {
+          "fileName": "凡人修仙传.txt",
+          "relativePath": "小说txt/凡人修仙传.txt",
+          "size": 15491089,
+          "hash": "d7fcf9594d44dd667b56f3a9345e7ef0dc4f654e2a6667498e08b15f29572161",
+          "readable": true
+        },
+        {
+          "fileName": "浮躁.TXT",
+          "relativePath": "小说txt/浮躁.TXT",
+          "size": 592234,
+          "hash": "da560c4c163ad0882cac8b1618ba23b207c60d7fd49a8ec768e663e0bdf66751",
+          "readable": true
+        },
+        {
+          "fileName": "古船.txt",
+          "relativePath": "小说txt/古船.txt",
+          "size": 546962,
+          "hash": "5507372564ba215afd14cda9ad6773607e701ac206ee9bf69ee60cc48586c0e4",
+          "readable": true
+        },
+        {
+          "fileName": "黄河东流去.txt",
+          "relativePath": "小说txt/黄河东流去.txt",
+          "size": 1402095,
+          "hash": "43224a4b805591835a0542f395c48bb6f74c8f53a8590d244368ee9b7f447baf",
+          "readable": true
+        },
+        {
+          "fileName": "将军吟.txt",
+          "relativePath": "小说txt/将军吟.txt",
+          "size": 1193888,
+          "hash": "b0b546db4bf348a1c9dbe883132ebd050c3b7acf63a34ba95103a89320042e86",
+          "readable": true
+        },
+        {
+          "fileName": "解忧杂货店.txt",
+          "relativePath": "小说txt/解忧杂货店.txt",
+          "size": 354114,
+          "hash": "db4f316fe3a4386b277ef42c164269df058e40175a4bab880e642bf5fdac1c44",
+          "readable": true
+        },
+        {
+          "fileName": "金瓯缺.txt",
+          "relativePath": "小说txt/金瓯缺.txt",
+          "size": 2624311,
+          "hash": "ae0b5b141e3ff59c4353ec3178a59bf163dd43012f9b063ab67b24c8a2991d0e",
+          "readable": true
+        },
+        {
+          "fileName": "锦衣夜行.txt",
+          "relativePath": "小说txt/锦衣夜行.txt",
+          "size": 7736295,
+          "hash": "8ae7b95c2d5bdd79df43dfab762ffe6c467cd37dcf44611ac188de0b69a5710b",
+          "readable": true
+        },
+        {
+          "fileName": "进击的巨人.txt",
+          "relativePath": "小说txt/进击的巨人.txt",
+          "size": 865883,
+          "hash": "6873e635b941e9147b5cb74be83c6d73907096b33c212d3f9e5d85cdacf25f83",
+          "readable": true
+        },
+        {
+          "fileName": "老舍：四世同堂.txt",
+          "relativePath": "小说txt/老舍：四世同堂.txt",
+          "size": 1448573,
+          "hash": "f194b5774b88c5ad9fad74e44c458ea7ce9e50a4f661484bd6c0a23f5c0b7cee",
+          "readable": true
+        },
+        {
+          "fileName": "李自成.txt",
+          "relativePath": "小说txt/李自成.txt",
+          "size": 8831186,
+          "hash": "830a1507d9c71f02b0915715524422a0969103a257920a471593df8e9a81dbda",
+          "readable": true
+        },
+        {
+          "fileName": "你在高原.txt",
+          "relativePath": "小说txt/你在高原.txt",
+          "size": 2960441,
+          "hash": "8d266c7bed95c9accd63eeb4476500f149281859504ed5051e4af5b1ccbcbc8c",
+          "readable": true
+        },
+        {
+          "fileName": "全球高武.txt",
+          "relativePath": "小说txt/全球高武.txt",
+          "size": 18732153,
+          "hash": "96263067cc84e2636732ea2bb8c27a71048f6c62ac5bcc5384eef104dc9c5107",
+          "readable": true
+        },
+        {
+          "fileName": "日光流年.txt",
+          "relativePath": "小说txt/日光流年.txt",
+          "size": 701676,
+          "hash": "435caaa495114e3bd164e06cbb43901aedb38c435413f2765688bf2a8910c822",
+          "readable": true
+        },
+        {
+          "fileName": "少年歌行.txt",
+          "relativePath": "小说txt/少年歌行.txt",
+          "size": 3238823,
+          "hash": "3a83588861069113cd800f3b7aae51ac4e72ae2d2d4a65c2034727d49047f642",
+          "readable": true
+        },
+        {
+          "fileName": "少年天子.txt",
+          "relativePath": "小说txt/少年天子.txt",
+          "size": 1240558,
+          "hash": "f8f3740ff8b3251d0d6199455e9a8608dd8a70a7b093f46f861ca61347eadbc2",
+          "readable": true
+        },
+        {
+          "fileName": "神印王座.txt",
+          "relativePath": "小说txt/神印王座.txt",
+          "size": 5465798,
+          "hash": "2d9006658b5ebdbf9b7ad81e8901d0f2c466aaad3da217b5d46e735712ad2ab5",
+          "readable": true
+        },
+        {
+          "fileName": "受活.txt",
+          "relativePath": "小说txt/受活.txt",
+          "size": 520415,
+          "hash": "d44474a70e077a2716c5e5067698926830f584120b9d4fce6b3ae573c12a92f3",
+          "readable": true
+        },
+        {
+          "fileName": "天域苍穹.txt",
+          "relativePath": "小说txt/天域苍穹.txt",
+          "size": 16104073,
+          "hash": "9f96538d61828aa30465e924301057f980f5e2f32ada7bcd1ab63e9d78d518cf",
+          "readable": true
+        },
+        {
+          "fileName": "完美世界.txt",
+          "relativePath": "小说txt/完美世界.txt",
+          "size": 21304167,
+          "hash": "d7a3d888cbab169057452103ee63a2cf7c6ef8cda7decbd6871cd5e21585fc71",
+          "readable": true
+        },
+        {
+          "fileName": "万相之王.txt",
+          "relativePath": "小说txt/万相之王.txt",
+          "size": 9702065,
+          "hash": "7fe2b2bdb548ff1f841a7ca22bcd268d0ac86cbc26b0e391b09779af65ca3480",
+          "readable": true
+        },
+        {
+          "fileName": "王朔《动物凶猛》.TXT",
+          "relativePath": "小说txt/王朔《动物凶猛》.TXT",
+          "size": 104838,
+          "hash": "af0292db917fd1710f8c461d9396dd053a77cfb41e840706c800f55467ec0025",
+          "readable": true
+        },
+        {
+          "fileName": "我欲封天.txt",
+          "relativePath": "小说txt/我欲封天.txt",
+          "size": 10384749,
+          "hash": "d6681f355f0bd58385642e24f5e2fedd8ae6cb9d2dbb9ddf4b4b505f6a98894f",
+          "readable": true
+        },
+        {
+          "fileName": "无字.txt",
+          "relativePath": "小说txt/无字.txt",
+          "size": 1916887,
+          "hash": "c066dbb611476d9bd92c40eee6e82653ea19e35f56697da3eee1b109858d820a",
+          "readable": true
+        },
+        {
+          "fileName": "仙道长青.txt",
+          "relativePath": "小说txt/仙道长青.txt",
+          "size": 7963001,
+          "hash": "51de9eec3d46d932e69642d78ca4eeedb49e2c6d07ec3f68c9129b0b3a58f70e",
+          "readable": true
+        },
+        {
+          "fileName": "仙路至尊.txt",
+          "relativePath": "小说txt/仙路至尊.txt",
+          "size": 19209062,
+          "hash": "32ca06bc1da416ecd5567b432ec679e415bea1136952e142cd291ac73ba501fe",
+          "readable": true
+        },
+        {
+          "fileName": "仙逆.txt",
+          "relativePath": "小说txt/仙逆.txt",
+          "size": 13690885,
+          "hash": "1925feb256ea93c874cda515a8b7bcd1650a382e2ab35bc1c03c4e41625f0b2b",
+          "readable": true
+        },
+        {
+          "fileName": "仙侠世界.txt",
+          "relativePath": "小说txt/仙侠世界.txt",
+          "size": 8575513,
+          "hash": "78b8cf10e9ac8ffdc836133f7a646dbd0c8aab9cd837be8ea9e893b3252ca06e",
+          "readable": true
+        },
+        {
+          "fileName": "修真界败类.txt",
+          "relativePath": "小说txt/修真界败类.txt",
+          "size": 7691020,
+          "hash": "e5105ffbd7cf23f0e32dbc9c26adb903a26916005de5e0e681f9521f6d02ae29",
+          "readable": true
+        },
+        {
+          "fileName": "修真聊天群.txt",
+          "relativePath": "小说txt/修真聊天群.txt",
+          "size": 15238389,
+          "hash": "285e43dbe9dec6b2d8b5b3e1b75983b7c9461c9264c2e39b39deaa723c4d7b43",
+          "readable": true
+        },
+        {
+          "fileName": "许茂和他的女儿们.txt",
+          "relativePath": "小说txt/许茂和他的女儿们.txt",
+          "size": 559483,
+          "hash": "7ab28503b44c11d1800a9cf6cf7a120c53aac656781faa1639c1b6364d1b2af8",
+          "readable": true
+        },
+        {
+          "fileName": "一句顶一万句.txt",
+          "relativePath": "小说txt/一句顶一万句.txt",
+          "size": 829749,
+          "hash": "cc44076a573faffa26a27b8e6864b5571e6b11bdca83997c13e7387a9db89270",
+          "readable": true
+        },
+        {
+          "fileName": "一念永恒.txt",
+          "relativePath": "小说txt/一念永恒.txt",
+          "size": 12084155,
+          "hash": "5b4c99c1ec96ea941f53e98a18e519bccc074ffa9892cb03bfb35b3bfe4051f8",
+          "readable": true
+        },
+        {
+          "fileName": "元尊_天蚕土豆.txt",
+          "relativePath": "小说txt/元尊_天蚕土豆.txt",
+          "size": 8227902,
+          "hash": "52dcaafa5072bb9db31f57e7b9f8a5bfd4911ab94c2c401a996186a1c626a23a",
+          "readable": true
+        },
+        {
+          "fileName": "张居正.txt",
+          "relativePath": "小说txt/张居正.txt",
+          "size": 3476195,
+          "hash": "2e35c66714d26260928c2decd753e7f93de6e172f9bd1d3a2027ce534b8ab717",
+          "readable": true
+        },
+        {
+          "fileName": "遮天_辰东.txt",
+          "relativePath": "小说txt/遮天_辰东.txt",
+          "size": 20132823,
+          "hash": "148e0449a3eca9477edfbe782ca85fe0dc952ecc986ec6cd45ee6478f93f1798",
+          "readable": true
+        },
+        {
+          "fileName": "钟鼓楼.txt",
+          "relativePath": "小说txt/钟鼓楼.txt",
+          "size": 825266,
+          "hash": "35b78b43ae872fdfbfcc8d6cc640d867b1c45ea56d66ea0930c4e3c9a1c73fde",
+          "readable": true
+        }
+      ]
+    },
+    "localReport": {
+      "path": "frontend/src/data/localWritingSampleReport.json",
+      "fileCount": 46,
+      "filesListed": 46,
+      "cardCount": 46,
+      "standardCandidateSourceIds": 46
+    },
+    "alignment": {
+      "reportCoveredSources": 46,
+      "txtFilesWithoutReport": [
+        {
+          "fileName": "斗破苍穹.txt",
+          "size": 10714188,
+          "hash": "8cdb8354e78494ccb843ca0eb4038556149211c5c946567dc919dbfb27bec060"
+        },
+        {
+          "fileName": "全球高武.txt",
+          "size": 18732153,
+          "hash": "96263067cc84e2636732ea2bb8c27a71048f6c62ac5bcc5384eef104dc9c5107"
+        },
+        {
+          "fileName": "修真聊天群.txt",
+          "size": 15238389,
+          "hash": "285e43dbe9dec6b2d8b5b3e1b75983b7c9461c9264c2e39b39deaa723c4d7b43"
+        }
+      ],
+      "reportSourcesWithoutTxt": [],
+      "duplicateReportNames": [],
+      "duplicateSourceTitles": [],
+      "rows": [
+        {
+          "sourceId": "local-sample-001--大地-美-赛珍珠",
+          "sourceTitle": "《大地》[美]赛珍珠",
+          "reportFileName": "《大地》[美]赛珍珠.txt",
+          "txtFileName": "《大地》[美]赛珍珠.txt",
+          "status": "covered",
+          "metricsHash": "c8365f74d95fea849328a69db1c7a818e557c38ca43e5d738f179e1386d06d08"
+        },
+        {
+          "sourceId": "local-sample-002--穆斯林的葬礼-",
+          "sourceTitle": "《穆斯林的葬礼》",
+          "reportFileName": "《穆斯林的葬礼》.TXT",
+          "txtFileName": "《穆斯林的葬礼》.TXT",
+          "status": "covered",
+          "metricsHash": "3ba45d8027911c910845e4f2f960b95b5e00a3c23215f484ccf394e1689891f8"
+        },
+        {
+          "sourceId": "local-sample-003-奥术神座",
+          "sourceTitle": "奥术神座",
+          "reportFileName": "奥术神座.txt",
+          "txtFileName": "奥术神座.txt",
+          "status": "covered",
+          "metricsHash": "a89e273513132ab27917569e09d897462f0d8738e1d81a5a2247d7ec52352e3f"
+        },
+        {
+          "sourceId": "local-sample-004-白夜行",
+          "sourceTitle": "白夜行",
+          "reportFileName": "白夜行.txt",
+          "txtFileName": "白夜行.txt",
+          "status": "covered",
+          "metricsHash": "ce65b2176e3e91b7268f171d52a14c9b3170c74e94b777a42ebb72f8134c3449"
+        },
+        {
+          "sourceId": "local-sample-005-大道争锋",
+          "sourceTitle": "大道争锋",
+          "reportFileName": "大道争锋.txt",
+          "txtFileName": "大道争锋.txt",
+          "status": "covered",
+          "metricsHash": "6de79c5324d8b400b466c93625e1ccd318e165d4d8a3b81b7389729b65e3d4fa"
+        },
+        {
+          "sourceId": "local-sample-006-大奉打更人",
+          "sourceTitle": "大奉打更人",
+          "reportFileName": "大奉打更人.txt",
+          "txtFileName": "大奉打更人.txt",
+          "status": "covered",
+          "metricsHash": "e333bdd1c70029c6782df4c6fae252c3930343f1e57181590c3344302d35249d"
+        },
+        {
+          "sourceId": "local-sample-007-大明文魁",
+          "sourceTitle": "大明文魁",
+          "reportFileName": "大明文魁.txt",
+          "txtFileName": "大明文魁.txt",
+          "status": "covered",
+          "metricsHash": "a05805d530b09e394de6b55d0d6ad7895177fc50128042bfad870bf2e330402f"
+        },
+        {
+          "sourceId": "local-sample-008-道门法则",
+          "sourceTitle": "道门法则",
+          "reportFileName": "道门法则.txt",
+          "txtFileName": "道门法则.txt",
+          "status": "covered",
+          "metricsHash": "1e4518b92824c3fbb156be3bfc82b6be400ca671eeaa21439125ce6f37871e29"
+        },
+        {
+          "sourceId": "local-sample-009-道士不好惹",
+          "sourceTitle": "道士不好惹",
+          "reportFileName": "道士不好惹.txt",
+          "txtFileName": "道士不好惹.txt",
+          "status": "covered",
+          "metricsHash": "5a198fe0a64af4aaa9caec1526f9534e97d92433212ecaa4986e56470f226319"
+        },
+        {
+          "sourceId": "local-sample-010-东方",
+          "sourceTitle": "东方",
+          "reportFileName": "东方.txt",
+          "txtFileName": "东方.txt",
+          "status": "covered",
+          "metricsHash": "7146bd50d9b8ac3856370d23b65eccc2f60d24470ea5022112492941fd649a81"
+        },
+        {
+          "sourceId": "local-sample-011-冬天里的春天",
+          "sourceTitle": "冬天里的春天",
+          "reportFileName": "冬天里的春天.txt",
+          "txtFileName": "冬天里的春天.txt",
+          "status": "covered",
+          "metricsHash": "c76c3d3b52dbaab469631ae190a18a1a545713c6199f5d4ea740fbb4f62ffab4"
+        },
+        {
+          "sourceId": "local-sample-012-凡人修仙传",
+          "sourceTitle": "凡人修仙传",
+          "reportFileName": "凡人修仙传.txt",
+          "txtFileName": "凡人修仙传.txt",
+          "status": "covered",
+          "metricsHash": "9467bf31ddaea5e1b7dbd79bf26387318df2801ebc8006a82251bef878720318"
+        },
+        {
+          "sourceId": "local-sample-013-浮躁",
+          "sourceTitle": "浮躁",
+          "reportFileName": "浮躁.TXT",
+          "txtFileName": "浮躁.TXT",
+          "status": "covered",
+          "metricsHash": "3e680827d3f899777b91030f830d30964960c036807cc31b86c78dc51b89d6a1"
+        },
+        {
+          "sourceId": "local-sample-014-古船",
+          "sourceTitle": "古船",
+          "reportFileName": "古船.txt",
+          "txtFileName": "古船.txt",
+          "status": "covered",
+          "metricsHash": "5092fbc7b395e5f27ad5a65b596515678bdbc253151acd1a3d14b6a9896a61ff"
+        },
+        {
+          "sourceId": "local-sample-015-黄河东流去",
+          "sourceTitle": "黄河东流去",
+          "reportFileName": "黄河东流去.txt",
+          "txtFileName": "黄河东流去.txt",
+          "status": "covered",
+          "metricsHash": "beaf399a1abc11a4d09e561efecc2882291158a7920e12afbe4a107ed9afbd47"
+        },
+        {
+          "sourceId": "local-sample-016-将军吟",
+          "sourceTitle": "将军吟",
+          "reportFileName": "将军吟.txt",
+          "txtFileName": "将军吟.txt",
+          "status": "covered",
+          "metricsHash": "d94cca06cfc175a50075255fa9ca9830eecdfdb0a84b03534882b7e79c9b2dfa"
+        },
+        {
+          "sourceId": "local-sample-017-解忧杂货店",
+          "sourceTitle": "解忧杂货店",
+          "reportFileName": "解忧杂货店.txt",
+          "txtFileName": "解忧杂货店.txt",
+          "status": "covered",
+          "metricsHash": "f9d748968ff39a48fb4b909da0de6d6598b057a58ebc17f331f5c916f711cada"
+        },
+        {
+          "sourceId": "local-sample-018-金瓯缺",
+          "sourceTitle": "金瓯缺",
+          "reportFileName": "金瓯缺.txt",
+          "txtFileName": "金瓯缺.txt",
+          "status": "covered",
+          "metricsHash": "7a90b5939d0419ba6013b19064ebac3a31cd801a52b1687e107f97deffd8b10d"
+        },
+        {
+          "sourceId": "local-sample-019-锦衣夜行",
+          "sourceTitle": "锦衣夜行",
+          "reportFileName": "锦衣夜行.txt",
+          "txtFileName": "锦衣夜行.txt",
+          "status": "covered",
+          "metricsHash": "a98b53f43d12a486caffaae8aced0ba2789ea5b60fdafb991365a45af206f603"
+        },
+        {
+          "sourceId": "local-sample-020-进击的巨人",
+          "sourceTitle": "进击的巨人",
+          "reportFileName": "进击的巨人.txt",
+          "txtFileName": "进击的巨人.txt",
+          "status": "covered",
+          "metricsHash": "2b4ccaffb26fa4e59f39410f67e461ce03d794d074f14185ca92a97997b7f735"
+        },
+        {
+          "sourceId": "local-sample-021-老舍-四世同堂",
+          "sourceTitle": "老舍：四世同堂",
+          "reportFileName": "老舍：四世同堂.txt",
+          "txtFileName": "老舍：四世同堂.txt",
+          "status": "covered",
+          "metricsHash": "31cb10e8c1db41007d6c4adc6fa66e3905d50a48126cd115595db9d43fdb3e6b"
+        },
+        {
+          "sourceId": "local-sample-022-李自成",
+          "sourceTitle": "李自成",
+          "reportFileName": "李自成.txt",
+          "txtFileName": "李自成.txt",
+          "status": "covered",
+          "metricsHash": "b173ba350dac8ad470c1569947bc700a3208b04502fcd704e9ca04c15779ef28"
+        },
+        {
+          "sourceId": "local-sample-023-你在高原",
+          "sourceTitle": "你在高原",
+          "reportFileName": "你在高原.txt",
+          "txtFileName": "你在高原.txt",
+          "status": "covered",
+          "metricsHash": "20a92c7fd45916cc281df5a122a151c22515968d917d755d5544aa5273cc21de"
+        },
+        {
+          "sourceId": "local-sample-024-日光流年",
+          "sourceTitle": "日光流年",
+          "reportFileName": "日光流年.txt",
+          "txtFileName": "日光流年.txt",
+          "status": "covered",
+          "metricsHash": "23e51a53f540fafc35a07420f7c12ae220b40cc1c216cc22ab027d82a61f57cb"
+        },
+        {
+          "sourceId": "local-sample-025-少年歌行",
+          "sourceTitle": "少年歌行",
+          "reportFileName": "少年歌行.txt",
+          "txtFileName": "少年歌行.txt",
+          "status": "covered",
+          "metricsHash": "7a2bb484c0fec2b735e7f57147889ad468c4cb66bc8f6729d68ac957ae14300f"
+        },
+        {
+          "sourceId": "local-sample-026-少年天子",
+          "sourceTitle": "少年天子",
+          "reportFileName": "少年天子.txt",
+          "txtFileName": "少年天子.txt",
+          "status": "covered",
+          "metricsHash": "95dad9cf5cecbc6ec3b6116217c40b174bb8233d60a7846168d4726a64c66f40"
+        },
+        {
+          "sourceId": "local-sample-027-神印王座",
+          "sourceTitle": "神印王座",
+          "reportFileName": "神印王座.txt",
+          "txtFileName": "神印王座.txt",
+          "status": "covered",
+          "metricsHash": "8a5b30bcbc7d315c63af20b0650cc5920bb17c7ff59169b3d7b9c4cc4ef44778"
+        },
+        {
+          "sourceId": "local-sample-028-受活",
+          "sourceTitle": "受活",
+          "reportFileName": "受活.txt",
+          "txtFileName": "受活.txt",
+          "status": "covered",
+          "metricsHash": "0b9c91a2bce697b5e0eb93d12dcb2bbd3c9da3be608e0981d54bf464f53ba36a"
+        },
+        {
+          "sourceId": "local-sample-029-天域苍穹",
+          "sourceTitle": "天域苍穹",
+          "reportFileName": "天域苍穹.txt",
+          "txtFileName": "天域苍穹.txt",
+          "status": "covered",
+          "metricsHash": "877db6d23af42ce0a4b34556c683662c1dabc439b3f8e25afb3e994756b27664"
+        },
+        {
+          "sourceId": "local-sample-030-完美世界",
+          "sourceTitle": "完美世界",
+          "reportFileName": "完美世界.txt",
+          "txtFileName": "完美世界.txt",
+          "status": "covered",
+          "metricsHash": "9918da976c0dd6f3b7c399a10c2d94e268fcde2b12a1d645f0d2fbd08d5cbcc9"
+        },
+        {
+          "sourceId": "local-sample-031-万相之王",
+          "sourceTitle": "万相之王",
+          "reportFileName": "万相之王.txt",
+          "txtFileName": "万相之王.txt",
+          "status": "covered",
+          "metricsHash": "62e8d86bfb03b11b6db14d3c2983f4c52abd93db37c888219859afa08d834219"
+        },
+        {
+          "sourceId": "local-sample-032-王朔-动物凶猛-",
+          "sourceTitle": "王朔《动物凶猛》",
+          "reportFileName": "王朔《动物凶猛》.TXT",
+          "txtFileName": "王朔《动物凶猛》.TXT",
+          "status": "covered",
+          "metricsHash": "4e54bdbfe89929a7ccf92bd04330706e9fad641596ca454efd82956d577a33fc"
+        },
+        {
+          "sourceId": "local-sample-033-我欲封天",
+          "sourceTitle": "我欲封天",
+          "reportFileName": "我欲封天.txt",
+          "txtFileName": "我欲封天.txt",
+          "status": "covered",
+          "metricsHash": "f92d0782c3a2de625b877f6e41e7a2fbab3584f79bf3f759fe1d87a8318ab51f"
+        },
+        {
+          "sourceId": "local-sample-034-无字",
+          "sourceTitle": "无字",
+          "reportFileName": "无字.txt",
+          "txtFileName": "无字.txt",
+          "status": "covered",
+          "metricsHash": "f145b7938598facc1d131df5031b5fd3e5e1fc97653c17440db7ca6ee32c7a32"
+        },
+        {
+          "sourceId": "local-sample-035-仙道长青",
+          "sourceTitle": "仙道长青",
+          "reportFileName": "仙道长青.txt",
+          "txtFileName": "仙道长青.txt",
+          "status": "covered",
+          "metricsHash": "fa95edc85b621d7610586d9d91b025fd153225eec6b2579749debdfd5d4a5260"
+        },
+        {
+          "sourceId": "local-sample-036-仙路至尊",
+          "sourceTitle": "仙路至尊",
+          "reportFileName": "仙路至尊.txt",
+          "txtFileName": "仙路至尊.txt",
+          "status": "covered",
+          "metricsHash": "d644b6dcc010b15309e3e9f6afcf6baac3d1d75fa122a5bae900451c406a7656"
+        },
+        {
+          "sourceId": "local-sample-037-仙逆",
+          "sourceTitle": "仙逆",
+          "reportFileName": "仙逆.txt",
+          "txtFileName": "仙逆.txt",
+          "status": "covered",
+          "metricsHash": "143a23858d5fec59e79f233ad39dcdad7838d28c8b79c1fed86bf50d8361c46d"
+        },
+        {
+          "sourceId": "local-sample-038-仙侠世界",
+          "sourceTitle": "仙侠世界",
+          "reportFileName": "仙侠世界.txt",
+          "txtFileName": "仙侠世界.txt",
+          "status": "covered",
+          "metricsHash": "58225aa5374167038052b27c87e98830ee57017857d02ddfd08e0acf36d880e1"
+        },
+        {
+          "sourceId": "local-sample-039-修真界败类",
+          "sourceTitle": "修真界败类",
+          "reportFileName": "修真界败类.txt",
+          "txtFileName": "修真界败类.txt",
+          "status": "covered",
+          "metricsHash": "01aa743c300ff04d13d11070e98a8d3b29a8f9d7d49e501ca5f4d3292632cb2a"
+        },
+        {
+          "sourceId": "local-sample-040-许茂和他的女儿们",
+          "sourceTitle": "许茂和他的女儿们",
+          "reportFileName": "许茂和他的女儿们.txt",
+          "txtFileName": "许茂和他的女儿们.txt",
+          "status": "covered",
+          "metricsHash": "5f44b2b6f6ff97af6e06f5b3bbd23459ae49f4cb6f1236b3da3f3785c3865156"
+        },
+        {
+          "sourceId": "local-sample-041-一句顶一万句",
+          "sourceTitle": "一句顶一万句",
+          "reportFileName": "一句顶一万句.txt",
+          "txtFileName": "一句顶一万句.txt",
+          "status": "covered",
+          "metricsHash": "016d8bd0a28564ef6a65493624f2e97bb92722bc0031e313a7a2bc820b2e8ff8"
+        },
+        {
+          "sourceId": "local-sample-042-一念永恒",
+          "sourceTitle": "一念永恒",
+          "reportFileName": "一念永恒.txt",
+          "txtFileName": "一念永恒.txt",
+          "status": "covered",
+          "metricsHash": "5f9ce0063eb22c1fe02f7ea9672b4ae66c1d79c2d4cdff566d5589d3f5e23cb4"
+        },
+        {
+          "sourceId": "local-sample-043-元尊_天蚕土豆",
+          "sourceTitle": "元尊_天蚕土豆",
+          "reportFileName": "元尊_天蚕土豆.txt",
+          "txtFileName": "元尊_天蚕土豆.txt",
+          "status": "covered",
+          "metricsHash": "e359aec607103d201050435eebde0b7190bb0c282ee50f14005f0956d9c88fb6"
+        },
+        {
+          "sourceId": "local-sample-044-张居正",
+          "sourceTitle": "张居正",
+          "reportFileName": "张居正.txt",
+          "txtFileName": "张居正.txt",
+          "status": "covered",
+          "metricsHash": "4829e3cd66a0040f885016a8d915bbebcea7ad124cb25f1fb3d3c63f38ea26ec"
+        },
+        {
+          "sourceId": "local-sample-045-遮天_辰东",
+          "sourceTitle": "遮天_辰东",
+          "reportFileName": "遮天_辰东.txt",
+          "txtFileName": "遮天_辰东.txt",
+          "status": "covered",
+          "metricsHash": "9a816402094ff2c77808d5a2835282c9dc6ac96bba93cc5d0866338222305cff"
+        },
+        {
+          "sourceId": "local-sample-046-钟鼓楼",
+          "sourceTitle": "钟鼓楼",
+          "reportFileName": "钟鼓楼.txt",
+          "txtFileName": "钟鼓楼.txt",
+          "status": "covered",
+          "metricsHash": "4fa9a0e3bbf917fd15d15df79b67ef0765cff9bdaf4a6543fc2c245f1f04fc5c"
+        }
+      ]
+    }
+  },
+  "currentSampleLayer": {
+    "builtInMicroDemoCards": {
+      "v2_1": 16,
+      "v2_2": 12,
+      "total": 28,
+      "promptReady": 24,
+      "backendReferenceOnly": 4
+    },
+    "localReportCards": 46,
+    "directDraftInjectionEnabled": false,
+    "localReportStandardCandidateSourceIds": 46,
+    "formalStandardAbsorption": {
+      "reviewedLocalSampleAdapterPresent": true,
+      "forbidsRawSampleFields": true,
+      "localHumanSampleStandardBundled": false,
+      "currentRole": "formal standards can absorb reviewed local sample guidance, but the 46-source report is not yet a SceneExecutionCard-retrievable V3 card layer"
+    },
+    "v23ArtifactsPresent": false
+  },
+  "v3Cards": {
+    "total": 46,
+    "sceneFunctionTagDistribution": {
+      "dialogue_conflict": 26,
+      "emotion_variation": 26,
+      "character_humanity": 46,
+      "scene_dwell": 16,
+      "setting_naturalization": 29,
+      "aftermath": 22,
+      "longform_rhythm": 14,
+      "action_burst": 5
+    },
+    "promptReadinessDistribution": {
+      "prompt-ready-low-dose": 46
+    },
+    "sourceCoverage": {
+      "sourcesWithCandidateCards": 46,
+      "skippedSources": []
+    }
+  },
+  "retrieval": {
+    "maxSelectedCards": 2,
+    "leakageDetected": false,
+    "scenes": [
+      {
+        "id": "interrogation_negotiation",
+        "expectedTags": [
+          "dialogue_conflict",
+          "setting_naturalization"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-001",
+          "real-corpus-v3-003"
+        ],
+        "selectedTags": [
+          "dialogue_conflict",
+          "emotion_variation",
+          "character_humanity",
+          "scene_dwell",
+          "setting_naturalization",
+          "aftermath"
+        ],
+        "helperHash": "d6b39c65084fdf694c699dbffe195bbda84902ae08d81355c841c1ffb3f9fa9d",
+        "leakageDetected": false
+      },
+      {
+        "id": "conflict_dialogue",
+        "expectedTags": [
+          "dialogue_conflict",
+          "character_humanity"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-003",
+          "real-corpus-v3-008"
+        ],
+        "selectedTags": [
+          "character_humanity",
+          "dialogue_conflict",
+          "setting_naturalization",
+          "aftermath",
+          "action_burst"
+        ],
+        "helperHash": "44253ec5e0d5a391a060447a7928255dca2e48d2a60bcfa49c0e0e60164bd437",
+        "leakageDetected": false
+      },
+      {
+        "id": "chase_action_burst",
+        "expectedTags": [
+          "action_burst",
+          "scene_dwell"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-008",
+          "real-corpus-v3-016"
+        ],
+        "selectedTags": [
+          "action_burst",
+          "dialogue_conflict",
+          "character_humanity",
+          "setting_naturalization",
+          "emotion_variation"
+        ],
+        "helperHash": "685fac179fb26593aacc93fbe63399ad018ab2e014ec01492ffd2537a17e1cdc",
+        "leakageDetected": false
+      },
+      {
+        "id": "intimate_fracture",
+        "expectedTags": [
+          "emotion_variation",
+          "character_humanity"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-001",
+          "real-corpus-v3-002"
+        ],
+        "selectedTags": [
+          "dialogue_conflict",
+          "emotion_variation",
+          "character_humanity",
+          "scene_dwell"
+        ],
+        "helperHash": "e3274243cc92cb6aa4b2d6f47329ca876b03652cdd3e4a3a1454e94511e363e4",
+        "leakageDetected": false
+      },
+      {
+        "id": "before_reveal",
+        "expectedTags": [
+          "setting_naturalization",
+          "longform_rhythm"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-005",
+          "real-corpus-v3-027"
+        ],
+        "selectedTags": [
+          "setting_naturalization",
+          "character_humanity",
+          "aftermath",
+          "longform_rhythm"
+        ],
+        "helperHash": "4757a3b3764bc57ac6d0fb8ab5b318c4ac4544564ce1e043e2951b0801d21f6c",
+        "leakageDetected": false
+      },
+      {
+        "id": "failure_aftermath",
+        "expectedTags": [
+          "aftermath",
+          "emotion_variation"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-003",
+          "real-corpus-v3-009"
+        ],
+        "selectedTags": [
+          "character_humanity",
+          "dialogue_conflict",
+          "setting_naturalization",
+          "aftermath"
+        ],
+        "helperHash": "efd2fadae55abfb7aa6cc691a044768afc4abb4cb7e49ca83e28e518f0c5f9d3",
+        "leakageDetected": false
+      }
+    ]
+  },
+  "safety": {
+    "blockingIssues": [],
+    "promptFacingSourceNameLeaks": [],
+    "rawFieldViolations": [],
+    "longQuoteViolations": [],
+    "microDemoSimilarityViolations": [],
+    "factBoundaryViolations": []
+  },
+  "abQuality": {
+    "syntheticScenes": [
+      {
+        "id": "interrogation_negotiation",
+        "expectedTags": [
+          "dialogue_conflict",
+          "setting_naturalization"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-001",
+          "real-corpus-v3-003"
+        ],
+        "selectedTags": [
+          "dialogue_conflict",
+          "emotion_variation",
+          "character_humanity",
+          "scene_dwell",
+          "setting_naturalization",
+          "aftermath"
+        ],
+        "baselineScore": 20,
+        "sampleScore": 80,
+        "signalLift": 60,
+        "futureLeak": false,
+        "baselineSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": false,
+          "sceneDwell": false,
+          "characterHumanity": false,
+          "settingNaturalization": false,
+          "aftermath": false,
+          "actionIntent": false,
+          "boundarySafe": true
+        },
+        "sampleSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": true,
+          "sceneDwell": true,
+          "characterHumanity": true,
+          "settingNaturalization": true,
+          "aftermath": true,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "helperExcerpt": "## Real Corpus Expression Helper\nUse only these expression methods. They do not provide facts, stage boundaries, source worlds, characters, or guard rules.\n- Scene function needs: dialogue_conflict\n- Helper 1: 写对白时先安排双方各有不能直说的筹码，冲突从试探、否认、截断里推进，不把设定解释塞进台词。\n  Method: 让对白先撞出立场差，再用停顿、转开话题或半句反问暴露真正顾虑；每句都要改变关系压力。 先写角色用惯常反应撑住局面，再让一个可见细节击穿判断，情绪变化落在动作和一句短内心里。 给每个人一个眼"
+      },
+      {
+        "id": "conflict_dialogue",
+        "expectedTags": [
+          "dialogue_conflict",
+          "character_humanity"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-003",
+          "real-corpus-v3-008"
+        ],
+        "selectedTags": [
+          "character_humanity",
+          "dialogue_conflict",
+          "setting_naturalization",
+          "aftermath",
+          "action_burst"
+        ],
+        "baselineScore": 20,
+        "sampleScore": 80,
+        "signalLift": 60,
+        "futureLeak": false,
+        "baselineSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": false,
+          "sceneDwell": false,
+          "characterHumanity": false,
+          "settingNaturalization": false,
+          "aftermath": false,
+          "actionIntent": false,
+          "boundarySafe": true
+        },
+        "sampleSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": true,
+          "sceneDwell": true,
+          "characterHumanity": true,
+          "settingNaturalization": true,
+          "aftermath": true,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "helperExcerpt": "## Real Corpus Expression Helper\nUse only these expression methods. They do not provide facts, stage boundaries, source worlds, characters, or guard rules.\n- Scene function needs: dialogue_conflict, aftermath, action_burst\n- Helper 1: 写对白时先安排双方各有不能直说的筹码，冲突从试探、否认、截断里推进，不把设定解释塞进台词。\n  Method: 让对白先撞出立场差，再用停顿、转开话题或半句反问暴露真正顾虑；每句都要改变关系压力。 给每个人一个眼前小目的或小难处，让他们先为自己行动，"
+      },
+      {
+        "id": "chase_action_burst",
+        "expectedTags": [
+          "action_burst",
+          "scene_dwell"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-008",
+          "real-corpus-v3-016"
+        ],
+        "selectedTags": [
+          "action_burst",
+          "dialogue_conflict",
+          "character_humanity",
+          "setting_naturalization",
+          "emotion_variation"
+        ],
+        "baselineScore": 20,
+        "sampleScore": 70,
+        "signalLift": 50,
+        "futureLeak": false,
+        "baselineSignals": {
+          "dialogueConflict": false,
+          "emotionalTurn": false,
+          "sceneDwell": false,
+          "characterHumanity": false,
+          "settingNaturalization": false,
+          "aftermath": false,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "sampleSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": true,
+          "sceneDwell": true,
+          "characterHumanity": true,
+          "settingNaturalization": false,
+          "aftermath": true,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "helperExcerpt": "## Real Corpus Expression Helper\nUse only these expression methods. They do not provide facts, stage boundaries, source worlds, characters, or guard rules.\n- Scene function needs: action_burst\n- Helper 1: 动作不是连续招式清单；每一次推、退、躲、抓都要改变距离、风险或关系。\n  Method: 动作要服务意图变化：先有空间限制和目标冲突，再用短促动作改变筹码。 让对白先撞出立场差，再用停顿、转开话题或半句反问暴露真正顾虑；每句都要改变关系压力。 给每个人一个眼前小目的或小难处，让他们先为自己行动，再被主线卷进去"
+      },
+      {
+        "id": "intimate_fracture",
+        "expectedTags": [
+          "emotion_variation",
+          "character_humanity"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-001",
+          "real-corpus-v3-002"
+        ],
+        "selectedTags": [
+          "dialogue_conflict",
+          "emotion_variation",
+          "character_humanity",
+          "scene_dwell"
+        ],
+        "baselineScore": 30,
+        "sampleScore": 70,
+        "signalLift": 40,
+        "futureLeak": false,
+        "baselineSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": false,
+          "sceneDwell": false,
+          "characterHumanity": true,
+          "settingNaturalization": false,
+          "aftermath": false,
+          "actionIntent": false,
+          "boundarySafe": true
+        },
+        "sampleSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": true,
+          "sceneDwell": true,
+          "characterHumanity": true,
+          "settingNaturalization": true,
+          "aftermath": false,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "helperExcerpt": "## Real Corpus Expression Helper\nUse only these expression methods. They do not provide facts, stage boundaries, source worlds, characters, or guard rules.\n- Scene function needs: dialogue_conflict, character_humanity\n- Helper 1: 写对白时先安排双方各有不能直说的筹码，冲突从试探、否认、截断里推进，不把设定解释塞进台词。\n  Method: 让对白先撞出立场差，再用停顿、转开话题或半句反问暴露真正顾虑；每句都要改变关系压力。 先写角色用惯常反应撑住局面，再让一个可见细节击穿判断，情绪变化"
+      },
+      {
+        "id": "before_reveal",
+        "expectedTags": [
+          "setting_naturalization",
+          "longform_rhythm"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-005",
+          "real-corpus-v3-027"
+        ],
+        "selectedTags": [
+          "setting_naturalization",
+          "character_humanity",
+          "aftermath",
+          "longform_rhythm"
+        ],
+        "baselineScore": 40,
+        "sampleScore": 60,
+        "signalLift": 20,
+        "futureLeak": false,
+        "baselineSignals": {
+          "dialogueConflict": false,
+          "emotionalTurn": false,
+          "sceneDwell": false,
+          "characterHumanity": false,
+          "settingNaturalization": true,
+          "aftermath": true,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "sampleSignals": {
+          "dialogueConflict": false,
+          "emotionalTurn": false,
+          "sceneDwell": true,
+          "characterHumanity": true,
+          "settingNaturalization": true,
+          "aftermath": true,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "helperExcerpt": "## Real Corpus Expression Helper\nUse only these expression methods. They do not provide facts, stage boundaries, source worlds, characters, or guard rules.\n- Scene function needs: setting_naturalization, aftermath\n- Helper 1: 先让人物试探规则边界，再让结果影响风险；不要让旁白或长者一次性讲完世界观。\n  Method: 把规则写成一次可观察的验证或失败后果，信息由物件、旁人反应和代价逐步露出。 给每个人一个眼前小目的或小难处，让他们先为自己行动，再被主线卷进去。 失败后先写残局里的具体损失"
+      },
+      {
+        "id": "failure_aftermath",
+        "expectedTags": [
+          "aftermath",
+          "emotion_variation"
+        ],
+        "selectedCardIds": [
+          "real-corpus-v3-003",
+          "real-corpus-v3-009"
+        ],
+        "selectedTags": [
+          "character_humanity",
+          "dialogue_conflict",
+          "setting_naturalization",
+          "aftermath"
+        ],
+        "baselineScore": 50,
+        "sampleScore": 80,
+        "signalLift": 30,
+        "futureLeak": false,
+        "baselineSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": true,
+          "sceneDwell": false,
+          "characterHumanity": false,
+          "settingNaturalization": true,
+          "aftermath": true,
+          "actionIntent": false,
+          "boundarySafe": true
+        },
+        "sampleSignals": {
+          "dialogueConflict": true,
+          "emotionalTurn": true,
+          "sceneDwell": true,
+          "characterHumanity": true,
+          "settingNaturalization": true,
+          "aftermath": true,
+          "actionIntent": true,
+          "boundarySafe": true
+        },
+        "helperExcerpt": "## Real Corpus Expression Helper\nUse only these expression methods. They do not provide facts, stage boundaries, source worlds, characters, or guard rules.\n- Scene function needs: dialogue_conflict, aftermath\n- Helper 1: 写对白时先安排双方各有不能直说的筹码，冲突从试探、否认、截断里推进，不把设定解释塞进台词。\n  Method: 让对白先撞出立场差，再用停顿、转开话题或半句反问暴露真正顾虑；每句都要改变关系压力。 给每个人一个眼前小目的或小难处，让他们先为自己行动，再被主线卷进去。 把规则写成"
+      }
+    ],
+    "summary": {
+      "averageBaselineScore": 30,
+      "averageSampleScore": 73.33,
+      "averageSignalLift": 43.33,
+      "sampleV3Regressions": 0,
+      "futureLeaks": 0
+    }
+  },
+  "modelAssistedValidation": {
+    "used": false,
+    "model": "联通云-DeepSeek-V4-Flash",
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "reason": "offline model tool/provider was not exposed in this thread and Phase 3.0 avoided provider-adapter work; deterministic no-model gates are the hard evidence.",
+    "inputSummary": "",
+    "outputSummary": "",
+    "conclusion": "not_used"
+  },
+  "review": {
+    "threadId": "019f300d-e340-78e2-bb59-fd23ccd0ae69",
+    "critical": 0,
+    "important": 0,
+    "minor": 1,
+    "conclusion": "Ready for Phase 3.0 Critical/Important gate; minor notes files are untracked until a later integration step."
+  }
+}
