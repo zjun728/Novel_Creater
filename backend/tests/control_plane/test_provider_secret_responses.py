@@ -10,6 +10,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from backend.routers import providers
+from backend.routers.provider_public import to_public_provider
 
 
 SENTINEL = "SECRET_MUST_NEVER_LEAVE_BACKEND"
@@ -49,6 +50,16 @@ def assert_secret_free(testcase, value, *, has_key):
 
 
 class ProviderSecretCrudTest(unittest.IsolatedAsyncioTestCase):
+    def test_normalizes_has_api_key_metadata_to_single_public_spelling(self):
+        row = provider_row(has_key=True)
+        row.pop("has_api_key")
+        row["hasAPIKey"] = 1
+
+        result = to_public_provider(row)
+
+        self.assertNotIn("hasAPIKey", result)
+        assert_secret_free(self, result, has_key=True)
+
     async def test_list_returns_has_api_key_without_secret(self):
         fetchall = AsyncMock(return_value=[provider_row(has_key=True)])
         with patch.object(providers, "fetchall", fetchall):

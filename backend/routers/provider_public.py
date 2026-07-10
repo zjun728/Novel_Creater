@@ -24,7 +24,12 @@ def to_public_provider(row):
     safe = dict(row)
     safe.pop("api_key", None)
     safe.pop("apiKey", None)
-    has_api_key = safe.pop("has_api_key", safe.get("hasApiKey", False))
+    metadata_values = [
+        safe.pop("has_api_key", None),
+        safe.pop("hasAPIKey", None),
+        safe.pop("hasApiKey", None),
+    ]
+    has_api_key = next((value for value in metadata_values if value is not None), False)
     result = convert_row(safe)
     result["hasApiKey"] = bool(has_api_key)
     return result
