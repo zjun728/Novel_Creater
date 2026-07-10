@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from database import fetchall, execute
 from .helpers import convert_rows, to_snake
+from .provider_public import public_provider_query, to_public_providers
 import uuid
 import time
 import json
@@ -22,10 +23,18 @@ MODEL_ID_KEYS = [
 
 @router.post("/export/full")
 async def export_full(projectId: str = "", includeApiKeys: bool = False):
-    providers = convert_rows(await fetchall("SELECT * FROM provider_profiles"))
-    if not includeApiKeys:
-        for provider in providers:
-            provider["apiKey"] = ""
+    if includeApiKeys:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "provider_api_key_export_disabled",
+                "message": "Provider API key export is disabled.",
+            },
+        )
+
+    providers = to_public_providers(
+        await fetchall(public_provider_query("ORDER BY created_at"))
+    )
 
     result = {
         "version": "1.0",
@@ -75,7 +84,10 @@ async def import_full(data: dict):
     imported_projects = 0
 
     try:
-        for provider in data.get("providers", []):
+        for original_provider in data.get("providers", []):
+            provider = dict(original_provider)
+            provider.pop("hasApiKey", None)
+            provider.pop("has_api_key", None)
             old_provider_id = provider.get("id", "")
             new_provider_id = str(uuid.uuid4())
             if old_provider_id:

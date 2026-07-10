@@ -4,12 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
+
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from backend.routers import providers
+from backend.routers import export, providers
 from backend.routers.provider_public import to_public_provider
 
 
@@ -199,6 +201,78 @@ class ProviderSecretCrudTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("api_key=%s", sql)
         self.assertEqual(args[0], "")
         assert_secret_free(self, result, has_key=False)
+
+
+class ProviderSecretExportImportTest(unittest.IsolatedAsyncioTestCase):
+    async def test_export_full_returns_public_providers_without_secrets_by_default(self):
+        fetchall = AsyncMock(side_effect=[[provider_row(has_key=True)], []])
+        with patch.object(export, "fetchall", fetchall):
+            result = await export.export_full()
+
+        self.assertEqual(len(result["providers"]), 1)
+        assert_secret_free(self, result["providers"][0], has_key=True)
+        provider_sql = fetchall.await_args_list[0].args[0]
+        self.assertNotIn("SELECT *", provider_sql.upper())
+
+    async def test_export_full_rejects_api_key_export_before_fetching(self):
+        fetchall = AsyncMock()
+        with patch.object(export, "fetchall", fetchall):
+            with self.assertRaises(HTTPException) as raised:
+                await export.export_full(includeApiKeys=True)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(
+            raised.exception.detail,
+            {
+                "code": "provider_api_key_export_disabled",
+                "message": "Provider API key export is disabled.",
+            },
+        )
+        fetchall.assert_not_awaited()
+
+    async def test_import_full_keeps_explicit_api_key_and_drops_response_metadata(self):
+        insert = AsyncMock()
+        payload = {
+            "providers": [
+                {
+                    "id": "provider-1",
+                    "name": "Provider",
+                    "hasApiKey": True,
+                    "has_api_key": True,
+                    "apiKey": "EXPLICIT_INBOUND_KEY",
+                }
+            ],
+            "projects": [],
+        }
+        with patch.object(export, "_insert", insert):
+            await export.import_full(payload)
+
+        table, provider = insert.await_args.args
+        self.assertEqual(table, "provider_profiles")
+        self.assertNotIn("hasApiKey", provider)
+        self.assertNotIn("has_api_key", provider)
+        self.assertEqual(provider["apiKey"], "EXPLICIT_INBOUND_KEY")
+
+    async def test_import_full_does_not_invent_api_key_from_backup_metadata(self):
+        insert = AsyncMock()
+        payload = {
+            "providers": [
+                {
+                    "id": "provider-1",
+                    "name": "Provider",
+                    "hasApiKey": True,
+                }
+            ],
+            "projects": [],
+        }
+        with patch.object(export, "_insert", insert):
+            await export.import_full(payload)
+
+        table, provider = insert.await_args.args
+        self.assertEqual(table, "provider_profiles")
+        self.assertNotIn("hasApiKey", provider)
+        self.assertNotIn("has_api_key", provider)
+        self.assertEqual(provider["apiKey"], "")
 
 
 if __name__ == "__main__":
