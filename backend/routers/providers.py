@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import Optional
 from database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake
+from .provider_public import public_provider_query, to_public_provider, to_public_providers
 import uuid, time, json
 
 router = APIRouter(tags=["providers"])
@@ -76,10 +77,15 @@ class BindingsUpdate(BaseModel):
     polishModelId: Optional[str] = None
 
 # --- Providers ---
+async def _fetch_public_provider(pid: str):
+    row = await fetchone(public_provider_query("WHERE id=%s"), (pid,))
+    return to_public_provider(row)
+
+
 @router.get("/providers")
 async def list_providers():
-    rows = await fetchall("SELECT * FROM provider_profiles ORDER BY created_at")
-    return convert_rows(rows)
+    rows = await fetchall(public_provider_query("ORDER BY created_at"))
+    return to_public_providers(rows)
 
 @router.post("/providers")
 async def create_provider(data: ProviderCreate):
@@ -94,7 +100,7 @@ async def create_provider(data: ProviderCreate):
                         int(data.stream), data.maxContextTokens, data.maxOutputTokens,
                         data.temperature, data.topP, int(data.supportsJSON),
                         int(data.supportsStreaming), data.notes, thinking_json, now, now))
-    return convert_row(await fetchone("SELECT * FROM provider_profiles WHERE id=%s", (pid,)))
+    return await _fetch_public_provider(pid)
 
 @router.put("/providers/{pid}")
 async def update_provider(pid: str, data: ProviderUpdate):
@@ -111,12 +117,12 @@ async def update_provider(pid: str, data: ProviderUpdate):
             sets.append(f"{col}=%s")
             args.append(v)
     if not sets:
-        return convert_row(await fetchone("SELECT * FROM provider_profiles WHERE id=%s", (pid,)))
+        return await _fetch_public_provider(pid)
     sets.append("updated_at=%s")
     args.append(int(time.time() * 1000))
     args.append(pid)
     await execute(f"UPDATE provider_profiles SET {', '.join(sets)} WHERE id=%s", args)
-    return convert_row(await fetchone("SELECT * FROM provider_profiles WHERE id=%s", (pid,)))
+    return await _fetch_public_provider(pid)
 
 @router.delete("/providers/{pid}")
 async def delete_provider(pid: str):
