@@ -3,6 +3,8 @@
  * 统一通过后端 HTTP API 访问本地 MySQL 数据层。
  */
 
+import { buildSecretFreeExportPath } from '@/utils/providerSecurity'
+
 const BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
 
@@ -308,13 +310,7 @@ export const api = {
   },
 
   // === 导入导出 ===
-  exportFull: (projectId = '', includeApiKeys = false) => {
-    const params = new URLSearchParams()
-    if (projectId) params.set('projectId', projectId)
-    if (includeApiKeys) params.set('includeApiKeys', 'true')
-    const query = params.toString()
-    return post(`/export/full${query ? `?${query}` : ''}`)
-  },
+  exportFull: (projectId = '') => post(buildSecretFreeExportPath(projectId)),
   importFull: (data) => post('/import/full', data),
 
   // === 选题雷达 ===

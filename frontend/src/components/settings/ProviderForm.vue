@@ -43,7 +43,7 @@ const defaults = {
 
 watch(() => props.initial, (val) => {
   if (val) {
-    form.value = { ...defaults, ...val }
+    form.value = { ...defaults, ...val, apiKey: '' }
   } else {
     form.value = { ...defaults }
   }
@@ -86,7 +86,7 @@ function handleSubmit() {
         v-model:value="form.apiKey"
         type="password"
         show-password-on="click"
-        placeholder="输入 API Key"
+        :placeholder="props.initial?.hasApiKey ? '已配置；留空则保留现有 API Key' : '输入 API Key'"
       />
     </n-form-item>
     <n-form-item label="备注">

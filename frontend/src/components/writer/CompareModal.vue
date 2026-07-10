@@ -4,6 +4,7 @@ import { NModal, NButton, NCheckbox, NTag } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useCompareStore } from '@/stores/compareStore'
 import { useProviderStore } from '@/stores/providerStore'
+import { isProviderConfigured } from '@/utils/providerSecurity'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -22,7 +23,7 @@ const step = ref('select')
 const selectedModels = ref([])
 
 const writableProviders = computed(() =>
-  providerStore.providers.filter(provider => provider.apiKey && provider.model)
+  providerStore.providers.filter(isProviderConfigured)
 )
 
 const doneCount = computed(() =>

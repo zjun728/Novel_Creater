@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '@/api/db/client'
+import { buildProviderUpdatePayload } from '@/utils/providerSecurity'
 
 export const useProviderStore = defineStore('provider', () => {
   const providers = ref([])
@@ -104,22 +105,7 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function updateProvider(provider) {
     try {
-      const updated = await api.providers.update(provider.id, {
-        name: provider.name,
-        providerType: provider.providerType,
-        baseURL: provider.baseURL,
-        apiKey: provider.apiKey,
-        model: provider.model,
-        stream: provider.stream,
-        maxContextTokens: provider.maxContextTokens,
-        maxOutputTokens: provider.maxOutputTokens,
-        temperature: provider.temperature,
-        topP: provider.topP,
-        supportsJSON: provider.supportsJSON,
-        supportsStreaming: provider.supportsStreaming,
-        notes: provider.notes,
-        thinking: provider.thinking
-      })
+      const updated = await api.providers.update(provider.id, buildProviderUpdatePayload(provider))
       const idx = providers.value.findIndex(p => p.id === updated.id)
       if (idx !== -1) providers.value[idx] = updated
     } catch (e) {
