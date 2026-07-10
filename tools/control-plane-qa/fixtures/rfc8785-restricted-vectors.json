@@ -1,0 +1,38 @@
+{
+  "valid": [
+    {
+      "name": "object order",
+      "value": {"b": 1, "a": 2},
+      "canonical": "{\"a\":2,\"b\":1}"
+    },
+    {
+      "name": "utf16 object order",
+      "value": {"": 1, "😀": 2},
+      "canonical": "{\"😀\":2,\"\":1}"
+    },
+    {
+      "name": "no unicode normalization",
+      "value": {"é": "é"},
+      "canonical": "{\"é\":\"é\"}"
+    },
+    {
+      "name": "ecmascript escapes",
+      "value": {"text": "\b\t\n\f\r\u0000\u001f\"\\/"},
+      "canonical": "{\"text\":\"\\b\\t\\n\\f\\r\\u0000\\u001f\\\"\\\\/\"}"
+    },
+    {
+      "name": "non bmp value",
+      "value": {"emoji": "😀"},
+      "canonical": "{\"emoji\":\"😀\"}"
+    },
+    {
+      "name": "nested arrays",
+      "value": [{"z": 0, "a": -1}, [9007199254740991, -9007199254740991]],
+      "canonical": "[{\"a\":-1,\"z\":0},[9007199254740991,-9007199254740991]]"
+    }
+  ],
+  "invalidRaw": [
+    {"name": "duplicate key", "raw": "{\"a\":1,\"a\":2}"},
+    {"name": "nested duplicate key", "raw": "{\"outer\":{\"a\":1,\"a\":2}}"}
+  ]
+}
