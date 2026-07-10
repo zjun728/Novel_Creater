@@ -58,7 +58,7 @@ The root scripts are:
 
 - `test`: `npm run test:control-plane`; no legacy `tmp/` suite is included implicitly.
 - `test:control-plane`: run `test:control-plane:node` followed by `test:control-plane:py`.
-- `test:control-plane:node`: `node --test tools/control-plane-qa/tests`.
+- `test:control-plane:node`: `node --test "tools/control-plane-qa/tests/*.test.mjs"`; this glob form is verified with the repository's Node 24 runtime.
 - `test:control-plane:py`: `python -m unittest discover -s backend/tests/control_plane -p "test_*.py"`.
 - `test:control-plane:db`: `python -m unittest discover -s backend/tests/control_plane -p "mysql_integration_test.py"`; the integration module deliberately does not match `test_*.py`, and this command must refuse non-disposable database targets.
 
