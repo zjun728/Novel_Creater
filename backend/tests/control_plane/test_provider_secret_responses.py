@@ -50,6 +50,49 @@ def assert_secret_free(testcase, value, *, has_key):
 
 
 class ProviderSecretCrudTest(unittest.IsolatedAsyncioTestCase):
+    def test_recursively_strips_api_key_variants_from_decoded_provider_fields(self):
+        nested_sentinel = "NESTED_SECRET_MUST_NEVER_LEAVE_BACKEND"
+        row = provider_row(has_key=True)
+        row["thinking"] = json.dumps(
+            {
+                "mode": "enabled",
+                "credentials": {
+                    "api_key": nested_sentinel,
+                    "region": "us-east",
+                },
+                "items": [
+                    {"apiKey": nested_sentinel, "name": "first"},
+                    {
+                        "details": {
+                            "API_KEY": nested_sentinel,
+                            "enabled": True,
+                        }
+                    },
+                    {"api-key": nested_sentinel, "name": "third"},
+                ],
+            }
+        )
+
+        result = to_public_provider(row)
+
+        encoded = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn(nested_sentinel, encoded)
+        for secret_key in ("api_key", "apiKey", "API_KEY", "api-key"):
+            self.assertNotIn(f'"{secret_key}"', encoded)
+        self.assertEqual(
+            result["thinking"],
+            {
+                "mode": "enabled",
+                "credentials": {"region": "us-east"},
+                "items": [
+                    {"name": "first"},
+                    {"details": {"enabled": True}},
+                    {"name": "third"},
+                ],
+            },
+        )
+        assert_secret_free(self, result, has_key=True)
+
     def test_normalizes_has_api_key_metadata_to_single_public_spelling(self):
         row = provider_row(has_key=True)
         row.pop("has_api_key")

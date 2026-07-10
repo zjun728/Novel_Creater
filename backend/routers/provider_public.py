@@ -11,6 +11,21 @@ CASE WHEN COALESCE(api_key, '') <> '' THEN 1 ELSE 0 END AS has_api_key
 """.strip()
 
 
+def _strip_secret_fields(value):
+    if isinstance(value, dict):
+        return {
+            key: _strip_secret_fields(item)
+            for key, item in value.items()
+            if not (
+                isinstance(key, str)
+                and key.lower().replace("_", "").replace("-", "") == "apikey"
+            )
+        }
+    if isinstance(value, list):
+        return [_strip_secret_fields(item) for item in value]
+    return value
+
+
 def public_provider_query(suffix: str = "") -> str:
     suffix = suffix.strip()
     return f"SELECT {PUBLIC_PROVIDER_COLUMNS} FROM provider_profiles" + (
@@ -30,7 +45,7 @@ def to_public_provider(row):
         safe.pop("hasApiKey", None),
     ]
     has_api_key = next((value for value in metadata_values if value is not None), False)
-    result = convert_row(safe)
+    result = _strip_secret_fields(convert_row(safe))
     result["hasApiKey"] = bool(has_api_key)
     return result
 
