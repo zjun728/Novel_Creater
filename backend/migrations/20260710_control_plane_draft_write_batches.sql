@@ -3,7 +3,7 @@ CREATE TABLE draft_write_batches (
   project_id CHAR(36) NOT NULL,
   idempotency_key VARBINARY(120) NOT NULL,
   manifest_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  result_json JSON DEFAULT NULL,
+  result_json JSON,
   created_at BIGINT NOT NULL,
   committed_at BIGINT DEFAULT NULL,
   PRIMARY KEY (id),

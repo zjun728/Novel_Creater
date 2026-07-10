@@ -18,7 +18,15 @@ class DraftWriteMigrationTest(unittest.TestCase):
         self.assertIn("project_id char(36) not null", lowered)
         self.assertIn("idempotency_key varbinary(120) not null", lowered)
         self.assertIn("manifest_sha256 char(64) character set ascii collate ascii_bin not null", lowered)
-        self.assertIn("result_json json default null", lowered)
+        self.assertRegex(lowered, r"(?m)^\s*result_json\s+json\s*,\s*$")
+        large_object_columns = re.findall(
+            r"(?im)^\s*`?\w+`?\s+(?:json|tinytext|text|mediumtext|longtext|tinyblob|blob|mediumblob|longblob)\b[^,\n]*",
+            sql,
+        )
+        self.assertTrue(large_object_columns)
+        for declaration in large_object_columns:
+            with self.subTest(declaration=declaration.strip()):
+                self.assertNotRegex(declaration.lower(), r"\bdefault\b")
         self.assertIn("created_at bigint not null", lowered)
         self.assertIn("committed_at bigint default null", lowered)
         self.assertRegex(
