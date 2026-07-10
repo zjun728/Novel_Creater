@@ -1425,9 +1425,12 @@ test('defines only docstrings in the backend test namespace markers', async () =
     import.meta.url
   )
 
-  assert.equal(await readFile(backendTestsUrl, 'utf8'), '"""Backend tests."""\n')
   assert.equal(
-    await readFile(controlPlaneTestsUrl, 'utf8'),
+    (await readFile(backendTestsUrl, 'utf8')).replaceAll('\r\n', '\n'),
+    '"""Backend tests."""\n'
+  )
+  assert.equal(
+    (await readFile(controlPlaneTestsUrl, 'utf8')).replaceAll('\r\n', '\n'),
     '"""Deterministic control-plane tests."""\n'
   )
 })
