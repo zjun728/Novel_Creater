@@ -7,7 +7,11 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run test:control-plane",
+    "test:control-plane": "npm run test:control-plane:node && npm run test:control-plane:py",
+    "test:control-plane:node": "node --test \"tools/control-plane-qa/tests/*.test.mjs\"",
+    "test:control-plane:py": "python -m unittest discover -s backend/tests/control_plane -p \"test_*.py\"",
+    "test:control-plane:db": "python -m unittest discover -s backend/tests/control_plane -p \"mysql_integration_test.py\""
   },
   "repository": {
     "type": "git",
