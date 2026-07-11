@@ -17,7 +17,6 @@ import re
 import sys
 import time
 from typing import Awaitable, Callable, Mapping, Sequence
-import unicodedata
 from uuid import uuid4
 
 from backend.schema_manifest import created_table_names
@@ -280,21 +279,68 @@ def _json_text(value: object, field_name: str) -> str | None:
         raise ResetValidationError(f"Legacy {field_name} must be valid JSON") from exc
 
 
-def _collation_key(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value).casefold().rstrip(" ")
-    return "".join(character for character in normalized if not unicodedata.combining(character))
-
-
-def _require_unique(rows: Sequence[Mapping[str, object]], field: str, noun: str) -> None:
-    seen: dict[str, object] = {}
+def _require_exact_unique(
+    rows: Sequence[Mapping[str, object]], field: str, noun: str,
+) -> None:
+    seen: set[object] = set()
     for row in rows:
         value = row[field]
-        key = _collation_key(value) if isinstance(value, str) else str(value)
-        if key in seen:
+        if value in seen:
+            raise ResetValidationError(f"Legacy {noun} {field} values must be unique")
+        seen.add(value)
+
+
+async def _require_target_collation_unique(
+    admin_session,
+    rows: Sequence[Mapping[str, object]],
+    field: str,
+    noun: str,
+) -> None:
+    for index, row in enumerate(rows):
+        for other in rows[index + 1:]:
+            comparison = await admin_session.fetchone(
+                """SELECT (
+                         CONVERT(%s USING utf8mb4) COLLATE utf8mb4_0900_ai_ci =
+                         CONVERT(%s USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+                       ) AS collation_conflict""",
+                (row[field], other[field]),
+            )
+            if (comparison or {}).get("collation_conflict") != 1:
+                continue
             raise ResetValidationError(
                 f"Legacy {noun} {field} values conflict under target collation"
             )
-        seen[key] = value
+
+
+async def _verify_reset_server_capabilities(admin_session) -> None:
+    version_row = await admin_session.fetchone("SELECT VERSION() AS version")
+    version = (version_row or {}).get("version")
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version or "")
+    if match is None:
+        raise ResetValidationError("Could not verify the MySQL server version")
+    version_tuple = tuple(int(part) for part in match.groups())
+    if version_tuple[0] != 8 or version_tuple < (8, 0, 16):
+        raise ResetValidationError(
+            "Writer Core reset requires MySQL 8 with enforced CHECK constraints"
+        )
+    collation = await admin_session.fetchone(
+        """SELECT COLLATION_NAME FROM information_schema.COLLATIONS
+           WHERE COLLATION_NAME='utf8mb4_0900_ai_ci'"""
+    )
+    if (collation or {}).get("COLLATION_NAME") != "utf8mb4_0900_ai_ci":
+        raise ResetValidationError(
+            "MySQL server does not provide required utf8mb4_0900_ai_ci collation"
+        )
+    json_support = await admin_session.fetchone(
+        "SELECT JSON_VALID(%s) AS json_supported", ('{"writerCore":true}',)
+    )
+    if (json_support or {}).get("json_supported") != 1:
+        raise ResetValidationError("MySQL server JSON capability check failed")
+    check_support = await admin_session.fetchone(
+        "SELECT COUNT(*) AS count FROM information_schema.CHECK_CONSTRAINTS"
+    )
+    if type((check_support or {}).get("count")) is not int:
+        raise ResetValidationError("MySQL server CHECK capability check failed")
 
 
 def _map_project(row: Mapping[str, object]) -> dict[str, object]:
@@ -417,8 +463,10 @@ async def _load_preserved_state(admin_session, database_name: str, request: Rese
         )
 
     mapped_seeds = tuple(_map_seed(row, project["id"]) for row in seed_rows)
-    _require_unique(mapped_seeds, "id", "seed")
-    _require_unique(mapped_seeds, "title", "seed")
+    _require_exact_unique(mapped_seeds, "id", "seed")
+    await _require_target_collation_unique(
+        admin_session, mapped_seeds, "title", "seed",
+    )
 
     provider_rows = await admin_session.fetchall(
         f"SELECT {', '.join(_LEGACY_PROVIDER_COLUMNS)} "
@@ -443,8 +491,10 @@ async def _load_preserved_state(admin_session, database_name: str, request: Rese
         _map_provider(row, 0 if index == 0 else index * 10)
         for index, row in enumerate(ordered_provider_rows)
     )
-    _require_unique(mapped_providers, "id", "provider")
-    _require_unique(mapped_providers, "name", "provider")
+    _require_exact_unique(mapped_providers, "id", "provider")
+    await _require_target_collation_unique(
+        admin_session, mapped_providers, "name", "provider",
+    )
     preferred = tuple(
         row for row in mapped_providers
         if row["name"] == request.preferred_provider_name
@@ -628,6 +678,29 @@ async def _release_lock(admin_session) -> None:
         raise ResetError("Writer Core reset advisory lock was not released")
 
 
+async def _recover_failed_commit(admin_session, commit_error: BaseException) -> None:
+    """Best-effort transaction/lock cleanup without reusing an uncertain session."""
+    failures = [commit_error]
+    try:
+        await admin_session.execute("ROLLBACK")
+    except BaseException as rollback_error:
+        failures.append(rollback_error)
+    try:
+        await _release_lock(admin_session)
+    except BaseException as release_error:
+        failures.append(release_error)
+    try:
+        await admin_session.close()
+    except BaseException as close_error:
+        failures.append(close_error)
+    if len(failures) > 1:
+        raise BaseExceptionGroup(
+            "Writer Core COMMIT failed and recovery also failed",
+            failures,
+        ) from commit_error
+    raise commit_error
+
+
 async def reset_writer_core_data(
     admin_session,
     *,
@@ -678,6 +751,7 @@ async def reset_writer_core_data(
         if lock is None or lock["acquired"] != 1:
             raise ResetError("Could not acquire Writer Core reset advisory lock")
         acquired = True
+        await _verify_reset_server_capabilities(admin_session)
         state = await _load_preserved_state(admin_session, database_name, request)
 
         _guard_database(database_name, product_execute_authorized)
@@ -718,24 +792,11 @@ async def reset_writer_core_data(
             try:
                 await admin_session.execute("COMMIT")
             except BaseException as commit_error:
-                commit_failures = [commit_error]
-                try:
-                    await admin_session.execute("ROLLBACK")
-                except BaseException as rollback_error:
-                    commit_failures.append(rollback_error)
-                # A failed COMMIT leaves transaction outcome unknown. Closing the
-                # connection both releases its advisory lock and prevents reuse.
+                # Recovery explicitly releases the named lock before closing; an
+                # aiomysql transport close alone does not synchronously prove the
+                # server has processed COM_QUIT and released the lock.
                 acquired = False
-                try:
-                    await admin_session.close()
-                except BaseException as close_error:
-                    commit_failures.append(close_error)
-                if len(commit_failures) > 1:
-                    raise BaseExceptionGroup(
-                        "Writer Core COMMIT failed and transaction cleanup also failed",
-                        commit_failures,
-                    ) from commit_error
-                raise
+                await _recover_failed_commit(admin_session, commit_error)
         report = _report(database_name, state, executed=True)
     except BaseException as exc:
         body_error = exc

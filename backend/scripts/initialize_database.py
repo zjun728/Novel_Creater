@@ -136,13 +136,25 @@ class _AiomysqlAdminSession:
     async def close(self):
         if self._closed:
             return
-        self._closed = True
-        await self._cursor.close()
-        ensure_closed = getattr(self._connection, "ensure_closed", None)
-        if ensure_closed is not None:
-            await ensure_closed()
+        failures = []
+        try:
+            await self._cursor.close()
+        except BaseException as exc:
+            failures.append(exc)
+        try:
+            ensure_closed = getattr(self._connection, "ensure_closed", None)
+            if ensure_closed is not None:
+                await ensure_closed()
+            else:
+                self._connection.close()
+        except BaseException as exc:
+            failures.append(exc)
         else:
-            self._connection.close()
+            self._closed = True
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("admin session close failed", failures)
 
 
 async def _default_connection_factory(connection_config: Mapping[str, object]):

@@ -64,6 +64,7 @@ class CommitFailingAdminProxy(RecordingAdminProxy):
         return await self.delegate.execute(sql, args)
 
     async def close(self):
+        self.calls.append(("close", "CLOSE", None))
         self.closed = True
         await self.delegate.close()
 
@@ -317,6 +318,9 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
         next(table for table in ("projects", "creative_seeds", "provider_profiles") if f".`{table}`" in sql)
         for sql in before_drop_reads
     } == {"projects", "creative_seeds", "provider_profiles"}
+    capability_sql = " ".join(sql for _, sql, _ in calls[lock_index + 1:drop_index])
+    for required in ("VERSION()", "information_schema.COLLATIONS", "JSON_VALID", "information_schema.CHECK_CONSTRAINTS"):
+        assert required in capability_sql
 
 
 @pytest.mark.mysql
@@ -434,7 +438,19 @@ async def test_execute_requires_exactly_one_preferred_legacy_provider(empty_disp
         ("UPDATE projects SET target_words=0 WHERE id=%s", (PROJECT_ID,), "minimum"),
         ("UPDATE provider_profiles SET name=%s WHERE id=%s", ("x" * 121, "88888888-8888-8888-8888-888888888888"), "length"),
         ("UPDATE provider_profiles SET model=%s WHERE id=%s", ("x" * 161, "88888888-8888-8888-8888-888888888888"), "length"),
-        ("UPDATE provider_profiles SET name=%s WHERE id=%s", ("联通云 ", "88888888-8888-8888-8888-888888888888"), "target collation"),
+        (
+            """INSERT INTO provider_profiles
+               SELECT %s, %s, provider_type, base_url, api_key, model, stream,
+                      max_context_tokens, max_output_tokens, temperature, top_p,
+                      supports_json, supports_streaming, notes, thinking,
+                      created_at, updated_at
+               FROM provider_profiles WHERE id=%s""",
+            (
+                "55555555-5555-5555-5555-555555555555", "联通云",
+                "88888888-8888-8888-8888-888888888888",
+            ),
+            "target collation",
+        ),
         ("UPDATE provider_profiles SET max_context_tokens=0 WHERE id=%s", ("88888888-8888-8888-8888-888888888888",), "minimum"),
         ("UPDATE provider_profiles SET stream=2 WHERE id=%s", ("88888888-8888-8888-8888-888888888888",), "0 or 1"),
         ("UPDATE provider_profiles SET temperature=100 WHERE id=%s", ("88888888-8888-8888-8888-888888888888",), "DECIMAL"),
@@ -459,6 +475,8 @@ async def test_incompatible_legacy_mapping_is_rejected_before_any_ddl(
         )
 
     assert not any(sql.startswith(("DROP DATABASE", "CREATE DATABASE")) for _, sql, _ in recording_admin.calls)
+    if message == "target collation":
+        assert any("collation_conflict" in sql for _, sql, _ in recording_admin.calls)
     assert await legacy_snapshot(empty_disposable_mysql.session) == before
     lock = await empty_disposable_mysql.session.fetchone(
         "SELECT IS_FREE_LOCK(%s) AS is_free", (RESET_LOCK_NAME,)
@@ -577,7 +595,10 @@ async def test_commit_failure_rolls_back_closes_session_and_releases_lock_by_dis
     sql_calls = [sql for _, sql, _ in failing_admin.calls]
     assert "COMMIT" in sql_calls
     assert "ROLLBACK" in sql_calls
-    assert all("RELEASE_LOCK" not in sql for sql in sql_calls)
+    assert any("RELEASE_LOCK" in sql for sql in sql_calls)
+    assert sql_calls.index("ROLLBACK") < next(
+        index for index, sql in enumerate(sql_calls) if "RELEASE_LOCK" in sql
+    ) < sql_calls.index("CLOSE")
     lock = await empty_disposable_mysql.admin_session.fetchone(
         "SELECT IS_FREE_LOCK(%s) AS is_free", (RESET_LOCK_NAME,)
     )

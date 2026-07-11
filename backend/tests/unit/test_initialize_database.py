@@ -41,6 +41,61 @@ async def test_admin_session_close_is_idempotent_and_waits_for_disconnect():
     assert connection.close_count == 1
 
 
+@pytest.mark.asyncio
+async def test_admin_session_closes_connection_when_cursor_close_fails():
+    class Cursor:
+        async def close(self):
+            raise RuntimeError("cursor close failed")
+
+    class Connection:
+        close_count = 0
+
+        async def ensure_closed(self):
+            self.close_count += 1
+
+    connection = Connection()
+    session = _AiomysqlAdminSession(connection, Cursor())
+
+    with pytest.raises(RuntimeError, match="cursor close failed"):
+        await session.close()
+    await session.close()
+
+    assert connection.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_session_combines_close_failures_and_can_retry():
+    class Cursor:
+        attempts = 0
+
+        async def close(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("cursor close failed")
+
+    class Connection:
+        attempts = 0
+
+        async def ensure_closed(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("connection close failed")
+
+    cursor = Cursor()
+    connection = Connection()
+    session = _AiomysqlAdminSession(connection, cursor)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await session.close()
+    assert [str(error) for error in raised.value.exceptions] == [
+        "cursor close failed", "connection close failed",
+    ]
+
+    await session.close()
+    assert cursor.attempts == 2
+    assert connection.attempts == 2
+
+
 class FakeAdminSession:
     def __init__(
         self,

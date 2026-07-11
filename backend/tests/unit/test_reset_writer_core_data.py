@@ -2,9 +2,11 @@ import pytest
 
 from backend.scripts.reset_writer_core_data import (
     RESET_LOCK_NAME,
+    _recover_failed_commit,
     ResetPartialStateError,
     ResetRequest,
     ResetSafetyError,
+    ResetValidationError,
     reset_writer_core_data,
     run_cli,
 )
@@ -60,6 +62,9 @@ class RecordingAdminSession:
 
     async def fetchone(self, sql, args=None):
         self.calls.append(("fetchone", " ".join(sql.split()), args))
+        if "collation_conflict" in sql:
+            left, right = (value.casefold().rstrip(" ") for value in args)
+            return {"collation_conflict": int(left == right)}
         raise AssertionError(f"unexpected SELECT: {sql}")
 
     async def execute(self, sql, args=None):
@@ -213,7 +218,11 @@ async def test_cli_product_dry_run_connects_read_only_and_reports_without_ddl():
 
     assert result == 0
     assert session.closed
-    assert [kind for kind, _, _ in session.calls] == ["fetchall"] * 3
+    assert sum(kind == "fetchall" for kind, _, _ in session.calls) == 3
+    assert all(
+        kind == "fetchall" or (kind == "fetchone" and "collation_conflict" in sql)
+        for kind, sql, _ in session.calls
+    )
     assert not any(kind == "execute" for kind, _, _ in session.calls)
     assert "mode=dry-run" in "\n".join(output)
 
@@ -291,6 +300,17 @@ async def test_ddl_failure_reports_partial_state_and_releases_advisory_lock():
             self.calls.append(("fetchone", normalized, args))
             if "GET_LOCK" in sql:
                 return {"acquired": 1}
+            if "VERSION()" in sql:
+                return {"version": "8.0.46"}
+            if "information_schema.COLLATIONS" in sql:
+                return {"COLLATION_NAME": "utf8mb4_0900_ai_ci"}
+            if "JSON_VALID" in sql:
+                return {"json_supported": 1}
+            if "information_schema.CHECK_CONSTRAINTS" in sql:
+                return {"count": 1}
+            if "collation_conflict" in sql:
+                left, right = (value.casefold().rstrip(" ") for value in args)
+                return {"collation_conflict": int(left == right)}
             if "RELEASE_LOCK" in sql:
                 return {"released": 1}
             raise AssertionError(f"unexpected SELECT: {sql}")
@@ -337,3 +357,71 @@ async def test_ddl_failure_reports_partial_state_and_releases_advisory_lock():
         any(f".`{table}`" in sql for table in ("projects", "creative_seeds", "provider_profiles"))
         for sql in preserved_selects
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failures", ((), ("rollback",), ("release",), ("close",), ("rollback", "release", "close")))
+async def test_failed_commit_recovery_runs_every_step_and_combines_failures(failures):
+    class RecoverySession:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, args=None):
+            self.calls.append("rollback")
+            if "rollback" in failures:
+                raise RuntimeError("rollback failed")
+
+        async def fetchone(self, sql, args=None):
+            self.calls.append("release")
+            if "release" in failures:
+                raise RuntimeError("release failed")
+            return {"released": 1}
+
+        async def close(self):
+            self.calls.append("close")
+            if "close" in failures:
+                raise RuntimeError("close failed")
+
+    session = RecoverySession()
+    commit_error = RuntimeError("commit failed")
+    expected = ["commit failed", *(f"{name} failed" for name in failures)]
+
+    if failures:
+        with pytest.raises(BaseExceptionGroup) as raised:
+            await _recover_failed_commit(session, commit_error)
+        assert [str(error) for error in raised.value.exceptions] == expected
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            await _recover_failed_commit(session, commit_error)
+        assert raised.value is commit_error
+    assert session.calls == ["rollback", "release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_mysql_57_is_rejected_before_preserve_reads_or_any_ddl():
+    class MySQL57Session(RecordingAdminSession):
+        async def fetchone(self, sql, args=None):
+            normalized = " ".join(sql.split())
+            self.calls.append(("fetchone", normalized, args))
+            if "GET_LOCK" in sql:
+                return {"acquired": 1}
+            if "VERSION()" in sql:
+                return {"version": "5.7.44"}
+            if "RELEASE_LOCK" in sql:
+                return {"released": 1}
+            raise AssertionError(f"unexpected SELECT: {sql}")
+
+    session = MySQL57Session()
+
+    with pytest.raises(ResetValidationError, match="MySQL 8"):
+        await reset_writer_core_data(
+            session,
+            database_name=DISPOSABLE,
+            confirm_reset=DISPOSABLE,
+            request=request(), execute=True, allow_product_database=False,
+            output=lambda value: None,
+        )
+
+    assert not any(kind == "fetchall" for kind, _, _ in session.calls)
+    assert not any(kind == "execute" for kind, _, _ in session.calls)
+    assert any("RELEASE_LOCK" in sql for _, sql, _ in session.calls)

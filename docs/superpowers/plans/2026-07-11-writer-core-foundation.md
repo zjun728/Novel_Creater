@@ -1600,7 +1600,7 @@ The only allowed product reset shape is:
 python -m backend.scripts.reset_writer_core_data --database novel_creator --project-title 永乐大典 --seed-title 永乐长明 --seed-title 文渊山海 --seed-title 典镇山河 --preferred-provider-name 联通云 --preferred-model deepseek-v4-flash --confirm-reset novel_creator --execute
 ```
 
-Before `--execute`, default dry-run reports only counts, IDs, titles, provider display names/model IDs and table names. It must find exactly one enabled row whose name is `联通云` and model is `deepseek-v4-flash`; zero or multiple matches abort the reset rather than leaving empty or ambiguous bindings. It never prints descriptions containing chapter text, `api_key`, `base_url`, password or DSN.
+Before `--execute`, a matching `--database novel_creator --confirm-reset novel_creator` obtains read-only CLI authority and reports only counts, IDs, titles, provider display names/model IDs and table names. It never receives DROP authority. The immutable `4b85e8d` legacy Provider contract has no `enabled` column, so reset requires exactly one legacy row whose name is `联通云` and model is `deepseek-v4-flash`, then maps preserved Providers to enabled V1 rows; zero or multiple matches abort before DDL. It never prints descriptions containing chapter text, `api_key`, `base_url`, password or DSN.
 
 Execution performs this exact sequence:
 
@@ -1614,14 +1614,14 @@ Execution performs this exact sequence:
 8. insert the preserved project, three seeds and Provider rows;
 9. insert the unique `project_selected_seeds` row for the `典镇山河` seed;
 10. create bootstrap Canon revision/head 0 and empty deterministic projections;
-11. bind every Task 8 task key to the one enabled preferred Provider; zero or multiple preferred matches abort before DDL;
+11. bind every Task 8 task key to the mapped enabled preferred Provider; zero or multiple preferred legacy matches abort before DDL;
 12. verify all derived table counts are zero and release the lock.
 
 This is a reset, not migration: it never reads or maps old chapters, versions, Canon facts, settings, memory, arcs, volumes, blocks, audits or QA data.
 
 - [x] **Step 5: Test reset only against disposable databases**
 
-Seed a disposable database with the project, three seeds, one Provider containing a sentinel key, and fake rows in every old derived table. Run the reset command's internal function with `allow_product_database=False`. Assert project/seeds/provider survive, every V1 derived table is empty/head 0, task items bind to the preferred Provider, stdout/stderr do not contain the sentinel key, and the guarded test path rejects `novel_creator`. Only the CLI path with matching `--database`, `--confirm-reset` and `--execute` can set `allow_product_database=True`.
+Seed a disposable database with the project, three seeds, one Provider containing a sentinel key, and fake rows in every old derived table. Run the reset command's internal function with `allow_product_database=False`. Assert project/seeds/provider survive, every V1 derived table is empty/head 0, task items bind to the preferred Provider, and stdout/stderr do not contain the sentinel key. Recording fakes prove matching product dry-run receives only the private read authority, direct core calls cannot forge product authority, confirmation mismatch opens no connection, and only matching CLI `--execute` receives private DROP authority.
 
 - [x] **Step 6: Run integration tests**
 
