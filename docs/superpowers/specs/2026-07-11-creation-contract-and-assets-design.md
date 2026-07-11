@@ -1,7 +1,7 @@
 # M2 创作契约与创作资产设计
 
 - 日期：2026-07-11
-- 状态：设计内容已逐节确认，等待规格文档整体复核
+- 状态：用户已于 2026-07-11 整体批准，进入实施计划阶段
 - 所属总体设计：`2026-07-11-writer-core-v1-design.md`
 - 实施分支：`codex/writer-core-v1`
 - 前置里程碑：M1 写作内核地基
@@ -216,7 +216,7 @@ Schema 版本从 `writer-core-v1.0.0` 提升为 `writer-core-v1.1.0`。现有 M1
 | `style_template_heads` | `stable_key, style_template_id, revision, content_hash, updated_at`；PK `stable_key`；FK 指向相同 stable key 的不可变修订 |
 | `experience_cards` | `id, stable_key, revision, title, category, payload_json, provenance_json, content_hash, status, created_at`；PK `id`；UNIQUE `(stable_key,revision)`；category 为批准的八类闭集 |
 | `experience_card_heads` | `stable_key, experience_card_id, revision, content_hash, updated_at`；PK `stable_key`；FK 指向相同 stable key 的不可变修订 |
-| `corpus_sources` | `id, source_key, revision, relative_path, title, author, source_hash, file_size, encoding, parser_version, normalizer_version, fragmenter_version, index_version, status, public_error_code, imported_at, analyzed_at`；PK `id`；UNIQUE `(source_key,revision)`、`source_hash` |
+| `corpus_sources` | `id, source_key, revision, relative_path, title, author, source_hash, file_size, encoding, parser_version, normalizer_version, fragmenter_version, index_version, status, public_error_code, imported_at, analyzed_at`；PK `id`；UNIQUE `(source_key,revision)`、`(source_hash,parser_version,normalizer_version,fragmenter_version,index_version)`；相同字节在分析版本变化时允许形成新修订 |
 | `corpus_chapters` | `id, corpus_source_id, chapter_order, title, raw_byte_start, raw_byte_end, normalized_char_start, normalized_char_end, normalized_text, content_hash, created_at`；UNIQUE `(corpus_source_id,chapter_order)` |
 | `corpus_fragments` | `id, corpus_chapter_id, fragment_order, chapter_char_start, chapter_char_end, normalized_text, content_hash, index_payload, analysis_version, created_at`；UNIQUE `(corpus_chapter_id,fragment_order)` |
 | `corpus_import_runs` | `id, idempotency_key, request_hash, relative_path, source_hash, status, corpus_source_id, public_error_code, parser_versions_json, created_at, completed_at`；UNIQUE `idempotency_key`；`status IN ('reserved','running','succeeded','failed')`；同键异 hash 返回 409 |
@@ -359,6 +359,8 @@ M2 首批 seed manifest 必须提供恰好 8 个真正可区分的主风格模�
 
 普通浏览器只展示来源名称、导入状态、章节数量、相对标识和必要的审计哈希。禁止提供整本原文下载、绝对路径或大段原文 API。受限的章节/片段读取接口只服务本机产品内的资产检查和后续检索，必须限制范围和响应大小。
 
+M2 固定正文预览默认 600、最大 1200 个字符；片段接口默认 10、最大 20 条，每条预览最大 240 个字符，单响应预览文本总量最大 4800 个字符。请求超过硬上限返回 422，客户端不能提高服务器上限。
+
 原始小说文件不进入 Git。M2 验收必须通过 `git ls-files` 和敏感内容扫描证明这一点。
 
 ## 10. API 设计
@@ -398,6 +400,7 @@ M2 首批 seed manifest 必须提供恰好 8 个真正可区分的主风格模�
 
 - 读取八任务完整绑定和 head。
 - 原子更新整组绑定。
+- 有界发现配置 root 下可导入的相对 `.txt`，只返回安全相对标识、大小、预检状态和跳过原因计数。
 - 导入语料并查询状态。
 - 读取受限章节和片段信息。
 
@@ -409,7 +412,7 @@ M2 首批 seed manifest 必须提供恰好 8 个真正可区分的主风格模�
 - 未确认的向导进度写入 `project_contract_drafts`，刷新和重开页面后可恢复。
 - `localStorage` 只能保存纯 UI 偏好，不能成为契约或资产选择的正式来源。
 - 已确认 head 默认只读；作者点击“创建新修订”后才克隆出可编辑草稿。
-- 页面和后端都按 selected seed revision/hash 与当前契约冻结值计算 `contractReady`；种子变更后旧契约仍可查看，但必须显示失效原因并阻止进入 M3。
+- 后端同时按 selected seed revision/hash 和 binding revision/hash 与当前契约冻结值计算 `contractReady`，前端只展示该结果及 reasons，不另建事实判断；种子或绑定变更后旧契约仍可查看，但必须显示失效原因并阻止进入 M3。
 - 依赖缺失或模型不可用时阻止进入 Provider 步骤，并链接到设置页。
 - 409 显示“项目状态已在其他页面更新”，要求重新加载，不尝试前端合并正式状态。
 - `outcome_unknown` 显示未知状态和“显式创建新批次”，不自动重试。
