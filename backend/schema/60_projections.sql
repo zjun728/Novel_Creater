@@ -11,7 +11,8 @@ CREATE TABLE current_state_projections (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE RESTRICT,
   CHECK (revision_number >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE memory_views (
   id CHAR(36) PRIMARY KEY,
@@ -26,7 +27,8 @@ CREATE TABLE memory_views (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE RESTRICT,
   CHECK (revision_number >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE arc_projections (
   id CHAR(36) PRIMARY KEY,
@@ -41,7 +43,8 @@ CREATE TABLE arc_projections (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE RESTRICT,
   CHECK (revision_number >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE plot_thread_projections (
   id CHAR(36) PRIMARY KEY,
@@ -54,7 +57,8 @@ CREATE TABLE plot_thread_projections (
   UNIQUE KEY uq_plot_thread_key (project_id, revision_number, plot_thread_key),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (revision_number >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE projection_heads (
   project_id CHAR(36) PRIMARY KEY,
@@ -64,4 +68,5 @@ CREATE TABLE projection_heads (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (canon_revision_number >= 0),
   CHECK (projection_revision_number >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement

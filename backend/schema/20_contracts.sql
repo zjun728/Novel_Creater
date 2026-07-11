@@ -8,7 +8,8 @@ CREATE TABLE creation_contracts (
   UNIQUE KEY uq_creation_contract_project (project_id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (revision > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE style_contracts (
   id CHAR(36) PRIMARY KEY,
@@ -20,7 +21,8 @@ CREATE TABLE style_contracts (
   UNIQUE KEY uq_style_contract_project (project_id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (revision > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE contract_asset_refs (
   id CHAR(36) PRIMARY KEY,
@@ -33,4 +35,5 @@ CREATE TABLE contract_asset_refs (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (creation_contract_id) REFERENCES creation_contracts(id) ON DELETE CASCADE,
   CHECK (asset_type IN ('style_template','experience_card','corpus_source'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement

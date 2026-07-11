@@ -7,7 +7,8 @@ CREATE TABLE projects (
   updated_at BIGINT NOT NULL,
   CHECK (status IN ('drafting','active','completed','archived')),
   CHECK (current_chapter >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE creative_seeds (
   id CHAR(36) PRIMARY KEY,
@@ -20,7 +21,8 @@ CREATE TABLE creative_seeds (
   UNIQUE KEY uq_seed_title (project_id, title),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (status IN ('candidate','selected','archived'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE project_selected_seeds (
   project_id CHAR(36) PRIMARY KEY,
@@ -29,7 +31,8 @@ CREATE TABLE project_selected_seeds (
   UNIQUE KEY uq_selected_seed (seed_id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (seed_id) REFERENCES creative_seeds(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE provider_profiles (
   id CHAR(36) PRIMARY KEY,
@@ -44,7 +47,8 @@ CREATE TABLE provider_profiles (
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_provider_name (name),
   CHECK (enabled IN (0,1))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE task_model_bindings (
   id CHAR(36) PRIMARY KEY,
@@ -53,7 +57,8 @@ CREATE TABLE task_model_bindings (
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_binding_project (project_id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE task_model_binding_items (
   id CHAR(36) PRIMARY KEY,
@@ -68,4 +73,5 @@ CREATE TABLE task_model_binding_items (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (binding_id) REFERENCES task_model_bindings(id) ON DELETE CASCADE,
   FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement

@@ -15,6 +15,18 @@ class SchemaMismatch(RuntimeError):
     """The connected database is not the exact Writer Core manifest."""
 
 
+def _is_missing_table_error(exc: Exception) -> bool:
+    errno = getattr(exc, "errno", None)
+    if errno == 1146:
+        return True
+    if not exc.args:
+        return False
+    value = exc.args[0]
+    if value == 1146:
+        return True
+    return isinstance(value, tuple) and bool(value) and value[0] == 1146
+
+
 def _guidance() -> str:
     return (
         "Run python -m backend.scripts.initialize_database for a new empty database, "
@@ -27,8 +39,10 @@ async def verify_schema_version(session) -> None:
     try:
         row = await session.fetchone(_VERSION_QUERY)
     except Exception as exc:
+        if not _is_missing_table_error(exc):
+            raise
         raise SchemaMismatch(
-            f"Writer Core schema metadata could not be read ({exc}). {_guidance()}"
+            f"Writer Core schema metadata table is missing. {_guidance()}"
         ) from exc
 
     expected_hash = manifest_hash()

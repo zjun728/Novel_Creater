@@ -19,6 +19,14 @@ FRAGMENTS = (
     "70_corpus.sql",
 )
 STATEMENT_DELIMITER = ";-- statement"
+_STATEMENT_SPLIT = re.compile(
+    rf"^[ \t]*{re.escape(STATEMENT_DELIMITER)}[ \t]*$",
+    re.MULTILINE,
+)
+_LEADING_SQL_COMMENTS = re.compile(
+    r"\A(?:\s+|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*",
+    re.DOTALL,
+)
 _CREATE_TABLE = re.compile(r"^CREATE\s+TABLE\s+([A-Za-z0-9_]+)\s*\(", re.IGNORECASE)
 
 
@@ -34,7 +42,7 @@ def read_statements() -> list[str]:
         normalized = _normalize_newlines(fragment)
         statements.extend(
             part.strip()
-            for part in normalized.split(STATEMENT_DELIMITER)
+            for part in _STATEMENT_SPLIT.split(normalized)
             if part.strip()
         )
     return statements
@@ -50,7 +58,8 @@ def created_table_names() -> tuple[str, ...]:
     """Return created table names in manifest order."""
     names: list[str] = []
     for statement in read_statements():
-        match = _CREATE_TABLE.match(statement)
+        content_start = _LEADING_SQL_COMMENTS.match(statement).end()
+        match = _CREATE_TABLE.match(statement[content_start:])
         if match is not None:
             names.append(match.group(1))
     return tuple(names)

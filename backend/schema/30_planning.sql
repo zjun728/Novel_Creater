@@ -13,7 +13,8 @@ CREATE TABLE volume_plans (
   CHECK (volume_num > 0),
   CHECK (revision > 0),
   CHECK (status IN ('planned','active','completed','cancelled'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE story_blocks (
   id CHAR(36) PRIMARY KEY,
@@ -32,7 +33,8 @@ CREATE TABLE story_blocks (
   CHECK (block_num > 0),
   CHECK (revision > 0),
   CHECK (status IN ('planned','active','completed','failed','redirected'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE story_stages (
   id CHAR(36) PRIMARY KEY,
@@ -51,7 +53,8 @@ CREATE TABLE story_stages (
   CHECK (stage_order > 0),
   CHECK (revision > 0),
   CHECK (status IN ('pending','in_progress','completed','cancelled'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE scene_tasks (
   id CHAR(36) PRIMARY KEY,
@@ -69,4 +72,5 @@ CREATE TABLE scene_tasks (
   CHECK (task_order > 0),
   CHECK (revision > 0),
   CHECK (status IN ('pending','in_progress','completed','cancelled'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement

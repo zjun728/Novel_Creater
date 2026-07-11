@@ -9,7 +9,8 @@ CREATE TABLE corpus_sources (
   UNIQUE KEY uq_corpus_source_hash (project_id, source_hash),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (status IN ('imported','analyzed','failed'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE corpus_chapters (
   id CHAR(36) PRIMARY KEY,
@@ -24,7 +25,8 @@ CREATE TABLE corpus_chapters (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (corpus_source_id) REFERENCES corpus_sources(id) ON DELETE CASCADE,
   CHECK (chapter_num > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE style_templates (
   id CHAR(36) PRIMARY KEY,
@@ -39,7 +41,8 @@ CREATE TABLE style_templates (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (revision > 0),
   CHECK (status IN ('active','archived'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE experience_cards (
   id CHAR(36) PRIMARY KEY,
@@ -55,7 +58,8 @@ CREATE TABLE experience_cards (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (revision > 0),
   CHECK (status IN ('active','archived'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE reference_uses (
   id CHAR(36) PRIMARY KEY,
@@ -78,4 +82,5 @@ CREATE TABLE reference_uses (
   CHECK (location_start >= 0),
   CHECK (location_end > location_start),
   CHECK (reference_purpose IN ('generation','review','revision'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement

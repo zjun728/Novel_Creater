@@ -108,6 +108,66 @@ def test_manifest_uses_portable_normalized_hash(monkeypatch):
     assert manifest_hash() == sha256(expected_payload).hexdigest()
 
 
+def test_manifest_parser_accepts_leading_sql_comments(monkeypatch):
+    fragments = {name: "" for name in FRAGMENTS}
+    fragments[FRAGMENTS[0]] = """-- bootstrap metadata comment
+-- another comment
+CREATE TABLE commented_table (
+  id INT PRIMARY KEY
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+"""
+
+    class FakeFragment:
+        def __init__(self, name):
+            self.name = name
+
+        def read_text(self, *, encoding):
+            assert encoding == "utf-8"
+            return fragments[self.name]
+
+    class FakeSchemaDirectory:
+        def __truediv__(self, fragment):
+            return FakeFragment(fragment)
+
+    monkeypatch.setattr(schema_manifest, "SCHEMA_DIR", FakeSchemaDirectory())
+    assert created_table_names() == ("commented_table",)
+
+
+def test_statement_delimiter_only_splits_when_it_is_an_independent_line(monkeypatch):
+    fragments = {name: "" for name in FRAGMENTS}
+    fragments[FRAGMENTS[0]] = """CREATE TABLE delimiter_example (
+  id INT PRIMARY KEY,
+  note VARCHAR(200) NOT NULL DEFAULT ';-- statement'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+-- a comment mentioning ;-- statement must not split anything
+CREATE TABLE second_example (
+  id INT PRIMARY KEY
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+"""
+
+    class FakeFragment:
+        def __init__(self, name):
+            self.name = name
+
+        def read_text(self, *, encoding):
+            assert encoding == "utf-8"
+            return fragments[self.name]
+
+    class FakeSchemaDirectory:
+        def __truediv__(self, fragment):
+            return FakeFragment(fragment)
+
+    monkeypatch.setattr(schema_manifest, "SCHEMA_DIR", FakeSchemaDirectory())
+    statements = read_statements()
+    assert len(statements) == 2
+    assert "DEFAULT ';-- statement'" in statements[0]
+    assert ";-- statement must not split anything" in statements[1]
+    assert created_table_names() == ("delimiter_example", "second_example")
+
+
 def test_fragments_are_create_only_and_have_no_legacy_schema():
     statements = read_statements()
     upper = "\n".join(statements).upper()

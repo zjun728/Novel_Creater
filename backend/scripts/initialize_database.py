@@ -84,12 +84,16 @@ async def initialize_database(
             _METADATA_INSERT,
             (EXPECTED_SCHEMA_VERSION, expected_hash, now_ms),
         )
-    except Exception:
+    except Exception as bootstrap_error:
         if created_database:
             try:
                 await admin_session.execute(f"DROP DATABASE `{name}`")
-            except Exception:
-                pass
+            except Exception as cleanup_error:
+                raise ExceptionGroup(
+                    f"Writer Core bootstrap and cleanup both failed; database "
+                    f"{name!r} may remain partially initialized",
+                    [bootstrap_error, cleanup_error],
+                ) from None
         raise
 
     return InitializationResult(

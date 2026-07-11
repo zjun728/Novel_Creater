@@ -359,6 +359,14 @@ FRAGMENTS = (
 )
 
 STATEMENT_DELIMITER = ";-- statement"
+STATEMENT_SPLIT = re.compile(
+    rf"^[ \t]*{re.escape(STATEMENT_DELIMITER)}[ \t]*$",
+    re.MULTILINE,
+)
+LEADING_SQL_COMMENTS = re.compile(
+    r"\A(?:\s+|--[^\n]*(?:\n|\Z)|/\*.*?\*/)*",
+    re.DOTALL,
+)
 CREATE_TABLE = re.compile(r"^CREATE\s+TABLE\s+([A-Za-z0-9_]+)\s*\(", re.IGNORECASE)
 
 def read_statements() -> list[str]:
@@ -366,7 +374,7 @@ def read_statements() -> list[str]:
     for name in FRAGMENTS:
         text = (SCHEMA_DIR / name).read_text(encoding="utf-8")
         text = text.replace("\r\n", "\n").replace("\r", "\n")
-        statements.extend(part.strip() for part in text.split(STATEMENT_DELIMITER) if part.strip())
+        statements.extend(part.strip() for part in STATEMENT_SPLIT.split(text) if part.strip())
     return statements
 
 def manifest_hash() -> str:
@@ -375,11 +383,12 @@ def manifest_hash() -> str:
 
 def created_table_names() -> tuple[str, ...]:
     """Returns CREATE TABLE names in manifest order for behavior tests."""
-    return tuple(
-        match.group(1)
-        for statement in read_statements()
-        if (match := CREATE_TABLE.match(statement)) is not None
-    )
+    names = []
+    for statement in read_statements():
+        content_start = LEADING_SQL_COMMENTS.match(statement).end()
+        if match := CREATE_TABLE.match(statement[content_start:]):
+            names.append(match.group(1))
+    return tuple(names)
 ```
 
 ```python
@@ -389,22 +398,36 @@ class SchemaMismatch(RuntimeError):
 
 EXPECTED_SCHEMA_VERSION = "writer-core-v1.0.0"
 
+def _is_missing_table_error(exc) -> bool:
+    """Recognizes only MySQL 1146 without exposing driver text."""
+    errno = getattr(exc, "errno", None)
+    if errno == 1146:
+        return True
+    if not exc.args:
+        return False
+    value = exc.args[0]
+    if value == 1146:
+        return True
+    return isinstance(value, tuple) and bool(value) and value[0] == 1146
+
 async def verify_schema_version(conn) -> None:
     try:
         row = await conn.fetchone(
             "SELECT schema_version, manifest_hash FROM schema_metadata WHERE singleton_id=1"
         )
     except Exception as exc:
+        if not _is_missing_table_error(exc):
+            raise
         raise SchemaMismatch(
-            "Writer Core schema is missing; run backend.scripts.initialize_database"
+            "Writer Core schema metadata table is missing; run backend.scripts.initialize_database"
         ) from exc
     from backend.schema_manifest import manifest_hash
     expected_hash = manifest_hash()
     if not row or row["schema_version"] != EXPECTED_SCHEMA_VERSION or row["manifest_hash"] != expected_hash:
-        raise SchemaMismatch(
-            f"Expected {EXPECTED_SCHEMA_VERSION}/{expected_hash}; explicitly reinitialize the development database"
-        )
+        raise SchemaMismatch(f"Expected {EXPECTED_SCHEMA_VERSION}/{expected_hash}; explicitly reinitialize the development database")
 ```
+
+Only MySQL missing-table error `1146` is translated into `SchemaMismatch`, and the translated message never includes raw driver text. Authentication, timeout and other operational errors are re-raised unchanged and do not receive reinitialization guidance. A missing metadata row or version/hash mismatch remains a `SchemaMismatch`.
 
 - [ ] **Step 4: Define the exact schema invariants in the fragments**
 
@@ -418,8 +441,11 @@ CREATE TABLE schema_metadata (
   manifest_hash CHAR(64) NOT NULL,
   initialized_at BIGINT NOT NULL,
   CHECK (singleton_id = 1)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 ```
+
+Every fragment delimiter is the complete content of its own line. Delimiter-like text inside SQL strings or comments is ordinary content, and leading SQL comments do not hide the following `CREATE TABLE` from `created_table_names()`.
 
 `10_core.sql` defines `projects`, `creative_seeds`, `project_selected_seeds`, `provider_profiles`, `task_model_bindings` and `task_model_binding_items`. `project_selected_seeds` breaks the circular project/seed foreign key while preserving the logical `selectedSeedId`; it has `project_id` as its primary key, `seed_id` as a unique key, and FKs to both owning rows. Required keys are:
 
@@ -550,7 +576,7 @@ CREATE TABLE canon_events (
 2. require `--database` and `--confirm-create` to match exactly;
 3. query whether the database exists, create it explicitly only when absent, and refuse an existing database containing any tables before executing schema statements;
 4. select the validated name, execute every manifest statement in order in one bootstrap connection, and insert singleton metadata with the computed manifest hash;
-5. if bootstrap fails after this script created the database, attempt to drop that new database before re-raising; never drop an existing empty database on failure;
+5. if bootstrap fails after this script created the database, attempt to drop that new database; successful cleanup re-raises the original bootstrap error, while failed cleanup raises an `ExceptionGroup` containing both original errors and explicitly warns that the named database may remain partially initialized; never drop an existing empty database on failure;
 6. print only database name, version, hash and table count;
 7. never print DSN, password, Provider row, API key or base URL.
 
@@ -558,7 +584,7 @@ CREATE TABLE canon_events (
 
 Run: `python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py -q`
 
-Expected: PASS; scan confirms fragments contain no `ALTER TABLE`, `CREATE DATABASE`, `USE`, `IF NOT EXISTS` or old compatibility table, and initializer fakes prove confirmation, empty-database, ordering, metadata, secret-free output and cleanup behavior without connecting to a database.
+Expected: PASS; scan confirms fragments contain no `ALTER TABLE`, `CREATE DATABASE`, `USE`, `IF NOT EXISTS` or old compatibility table. Tests also prove safe `1146` translation versus unchanged operational errors, independent-line delimiter parsing, confirmation, empty-database ordering, metadata, secret-free output, successful cleanup and dual-error cleanup failure behavior without connecting to a database.
 
 - [ ] **Step 7: Commit**
 

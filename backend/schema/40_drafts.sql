@@ -16,7 +16,8 @@ CREATE TABLE chapter_sessions (
   CHECK (expected_canon_revision >= 0),
   CHECK (expected_story_block_revision > 0),
   CHECK (status IN ('drafting','final'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE working_drafts (
   id CHAR(36) PRIMARY KEY,
@@ -31,7 +32,8 @@ CREATE TABLE working_drafts (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (chapter_session_id) REFERENCES chapter_sessions(id) ON DELETE CASCADE,
   CHECK (revision > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE draft_candidates (
   id CHAR(36) PRIMARY KEY,
@@ -46,7 +48,8 @@ CREATE TABLE draft_candidates (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (chapter_session_id) REFERENCES chapter_sessions(id) ON DELETE RESTRICT,
   CHECK (working_draft_revision > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE finalization_change_sets (
   id CHAR(36) PRIMARY KEY,
@@ -65,7 +68,8 @@ CREATE TABLE finalization_change_sets (
   FOREIGN KEY (draft_candidate_id) REFERENCES draft_candidates(id) ON DELETE RESTRICT,
   CHECK (expected_canon_revision >= 0),
   CHECK (expected_story_block_revision > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE finalization_records (
   id CHAR(36) PRIMARY KEY,
@@ -88,7 +92,8 @@ CREATE TABLE finalization_records (
   FOREIGN KEY (change_set_id) REFERENCES finalization_change_sets(id) ON DELETE RESTRICT,
   CHECK (expected_canon_revision >= 0),
   CHECK (committed_canon_revision > expected_canon_revision)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE final_chapters (
   id CHAR(36) PRIMARY KEY,
@@ -114,4 +119,5 @@ CREATE TABLE final_chapters (
   CHECK (chapter_num > 0),
   CHECK (canon_revision > 0),
   CHECK (story_block_revision > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement

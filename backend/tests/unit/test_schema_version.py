@@ -28,14 +28,39 @@ class FakeVersionSession:
         return self.row
 
 
+class DriverError(RuntimeError):
+    pass
+
+
 @pytest.mark.asyncio
 async def test_missing_table_is_rejected_with_initializer_guidance_and_no_ddl():
-    session = FakeVersionSession(error=RuntimeError("schema_metadata does not exist"))
+    raw_driver_message = "Table schema_metadata missing; host=DRIVER_SENTINEL"
+    session = FakeVersionSession(error=DriverError(1146, raw_driver_message))
 
     with pytest.raises(SchemaMismatch, match="backend.scripts.initialize_database") as raised:
         await verify_schema_version(session)
 
-    assert "schema_metadata does not exist" in str(raised.value)
+    assert raw_driver_message not in str(raised.value)
+    assert "DRIVER_SENTINEL" not in str(raised.value)
+    assert session.executed == [(EXPECTED_QUERY, None)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        DriverError(1045, "Access denied; password=DRIVER_SENTINEL"),
+        DriverError(2003, "Connection timed out to DRIVER_SENTINEL"),
+        RuntimeError("unclassified operational failure DRIVER_SENTINEL"),
+    ],
+)
+async def test_non_missing_table_errors_are_reraised_unchanged(error):
+    session = FakeVersionSession(error=error)
+
+    with pytest.raises(type(error)) as raised:
+        await verify_schema_version(session)
+
+    assert raised.value is error
     assert session.executed == [(EXPECTED_QUERY, None)]
 
 

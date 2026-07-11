@@ -16,10 +16,18 @@ DATABASE_NAME = "writer_core_test"
 
 
 class FakeAdminSession:
-    def __init__(self, *, database_exists=False, tables=(), fail_on_sql=None):
+    def __init__(
+        self,
+        *,
+        database_exists=False,
+        tables=(),
+        fail_on_sql=None,
+        cleanup_error=None,
+    ):
         self.database_exists = database_exists
         self.tables = tuple(tables)
         self.fail_on_sql = fail_on_sql
+        self.cleanup_error = cleanup_error
         self.calls = []
         self.closed = False
 
@@ -37,6 +45,8 @@ class FakeAdminSession:
 
     async def execute(self, sql, parameters=None):
         self.calls.append(("execute", sql, parameters))
+        if sql.startswith("DROP DATABASE") and self.cleanup_error is not None:
+            raise self.cleanup_error
         if sql == self.fail_on_sql:
             raise RuntimeError("injected bootstrap failure")
 
@@ -109,6 +119,29 @@ async def test_failure_after_creating_database_attempts_cleanup_and_reraises():
     with pytest.raises(RuntimeError, match="injected bootstrap failure"):
         await initialize_database(session, DATABASE_NAME, DATABASE_NAME, 123)
 
+    executed_sql = [sql for kind, sql, _ in session.calls if kind == "execute"]
+    assert executed_sql[-1] == f"DROP DATABASE `{DATABASE_NAME}`"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_and_cleanup_failures_are_both_reported_as_partial_database():
+    failing_statement = read_statements()[2]
+    cleanup_error = RuntimeError("injected cleanup failure")
+    session = FakeAdminSession(
+        database_exists=False,
+        fail_on_sql=failing_statement,
+        cleanup_error=cleanup_error,
+    )
+
+    with pytest.raises(ExceptionGroup) as raised:
+        await initialize_database(session, DATABASE_NAME, DATABASE_NAME, 123)
+
+    group = raised.value
+    assert DATABASE_NAME in str(group)
+    assert "may remain partially initialized" in str(group)
+    assert len(group.exceptions) == 2
+    assert str(group.exceptions[0]) == "injected bootstrap failure"
+    assert group.exceptions[1] is cleanup_error
     executed_sql = [sql for kind, sql, _ in session.calls if kind == "execute"]
     assert executed_sql[-1] == f"DROP DATABASE `{DATABASE_NAME}`"
 

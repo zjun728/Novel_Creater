@@ -10,7 +10,8 @@ CREATE TABLE canon_entities (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (entity_type IN ('person','organization','place','item')),
   CHECK (created_revision >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE entity_aliases (
   id CHAR(36) PRIMARY KEY,
@@ -25,7 +26,8 @@ CREATE TABLE entity_aliases (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE CASCADE,
   CHECK (created_revision >= 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE canon_revisions (
   id CHAR(36) PRIMARY KEY,
@@ -43,7 +45,8 @@ CREATE TABLE canon_revisions (
   CHECK (revision_number >= 0),
   CHECK (parent_revision_number >= 0),
   CHECK (source_type IN ('bootstrap','finalization','manual_test'))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
 
 CREATE TABLE canon_events (
   id CHAR(36) PRIMARY KEY,
@@ -75,4 +78,5 @@ CREATE TABLE canon_events (
   CHECK (effective_start_chapter IS NULL OR effective_start_chapter > 0),
   CHECK (effective_end_chapter IS NULL OR effective_end_chapter > 0),
   CHECK (effective_end_chapter IS NULL OR effective_start_chapter IS NULL OR effective_end_chapter >= effective_start_chapter)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;-- statement
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
