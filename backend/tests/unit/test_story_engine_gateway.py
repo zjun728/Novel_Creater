@@ -19,6 +19,7 @@ MESSAGES = (
     {"role": "system", "content": "system"},
     {"role": "user", "content": "user"},
 )
+GENERATION_CONFIG = {"temperature": 0.321, "maxOutputTokens": 1_234}
 
 
 @pytest.mark.asyncio
@@ -29,6 +30,10 @@ MESSAGES = (
         (
             "https://provider.example/v1/chat/completions",
             "https://provider.example/v1/chat/completions",
+        ),
+        (
+            "https://provider.example/v1/chat/completions?api-version=2026-01",
+            "https://provider.example/v1/chat/completions?api-version=2026-01",
         ),
     ),
 )
@@ -52,6 +57,7 @@ async def test_gateway_posts_one_fixed_json_mode_request(base_url, expected_url)
             "model_name": "frozen-model",
         },
         messages=MESSAGES,
+        generation_config=GENERATION_CONFIG,
     )
 
     assert content == '{"options": []}'
@@ -68,8 +74,8 @@ async def test_gateway_posts_one_fixed_json_mode_request(base_url, expected_url)
     assert json.loads(request.content) == {
         "model": "frozen-model",
         "messages": list(MESSAGES),
-        "temperature": gateway_module.STORY_ENGINE_TEMPERATURE,
-        "max_tokens": gateway_module.STORY_ENGINE_MAX_TOKENS,
+        "temperature": 0.321,
+        "max_tokens": 1_234,
         "response_format": {"type": "json_object"},
         "stream": False,
     }
@@ -100,6 +106,7 @@ async def test_gateway_strictly_requires_non_empty_first_message_content(payload
                 "model_name": "model",
             },
             messages=MESSAGES,
+            generation_config=GENERATION_CONFIG,
         )
     rendered = str(caught.value)
     assert "KEY_SENTINEL" not in rendered
@@ -124,6 +131,7 @@ async def test_gateway_converts_http_failure_to_secret_free_public_exception():
                 "model_name": "model",
             },
             messages=MESSAGES,
+            generation_config=GENERATION_CONFIG,
         )
     rendered = str(caught.value)
     assert all(
@@ -153,6 +161,7 @@ async def test_gateway_applies_outer_total_deadline(monkeypatch):
                 "model_name": "model",
             },
             messages=MESSAGES,
+            generation_config=GENERATION_CONFIG,
         )
 
 
@@ -171,7 +180,41 @@ async def test_gateway_redacts_invalid_url_failures():
                 "model_name": "model",
             },
             messages=MESSAGES,
+            generation_config=GENERATION_CONFIG,
         )
     rendered = str(caught.value)
     assert "KEY_SENTINEL" not in rendered
     assert "PRIVATE_URL_SENTINEL" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_gateway_converts_content_decoding_failure_to_safe_response_error():
+    gateway = StoryEngineProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Encoding": "gzip"},
+                content=b"RAW_SECRET_SENTINEL not-gzip",
+                request=request,
+            )
+        )
+    )
+    with pytest.raises(StoryEngineProviderResponseError) as caught:
+        await gateway.generate(
+            provider={
+                "base_url": "https://PRIVATE_URL_SENTINEL/v1",
+                "api_key": "KEY_SENTINEL",
+                "model_name": "model",
+            },
+            messages=MESSAGES,
+            generation_config=GENERATION_CONFIG,
+        )
+    rendered = str(caught.value)
+    assert all(
+        value not in rendered
+        for value in (
+            "KEY_SENTINEL",
+            "PRIVATE_URL_SENTINEL",
+            "RAW_SECRET_SENTINEL",
+        )
+    )

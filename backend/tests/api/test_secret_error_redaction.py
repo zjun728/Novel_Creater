@@ -166,6 +166,48 @@ def test_story_engine_provider_failure_redacts_connection_and_raw_response(caplo
     )
 
 
+def test_story_engine_decoding_failure_finishes_batch_without_secret_leak(caplog):
+    harness = StoryEngineHarness()
+    harness.repository.providers["provider-seed"].update(
+        api_key=SECRET,
+        base_url=PRIVATE_URL,
+    )
+    harness.service.provider_gateway = StoryEngineProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"Content-Encoding": "gzip"},
+                content=f"RAW_RESPONSE_SENTINEL {SECRET}".encode(),
+                request=request,
+            )
+        )
+    )
+    app = FastAPI()
+    app.include_router(story_engines.router, prefix="/api")
+    app.dependency_overrides[
+        story_engines.get_story_engine_service
+    ] = lambda: harness.service
+    install_error_handlers(app)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post(
+            "/api/projects/p1/story-engine-batches",
+            json={"idempotencyKey": "safe-decoding-failure"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "failed"
+    assert response.json()["publicErrorCode"] == "invalid_response"
+    stored = next(iter(harness.repository.batches.values()))
+    assert stored["status"] == "failed"
+    rendered = response.text + caplog.text
+    assert all(
+        sentinel not in rendered
+        for sentinel in (SECRET, PRIVATE_URL, "RAW_RESPONSE_SENTINEL")
+    )
+
+
 def test_real_uvicorn_logs_never_render_unexpected_error_secrets():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))

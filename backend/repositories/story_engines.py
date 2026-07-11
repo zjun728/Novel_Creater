@@ -43,11 +43,15 @@ class StoryEngineRepository:
                       head.content_hash AS binding_hash,
                       item.resolution_status,
                       item.provider_id,
-                      item.model_name_snapshot
+                      item.model_name_snapshot,
+                      provider.temperature,
+                      provider.max_output_tokens
                FROM project_model_binding_heads head
                JOIN project_model_binding_items item
                  ON item.binding_revision_id=head.binding_revision_id
                 AND item.task_key='seed'
+               LEFT JOIN provider_profiles provider
+                 ON provider.id=item.provider_id
                WHERE head.project_id=%s
                FOR UPDATE""",
             (project_id,),

@@ -9,8 +9,6 @@ import httpx
 
 
 PROVIDER_TIMEOUT_SECONDS = 180
-STORY_ENGINE_TEMPERATURE = 0.7
-STORY_ENGINE_MAX_TOKENS = 6_000
 
 
 class StoryEngineProviderError(RuntimeError):
@@ -35,23 +33,25 @@ class StoryEngineProviderGateway:
 
     @staticmethod
     def _endpoint(base_url: str) -> str:
-        endpoint = base_url.rstrip("/")
-        if not endpoint.endswith("/chat/completions"):
-            endpoint += "/chat/completions"
-        return endpoint
+        parsed = httpx.URL(base_url)
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/chat/completions"):
+            path += "/chat/completions"
+        return str(parsed.copy_with(path=path))
 
     async def generate(
         self,
         *,
         provider: Mapping[str, object],
         messages: Sequence[Mapping[str, str]],
+        generation_config: Mapping[str, object],
     ) -> str:
         timeout = httpx.Timeout(connect=15, read=180, write=30, pool=15)
         body = {
             "model": provider["model_name"],
             "messages": list(messages),
-            "temperature": STORY_ENGINE_TEMPERATURE,
-            "max_tokens": STORY_ENGINE_MAX_TOKENS,
+            "temperature": generation_config["temperature"],
+            "max_tokens": generation_config["maxOutputTokens"],
             "response_format": {"type": "json_object"},
             "stream": False,
         }
@@ -69,6 +69,10 @@ class StoryEngineProviderGateway:
                     )
         except httpx.TimeoutException:
             raise TimeoutError("provider request timed out") from None
+        except httpx.DecodingError:
+            raise StoryEngineProviderResponseError(
+                "provider response was invalid"
+            ) from None
         except (httpx.TransportError, httpx.InvalidURL):
             raise StoryEngineProviderTransportError(
                 "provider transport failed"

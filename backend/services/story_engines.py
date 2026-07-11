@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import math
 import time
 from types import MappingProxyType
 from typing import Literal
@@ -129,6 +130,7 @@ class StoryEngineService:
         seed_payload: SeedPayload | None = None,
         channel_profile=None,
         genre_profile=None,
+        generation_config=None,
     ):
         request = {
             "sourceType": source_type,
@@ -150,6 +152,11 @@ class StoryEngineService:
             request["seed"]["payload"] = seed_payload.model_dump(mode="json")
             request["channelProfile"] = dict(channel_profile)
             request["genreProfile"] = dict(genre_profile)
+            request["generationConfig"] = (
+                dict(generation_config)
+                if generation_config is not None
+                else None
+            )
         if options is not None:
             request["options"] = [
                 option.model_dump(mode="json") for option in options
@@ -336,6 +343,7 @@ class StoryEngineService:
             if seed is None or binding is None:
                 raise StoryEnginePreconditionFailed()
             seed_payload = self._seed_payload(seed)
+            generation_config = self._generation_config(binding)
             genre_profile = {
                 "schemaVersion": "writer-genre-profile-v1",
                 "projectGenre": seed["project_genre"],
@@ -348,6 +356,7 @@ class StoryEngineService:
                 seed_payload=seed_payload,
                 channel_profile=DEFAULT_CHANNEL_PROFILE,
                 genre_profile=genre_profile,
+                generation_config=generation_config,
             )
             request_hash = canonical_hash(request)
             replay = await self._replay_or_conflict(
@@ -371,8 +380,39 @@ class StoryEngineService:
             return result, True, request
 
     @staticmethod
-    def _provider_is_callable(provider, model_name_snapshot: str | None) -> bool:
-        if provider is None or not isinstance(model_name_snapshot, str):
+    def _generation_config(binding) -> dict[str, int | float] | None:
+        if binding.get("provider_id") is None:
+            return None
+        temperature = binding.get("temperature")
+        max_output_tokens = binding.get("max_output_tokens")
+        if isinstance(temperature, bool) or isinstance(max_output_tokens, bool):
+            return None
+        try:
+            normalized_temperature = float(temperature)
+            normalized_max_output = int(max_output_tokens)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            not math.isfinite(normalized_temperature)
+            or normalized_max_output <= 0
+        ):
+            return None
+        return {
+            "temperature": normalized_temperature,
+            "maxOutputTokens": normalized_max_output,
+        }
+
+    @staticmethod
+    def _provider_is_callable(
+        provider,
+        model_name_snapshot: str | None,
+        generation_config,
+    ) -> bool:
+        if (
+            provider is None
+            or not isinstance(model_name_snapshot, str)
+            or generation_config is None
+        ):
             return False
         return (
             provider.get("lifecycle_status") == "active"
@@ -457,7 +497,9 @@ class StoryEngineService:
             if (
                 self.provider_gateway is None
                 or not self._provider_is_callable(
-                    provider, stored.get("model_name_snapshot")
+                    provider,
+                    stored.get("model_name_snapshot"),
+                    request["generationConfig"],
                 )
             ):
                 changed = await self.repository.cas_fail_configuration(
@@ -495,6 +537,7 @@ class StoryEngineService:
             raw_response_text = await self.provider_gateway.generate(
                 provider=provider,
                 messages=messages,
+                generation_config=request["generationConfig"],
             )
         except StoryEngineProviderHTTPError:
             return await self.fail_attempt(

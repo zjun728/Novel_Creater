@@ -45,14 +45,27 @@ def test_prompt_contains_only_frozen_inputs_and_exact_output_contract():
     assert user["genreProfile"] == genre
     contract = user["outputContract"]
     assert contract["type"] == "object"
-    assert contract["onlyField"] == "options"
-    assert contract["options"]["type"] == "array"
-    assert contract["options"]["exactItems"] == 3
-    assert contract["options"]["item"]["type"] == "object"
-    assert contract["options"]["item"]["fields"] == list(
-        StoryEngineOption.model_fields
-    )
-    assert contract["options"]["item"]["additionalFields"] is False
+    assert contract["required"] == ["options"]
+    assert contract["additionalProperties"] is False
+    options_schema = contract["properties"]["options"]
+    assert options_schema["type"] == "array"
+    assert options_schema["minItems"] == options_schema["maxItems"] == 3
+    item_schema = options_schema["items"]
+    assert item_schema["type"] == "object"
+    assert item_schema["required"] == list(StoryEngineOption.model_fields)
+    assert item_schema["additionalProperties"] is False
+    assert set(item_schema["properties"]) == set(StoryEngineOption.model_fields)
+    assert item_schema["properties"]["name"]["type"] == "string"
+    assert item_schema["properties"]["satisfactionSources"]["type"] == "array"
+    assert item_schema["properties"]["longFormVariation"]["type"] == "array"
+    assert item_schema["properties"]["risks"]["type"] == "array"
+    role_ref = item_schema["properties"]["ensembleRoles"]["items"]["$ref"]
+    assert role_ref == "#/$defs/EnsembleRole"
+    role_schema = contract["$defs"]["EnsembleRole"]
+    assert role_schema["type"] == "object"
+    assert role_schema["required"] == ["role", "purpose"]
+    assert role_schema["additionalProperties"] is False
+    assert set(role_schema["properties"]) == {"role", "purpose"}
 
 
 def test_prompt_does_not_import_or_embed_forbidden_prompt_material():

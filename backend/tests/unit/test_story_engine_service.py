@@ -260,9 +260,11 @@ class ScriptedGateway:
         self.release = asyncio.Event()
         self.block = False
 
-    async def generate(self, *, provider, messages):
+    async def generate(self, *, provider, messages, generation_config):
         assert self.harness.transaction_active == 0
-        self.calls.append((dict(provider), tuple(messages)))
+        self.calls.append(
+            (dict(provider), tuple(messages), dict(generation_config))
+        )
         self.entered.set()
         if self.block:
             await self.release.wait()
@@ -284,8 +286,24 @@ async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transa
     assert result.status == "succeeded"
     assert len(result.options) == 3
     assert len(gateway.calls) == 1
-    provider, messages = gateway.calls[0]
-    assert provider == harness.repository.providers["provider-seed"]
+    assert harness.transaction_enter_count == 3
+    provider, messages, generation_config = gateway.calls[0]
+    assert provider == {
+        key: harness.repository.providers["provider-seed"][key]
+        for key in (
+            "id",
+            "provider_type",
+            "model_name",
+            "base_url",
+            "api_key",
+            "enabled",
+            "lifecycle_status",
+        )
+    }
+    assert generation_config == {
+        "temperature": 0.456,
+        "maxOutputTokens": 4_321,
+    }
     prompt = json.loads(messages[1]["content"])
     assert prompt["seedSnapshot"]["title"] == "冻结标题"
     assert prompt["channelProfile"] == DEFAULT_CHANNEL_PROFILE
@@ -297,6 +315,7 @@ async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transa
     stored_request = harness.repository.batches[result.id]["request"]
     assert stored_request["channelProfile"] == DEFAULT_CHANNEL_PROFILE
     assert stored_request["genreProfile"] == prompt["genreProfile"]
+    assert stored_request["generationConfig"] == generation_config
     rendered = harness.repository.batches[result.id]["request_json"]
     assert "KEY_SENTINEL" not in rendered
     assert "https://provider.example" not in rendered
@@ -312,6 +331,7 @@ async def test_terminal_replay_and_expired_running_never_call_provider_again():
     replay = await harness.service.generate_provider(command)
     assert replay == first
     assert len(gateway.calls) == 1
+    assert harness.transaction_enter_count == 4
 
     reserved = await harness.service.reserve_provider(
         ReserveStoryEngineBatch("p1", "expired")
@@ -401,6 +421,42 @@ async def test_unavailable_configuration_fails_before_attempt_with_zero_transpor
     assert result.attempt_started_at is None
     assert result.lease_expires_at is None
     assert gateway.calls == []
+    assert harness.transaction_enter_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generation_config_is_frozen_before_current_profile_changes():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    harness.service.provider_gateway = gateway
+
+    def change_current_profile():
+        harness.repository.providers["provider-seed"].update(
+            temperature=0.999,
+            max_output_tokens=9_999,
+        )
+        harness.repository.on_lock_provider_connection = None
+
+    harness.repository.on_lock_provider_connection = change_current_profile
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "frozen-generation-config")
+    )
+
+    assert result.status == "succeeded"
+    assert gateway.calls[0][2] == {
+        "temperature": 0.456,
+        "maxOutputTokens": 4_321,
+    }
+    stored = harness.repository.batches[result.id]
+    assert stored["request"]["generationConfig"] == gateway.calls[0][2]
+    changed = await harness.service.reserve_provider(
+        ReserveStoryEngineBatch("p1", "changed-generation-config")
+    )
+    assert changed.request_hash != result.request_hash
+    with pytest.raises(StoryEngineBatchConflict):
+        await harness.service.reserve_provider(
+            ReserveStoryEngineBatch("p1", "frozen-generation-config")
+        )
 
 
 @pytest.mark.asyncio

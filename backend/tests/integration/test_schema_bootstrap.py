@@ -160,11 +160,13 @@ async def _insert_provider_batch_state(
     raw_response_hash,
     public_error_code,
     finished_at,
+    provider_bound=True,
 ):
     provider_id = "00000000-0000-0000-0000-000000000090"
     batch_id = "00000000-0000-0000-0000-000000000091"
     await _insert_foundation_project(session)
-    await _insert_active_provider(session, provider_id, "Provider batch state")
+    if provider_bound:
+        await _insert_active_provider(session, provider_id, "Provider batch state")
     seed_id, seed_revision_id = await _insert_seed_revision(session)
     columns = (
         "id,project_id,source_type,seed_id,seed_revision_id,seed_hash,"
@@ -178,13 +180,82 @@ async def _insert_provider_batch_state(
         f"INSERT INTO story_engine_batches ({columns}) VALUES ({placeholders})",
         (
             batch_id, PROJECT_ID, "provider", seed_id, seed_revision_id, HASH_A,
-            BINDING_ID, HASH_A, provider_id, "model", "i" * 64, "{}", HASH_B,
+            BINDING_ID, HASH_A,
+            provider_id if provider_bound else None,
+            "model" if provider_bound else None,
+            "i" * 64, "{}", HASH_B,
             status, attempt_id, attempt_started_at, lease_expires_at,
             raw_response_text, raw_response_hash, public_error_code, NOW,
             finished_at,
         ),
     )
     return batch_id
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    ("status", "public_error_code", "finished_at"),
+    (
+        ("reserved", None, None),
+        ("failed", "not_started", NOW),
+        ("failed", "provider_configuration", NOW),
+    ),
+)
+async def test_provider_null_snapshot_accepts_only_unattempted_states(
+    disposable_mysql, status, public_error_code, finished_at,
+):
+    batch_id = await _insert_provider_batch_state(
+        disposable_mysql.session,
+        status=status,
+        attempt_id=None,
+        attempt_started_at=None,
+        lease_expires_at=None,
+        raw_response_text=None,
+        raw_response_hash=None,
+        public_error_code=public_error_code,
+        finished_at=finished_at,
+        provider_bound=False,
+    )
+    row = await disposable_mysql.session.fetchone(
+        "SELECT status,provider_id,attempt_id FROM story_engine_batches WHERE id=%s",
+        (batch_id,),
+    )
+    assert row == {"status": status, "provider_id": None, "attempt_id": None}
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    (
+        "status", "raw_response_text", "raw_response_hash",
+        "public_error_code",
+    ),
+    (
+        ("running", None, None, None),
+        ("succeeded", "raw", HASH_C, None),
+        ("failed", None, None, "provider_failed"),
+        ("outcome_unknown", None, None, "outcome_unknown"),
+    ),
+)
+async def test_provider_null_snapshot_rejects_every_attempted_state(
+    disposable_mysql,
+    status,
+    raw_response_text,
+    raw_response_hash,
+    public_error_code,
+):
+    with pytest.raises(aiomysql.OperationalError, match="Check constraint"):
+        await _insert_provider_batch_state(
+            disposable_mysql.session,
+            status=status,
+            attempt_id="00000000-0000-0000-0000-000000000092",
+            attempt_started_at=NOW,
+            lease_expires_at=NOW,
+            raw_response_text=raw_response_text,
+            raw_response_hash=raw_response_hash,
+            public_error_code=public_error_code,
+            finished_at=None if status == "running" else NOW,
+            provider_bound=False,
+        )
 
 
 async def _insert_cross_project_provenance_fixture(session):

@@ -95,6 +95,8 @@ class MemoryStoryEngineRepository:
                 "model_name": "seed-model",
                 "base_url": "https://provider.example/v1",
                 "api_key": "KEY_SENTINEL",
+                "temperature": 0.456,
+                "max_output_tokens": 4_321,
                 "enabled": 1,
                 "lifecycle_status": "active",
             }
@@ -103,6 +105,7 @@ class MemoryStoryEngineRepository:
         self.options: dict[str, list[dict]] = {}
         self.events: list[str] = []
         self.fail_option_order: int | None = None
+        self.on_lock_provider_connection = None
 
     async def lock_project(self, session, project_id):
         self.events.append("lock-project")
@@ -125,12 +128,35 @@ class MemoryStoryEngineRepository:
     async def lock_seed_binding(self, session, project_id):
         self.events.append("lock-binding")
         binding = self.bindings.get("seed")
-        return dict(binding) if project_id == "p1" and binding else None
+        if project_id != "p1" or not binding:
+            return None
+        result = dict(binding)
+        provider = self.providers.get(result.get("provider_id"))
+        result["temperature"] = provider.get("temperature") if provider else None
+        result["max_output_tokens"] = (
+            provider.get("max_output_tokens") if provider else None
+        )
+        return result
 
     async def lock_provider_connection(self, session, provider_id):
         self.events.append("lock-provider")
+        if self.on_lock_provider_connection is not None:
+            self.on_lock_provider_connection()
         provider = self.providers.get(provider_id)
-        return dict(provider) if provider else None
+        if provider is None:
+            return None
+        return {
+            key: provider[key]
+            for key in (
+                "id",
+                "provider_type",
+                "model_name",
+                "base_url",
+                "api_key",
+                "enabled",
+                "lifecycle_status",
+            )
+        }
 
     async def lock_batch_by_key(self, session, project_id, idempotency_key):
         self.events.append("lock-key")
@@ -250,6 +276,7 @@ class StoryEngineHarness:
         self.clock = FakeClock(now)
         self.gateway = CountingGateway()
         self.transaction_active = 0
+        self.transaction_enter_count = 0
         self._transaction_lock = asyncio.Lock()
         ids = iter(f"00000000-0000-0000-0000-{number:012d}" for number in range(1, 100))
         self.service = StoryEngineService(
@@ -266,6 +293,7 @@ class StoryEngineHarness:
         async with self._transaction_lock:
             snapshot = deepcopy(self.repository.__dict__)
             self.transaction_active += 1
+            self.transaction_enter_count += 1
             try:
                 yield object()
             except BaseException:
