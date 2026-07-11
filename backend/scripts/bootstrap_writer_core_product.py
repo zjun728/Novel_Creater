@@ -7,10 +7,12 @@ import asyncio
 from collections import Counter
 from dataclasses import dataclass
 import json
+import os
 import re
 import subprocess
 import sys
 import time
+import unicodedata
 from typing import Callable, Mapping, Sequence
 from uuid import uuid4
 
@@ -120,6 +122,20 @@ SOURCE_SELECT_WHITELIST = (
     _SOURCE_PROVIDER_QUERY,
 )
 
+_BLOCKED_MYSQL_ENVIRONMENT_KEYS = {
+    "LIBMYSQL_PLUGIN_DIR",
+    "LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN",
+}
+
+
+def _source_client_environment() -> dict[str, str]:
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("MYSQL_")
+        and key.upper() not in _BLOCKED_MYSQL_ENVIRONMENT_KEYS
+    }
+
 
 def _run_source_select(
     mysql_client: str,
@@ -134,6 +150,7 @@ def _run_source_select(
     result = runner(
         [
             mysql_client,
+            "--no-defaults",
             f"--login-path={login_path}",
             f"--database={source_database}",
             "--default-character-set=utf8mb4",
@@ -148,6 +165,7 @@ def _run_source_select(
         encoding="utf-8",
         check=False,
         shell=False,
+        env=_source_client_environment(),
     )
     if getattr(result, "returncode", 1) != 0:
         raise BootstrapSourceError("Legacy mysql client SELECT failed")
@@ -295,28 +313,40 @@ def build_report(state: _PreservedState) -> BootstrapReport:
     )
 
 
+def _receipt_value(value: object) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return "".join(
+        f"\\u{ord(character):04x}"
+        if unicodedata.category(character) == "Cc"
+        else character
+        for character in encoded
+    )
+
+
 def format_bootstrap_report(report: BootstrapReport) -> str:
     lines = [
-        "projects.count=1",
-        f"project.id={report.project_id}",
-        f"project.title={report.project_title}",
-        f"seeds.count={len(report.seeds)}",
+        f"projects.count={_receipt_value(1)}",
+        f"project.id={_receipt_value(report.project_id)}",
+        f"project.title={_receipt_value(report.project_title)}",
+        f"seeds.count={_receipt_value(len(report.seeds))}",
     ]
     lines.extend(
-        f"seed.id={seed_id} seed.title={title}"
+        f"seed.id={_receipt_value(seed_id)} seed.title={_receipt_value(title)}"
         for seed_id, title in report.seeds
     )
-    lines.append(f"providers.count={len(report.providers)}")
+    lines.append(f"providers.count={_receipt_value(len(report.providers))}")
     lines.extend(
-        f"provider.id={provider_id} provider.name={name} provider.model={model}"
+        f"provider.id={_receipt_value(provider_id)} "
+        f"provider.name={_receipt_value(name)} "
+        f"provider.model={_receipt_value(model)}"
         for provider_id, name, model in report.providers
     )
     lines.extend((
-        f"preferred_provider.id={report.preferred_provider_id}",
-        f"bindings.count={report.binding_count}",
-        f"binding_items.count={report.binding_item_count}",
-        f"canon_revisions.count={report.canon_revision_count}",
-        f"projection_heads.count={report.projection_head_count}",
+        f"preferred_provider.id={_receipt_value(report.preferred_provider_id)}",
+        f"bindings.count={_receipt_value(report.binding_count)}",
+        f"binding_items.count={_receipt_value(report.binding_item_count)}",
+        f"canon_revisions.count={_receipt_value(report.canon_revision_count)}",
+        f"projection_heads.count={_receipt_value(report.projection_head_count)}",
     ))
     return "\n".join(lines)
 

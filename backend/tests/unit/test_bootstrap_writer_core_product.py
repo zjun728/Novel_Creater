@@ -107,8 +107,21 @@ def inventory(*, providers=None, seeds=None, projects=None):
     )
 
 
-def test_source_reader_uses_only_fixed_shell_free_json_selects():
+def test_source_reader_uses_only_fixed_shell_free_json_selects(monkeypatch):
     calls = []
+    environment_secrets = (
+        "MYSQL_PWD_SECRET",
+        "MYSQL_TEST_LOGIN_FILE_SECRET",
+        "MYSQL_ARBITRARY_SECRET",
+        "LIBMYSQL_PLUGIN_DIR_SECRET",
+        "LIBMYSQL_CLEARTEXT_SECRET",
+    )
+    monkeypatch.setenv("MYSQL_PWD", environment_secrets[0])
+    monkeypatch.setenv("mysql_test_login_file", environment_secrets[1])
+    monkeypatch.setenv("MySql_Arbitrary", environment_secrets[2])
+    monkeypatch.setenv("LIBMYSQL_PLUGIN_DIR", environment_secrets[3])
+    monkeypatch.setenv("libmysql_enable_cleartext_plugin", environment_secrets[4])
+    monkeypatch.setenv("WRITER_CORE_SAFE_ENV", "preserved")
 
     def runner(command, **kwargs):
         calls.append((command, kwargs))
@@ -143,9 +156,21 @@ def test_source_reader_uses_only_fixed_shell_free_json_selects():
     assert "password" not in rendered_commands.lower()
     assert "task_model_bindings" not in rendered_commands
     for command, kwargs in calls:
+        assert command[1:3] == ["--no-defaults", "--login-path=novel57-admin"]
         query = command[command.index("--execute") + 1]
         assert query in bootstrap.SOURCE_SELECT_WHITELIST
         assert query.lstrip().upper().startswith("SELECT ")
+        environment = kwargs.pop("env")
+        assert environment["WRITER_CORE_SAFE_ENV"] == "preserved"
+        assert not any(
+            key.upper().startswith("MYSQL_")
+            or key.upper() in {
+                "LIBMYSQL_PLUGIN_DIR",
+                "LIBMYSQL_ENABLE_CLEARTEXT_PLUGIN",
+            }
+            for key in environment
+        )
+        assert all(secret not in repr(environment) for secret in environment_secrets)
         assert kwargs == {
             "capture_output": True,
             "text": True,
@@ -349,6 +374,52 @@ def test_receipt_contains_only_public_identity_and_count_fields():
     assert "description" not in rendered
     assert "base_url" not in rendered
     assert "notes" not in rendered
+
+
+def test_receipt_json_encodes_dynamic_values_as_single_safe_records():
+    injection = "\r\nforged.count=999\x1b[31m\x07\u009b32m"
+    project_id = f"project-{injection}"
+    project_title = f"title-{injection}"
+    seed_id = f"seed-{injection}"
+    seed_title = f"seed-title-{injection}"
+    provider_id = f"provider-{injection}"
+    provider_name = f"provider-name-{injection}"
+    provider_model = f"provider-model-{injection}"
+    preferred_id = f"preferred-{injection}"
+    report = bootstrap.BootstrapReport(
+        project_id=project_id,
+        project_title=project_title,
+        seeds=((seed_id, seed_title),),
+        providers=((provider_id, provider_name, provider_model),),
+        preferred_provider_id=preferred_id,
+    )
+
+    rendered = bootstrap.format_bootstrap_report(report)
+
+    def encode(value):
+        return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+    assert rendered.splitlines() == [
+        "projects.count=1",
+        f"project.id={encode(project_id)}",
+        f"project.title={encode(project_title)}",
+        "seeds.count=1",
+        f"seed.id={encode(seed_id)} seed.title={encode(seed_title)}",
+        "providers.count=1",
+        (
+            f"provider.id={encode(provider_id)} provider.name={encode(provider_name)} "
+            f"provider.model={encode(provider_model)}"
+        ),
+        f"preferred_provider.id={encode(preferred_id)}",
+        "bindings.count=1",
+        "binding_items.count=8",
+        "canon_revisions.count=1",
+        "projection_heads.count=1",
+    ]
+    assert all(
+        control not in rendered for control in ("\r", "\x1b", "\x07", "\u009b")
+    )
+    assert all(secret not in rendered for secret in SECRET_VALUES)
 
 
 @pytest.mark.asyncio

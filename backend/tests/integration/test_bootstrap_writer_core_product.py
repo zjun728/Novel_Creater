@@ -104,8 +104,53 @@ async def test_cross_server_bootstrap_builds_verified_disposable_target():
         ):
             assert secret not in rendered
     finally:
-        if database_connection is not None:
-            await _close_raw_connection(database_connection)
-        assert_disposable_name(database_name)
-        await admin_session.execute(f"DROP DATABASE IF EXISTS `{database_name}`")
-        await admin_session.close()
+        try:
+            if database_connection is not None:
+                await _close_raw_connection(database_connection)
+        finally:
+            try:
+                assert_disposable_name(database_name)
+                await admin_session.execute(
+                    f"DROP DATABASE IF EXISTS `{database_name}`"
+                )
+            finally:
+                await admin_session.close()
+
+
+@pytest.mark.asyncio
+async def test_cross_server_cleanup_closes_admin_when_drop_fails(monkeypatch):
+    database_name = "novel_creator_test_0123456789abcdef0123456789abcdef"
+    drop_error = RuntimeError("drop failed")
+
+    class AdminSession:
+        def __init__(self):
+            self.calls = []
+            self.closed = False
+
+        async def execute(self, sql):
+            self.calls.append(sql)
+            raise drop_error
+
+        async def close(self):
+            self.closed = True
+
+    admin_session = AdminSession()
+
+    async def open_admin_session(config):
+        return admin_session
+
+    async def fail_bootstrap(*args, **kwargs):
+        raise RuntimeError("bootstrap failed")
+
+    module = "backend.tests.integration.test_bootstrap_writer_core_product"
+    monkeypatch.setattr(f"{module}.test_server_config", lambda: {})
+    monkeypatch.setattr(f"{module}.new_database_name", lambda: database_name)
+    monkeypatch.setattr(f"{module}._open_admin_session", open_admin_session)
+    monkeypatch.setattr(f"{module}.bootstrap_writer_core_product", fail_bootstrap)
+
+    with pytest.raises(RuntimeError) as raised:
+        await test_cross_server_bootstrap_builds_verified_disposable_target()
+
+    assert raised.value is drop_error
+    assert admin_session.calls == [f"DROP DATABASE IF EXISTS `{database_name}`"]
+    assert admin_session.closed is True
