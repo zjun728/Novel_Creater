@@ -277,9 +277,11 @@ git commit -m "test: add official writer core test entrypoints"
 - Create: `backend/schema/50_canon.sql`
 - Create: `backend/schema/60_projections.sql`
 - Create: `backend/schema/70_corpus.sql`
+- Create: `backend/scripts/__init__.py`
 - Create: `backend/scripts/initialize_database.py`
 - Create: `backend/tests/unit/test_schema_manifest.py`
 - Create: `backend/tests/unit/test_schema_version.py`
+- Create: `backend/tests/unit/test_initialize_database.py`
 - Delete: `backend/schema.sql`
 - Delete: `backend/migrations/20260705_state_provenance_phase1_2.sql`
 - Delete: `backend/migrations/20260705_state_provenance_phase1_2_rollback.sql`
@@ -288,7 +290,7 @@ git commit -m "test: add official writer core test entrypoints"
 
 ```python
 # backend/tests/unit/test_schema_manifest.py
-from backend.schema_manifest import FRAGMENTS, manifest_hash, read_statements
+from backend.schema_manifest import FRAGMENTS, created_table_names, manifest_hash, read_statements
 
 EXPECTED_TABLES = {
     "schema_metadata", "projects", "creative_seeds", "project_selected_seeds", "provider_profiles",
@@ -304,12 +306,14 @@ EXPECTED_TABLES = {
 }
 
 def test_manifest_is_ordered_complete_and_has_no_runtime_alter():
-    assert FRAGMENTS == tuple(sorted(FRAGMENTS))
+    assert FRAGMENTS == (
+        "00_metadata.sql", "10_core.sql", "20_contracts.sql", "30_planning.sql",
+        "40_drafts.sql", "50_canon.sql", "60_projections.sql", "70_corpus.sql",
+    )
     sql = "\n".join(read_statements())
     assert "ALTER TABLE" not in sql.upper()
     assert "CREATE DATABASE" not in sql.upper()
-    for table in EXPECTED_TABLES:
-        assert f"CREATE TABLE {table}" in sql
+    assert set(created_table_names()) == EXPECTED_TABLES
     assert len(manifest_hash()) == 64
 ```
 
@@ -336,7 +340,7 @@ async def test_wrong_version_is_rejected(fake_connection):
 
 - [ ] **Step 2: Run the tests and verify failure**
 
-Run: `python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py -q`
+Run: `python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py -q`
 
 Expected: FAIL because schema modules do not exist.
 
@@ -346,6 +350,7 @@ Expected: FAIL because schema modules do not exist.
 # backend/schema_manifest.py
 from hashlib import sha256
 from pathlib import Path
+import re
 
 SCHEMA_DIR = Path(__file__).with_name("schema")
 FRAGMENTS = (
@@ -353,16 +358,28 @@ FRAGMENTS = (
     "40_drafts.sql", "50_canon.sql", "60_projections.sql", "70_corpus.sql",
 )
 
+STATEMENT_DELIMITER = ";-- statement"
+CREATE_TABLE = re.compile(r"^CREATE\s+TABLE\s+([A-Za-z0-9_]+)\s*\(", re.IGNORECASE)
+
 def read_statements() -> list[str]:
     statements = []
     for name in FRAGMENTS:
         text = (SCHEMA_DIR / name).read_text(encoding="utf-8")
-        statements.extend(part.strip() for part in text.split(";-- statement") if part.strip())
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        statements.extend(part.strip() for part in text.split(STATEMENT_DELIMITER) if part.strip())
     return statements
 
 def manifest_hash() -> str:
-    payload = "\n;-- statement\n".join(read_statements()).encode("utf-8")
+    payload = f"\n{STATEMENT_DELIMITER}\n".join(read_statements()).encode("utf-8")
     return sha256(payload).hexdigest()
+
+def created_table_names() -> tuple[str, ...]:
+    """Returns CREATE TABLE names in manifest order for behavior tests."""
+    return tuple(
+        match.group(1)
+        for statement in read_statements()
+        if (match := CREATE_TABLE.match(statement)) is not None
+    )
 ```
 
 ```python
@@ -526,25 +543,27 @@ CREATE TABLE canon_events (
 
 - [ ] **Step 5: Implement explicit initialization**
 
-`python -m backend.scripts.initialize_database --database <name> --confirm-create <name>` must:
+`python -m backend.scripts.initialize_database --database <name> --confirm-create <name>` uses the injectable async core
+`initialize_database(admin_session, database_name, confirm_name, now_ms)` and must:
 
 1. reject database names not matching `^[A-Za-z0-9_]+$`;
-2. refuse a database containing any tables;
-3. execute every manifest statement in order in one bootstrap connection;
-4. insert singleton metadata with the computed manifest hash;
-5. print only database name, version, hash and table count;
-6. never print DSN, password, Provider row or API key.
+2. require `--database` and `--confirm-create` to match exactly;
+3. query whether the database exists, create it explicitly only when absent, and refuse an existing database containing any tables before executing schema statements;
+4. select the validated name, execute every manifest statement in order in one bootstrap connection, and insert singleton metadata with the computed manifest hash;
+5. if bootstrap fails after this script created the database, attempt to drop that new database before re-raising; never drop an existing empty database on failure;
+6. print only database name, version, hash and table count;
+7. never print DSN, password, Provider row, API key or base URL.
 
 - [ ] **Step 6: Run unit tests**
 
-Run: `python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py -q`
+Run: `python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py -q`
 
-Expected: PASS; scan confirms no `ALTER TABLE`, `CREATE DATABASE` or old migration file.
+Expected: PASS; scan confirms fragments contain no `ALTER TABLE`, `CREATE DATABASE`, `USE`, `IF NOT EXISTS` or old compatibility table, and initializer fakes prove confirmation, empty-database, ordering, metadata, secret-free output and cleanup behavior without connecting to a database.
 
 - [ ] **Step 7: Commit**
 
 ```powershell
-git add backend/schema backend/schema_manifest.py backend/schema_version.py backend/scripts/initialize_database.py backend/tests
+git add backend/schema backend/schema_manifest.py backend/schema_version.py backend/scripts backend/tests docs/superpowers/plans/2026-07-11-writer-core-foundation.md
 git rm backend/schema.sql backend/migrations/20260705_state_provenance_phase1_2.sql backend/migrations/20260705_state_provenance_phase1_2_rollback.sql
 git commit -m "feat: define immutable writer core schema manifest"
 ```
