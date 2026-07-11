@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import time
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,6 +19,21 @@ from backend.security.redaction import SecretRedactionFilter, install_error_hand
 
 SECRET = "sk-validation-and-error-sentinel"
 PRIVATE_URL = "https://error-private.example/v1"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+uvicorn_test_app = FastAPI()
+install_error_handlers(uvicorn_test_app)
+
+
+@uvicorn_test_app.get("/health")
+async def _uvicorn_test_health():
+    return {"status": "ok"}
+
+
+@uvicorn_test_app.get("/failure")
+async def _uvicorn_test_failure():
+    raise RuntimeError(f"upstream failed {SECRET} {PRIVATE_URL}")
 
 
 def test_request_validation_error_sanitizes_pydantic_input(caplog):
@@ -74,3 +96,97 @@ def test_logging_filter_recursively_redacts_structured_arguments():
     rendered = record.getMessage()
     assert SECRET not in rendered and PRIVATE_URL not in rendered
     assert rendered.count("[REDACTED]") == 2
+
+
+def test_error_handler_installation_filters_uvicorn_error_once():
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    original_filters = list(uvicorn_logger.filters)
+    for item in original_filters:
+        if isinstance(item, SecretRedactionFilter):
+            uvicorn_logger.removeFilter(item)
+
+    try:
+        install_error_handlers(FastAPI())
+        install_error_handlers(FastAPI())
+
+        installed = [
+            item
+            for item in uvicorn_logger.filters
+            if isinstance(item, SecretRedactionFilter)
+        ]
+        assert len(installed) == 1
+    finally:
+        for item in list(uvicorn_logger.filters):
+            if isinstance(item, SecretRedactionFilter):
+                uvicorn_logger.removeFilter(item)
+        for item in original_filters:
+            if isinstance(item, SecretRedactionFilter):
+                uvicorn_logger.addFilter(item)
+
+
+def test_real_uvicorn_logs_never_render_unexpected_error_secrets():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "backend.tests.api.test_secret_error_redaction:uvicorn_test_app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "error",
+            "--no-access-log",
+        ],
+        cwd=REPOSITORY_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            if process.poll() is not None:
+                raise AssertionError("Uvicorn exited before the health route was ready")
+            try:
+                with urlopen(
+                    f"http://127.0.0.1:{port}/health", timeout=0.25
+                ) as response:
+                    if response.status == 200:
+                        break
+            except (OSError, URLError):
+                pass
+            if time.monotonic() >= deadline:
+                raise AssertionError("Uvicorn health route did not become ready")
+            time.sleep(0.05)
+
+        try:
+            urlopen(f"http://127.0.0.1:{port}/failure", timeout=2)
+            raise AssertionError("Failure route unexpectedly returned success")
+        except HTTPError as exc:
+            status = exc.code
+            body = json.loads(exc.read().decode("utf-8"))
+    finally:
+        process.terminate()
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=5)
+
+    assert status == 500
+    assert body["message"] == "Internal server error"
+    assert body["correlationId"]
+    rendered_body = json.dumps(body, ensure_ascii=False)
+    captured_logs = stdout + stderr
+    assert SECRET not in rendered_body and PRIVATE_URL not in rendered_body
+    assert SECRET not in captured_logs and PRIVATE_URL not in captured_logs

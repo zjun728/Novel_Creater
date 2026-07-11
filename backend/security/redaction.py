@@ -65,13 +65,18 @@ class SecretRedactionFilter(logging.Filter):
         return True
 
 
-def install_error_handlers(app, *, logger=None) -> None:
-    application_logger = logger or logging.getLogger("backend")
+def _install_redaction_filter(target) -> None:
     if not any(
         isinstance(item, SecretRedactionFilter)
-        for item in application_logger.filters
+        for item in target.filters
     ):
-        application_logger.addFilter(SecretRedactionFilter())
+        target.addFilter(SecretRedactionFilter())
+
+
+def install_error_handlers(app, *, logger=None) -> None:
+    application_logger = logger or logging.getLogger("backend")
+    _install_redaction_filter(application_logger)
+    _install_redaction_filter(logging.getLogger("uvicorn.error"))
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
