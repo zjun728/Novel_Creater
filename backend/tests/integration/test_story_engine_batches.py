@@ -5,6 +5,7 @@ import asyncio
 import aiomysql
 import pytest
 
+from backend.http_errors import StoryEngineBatchConflict
 from backend.repositories.story_engines import StoryEngineRepository
 from backend.services.story_engines import (
     RESERVED_TIMEOUT_MS,
@@ -64,9 +65,20 @@ async def _bootstrap_facts(session, project_id: str = "project-1") -> None:
             stream,max_context_tokens,max_output_tokens,temperature,top_p,
             supports_json,supports_streaming,notes,thinking,lifecycle_status,
             deleted_at,created_at,updated_at)
-           VALUES ('provider-1','Test Provider','openai','safe-model',
+           VALUES ('provider-seed','Seed Provider','openai','seed-model',
                    'https://test.invalid','test-only-key',1,0,0,10000,1000,
                    0.2,1.0,1,0,'test only',NULL,'active',NULL,%s,%s)""",
+        (now, now),
+    )
+    await session.execute(
+        """INSERT INTO provider_profiles
+           (id,name,provider_type,model_name,base_url,api_key,enabled,sort_order,
+            stream,max_context_tokens,max_output_tokens,temperature,top_p,
+            supports_json,supports_streaming,notes,thinking,lifecycle_status,
+            deleted_at,created_at,updated_at)
+           VALUES ('provider-planning','Planning Provider','openai','planning-model',
+                   'https://planning.test.invalid','planning-test-only-key',1,1,0,
+                   10000,1000,0.2,1.0,1,0,'test only',NULL,'active',NULL,%s,%s)""",
         (now, now),
     )
     await session.execute(
@@ -79,9 +91,17 @@ async def _bootstrap_facts(session, project_id: str = "project-1") -> None:
         """INSERT INTO project_model_binding_items
            (binding_revision_id,task_key,resolution_status,provider_id,
             provider_name_snapshot,model_name_snapshot,item_hash)
-           VALUES ('binding-revision-1','planning','bound','provider-1',
-                   'Test Provider','safe-model',%s)""",
+           VALUES ('binding-revision-1','seed','bound','provider-seed',
+                   'Seed Provider','seed-model',%s)""",
         ("c" * 64,),
+    )
+    await session.execute(
+        """INSERT INTO project_model_binding_items
+           (binding_revision_id,task_key,resolution_status,provider_id,
+            provider_name_snapshot,model_name_snapshot,item_hash)
+           VALUES ('binding-revision-1','planning','bound','provider-planning',
+                   'Planning Provider','planning-model',%s)""",
+        ("d" * 64,),
     )
     await session.execute(
         """INSERT INTO project_model_binding_heads
@@ -225,6 +245,57 @@ async def test_real_transition_cas_and_terminal_rows_are_immutable(disposable_my
 
 
 @pytest.mark.asyncio
+async def test_provider_batch_freezes_only_seed_binding_and_hashes_seed_changes(
+    disposable_mysql,
+):
+    await _bootstrap_facts(disposable_mysql.session)
+    service = _service(disposable_mysql)
+    first = await service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "seed-binding")
+    )
+    assert first.provider_id == "provider-seed"
+    assert first.model_name_snapshot == "seed-model"
+    original_hash = first.request_hash
+
+    await disposable_mysql.session.execute(
+        """UPDATE project_model_binding_items
+           SET provider_id='provider-seed',provider_name_snapshot='Seed Provider',
+               model_name_snapshot='seed-model',item_hash=%s
+           WHERE binding_revision_id='binding-revision-1' AND task_key='planning'""",
+        ("e" * 64,),
+    )
+    replay = await service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "seed-binding")
+    )
+    assert replay.request_hash == original_hash
+
+    await disposable_mysql.session.execute(
+        """UPDATE project_model_binding_items
+           SET provider_id='provider-planning',
+               provider_name_snapshot='Planning Provider',
+               model_name_snapshot='planning-model',item_hash=%s
+           WHERE binding_revision_id='binding-revision-1' AND task_key='planning'""",
+        ("d" * 64,),
+    )
+    await disposable_mysql.session.execute(
+        """UPDATE project_model_binding_items
+           SET provider_id='provider-planning',
+               provider_name_snapshot='Planning Provider',
+               model_name_snapshot='planning-model',item_hash=%s
+           WHERE binding_revision_id='binding-revision-1' AND task_key='seed'""",
+        ("f" * 64,),
+    )
+    changed = await service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "changed-seed")
+    )
+    assert changed.request_hash != original_hash
+    with pytest.raises(StoryEngineBatchConflict):
+        await service.reserve_provider(
+            ReserveStoryEngineBatch("project-1", "seed-binding")
+        )
+
+
+@pytest.mark.asyncio
 async def test_real_reconcile_uses_cas_for_stale_reserved_and_expired_running(
     disposable_mysql,
 ):
@@ -238,6 +309,9 @@ async def test_real_reconcile_uses_cas_for_stale_reserved_and_expired_running(
     clock.advance(RESERVED_TIMEOUT_MS)
     failed = await service.reconcile("project-1", stale.id)
     assert (failed.status, failed.public_error_code) == ("failed", "not_started")
+    assert failed.attempt_id is None
+    assert failed.attempt_started_at is None
+    assert failed.lease_expires_at is None
 
     live = await service.reserve_provider(
         ReserveStoryEngineBatch("project-1", "running")

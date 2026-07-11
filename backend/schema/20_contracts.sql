@@ -53,7 +53,16 @@ CREATE TABLE story_engine_batches (
       AND lease_expires_at IS NOT NULL AND raw_response_text IS NOT NULL
       AND raw_response_hash IS NOT NULL
       AND public_error_code IS NULL AND finished_at IS NOT NULL)
-    OR (status IN ('failed','outcome_unknown') AND attempt_id IS NOT NULL
+    OR (status = 'failed' AND public_error_code IS NOT NULL
+      AND public_error_code = 'not_started' AND attempt_id IS NULL
+      AND attempt_started_at IS NULL AND lease_expires_at IS NULL
+      AND raw_response_text IS NULL AND raw_response_hash IS NULL
+      AND finished_at IS NOT NULL)
+    OR (status = 'failed' AND attempt_id IS NOT NULL
+      AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL
+      AND public_error_code IS NOT NULL AND public_error_code <> 'not_started'
+      AND finished_at IS NOT NULL)
+    OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
       AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL
       AND public_error_code IS NOT NULL AND finished_at IS NOT NULL)
   )

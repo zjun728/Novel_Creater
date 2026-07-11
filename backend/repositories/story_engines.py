@@ -31,7 +31,7 @@ class StoryEngineRepository:
             (project_id,),
         )
 
-    async def lock_planning_binding(self, session, project_id: str):
+    async def lock_seed_binding(self, session, project_id: str):
         return await session.fetchone(
             """SELECT head.binding_revision_id,
                       head.content_hash AS binding_hash,
@@ -40,7 +40,7 @@ class StoryEngineRepository:
                FROM project_model_binding_heads head
                JOIN project_model_binding_items item
                  ON item.binding_revision_id=head.binding_revision_id
-                AND item.task_key='planning'
+                AND item.task_key='seed'
                JOIN provider_profiles provider ON provider.id=item.provider_id
                WHERE head.project_id=%s
                  AND item.resolution_status='bound'
@@ -189,15 +189,11 @@ class StoryEngineRepository:
     ) -> bool:
         changed = await session.execute(
             """UPDATE story_engine_batches
-               SET status='failed',attempt_id=%s,attempt_started_at=%s,
-                   lease_expires_at=%s,public_error_code='not_started',
-                   finished_at=%s
+               SET status='failed',public_error_code='not_started',finished_at=%s
                WHERE project_id=%s AND id=%s AND status='reserved'
                  AND attempt_id IS NULL AND created_at<=%s""",
             (
-                row["attempt_id"], row["attempt_started_at"],
-                row["lease_expires_at"], row["finished_at"],
-                project_id, batch_id, stale_before,
+                row["finished_at"], project_id, batch_id, stale_before,
             ),
         )
         return changed == 1

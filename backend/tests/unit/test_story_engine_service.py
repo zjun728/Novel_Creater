@@ -85,16 +85,36 @@ async def test_provider_create_only_reserves_frozen_metadata_and_never_calls_gat
     assert result.status == "reserved"
     assert stored["seed_revision_id"] == "seed-revision-1"
     assert stored["binding_revision_id"] == "binding-revision-1"
-    assert stored["provider_id"] == "provider-1"
-    assert stored["model_name_snapshot"] == "safe-model"
+    assert stored["provider_id"] == "provider-seed"
+    assert stored["model_name_snapshot"] == "seed-model"
     assert harness.gateway.calls == 0
 
 
 @pytest.mark.asyncio
 async def test_provider_same_key_conflicts_when_frozen_request_facts_change():
     harness = StoryEngineHarness()
-    await harness.service.reserve_provider(ReserveStoryEngineBatch("p1", "same"))
-    harness.repository.seed["seed_hash"] = "c" * 64
+    first = await harness.service.reserve_provider(ReserveStoryEngineBatch("p1", "same"))
+    original_hash = first.request_hash
+
+    harness.repository.bindings["planning"].update(
+        provider_id="provider-planning-changed",
+        model_name_snapshot="planning-model-changed",
+    )
+    replay = await harness.service.reserve_provider(ReserveStoryEngineBatch("p1", "same"))
+    assert replay.request_hash == original_hash
+
+    harness.repository.bindings["planning"].update(
+        provider_id="provider-planning",
+        model_name_snapshot="planning-model",
+    )
+    harness.repository.bindings["seed"].update(
+        provider_id="provider-seed-changed",
+        model_name_snapshot="seed-model-changed",
+    )
+    changed = await harness.service.reserve_provider(
+        ReserveStoryEngineBatch("p1", "changed-seed")
+    )
+    assert changed.request_hash != original_hash
 
     with pytest.raises(StoryEngineBatchConflict):
         await harness.service.reserve_provider(ReserveStoryEngineBatch("p1", "same"))
@@ -138,6 +158,9 @@ async def test_reconcile_stale_reserved_and_expired_running_without_gateway_call
     failed = await harness.service.reconcile("p1", reserved.id)
     assert failed.status == "failed"
     assert failed.public_error_code == "not_started"
+    assert failed.attempt_id is None
+    assert failed.attempt_started_at is None
+    assert failed.lease_expires_at is None
 
     running_batch = await harness.service.reserve_provider(ReserveStoryEngineBatch("p1", "u"))
     running = await harness.service.start_attempt("p1", running_batch.id)
@@ -185,6 +208,6 @@ async def test_missing_archived_and_missing_prerequisites_are_stable_public_erro
         )
 
     harness = StoryEngineHarness()
-    harness.repository.binding = None
+    harness.repository.bindings["seed"] = None
     with pytest.raises(StoryEnginePreconditionFailed):
         await harness.service.reserve_provider(ReserveStoryEngineBatch("p1", "no-binding"))

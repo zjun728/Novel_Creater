@@ -49,8 +49,10 @@ def _result(status, *, options=(), public_error_code=None):
         provider_id=None if options else "provider-1",
         model_name_snapshot=None if options else "model",
         idempotency_key="key", request_hash="c" * 64, status=status,
-        attempt_id=None, attempt_started_at=None, lease_expires_at=None,
-        raw_response_text=None, raw_response_hash=None,
+        attempt_id="attempt-secret-sentinel",
+        attempt_started_at=123456789, lease_expires_at=987654321,
+        raw_response_text="https://secret.invalid/api\nraw-secret-sentinel",
+        raw_response_hash="d" * 64,
         public_error_code=public_error_code, created_at=100, finished_at=200 if status in {"succeeded", "failed"} else None,
         options=tuple(
             {"id": f"option-{index}", "option_order": index, "content_hash": canonical,
@@ -85,11 +87,35 @@ def test_fixed_routes_delegate_and_return_camel_case_dto():
     assert provider.json()["projectId"] == "p1"
     assert provider.json()["bindingRevisionId"] == "binding-1"
     assert manual.json()["bindingRevisionId"] is None
-    assert manual.json()["rawResponseText"] is None
-    assert manual.json()["rawResponseHash"] is None
     assert len(manual.json()["options"]) == 3
     assert reconcile.json()["publicErrorCode"] == "not_started"
     assert service.calls[0][1].project_id == "p1"
+
+
+def test_all_public_batch_responses_redact_raw_audit_and_attempt_markers():
+    client, _ = make_client()
+    responses = (
+        client.post(
+            "/api/projects/p1/story-engine-batches",
+            json={"idempotencyKey": "key"},
+        ),
+        client.post(
+            "/api/projects/p1/story-engine-batches",
+            json={"idempotencyKey": "key"},
+        ),
+        client.get("/api/projects/p1/story-engine-batches/batch-1"),
+        client.post("/api/projects/p1/story-engine-batches/batch-1/reconcile"),
+    )
+    forbidden = (
+        "attemptId", "attemptStartedAt", "leaseExpiresAt",
+        "rawResponseText", "rawResponseHash",
+        "attempt-secret-sentinel", "123456789", "987654321",
+        "https://secret.invalid/api", "raw-secret-sentinel", "d" * 64,
+    )
+    for response in responses:
+        assert response.status_code == 200
+        serialized = response.text
+        assert all(item not in serialized for item in forbidden)
 
 
 def test_manual_requires_exactly_three_strict_options_and_forbids_extra_fields():

@@ -287,7 +287,7 @@ class StoryEngineService:
             if await self.repository.lock_project(session, command.project_id) is None:
                 raise StoryEngineBatchNotFound()
             seed = await self.repository.lock_selected_seed(session, command.project_id)
-            binding = await self.repository.lock_planning_binding(
+            binding = await self.repository.lock_seed_binding(
                 session, command.project_id
             )
             if seed is None or binding is None:
@@ -420,12 +420,7 @@ class StoryEngineService:
                     session,
                     project_id,
                     batch_id,
-                    {
-                        "attempt_id": self.id_factory(),
-                        "attempt_started_at": batch["created_at"],
-                        "lease_expires_at": batch["created_at"],
-                        "finished_at": now,
-                    },
+                    {"finished_at": now},
                     now - RESERVED_TIMEOUT_MS,
                 )
             elif batch["status"] == "running":

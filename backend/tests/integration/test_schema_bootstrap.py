@@ -1,3 +1,4 @@
+import aiomysql
 import pytest
 
 from backend.schema_manifest import manifest_hash
@@ -146,6 +147,44 @@ async def _insert_seed_revision(
         (revision_id, project_id, seed_id, '{}', content_hash, NOW),
     )
     return seed_id, revision_id
+
+
+async def _insert_provider_batch_state(
+    session,
+    *,
+    status,
+    attempt_id,
+    attempt_started_at,
+    lease_expires_at,
+    raw_response_text,
+    raw_response_hash,
+    public_error_code,
+    finished_at,
+):
+    provider_id = "00000000-0000-0000-0000-000000000090"
+    batch_id = "00000000-0000-0000-0000-000000000091"
+    await _insert_foundation_project(session)
+    await _insert_active_provider(session, provider_id, "Provider batch state")
+    seed_id, seed_revision_id = await _insert_seed_revision(session)
+    columns = (
+        "id,project_id,source_type,seed_id,seed_revision_id,seed_hash,"
+        "binding_revision_id,binding_hash,provider_id,model_name_snapshot,"
+        "idempotency_key,request_json,request_hash,status,attempt_id,"
+        "attempt_started_at,lease_expires_at,raw_response_text,raw_response_hash,"
+        "public_error_code,created_at,finished_at"
+    )
+    placeholders = ",".join(("%s",) * 22)
+    await session.execute(
+        f"INSERT INTO story_engine_batches ({columns}) VALUES ({placeholders})",
+        (
+            batch_id, PROJECT_ID, "provider", seed_id, seed_revision_id, HASH_A,
+            BINDING_ID, HASH_A, provider_id, "model", "i" * 64, "{}", HASH_B,
+            status, attempt_id, attempt_started_at, lease_expires_at,
+            raw_response_text, raw_response_hash, public_error_code, NOW,
+            finished_at,
+        ),
+    )
+    return batch_id
 
 
 async def _insert_cross_project_provenance_fixture(session):
@@ -543,6 +582,80 @@ async def test_provider_terminal_batch_rejects_missing_lease_marker(
                 HASH_A, provider_id, "f" * 64, '{}', HASH_B, status, NOW,
                 HASH_C, public_error_code, NOW, NOW,
             ),
+        )
+
+
+@pytest.mark.mysql
+async def test_provider_not_started_failure_accepts_no_attempt_or_raw_markers(
+    disposable_mysql,
+):
+    batch_id = await _insert_provider_batch_state(
+        disposable_mysql.session,
+        status="failed",
+        attempt_id=None,
+        attempt_started_at=None,
+        lease_expires_at=None,
+        raw_response_text=None,
+        raw_response_hash=None,
+        public_error_code="not_started",
+        finished_at=NOW,
+    )
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,public_error_code,attempt_id,attempt_started_at,
+                  lease_expires_at,raw_response_text,raw_response_hash,finished_at
+           FROM story_engine_batches WHERE id=%s""",
+        (batch_id,),
+    )
+    assert row == {
+        "status": "failed",
+        "public_error_code": "not_started",
+        "attempt_id": None,
+        "attempt_started_at": None,
+        "lease_expires_at": None,
+        "raw_response_text": None,
+        "raw_response_hash": None,
+        "finished_at": NOW,
+    }
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    (
+        "status", "attempt_id", "attempt_started_at", "lease_expires_at",
+        "raw_response_text", "raw_response_hash", "public_error_code",
+        "finished_at",
+    ),
+    (
+        ("failed", "00000000-0000-0000-0000-000000000092", NOW, NOW,
+         None, None, "not_started", NOW),
+        ("failed", None, None, None, None, None, "provider_failed", NOW),
+        ("outcome_unknown", None, None, None, None, None, "outcome_unknown", NOW),
+        ("failed", None, None, None, "raw", HASH_C, "not_started", NOW),
+        ("failed", None, None, None, None, None, "not_started", None),
+    ),
+)
+async def test_provider_terminal_batch_rejects_non_exact_attempt_states(
+    disposable_mysql,
+    status,
+    attempt_id,
+    attempt_started_at,
+    lease_expires_at,
+    raw_response_text,
+    raw_response_hash,
+    public_error_code,
+    finished_at,
+):
+    with pytest.raises(aiomysql.OperationalError, match="Check constraint"):
+        await _insert_provider_batch_state(
+            disposable_mysql.session,
+            status=status,
+            attempt_id=attempt_id,
+            attempt_started_at=attempt_started_at,
+            lease_expires_at=lease_expires_at,
+            raw_response_text=raw_response_text,
+            raw_response_hash=raw_response_hash,
+            public_error_code=public_error_code,
+            finished_at=finished_at,
         )
 
 

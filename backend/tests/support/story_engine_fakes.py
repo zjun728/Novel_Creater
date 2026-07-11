@@ -57,11 +57,19 @@ class MemoryStoryEngineRepository:
             "seed_revision_id": "seed-revision-1",
             "seed_hash": "a" * 64,
         }
-        self.binding = {
-            "binding_revision_id": "binding-revision-1",
-            "binding_hash": "b" * 64,
-            "provider_id": "provider-1",
-            "model_name_snapshot": "safe-model",
+        self.bindings = {
+            "seed": {
+                "binding_revision_id": "binding-revision-1",
+                "binding_hash": "b" * 64,
+                "provider_id": "provider-seed",
+                "model_name_snapshot": "seed-model",
+            },
+            "planning": {
+                "binding_revision_id": "binding-revision-1",
+                "binding_hash": "b" * 64,
+                "provider_id": "provider-planning",
+                "model_name_snapshot": "planning-model",
+            },
         }
         self.batches: dict[str, dict] = {}
         self.options: dict[str, list[dict]] = {}
@@ -86,9 +94,10 @@ class MemoryStoryEngineRepository:
         self.events.append("lock-seed")
         return dict(self.seed) if project_id == "p1" else None
 
-    async def lock_planning_binding(self, session, project_id):
+    async def lock_seed_binding(self, session, project_id):
         self.events.append("lock-binding")
-        return dict(self.binding) if project_id == "p1" and self.binding else None
+        binding = self.bindings.get("seed")
+        return dict(binding) if project_id == "p1" and binding else None
 
     async def lock_batch_by_key(self, session, project_id, idempotency_key):
         self.events.append("lock-key")
