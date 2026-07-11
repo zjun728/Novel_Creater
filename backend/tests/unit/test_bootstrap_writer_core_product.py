@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.domain.model_bindings import TASK_KEYS
 from backend.scripts import bootstrap_writer_core_product as bootstrap
-from backend.services.projects import TASK_KEYS
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -280,10 +280,9 @@ def test_mapping_reuses_v1_rules_and_only_canonically_renames_preferred():
     assert state.project["title"] == "永乐大典"
     assert state.project["current_chapter"] == 0
     assert len(state.seeds) == 3
-    selected = [seed for seed in state.seeds if seed["status"] == "selected"]
-    assert [(row["title"], len(row["content_hash"])) for row in selected] == [
-        ("典镇山河", 64),
-    ]
+    assert {seed["status"] for seed in state.seeds} == {"candidate"}
+    assert all(len(seed["content_hash"]) == 64 for seed in state.seeds)
+    assert all("payload_json" in seed for seed in state.seeds)
     assert [provider["id"] for provider in state.providers] == [
         "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
         "ffffffff-ffff-ffff-ffff-ffffffffffff",
@@ -343,12 +342,16 @@ class TargetSession:
         self.foundation_counts = {
             "projects": 1,
             "creative_seeds": 3,
+            "creative_seed_revisions": 3,
+            "creative_seed_heads": 3,
             "project_selected_seeds": 1,
             "provider_profiles": 2,
-            "task_model_bindings": 1,
-            "task_model_binding_items": len(TASK_KEYS),
+            "project_model_binding_revisions": 1,
+            "project_model_binding_items": len(TASK_KEYS),
+            "project_model_binding_heads": 1,
             "canon_revisions": 1,
             "projection_heads": 1,
+            "project_contract_heads": 1,
         }
 
     async def fetchone(self, sql, parameters=None):
@@ -473,10 +476,14 @@ def test_receipt_json_encodes_dynamic_values_as_single_safe_records():
             f"provider.model={encode(provider_model)}"
         ),
         f"preferred_provider.id={encode(preferred_id)}",
-        "bindings.count=1",
+        "seed_revisions.count=3",
+        "seed_heads.count=3",
+        "binding_revisions.count=1",
         "binding_items.count=8",
+        "binding_heads.count=1",
         "canon_revisions.count=1",
         "projection_heads.count=1",
+        "contract_heads.count=1",
     ]
     assert all(
         control not in rendered
@@ -661,7 +668,7 @@ async def test_commit_failure_rolls_back_drops_incomplete_target_and_releases():
 @pytest.mark.asyncio
 async def test_verification_failure_preserves_error_rolls_back_drops_and_releases():
     session = TargetSession()
-    session.foundation_counts["task_model_binding_items"] = 7
+    session.foundation_counts["project_model_binding_items"] = 7
 
     async def initializer(*args):
         return None
@@ -671,7 +678,7 @@ async def test_verification_failure_preserves_error_rolls_back_drops_and_release
 
     with pytest.raises(
         bootstrap.BootstrapError,
-        match="Bootstrap verification failed for task_model_binding_items",
+        match="Bootstrap verification failed for project_model_binding_items",
     ):
         await bootstrap.bootstrap_writer_core_product(
             session,

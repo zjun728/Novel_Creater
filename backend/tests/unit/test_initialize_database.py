@@ -297,7 +297,7 @@ async def test_fresh_database_executes_manifest_in_order_and_writes_metadata():
     assert result.database_name == DATABASE_NAME
     assert result.schema_version == EXPECTED_SCHEMA_VERSION
     assert result.manifest_hash == manifest_hash()
-    assert result.table_count == len(created_table_names()) == 34
+    assert result.table_count == len(created_table_names()) == 49
 
 
 @pytest.mark.asyncio
@@ -357,7 +357,7 @@ def test_result_output_contains_only_public_bootstrap_fields():
             "database_name": DATABASE_NAME,
             "schema_version": EXPECTED_SCHEMA_VERSION,
             "manifest_hash": manifest_hash(),
-            "table_count": 34,
+            "table_count": 49,
         },
     )()
     output = format_initialization_result(result)
@@ -365,7 +365,7 @@ def test_result_output_contains_only_public_bootstrap_fields():
         f"database={DATABASE_NAME}",
         f"schema_version={EXPECTED_SCHEMA_VERSION}",
         f"manifest_hash={manifest_hash()}",
-        "table_count=34",
+        "table_count=49",
     }
     assert all(secret not in output for secret in sentinel_secrets)
     assert session.calls == []
