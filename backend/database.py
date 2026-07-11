@@ -1,5 +1,6 @@
 """Explicit async database connection and transaction boundaries."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import aiomysql
@@ -8,6 +9,7 @@ from backend.config import MYSQL_CONFIG
 
 
 _pool = None
+_pool_lock = asyncio.Lock()
 
 
 class DatabaseSession:
@@ -35,16 +37,20 @@ class DatabaseSession:
 async def get_pool():
     global _pool
     if _pool is None:
-        _pool = await aiomysql.create_pool(**MYSQL_CONFIG)
+        async with _pool_lock:
+            if _pool is None:
+                _pool = await aiomysql.create_pool(**MYSQL_CONFIG)
     return _pool
 
 
 async def close_pool():
     global _pool
-    if _pool is not None:
-        _pool.close()
-        await _pool.wait_closed()
+    async with _pool_lock:
+        pool = _pool
         _pool = None
+        if pool is not None:
+            pool.close()
+            await pool.wait_closed()
 
 
 @asynccontextmanager

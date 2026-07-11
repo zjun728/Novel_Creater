@@ -601,11 +601,13 @@ git commit -m "feat: define immutable writer core schema manifest"
 - Create: `backend/__init__.py`
 - Create: `backend/tests/support/fakes.py`
 - Create: `backend/tests/unit/test_database_transaction.py`
+- Create: `backend/tests/unit/test_backend_launcher.py`
 - Create: `backend/tests/unit/test_main_lifespan.py`
 - Create: `backend/tests/unit/test_no_runtime_ddl.py`
 - Modify: `backend/config.py`
 - Modify: `backend/database.py`
 - Modify: `backend/main.py`
+- Modify: `start_backend.bat`
 - Modify: `backend/routers/*.py` (only package-qualify active `database` imports,
   including the lazy import in `helpers.py`; do not change route behavior)
 
@@ -641,8 +643,12 @@ async def test_transaction_rolls_back_and_releases(monkeypatch, fake_pool):
 Add fake-context startup tests that import `backend.main.lifespan` from the repository
 root and prove verification happens exactly once before yielding, schema mismatch is
 not swallowed, and pool closure runs after normal shutdown and application failure.
-Also assert no symbol named `ensure_schema` exists in `backend.database` and that the
-module contains no runtime `CREATE TABLE` or `ALTER TABLE` statements.
+Also use controlled async events to prove two simultaneous first `get_pool()` calls
+create one shared pool, and that `close_pool()` racing initialization waits and closes
+that pool exactly once. Assert no symbol named `ensure_schema` exists in
+`backend.database` and that the module contains no runtime `CREATE TABLE` or
+`ALTER TABLE` statements. Add a launcher contract test that reads, but never runs,
+`start_backend.bat` and requires the repository-root package entrypoint.
 
 - [ ] **Step 2: Verify failure**
 
@@ -656,11 +662,13 @@ Use a focused session wrapper; transaction-aware repositories never call module-
 
 ```python
 # backend/database.py
+import asyncio
 from contextlib import asynccontextmanager
 import aiomysql
 from backend.config import MYSQL_CONFIG
 
 _pool = None
+_pool_lock = asyncio.Lock()
 
 class DatabaseSession:
     def __init__(self, raw):
@@ -684,15 +692,19 @@ class DatabaseSession:
 async def get_pool():
     global _pool
     if _pool is None:
-        _pool = await aiomysql.create_pool(**MYSQL_CONFIG)
+        async with _pool_lock:
+            if _pool is None:
+                _pool = await aiomysql.create_pool(**MYSQL_CONFIG)
     return _pool
 
 async def close_pool():
     global _pool
-    if _pool is not None:
-        _pool.close()
-        await _pool.wait_closed()
+    async with _pool_lock:
+        pool = _pool
         _pool = None
+        if pool is not None:
+            pool.close()
+            await pool.wait_closed()
 
 @asynccontextmanager
 async def connection():
@@ -750,6 +762,12 @@ without being reported as success or triggering a compensating rollback. If both
 body and rollback fail, raise a diagnostic exception group containing both original
 errors; never replace the body error silently. Do not retry or switch connections.
 
+Create the pool lock once at module import, never through a lazy check that crosses
+an `await`. Pool creation uses double-checked locking so cached reads remain cheap
+while simultaneous first callers cannot create competing pools. `close_pool()` uses
+that same lock to take and clear the global pool and finish close/wait atomically with
+respect to initialization.
+
 Package-qualify `backend.config`, `backend.database`, `backend.routers` and
 `backend.schema_version`. Mechanically change all active router imports from
 `from database ...` to `from backend.database ...`, including function-local lazy
@@ -775,16 +793,22 @@ before lifespan yields, and `close_pool()` runs for verification failure, normal
 shutdown and an exception raised after yield. The process refuses to serve requests
 with missing or mismatched Schema.
 
+`start_backend.bat` must change to the repository root with `cd /d "%~dp0"` and
+invoke `python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000` (using the
+existing preferred Python executable when present and the existing fallback
+otherwise). It must not change into `backend` or launch `uvicorn main:app`; retain
+the existing port, prompts and executable/dependency check behavior.
+
 - [ ] **Step 5: Run tests**
 
-Run: `python -m pytest backend/tests/unit/test_database_transaction.py backend/tests/unit/test_main_lifespan.py backend/tests/unit/test_no_runtime_ddl.py backend/tests/unit/test_schema_version.py -q`
+Run: `python -m pytest backend/tests/unit/test_database_transaction.py backend/tests/unit/test_backend_launcher.py backend/tests/unit/test_main_lifespan.py backend/tests/unit/test_no_runtime_ddl.py backend/tests/unit/test_schema_version.py -q`
 
 Expected: PASS; commit/rollback/release counts match exactly.
 
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add backend/__init__.py backend/config.py backend/database.py backend/main.py backend/tests
+git add backend/__init__.py backend/config.py backend/database.py backend/main.py backend/tests start_backend.bat
 git commit -m "refactor: make database transactions explicit"
 ```
 

@@ -1,3 +1,5 @@
+import asyncio
+
 import aiomysql
 import pytest
 
@@ -163,6 +165,68 @@ async def test_get_pool_uses_backend_config_and_caches_pool(monkeypatch):
     assert await database.get_pool() is created_pool
     assert await database.get_pool() is created_pool
     assert calls == [database.MYSQL_CONFIG]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_get_pool_creates_one_shared_pool(monkeypatch):
+    create_started = asyncio.Event()
+    allow_create = asyncio.Event()
+    created_pools = []
+
+    async def fake_create_pool(**kwargs):
+        pool = FakePool()
+        created_pools.append(pool)
+        create_started.set()
+        await allow_create.wait()
+        return pool
+
+    monkeypatch.setattr(database, "_pool", None)
+    monkeypatch.setattr(database, "_pool_lock", asyncio.Lock(), raising=False)
+    monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
+
+    first = asyncio.create_task(database.get_pool())
+    await create_started.wait()
+    second = asyncio.create_task(database.get_pool())
+    await asyncio.sleep(0)
+    allow_create.set()
+    first_pool, second_pool = await asyncio.gather(first, second)
+
+    assert len(created_pools) == 1
+    assert first_pool is second_pool is created_pools[0]
+
+
+@pytest.mark.asyncio
+async def test_close_pool_waits_for_initialization_and_closes_once(monkeypatch):
+    create_started = asyncio.Event()
+    allow_create = asyncio.Event()
+    created_pool = FakePool()
+
+    async def fake_create_pool(**kwargs):
+        create_started.set()
+        await allow_create.wait()
+        return created_pool
+
+    monkeypatch.setattr(database, "_pool", None)
+    monkeypatch.setattr(database, "_pool_lock", asyncio.Lock(), raising=False)
+    monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
+
+    get_task = asyncio.create_task(database.get_pool())
+    await create_started.wait()
+    close_task = asyncio.create_task(database.close_pool())
+    await asyncio.sleep(0)
+    close_waited_for_initialization = not close_task.done()
+    allow_create.set()
+
+    assert await get_task is created_pool
+    await close_task
+    assert close_waited_for_initialization
+    assert created_pool.close_count == 1
+    assert created_pool.wait_closed_count == 1
+    assert database._pool is None
+
+
+def test_pool_lock_is_created_at_module_scope():
+    assert isinstance(database._pool_lock, asyncio.Lock)
 
 
 @pytest.mark.asyncio
