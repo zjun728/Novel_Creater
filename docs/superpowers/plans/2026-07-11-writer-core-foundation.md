@@ -821,7 +821,7 @@ git commit -m "refactor: make database transactions explicit"
 - Create: `backend/tests/unit/test_canon_identity.py`
 - Create: `backend/tests/unit/test_canon_conflicts.py`
 
-- [ ] **Step 1: Write exact identity and conflict tests**
+- [x] **Step 1: Write exact identity and conflict tests**
 
 ```python
 # backend/tests/unit/test_canon_identity.py
@@ -870,13 +870,13 @@ def test_equals_and_not_equals_same_value_are_mutually_exclusive():
     assert len(find_hard_conflicts([event("北平")], [denied])) == 1
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `python -m pytest backend/tests/unit/test_canon_identity.py backend/tests/unit/test_canon_conflicts.py -q`
 
 Expected: FAIL because the domain module does not exist.
 
-- [ ] **Step 3: Implement closed enums and pure rules**
+- [x] **Step 3: Implement closed enums and pure rules**
 
 ```python
 # backend/domain/canon.py
@@ -975,7 +975,7 @@ def find_hard_conflicts(existing: list[CanonEventInput], incoming: list[CanonEve
 
 Validate on construction: names and field paths must be non-empty; chapter bounds must be positive; end cannot precede start; confirmed events require non-empty evidence. Events for the same entity/field must use the same cardinality; a mismatch is an invalid ChangeSet that requires author correction, not an automatic conflict guess. Do not add fuzzy matching, rehome, find-or-create or name-based automatic merge.
 
-- [ ] **Step 4: Align Canon SQL with conflict semantics**
+- [x] **Step 4: Align Canon SQL with conflict semantics**
 
 In `backend/schema/50_canon.sql`, replace opaque validity strings with:
 
@@ -991,7 +991,7 @@ CHECK (assertion_operator IN ('equals','not_equals')),
 CHECK (value_cardinality IN ('single','multi')),
 ```
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `python -m pytest backend/tests/unit/test_canon_identity.py backend/tests/unit/test_canon_conflicts.py -q`
 
