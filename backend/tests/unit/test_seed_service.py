@@ -89,8 +89,12 @@ class MemorySeedRepository:
         self.events.append("insert-selection")
         self.selections[row["project_id"]] = dict(row)
 
-    async def update_selection(self, session, row):
-        self.events.append("update-selection")
+    async def advance_selected_revision(self, session, row):
+        self.events.append("advance-selected-revision")
+        self.selections[row["project_id"]].update(row)
+
+    async def replace_selection(self, session, row):
+        self.events.append("replace-selection")
         self.selections[row["project_id"]] = dict(row)
 
     async def dependency_count(self, session, project_id, seed_id):
@@ -174,7 +178,36 @@ async def test_create_persists_identity_revision_one_and_head_with_canonical_fac
     assert result.revision == 1
     assert revision["payload_json"] == canonical_json(payload())
     assert revision["content_hash"] == canonical_hash(payload()) == result.content_hash
-    assert harness.repo.events == ["project", "identity", "revision", "head"]
+    assert harness.repo.events == [
+        "project", "selection", "identity", "revision", "head",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_reports_current_project_selection_revision_for_unselected_seed():
+    harness = Harness()
+    selected_seed = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("已选"))
+    )
+    for expected_selection_revision in range(7):
+        await harness.service.select(
+            SelectSeed(
+                project_id="p1", seed_id=selected_seed.id,
+                expected_seed_revision=1,
+                expected_selection_revision=expected_selection_revision,
+            )
+        )
+    harness.repo.events.clear()
+
+    created = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("新候选"))
+    )
+
+    assert created.is_selected is False
+    assert created.selection_revision == 7
+    assert harness.repo.events == [
+        "project", "selection", "identity", "revision", "head",
+    ]
 
 
 @pytest.mark.asyncio
@@ -267,7 +300,8 @@ async def test_edit_appends_revision_preserves_history_and_moves_selected_fact()
     assert harness.repo.selections["p1"]["seed_hash"] == edited.content_hash
     assert harness.repo.selections["p1"]["selection_revision"] == 2
     assert harness.repo.events[-6:] == [
-        "project", "seed", "selection", "revision", "update-head", "update-selection",
+        "project", "seed", "selection", "revision", "update-head",
+        "advance-selected-revision",
     ]
 
 

@@ -260,3 +260,74 @@ async def test_edit_failure_rolls_back_revision_append(disposable_mysql):
     assert await disposable_mysql.session.fetchone(
         "SELECT revision FROM creative_seed_heads WHERE seed_id=%s", (created.id,)
     ) == {"revision": 1}
+
+
+@pytest.mark.asyncio
+async def test_explicit_selection_refreshes_selected_at_while_edit_preserves_it(
+    disposable_mysql,
+):
+    await insert_project(disposable_mysql.session, "p1")
+    now = {"value": 10}
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+        clock=lambda: now["value"],
+    )
+    first = await service.create(CreateSeed(project_id="p1", payload=payload("甲")))
+    second = await service.create(CreateSeed(project_id="p1", payload=payload("乙")))
+
+    now["value"] = 100
+    await service.select(
+        SelectSeed(
+            project_id="p1", seed_id=first.id,
+            expected_seed_revision=1, expected_selection_revision=0,
+        )
+    )
+    assert await disposable_mysql.session.fetchone(
+        """SELECT seed_id,selection_revision,selected_at,updated_at
+           FROM project_selected_seeds WHERE project_id='p1'"""
+    ) == {
+        "seed_id": first.id,
+        "selection_revision": 1,
+        "selected_at": 100,
+        "updated_at": 100,
+    }
+
+    now["value"] = 200
+    await service.select(
+        SelectSeed(
+            project_id="p1", seed_id=second.id,
+            expected_seed_revision=1, expected_selection_revision=1,
+        )
+    )
+    assert await disposable_mysql.session.fetchone(
+        """SELECT seed_id,selection_revision,selected_at,updated_at
+           FROM project_selected_seeds WHERE project_id='p1'"""
+    ) == {
+        "seed_id": second.id,
+        "selection_revision": 2,
+        "selected_at": 200,
+        "updated_at": 200,
+    }
+
+    now["value"] = 300
+    await service.edit(
+        EditSeed(
+            project_id="p1", seed_id=second.id, payload=payload("乙改"),
+            expected_seed_revision=1, expected_selection_revision=2,
+        )
+    )
+    assert await disposable_mysql.session.fetchone(
+        """SELECT seed_id,selection_revision,selected_at,updated_at
+           FROM project_selected_seeds WHERE project_id='p1'"""
+    ) == {
+        "seed_id": second.id,
+        "selection_revision": 3,
+        "selected_at": 200,
+        "updated_at": 300,
+    }

@@ -127,33 +127,40 @@ class SeedService:
         )
 
     async def create(self, command: CreateSeed) -> SeedResult:
-        seed_id = self.id_factory()
-        revision_id = self.id_factory()
-        now = self.clock()
-        payload_json = canonical_json(command.payload)
-        content_hash = canonical_hash(command.payload)
-        identity = {
-            "id": seed_id, "project_id": command.project_id,
-            "status": "candidate", "created_at": now, "updated_at": now,
-        }
-        revision = {
-            "id": revision_id, "project_id": command.project_id,
-            "seed_id": seed_id, "revision": 1, "payload_json": payload_json,
-            "content_hash": content_hash, "created_at": now,
-        }
-        head = {
-            "seed_id": seed_id, "revision_id": revision_id, "revision": 1,
-            "content_hash": content_hash, "updated_at": now,
-        }
         async with self.transaction_factory() as session:
             await self._lock_project_for_mutation(session, command.project_id)
+            selection = await self.repository.lock_selection(
+                session, command.project_id
+            )
+            selection_revision = _selection_revision(selection)
+            seed_id = self.id_factory()
+            revision_id = self.id_factory()
+            now = self.clock()
+            payload_json = canonical_json(command.payload)
+            content_hash = canonical_hash(command.payload)
+            identity = {
+                "id": seed_id, "project_id": command.project_id,
+                "status": "candidate", "created_at": now, "updated_at": now,
+            }
+            revision = {
+                "id": revision_id, "project_id": command.project_id,
+                "seed_id": seed_id, "revision": 1,
+                "payload_json": payload_json, "content_hash": content_hash,
+                "created_at": now,
+            }
+            head = {
+                "seed_id": seed_id, "revision_id": revision_id,
+                "revision": 1, "content_hash": content_hash,
+                "updated_at": now,
+            }
             await self.repository.insert_identity(session, identity)
             await self.repository.insert_revision(session, revision)
             await self.repository.insert_head(session, head)
         return SeedResult(
             id=seed_id, project_id=command.project_id, status="candidate",
             revision=1, revision_id=revision_id, content_hash=content_hash,
-            payload=command.payload, is_selected=False, selection_revision=0,
+            payload=command.payload, is_selected=False,
+            selection_revision=selection_revision,
         )
 
     async def edit(self, command: EditSeed) -> SeedResult:
@@ -198,11 +205,10 @@ class SeedService:
             selection_revision = _selection_revision(selection)
             if is_selected:
                 selection_revision += 1
-                await self.repository.update_selection(
+                await self.repository.advance_selected_revision(
                     session,
                     {
                         "project_id": command.project_id,
-                        "seed_id": command.seed_id,
                         "seed_revision_id": revision_id,
                         "seed_hash": content_hash,
                         "selection_revision": selection_revision,
@@ -247,7 +253,7 @@ class SeedService:
             if selection is None:
                 await self.repository.insert_selection(session, row)
             else:
-                await self.repository.update_selection(session, row)
+                await self.repository.replace_selection(session, row)
         return self._result(
             head, is_selected=True, selection_revision=new_revision
         )

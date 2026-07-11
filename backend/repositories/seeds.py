@@ -128,15 +128,29 @@ class SeedRepository:
             ),
         )
 
-    async def update_selection(self, session, row: dict) -> None:
+    async def advance_selected_revision(self, session, row: dict) -> None:
         await session.execute(
             """UPDATE project_selected_seeds
-               SET seed_id=%s, seed_revision_id=%s, seed_hash=%s,
+               SET seed_revision_id=%s, seed_hash=%s,
                    selection_revision=%s, updated_at=%s
                WHERE project_id=%s""",
             (
-                row["seed_id"], row["seed_revision_id"], row["seed_hash"],
+                row["seed_revision_id"], row["seed_hash"],
                 row["selection_revision"], row["updated_at"],
+                row["project_id"],
+            ),
+        )
+
+    async def replace_selection(self, session, row: dict) -> None:
+        await session.execute(
+            """UPDATE project_selected_seeds
+               SET seed_id=%s, seed_revision_id=%s, seed_hash=%s,
+                   selection_revision=%s, selected_at=%s, updated_at=%s
+               WHERE project_id=%s""",
+            (
+                row["seed_id"], row["seed_revision_id"], row["seed_hash"],
+                row["selection_revision"], row["selected_at"],
+                row["updated_at"],
                 row["project_id"],
             ),
         )
