@@ -65,14 +65,20 @@ export function observeRuntime(page) {
 
   async function finish() {
     const apiResponses = []
-    try {
-      await page.waitForLoadState('networkidle')
+    const drainPendingApiBodies = async () => {
       while (pendingApiBodies.size) {
         const batch = [...pendingApiBodies]
         const resolved = await Promise.all(batch)
         for (const promise of batch) pendingApiBodies.delete(promise)
         apiResponses.push(...resolved)
       }
+    }
+    let pageContent = ''
+    try {
+      await page.waitForLoadState('networkidle')
+      await drainPendingApiBodies()
+      pageContent = await page.content()
+      await drainPendingApiBodies()
     } finally {
       page.off('response', onResponse)
       page.off('console', onConsole)
@@ -87,7 +93,7 @@ export function observeRuntime(page) {
       pageErrors,
       requestFailures,
       responseFailures,
-      pageContent: await page.content(),
+      pageContent,
     }
   }
 

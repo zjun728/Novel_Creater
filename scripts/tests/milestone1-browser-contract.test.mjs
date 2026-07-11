@@ -59,6 +59,7 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   }
   assert.match(observer, /new Set\(\)/)
   assert.match(observer, /while\s*\(pendingApiBodies\.size\)/)
+  assert.match(observer, /await drainPendingApiBodies\(\)[^]*pageContent\s*=\s*await page\.content\(\)[^]*await drainPendingApiBodies\(\)[^]*finally\s*\{/)
   assert.match(observer, /finally\s*\{[^]*page\.off\('response',\s*onResponse\)[^]*page\.off\('console',\s*onConsole\)[^]*page\.off\('pageerror',\s*onPageError\)[^]*page\.off\('requestfailed',\s*onRequestFailed\)/)
   assert.match(source, /READ_METHODS\.has\(response\.method\)/)
   assert.match(source, /expect\(apiWriteMethods[^]*?\.toEqual\(\[\]\)/)

@@ -15,7 +15,7 @@ class FakePage extends EventEmitter {
   }
 
   async content() {
-    this.onContent?.()
+    await this.onContent?.()
     return this.contentValue
   }
 }
@@ -38,7 +38,7 @@ function fakeResponse({
   }
 }
 
-test('observer drains API bodies added during an earlier drain and then detaches', async () => {
+test('observer keeps listeners through DOM capture, drains again, then detaches', async () => {
   const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
   const page = new FakePage()
   let resolveFirstBody
@@ -56,10 +56,22 @@ test('observer drains API bodies added during an earlier drain and then detaches
       return value
     },
   })
-  const ignoredAfterDetach = fakeResponse({
+  const capturedDuringContent = fakeResponse({
     url: 'http://127.0.0.1:8000/api/late-timer',
+    headers: { 'x-content': 'yes' },
+    body: '{"late":true}',
   })
-  page.onContent = () => page.emit('response', ignoredAfterDetach)
+  page.onContent = async () => {
+    await new Promise(resolve => setTimeout(resolve, 0))
+    page.emit('response', capturedDuringContent)
+    page.emit('console', { type: () => 'error', text: () => 'content timer console' })
+    page.emit('pageerror', new Error('content timer page error'))
+    page.emit('requestfailed', {
+      method: () => 'GET',
+      url: () => 'http://127.0.0.1:5173/content-timer',
+      failure: () => ({ errorText: 'content timer request failure' }),
+    })
+  }
 
   const observer = observeRuntime(page)
   page.emit('response', first)
@@ -68,12 +80,17 @@ test('observer drains API bodies added during an earlier drain and then detaches
   const evidence = await finishing
 
   assert.equal(page.waitedFor, 'networkidle')
-  assert.equal(evidence.apiResponses.length, 2)
+  assert.equal(evidence.apiResponses.length, 3)
   assert.deepEqual(
     evidence.apiResponses.map(response => response.headers),
-    [{ 'x-first': 'yes' }, { 'x-second': 'yes' }],
+    [{ 'x-first': 'yes' }, { 'x-second': 'yes' }, { 'x-content': 'yes' }],
   )
   assert.equal(evidence.pageContent, '<main>final DOM</main>')
+  assert.deepEqual(evidence.consoleErrors, ['error: content timer console'])
+  assert.deepEqual(evidence.pageErrors, ['content timer page error'])
+  assert.deepEqual(evidence.requestFailures, [
+    'GET http://127.0.0.1:5173/content-timer content timer request failure',
+  ])
   for (const event of ['response', 'console', 'pageerror', 'requestfailed']) {
     assert.equal(page.listenerCount(event), 0)
   }
