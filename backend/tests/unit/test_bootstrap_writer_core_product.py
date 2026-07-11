@@ -832,3 +832,20 @@ def test_main_runtime_failure_is_generic_and_secret_free(monkeypatch, capsys):
     assert captured.out == ""
     assert captured.err == "Writer Core product bootstrap failed.\n"
     assert SECRET_VALUES[0] not in captured.err
+
+
+def test_bootstrap_integration_module_exposes_only_two_real_tests():
+    from backend.tests.integration import (
+        test_bootstrap_writer_core_product as integration,
+    )
+
+    exposed_tests = sorted(
+        name
+        for name, value in vars(integration).items()
+        if name.startswith("test_") and callable(value)
+    )
+
+    assert exposed_tests == [
+        "test_cross_server_bootstrap_builds_verified_disposable_target",
+        "test_cross_server_cleanup_closes_admin_when_drop_fails",
+    ]

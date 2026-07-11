@@ -18,7 +18,7 @@ from backend.tests.support.disposable_mysql import (
     _open_admin_session,
     assert_disposable_name,
     new_database_name,
-    test_server_config,
+    test_server_config as _mysql_server_config,
 )
 
 
@@ -57,7 +57,7 @@ def _source_inventory():
 @pytest.mark.mysql
 @pytest.mark.asyncio
 async def test_cross_server_bootstrap_builds_verified_disposable_target():
-    config = test_server_config()
+    config = _mysql_server_config()
     database_name = new_database_name()
     assert_disposable_name(database_name)
     admin_session = await _open_admin_session(config)
@@ -143,7 +143,7 @@ async def test_cross_server_cleanup_closes_admin_when_drop_fails(monkeypatch):
         raise RuntimeError("bootstrap failed")
 
     module = "backend.tests.integration.test_bootstrap_writer_core_product"
-    monkeypatch.setattr(f"{module}.test_server_config", lambda: {})
+    monkeypatch.setattr(f"{module}._mysql_server_config", lambda: {})
     monkeypatch.setattr(f"{module}.new_database_name", lambda: database_name)
     monkeypatch.setattr(f"{module}._open_admin_session", open_admin_session)
     monkeypatch.setattr(f"{module}.bootstrap_writer_core_product", fail_bootstrap)
