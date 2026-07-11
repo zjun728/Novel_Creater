@@ -12,6 +12,12 @@ class PublicDomainError(RuntimeError):
         super().__init__(self.message)
 
 
+class ProjectNotFound(PublicDomainError):
+    status_code = 404
+    code = "ProjectNotFound"
+    message = "Project not found"
+
+
 class SeedNotFound(PublicDomainError):
     status_code = 404
     code = "SeedNotFound"

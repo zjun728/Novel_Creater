@@ -6,6 +6,7 @@ from hashlib import sha256
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.http_errors import ProjectNotFound
 from backend.services.projections import build_projection_bundle
 
 
@@ -91,7 +92,10 @@ class ProjectService:
 
     async def delete(self, project_id: str) -> None:
         async with self.transaction_factory() as session:
-            await self.repository.delete(session, project_id)
+            if await self.repository.lock_active_project(session, project_id) is None:
+                raise ProjectNotFound()
+            if not await self.repository.archive(session, project_id):
+                raise ProjectNotFound()
 
     def _connection(self):
         if self.connection_factory is None:

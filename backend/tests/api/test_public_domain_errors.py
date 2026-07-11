@@ -7,7 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.http_errors import SeedConflict, SeedLocked, SeedNotFound
+from backend.http_errors import ProjectNotFound, SeedConflict, SeedLocked, SeedNotFound
 from backend.security.redaction import install_error_handlers
 
 
@@ -18,6 +18,7 @@ PRIVATE_URL = "https://domain-private.example/v1"
 @pytest.mark.parametrize(
     ("error", "status", "code"),
     [
+        (ProjectNotFound(), 404, "ProjectNotFound"),
         (SeedNotFound(), 404, "SeedNotFound"),
         (SeedConflict(), 409, "SeedConflict"),
         (SeedLocked(), 423, "SeedLocked"),

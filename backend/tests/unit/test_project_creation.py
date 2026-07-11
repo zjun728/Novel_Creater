@@ -5,6 +5,7 @@ from contextlib import AbstractAsyncContextManager
 import pytest
 from pydantic import ValidationError
 
+from backend import http_errors
 from backend.repositories.projects import ProjectRepository
 from backend.services.projections import build_projection_bundle
 from backend.services.projects import CreateProject, ProjectService
@@ -166,17 +167,23 @@ def test_create_project_is_strict_frozen_and_rejects_extra_fields():
 
 
 class RecordingSession:
-    def __init__(self):
+    def __init__(self, *, execute_result=1):
         self.calls = []
         self.fetchone_result = None
+        self.fetchall_result = []
+        self.execute_result = execute_result
 
     async def execute(self, sql, args=None):
         self.calls.append(("execute", " ".join(sql.split()), args))
-        return 1
+        return self.execute_result
 
     async def fetchone(self, sql, args=None):
         self.calls.append(("fetchone", " ".join(sql.split()), args))
         return self.fetchone_result
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append(("fetchall", " ".join(sql.split()), args))
+        return self.fetchall_result
 
 
 @pytest.mark.asyncio
@@ -195,10 +202,133 @@ async def test_repository_inserts_contract_head_zero_on_explicit_session():
 
 
 @pytest.mark.asyncio
-async def test_delete_is_one_project_statement_on_explicit_session():
+async def test_repository_project_reads_hide_archived_rows():
     session = RecordingSession()
-    await ProjectRepository().delete(session, "p1")
-    assert session.calls == [("execute", "DELETE FROM projects WHERE id=%s", ("p1",))]
+    repository = ProjectRepository()
+
+    await repository.list(session)
+    await repository.get(session, "p1")
+
+    assert session.calls == [
+        (
+            "fetchall",
+            "SELECT * FROM projects WHERE status<>'archived' ORDER BY updated_at DESC, id DESC",
+            None,
+        ),
+        (
+            "fetchone",
+            "SELECT * FROM projects WHERE id=%s AND status<>'archived'",
+            ("p1",),
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repository_locks_only_active_project_on_explicit_session():
+    session = RecordingSession()
+
+    await ProjectRepository().lock_active_project(session, "p1")
+
+    assert session.calls == [
+        (
+            "fetchone",
+            "SELECT * FROM projects WHERE id=%s AND status<>'archived' FOR UPDATE",
+            ("p1",),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
+async def test_repository_archive_checks_conditional_update_rowcount(affected, expected):
+    session = RecordingSession(execute_result=affected)
+
+    changed = await ProjectRepository(clock=lambda: 123).archive(session, "p1")
+
+    assert changed is expected
+    assert session.calls == [
+        (
+            "execute",
+            "UPDATE projects SET status='archived',updated_at=%s WHERE id=%s AND status<>'archived'",
+            (123, "p1"),
+        )
+    ]
+
+
+class FakeProjectArchiveRepository:
+    def __init__(self, *, active_project=None, archive_result=True, archive_error=None):
+        self.active_project = active_project
+        self.archive_result = archive_result
+        self.archive_error = archive_error
+        self.calls = []
+
+    async def lock_active_project(self, session, project_id):
+        self.calls.append(("lock", session, project_id))
+        if self.active_project and self.active_project.get("status") == "archived":
+            return None
+        return self.active_project
+
+    async def archive(self, session, project_id):
+        self.calls.append(("archive", session, project_id))
+        if self.archive_error is not None:
+            raise self.archive_error
+        return self.archive_result
+
+
+@pytest.mark.asyncio
+async def test_delete_locks_and_archives_project_in_one_transaction():
+    repository = FakeProjectArchiveRepository(active_project={"id": "p1"})
+    transactions = FakeTransactionFactory()
+
+    await ProjectService(repository, transactions).delete("p1")
+
+    assert [call[0] for call in repository.calls] == ["lock", "archive"]
+    assert repository.calls[0][1] is repository.calls[1][1]
+    assert transactions.enter_count == 1
+    assert transactions.commit_count == 1
+    assert transactions.rollback_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_project", [None, {"id": "p1", "status": "archived"}])
+async def test_delete_missing_or_archived_project_raises_stable_not_found(active_project):
+    repository = FakeProjectArchiveRepository(active_project=active_project)
+    transactions = FakeTransactionFactory()
+
+    with pytest.raises(http_errors.ProjectNotFound):
+        await ProjectService(repository, transactions).delete("p1")
+
+    assert [call[0] for call in repository.calls] == ["lock"]
+    assert transactions.commit_count == 0
+    assert transactions.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_rolls_back_when_archive_fails():
+    repository = FakeProjectArchiveRepository(
+        active_project={"id": "p1"}, archive_error=RuntimeError("archive failed")
+    )
+    transactions = FakeTransactionFactory()
+
+    with pytest.raises(RuntimeError, match="archive failed"):
+        await ProjectService(repository, transactions).delete("p1")
+
+    assert transactions.commit_count == 0
+    assert transactions.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_zero_row_archive_rolls_back_as_stable_not_found():
+    repository = FakeProjectArchiveRepository(
+        active_project={"id": "p1"}, archive_result=False
+    )
+    transactions = FakeTransactionFactory()
+
+    with pytest.raises(http_errors.ProjectNotFound):
+        await ProjectService(repository, transactions).delete("p1")
+
+    assert transactions.commit_count == 0
+    assert transactions.rollback_count == 1
 
 
 @pytest.mark.asyncio

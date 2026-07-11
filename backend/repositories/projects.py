@@ -35,13 +35,30 @@ class ProjectRepository:
 
     async def list(self, session):
         return await session.fetchall(
-            "SELECT * FROM projects ORDER BY updated_at DESC, id DESC"
+            """SELECT * FROM projects WHERE status<>'archived'
+               ORDER BY updated_at DESC, id DESC"""
         )
 
     async def get(self, session, project_id: str):
         return await session.fetchone(
-            "SELECT * FROM projects WHERE id=%s", (project_id,)
+            "SELECT * FROM projects WHERE id=%s AND status<>'archived'",
+            (project_id,),
         )
+
+    async def lock_active_project(self, session, project_id: str):
+        return await session.fetchone(
+            """SELECT * FROM projects
+               WHERE id=%s AND status<>'archived' FOR UPDATE""",
+            (project_id,),
+        )
+
+    async def archive(self, session, project_id: str) -> bool:
+        changed = await session.execute(
+            """UPDATE projects SET status='archived',updated_at=%s
+               WHERE id=%s AND status<>'archived'""",
+            (self._clock(), project_id),
+        )
+        return changed == 1
 
     async def update(self, session, project_id: str, changes: Mapping) -> None:
         if not changes:
@@ -121,6 +138,3 @@ class ProjectRepository:
                VALUES (%s,0,NULL,NULL,NULL,NULL,%s)""",
             (project_id, self._clock()),
         )
-
-    async def delete(self, session, project_id: str) -> None:
-        await session.execute("DELETE FROM projects WHERE id=%s", (project_id,))
