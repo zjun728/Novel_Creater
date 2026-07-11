@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from hashlib import sha256
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, get_args
 import unicodedata
 
 from pydantic import (
@@ -23,17 +24,10 @@ from pydantic import (
 from backend.domain.json_contracts import canonical_hash
 
 
-PACKAGE_VERSION = "writer-core-v1.1.0"
-ASSET_CATEGORIES = (
-    "plot_organization",
-    "ensemble",
-    "dialogue",
-    "emotion",
-    "interiority",
-    "information_release",
-    "pacing",
-    "suspense",
-)
+PackageVersion = Literal["writer-core-v1.1.0"]
+PACKAGE_VERSION = get_args(PackageVersion)[0]
+MAX_ASSET_MANIFEST_BYTES = 64 * 1024
+MAX_ASSET_CHILD_BYTES = 4 * 1024 * 1024
 
 AssetCategory = Literal[
     "plot_organization",
@@ -45,6 +39,7 @@ AssetCategory = Literal[
     "pacing",
     "suspense",
 ]
+ASSET_CATEGORIES = get_args(AssetCategory)
 ReviewDecision = Literal["approved", "candidate", "rewrite", "rejected"]
 ValidationMode = Literal["structural", "release"]
 
@@ -88,8 +83,121 @@ ManifestPath = Annotated[
 ]
 
 
+class _AssetError(Enum):
+    PACKAGE_INVALID = ("ASSET_PACKAGE_INVALID", "asset package is invalid")
+    MANIFEST_INVALID = ("ASSET_MANIFEST_INVALID", "asset manifest is invalid")
+    VALIDATION_MODE_UNSUPPORTED = (
+        "ASSET_VALIDATION_MODE_UNSUPPORTED",
+        "asset package validation mode is unsupported",
+    )
+    MANIFEST_IO = ("ASSET_MANIFEST_IO", "asset manifest could not be read")
+    MANIFEST_JSON_INVALID = (
+        "ASSET_MANIFEST_JSON_INVALID",
+        "asset manifest JSON is invalid",
+    )
+    MANIFEST_TOO_LARGE = (
+        "ASSET_MANIFEST_TOO_LARGE",
+        "asset manifest exceeds maximum size",
+    )
+    STYLES_IO = ("ASSET_STYLES_IO", "styles asset file could not be read")
+    STYLES_JSON_INVALID = (
+        "ASSET_STYLES_JSON_INVALID",
+        "styles asset JSON is invalid",
+    )
+    STYLES_TOO_LARGE = (
+        "ASSET_STYLES_TOO_LARGE",
+        "styles asset file exceeds maximum size",
+    )
+    STYLES_PATH_ESCAPE = (
+        "ASSET_STYLES_PATH_ESCAPE",
+        "styles asset path escapes package directory",
+    )
+    STYLES_SHA256_MISMATCH = (
+        "ASSET_STYLES_SHA256_MISMATCH",
+        "styles_file sha256 mismatch",
+    )
+    STYLES_NOT_ARRAY = (
+        "ASSET_STYLES_NOT_ARRAY",
+        "styles_file must contain a JSON array",
+    )
+    CARDS_IO = (
+        "ASSET_CARDS_IO",
+        "experience cards asset file could not be read",
+    )
+    CARDS_JSON_INVALID = (
+        "ASSET_CARDS_JSON_INVALID",
+        "experience cards asset JSON is invalid",
+    )
+    CARDS_TOO_LARGE = (
+        "ASSET_CARDS_TOO_LARGE",
+        "experience cards asset file exceeds maximum size",
+    )
+    CARDS_PATH_ESCAPE = (
+        "ASSET_CARDS_PATH_ESCAPE",
+        "experience cards asset path escapes package directory",
+    )
+    CARDS_SHA256_MISMATCH = (
+        "ASSET_CARDS_SHA256_MISMATCH",
+        "experience_cards_file sha256 mismatch",
+    )
+    CARDS_NOT_ARRAY = (
+        "ASSET_CARDS_NOT_ARRAY",
+        "experience_cards_file must contain a JSON array",
+    )
+    PACKAGE_VERSION = (
+        "ASSET_PACKAGE_VERSION_INVALID",
+        "asset package version is invalid",
+    )
+    STYLE_COUNT = (
+        "ASSET_STYLE_COUNT_INVALID",
+        "asset package must contain exactly 8 styles",
+    )
+    CARD_COUNT = (
+        "ASSET_CARD_COUNT_INVALID",
+        "asset package must contain 40 to 60 experience cards",
+    )
+    CATEGORY_COVERAGE = (
+        "ASSET_CATEGORY_COVERAGE_INVALID",
+        "experience cards must cover all asset categories",
+    )
+    STYLE_KEY_DUPLICATE = (
+        "ASSET_STYLE_KEY_DUPLICATE",
+        "duplicate stable_key in styles",
+    )
+    CARD_KEY_DUPLICATE = (
+        "ASSET_CARD_KEY_DUPLICATE",
+        "duplicate stable_key in experience_cards",
+    )
+    METHOD_DUPLICATE = (
+        "ASSET_METHOD_DUPLICATE",
+        "duplicate normalized method",
+    )
+    MICRO_DEMO_DUPLICATE = (
+        "ASSET_MICRO_DEMO_DUPLICATE",
+        "duplicate normalized original_micro_demo",
+    )
+    CONTENT_HASH_DUPLICATE = (
+        "ASSET_CONTENT_HASH_DUPLICATE",
+        "duplicate content_hash",
+    )
+    CONTENT_HASH_MISMATCH = (
+        "ASSET_CONTENT_HASH_MISMATCH",
+        "asset content_hash mismatch",
+    )
+    RELEASE_REVIEW_INCOMPLETE = (
+        "ASSET_RELEASE_REVIEW_INCOMPLETE",
+        "release review metadata is incomplete",
+    )
+
+
 class AssetPackageError(ValueError):
-    """An asset package is malformed or violates package policy."""
+    """A stable, non-sensitive error at the public asset-package boundary."""
+
+    def __init__(self, error: _AssetError) -> None:
+        if not isinstance(error, _AssetError):
+            raise TypeError("AssetPackageError requires a fixed asset error")
+        self.code, self.safe_message = error.value
+        super().__init__(f"{self.code}: {self.safe_message}")
 
 
 class _FrozenModel(BaseModel):
@@ -98,6 +206,7 @@ class _FrozenModel(BaseModel):
         frozen=True,
         extra="forbid",
         str_strip_whitespace=True,
+        hide_input_in_errors=True,
     )
 
 
@@ -202,22 +311,34 @@ class AssetFile(_FrozenModel):
     @classmethod
     def require_safe_relative_json_path(cls, value: str) -> str:
         normalized = value.replace("\\", "/")
-        path = PurePosixPath(normalized)
-        if path.is_absolute() or ".." in path.parts or path.suffix.lower() != ".json":
+        posix_path = PurePosixPath(normalized)
+        windows_path = PureWindowsPath(value)
+        if (
+            posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or bool(windows_path.drive)
+            or bool(windows_path.root)
+            or ".." in posix_path.parts
+            or ".." in windows_path.parts
+            or posix_path.suffix.lower() != ".json"
+        ):
             raise ValueError("asset child path must be a relative JSON path")
         return normalized
 
 
 class AssetManifest(_FrozenModel):
-    package_version: Literal["writer-core-v1.1.0"]
+    package_version: PackageVersion
     styles_file: AssetFile
     experience_cards_file: AssetFile
 
 
 class AssetPackage(_FrozenModel):
     manifest: AssetManifest
-    styles: tuple[StyleTemplateRevision, ...]
-    experience_cards: tuple[ExperienceCardRevision, ...]
+    styles: tuple[StyleTemplateRevision, ...] = Field(min_length=8, max_length=8)
+    experience_cards: tuple[ExperienceCardRevision, ...] = Field(
+        min_length=40,
+        max_length=60,
+    )
 
     @field_validator("styles", "experience_cards", mode="before")
     @classmethod
@@ -236,10 +357,10 @@ def _normalized_identity(value: str) -> str:
     return " ".join(normalized.split()).casefold()
 
 
-def _ensure_unique(values: list[str], *, label: str) -> None:
+def _ensure_unique(values: list[str], *, error: _AssetError) -> None:
     normalized = [_normalized_identity(value) for value in values]
     if len(normalized) != len(set(normalized)):
-        raise AssetPackageError(f"duplicate {label}")
+        raise AssetPackageError(error)
 
 
 def _validate_release_review(package: AssetPackage) -> None:
@@ -250,9 +371,7 @@ def _validate_release_review(package: AssetPackage) -> None:
             or provenance.reviewer is None
             or provenance.review_time is None
         ):
-            raise AssetPackageError(
-                f"release review metadata is incomplete for {asset.stable_key}"
-            )
+            raise AssetPackageError(_AssetError.RELEASE_REVIEW_INCOMPLETE)
 
 
 def validate_asset_package(
@@ -263,46 +382,46 @@ def validate_asset_package(
     """Validate inventory, hashes, uniqueness and optional release approval."""
 
     if mode not in ("structural", "release"):
-        raise AssetPackageError(f"unsupported validation mode: {mode}")
+        raise AssetPackageError(_AssetError.VALIDATION_MODE_UNSUPPORTED)
     if not isinstance(package, AssetPackage):
         try:
             package = AssetPackage.model_validate(package)
         except ValidationError as exc:
-            raise _validation_error("asset package", exc) from exc
+            raise _validation_error("asset package", exc) from None
     if package.manifest.package_version != PACKAGE_VERSION:
-        raise AssetPackageError(f"package_version must be {PACKAGE_VERSION}")
+        raise AssetPackageError(_AssetError.PACKAGE_VERSION)
     if len(package.styles) != 8:
-        raise AssetPackageError("asset package must contain exactly 8 styles")
+        raise AssetPackageError(_AssetError.STYLE_COUNT)
     if not 40 <= len(package.experience_cards) <= 60:
-        raise AssetPackageError("asset package must contain 40 to 60 experience cards")
+        raise AssetPackageError(_AssetError.CARD_COUNT)
     if {card.category for card in package.experience_cards} != set(ASSET_CATEGORIES):
-        raise AssetPackageError("experience cards must cover all asset categories")
+        raise AssetPackageError(_AssetError.CATEGORY_COVERAGE)
 
     _ensure_unique(
         [style.stable_key for style in package.styles],
-        label="stable_key in styles",
+        error=_AssetError.STYLE_KEY_DUPLICATE,
     )
     _ensure_unique(
         [card.stable_key for card in package.experience_cards],
-        label="stable_key in experience_cards",
+        error=_AssetError.CARD_KEY_DUPLICATE,
     )
     _ensure_unique(
         [card.payload.method for card in package.experience_cards],
-        label="normalized method",
+        error=_AssetError.METHOD_DUPLICATE,
     )
     _ensure_unique(
         [card.payload.original_micro_demo for card in package.experience_cards],
-        label="normalized original_micro_demo",
+        error=_AssetError.MICRO_DEMO_DUPLICATE,
     )
 
     assets = (*package.styles, *package.experience_cards)
     hashes = [asset.content_hash for asset in assets]
     if len(hashes) != len(set(hashes)):
-        raise AssetPackageError("duplicate content_hash")
+        raise AssetPackageError(_AssetError.CONTENT_HASH_DUPLICATE)
     for asset in assets:
         expected_hash = canonical_hash(asset.payload)
         if asset.content_hash != expected_hash:
-            raise AssetPackageError(f"content_hash mismatch for {asset.stable_key}")
+            raise AssetPackageError(_AssetError.CONTENT_HASH_MISMATCH)
 
     if mode == "release":
         _validate_release_review(package)
@@ -310,18 +429,46 @@ def validate_asset_package(
 
 
 def _validation_error(label: str, exc: ValidationError) -> AssetPackageError:
-    first = exc.errors(include_url=False)[0]
-    location = ".".join(str(part) for part in first["loc"])
-    return AssetPackageError(
-        f"invalid {label} at {location}: {first['msg']}"
+    del exc
+    error = (
+        _AssetError.MANIFEST_INVALID
+        if label == "asset manifest"
+        else _AssetError.PACKAGE_INVALID
     )
+    return AssetPackageError(error)
 
 
 def _parse_json_bytes(raw: bytes, *, label: str) -> object:
     try:
         return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AssetPackageError(f"invalid JSON in {label}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        error = {
+            "asset manifest": _AssetError.MANIFEST_JSON_INVALID,
+            "styles_file": _AssetError.STYLES_JSON_INVALID,
+            "experience_cards_file": _AssetError.CARDS_JSON_INVALID,
+        }[label]
+        raise AssetPackageError(error) from None
+
+
+def _read_bounded_bytes(
+    path: Path,
+    *,
+    limit: int,
+    io_error: _AssetError,
+    size_error: _AssetError,
+) -> bytes:
+    try:
+        if path.stat().st_size > limit:
+            raise AssetPackageError(size_error)
+        with path.open("rb") as source:
+            raw = source.read(limit + 1)
+    except AssetPackageError:
+        raise
+    except OSError:
+        raise AssetPackageError(io_error) from None
+    if len(raw) > limit:
+        raise AssetPackageError(size_error)
+    return raw
 
 
 def _read_child(
@@ -333,14 +480,31 @@ def _read_child(
     root = manifest_path.parent.resolve()
     child_path = (root / descriptor.path).resolve()
     if root not in child_path.parents:
-        raise AssetPackageError(f"{label} path escapes manifest directory")
-    try:
-        raw = child_path.read_bytes()
-    except OSError as exc:
-        raise AssetPackageError(f"unable to read {label}") from exc
+        error = (
+            _AssetError.STYLES_PATH_ESCAPE
+            if label == "styles_file"
+            else _AssetError.CARDS_PATH_ESCAPE
+        )
+        raise AssetPackageError(error)
+    is_styles = label == "styles_file"
+    raw = _read_bounded_bytes(
+        child_path,
+        limit=MAX_ASSET_CHILD_BYTES,
+        io_error=_AssetError.STYLES_IO if is_styles else _AssetError.CARDS_IO,
+        size_error=(
+            _AssetError.STYLES_TOO_LARGE
+            if is_styles
+            else _AssetError.CARDS_TOO_LARGE
+        ),
+    )
     actual_hash = sha256(raw).hexdigest()
     if actual_hash != descriptor.sha256:
-        raise AssetPackageError(f"{label} sha256 mismatch")
+        error = (
+            _AssetError.STYLES_SHA256_MISMATCH
+            if label == "styles_file"
+            else _AssetError.CARDS_SHA256_MISMATCH
+        )
+        raise AssetPackageError(error)
     return _parse_json_bytes(raw, label=label)
 
 
@@ -352,15 +516,17 @@ def load_asset_package(
     """Load and validate a package deterministically from one manifest path."""
 
     path = Path(manifest_path)
-    try:
-        manifest_raw = path.read_bytes()
-    except OSError as exc:
-        raise AssetPackageError("unable to read asset manifest") from exc
+    manifest_raw = _read_bounded_bytes(
+        path,
+        limit=MAX_ASSET_MANIFEST_BYTES,
+        io_error=_AssetError.MANIFEST_IO,
+        size_error=_AssetError.MANIFEST_TOO_LARGE,
+    )
     manifest_values = _parse_json_bytes(manifest_raw, label="asset manifest")
     try:
         manifest = AssetManifest.model_validate(manifest_values)
     except ValidationError as exc:
-        raise _validation_error("asset manifest", exc) from exc
+        raise _validation_error("asset manifest", exc) from None
 
     styles_values = _read_child(
         path,
@@ -373,9 +539,9 @@ def load_asset_package(
         label="experience_cards_file",
     )
     if not isinstance(styles_values, list):
-        raise AssetPackageError("styles_file must contain a JSON array")
+        raise AssetPackageError(_AssetError.STYLES_NOT_ARRAY)
     if not isinstance(cards_values, list):
-        raise AssetPackageError("experience_cards_file must contain a JSON array")
+        raise AssetPackageError(_AssetError.CARDS_NOT_ARRAY)
 
     try:
         package = AssetPackage.model_validate(
@@ -386,5 +552,5 @@ def load_asset_package(
             }
         )
     except ValidationError as exc:
-        raise _validation_error("asset package", exc) from exc
+        raise _validation_error("asset package", exc) from None
     return validate_asset_package(package, mode=mode)

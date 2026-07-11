@@ -4,6 +4,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
+import traceback
 
 import pytest
 
@@ -116,6 +117,19 @@ def _write_package(root: Path, *, approved: bool = False) -> Path:
     return manifest_path
 
 
+def _assert_safe_error(
+    error: BaseException,
+    *,
+    expected: str,
+    secrets: tuple[str, ...],
+) -> None:
+    assert str(error) == expected
+    rendered = "".join(traceback.format_exception(error))
+    for secret in secrets:
+        assert secret not in str(error)
+        assert secret not in rendered
+
+
 def test_structural_package_accepts_exact_synthetic_inventory_and_decisions():
     package = package_from_values()
 
@@ -140,10 +154,18 @@ def test_validator_accepts_a_raw_synthetic_package_dict():
 
 def test_validator_wraps_raw_dict_validation_errors_as_stable_package_errors():
     values = package_dict()
-    values["experience_cards"][0]["payload"]["rawExcerpt"] = "forbidden"
+    secret_key = "rawExcerpt_SECRET_KEY"
+    secret_value = "SECRET_VALUE\nSECRET_NEWLINE_SENTINEL"
+    values["experience_cards"][0]["payload"][secret_key] = secret_value
 
-    with pytest.raises(AssetPackageError, match="rawExcerpt"):
+    with pytest.raises(AssetPackageError) as captured:
         validate_asset_package(values, mode="structural")
+
+    _assert_safe_error(
+        captured.value,
+        expected="ASSET_PACKAGE_INVALID: asset package is invalid",
+        secrets=(secret_key, secret_value, "SECRET_NEWLINE_SENTINEL"),
+    )
 
 
 @pytest.mark.parametrize("style_count", [7, 9])
@@ -249,13 +271,201 @@ def test_release_rejects_invalid_or_timezone_naive_review_time():
         values = package_dict(approved=True)
         values["styles"][0]["provenance"]["review_time"] = review_time
 
-        with pytest.raises(AssetPackageError, match="review_time"):
+        with pytest.raises(AssetPackageError) as captured:
             validate_asset_package(values, mode="release")
+
+        _assert_safe_error(
+            captured.value,
+            expected="ASSET_PACKAGE_INVALID: asset package is invalid",
+            secrets=(review_time,),
+        )
 
 
 def test_unknown_validation_mode_is_rejected():
-    with pytest.raises(AssetPackageError, match="validation mode"):
-        validate_asset_package(package_from_values(), mode="preview")
+    secret_mode = "preview_SECRET_MODE\nSECRET_NEWLINE_SENTINEL"
+    with pytest.raises(AssetPackageError) as captured:
+        validate_asset_package(package_from_values(), mode=secret_mode)
+
+    _assert_safe_error(
+        captured.value,
+        expected=(
+            "ASSET_VALIDATION_MODE_UNSUPPORTED: "
+            "asset package validation mode is unsupported"
+        ),
+        secrets=(secret_mode, "SECRET_MODE", "SECRET_NEWLINE_SENTINEL"),
+    )
+
+
+def test_loader_wraps_manifest_validation_without_secret_echo(tmp_path: Path):
+    secret_key = "unknown_SECRET_MANIFEST_KEY"
+    secret_value = "SECRET_MANIFEST_VALUE\nSECRET_NEWLINE_SENTINEL"
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "package_version": "writer-core-v1.1.0",
+                "styles_file": {"path": "styles.json", "sha256": "a" * 64},
+                "experience_cards_file": {"path": "cards.json", "sha256": "b" * 64},
+                secret_key: secret_value,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssetPackageError) as captured:
+        load_asset_package(manifest_path)
+
+    _assert_safe_error(
+        captured.value,
+        expected="ASSET_MANIFEST_INVALID: asset manifest is invalid",
+        secrets=(secret_key, secret_value, "SECRET_NEWLINE_SENTINEL"),
+    )
+
+
+def test_loader_wraps_manifest_io_without_absolute_path_echo(tmp_path: Path):
+    secret_path = tmp_path / "SECRET_ABSOLUTE_PATH\nSECRET_NEWLINE_SENTINEL.json"
+
+    with pytest.raises(AssetPackageError) as captured:
+        load_asset_package(secret_path)
+
+    _assert_safe_error(
+        captured.value,
+        expected="ASSET_MANIFEST_IO: asset manifest could not be read",
+        secrets=(str(secret_path), "SECRET_ABSOLUTE_PATH", "SECRET_NEWLINE_SENTINEL"),
+    )
+
+
+def test_loader_wraps_child_io_without_absolute_path_echo(tmp_path: Path):
+    manifest, _, _ = valid_values()
+    secret_child = "SECRET_CHILD_PATH_SECRET_NEWLINE_SENTINEL.json"
+    manifest["styles_file"]["path"] = secret_child
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(AssetPackageError) as captured:
+        load_asset_package(manifest_path)
+
+    absolute_secret_path = str(tmp_path / secret_child)
+    _assert_safe_error(
+        captured.value,
+        expected="ASSET_STYLES_IO: styles asset file could not be read",
+        secrets=(secret_child, absolute_secret_path, "SECRET_NEWLINE_SENTINEL"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("manifest", "ASSET_MANIFEST_JSON_INVALID: asset manifest JSON is invalid"),
+        ("styles", "ASSET_STYLES_JSON_INVALID: styles asset JSON is invalid"),
+    ],
+)
+def test_loader_wraps_invalid_json_without_content_or_path_echo(
+    tmp_path: Path,
+    target: str,
+    expected: str,
+):
+    secret_json = b'{"SECRET_JSON_KEY":"SECRET_JSON_VALUE\\nSECRET_NEWLINE_SENTINEL"'
+    if target == "manifest":
+        target_path = tmp_path / "manifest_SECRET_ABSOLUTE_PATH.json"
+        target_path.write_bytes(secret_json)
+        manifest_path = target_path
+    else:
+        manifest_path = _write_package(tmp_path)
+        target_path = tmp_path / "style_templates.json"
+        target_path.write_bytes(secret_json)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["styles_file"]["sha256"] = sha256(secret_json).hexdigest()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(AssetPackageError) as captured:
+        load_asset_package(manifest_path)
+
+    _assert_safe_error(
+        captured.value,
+        expected=expected,
+        secrets=(
+            "SECRET_JSON_KEY",
+            "SECRET_JSON_VALUE",
+            "SECRET_NEWLINE_SENTINEL",
+            str(target_path),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "limit", "expected"),
+    [
+        (
+            "manifest",
+            64 * 1024,
+            "ASSET_MANIFEST_TOO_LARGE: asset manifest exceeds maximum size",
+        ),
+        (
+            "styles",
+            4 * 1024 * 1024,
+            "ASSET_STYLES_TOO_LARGE: styles asset file exceeds maximum size",
+        ),
+    ],
+)
+def test_loader_rejects_oversized_invalid_json_before_parsing(
+    tmp_path: Path,
+    target: str,
+    limit: int,
+    expected: str,
+):
+    invalid_oversized_json = b"{" + (b"x" * limit)
+    if target == "manifest":
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(invalid_oversized_json)
+    else:
+        manifest_path = _write_package(tmp_path)
+        styles_path = tmp_path / "style_templates.json"
+        styles_path.write_bytes(invalid_oversized_json)
+
+    with pytest.raises(AssetPackageError) as captured:
+        load_asset_package(manifest_path)
+
+    assert str(captured.value) == expected
+
+
+def test_loader_rejects_resolved_child_escape(tmp_path: Path):
+    manifest, _, _ = valid_values()
+    manifest["styles_file"]["path"] = "nested/../../outside.json"
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(AssetPackageError) as captured:
+        load_asset_package(manifest_path)
+
+    assert str(captured.value) == "ASSET_MANIFEST_INVALID: asset manifest is invalid"
+
+
+def test_loader_rejects_symlink_child_escape_when_supported(tmp_path: Path):
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("[]", encoding="utf-8")
+    link = package_root / "linked.json"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"file symlink creation is unavailable: {exc.__class__.__name__}")
+
+    manifest, _, _ = valid_values()
+    manifest["styles_file"] = {
+        "path": "linked.json",
+        "sha256": sha256(b"[]").hexdigest(),
+    }
+    manifest_path = package_root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(AssetPackageError) as captured:
+        load_asset_package(manifest_path)
+
+    assert str(captured.value) == (
+        "ASSET_STYLES_PATH_ESCAPE: styles asset path escapes package directory"
+    )
 
 
 def test_loader_checks_child_sha256_before_json_parsing(tmp_path: Path):
@@ -301,5 +511,7 @@ def test_loader_wraps_forbidden_raw_excerpt_as_stable_package_error(tmp_path: Pa
     manifest["experience_cards_file"]["sha256"] = sha256(card_bytes).hexdigest()
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    with pytest.raises(AssetPackageError, match="rawExcerpt"):
+    with pytest.raises(AssetPackageError) as captured:
         load_asset_package(manifest_path, mode="structural")
+
+    assert str(captured.value) == "ASSET_PACKAGE_INVALID: asset package is invalid"

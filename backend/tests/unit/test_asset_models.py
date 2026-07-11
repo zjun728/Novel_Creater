@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import traceback
+from typing import get_args
 
 import pytest
 from pydantic import ValidationError
 
+from backend.domain import assets
 from backend.domain.assets import (
+    ASSET_CATEGORIES,
+    PACKAGE_VERSION,
+    AssetCategory,
+    AssetFile,
     AssetManifest,
     AssetPackage,
     ExperienceCardRevision,
@@ -195,10 +202,12 @@ def test_manifest_and_package_are_strict_frozen_models():
             "experience_cards_file": {"path": "cards.json", "sha256": "b" * 64},
         }
     )
+    style = StyleTemplateRevision.model_validate(style_values())
+    card = ExperienceCardRevision.model_validate(card_values())
     package = AssetPackage(
         manifest=manifest,
-        styles=(StyleTemplateRevision.model_validate(style_values()),),
-        experience_cards=(ExperienceCardRevision.model_validate(card_values()),),
+        styles=(style,) * 8,
+        experience_cards=(card,) * 40,
     )
 
     for model in (manifest, package):
@@ -214,3 +223,68 @@ def test_manifest_and_package_are_strict_frozen_models():
                 "package_version": "writer-core-v1.0.0",
             }
         )
+
+
+@pytest.mark.parametrize(
+    "malicious_path",
+    [
+        "/absolute/SECRET_PATH.json",
+        "../SECRET_PATH.json",
+        "nested/../../SECRET_PATH.json",
+        "..\\SECRET_PATH.json",
+        "C:/absolute/SECRET_PATH.json",
+        "C:\\absolute\\SECRET_PATH.json",
+        "C:drive-relative-SECRET_PATH.json",
+        "\\SECRET_PATH.json",
+        "\\\\server\\share\\SECRET_PATH.json",
+    ],
+)
+def test_asset_file_rejects_posix_and_windows_non_relative_paths_without_echo(
+    malicious_path: str,
+):
+    with pytest.raises(ValidationError) as captured:
+        AssetFile.model_validate({"path": malicious_path, "sha256": "a" * 64})
+
+    rendered = str(captured.value) + "".join(
+        traceback.format_exception(captured.value)
+    )
+    assert malicious_path not in rendered
+    assert "SECRET_PATH" not in rendered
+
+
+def test_asset_file_accepts_portable_relative_json_path():
+    parsed = AssetFile.model_validate(
+        {"path": "nested/assets/styles.json", "sha256": "a" * 64}
+    )
+
+    assert parsed.path == "nested/assets/styles.json"
+
+
+def test_asset_package_model_enforces_inventory_lengths_directly():
+    manifest = AssetManifest.model_validate(
+        {
+            "package_version": PACKAGE_VERSION,
+            "styles_file": {"path": "styles.json", "sha256": "a" * 64},
+            "experience_cards_file": {"path": "cards.json", "sha256": "b" * 64},
+        }
+    )
+    style = StyleTemplateRevision.model_validate(style_values())
+    card = ExperienceCardRevision.model_validate(card_values())
+
+    with pytest.raises(ValidationError):
+        AssetPackage.model_validate(
+            {"manifest": manifest, "styles": [style] * 7, "experience_cards": [card] * 40}
+        )
+    with pytest.raises(ValidationError):
+        AssetPackage.model_validate(
+            {"manifest": manifest, "styles": [style] * 8, "experience_cards": [card] * 39}
+        )
+    with pytest.raises(ValidationError):
+        AssetPackage.model_validate(
+            {"manifest": manifest, "styles": [style] * 8, "experience_cards": [card] * 61}
+        )
+
+
+def test_literal_contracts_have_one_exact_runtime_source():
+    assert get_args(AssetCategory) == ASSET_CATEGORIES
+    assert get_args(assets.PackageVersion) == (PACKAGE_VERSION,)
