@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+import pytest
+
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.seeds import SeedPayload
 
@@ -64,3 +66,12 @@ def test_canonical_json_uses_model_json_dump_and_hashes_utf8_bytes():
     assert canonical_hash(payload.model_dump(mode="json")) == canonical_hash(
         payload
     )
+
+
+@pytest.mark.parametrize(
+    "non_finite",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_canonical_json_rejects_non_finite_floats(non_finite: float):
+    with pytest.raises(ValueError):
+        canonical_json({"value": non_finite})

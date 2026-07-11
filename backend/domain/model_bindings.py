@@ -74,6 +74,8 @@ class BindingRevision(BaseModel):
         item_keys = tuple(item.task_key for item in self.items)
         if len(item_keys) != len(TASK_KEYS) or set(item_keys) != set(TASK_KEYS):
             raise ValueError("items must contain each task key exactly once")
+        if item_keys != TASK_KEYS:
+            raise ValueError("items must follow TASK_KEYS canonical order")
         return self
 
     @property

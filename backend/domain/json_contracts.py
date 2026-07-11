@@ -21,6 +21,7 @@ def canonical_json(value: BaseModel | dict[str, object]) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     )
 
 

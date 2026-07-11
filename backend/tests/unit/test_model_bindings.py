@@ -83,6 +83,15 @@ def test_revision_requires_exactly_one_item_for_every_task_key(items):
         revision_with(items=items)
 
 
+def test_revision_rejects_complete_items_outside_canonical_task_order():
+    reversed_items = tuple(
+        unbound_item(task_key) for task_key in reversed(TASK_KEYS)
+    )
+
+    with pytest.raises(ValidationError, match="canonical order"):
+        revision_with(items=reversed_items)
+
+
 @pytest.mark.parametrize("project_id", ["", 123])
 def test_revision_requires_a_strict_non_empty_project_id(project_id: object):
     with pytest.raises(ValidationError):
