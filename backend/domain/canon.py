@@ -80,7 +80,9 @@ class FrozenJsonObject(Mapping[str, object]):
         raise AttributeError("FrozenJsonObject is immutable")
 
 
-def _freeze_json(value: object, *, field_name: str) -> object:
+def freeze_json(value: object, *, field_name: str) -> object:
+    """Copy and deeply freeze one strict JSON value."""
+
     if value is None or type(value) in (bool, int, str):
         return value
     if type(value) is float:
@@ -89,7 +91,7 @@ def _freeze_json(value: object, *, field_name: str) -> object:
         raise CanonValidationError(f"{field_name} must contain finite JSON numbers")
     if type(value) is list:
         return tuple(
-            _freeze_json(item, field_name=field_name)
+            freeze_json(item, field_name=field_name)
             for item in value
         )
     if type(value) is dict:
@@ -100,7 +102,7 @@ def _freeze_json(value: object, *, field_name: str) -> object:
                     f"{field_name} JSON object keys must be strings"
                 )
             frozen_items.append(
-                (key, _freeze_json(item, field_name=field_name))
+                (key, freeze_json(item, field_name=field_name))
             )
         return FrozenJsonObject(frozen_items)
     raise CanonValidationError(
@@ -108,18 +110,22 @@ def _freeze_json(value: object, *, field_name: str) -> object:
     )
 
 
-def _thaw_json(value: object) -> object:
+def thaw_json(value: object) -> object:
+    """Return a mutable strict-JSON representation of a frozen JSON value."""
+
     if isinstance(value, FrozenJsonObject):
-        return {key: _thaw_json(item) for key, item in value.items()}
+        return {key: thaw_json(item) for key, item in value.items()}
     if isinstance(value, tuple):
-        return [_thaw_json(item) for item in value]
+        return [thaw_json(item) for item in value]
     return value
 
 
-def _canonical_json(value: object, *, field_name: str = "value") -> str:
+def canonical_json(value: object, *, field_name: str = "value") -> str:
+    """Serialize a frozen or raw strict JSON value deterministically."""
+
     try:
         return json.dumps(
-            _thaw_json(value),
+            thaw_json(value),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -129,6 +135,13 @@ def _canonical_json(value: object, *, field_name: str = "value") -> str:
         raise CanonValidationError(
             f"{field_name} must be valid finite JSON"
         ) from exc
+
+
+# Private aliases preserve the established internal API while callers migrate to
+# the deliberately small public strict-JSON boundary above.
+_freeze_json = freeze_json
+_thaw_json = thaw_json
+_canonical_json = canonical_json
 
 
 def _closed_enum(enum_type, value: object, field_name: str):

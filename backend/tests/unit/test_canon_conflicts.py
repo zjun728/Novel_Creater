@@ -14,7 +14,10 @@ from backend.domain.canon import (
     ConfirmationStatus,
     FactKind,
     ValueCardinality,
+    canonical_json,
     find_hard_conflicts,
+    freeze_json,
+    thaw_json,
 )
 
 
@@ -75,6 +78,22 @@ def test_event_input_deep_freezes_copied_json_and_is_hashable():
         item.value["city"] = "不可写"
     with pytest.raises(TypeError):
         item.evidence["quote"] = "不可写"
+
+
+def test_public_strict_json_helpers_share_freeze_thaw_and_canonical_rules():
+    raw = {"text": "沈砚", "nested": [True, 1, 1.0]}
+
+    frozen = freeze_json(raw, field_name="projection")
+    raw["nested"].append("污染")
+
+    assert frozen == {"nested": (True, 1, 1.0), "text": "沈砚"}
+    assert thaw_json(frozen) == {
+        "nested": [True, 1, 1.0],
+        "text": "沈砚",
+    }
+    assert canonical_json(frozen, field_name="projection") == (
+        '{"nested":[true,1,1.0],"text":"沈砚"}'
+    )
 
 
 @pytest.mark.parametrize(

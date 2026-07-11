@@ -1020,7 +1020,7 @@ git commit -m "feat: define canon identity and conflict boundary"
 - Create: `backend/services/projections.py`
 - Create: `backend/tests/unit/test_projections.py`
 
-- [ ] **Step 1: Write deterministic projection tests**
+- [x] **Step 1: Write deterministic projection tests**
 
 ```python
 # backend/tests/unit/test_projections.py
@@ -1055,22 +1055,22 @@ def test_arc_and_plot_views_are_filters_not_second_extractions():
          "confirmation_status": "confirmed", "evidence": {}},
     ])
     assert bundle.arcs["p1"]["arc.trust"] == "动摇"
-    assert bundle.plot_threads["plot.gunpowder"] == "推进"
+    assert bundle.plot_threads["__global__"]["plot.gunpowder"] == "推进"
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `python -m pytest backend/tests/unit/test_projections.py -q`
 
 Expected: FAIL because projection service does not exist.
 
-- [ ] **Step 3: Implement one deterministic reducer**
+- [x] **Step 3: Implement one deterministic reducer**
 
-Define immutable `ProjectionBundle(revision, current_state, memories, arcs, plot_threads, content_hash)`. Sort events by `(revision_number, event_order, id)`, ignore rejected events, place every confirmed event into memory, exclude claims from current state, and derive arc/plot views only by `field_path` prefix. Compute `content_hash` from canonical sorted JSON of the four projection payloads.
+Define immutable `ProjectionBundle(revision, current_state, memories, arcs, plot_threads, content_hash)`. Strictly validate and freeze each event, reject duplicate IDs and duplicate `(revision_number, event_order)` stream positions, then sort by `(revision_number, event_order, id)`. Ignore rejected events, place every confirmed event into memory, exclude claims from current state, and derive arc/plot views only by `field_path` prefix. Plot threads use `entity_id` or `__global__` as the outer natural key so the same field on different entities never overwrites. Compute `content_hash` from canonical sorted JSON of `{revision,currentState,memories,arcs,plotThreads}`.
 
 The function accepts event rows only; it must not accept chapter text, a model client, a Prompt or an independent settings/memory input.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 Run: `python -m pytest backend/tests/unit/test_projections.py -q`
 
