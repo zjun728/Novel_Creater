@@ -12,6 +12,7 @@ output/
 # Python caches
 __pycache__/
 *.py[cod]
+.venv-m2/
 
 # Local environment and scratch files
 .env
