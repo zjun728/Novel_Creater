@@ -33,7 +33,7 @@ async def test_fresh_bootstrap_has_exact_mysql8_schema(disposable_mysql):
     )
 
     assert {row["TABLE_NAME"] for row in rows} == EXPECTED_TABLES
-    assert version["version"].startswith("8.0.")
+    assert int(version["version"].split(".", 1)[0]) == 8
     assert len(rows) == 34
     assert {row["ENGINE"] for row in rows} == {"InnoDB"}
     assert all(row["TABLE_COLLATION"].startswith("utf8mb4_") for row in rows)

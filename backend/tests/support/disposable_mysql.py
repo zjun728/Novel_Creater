@@ -15,7 +15,6 @@ import time
 
 import aiomysql
 
-from backend.database import DatabaseSession
 from backend.scripts.initialize_database import (
     _AiomysqlAdminSession,
     initialize_database,
@@ -31,6 +30,28 @@ _REQUIRED_TEST_VARIABLES = (
     "TEST_MYSQL_USER",
     "TEST_MYSQL_PASSWORD",
 )
+
+
+class _TestDatabaseSession:
+    """Minimal explicit session that has no application-config import path."""
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    async def execute(self, sql, args=None):
+        async with self.raw.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute(sql, args)
+            return cursor.rowcount
+
+    async def fetchone(self, sql, args=None):
+        async with self.raw.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute(sql, args)
+            return await cursor.fetchone()
+
+    async def fetchall(self, sql, args=None):
+        async with self.raw.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute(sql, args)
+            return await cursor.fetchall()
 
 
 def test_server_config() -> dict[str, object]:
@@ -74,7 +95,7 @@ class DisposableMySQL:
     database_name: str
     connection_config: dict[str, object]
     admin_session: _AiomysqlAdminSession
-    session: DatabaseSession
+    session: _TestDatabaseSession
 
 
 async def _database_exists(admin_session, database_name: str) -> bool:
@@ -92,6 +113,14 @@ async def _open_admin_session(config: dict[str, object]):
     return _AiomysqlAdminSession(connection, cursor)
 
 
+async def _close_raw_connection(connection) -> None:
+    ensure_closed = getattr(connection, "ensure_closed", None)
+    if ensure_closed is not None:
+        await ensure_closed()
+    else:
+        connection.close()
+
+
 @asynccontextmanager
 async def disposable_mysql_database(
     *, on_created=None, on_cleaned=None, initialize_schema: bool = True,
@@ -101,15 +130,16 @@ async def disposable_mysql_database(
     database_name = new_database_name()
     admin_session = await _open_admin_session(admin_config)
     database_connection = None
-    created = False
+    create_attempted = False
+    body_error = None
     try:
         assert_disposable_name(database_name)
+        create_attempted = True
         await admin_session.execute(
             f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 "
             "COLLATE utf8mb4_0900_ai_ci"
         )
         assert_disposable_name(database_name)
-        created = True
         if on_created is not None:
             on_created(database_name)
 
@@ -122,36 +152,71 @@ async def disposable_mysql_database(
             )
         database_config = {**admin_config, "db": database_name}
         database_connection = await aiomysql.connect(**database_config)
-        test_session = DatabaseSession(database_connection)
+        test_session = _TestDatabaseSession(database_connection)
         yield DisposableMySQL(
             database_name=database_name,
             connection_config=database_config,
             admin_session=admin_session,
             session=test_session,
         )
+    except BaseException as exc:
+        body_error = exc
     finally:
+        cleanup_failures = []
         if database_connection is not None:
-            database_connection.close()
-        cleanup_error = None
-        if created:
+            try:
+                await _close_raw_connection(database_connection)
+            except BaseException as exc:
+                cleanup_failures.append(exc)
+        if create_attempted:
             try:
                 assert_disposable_name(database_name)
-                await admin_session.execute(f"DROP DATABASE `{database_name}`")
+                exists = await _database_exists(admin_session, database_name)
                 assert_disposable_name(database_name)
-                if await _database_exists(admin_session, database_name):
+                if exists:
+                    assert_disposable_name(database_name)
+                    await admin_session.execute(f"DROP DATABASE `{database_name}`")
+                    assert_disposable_name(database_name)
+                assert_disposable_name(database_name)
+                still_exists = await _database_exists(admin_session, database_name)
+                assert_disposable_name(database_name)
+                if still_exists:
                     raise RuntimeError(
                         f"Disposable database cleanup did not remove {database_name}"
                     )
-                if on_cleaned is not None:
+                if exists and on_cleaned is not None:
                     on_cleaned(database_name)
             except BaseException as exc:
-                cleanup_error = exc
-        await admin_session.close()
-        if cleanup_error is not None:
-            raise RuntimeError(
+                cleanup_failures.append(exc)
+        try:
+            await admin_session.close()
+        except BaseException as exc:
+            cleanup_failures.append(exc)
+
+        cleanup_error = None
+        if cleanup_failures:
+            cause = (
+                cleanup_failures[0]
+                if len(cleanup_failures) == 1
+                else BaseExceptionGroup(
+                    "multiple disposable MySQL cleanup failures",
+                    cleanup_failures,
+                )
+            )
+            cleanup_error = RuntimeError(
                 f"Disposable MySQL cleanup failed; partial state may remain for "
                 f"{database_name}"
-            ) from cleanup_error
+            )
+            cleanup_error.__cause__ = cause
+        if body_error is not None and cleanup_error is not None:
+            raise BaseExceptionGroup(
+                "Disposable MySQL body and cleanup both failed",
+                [body_error, cleanup_error],
+            ) from body_error
+        if cleanup_error is not None:
+            raise cleanup_error
+        if body_error is not None:
+            raise body_error
 
 
 def empty_disposable_mysql_database(*, on_created=None, on_cleaned=None):
@@ -175,7 +240,7 @@ def transaction_factory_for(connection_config: dict[str, object]):
         raw = await aiomysql.connect(**config)
         await raw.begin()
         try:
-            yield DatabaseSession(raw)
+            yield _TestDatabaseSession(raw)
         except BaseException as body_error:
             try:
                 await raw.rollback()

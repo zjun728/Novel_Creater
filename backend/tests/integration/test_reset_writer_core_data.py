@@ -1,3 +1,5 @@
+from decimal import Decimal
+from hashlib import sha256
 import json
 
 import aiomysql
@@ -7,61 +9,27 @@ from backend.schema_manifest import created_table_names, manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.reset_writer_core_data import (
     RESET_LOCK_NAME,
+    ResetPartialStateError,
     ResetRequest,
     ResetValidationError,
     reset_writer_core_data,
 )
 from backend.services.projects import TASK_KEYS
 from backend.services.projections import build_projection_bundle
+from backend.tests.support.legacy_writer_core import (
+    LEGACY_DERIVED_TABLES,
+    OTHER_PROJECT_ID,
+    PROJECT_ID,
+    PROVIDER_ID,
+    SEEDS,
+    SENTINELS,
+    create_legacy_writer_core,
+)
+from backend.tests.support.disposable_mysql import _open_admin_session
 
 
-PROJECT_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-OTHER_PROJECT_ID = "99999999-9999-9999-9999-999999999999"
-SEEDS = (
-    ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "永乐长明", "candidate"),
-    ("cccccccc-cccc-cccc-cccc-cccccccccccc", "文渊山海", "candidate"),
-    ("dddddddd-dddd-dddd-dddd-dddddddddddd", "典镇山河", "selected"),
-)
-PROVIDER_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
-OTHER_PROVIDER_ID = "88888888-8888-8888-8888-888888888888"
-SENTINELS = (
-    "API_KEY_SENTINEL",
-    "BASE_URL_SENTINEL",
-    "DESCRIPTION_CHAPTER_SENTINEL",
-    "PROVIDER_NOTES_SENTINEL",
-    "PASSWORD_SENTINEL",
-    "DSN_SENTINEL",
-)
-LEGACY_DERIVED_TABLES = (
-    "task_model_bindings",
-    "chapters",
-    "chapter_versions",
-    "possibility_cards",
-    "creative_bible",
-    "sample_source",
-    "sample_chunk",
-    "experience_card",
-    "writing_standard_candidate",
-    "writing_standard",
-    "characters",
-    "plot_threads",
-    "rolling_outlines",
-    "project_volumes",
-    "project_audit_reports",
-    "correction_tasks",
-    "canon_facts",
-    "temp_drafts",
-    "chapter_beat_plans",
-    "story_blocks",
-    "story_block_reviews",
-    "market_items",
-    "market_chat_messages",
-    "market_direction_reports",
-    "setting_entities",
-    "setting_relations",
-    "setting_change_events",
-    "finalization_markers",
-    "project_health_checks",
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Integer display width is deprecated and will be removed in a future release"
 )
 
 
@@ -83,83 +51,21 @@ class RecordingAdminProxy:
         return await self.delegate.execute(sql, args)
 
 
-async def create_legacy_tables(session):
-    await session.execute(
-        """CREATE TABLE projects (
-             id CHAR(36), title VARCHAR(200), genre VARCHAR(120), description TEXT,
-             target_words INT, target_chapters INT, status VARCHAR(24),
-             current_chapter INT, created_at BIGINT, updated_at BIGINT
-           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-    )
-    await session.execute(
-        """CREATE TABLE creative_seeds (
-             id CHAR(36), project_id CHAR(36), title VARCHAR(200), premise_json JSON,
-             content_hash CHAR(64), status VARCHAR(24), created_at BIGINT
-           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-    )
-    await session.execute(
-        """CREATE TABLE provider_profiles (
-             id CHAR(36), name VARCHAR(120), provider_type VARCHAR(64),
-             model_name VARCHAR(160), base_url VARCHAR(2048), api_key TEXT,
-             enabled TINYINT, sort_order INT, stream TINYINT,
-             max_context_tokens INT, max_output_tokens INT,
-             temperature DECIMAL(5,3), top_p DECIMAL(5,3),
-             supports_json TINYINT, supports_streaming TINYINT, notes TEXT,
-             thinking JSON, created_at BIGINT, updated_at BIGINT
-           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"""
-    )
-    for table in LEGACY_DERIVED_TABLES:
-        await session.execute(
-            f"CREATE TABLE `{table}` (id INT PRIMARY KEY, payload LONGTEXT) ENGINE=InnoDB"
-        )
-        await session.execute(
-            f"INSERT INTO `{table}` (id, payload) VALUES (1, %s)",
-            (f"{table}-{SENTINELS[2]}-{SENTINELS[4]}-{SENTINELS[5]}",),
-        )
+class CommitFailingAdminProxy(RecordingAdminProxy):
+    def __init__(self, delegate):
+        super().__init__(delegate)
+        self.closed = False
 
-    await session.execute(
-        """INSERT INTO projects VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        (
-            PROJECT_ID, "永乐大典", "历史", SENTINELS[2], 1_000_000, 500,
-            "active", 17, 100, 200,
-        ),
-    )
-    await session.execute(
-        """INSERT INTO projects VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        (
-            OTHER_PROJECT_ID, "无关项目", "其他", "must be removed", 10_000, 10,
-            "drafting", 0, 50, 60,
-        ),
-    )
-    for seed_id, title, status in SEEDS:
-        await session.execute(
-            "INSERT INTO creative_seeds VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (seed_id, PROJECT_ID, title, json.dumps({"title": title}), "1" * 64, status, 100),
-        )
-    await session.execute(
-        "INSERT INTO creative_seeds VALUES (%s,%s,%s,%s,%s,%s,%s)",
-        (
-            "77777777-7777-7777-7777-777777777777", OTHER_PROJECT_ID,
-            "无关种子", "{}", "2" * 64, "candidate", 50,
-        ),
-    )
-    await session.execute(
-        """INSERT INTO provider_profiles VALUES
-           (%s,%s,%s,%s,%s,%s,1,0,1,128000,8192,0.700,0.950,1,1,%s,NULL,100,200)""",
-        (
-            PROVIDER_ID, "联通云", "openai-compatible", "deepseek-v4-flash",
-            SENTINELS[1], SENTINELS[0], SENTINELS[3],
-        ),
-    )
-    await session.execute(
-        """INSERT INTO provider_profiles VALUES
-           (%s,%s,%s,%s,%s,%s,1,5,0,64000,4096,0.500,0.900,0,0,%s,%s,90,190)""",
-        (
-            OTHER_PROVIDER_ID, "备用云", "openai-compatible", "backup-model",
-            "https://DSN_SENTINEL.invalid", "PASSWORD_SENTINEL",
-            "PROVIDER_NOTES_SENTINEL-2", json.dumps({"budget": 3}),
-        ),
-    )
+    async def execute(self, sql, args=None):
+        normalized = " ".join(sql.split())
+        self.calls.append(("execute", normalized, args))
+        if normalized == "COMMIT":
+            raise RuntimeError("injected COMMIT failure")
+        return await self.delegate.execute(sql, args)
+
+    async def close(self):
+        self.closed = True
+        await self.delegate.close()
 
 
 def request():
@@ -171,9 +77,21 @@ def request():
     )
 
 
+async def legacy_snapshot(session):
+    return {
+        "projects": await session.fetchall("SELECT * FROM projects ORDER BY id"),
+        "creative_seeds": await session.fetchall("SELECT * FROM creative_seeds ORDER BY id"),
+        "provider_profiles": await session.fetchall("SELECT * FROM provider_profiles ORDER BY id"),
+        "derived": {
+            table: await session.fetchall(f"SELECT * FROM `{table}` ORDER BY id")
+            for table in LEGACY_DERIVED_TABLES
+        },
+    }
+
+
 @pytest.mark.mysql
 async def test_dry_run_is_read_only_and_redacts_preserved_secrets(empty_disposable_mysql, capsys, caplog):
-    await create_legacy_tables(empty_disposable_mysql.session)
+    await create_legacy_writer_core(empty_disposable_mysql.session)
 
     report = await reset_writer_core_data(
         empty_disposable_mysql.admin_session,
@@ -207,7 +125,7 @@ async def test_dry_run_is_read_only_and_redacts_preserved_secrets(empty_disposab
 
 @pytest.mark.mysql
 async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(empty_disposable_mysql, capsys, caplog):
-    await create_legacy_tables(empty_disposable_mysql.session)
+    await create_legacy_writer_core(empty_disposable_mysql.session)
     old_project = await empty_disposable_mysql.session.fetchone(
         "SELECT * FROM projects WHERE id=%s", (PROJECT_ID,)
     )
@@ -276,9 +194,73 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
 
     empty_hash = build_projection_bundle(0, ()).content_hash
     assert report.executed is True
-    assert projects == [old_project]
-    assert seeds == old_seeds
-    assert providers == old_providers
+    assert projects == [{
+        "id": old_project["id"],
+        "title": old_project["title"],
+        "genre": old_project["genre"],
+        "description": old_project["description"],
+        "target_words": old_project["target_words"],
+        "target_chapters": old_project["target_chapters"],
+        "status": "drafting",
+        "current_chapter": 0,
+        "created_at": old_project["created_at"],
+        "updated_at": old_project["updated_at"],
+    }]
+    assert len(seeds) == len(old_seeds) == 3
+    for mapped, legacy in zip(seeds, old_seeds, strict=True):
+        premise = {
+            "genre": legacy["genre"],
+            "logline": legacy["logline"],
+            "protagonist": legacy["protagonist"],
+            "desire": legacy["desire"],
+            "coreConflict": legacy["core_conflict"],
+            "worldPressure": legacy["world_pressure"],
+            "openingHook": legacy["opening_hook"],
+            "emotionalPromise": legacy["emotional_promise"],
+            "differentiation": legacy["differentiation"],
+            "styleTarget": legacy["style_target"],
+            "source": legacy["source"],
+            "riskNotes": legacy["risk_notes"],
+            "endingAnchor": legacy["ending_anchor"],
+        }
+        envelope = json.dumps(
+            {"title": legacy["title"], "premise": premise},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        assert json.loads(mapped["premise_json"]) == premise
+        assert {key: value for key, value in mapped.items() if key != "premise_json"} == {
+            "id": legacy["id"],
+            "project_id": legacy["project_id"],
+            "title": legacy["title"],
+            "content_hash": sha256(envelope.encode("utf-8")).hexdigest(),
+            "status": "selected" if legacy["title"] == "典镇山河" else "candidate",
+            "created_at": legacy["created_at"],
+        }
+    assert len(providers) == len(old_providers) == 2
+    legacy_by_id = {row["id"]: row for row in old_providers}
+    for mapped in providers:
+        legacy = legacy_by_id[mapped["id"]]
+        assert mapped == {
+            "id": legacy["id"],
+            "name": legacy["name"],
+            "provider_type": legacy["provider_type"],
+            "model_name": legacy["model"],
+            "base_url": legacy["base_url"],
+            "api_key": legacy["api_key"],
+            "enabled": 1,
+            "sort_order": 0 if legacy["id"] == PROVIDER_ID else 10,
+            "stream": legacy["stream"],
+            "max_context_tokens": legacy["max_context_tokens"],
+            "max_output_tokens": legacy["max_output_tokens"],
+            "temperature": Decimal(str(legacy["temperature"])).quantize(Decimal("0.001")),
+            "top_p": Decimal(str(legacy["top_p"])).quantize(Decimal("0.001")),
+            "supports_json": legacy["supports_json"],
+            "supports_streaming": legacy["supports_streaming"],
+            "notes": legacy["notes"] or "",
+            "thinking": legacy["thinking"],
+            "created_at": legacy["created_at"],
+            "updated_at": legacy["updated_at"],
+        }
     assert selected == {"seed_id": SEEDS[2][0]}
     assert {row["task_key"] for row in bindings} == set(TASK_KEYS)
     assert {row["provider_id"] for row in bindings} == {PROVIDER_ID}
@@ -340,7 +322,7 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
 @pytest.mark.mysql
 @pytest.mark.parametrize("shape", ("missing", "duplicate"))
 async def test_execute_rejects_missing_or_duplicate_requested_seed_before_drop(empty_disposable_mysql, shape):
-    await create_legacy_tables(empty_disposable_mysql.session)
+    await create_legacy_writer_core(empty_disposable_mysql.session)
     if shape == "missing":
         await empty_disposable_mysql.session.execute(
             "DELETE FROM creative_seeds WHERE title=%s", ("永乐长明",)
@@ -348,7 +330,10 @@ async def test_execute_rejects_missing_or_duplicate_requested_seed_before_drop(e
     else:
         await empty_disposable_mysql.session.execute(
             """INSERT INTO creative_seeds
-               SELECT %s, project_id, title, premise_json, content_hash, status, created_at
+               SELECT %s, project_id, title, genre, logline, protagonist, desire,
+                      core_conflict, world_pressure, opening_hook, emotional_promise,
+                      differentiation, style_target, source, risk_notes, ending_anchor,
+                      status, created_at
                FROM creative_seeds WHERE title=%s""",
             ("ffffffff-ffff-ffff-ffff-ffffffffffff", "永乐长明"),
         )
@@ -376,7 +361,7 @@ async def test_execute_rejects_missing_or_duplicate_requested_seed_before_drop(e
 
 @pytest.mark.mysql
 async def test_execute_rejects_duplicate_requested_project_title_before_drop(empty_disposable_mysql):
-    await create_legacy_tables(empty_disposable_mysql.session)
+    await create_legacy_writer_core(empty_disposable_mysql.session)
     await empty_disposable_mysql.session.execute(
         "UPDATE projects SET title=%s WHERE id=%s", ("永乐大典", OTHER_PROJECT_ID)
     )
@@ -403,29 +388,25 @@ async def test_execute_rejects_duplicate_requested_project_title_before_drop(emp
 
 
 @pytest.mark.mysql
-@pytest.mark.parametrize("shape", ("absent", "disabled", "duplicate"))
-async def test_execute_requires_exactly_one_enabled_preferred_provider(empty_disposable_mysql, shape):
-    await create_legacy_tables(empty_disposable_mysql.session)
+@pytest.mark.parametrize("shape", ("absent", "duplicate"))
+async def test_execute_requires_exactly_one_preferred_legacy_provider(empty_disposable_mysql, shape):
+    await create_legacy_writer_core(empty_disposable_mysql.session)
     if shape == "absent":
         await empty_disposable_mysql.session.execute(
             "DELETE FROM provider_profiles WHERE id=%s", (PROVIDER_ID,)
         )
-    elif shape == "disabled":
-        await empty_disposable_mysql.session.execute(
-            "UPDATE provider_profiles SET enabled=0 WHERE id=%s", (PROVIDER_ID,)
-        )
     else:
         await empty_disposable_mysql.session.execute(
             """INSERT INTO provider_profiles
-               SELECT %s, name, provider_type, model_name, base_url, api_key,
-                      enabled, sort_order, stream, max_context_tokens,
-                      max_output_tokens, temperature, top_p, supports_json,
-                      supports_streaming, notes, thinking, created_at, updated_at
+               SELECT %s, name, provider_type, base_url, api_key, model, stream,
+                      max_context_tokens, max_output_tokens, temperature, top_p,
+                      supports_json, supports_streaming, notes, thinking,
+                      created_at, updated_at
                FROM provider_profiles WHERE id=%s""",
             ("ffffffff-ffff-ffff-ffff-ffffffffffff", PROVIDER_ID),
         )
 
-    with pytest.raises(ResetValidationError, match="exactly one enabled"):
+    with pytest.raises(ResetValidationError, match="exactly one preferred legacy"):
         await reset_writer_core_data(
             empty_disposable_mysql.admin_session,
             database_name=empty_disposable_mysql.database_name,
@@ -444,3 +425,171 @@ async def test_execute_requires_exactly_one_enabled_preferred_provider(empty_dis
         "SELECT IS_FREE_LOCK(%s) AS is_free", (RESET_LOCK_NAME,)
     )
     assert lock == {"is_free": 1}
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    ("mutation_sql", "args", "message"),
+    (
+        ("UPDATE projects SET target_words=0 WHERE id=%s", (PROJECT_ID,), "minimum"),
+        ("UPDATE provider_profiles SET name=%s WHERE id=%s", ("x" * 121, "88888888-8888-8888-8888-888888888888"), "length"),
+        ("UPDATE provider_profiles SET model=%s WHERE id=%s", ("x" * 161, "88888888-8888-8888-8888-888888888888"), "length"),
+        ("UPDATE provider_profiles SET name=%s WHERE id=%s", ("联通云 ", "88888888-8888-8888-8888-888888888888"), "target collation"),
+        ("UPDATE provider_profiles SET max_context_tokens=0 WHERE id=%s", ("88888888-8888-8888-8888-888888888888",), "minimum"),
+        ("UPDATE provider_profiles SET stream=2 WHERE id=%s", ("88888888-8888-8888-8888-888888888888",), "0 or 1"),
+        ("UPDATE provider_profiles SET temperature=100 WHERE id=%s", ("88888888-8888-8888-8888-888888888888",), "DECIMAL"),
+    ),
+)
+async def test_incompatible_legacy_mapping_is_rejected_before_any_ddl(
+    empty_disposable_mysql, mutation_sql, args, message,
+):
+    await create_legacy_writer_core(empty_disposable_mysql.session)
+    await empty_disposable_mysql.session.execute(mutation_sql, args)
+    before = await legacy_snapshot(empty_disposable_mysql.session)
+    recording_admin = RecordingAdminProxy(empty_disposable_mysql.admin_session)
+
+    with pytest.raises(ResetValidationError, match=message):
+        await reset_writer_core_data(
+            recording_admin,
+            database_name=empty_disposable_mysql.database_name,
+            confirm_reset=empty_disposable_mysql.database_name,
+            request=request(),
+            execute=True,
+            allow_product_database=False,
+        )
+
+    assert not any(sql.startswith(("DROP DATABASE", "CREATE DATABASE")) for _, sql, _ in recording_admin.calls)
+    assert await legacy_snapshot(empty_disposable_mysql.session) == before
+    lock = await empty_disposable_mysql.session.fetchone(
+        "SELECT IS_FREE_LOCK(%s) AS is_free", (RESET_LOCK_NAME,)
+    )
+    assert lock == {"is_free": 1}
+
+
+@pytest.mark.mysql
+async def test_legacy_provider_nulls_use_baseline_defaults_but_explicit_zero_survives(empty_disposable_mysql):
+    await create_legacy_writer_core(empty_disposable_mysql.session)
+    await empty_disposable_mysql.session.execute(
+        """UPDATE provider_profiles
+           SET base_url=NULL, api_key=NULL, stream=NULL,
+               max_context_tokens=NULL, max_output_tokens=NULL,
+               temperature=NULL, top_p=NULL, supports_json=NULL,
+               supports_streaming=NULL, notes=NULL, thinking=NULL
+           WHERE id=%s""",
+        ("88888888-8888-8888-8888-888888888888",),
+    )
+    await empty_disposable_mysql.session.execute(
+        """UPDATE provider_profiles
+           SET stream=0, supports_json=0, supports_streaming=0 WHERE id=%s""",
+        (PROVIDER_ID,),
+    )
+
+    await reset_writer_core_data(
+        empty_disposable_mysql.admin_session,
+        database_name=empty_disposable_mysql.database_name,
+        confirm_reset=empty_disposable_mysql.database_name,
+        request=request(), execute=True, allow_product_database=False,
+        output=lambda value: None,
+    )
+
+    connection = await aiomysql.connect(**empty_disposable_mysql.connection_config)
+    cursor = await connection.cursor(aiomysql.DictCursor)
+    try:
+        await cursor.execute(
+            """SELECT base_url, api_key, enabled, sort_order, stream,
+                      max_context_tokens, max_output_tokens, temperature, top_p,
+                      supports_json, supports_streaming, notes, thinking
+               FROM provider_profiles WHERE id=%s""",
+            ("88888888-8888-8888-8888-888888888888",),
+        )
+        defaults = await cursor.fetchone()
+        await cursor.execute(
+            "SELECT stream, supports_json, supports_streaming FROM provider_profiles WHERE id=%s",
+            (PROVIDER_ID,),
+        )
+        explicit = await cursor.fetchone()
+    finally:
+        await cursor.close()
+        connection.close()
+    assert defaults == {
+        "base_url": "", "api_key": "", "enabled": 1, "sort_order": 10,
+        "stream": 1, "max_context_tokens": 200000, "max_output_tokens": 4096,
+        "temperature": Decimal("0.800"), "top_p": Decimal("0.900"),
+        "supports_json": 1, "supports_streaming": 1, "notes": "", "thinking": None,
+    }
+    assert explicit == {"stream": 0, "supports_json": 0, "supports_streaming": 0}
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize("legacy_status", ("candidate", "selected"))
+async def test_legacy_seed_status_is_ignored_and_exactly_named_seed_is_selected(
+    empty_disposable_mysql, legacy_status,
+):
+    await create_legacy_writer_core(empty_disposable_mysql.session)
+    await empty_disposable_mysql.session.execute(
+        "UPDATE creative_seeds SET status=%s WHERE project_id=%s",
+        (legacy_status, PROJECT_ID),
+    )
+
+    await reset_writer_core_data(
+        empty_disposable_mysql.admin_session,
+        database_name=empty_disposable_mysql.database_name,
+        confirm_reset=empty_disposable_mysql.database_name,
+        request=request(), execute=True, allow_product_database=False,
+        output=lambda value: None,
+    )
+    connection = await aiomysql.connect(**empty_disposable_mysql.connection_config)
+    cursor = await connection.cursor(aiomysql.DictCursor)
+    try:
+        await cursor.execute("SELECT title, status FROM creative_seeds ORDER BY title")
+        rows = await cursor.fetchall()
+    finally:
+        await cursor.close()
+        connection.close()
+    assert {row["title"]: row["status"] for row in rows} == {
+        "永乐长明": "candidate", "文渊山海": "candidate", "典镇山河": "selected",
+    }
+
+
+@pytest.mark.mysql
+async def test_commit_failure_rolls_back_closes_session_and_releases_lock_by_disconnect(
+    empty_disposable_mysql,
+):
+    await create_legacy_writer_core(empty_disposable_mysql.session)
+    admin_config = {
+        key: value for key, value in empty_disposable_mysql.connection_config.items()
+        if key != "db"
+    }
+    reset_admin = await _open_admin_session(admin_config)
+    failing_admin = CommitFailingAdminProxy(reset_admin)
+
+    with pytest.raises(ResetPartialStateError, match="partially reset") as raised:
+        await reset_writer_core_data(
+            failing_admin,
+            database_name=empty_disposable_mysql.database_name,
+            confirm_reset=empty_disposable_mysql.database_name,
+            request=request(), execute=True, allow_product_database=False,
+            output=lambda value: None,
+        )
+
+    assert "injected COMMIT failure" in str(raised.value.__cause__)
+    assert failing_admin.closed
+    sql_calls = [sql for _, sql, _ in failing_admin.calls]
+    assert "COMMIT" in sql_calls
+    assert "ROLLBACK" in sql_calls
+    assert all("RELEASE_LOCK" not in sql for sql in sql_calls)
+    lock = await empty_disposable_mysql.admin_session.fetchone(
+        "SELECT IS_FREE_LOCK(%s) AS is_free", (RESET_LOCK_NAME,)
+    )
+    assert lock == {"is_free": 1}
+
+    connection = await aiomysql.connect(**empty_disposable_mysql.connection_config)
+    cursor = await connection.cursor(aiomysql.DictCursor)
+    try:
+        await cursor.execute("SELECT COUNT(*) AS count FROM projects")
+        assert await cursor.fetchone() == {"count": 0}
+        await cursor.execute("SELECT COUNT(*) AS count FROM schema_metadata")
+        assert await cursor.fetchone() == {"count": 1}
+    finally:
+        await cursor.close()
+        connection.close()

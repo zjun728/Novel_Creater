@@ -8,6 +8,12 @@ from backend.scripts.reset_writer_core_data import (
     reset_writer_core_data,
     run_cli,
 )
+from backend.tests.support.legacy_writer_core import (
+    LEGACY_BASELINE_COMMIT,
+    PROJECTS_DDL,
+    PROVIDERS_DDL,
+    SEEDS_DDL,
+)
 
 
 DISPOSABLE = "novel_creator_test_0123456789abcdef0123456789abcdef"
@@ -24,21 +30,27 @@ class RecordingAdminSession:
             return [{
                 "id": "project", "title": "永乐大典", "genre": "历史",
                 "description": "DESCRIPTION_SENTINEL", "target_words": 1,
-                "target_chapters": 1, "status": "active", "current_chapter": 0,
+                "target_chapters": 1, "status": "active", "current_chapter_num": 17,
                 "created_at": 1, "updated_at": 1,
             }]
         if ".`creative_seeds`" in sql:
             return [
-                {"id": str(index), "project_id": "project", "title": title,
-                 "premise_json": "{}", "content_hash": "1" * 64,
-                 "status": "candidate", "created_at": 1}
+                {
+                    "id": str(index), "project_id": "project", "title": title,
+                    "genre": "历史", "logline": title, "protagonist": "主角",
+                    "desire": "目标", "core_conflict": "冲突",
+                    "world_pressure": "压力", "opening_hook": "钩子",
+                    "emotional_promise": "承诺", "differentiation": "差异",
+                    "style_target": "风格", "source": "user", "risk_notes": None,
+                    "ending_anchor": "结局", "status": "candidate", "created_at": 1,
+                }
                 for index, title in enumerate(("永乐长明", "文渊山海", "典镇山河"), 1)
             ]
         if ".`provider_profiles`" in sql:
             return [{
                 "id": "provider", "name": "联通云", "provider_type": "test",
-                "model_name": "deepseek-v4-flash", "base_url": "BASE_URL_SENTINEL",
-                "api_key": "API_KEY_SENTINEL", "enabled": 1, "sort_order": 0,
+                "model": "deepseek-v4-flash", "base_url": "BASE_URL_SENTINEL",
+                "api_key": "API_KEY_SENTINEL",
                 "stream": 1, "max_context_tokens": 1, "max_output_tokens": 1,
                 "temperature": 0.7, "top_p": 0.9, "supports_json": 1,
                 "supports_streaming": 1, "notes": "NOTES_SENTINEL",
@@ -75,6 +87,24 @@ def test_reset_request_requires_exactly_three_unique_seed_titles(seed_titles):
         request(seed_titles=seed_titles)
 
 
+def test_legacy_preserve_fixture_is_pinned_to_the_only_baseline_shape():
+    assert LEGACY_BASELINE_COMMIT == "4b85e8d"
+    assert "current_chapter_num INT" in PROJECTS_DDL
+    assert "current_chapter INT" not in PROJECTS_DDL
+    assert "model VARCHAR(200)" in PROVIDERS_DDL
+    for v1_only in ("model_name", "enabled", "sort_order"):
+        assert v1_only not in PROVIDERS_DDL
+    for legacy_seed_field in (
+        "genre", "logline", "protagonist", "desire", "core_conflict",
+        "world_pressure", "opening_hook", "emotional_promise",
+        "differentiation", "style_target", "source", "risk_notes",
+        "ending_anchor",
+    ):
+        assert legacy_seed_field in SEEDS_DDL
+    for v1_only in ("premise_json", "content_hash"):
+        assert v1_only not in SEEDS_DDL
+
+
 @pytest.mark.asyncio
 async def test_dry_run_reads_only_three_preserve_tables_and_redacts_secrets():
     session = RecordingAdminSession()
@@ -95,6 +125,11 @@ async def test_dry_run_reads_only_three_preserve_tables_and_redacts_secrets():
     assert "`projects`" in selected_sql
     assert "`creative_seeds`" in selected_sql
     assert "`provider_profiles`" in selected_sql
+    assert "current_chapter_num" in selected_sql
+    assert " core_conflict" in selected_sql
+    assert " model," in selected_sql
+    for v1_only in ("current_chapter,", "premise_json", "content_hash", "model_name", " enabled", "sort_order"):
+        assert v1_only not in selected_sql
     for forbidden in (
         "chapters", "versions", "canon_events", "settings", "memory_views",
         "arc_projections", "volume_plans", "story_blocks", "audits", "qa",
@@ -153,31 +188,34 @@ async def test_direct_core_call_cannot_authorize_product_database(execute):
 
 
 @pytest.mark.asyncio
-async def test_cli_product_dry_run_is_rejected_before_connection():
-    called = False
+async def test_cli_product_dry_run_connects_read_only_and_reports_without_ddl():
+    session = RecordingAdminSession()
+    output = []
 
     async def connection_factory(config):
-        nonlocal called
-        called = True
-        return RecordingAdminSession()
+        return session
 
-    with pytest.raises(ResetSafetyError, match="novel_creator"):
-        await run_cli(
-            [
-                "--database", "novel_creator",
-                "--confirm-reset", "novel_creator",
-                "--project-title", "永乐大典",
-                "--seed-title", "永乐长明",
-                "--seed-title", "文渊山海",
-                "--seed-title", "典镇山河",
-                "--preferred-provider-name", "联通云",
-                "--preferred-model", "deepseek-v4-flash",
-            ],
-            connection_factory=connection_factory,
-            connection_config={},
-        )
+    result = await run_cli(
+        [
+            "--database", "novel_creator",
+            "--confirm-reset", "novel_creator",
+            "--project-title", "永乐大典",
+            "--seed-title", "永乐长明",
+            "--seed-title", "文渊山海",
+            "--seed-title", "典镇山河",
+            "--preferred-provider-name", "联通云",
+            "--preferred-model", "deepseek-v4-flash",
+        ],
+        connection_factory=connection_factory,
+        connection_config={},
+        output=output.append,
+    )
 
-    assert called is False
+    assert result == 0
+    assert session.closed
+    assert [kind for kind, _, _ in session.calls] == ["fetchall"] * 3
+    assert not any(kind == "execute" for kind, _, _ in session.calls)
+    assert "mode=dry-run" in "\n".join(output)
 
 
 @pytest.mark.asyncio

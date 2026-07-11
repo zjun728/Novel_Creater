@@ -5,6 +5,7 @@ import pytest
 from backend.schema_manifest import created_table_names, manifest_hash, read_statements
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.initialize_database import (
+    _AiomysqlAdminSession,
     InitializationError,
     format_initialization_result,
     initialize_database,
@@ -13,6 +14,31 @@ from backend.scripts.initialize_database import (
 
 
 DATABASE_NAME = "writer_core_test"
+
+
+@pytest.mark.asyncio
+async def test_admin_session_close_is_idempotent_and_waits_for_disconnect():
+    class Cursor:
+        close_count = 0
+
+        async def close(self):
+            self.close_count += 1
+
+    class Connection:
+        close_count = 0
+
+        async def ensure_closed(self):
+            self.close_count += 1
+
+    cursor = Cursor()
+    connection = Connection()
+    session = _AiomysqlAdminSession(connection, cursor)
+
+    await session.close()
+    await session.close()
+
+    assert cursor.close_count == 1
+    assert connection.close_count == 1
 
 
 class FakeAdminSession:

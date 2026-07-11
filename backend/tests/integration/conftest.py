@@ -23,14 +23,29 @@ _CREATED: list[str] = []
 _CLEANED: list[str] = []
 
 
+def _missing_test_server_variables():
+    return [name for name in _REQUIRED if name not in os.environ]
+
+
+def pytest_collection_modifyitems(items):
+    if not any(item.get_closest_marker("mysql") is not None for item in items):
+        return
+    missing = _missing_test_server_variables()
+    if missing:
+        raise pytest.UsageError(
+            "Disposable MySQL integration tests require explicit variables: "
+            + ", ".join(missing)
+        )
+
+
 @pytest_asyncio.fixture
 async def disposable_mysql(request):
     if request.node.get_closest_marker("mysql") is None:
         raise RuntimeError("disposable_mysql fixture requires @pytest.mark.mysql")
-    missing = [name for name in _REQUIRED if name not in os.environ]
+    missing = _missing_test_server_variables()
     if missing:
-        pytest.skip(
-            "Disposable MySQL integration tests require explicit variables: "
+        raise RuntimeError(
+            "Disposable MySQL integration variables disappeared after collection: "
             + ", ".join(missing)
         )
     async with disposable_mysql_database(
@@ -44,10 +59,10 @@ async def disposable_mysql(request):
 async def empty_disposable_mysql(request):
     if request.node.get_closest_marker("mysql") is None:
         raise RuntimeError("empty_disposable_mysql fixture requires @pytest.mark.mysql")
-    missing = [name for name in _REQUIRED if name not in os.environ]
+    missing = _missing_test_server_variables()
     if missing:
-        pytest.skip(
-            "Disposable MySQL integration tests require explicit variables: "
+        raise RuntimeError(
+            "Disposable MySQL integration variables disappeared after collection: "
             + ", ".join(missing)
         )
     async with empty_disposable_mysql_database(

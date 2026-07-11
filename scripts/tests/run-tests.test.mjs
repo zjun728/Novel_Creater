@@ -79,6 +79,36 @@ test('uses the injected child process runner', () => {
   assert.equal(calls[0].options.shell, false)
 })
 
+const requiredIntegrationEnvironment = {
+  TEST_MYSQL_HOST: '127.0.0.1',
+  TEST_MYSQL_PORT: '33060',
+  TEST_MYSQL_USER: 'root',
+  TEST_MYSQL_PASSWORD: 'test-only-secret',
+}
+
+for (const missingName of Object.keys(requiredIntegrationEnvironment)) {
+  test(`integration fails closed before pytest when ${missingName} is missing`, () => {
+    const environment = { ...requiredIntegrationEnvironment }
+    delete environment[missingName]
+    const calls = []
+    let stderr = ''
+
+    const exitCode = runSuites(['integration'], {
+      environment,
+      spawnSyncImpl(command, args, options) {
+        calls.push({ command, args, options })
+        return { status: 0 }
+      },
+      stderr: { write(chunk) { stderr += chunk } },
+    })
+
+    assert.equal(exitCode, 2)
+    assert.deepEqual(calls, [])
+    assert.match(stderr, new RegExp(`requires explicit variables: ${missingName}`))
+    assert.doesNotMatch(stderr, /test-only-secret/)
+  })
+}
+
 for (const scenario of [
   {
     suite: 'unit',

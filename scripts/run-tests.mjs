@@ -5,6 +5,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const suiteNames = ['unit', 'frontend-unit', 'integration', 'browser']
+const integrationEnvironmentNames = [
+  'TEST_MYSQL_HOST',
+  'TEST_MYSQL_PORT',
+  'TEST_MYSQL_USER',
+  'TEST_MYSQL_PASSWORD',
+]
 
 export function discoverTestFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })
@@ -14,8 +20,8 @@ export function discoverTestFiles(directory) {
     .map(name => path.join(directory, name))
 }
 
-function createSuites(rootDirectory) {
-  const python = process.env.PYTHON || 'python'
+function createSuites(rootDirectory, environment) {
+  const python = environment.PYTHON || 'python'
   const node = process.execPath
   const scriptTestDirectory = path.join(rootDirectory, 'scripts', 'tests')
   const frontendTestDirectory = path.join(rootDirectory, 'frontend', 'tests', 'unit')
@@ -51,13 +57,22 @@ export function runSuites(requested, {
   rootDirectory = root,
   spawnSyncImpl = spawnSync,
   stderr = process.stderr,
+  environment = process.env,
 } = {}) {
   if (requested.length === 0 || requested.some(name => !suiteNames.includes(name))) {
     stderr.write(usage())
     return 2
   }
 
-  const { commands, formalTests } = createSuites(rootDirectory)
+  if (requested.includes('integration')) {
+    const missing = integrationEnvironmentNames.filter(name => !(name in environment))
+    if (missing.length > 0) {
+      stderr.write(`Integration requires explicit variables: ${missing.join(', ')}\n`)
+      return 2
+    }
+  }
+
+  const { commands, formalTests } = createSuites(rootDirectory, environment)
   for (const suite of requested) {
     for (const [directory, files] of formalTests[suite] ?? []) {
       if (files.length === 0) {

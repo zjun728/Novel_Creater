@@ -120,6 +120,7 @@ class _AiomysqlAdminSession:
     def __init__(self, connection, cursor):
         self._connection = connection
         self._cursor = cursor
+        self._closed = False
 
     async def fetchone(self, sql, parameters=None):
         await self._cursor.execute(sql, parameters)
@@ -133,8 +134,15 @@ class _AiomysqlAdminSession:
         await self._cursor.execute(sql, parameters)
 
     async def close(self):
+        if self._closed:
+            return
+        self._closed = True
         await self._cursor.close()
-        self._connection.close()
+        ensure_closed = getattr(self._connection, "ensure_closed", None)
+        if ensure_closed is not None:
+            await ensure_closed()
+        else:
+            self._connection.close()
 
 
 async def _default_connection_factory(connection_config: Mapping[str, object]):

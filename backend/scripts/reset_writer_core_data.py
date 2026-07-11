@@ -10,11 +10,14 @@ import argparse
 import asyncio
 from collections import Counter
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from hashlib import sha256
 import json
 import re
 import sys
 import time
 from typing import Awaitable, Callable, Mapping, Sequence
+import unicodedata
 from uuid import uuid4
 
 from backend.schema_manifest import created_table_names
@@ -29,7 +32,6 @@ from backend.services.projections import build_projection_bundle
 PRODUCT_DATABASE = "novel_creator"
 RESET_LOCK_NAME = "novel_creator_writer_core_reset"
 SELECTED_SEED_TITLE = "典镇山河"
-PRESERVE_TABLES = ("projects", "creative_seeds", "provider_profiles")
 FOUNDATION_TABLES = frozenset({
     "schema_metadata",
     "projects",
@@ -45,8 +47,25 @@ VERIFIED_EMPTY_TABLES = tuple(
     table for table in created_table_names() if table not in FOUNDATION_TABLES
 )
 _DISPOSABLE_DATABASE = re.compile(r"novel_creator_test_[a-f0-9]{32}")
-_CLI_PRODUCT_AUTHORITY = object()
+_CLI_PRODUCT_READ_AUTHORITY = object()
+_CLI_PRODUCT_EXECUTE_AUTHORITY = object()
 
+_LEGACY_PROJECT_COLUMNS = (
+    "id", "title", "genre", "description", "target_words",
+    "target_chapters", "current_chapter_num", "status", "created_at", "updated_at",
+)
+_LEGACY_SEED_COLUMNS = (
+    "id", "project_id", "title", "genre", "logline", "protagonist", "desire",
+    "core_conflict", "world_pressure", "opening_hook", "emotional_promise",
+    "differentiation", "style_target", "source", "risk_notes", "ending_anchor",
+    "status", "created_at",
+)
+_LEGACY_PROVIDER_COLUMNS = (
+    "id", "name", "provider_type", "base_url", "api_key", "model", "stream",
+    "max_context_tokens", "max_output_tokens", "temperature", "top_p",
+    "supports_json", "supports_streaming", "notes", "thinking", "created_at",
+    "updated_at",
+)
 _PROJECT_COLUMNS = (
     "id", "title", "genre", "description", "target_words",
     "target_chapters", "status", "current_chapter", "created_at", "updated_at",
@@ -60,6 +79,21 @@ _PROVIDER_COLUMNS = (
     "enabled", "sort_order", "stream", "max_context_tokens",
     "max_output_tokens", "temperature", "top_p", "supports_json",
     "supports_streaming", "notes", "thinking", "created_at", "updated_at",
+)
+_SEED_PREMISE_MAPPING = (
+    ("genre", "genre"),
+    ("logline", "logline"),
+    ("protagonist", "protagonist"),
+    ("desire", "desire"),
+    ("coreConflict", "core_conflict"),
+    ("worldPressure", "world_pressure"),
+    ("openingHook", "opening_hook"),
+    ("emotionalPromise", "emotional_promise"),
+    ("differentiation", "differentiation"),
+    ("styleTarget", "style_target"),
+    ("source", "source"),
+    ("riskNotes", "risk_notes"),
+    ("endingAnchor", "ending_anchor"),
 )
 
 
@@ -164,9 +198,202 @@ def _validate_target(
         raise ResetSafetyError("Database confirmation does not match reset target")
 
 
+def _text(value: object, field_name: str, *, default: str = "", max_length: int) -> str:
+    if value is None:
+        value = default
+    if not isinstance(value, str):
+        raise ResetValidationError(f"Legacy {field_name} must be text")
+    if len(value) > max_length:
+        raise ResetValidationError(
+            f"Legacy {field_name} exceeds the Writer Core V1 length limit"
+        )
+    return value
+
+
+def _identifier(value: object, field_name: str) -> str:
+    result = _text(value, field_name, max_length=36)
+    if not result:
+        raise ResetValidationError(f"Legacy {field_name} must not be empty")
+    return result
+
+
+def _integer(
+    value: object,
+    field_name: str,
+    *,
+    default: int | None = None,
+    minimum: int | None = None,
+) -> int:
+    if value is None:
+        value = default
+    if type(value) is not int:
+        raise ResetValidationError(f"Legacy {field_name} must be an integer")
+    if value < -(2**63) or value > 2**63 - 1:
+        raise ResetValidationError(f"Legacy {field_name} exceeds BIGINT range")
+    if minimum is not None and value < minimum:
+        raise ResetValidationError(
+            f"Legacy {field_name} violates the Writer Core V1 minimum"
+        )
+    return value
+
+
+def _flag(value: object, field_name: str, *, default: int = 1) -> int:
+    if value is None:
+        return default
+    if type(value) is not int or value not in (0, 1):
+        raise ResetValidationError(f"Legacy {field_name} must be 0 or 1")
+    return value
+
+
+def _decimal(value: object, field_name: str, *, default: str) -> Decimal:
+    if value is None:
+        value = default
+    if isinstance(value, bool):
+        raise ResetValidationError(f"Legacy {field_name} must be numeric")
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ResetValidationError(f"Legacy {field_name} must be numeric") from exc
+    if not result.is_finite():
+        raise ResetValidationError(f"Legacy {field_name} must be finite")
+    result = result.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    if result < Decimal("-99.999") or result > Decimal("99.999"):
+        raise ResetValidationError(
+            f"Legacy {field_name} exceeds DECIMAL(5,3) range"
+        )
+    return result
+
+
+def _json_text(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        decoded = json.loads(value) if isinstance(value, str) else value
+        return json.dumps(
+            decoded,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ResetValidationError(f"Legacy {field_name} must be valid JSON") from exc
+
+
+def _collation_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).casefold().rstrip(" ")
+    return "".join(character for character in normalized if not unicodedata.combining(character))
+
+
+def _require_unique(rows: Sequence[Mapping[str, object]], field: str, noun: str) -> None:
+    seen: dict[str, object] = {}
+    for row in rows:
+        value = row[field]
+        key = _collation_key(value) if isinstance(value, str) else str(value)
+        if key in seen:
+            raise ResetValidationError(
+                f"Legacy {noun} {field} values conflict under target collation"
+            )
+        seen[key] = value
+
+
+def _map_project(row: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "id": _identifier(row["id"], "project.id"),
+        "title": _text(row["title"], "project.title", max_length=200),
+        "genre": _text(row["genre"], "project.genre", max_length=120),
+        "description": _text(
+            row["description"], "project.description", max_length=65_535
+        ),
+        "target_words": _integer(
+            row["target_words"], "project.target_words", default=100_000, minimum=1
+        ),
+        "target_chapters": _integer(
+            row["target_chapters"], "project.target_chapters", default=100, minimum=1
+        ),
+        # Legacy progress/status are derived writing state and are intentionally reset.
+        "status": "drafting",
+        "current_chapter": 0,
+        "created_at": _integer(row["created_at"], "project.created_at"),
+        "updated_at": _integer(row["updated_at"], "project.updated_at"),
+    }
+
+
+def _map_seed(row: Mapping[str, object], project_id: str) -> dict[str, object]:
+    seed_id = _identifier(row["id"], "seed.id")
+    owner_id = _identifier(row["project_id"], "seed.project_id")
+    if owner_id != project_id:
+        raise ResetValidationError("Legacy requested seed belongs to another project")
+    title = _text(row["title"], "seed.title", max_length=200)
+    premise = {
+        target: row[source]
+        for target, source in _SEED_PREMISE_MAPPING
+    }
+    premise_json = json.dumps(
+        premise,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    envelope = json.dumps(
+        {"title": title, "premise": premise},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return {
+        "id": seed_id,
+        "project_id": owner_id,
+        "title": title,
+        "premise_json": premise_json,
+        "content_hash": sha256(envelope.encode("utf-8")).hexdigest(),
+        "status": "selected" if title == SELECTED_SEED_TITLE else "candidate",
+        "created_at": _integer(row["created_at"], "seed.created_at"),
+    }
+
+
+def _map_provider(row: Mapping[str, object], sort_order: int) -> dict[str, object]:
+    return {
+        "id": _identifier(row["id"], "provider.id"),
+        "name": _text(row["name"], "provider.name", max_length=120),
+        "provider_type": _text(
+            row["provider_type"], "provider.provider_type",
+            default="openai-compatible", max_length=64,
+        ),
+        "model_name": _text(row["model"], "provider.model", max_length=160),
+        "base_url": _text(row["base_url"], "provider.base_url", max_length=2048),
+        "api_key": _text(row["api_key"], "provider.api_key", max_length=65_535),
+        "enabled": 1,
+        "sort_order": sort_order,
+        "stream": _flag(row["stream"], "provider.stream"),
+        "max_context_tokens": _integer(
+            row["max_context_tokens"], "provider.max_context_tokens",
+            default=200_000, minimum=1,
+        ),
+        "max_output_tokens": _integer(
+            row["max_output_tokens"], "provider.max_output_tokens",
+            default=4_096, minimum=1,
+        ),
+        "temperature": _decimal(
+            row["temperature"], "provider.temperature", default="0.8"
+        ),
+        "top_p": _decimal(row["top_p"], "provider.top_p", default="0.9"),
+        "supports_json": _flag(row["supports_json"], "provider.supports_json"),
+        "supports_streaming": _flag(
+            row["supports_streaming"], "provider.supports_streaming"
+        ),
+        "notes": _text(row["notes"], "provider.notes", max_length=65_535),
+        "thinking": _json_text(row["thinking"], "provider.thinking"),
+        "created_at": _integer(row["created_at"], "provider.created_at"),
+        "updated_at": _integer(row["updated_at"], "provider.updated_at"),
+    }
+
+
 async def _load_preserved_state(admin_session, database_name: str, request: ResetRequest):
     project_rows = await admin_session.fetchall(
-        f"SELECT {', '.join(_PROJECT_COLUMNS)} "
+        f"SELECT {', '.join(_LEGACY_PROJECT_COLUMNS)} "
         f"FROM {_qualified(database_name, 'projects')} WHERE title=%s",
         (request.project_title,),
     )
@@ -174,11 +401,11 @@ async def _load_preserved_state(admin_session, database_name: str, request: Rese
         raise ResetValidationError(
             "Reset requires exactly one project with the requested title"
         )
-    project = project_rows[0]
+    project = _map_project(project_rows[0])
 
     placeholders = ",".join(("%s",) * len(request.seed_titles))
     seed_rows = await admin_session.fetchall(
-        f"SELECT {', '.join(_SEED_COLUMNS)} "
+        f"SELECT {', '.join(_LEGACY_SEED_COLUMNS)} "
         f"FROM {_qualified(database_name, 'creative_seeds')} "
         f"WHERE project_id=%s AND title IN ({placeholders}) ORDER BY title, id",
         (project["id"], *request.seed_titles),
@@ -189,13 +416,37 @@ async def _load_preserved_state(admin_session, database_name: str, request: Rese
             "Reset requires exactly one row for each requested seed title"
         )
 
+    mapped_seeds = tuple(_map_seed(row, project["id"]) for row in seed_rows)
+    _require_unique(mapped_seeds, "id", "seed")
+    _require_unique(mapped_seeds, "title", "seed")
+
     provider_rows = await admin_session.fetchall(
-        f"SELECT {', '.join(_PROVIDER_COLUMNS)} "
+        f"SELECT {', '.join(_LEGACY_PROVIDER_COLUMNS)} "
         f"FROM {_qualified(database_name, 'provider_profiles')} "
-        "ORDER BY sort_order, created_at, id"
+        "ORDER BY created_at, id"
     )
-    preferred = tuple(
+    preferred_legacy = tuple(
         row for row in provider_rows
+        if row["name"] == request.preferred_provider_name
+        and row["model"] == request.preferred_model
+    )
+    if len(preferred_legacy) != 1:
+        raise ResetValidationError(
+            "Reset requires exactly one preferred legacy Provider/model row"
+        )
+    preferred_id = preferred_legacy[0]["id"]
+    ordered_provider_rows = (
+        preferred_legacy[0],
+        *(row for row in provider_rows if row["id"] != preferred_id),
+    )
+    mapped_providers = tuple(
+        _map_provider(row, 0 if index == 0 else index * 10)
+        for index, row in enumerate(ordered_provider_rows)
+    )
+    _require_unique(mapped_providers, "id", "provider")
+    _require_unique(mapped_providers, "name", "provider")
+    preferred = tuple(
+        row for row in mapped_providers
         if row["name"] == request.preferred_provider_name
         and row["model_name"] == request.preferred_model
         and row["enabled"] == 1
@@ -206,8 +457,8 @@ async def _load_preserved_state(admin_session, database_name: str, request: Rese
         )
     return _PreservedState(
         project=project,
-        seeds=tuple(seed_rows),
-        providers=tuple(provider_rows),
+        seeds=mapped_seeds,
+        providers=mapped_providers,
         preferred_provider=preferred[0],
     )
 
@@ -393,10 +644,22 @@ async def reset_writer_core_data(
     """Inspect or rebuild one explicitly authorized target database."""
     if type(request) is not ResetRequest:
         raise TypeError("request must be ResetRequest")
-    product_authorized = bool(
-        allow_product_database and _product_authority is _CLI_PRODUCT_AUTHORITY
+    product_read_authorized = bool(
+        allow_product_database
+        and _product_authority in {
+            _CLI_PRODUCT_READ_AUTHORITY,
+            _CLI_PRODUCT_EXECUTE_AUTHORITY,
+        }
     )
-    _validate_target(database_name, confirm_reset, product_authorized)
+    product_execute_authorized = bool(
+        allow_product_database
+        and _product_authority is _CLI_PRODUCT_EXECUTE_AUTHORITY
+    )
+    _validate_target(database_name, confirm_reset, product_read_authorized)
+    if execute and database_name == PRODUCT_DATABASE and not product_execute_authorized:
+        raise ResetSafetyError(
+            "Refusing product database reset without explicit CLI execute authorization"
+        )
 
     if not execute:
         state = await _load_preserved_state(admin_session, database_name, request)
@@ -417,15 +680,15 @@ async def reset_writer_core_data(
         acquired = True
         state = await _load_preserved_state(admin_session, database_name, request)
 
-        _guard_database(database_name, product_authorized)
+        _guard_database(database_name, product_execute_authorized)
         ddl_started = True
         await admin_session.execute(f"DROP DATABASE `{database_name}`")
-        _guard_database(database_name, product_authorized)
+        _guard_database(database_name, product_execute_authorized)
         await admin_session.execute(
             f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 "
             "COLLATE utf8mb4_0900_ai_ci"
         )
-        _guard_database(database_name, product_authorized)
+        _guard_database(database_name, product_execute_authorized)
         timestamp = (now_ms or (lambda: int(time.time() * 1000)))()
         await initialize_database(
             admin_session,
@@ -452,7 +715,27 @@ async def reset_writer_core_data(
                 ) from insert_error
             raise
         else:
-            await admin_session.execute("COMMIT")
+            try:
+                await admin_session.execute("COMMIT")
+            except BaseException as commit_error:
+                commit_failures = [commit_error]
+                try:
+                    await admin_session.execute("ROLLBACK")
+                except BaseException as rollback_error:
+                    commit_failures.append(rollback_error)
+                # A failed COMMIT leaves transaction outcome unknown. Closing the
+                # connection both releases its advisory lock and prevents reuse.
+                acquired = False
+                try:
+                    await admin_session.close()
+                except BaseException as close_error:
+                    commit_failures.append(close_error)
+                if len(commit_failures) > 1:
+                    raise BaseExceptionGroup(
+                        "Writer Core COMMIT failed and transaction cleanup also failed",
+                        commit_failures,
+                    ) from commit_error
+                raise
         report = _report(database_name, state, executed=True)
     except BaseException as exc:
         body_error = exc
@@ -515,8 +798,7 @@ async def run_cli(
         preferred_model=args.preferred_model,
     )
     allow_product_database = bool(
-        args.execute
-        and args.database == PRODUCT_DATABASE
+        args.database == PRODUCT_DATABASE
         and args.confirm_reset == PRODUCT_DATABASE
     )
     _guard_database(args.database, allow_product_database)
@@ -536,7 +818,11 @@ async def run_cli(
             execute=args.execute,
             allow_product_database=allow_product_database,
             output=output,
-            _product_authority=_CLI_PRODUCT_AUTHORITY,
+            _product_authority=(
+                _CLI_PRODUCT_EXECUTE_AUTHORITY
+                if args.execute
+                else _CLI_PRODUCT_READ_AUTHORITY
+            ),
         )
     finally:
         await session.close()
