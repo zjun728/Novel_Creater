@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+
 import pytest
 
 from backend.schema_manifest import manifest_hash
@@ -42,6 +44,10 @@ async def test_missing_table_is_rejected_with_initializer_guidance_and_no_ddl():
 
     assert raw_driver_message not in str(raised.value)
     assert "DRIVER_SENTINEL" not in str(raised.value)
+    assert "DRIVER_SENTINEL" not in "".join(
+        traceback.format_exception(raised.value)
+    )
+    assert raised.value.__cause__ is None
     assert session.executed == [(EXPECTED_QUERY, None)]
 
 

@@ -43,7 +43,7 @@ async def verify_schema_version(session) -> None:
             raise
         raise SchemaMismatch(
             f"Writer Core schema metadata table is missing. {_guidance()}"
-        ) from exc
+        ) from None
 
     expected_hash = manifest_hash()
     if row is None:
