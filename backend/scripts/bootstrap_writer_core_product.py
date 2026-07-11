@@ -317,7 +317,7 @@ def _receipt_value(value: object) -> str:
     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     return "".join(
         f"\\u{ord(character):04x}"
-        if unicodedata.category(character) == "Cc"
+        if unicodedata.category(character) in {"Cc", "Zl", "Zp", "Cf"}
         else character
         for character in encoded
     )

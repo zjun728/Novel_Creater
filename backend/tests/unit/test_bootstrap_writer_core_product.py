@@ -377,7 +377,10 @@ def test_receipt_contains_only_public_identity_and_count_fields():
 
 
 def test_receipt_json_encodes_dynamic_values_as_single_safe_records():
-    injection = "\r\nforged.count=999\x1b[31m\x07\u009b32m"
+    injection = (
+        "\r\nforged.count=999\x1b[31m\x07\u009b32m"
+        "\u2028line-separator\u2029paragraph-separator\u202ebidi-override"
+    )
     project_id = f"project-{injection}"
     project_title = f"title-{injection}"
     seed_id = f"seed-{injection}"
@@ -417,7 +420,10 @@ def test_receipt_json_encodes_dynamic_values_as_single_safe_records():
         "projection_heads.count=1",
     ]
     assert all(
-        control not in rendered for control in ("\r", "\x1b", "\x07", "\u009b")
+        control not in rendered
+        for control in (
+            "\r", "\x1b", "\x07", "\u009b", "\u2028", "\u2029", "\u202e",
+        )
     )
     assert all(secret not in rendered for secret in SECRET_VALUES)
 
