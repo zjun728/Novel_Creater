@@ -38,8 +38,11 @@ CREATE TABLE story_engine_batches (
       AND raw_response_text IS NULL AND raw_response_hash IS NULL
       AND status = 'succeeded' AND public_error_code IS NULL AND finished_at IS NOT NULL)
     OR (source_type = 'provider' AND binding_revision_id IS NOT NULL
-      AND binding_hash IS NOT NULL AND provider_id IS NOT NULL
-      AND model_name_snapshot IS NOT NULL)
+      AND binding_hash IS NOT NULL
+      AND ((provider_id IS NULL AND model_name_snapshot IS NULL
+          AND (status = 'reserved' OR (status = 'failed' AND attempt_id IS NULL
+            AND public_error_code IN ('not_started','provider_configuration'))))
+        OR (provider_id IS NOT NULL AND model_name_snapshot IS NOT NULL)))
   ),
   CHECK (
     source_type = 'manual'
@@ -58,9 +61,14 @@ CREATE TABLE story_engine_batches (
       AND attempt_started_at IS NULL AND lease_expires_at IS NULL
       AND raw_response_text IS NULL AND raw_response_hash IS NULL
       AND finished_at IS NOT NULL)
+    OR (status = 'failed' AND public_error_code = 'provider_configuration'
+      AND attempt_id IS NULL AND attempt_started_at IS NULL
+      AND lease_expires_at IS NULL AND raw_response_text IS NULL
+      AND raw_response_hash IS NULL AND finished_at IS NOT NULL)
     OR (status = 'failed' AND attempt_id IS NOT NULL
       AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL
-      AND public_error_code IS NOT NULL AND public_error_code <> 'not_started'
+      AND public_error_code IS NOT NULL
+      AND public_error_code NOT IN ('not_started','provider_configuration')
       AND finished_at IS NOT NULL)
     OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
       AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL

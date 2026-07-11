@@ -4,27 +4,45 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 import time
+from types import MappingProxyType
 from typing import Literal
 from uuid import uuid4
 
+import httpx
 from pydantic import BaseModel, ConfigDict
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption, validate_three_options
+from backend.gateways.story_engine_provider import (
+    PROVIDER_TIMEOUT_SECONDS,
+    StoryEngineProviderHTTPError,
+    StoryEngineProviderResponseError,
+)
 from backend.http_errors import (
     StoryEngineBatchConflict,
     StoryEngineBatchNotFound,
     StoryEnginePreconditionFailed,
 )
+from backend.prompts.story_engine import build_story_engine_messages
 
 
 RESERVED_TIMEOUT_MS = 300_000
-PROVIDER_TIMEOUT_SECONDS = 180
 RUNNING_LEASE_MS = 240_000
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "outcome_unknown"})
 _SAFE_FAILURE_CODES = frozenset(
     {"provider_failed", "provider_timeout", "invalid_response"}
+)
+DEFAULT_CHANNEL_PROFILE = MappingProxyType(
+    {
+        "schemaVersion": "writer-channel-profile-v1",
+        "key": "male-qidian-qq-longform",
+        "audience": "男频长篇",
+        "readingModel": "起点/QQ阅读型",
+        "storyPriority": "好读、情节丰满、持续追读优先，不追求文学腔",
+    }
 )
 
 
@@ -102,7 +120,16 @@ class StoryEngineService:
         self.provider_gateway = provider_gateway
 
     @staticmethod
-    def _request(source_type: str, seed: dict, *, binding=None, options=None):
+    def _request(
+        source_type: str,
+        seed: dict,
+        *,
+        binding=None,
+        options=None,
+        seed_payload: SeedPayload | None = None,
+        channel_profile=None,
+        genre_profile=None,
+    ):
         request = {
             "sourceType": source_type,
             "seed": {
@@ -120,6 +147,9 @@ class StoryEngineService:
                 "id": binding["provider_id"],
                 "modelName": binding["model_name_snapshot"],
             }
+            request["seed"]["payload"] = seed_payload.model_dump(mode="json")
+            request["channelProfile"] = dict(channel_profile)
+            request["genreProfile"] = dict(genre_profile)
         if options is not None:
             request["options"] = [
                 option.model_dump(mode="json") for option in options
@@ -283,6 +313,19 @@ class StoryEngineService:
     async def reserve_provider(
         self, command: ReserveStoryEngineBatch
     ) -> StoryEngineBatchResult:
+        result, _, _ = await self._reserve_provider(command)
+        return result
+
+    @staticmethod
+    def _seed_payload(seed: dict) -> SeedPayload:
+        payload = seed["payload_json"]
+        if isinstance(payload, (bytes, bytearray)):
+            payload = payload.decode("utf-8")
+        if isinstance(payload, str):
+            return SeedPayload.model_validate_json(payload)
+        return SeedPayload.model_validate(payload)
+
+    async def _reserve_provider(self, command: ReserveStoryEngineBatch):
         async with self.transaction_factory() as session:
             if await self.repository.lock_project(session, command.project_id) is None:
                 raise StoryEngineBatchNotFound()
@@ -292,13 +335,26 @@ class StoryEngineService:
             )
             if seed is None or binding is None:
                 raise StoryEnginePreconditionFailed()
-            request = self._request("provider", seed, binding=binding)
+            seed_payload = self._seed_payload(seed)
+            genre_profile = {
+                "schemaVersion": "writer-genre-profile-v1",
+                "projectGenre": seed["project_genre"],
+                "seedGenre": seed_payload.genre,
+            }
+            request = self._request(
+                "provider",
+                seed,
+                binding=binding,
+                seed_payload=seed_payload,
+                channel_profile=DEFAULT_CHANNEL_PROFILE,
+                genre_profile=genre_profile,
+            )
             request_hash = canonical_hash(request)
             replay = await self._replay_or_conflict(
                 session, command.project_id, command.idempotency_key, request_hash
             )
             if replay is not None:
-                return replay
+                return replay, False, None
             now = self.clock()
             row = self._batch_row(
                 project_id=command.project_id,
@@ -311,7 +367,161 @@ class StoryEngineService:
                 now=now,
             )
             await self.repository.insert_batch(session, row)
-            return await self._load_result(session, command.project_id, row["id"])
+            result = await self._load_result(session, command.project_id, row["id"])
+            return result, True, request
+
+    @staticmethod
+    def _provider_is_callable(provider, model_name_snapshot: str | None) -> bool:
+        if provider is None or not isinstance(model_name_snapshot, str):
+            return False
+        return (
+            provider.get("lifecycle_status") == "active"
+            and int(provider.get("enabled") or 0) == 1
+            and all(
+                isinstance(provider.get(field), str)
+                and bool(provider[field].strip())
+                for field in (
+                    "provider_type",
+                    "model_name",
+                    "base_url",
+                    "api_key",
+                )
+            )
+            and provider["provider_type"].strip().casefold()
+            in {"openai", "openai-compatible"}
+            and provider["model_name"] == model_name_snapshot
+        )
+
+    @staticmethod
+    def _parse_provider_options(raw_response_text: str):
+        payload = json.loads(raw_response_text)
+        if not isinstance(payload, dict) or set(payload) != {"options"}:
+            raise ValueError("response must contain only options")
+        raw_options = payload["options"]
+        if not isinstance(raw_options, list) or len(raw_options) != 3:
+            raise ValueError("response must contain three options")
+        tuple_fields = {
+            "ensembleRoles",
+            "satisfactionSources",
+            "longFormVariation",
+            "risks",
+        }
+        options = []
+        for raw_option in raw_options:
+            if not isinstance(raw_option, dict):
+                raise ValueError("option must be an object")
+            normalized = {
+                key: tuple(value)
+                if key in tuple_fields and isinstance(value, list)
+                else value
+                for key, value in raw_option.items()
+            }
+            options.append(StoryEngineOption.model_validate(normalized))
+        return validate_three_options(tuple(options))
+
+    async def mark_outcome_unknown(
+        self, project_id: str, batch_id: str, attempt_id: str
+    ) -> StoryEngineBatchResult:
+        async with self.transaction_factory() as session:
+            changed = await self.repository.cas_unknown_attempt(
+                session,
+                project_id,
+                batch_id,
+                attempt_id,
+                {"finished_at": self.clock()},
+            )
+            if not changed:
+                raise StoryEngineBatchConflict()
+            return await self._load_result(session, project_id, batch_id)
+
+    async def generate_provider(
+        self, command: ReserveStoryEngineBatch
+    ) -> StoryEngineBatchResult:
+        batch, created, request = await self._reserve_provider(command)
+        if not created:
+            return batch
+
+        async with self.transaction_factory() as session:
+            if await self.repository.lock_project(session, command.project_id) is None:
+                raise StoryEngineBatchNotFound()
+            stored = await self.repository.read_batch(
+                session, command.project_id, batch.id
+            )
+            if stored is None:
+                raise StoryEngineBatchNotFound()
+            provider = None
+            if stored.get("provider_id") is not None:
+                provider = await self.repository.lock_provider_connection(
+                    session, stored["provider_id"]
+                )
+            if (
+                self.provider_gateway is None
+                or not self._provider_is_callable(
+                    provider, stored.get("model_name_snapshot")
+                )
+            ):
+                changed = await self.repository.cas_fail_configuration(
+                    session,
+                    command.project_id,
+                    batch.id,
+                    {"finished_at": self.clock()},
+                )
+                if not changed:
+                    raise StoryEngineBatchConflict()
+                return await self._load_result(session, command.project_id, batch.id)
+
+            now = self.clock()
+            attempt_id = self.id_factory()
+            changed = await self.repository.cas_start_attempt(
+                session,
+                command.project_id,
+                batch.id,
+                {
+                    "attempt_id": attempt_id,
+                    "attempt_started_at": now,
+                    "lease_expires_at": now + RUNNING_LEASE_MS,
+                },
+            )
+            if not changed:
+                raise StoryEngineBatchConflict()
+            provider = dict(provider)
+
+        messages = build_story_engine_messages(
+            request["seed"]["payload"],
+            request["channelProfile"],
+            request["genreProfile"],
+        )
+        try:
+            raw_response_text = await self.provider_gateway.generate(
+                provider=provider,
+                messages=messages,
+            )
+        except StoryEngineProviderHTTPError:
+            return await self.fail_attempt(
+                command.project_id, batch.id, attempt_id, "provider_failed"
+            )
+        except StoryEngineProviderResponseError:
+            return await self.fail_attempt(
+                command.project_id, batch.id, attempt_id, "invalid_response"
+            )
+        except (TimeoutError, httpx.TransportError):
+            return await self.mark_outcome_unknown(
+                command.project_id, batch.id, attempt_id
+            )
+
+        try:
+            options = self._parse_provider_options(raw_response_text)
+        except (TypeError, ValueError):
+            return await self.fail_attempt(
+                command.project_id, batch.id, attempt_id, "invalid_response"
+            )
+        return await self.succeed_attempt(
+            command.project_id,
+            batch.id,
+            attempt_id,
+            raw_response_text,
+            options,
+        )
 
     async def get(self, project_id: str, batch_id: str) -> StoryEngineBatchResult:
         async with self.connection_factory() as session:

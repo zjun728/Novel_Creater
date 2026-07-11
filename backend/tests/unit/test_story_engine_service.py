@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
+import httpx
 import pytest
+
+from backend.gateways.story_engine_provider import (
+    StoryEngineProviderHTTPError,
+    StoryEngineProviderResponseError,
+)
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.http_errors import (
@@ -9,6 +18,7 @@ from backend.http_errors import (
     StoryEnginePreconditionFailed,
 )
 from backend.services.story_engines import (
+    DEFAULT_CHANNEL_PROFILE,
     PROVIDER_TIMEOUT_SECONDS,
     RESERVED_TIMEOUT_MS,
     RUNNING_LEASE_MS,
@@ -211,3 +221,213 @@ async def test_missing_archived_and_missing_prerequisites_are_stable_public_erro
     harness.repository.bindings["seed"] = None
     with pytest.raises(StoryEnginePreconditionFailed):
         await harness.service.reserve_provider(ReserveStoryEngineBatch("p1", "no-binding"))
+
+
+@pytest.mark.asyncio
+async def test_unbound_reserved_batch_cannot_start_an_attempt():
+    harness = StoryEngineHarness()
+    harness.repository.bindings["seed"].update(
+        resolution_status="unbound",
+        provider_id=None,
+        model_name_snapshot=None,
+    )
+    batch = await harness.service.reserve_provider(
+        ReserveStoryEngineBatch("p1", "unbound-start")
+    )
+
+    with pytest.raises(StoryEngineBatchConflict):
+        await harness.service.start_attempt("p1", batch.id)
+
+
+def _provider_response(*, suffix=""):
+    return json.dumps(
+        {
+            "options": [
+                item.model_dump(mode="json")
+                for item in three_options(suffix=suffix)
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+class ScriptedGateway:
+    def __init__(self, harness, outcome=None):
+        self.harness = harness
+        self.outcome = outcome if outcome is not None else _provider_response()
+        self.calls = []
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.block = False
+
+    async def generate(self, *, provider, messages):
+        assert self.harness.transaction_active == 0
+        self.calls.append((dict(provider), tuple(messages)))
+        self.entered.set()
+        if self.block:
+            await self.release.wait()
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+@pytest.mark.asyncio
+async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transaction_once():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "generated")
+    )
+
+    assert result.status == "succeeded"
+    assert len(result.options) == 3
+    assert len(gateway.calls) == 1
+    provider, messages = gateway.calls[0]
+    assert provider == harness.repository.providers["provider-seed"]
+    prompt = json.loads(messages[1]["content"])
+    assert prompt["seedSnapshot"]["title"] == "冻结标题"
+    assert prompt["channelProfile"] == DEFAULT_CHANNEL_PROFILE
+    assert prompt["genreProfile"] == {
+        "schemaVersion": "writer-genre-profile-v1",
+        "projectGenre": "男频玄幻",
+        "seedGenre": "玄幻",
+    }
+    stored_request = harness.repository.batches[result.id]["request"]
+    assert stored_request["channelProfile"] == DEFAULT_CHANNEL_PROFILE
+    assert stored_request["genreProfile"] == prompt["genreProfile"]
+    rendered = harness.repository.batches[result.id]["request_json"]
+    assert "KEY_SENTINEL" not in rendered
+    assert "https://provider.example" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_terminal_replay_and_expired_running_never_call_provider_again():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    harness.service.provider_gateway = gateway
+    command = ReserveStoryEngineBatch("p1", "replay")
+    first = await harness.service.generate_provider(command)
+    replay = await harness.service.generate_provider(command)
+    assert replay == first
+    assert len(gateway.calls) == 1
+
+    reserved = await harness.service.reserve_provider(
+        ReserveStoryEngineBatch("p1", "expired")
+    )
+    await harness.service.start_attempt("p1", reserved.id)
+    harness.clock.advance(RUNNING_LEASE_MS)
+    unknown = await harness.service.reconcile("p1", reserved.id)
+    replayed_unknown = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "expired")
+    )
+    assert unknown.status == replayed_unknown.status == "outcome_unknown"
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_key_has_one_outbound_call():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    gateway.block = True
+    harness.service.provider_gateway = gateway
+    command = ReserveStoryEngineBatch("p1", "concurrent")
+
+    winner = asyncio.create_task(harness.service.generate_provider(command))
+    await gateway.entered.wait()
+    loser = await harness.service.generate_provider(command)
+    gateway.release.set()
+    completed = await winner
+
+    assert loser.status == "running"
+    assert completed.status == "succeeded"
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configuration",
+    (
+        "unbound",
+        "missing",
+        "deleted",
+        "disabled",
+        "empty-key",
+        "empty-base",
+        "empty-model",
+        "model-mismatch",
+        "unsupported-type",
+    ),
+)
+async def test_unavailable_configuration_fails_before_attempt_with_zero_transport(
+    configuration,
+):
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    harness.service.provider_gateway = gateway
+    binding = harness.repository.bindings["seed"]
+    provider = harness.repository.providers["provider-seed"]
+    if configuration == "unbound":
+        binding.update(
+            resolution_status="unbound",
+            provider_id=None,
+            model_name_snapshot=None,
+        )
+    elif configuration == "missing":
+        harness.repository.providers.clear()
+    elif configuration == "deleted":
+        provider.update(lifecycle_status="deleted", enabled=0, api_key="", base_url="")
+    elif configuration == "disabled":
+        provider["enabled"] = 0
+    elif configuration == "empty-key":
+        provider["api_key"] = " "
+    elif configuration == "empty-base":
+        provider["base_url"] = " "
+    elif configuration == "empty-model":
+        provider["model_name"] = " "
+    elif configuration == "model-mismatch":
+        provider["model_name"] = "changed-model"
+    elif configuration == "unsupported-type":
+        provider["provider_type"] = "anthropic"
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"configuration-{configuration}")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "provider_configuration"
+    assert result.attempt_id is None
+    assert result.attempt_started_at is None
+    assert result.lease_expires_at is None
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "status", "code"),
+    (
+        ("not-json", "failed", "invalid_response"),
+        ('{"options": []}', "failed", "invalid_response"),
+        (StoryEngineProviderHTTPError("RAW_SENTINEL"), "failed", "provider_failed"),
+        (StoryEngineProviderResponseError("RAW_SENTINEL"), "failed", "invalid_response"),
+        (TimeoutError("KEY_SENTINEL PRIVATE_URL_SENTINEL"), "outcome_unknown", "outcome_unknown"),
+        (httpx.TransportError("KEY_SENTINEL PRIVATE_URL_SENTINEL"), "outcome_unknown", "outcome_unknown"),
+    ),
+)
+async def test_generation_rejection_and_uncertain_transport_have_stable_classification(
+    outcome, status, code
+):
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness, outcome)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"classification-{status}-{type(outcome).__name__}")
+    )
+
+    assert result.status == status
+    assert result.public_error_code == code
+    assert len(gateway.calls) == 1
+    assert "KEY_SENTINEL" not in str(result)
+    assert "PRIVATE_URL_SENTINEL" not in str(result)

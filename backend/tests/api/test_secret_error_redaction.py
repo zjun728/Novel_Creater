@@ -12,9 +12,12 @@ from urllib.request import urlopen
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import httpx
 
-from backend.routers import providers
+from backend.gateways.story_engine_provider import StoryEngineProviderGateway
+from backend.routers import providers, story_engines
 from backend.security.redaction import SecretRedactionFilter, install_error_handlers
+from backend.tests.support.story_engine_fakes import StoryEngineHarness
 
 
 SECRET = "sk-validation-and-error-sentinel"
@@ -122,6 +125,45 @@ def test_error_handler_installation_filters_uvicorn_error_once():
         for item in original_filters:
             if isinstance(item, SecretRedactionFilter):
                 uvicorn_logger.addFilter(item)
+
+
+def test_story_engine_provider_failure_redacts_connection_and_raw_response(caplog):
+    harness = StoryEngineHarness()
+    harness.repository.providers["provider-seed"].update(
+        api_key=SECRET,
+        base_url=PRIVATE_URL,
+    )
+    harness.service.provider_gateway = StoryEngineProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                503,
+                text=f"RAW_RESPONSE_SENTINEL {SECRET} {PRIVATE_URL}",
+                request=request,
+            )
+        )
+    )
+    app = FastAPI()
+    app.include_router(story_engines.router, prefix="/api")
+    app.dependency_overrides[
+        story_engines.get_story_engine_service
+    ] = lambda: harness.service
+    install_error_handlers(app)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post(
+            "/api/projects/p1/story-engine-batches",
+            json={"idempotencyKey": "safe-failure"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "failed"
+    assert response.json()["publicErrorCode"] == "provider_failed"
+    rendered = response.text + caplog.text
+    assert all(
+        sentinel not in rendered
+        for sentinel in (SECRET, PRIVATE_URL, "RAW_RESPONSE_SENTINEL")
+    )
 
 
 def test_real_uvicorn_logs_never_render_unexpected_error_secrets():

@@ -21,11 +21,17 @@ class StoryEngineRepository:
         return await session.fetchone(
             """SELECT selected.seed_id,
                       selected.seed_revision_id,
-                      selected.seed_hash
+                      selected.seed_hash,
+                      revision.payload_json,
+                      project.genre AS project_genre
                FROM project_selected_seeds selected
                JOIN creative_seeds seed
                  ON seed.project_id=selected.project_id
                 AND seed.id=selected.seed_id
+               JOIN creative_seed_revisions revision
+                 ON revision.seed_id=selected.seed_id
+                AND revision.id=selected.seed_revision_id
+               JOIN projects project ON project.id=selected.project_id
                WHERE selected.project_id=%s AND seed.status='candidate'
                FOR UPDATE""",
             (project_id,),
@@ -35,27 +41,24 @@ class StoryEngineRepository:
         return await session.fetchone(
             """SELECT head.binding_revision_id,
                       head.content_hash AS binding_hash,
+                      item.resolution_status,
                       item.provider_id,
                       item.model_name_snapshot
                FROM project_model_binding_heads head
                JOIN project_model_binding_items item
                  ON item.binding_revision_id=head.binding_revision_id
                 AND item.task_key='seed'
-               JOIN provider_profiles provider ON provider.id=item.provider_id
                WHERE head.project_id=%s
-                 AND item.resolution_status='bound'
-                 AND provider.lifecycle_status='active'
-                 AND provider.enabled=1
-                 AND provider.provider_type IS NOT NULL
-                 AND TRIM(provider.provider_type)<>''
-                 AND provider.model_name=item.model_name_snapshot
-                 AND TRIM(provider.model_name)<>''
-                 AND provider.base_url IS NOT NULL
-                 AND TRIM(provider.base_url)<>''
-                 AND provider.api_key IS NOT NULL
-                 AND TRIM(provider.api_key)<>''
                FOR UPDATE""",
             (project_id,),
+        )
+
+    async def lock_provider_connection(self, session, provider_id: str):
+        return await session.fetchone(
+            """SELECT id,provider_type,model_name,base_url,api_key,enabled,
+                      lifecycle_status
+               FROM provider_profiles WHERE id=%s FOR UPDATE""",
+            (provider_id,),
         )
 
     async def lock_batch_by_key(
@@ -130,7 +133,9 @@ class StoryEngineRepository:
                SET status='running',attempt_id=%s,attempt_started_at=%s,
                    lease_expires_at=%s
                WHERE project_id=%s AND id=%s AND source_type='provider'
-                 AND status='reserved' AND attempt_id IS NULL""",
+                 AND status='reserved' AND attempt_id IS NULL
+                 AND provider_id IS NOT NULL
+                 AND model_name_snapshot IS NOT NULL""",
             (
                 row["attempt_id"], row["attempt_started_at"],
                 row["lease_expires_at"], project_id, batch_id,
@@ -176,6 +181,37 @@ class StoryEngineRepository:
                 row["public_error_code"], row["finished_at"],
                 project_id, batch_id, attempt_id,
             ),
+        )
+        return changed == 1
+
+    async def cas_fail_configuration(
+        self, session, project_id: str, batch_id: str, row: dict
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE story_engine_batches
+               SET status='failed',public_error_code='provider_configuration',
+                   finished_at=%s
+               WHERE project_id=%s AND id=%s AND source_type='provider'
+                 AND status='reserved' AND attempt_id IS NULL""",
+            (row["finished_at"], project_id, batch_id),
+        )
+        return changed == 1
+
+    async def cas_unknown_attempt(
+        self,
+        session,
+        project_id: str,
+        batch_id: str,
+        attempt_id: str,
+        row: dict,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE story_engine_batches
+               SET status='outcome_unknown',public_error_code='outcome_unknown',
+                   finished_at=%s
+               WHERE project_id=%s AND id=%s AND status='running'
+                 AND attempt_id=%s""",
+            (row["finished_at"], project_id, batch_id, attempt_id),
         )
         return changed == 1
 

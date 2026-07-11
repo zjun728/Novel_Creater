@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import aiomysql
 import pytest
 
+from backend.domain.json_contracts import canonical_json
 from backend.http_errors import StoryEngineBatchConflict
 from backend.repositories.story_engines import StoryEngineRepository
 from backend.services.story_engines import (
@@ -45,8 +46,25 @@ async def _bootstrap_facts(session, project_id: str = "project-1") -> None:
     await session.execute(
         """INSERT INTO creative_seed_revisions
            (id,project_id,seed_id,revision,payload_json,content_hash,created_at)
-           VALUES ('seed-revision-1',%s,'seed-1',1,'{}',%s,%s)""",
-        (project_id, "a" * 64, now),
+           VALUES ('seed-revision-1',%s,'seed-1',1,%s,%s,%s)""",
+        (
+            project_id,
+            canonical_json(
+                {
+                    "title": "Integration seed",
+                    "genre": "history",
+                    "logline": "A tested protagonist faces a lasting conflict",
+                    "protagonist": "The tested protagonist",
+                    "desire": "Protect the project",
+                    "coreConflict": "Every success creates a cost",
+                    "worldPressure": "The surrounding order keeps changing",
+                    "openingHook": "The first invariant breaks",
+                    "differentiation": "Choices alter later constraints",
+                }
+            ),
+            "a" * 64,
+            now,
+        ),
     )
     await session.execute(
         """INSERT INTO creative_seed_heads

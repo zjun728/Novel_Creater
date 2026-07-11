@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 
+from backend.domain.json_contracts import canonical_json
 from backend.domain.story_engines import StoryEngineOption
 
 
@@ -56,6 +58,20 @@ class MemoryStoryEngineRepository:
             "seed_id": "seed-1",
             "seed_revision_id": "seed-revision-1",
             "seed_hash": "a" * 64,
+            "payload_json": canonical_json(
+                {
+                    "title": "冻结标题",
+                    "genre": "玄幻",
+                    "logline": "少年为守住家园踏上征途",
+                    "protagonist": "出身边城的少年",
+                    "desire": "保护家人与证明自己",
+                    "coreConflict": "力量的代价不断侵蚀初心",
+                    "worldPressure": "宗门与王朝争夺边境资源",
+                    "openingHook": "家园在选拔当夜遭到袭击",
+                    "differentiation": "每次变强都必须公开放弃一种关系",
+                }
+            ),
+            "project_genre": "男频玄幻",
         }
         self.bindings = {
             "seed": {
@@ -63,6 +79,7 @@ class MemoryStoryEngineRepository:
                 "binding_hash": "b" * 64,
                 "provider_id": "provider-seed",
                 "model_name_snapshot": "seed-model",
+                "resolution_status": "bound",
             },
             "planning": {
                 "binding_revision_id": "binding-revision-1",
@@ -70,6 +87,17 @@ class MemoryStoryEngineRepository:
                 "provider_id": "provider-planning",
                 "model_name_snapshot": "planning-model",
             },
+        }
+        self.providers = {
+            "provider-seed": {
+                "id": "provider-seed",
+                "provider_type": "openai-compatible",
+                "model_name": "seed-model",
+                "base_url": "https://provider.example/v1",
+                "api_key": "KEY_SENTINEL",
+                "enabled": 1,
+                "lifecycle_status": "active",
+            }
         }
         self.batches: dict[str, dict] = {}
         self.options: dict[str, list[dict]] = {}
@@ -98,6 +126,11 @@ class MemoryStoryEngineRepository:
         self.events.append("lock-binding")
         binding = self.bindings.get("seed")
         return dict(binding) if project_id == "p1" and binding else None
+
+    async def lock_provider_connection(self, session, provider_id):
+        self.events.append("lock-provider")
+        provider = self.providers.get(provider_id)
+        return dict(provider) if provider else None
 
     async def lock_batch_by_key(self, session, project_id, idempotency_key):
         self.events.append("lock-key")
@@ -134,6 +167,8 @@ class MemoryStoryEngineRepository:
             return False
         if batch["status"] != "reserved" or batch["attempt_id"] is not None:
             return False
+        if batch["provider_id"] is None or batch["model_name_snapshot"] is None:
+            return False
         batch["status"] = "running"
         batch.update(row)
         return True
@@ -156,6 +191,28 @@ class MemoryStoryEngineRepository:
             return False
         batch["status"] = "failed"
         batch.update(row)
+        return True
+
+    async def cas_fail_configuration(self, session, project_id, batch_id, row):
+        batch = self.batches.get(batch_id)
+        if not batch or batch["project_id"] != project_id:
+            return False
+        if batch["status"] != "reserved" or batch["attempt_id"] is not None:
+            return False
+        batch["status"] = "failed"
+        batch.update({**row, "public_error_code": "provider_configuration"})
+        return True
+
+    async def cas_unknown_attempt(
+        self, session, project_id, batch_id, attempt_id, row
+    ):
+        batch = self.batches.get(batch_id)
+        if not batch or batch["project_id"] != project_id:
+            return False
+        if batch["status"] != "running" or batch["attempt_id"] != attempt_id:
+            return False
+        batch["status"] = "outcome_unknown"
+        batch.update({**row, "public_error_code": "outcome_unknown"})
         return True
 
     async def cas_reconcile_reserved(self, session, project_id, batch_id, row, stale_before):
@@ -192,6 +249,8 @@ class StoryEngineHarness:
         self.repository = MemoryStoryEngineRepository()
         self.clock = FakeClock(now)
         self.gateway = CountingGateway()
+        self.transaction_active = 0
+        self._transaction_lock = asyncio.Lock()
         ids = iter(f"00000000-0000-0000-0000-{number:012d}" for number in range(1, 100))
         self.service = StoryEngineService(
             self.repository,
@@ -204,13 +263,17 @@ class StoryEngineHarness:
 
     @asynccontextmanager
     async def transaction(self):
-        snapshot = deepcopy(self.repository.__dict__)
-        try:
-            yield object()
-        except BaseException:
-            self.repository.__dict__.clear()
-            self.repository.__dict__.update(snapshot)
-            raise
+        async with self._transaction_lock:
+            snapshot = deepcopy(self.repository.__dict__)
+            self.transaction_active += 1
+            try:
+                yield object()
+            except BaseException:
+                self.repository.__dict__.clear()
+                self.repository.__dict__.update(snapshot)
+                raise
+            finally:
+                self.transaction_active -= 1
 
     @asynccontextmanager
     async def connection(self):

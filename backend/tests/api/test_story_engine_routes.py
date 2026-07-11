@@ -17,8 +17,8 @@ class FakeService:
     def __init__(self):
         self.calls = []
 
-    async def reserve_provider(self, command):
-        self.calls.append(("reserve", command))
+    async def generate_provider(self, command):
+        self.calls.append(("generate", command))
         if command.idempotency_key == "conflict":
             raise StoryEngineBatchConflict()
         return _result("reserved")
@@ -90,6 +90,7 @@ def test_fixed_routes_delegate_and_return_camel_case_dto():
     assert manual.json()["bindingRevisionId"] is None
     assert len(manual.json()["options"]) == 3
     assert reconcile.json()["publicErrorCode"] == "not_started"
+    assert service.calls[0][0] == "generate"
     assert service.calls[0][1].project_id == "p1"
 
 

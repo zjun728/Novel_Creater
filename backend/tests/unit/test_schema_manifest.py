@@ -279,6 +279,14 @@ def test_global_assets_have_revision_heads_and_no_project_ownership():
 
 def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     batches = _table_statement("story_engine_batches")
+    assert "provider_id is null and model_name_snapshot is null" in batches
+    assert "provider_id is not null and model_name_snapshot is not null" in batches
+    assert (
+        "provider_id is null and model_name_snapshot is null "
+        "and (status = 'reserved' or (status = 'failed' and attempt_id is null "
+        "and public_error_code in ('not_started','provider_configuration')))"
+    ) in batches
+    assert "public_error_code = 'provider_configuration'" in batches
     assert "unique key uq_engine_batch_idempotency (project_id, idempotency_key)" in batches
     assert "unique key uq_engine_batch_project_id (project_id, id)" in batches
     assert "check (source_type in ('provider','manual'))" in batches
@@ -294,7 +302,8 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     assert (
         "status = 'failed' and attempt_id is not null "
         "and attempt_started_at is not null and lease_expires_at is not null "
-        "and public_error_code is not null and public_error_code <> 'not_started' "
+        "and public_error_code is not null "
+        "and public_error_code not in ('not_started','provider_configuration') "
         "and finished_at is not null"
     ) in batches
     assert re.search(

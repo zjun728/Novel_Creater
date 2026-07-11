@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from backend.database import connection, transaction
 from backend.domain.story_engines import StoryEngineOption, validate_three_options
+from backend.gateways.story_engine_provider import StoryEngineProviderGateway
 from backend.repositories.story_engines import StoryEngineRepository
 from backend.services.story_engines import (
     CreateManualStoryEngineBatch,
@@ -20,6 +21,7 @@ _service = StoryEngineService(
     StoryEngineRepository(),
     transaction_factory=transaction,
     connection_factory=connection,
+    provider_gateway=StoryEngineProviderGateway(),
 )
 
 
@@ -108,7 +110,7 @@ async def reserve_batch(
     service=Depends(get_story_engine_service),
 ):
     return _public_batch(
-        await service.reserve_provider(
+        await service.generate_provider(
             ReserveStoryEngineBatch(pid, body.idempotencyKey)
         )
     )
