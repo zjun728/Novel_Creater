@@ -195,7 +195,7 @@ Expected: FAIL because the dispatcher module or required behavior is absent. The
 
 - [ ] **Step 3: Add the official dispatcher and package entrypoints**
 
-The dispatcher uses `spawnSync(..., shell: false)`, `process.execPath` for Node, and `process.env.PYTHON || 'python'` for Python. It uses `readdirSync` to discover and stably sort only direct `*.test.mjs` files in `scripts/tests/` and `frontend/tests/unit/`, passing explicit file paths to Node. It supports `unit`, `frontend-unit`, `integration`, and `browser`, rejects empty or unknown suites with exit code 2 and usage, and immediately propagates a failing child exit code.
+The dispatcher uses `spawnSync(..., shell: false)`, `process.execPath` for Node, and `process.env.PYTHON || 'python'` for Python. It uses `readdirSync` to discover and stably sort only direct `*.test.mjs` files in `scripts/tests/` and `frontend/tests/unit/`, passing explicit file paths to Node. It supports `unit`, `frontend-unit`, `integration`, and `browser`, rejects empty or unknown suites with exit code 2 and usage, and immediately propagates a failing child exit code. If a required formal test directory is empty, `unit` and `frontend-unit` fail closed with exit code 2 before spawning Node, so `node --test` can never fall back to repository-wide discovery. If a child command cannot start, stderr identifies the command plus the spawn error code/message without logging environment values.
 
 Set root scripts to:
 
@@ -254,7 +254,7 @@ npm --prefix frontend run build
 git diff --check
 ```
 
-Expected: all formal unit tests and the production build pass. `npm test` output contains neither `tmp` nor `legacy`; the 3/3 legacy Prompt failure remains historical evidence, not a formal failure and not a Ready claim.
+Expected: all formal unit tests and the production build pass. Dispatcher behavior tests also prove empty formal directories fail closed and child startup errors are diagnosable. `npm test` output contains neither `tmp` nor `legacy`; the 3/3 legacy Prompt failure remains historical evidence, not a formal failure and not a Ready claim.
 
 - [ ] **Step 5: Commit**
 
