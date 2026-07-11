@@ -57,4 +57,3 @@ test('the active API client contains no retired or secret-bearing endpoint', asy
     assert.equal(source.includes(forbidden), false, `retired client endpoint remains: ${forbidden}`)
   }
 })
-

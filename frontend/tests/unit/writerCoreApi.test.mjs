@@ -28,4 +28,3 @@ test('writer core state performs one read through the product API', async () => 
     global.fetch = originalFetch
   }
 })
-
