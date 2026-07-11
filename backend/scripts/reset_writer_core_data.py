@@ -11,7 +11,6 @@ import asyncio
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from hashlib import sha256
 import json
 import re
 import sys
@@ -19,12 +18,15 @@ import time
 from typing import Awaitable, Callable, Mapping, Sequence
 from uuid import uuid4
 
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
+from backend.domain.seeds import SeedPayload
 from backend.schema_manifest import created_table_names
 from backend.scripts.initialize_database import (
     _default_connection_factory,
     initialize_database,
 )
-from backend.services.projects import ProjectService, TASK_KEYS
+from backend.services.projects import ProjectService
 from backend.services.projections import build_projection_bundle
 
 
@@ -35,12 +37,16 @@ FOUNDATION_TABLES = frozenset({
     "schema_metadata",
     "projects",
     "creative_seeds",
+    "creative_seed_revisions",
+    "creative_seed_heads",
     "project_selected_seeds",
     "provider_profiles",
-    "task_model_bindings",
-    "task_model_binding_items",
+    "project_model_binding_revisions",
+    "project_model_binding_items",
+    "project_model_binding_heads",
     "canon_revisions",
     "projection_heads",
+    "project_contract_heads",
 })
 VERIFIED_EMPTY_TABLES = tuple(
     table for table in created_table_names() if table not in FOUNDATION_TABLES
@@ -70,29 +76,14 @@ _PROJECT_COLUMNS = (
     "target_chapters", "status", "current_chapter", "created_at", "updated_at",
 )
 _SEED_COLUMNS = (
-    "id", "project_id", "title", "premise_json", "content_hash", "status",
-    "created_at",
+    "id", "project_id", "status", "created_at", "updated_at",
 )
 _PROVIDER_COLUMNS = (
     "id", "name", "provider_type", "model_name", "base_url", "api_key",
     "enabled", "sort_order", "stream", "max_context_tokens",
     "max_output_tokens", "temperature", "top_p", "supports_json",
-    "supports_streaming", "notes", "thinking", "created_at", "updated_at",
-)
-_SEED_PREMISE_MAPPING = (
-    ("genre", "genre"),
-    ("logline", "logline"),
-    ("protagonist", "protagonist"),
-    ("desire", "desire"),
-    ("coreConflict", "core_conflict"),
-    ("worldPressure", "world_pressure"),
-    ("openingHook", "opening_hook"),
-    ("emotionalPromise", "emotional_promise"),
-    ("differentiation", "differentiation"),
-    ("styleTarget", "style_target"),
-    ("source", "source"),
-    ("riskNotes", "risk_notes"),
-    ("endingAnchor", "ending_anchor"),
+    "supports_streaming", "notes", "thinking", "lifecycle_status", "deleted_at",
+    "created_at", "updated_at",
 )
 
 
@@ -157,6 +148,14 @@ class ResetReport:
     provider_count: int
     providers: tuple[tuple[str, str, str, bool], ...]
     preferred_provider_id: str
+    seed_revision_count: int
+    seed_head_count: int
+    binding_revision_count: int
+    binding_item_count: int
+    binding_head_count: int
+    canon_revision_count: int
+    projection_head_count: int
+    contract_head_count: int
     table_names: tuple[str, ...]
     verified_empty_tables: tuple[str, ...]
 
@@ -372,36 +371,41 @@ def _map_seed(row: Mapping[str, object], project_id: str) -> dict[str, object]:
     if owner_id != project_id:
         raise ResetValidationError("Legacy requested seed belongs to another project")
     title = _text(row["title"], "seed.title", max_length=200)
-    premise = {
-        target: row[source]
-        for target, source in _SEED_PREMISE_MAPPING
-    }
-    premise_json = json.dumps(
-        premise,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    envelope = json.dumps(
-        {"title": title, "premise": premise},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
+    try:
+        payload = SeedPayload(
+            title=title,
+            genre=row["genre"],
+            logline=row["logline"],
+            protagonist=row["protagonist"],
+            desire=row["desire"],
+            coreConflict=row["core_conflict"],
+            worldPressure=row["world_pressure"],
+            openingHook=row["opening_hook"],
+            differentiation=row["differentiation"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise ResetValidationError("Legacy seed cannot map to SeedPayload") from exc
+    payload_json = canonical_json(payload)
+    created_at = _integer(row["created_at"], "seed.created_at")
     return {
         "id": seed_id,
         "project_id": owner_id,
         "title": title,
-        "premise_json": premise_json,
-        "content_hash": sha256(envelope.encode("utf-8")).hexdigest(),
-        "status": "selected" if title == SELECTED_SEED_TITLE else "candidate",
-        "created_at": _integer(row["created_at"], "seed.created_at"),
+        "status": "candidate",
+        "payload_json": payload_json,
+        "content_hash": canonical_hash(payload),
+        "created_at": created_at,
+        "updated_at": created_at,
     }
 
 
 def _map_provider(row: Mapping[str, object], sort_order: int) -> dict[str, object]:
+    base_url = _text(row["base_url"], "provider.base_url", max_length=2048)
+    api_key = _text(row["api_key"], "provider.api_key", max_length=65_535)
+    if not base_url or not api_key:
+        raise ResetValidationError(
+            "Legacy active Provider requires non-empty connection fields"
+        )
     return {
         "id": _identifier(row["id"], "provider.id"),
         "name": _text(row["name"], "provider.name", max_length=120),
@@ -410,8 +414,8 @@ def _map_provider(row: Mapping[str, object], sort_order: int) -> dict[str, objec
             default="openai-compatible", max_length=64,
         ),
         "model_name": _text(row["model"], "provider.model", max_length=160),
-        "base_url": _text(row["base_url"], "provider.base_url", max_length=2048),
-        "api_key": _text(row["api_key"], "provider.api_key", max_length=65_535),
+        "base_url": base_url,
+        "api_key": api_key,
         "enabled": 1,
         "sort_order": sort_order,
         "stream": _flag(row["stream"], "provider.stream"),
@@ -433,6 +437,8 @@ def _map_provider(row: Mapping[str, object], sort_order: int) -> dict[str, objec
         ),
         "notes": _text(row["notes"], "provider.notes", max_length=65_535),
         "thinking": _json_text(row["thinking"], "provider.thinking"),
+        "lifecycle_status": "active",
+        "deleted_at": None,
         "created_at": _integer(row["created_at"], "provider.created_at"),
         "updated_at": _integer(row["updated_at"], "provider.updated_at"),
     }
@@ -538,6 +544,14 @@ def _report(
             for row in state.providers
         ),
         preferred_provider_id=str(state.preferred_provider["id"]),
+        seed_revision_count=len(state.seeds),
+        seed_head_count=len(state.seeds),
+        binding_revision_count=1,
+        binding_item_count=len(TASK_KEYS),
+        binding_head_count=1,
+        canon_revision_count=1,
+        projection_head_count=1,
+        contract_head_count=1,
         table_names=created_table_names(),
         verified_empty_tables=VERIFIED_EMPTY_TABLES if executed else (),
     )
@@ -565,6 +579,14 @@ def format_reset_report(report: ResetReport) -> str:
     )
     lines.extend((
         f"preferred_provider.id={report.preferred_provider_id}",
+        f"seed_revisions.count={report.seed_revision_count}",
+        f"seed_heads.count={report.seed_head_count}",
+        f"binding_revisions.count={report.binding_revision_count}",
+        f"binding_items.count={report.binding_item_count}",
+        f"binding_heads.count={report.binding_head_count}",
+        f"canon_revisions.count={report.canon_revision_count}",
+        f"projection_heads.count={report.projection_head_count}",
+        f"contract_heads.count={report.contract_head_count}",
         "tables=" + ",".join(report.table_names),
     ))
     if report.executed:
@@ -591,16 +613,6 @@ async def _insert_preserved_state(
         f"VALUES ({','.join(('%s',) * len(_PROJECT_COLUMNS))})",
         tuple(project[column] for column in _PROJECT_COLUMNS),
     )
-    for seed in state.seeds:
-        values = tuple(
-            _db_json(seed[column]) if column == "premise_json" else seed[column]
-            for column in _SEED_COLUMNS
-        )
-        await admin_session.execute(
-            f"INSERT INTO creative_seeds ({', '.join(_SEED_COLUMNS)}) "
-            f"VALUES ({','.join(('%s',) * len(_SEED_COLUMNS))})",
-            values,
-        )
     for provider in state.providers:
         values = tuple(
             _db_json(provider[column]) if column == "thinking" else provider[column]
@@ -612,13 +624,94 @@ async def _insert_preserved_state(
             values,
         )
 
+    for seed in state.seeds:
+        await admin_session.execute(
+            f"INSERT INTO creative_seeds ({', '.join(_SEED_COLUMNS)}) "
+            f"VALUES ({','.join(('%s',) * len(_SEED_COLUMNS))})",
+            tuple(seed[column] for column in _SEED_COLUMNS),
+        )
+
+    seed_revisions: dict[str, dict[str, object]] = {}
+    for seed in state.seeds:
+        revision_id = id_factory()
+        revision = {
+            "id": revision_id,
+            "seed_id": seed["id"],
+            "content_hash": seed["content_hash"],
+        }
+        seed_revisions[str(seed["id"])] = revision
+        await admin_session.execute(
+            """INSERT INTO creative_seed_revisions
+               (id, project_id, seed_id, revision, payload_json, content_hash, created_at)
+               VALUES (%s,%s,%s,1,%s,%s,%s)""",
+            (
+                revision_id, project["id"], seed["id"], seed["payload_json"],
+                seed["content_hash"], seed["created_at"],
+            ),
+        )
+
+    for seed in state.seeds:
+        revision = seed_revisions[str(seed["id"])]
+        await admin_session.execute(
+            """INSERT INTO creative_seed_heads
+               (seed_id, revision_id, revision, content_hash, updated_at)
+               VALUES (%s,%s,1,%s,%s)""",
+            (seed["id"], revision["id"], revision["content_hash"], now_ms),
+        )
+
     selected_seed = next(
         seed for seed in state.seeds if seed["title"] == SELECTED_SEED_TITLE
     )
+    selected_revision = seed_revisions[str(selected_seed["id"])]
     await admin_session.execute(
-        "INSERT INTO project_selected_seeds (project_id, seed_id, selected_at) "
-        "VALUES (%s,%s,%s)",
-        (project["id"], selected_seed["id"], now_ms),
+        """INSERT INTO project_selected_seeds
+           (project_id, seed_id, seed_revision_id, seed_hash,
+            selection_revision, selected_at, updated_at)
+           VALUES (%s,%s,%s,%s,1,%s,%s)""",
+        (
+            project["id"], selected_seed["id"], selected_revision["id"],
+            selected_revision["content_hash"], now_ms, now_ms,
+        ),
+    )
+
+    preferred = state.preferred_provider
+    binding_items = tuple(BindingItem(
+        task_key=task_key,
+        resolution_status="bound",
+        provider_id=str(preferred["id"]),
+        provider_name_snapshot=str(preferred["name"]),
+        model_name_snapshot=str(preferred["model_name"]),
+    ) for task_key in TASK_KEYS)
+    binding = BindingRevision(
+        project_id=str(project["id"]),
+        revision=1,
+        items=binding_items,
+    )
+    binding_id = id_factory()
+    binding_hash = canonical_hash(binding)
+    await admin_session.execute(
+        """INSERT INTO project_model_binding_revisions
+           (id, project_id, revision, content_hash, source_project_id, created_at)
+           VALUES (%s,%s,1,%s,NULL,%s)""",
+        (binding_id, project["id"], binding_hash, now_ms),
+    )
+    for item in binding_items:
+        await admin_session.execute(
+            """INSERT INTO project_model_binding_items
+               (binding_revision_id, task_key, resolution_status, provider_id,
+                provider_name_snapshot, model_name_snapshot, item_hash)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                binding_id, item.task_key, item.resolution_status, item.provider_id,
+                item.provider_name_snapshot, item.model_name_snapshot,
+                canonical_hash(item),
+            ),
+        )
+    await admin_session.execute(
+        """INSERT INTO project_model_binding_heads
+           (project_id, revision, binding_revision_id, content_hash, updated_at)
+           VALUES (%s,1,%s,%s,%s)""",
+        (project["id"], binding_id, binding_hash, now_ms),
     )
 
     empty_hash = build_projection_bundle(0, ()).content_hash
@@ -641,25 +734,13 @@ async def _insert_preserved_state(
             content_hash, updated_at) VALUES (%s,0,0,%s,%s)""",
         (project["id"], empty_hash, now_ms),
     )
-
-    binding_id = id_factory()
     await admin_session.execute(
-        """INSERT INTO task_model_bindings
-           (id, project_id, source_project_id, created_at, updated_at)
-           VALUES (%s,%s,NULL,%s,%s)""",
-        (binding_id, project["id"], now_ms, now_ms),
+        """INSERT INTO project_contract_heads
+           (project_id, revision, creation_contract_id, style_contract_id,
+            creation_hash, style_hash, updated_at)
+           VALUES (%s,0,NULL,NULL,NULL,NULL,%s)""",
+        (project["id"], now_ms),
     )
-    preferred = state.preferred_provider
-    for task_key in TASK_KEYS:
-        await admin_session.execute(
-            """INSERT INTO task_model_binding_items
-               (id, project_id, binding_id, task_key, provider_id, model_name,
-                created_at, updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (
-                id_factory(), project["id"], binding_id, task_key,
-                preferred["id"], preferred["model_name"], now_ms, now_ms,
-            ),
-        )
 
 
 async def _verify_empty_tables(admin_session) -> None:

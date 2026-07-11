@@ -3,12 +3,17 @@ import json
 import aiomysql
 import pytest
 
+from backend.domain.json_contracts import canonical_hash
+from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
+from backend.domain.seeds import SeedPayload
+from backend.schema_manifest import created_table_names
 from backend.scripts.bootstrap_writer_core_product import (
     LegacyInventory,
     _CLI_PRODUCT_EXECUTE_AUTHORITY,
     bootstrap_writer_core_product,
 )
 from backend.scripts.reset_writer_core_data import (
+    VERIFIED_EMPTY_TABLES,
     _LEGACY_PROJECT_COLUMNS,
     _LEGACY_PROVIDER_COLUMNS,
     _LEGACY_SEED_COLUMNS,
@@ -84,16 +89,73 @@ async def test_cross_server_bootstrap_builds_verified_disposable_target():
             expected = {
                 "projects": 1,
                 "creative_seeds": 3,
+                "creative_seed_revisions": 3,
+                "creative_seed_heads": 3,
                 "provider_profiles": 2,
                 "project_selected_seeds": 1,
-                "task_model_bindings": 1,
-                "task_model_binding_items": 8,
+                "project_model_binding_revisions": 1,
+                "project_model_binding_items": len(TASK_KEYS),
+                "project_model_binding_heads": 1,
                 "canon_revisions": 1,
                 "projection_heads": 1,
+                "project_contract_heads": 1,
             }
             for table, count in expected.items():
                 await cursor.execute(f"SELECT COUNT(*) AS count FROM `{table}`")
                 assert (await cursor.fetchone())["count"] == count
+            for table in VERIFIED_EMPTY_TABLES:
+                await cursor.execute(f"SELECT COUNT(*) AS count FROM `{table}`")
+                assert (await cursor.fetchone())["count"] == 0
+            await cursor.execute("SELECT * FROM creative_seed_revisions ORDER BY seed_id")
+            seed_revisions = await cursor.fetchall()
+            for row in seed_revisions:
+                payload = SeedPayload.model_validate(json.loads(row["payload_json"]), strict=True)
+                assert row["revision"] == 1
+                assert row["content_hash"] == canonical_hash(payload)
+            await cursor.execute("SELECT * FROM project_selected_seeds")
+            selected = await cursor.fetchone()
+            selected_revision = next(
+                row for row in seed_revisions if row["id"] == selected["seed_revision_id"]
+            )
+            assert json.loads(selected_revision["payload_json"])["title"] == "典镇山河"
+            assert selected["seed_hash"] == selected_revision["content_hash"]
+            assert selected["selection_revision"] == 1
+            await cursor.execute("SELECT * FROM project_model_binding_revisions")
+            binding_revision = await cursor.fetchone()
+            await cursor.execute("SELECT * FROM project_model_binding_items")
+            item_rows = await cursor.fetchall()
+            items_by_key = {row["task_key"]: row for row in item_rows}
+            domain_items = tuple(BindingItem(
+                task_key=task_key,
+                resolution_status="bound",
+                provider_id=items_by_key[task_key]["provider_id"],
+                provider_name_snapshot=items_by_key[task_key]["provider_name_snapshot"],
+                model_name_snapshot=items_by_key[task_key]["model_name_snapshot"],
+            ) for task_key in TASK_KEYS)
+            domain_binding = BindingRevision(
+                project_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                revision=1,
+                items=domain_items,
+            )
+            assert binding_revision["content_hash"] == canonical_hash(domain_binding)
+            assert all(
+                items_by_key[item.task_key]["item_hash"] == canonical_hash(item)
+                for item in domain_items
+            )
+            await cursor.execute("SELECT lifecycle_status, deleted_at FROM provider_profiles")
+            assert await cursor.fetchall() == [
+                {"lifecycle_status": "active", "deleted_at": None},
+                {"lifecycle_status": "active", "deleted_at": None},
+            ]
+            await cursor.execute("SELECT * FROM project_contract_heads")
+            contract_head = await cursor.fetchone()
+            assert contract_head["revision"] == 0
+            assert all(contract_head[key] is None for key in (
+                "creation_contract_id", "style_contract_id", "creation_hash", "style_hash"
+            ))
+            assert set(expected) | set(VERIFIED_EMPTY_TABLES) | {"schema_metadata"} == set(
+                created_table_names()
+            )
         finally:
             await cursor.close()
         assert report.binding_item_count == 8

@@ -6,19 +6,8 @@ from hashlib import sha256
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.http_errors import ProjectNotFound
 from backend.services.projections import build_projection_bundle
-
-
-TASK_KEYS = (
-    "seed",
-    "planning",
-    "writing",
-    "audit",
-    "summary",
-    "extraction",
-    "polish",
-    "market",
-)
 
 
 class CreateProject(BaseModel):
@@ -64,10 +53,18 @@ class UpdateProject(BaseModel):
 
 
 class ProjectService:
-    def __init__(self, repository, transaction_factory, connection_factory=None):
+    def __init__(
+        self,
+        repository,
+        transaction_factory,
+        connection_factory=None,
+        *,
+        model_binding_service=None,
+    ):
         self.repository = repository
         self.transaction_factory = transaction_factory
         self.connection_factory = connection_factory
+        self.model_binding_service = model_binding_service
 
     @staticmethod
     def bootstrap_idempotency_key(project_id: str) -> str:
@@ -76,6 +73,9 @@ class ProjectService:
     async def create(self, command: CreateProject) -> ProjectResult:
         empty_hash = build_projection_bundle(0, ()).content_hash
         async with self.transaction_factory() as session:
+            if self.model_binding_service is None:
+                raise RuntimeError("model binding service is not configured")
+            await self.model_binding_service.lock_project_creation(session)
             await self.repository.insert_project(session, command)
             await self.repository.insert_bootstrap_revision(
                 session,
@@ -86,42 +86,16 @@ class ProjectService:
             await self.repository.insert_projection_head(
                 session, command.id, content_hash=empty_hash
             )
-            enabled = await self.repository.list_enabled_providers(session)
-            previous_snapshot = (
-                await self.repository.find_previous_binding_snapshot(
-                    session, command.id
-                )
-            )
-            enabled_by_id = {row["id"]: row for row in enabled}
-            fallback = enabled[0] if enabled else None
-            previous = (
-                previous_snapshot.provider_ids if previous_snapshot else {}
-            )
-            items = {}
-            for task_key in TASK_KEYS:
-                provider = enabled_by_id.get(previous.get(task_key)) or fallback
-                if provider is not None:
-                    items[task_key] = {
-                        "provider_id": provider["id"],
-                        "model_name": provider["model_name"],
-                    }
-            binding_id = await self.repository.insert_binding_snapshot(
-                session,
-                command.id,
-                source_project_id=(
-                    previous_snapshot.source_project_id
-                    if previous_snapshot
-                    else None
-                ),
-            )
-            await self.repository.insert_binding_items(
-                session, command.id, binding_id, items
-            )
+            await self.repository.insert_contract_head0(session, command.id)
+            await self.model_binding_service.initialize_project(session, command.id)
         return ProjectResult.from_command(command)
 
     async def delete(self, project_id: str) -> None:
         async with self.transaction_factory() as session:
-            await self.repository.delete(session, project_id)
+            if await self.repository.lock_active_project(session, project_id) is None:
+                raise ProjectNotFound()
+            if not await self.repository.archive(session, project_id):
+                raise ProjectNotFound()
 
     def _connection(self):
         if self.connection_factory is None:
@@ -137,13 +111,19 @@ class ProjectService:
             return await self.repository.get(session, project_id)
 
     async def update(self, project_id: str, command: UpdateProject):
-        changes = command.model_dump(exclude_none=True)
         async with self.transaction_factory() as session:
-            if await self.repository.get(session, project_id) is None:
+            if await self.repository.lock_active_project(session, project_id) is None:
                 return None
-            await self.repository.update(session, project_id, changes)
+            changes = command.model_dump(exclude_none=True)
+            changes.pop("status", None)
+            if changes and not await self.repository.update(
+                session, project_id, changes
+            ):
+                return None
             return await self.repository.get(session, project_id)
 
     async def content_state(self, project_id: str):
         async with self._connection() as session:
+            if await self.repository.get(session, project_id) is None:
+                raise ProjectNotFound()
             return await self.repository.content_state(session, project_id)

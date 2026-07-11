@@ -38,7 +38,7 @@ from backend.scripts.reset_writer_core_data import (
     _verify_empty_tables,
     _verify_reset_server_capabilities,
 )
-from backend.services.projects import TASK_KEYS
+from backend.domain.model_bindings import TASK_KEYS
 
 
 SOURCE_PROJECT_TITLE = "永乐大典"
@@ -86,10 +86,14 @@ class BootstrapReport:
     seeds: tuple[tuple[str, str], ...]
     providers: tuple[tuple[str, str, str], ...]
     preferred_provider_id: str
-    binding_count: int = 1
+    seed_revision_count: int = 3
+    seed_head_count: int = 3
+    binding_revision_count: int = 1
     binding_item_count: int = 8
+    binding_head_count: int = 1
     canon_revision_count: int = 1
     projection_head_count: int = 1
+    contract_head_count: int = 1
 
 
 def _json_object_expression(columns: Sequence[str]) -> str:
@@ -361,10 +365,14 @@ def format_bootstrap_report(report: BootstrapReport) -> str:
     )
     lines.extend((
         f"preferred_provider.id={_receipt_value(report.preferred_provider_id)}",
-        f"bindings.count={_receipt_value(report.binding_count)}",
+        f"seed_revisions.count={_receipt_value(report.seed_revision_count)}",
+        f"seed_heads.count={_receipt_value(report.seed_head_count)}",
+        f"binding_revisions.count={_receipt_value(report.binding_revision_count)}",
         f"binding_items.count={_receipt_value(report.binding_item_count)}",
+        f"binding_heads.count={_receipt_value(report.binding_head_count)}",
         f"canon_revisions.count={_receipt_value(report.canon_revision_count)}",
         f"projection_heads.count={_receipt_value(report.projection_head_count)}",
+        f"contract_heads.count={_receipt_value(report.contract_head_count)}",
     ))
     return "\n".join(lines)
 
@@ -409,16 +417,26 @@ async def _verify_foundation_state(
     checks = (
         ("projects", 1, "WHERE id=%s", (state.project["id"],)),
         ("creative_seeds", 3, "WHERE project_id=%s", (state.project["id"],)),
+        ("creative_seed_revisions", 3, "WHERE project_id=%s AND revision=1", (
+            state.project["id"],
+        )),
+        ("creative_seed_heads", 3, "WHERE revision=1", None),
         ("project_selected_seeds", 1, "WHERE project_id=%s AND seed_id=%s", (
             state.project["id"], selected_seed["id"],
         )),
         ("provider_profiles", len(state.providers), "", None),
-        ("task_model_bindings", 1, "WHERE project_id=%s", (state.project["id"],)),
-        ("task_model_binding_items", len(TASK_KEYS), (
-            "WHERE project_id=%s AND provider_id=%s AND model_name=%s"
+        ("project_model_binding_revisions", 1, (
+            "WHERE project_id=%s AND revision=1 AND source_project_id IS NULL"
+        ), (state.project["id"],)),
+        ("project_model_binding_items", len(TASK_KEYS), (
+            "WHERE provider_id=%s AND model_name_snapshot=%s "
+            "AND resolution_status='bound'"
         ), (
-            state.project["id"], state.preferred_provider["id"],
+            state.preferred_provider["id"],
             state.preferred_provider["model_name"],
+        )),
+        ("project_model_binding_heads", 1, "WHERE project_id=%s AND revision=1", (
+            state.project["id"],
         )),
         ("canon_revisions", 1, "WHERE project_id=%s AND revision_number=0", (
             state.project["id"],
@@ -426,6 +444,10 @@ async def _verify_foundation_state(
         ("projection_heads", 1, (
             "WHERE project_id=%s AND canon_revision_number=0 "
             "AND projection_revision_number=0"
+        ), (state.project["id"],)),
+        ("project_contract_heads", 1, (
+            "WHERE project_id=%s AND revision=0 AND creation_contract_id IS NULL "
+            "AND style_contract_id IS NULL AND creation_hash IS NULL AND style_hash IS NULL"
         ), (state.project["id"],)),
     )
     for table, expected, where, parameters in checks:

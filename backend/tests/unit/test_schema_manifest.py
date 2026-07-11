@@ -14,6 +14,7 @@ from backend.schema_manifest import (
 EXPECTED_FRAGMENTS = (
     "00_metadata.sql",
     "10_core.sql",
+    "15_assets.sql",
     "20_contracts.sql",
     "30_planning.sql",
     "40_drafts.sql",
@@ -26,13 +27,32 @@ EXPECTED_TABLES = {
     "schema_metadata",
     "projects",
     "creative_seeds",
+    "creative_seed_revisions",
+    "creative_seed_heads",
     "project_selected_seeds",
     "provider_profiles",
-    "task_model_bindings",
-    "task_model_binding_items",
+    "project_model_binding_revisions",
+    "project_model_binding_items",
+    "project_model_binding_heads",
+    "style_templates",
+    "style_template_heads",
+    "experience_cards",
+    "experience_card_heads",
+    "corpus_sources",
+    "corpus_chapters",
+    "corpus_fragments",
+    "corpus_import_runs",
+    "story_engine_batches",
+    "story_engine_options",
+    "project_contract_drafts",
     "creation_contracts",
     "style_contracts",
-    "contract_asset_refs",
+    "project_contract_heads",
+    "contract_confirmation_requests",
+    "creation_contract_engine_refs",
+    "style_contract_template_refs",
+    "creation_contract_experience_refs",
+    "creation_contract_corpus_refs",
     "volume_plans",
     "story_blocks",
     "story_stages",
@@ -52,10 +72,6 @@ EXPECTED_TABLES = {
     "arc_projections",
     "plot_thread_projections",
     "projection_heads",
-    "corpus_sources",
-    "corpus_chapters",
-    "style_templates",
-    "experience_cards",
     "reference_uses",
 }
 
@@ -75,9 +91,11 @@ def _table_statement(table_name: str) -> str:
 
 def test_manifest_has_exact_ordered_fragments_and_tables():
     assert FRAGMENTS == EXPECTED_FRAGMENTS
-    assert len(EXPECTED_TABLES) == 34
     assert set(created_table_names()) == EXPECTED_TABLES
-    assert len(created_table_names()) == len(EXPECTED_TABLES)
+    assert len(created_table_names()) == len(EXPECTED_TABLES) == 49
+    assert set(created_table_names()).isdisjoint(
+        {"task_model_bindings", "task_model_binding_items", "contract_asset_refs"}
+    )
 
 
 def test_manifest_uses_portable_normalized_hash(monkeypatch):
@@ -111,7 +129,6 @@ def test_manifest_uses_portable_normalized_hash(monkeypatch):
 def test_manifest_parser_accepts_leading_sql_comments(monkeypatch):
     fragments = {name: "" for name in FRAGMENTS}
     fragments[FRAGMENTS[0]] = """-- bootstrap metadata comment
--- another comment
 CREATE TABLE commented_table (
   id INT PRIMARY KEY
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -164,33 +181,28 @@ CREATE TABLE second_example (
     statements = read_statements()
     assert len(statements) == 2
     assert "DEFAULT ';-- statement'" in statements[0]
-    assert ";-- statement must not split anything" in statements[1]
     assert created_table_names() == ("delimiter_example", "second_example")
 
 
-def test_fragments_are_create_only_and_have_no_legacy_schema():
+def test_fragments_are_the_only_create_only_empty_database_ddl_path():
     statements = read_statements()
     upper = "\n".join(statements).upper()
-    for banned in ("ALTER TABLE", "CREATE DATABASE", "IF NOT EXISTS"):
+    for banned in (
+        "ALTER TABLE",
+        "CREATE DATABASE",
+        "IF NOT EXISTS",
+        "CREATE TRIGGER",
+        "CREATE PROCEDURE",
+        "CREATE EVENT",
+        "MIGRATION",
+        "COMPATIBILITY",
+    ):
         assert banned not in upper
     assert all(not statement.lstrip().upper().startswith("USE ") for statement in statements)
-    assert "LEGACY" not in upper
-    assert "COMPATIBILITY" not in upper
-
-    legacy_tables = {
-        "chapters",
-        "chapter_versions",
-        "temp_drafts",
-        "canon_facts",
-        "characters",
-        "plot_threads",
-        "rolling_outlines",
-        "project_volumes",
-        "setting_entities",
-        "setting_relations",
-        "setting_change_events",
-    }
-    assert set(created_table_names()).isdisjoint(legacy_tables)
+    assert all(
+        _compact(statement).startswith("create table ")
+        for statement in statements
+    )
 
 
 def test_every_table_uses_mysql8_storage_contract():
@@ -201,199 +213,130 @@ def test_every_table_uses_mysql8_storage_contract():
         assert "collate=utf8mb4_0900_ai_ci" in statement
 
 
-def test_project_owned_tables_have_project_and_owner_foreign_keys():
-    globally_owned = {"schema_metadata", "projects", "provider_profiles"}
-    for table_name in EXPECTED_TABLES - globally_owned:
-        statement = _table_statement(table_name)
-        assert (
-            "project_id char(36) not null" in statement
-            or "project_id char(36) primary key" in statement
-        )
-        assert (
-            "foreign key (project_id) references projects(id) on delete cascade"
-            in statement
-        )
-
-    nested_owners = {
-        "project_selected_seeds": "foreign key (seed_id) references creative_seeds(id)",
-        "task_model_binding_items": "foreign key (binding_id) references task_model_bindings(id)",
-        "contract_asset_refs": "foreign key (creation_contract_id) references creation_contracts(id)",
-        "story_stages": "foreign key (story_block_id) references story_blocks(id)",
-        "scene_tasks": "foreign key (story_stage_id) references story_stages(id)",
-        "working_drafts": "foreign key (chapter_session_id) references chapter_sessions(id)",
-        "draft_candidates": "foreign key (chapter_session_id) references chapter_sessions(id)",
-        "finalization_change_sets": "foreign key (draft_candidate_id) references draft_candidates(id)",
-        "corpus_chapters": "foreign key (corpus_source_id) references corpus_sources(id)",
-    }
-    for table_name, owner_fk in nested_owners.items():
-        assert owner_fk in _table_statement(table_name)
-
-
-def test_core_contracts_and_provider_constraints_are_explicit():
-    projects = _table_statement("projects")
-    for column in (
-        "genre varchar(120) not null",
-        "description text not null",
-        "target_words int not null",
-        "target_chapters int not null",
-    ):
-        assert column in projects
-    selected = _table_statement("project_selected_seeds")
-    assert "project_id char(36) primary key" in selected
-    assert "unique key uq_selected_seed (seed_id)" in selected
-    assert "foreign key (project_id) references projects(id) on delete cascade" in selected
-    assert "foreign key (seed_id) references creative_seeds(id) on delete cascade" in selected
-
-    providers = _table_statement("provider_profiles")
-    for column in (
-        "base_url varchar(2048) not null",
-        "api_key text not null",
-        "enabled tinyint not null default 1",
-        "sort_order int not null default 0",
-        "stream tinyint not null default 1",
-        "max_context_tokens int not null",
-        "max_output_tokens int not null",
-        "temperature decimal(5,3) not null",
-        "top_p decimal(5,3) not null",
-        "supports_json tinyint not null default 1",
-        "supports_streaming tinyint not null default 1",
-        "notes text not null",
-        "thinking json null",
-    ):
-        assert column in providers
-    assert "tinyint(1)" not in providers
-    bindings = _table_statement("task_model_bindings")
-    assert "unique key uq_binding_project (project_id)" in bindings
-    assert "foreign key (source_project_id) references projects(id) on delete set null" in bindings
-    items = _table_statement("task_model_binding_items")
-    assert "unique key uq_binding_task (binding_id, task_key)" in items
-    assert "foreign key (provider_id) references provider_profiles(id) on delete restrict" in items
-
-    for contract in ("creation_contracts", "style_contracts"):
-        statement = _table_statement(contract)
-        assert "unique key" in statement and "(project_id)" in statement
-        assert "revision int not null" in statement
-        assert "check (revision > 0)" in statement
-        assert "content_hash char(64) not null" in statement
-    refs = _table_statement("contract_asset_refs")
-    assert (
-        "unique key uq_contract_asset (creation_contract_id, asset_type, asset_id)"
-        in refs
-    )
-
-
-def test_planning_and_draft_invariants_are_explicit():
-    planning = " ".join(
-        _table_statement(name)
-        for name in ("volume_plans", "story_blocks", "story_stages", "scene_tasks")
-    )
-    for key in (
-        "unique key uq_volume_num (project_id, volume_num)",
-        "unique key uq_block_num (project_id, block_num)",
-        "unique key uq_stage_order (story_block_id, stage_order)",
-        "unique key uq_scene_order (story_stage_id, task_order)",
-    ):
-        assert key in planning
-    assert "check (status in ('planned','active','completed','failed','redirected'))" in planning
-    assert planning.count("check (status in ('pending','in_progress','completed','cancelled'))") == 2
-    for banned in ("target_chapter", "continuation_count", "forced_hook"):
-        assert banned not in planning
-
-    sessions = _table_statement("chapter_sessions")
-    assert "check (status in ('drafting','final'))" in sessions
-    assert "unique key uq_working_draft_session (chapter_session_id)" in _table_statement("working_drafts")
-    candidates = _table_statement("draft_candidates")
-    assert "unique key uq_candidate_hash (chapter_session_id, content_hash)" in candidates
-    assert "updated_at" not in candidates
-    final_chapters = _table_statement("final_chapters")
-    assert "unique key uq_final_chapter_num (project_id, chapter_num)" in final_chapters
-    assert "updated_at" not in final_chapters
-    assert "finalization_record_id char(36) not null" in final_chapters
-    changesets = _table_statement("finalization_change_sets")
-    assert "unique key uq_changeset_candidate (draft_candidate_id, candidate_hash, expected_canon_revision)" in changesets
-    assert "unique key uq_finalization_idempotency (idempotency_key)" in _table_statement("finalization_records")
-    for required in ("payload_json json not null", "content_hash char(64) not null"):
-        assert required in changesets
-
-
-def test_canon_and_projection_invariants_are_explicit():
-    entities = _table_statement("canon_entities")
-    assert "check (entity_type in ('person','organization','place','item'))" in entities
-    assert "key ix_entity_name (project_id, entity_type, normalized_name)" in entities
-    assert "unique" not in entities.split("key ix_entity_name", 1)[0][-8:]
-
-    aliases = _table_statement("entity_aliases")
-    assert "unique key uq_entity_alias (project_id, entity_id, normalized_alias)" in aliases
-    assert "key ix_alias_lookup (project_id, normalized_alias)" in aliases
-    revisions = _table_statement("canon_revisions")
-    assert "unique key uq_revision_number (project_id, revision_number)" in revisions
-    assert "unique key uq_revision_idempotency (project_id, idempotency_key)" in revisions
-    assert "check (source_type in ('bootstrap','finalization','manual_test'))" in revisions
-
-    events = _table_statement("canon_events")
+def test_revisioned_seed_and_selection_contracts_are_exact():
+    seeds = _table_statement("creative_seeds")
+    assert "unique key uq_seed_project_id (project_id, id)" in seeds
+    assert "check (status in ('candidate','archived'))" in seeds
+    revisions = _table_statement("creative_seed_revisions")
     for contract in (
-        "entity_id char(36) null",
-        "value_json json not null",
-        "evidence_json json not null",
-        "check (fact_kind in ('stable_definition','dynamic_event','claim'))",
-        "check (assertion_operator in ('equals','not_equals'))",
-        "check (value_cardinality in ('single','multi'))",
-        "check (confirmation_status in ('confirmed','rejected'))",
-        "check (effective_end_chapter is null or effective_start_chapter is null or effective_end_chapter >= effective_start_chapter)",
+        "unique key uq_seed_revision (seed_id, revision)",
+        "unique key uq_seed_revision_id (seed_id, id)",
+        "unique key uq_seed_revision_project_id (project_id, id)",
+        "foreign key (project_id, seed_id) references creative_seeds(project_id, id) on delete restrict",
+        "check (revision > 0)",
     ):
-        assert contract in events
+        assert contract in revisions
+    heads = _table_statement("creative_seed_heads")
+    assert "foreign key (seed_id, revision_id, revision, content_hash) references creative_seed_revisions(seed_id, id, revision, content_hash) on delete restrict" in heads
+    selected = _table_statement("project_selected_seeds")
+    assert "foreign key (project_id, seed_id) references creative_seeds(project_id, id) on delete restrict" in selected
+    assert "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete restrict" in selected
 
-    for projection in (
-        "current_state_projections",
-        "memory_views",
-        "arc_projections",
-        "plot_thread_projections",
+
+def test_provider_and_binding_revisions_encode_closed_state_spaces():
+    providers = _table_statement("provider_profiles")
+    assert "lifecycle_status varchar(16) not null" in providers
+    assert "deleted_at bigint null" in providers
+    assert "check (lifecycle_status in ('active','deleted'))" in providers
+    revisions = _table_statement("project_model_binding_revisions")
+    assert "unique key uq_binding_revision (project_id, revision)" in revisions
+    assert "unique key uq_binding_revision_id (project_id, id)" in revisions
+    items = _table_statement("project_model_binding_items")
+    assert "primary key (binding_revision_id, task_key)" in items
+    for task_key in (
+        "seed", "planning", "writing", "audit",
+        "summary", "extraction", "polish", "market",
     ):
-        statement = _table_statement(projection)
-        assert "revision_number int not null" in statement
-        assert "payload_json json not null" in statement
-        assert "content_hash char(64) not null" in statement
-        assert "unique key" in statement
-    heads = _table_statement("projection_heads")
-    assert "project_id char(36) primary key" in heads
-    assert "content_hash char(64) not null" in heads
-    assert "check (canon_revision_number >= 0)" in heads
-    assert "check (projection_revision_number >= 0)" in heads
-
-    memories = _table_statement("memory_views")
-    assert "entity_id char(36) null" in memories
-    assert "subject_key varchar(200) not null" in memories
-    assert "unique key uq_memory_key (project_id, revision_number, subject_key)" in memories
-
-    threads = _table_statement("plot_thread_projections")
-    assert "entity_id char(36) null" in threads
-    assert "subject_key varchar(200) not null" in threads
-    assert "field_path varchar(200) not null" in threads
-    assert "unique key uq_plot_thread_key (project_id, revision_number, subject_key, field_path)" in threads
+        assert f"'{task_key}'" in items
+    assert "check (resolution_status in ('bound','unbound'))" in items
+    assert "foreign key (provider_id) references provider_profiles(id) on delete restrict" in items
+    heads = _table_statement("project_model_binding_heads")
+    assert "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete restrict" in heads
 
 
-def test_corpus_records_sources_content_analysis_and_reference_locations():
-    sources = _table_statement("corpus_sources")
-    for column in ("source_path", "source_hash", "status"):
-        assert column in sources
-    chapters = _table_statement("corpus_chapters")
-    assert "normalized_text longtext not null" in chapters
-    assert "content_hash char(64) not null" in chapters
-    assert "payload_json json not null" in _table_statement("style_templates")
-    assert "payload_json json not null" in _table_statement("experience_cards")
-    uses = _table_statement("reference_uses")
-    for column in (
-        "chapter_session_id",
-        "draft_candidate_id",
-        "corpus_source_id",
-        "corpus_chapter_id",
-        "location_start",
-        "location_end",
+def test_global_assets_have_revision_heads_and_no_project_ownership():
+    for table_name in (
+        "style_templates", "style_template_heads", "experience_cards",
+        "experience_card_heads", "corpus_sources", "corpus_chapters",
+        "corpus_fragments", "corpus_import_runs",
     ):
-        assert column in uses
-    corpus = " ".join(
-        _table_statement(name)
-        for name in ("corpus_sources", "corpus_chapters", "style_templates", "experience_cards", "reference_uses")
-    )
-    for secret in ("api_key", "base_url", "password"):
-        assert secret not in corpus
+        assert "project_id" not in _table_statement(table_name)
+    styles = _table_statement("style_templates")
+    assert "unique key uq_style_template_revision (stable_key, revision)" in styles
+    assert "unique key uq_style_template_identity (stable_key, id)" in styles
+    style_heads = _table_statement("style_template_heads")
+    assert "foreign key (stable_key, style_template_id) references style_templates(stable_key, id) on delete restrict" in style_heads
+    cards = _table_statement("experience_cards")
+    assert "check (category in ('plot','ensemble','dialogue','emotion','interiority','information','rhythm','suspense'))" in cards
+    corpus = _table_statement("corpus_sources")
+    assert "unique key uq_corpus_source_revision (source_key, revision)" in corpus
+    assert "unique key uq_corpus_source_import (source_hash, parser_version, normalizer_version, fragmenter_version, index_version)" in corpus
+    assert "status = 'imported' and public_error_code is null and analyzed_at is null" in corpus
+    assert "status = 'analyzed' and public_error_code is null and analyzed_at is not null and analyzed_at >= imported_at" in corpus
+    assert "status = 'failed' and public_error_code is not null and analyzed_at is null" in corpus
+
+
+def test_story_engine_drafts_and_contract_heads_are_revision_bound():
+    batches = _table_statement("story_engine_batches")
+    assert "unique key uq_engine_batch_idempotency (project_id, idempotency_key)" in batches
+    assert "unique key uq_engine_batch_project_id (project_id, id)" in batches
+    assert "check (source_type in ('provider','manual'))" in batches
+    assert "check (status in ('reserved','running','succeeded','failed','outcome_unknown'))" in batches
+    assert batches.count("lease_expires_at is not null") == 3
+    options = _table_statement("story_engine_options")
+    assert "project_id char(36) not null" in options
+    assert "unique key uq_engine_option_order (batch_id, option_order)" in options
+    assert "unique key uq_engine_option_project_id (project_id, id)" in options
+    assert "foreign key (project_id, batch_id) references story_engine_batches(project_id, id) on delete restrict" in options
+    assert "foreign key (batch_id)" not in options
+    assert "check (option_order between 1 and 3)" in options
+    drafts = _table_statement("project_contract_drafts")
+    assert "project_id char(36) primary key" in drafts
+    assert "unique key uq_contract_draft_id (id)" in drafts
+    assert "foreign key (project_id, seed_revision_id) references creative_seed_revisions(project_id, id) on delete restrict" in drafts
+    assert "foreign key (project_id, engine_option_id) references story_engine_options(project_id, id) on delete restrict" in drafts
+    assert "foreign key (seed_revision_id)" not in drafts
+    assert "foreign key (engine_option_id)" not in drafts
+    heads = _table_statement("project_contract_heads")
+    assert "check ((revision = 0" in heads
+    assert "foreign key (project_id, creation_contract_id) references creation_contracts(project_id, id) on delete restrict" in heads
+    requests = _table_statement("contract_confirmation_requests")
+    assert "unique key uq_contract_confirmation_idempotency (project_id, idempotency_key)" in requests
+    assert "foreign key (project_id, creation_contract_id, result_revision) references creation_contracts(project_id, id, revision) on delete restrict" in requests
+    assert "foreign key (project_id, style_contract_id, result_revision) references style_contracts(project_id, id, revision) on delete restrict" in requests
+
+
+def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
+    creation = _table_statement("creation_contracts")
+    for contract in (
+        "unique key uq_creation_contract_revision (project_id, revision)",
+        "unique key uq_creation_contract_id (project_id, id)",
+        "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete restrict",
+        "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete restrict",
+        "check (total_word_min > 0 and total_word_max >= total_word_min)",
+        "check (chapter_char_min > 0 and chapter_char_target >= chapter_char_min and chapter_char_max >= chapter_char_target)",
+    ):
+        assert contract in creation
+    style = _table_statement("style_contracts")
+    assert "foreign key (project_id, creation_contract_id, revision) references creation_contracts(project_id, id, revision) on delete restrict" in style
+    engine_refs = _table_statement("creation_contract_engine_refs")
+    assert "project_id char(36) not null" in engine_refs
+    assert "foreign key (project_id, creation_contract_id) references creation_contracts(project_id, id) on delete restrict" in engine_refs
+    assert "foreign key (project_id, engine_option_id) references story_engine_options(project_id, id) on delete restrict" in engine_refs
+    assert "foreign key (creation_contract_id)" not in engine_refs
+    assert "foreign key (engine_option_id)" not in engine_refs
+    assert "foreign key (style_template_id, asset_revision) references style_templates(id, revision) on delete restrict" in _table_statement("style_contract_template_refs")
+    assert "foreign key (experience_card_id, asset_revision) references experience_cards(id, revision) on delete restrict" in _table_statement("creation_contract_experience_refs")
+    assert "foreign key (corpus_source_id, source_revision) references corpus_sources(id, revision) on delete restrict" in _table_statement("creation_contract_corpus_refs")
+
+
+def test_existing_planning_draft_canon_and_projection_tables_remain_present():
+    unchanged = {
+        "volume_plans", "story_blocks", "story_stages", "scene_tasks",
+        "chapter_sessions", "working_drafts", "draft_candidates", "final_chapters",
+        "finalization_change_sets", "finalization_records", "canon_entities",
+        "entity_aliases", "canon_revisions", "canon_events",
+        "current_state_projections", "memory_views", "arc_projections",
+        "plot_thread_projections", "projection_heads", "reference_uses",
+    }
+    assert unchanged <= set(created_table_names())

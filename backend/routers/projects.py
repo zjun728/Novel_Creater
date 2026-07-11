@@ -6,10 +6,12 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.database import connection, transaction
+from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
+from backend.services.model_bindings import ModelBindingService
 from backend.services.projects import (
     CreateProject,
     ProjectService,
@@ -19,7 +21,17 @@ from .helpers import convert_row, convert_rows
 
 
 router = APIRouter(tags=["projects"])
-_service = ProjectService(ProjectRepository(), transaction, connection)
+_binding_service = ModelBindingService(
+    ModelBindingRepository(),
+    transaction_factory=transaction,
+    connection_factory=connection,
+)
+_service = ProjectService(
+    ProjectRepository(),
+    transaction,
+    connection,
+    model_binding_service=_binding_service,
+)
 
 
 class ProjectCreate(BaseModel):
@@ -31,13 +43,14 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: Optional[str] = None
     genre: Optional[str] = None
     description: Optional[str] = None
     targetWords: Optional[int] = Field(default=None, gt=0)
     targetChapters: Optional[int] = Field(default=None, gt=0)
     currentChapter: Optional[int] = Field(default=None, ge=0)
-    status: Optional[str] = None
 
 
 @router.get("/projects")

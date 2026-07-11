@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers import canon
+from backend.schema_version import EXPECTED_SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -93,7 +94,7 @@ def test_writer_core_state_reports_revision_sync(canon_api):
     assert response.status_code == 200
     assert response.json() == {
         "projectId": "p1",
-        "schemaVersion": "writer-core-v1.0.0",
+        "schemaVersion": EXPECTED_SCHEMA_VERSION,
         "canonHeadRevision": 2,
         "projectionHeadRevision": 2,
         "projectionInSync": True,

@@ -28,3 +28,41 @@ test('writer core state performs one read through the product API', async () => 
     global.fetch = originalFetch
   }
 })
+
+test('project update sends only mutable public fields', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  global.fetch = async (url, options) => {
+    calls.push({ url, options })
+    return new Response(JSON.stringify({ id: 'project-1' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await api.projects.update('project-1', {
+      title: 'Changed',
+      genre: 'history',
+      description: 'Description',
+      targetWords: 1000,
+      targetChapters: 10,
+      currentChapter: 4,
+      status: 'drafting',
+      unexpected: 'discard me',
+    })
+
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].options.method, 'PUT')
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+      title: 'Changed',
+      genre: 'history',
+      description: 'Description',
+      targetWords: 1000,
+      targetChapters: 10,
+    })
+  } finally {
+    global.fetch = originalFetch
+  }
+})

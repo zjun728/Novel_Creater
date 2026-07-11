@@ -17,6 +17,10 @@ EXPECTED_QUERY = (
 )
 
 
+def test_expected_schema_version_is_writer_core_v1_1():
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.1.0"
+
+
 class FakeVersionSession:
     def __init__(self, row=None, error: Exception | None = None):
         self.row = row

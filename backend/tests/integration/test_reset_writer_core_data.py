@@ -1,5 +1,4 @@
 from decimal import Decimal
-from hashlib import sha256
 import json
 
 import aiomysql
@@ -14,7 +13,9 @@ from backend.scripts.reset_writer_core_data import (
     ResetValidationError,
     reset_writer_core_data,
 )
-from backend.services.projects import TASK_KEYS
+from backend.domain.json_contracts import canonical_hash
+from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
+from backend.domain.seeds import SeedPayload
 from backend.services.projections import build_projection_bundle
 from backend.tests.support.legacy_writer_core import (
     LEGACY_DERIVED_TABLES,
@@ -161,10 +162,20 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
         seeds = await cursor.fetchall()
         await cursor.execute("SELECT * FROM provider_profiles ORDER BY id")
         providers = await cursor.fetchall()
-        await cursor.execute("SELECT seed_id FROM project_selected_seeds WHERE project_id=%s", (PROJECT_ID,))
+        await cursor.execute("SELECT * FROM project_selected_seeds WHERE project_id=%s", (PROJECT_ID,))
         selected = await cursor.fetchone()
-        await cursor.execute("SELECT task_key, provider_id, model_name FROM task_model_binding_items ORDER BY task_key")
+        await cursor.execute("SELECT * FROM creative_seed_revisions ORDER BY seed_id")
+        seed_revisions = await cursor.fetchall()
+        await cursor.execute("SELECT * FROM creative_seed_heads ORDER BY seed_id")
+        seed_heads = await cursor.fetchall()
+        await cursor.execute("SELECT * FROM project_model_binding_revisions")
+        binding_revision = await cursor.fetchone()
+        await cursor.execute("SELECT * FROM project_model_binding_items ORDER BY task_key")
         bindings = await cursor.fetchall()
+        await cursor.execute("SELECT * FROM project_model_binding_heads")
+        binding_head = await cursor.fetchone()
+        await cursor.execute("SELECT * FROM project_contract_heads")
+        contract_head = await cursor.fetchone()
         await cursor.execute("SELECT revision_number, content_hash FROM canon_revisions")
         revision = await cursor.fetchone()
         await cursor.execute("SELECT canon_revision_number, projection_revision_number, content_hash FROM projection_heads")
@@ -209,7 +220,8 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
     }]
     assert len(seeds) == len(old_seeds) == 3
     for mapped, legacy in zip(seeds, old_seeds, strict=True):
-        premise = {
+        payload = SeedPayload(**{
+            "title": legacy["title"],
             "genre": legacy["genre"],
             "logline": legacy["logline"],
             "protagonist": legacy["protagonist"],
@@ -217,26 +229,23 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
             "coreConflict": legacy["core_conflict"],
             "worldPressure": legacy["world_pressure"],
             "openingHook": legacy["opening_hook"],
-            "emotionalPromise": legacy["emotional_promise"],
             "differentiation": legacy["differentiation"],
-            "styleTarget": legacy["style_target"],
-            "source": legacy["source"],
-            "riskNotes": legacy["risk_notes"],
-            "endingAnchor": legacy["ending_anchor"],
-        }
-        envelope = json.dumps(
-            {"title": legacy["title"], "premise": premise},
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-        )
-        assert json.loads(mapped["premise_json"]) == premise
-        assert {key: value for key, value in mapped.items() if key != "premise_json"} == {
+        })
+        assert mapped == {
             "id": legacy["id"],
             "project_id": legacy["project_id"],
-            "title": legacy["title"],
-            "content_hash": sha256(envelope.encode("utf-8")).hexdigest(),
-            "status": "selected" if legacy["title"] == "典镇山河" else "candidate",
+            "status": "candidate",
             "created_at": legacy["created_at"],
+            "updated_at": legacy["created_at"],
         }
+        revision_row = next(row for row in seed_revisions if row["seed_id"] == legacy["id"])
+        assert json.loads(revision_row["payload_json"]) == payload.model_dump(mode="json")
+        assert revision_row["revision"] == 1
+        assert revision_row["content_hash"] == canonical_hash(payload)
+        head_row = next(row for row in seed_heads if row["seed_id"] == legacy["id"])
+        assert head_row["revision_id"] == revision_row["id"]
+        assert head_row["revision"] == 1
+        assert head_row["content_hash"] == revision_row["content_hash"]
     assert len(providers) == len(old_providers) == 2
     legacy_by_id = {row["id"]: row for row in old_providers}
     for mapped in providers:
@@ -259,13 +268,45 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
             "supports_streaming": legacy["supports_streaming"],
             "notes": legacy["notes"] or "",
             "thinking": legacy["thinking"],
+            "lifecycle_status": "active",
+            "deleted_at": None,
             "created_at": legacy["created_at"],
             "updated_at": legacy["updated_at"],
         }
-    assert selected == {"seed_id": SEEDS[2][0]}
+    selected_revision = next(row for row in seed_revisions if row["seed_id"] == SEEDS[2][0])
+    assert selected["seed_id"] == SEEDS[2][0]
+    assert selected["seed_revision_id"] == selected_revision["id"]
+    assert selected["seed_hash"] == selected_revision["content_hash"]
+    assert selected["selection_revision"] == 1
     assert {row["task_key"] for row in bindings} == set(TASK_KEYS)
     assert {row["provider_id"] for row in bindings} == {PROVIDER_ID}
-    assert {row["model_name"] for row in bindings} == {"deepseek-v4-flash"}
+    assert {row["provider_name_snapshot"] for row in bindings} == {"联通云"}
+    assert {row["model_name_snapshot"] for row in bindings} == {"deepseek-v4-flash"}
+    domain_binding = BindingRevision(
+        project_id=PROJECT_ID,
+        revision=1,
+        items=tuple(BindingItem(
+            task_key=task_key,
+            resolution_status="bound",
+            provider_id=PROVIDER_ID,
+            provider_name_snapshot="联通云",
+            model_name_snapshot="deepseek-v4-flash",
+        ) for task_key in TASK_KEYS),
+    )
+    assert binding_revision["content_hash"] == canonical_hash(domain_binding)
+    assert binding_revision["source_project_id"] is None
+    assert all(row["binding_revision_id"] == binding_revision["id"] for row in bindings)
+    for row in bindings:
+        item = next(item for item in domain_binding.items if item.task_key == row["task_key"])
+        assert row["item_hash"] == canonical_hash(item)
+    assert binding_head["binding_revision_id"] == binding_revision["id"]
+    assert binding_head["revision"] == 1
+    assert binding_head["content_hash"] == binding_revision["content_hash"]
+    assert contract_head["revision"] == 0
+    assert contract_head["project_id"] == PROJECT_ID
+    assert all(contract_head[key] is None for key in (
+        "creation_contract_id", "style_contract_id", "creation_hash", "style_hash"
+    ))
     assert revision == {"revision_number": 0, "content_hash": empty_hash}
     assert head == {
         "canon_revision_number": 0,
@@ -288,11 +329,12 @@ async def test_execute_preserves_only_foundation_and_rebuilds_empty_writer_core(
         table: (
             1 if table in {
                 "schema_metadata", "projects", "project_selected_seeds",
-                "task_model_bindings", "canon_revisions", "projection_heads",
+                "project_model_binding_revisions", "project_model_binding_heads",
+                "canon_revisions", "projection_heads", "project_contract_heads",
             }
-            else 3 if table == "creative_seeds"
+            else 3 if table in {"creative_seeds", "creative_seed_revisions", "creative_seed_heads"}
             else 2 if table == "provider_profiles"
-            else len(TASK_KEYS) if table == "task_model_binding_items"
+            else len(TASK_KEYS) if table == "project_model_binding_items"
             else 0
         )
         for table in created_table_names()
@@ -485,7 +527,9 @@ async def test_incompatible_legacy_mapping_is_rejected_before_any_ddl(
 
 
 @pytest.mark.mysql
-async def test_legacy_provider_nulls_use_baseline_defaults_but_explicit_zero_survives(empty_disposable_mysql):
+async def test_active_provider_rejects_missing_sensitive_connection_fields_before_ddl(
+    empty_disposable_mysql,
+):
     await create_legacy_writer_core(empty_disposable_mysql.session)
     await empty_disposable_mysql.session.execute(
         """UPDATE provider_profiles
@@ -496,46 +540,21 @@ async def test_legacy_provider_nulls_use_baseline_defaults_but_explicit_zero_sur
            WHERE id=%s""",
         ("88888888-8888-8888-8888-888888888888",),
     )
-    await empty_disposable_mysql.session.execute(
-        """UPDATE provider_profiles
-           SET stream=0, supports_json=0, supports_streaming=0 WHERE id=%s""",
-        (PROVIDER_ID,),
-    )
+    recording_admin = RecordingAdminProxy(empty_disposable_mysql.admin_session)
 
-    await reset_writer_core_data(
-        empty_disposable_mysql.admin_session,
-        database_name=empty_disposable_mysql.database_name,
-        confirm_reset=empty_disposable_mysql.database_name,
-        request=request(), execute=True, allow_product_database=False,
-        output=lambda value: None,
-    )
+    with pytest.raises(ResetValidationError, match="active Provider"):
+        await reset_writer_core_data(
+            recording_admin,
+            database_name=empty_disposable_mysql.database_name,
+            confirm_reset=empty_disposable_mysql.database_name,
+            request=request(), execute=True, allow_product_database=False,
+            output=lambda value: None,
+        )
 
-    connection = await aiomysql.connect(**empty_disposable_mysql.connection_config)
-    cursor = await connection.cursor(aiomysql.DictCursor)
-    try:
-        await cursor.execute(
-            """SELECT base_url, api_key, enabled, sort_order, stream,
-                      max_context_tokens, max_output_tokens, temperature, top_p,
-                      supports_json, supports_streaming, notes, thinking
-               FROM provider_profiles WHERE id=%s""",
-            ("88888888-8888-8888-8888-888888888888",),
-        )
-        defaults = await cursor.fetchone()
-        await cursor.execute(
-            "SELECT stream, supports_json, supports_streaming FROM provider_profiles WHERE id=%s",
-            (PROVIDER_ID,),
-        )
-        explicit = await cursor.fetchone()
-    finally:
-        await cursor.close()
-        connection.close()
-    assert defaults == {
-        "base_url": "", "api_key": "", "enabled": 1, "sort_order": 10,
-        "stream": 1, "max_context_tokens": 200000, "max_output_tokens": 4096,
-        "temperature": Decimal("0.800"), "top_p": Decimal("0.900"),
-        "supports_json": 1, "supports_streaming": 1, "notes": "", "thinking": None,
-    }
-    assert explicit == {"stream": 0, "supports_json": 0, "supports_streaming": 0}
+    assert not any(
+        sql.startswith(("DROP DATABASE", "CREATE DATABASE"))
+        for _, sql, _ in recording_admin.calls
+    )
 
 
 @pytest.mark.mysql
@@ -559,13 +578,28 @@ async def test_legacy_seed_status_is_ignored_and_exactly_named_seed_is_selected(
     connection = await aiomysql.connect(**empty_disposable_mysql.connection_config)
     cursor = await connection.cursor(aiomysql.DictCursor)
     try:
-        await cursor.execute("SELECT title, status FROM creative_seeds ORDER BY title")
-        rows = await cursor.fetchall()
+        await cursor.execute("SELECT id, status FROM creative_seeds ORDER BY id")
+        identities = await cursor.fetchall()
+        await cursor.execute(
+            "SELECT seed_id, seed_revision_id, seed_hash, selection_revision "
+            "FROM project_selected_seeds WHERE project_id=%s",
+            (PROJECT_ID,),
+        )
+        selected = await cursor.fetchone()
+        await cursor.execute(
+            "SELECT id, content_hash FROM creative_seed_revisions WHERE seed_id=%s",
+            (SEEDS[2][0],),
+        )
+        selected_revision = await cursor.fetchone()
     finally:
         await cursor.close()
         connection.close()
-    assert {row["title"]: row["status"] for row in rows} == {
-        "永乐长明": "candidate", "文渊山海": "candidate", "典镇山河": "selected",
+    assert {row["status"] for row in identities} == {"candidate"}
+    assert selected == {
+        "seed_id": SEEDS[2][0],
+        "seed_revision_id": selected_revision["id"],
+        "seed_hash": selected_revision["content_hash"],
+        "selection_revision": 1,
     }
 
 

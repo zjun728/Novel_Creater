@@ -6,6 +6,9 @@ import pytest
 
 from backend import config as backend_config
 from backend.config import LocalMySQLConfigError
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.model_bindings import TASK_KEYS
+from backend.domain.seeds import SeedPayload
 from backend.scripts.reset_writer_core_data import (
     RESET_LOCK_NAME,
     _recover_failed_commit,
@@ -16,6 +19,11 @@ from backend.scripts.reset_writer_core_data import (
     main,
     reset_writer_core_data,
     run_cli,
+    _PreservedState,
+    _insert_preserved_state,
+    _map_project,
+    _map_provider,
+    _map_seed,
 )
 from backend.tests.support.legacy_writer_core import (
     LEGACY_BASELINE_COMMIT,
@@ -160,6 +168,85 @@ def request(**changes):
     }
     values.update(changes)
     return ResetRequest(**values)
+
+
+def test_seed_mapping_builds_exact_immutable_nine_field_payload():
+    legacy = RecordingAdminSession()
+    row = next(iter(__import__("asyncio").run(legacy.fetchall("FROM .`creative_seeds`"))))
+
+    mapped = _map_seed(row, "project")
+    payload = SeedPayload(
+        title=row["title"],
+        genre=row["genre"],
+        logline=row["logline"],
+        protagonist=row["protagonist"],
+        desire=row["desire"],
+        coreConflict=row["core_conflict"],
+        worldPressure=row["world_pressure"],
+        openingHook=row["opening_hook"],
+        differentiation=row["differentiation"],
+    )
+
+    assert {key: mapped[key] for key in (
+        "id", "project_id", "status", "payload_json", "content_hash", "created_at"
+    )} == {
+        "id": row["id"],
+        "project_id": "project",
+        "status": "candidate",
+        "payload_json": canonical_json(payload),
+        "content_hash": canonical_hash(payload),
+        "created_at": 1,
+    }
+    assert mapped["updated_at"] == 1
+    rendered = mapped["payload_json"]
+    for discarded in (
+        "emotionalPromise", "styleTarget", "source", "riskNotes", "endingAnchor"
+    ):
+        assert discarded not in rendered
+
+
+@pytest.mark.asyncio
+async def test_foundation_insert_order_uses_revisioned_seed_binding_and_contract_heads():
+    source = RecordingAdminSession()
+    project = _map_project((await source.fetchall("FROM .`projects`"))[0])
+    seeds = tuple(
+        _map_seed(row, project["id"])
+        for row in await source.fetchall("FROM .`creative_seeds`")
+    )
+    provider = _map_provider((await source.fetchall("FROM .`provider_profiles`"))[0], 0)
+    state = _PreservedState(project, seeds, (provider,), provider)
+
+    class InsertSession:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, args=None):
+            self.calls.append((" ".join(sql.split()), args))
+
+    session = InsertSession()
+    ids = iter(f"generated-{index}" for index in range(10))
+    await _insert_preserved_state(
+        session, state, now_ms=123, id_factory=lambda: next(ids)
+    )
+
+    insert_tables = [sql.split("INSERT INTO ", 1)[1].split()[0] for sql, _ in session.calls]
+    assert insert_tables == [
+        "projects",
+        "provider_profiles",
+        "creative_seeds", "creative_seeds", "creative_seeds",
+        "creative_seed_revisions", "creative_seed_revisions", "creative_seed_revisions",
+        "creative_seed_heads", "creative_seed_heads", "creative_seed_heads",
+        "project_selected_seeds",
+        "project_model_binding_revisions",
+        *("project_model_binding_items" for _ in TASK_KEYS),
+        "project_model_binding_heads",
+        "canon_revisions",
+        "projection_heads",
+        "project_contract_heads",
+    ]
+    rendered_sql = "\n".join(sql for sql, _ in session.calls)
+    assert "task_model_bindings" not in rendered_sql
+    assert "task_model_binding_items" not in rendered_sql
 
 
 @pytest.mark.parametrize("seed_titles", [(), ("a", "b"), ("a", "a", "c"), ("a", "b", "c", "d")])

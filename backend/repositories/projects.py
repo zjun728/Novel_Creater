@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 import time
 from uuid import uuid4
 
-
-@dataclass(frozen=True)
-class PreviousBindingSnapshot:
-    source_project_id: str
-    provider_ids: Mapping[str, str]
+from backend.repositories.project_lifecycle import (
+    lock_active_project,
+    read_active_project,
+)
 
 
 class ProjectRepository:
@@ -42,17 +40,27 @@ class ProjectRepository:
 
     async def list(self, session):
         return await session.fetchall(
-            "SELECT * FROM projects ORDER BY updated_at DESC, id DESC"
+            """SELECT * FROM projects WHERE status<>'archived'
+               ORDER BY updated_at DESC, id DESC"""
         )
 
     async def get(self, session, project_id: str):
-        return await session.fetchone(
-            "SELECT * FROM projects WHERE id=%s", (project_id,)
-        )
+        return await read_active_project(session, project_id)
 
-    async def update(self, session, project_id: str, changes: Mapping) -> None:
+    async def lock_active_project(self, session, project_id: str):
+        return await lock_active_project(session, project_id)
+
+    async def archive(self, session, project_id: str) -> bool:
+        changed = await session.execute(
+            """UPDATE projects SET status='archived',updated_at=%s
+               WHERE id=%s AND status<>'archived'""",
+            (self._clock(), project_id),
+        )
+        return changed == 1
+
+    async def update(self, session, project_id: str, changes: Mapping) -> bool:
         if not changes:
-            return
+            return True
         allowed = {
             "title",
             "genre",
@@ -60,7 +68,6 @@ class ProjectRepository:
             "target_words",
             "target_chapters",
             "current_chapter",
-            "status",
         }
         if not set(changes) <= allowed:
             raise ValueError("project update contains unsupported fields")
@@ -68,9 +75,12 @@ class ProjectRepository:
         args = [changes[field] for field in changes]
         sets.append("updated_at=%s")
         args.extend((self._clock(), project_id))
-        await session.execute(
-            f"UPDATE projects SET {', '.join(sets)} WHERE id=%s", tuple(args)
+        changed = await session.execute(
+            f"UPDATE projects SET {', '.join(sets)} "
+            "WHERE id=%s AND status<>'archived'",
+            tuple(args),
         )
+        return changed == 1
 
     async def content_state(self, session, project_id: str) -> dict:
         row = await session.fetchone(
@@ -120,76 +130,11 @@ class ProjectRepository:
             (project_id, content_hash, self._clock()),
         )
 
-    async def list_enabled_providers(self, session):
-        return await session.fetchall(
-            """SELECT id, model_name FROM provider_profiles
-               WHERE enabled=1
-               ORDER BY sort_order ASC, created_at ASC, id ASC"""
-        )
-
-    async def find_previous_binding_snapshot(
-        self, session, project_id: str
-    ) -> PreviousBindingSnapshot | None:
-        rows = await session.fetchall(
-            """SELECT latest.id AS source_project_id, i.task_key, i.provider_id
-               FROM (
-                 SELECT id FROM projects WHERE id<>%s
-                 ORDER BY created_at DESC, id DESC LIMIT 1
-               ) AS latest
-               LEFT JOIN task_model_bindings b ON b.project_id=latest.id
-               LEFT JOIN task_model_binding_items i ON i.binding_id=b.id
-               ORDER BY i.task_key ASC""",
-            (project_id,),
-        )
-        if not rows:
-            return None
-        source_project_id = rows[0]["source_project_id"]
-        provider_ids = {
-            row["task_key"]: row["provider_id"]
-            for row in rows
-            if row.get("task_key")
-            and row.get("provider_id")
-        }
-        return PreviousBindingSnapshot(source_project_id, provider_ids)
-
-    async def insert_binding_snapshot(
-        self, session, project_id: str, *, source_project_id: str | None
-    ) -> str:
-        binding_id = self._id_factory()
-        now = self._clock()
+    async def insert_contract_head0(self, session, project_id: str) -> None:
         await session.execute(
-            """INSERT INTO task_model_bindings
-               (id, project_id, source_project_id, created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s)""",
-            (binding_id, project_id, source_project_id, now, now),
+            """INSERT INTO project_contract_heads
+               (project_id, revision, creation_contract_id, style_contract_id,
+                creation_hash, style_hash, updated_at)
+               VALUES (%s,0,NULL,NULL,NULL,NULL,%s)""",
+            (project_id, self._clock()),
         )
-        return binding_id
-
-    async def insert_binding_items(
-        self,
-        session,
-        project_id: str,
-        binding_id: str,
-        items: Mapping[str, Mapping[str, str]],
-    ) -> None:
-        now = self._clock()
-        for task_key, item in items.items():
-            await session.execute(
-                """INSERT INTO task_model_binding_items
-                   (id, project_id, binding_id, task_key, provider_id,
-                    model_name, created_at, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (
-                    self._id_factory(),
-                    project_id,
-                    binding_id,
-                    task_key,
-                    item["provider_id"],
-                    item["model_name"],
-                    now,
-                    now,
-                ),
-            )
-
-    async def delete(self, session, project_id: str) -> None:
-        await session.execute("DELETE FROM projects WHERE id=%s", (project_id,))
