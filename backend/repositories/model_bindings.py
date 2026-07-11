@@ -48,9 +48,8 @@ class ModelBindingRepository:
         )
 
     @staticmethod
-    def _current_sql(*, for_update: bool) -> str:
-        lock = " FOR UPDATE" if for_update else ""
-        return f"""SELECT h.project_id,h.revision,h.binding_revision_id,
+    def _read_current_sql() -> str:
+        return """SELECT h.project_id,h.revision,h.binding_revision_id,
                            h.content_hash,r.source_project_id,r.created_at,
                            i.task_key,i.resolution_status,i.provider_id,
                            i.provider_name_snapshot,i.model_name_snapshot,
@@ -74,16 +73,37 @@ class ModelBindingRepository:
                       WHEN 'seed' THEN 1 WHEN 'planning' THEN 2
                       WHEN 'writing' THEN 3 WHEN 'audit' THEN 4
                       WHEN 'summary' THEN 5 WHEN 'extraction' THEN 6
-                      WHEN 'polish' THEN 7 WHEN 'market' THEN 8 ELSE 9 END{lock}"""
+                      WHEN 'polish' THEN 7 WHEN 'market' THEN 8 ELSE 9 END"""
+
+    @staticmethod
+    def _lock_current_sql() -> str:
+        return """SELECT h.project_id,h.revision,h.binding_revision_id,
+                          h.content_hash,r.source_project_id,r.created_at,
+                          i.task_key,i.resolution_status,i.provider_id,
+                          i.provider_name_snapshot,i.model_name_snapshot,
+                          i.item_hash
+                   FROM project_model_binding_heads h
+                   JOIN project_model_binding_revisions r
+                     ON r.project_id=h.project_id
+                    AND r.id=h.binding_revision_id
+                   JOIN project_model_binding_items i
+                     ON i.binding_revision_id=r.id
+                   WHERE h.project_id=%s
+                   ORDER BY CASE i.task_key
+                     WHEN 'seed' THEN 1 WHEN 'planning' THEN 2
+                     WHEN 'writing' THEN 3 WHEN 'audit' THEN 4
+                     WHEN 'summary' THEN 5 WHEN 'extraction' THEN 6
+                     WHEN 'polish' THEN 7 WHEN 'market' THEN 8 ELSE 9 END
+                   FOR UPDATE"""
 
     async def read_current_rows(self, session, project_id: str):
         return await session.fetchall(
-            self._current_sql(for_update=False), (project_id,)
+            self._read_current_sql(), (project_id,)
         )
 
     async def lock_current_rows(self, session, project_id: str):
         return await session.fetchall(
-            self._current_sql(for_update=True), (project_id,)
+            self._lock_current_sql(), (project_id,)
         )
 
     async def lock_providers(self, session, provider_ids: set[str]):
