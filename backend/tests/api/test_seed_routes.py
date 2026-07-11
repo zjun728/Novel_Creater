@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.domain.seeds import SeedPayload
+from backend.http_errors import SeedNotFound
 from backend.routers import seeds
 from backend.security.redaction import install_error_handlers
 from backend.services.seeds import SeedResult, SelectedSeedResult
@@ -53,6 +54,8 @@ class FakeSeedService:
 
     async def get_selected(self, project_id):
         self.calls.append(("get-selected", project_id))
+        if project_id == "missing":
+            raise SeedNotFound()
         return SelectedSeedResult(
             selected=seed_result(1, 1), seed_ready=True,
             contract_ready=False, reasons=("binding_not_verified",),
@@ -126,3 +129,16 @@ def test_seed_write_requests_forbid_legacy_or_extra_fields():
         },
     )
     assert response.status_code == 422
+
+
+def test_selected_seed_unknown_project_returns_exact_public_404():
+    client, _ = make_client()
+
+    response = client.get("/api/projects/missing/selected-seed")
+
+    assert response.status_code == 404
+    body = response.json()
+    assert set(body) == {"code", "message", "correlationId"}
+    assert body["code"] == "SeedNotFound"
+    assert body["message"] == SeedNotFound.message
+    assert body["correlationId"]

@@ -297,6 +297,8 @@ class SeedService:
 
     async def get_selected(self, project_id: str) -> SelectedSeedResult:
         async with self._connection() as session:
+            if await self.repository.read_project(session, project_id) is None:
+                raise SeedNotFound()
             selected = await self.repository.read_selection(session, project_id)
             contract = await self.repository.read_contract_facts(
                 session, project_id

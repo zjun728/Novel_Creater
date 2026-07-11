@@ -49,6 +49,10 @@ class MemorySeedRepository:
     async def count_final_chapters(self, session, project_id):
         return int(project_id in self.final_projects)
 
+    async def read_project(self, session, project_id):
+        self.events.append("read-project")
+        return {"id": project_id} if project_id in self.projects else None
+
     async def insert_identity(self, session, row):
         self.events.append("identity")
         self.seeds[row["id"]] = dict(row)
@@ -381,3 +385,13 @@ async def test_selected_readiness_is_backend_fact_and_reports_seed_drift_after_e
     assert drifted.seed_ready is False
     assert drifted.contract_ready is False
     assert "selected_seed_drift" in drifted.reasons
+
+
+@pytest.mark.asyncio
+async def test_get_selected_rejects_unknown_project_before_reading_seed_facts():
+    harness = Harness()
+
+    with pytest.raises(SeedNotFound):
+        await harness.service.get_selected("missing")
+
+    assert harness.repo.events == ["read-project"]
