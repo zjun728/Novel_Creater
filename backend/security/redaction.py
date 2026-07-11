@@ -11,6 +11,8 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from backend.http_errors import PublicDomainError
+
 
 REDACTED = "[REDACTED]"
 _SECRET_KEYS = frozenset(
@@ -77,6 +79,25 @@ def install_error_handlers(app, *, logger=None) -> None:
     application_logger = logger or logging.getLogger("backend")
     _install_redaction_filter(application_logger)
     _install_redaction_filter(logging.getLogger("uvicorn.error"))
+
+    @app.exception_handler(PublicDomainError)
+    async def public_domain_error_handler(
+        request: Request, exc: PublicDomainError
+    ):
+        correlation_id = str(uuid4())
+        application_logger.warning(
+            "public_domain_error type=%s correlation_id=%s",
+            type(exc).__name__,
+            correlation_id,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": exc.code,
+                "message": exc.message,
+                "correlationId": correlation_id,
+            },
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(

@@ -46,16 +46,28 @@ def test_main_registers_only_m1_product_routes():
     }
 
 
-def test_seed_and_canon_paths_have_no_write_methods():
-    relevant = [
+def test_only_approved_seed_paths_write_and_canon_remains_read_only():
+    seed_routes = [
         route
         for route in main.app.routes
-        if "/seeds" in route.path
-        or "/canon/" in route.path
-        or "/projections/" in route.path
+        if "/seeds" in route.path or "/selected-seed" in route.path
     ]
-    assert relevant
-    assert all(route.methods <= {"GET", "HEAD"} for route in relevant)
+    seed_methods = {}
+    for route in seed_routes:
+        seed_methods.setdefault(route.path, set()).update(route.methods)
+    assert seed_methods == {
+        "/api/projects/{pid}/seeds": {"GET", "POST"},
+        "/api/projects/{pid}/seeds/{seed_id}": {"PUT", "DELETE"},
+        "/api/projects/{pid}/selected-seed": {"GET", "PUT"},
+    }
+
+    canon_routes = [
+        route
+        for route in main.app.routes
+        if "/canon/" in route.path or "/projections/" in route.path
+    ]
+    assert canon_routes
+    assert all(route.methods <= {"GET", "HEAD"} for route in canon_routes)
 
 
 def test_incompatible_router_files_are_physically_absent():

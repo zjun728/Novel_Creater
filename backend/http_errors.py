@@ -1,0 +1,30 @@
+"""Stable public domain errors for HTTP-safe application boundaries."""
+
+from __future__ import annotations
+
+
+class PublicDomainError(RuntimeError):
+    status_code = 400
+    code = "DomainError"
+    message = "The request could not be completed"
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
+
+
+class SeedNotFound(PublicDomainError):
+    status_code = 404
+    code = "SeedNotFound"
+    message = "Seed or project not found"
+
+
+class SeedConflict(PublicDomainError):
+    status_code = 409
+    code = "SeedConflict"
+    message = "Seed state changed; refresh and retry"
+
+
+class SeedLocked(PublicDomainError):
+    status_code = 423
+    code = "SeedLocked"
+    message = "Seed changes are locked after final chapter creation"
