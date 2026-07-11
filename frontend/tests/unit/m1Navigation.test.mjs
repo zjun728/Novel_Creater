@@ -100,3 +100,11 @@ test('active navigation exposes no retired import export backup or provider call
   assert.match(router, /path:\s*['"]\/:pathMatch\(\.\*\)\*['"].*redirect:\s*['"]\/['"]/s)
   assert.doesNotMatch(sidebarTree, /写作台|\/writer\/|ExperienceCards|experience-cards|创作经验卡/)
 })
+
+test('the top bar explicitly imports the breadcrumb item it renders', async () => {
+  const topBar = await readSource('components/layout/TopBar.vue')
+
+  assert.match(topBar, /NBreadcrumbItem/)
+  assert.match(topBar, /<n-breadcrumb-item/)
+  assert.doesNotMatch(topBar, /\bNButton\b/)
+})

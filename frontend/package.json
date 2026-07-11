@@ -7,19 +7,21 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test:unit": "node ../scripts/run-tests.mjs frontend-unit"
+    "test:unit": "node ../scripts/run-tests.mjs frontend-unit",
+    "test:e2e": "node e2e/run-milestone1.mjs"
   },
   "dependencies": {
-    "vue": "^3.5.34",
     "naive-ui": "^2.41.0",
     "pinia": "^3.0.2",
-    "vue-router": "^4.5.1",
-    "uuid": "^11.1.0"
+    "uuid": "^11.1.0",
+    "vue": "^3.5.34",
+    "vue-router": "^4.5.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@tailwindcss/vite": "^4.1.4",
     "@vitejs/plugin-vue": "^6.0.6",
-    "vite": "^8.0.12",
     "tailwindcss": "^4.1.4",
-    "@tailwindcss/vite": "^4.1.4"
+    "vite": "^8.0.12"
   }
 }

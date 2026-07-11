@@ -1,6 +1,6 @@
 <script setup>
 import { useRouter, useRoute } from 'vue-router'
-import { NBreadcrumb, NSpace, NButton } from 'naive-ui'
+import { NBreadcrumb, NBreadcrumbItem, NSpace } from 'naive-ui'
 import { computed } from 'vue'
 import { useProjectStore } from '@/stores/projectStore'
 
