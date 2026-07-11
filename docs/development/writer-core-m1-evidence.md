@@ -44,8 +44,7 @@ The page and database evidence correlated the same project ID and the same Canon
 - Sensitive Provider rows matched the in-memory expected inventory: `9/9`.
 - API plaintext sensitive-value hits: `0`.
 - API exact forbidden-key hits: `0`.
-- AI calls: `0`.
-- Provider/model calls: `0`.
+- AI completion / upstream Provider model calls: `0`.
 
 No sensitive row values, raw source rows, connection material, or Provider diagnostics are recorded in this document.
 
@@ -61,8 +60,8 @@ These are the latest known results, not a substitute for the final controller ga
 
 ## Product browser evidence
 
-- Product requests: `8`, all `GET`.
-- AI/Provider requests: `0`.
+- Product requests: `8`, all `GET`, including the `/api/providers` configuration read.
+- AI completion / upstream Provider model calls: `0`.
 - Console errors: `0`.
 - Console warnings: `0`.
 - The project library and project foundation view read the reconciled product state.
@@ -82,6 +81,6 @@ The legacy source remains read-only, the whitelist remains four fixed `SELECT` s
 
 ## Conclusion and next dependency
 
-M1 is closed at **L4 M1 No-Provider Ready** only. There was no Provider call, no body generation, and no content-quality evaluation, so this evidence makes no claim about generated prose or the end-to-end writing workflow.
+M1 is closed at **L4 M1 No-Provider Ready** only. There was no AI completion / upstream Provider model call, no body generation, and no content-quality evaluation, so this evidence makes no claim about generated prose or the end-to-end writing workflow.
 
 The only authorized next action is to write and audit the detailed M2 plan for `CreationContract`, `StyleContract`, corpus assets, and experience assets. M2 implementation does not begin until that separate plan is approved.

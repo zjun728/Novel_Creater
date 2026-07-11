@@ -2,16 +2,19 @@
 
 > 当前有效规划。日期：`2026-07-11`。
 
-## 1. 唯一规划来源
+## 1. 产品权威层级
 
-产品规划以以下两份批准文档为准：
+产品和实现判断按以下层级执行：
 
-1. `docs/superpowers/specs/2026-07-11-writer-core-v1-design.md`
-2. `docs/superpowers/plans/2026-07-11-writer-core-v1-roadmap.md`
+1. `STORY_QUALITY_CHARTER.md`：最高产品质量原则。
+2. `docs/superpowers/specs/2026-07-11-writer-core-v1-design.md`：Writer Core V1 实现权威。
+3. `docs/superpowers/plans/2026-07-11-writer-core-v1-roadmap.md`：M1–M8 交付权威。
 
-总体设计定义产品规则，roadmap 定义 M1–M8 的交付顺序。本文件只汇总当前完成度和下一里程碑授权，不修改总体设计。
+`STORY_QUALITY_CHARTER.md` 的质量总纲不能被 Writer Core design/roadmap 替代。总体设计定义实现规则，roadmap 定义交付顺序；本文件只汇总当前完成度和下一里程碑授权。
 
 实施分支为 `codex/writer-core-v1`，唯一基线为 `4b85e8d`。旧数据库结构、旧 API、旧独立写作状态链、旧 runner 和旧 artifact 不恢复，不增加兼容层、dual-write 或 fallback。
+
+远端 `main` 在 `4b85e8d` 后已有 `13` 个尚未合并的旧 control-plane 分叉提交。`codex/writer-core-v1` 可以安全推送为独立分支，但 canonical `main` 的 promotion/replacement policy 必须单独明确；禁止把旧分叉或兼容链无脑 merge/cherry-pick 回来。
 
 ## 2. 产品目标
 
@@ -33,7 +36,7 @@ M1 已完成干净 Schema、Canon/Projection 基础、实体身份、事务边�
 - Canon/Projection：`0 / 0`
 - 空派生写作表：`25/25`
 - Writer：停用；旧 Writer 入口返回项目库
-- AI/Provider 调用：`0`
+- AI completion / upstream Provider model calls：`0`
 
 完整证据见 `docs/development/writer-core-m1-evidence.md`。
 
