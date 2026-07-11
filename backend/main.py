@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.database import close_pool, connection
-from backend.routers import canon, projects, providers, seeds
+from backend.routers import canon, model_bindings, projects, providers, seeds
 from backend.schema_version import verify_schema_version
 from backend.security.redaction import install_error_handlers
 
@@ -38,6 +38,7 @@ app.add_middleware(
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
+app.include_router(model_bindings.router, prefix="/api")
 app.include_router(seeds.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")
 

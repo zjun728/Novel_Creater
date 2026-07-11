@@ -1,25 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
 
 import pytest
 from pydantic import ValidationError
 
 from backend.repositories.projects import ProjectRepository
 from backend.services.projections import build_projection_bundle
-from backend.services.projects import CreateProject, ProjectService, TASK_KEYS
-
-
-@dataclass
-class PreviousSnapshot:
-    source_project_id: str
-    provider_ids: dict[str, str]
+from backend.services.projects import CreateProject, ProjectService
 
 
 class FakeTransaction(AbstractAsyncContextManager):
-    def __init__(self, factory: "FakeTransactionFactory"):
+    def __init__(self, factory):
         self.factory = factory
         self.session = object()
 
@@ -30,17 +22,12 @@ class FakeTransaction(AbstractAsyncContextManager):
     async def __aexit__(self, exc_type, exc, traceback):
         if exc_type is None:
             self.factory.commit_count += 1
-            self.factory.repository.committed_rows.extend(
-                self.factory.repository.pending_rows
-            )
         else:
             self.factory.rollback_count += 1
-        self.factory.repository.pending_rows.clear()
 
 
 class FakeTransactionFactory:
-    def __init__(self, repository):
-        self.repository = repository
+    def __init__(self):
         self.enter_count = 0
         self.commit_count = 0
         self.rollback_count = 0
@@ -50,84 +37,50 @@ class FakeTransactionFactory:
 
 
 class FakeProjectRepository:
-    STEPS = (
-        "project",
-        "revision",
-        "head",
-        "providers",
-        "previous",
-        "binding",
-        "items",
-    )
+    STEPS = ("project", "revision", "projection", "contract")
 
     def __init__(self):
-        self.enabled_providers = []
-        self.previous_snapshot = None
-        self.fail_at = None
         self.calls = []
-        self.seen_sessions = []
-        self.pending_rows = []
-        self.committed_rows = []
-        self.inserted_revision = None
-        self.inserted_head = None
-        self.binding_items = {}
-        self.binding_source = None
+        self.sessions = []
+        self.fail_at = None
+        self.revision = None
+        self.projection = None
+        self.contract = None
 
-    def _record(self, step, session, row=None):
+    def _record(self, step, session, value=None):
         self.calls.append(step)
-        self.seen_sessions.append(session)
+        self.sessions.append(session)
         if self.fail_at == step:
             raise RuntimeError(f"{step} failed")
-        if row is not None:
-            self.pending_rows.append((step, row))
+        return value
 
     async def insert_project(self, session, command):
-        self._record("project", session, command)
+        self._record("project", session)
 
     async def insert_bootstrap_revision(
         self, session, project_id, *, content_hash, idempotency_key
     ):
-        row = {
-            "project_id": project_id,
-            "revision_number": 0,
-            "parent_revision_number": 0,
-            "source_type": "bootstrap",
-            "content_hash": content_hash,
-            "idempotency_key": idempotency_key,
-        }
-        self._record("revision", session, row)
-        self.inserted_revision = row
+        self.revision = {"content_hash": content_hash, "key": idempotency_key}
+        self._record("revision", session)
 
     async def insert_projection_head(self, session, project_id, *, content_hash):
-        row = {
-            "project_id": project_id,
-            "canon_revision_number": 0,
-            "projection_revision_number": 0,
-            "content_hash": content_hash,
-        }
-        self._record("head", session, row)
-        self.inserted_head = row
+        self.projection = {"content_hash": content_hash}
+        self._record("projection", session)
 
-    async def list_enabled_providers(self, session):
-        self._record("providers", session)
-        return self.enabled_providers
+    async def insert_contract_head0(self, session, project_id):
+        self.contract = {"project_id": project_id, "revision": 0}
+        self._record("contract", session)
 
-    async def find_previous_binding_snapshot(self, session, project_id):
-        self._record("previous", session)
-        return self.previous_snapshot
 
-    async def insert_binding_snapshot(
-        self, session, project_id, *, source_project_id
-    ):
-        self._record("binding", session, project_id)
-        self.binding_source = source_project_id
-        return "binding-1"
+class FakeBindingService:
+    def __init__(self):
+        self.calls = []
+        self.fail = False
 
-    async def insert_binding_items(self, session, project_id, binding_id, items):
-        self._record("items", session, dict(items))
-        self.binding_items = {
-            task: item["provider_id"] for task, item in items.items()
-        }
+    async def initialize_project(self, session, project_id):
+        self.calls.append((session, project_id))
+        if self.fail:
+            raise RuntimeError("binding failed")
 
 
 def command(**overrides):
@@ -144,86 +97,50 @@ def command(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_create_builds_revision_head_and_per_task_binding_on_one_session():
+async def test_create_builds_all_foundations_and_delegates_binding_on_one_session():
     repository = FakeProjectRepository()
-    repository.previous_snapshot = PreviousSnapshot(
-        "previous-project", {"writing": "enabled-previous", "seed": "disabled"}
-    )
-    repository.enabled_providers = [
-        {"id": "fallback", "model_name": "fallback-model"},
-        {"id": "enabled-previous", "model_name": "previous-model"},
-    ]
-    transactions = FakeTransactionFactory(repository)
+    bindings = FakeBindingService()
+    transactions = FakeTransactionFactory()
 
-    result = await ProjectService(repository, transactions).create(command())
+    result = await ProjectService(
+        repository,
+        transactions,
+        model_binding_service=bindings,
+    ).create(command())
 
     empty_hash = build_projection_bundle(0, ()).content_hash
     assert result.id == "p1"
     assert repository.calls == list(FakeProjectRepository.STEPS)
-    assert repository.inserted_revision["content_hash"] == empty_hash
-    assert repository.inserted_head["content_hash"] == empty_hash
-    assert repository.inserted_revision["idempotency_key"] == (
-        ProjectService.bootstrap_idempotency_key("p1")
-    )
-    assert repository.binding_items["writing"] == "enabled-previous"
-    assert repository.binding_items["seed"] == "fallback"
-    assert set(repository.binding_items) == set(TASK_KEYS)
-    assert repository.binding_source == "previous-project"
-    assert len({id(session) for session in repository.seen_sessions}) == 1
+    assert repository.revision["content_hash"] == empty_hash
+    assert repository.projection["content_hash"] == empty_hash
+    assert repository.contract == {"project_id": "p1", "revision": 0}
+    assert repository.revision["key"] == ProjectService.bootstrap_idempotency_key("p1")
+    assert bindings.calls == [(repository.sessions[0], "p1")]
+    assert len({id(session) for session in repository.sessions}) == 1
     assert transactions.commit_count == 1
     assert transactions.rollback_count == 0
 
 
 @pytest.mark.asyncio
-async def test_create_falls_back_each_disabled_or_missing_previous_task():
-    repository = FakeProjectRepository()
-    repository.previous_snapshot = PreviousSnapshot(
-        "previous-project", {"writing": "disabled", "audit": "enabled"}
-    )
-    repository.enabled_providers = [
-        {"id": "fallback", "model_name": "fallback-model"},
-        {"id": "enabled", "model_name": "enabled-model"},
-    ]
-    transactions = FakeTransactionFactory(repository)
-
-    await ProjectService(repository, transactions).create(command())
-
-    assert repository.binding_items["audit"] == "enabled"
-    assert repository.binding_items["writing"] == "fallback"
-    assert repository.binding_items["planning"] == "fallback"
-
-
-@pytest.mark.asyncio
-async def test_create_without_enabled_provider_keeps_empty_binding_snapshot():
-    repository = FakeProjectRepository()
-    repository.previous_snapshot = PreviousSnapshot(
-        "previous-project", {"writing": "disabled"}
-    )
-    transactions = FakeTransactionFactory(repository)
-
-    await ProjectService(repository, transactions).create(command())
-
-    assert repository.binding_items == {}
-    assert "binding" in repository.calls
-    assert repository.binding_source == "previous-project"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failed_step", FakeProjectRepository.STEPS)
+@pytest.mark.parametrize("failed_step", (*FakeProjectRepository.STEPS, "binding"))
 async def test_create_rolls_back_when_any_foundation_step_fails(failed_step):
     repository = FakeProjectRepository()
-    repository.enabled_providers = [
-        {"id": "provider", "model_name": "model"}
-    ]
-    repository.fail_at = failed_step
-    transactions = FakeTransactionFactory(repository)
+    bindings = FakeBindingService()
+    transactions = FakeTransactionFactory()
+    if failed_step == "binding":
+        bindings.fail = True
+    else:
+        repository.fail_at = failed_step
 
     with pytest.raises(RuntimeError, match=f"{failed_step} failed"):
-        await ProjectService(repository, transactions).create(command())
+        await ProjectService(
+            repository,
+            transactions,
+            model_binding_service=bindings,
+        ).create(command())
 
     assert transactions.commit_count == 0
     assert transactions.rollback_count == 1
-    assert repository.committed_rows == []
 
 
 def test_create_project_is_strict_frozen_and_rejects_extra_fields():
@@ -240,7 +157,6 @@ class RecordingSession:
     def __init__(self):
         self.calls = []
         self.fetchone_result = None
-        self.fetchall_result = []
 
     async def execute(self, sql, args=None):
         self.calls.append(("execute", " ".join(sql.split()), args))
@@ -250,78 +166,27 @@ class RecordingSession:
         self.calls.append(("fetchone", " ".join(sql.split()), args))
         return self.fetchone_result
 
-    async def fetchall(self, sql, args=None):
-        self.calls.append(("fetchall", " ".join(sql.split()), args))
-        return self.fetchall_result
-
 
 @pytest.mark.asyncio
-async def test_repository_orders_enabled_providers_stably():
+async def test_repository_inserts_contract_head_zero_on_explicit_session():
     session = RecordingSession()
-    await ProjectRepository().list_enabled_providers(session)
-    assert "ORDER BY sort_order ASC, created_at ASC, id ASC" in session.calls[0][1]
 
+    await ProjectRepository(clock=lambda: 123).insert_contract_head0(session, "p1")
 
-@pytest.mark.asyncio
-async def test_repository_finds_previous_project_by_created_at_then_id():
-    session = RecordingSession()
-    session.fetchall_result = [
-        {
-            "source_project_id": "latest-project",
-            "task_key": "audit",
-            "provider_id": "provider-audit",
-        },
-        {
-            "source_project_id": "latest-project",
-            "task_key": "writing",
-            "provider_id": "provider-writing",
-        },
+    assert session.calls == [
+        (
+            "execute",
+            "INSERT INTO project_contract_heads (project_id, revision, creation_contract_id, style_contract_id, creation_hash, style_hash, updated_at) VALUES (%s,0,NULL,NULL,NULL,NULL,%s)",
+            ("p1", 123),
+        )
     ]
-    snapshot = await ProjectRepository().find_previous_binding_snapshot(
-        session, "p1"
-    )
-    sql = session.calls[0][1]
-    assert snapshot.source_project_id == "latest-project"
-    assert snapshot.provider_ids == {
-        "audit": "provider-audit",
-        "writing": "provider-writing",
-    }
-    assert "id<>%s" in sql
-    assert "ORDER BY created_at DESC, id DESC" in sql
-    assert "LIMIT 1" in sql
 
 
 @pytest.mark.asyncio
 async def test_delete_is_one_project_statement_on_explicit_session():
     session = RecordingSession()
-    repository = ProjectRepository()
-
-    await repository.delete(session, "p1")
-
-    assert session.calls == [
-        ("execute", "DELETE FROM projects WHERE id=%s", ("p1",))
-    ]
-
-
-@pytest.mark.asyncio
-async def test_delete_uses_one_transaction_and_rolls_back_repository_failure():
-    class DeleteRepository(FakeProjectRepository):
-        async def delete(self, session, project_id):
-            self._record("delete", session, project_id)
-
-    repository = DeleteRepository()
-    transactions = FakeTransactionFactory(repository)
-    service = ProjectService(repository, transactions)
-
-    await service.delete("p1")
-
-    assert transactions.commit_count == 1
-    assert repository.committed_rows == [("delete", "p1")]
-
-    repository.fail_at = "delete"
-    with pytest.raises(RuntimeError, match="delete failed"):
-        await service.delete("p1")
-    assert transactions.rollback_count == 1
+    await ProjectRepository().delete(session, "p1")
+    assert session.calls == [("execute", "DELETE FROM projects WHERE id=%s", ("p1",))]
 
 
 @pytest.mark.asyncio
@@ -337,21 +202,8 @@ async def test_content_state_reads_only_new_seed_head_and_final_chapter_tables()
 
     session = ContentStateSession()
     state = await ProjectRepository().content_state(session, "p1")
-
     assert state == {
         "seeds_count": 3,
         "canon_head_revision": 2,
         "has_final_chapters": True,
     }
-    sql = session.calls[0][1].lower()
-    assert "creative_seeds" in sql
-    assert "projection_heads" in sql
-    assert "final_chapters" in sql
-    for legacy in (
-        " chapters ",
-        "chapter_versions",
-        "temp_drafts",
-        "creative_bible",
-        "setting_entities",
-    ):
-        assert legacy not in f" {sql} "

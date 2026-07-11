@@ -28,3 +28,21 @@ class SeedLocked(PublicDomainError):
     status_code = 423
     code = "SeedLocked"
     message = "Seed changes are locked after final chapter creation"
+
+
+class BindingNotFound(PublicDomainError):
+    status_code = 404
+    code = "BindingNotFound"
+    message = "Project binding not found"
+
+
+class BindingConflict(PublicDomainError):
+    status_code = 409
+    code = "BindingConflict"
+    message = "Binding state changed; refresh and retry"
+
+
+class BindingProviderUnavailable(PublicDomainError):
+    status_code = 422
+    code = "BindingProviderUnavailable"
+    message = "A selected provider is unavailable"

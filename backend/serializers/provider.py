@@ -6,6 +6,9 @@ import json
 from collections.abc import Mapping
 
 
+REDACTED = "[REDACTED]"
+
+
 def _thinking(value):
     if isinstance(value, (bytes, bytearray)):
         value = value.decode("utf-8")
@@ -17,10 +20,37 @@ def _thinking(value):
     return value
 
 
+def _secret_values(row: Mapping) -> tuple[str, ...]:
+    values = []
+    for key in ("api_key", "base_url"):
+        value = row.get(key)
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        if isinstance(value, str) and value:
+            values.append(value)
+    return tuple(values)
+
+
+def _sanitize(value, secrets: tuple[str, ...]):
+    if isinstance(value, Mapping):
+        return {
+            _sanitize(key, secrets): _sanitize(item, secrets)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize(item, secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize(item, secrets) for item in value)
+    if isinstance(value, str):
+        for secret in secrets:
+            value = value.replace(secret, REDACTED)
+    return value
+
+
 def provider_public(row: Mapping | None) -> dict | None:
     if not row:
         return None
-    return {
+    public = {
         "id": row["id"],
         "name": row["name"],
         "providerType": row["provider_type"],
@@ -41,6 +71,7 @@ def provider_public(row: Mapping | None) -> dict | None:
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
+    return _sanitize(public, _secret_values(row))
 
 
 def providers_public(rows) -> list[dict]:

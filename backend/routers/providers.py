@@ -8,9 +8,9 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from backend.database import execute, fetchall, fetchone
+from backend.database import execute, fetchall, fetchone, transaction
 from backend.serializers.provider import provider_public, providers_public
 from .helpers import to_snake
 
@@ -26,10 +26,10 @@ class ProviderCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
-    providerType: str = "openai-compatible"
-    model: str = ""
-    baseURL: str = ""
-    apiKey: str = ""
+    providerType: str = Field(default="openai-compatible", min_length=1)
+    model: str = Field(min_length=1)
+    baseURL: str = Field(min_length=1)
+    apiKey: str = Field(min_length=1)
     enabled: bool = True
     sortOrder: int = 0
     stream: bool = True
@@ -42,6 +42,13 @@ class ProviderCreate(BaseModel):
     notes: str = ""
     thinking: Optional[dict] = None
 
+    @field_validator("name", "providerType", "model", "baseURL", "apiKey")
+    @classmethod
+    def required_fields_are_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("field must not be blank")
+        return value
+
 
 class ProviderUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -51,8 +58,6 @@ class ProviderUpdate(BaseModel):
     model: Optional[str] = None
     baseURL: Optional[str] = None
     apiKey: Optional[str] = None
-    clearBaseURL: bool = False
-    clearApiKey: bool = False
     enabled: Optional[bool] = None
     sortOrder: Optional[int] = None
     stream: Optional[bool] = None
@@ -65,11 +70,29 @@ class ProviderUpdate(BaseModel):
     notes: Optional[str] = None
     thinking: Optional[dict] = None
 
+    @field_validator("name", "providerType", "model")
+    @classmethod
+    def active_fields_are_not_blank(cls, value: str | None):
+        if value is not None and not value.strip():
+            raise ValueError("active provider fields must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def active_required_fields_cannot_be_cleared(self):
+        required = {"name", "providerType", "model", "baseURL", "apiKey", "notes"}
+        if any(
+            field in self.model_fields_set and getattr(self, field) is None
+            for field in required
+        ):
+            raise ValueError("active provider fields cannot be cleared")
+        return self
+
 
 @router.get("/providers")
 async def list_providers():
     rows = await fetchall(
-        "SELECT * FROM provider_profiles ORDER BY sort_order, created_at, id"
+        """SELECT * FROM provider_profiles WHERE lifecycle_status='active'
+           ORDER BY sort_order, created_at, id"""
     )
     return providers_public(rows)
 
@@ -83,8 +106,8 @@ async def create_provider(data: ProviderCreate):
            (id, name, provider_type, model_name, base_url, api_key, enabled,
             sort_order, stream, max_context_tokens, max_output_tokens,
             temperature, top_p, supports_json, supports_streaming, notes,
-            thinking, created_at, updated_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            thinking, lifecycle_status, deleted_at, created_at, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
         (
             provider_id,
             data.name,
@@ -103,13 +126,17 @@ async def create_provider(data: ProviderCreate):
             int(data.supportsStreaming),
             data.notes,
             json.dumps(data.thinking, ensure_ascii=False) if data.thinking else None,
+            "active",
+            None,
             now,
             now,
         ),
     )
     return provider_public(
         await fetchone(
-            "SELECT * FROM provider_profiles WHERE id=%s", (provider_id,)
+            """SELECT * FROM provider_profiles
+               WHERE id=%s AND lifecycle_status='active'""",
+            (provider_id,),
         )
     )
 
@@ -117,20 +144,16 @@ async def create_provider(data: ProviderCreate):
 @router.put("/providers/{provider_id}")
 async def update_provider(provider_id: str, data: ProviderUpdate):
     current = await fetchone(
-        "SELECT * FROM provider_profiles WHERE id=%s", (provider_id,)
+        """SELECT * FROM provider_profiles
+           WHERE id=%s AND lifecycle_status='active'""",
+        (provider_id,),
     )
     if current is None:
         raise HTTPException(status_code=404, detail="Provider not found")
     incoming = data.model_dump(exclude_unset=True)
-    clear_api_key = incoming.pop("clearApiKey", False)
-    clear_base_url = incoming.pop("clearBaseURL", False)
-    if clear_api_key:
-        incoming["apiKey"] = ""
-    elif "apiKey" not in incoming or _is_blank(incoming["apiKey"]):
+    if "apiKey" not in incoming or _is_blank(incoming["apiKey"]):
         incoming.pop("apiKey", None)
-    if clear_base_url:
-        incoming["baseURL"] = ""
-    elif "baseURL" not in incoming or _is_blank(incoming["baseURL"]):
+    if "baseURL" not in incoming or _is_blank(incoming["baseURL"]):
         incoming.pop("baseURL", None)
 
     sets = []
@@ -151,67 +174,39 @@ async def update_provider(provider_id: str, data: ProviderUpdate):
     if sets:
         sets.append("updated_at=%s")
         args.extend((int(time.time() * 1000), provider_id))
-        await execute(
-            f"UPDATE provider_profiles SET {', '.join(sets)} WHERE id=%s",
+        changed = await execute(
+            f"""UPDATE provider_profiles SET {', '.join(sets)}
+                WHERE id=%s AND lifecycle_status='active'""",
             args,
         )
-    return provider_public(
-        await fetchone(
-            "SELECT * FROM provider_profiles WHERE id=%s", (provider_id,)
-        )
+    updated = await fetchone(
+        """SELECT * FROM provider_profiles
+           WHERE id=%s AND lifecycle_status='active'""",
+        (provider_id,),
     )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    return provider_public(updated)
 
 
 @router.delete("/providers/{provider_id}")
 async def delete_provider(provider_id: str):
-    await execute("DELETE FROM provider_profiles WHERE id=%s", (provider_id,))
+    async with transaction() as session:
+        current = await session.fetchone(
+            """SELECT id FROM provider_profiles
+               WHERE id=%s AND lifecycle_status='active' FOR UPDATE""",
+            (provider_id,),
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        now = int(time.time() * 1000)
+        changed = await session.execute(
+            """UPDATE provider_profiles
+               SET enabled=0,lifecycle_status='deleted',api_key='',base_url='',
+                   deleted_at=%s,updated_at=%s
+               WHERE id=%s AND lifecycle_status='active'""",
+            (now, now, provider_id),
+        )
+        if changed != 1:
+            raise HTTPException(status_code=404, detail="Provider not found")
     return {"ok": True}
-
-
-async def _binding_items(project_id: str):
-    rows = await fetchall(
-        """SELECT i.task_key, p.*
-           FROM task_model_binding_items i
-           JOIN provider_profiles p ON p.id=i.provider_id
-           WHERE i.project_id=%s ORDER BY i.task_key""",
-        (project_id,),
-    )
-    return [
-        {"taskKey": row["task_key"], "provider": provider_public(row)}
-        for row in rows
-    ]
-
-
-@router.get("/projects/{project_id}/bindings")
-async def get_bindings(project_id: str):
-    binding = await fetchone(
-        "SELECT * FROM task_model_bindings WHERE project_id=%s", (project_id,)
-    )
-    if binding is None:
-        return None
-    return {
-        "id": binding["id"],
-        "projectId": project_id,
-        "items": await _binding_items(project_id),
-    }
-
-
-@router.get("/projects/{project_id}/bindings/status")
-async def get_bindings_status(project_id: str):
-    project = await fetchone(
-        "SELECT id FROM projects WHERE id=%s", (project_id,)
-    )
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    binding = await get_bindings(project_id)
-    items = binding["items"] if binding else []
-    return {
-        "projectId": project_id,
-        "hasBinding": bool(items),
-        "items": items,
-        "message": (
-            "Provider bindings configured"
-            if items
-            else "No enabled Provider is bound"
-        ),
-    }

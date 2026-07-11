@@ -9,7 +9,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.database import connection, transaction
+from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
+from backend.services.model_bindings import ModelBindingService
 from backend.services.projects import (
     CreateProject,
     ProjectService,
@@ -19,7 +21,17 @@ from .helpers import convert_row, convert_rows
 
 
 router = APIRouter(tags=["projects"])
-_service = ProjectService(ProjectRepository(), transaction, connection)
+_binding_service = ModelBindingService(
+    ModelBindingRepository(),
+    transaction_factory=transaction,
+    connection_factory=connection,
+)
+_service = ProjectService(
+    ProjectRepository(),
+    transaction,
+    connection,
+    model_binding_service=_binding_service,
+)
 
 
 class ProjectCreate(BaseModel):
