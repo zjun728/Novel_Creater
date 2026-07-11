@@ -72,6 +72,9 @@ class ProjectService:
     async def create(self, command: CreateProject) -> ProjectResult:
         empty_hash = build_projection_bundle(0, ()).content_hash
         async with self.transaction_factory() as session:
+            if self.model_binding_service is None:
+                raise RuntimeError("model binding service is not configured")
+            await self.model_binding_service.lock_project_creation(session)
             await self.repository.insert_project(session, command)
             await self.repository.insert_bootstrap_revision(
                 session,
@@ -83,8 +86,6 @@ class ProjectService:
                 session, command.id, content_hash=empty_hash
             )
             await self.repository.insert_contract_head0(session, command.id)
-            if self.model_binding_service is None:
-                raise RuntimeError("model binding service is not configured")
             await self.model_binding_service.initialize_project(session, command.id)
         return ProjectResult.from_command(command)
 

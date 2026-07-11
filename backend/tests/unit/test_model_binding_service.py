@@ -68,6 +68,20 @@ class InitializeRepository:
     async def insert_head(self, session, row):
         self.events.append("head")
 
+    async def lock_project_creation_guard(self, session):
+        self.events.append(("creation_guard", session))
+
+
+@pytest.mark.asyncio
+async def test_project_creation_lock_delegates_on_the_caller_session():
+    repository = InitializeRepository()
+    service = ModelBindingService(repository, transaction_factory=None)
+    session = object()
+
+    await service.lock_project_creation(session)
+
+    assert repository.events == [("creation_guard", session)]
+
 
 @pytest.mark.asyncio
 async def test_initialize_locks_and_revalidates_before_writing_revision():

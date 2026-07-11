@@ -21,6 +21,14 @@ class ModelBindingRepository:
         self.id_factory = id_factory or (lambda: str(uuid4()))
         self.clock = clock or (lambda: int(time.time() * 1000))
 
+    async def lock_project_creation_guard(self, session) -> None:
+        row = await session.fetchone(
+            """SELECT singleton_id FROM schema_metadata
+               WHERE singleton_id=1 FOR UPDATE"""
+        )
+        if row is None:
+            raise RuntimeError("project creation guard is unavailable")
+
     async def lock_previous_project(self, session, project_id: str):
         return await session.fetchone(
             """SELECT id FROM projects WHERE id<>%s

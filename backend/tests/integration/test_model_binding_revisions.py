@@ -201,6 +201,9 @@ async def test_no_provider_is_complete_unbound_and_binding_failure_rolls_back(
     assert contract["revision"] == 0
 
     class FailingBindings:
+        async def lock_project_creation(self, session):
+            return None
+
         async def initialize_project(self, session, project_id):
             raise RuntimeError("binding failed")
 
@@ -269,3 +272,83 @@ async def test_provider_delete_waits_until_initialize_writes_and_commits(
     )
     assert revision["revision"] == 1
     assert deleted["lifecycle_status"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_project_creation_waits_on_global_guard_before_insert(
+    disposable_mysql
+):
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+    first_guard_acquired = asyncio.Event()
+    release_first_guard = asyncio.Event()
+    second_guard_attempted = asyncio.Event()
+    second_guard_acquired = asyncio.Event()
+    inserted_projects = []
+
+    class GuardProbeRepository(ModelBindingRepository):
+        def __init__(self):
+            super().__init__()
+            self.guard_calls = 0
+
+        async def lock_project_creation_guard(self, session):
+            self.guard_calls += 1
+            call_number = self.guard_calls
+            if call_number == 2:
+                second_guard_attempted.set()
+            await super().lock_project_creation_guard(session)
+            if call_number == 1:
+                first_guard_acquired.set()
+                await release_first_guard.wait()
+            else:
+                second_guard_acquired.set()
+
+    class InsertProbeRepository(ProjectRepository):
+        async def insert_project(self, session, command):
+            if command.id.endswith("1"):
+                assert first_guard_acquired.is_set()
+            else:
+                assert second_guard_acquired.is_set()
+            inserted_projects.append(command.id)
+            await super().insert_project(session, command)
+
+    bindings = ModelBindingService(
+        GuardProbeRepository(), transaction_factory=tx
+    )
+    service = ProjectService(
+        InsertProbeRepository(), tx, model_binding_service=bindings
+    )
+    first_id = "70000000-0000-0000-0000-000000000001"
+    second_id = "70000000-0000-0000-0000-000000000002"
+    first_task = asyncio.create_task(service.create(project(first_id, "first")))
+    guard_wait = asyncio.create_task(first_guard_acquired.wait())
+    done, _ = await asyncio.wait(
+        {first_task, guard_wait}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if first_task in done:
+        await first_task
+    await guard_wait
+    assert inserted_projects == []
+
+    second_task = asyncio.create_task(service.create(project(second_id, "second")))
+    await second_guard_attempted.wait()
+    assert second_guard_acquired.is_set() is False
+    assert inserted_projects == []
+
+    release_first_guard.set()
+    await asyncio.gather(first_task, second_task)
+    assert inserted_projects == [first_id, second_id]
+
+    expected_counts = {
+        "projects": 2,
+        "canon_revisions": 2,
+        "projection_heads": 2,
+        "project_contract_heads": 2,
+        "project_model_binding_revisions": 2,
+        "project_model_binding_heads": 2,
+        "project_model_binding_items": 2 * len(TASK_KEYS),
+    }
+    for table, expected in expected_counts.items():
+        row = await disposable_mysql.session.fetchone(
+            f"SELECT COUNT(*) AS count FROM {table}"
+        )
+        assert int(row["count"]) == expected

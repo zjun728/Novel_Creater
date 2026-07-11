@@ -37,7 +37,7 @@ class FakeTransactionFactory:
 
 
 class FakeProjectRepository:
-    STEPS = ("project", "revision", "projection", "contract")
+    STEPS = ("guard", "project", "revision", "projection", "contract", "binding")
 
     def __init__(self):
         self.calls = []
@@ -73,13 +73,21 @@ class FakeProjectRepository:
 
 
 class FakeBindingService:
-    def __init__(self):
+    def __init__(self, events):
+        self.events = events
         self.calls = []
-        self.fail = False
+        self.fail_at = None
+
+    async def lock_project_creation(self, session):
+        self.events.append("guard")
+        self.calls.append(("guard", session, None))
+        if self.fail_at == "guard":
+            raise RuntimeError("guard failed")
 
     async def initialize_project(self, session, project_id):
-        self.calls.append((session, project_id))
-        if self.fail:
+        self.events.append("binding")
+        self.calls.append(("binding", session, project_id))
+        if self.fail_at == "binding":
             raise RuntimeError("binding failed")
 
 
@@ -99,7 +107,7 @@ def command(**overrides):
 @pytest.mark.asyncio
 async def test_create_builds_all_foundations_and_delegates_binding_on_one_session():
     repository = FakeProjectRepository()
-    bindings = FakeBindingService()
+    bindings = FakeBindingService(repository.calls)
     transactions = FakeTransactionFactory()
 
     result = await ProjectService(
@@ -115,20 +123,24 @@ async def test_create_builds_all_foundations_and_delegates_binding_on_one_sessio
     assert repository.projection["content_hash"] == empty_hash
     assert repository.contract == {"project_id": "p1", "revision": 0}
     assert repository.revision["key"] == ProjectService.bootstrap_idempotency_key("p1")
-    assert bindings.calls == [(repository.sessions[0], "p1")]
-    assert len({id(session) for session in repository.sessions}) == 1
+    assert bindings.calls == [
+        ("guard", repository.sessions[0], None),
+        ("binding", repository.sessions[0], "p1"),
+    ]
+    all_sessions = repository.sessions + [call[1] for call in bindings.calls]
+    assert len({id(session) for session in all_sessions}) == 1
     assert transactions.commit_count == 1
     assert transactions.rollback_count == 0
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failed_step", (*FakeProjectRepository.STEPS, "binding"))
+@pytest.mark.parametrize("failed_step", FakeProjectRepository.STEPS)
 async def test_create_rolls_back_when_any_foundation_step_fails(failed_step):
     repository = FakeProjectRepository()
-    bindings = FakeBindingService()
+    bindings = FakeBindingService(repository.calls)
     transactions = FakeTransactionFactory()
-    if failed_step == "binding":
-        bindings.fail = True
+    if failed_step in {"guard", "binding"}:
+        bindings.fail_at = failed_step
     else:
         repository.fail_at = failed_step
 

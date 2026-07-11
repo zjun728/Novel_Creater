@@ -55,6 +55,9 @@ class ModelBindingService:
         self.transaction_factory = transaction_factory
         self.connection_factory = connection_factory
 
+    async def lock_project_creation(self, session) -> None:
+        await self.repository.lock_project_creation_guard(session)
+
     @staticmethod
     def _bound_item(task_key: str, provider: Mapping) -> BindingItem:
         secrets = tuple(
