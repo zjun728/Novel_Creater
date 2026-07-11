@@ -893,6 +893,8 @@ async def run_cli(
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         return asyncio.run(run_cli(argv))
+    except SystemExit:
+        raise
     except BaseException:
         print("Writer Core data reset failed.", file=sys.stderr)
         return 1

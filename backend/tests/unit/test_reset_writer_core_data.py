@@ -1,3 +1,7 @@
+from pathlib import Path
+import subprocess
+import sys
+
 import pytest
 
 from backend.scripts.reset_writer_core_data import (
@@ -7,6 +11,7 @@ from backend.scripts.reset_writer_core_data import (
     ResetRequest,
     ResetSafetyError,
     ResetValidationError,
+    main,
     reset_writer_core_data,
     run_cli,
 )
@@ -19,6 +24,42 @@ from backend.tests.support.legacy_writer_core import (
 
 
 DISPOSABLE = "novel_creator_test_0123456789abcdef0123456789abcdef"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+def test_cli_help_exits_zero_with_empty_stderr():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "backend.scripts.reset_writer_core_data",
+            "--help",
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "usage:" in result.stdout
+    assert result.stderr == ""
+
+
+def test_cli_main_still_converts_runtime_failures_to_exit_one(monkeypatch, capsys):
+    def fail_run(coroutine):
+        coroutine.close()
+        raise RuntimeError("runtime sentinel")
+
+    monkeypatch.setattr(
+        "backend.scripts.reset_writer_core_data.asyncio.run",
+        fail_run,
+    )
+
+    assert main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Writer Core data reset failed.\n"
 
 
 class RecordingAdminSession:
