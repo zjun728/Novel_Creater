@@ -98,3 +98,38 @@ def test_alias_resolution_is_immutable_and_rejects_unknown_statuses():
         resolution.status = "missing"
     with pytest.raises(CanonValidationError, match="status"):
         AliasResolution("guessed", ("person-1",))
+
+
+@pytest.mark.parametrize("entity_id", [None, 0, False, "　"])
+def test_alias_rows_reject_non_string_or_empty_entity_ids(entity_id):
+    with pytest.raises(CanonValidationError, match="entity_id"):
+        resolve_alias(
+            "掌柜",
+            [{"entity_id": entity_id, "normalized_alias": "掌柜"}],
+        )
+
+
+@pytest.mark.parametrize("entity_id", [None, 0, False, "　"])
+def test_alias_resolution_rejects_non_string_or_empty_entity_ids(entity_id):
+    with pytest.raises(CanonValidationError, match="entity_ids"):
+        AliasResolution("resolved", (entity_id,))
+
+
+def test_alias_entity_ids_are_trimmed_deduplicated_and_sorted():
+    assert resolve_alias(
+        "掌柜",
+        [
+            {"entity_id": " b ", "normalized_alias": "掌柜"},
+            {"entity_id": "a", "normalized_alias": "掌柜"},
+            {"entity_id": "b", "normalized_alias": "掌柜"},
+        ],
+    ) == AliasResolution("ambiguous", ("a", "b"))
+
+
+@pytest.mark.parametrize("normalized_alias", [None, 0, False, "ＳＨＥＮ"])
+def test_alias_rows_require_an_exact_normalized_string(normalized_alias):
+    with pytest.raises(CanonValidationError, match="normalized_alias"):
+        resolve_alias(
+            "ＳＨＥＮ",
+            [{"entity_id": "person-1", "normalized_alias": normalized_alias}],
+        )

@@ -1007,6 +1007,10 @@ git commit -m "feat: define canon identity and conflict boundary"
 - [x] Validate one cardinality per non-empty entity/field stable group across existing and incoming events, including incoming-only and dirty-history groups.
 - [x] Compare both `existing × incoming` and unordered incoming pairs for hard conflicts without comparing existing history against itself.
 - [x] Include canonical evidence JSON in the stable event key so only exact duplicate events collapse and reordered inputs return the same complete conflict tuple.
+- [x] Deep-freeze strict JSON values and evidence into hashable immutable structures while preserving canonical JSON comparison.
+- [x] Make event equality, hashing and key caching JSON-type-sensitive so booleans, integers, floats and nested variants remain distinct.
+- [x] Reject alias identifiers and normalized aliases that are not exact strings; trim, deduplicate and sort valid entity IDs.
+- [x] Group stable events by entity/field before cardinality validation and conflict candidate generation so unrelated scopes never enter pair evaluation.
 
 ## Task 6: Build deterministic projections as pure functions
 

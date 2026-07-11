@@ -5,6 +5,7 @@ import math
 
 import pytest
 
+from backend.domain import canon as canon_domain
 from backend.domain.canon import (
     AssertionOperator,
     CanonConflict,
@@ -52,6 +53,78 @@ def test_event_input_coerces_closed_enum_values_and_is_immutable():
     assert item.value_cardinality is ValueCardinality.SINGLE
     with pytest.raises(FrozenInstanceError):
         item.field_path = "other"
+
+
+def test_event_input_deep_freezes_copied_json_and_is_hashable():
+    raw_value = {"city": "北平", "tags": ["旧都"]}
+    raw_evidence = {"quote": "原始证据"}
+    item = event(raw_value, evidence=raw_evidence)
+    conflict = find_hard_conflicts((item,), (event({"city": "应天", "tags": []}),))
+
+    raw_value["city"] = "外部改写"
+    raw_value["tags"].append("污染")
+    raw_evidence["quote"] = "外部改写"
+
+    assert item.value["city"] == "北平"
+    assert item.value["tags"] == ("旧都",)
+    assert item.evidence["quote"] == "原始证据"
+    assert len(conflict) == 1
+    assert conflict[0].old.value["city"] == "北平"
+    assert hash(item)
+    with pytest.raises(TypeError):
+        item.value["city"] = "不可写"
+    with pytest.raises(TypeError):
+        item.evidence["quote"] = "不可写"
+
+
+@pytest.mark.parametrize(
+    ("left_value", "right_value"),
+    [
+        (True, 1),
+        (1, 1.0),
+        ([True], [1]),
+        ({"nested": [1]}, {"nested": [1.0]}),
+    ],
+)
+def test_event_identity_and_conflicts_are_json_type_sensitive(
+    left_value, right_value
+):
+    left = event(left_value)
+    right = event(right_value)
+
+    assert left != right
+    assert len({left, right}) == 2
+    assert len(find_hard_conflicts((), (right, left))) == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        ("tuple",),
+        {"set"},
+        {1: "non-string key"},
+        {"nested": {1: "non-string key"}},
+        math.nan,
+        math.inf,
+        -math.inf,
+    ],
+)
+def test_event_input_rejects_values_outside_strict_json(value):
+    with pytest.raises(CanonValidationError, match="value.*JSON"):
+        event(value)
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"nested": ("tuple",)},
+        {1: "non-string key"},
+        {"score": math.inf},
+    ],
+)
+def test_event_input_rejects_evidence_outside_strict_json(evidence):
+    with pytest.raises(CanonValidationError, match="evidence.*JSON"):
+        event(evidence=evidence)
 
 
 @pytest.mark.parametrize(
@@ -309,3 +382,25 @@ def test_same_unordered_conflict_pair_is_reported_once_across_candidate_sources(
             reason="mutually_exclusive_stable_definition",
         ),
     )
+
+
+def test_conflict_pair_evaluation_is_limited_to_matching_scopes(monkeypatch):
+    existing = tuple(
+        event("北平", entity_id=f"unrelated-{index}")
+        for index in range(500)
+    ) + (event("北平", entity_id="matching"),)
+    incoming = (event("应天", entity_id="matching"),)
+    calls = 0
+    original = canon_domain._is_hard_conflict_pair
+
+    def counting_pair(left, right):
+        nonlocal calls
+        calls += 1
+        return original(left, right)
+
+    monkeypatch.setattr(canon_domain, "_is_hard_conflict_pair", counting_pair)
+
+    conflicts = find_hard_conflicts(existing, incoming)
+
+    assert len(conflicts) == 1
+    assert calls == 1
