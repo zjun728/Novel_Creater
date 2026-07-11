@@ -337,8 +337,20 @@ def test_canon_and_projection_invariants_are_explicit():
         assert "unique key" in statement
     heads = _table_statement("projection_heads")
     assert "project_id char(36) primary key" in heads
+    assert "content_hash char(64) not null" in heads
     assert "check (canon_revision_number >= 0)" in heads
     assert "check (projection_revision_number >= 0)" in heads
+
+    memories = _table_statement("memory_views")
+    assert "entity_id char(36) null" in memories
+    assert "subject_key varchar(200) not null" in memories
+    assert "unique key uq_memory_key (project_id, revision_number, subject_key)" in memories
+
+    threads = _table_statement("plot_thread_projections")
+    assert "entity_id char(36) null" in threads
+    assert "subject_key varchar(200) not null" in threads
+    assert "field_path varchar(200) not null" in threads
+    assert "unique key uq_plot_thread_key (project_id, revision_number, subject_key, field_path)" in threads
 
 
 def test_corpus_records_sources_content_analysis_and_reference_locations():

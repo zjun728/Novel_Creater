@@ -1091,8 +1091,20 @@ git commit -m "feat: derive all projections from canon events"
 - Create: `backend/tests/unit/test_canon_revision.py`
 - Create: `backend/tests/unit/test_canon_idempotency.py`
 - Create: `backend/tests/unit/test_canon_rollback.py`
+- Create: `backend/tests/unit/test_canon_repository.py`
 
-- [ ] **Step 1: Write service tests against one fake transaction**
+**Task 7 contract:** `CanonService.commit` is an internal transaction boundary, not
+an HTTP route. Public commit DTOs are frozen and strict. IDs must be non-empty,
+trimmed strings; the idempotency key is exactly 64 lowercase hexadecimal
+characters; ordinary commits accept only `finalization` and `manual_test` sources.
+Names are persisted with `normalize_name`, duplicate entity/alias/event IDs are
+rejected, aliases always identify a stable entity ID explicitly, and event entity
+references must resolve either to an existing project entity or an entity created in
+the same request. Alias lookup may report multiple exact normalized matches; this is
+future read-side ambiguity and never causes automatic merge, find-or-create, or an
+arbitrary choice during commit.
+
+- [x] **Step 1: Write service tests against one fake transaction**
 
 ```python
 # backend/tests/unit/test_canon_revision.py
@@ -1103,9 +1115,8 @@ from backend.services.canon import CanonHeadMismatch, CommitCanonRevision, Canon
 async def test_expected_head_mismatch_writes_nothing(canon_repo):
     canon_repo.head = 3
     service = CanonService(canon_repo)
-    request = CommitCanonRevision(project_id="p", expected_head=2, idempotency_key="k", entities=(), aliases=(), events=())
     with pytest.raises(CanonHeadMismatch):
-        await service.commit(request)
+        await service.commit(request(expected_head=2))
     assert canon_repo.write_calls == []
 ```
 
@@ -1113,8 +1124,12 @@ async def test_expected_head_mismatch_writes_nothing(canon_repo):
 # backend/tests/unit/test_canon_idempotency.py
 @pytest.mark.asyncio
 async def test_duplicate_idempotency_key_returns_first_revision(canon_repo):
-    canon_repo.existing_idempotent_result = {"revisionNumber": 4, "id": "r4"}
-    result = await CanonService(canon_repo).commit(request(expected_head=3, key="same"))
+    canon_repo.existing_idempotent_result = {
+        "revision_number": 4, "id": "r4", "content_hash": "b" * 64
+    }
+    result = await CanonService(canon_repo).commit(
+        request(expected_head=3, idempotency_key="a" * 64)
+    )
     assert result.revision_number == 4
     assert canon_repo.write_calls == []
 ```
@@ -1130,23 +1145,45 @@ async def test_projection_failure_escapes_transaction_and_rolls_back(transaction
     assert transaction_factory.commit_count == 0
 ```
 
-Also test: revision increments exactly once, every event receives the new revision, hard conflicts write nothing, an alias resolving to multiple entity IDs returns an ambiguity result instead of selecting one, and projection head equals Canon head before commit returns.
+Also test: revision increments exactly once; every inserted row receives the same
+new revision; event order is one-based request order; hard conflicts (including two
+incoming events) write nothing; duplicate IDs and unresolved entity references fail
+before writes; exact alias ambiguity is preserved without automatic selection; all
+repository calls receive the one transaction session; and the projection bundle is
+rebuilt from the complete confirmed event stream before both heads advance together.
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `python -m pytest backend/tests/unit/test_canon_revision.py backend/tests/unit/test_canon_idempotency.py backend/tests/unit/test_canon_rollback.py -q`
 
 Expected: FAIL because repository/service modules do not exist.
 
-- [ ] **Step 3: Implement repository methods with mandatory sessions**
+- [x] **Step 3: Implement repository methods with mandatory sessions**
 
-`backend/repositories/canon.py` exposes only methods whose first runtime argument is `session`: `lock_head(session, project_id) -> int`、`find_idempotent(session, project_id, key)`、`list_alias_matches(session, project_id, normalized_alias)`、`list_active_stable_events(session, project_id, entity_ids, field_paths)`、`insert_revision(session, row)`、`insert_entities(session, rows)`、`insert_aliases(session, rows)`、`insert_events(session, rows)`、`list_confirmed_events(session, project_id)`、`replace_projections(session, project_id, bundle)`、`advance_heads(session, project_id, revision, content_hash)`。
+`backend/repositories/canon.py` exposes only methods whose first runtime argument is `session`: `lock_head(session, project_id) -> int`、`find_idempotent(session, project_id, key)`、`list_existing_entity_ids(session, project_id, entity_ids)`、`list_alias_matches(session, project_id, normalized_alias)`、`list_active_stable_events(session, project_id, scopes)`、`insert_revision(session, row)`、`insert_entities(session, rows)`、`insert_aliases(session, rows)`、`insert_events(session, rows)`、`list_confirmed_events(session, project_id)`、`replace_projections(session, project_id, bundle)`、`set_revision_content_hash(session, revision_id, content_hash)`、`advance_heads(session, project_id, revision, content_hash)`。
 
-`lock_head` executes `SELECT canon_revision_number FROM projection_heads WHERE project_id=%s FOR UPDATE`. The project creation transaction always inserts revision 0 and projection head 0, so a missing head is data corruption, not a fallback case.
+`lock_head` selects Canon head, projection head and content hash from
+`projection_heads WHERE project_id=%s FOR UPDATE`. The project creation transaction
+always inserts revision 0 and projection head 0, so a missing or divergent head is
+data corruption, not a fallback case.
 
-Projection replacement deletes only rows for the same project inside the current transaction, inserts the complete new bundle, then updates `projection_heads`. There is no public repository method to mutate one projection field independently.
+Repository methods use only the supplied session and never acquire a pool or
+connection. JSON values are thawed and encoded with strict JSON settings. Projection
+replacement deletes the four old projection sets only for the same project and
+inserts the complete new bundle in the current transaction. There is no public method
+to mutate one projection independently. `advance_heads` updates Canon and projection
+revision numbers together after all replacement inserts succeed.
 
-- [ ] **Step 4: Implement service ordering**
+The clean create-only schema stores global memories with nullable `entity_id` plus a
+required `subject_key` (`entity ID` or `__global__`). Plot-thread rows use the same
+nullable entity/subject split and one row per `field_path`, unique by project,
+revision, subject and field. `projection_heads.content_hash` stores the exact complete
+bundle hash. After projection replacement, `set_revision_content_hash` replaces the
+temporary valid hash on the inserted revision; only then may `advance_heads` write the
+same hash and revision to the project head. No transaction may commit a placeholder
+revision hash.
+
+- [x] **Step 4: Implement service ordering**
 
 ```python
 # backend/services/canon.py — required ordering
@@ -1161,7 +1198,7 @@ async def commit(self, request: CommitCanonRevision) -> CommitCanonResult:
         if head != request.expected_head:
             raise CanonHeadMismatch(expected=request.expected_head, actual=head)
 
-        await self._reject_alias_ambiguity(session, request)
+        await self._validate_explicit_references(session, request)
         await self._reject_hard_conflicts(session, request)
         revision_number = head + 1
         revision = self._build_revision(request, revision_number)
@@ -1172,21 +1209,32 @@ async def commit(self, request: CommitCanonRevision) -> CommitCanonResult:
         events = await self.repository.list_confirmed_events(session, request.project_id)
         bundle = build_projection_bundle(revision_number, events)
         await self.repository.replace_projections(session, request.project_id, bundle)
+        await self.repository.set_revision_content_hash(
+            session, revision.id, bundle.content_hash
+        )
         await self.repository.advance_heads(
             session, request.project_id, revision_number, bundle.content_hash
         )
         return CommitCanonResult.from_revision(revision, bundle.content_hash)
 ```
 
-Generate IDs and timestamps before their insert calls. The idempotency key must already be a SHA-256 hex string; reject any other form. M1 accepts `source_type='manual_test'` only from internal service tests and does not expose this method as HTTP write API.
+The lock precedes idempotency lookup, and idempotency precedes expected-head
+validation, so a duplicate returns the first revision/hash with `idempotent=True`
+even when its expected head is now stale and performs zero writes. Generate the
+revision ID and timestamp before inserts. Insert failures, projection replacement
+failures, and head-advance failures escape unchanged so `backend.database.transaction`
+rolls back. M1 uses `source_type='manual_test'` only in internal tests and exposes no
+HTTP Canon write API.
 
-- [ ] **Step 5: Run all Canon unit tests**
+- [x] **Step 5: Run all Canon unit tests**
 
 Run: `python -m pytest backend/tests/unit/test_canon_*.py backend/tests/unit/test_projections.py -q`
 
-Expected: PASS; fake transaction shows one session object across every repository call.
+Expected: PASS; fake transaction shows one session object across every repository
+call, successful work commits once, every injected failure rolls back once and
+commits zero times, and repository SQL contract tests show no connection acquisition.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add backend/repositories backend/services/canon.py backend/tests/unit
