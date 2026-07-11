@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { observeRuntime } from './runtime-observer.mjs'
 
 function requiredTestEnvironment(name: string): string {
   const value = process.env[name]
@@ -22,102 +23,51 @@ const SECRET_OR_TEST_STATE = new RegExp(
 )
 const READ_METHODS = new Set(['GET', 'HEAD'])
 
-type ApiResponseEvidence = {
-  url: string
-  method: string
-  status: number
-  body: string
-  bodyReadError: string
-}
+async function assertCleanRuntime(observer: ReturnType<typeof observeRuntime>) {
+  const evidence = await observer.finish()
+  const {
+    apiResponses,
+    consoleErrors,
+    pageErrors,
+    requestFailures,
+    responseFailures,
+    pageContent,
+  } = evidence
+  const apiFailures = apiResponses
+    .filter(response => response.status < 200 || response.status >= 300)
+    .map(response => `${response.status} ${response.method} ${response.url}`)
+  const apiWriteMethods = apiResponses
+    .filter(response => !READ_METHODS.has(response.method))
+    .map(response => `${response.method} ${response.url}`)
+  const apiBodyReadFailures = apiResponses
+    .filter(response => response.bodyReadError)
+    .map(response => `${response.method} ${response.url}: ${response.bodyReadError}`)
+  const apiHeaderReadFailures = apiResponses
+    .filter(response => response.headersReadError)
+    .map(response => `${response.method} ${response.url}: ${response.headersReadError}`)
 
-function observeRuntime(page: Page) {
-  const apiBodyPromises: Array<Promise<ApiResponseEvidence>> = []
-  const consoleMessages: string[] = []
-  const consoleErrors: string[] = []
-  const pageErrors: string[] = []
-  const requestFailures: string[] = []
-  const responseFailures: string[] = []
+  expect(consoleErrors, 'console.error must stay empty').toEqual([])
+  expect(pageErrors, 'uncaught page errors must stay empty').toEqual([])
+  expect(requestFailures, 'network requests must not fail').toEqual([])
+  expect(responseFailures, 'every page response must be 2xx').toEqual([])
+  expect(apiFailures, 'every product API response must be 2xx').toEqual([])
+  expect(apiWriteMethods, 'browser goals must use only GET/HEAD product API reads').toEqual([])
+  expect(apiBodyReadFailures, 'every product API body must be readable').toEqual([])
+  expect(apiHeaderReadFailures, 'every product API header set must be readable').toEqual([])
 
-  page.on('response', response => {
-    const method = response.request().method()
-    const status = response.status()
-    const url = response.url()
-    if (status < 200 || status >= 300) {
-      responseFailures.push(`${status} ${method} ${url}`)
-    }
-    if (!url.includes('/api/')) return
-    apiBodyPromises.push((async () => {
-      try {
-        return {
-          url,
-          method,
-          status,
-          body: await response.text(),
-          bodyReadError: '',
-        }
-      } catch (error) {
-        return {
-          url,
-          method,
-          status,
-          body: '',
-          bodyReadError: error instanceof Error ? error.message : String(error),
-        }
-      }
-    })())
+  const diagnosticEvidence = JSON.stringify({
+    ...evidence,
+    apiFailures,
+    apiWriteMethods,
+    apiBodyReadFailures,
+    apiHeaderReadFailures,
+    pageContent,
   })
-  page.on('console', message => {
-    const rendered = `${message.type()}: ${message.text()}`
-    consoleMessages.push(rendered)
-    if (message.type() === 'error') consoleErrors.push(rendered)
-  })
-  page.on('pageerror', error => {
-    pageErrors.push(error.message)
-  })
-  page.on('requestfailed', request => {
-    requestFailures.push(
-      `${request.method()} ${request.url()} ${request.failure()?.errorText || 'unknown failure'}`,
-    )
-  })
-
-  return async function assertCleanRuntime() {
-    await page.waitForLoadState('networkidle')
-    const apiResponses = await Promise.all(apiBodyPromises)
-    const apiFailures = apiResponses
-      .filter(response => response.status < 200 || response.status >= 300)
-      .map(response => `${response.status} ${response.method} ${response.url}`)
-    const apiWriteMethods = apiResponses
-      .filter(response => !READ_METHODS.has(response.method))
-      .map(response => `${response.method} ${response.url}`)
-    const apiBodyReadFailures = apiResponses
-      .filter(response => response.bodyReadError)
-      .map(response => `${response.method} ${response.url}: ${response.bodyReadError}`)
-
-    expect(consoleErrors, 'console.error must stay empty').toEqual([])
-    expect(pageErrors, 'uncaught page errors must stay empty').toEqual([])
-    expect(requestFailures, 'network requests must not fail').toEqual([])
-    expect(responseFailures, 'every page response must be 2xx').toEqual([])
-    expect(apiFailures, 'every product API response must be 2xx').toEqual([])
-    expect(apiWriteMethods, 'browser goals must use only GET/HEAD product API reads').toEqual([])
-    expect(apiBodyReadFailures, 'every product API body must be readable').toEqual([])
-
-    const diagnosticEvidence = JSON.stringify({
-      apiResponses,
-      consoleMessages,
-      consoleErrors,
-      pageErrors,
-      requestFailures,
-      responseFailures,
-      apiFailures,
-      apiWriteMethods,
-      apiBodyReadFailures,
-    })
-    expect(diagnosticEvidence).not.toMatch(SECRET_OR_TEST_STATE)
-  }
+  expect(diagnosticEvidence).not.toMatch(SECRET_OR_TEST_STATE)
 }
 
 test('author opens the preserved project and sees a clean synced foundation', async ({ page }) => {
-  const assertCleanRuntime = observeRuntime(page)
+  const observer = observeRuntime(page)
 
   await page.goto('/')
   await page.getByRole('heading', { name: '永乐大典', exact: true }).click()
@@ -140,11 +90,11 @@ test('author opens the preserved project and sees a clean synced foundation', as
   await page.getByRole('heading', { name: '永乐大典', exact: true }).click()
   await expect(page.getByRole('heading', { name: '永乐大典', exact: true })).toBeVisible()
 
-  await assertCleanRuntime()
+  await assertCleanRuntime(observer)
 })
 
 test('old writer URL cannot mount the retired writer chain', async ({ page }) => {
-  const assertCleanRuntime = observeRuntime(page)
+  const observer = observeRuntime(page)
 
   await page.goto('/writer/project-1/1')
   await expect(page.getByRole('heading', { name: '写作内核尚未开放' })).toBeVisible()
@@ -153,5 +103,5 @@ test('old writer URL cannot mount the retired writer chain', async ({ page }) =>
   await expect(page).toHaveURL(/\/project\/project-1$/)
   await expect(page.getByRole('heading', { name: '永乐大典', exact: true })).toBeVisible()
 
-  await assertCleanRuntime()
+  await assertCleanRuntime(observer)
 })

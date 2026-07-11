@@ -37,24 +37,35 @@ test('M1 browser spec defines exactly two real-page goals with no direct API wri
 })
 
 test('M1 browser spec awaits every API body and rejects runtime failures and leaks', async () => {
-  const source = await readWorkspaceFile('frontend/e2e/milestone1.spec.ts')
+  const [source, observer] = await Promise.all([
+    readWorkspaceFile('frontend/e2e/milestone1.spec.ts'),
+    readWorkspaceFile('frontend/e2e/runtime-observer.mjs'),
+  ])
+  const combined = `${source}\n${observer}`
 
   for (const required of [
     "page.on('response'", "page.on('console'", "page.on('pageerror'",
-    "page.on('requestfailed'", 'apiBodyPromises.push', 'response.text()',
-    'Promise.all(apiBodyPromises)', 'response.status()', 'consoleErrors',
+    "page.on('requestfailed'", 'pendingApiBodies.add', 'response.text()',
+    'Promise.all(batch)', 'response.status()', 'consoleErrors',
     'response.request().method()', 'consoleMessages', 'pageErrors',
     'requestFailures', 'responseFailures', 'apiFailures', 'apiWriteMethods',
-    'apiBodyReadFailures', 'bodyReadError', 'requiredTestEnvironment',
+    'apiBodyReadFailures', 'apiHeaderReadFailures', 'bodyReadError',
+    'headersReadError', 'response.allHeaders()', 'page.content()',
+    'requiredTestEnvironment',
     'BROWSER_SECRET_SENTINEL', 'BROWSER_PRIVATE_PROVIDER_URL',
     'BROWSER_TEST_DATABASE', 'api[_-]?key',
   ]) {
-    assert.equal(source.includes(required), true, `missing browser diagnostic contract: ${required}`)
+    assert.equal(combined.includes(required), true, `missing browser diagnostic contract: ${required}`)
   }
+  assert.match(observer, /new Set\(\)/)
+  assert.match(observer, /while\s*\(pendingApiBodies\.size\)/)
+  assert.match(observer, /finally\s*\{[^]*page\.off\('response',\s*onResponse\)[^]*page\.off\('console',\s*onConsole\)[^]*page\.off\('pageerror',\s*onPageError\)[^]*page\.off\('requestfailed',\s*onRequestFailed\)/)
   assert.match(source, /READ_METHODS\.has\(response\.method\)/)
   assert.match(source, /expect\(apiWriteMethods[^]*?\.toEqual\(\[\]\)/)
   assert.match(source, /expect\(apiBodyReadFailures[^]*?\.toEqual\(\[\]\)/)
+  assert.match(source, /expect\(apiHeaderReadFailures[^]*?\.toEqual\(\[\]\)/)
   assert.match(source, /expect\(responseFailures[^]*?\.toEqual\(\[\]\)/)
+  assert.match(source, /pageContent/)
   assert.doesNotMatch(source, /browser-secret-must-not-leak|private-provider\.example/)
 })
 
