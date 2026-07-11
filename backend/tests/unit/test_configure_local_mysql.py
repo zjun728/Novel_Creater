@@ -180,6 +180,9 @@ def test_atomic_writer_restricts_temp_before_same_directory_replace(workspace_tm
         events.append((temp_path, temp_path.parent, target.read_text(encoding="utf-8")))
         assert temp_path.exists()
         assert temp_path != target
+        assert temp_path.name.startswith(".env.local.")
+        assert temp_path.name.endswith(".tmp")
+        assert temp_path.read_bytes() == b""
 
     setup.atomic_write_local_config(target, document, acl_runner)
 
@@ -194,7 +197,10 @@ def test_atomic_writer_acl_failure_keeps_old_target_and_removes_temp(workspace_t
     target = workspace_tmp_path / ".env.local.json"
     target.write_text("old-config", encoding="utf-8")
 
+    observed_before_acl_failure = []
+
     def acl_runner(temp_path):
+        observed_before_acl_failure.append(temp_path.read_bytes())
         raise setup.LocalMySQLSetupError("ACL failed")
 
     with pytest.raises(setup.LocalMySQLSetupError, match="ACL"):
@@ -211,7 +217,47 @@ def test_atomic_writer_acl_failure_keeps_old_target_and_removes_temp(workspace_t
         )
 
     assert target.read_text(encoding="utf-8") == "old-config"
+    assert observed_before_acl_failure == [b""]
     assert list(workspace_tmp_path.iterdir()) == [target]
+
+
+def test_interruption_during_acl_never_places_secret_in_temp(workspace_tmp_path):
+    target = workspace_tmp_path / ".env.local.json"
+    observed_before_interrupt = []
+
+    def interrupt_acl(temp_path):
+        observed_before_interrupt.append(temp_path.read_bytes())
+        raise KeyboardInterrupt("simulated interruption")
+
+    with pytest.raises(KeyboardInterrupt, match="simulated"):
+        setup.atomic_write_local_config(
+            target,
+            {
+                "MYSQL_HOST": "127.0.0.1",
+                "MYSQL_PORT": 3307,
+                "MYSQL_USER": "root",
+                "MYSQL_PASSWORD": SECRET,
+                "MYSQL_DB": "novel_creator",
+            },
+            interrupt_acl,
+        )
+
+    assert observed_before_interrupt == [b""]
+    assert list(workspace_tmp_path.iterdir()) == []
+
+
+def test_temporary_secret_file_has_an_explicit_gitignore_rule():
+    ignore_lines = (REPOSITORY_ROOT / ".gitignore").read_text(
+        encoding="utf-8"
+    ).splitlines()
+
+    assert ".env.local.*.tmp" in ignore_lines
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", ".env.local.security-review.tmp"],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+    )
+    assert result.returncode == 0
 
 
 def test_windows_acl_runner_captures_output_and_fails_closed(workspace_tmp_path):

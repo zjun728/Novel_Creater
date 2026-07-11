@@ -20,9 +20,11 @@ The command connects without selecting or creating a database and runs the same 
 
 ## Atomic private file publication
 
-The command serializes exactly the five allowed keys to a temporary file in the repository root, flushes and fsyncs it, then invokes an injectable ACL runner on that temporary file. The Windows implementation runs `icacls` with inherited permissions removed and grants the current user access. Captured `icacls` output is never forwarded.
+The command creates an empty, explicitly ignored `.env.local.*.tmp` file in the repository root and immediately invokes an injectable ACL runner on that empty file. Only after ACL restriction succeeds does it open the temporary file, serialize exactly the five allowed keys, flush, and fsync. The Windows implementation runs `icacls` with inherited permissions removed and grants the current user access. Captured `icacls` output is never forwarded.
 
-Only after ACL success does the writer perform a same-directory `os.replace`, so the target inherits the already-restricted temporary file ACL. If writing, fsync, ACL restriction, or replacement fails, the temporary file is removed and any existing `.env.local.json` remains unchanged. `.env.*` already ignores the target file.
+After the private temporary file is fully written, the writer performs a same-directory `os.replace`, so the target retains the restricted temporary file ACL. If ACL restriction, writing, fsync, or replacement fails, the temporary file is removed and any existing `.env.local.json` remains unchanged. An ACL failure or interruption before writing therefore leaves no secret in the temporary file. `.gitignore` explicitly covers both `.env.local.json` and `.env.local.*.tmp`.
+
+If `aiomysql.connect` succeeds but admin cursor creation fails, the connection factory closes the raw connection with `ensure_closed()` when available or `close()` otherwise. A simultaneous cursor and close failure is preserved as a `BaseExceptionGroup` rather than losing either error.
 
 ## Error and security boundaries
 

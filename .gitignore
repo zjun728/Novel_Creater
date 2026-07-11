@@ -16,6 +16,7 @@ __pycache__/
 # Local environment and scratch files
 .env
 .env.*
+.env.local.*.tmp
 _check_db.py
 
 # Local novel corpus / reference texts

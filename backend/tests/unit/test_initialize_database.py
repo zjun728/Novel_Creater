@@ -8,6 +8,7 @@ from backend.schema_manifest import created_table_names, manifest_hash, read_sta
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.initialize_database import (
     _AiomysqlAdminSession,
+    _default_connection_factory,
     InitializationError,
     format_initialization_result,
     initialize_database,
@@ -16,6 +17,87 @@ from backend.scripts.initialize_database import (
 
 
 DATABASE_NAME = "writer_core_test"
+
+
+@pytest.mark.asyncio
+async def test_default_factory_ensures_connection_closed_when_cursor_creation_fails(monkeypatch):
+    import aiomysql
+
+    cursor_error = RuntimeError("cursor creation failed")
+
+    class Connection:
+        close_count = 0
+
+        async def cursor(self, cursor_class):
+            assert cursor_class is aiomysql.DictCursor
+            raise cursor_error
+
+        async def ensure_closed(self):
+            self.close_count += 1
+
+    connection = Connection()
+
+    async def connect(**kwargs):
+        return connection
+
+    monkeypatch.setattr(aiomysql, "connect", connect)
+
+    with pytest.raises(RuntimeError) as raised:
+        await _default_connection_factory({"password": "test-only"})
+
+    assert raised.value is cursor_error
+    assert connection.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_default_factory_falls_back_to_sync_close_after_cursor_failure(monkeypatch):
+    import aiomysql
+
+    class Connection:
+        close_count = 0
+
+        async def cursor(self, cursor_class):
+            raise RuntimeError("cursor creation failed")
+
+        def close(self):
+            self.close_count += 1
+
+    connection = Connection()
+
+    async def connect(**kwargs):
+        return connection
+
+    monkeypatch.setattr(aiomysql, "connect", connect)
+
+    with pytest.raises(RuntimeError, match="cursor creation failed"):
+        await _default_connection_factory({"password": "test-only"})
+
+    assert connection.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_default_factory_preserves_cursor_and_connection_close_failures(monkeypatch):
+    import aiomysql
+
+    cursor_error = RuntimeError("cursor creation failed")
+    close_error = RuntimeError("connection close failed")
+
+    class Connection:
+        async def cursor(self, cursor_class):
+            raise cursor_error
+
+        async def ensure_closed(self):
+            raise close_error
+
+    async def connect(**kwargs):
+        return Connection()
+
+    monkeypatch.setattr(aiomysql, "connect", connect)
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await _default_connection_factory({"password": "test-only"})
+
+    assert raised.value.exceptions == (cursor_error, close_error)
 
 
 @pytest.mark.asyncio

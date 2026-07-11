@@ -97,15 +97,18 @@ def atomic_write_local_config(
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            prefix=f".{target.name}.",
+            prefix=".env.local.",
             suffix=".tmp",
             dir=target.parent,
             delete=False,
         ) as handle:
             temporary_path = Path(handle.name)
+        acl_runner(temporary_path)
+        with temporary_path.open(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+        ) as handle:
             json.dump(
                 dict(document),
                 handle,
@@ -116,7 +119,6 @@ def atomic_write_local_config(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        acl_runner(temporary_path)
         os.replace(temporary_path, target)
         temporary_path = None
     except OSError as exc:

@@ -164,7 +164,24 @@ async def _default_connection_factory(connection_config: Mapping[str, object]):
     kwargs = {key: value for key, value in connection_config.items() if key in allowed}
     kwargs["autocommit"] = True
     connection = await aiomysql.connect(**kwargs)
-    cursor = await connection.cursor(aiomysql.DictCursor)
+    try:
+        cursor = await connection.cursor(aiomysql.DictCursor)
+    except BaseException as cursor_error:
+        close_error: BaseException | None = None
+        try:
+            ensure_closed = getattr(connection, "ensure_closed", None)
+            if ensure_closed is not None:
+                await ensure_closed()
+            else:
+                connection.close()
+        except BaseException as exc:
+            close_error = exc
+        if close_error is not None:
+            raise BaseExceptionGroup(
+                "admin cursor creation and connection close both failed",
+                [cursor_error, close_error],
+            ) from cursor_error
+        raise
     return _AiomysqlAdminSession(connection, cursor)
 
 
