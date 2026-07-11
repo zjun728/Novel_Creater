@@ -16,6 +16,7 @@ from backend.domain.json_contracts import canonical_hash
 
 def style_payload() -> dict[str, object]:
     return {
+        "schemaVersion": "style-template-v1",
         "reading_experience": "Measured tension with lucid emotional stakes.",
         "applicability": ["Long-form ensemble fantasy"],
         "standard_scene_example": "The same gate closes while three witnesses disagree.",
@@ -64,6 +65,7 @@ def style_values() -> dict[str, object]:
 
 def card_values() -> dict[str, object]:
     payload = {
+        "schemaVersion": "experience-card-v1",
         "category": "plot_organization",
         "method": "Synthetic method one",
         "applicability": ["Stories with competing goals"],
@@ -112,6 +114,20 @@ def test_prompt_payloads_forbid_source_leaks_and_unknown_fields():
         ExperienceCardRevision.model_validate(card)
 
 
+@pytest.mark.parametrize("asset_values", [style_values, card_values])
+def test_prompt_payload_requires_schema_version(asset_values):
+    values = asset_values()
+    values["payload"].pop("schemaVersion")
+    model = (
+        StyleTemplateRevision
+        if asset_values is style_values
+        else ExperienceCardRevision
+    )
+
+    with pytest.raises(ValidationError, match="schemaVersion"):
+        model.model_validate(values)
+
+
 def test_review_metadata_is_allowed_only_in_provenance():
     style = style_values()
     style["payload"] = {**style["payload"], "reviewer": "leak"}
@@ -137,6 +153,38 @@ def test_required_strings_reject_whitespace_only_values():
 
     with pytest.raises(ValidationError, match="method"):
         ExperienceCardRevision.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [(["   "], "applicability"), (["item"] * 33, "applicability")],
+)
+def test_prompt_tuple_fields_reject_blank_elements_and_excess_items(value, match):
+    values = card_values()
+    values["payload"] = {**values["payload"], "applicability": value}
+
+    with pytest.raises(ValidationError, match=match):
+        ExperienceCardRevision.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("mutator", "match"),
+    [
+        (lambda values: values.update(stable_key="k" * 161), "stable_key"),
+        (
+            lambda values: values["payload"].update(
+                complete_application_example="x" * 20_001
+            ),
+            "complete_application_example",
+        ),
+    ],
+)
+def test_asset_fields_enforce_stable_key_and_large_text_limits(mutator, match):
+    values = style_values()
+    mutator(values)
+
+    with pytest.raises(ValidationError, match=match):
+        StyleTemplateRevision.model_validate(values)
 
 
 def test_manifest_and_package_are_strict_frozen_models():

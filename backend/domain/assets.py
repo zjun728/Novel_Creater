@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 import re
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 import unicodedata
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StringConstraints,
     ValidationError,
     field_validator,
     model_validator,
@@ -48,6 +50,43 @@ ValidationMode = Literal["structural", "release"]
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
+SchemaVersion = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+]
+StableKey = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=160),
+]
+AssetName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+]
+PromptText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000),
+]
+ExampleText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=20_000),
+]
+ListItem = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=2_000),
+]
+ReviewerName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+]
+ReviewTime = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+]
+ManifestPath = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=2_048),
+]
+
 
 class AssetPackageError(ValueError):
     """An asset package is malformed or violates package policy."""
@@ -63,25 +102,29 @@ class _FrozenModel(BaseModel):
 
 
 class StylePromptPayload(_FrozenModel):
-    reading_experience: str = Field(min_length=1)
-    applicability: tuple[str, ...] = Field(min_length=1)
-    standard_scene_example: str = Field(min_length=1)
-    complete_application_example: str = Field(min_length=1)
-    narrative_distance: str = Field(min_length=1)
-    rhythm: str = Field(min_length=1)
-    diction_density: str = Field(min_length=1)
-    dialogue: str = Field(min_length=1)
-    subtext: str = Field(min_length=1)
-    character_voices: str = Field(min_length=1)
-    emotion: str = Field(min_length=1)
-    interiority: str = Field(min_length=1)
-    action: str = Field(min_length=1)
-    explanation: str = Field(min_length=1)
-    environment: str = Field(min_length=1)
-    body_response: str = Field(min_length=1)
-    preferred_techniques: tuple[str, ...] = Field(min_length=1)
-    risks: tuple[str, ...] = Field(min_length=1)
-    original_anchor: str = Field(min_length=1)
+    schemaVersion: SchemaVersion
+    reading_experience: PromptText
+    applicability: tuple[ListItem, ...] = Field(min_length=1, max_length=32)
+    standard_scene_example: ExampleText
+    complete_application_example: ExampleText
+    narrative_distance: PromptText
+    rhythm: PromptText
+    diction_density: PromptText
+    dialogue: PromptText
+    subtext: PromptText
+    character_voices: PromptText
+    emotion: PromptText
+    interiority: PromptText
+    action: PromptText
+    explanation: PromptText
+    environment: PromptText
+    body_response: PromptText
+    preferred_techniques: tuple[ListItem, ...] = Field(
+        min_length=1,
+        max_length=32,
+    )
+    risks: tuple[ListItem, ...] = Field(min_length=1, max_length=32)
+    original_anchor: PromptText
 
     @field_validator("applicability", "preferred_techniques", "risks", mode="before")
     @classmethod
@@ -90,12 +133,16 @@ class StylePromptPayload(_FrozenModel):
 
 
 class ExperienceCardPromptPayload(_FrozenModel):
+    schemaVersion: SchemaVersion
     category: AssetCategory
-    method: str = Field(min_length=1)
-    applicability: tuple[str, ...] = Field(min_length=1)
-    non_applicability: tuple[str, ...] = Field(min_length=1)
-    risks: tuple[str, ...] = Field(min_length=1)
-    original_micro_demo: str = Field(min_length=1)
+    method: PromptText
+    applicability: tuple[ListItem, ...] = Field(min_length=1, max_length=32)
+    non_applicability: tuple[ListItem, ...] = Field(
+        min_length=1,
+        max_length=32,
+    )
+    risks: tuple[ListItem, ...] = Field(min_length=1, max_length=32)
+    original_micro_demo: ExampleText
 
     @field_validator("applicability", "non_applicability", "risks", mode="before")
     @classmethod
@@ -104,24 +151,37 @@ class ExperienceCardPromptPayload(_FrozenModel):
 
 
 class AssetProvenance(_FrozenModel):
-    reviewer: str | None = Field(default=None, min_length=1)
-    review_time: str | None = Field(default=None, min_length=1)
+    reviewer: ReviewerName | None = None
+    review_time: ReviewTime | None = None
     decision: ReviewDecision
+
+    @field_validator("review_time")
+    @classmethod
+    def require_aware_iso_timestamp(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("review_time must be an ISO-8601 timestamp") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("review_time must include a timezone offset")
+        return value
 
 
 class StyleTemplateRevision(_FrozenModel):
-    stable_key: str = Field(min_length=1)
+    stable_key: StableKey
     revision: int = Field(gt=0)
-    name: str = Field(min_length=1)
+    name: AssetName
     payload: StylePromptPayload
     provenance: AssetProvenance
     content_hash: str = Field(pattern=_SHA256_PATTERN.pattern)
 
 
 class ExperienceCardRevision(_FrozenModel):
-    stable_key: str = Field(min_length=1)
+    stable_key: StableKey
     revision: int = Field(gt=0)
-    title: str = Field(min_length=1)
+    title: AssetName
     category: AssetCategory
     payload: ExperienceCardPromptPayload
     provenance: AssetProvenance
@@ -135,7 +195,7 @@ class ExperienceCardRevision(_FrozenModel):
 
 
 class AssetFile(_FrozenModel):
-    path: str = Field(min_length=1)
+    path: ManifestPath
     sha256: str = Field(pattern=_SHA256_PATTERN.pattern)
 
     @field_validator("path")
@@ -196,7 +256,7 @@ def _validate_release_review(package: AssetPackage) -> None:
 
 
 def validate_asset_package(
-    package: AssetPackage,
+    package: AssetPackage | dict[str, object],
     *,
     mode: ValidationMode = "structural",
 ) -> AssetPackage:
@@ -204,6 +264,11 @@ def validate_asset_package(
 
     if mode not in ("structural", "release"):
         raise AssetPackageError(f"unsupported validation mode: {mode}")
+    if not isinstance(package, AssetPackage):
+        try:
+            package = AssetPackage.model_validate(package)
+        except ValidationError as exc:
+            raise _validation_error("asset package", exc) from exc
     if package.manifest.package_version != PACKAGE_VERSION:
         raise AssetPackageError(f"package_version must be {PACKAGE_VERSION}")
     if len(package.styles) != 8:

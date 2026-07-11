@@ -19,6 +19,7 @@ from backend.domain.json_contracts import canonical_hash
 
 def _style(index: int, *, approved: bool = False) -> dict[str, object]:
     payload = {
+        "schemaVersion": "style-template-v1",
         "reading_experience": f"Synthetic reading experience {index}.",
         "applicability": [f"Synthetic application {index}"],
         "standard_scene_example": f"Standard scene rendered in style {index}.",
@@ -56,6 +57,7 @@ def _style(index: int, *, approved: bool = False) -> dict[str, object]:
 def _card(index: int, *, approved: bool = False) -> dict[str, object]:
     category = ASSET_CATEGORIES[index % len(ASSET_CATEGORIES)]
     payload = {
+        "schemaVersion": "experience-card-v1",
         "category": category,
         "method": f"Synthetic method {index}",
         "applicability": [f"Applicable situation {index}"],
@@ -96,6 +98,11 @@ def package_from_values(*, approved: bool = False) -> AssetPackage:
     )
 
 
+def package_dict(*, approved: bool = False) -> dict[str, object]:
+    manifest, styles, cards = valid_values(approved=approved)
+    return {"manifest": manifest, "styles": styles, "experience_cards": cards}
+
+
 def _write_package(root: Path, *, approved: bool = False) -> Path:
     manifest, styles, cards = valid_values(approved=approved)
     style_bytes = json.dumps(styles, ensure_ascii=False, indent=2).encode("utf-8")
@@ -122,6 +129,21 @@ def test_structural_package_accepts_exact_synthetic_inventory_and_decisions():
     assert {item.provenance.decision for item in (*result.styles, *result.experience_cards)} <= {
         "approved", "candidate", "rewrite", "rejected"
     }
+
+
+def test_validator_accepts_a_raw_synthetic_package_dict():
+    result = validate_asset_package(package_dict(), mode="structural")
+
+    assert isinstance(result, AssetPackage)
+    assert result.package_version == "writer-core-v1.1.0"
+
+
+def test_validator_wraps_raw_dict_validation_errors_as_stable_package_errors():
+    values = package_dict()
+    values["experience_cards"][0]["payload"]["rawExcerpt"] = "forbidden"
+
+    with pytest.raises(AssetPackageError, match="rawExcerpt"):
+        validate_asset_package(values, mode="structural")
 
 
 @pytest.mark.parametrize("style_count", [7, 9])
@@ -220,6 +242,15 @@ def test_release_requires_approved_decision_reviewer_and_review_time():
 
     approved = package_from_values(approved=True)
     assert validate_asset_package(approved, mode="release") is approved
+
+
+def test_release_rejects_invalid_or_timezone_naive_review_time():
+    for review_time in ("not-a-time", "2026-07-12T00:00:00"):
+        values = package_dict(approved=True)
+        values["styles"][0]["provenance"]["review_time"] = review_time
+
+        with pytest.raises(AssetPackageError, match="review_time"):
+            validate_asset_package(values, mode="release")
 
 
 def test_unknown_validation_mode_is_rejected():
