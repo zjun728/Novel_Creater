@@ -1253,10 +1253,15 @@ git commit -m "feat: commit canon revisions atomically"
 - Create: `backend/tests/api/test_canon_routes.py`
 - Create: `backend/tests/api/test_provider_redaction.py`
 - Create: `backend/tests/api/test_secret_error_redaction.py`
+- Create: `backend/tests/api/test_product_routes.py`
+- Create: `backend/tests/api/test_route_inventory.py`
+- Create: `backend/tests/unit/test_project_creation.py`
 - Modify: `backend/main.py`
 - Modify: `backend/routers/projects.py`
 - Modify: `backend/routers/providers.py`
 - Modify: `backend/routers/seeds.py`
+- Modify: `backend/schema/10_core.sql`
+- Modify: `backend/tests/unit/test_schema_manifest.py`
 - Delete: incompatible backend routers listed in the locked file structure
 
 ### Task 8A: Make project creation a foundation transaction
@@ -1267,7 +1272,7 @@ git commit -m "feat: commit canon revisions atomically"
 - Create: `backend/services/projects.py`
 - Create: `backend/tests/unit/test_project_creation.py`
 
-- [ ] **Step 1: Write the project foundation transaction tests**
+- [x] **Step 1: Write the project foundation transaction tests**
 
 ```python
 # backend/tests/unit/test_project_creation.py
@@ -1314,13 +1319,13 @@ async def test_project_create_without_enabled_provider_creates_no_binding_items(
     assert project_repo.binding_items == {}
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `python -m pytest backend/tests/unit/test_project_creation.py -q`
 
 Expected: FAIL because project repository/service do not exist.
 
-- [ ] **Step 3: Implement the transaction in the required order**
+- [x] **Step 3: Implement the transaction in the required order**
 
 ```python
 # backend/services/projects.py — create method
@@ -1348,7 +1353,7 @@ async def create(self, command: CreateProject) -> ProjectResult:
 
 Repository `list_enabled_providers` orders by `sort_order ASC, created_at ASC, id ASC`; `find_previous_binding_snapshot` orders projects by `created_at DESC, id DESC`. Bootstrap revision uses `source_type='bootstrap'` and a deterministic SHA-256 key for `project_id/revision-0`; head row stores both revisions as 0 and the hash of empty projections. `backend/routers/projects.py` calls only this service for create and never performs a second write.
 
-- [ ] **Step 4: Run and commit the project transaction**
+- [x] **Step 4: Run the project transaction tests**
 
 Run: `python -m pytest backend/tests/unit/test_project_creation.py -q`
 
@@ -1359,7 +1364,7 @@ git add backend/repositories/projects.py backend/services/projects.py backend/ro
 git commit -m "feat: create projects with canon foundation atomically"
 ```
 
-- [ ] **Step 1: Write API tests before changing routes**
+- [x] **Step 1: Write API tests before changing routes**
 
 ```python
 # backend/tests/api/test_provider_redaction.py
@@ -1404,13 +1409,13 @@ def test_canon_router_has_no_write_route(app):
     assert all(methods <= {"GET", "HEAD"} for methods in canon_paths.values())
 ```
 
-- [ ] **Step 2: Verify the current Provider API leaks the key**
+- [x] **Step 2: Verify the current Provider API leaks the key**
 
 Run: `python -m pytest backend/tests/api/test_provider_redaction.py -q`
 
 Expected: FAIL because current `SELECT *` responses include `apiKey` and `baseURL`.
 
-- [ ] **Step 3: Add one secret-free serializer**
+- [x] **Step 3: Add one secret-free serializer**
 
 ```python
 # backend/serializers/provider.py
@@ -1446,7 +1451,7 @@ All Provider list/create/update/binding response paths call this serializer. Err
 
 Update semantics are explicit: omitted `apiKey` keeps the old key; `clearApiKey: true` clears it. A blank string never accidentally replaces a stored key. Apply the same rule to `baseURL` with `clearBaseURL`.
 
-- [ ] **Step 4: Implement the read-only router**
+- [x] **Step 4: Implement the read-only router**
 
 Register only:
 
@@ -1467,7 +1472,7 @@ GET /api/projects/{pid}/projections/plot-threads
 
 Alias resolution returns HTTP 200 with `{status:'missing'|'resolved'|'ambiguous', entityIds:['entity-id']}`; ambiguity is expected product state, not a 500. Projection endpoints return 409 `projection_out_of_sync` if heads differ.
 
-- [ ] **Step 5: Make project create/delete transactional and model binding deterministic**
+- [x] **Step 5: Make project create/delete transactional and model binding deterministic**
 
 Project create performs in one transaction: insert project, insert bootstrap revision 0, insert projection head 0, resolve each task binding, insert binding snapshot. Fixed task keys are:
 
@@ -1495,11 +1500,11 @@ It must not query old chapters/tempDrafts/settings tables.
 
 Replace `backend/routers/seeds.py` with one M1 read route, `GET /api/projects/{pid}/seeds`, joining `project_selected_seeds` so the selected row is serialized with `status='selected'`. Do not register seed POST/PUT/DELETE in M1; the unique selection command and seed-pool writes return in the M2 contract flow. This removes the old `ensure_project_without_chapter_content` dependency instead of emulating chapters with a fallback query.
 
-- [ ] **Step 6: Remove old live routes and files**
+- [x] **Step 6: Remove old live routes and files**
 
 `backend/main.py` registers only health, projects, providers, seeds and new Canon router. Keep `backend/routers/ai_proxy.py` as committed source reference but do not register it in M1; M2/M5 reactivates it only after its error/diagnostic paths pass the same secret boundary. Physically delete the incompatible state routers and their imports. Do not return synthetic `migrationUnavailable` or field-existence fallback objects.
 
-- [ ] **Step 7: Run API tests and route inventory**
+- [x] **Step 7: Run API tests and route inventory**
 
 Run:
 
@@ -1510,7 +1515,7 @@ rg -n "api_key|apiKey|base_url|baseURL|includeApiKeys|migrationUnavailable|SHOW 
 
 Expected: tests PASS. Search hits are limited to request models, DB-only Provider resolution, the redaction tests, and explicit secret fields in schema; no response/export/log path contains them.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add backend/main.py backend/routers backend/serializers backend/tests/api

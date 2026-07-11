@@ -1,47 +1,40 @@
-"""Provider 配置与任务模型绑定"""
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+"""Provider configuration with a strict public-response boundary."""
+
+from __future__ import annotations
+
+import json
+import time
 from typing import Optional
-from backend.database import fetchone, fetchall, execute
-from .helpers import convert_row, convert_rows, to_snake
-import uuid, time, json
+from uuid import uuid4
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+
+from backend.database import execute, fetchall, fetchone
+from backend.serializers.provider import provider_public, providers_public
+from .helpers import to_snake
+
 
 router = APIRouter(tags=["providers"])
 
-MODEL_BINDING_FIELDS = [
-    "writing_model_id",
-    "brainstorm_model_id",
-    "outline_model_id",
-    "audit_model_id",
-    "summary_model_id",
-    "extraction_model_id",
-    "market_model_id",
-    "polish_model_id",
-]
 
-MODEL_BINDING_CAMEL_FIELDS = [
-    "writingModelId",
-    "brainstormModelId",
-    "outlineModelId",
-    "auditModelId",
-    "summaryModelId",
-    "extractionModelId",
-    "marketModelId",
-    "polishModelId",
-]
+def _is_blank(value) -> bool:
+    return isinstance(value, str) and not value.strip()
 
-DEFAULT_TASK_PROVIDER_NAME = "联通云-DeepSeek-V4-Flash"
-DEFAULT_TASK_MODEL_NAME = "DeepSeek-V4-Flash"
 
 class ProviderCreate(BaseModel):
-    name: str
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
     providerType: str = "openai-compatible"
+    model: str = ""
     baseURL: str = ""
     apiKey: str = ""
-    model: str = ""
+    enabled: bool = True
+    sortOrder: int = 0
     stream: bool = True
-    maxContextTokens: int = 200000
-    maxOutputTokens: int = 4096
+    maxContextTokens: int = Field(default=200_000, gt=0)
+    maxOutputTokens: int = Field(default=4096, gt=0)
     temperature: float = 0.8
     topP: float = 0.9
     supportsJSON: bool = True
@@ -49,15 +42,22 @@ class ProviderCreate(BaseModel):
     notes: str = ""
     thinking: Optional[dict] = None
 
+
 class ProviderUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: Optional[str] = None
     providerType: Optional[str] = None
+    model: Optional[str] = None
     baseURL: Optional[str] = None
     apiKey: Optional[str] = None
-    model: Optional[str] = None
+    clearBaseURL: bool = False
+    clearApiKey: bool = False
+    enabled: Optional[bool] = None
+    sortOrder: Optional[int] = None
     stream: Optional[bool] = None
-    maxContextTokens: Optional[int] = None
-    maxOutputTokens: Optional[int] = None
+    maxContextTokens: Optional[int] = Field(default=None, gt=0)
+    maxOutputTokens: Optional[int] = Field(default=None, gt=0)
     temperature: Optional[float] = None
     topP: Optional[float] = None
     supportsJSON: Optional[bool] = None
@@ -65,209 +65,153 @@ class ProviderUpdate(BaseModel):
     notes: Optional[str] = None
     thinking: Optional[dict] = None
 
-class BindingsUpdate(BaseModel):
-    writingModelId: Optional[str] = None
-    brainstormModelId: Optional[str] = None
-    outlineModelId: Optional[str] = None
-    auditModelId: Optional[str] = None
-    summaryModelId: Optional[str] = None
-    extractionModelId: Optional[str] = None
-    marketModelId: Optional[str] = None
-    polishModelId: Optional[str] = None
 
-# --- Providers ---
 @router.get("/providers")
 async def list_providers():
-    rows = await fetchall("SELECT * FROM provider_profiles ORDER BY created_at")
-    return convert_rows(rows)
+    rows = await fetchall(
+        "SELECT * FROM provider_profiles ORDER BY sort_order, created_at, id"
+    )
+    return providers_public(rows)
+
 
 @router.post("/providers")
 async def create_provider(data: ProviderCreate):
     now = int(time.time() * 1000)
-    pid = str(uuid.uuid4())
-    thinking_json = json.dumps(data.thinking) if data.thinking else None
-    sql = """INSERT INTO provider_profiles (id, name, provider_type, base_url, api_key, model,
-             stream, max_context_tokens, max_output_tokens, temperature, top_p,
-             supports_json, supports_streaming, notes, thinking, created_at, updated_at)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
-    await execute(sql, (pid, data.name, data.providerType, data.baseURL, data.apiKey, data.model,
-                        int(data.stream), data.maxContextTokens, data.maxOutputTokens,
-                        data.temperature, data.topP, int(data.supportsJSON),
-                        int(data.supportsStreaming), data.notes, thinking_json, now, now))
-    return convert_row(await fetchone("SELECT * FROM provider_profiles WHERE id=%s", (pid,)))
+    provider_id = str(uuid4())
+    await execute(
+        """INSERT INTO provider_profiles
+           (id, name, provider_type, model_name, base_url, api_key, enabled,
+            sort_order, stream, max_context_tokens, max_output_tokens,
+            temperature, top_p, supports_json, supports_streaming, notes,
+            thinking, created_at, updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (
+            provider_id,
+            data.name,
+            data.providerType,
+            data.model,
+            data.baseURL,
+            data.apiKey,
+            int(data.enabled),
+            data.sortOrder,
+            int(data.stream),
+            data.maxContextTokens,
+            data.maxOutputTokens,
+            data.temperature,
+            data.topP,
+            int(data.supportsJSON),
+            int(data.supportsStreaming),
+            data.notes,
+            json.dumps(data.thinking, ensure_ascii=False) if data.thinking else None,
+            now,
+            now,
+        ),
+    )
+    return provider_public(
+        await fetchone(
+            "SELECT * FROM provider_profiles WHERE id=%s", (provider_id,)
+        )
+    )
 
-@router.put("/providers/{pid}")
-async def update_provider(pid: str, data: ProviderUpdate):
-    sets, args = [], []
-    for k, v in data.dict(exclude_none=True).items():
-        col = to_snake(k)
-        if k == "thinking":
-            sets.append("thinking=%s")
-            args.append(json.dumps(v) if v else None)
-        elif isinstance(v, bool):
-            sets.append(f"{col}=%s")
-            args.append(int(v))
-        else:
-            sets.append(f"{col}=%s")
-            args.append(v)
-    if not sets:
-        return convert_row(await fetchone("SELECT * FROM provider_profiles WHERE id=%s", (pid,)))
-    sets.append("updated_at=%s")
-    args.append(int(time.time() * 1000))
-    args.append(pid)
-    await execute(f"UPDATE provider_profiles SET {', '.join(sets)} WHERE id=%s", args)
-    return convert_row(await fetchone("SELECT * FROM provider_profiles WHERE id=%s", (pid,)))
 
-@router.delete("/providers/{pid}")
-async def delete_provider(pid: str):
-    await execute("DELETE FROM provider_profiles WHERE id=%s", (pid,))
+@router.put("/providers/{provider_id}")
+async def update_provider(provider_id: str, data: ProviderUpdate):
+    current = await fetchone(
+        "SELECT * FROM provider_profiles WHERE id=%s", (provider_id,)
+    )
+    if current is None:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    incoming = data.model_dump(exclude_unset=True)
+    clear_api_key = incoming.pop("clearApiKey", False)
+    clear_base_url = incoming.pop("clearBaseURL", False)
+    if clear_api_key:
+        incoming["apiKey"] = ""
+    elif "apiKey" not in incoming or _is_blank(incoming["apiKey"]):
+        incoming.pop("apiKey", None)
+    if clear_base_url:
+        incoming["baseURL"] = ""
+    elif "baseURL" not in incoming or _is_blank(incoming["baseURL"]):
+        incoming.pop("baseURL", None)
+
+    sets = []
+    args = []
+    field_columns = {"model": "model_name"}
+    for key, value in incoming.items():
+        column = field_columns.get(key, to_snake(key))
+        sets.append(f"{column}=%s")
+        if key == "thinking":
+            value = (
+                json.dumps(value, ensure_ascii=False)
+                if value is not None
+                else None
+            )
+        elif isinstance(value, bool):
+            value = int(value)
+        args.append(value)
+    if sets:
+        sets.append("updated_at=%s")
+        args.extend((int(time.time() * 1000), provider_id))
+        await execute(
+            f"UPDATE provider_profiles SET {', '.join(sets)} WHERE id=%s",
+            args,
+        )
+    return provider_public(
+        await fetchone(
+            "SELECT * FROM provider_profiles WHERE id=%s", (provider_id,)
+        )
+    )
+
+
+@router.delete("/providers/{provider_id}")
+async def delete_provider(provider_id: str):
+    await execute("DELETE FROM provider_profiles WHERE id=%s", (provider_id,))
     return {"ok": True}
 
-# --- Task Model Bindings ---
-@router.get("/projects/{pid}/bindings")
-async def get_bindings(pid: str):
-    rows = await fetchall("SELECT * FROM task_model_bindings WHERE project_id=%s", (pid,))
-    r = convert_rows(rows)
-    return r[0] if r else None
 
-@router.get("/projects/{pid}/bindings/status")
-async def get_bindings_status(pid: str):
-    project = await fetchone("SELECT * FROM projects WHERE id=%s", (pid,))
-    if not project:
-        raise HTTPException(404, "项目不存在")
+async def _binding_items(project_id: str):
+    rows = await fetchall(
+        """SELECT i.task_key, p.*
+           FROM task_model_binding_items i
+           JOIN provider_profiles p ON p.id=i.provider_id
+           WHERE i.project_id=%s ORDER BY i.task_key""",
+        (project_id,),
+    )
+    return [
+        {"taskKey": row["task_key"], "provider": provider_public(row)}
+        for row in rows
+    ]
 
-    row = await fetchone("SELECT * FROM task_model_bindings WHERE project_id=%s", (pid,))
-    binding = convert_row(row)
-    has_binding = bool(row and _has_any_model_binding(row))
+
+@router.get("/projects/{project_id}/bindings")
+async def get_bindings(project_id: str):
+    binding = await fetchone(
+        "SELECT * FROM task_model_bindings WHERE project_id=%s", (project_id,)
+    )
+    if binding is None:
+        return None
     return {
-        "projectId": pid,
-        "hasBinding": has_binding,
-        "binding": binding,
-        "inherited": bool(row and row.get("inherited_from_project_id")),
-        "inheritedFromProjectId": row.get("inherited_from_project_id") if row else None,
-        "inheritedFromProjectTitle": row.get("inherited_from_project_title") if row else "",
-        "inheritedFromUpdatedAt": row.get("inherited_from_updated_at") if row else None,
-        "message": _binding_status_message(row),
+        "id": binding["id"],
+        "projectId": project_id,
+        "items": await _binding_items(project_id),
     }
 
-@router.put("/projects/{pid}/bindings")
-async def save_bindings(pid: str, data: BindingsUpdate):
-    now = int(time.time() * 1000)
-    rows = await fetchall("SELECT * FROM task_model_bindings WHERE project_id=%s", (pid,))
-    d = data.dict()
-    if rows:
-        sets = [f"{to_snake(k)}=%s" for k in d]
-        sets.extend([
-            "inherited_from_project_id=%s",
-            "inherited_from_project_title=%s",
-            "inherited_from_updated_at=%s",
-        ])
-        if sets:
-            sets.append("updated_at=%s")
-            args = list(d.values()) + [None, "", None, now, rows[0]['id']]
-            await execute(f"UPDATE task_model_bindings SET {', '.join(sets)} WHERE id=%s", args)
-    else:
-        bid = str(uuid.uuid4())
-        vals = [bid, pid] + [d.get(k) for k in MODEL_BINDING_CAMEL_FIELDS]
-        await execute(
-            """
-            INSERT INTO task_model_bindings
-              (id, project_id, writing_model_id, brainstorm_model_id, outline_model_id, audit_model_id,
-               summary_model_id, extraction_model_id, market_model_id, polish_model_id,
-               inherited_from_project_id, inherited_from_project_title, inherited_from_updated_at,
-               created_at, updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            vals + [None, "", None, now, now],
-        )
-    return await get_bindings(pid)
 
-
-async def find_latest_saved_task_model_binding(exclude_project_id: Optional[str] = None):
-    where = [
-        "(" + " OR ".join([f"b.{field} IS NOT NULL" for field in MODEL_BINDING_FIELDS]) + ")"
-    ]
-    args = []
-    if exclude_project_id:
-        where.append("b.project_id<>%s")
-        args.append(exclude_project_id)
-    row = await fetchone(
-        f"""
-        SELECT b.*, p.title AS source_project_title
-        FROM task_model_bindings b
-        LEFT JOIN projects p ON p.id=b.project_id
-        WHERE {' AND '.join(where)}
-        ORDER BY b.updated_at DESC
-        LIMIT 1
-        """,
-        tuple(args),
+@router.get("/projects/{project_id}/bindings/status")
+async def get_bindings_status(project_id: str):
+    project = await fetchone(
+        "SELECT id FROM projects WHERE id=%s", (project_id,)
     )
-    return row
-
-
-async def inherit_latest_task_model_bindings(pid: str):
-    latest = await find_latest_saved_task_model_binding(exclude_project_id=pid)
-    default_provider = await find_default_task_model_provider()
-    if not latest and not default_provider:
-        return None
-
-    now = int(time.time() * 1000)
-    bid = str(uuid.uuid4())
-    values = [default_provider.get("id") for _ in MODEL_BINDING_FIELDS] if default_provider else [latest.get(field) for field in MODEL_BINDING_FIELDS]
-    await execute(
-        """
-        INSERT INTO task_model_bindings
-          (id, project_id, writing_model_id, brainstorm_model_id, outline_model_id, audit_model_id,
-           summary_model_id, extraction_model_id, market_model_id, polish_model_id,
-           inherited_from_project_id, inherited_from_project_title, inherited_from_updated_at,
-           created_at, updated_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        """,
-        [bid, pid] + values + [
-            latest.get("project_id") if latest else None,
-            latest.get("source_project_title") if latest else "",
-            latest.get("updated_at") if latest else None,
-            now,
-            now,
-        ],
-    )
-    return await get_bindings(pid)
-
-
-async def find_default_task_model_provider():
-    provider = await fetchone(
-        """
-        SELECT *
-        FROM provider_profiles
-        WHERE model=%s AND name=%s
-        ORDER BY updated_at DESC
-        LIMIT 1
-        """,
-        (DEFAULT_TASK_MODEL_NAME, DEFAULT_TASK_PROVIDER_NAME),
-    )
-    if provider:
-        return provider
-    return await fetchone(
-        """
-        SELECT *
-        FROM provider_profiles
-        WHERE model=%s
-        ORDER BY updated_at DESC
-        LIMIT 1
-        """,
-        (DEFAULT_TASK_MODEL_NAME,),
-    )
-
-
-def _has_any_model_binding(row: dict) -> bool:
-    return any(row.get(field) for field in MODEL_BINDING_FIELDS)
-
-
-def _binding_status_message(row: Optional[dict]) -> str:
-    if not row or not _has_any_model_binding(row):
-        return "当前项目未配置任务模型映射：请先配置模型。"
-    if row.get("inherited_from_project_id"):
-        title = row.get("inherited_from_project_title") or "上一个项目"
-        updated_at = row.get("inherited_from_updated_at") or ""
-        return f"已继承上一个项目模型配置：{title} / {updated_at}"
-    return "当前项目已配置任务模型映射。"
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    binding = await get_bindings(project_id)
+    items = binding["items"] if binding else []
+    return {
+        "projectId": project_id,
+        "hasBinding": bool(items),
+        "items": items,
+        "message": (
+            "Provider bindings configured"
+            if items
+            else "No enabled Provider is bound"
+        ),
+    }

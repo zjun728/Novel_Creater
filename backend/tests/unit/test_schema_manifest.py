@@ -230,6 +230,14 @@ def test_project_owned_tables_have_project_and_owner_foreign_keys():
 
 
 def test_core_contracts_and_provider_constraints_are_explicit():
+    projects = _table_statement("projects")
+    for column in (
+        "genre varchar(120) not null",
+        "description text not null",
+        "target_words int not null",
+        "target_chapters int not null",
+    ):
+        assert column in projects
     selected = _table_statement("project_selected_seeds")
     assert "project_id char(36) primary key" in selected
     assert "unique key uq_selected_seed (seed_id)" in selected
@@ -242,10 +250,20 @@ def test_core_contracts_and_provider_constraints_are_explicit():
         "api_key text not null",
         "enabled tinyint(1) not null default 1",
         "sort_order int not null default 0",
+        "stream tinyint(1) not null default 1",
+        "max_context_tokens int not null",
+        "max_output_tokens int not null",
+        "temperature decimal(5,3) not null",
+        "top_p decimal(5,3) not null",
+        "supports_json tinyint(1) not null default 1",
+        "supports_streaming tinyint(1) not null default 1",
+        "notes text not null",
+        "thinking json null",
     ):
         assert column in providers
     bindings = _table_statement("task_model_bindings")
     assert "unique key uq_binding_project (project_id)" in bindings
+    assert "foreign key (source_project_id) references projects(id) on delete set null" in bindings
     items = _table_statement("task_model_binding_items")
     assert "unique key uq_binding_task (binding_id, task_key)" in items
     assert "foreign key (provider_id) references provider_profiles(id) on delete restrict" in items

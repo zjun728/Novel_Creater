@@ -1,12 +1,18 @@
 CREATE TABLE projects (
   id CHAR(36) PRIMARY KEY,
   title VARCHAR(200) NOT NULL,
+  genre VARCHAR(120) NOT NULL,
+  description TEXT NOT NULL,
+  target_words INT NOT NULL,
+  target_chapters INT NOT NULL,
   status VARCHAR(24) NOT NULL,
   current_chapter INT NOT NULL DEFAULT 0,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   CHECK (status IN ('drafting','active','completed','archived')),
-  CHECK (current_chapter >= 0)
+  CHECK (current_chapter >= 0),
+  CHECK (target_words > 0),
+  CHECK (target_chapters > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -43,20 +49,36 @@ CREATE TABLE provider_profiles (
   api_key TEXT NOT NULL,
   enabled TINYINT(1) NOT NULL DEFAULT 1,
   sort_order INT NOT NULL DEFAULT 0,
+  stream TINYINT(1) NOT NULL DEFAULT 1,
+  max_context_tokens INT NOT NULL,
+  max_output_tokens INT NOT NULL,
+  temperature DECIMAL(5,3) NOT NULL,
+  top_p DECIMAL(5,3) NOT NULL,
+  supports_json TINYINT(1) NOT NULL DEFAULT 1,
+  supports_streaming TINYINT(1) NOT NULL DEFAULT 1,
+  notes TEXT NOT NULL,
+  thinking JSON NULL,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_provider_name (name),
-  CHECK (enabled IN (0,1))
+  CHECK (enabled IN (0,1)),
+  CHECK (stream IN (0,1)),
+  CHECK (supports_json IN (0,1)),
+  CHECK (supports_streaming IN (0,1)),
+  CHECK (max_context_tokens > 0),
+  CHECK (max_output_tokens > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
 CREATE TABLE task_model_bindings (
   id CHAR(36) PRIMARY KEY,
   project_id CHAR(36) NOT NULL,
+  source_project_id CHAR(36) NULL,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_binding_project (project_id),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_project_id) REFERENCES projects(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 

@@ -1,30 +1,17 @@
-"""
-Novel Creator — FastAPI 后端入口
-"""
+"""Novel Creator Writer Core V1 FastAPI entrypoint."""
+
 from contextlib import asynccontextmanager
 from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
 from backend.database import close_pool, connection
-from backend.routers import (
-    ai_proxy,
-    chapters,
-    correction_tasks,
-    experience_cards,
-    export,
-    market,
-    novel,
-    project_state,
-    projects,
-    providers,
-    seeds,
-    settings_library,
-    story_blocks,
-    volumes,
-)
+from backend.routers import canon, projects, providers, seeds
 from backend.schema_version import verify_schema_version
+from backend.security.redaction import install_error_handlers
 
 
 @asynccontextmanager
@@ -37,9 +24,9 @@ async def lifespan(app: FastAPI):
         await close_pool()
 
 
-app = FastAPI(title="Novel Creator API", version="0.1", lifespan=lifespan)
+app = FastAPI(title="Novel Creator API", version="1.0", lifespan=lifespan)
+install_error_handlers(app)
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -49,21 +36,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册路由
 app.include_router(projects.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
-app.include_router(chapters.router, prefix="/api")
 app.include_router(seeds.router, prefix="/api")
-app.include_router(novel.router, prefix="/api")
-app.include_router(export.router, prefix="/api")
-app.include_router(market.router, prefix="/api")
-app.include_router(settings_library.router, prefix="/api")
-app.include_router(volumes.router, prefix="/api")
-app.include_router(correction_tasks.router, prefix="/api")
-app.include_router(story_blocks.router, prefix="/api")
-app.include_router(ai_proxy.router, prefix="/api")
-app.include_router(experience_cards.router, prefix="/api")
-app.include_router(project_state.router, prefix="/api")
+app.include_router(canon.router, prefix="/api")
 
 
 @app.get("/api/health")
@@ -76,7 +52,9 @@ FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     assets_dir = FRONTEND_DIST / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+        app.mount(
+            "/assets", StaticFiles(directory=assets_dir), name="frontend-assets"
+        )
 
     @app.get("/")
     async def serve_frontend_index():
