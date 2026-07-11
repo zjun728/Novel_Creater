@@ -523,6 +523,38 @@ async def test_commit_failure_rolls_back_drops_incomplete_target_and_releases():
 
 
 @pytest.mark.asyncio
+async def test_verification_failure_preserves_error_rolls_back_drops_and_releases():
+    session = TargetSession()
+    session.foundation_counts["task_model_binding_items"] = 7
+
+    async def initializer(*args):
+        return None
+
+    async def inserter(*args, **kwargs):
+        return None
+
+    with pytest.raises(
+        bootstrap.BootstrapError,
+        match="Bootstrap verification failed for task_model_binding_items",
+    ):
+        await bootstrap.bootstrap_writer_core_product(
+            session,
+            database_name=PRODUCT,
+            source_loader=inventory,
+            execute=True,
+            confirm_bootstrap=PRODUCT,
+            initializer=initializer,
+            inserter=inserter,
+            _product_authority=bootstrap._CLI_PRODUCT_EXECUTE_AUTHORITY,
+        )
+
+    executed = [sql for kind, sql, _ in session.calls if kind == "execute"]
+    assert "ROLLBACK" in executed
+    assert "DROP DATABASE IF EXISTS `novel_creator`" in executed
+    assert any("RELEASE_LOCK" in sql for _, sql, _ in session.calls)
+
+
+@pytest.mark.asyncio
 async def test_create_failure_never_drops_a_target_not_owned_by_bootstrap():
     session = TargetSession(fail_execute_contains="CREATE DATABASE")
 
