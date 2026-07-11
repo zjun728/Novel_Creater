@@ -1536,7 +1536,7 @@ git commit -m "feat: expose secret-free writer core state"
 - Create: `backend/scripts/reset_writer_core_data.py`
 - Create: `backend/tests/integration/test_reset_writer_core_data.py`
 
-- [ ] **Step 1: Implement a guard before any integration test is allowed to connect**
+- [x] **Step 1: Implement a guard before any integration test is allowed to connect**
 
 ```python
 # backend/tests/support/disposable_mysql.py
@@ -1570,11 +1570,11 @@ def assert_disposable_name(name: str) -> None:
 
 No test support code reads `MYSQL_HOST`, `MYSQL_DB` or the product default. The fixture creates one unique database, runs the same `schema_manifest` initializer, yields its config, then drops it in `finally` after calling `assert_disposable_name()` again.
 
-- [ ] **Step 2: Write fresh bootstrap and mismatch tests**
+- [x] **Step 2: Write fresh bootstrap and mismatch tests**
 
 `test_schema_bootstrap.py` must assert the exact expected table set from Task 3, metadata version/hash, all tables use InnoDB/utf8mb4, and the second initializer invocation refuses the non-empty database. It then corrupts the metadata version and proves application verification refuses startup without altering any table.
 
-- [ ] **Step 3: Write real atomicity tests**
+- [x] **Step 3: Write real atomicity tests**
 
 `test_canon_atomic_commit.py` creates a project with revision/head 0, commits one entity, alias and two events through `CanonService`, then asserts in the same database:
 
@@ -1592,7 +1592,7 @@ projection_heads: canon_revision_number = projection_revision_number = 1
 
 Also submit the same stable field with overlapping chapters and a different value; assert the service raises a hard conflict and all counts remain unchanged.
 
-- [ ] **Step 4: Implement the one-time preserve-and-reset command**
+- [x] **Step 4: Implement the one-time preserve-and-reset command**
 
 The only allowed product reset shape is:
 
@@ -1614,16 +1614,16 @@ Execution performs this exact sequence:
 8. insert the preserved project, three seeds and Provider rows;
 9. insert the unique `project_selected_seeds` row for the `典镇山河` seed;
 10. create bootstrap Canon revision/head 0 and empty deterministic projections;
-11. bind every Task 8 task key to the enabled preferred Provider, or leave bindings empty if no enabled Provider exists;
+11. bind every Task 8 task key to the one enabled preferred Provider; zero or multiple preferred matches abort before DDL;
 12. verify all derived table counts are zero and release the lock.
 
 This is a reset, not migration: it never reads or maps old chapters, versions, Canon facts, settings, memory, arcs, volumes, blocks, audits or QA data.
 
-- [ ] **Step 5: Test reset only against disposable databases**
+- [x] **Step 5: Test reset only against disposable databases**
 
 Seed a disposable database with the project, three seeds, one Provider containing a sentinel key, and fake rows in every old derived table. Run the reset command's internal function with `allow_product_database=False`. Assert project/seeds/provider survive, every V1 derived table is empty/head 0, task items bind to the preferred Provider, stdout/stderr do not contain the sentinel key, and the guarded test path rejects `novel_creator`. Only the CLI path with matching `--database`, `--confirm-reset` and `--execute` can set `allow_product_database=True`.
 
-- [ ] **Step 6: Run integration tests**
+- [x] **Step 6: Run integration tests**
 
 Run only after setting the four explicit test-server variables:
 
@@ -1637,7 +1637,7 @@ npm run test:integration
 
 Expected: PASS; every created DB name has the guarded prefix and is absent after the run.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add backend/tests/support backend/tests/integration backend/scripts/reset_writer_core_data.py
