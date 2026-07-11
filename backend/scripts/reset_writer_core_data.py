@@ -312,7 +312,7 @@ async def _require_target_collation_unique(
             )
 
 
-async def _verify_reset_server_capabilities(admin_session) -> None:
+async def _verify_reset_server_capabilities(admin_session) -> str:
     version_row = await admin_session.fetchone("SELECT VERSION() AS version")
     version = (version_row or {}).get("version")
     match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version or "")
@@ -341,6 +341,7 @@ async def _verify_reset_server_capabilities(admin_session) -> None:
     )
     if type((check_support or {}).get("count")) is not int:
         raise ResetValidationError("MySQL server CHECK capability check failed")
+    return version
 
 
 def _map_project(row: Mapping[str, object]) -> dict[str, object]:
@@ -864,9 +865,9 @@ async def run_cli(
     )
     _guard_database(args.database, allow_product_database)
     if connection_config is None:
-        from backend.config import MYSQL_CONFIG
+        from backend.config import require_mysql_config
 
-        connection_config = MYSQL_CONFIG
+        connection_config = require_mysql_config()
     factory = connection_factory or _default_connection_factory
     session = await factory(connection_config)
     try:

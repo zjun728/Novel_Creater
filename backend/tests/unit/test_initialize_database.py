@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from backend.config import LocalMySQLConfigError
+from backend import config as backend_config
 from backend.schema_manifest import created_table_names, manifest_hash, read_statements
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.initialize_database import (
@@ -14,6 +16,30 @@ from backend.scripts.initialize_database import (
 
 
 DATABASE_NAME = "writer_core_test"
+
+
+@pytest.mark.asyncio
+async def test_cli_default_config_rejects_missing_password_before_connection(monkeypatch):
+    called = False
+
+    async def connection_factory(connection_config):
+        nonlocal called
+        called = True
+        raise AssertionError("must not connect")
+
+    monkeypatch.setattr(
+        backend_config,
+        "MYSQL_CONFIG",
+        dict(backend_config.MYSQL_CONFIG, password=None),
+    )
+
+    with pytest.raises(LocalMySQLConfigError, match="MYSQL_PASSWORD"):
+        await run_cli(
+            ["--database", DATABASE_NAME, "--confirm-create", DATABASE_NAME],
+            connection_factory=connection_factory,
+        )
+
+    assert called is False
 
 
 @pytest.mark.asyncio

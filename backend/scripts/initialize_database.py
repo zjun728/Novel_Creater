@@ -188,9 +188,9 @@ async def run_cli(
     _validated_database_name(args.database, args.confirm_create)
 
     if connection_config is None:
-        from backend.config import MYSQL_CONFIG
+        from backend.config import require_mysql_config
 
-        connection_config = MYSQL_CONFIG
+        connection_config = require_mysql_config()
     factory = connection_factory or _default_connection_factory
     timestamp = now_ms or (lambda: int(time.time() * 1000))
     session = await factory(connection_config)

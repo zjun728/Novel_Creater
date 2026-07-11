@@ -4,6 +4,7 @@ import aiomysql
 import pytest
 
 from backend import database
+from backend.config import LocalMySQLConfigError
 from backend.tests.support.fakes import FakePool
 
 
@@ -12,6 +13,12 @@ def use_pool(monkeypatch, pool):
         return pool
 
     monkeypatch.setattr(database, "get_pool", fake_get_pool)
+
+
+def use_complete_mysql_config(monkeypatch):
+    complete = dict(database.MYSQL_CONFIG, password="test-only")
+    monkeypatch.setattr(database, "MYSQL_CONFIG", complete)
+    return complete
 
 
 @pytest.mark.asyncio
@@ -159,12 +166,31 @@ async def test_get_pool_uses_backend_config_and_caches_pool(monkeypatch):
         calls.append(kwargs)
         return created_pool
 
+    complete = use_complete_mysql_config(monkeypatch)
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
 
     assert await database.get_pool() is created_pool
     assert await database.get_pool() is created_pool
-    assert calls == [database.MYSQL_CONFIG]
+    assert calls == [complete]
+
+
+@pytest.mark.asyncio
+async def test_get_pool_rejects_missing_password_before_connector(monkeypatch):
+    called = False
+
+    async def fake_create_pool(**kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(database, "MYSQL_CONFIG", dict(database.MYSQL_CONFIG, password=None))
+    monkeypatch.setattr(database, "_pool", None)
+    monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
+
+    with pytest.raises(LocalMySQLConfigError, match="MYSQL_PASSWORD"):
+        await database.get_pool()
+
+    assert called is False
 
 
 @pytest.mark.asyncio
@@ -180,6 +206,7 @@ async def test_concurrent_first_get_pool_creates_one_shared_pool(monkeypatch):
         await allow_create.wait()
         return pool
 
+    use_complete_mysql_config(monkeypatch)
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(database, "_pool_lock", asyncio.Lock(), raising=False)
     monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)
@@ -206,6 +233,7 @@ async def test_close_pool_waits_for_initialization_and_closes_once(monkeypatch):
         await allow_create.wait()
         return created_pool
 
+    use_complete_mysql_config(monkeypatch)
     monkeypatch.setattr(database, "_pool", None)
     monkeypatch.setattr(database, "_pool_lock", asyncio.Lock(), raising=False)
     monkeypatch.setattr(database.aiomysql, "create_pool", fake_create_pool)

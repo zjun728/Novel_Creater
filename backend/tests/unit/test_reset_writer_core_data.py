@@ -4,6 +4,8 @@ import sys
 
 import pytest
 
+from backend import config as backend_config
+from backend.config import LocalMySQLConfigError
 from backend.scripts.reset_writer_core_data import (
     RESET_LOCK_NAME,
     _recover_failed_commit,
@@ -25,6 +27,39 @@ from backend.tests.support.legacy_writer_core import (
 
 DISPOSABLE = "novel_creator_test_0123456789abcdef0123456789abcdef"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.asyncio
+async def test_cli_default_config_rejects_missing_password_before_connection(monkeypatch):
+    called = False
+
+    async def connection_factory(connection_config):
+        nonlocal called
+        called = True
+        raise AssertionError("must not connect")
+
+    monkeypatch.setattr(
+        backend_config,
+        "MYSQL_CONFIG",
+        dict(backend_config.MYSQL_CONFIG, password=None),
+    )
+
+    with pytest.raises(LocalMySQLConfigError, match="MYSQL_PASSWORD"):
+        await run_cli(
+            [
+                "--database", DISPOSABLE,
+                "--confirm-reset", DISPOSABLE,
+                "--project-title", "永乐大典",
+                "--seed-title", "永乐长明",
+                "--seed-title", "文渊山海",
+                "--seed-title", "典镇山河",
+                "--preferred-provider-name", "local",
+                "--preferred-model", "local-model",
+            ],
+            connection_factory=connection_factory,
+        )
+
+    assert called is False
 
 
 def test_cli_help_exits_zero_with_empty_stderr():
