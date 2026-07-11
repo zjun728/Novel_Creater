@@ -1,0 +1,1 @@
+"""Disposable MySQL integration tests."""

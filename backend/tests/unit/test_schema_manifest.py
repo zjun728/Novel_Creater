@@ -248,19 +248,20 @@ def test_core_contracts_and_provider_constraints_are_explicit():
     for column in (
         "base_url varchar(2048) not null",
         "api_key text not null",
-        "enabled tinyint(1) not null default 1",
+        "enabled tinyint not null default 1",
         "sort_order int not null default 0",
-        "stream tinyint(1) not null default 1",
+        "stream tinyint not null default 1",
         "max_context_tokens int not null",
         "max_output_tokens int not null",
         "temperature decimal(5,3) not null",
         "top_p decimal(5,3) not null",
-        "supports_json tinyint(1) not null default 1",
-        "supports_streaming tinyint(1) not null default 1",
+        "supports_json tinyint not null default 1",
+        "supports_streaming tinyint not null default 1",
         "notes text not null",
         "thinking json null",
     ):
         assert column in providers
+    assert "tinyint(1)" not in providers
     bindings = _table_statement("task_model_bindings")
     assert "unique key uq_binding_project (project_id)" in bindings
     assert "foreign key (source_project_id) references projects(id) on delete set null" in bindings
