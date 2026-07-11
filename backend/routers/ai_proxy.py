@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
 
-from database import fetchone
+from backend.database import fetchone
 
 
 router = APIRouter(tags=["ai-proxy"])

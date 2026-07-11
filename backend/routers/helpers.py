@@ -109,5 +109,5 @@ def convert_rows(rows):
     return [convert_row(r) for r in rows]
 
 async def touch_project(pid: str):
-    from database import execute
+    from backend.database import execute
     await execute("UPDATE projects SET updated_at=%s WHERE id=%s", (int(time.time() * 1000), pid))

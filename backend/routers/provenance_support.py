@@ -5,7 +5,7 @@ only when the target table already has the provenance columns, so older local
 databases remain readable while migrated databases become auditable.
 """
 import json
-from database import execute, fetchall
+from backend.database import execute, fetchall
 
 PROVENANCE_COLUMNS = {
     "provenance": "json",

@@ -1,6 +1,6 @@
 """设定库：人物、势力、地点、体系、物品、关系和状态变更。"""
 from fastapi import APIRouter, Body, HTTPException, Query
-from database import fetchone, fetchall, execute
+from backend.database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, touch_project
 from .guards import ensure_project_without_chapter_content
 from .provenance_support import persist_provenance_if_columns

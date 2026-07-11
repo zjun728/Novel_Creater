@@ -7,16 +7,34 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from database import get_pool, close_pool, ensure_schema
-from routers import projects, providers, chapters, seeds, novel, export, market, settings_library, volumes, correction_tasks, story_blocks, ai_proxy, experience_cards, project_state
+from backend.database import close_pool, connection
+from backend.routers import (
+    ai_proxy,
+    chapters,
+    correction_tasks,
+    experience_cards,
+    export,
+    market,
+    novel,
+    project_state,
+    projects,
+    providers,
+    seeds,
+    settings_library,
+    story_blocks,
+    volumes,
+)
+from backend.schema_version import verify_schema_version
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await get_pool()
-    await ensure_schema()
-    yield
-    await close_pool()
+    try:
+        async with connection() as session:
+            await verify_schema_version(session)
+        yield
+    finally:
+        await close_pool()
 
 
 app = FastAPI(title="Novel Creator API", version="0.1", lifespan=lifespan)

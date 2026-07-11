@@ -601,9 +601,13 @@ git commit -m "feat: define immutable writer core schema manifest"
 - Create: `backend/__init__.py`
 - Create: `backend/tests/support/fakes.py`
 - Create: `backend/tests/unit/test_database_transaction.py`
+- Create: `backend/tests/unit/test_main_lifespan.py`
+- Create: `backend/tests/unit/test_no_runtime_ddl.py`
 - Modify: `backend/config.py`
 - Modify: `backend/database.py`
 - Modify: `backend/main.py`
+- Modify: `backend/routers/*.py` (only package-qualify active `database` imports,
+  including the lazy import in `helpers.py`; do not change route behavior)
 
 - [ ] **Step 1: Write rollback and startup tests**
 
@@ -634,7 +638,11 @@ async def test_transaction_rolls_back_and_releases(monkeypatch, fake_pool):
     assert fake_pool.release_count == 1
 ```
 
-Add a source-level startup invariant test that imports `backend.main.lifespan` with the pool mocked and asserts `verify_schema_version()` is called exactly once while no symbol named `ensure_schema` exists in `backend.database`.
+Add fake-context startup tests that import `backend.main.lifespan` from the repository
+root and prove verification happens exactly once before yielding, schema mismatch is
+not swallowed, and pool closure runs after normal shutdown and application failure.
+Also assert no symbol named `ensure_schema` exists in `backend.database` and that the
+module contains no runtime `CREATE TABLE` or `ALTER TABLE` statements.
 
 - [ ] **Step 2: Verify failure**
 
@@ -699,14 +707,22 @@ async def connection():
 async def transaction():
     pool = await get_pool()
     raw = await pool.acquire()
-    await raw.begin()
     try:
-        yield DatabaseSession(raw)
-    except BaseException:
-        await raw.rollback()
-        raise
-    else:
-        await raw.commit()
+        await raw.begin()
+        session = DatabaseSession(raw)
+        try:
+            yield session
+        except BaseException as body_error:
+            try:
+                await raw.rollback()
+            except BaseException as rollback_error:
+                raise BaseExceptionGroup(
+                    "transaction body failed and rollback also failed",
+                    [body_error, rollback_error],
+                ) from body_error
+            raise
+        else:
+            await raw.commit()
     finally:
         pool.release(raw)
 
@@ -725,7 +741,19 @@ async def fetchall(sql, args=None):
 
 Delete `ensure_schema()` and every runtime `CREATE/ALTER` string.
 
-Set `MYSQL_CONFIG["autocommit"] = True`; explicit transactions call `begin()` and hold one raw connection. Unit tests must prove all repository calls inside CanonService receive the same `DatabaseSession` object.
+Set `MYSQL_CONFIG["autocommit"] = True`; explicit transactions call `begin()` and hold one raw connection. Unit tests must prove all operations inside one transaction use the same `DatabaseSession` and raw connection.
+
+The release boundary covers `begin()`, the yielded body, rollback and commit, and
+calls `pool.release(raw)` exactly once after a successful acquire. A begin failure
+must release without entering the body. A commit failure must propagate and release
+without being reported as success or triggering a compensating rollback. If both the
+body and rollback fail, raise a diagnostic exception group containing both original
+errors; never replace the body error silently. Do not retry or switch connections.
+
+Package-qualify `backend.config`, `backend.database`, `backend.routers` and
+`backend.schema_version`. Mechanically change all active router imports from
+`from database ...` to `from backend.database ...`, including function-local lazy
+imports, while preserving the existing router registration and business logic.
 
 - [ ] **Step 4: Make startup verify, never mutate, the schema**
 
@@ -734,21 +762,22 @@ Set `MYSQL_CONFIG["autocommit"] = True`; explicit transactions call `begin()` an
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    pool = await get_pool()
-    raw = await pool.acquire()
     try:
-        await verify_schema_version(DatabaseSession(raw))
+        async with connection() as session:
+            await verify_schema_version(session)
+        yield
     finally:
-        pool.release(raw)
-    yield
-    await close_pool()
+        await close_pool()
 ```
 
-No exception from schema verification is swallowed. The process refuses to serve requests with missing or mismatched Schema.
+No exception from schema verification is swallowed. Verification must complete
+before lifespan yields, and `close_pool()` runs for verification failure, normal
+shutdown and an exception raised after yield. The process refuses to serve requests
+with missing or mismatched Schema.
 
 - [ ] **Step 5: Run tests**
 
-Run: `python -m pytest backend/tests/unit/test_database_transaction.py backend/tests/unit/test_schema_version.py -q`
+Run: `python -m pytest backend/tests/unit/test_database_transaction.py backend/tests/unit/test_main_lifespan.py backend/tests/unit/test_no_runtime_ddl.py backend/tests/unit/test_schema_version.py -q`
 
 Expected: PASS; commit/rollback/release counts match exactly.
 

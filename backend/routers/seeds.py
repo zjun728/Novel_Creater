@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from database import fetchone, fetchall, execute
+from backend.database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
 from .guards import ensure_project_without_chapter_content
 import uuid, time

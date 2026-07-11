@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 
-from database import fetchone
+from backend.database import fetchone
 
 
 async def _count(sql: str, args: tuple) -> int:

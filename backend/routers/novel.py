@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional, List, Any
-from database import fetchone, fetchall, execute
+from backend.database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows, to_snake, touch_project
 from .provenance_support import persist_provenance_if_columns
 from .guards import ensure_project_without_chapter_content

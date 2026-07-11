@@ -1,7 +1,7 @@
 """创作经验卡：样本来源、经验卡审核、候选标准和正式写作标准。"""
 from pathlib import Path
 from fastapi import APIRouter, Body, HTTPException, Query
-from database import fetchone, fetchall, execute
+from backend.database import fetchone, fetchall, execute
 from .helpers import convert_row, convert_rows
 import hashlib
 import json
