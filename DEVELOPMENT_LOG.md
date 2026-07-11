@@ -39,14 +39,16 @@
 - Provider 敏感行内存核对：`9/9`。
 - API 明文敏感值命中：`0`；精确禁止键命中：`0`。
 - 真实 MySQL 8 cross-server integration：`2/2`。
-- Final M1 gate 基于代码快照 `f9bfd2f`；`npm run test:milestone1` exit `0`。
-- Unit：Python `393`、scripts `24`、frontend `11`。
+- Final M1 gate 基于代码快照 `bc52a1d`；`npm run test:milestone1` exit `0`。
+- Unit：Python `395`、scripts `24`、frontend `11`。
 - Integration：`30 passed, 1 deselected`；disposable databases created `29`、cleaned `29`、remaining `0`。
 - Browser：`2/2`，browser disposable database 已 drop。
 - Post-test product DB counts：`PASS`；gate 结束后端口 `8000` / `5173` free。
 - 产品浏览器：`8` 个产品请求，全部为 `GET`，其中包含 `/api/providers` 配置读取；AI completion / upstream Provider model calls `0`；console errors/warnings `0/0`。
 - 旧 Writer 入口返回项目库，Writer 明确停用。
 - 截图保存在本地忽略目录 `output/playwright/product-ui`，不进入 Git。
+- Final security review 发现 Starlette 发送泛化 500 response 后仍 re-raise，可能由 `uvicorn.error` 通过原始 `exc_info` 记录明文；real-Uvicorn RED 证实 body 安全但 stderr 命中测试 sentinel。
+- `bc52a1d` 为 exact `uvicorn.error` 幂等安装 redaction filter；focused `5/5`，response/process logs sentinel hits `0`，production 无 test routes；final reviewer：`APPROVED`。
 
 完整收口证据见 `docs/development/writer-core-m1-evidence.md`。
 

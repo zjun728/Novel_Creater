@@ -51,16 +51,25 @@ No sensitive row values, raw source rows, connection material, or Provider diagn
 ## Automated evidence
 
 - Real MySQL 8 cross-server integration: `2/2` passed.
-- Final M1 gate code snapshot: `f9bfd2f`.
+- Final M1 gate code snapshot: `bc52a1d`.
 - `npm run test:milestone1`: exit `0`.
 - Unit results:
-  - Python: `393` passed
+  - Python: `395` passed
   - scripts Node tests: `24` passed
   - frontend Node tests: `11` passed
 - Integration suite: `30 passed, 1 deselected`.
 - Disposable database accounting: created `29`, cleaned `29`, remaining `0`.
 - Post-test product database counts: `PASS`.
 - Ports `8000` and `5173` after the gate: free.
+
+## Final Uvicorn log-redaction evidence
+
+- Final review identified that Starlette re-raises an exception after sending the installed generic 500 response, allowing original `exc_info` to reach `uvicorn.error`.
+- A real-Uvicorn RED regression confirmed that the 500 body was safe while captured stderr still contained the test sentinel.
+- At `bc52a1d`, an idempotent redaction filter is installed on exact `uvicorn.error`; focused result: `5/5` passed.
+- Generic response and captured process-log sentinel hits: `0`.
+- The test app and health/failure routes exist only in the test module; production has no test routes.
+- Final reviewer verdict: `APPROVED`.
 
 ## Product browser evidence
 

@@ -53,9 +53,9 @@ Provider 敏感行的内存核对为 `9/9`；API 明文敏感值命中 `0`，精
 ## 当前验收事实
 
 - 真实 MySQL 8 cross-server integration：`2/2`。
-- Final M1 gate 代码快照：`f9bfd2f`。
+- Final M1 gate 代码快照：`bc52a1d`。
 - `npm run test:milestone1`：exit `0`。
-- Unit：Python `393`、scripts `24`、frontend `11`。
+- Unit：Python `395`、scripts `24`、frontend `11`。
 - Integration：`30 passed, 1 deselected`；disposable databases created `29`、cleaned `29`、remaining `0`。
 - Browser：`2/2`；browser disposable database 已 drop。
 - Post-test product DB counts：`PASS`。
@@ -63,6 +63,8 @@ Provider 敏感行的内存核对为 `9/9`；API 明文敏感值命中 `0`，精
 - 产品浏览器：`8` 个产品 `GET` 请求，其中包含 `/api/providers` 配置读取；AI completion / upstream Provider model calls 为 `0`。
 - Console errors / warnings：`0 / 0`。
 - 截图只保存在本地忽略目录 `output/playwright/product-ui`，不进入 Git。
+- Final security review 发现 Starlette 在发送 500 handler response 后 re-raise，原始 `exc_info` 可能由 `uvicorn.error` 明文记录；real-Uvicorn RED 证实 response 安全但 stderr 命中测试 sentinel。
+- `bc52a1d` 对 exact `uvicorn.error` 幂等安装 redaction filter 后 focused `5/5`；response 与子进程日志 sentinel hits `0`，production 无 test routes；final reviewer：`APPROVED`。
 
 实机 dry-run 曾暴露两个编码问题，均已 TDD 修复：
 
