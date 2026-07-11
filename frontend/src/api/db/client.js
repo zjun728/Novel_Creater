@@ -58,7 +58,13 @@ export const api = {
     create: data => post('/projects', data),
     get: projectId => get(`/projects/${projectId}`),
     contentState: projectId => get(`/projects/${projectId}/content-state`),
-    update: (projectId, data) => put(`/projects/${projectId}`, data),
+    update: (projectId, data) => put(`/projects/${projectId}`, {
+      title: data.title,
+      genre: data.genre,
+      description: data.description,
+      targetWords: data.targetWords,
+      targetChapters: data.targetChapters,
+    }),
     delete: projectId => del(`/projects/${projectId}`),
   },
 

@@ -5,6 +5,11 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
+from backend.repositories.project_lifecycle import (
+    lock_active_project,
+    read_active_project,
+)
+
 
 AVAILABLE_PROVIDER_PREDICATE = """lifecycle_status='active'
   AND enabled=1
@@ -31,7 +36,8 @@ class ModelBindingRepository:
 
     async def lock_previous_project(self, session, project_id: str):
         return await session.fetchone(
-            """SELECT id FROM projects WHERE id<>%s
+            """SELECT id FROM projects
+               WHERE id<>%s AND status<>'archived'
                ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE""",
             (project_id,),
         )
@@ -46,14 +52,10 @@ class ModelBindingRepository:
         )
 
     async def read_project(self, session, project_id: str):
-        return await session.fetchone(
-            "SELECT id FROM projects WHERE id=%s", (project_id,)
-        )
+        return await read_active_project(session, project_id)
 
     async def lock_project(self, session, project_id: str):
-        return await session.fetchone(
-            "SELECT id FROM projects WHERE id=%s FOR UPDATE", (project_id,)
-        )
+        return await lock_active_project(session, project_id)
 
     @staticmethod
     def _read_current_sql() -> str:

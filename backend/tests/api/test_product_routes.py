@@ -116,3 +116,22 @@ def test_archived_project_content_state_has_exact_domain_404(monkeypatch):
     assert response.json()["code"] == "ProjectNotFound"
     assert response.json()["message"] == ProjectNotFound.message
     assert response.json()["correlationId"]
+
+
+def test_project_update_rejects_status_as_an_extra_field(monkeypatch):
+    class FakeService:
+        async def update(self, project_id, command):
+            raise AssertionError("status payload must be rejected before service")
+
+    monkeypatch.setattr(projects, "_service", FakeService())
+    app = FastAPI()
+    app.include_router(projects.router, prefix="/api")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.put(
+        "/api/projects/p1", json={"title": "Changed", "status": "drafting"}
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert any(item["loc"][-1] == "status" for item in detail)

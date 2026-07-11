@@ -6,6 +6,11 @@ from collections.abc import Mapping
 import time
 from uuid import uuid4
 
+from backend.repositories.project_lifecycle import (
+    lock_active_project,
+    read_active_project,
+)
+
 
 class ProjectRepository:
     """All methods require the caller's explicit database session."""
@@ -40,17 +45,10 @@ class ProjectRepository:
         )
 
     async def get(self, session, project_id: str):
-        return await session.fetchone(
-            "SELECT * FROM projects WHERE id=%s AND status<>'archived'",
-            (project_id,),
-        )
+        return await read_active_project(session, project_id)
 
     async def lock_active_project(self, session, project_id: str):
-        return await session.fetchone(
-            """SELECT * FROM projects
-               WHERE id=%s AND status<>'archived' FOR UPDATE""",
-            (project_id,),
-        )
+        return await lock_active_project(session, project_id)
 
     async def archive(self, session, project_id: str) -> bool:
         changed = await session.execute(

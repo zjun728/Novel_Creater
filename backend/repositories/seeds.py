@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+from backend.repositories.project_lifecycle import (
+    lock_active_project,
+    read_active_project,
+)
+
 
 class SeedRepository:
     """Every method uses the explicit session supplied by its caller."""
 
     async def lock_project(self, session, project_id: str):
-        return await session.fetchone(
-            "SELECT id FROM projects WHERE id=%s FOR UPDATE", (project_id,)
-        )
+        return await lock_active_project(session, project_id)
 
     async def read_project(self, session, project_id: str):
-        return await session.fetchone(
-            "SELECT id FROM projects WHERE id=%s", (project_id,)
-        )
+        return await read_active_project(session, project_id)
 
     async def count_final_chapters(self, session, project_id: str) -> int:
         row = await session.fetchone(
