@@ -12,6 +12,9 @@ from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption
 
 
+EXPECTED_COLLECTION_MAX_ITEMS = 20
+
+
 def seed() -> SeedPayload:
     return SeedPayload(
         title="典镇山河",
@@ -37,7 +40,7 @@ def engine() -> StoryEngineOption:
         ensembleRoles=({"role": "新县令", "purpose": "制造秩序压力。"},),
         advantageAndCost="修史可号令镇物，但会失去私人记忆。",
         satisfactionSources=("旧案翻转",),
-        longFormVariation="县、州、王朝三层旧志扩大冲突。",
+        longFormVariation=("县、州、王朝三层旧志扩大冲突。",),
         endingAnchor="主角把自己的名字写入末页封住黑潮。",
         risks=("旧案结构重复",),
         differentiation="地方志修复是有代价的力量系统。",
@@ -189,3 +192,26 @@ def test_style_contract_collection_items_are_bounded_and_strict(
 ):
     with pytest.raises(ValidationError):
         StyleContractPayload(**style_values(**{field_name: (invalid_item,)}))
+
+
+@pytest.mark.parametrize("field_name", ("characterVoices", "primaryRules", "risks"))
+def test_style_contract_collections_have_an_explicit_item_count_limit(
+    field_name: str,
+):
+    assert len(
+        StyleContractPayload(
+            **style_values(
+                **{field_name: ("规则",) * EXPECTED_COLLECTION_MAX_ITEMS}
+            )
+        ).model_dump()[field_name]
+    ) == EXPECTED_COLLECTION_MAX_ITEMS
+
+    with pytest.raises(ValidationError):
+        StyleContractPayload(
+            **style_values(
+                **{
+                    field_name: ("规则",)
+                    * (EXPECTED_COLLECTION_MAX_ITEMS + 1)
+                }
+            )
+        )

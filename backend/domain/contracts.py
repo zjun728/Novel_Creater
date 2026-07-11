@@ -7,7 +7,10 @@ from typing import Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.domain.seeds import SeedPayload
-from backend.domain.story_engines import StoryEngineOption
+from backend.domain.story_engines import (
+    CONTRACT_COLLECTION_MAX_ITEMS,
+    StoryEngineOption,
+)
 
 
 CONTRACT_TEXT_MAX_LENGTH = 2_000
@@ -61,12 +64,21 @@ class StyleContractPayload(BaseModel):
     sentenceParagraphRhythm: ContractText
     dictionDensity: ContractText
     dialogueAndSubtext: ContractText
-    characterVoices: tuple[ContractText, ...] = Field(min_length=1)
+    characterVoices: tuple[ContractText, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
     emotionAndInteriority: ContractText
     actionExplanationEnvironment: ContractText
-    primaryRules: tuple[ContractText, ...] = Field(min_length=1)
+    primaryRules: tuple[ContractText, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
     secondaryFlavor: ContractText | None = None
-    risks: tuple[ContractText, ...] = Field(min_length=1)
+    risks: tuple[ContractText, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
 
     @model_validator(mode="after")
     def validate_secondary_flavor(self) -> Self:

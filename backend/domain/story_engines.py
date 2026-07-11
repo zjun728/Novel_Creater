@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 STORY_ENGINE_TEXT_MAX_LENGTH = 2_000
+CONTRACT_COLLECTION_MAX_ITEMS = 20
 StoryEngineText = Annotated[
     str,
     Field(min_length=1, max_length=STORY_ENGINE_TEXT_MAX_LENGTH),
@@ -44,12 +45,24 @@ class StoryEngineOption(BaseModel):
     sustainedPressure: StoryEngineText
     growthDirection: StoryEngineText
     conflictLoop: StoryEngineText
-    ensembleRoles: tuple[EnsembleRole, ...] = Field(min_length=1)
+    ensembleRoles: tuple[EnsembleRole, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
     advantageAndCost: StoryEngineText
-    satisfactionSources: tuple[StoryEngineText, ...] = Field(min_length=1)
-    longFormVariation: StoryEngineText
+    satisfactionSources: tuple[StoryEngineText, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
+    longFormVariation: tuple[StoryEngineText, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
     endingAnchor: StoryEngineText
-    risks: tuple[StoryEngineText, ...] = Field(min_length=1)
+    risks: tuple[StoryEngineText, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
     differentiation: StoryEngineText
 
 

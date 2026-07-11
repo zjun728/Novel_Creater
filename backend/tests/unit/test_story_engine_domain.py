@@ -11,6 +11,9 @@ from backend.domain.story_engines import (
 )
 
 
+EXPECTED_COLLECTION_MAX_ITEMS = 20
+
+
 def engine_values(name: str = "县志镇潮", **overrides: object) -> dict[str, object]:
     values: dict[str, object] = {
         "name": name,
@@ -24,7 +27,7 @@ def engine_values(name: str = "县志镇潮", **overrides: object) -> dict[str, 
         ),
         "advantageAndCost": "修史可号令镇物，但每次都会失去一段私人记忆。",
         "satisfactionSources": ("旧案翻转", "镇物奇观"),
-        "longFormVariation": "县、州、王朝三层旧志逐步扩大冲突。",
+        "longFormVariation": ("县、州、王朝三层旧志逐步扩大冲突。",),
         "endingAnchor": "主角将自己的名字写入最后一页以封住黑潮。",
         "risks": ("单元旧案可能重复",),
         "differentiation": "把地方志修复变成有明确代价的力量系统。",
@@ -79,7 +82,7 @@ def test_story_engine_strings_are_non_empty_bounded_and_strict():
 
 @pytest.mark.parametrize(
     "field_name",
-    ("ensembleRoles", "satisfactionSources", "risks"),
+    ("ensembleRoles", "satisfactionSources", "longFormVariation", "risks"),
 )
 def test_story_engine_collections_are_non_empty_strict_tuples(field_name: str):
     with pytest.raises(ValidationError):
@@ -88,13 +91,17 @@ def test_story_engine_collections_are_non_empty_strict_tuples(field_name: str):
     list_value = {
         "ensembleRoles": [{"role": "盟友", "purpose": "制造选择"}],
         "satisfactionSources": ["反转"],
+        "longFormVariation": ["扩大舞台"],
         "risks": ["重复"],
     }[field_name]
     with pytest.raises(ValidationError):
         make_engine(**{field_name: list_value})
 
 
-@pytest.mark.parametrize("field_name", ("satisfactionSources", "risks"))
+@pytest.mark.parametrize(
+    "field_name",
+    ("satisfactionSources", "longFormVariation", "risks"),
+)
 @pytest.mark.parametrize(
     "invalid_item",
     ("", " \t\n", "x" * (STORY_ENGINE_TEXT_MAX_LENGTH + 1), 1),
@@ -105,6 +112,38 @@ def test_story_engine_string_collection_items_are_bounded_and_strict(
 ):
     with pytest.raises(ValidationError):
         make_engine(**{field_name: (invalid_item,)})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "item"),
+    (
+        ("ensembleRoles", {"role": "盟友", "purpose": "制造选择"}),
+        ("satisfactionSources", "反转"),
+        ("longFormVariation", "扩大舞台"),
+        ("risks", "重复"),
+    ),
+)
+def test_story_engine_collections_have_an_explicit_item_count_limit(
+    field_name: str,
+    item: object,
+):
+    assert len(
+        make_engine(
+            **{field_name: (item,) * EXPECTED_COLLECTION_MAX_ITEMS}
+        ).model_dump()[field_name]
+    ) == EXPECTED_COLLECTION_MAX_ITEMS
+
+    with pytest.raises(ValidationError):
+        make_engine(**{field_name: (item,) * (EXPECTED_COLLECTION_MAX_ITEMS + 1)})
+
+
+def test_long_form_variation_requires_a_tuple_even_for_one_item():
+    assert make_engine(longFormVariation=("扩大舞台",)).longFormVariation == (
+        "扩大舞台",
+    )
+
+    with pytest.raises(ValidationError):
+        make_engine(longFormVariation="扩大舞台")
 
 
 def test_story_engine_and_nested_roles_are_frozen():
