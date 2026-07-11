@@ -1,94 +1,80 @@
 # 当前项目状态
 
-> 新线程或上下文压缩后，先读本文件。历史过程报告只在追溯问题时查看。
+> 新线程或上下文压缩后先读本文件。日期：`2026-07-11`。
 
-## 文档优先级
+## 当前事实来源
 
-1. `STORY_QUALITY_CHARTER.md`：最高故事质量原则。
-2. `CURRENT_PROJECT_STATE.md`：当前有效状态和下一步。
-3. `PRODUCT_DEVELOPMENT_PLAN.md`：当前产品规划。
-4. `FUNCTION_TEST_CHECKLIST.md`：验收清单。
-5. `WRITING_STYLE_STANDARDS.md`：写作风格标准库。
+按以下顺序理解 Writer Core V1：
 
-不要从旧测试报告、旧临时脚本或旧提交里恢复写作规则，除非主产品线程重新确认。
+1. `docs/superpowers/specs/2026-07-11-writer-core-v1-design.md`：已批准的总体设计。
+2. `docs/superpowers/plans/2026-07-11-writer-core-v1-roadmap.md`：M1–M8 交付顺序。
+3. `docs/development/writer-core-m1-evidence.md`：M1 实机与浏览器证据。
+4. `CURRENT_PROJECT_STATE.md`：当前有效状态和唯一允许的下一步。
+5. `PRODUCT_DEVELOPMENT_PLAN.md`：当前里程碑规划。
 
-## 当前长篇项目
+旧长篇项目、旧章节进度、旧状态链、旧 runner 和旧 artifact 不再是当前事实，也不得恢复为兼容路径或 Ready 证据。
 
-- 项目名：`LongformBrowser240w_20260625_153055`
-- projectId：`2da6152a-c083-41ee-8bcb-f11b0fae387d`
-- 当前进度：第 90 章 final，《玉牌》
-- 第 90 finalVersionId：`db524497-287f-4cc4-87a3-fdc16baec455`
-- 第 91 章：不存在
-- 第 91 beat plan：不存在
-- 当前唯一 active story block：《商盟玉牌与两线抉择》
-- 当前下一阶段：`stage-2`，在缺指男人交易时限下确定救小九、探商盟或并行反制方案。
+## 当前结论
 
-最新只读验收状态：
+- Branch: `codex/writer-core-v1`
+- Baseline: `4b85e8d`
+- 当前里程碑：M1 已完成
+- 证据等级：**L4 M1 No-Provider Ready**，不得升级表述
+- Writer 状态：明确停用；旧 Writer 入口返回项目库
 
-- pending settings/facts：`0/0`
-- active relation count：`43`
-- relation risk synthetic/self/wrong-layer/missingEndpoint：`0/0/0/0`
-- 83-90 已 final 正文不得重写；能 metadata-only 修复的只修元数据。
+M1 只证明 Schema、Canon/Projection 基础、事务边界、产品只读页面和无 Provider 的产品状态。它不证明正文生成、Provider 链路或内容质量。
 
-## 当前架构状态
+## 当前本机产品状态
 
-已完成一轮架构规范整理与功能解耦治理，恢复长篇测试的门槛已通过：
+- 产品数据库：MySQL `8.4.10`，`127.0.0.1:3307/novel_creator`
+- 只读回滚源：MySQL `5.7.25-log`
+- Schema version：`writer-core-v1.0.0`
+- Manifest：`0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826`
+- 表数量：`34`
+- Canon head / Projection head：`0 / 0`
+- 空派生写作表：`25/25`
 
-- 章名模块已迁移到 `frontend/src/domain/chapter-title/`，以正向素材候选为主，坏标题规则只作兜底。
-- `WriterView.vue` 的若干流程编排已抽到 `frontend/src/application/writer-flow/`。
-- 正文草稿 AI 内容辅助已抽到 `frontend/src/domain/chapter-draft/`。
-- live runner 的冻结护栏、健康审计、报告写入、服务管理已沉淀到 `tmp/live-qa/`。
-- 定稿状态机增加 marker/action、retry、postprocess、story block settlement 等合同。
-- 第 89、90 单章 canary 已验证真实链路未越界：未启动后续章，未污染关系，prompt 边界保持 1/1/1。
+旧 MySQL 5.7 仅用于只读回滚和来源核对。产品运行不读取旧库，不保留 dual-write、legacy fallback 或旧状态兼容。
 
-架构治理的当前结论：不继续大重构，下一步用小范围真实生成验证剩余阶段。
+## 当前项目基础数据
 
-## 当前产品边界
+- 项目：`永乐大典`
+- Project ID：`88d63943-ab7d-42c4-9319-998b6d61e413`
+- 种子：`典镇山河`（selected）、`文渊山海`、`永乐长明`
+- Provider profiles：`9`
+- Preferred Provider/model：`联通云 / deepseek-v4-flash`
+- 任务级绑定项：`8`，全部指向 preferred Provider/model
 
-- 故事块是卷与章节之间的剧情任务单元，不是单章容器。
-- 故事块只能向前滚动；已定稿章节依赖的目标、入场状态、已完成阶段和故事任务不能回改。
-- 当前章小纲必须绑定当前 active story block 的当前 planned stage。
-- 正文生成只能读取已激活正式写作标准；经验卡和候选标准不能直连正文。
-- 正式写作标准低量调用：每章最多 1 条原则、1 个原创微示范、1 条反 AI 提醒。
-- 样本库只提供抽象写法参考，不得泄漏原文、人物名、地名、专有设定或 source 字段。
-- 失败即停，不通过新建项目、跳章或改报告标签掩盖问题。
+Provider 敏感行的内存核对为 `9/9`；API 明文敏感值命中 `0`，精确禁止键命中 `0`。M1 没有调用 AI 或 Provider。
 
-## 当前质量方向
+## 当前验收事实
 
-平台目标是低理解成本地讲一个吸引人的长篇故事。
+- 真实 MySQL 8 cross-server integration：`2/2`。
+- 最新已知 `npm test`：Python `393`、scripts `24`、frontend `11`；最终主控会 fresh 复跑。
+- 产品浏览器：仅 `8` 个产品 `GET` 请求，AI/Provider 请求 `0`。
+- Console errors / warnings：`0 / 0`。
+- 截图只保存在本地忽略目录 `output/playwright/product-ui`，不进入 Git。
 
-当前质量优先级：
+实机 dry-run 曾暴露两个编码问题，均已 TDD 修复：
 
-1. 读者愿意继续看。
-2. 故事清楚。
-3. 长篇连续性稳定。
-4. 人物有选择和后果。
-5. 阅读负担低。
-6. 文字自然。
-7. 降低 AI 痕迹。
+- `latin1` 连接下，中文 title 普通等值不可靠；固定查询改为 ASCII-only 的 UTF-8 hex `BINARY` 精确条件。
+- mysql client stdout 可含非 UTF-8 字节；四条固定查询统一使用 ASCII `HEX(JSON_OBJECT(...))` 传输，reader 以 bytes 严格解码。
 
-AI 风格指标主要用于审稿和 QA 观察，不应压过故事清楚度，也不应把正文 prompt 变成检查清单。
+## 唯一允许的下一步
 
-## 下一步
+下一步只允许：**编写并审计 M2 detailed plan**。
 
-下一步建议执行：**第 91 章单章 canary 验证**。
+M2 规划范围：
 
-硬边界：
+- `CreationContract`
+- `StyleContract`
+- Corpus assets
+- Experience assets
 
-- 只生成并尝试定稿第 91 章。
-- 成功或失败都立即停止。
-- 不启动第 92 章，不跑第 50 章，不跑范围生成。
-- 不新建项目，不改模型配置，不改 prompt，不改正式写作标准内容。
-- 不重写 83-90 正文。
+当前不得开始 M2 实现，不得调用 Provider，不得生成正文，不得恢复旧兼容链。M2 详细计划经单独批准后，才可进入实现。
 
-第 91 的核心验收点：
-
-- 跑前第 91 章和第 91 beat plan 仍不存在。
-- 第 91 绑定《商盟玉牌与两线抉择》stage-2。
-- 不重复 stage-1 的伤势处理/玉牌判读。
-- 不跳到 stage-3/4 直接执行商盟潜入或交易反制。
-- 定稿后 pending settings/facts 仍为 0/0，关系风险仍为 0/0/0/0。
+M2 之后继续按 roadmap 顺序推进：M3 滚动规划、M4 章节会话与候选、M5 场景生成与审核、M6 原子定稿、M7 Writer UI、M8《典镇山河》30 章人工验收。
 
 ## 文档纪律
 
-`CURRENT_PROJECT_STATE.md`、`PRODUCT_DEVELOPMENT_PLAN.md` 和 `DEVELOPMENT_LOG.md` 只记录当前有效事实、产品边界和决策级总结。详细 live 报告、runner 产物、临时诊断、历史复盘默认不入库；需要追溯时看 git 历史或本地短期产物。
+当前状态文档只记录已取得的证据等级和当前授权。没有 Provider 调用、正文生成和人工阅读证据时，不得写更高 Ready 等级、产品完成或内容质量结论。

@@ -1,113 +1,57 @@
 # 开发日志
 
-> 当前轻量开发日志。只记录仍有效的产品级决策和验证结论；完整运行产物不入本文档。
+> 只保留当前仍有效的决策级记录。日期：`2026-07-11`。不粘贴密钥、原始运行日志或本地截图。
 
-## 2026-06-17 文档事实来源清理
+## 2026-07-11 Writer Core V1 reset 决策
 
-建立新的当前事实来源：
+- 批准 `docs/superpowers/specs/2026-07-11-writer-core-v1-design.md` 为总体产品设计。
+- 批准 `docs/superpowers/plans/2026-07-11-writer-core-v1-roadmap.md` 为 M1–M8 交付顺序。
+- 唯一实施基线为 `4b85e8d`，实施分支为 `codex/writer-core-v1`。
+- 采用“保留产品外壳、替换写作内核”，不恢复旧数据库结构、旧 API、旧状态链、dual-write、legacy fallback 或旧 runner。
+- M1 只建设 Schema、Canon/Projection、实体身份、事务基础和只读产品入口；Writer 在 M1 保持停用。
 
-- `STORY_QUALITY_CHARTER.md`
-- `CURRENT_PROJECT_STATE.md`
-- `PRODUCT_DEVELOPMENT_PLAN.md`
-- `FUNCTION_TEST_CHECKLIST.md`
+## 2026-07-11 跨库 reconciliation
 
-旧长日志、旧真实流程报告、截图和临时补丁记录不再作为默认事实来源。后续开发线程改变写作规则、硬门禁、故事块边界、定稿行为或 prompt 前，必须先核对当前事实文档。
+本机产品状态统一到 MySQL `8.4.10` 的 `127.0.0.1:3307/novel_creator`。MySQL `5.7.25-log` 只读保留为回滚来源，不参与产品运行。
 
-## 2026-06-17 故事块滚动规划准则
+迁移后的 foundation：
 
-新增故事块作为分卷规划和章节小纲之间的正式规划层。
+- `永乐大典`，Project ID `88d63943-ab7d-42c4-9319-998b6d61e413`
+- `典镇山河`（selected）、`文渊山海`、`永乐长明`
+- `9` 个 Provider profiles
+- Preferred Provider/model：`联通云 / deepseek-v4-flash`
+- `8` 个任务级绑定项
 
-有效边界：
+未迁移旧派生写作状态。Writer Core Schema 为 `writer-core-v1.0.0`，manifest 为 `0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826`，共 `34` 张表；Canon/Projection heads 为 `0/0`，`25/25` 张派生写作表为空。
 
-- 故事块控制一段连续剧情的目标、功能、压力、人物变化和未解决项。
-- 故事块不预设固定章节数。
-- 每章定稿后执行块级回看。
-- 故事块只能向前滚动，已定稿章节依赖的目标、入场状态、已完成阶段和故事任务不能回改。
-- `adjust_remaining_stages` 只调整尚未执行、未被小纲引用、未被定稿章节依赖的剩余阶段。
+## 2026-07-11 实机 dry-run 编码修复
 
-## 2026-06-26 故事性与人物血肉 v1
+跨库 dry-run 暴露并通过 TDD 修复两个 MySQL 5.7 编码边界：
 
-第 1-20 章只读复盘确认：主链路能推进，但故事质量短板从链路正确性转为人物关系、选择代价和场景停留。
+1. `latin1` 连接下，非 ASCII title literal 的普通等值无法稳定命中相同 UTF-8 bytes。固定项目/种子过滤条件改为 ASCII-only 的 UTF-8 hex `BINARY` 精确比较。
+2. mysql client stdout 可能包含非 UTF-8 byte，导致 text-mode subprocess 在 reader thread 失败。四条固定 source `SELECT` 统一输出 `HEX(JSON_OBJECT(...))`；客户端捕获 bytes，并严格执行 ASCII hex、UTF-8 和 JSON object 解码。
 
-有效改造方向：
+修复没有扩大 whitelist、表或列，也没有写入旧库。错误路径只返回泛化错误，不回显原始输出。
 
-- 故事块增加人物关系任务。
-- 小纲增加情绪锚点。
-- 正文提示保持轻量，只做短量正向引导。
-- 设定呈现优先写行动后果。
-- 重要配角建立声音卡。
+## 2026-07-11 M1 证据与结论
 
-该方向不得演变为正文 prompt 的完整 QA 清单。
+- 证据等级：**L4 M1 No-Provider Ready**，仅此等级。
+- Provider 敏感行内存核对：`9/9`。
+- API 明文敏感值命中：`0`；精确禁止键命中：`0`。
+- 真实 MySQL 8 cross-server integration：`2/2`。
+- 产品浏览器：`8` 个产品请求，全部为 `GET`；AI/Provider 请求 `0`；console errors/warnings `0/0`。
+- 旧 Writer 入口返回项目库，Writer 明确停用。
+- 最新已知 `npm test`：Python `393`、scripts `24`、frontend `11`；最终主控会 fresh 复跑。
+- 截图保存在本地忽略目录 `output/playwright/product-ui`，不进入 Git。
 
-## 2026-06-28 至 2026-06-29 样本库、经验卡与正式标准边界
+完整收口证据见 `docs/development/writer-core-m1-evidence.md`。
 
-样本库和经验卡已进入产品化方向：
+M1 没有 Provider 调用、正文生成或人工内容验收，因此没有正文质量结论，也不授予更高 Ready 等级。
 
-- 样本库用于抽象创作经验，不复制原文。
-- 经验卡和候选标准不能直连正文。
-- 正文只能读取已激活正式写作标准。
-- 正式标准低量调用：1 条原则、1 个原创微示范、1 条反 AI 提醒。
-- 报告与合同持续检查 `sampleLeakageDetected=false`、`hasExperienceCardDirectField=false`、`sourceFieldsStripped=true`。
+## 下一步决策
 
-## 2026-06-29 至 2026-06-30 章名重构与架构治理
-
-章名从黑名单补丁转为正向素材候选优先：
-
-- 关键地点、物件、人物、组织、武器功法、阶段答案等朴素目录名优先。
-- 对白碎片、位置残片、默认章名只作为拒绝项。
-- 章名逻辑沉淀到 `frontend/src/domain/chapter-title/`。
-
-架构治理完成一轮可恢复测试门槛：
-
-- `frontend/src/application/writer-flow/` 承接 WriterView 流程 adapter。
-- `frontend/src/domain/chapter-draft/` 承接正文草稿 AI 内容辅助。
-- `tmp/live-qa/` 承接 runner freeze guards、project health audit、report writer、runtime config 和 service manager。
-- 定稿状态机补齐 marker/action、retry、postprocess、story block settlement 合同。
-
-结论：不继续大重构，回到单章 canary 验证真实链路。
-
-## 2026-06-30 第 89/90 章 canary 与故事块切换
-
-第 89 章单章 canary 通过：
-
-- 第 89 final：《地下仓库》
-- finalVersionId：`3ca8b60f-b0d7-4957-ba30-6580cac31e20`
-- 未启动第 90/50。
-- pending settings/facts：`0/0`
-- relation risk：`0/0/0/0`
-
-第 89 后发现旧块《东城染坊取物》已完成但仍 active，已做 metadata-only 修正：
-
-- 旧块 completed。
-- 新 active story block：《商盟玉牌与两线抉择》。
-
-第 90 章单章 canary 通过：
-
-- 第 90 final：《玉牌》
-- finalVersionId：`db524497-287f-4cc4-87a3-fdc16baec455`
-- 正确绑定新块 stage-1。
-- 第 91 不存在。
-- pending settings/facts：`0/0`
-- relation risk：`0/0/0/0`
-
-第 90 触及未来阶段，已做第 91 前 metadata-only replan：
-
-- stage-1 保持 completed，completedChapterNum=90。
-- stage-2/3/4 保持 planned，并根据第 90 的未来阶段证据重排。
-- nextStageSuggestion 指向 stage-2。
-
-## 下一步
-
-执行第 91 章单章 canary。成功或失败都停止，不直接扩大到 92-94。
-
-第 91 重点验收：
-
-- 正确绑定《商盟玉牌与两线抉择》stage-2。
-- 不重复 stage-1 的伤势处理/玉牌判读。
-- 不跳到 stage-3/4。
-- 不启动第 92/50。
-- prompt、正式标准、样本库、经验卡、关系风险和 pending 后处理边界保持稳定。
+当前只允许编写和审计 M2 detailed plan，范围为 `CreationContract`、`StyleContract`、Corpus assets 和 Experience assets。详细计划批准前不开始 M2 实现。M3–M8 继续服从 Writer Core V1 roadmap。
 
 ## 日志纪律
 
-不要把完整测试日志粘贴进本文件。详细运行产物默认不入库；必要结论应沉淀为当前事实、产品边界或验收清单。
+本文只记录当前有效决策和证据摘要。原始 DB 输出、浏览器 network/console dump、Provider 配置值、截图和完整测试日志不进入本文档。

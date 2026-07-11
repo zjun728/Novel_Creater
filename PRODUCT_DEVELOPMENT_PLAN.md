@@ -1,142 +1,86 @@
 # 产品开发规划
 
-> 当前有效产品规划。旧阶段测试结论和临时补丁记录不再作为默认事实来源。
+> 当前有效规划。日期：`2026-07-11`。
 
-## 1. 事实来源
+## 1. 唯一规划来源
 
-产品判断按以下顺序服从：
+产品规划以以下两份批准文档为准：
 
-1. `STORY_QUALITY_CHARTER.md`
-2. `CURRENT_PROJECT_STATE.md`
-3. 本文件
-4. `FUNCTION_TEST_CHECKLIST.md`
+1. `docs/superpowers/specs/2026-07-11-writer-core-v1-design.md`
+2. `docs/superpowers/plans/2026-07-11-writer-core-v1-roadmap.md`
 
-历史运行报告和临时诊断只用于追溯，不用于直接恢复旧规则。
+总体设计定义产品规则，roadmap 定义 M1–M8 的交付顺序。本文件只汇总当前完成度和下一里程碑授权，不修改总体设计。
+
+实施分支为 `codex/writer-core-v1`，唯一基线为 `4b85e8d`。旧数据库结构、旧 API、旧独立写作状态链、旧 runner 和旧 artifact 不恢复，不增加兼容层、dual-write 或 fallback。
 
 ## 2. 产品目标
 
-Novel Creator 的目标是通过可控链路帮助用户持续创作长篇小说：
+Writer Core V1 采用“保留产品外壳、替换写作内核”的路线：后端是正式状态的唯一写入口，Canon 是已发生事实的唯一事实源，作者对候选、ChangeSet 和定稿拥有最终决定权。
 
-市场/选题 -> 种子 -> 创作圣经 -> 设定库 -> 分卷规划 -> 故事块滚动规划 -> 当前章小纲 -> 正文草稿 -> 审稿/修订 -> 定稿 -> 记忆/设定提取 -> 块级回看 -> 下一章。
+完整 V1 目标仍是通过正式产品 UI 手动完成《典镇山河》前 30 章，并经过 Provider、事务、浏览器和人工内容验收。M1 只是这一依赖链的基础，不代表完整产品可写。
 
-平台需要同时保证：
+## 3. M1 — 已完成
 
-- 长篇连续性。
-- 方向可控。
-- 章节可读、好看、有推进。
-- 人物有选择、代价和关系变化。
-- 阅读负担低。
-- AI 输出失败时可恢复。
+M1 已完成干净 Schema、Canon/Projection 基础、实体身份、事务边界和产品基础页收束。
 
-所有模块最终服务于：**低理解成本地讲一个吸引人的故事**。
+当前证据：
 
-## 3. 当前核心模块边界
+- 等级：**L4 M1 No-Provider Ready**
+- 产品数据库：MySQL `8.4.10`，`127.0.0.1:3307/novel_creator`
+- Schema：`writer-core-v1.0.0`
+- Manifest：`0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826`
+- Foundation：`永乐大典`、三个种子、9 个 Provider profiles、8 个任务级绑定项
+- Canon/Projection：`0 / 0`
+- 空派生写作表：`25/25`
+- Writer：停用；旧 Writer 入口返回项目库
+- AI/Provider 调用：`0`
 
-### 故事块
+完整证据见 `docs/development/writer-core-m1-evidence.md`。
 
-- 故事块是分卷和章节之间的剧情任务单元，不是单章容器。
-- 故事块不固定章节数，章节数量由实际阶段自然决定。
-- 小纲必须绑定当前 active story block 的当前 planned stage。
-- 每章定稿后执行块级回看，判断继续当前块、调整剩余阶段、结束当前块或开启新块。
-- 已定稿章节依赖的 `goal`、`entry_state`、已完成阶段和故事任务不能回改。
-- `adjust_remaining_stages` 只调整未执行、未被小纲引用、未被定稿章节依赖的未来阶段。
+## 4. M2 — 待编写并审计详细计划
 
-### 章节小纲
+M2 名称：创作契约、模型绑定、风格/语料/经验资产。
 
-- 小纲是正文质量的直接上游。
-- 小纲先描述具体故事事件，再承载主题和情绪。
-- 小纲要短、可执行，但不能变成机械字段补全。
-- 如果正文触及未来阶段，下一章前先做 metadata-only replan 预检。
+详细计划文件尚待创建：
 
-### 正文草稿
+`docs/superpowers/plans/2026-07-11-creation-contract-and-assets.md`
 
-- 正文生成保持轻量，默认大白话、可视动作、真实反应。
-- 正文完成本章事件，不把多章内容塞进一章。
-- 正文 prompt 不携带完整审稿 rubric。
-- 降低 AI 风格痕迹不能压过故事清楚度。
+M2 的规划范围必须覆盖：
 
-### 正式写作标准、样本库和经验卡
+- `CreationContract`：从 selected seed、故事发动机和作者选择形成明确的项目创作契约。
+- `StyleContract`：主风格、次要风味、偏好和禁忌的可确认契约。
+- Corpus assets：本机原始语料、文件哈希、章节边界、规范化文本、索引和分析版本。
+- Experience assets：可复用的高质量经验卡、原创微示范和结构化方法。
+- Model bindings：新项目复制与逐项确定性回退；无 enabled model 时阻止 AI 操作。
 
-- 正文生成只能读取已激活正式写作标准。
-- 经验卡和候选标准不能直连正文。
-- 每章正式标准低量调用：最多 1 条原则、1 个原创微示范、1 条反 AI 提醒。
-- 样本库只提供抽象写法参考，不得泄漏原文、人物名、地名、专有设定、标志性表达或 source 字段。
-- 样本库和经验卡的目标是提升真人感、人物血肉和故事推进，不是堆规则清单。
+M2 详细计划必须先对照总体设计和 roadmap 审计，明确 Schema/API/UI、TDD 顺序、资产质量门禁、敏感信息边界和验收证据。当前只允许写计划和做审计，**不开始实现**。
 
-### 设定、记忆和关系
+## 5. M3–M8 顺序
 
-- 设定库存储相对稳定实体：人物、地点、势力、规则、物品、能力。
-- 记忆和 canon facts 存储动态章节事实：状态、位置、伤势、归属、选择、线索、近期事件。
-- 待确认设定变更必须确认后才进入活跃上下文。
-- 关系污染必须持续监控：synthetic/self/wrong-layer/missingEndpoint 均应为 0。
+M2 获批并完成后，严格按 roadmap 推进：
 
-### 定稿后处理
+1. M3：StoryBlock、StoryStage、SceneTask 和章节容量。
+2. M4：ChapterSession、WorkingDraft、DraftCandidate 和编辑流程。
+3. M5：分场景生成、参考检索、防复制和质量审核。
+4. M6：FinalizationChangeSet 与原子定稿。
+5. M7：Writer UI 收束和跨层浏览器诊断。
+6. M8：《典镇山河》前 30 章人工验收。
 
-- 定稿触发记忆、canon、设定变更和故事块回看。
-- post-finalize 失败必须留下可恢复 marker。
-- retry 只能用于可重试的 memory/settings 后处理，不能误清 story block settlement failure。
-- 已定稿正文锁定；优先 metadata-only 修复。
+不得跨里程碑提前恢复写作入口，也不得用低等级 evidence 代替 Provider 或人工内容验收。
 
-## 4. 当前架构治理结果
+## 6. 共同门禁
 
-本轮架构规范整理已经达到恢复长篇测试门槛：
+每个后续里程碑都必须：
 
-- `frontend/src/domain/chapter-title/`：章名正向素材抽取、候选排序、质量 policy。
-- `frontend/src/domain/chapter-draft/`：正文草稿 AI 内容辅助。
-- `frontend/src/application/writer-flow/`：写字台流程 adapter，包括小纲、标题、上下文、草稿、修复、版本、定稿等命令。
-- `tmp/live-qa/`：runner runtime config、freeze guards、project health audit、report writer、service manager。
-- 后端新增/增强经验卡、设定、故事块、章节和模型绑定相关能力。
-- 合同测试覆盖章名、正式标准边界、样本/经验卡泄漏、故事块阶段、定稿状态机、runner freeze guards 和 project health。
+- 从上一个已验收里程碑继续，不引入旧兼容链。
+- 先批准详细计划，再以 TDD 实现。
+- 通过正式 unit、必要的 disposable MySQL integration 和固定 browser 回归。
+- 由主控执行真实浏览器探索并审计同次状态证据。
+- 不在 API、日志、错误、诊断、导出或浏览器 payload 中暴露 Provider 敏感值。
+- 只授予实际取得的证据等级。
 
-当前产品判断：停止大重构，用单章 canary 继续验证真实链路。
+真实 Provider 和正文生成只在相应后续里程碑明确授权后运行。M1 文档不得据此推导任何正文或内容质量结论。
 
-## 5. 当前长篇验证状态
+## 7. 当前授权
 
-当前项目：
-
-- projectId：`2da6152a-c083-41ee-8bcb-f11b0fae387d`
-- 第 90 章已 final：《玉牌》
-- finalVersionId：`db524497-287f-4cc4-87a3-fdc16baec455`
-- 第 91 章不存在，第 91 beat plan 不存在。
-- 当前 active story block：《商盟玉牌与两线抉择》
-- 当前 next stage：stage-2，确定救小九、探商盟或并行反制交易的方案。
-- pending settings/facts：`0/0`
-- active relation count：`43`
-- relation risk synthetic/self/wrong-layer/missingEndpoint：`0/0/0/0`
-
-## 6. 当前开发优先级
-
-1. 第 91 章单章 canary：验证新块 stage-2 绑定和生成链路。
-2. 若第 91 稳定，再按 92-only 或 92-94 小段观察推进，不直接扩大长跑。
-3. 持续监控章名源头质量、正式标准选择是否粘滞、样本/经验卡边界、关系风险和 pending 后处理。
-4. 只在真实链路暴露结构性问题时开启窄范围架构切片。
-
-## 7. 线程协作规则
-
-主产品线程负责：
-
-- 故事质量方向。
-- 规则准入。
-- 架构边界判断。
-- 验收报告复核。
-- 判断局部失败是否升级为全局规则。
-
-开发/测试线程负责：
-
-- 执行明确范围的实现或验证。
-- 契约测试。
-- 真实流程测试。
-- 基于证据汇报。
-
-开发/测试线程不得：
-
-- 从单个失败样本新增全局写作规则。
-- 把软警告升级为硬门禁。
-- 把完整审稿清单注入正文生成 prompt。
-- 未确认就重写核心流程边界。
-- 通过更改报告标签隐藏失败。
-- 通过新建项目、跳章或范围生成掩盖失败。
-
-## 8. 历史清理规则
-
-产品规划和开发日志只保留当前有效决策。旧阶段内容、已调整需求和临时现场过程报告不再复制进当前文档；如需追溯，使用 git 历史。
+当前唯一授权任务是：创建、评审并批准 M2 detailed plan。完成该审计前停止，不进入 M2 代码、资产导入、Provider 调用或正文生成。
