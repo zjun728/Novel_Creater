@@ -1652,11 +1652,18 @@ git commit -m "test: prove writer core transactions on disposable mysql"
 - Create: `frontend/src/components/project/WriterCoreStateCard.vue`
 - Create: `frontend/tests/unit/writerCoreApi.test.mjs`
 - Create: `frontend/tests/unit/providerRedaction.test.mjs`
+- Create: `frontend/tests/unit/m1Navigation.test.mjs`
 - Modify: `frontend/src/api/db/client.js`
 - Modify: `frontend/src/router/index.js`
+- Modify: `frontend/src/App.vue`
+- Modify: `frontend/src/views/HomeView.vue`
 - Modify: `frontend/src/views/ProjectView.vue`
+- Modify: `frontend/src/stores/projectStore.js`
+- Modify: `frontend/src/stores/seedStore.js`
 - Modify: `frontend/src/stores/providerStore.js`
 - Modify: `frontend/src/components/settings/ProviderForm.vue`
+- Modify: `frontend/src/components/settings/ProviderSettings.vue`
+- Modify: `frontend/src/components/settings/TaskModelBinding.vue`
 
 - [ ] **Step 1: Write API client tests**
 
@@ -1692,7 +1699,7 @@ Expected: FAIL because `api.writerCore` is absent and legacy endpoints remain.
 
 - [ ] **Step 3: Reduce the active client to M1 APIs**
 
-Keep health, projects, seeds, providers, bindings and AI Proxy helpers used by the retained Settings page. Add:
+Keep health, projects, read-only seeds, secret-safe Provider CRUD and read-only bindings used by the retained Settings page. M1 `backend/main.py` does not register AI Proxy, so Settings must not expose a connection test or any active AI Proxy helper. Add:
 
 ```js
 writerCore: {

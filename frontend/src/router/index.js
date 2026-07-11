@@ -15,7 +15,7 @@ const routes = [
   {
     path: '/writer/:projectId/:chapterNum?',
     name: 'Writer',
-    component: () => import('@/views/WriterView.vue'),
+    component: () => import('@/views/WriterUnavailableView.vue'),
     props: true
   },
   {

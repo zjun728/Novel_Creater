@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import test from 'node:test'
+
+import {
+  buildProviderUpdatePayload,
+  normalizePublicProvider,
+} from '../../src/stores/providerStore.js'
+
+test('public provider state retains configuration flags without inventing secrets', () => {
+  const provider = normalizePublicProvider({
+    id: 'provider-1',
+    name: '联通云',
+    providerType: 'openai-compatible',
+    model: 'deepseek-v4-flash',
+    hasKey: true,
+    hasBaseURL: true,
+  })
+
+  assert.equal(provider.hasKey, true)
+  assert.equal(provider.hasBaseURL, true)
+  assert.equal(Object.hasOwn(provider, 'apiKey'), false)
+  assert.equal(Object.hasOwn(provider, 'baseURL'), false)
+})
+
+test('blank secret inputs preserve stored values and explicit clear flags are intentional', () => {
+  const preserved = buildProviderUpdatePayload({
+    name: '联通云',
+    model: 'deepseek-v4-flash',
+    apiKey: '   ',
+    baseURL: '',
+  })
+  assert.equal(Object.hasOwn(preserved, 'apiKey'), false)
+  assert.equal(Object.hasOwn(preserved, 'baseURL'), false)
+  assert.equal(Object.hasOwn(preserved, 'clearApiKey'), false)
+  assert.equal(Object.hasOwn(preserved, 'clearBaseURL'), false)
+
+  const cleared = buildProviderUpdatePayload({
+    name: '联通云',
+    model: 'deepseek-v4-flash',
+    clearApiKey: true,
+    clearBaseURL: true,
+  })
+  assert.equal(cleared.clearApiKey, true)
+  assert.equal(cleared.clearBaseURL, true)
+  assert.equal(Object.hasOwn(cleared, 'apiKey'), false)
+  assert.equal(Object.hasOwn(cleared, 'baseURL'), false)
+})
+
+test('the active API client contains no retired or secret-bearing endpoint', async () => {
+  const source = await readFile(new URL('../../src/api/db/client.js', import.meta.url), 'utf8')
+  for (const forbidden of [
+    'includeApiKeys', '/export/full', '/import/full', '/canon-facts',
+    '/settings/change-events', '/versions/', '/chapters', '/temp-draft',
+    '/chapter-beat-plan', '/story-blocks', '/correction-tasks', '/ai/',
+  ]) {
+    assert.equal(source.includes(forbidden), false, `retired client endpoint remains: ${forbidden}`)
+  }
+})
+

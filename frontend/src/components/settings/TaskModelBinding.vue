@@ -1,192 +1,77 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import { NAlert, NButton, NForm, NFormItem, NSelect, NSpace } from 'naive-ui'
-import { useAppMessage } from '@/composables/useAppMessage'
-import { useProviderStore } from '@/stores/providerStore'
+import { computed, onMounted, ref, watch } from 'vue'
+import { NAlert, NButton, NEmpty, NSelect, NSpin, NTag } from 'naive-ui'
 import { useProjectStore } from '@/stores/projectStore'
+import { useProviderStore } from '@/stores/providerStore'
 
-const providerStore = useProviderStore()
 const projectStore = useProjectStore()
-const message = useAppMessage()
-
-const LAST_BINDING_PROJECT_KEY = 'novel_creator_last_binding_project_id'
-
-const bindings = ref(providerStore.emptyBindings())
-const bindingStatus = ref(null)
-const selectedProjectId = ref(null)
-const loadingBindings = ref(false)
-const saving = ref(false)
-
-const projectOptions = computed(() => {
-  return projectStore.projects.map(project => ({
-    label: project.title || '未命名项目',
-    value: project.id
-  }))
-})
-
-const providerOptions = computed(() => {
-  return providerStore.providers.map(p => ({
-    label: `${p.name} (${p.model})`,
-    value: p.id
-  }))
-})
-
-function readLastProjectId() {
-  try {
-    return window.localStorage.getItem(LAST_BINDING_PROJECT_KEY)
-  } catch {
-    return null
-  }
-}
-
-function writeLastProjectId(projectId) {
-  try {
-    if (projectId) window.localStorage.setItem(LAST_BINDING_PROJECT_KEY, projectId)
-  } catch {
-    // localStorage 可能被浏览器隐私策略禁用，忽略即可。
-  }
-}
-
-function pickInitialProjectId() {
-  const currentId = projectStore.currentProject?.id
-  if (currentId) return currentId
-
-  const lastId = readLastProjectId()
-  if (lastId && projectStore.projects.some(project => project.id === lastId)) return lastId
-
-  return projectStore.projects[0]?.id || null
-}
+const providerStore = useProviderStore()
+const selectedProjectId = ref('')
+const status = ref(null)
+const loading = ref(false)
+const error = ref('')
 
 const taskLabels = {
-  writingModelId: '正文创作',
-  brainstormModelId: '脑洞发散',
-  outlineModelId: '大纲规划',
-  auditModelId: '审稿检查',
-  summaryModelId: '摘要压缩',
-  extractionModelId: '结构化提取',
-  marketModelId: '选题分析',
-  polishModelId: '润色改写'
+  seed: '种子与选题', planning: '滚动规划', writing: '正文写作', audit: '质量审核',
+  summary: '章节摘要', extraction: '状态提取', polish: '修订润色', market: '市场选题',
 }
+const projectOptions = computed(() => projectStore.projects.map(project => ({ label: project.title, value: project.id })))
+const items = computed(() => status.value?.items || [])
 
-async function loadProjectBindings(projectId) {
-  if (!projectId) {
-    bindings.value = providerStore.emptyBindings()
+async function loadStatus() {
+  if (!selectedProjectId.value) {
+    status.value = null
     return
   }
-
-  loadingBindings.value = true
+  loading.value = true
+  error.value = ''
   try {
-    const existing = await providerStore.getBindings(projectId)
-    bindings.value = providerStore.normalizeBindings(existing)
-    bindingStatus.value = await providerStore.getBindingStatus(projectId)
-    writeLastProjectId(projectId)
-  } catch (e) {
-    message.error('加载模型映射失败：' + e.message)
+    status.value = await providerStore.getBindingStatus(selectedProjectId.value, { force: true })
+  } catch (loadError) {
+    error.value = loadError.message || '模型映射加载失败'
   } finally {
-    loadingBindings.value = false
+    loading.value = false
   }
 }
 
 onMounted(async () => {
-  await Promise.all([
-    providerStore.ensureProvidersLoaded(),
-    projectStore.projects.length ? Promise.resolve() : projectStore.loadProjects()
-  ])
-  selectedProjectId.value = pickInitialProjectId()
-  await loadProjectBindings(selectedProjectId.value)
+  if (!projectStore.projects.length) await projectStore.loadProjects()
+  selectedProjectId.value = projectStore.currentProject?.id || projectStore.projects[0]?.id || ''
 })
-
-watch(() => projectStore.currentProject?.id, async (newId) => {
-  if (!newId) return
-  selectedProjectId.value = newId
-  await loadProjectBindings(newId)
-})
-
-watch(selectedProjectId, async (newId, oldId) => {
-  if (newId === oldId) return
-  await loadProjectBindings(newId)
-})
-
-async function handleSave() {
-  if (!selectedProjectId.value) {
-    message.warning('请先选择一个项目')
-    return
-  }
-  saving.value = true
-  try {
-    await providerStore.saveBindings(selectedProjectId.value, bindings.value)
-    bindingStatus.value = await providerStore.getBindingStatus(selectedProjectId.value)
-    message.success('任务模型映射保存成功')
-  } catch (e) {
-    message.error('保存失败：' + e.message)
-  } finally {
-    saving.value = false
-  }
-}
+watch(selectedProjectId, loadStatus)
 </script>
 
 <template>
-  <div>
-    <p class="text-sm text-gray-500 mb-4">
-      为不同创作任务分配不同的 AI 模型。先在上方添加 Provider，然后在此处进行映射。
-    </p>
-
-    <n-alert type="info" class="mb-4" :show-icon="false">
-      模型映射按项目保存。刷新设置页后会自动恢复上次配置的项目。
-    </n-alert>
-
-    <n-form v-if="providerStore.providers.length > 0 && projectOptions.length > 0">
-      <n-alert
-        v-if="bindingStatus?.inherited"
-        type="success"
-        class="mb-4"
-        :show-icon="false"
-      >
-        已继承上一个项目模型配置：{{ bindingStatus.inheritedFromProjectTitle || '未命名项目' }}
-        <span v-if="bindingStatus.inheritedFromUpdatedAt"> / {{ bindingStatus.inheritedFromUpdatedAt }}</span>
+  <div class="binding-reader">
+    <div class="binding-toolbar">
+      <n-select v-model:value="selectedProjectId" :options="projectOptions" placeholder="选择项目查看映射" class="project-select" />
+      <n-tag type="info" :bordered="false">M1 只读</n-tag>
+    </div>
+    <n-spin :show="loading">
+      <n-alert v-if="error" type="error" class="mt-3">
+        {{ error }}
+        <template #action><n-button size="tiny" @click="loadStatus">重试</n-button></template>
       </n-alert>
-      <n-alert
-        v-else-if="bindingStatus && !bindingStatus.hasBinding"
-        type="warning"
-        class="mb-4"
-        :show-icon="false"
-      >
-        当前项目未配置任务模型映射：请先配置模型。
-      </n-alert>
-
-      <n-form-item label="当前配置项目">
-        <n-select
-          v-model:value="selectedProjectId"
-          :options="projectOptions"
-          placeholder="选择要配置的项目"
-          filterable
-        />
-      </n-form-item>
-
-      <div class="grid grid-cols-2 gap-4">
-        <n-form-item v-for="(label, key) in taskLabels" :key="key" :label="label">
-          <n-select
-            v-model:value="bindings[key]"
-            :options="providerOptions"
-            placeholder="选择模型"
-            clearable
-            :loading="loadingBindings"
-            :disabled="!selectedProjectId"
-          />
-        </n-form-item>
+      <n-empty v-else-if="selectedProjectId && !items.length" description="当前项目没有可用模型映射" class="empty-binding" />
+      <div v-else-if="items.length" class="binding-grid">
+        <div v-for="item in items" :key="item.taskKey" class="binding-row">
+          <span>{{ taskLabels[item.taskKey] || item.taskKey }}</span>
+          <strong>{{ item.provider?.name || 'Provider 不可用' }}</strong>
+          <small>{{ item.provider?.model || '未记录模型' }}</small>
+        </div>
       </div>
-      <n-space justify="end">
-        <n-button type="primary" :loading="saving" :disabled="!selectedProjectId" @click="handleSave">保存映射</n-button>
-      </n-space>
-    </n-form>
-
-    <p v-else-if="providerStore.providers.length === 0" class="text-sm text-gray-400">
-      暂无可用 Provider，请先在上方添加 AI 模型配置。
-    </p>
-
-    <p v-else class="text-sm text-gray-400">
-      暂无项目，请先创建项目后再配置任务模型映射。
-    </p>
+    </n-spin>
   </div>
 </template>
+
+<style scoped>
+.binding-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.project-select { width: min(320px, 100%); }
+.binding-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 9px; margin-top: 14px; }
+.binding-row { display: grid; gap: 2px; padding: 11px 12px; border: 1px solid #e3dac8; border-radius: 8px; background: #fffdf8; }
+.binding-row span { color: #817667; font-size: 12px; }
+.binding-row strong { color: #37322b; font-size: 13px; }
+.binding-row small { color: #9a8e7c; }
+.empty-binding { padding: 22px 0; }
+</style>
 

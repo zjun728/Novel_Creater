@@ -4,7 +4,6 @@ import { darkTheme } from 'naive-ui'
 import { ref, onMounted, onUnmounted, onErrorCaptured } from 'vue'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import TopBar from '@/components/layout/TopBar.vue'
-import BackupReminder from '@/components/layout/BackupReminder.vue'
 import { useHealthCheck } from '@/composables/useHealthCheck'
 
 const darkMode = ref(false)
@@ -48,9 +47,8 @@ onErrorCaptured((err, instance, info) => {
           </n-layout-sider>
           <n-layout>
             <TopBar />
-            <BackupReminder />
             <n-alert v-if="!backendOnline" type="error" :bordered="false" class="rounded-none">
-              后端服务连接失败，请确认 API 服务已启动（python backend/main.py）
+              后端服务连接失败，请确认 API 服务已启动（python -m backend.main）
             </n-alert>
             <n-layout-content class="main-content">
               <router-view />
