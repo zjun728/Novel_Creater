@@ -133,18 +133,27 @@ class ModelBindingService:
         return domain_revision
 
     async def initialize_project(self, session, project_id: str) -> None:
-        previous_project = await self.repository.find_previous_project(
+        previous_project = await self.repository.lock_previous_project(
             session, project_id
         )
         source_project_id = previous_project["id"] if previous_project else None
         previous_rows = (
-            await self.repository.read_current_rows(session, source_project_id)
+            await self.repository.lock_current_rows(session, source_project_id)
             if source_project_id else []
         )
         previous_by_task = {
             row["task_key"]: row.get("provider_id") for row in previous_rows
         }
-        available = await self.repository.list_available_providers(session)
+        candidates = await self.repository.list_available_providers(session)
+        locked_providers = await self.repository.lock_providers(
+            session, {row["id"] for row in candidates}
+        )
+        available = sorted(
+            (row for row in locked_providers if provider_is_available(row)),
+            key=lambda row: (
+                int(row["sort_order"]), int(row["created_at"]), row["id"]
+            ),
+        )
         available_by_id = {row["id"]: row for row in available}
         fallback = available[0] if available else None
         items = []

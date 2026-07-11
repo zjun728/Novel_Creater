@@ -214,3 +214,58 @@ async def test_no_provider_is_complete_unbound_and_binding_failure_rolls_back(
     assert await disposable_mysql.session.fetchone(
         "SELECT id FROM projects WHERE id=%s", (failed_id,)
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_provider_delete_waits_until_initialize_writes_and_commits(
+    disposable_mysql, monkeypatch
+):
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+    providers_locked = asyncio.Event()
+    allow_binding_write = asyncio.Event()
+    delete_transaction_entered = asyncio.Event()
+
+    class BlockingRepository(ModelBindingRepository):
+        async def lock_providers(self, session, provider_ids):
+            rows = await super().lock_providers(session, provider_ids)
+            providers_locked.set()
+            await allow_binding_write.wait()
+            return rows
+
+    repository = BlockingRepository()
+    bindings = ModelBindingService(repository, transaction_factory=tx)
+    service = ProjectService(
+        ProjectRepository(), tx, model_binding_service=bindings
+    )
+    await insert_provider(
+        disposable_mysql.session, PROVIDER_A, "Alpha", "a-model", 1
+    )
+    project_id = "60000000-0000-0000-0000-000000000001"
+    create_task = asyncio.create_task(service.create(project(project_id, "locked")))
+    await providers_locked.wait()
+
+    @asynccontextmanager
+    async def observed_delete_transaction():
+        async with tx() as session:
+            delete_transaction_entered.set()
+            yield session
+
+    monkeypatch.setattr(providers, "transaction", observed_delete_transaction)
+    delete_task = asyncio.create_task(providers.delete_provider(PROVIDER_A))
+    await delete_transaction_entered.wait()
+    assert delete_task.done() is False
+
+    allow_binding_write.set()
+    await create_task
+    await delete_task
+
+    revision = await disposable_mysql.session.fetchone(
+        "SELECT revision FROM project_model_binding_heads WHERE project_id=%s",
+        (project_id,),
+    )
+    deleted = await disposable_mysql.session.fetchone(
+        "SELECT lifecycle_status FROM provider_profiles WHERE id=%s",
+        (PROVIDER_A,),
+    )
+    assert revision["revision"] == 1
+    assert deleted["lifecycle_status"] == "deleted"

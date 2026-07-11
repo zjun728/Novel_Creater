@@ -10,12 +10,30 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from backend.database import execute, fetchall, fetchone, transaction
+from backend.database import fetchall, transaction
 from backend.serializers.provider import provider_public, providers_public
-from .helpers import to_snake
 
 
 router = APIRouter(tags=["providers"])
+
+_PROVIDER_UPDATE_COLUMNS = {
+    "name": "name",
+    "providerType": "provider_type",
+    "model": "model_name",
+    "baseURL": "base_url",
+    "apiKey": "api_key",
+    "enabled": "enabled",
+    "sortOrder": "sort_order",
+    "stream": "stream",
+    "maxContextTokens": "max_context_tokens",
+    "maxOutputTokens": "max_output_tokens",
+    "temperature": "temperature",
+    "topP": "top_p",
+    "supportsJSON": "supports_json",
+    "supportsStreaming": "supports_streaming",
+    "notes": "notes",
+    "thinking": "thinking",
+}
 
 
 def _is_blank(value) -> bool:
@@ -101,91 +119,76 @@ async def list_providers():
 async def create_provider(data: ProviderCreate):
     now = int(time.time() * 1000)
     provider_id = str(uuid4())
-    await execute(
-        """INSERT INTO provider_profiles
-           (id, name, provider_type, model_name, base_url, api_key, enabled,
-            sort_order, stream, max_context_tokens, max_output_tokens,
-            temperature, top_p, supports_json, supports_streaming, notes,
-            thinking, lifecycle_status, deleted_at, created_at, updated_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        (
-            provider_id,
-            data.name,
-            data.providerType,
-            data.model,
-            data.baseURL,
-            data.apiKey,
-            int(data.enabled),
-            data.sortOrder,
-            int(data.stream),
-            data.maxContextTokens,
-            data.maxOutputTokens,
-            data.temperature,
-            data.topP,
-            int(data.supportsJSON),
-            int(data.supportsStreaming),
-            data.notes,
-            json.dumps(data.thinking, ensure_ascii=False) if data.thinking else None,
-            "active",
-            None,
-            now,
-            now,
-        ),
-    )
-    return provider_public(
-        await fetchone(
+    async with transaction() as session:
+        await session.execute(
+            """INSERT INTO provider_profiles
+               (id, name, provider_type, model_name, base_url, api_key, enabled,
+                sort_order, stream, max_context_tokens, max_output_tokens,
+                temperature, top_p, supports_json, supports_streaming, notes,
+                thinking, lifecycle_status, deleted_at, created_at, updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                provider_id, data.name, data.providerType, data.model,
+                data.baseURL, data.apiKey, int(data.enabled), data.sortOrder,
+                int(data.stream), data.maxContextTokens, data.maxOutputTokens,
+                data.temperature, data.topP, int(data.supportsJSON),
+                int(data.supportsStreaming), data.notes,
+                json.dumps(data.thinking, ensure_ascii=False)
+                if data.thinking else None,
+                "active", None, now, now,
+            ),
+        )
+        created = await session.fetchone(
             """SELECT * FROM provider_profiles
                WHERE id=%s AND lifecycle_status='active'""",
             (provider_id,),
         )
-    )
+    return provider_public(created)
 
 
 @router.put("/providers/{provider_id}")
 async def update_provider(provider_id: str, data: ProviderUpdate):
-    current = await fetchone(
-        """SELECT * FROM provider_profiles
-           WHERE id=%s AND lifecycle_status='active'""",
-        (provider_id,),
-    )
-    if current is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
-    incoming = data.model_dump(exclude_unset=True)
-    if "apiKey" not in incoming or _is_blank(incoming["apiKey"]):
-        incoming.pop("apiKey", None)
-    if "baseURL" not in incoming or _is_blank(incoming["baseURL"]):
-        incoming.pop("baseURL", None)
-
-    sets = []
-    args = []
-    field_columns = {"model": "model_name"}
-    for key, value in incoming.items():
-        column = field_columns.get(key, to_snake(key))
-        sets.append(f"{column}=%s")
-        if key == "thinking":
-            value = (
-                json.dumps(value, ensure_ascii=False)
-                if value is not None
-                else None
-            )
-        elif isinstance(value, bool):
-            value = int(value)
-        args.append(value)
-    if sets:
-        sets.append("updated_at=%s")
-        args.extend((int(time.time() * 1000), provider_id))
-        changed = await execute(
-            f"""UPDATE provider_profiles SET {', '.join(sets)}
-                WHERE id=%s AND lifecycle_status='active'""",
-            args,
+    async with transaction() as session:
+        current = await session.fetchone(
+            """SELECT * FROM provider_profiles
+               WHERE id=%s AND lifecycle_status='active' FOR UPDATE""",
+            (provider_id,),
         )
-    updated = await fetchone(
-        """SELECT * FROM provider_profiles
-           WHERE id=%s AND lifecycle_status='active'""",
-        (provider_id,),
-    )
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        if current is None:
+            raise HTTPException(status_code=404, detail="Provider not found")
+        incoming = data.model_dump(exclude_unset=True)
+        if "apiKey" not in incoming or _is_blank(incoming["apiKey"]):
+            incoming.pop("apiKey", None)
+        if "baseURL" not in incoming or _is_blank(incoming["baseURL"]):
+            incoming.pop("baseURL", None)
+
+        sets = []
+        args = []
+        for key, value in incoming.items():
+            sets.append(f"{_PROVIDER_UPDATE_COLUMNS[key]}=%s")
+            if key == "thinking":
+                value = (
+                    json.dumps(value, ensure_ascii=False)
+                    if value is not None else None
+                )
+            elif isinstance(value, bool):
+                value = int(value)
+            args.append(value)
+        if sets:
+            sets.append("updated_at=%s")
+            args.extend((int(time.time() * 1000), provider_id))
+            await session.execute(
+                f"""UPDATE provider_profiles SET {', '.join(sets)}
+                    WHERE id=%s AND lifecycle_status='active'""",
+                args,
+            )
+        updated = await session.fetchone(
+            """SELECT * FROM provider_profiles
+               WHERE id=%s AND lifecycle_status='active'""",
+            (provider_id,),
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Provider not found")
     return provider_public(updated)
 
 

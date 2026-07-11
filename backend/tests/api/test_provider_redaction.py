@@ -72,18 +72,35 @@ class FakeSession:
 
     async def execute(self, sql, args=None):
         self.executions.append(("execute", " ".join(sql.split()), tuple(args or ())))
+        if sql.lstrip().startswith("INSERT INTO provider_profiles"):
+            self.store[args[0]] = provider_row(
+                id=args[0], name=args[1], provider_type=args[2],
+                model_name=args[3], base_url=args[4], api_key=args[5],
+                enabled=args[6], sort_order=args[7], stream=args[8],
+                max_context_tokens=args[9], max_output_tokens=args[10],
+                temperature=args[11], top_p=args[12], supports_json=args[13],
+                supports_streaming=args[14], notes=args[15], thinking=args[16],
+                lifecycle_status=args[17], deleted_at=args[18],
+                created_at=args[19], updated_at=args[20],
+            )
+            return 1
         provider_id = args[-1]
         row = self.store.get(provider_id)
         if row is None or row["lifecycle_status"] != "active":
             return 0
-        row.update(
-            enabled=0,
-            lifecycle_status="deleted",
-            api_key="",
-            base_url="",
-            deleted_at=args[0],
-            updated_at=args[1],
-        )
+        if "lifecycle_status='deleted'" in sql:
+            row.update(
+                enabled=0, lifecycle_status="deleted", api_key="", base_url="",
+                deleted_at=args[0], updated_at=args[1],
+            )
+        else:
+            assignments = sql.split("SET", 1)[1].split("WHERE", 1)[0].split(",")
+            value_index = 0
+            for assignment in assignments:
+                if "%s" not in assignment:
+                    continue
+                row[assignment.split("=")[0].strip()] = args[value_index]
+                value_index += 1
         return 1
 
 
@@ -132,8 +149,8 @@ def provider_api(monkeypatch):
             transaction_counts["commit"] += 1
 
     monkeypatch.setattr(providers, "fetchall", fetchall)
-    monkeypatch.setattr(providers, "fetchone", fetchone)
-    monkeypatch.setattr(providers, "execute", execute)
+    monkeypatch.setattr(providers, "fetchone", fetchone, raising=False)
+    monkeypatch.setattr(providers, "execute", execute, raising=False)
     monkeypatch.setattr(providers, "transaction", transaction)
     app = FastAPI()
     app.include_router(providers.router, prefix="/api")
@@ -152,6 +169,98 @@ def valid_create():
         "notes": f"nested {SECRET} {PRIVATE_URL}",
         "thinking": {"nested": [SECRET, {"url": PRIVATE_URL}]},
     }
+
+
+class ProviderMutationSession:
+    def __init__(self, events, *, fail_execute=False):
+        self.events = events
+        self.fail_execute = fail_execute
+        self.row = provider_row()
+
+    async def execute(self, sql, args=None):
+        self.events.append(("session_execute", " ".join(sql.split())))
+        if self.fail_execute:
+            raise RuntimeError("provider write failed")
+        if sql.lstrip().startswith("INSERT INTO provider_profiles"):
+            self.row = provider_row(id=args[0], name=args[1], model_name=args[3])
+        elif "model_name=%s" in sql:
+            self.row["model_name"] = args[0]
+        return 1
+
+    async def fetchone(self, sql, args=None):
+        self.events.append(("session_fetchone", " ".join(sql.split())))
+        return self.row
+
+
+def mutation_client(monkeypatch, *, fail_execute=False):
+    events = []
+    session = ProviderMutationSession(events, fail_execute=fail_execute)
+
+    @asynccontextmanager
+    async def transaction():
+        events.append(("transaction_enter", ""))
+        try:
+            yield session
+        except BaseException:
+            events.append(("transaction_rollback", ""))
+            raise
+        else:
+            events.append(("transaction_commit", ""))
+
+    async def outside_transaction(*args, **kwargs):
+        events.append(("outside_transaction", ""))
+        raise RuntimeError("provider write failed")
+
+    monkeypatch.setattr(providers, "transaction", transaction)
+    monkeypatch.setattr(providers, "execute", outside_transaction, raising=False)
+    monkeypatch.setattr(providers, "fetchone", outside_transaction, raising=False)
+    app = FastAPI()
+    app.include_router(providers.router, prefix="/api")
+    return TestClient(app), events
+
+
+def test_provider_create_insert_and_read_share_one_transaction(monkeypatch):
+    client, events = mutation_client(monkeypatch)
+
+    response = client.post("/api/providers", json=valid_create())
+
+    assert response.status_code == 200
+    assert [event[0] for event in events] == [
+        "transaction_enter", "session_execute", "session_fetchone",
+        "transaction_commit",
+    ]
+
+
+def test_provider_update_locks_writes_and_reads_on_one_transaction(monkeypatch):
+    client, events = mutation_client(monkeypatch)
+
+    response = client.put("/api/providers/provider-1", json={"model": "model-two"})
+
+    assert response.status_code == 200
+    assert [event[0] for event in events] == [
+        "transaction_enter", "session_fetchone", "session_execute",
+        "session_fetchone", "transaction_commit",
+    ]
+    assert "FOR UPDATE" in events[1][1]
+    assert "model_name=%s" in events[2][1]
+
+
+def test_provider_create_write_failure_rolls_back_transaction(monkeypatch):
+    client, events = mutation_client(monkeypatch, fail_execute=True)
+
+    with pytest.raises(RuntimeError, match="provider write failed"):
+        client.post("/api/providers", json=valid_create())
+
+    assert [event[0] for event in events][-1] == "transaction_rollback"
+
+
+def test_provider_update_write_failure_rolls_back_transaction(monkeypatch):
+    client, events = mutation_client(monkeypatch, fail_execute=True)
+
+    with pytest.raises(RuntimeError, match="provider write failed"):
+        client.put("/api/providers/provider-1", json={"model": "model-two"})
+
+    assert [event[0] for event in events][-1] == "transaction_rollback"
 
 
 def test_provider_list_create_update_are_active_only_and_recursively_redacted(provider_api):

@@ -21,10 +21,10 @@ class ModelBindingRepository:
         self.id_factory = id_factory or (lambda: str(uuid4()))
         self.clock = clock or (lambda: int(time.time() * 1000))
 
-    async def find_previous_project(self, session, project_id: str):
+    async def lock_previous_project(self, session, project_id: str):
         return await session.fetchone(
             """SELECT id FROM projects WHERE id<>%s
-               ORDER BY created_at DESC, id DESC LIMIT 1""",
+               ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE""",
             (project_id,),
         )
 

@@ -13,6 +13,23 @@ class RecordingSession:
         self.calls.append((" ".join(sql.split()), args))
         return []
 
+    async def fetchone(self, sql, args=None):
+        self.calls.append((" ".join(sql.split()), args))
+        return None
+
+
+@pytest.mark.asyncio
+async def test_lock_previous_project_uses_stable_latest_row_lock():
+    session = RecordingSession()
+
+    await ModelBindingRepository().lock_previous_project(session, "project-1")
+
+    sql, args = session.calls[0]
+    assert "id<>%s" in sql
+    assert "ORDER BY created_at DESC, id DESC LIMIT 1" in sql
+    assert sql.endswith("FOR UPDATE")
+    assert args == ("project-1",)
+
 
 @pytest.mark.asyncio
 async def test_lock_current_rows_does_not_lock_provider_rows_early():
