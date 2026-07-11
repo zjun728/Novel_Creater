@@ -335,10 +335,11 @@ def find_hard_conflicts(
     incoming_events = _unique_sorted_events(incoming)
     _validate_stable_cardinalities((*existing_events, *incoming_events))
 
-    candidate_pairs = (
+    candidate_pairs = [
         *((old, new) for old in existing_events for new in incoming_events),
         *combinations(incoming_events, 2),
-    )
+    ]
+    candidate_pairs.sort(key=lambda pair: (_event_key(pair[0]), _event_key(pair[1])))
     conflicts: list[CanonConflict] = []
     seen: set[tuple[tuple, tuple]] = set()
     for old, new in candidate_pairs:
@@ -350,7 +351,7 @@ def find_hard_conflicts(
             and _overlaps(old, new)
             and _mutually_exclusive(old, new)
         ):
-            key = (_event_key(old), _event_key(new))
+            key = tuple(sorted((_event_key(old), _event_key(new))))
             if key in seen:
                 continue
             seen.add(key)

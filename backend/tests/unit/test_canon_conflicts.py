@@ -292,3 +292,20 @@ def test_only_exact_duplicate_events_collapse_in_conflict_output():
         None,
         1,
     )
+
+
+def test_same_unordered_conflict_pair_is_reported_once_across_candidate_sources():
+    event_a = event("北平", evidence={"quote": "A"})
+    event_b = event("应天", evidence={"quote": "B"})
+
+    forward = find_hard_conflicts((event_b,), (event_a, event_b))
+    reverse = find_hard_conflicts((event_b,), (event_b, event_a))
+
+    assert forward == reverse
+    assert forward == (
+        CanonConflict(
+            old=event_a,
+            new=event_b,
+            reason="mutually_exclusive_stable_definition",
+        ),
+    )
