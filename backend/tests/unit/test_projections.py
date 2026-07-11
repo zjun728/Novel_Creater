@@ -314,6 +314,51 @@ def test_projection_event_input_is_normalized_once_and_remains_immutable():
         normalized.id = "changed"
 
 
+@pytest.mark.parametrize(
+    ("left_value", "right_value"),
+    [
+        (True, 1),
+        (1, 1.0),
+        ([True], [1]),
+        ({"nested": [1]}, {"nested": [1.0]}),
+    ],
+)
+def test_projection_event_identity_is_json_type_sensitive(
+    left_value, right_value
+):
+    left = ProjectionEvent(**event(value=left_value))
+    right = ProjectionEvent(**event(value=right_value))
+
+    assert left != right
+    assert len({left, right}) == 2
+
+
+def test_bundle_preserves_type_distinct_events_stably_across_input_order():
+    events = [
+        event("bool", event_order=1, field_path="state.bool", value=True),
+        event("int", event_order=2, field_path="state.int", value=1),
+        event("float", event_order=3, field_path="state.float", value=1.0),
+        event(
+            "nested",
+            event_order=4,
+            field_path="state.nested",
+            value={"values": [True, 1, 1.0]},
+        ),
+    ]
+
+    forward = build_projection_bundle(1, events)
+    reverse = build_projection_bundle(1, reversed(events))
+
+    assert forward == reverse
+    assert forward.content_hash == reverse.content_hash
+    assert [item["value"] for item in forward.memories["p1"]] == [
+        True,
+        1,
+        1.0,
+        {"values": (True, 1, 1.0)},
+    ]
+
+
 @pytest.mark.parametrize("revision", [-1, True, 1.0, "1"])
 def test_target_revision_must_be_a_non_negative_integer(revision):
     with pytest.raises(ProjectionValidationError, match="revision"):

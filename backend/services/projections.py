@@ -66,7 +66,7 @@ def _freeze(value: object, field_name: str) -> object:
         raise ProjectionValidationError(str(exc)) from exc
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ProjectionEvent:
     """Validated, copied and immutable input for projection reduction."""
 
@@ -79,6 +79,15 @@ class ProjectionEvent:
     value: object
     confirmation_status: ConfirmationStatus
     evidence: object
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, ProjectionEvent)
+            and _projection_event_key(self) == _projection_event_key(other)
+        )
+
+    def __hash__(self) -> int:
+        return hash(_projection_event_key(self))
 
     def __post_init__(self) -> None:
         _non_empty_string(self.id, "id")
@@ -103,6 +112,20 @@ class ProjectionEvent:
         )
         object.__setattr__(self, "value", _freeze(self.value, "value"))
         object.__setattr__(self, "evidence", _freeze(self.evidence, "evidence"))
+
+
+def _projection_event_key(item: ProjectionEvent) -> tuple[object, ...]:
+    return (
+        item.id,
+        item.revision_number,
+        item.event_order,
+        item.entity_id,
+        item.fact_kind.value,
+        item.field_path,
+        canonical_json(thaw_json(item.value), field_name="value"),
+        canonical_json(thaw_json(item.evidence), field_name="evidence"),
+        item.confirmation_status.value,
+    )
 
 
 @dataclass(frozen=True)

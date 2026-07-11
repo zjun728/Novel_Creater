@@ -13,6 +13,7 @@ from backend.domain.canon import (
     CanonValidationError,
     ConfirmationStatus,
     FactKind,
+    FrozenJsonObject,
     ValueCardinality,
     canonical_json,
     find_hard_conflicts,
@@ -91,9 +92,51 @@ def test_public_strict_json_helpers_share_freeze_thaw_and_canonical_rules():
         "nested": [True, 1, 1.0],
         "text": "沈砚",
     }
-    assert canonical_json(frozen, field_name="projection") == (
+    assert canonical_json(thaw_json(frozen), field_name="projection") == (
         '{"nested":[true,1,1.0],"text":"沈砚"}'
     )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ("tuple",),
+        {"set"},
+        {1: "non-string key"},
+        {"nested": ("tuple",)},
+        math.nan,
+        math.inf,
+        -math.inf,
+    ],
+)
+def test_public_canonical_json_rejects_values_outside_raw_strict_json(raw):
+    with pytest.raises(CanonValidationError, match="projection.*JSON"):
+        canonical_json(raw, field_name="projection")
+
+
+def test_public_canonical_json_preserves_legal_list_and_string_key_types():
+    assert canonical_json([True, 1, 1.0]) == "[true,1,1.0]"
+    assert canonical_json({"1": "string key"}) == '{"1":"string key"}'
+
+
+def test_frozen_json_object_rejects_duplicate_keys_at_its_public_boundary():
+    with pytest.raises(CanonValidationError, match="duplicate.*key"):
+        FrozenJsonObject([("name", "沈砚"), ("name", "沈彦")])
+
+
+@pytest.mark.parametrize("key", [1, False, None])
+def test_frozen_json_object_requires_exact_string_keys(key):
+    with pytest.raises(CanonValidationError, match="keys.*strings"):
+        FrozenJsonObject([(key, "value")])
+
+
+def test_frozen_json_object_normalizes_order_and_equal_values_hash_equally():
+    left = FrozenJsonObject([("b", 2), ("a", 1)])
+    right = FrozenJsonObject([("a", 1), ("b", 2)])
+
+    assert tuple(left) == ("a", "b")
+    assert left == right
+    assert hash(left) == hash(right)
 
 
 @pytest.mark.parametrize(

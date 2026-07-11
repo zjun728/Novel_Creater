@@ -54,7 +54,19 @@ class FrozenJsonObject(Mapping[str, object]):
     __slots__ = ("_hash", "_items")
 
     def __init__(self, values: Iterable[tuple[str, object]]) -> None:
-        items = tuple(sorted(values))
+        items = tuple(values)
+        seen: set[str] = set()
+        for key, _ in items:
+            if not isinstance(key, str):
+                raise CanonValidationError(
+                    "FrozenJsonObject keys must be strings"
+                )
+            if key in seen:
+                raise CanonValidationError(
+                    "FrozenJsonObject cannot contain duplicate keys"
+                )
+            seen.add(key)
+        items = tuple(sorted(items, key=lambda item: item[0]))
         object.__setattr__(self, "_items", items)
         object.__setattr__(self, "_hash", hash(items))
 
@@ -120,9 +132,12 @@ def thaw_json(value: object) -> object:
     return value
 
 
-def canonical_json(value: object, *, field_name: str = "value") -> str:
-    """Serialize a frozen or raw strict JSON value deterministically."""
-
+def _canonical_frozen_json(
+    value: object,
+    *,
+    field_name: str = "value",
+) -> str:
+    """Serialize an already validated and frozen JSON value deterministically."""
     try:
         return json.dumps(
             thaw_json(value),
@@ -137,11 +152,18 @@ def canonical_json(value: object, *, field_name: str = "value") -> str:
         ) from exc
 
 
+def canonical_json(value: object, *, field_name: str = "value") -> str:
+    """Validate and serialize one raw strict JSON value deterministically."""
+
+    frozen = freeze_json(value, field_name=field_name)
+    return _canonical_frozen_json(frozen, field_name=field_name)
+
+
 # Private aliases preserve the established internal API while callers migrate to
 # the deliberately small public strict-JSON boundary above.
 _freeze_json = freeze_json
 _thaw_json = thaw_json
-_canonical_json = canonical_json
+_canonical_json = _canonical_frozen_json
 
 
 def _closed_enum(enum_type, value: object, field_name: str):
