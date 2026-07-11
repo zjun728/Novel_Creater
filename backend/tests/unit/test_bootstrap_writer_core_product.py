@@ -107,6 +107,25 @@ def inventory(*, providers=None, seeds=None, projects=None):
     )
 
 
+def test_source_whitelist_uses_ascii_utf8_hex_binary_title_predicates():
+    queries = bootstrap.SOURCE_SELECT_WHITELIST
+    project_query = next(query for query in queries if "FROM `projects`" in query)
+    seed_query = next(query for query in queries if "FROM `creative_seeds`" in query)
+
+    assert len(queries) == 4
+    assert all(query.isascii() for query in queries)
+    assert all(query.lstrip().upper().startswith("SELECT ") for query in queries)
+    assert project_query.endswith(
+        "WHERE BINARY `title`=0xE6B0B8E4B990E5A4A7E585B8 ORDER BY `id`"
+    )
+    assert seed_query.endswith(
+        "WHERE BINARY `title` IN "
+        "(0xE6B0B8E4B990E995BFE6988E,"
+        "0xE69687E6B88AE5B1B1E6B5B7,"
+        "0xE585B8E99587E5B1B1E6B2B3) ORDER BY `title`,`id`"
+    )
+
+
 def test_source_reader_uses_only_fixed_shell_free_json_selects(monkeypatch):
     calls = []
     environment_secrets = (

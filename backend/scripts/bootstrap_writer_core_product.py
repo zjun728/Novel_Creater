@@ -104,12 +104,15 @@ _SOURCE_CAPABILITY_QUERY = (
 )
 _SOURCE_PROJECT_QUERY = (
     f"SELECT {_json_object_expression(_LEGACY_PROJECT_COLUMNS)} "
-    "FROM `projects` WHERE `title`='永乐大典' ORDER BY `id`"
+    "FROM `projects` WHERE BINARY `title`="
+    "0xE6B0B8E4B990E5A4A7E585B8 ORDER BY `id`"
 )
 _SOURCE_SEED_QUERY = (
     f"SELECT {_json_object_expression(_LEGACY_SEED_COLUMNS)} "
-    "FROM `creative_seeds` WHERE `title` IN "
-    "('永乐长明','文渊山海','典镇山河') ORDER BY `title`,`id`"
+    "FROM `creative_seeds` WHERE BINARY `title` IN "
+    "(0xE6B0B8E4B990E995BFE6988E,"
+    "0xE69687E6B88AE5B1B1E6B5B7,"
+    "0xE585B8E99587E5B1B1E6B2B3) ORDER BY `title`,`id`"
 )
 _SOURCE_PROVIDER_QUERY = (
     f"SELECT {_json_object_expression(_LEGACY_PROVIDER_COLUMNS)} "
