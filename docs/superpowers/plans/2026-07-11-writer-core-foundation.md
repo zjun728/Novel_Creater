@@ -1650,12 +1650,15 @@ git commit -m "test: prove writer core transactions on disposable mysql"
 
 - Create: `frontend/src/views/WriterUnavailableView.vue`
 - Create: `frontend/src/components/project/WriterCoreStateCard.vue`
+- Create: `frontend/src/utils/latestRequest.js`
 - Create: `frontend/tests/unit/writerCoreApi.test.mjs`
 - Create: `frontend/tests/unit/providerRedaction.test.mjs`
 - Create: `frontend/tests/unit/m1Navigation.test.mjs`
+- Create: `frontend/tests/unit/latestRequest.test.mjs`
 - Modify: `frontend/src/api/db/client.js`
 - Modify: `frontend/src/router/index.js`
 - Modify: `frontend/src/App.vue`
+- Modify: `frontend/src/components/layout/Sidebar.vue`
 - Modify: `frontend/src/views/HomeView.vue`
 - Modify: `frontend/src/views/ProjectView.vue`
 - Modify: `frontend/src/stores/projectStore.js`
@@ -1733,6 +1736,8 @@ On mount, call exactly `projectStore.openProject(id)`, `seedStore.loadSeeds(id)`
 - a disabled “进入写作台” action until the chapter-session milestone.
 
 Do not import old writer, novel, setting, volume, story-block or correction stores. Direct navigation to `/writer/:projectId` renders `WriterUnavailableView` and provides one link back to the project page; it never mounts old `WriterView.vue`.
+
+The Sidebar exposes neither a Writer action nor the dormant Experience Cards screen; only ProjectView renders the disabled Writer milestone action. Unknown retired URLs fall back to the project library. Route changes and unmounts invalidate all in-flight project, seed, Writer Core and binding-status reads so late responses cannot replace the newest visible state.
 
 - [ ] **Step 6: Run frontend tests and production build**
 

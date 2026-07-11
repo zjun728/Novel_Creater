@@ -57,8 +57,12 @@ function handleDelete(provider) {
     positiveText: '删除',
     negativeText: '取消',
     onPositiveClick: async () => {
-      await providerStore.deleteProvider(provider.id)
-      message.success('Provider 已删除')
+      try {
+        await providerStore.deleteProvider(provider.id)
+        message.success('Provider 已删除')
+      } catch (error) {
+        message.error(`删除失败：${error.message}`)
+      }
     },
   })
 }
@@ -133,4 +137,3 @@ function handleDelete(provider) {
 .binding-card { margin-top: 20px; border-color: #dfd6c4; background: #faf7ef; }
 .empty-state { padding: 30px 0; }
 </style>
-

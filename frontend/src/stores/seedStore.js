@@ -1,24 +1,31 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '../api/db/client.js'
+import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 export const useSeedStore = defineStore('seed', () => {
   const seeds = ref([])
   const loading = ref(false)
-  let loadSequence = 0
+  const loadGuard = createLatestRequestGuard()
 
   async function loadSeeds(projectId) {
-    const sequence = ++loadSequence
+    const requestGeneration = loadGuard.begin()
     seeds.value = []
     loading.value = true
     try {
       const rows = await api.seeds.list(projectId) || []
-      if (sequence === loadSequence) seeds.value = rows
+      if (loadGuard.isCurrent(requestGeneration)) seeds.value = rows
       return rows
     } finally {
-      if (sequence === loadSequence) loading.value = false
+      if (loadGuard.isCurrent(requestGeneration)) loading.value = false
     }
   }
 
-  return { seeds, loading, loadSeeds }
+  function invalidateLoadSeeds() {
+    loadGuard.invalidate()
+    seeds.value = []
+    loading.value = false
+  }
+
+  return { seeds, loading, loadSeeds, invalidateLoadSeeds }
 })

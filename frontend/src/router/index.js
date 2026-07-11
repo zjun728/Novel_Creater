@@ -24,9 +24,8 @@ const routes = [
     component: () => import('@/views/SettingsView.vue')
   },
   {
-    path: '/experience-cards',
-    name: 'ExperienceCards',
-    component: () => import('@/views/ExperienceCardsView.vue')
+    path: '/:pathMatch(.*)*',
+    redirect: '/'
   }
 ]
 

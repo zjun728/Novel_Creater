@@ -116,8 +116,12 @@ function handleDelete(project) {
     positiveText: '删除',
     negativeText: '取消',
     onPositiveClick: async () => {
-      await projectStore.deleteProject(project.id)
-      message.success('项目已删除')
+      try {
+        await projectStore.deleteProject(project.id)
+        message.success('项目已删除')
+      } catch (error) {
+        message.error(`删除失败：${error.message}`)
+      }
     },
   })
 }
@@ -146,23 +150,26 @@ function handleDelete(project) {
           <n-card
             class="project-card"
             hoverable
-            role="link"
-            tabindex="0"
-            :aria-label="`打开项目 ${project.title}`"
-            @click="handleOpen(project)"
-            @dblclick="handleOpen(project)"
-            @keydown.enter="handleOpen(project)"
           >
-            <div class="card-folio">PROJECT / {{ project.status || 'drafting' }}</div>
-            <div class="card-title-line">
-              <h2>{{ project.title }}</h2>
-              <n-tag size="small" :bordered="false">{{ project.genre || '未分类' }}</n-tag>
+            <div
+              class="card-open-area"
+              role="link"
+              tabindex="0"
+              :aria-label="`打开项目 ${project.title}`"
+              @click="handleOpen(project)"
+              @keydown.enter="handleOpen(project)"
+            >
+              <div class="card-folio">PROJECT / {{ project.status || 'drafting' }}</div>
+              <div class="card-title-line">
+                <h2>{{ project.title }}</h2>
+                <n-tag size="small" :bordered="false">{{ project.genre || '未分类' }}</n-tag>
+              </div>
+              <p class="card-description">{{ project.description || '暂无简介，等待作者补充。' }}</p>
+              <dl class="card-targets">
+                <div><dt>篇幅</dt><dd>{{ Math.round((project.targetWords || 0) / 10000) }} 万字</dd></div>
+                <div><dt>规划</dt><dd>{{ project.targetChapters }} 章</dd></div>
+              </dl>
             </div>
-            <p class="card-description">{{ project.description || '暂无简介，等待作者补充。' }}</p>
-            <dl class="card-targets">
-              <div><dt>篇幅</dt><dd>{{ Math.round((project.targetWords || 0) / 10000) }} 万字</dd></div>
-              <div><dt>规划</dt><dd>{{ project.targetChapters }} 章</dd></div>
-            </dl>
             <template #footer>
               <n-space justify="end">
                 <n-button size="tiny" @click.stop="handleEdit(project)">编辑信息</n-button>
@@ -214,9 +221,10 @@ h1 { margin: 7px 0 5px; font-size: clamp(34px, 5vw, 52px); font-weight: 600; }
 .load-alert, .shelf { width: min(1160px, 100%); margin-inline: auto; }
 .load-alert { margin-top: 20px; }
 .shelf { margin-top: 28px; }
-.project-card { cursor: pointer; border-color: #dcd1bd; background: #fffdf8; transition: border-color .16s ease, transform .16s ease; }
+.project-card { border-color: #dcd1bd; background: #fffdf8; transition: border-color .16s ease, transform .16s ease; }
 .project-card:hover { border-color: #a89575; transform: translateY(-2px); }
-.project-card:focus-visible { outline: 3px solid rgba(117, 139, 105, .35); outline-offset: 3px; }
+.card-open-area { cursor: pointer; }
+.card-open-area:focus-visible { outline: 3px solid rgba(117, 139, 105, .35); outline-offset: 3px; }
 .card-folio { color: #a08864; font-size: 9px; font-weight: 750; letter-spacing: .15em; }
 .card-title-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
 .card-title-line h2 { margin: 0; font-size: 23px; font-weight: 650; }

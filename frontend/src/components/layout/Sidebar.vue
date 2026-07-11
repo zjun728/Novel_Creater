@@ -19,32 +19,18 @@ const menuOptions = computed(() => {
   ]
 
   if (projectStore.currentProject) {
-    options.push(
-      {
-        label: projectStore.currentProject.title || '当前项目',
-        key: `/project/${projectStore.currentProject.id}`,
-        icon: () => '📖'
-      },
-      {
-        label: '写作台',
-        key: `/writer/${projectStore.currentProject.id}`,
-        icon: () => '✍️'
-      }
-    )
+    options.push({
+      label: projectStore.currentProject.title || '当前项目',
+      key: `/project/${projectStore.currentProject.id}`,
+      icon: () => '📖'
+    })
   }
 
-  options.push(
-    {
-      label: '创作经验卡',
-      key: '/experience-cards',
-      icon: () => '🧭'
-    },
-    {
-      label: '设置',
-      key: '/settings',
-      icon: () => '⚙️'
-    }
-  )
+  options.push({
+    label: '设置',
+    key: '/settings',
+    icon: () => '⚙️'
+  })
 
   return options
 })

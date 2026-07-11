@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '../api/db/client.js'
+import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 export const useProjectStore = defineStore('project', () => {
   const projects = ref([])
   const currentProject = ref(null)
   const loading = ref(false)
-  let openSequence = 0
+  const openGuard = createLatestRequestGuard()
 
   async function loadProjects() {
     loading.value = true
@@ -31,16 +32,22 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   async function openProject(projectId) {
-    const sequence = ++openSequence
+    const requestGeneration = openGuard.begin()
     currentProject.value = null
     loading.value = true
     try {
       const project = await api.projects.get(projectId)
-      if (sequence === openSequence) currentProject.value = project
+      if (openGuard.isCurrent(requestGeneration)) currentProject.value = project
       return project
     } finally {
-      if (sequence === openSequence) loading.value = false
+      if (openGuard.isCurrent(requestGeneration)) loading.value = false
     }
+  }
+
+  function invalidateOpenProject() {
+    openGuard.invalidate()
+    currentProject.value = null
+    loading.value = false
   }
 
   async function updateProject(project) {
@@ -71,6 +78,7 @@ export const useProjectStore = defineStore('project', () => {
     loadProjects,
     createProject,
     openProject,
+    invalidateOpenProject,
     updateProject,
     deleteProject,
   }

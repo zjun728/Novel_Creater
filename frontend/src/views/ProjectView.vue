@@ -1,11 +1,12 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { NAlert, NButton, NResult, NSkeleton, NTag } from 'naive-ui'
 import { api } from '@/api/db/client'
 import WriterCoreStateCard from '@/components/project/WriterCoreStateCard.vue'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSeedStore } from '@/stores/seedStore'
+import { createLatestRequestGuard } from '@/utils/latestRequest'
 
 const route = useRoute()
 const projectStore = useProjectStore()
@@ -14,6 +15,7 @@ const writerCoreState = ref(null)
 const loadedProject = ref(null)
 const loading = ref(true)
 const loadError = ref('')
+const foundationGuard = createLatestRequestGuard()
 
 const selectedSeedId = computed(() => seedStore.seeds.find(seed => seed.status === 'selected')?.id || '')
 
@@ -26,8 +28,8 @@ function seedSummary(seed) {
   return premise.logline || premise.openingHook || '种子内容已保留，等待创作契约里程碑展开。'
 }
 
-async function loadFoundation() {
-  const projectId = String(route.params.id || '')
+async function loadFoundation(projectId) {
+  const requestGeneration = foundationGuard.begin()
   loading.value = true
   loadError.value = ''
   loadedProject.value = null
@@ -38,16 +40,30 @@ async function loadFoundation() {
       seedStore.loadSeeds(projectId),
       api.writerCore.state(projectId),
     ])
+    if (!foundationGuard.isCurrent(requestGeneration)) return
     loadedProject.value = project
     writerCoreState.value = state
   } catch (error) {
+    if (!foundationGuard.isCurrent(requestGeneration)) return
     loadError.value = error.message || 'Writer Core 地基状态加载失败'
   } finally {
-    loading.value = false
+    if (foundationGuard.isCurrent(requestGeneration)) loading.value = false
   }
 }
 
-onMounted(loadFoundation)
+function retryFoundation() {
+  return loadFoundation(String(route.params.id || ''))
+}
+
+watch(() => route.params.id, projectId => {
+  loadFoundation(String(projectId || ''))
+}, { immediate: true })
+
+onBeforeUnmount(() => {
+  foundationGuard.invalidate()
+  projectStore.invalidateOpenProject()
+  seedStore.invalidateLoadSeeds()
+})
 </script>
 
 <template>
@@ -60,7 +76,7 @@ onMounted(loadFoundation)
     </section>
 
     <n-result v-else-if="loadError" status="error" title="项目地基未能加载" :description="loadError" class="error-sheet">
-      <template #footer><n-button type="primary" @click="loadFoundation">重试</n-button></template>
+      <template #footer><n-button type="primary" @click="retryFoundation">重试</n-button></template>
     </n-result>
 
     <template v-else-if="loadedProject && writerCoreState">
