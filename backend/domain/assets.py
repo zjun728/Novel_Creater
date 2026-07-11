@@ -269,10 +269,15 @@ class AssetProvenance(_FrozenModel):
     def require_aware_iso_timestamp(cls, value: str | None) -> str | None:
         if value is None:
             return None
+        parse_failed = False
+        parsed: datetime | None = None
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise ValueError("review_time must be an ISO-8601 timestamp") from exc
+        except ValueError:
+            parse_failed = True
+        if parse_failed:
+            raise ValueError("review_time must be an ISO-8601 timestamp")
+        assert parsed is not None
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             raise ValueError("review_time must include a timezone offset")
         return value
@@ -384,10 +389,13 @@ def validate_asset_package(
     if mode not in ("structural", "release"):
         raise AssetPackageError(_AssetError.VALIDATION_MODE_UNSUPPORTED)
     if not isinstance(package, AssetPackage):
+        validation_failed = False
         try:
             package = AssetPackage.model_validate(package)
-        except ValidationError as exc:
-            raise _validation_error("asset package", exc) from None
+        except ValidationError:
+            validation_failed = True
+        if validation_failed:
+            raise _validation_error("asset package")
     if package.manifest.package_version != PACKAGE_VERSION:
         raise AssetPackageError(_AssetError.PACKAGE_VERSION)
     if len(package.styles) != 8:
@@ -428,8 +436,7 @@ def validate_asset_package(
     return package
 
 
-def _validation_error(label: str, exc: ValidationError) -> AssetPackageError:
-    del exc
+def _validation_error(label: str) -> AssetPackageError:
     error = (
         _AssetError.MANIFEST_INVALID
         if label == "asset manifest"
@@ -439,15 +446,20 @@ def _validation_error(label: str, exc: ValidationError) -> AssetPackageError:
 
 
 def _parse_json_bytes(raw: bytes, *, label: str) -> object:
+    parse_failed = False
+    parsed: object = None
     try:
-        return json.loads(raw.decode("utf-8"))
+        parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
+        parse_failed = True
+    if parse_failed:
         error = {
             "asset manifest": _AssetError.MANIFEST_JSON_INVALID,
             "styles_file": _AssetError.STYLES_JSON_INVALID,
             "experience_cards_file": _AssetError.CARDS_JSON_INVALID,
         }[label]
-        raise AssetPackageError(error) from None
+        raise AssetPackageError(error)
+    return parsed
 
 
 def _read_bounded_bytes(
@@ -457,15 +469,26 @@ def _read_bounded_bytes(
     io_error: _AssetError,
     size_error: _AssetError,
 ) -> bytes:
+    stat_failed = False
+    size = 0
     try:
-        if path.stat().st_size > limit:
-            raise AssetPackageError(size_error)
+        size = path.stat().st_size
+    except OSError:
+        stat_failed = True
+    if stat_failed:
+        raise AssetPackageError(io_error)
+    if size > limit:
+        raise AssetPackageError(size_error)
+
+    read_failed = False
+    raw = b""
+    try:
         with path.open("rb") as source:
             raw = source.read(limit + 1)
-    except AssetPackageError:
-        raise
     except OSError:
-        raise AssetPackageError(io_error) from None
+        read_failed = True
+    if read_failed:
+        raise AssetPackageError(io_error)
     if len(raw) > limit:
         raise AssetPackageError(size_error)
     return raw
@@ -523,10 +546,13 @@ def load_asset_package(
         size_error=_AssetError.MANIFEST_TOO_LARGE,
     )
     manifest_values = _parse_json_bytes(manifest_raw, label="asset manifest")
+    manifest_validation_failed = False
     try:
         manifest = AssetManifest.model_validate(manifest_values)
-    except ValidationError as exc:
-        raise _validation_error("asset manifest", exc) from None
+    except ValidationError:
+        manifest_validation_failed = True
+    if manifest_validation_failed:
+        raise _validation_error("asset manifest")
 
     styles_values = _read_child(
         path,
@@ -543,6 +569,7 @@ def load_asset_package(
     if not isinstance(cards_values, list):
         raise AssetPackageError(_AssetError.CARDS_NOT_ARRAY)
 
+    package_validation_failed = False
     try:
         package = AssetPackage.model_validate(
             {
@@ -551,6 +578,8 @@ def load_asset_package(
                 "experience_cards": cards_values,
             }
         )
-    except ValidationError as exc:
-        raise _validation_error("asset package", exc) from None
+    except ValidationError:
+        package_validation_failed = True
+    if package_validation_failed:
+        raise _validation_error("asset package")
     return validate_asset_package(package, mode=mode)

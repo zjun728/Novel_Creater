@@ -7,6 +7,7 @@ from pathlib import Path
 import traceback
 
 import pytest
+from pydantic import ValidationError
 
 from backend.domain.assets import (
     ASSET_CATEGORIES,
@@ -124,6 +125,8 @@ def _assert_safe_error(
     secrets: tuple[str, ...],
 ) -> None:
     assert str(error) == expected
+    assert error.__context__ is None
+    assert error.__cause__ is None
     rendered = "".join(traceback.format_exception(error))
     for secret in secrets:
         assert secret not in str(error)
@@ -157,6 +160,12 @@ def test_validator_wraps_raw_dict_validation_errors_as_stable_package_errors():
     secret_key = "rawExcerpt_SECRET_KEY"
     secret_value = "SECRET_VALUE\nSECRET_NEWLINE_SENTINEL"
     values["experience_cards"][0]["payload"][secret_key] = secret_value
+
+    with pytest.raises(ValidationError) as original:
+        AssetPackage.model_validate(values)
+    original_error = original.value.errors(include_url=False)[0]
+    assert secret_key in original_error["loc"]
+    assert original_error["input"] == secret_value
 
     with pytest.raises(AssetPackageError) as captured:
         validate_asset_package(values, mode="structural")
@@ -325,6 +334,10 @@ def test_loader_wraps_manifest_validation_without_secret_echo(tmp_path: Path):
 def test_loader_wraps_manifest_io_without_absolute_path_echo(tmp_path: Path):
     secret_path = tmp_path / "SECRET_ABSOLUTE_PATH\nSECRET_NEWLINE_SENTINEL.json"
 
+    with pytest.raises(OSError) as original:
+        secret_path.stat()
+    assert original.value.filename == str(secret_path)
+
     with pytest.raises(AssetPackageError) as captured:
         load_asset_package(secret_path)
 
@@ -366,6 +379,11 @@ def test_loader_wraps_invalid_json_without_content_or_path_echo(
     expected: str,
 ):
     secret_json = b'{"SECRET_JSON_KEY":"SECRET_JSON_VALUE\\nSECRET_NEWLINE_SENTINEL"'
+    secret_document = secret_json.decode("utf-8")
+    with pytest.raises(json.JSONDecodeError) as original:
+        json.loads(secret_document)
+    assert original.value.doc == secret_document
+
     if target == "manifest":
         target_path = tmp_path / "manifest_SECRET_ABSOLUTE_PATH.json"
         target_path.write_bytes(secret_json)
