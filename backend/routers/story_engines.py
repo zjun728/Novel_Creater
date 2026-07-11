@@ -101,7 +101,7 @@ def _public_batch(result) -> dict:
     }
 
 
-@router.post("/projects/{pid}/story-engine-batches")
+@router.post("/projects/{pid}/story-engine-batches", status_code=201)
 async def reserve_batch(
     pid: str,
     body: ReserveBatchBody,
@@ -114,7 +114,7 @@ async def reserve_batch(
     )
 
 
-@router.post("/projects/{pid}/story-engine-batches/manual")
+@router.post("/projects/{pid}/story-engine-batches/manual", status_code=201)
 async def create_manual_batch(
     pid: str,
     body: ManualBatchBody,

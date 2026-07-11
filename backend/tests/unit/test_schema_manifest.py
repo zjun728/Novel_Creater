@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from hashlib import sha256
 
 from backend import schema_manifest
@@ -296,11 +297,13 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
         "and public_error_code is not null and public_error_code <> 'not_started' "
         "and finished_at is not null"
     ) in batches
-    assert (
-        "status = 'outcome_unknown' and attempt_id is not null "
-        "and attempt_started_at is not null and lease_expires_at is not null "
-        "and public_error_code is not null and finished_at is not null"
-    ) in batches
+    assert re.search(
+        r"status = 'outcome_unknown' and attempt_id is not null "
+        r"and attempt_started_at is not null and lease_expires_at is not null "
+        r"and raw_response_text is null and raw_response_hash is null "
+        r"and public_error_code = 'outcome_unknown' and finished_at is not null",
+        batches,
+    )
     options = _table_statement("story_engine_options")
     assert "project_id char(36) not null" in options
     assert "unique key uq_engine_option_order (batch_id, option_order)" in options

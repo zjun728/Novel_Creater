@@ -619,6 +619,40 @@ async def test_provider_not_started_failure_accepts_no_attempt_or_raw_markers(
 
 
 @pytest.mark.mysql
+async def test_provider_outcome_unknown_accepts_exact_attempt_state(
+    disposable_mysql,
+):
+    attempt_id = "00000000-0000-0000-0000-000000000092"
+    batch_id = await _insert_provider_batch_state(
+        disposable_mysql.session,
+        status="outcome_unknown",
+        attempt_id=attempt_id,
+        attempt_started_at=NOW,
+        lease_expires_at=NOW,
+        raw_response_text=None,
+        raw_response_hash=None,
+        public_error_code="outcome_unknown",
+        finished_at=NOW,
+    )
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,public_error_code,attempt_id,attempt_started_at,
+                  lease_expires_at,raw_response_text,raw_response_hash,finished_at
+           FROM story_engine_batches WHERE id=%s""",
+        (batch_id,),
+    )
+    assert row == {
+        "status": "outcome_unknown",
+        "public_error_code": "outcome_unknown",
+        "attempt_id": attempt_id,
+        "attempt_started_at": NOW,
+        "lease_expires_at": NOW,
+        "raw_response_text": None,
+        "raw_response_hash": None,
+        "finished_at": NOW,
+    }
+
+
+@pytest.mark.mysql
 @pytest.mark.parametrize(
     (
         "status", "attempt_id", "attempt_started_at", "lease_expires_at",
@@ -630,6 +664,10 @@ async def test_provider_not_started_failure_accepts_no_attempt_or_raw_markers(
          None, None, "not_started", NOW),
         ("failed", None, None, None, None, None, "provider_failed", NOW),
         ("outcome_unknown", None, None, None, None, None, "outcome_unknown", NOW),
+        ("outcome_unknown", "00000000-0000-0000-0000-000000000092", NOW,
+         NOW, None, None, "provider_failed", NOW),
+        ("outcome_unknown", "00000000-0000-0000-0000-000000000092", NOW,
+         NOW, "raw", HASH_C, "outcome_unknown", NOW),
         ("failed", None, None, None, "raw", HASH_C, "not_started", NOW),
         ("failed", None, None, None, None, None, "not_started", None),
     ),

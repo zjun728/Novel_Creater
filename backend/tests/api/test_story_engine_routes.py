@@ -83,7 +83,8 @@ def test_fixed_routes_delegate_and_return_camel_case_dto():
     read = client.get("/api/projects/p1/story-engine-batches/batch-1")
     reconcile = client.post("/api/projects/p1/story-engine-batches/batch-1/reconcile")
 
-    assert [response.status_code for response in (provider, manual, read, reconcile)] == [200] * 4
+    assert [response.status_code for response in (provider, manual)] == [201, 201]
+    assert [response.status_code for response in (read, reconcile)] == [200, 200]
     assert provider.json()["projectId"] == "p1"
     assert provider.json()["bindingRevisionId"] == "binding-1"
     assert manual.json()["bindingRevisionId"] is None
@@ -112,10 +113,30 @@ def test_all_public_batch_responses_redact_raw_audit_and_attempt_markers():
         "attempt-secret-sentinel", "123456789", "987654321",
         "https://secret.invalid/api", "raw-secret-sentinel", "d" * 64,
     )
+    assert [response.status_code for response in responses] == [201, 201, 200, 200]
     for response in responses:
-        assert response.status_code == 200
         serialized = response.text
         assert all(item not in serialized for item in forbidden)
+
+
+def test_create_route_idempotency_replays_keep_static_201_and_same_resource():
+    client, _ = make_client()
+    requests = (
+        (
+            "/api/projects/p1/story-engine-batches",
+            {"idempotencyKey": "key"},
+        ),
+        (
+            "/api/projects/p1/story-engine-batches/manual",
+            {"idempotencyKey": "key", "options": _json_options()},
+        ),
+    )
+    for path, payload in requests:
+        created = client.post(path, json=payload)
+        replayed = client.post(path, json=payload)
+        assert (created.status_code, replayed.status_code) == (201, 201)
+        assert replayed.json() == created.json()
+        assert replayed.json()["id"] == "batch-1"
 
 
 def test_manual_requires_exactly_three_strict_options_and_forbids_extra_fields():

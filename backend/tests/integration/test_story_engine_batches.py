@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import aiomysql
 import pytest
@@ -12,6 +13,7 @@ from backend.services.story_engines import (
     RUNNING_LEASE_MS,
     CreateManualStoryEngineBatch,
     ReserveStoryEngineBatch,
+    StoryEngineBatchResult,
     StoryEngineService,
 )
 from backend.tests.support.disposable_mysql import transaction_factory_for
@@ -111,14 +113,39 @@ async def _bootstrap_facts(session, project_id: str = "project-1") -> None:
     )
 
 
-def _service(database, *, repository=None, clock=None, gateway=None):
+def _service(
+    database,
+    *,
+    repository=None,
+    clock=None,
+    gateway=None,
+    transaction_factory=None,
+):
+    default_transaction_factory = transaction_factory_for(
+        database.connection_config
+    )
     return StoryEngineService(
         repository or StoryEngineRepository(),
-        transaction_factory=transaction_factory_for(database.connection_config),
-        connection_factory=transaction_factory_for(database.connection_config),
+        transaction_factory=transaction_factory or default_transaction_factory,
+        connection_factory=default_transaction_factory,
         clock=clock,
         provider_gateway=gateway,
     )
+
+
+def _two_connection_barrier_transaction_factory(database):
+    base_factory = transaction_factory_for(database.connection_config)
+    barrier = asyncio.Barrier(2)
+    connections = []
+
+    @asynccontextmanager
+    async def transaction_factory():
+        async with base_factory() as session:
+            connections.append(session.raw)
+            await asyncio.wait_for(barrier.wait(), timeout=10)
+            yield session
+
+    return transaction_factory, connections
 
 
 @pytest.mark.asyncio
@@ -323,3 +350,146 @@ async def test_real_reconcile_uses_cas_for_stale_reserved_and_expired_running(
         "outcome_unknown", "outcome_unknown"
     )
     assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_real_two_connection_stale_reserved_start_races_reconcile(
+    disposable_mysql,
+):
+    await _bootstrap_facts(disposable_mysql.session)
+    clock = FakeClock(1_800_000_000_000)
+    setup_service = _service(disposable_mysql, clock=clock)
+    reserved = await setup_service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "stale-race")
+    )
+    clock.advance(RESERVED_TIMEOUT_MS)
+    race_factory, connections = _two_connection_barrier_transaction_factory(
+        disposable_mysql
+    )
+    start_service = _service(
+        disposable_mysql, clock=clock, transaction_factory=race_factory
+    )
+    reconcile_service = _service(
+        disposable_mysql, clock=clock, transaction_factory=race_factory
+    )
+
+    start_result, reconcile_result = await asyncio.wait_for(
+        asyncio.gather(
+            start_service.start_attempt("project-1", reserved.id),
+            reconcile_service.reconcile("project-1", reserved.id),
+            return_exceptions=True,
+        ),
+        timeout=15,
+    )
+
+    assert len(connections) == 2
+    assert connections[0] is not connections[1]
+    assert isinstance(
+        start_result, (StoryEngineBatchResult, StoryEngineBatchConflict)
+    )
+    assert isinstance(reconcile_result, StoryEngineBatchResult)
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,attempt_id,attempt_started_at,lease_expires_at,
+                  raw_response_text,raw_response_hash,public_error_code,finished_at
+           FROM story_engine_batches WHERE project_id='project-1' AND id=%s""",
+        (reserved.id,),
+    )
+    option_count = await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM story_engine_options WHERE batch_id=%s",
+        (reserved.id,),
+    )
+    assert option_count == {"count": 0}
+    if row["status"] == "failed":
+        assert isinstance(start_result, StoryEngineBatchConflict)
+        assert reconcile_result.status == "failed"
+        assert row == {
+            "status": "failed",
+            "attempt_id": None,
+            "attempt_started_at": None,
+            "lease_expires_at": None,
+            "raw_response_text": None,
+            "raw_response_hash": None,
+            "public_error_code": "not_started",
+            "finished_at": clock.now,
+        }
+    else:
+        assert row["status"] == "running"
+        assert isinstance(start_result, StoryEngineBatchResult)
+        assert start_result.status == reconcile_result.status == "running"
+        assert row["attempt_id"] is not None
+        assert row["attempt_started_at"] == clock.now
+        assert row["lease_expires_at"] == clock.now + RUNNING_LEASE_MS
+        assert row["raw_response_text"] is None
+        assert row["raw_response_hash"] is None
+        assert row["public_error_code"] is None
+        assert row["finished_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_real_two_connection_expired_running_success_races_reconcile(
+    disposable_mysql,
+):
+    await _bootstrap_facts(disposable_mysql.session)
+    clock = FakeClock(1_800_000_000_000)
+    setup_service = _service(disposable_mysql, clock=clock)
+    reserved = await setup_service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "running-race")
+    )
+    running = await setup_service.start_attempt("project-1", reserved.id)
+    clock.advance(RUNNING_LEASE_MS)
+    race_factory, connections = _two_connection_barrier_transaction_factory(
+        disposable_mysql
+    )
+    success_service = _service(
+        disposable_mysql, clock=clock, transaction_factory=race_factory
+    )
+    reconcile_service = _service(
+        disposable_mysql, clock=clock, transaction_factory=race_factory
+    )
+
+    success_result, reconcile_result = await asyncio.wait_for(
+        asyncio.gather(
+            success_service.succeed_attempt(
+                "project-1", running.id, running.attempt_id, "raw", three_options()
+            ),
+            reconcile_service.reconcile("project-1", running.id),
+            return_exceptions=True,
+        ),
+        timeout=15,
+    )
+
+    assert len(connections) == 2
+    assert connections[0] is not connections[1]
+    assert isinstance(
+        success_result, (StoryEngineBatchResult, StoryEngineBatchConflict)
+    )
+    assert isinstance(reconcile_result, StoryEngineBatchResult)
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,attempt_id,attempt_started_at,lease_expires_at,
+                  raw_response_text,raw_response_hash,public_error_code,finished_at
+           FROM story_engine_batches WHERE project_id='project-1' AND id=%s""",
+        (running.id,),
+    )
+    option_count = await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM story_engine_options WHERE batch_id=%s",
+        (running.id,),
+    )
+    assert row["attempt_id"] == running.attempt_id
+    assert row["attempt_started_at"] is not None
+    assert row["lease_expires_at"] is not None
+    assert row["finished_at"] == clock.now
+    if row["status"] == "outcome_unknown":
+        assert isinstance(success_result, StoryEngineBatchConflict)
+        assert reconcile_result.status == "outcome_unknown"
+        assert row["public_error_code"] == "outcome_unknown"
+        assert row["raw_response_text"] is None
+        assert row["raw_response_hash"] is None
+        assert option_count == {"count": 0}
+    else:
+        assert row["status"] == "succeeded"
+        assert isinstance(success_result, StoryEngineBatchResult)
+        assert success_result.status == reconcile_result.status == "succeeded"
+        assert row["public_error_code"] is None
+        assert row["raw_response_text"] == "raw"
+        assert row["raw_response_hash"] is not None
+        assert option_count == {"count": 3}
