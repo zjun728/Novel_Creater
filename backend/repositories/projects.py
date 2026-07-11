@@ -131,12 +131,14 @@ class ProjectRepository:
         self, session, project_id: str
     ) -> PreviousBindingSnapshot | None:
         rows = await session.fetchall(
-            """SELECT p.id AS source_project_id, i.task_key, i.provider_id
-               FROM projects p
-               LEFT JOIN task_model_bindings b ON b.project_id=p.id
+            """SELECT latest.id AS source_project_id, i.task_key, i.provider_id
+               FROM (
+                 SELECT id FROM projects WHERE id<>%s
+                 ORDER BY created_at DESC, id DESC LIMIT 1
+               ) AS latest
+               LEFT JOIN task_model_bindings b ON b.project_id=latest.id
                LEFT JOIN task_model_binding_items i ON i.binding_id=b.id
-               WHERE p.id<>%s
-               ORDER BY p.created_at DESC, p.id DESC, i.task_key ASC""",
+               ORDER BY i.task_key ASC""",
             (project_id,),
         )
         if not rows:
@@ -145,8 +147,7 @@ class ProjectRepository:
         provider_ids = {
             row["task_key"]: row["provider_id"]
             for row in rows
-            if row["source_project_id"] == source_project_id
-            and row.get("task_key")
+            if row.get("task_key")
             and row.get("provider_id")
         }
         return PreviousBindingSnapshot(source_project_id, provider_ids)

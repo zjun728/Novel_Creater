@@ -265,10 +265,30 @@ async def test_repository_orders_enabled_providers_stably():
 @pytest.mark.asyncio
 async def test_repository_finds_previous_project_by_created_at_then_id():
     session = RecordingSession()
-    await ProjectRepository().find_previous_binding_snapshot(session, "p1")
+    session.fetchall_result = [
+        {
+            "source_project_id": "latest-project",
+            "task_key": "audit",
+            "provider_id": "provider-audit",
+        },
+        {
+            "source_project_id": "latest-project",
+            "task_key": "writing",
+            "provider_id": "provider-writing",
+        },
+    ]
+    snapshot = await ProjectRepository().find_previous_binding_snapshot(
+        session, "p1"
+    )
     sql = session.calls[0][1]
-    assert "p.id<>%s" in sql
-    assert "ORDER BY p.created_at DESC, p.id DESC" in sql
+    assert snapshot.source_project_id == "latest-project"
+    assert snapshot.provider_ids == {
+        "audit": "provider-audit",
+        "writing": "provider-writing",
+    }
+    assert "id<>%s" in sql
+    assert "ORDER BY created_at DESC, id DESC" in sql
+    assert "LIMIT 1" in sql
 
 
 @pytest.mark.asyncio

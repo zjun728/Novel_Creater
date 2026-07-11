@@ -14,7 +14,8 @@ def canon_api(monkeypatch):
             "canon_revision_number": 2,
             "projection_revision_number": 2,
             "content_hash": "a" * 64,
-        }
+        },
+        "json_mode": "encoded",
     }
 
     async def fetchone(sql, args=None):
@@ -35,7 +36,22 @@ def canon_api(monkeypatch):
         if "FROM canon_entities" in sql:
             return [{"id": "entity-1", "canonical_name": "甲"}]
         if "FROM canon_events" in sql:
-            return [{"id": "event-1", "value_json": '{"alive":true}'}]
+            if state["json_mode"] == "native":
+                value_json = {"alive": True}
+                evidence_json = [{"chapter": 1}]
+            elif state["json_mode"] == "invalid":
+                value_json = "{not-json"
+                evidence_json = "[not-json"
+            else:
+                value_json = '{"alive":true}'
+                evidence_json = '[{"chapter":1}]'
+            return [
+                {
+                    "id": "event-1",
+                    "value_json": value_json,
+                    "evidence_json": evidence_json,
+                }
+            ]
         if "FROM entity_aliases" in sql:
             normalized = args[1]
             if normalized == "missing":
@@ -55,7 +71,13 @@ def canon_api(monkeypatch):
             "plot_thread_projections",
         }
         if any(f"FROM {table}" in sql for table in projection_tables):
-            return [{"payload_json": '{"value":1}', "revision_number": 2}]
+            if state["json_mode"] == "native":
+                payload_json = {"value": 1}
+            elif state["json_mode"] == "invalid":
+                payload_json = "{not-json"
+            else:
+                payload_json = '{"value":1}'
+            return [{"payload_json": payload_json, "revision_number": 2}]
         raise AssertionError(sql)
 
     monkeypatch.setattr(canon, "fetchone", fetchone)
@@ -100,6 +122,43 @@ def test_canon_and_projection_read_routes_return_current_rows(canon_api):
     ]
     assert canon_routes
     assert all(route.methods <= {"GET", "HEAD"} for route in canon_routes)
+
+
+def test_canon_events_and_every_projection_endpoint_decode_json(canon_api):
+    client, _, _ = canon_api
+    event = client.get("/api/projects/p1/canon/events").json()[0]
+    assert event["valueJSON"] == {"alive": True}
+    assert event["evidenceJSON"] == [{"chapter": 1}]
+
+    for suffix in ("current-state", "memories", "arcs", "plot-threads"):
+        row = client.get(f"/api/projects/p1/projections/{suffix}").json()[0]
+        assert row["payloadJSON"] == {"value": 1}
+
+
+def test_native_and_invalid_json_values_follow_explicit_non_throwing_policy(
+    canon_api,
+):
+    client, _, state = canon_api
+    state["json_mode"] = "native"
+    native_event = client.get("/api/projects/p1/canon/events")
+    native_projection = client.get(
+        "/api/projects/p1/projections/current-state"
+    )
+    assert native_event.status_code == 200
+    assert native_event.json()[0]["valueJSON"] == {"alive": True}
+    assert native_event.json()[0]["evidenceJSON"] == [{"chapter": 1}]
+    assert native_projection.json()[0]["payloadJSON"] == {"value": 1}
+
+    state["json_mode"] = "invalid"
+    invalid_event = client.get("/api/projects/p1/canon/events")
+    invalid_projection = client.get(
+        "/api/projects/p1/projections/current-state"
+    )
+    assert invalid_event.status_code == 200
+    assert invalid_projection.status_code == 200
+    assert invalid_event.json()[0]["valueJSON"] == "{not-json"
+    assert invalid_event.json()[0]["evidenceJSON"] == "[not-json"
+    assert invalid_projection.json()[0]["payloadJSON"] == "{not-json"
 
 
 def test_projection_data_routes_reject_out_of_sync_heads(canon_api):

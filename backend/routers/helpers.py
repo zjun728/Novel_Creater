@@ -9,6 +9,9 @@ BOOL_FIELDS = {'stream', 'supports_json', 'supports_streaming', 'is_hidden', 'no
 JSON_FIELDS = {
     'thinking',
     'premise_json',
+    'value_json',
+    'evidence_json',
+    'payload_json',
     'writing_profile',
     'forbidden_directions',
     'far_vision',
