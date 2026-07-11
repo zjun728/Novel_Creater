@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import combinations
 import json
 from typing import Iterable, Literal, Mapping
 import unicodedata
@@ -286,44 +287,83 @@ def _event_key(item: CanonEventInput) -> tuple:
         item.confirmation_status.value,
         item.assertion_operator.value,
         item.value_cardinality.value,
-        1
+        (0, 1)
         if item.effective_start_chapter is None
-        else item.effective_start_chapter,
-        float("inf")
+        else (1, item.effective_start_chapter),
+        (1, 0)
         if item.effective_end_chapter is None
-        else item.effective_end_chapter,
+        else (0, item.effective_end_chapter),
         _canonical_json(item.value),
+        _canonical_json(item.evidence, field_name="evidence"),
     )
+
+
+def _unique_sorted_events(
+    events: Iterable[CanonEventInput],
+) -> tuple[CanonEventInput, ...]:
+    ordered = sorted(events, key=_event_key)
+    unique: list[CanonEventInput] = []
+    previous_key: tuple | None = None
+    for item in ordered:
+        key = _event_key(item)
+        if key != previous_key:
+            unique.append(item)
+            previous_key = key
+    return tuple(unique)
+
+
+def _validate_stable_cardinalities(events: Iterable[CanonEventInput]) -> None:
+    cardinalities: dict[tuple[str, str], ValueCardinality] = {}
+    for item in events:
+        if item.entity_id is None or item.fact_kind is not FactKind.STABLE_DEFINITION:
+            continue
+        group = (item.entity_id, item.field_path)
+        cardinality = cardinalities.get(group)
+        if cardinality is None:
+            cardinalities[group] = item.value_cardinality
+        elif cardinality is not item.value_cardinality:
+            raise CanonValidationError(
+                "stable events for one entity and field must use one value_cardinality"
+            )
 
 
 def find_hard_conflicts(
     existing: Iterable[CanonEventInput],
     incoming: Iterable[CanonEventInput],
 ) -> tuple[CanonConflict, ...]:
-    pairs: dict[tuple[tuple, tuple], CanonConflict] = {}
-    existing_events = tuple(existing)
-    incoming_events = tuple(incoming)
-    for old in existing_events:
-        for new in incoming_events:
-            if not _stable_scope(old, new):
+    existing_events = _unique_sorted_events(existing)
+    incoming_events = _unique_sorted_events(incoming)
+    _validate_stable_cardinalities((*existing_events, *incoming_events))
+
+    candidate_pairs = (
+        *((old, new) for old in existing_events for new in incoming_events),
+        *combinations(incoming_events, 2),
+    )
+    conflicts: list[CanonConflict] = []
+    seen: set[tuple[tuple, tuple]] = set()
+    for old, new in candidate_pairs:
+        if not _stable_scope(old, new):
+            continue
+        if (
+            old.confirmation_status is ConfirmationStatus.CONFIRMED
+            and new.confirmation_status is ConfirmationStatus.CONFIRMED
+            and _overlaps(old, new)
+            and _mutually_exclusive(old, new)
+        ):
+            key = (_event_key(old), _event_key(new))
+            if key in seen:
                 continue
-            if old.value_cardinality is not new.value_cardinality:
-                raise CanonValidationError(
-                    "stable events for one entity and field must use one value_cardinality"
+            seen.add(key)
+            conflicts.append(
+                CanonConflict(
+                    old=old,
+                    new=new,
+                    reason="mutually_exclusive_stable_definition",
                 )
-            if (
-                old.confirmation_status is ConfirmationStatus.CONFIRMED
-                and new.confirmation_status is ConfirmationStatus.CONFIRMED
-                and _overlaps(old, new)
-                and _mutually_exclusive(old, new)
-            ):
-                key = (_event_key(old), _event_key(new))
-                pairs.setdefault(
-                    key,
-                    CanonConflict(
-                        old=old,
-                        new=new,
-                        reason="mutually_exclusive_stable_definition",
-                    ),
-                )
-    return tuple(pairs[key] for key in sorted(pairs))
+            )
+    return tuple(
+        sorted(
+            conflicts,
+            key=lambda item: (_event_key(item.old), _event_key(item.new)),
+        )
+    )

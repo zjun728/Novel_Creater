@@ -1002,6 +1002,12 @@ git add backend/domain backend/schema/50_canon.sql backend/tests/unit
 git commit -m "feat: define canon identity and conflict boundary"
 ```
 
+### Task 5 follow-up: validate complete incoming ChangeSets
+
+- [x] Validate one cardinality per non-empty entity/field stable group across existing and incoming events, including incoming-only and dirty-history groups.
+- [x] Compare both `existing × incoming` and unordered incoming pairs for hard conflicts without comparing existing history against itself.
+- [x] Include canonical evidence JSON in the stable event key so only exact duplicate events collapse and reordered inputs return the same complete conflict tuple.
+
 ## Task 6: Build deterministic projections as pure functions
 
 **Files:**

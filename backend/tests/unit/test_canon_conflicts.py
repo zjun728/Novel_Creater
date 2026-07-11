@@ -180,6 +180,24 @@ def test_cardinality_mismatch_invalidates_same_entity_field_stable_comparison():
         find_hard_conflicts((old,), (new,))
 
 
+def test_incoming_only_cardinality_mismatch_invalidates_the_change_set():
+    incoming = (
+        event("北平", cardinality="single"),
+        event(["应天"], cardinality="multi"),
+    )
+    with pytest.raises(CanonValidationError, match="value_cardinality"):
+        find_hard_conflicts((), incoming)
+
+
+def test_existing_only_cardinality_mismatch_fails_fast_on_dirty_history():
+    existing = (
+        event("北平", cardinality="single"),
+        event(["应天"], cardinality="multi"),
+    )
+    with pytest.raises(CanonValidationError, match="value_cardinality"):
+        find_hard_conflicts(existing, ())
+
+
 def test_cardinality_mismatch_is_not_applied_outside_same_entity_field_stable_scope():
     single = event("北平")
     assert find_hard_conflicts(
@@ -196,6 +214,36 @@ def test_cardinality_mismatch_is_not_applied_outside_same_entity_field_stable_sc
     ) == ()
 
 
+def test_incoming_change_set_detects_its_own_hard_conflict_once():
+    north = event("北平")
+    south = event("应天")
+
+    forward = find_hard_conflicts((), (south, north))
+    reverse = find_hard_conflicts((), (north, south))
+
+    assert forward == reverse
+    assert len(forward) == 1
+    assert {forward[0].old.value, forward[0].new.value} == {"北平", "应天"}
+
+
+def test_existing_history_is_not_compared_against_itself_for_hard_conflicts():
+    assert find_hard_conflicts((event("北平"), event("应天")), ()) == ()
+
+
+@pytest.mark.parametrize(
+    "incoming",
+    [
+        (event("北平", start=1, end=5), event("应天", start=6)),
+        (
+            event("木工", field_path="skills", cardinality="multi"),
+            event("算学", field_path="skills", cardinality="multi"),
+        ),
+    ],
+)
+def test_non_conflicting_incoming_change_set_remains_empty(incoming):
+    assert find_hard_conflicts((), incoming) == ()
+
+
 def test_conflict_output_is_stable_and_deduplicated_for_reordered_inputs():
     old_a = event("北平", field_path="identity.birthplace")
     new_a = event("应天", field_path="identity.birthplace")
@@ -210,4 +258,37 @@ def test_conflict_output_is_stable_and_deduplicated_for_reordered_inputs():
     assert tuple(conflict.old.field_path for conflict in forward) == (
         "identity.birthplace",
         "identity.language",
+    )
+
+
+def test_conflict_output_uses_evidence_in_its_full_stable_event_key():
+    old_a = event("北平", evidence={"quote": "A"})
+    old_b = event("北平", evidence={"quote": "B"})
+    new_a = event("应天", evidence={"quote": "A"})
+    new_b = event("应天", evidence={"quote": "B"})
+
+    forward = find_hard_conflicts((old_b, old_a), (new_b, new_a))
+    reverse = find_hard_conflicts((old_a, old_b), (new_a, new_b))
+
+    assert forward == reverse
+    assert len(forward) == 4
+    assert tuple(
+        (conflict.old.evidence["quote"], conflict.new.evidence["quote"])
+        for conflict in forward
+    ) == (("A", "A"), ("A", "B"), ("B", "A"), ("B", "B"))
+
+
+def test_only_exact_duplicate_events_collapse_in_conflict_output():
+    implicit_start = event("北平", start=None)
+    explicit_start = event("北平", start=1)
+
+    conflicts = find_hard_conflicts(
+        (explicit_start, implicit_start),
+        (event("应天"),),
+    )
+
+    assert len(conflicts) == 2
+    assert tuple(conflict.old.effective_start_chapter for conflict in conflicts) == (
+        None,
+        1,
     )
