@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from backend import http_errors
 from backend.repositories.projects import ProjectRepository
 from backend.services.projections import build_projection_bundle
-from backend.services.projects import CreateProject, ProjectService
+from backend.services.projects import CreateProject, ProjectService, UpdateProject
 
 
 class FakeTransaction(AbstractAsyncContextManager):
@@ -255,6 +255,35 @@ async def test_repository_archive_checks_conditional_update_rowcount(affected, e
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
+async def test_repository_update_is_conditional_on_active_project(affected, expected):
+    session = RecordingSession(execute_result=affected)
+
+    changed = await ProjectRepository(clock=lambda: 456).update(
+        session, "p1", {"title": "Changed"}
+    )
+
+    assert changed is expected
+    assert session.calls == [
+        (
+            "execute",
+            "UPDATE projects SET title=%s, updated_at=%s WHERE id=%s AND status<>'archived'",
+            ("Changed", 456, "p1"),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repository_update_rejects_status_changes():
+    session = RecordingSession()
+
+    with pytest.raises(ValueError, match="unsupported fields"):
+        await ProjectRepository().update(session, "p1", {"status": "drafting"})
+
+    assert session.calls == []
+
+
 class FakeProjectArchiveRepository:
     def __init__(self, *, active_project=None, archive_result=True, archive_error=None):
         self.active_project = active_project
@@ -301,6 +330,109 @@ async def test_delete_missing_or_archived_project_raises_stable_not_found(active
     assert [call[0] for call in repository.calls] == ["lock"]
     assert transactions.commit_count == 0
     assert transactions.rollback_count == 1
+
+
+class FakeProjectLifecycleRepository:
+    def __init__(self, *, active_project=None, update_result=True):
+        self.active_project = active_project
+        self.update_result = update_result
+        self.calls = []
+
+    async def lock_active_project(self, session, project_id):
+        self.calls.append(("lock", session, project_id))
+        return self.active_project
+
+    async def update(self, session, project_id, changes):
+        self.calls.append(("update", session, project_id, changes))
+        return self.update_result
+
+    async def get(self, session, project_id):
+        self.calls.append(("get", session, project_id))
+        return self.active_project
+
+    async def content_state(self, session, project_id):
+        self.calls.append(("content_state", session, project_id))
+        return {
+            "seeds_count": 3,
+            "canon_head_revision": 2,
+            "has_final_chapters": True,
+        }
+
+
+@pytest.mark.asyncio
+async def test_update_locks_then_writes_without_status_on_one_transaction():
+    repository = FakeProjectLifecycleRepository(
+        active_project={"id": "p1", "status": "drafting"}
+    )
+    transactions = FakeTransactionFactory()
+
+    result = await ProjectService(repository, transactions).update(
+        "p1", UpdateProject(title="Changed", status="drafting")
+    )
+
+    assert result == {"id": "p1", "status": "drafting"}
+    assert [call[0] for call in repository.calls] == ["lock", "update", "get"]
+    assert repository.calls[1][3] == {"title": "Changed"}
+    assert len({id(call[1]) for call in repository.calls}) == 1
+    assert transactions.enter_count == 1
+    assert transactions.commit_count == 1
+    assert transactions.rollback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_update_after_archive_returns_none_without_writing():
+    repository = FakeProjectLifecycleRepository(active_project=None)
+    transactions = FakeTransactionFactory()
+
+    result = await ProjectService(repository, transactions).update(
+        "p1", UpdateProject(title="Changed", status="drafting")
+    )
+
+    assert result is None
+    assert [call[0] for call in repository.calls] == ["lock"]
+    assert transactions.enter_count == 1
+
+
+@pytest.mark.asyncio
+async def test_update_zero_row_result_returns_none_without_followup_read():
+    repository = FakeProjectLifecycleRepository(
+        active_project={"id": "p1", "status": "drafting"}, update_result=False
+    )
+
+    result = await ProjectService(repository, FakeTransactionFactory()).update(
+        "p1", UpdateProject(title="Changed")
+    )
+
+    assert result is None
+    assert [call[0] for call in repository.calls] == ["lock", "update"]
+
+
+@pytest.mark.asyncio
+async def test_content_state_checks_active_project_on_same_read_session():
+    repository = FakeProjectLifecycleRepository(
+        active_project={"id": "p1", "status": "drafting"}
+    )
+    connections = FakeTransactionFactory()
+
+    state = await ProjectService(
+        repository, FakeTransactionFactory(), connections
+    ).content_state("p1")
+
+    assert state["canon_head_revision"] == 2
+    assert [call[0] for call in repository.calls] == ["get", "content_state"]
+    assert repository.calls[0][1] is repository.calls[1][1]
+
+
+@pytest.mark.asyncio
+async def test_content_state_archived_project_raises_stable_not_found_without_readiness_query():
+    repository = FakeProjectLifecycleRepository(active_project=None)
+
+    with pytest.raises(http_errors.ProjectNotFound):
+        await ProjectService(
+            repository, FakeTransactionFactory(), FakeTransactionFactory()
+        ).content_state("p1")
+
+    assert [call[0] for call in repository.calls] == ["get"]
 
 
 @pytest.mark.asyncio

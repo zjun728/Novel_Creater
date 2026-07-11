@@ -111,13 +111,19 @@ class ProjectService:
             return await self.repository.get(session, project_id)
 
     async def update(self, project_id: str, command: UpdateProject):
-        changes = command.model_dump(exclude_none=True)
         async with self.transaction_factory() as session:
-            if await self.repository.get(session, project_id) is None:
+            if await self.repository.lock_active_project(session, project_id) is None:
                 return None
-            await self.repository.update(session, project_id, changes)
+            changes = command.model_dump(exclude_none=True)
+            changes.pop("status", None)
+            if changes and not await self.repository.update(
+                session, project_id, changes
+            ):
+                return None
             return await self.repository.get(session, project_id)
 
     async def content_state(self, project_id: str):
         async with self._connection() as session:
+            if await self.repository.get(session, project_id) is None:
+                raise ProjectNotFound()
             return await self.repository.content_state(session, project_id)

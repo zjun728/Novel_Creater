@@ -60,9 +60,9 @@ class ProjectRepository:
         )
         return changed == 1
 
-    async def update(self, session, project_id: str, changes: Mapping) -> None:
+    async def update(self, session, project_id: str, changes: Mapping) -> bool:
         if not changes:
-            return
+            return True
         allowed = {
             "title",
             "genre",
@@ -70,7 +70,6 @@ class ProjectRepository:
             "target_words",
             "target_chapters",
             "current_chapter",
-            "status",
         }
         if not set(changes) <= allowed:
             raise ValueError("project update contains unsupported fields")
@@ -78,9 +77,12 @@ class ProjectRepository:
         args = [changes[field] for field in changes]
         sets.append("updated_at=%s")
         args.extend((self._clock(), project_id))
-        await session.execute(
-            f"UPDATE projects SET {', '.join(sets)} WHERE id=%s", tuple(args)
+        changed = await session.execute(
+            f"UPDATE projects SET {', '.join(sets)} "
+            "WHERE id=%s AND status<>'archived'",
+            tuple(args),
         )
+        return changed == 1
 
     async def content_state(self, session, project_id: str) -> dict:
         row = await session.fetchone(

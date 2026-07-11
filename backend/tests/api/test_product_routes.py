@@ -3,8 +3,10 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.http_errors import ProjectNotFound
 from backend.routers import projects, seeds
 from backend.domain.seeds import SeedPayload
+from backend.security.redaction import install_error_handlers
 from backend.services.projects import ProjectResult
 from backend.services.seeds import SeedResult
 
@@ -93,3 +95,24 @@ def test_project_routes_delegate_create_delete_and_public_content_state(monkeypa
     deleted = client.delete(f"/api/projects/{service.created.id}")
     assert deleted.json() == {"ok": True}
     assert service.deleted == service.created.id
+
+
+def test_archived_project_content_state_has_exact_domain_404(monkeypatch):
+    class FakeService:
+        async def content_state(self, project_id):
+            assert project_id == "archived-project"
+            raise ProjectNotFound()
+
+    monkeypatch.setattr(projects, "_service", FakeService())
+    app = FastAPI()
+    app.include_router(projects.router, prefix="/api")
+    install_error_handlers(app)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get("/api/projects/archived-project/content-state")
+
+    assert response.status_code == 404
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert response.json()["code"] == "ProjectNotFound"
+    assert response.json()["message"] == ProjectNotFound.message
+    assert response.json()["correlationId"]
