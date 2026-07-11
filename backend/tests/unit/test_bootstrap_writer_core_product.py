@@ -107,14 +107,28 @@ def inventory(*, providers=None, seeds=None, projects=None):
     )
 
 
-def test_source_whitelist_uses_ascii_utf8_hex_binary_title_predicates():
+def ascii_hex_json_rows(rows):
+    return b"\n".join(
+        json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+        .encode("utf-8")
+        .hex()
+        .upper()
+        .encode("ascii")
+        for row in rows
+    )
+
+
+def test_source_whitelist_uses_ascii_hex_transport_and_binary_title_predicates():
     queries = bootstrap.SOURCE_SELECT_WHITELIST
     project_query = next(query for query in queries if "FROM `projects`" in query)
     seed_query = next(query for query in queries if "FROM `creative_seeds`" in query)
 
     assert len(queries) == 4
     assert all(query.isascii() for query in queries)
-    assert all(query.lstrip().upper().startswith("SELECT ") for query in queries)
+    assert all(
+        query.lstrip().upper().startswith("SELECT HEX(JSON_OBJECT(")
+        for query in queries
+    )
     assert project_query.endswith(
         "WHERE BINARY `title`=0xE6B0B8E4B990E5A4A7E585B8 ORDER BY `id`"
     )
@@ -148,17 +162,22 @@ def test_source_reader_uses_only_fixed_shell_free_json_selects(monkeypatch):
         if "VERSION()" in query:
             rows = [{"version": "5.7.44", "json_supported": 1}]
         elif "FROM `projects`" in query:
-            rows = [project_row()]
+            project = project_row()
+            project["description"] = "旧库·中文"
+            rows = [project]
         elif "FROM `creative_seeds`" in query:
             rows = list(inventory().seeds)
         elif "FROM `provider_profiles`" in query:
             rows = list(inventory().providers)
         else:
             raise AssertionError(query)
+        transport = ascii_hex_json_rows(rows)
+        assert transport.isascii()
+        assert b"\xb7" not in transport
         return SimpleNamespace(
             returncode=0,
-            stdout="\n".join(json.dumps(row, ensure_ascii=False) for row in rows),
-            stderr="",
+            stdout=transport,
+            stderr=b"",
         )
 
     loaded = bootstrap.read_legacy_inventory(
@@ -167,6 +186,7 @@ def test_source_reader_uses_only_fixed_shell_free_json_selects(monkeypatch):
     )
 
     assert loaded.source_version == "5.7.44"
+    assert loaded.projects[0]["description"] == "旧库·中文"
     assert (len(loaded.projects), len(loaded.seeds), len(loaded.providers)) == (1, 3, 2)
     assert len(calls) == 4
     rendered_commands = "\n".join(" ".join(command) for command, _ in calls)
@@ -192,8 +212,6 @@ def test_source_reader_uses_only_fixed_shell_free_json_selects(monkeypatch):
         assert all(secret not in repr(environment) for secret in environment_secrets)
         assert kwargs == {
             "capture_output": True,
-            "text": True,
-            "encoding": "utf-8",
             "check": False,
             "shell": False,
         }
@@ -203,8 +221,8 @@ def test_source_reader_failure_never_renders_captured_secrets():
     def runner(command, **kwargs):
         return SimpleNamespace(
             returncode=1,
-            stdout=SECRET_VALUES[0],
-            stderr=SECRET_VALUES[4],
+            stdout=SECRET_VALUES[0].encode("ascii"),
+            stderr=SECRET_VALUES[4].encode("ascii"),
         )
 
     with pytest.raises(bootstrap.BootstrapSourceError) as raised:
@@ -212,6 +230,28 @@ def test_source_reader_failure_never_renders_captured_secrets():
 
     rendered = str(raised.value)
     assert all(secret not in rendered for secret in SECRET_VALUES)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    (
+        b"NOT_HEX",
+        b"B7",
+        b"6E6F74206A736F6E",
+        b"5B5D",
+        None,
+    ),
+)
+def test_source_reader_rejects_invalid_transport_without_rendering_raw(stdout):
+    def runner(command, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
+
+    with pytest.raises(bootstrap.BootstrapSourceError) as raised:
+        bootstrap.read_legacy_inventory("mysql.exe", runner=runner)
+
+    rendered = str(raised.value)
+    if isinstance(stdout, bytes):
+        assert stdout.decode("ascii") not in rendered
 
 
 @pytest.mark.parametrize(

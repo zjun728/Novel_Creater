@@ -98,24 +98,28 @@ def _json_object_expression(columns: Sequence[str]) -> str:
     ) + ")"
 
 
+def _ascii_hex_json_object_expression(columns: Sequence[str]) -> str:
+    return f"HEX({_json_object_expression(columns)})"
+
+
 _SOURCE_CAPABILITY_QUERY = (
-    "SELECT JSON_OBJECT('version',VERSION(),'json_supported',"
-    "JSON_VALID('{\"writerCore\":true}'))"
+    "SELECT HEX(JSON_OBJECT('version',VERSION(),'json_supported',"
+    "JSON_VALID('{\"writerCore\":true}')))"
 )
 _SOURCE_PROJECT_QUERY = (
-    f"SELECT {_json_object_expression(_LEGACY_PROJECT_COLUMNS)} "
+    f"SELECT {_ascii_hex_json_object_expression(_LEGACY_PROJECT_COLUMNS)} "
     "FROM `projects` WHERE BINARY `title`="
     "0xE6B0B8E4B990E5A4A7E585B8 ORDER BY `id`"
 )
 _SOURCE_SEED_QUERY = (
-    f"SELECT {_json_object_expression(_LEGACY_SEED_COLUMNS)} "
+    f"SELECT {_ascii_hex_json_object_expression(_LEGACY_SEED_COLUMNS)} "
     "FROM `creative_seeds` WHERE BINARY `title` IN "
     "(0xE6B0B8E4B990E995BFE6988E,"
     "0xE69687E6B88AE5B1B1E6B5B7,"
     "0xE585B8E99587E5B1B1E6B2B3) ORDER BY `title`,`id`"
 )
 _SOURCE_PROVIDER_QUERY = (
-    f"SELECT {_json_object_expression(_LEGACY_PROVIDER_COLUMNS)} "
+    f"SELECT {_ascii_hex_json_object_expression(_LEGACY_PROVIDER_COLUMNS)} "
     "FROM `provider_profiles` ORDER BY `created_at`,`id`"
 )
 SOURCE_SELECT_WHITELIST = (
@@ -164,25 +168,36 @@ def _run_source_select(
             query,
         ],
         capture_output=True,
-        text=True,
-        encoding="utf-8",
         check=False,
         shell=False,
         env=_source_client_environment(),
     )
     if getattr(result, "returncode", 1) != 0:
         raise BootstrapSourceError("Legacy mysql client SELECT failed")
-    rows = []
+    rows: list[Mapping[str, object]] = []
     try:
-        for line in getattr(result, "stdout", "").splitlines():
-            if not line.strip():
+        stdout = getattr(result, "stdout", None)
+        if not isinstance(stdout, bytes):
+            raise TypeError("legacy stdout must be bytes")
+        for physical_line in stdout.split(b"\n"):
+            line = (
+                physical_line[:-1]
+                if physical_line.endswith(b"\r")
+                else physical_line
+            )
+            if not line:
                 continue
-            row = json.loads(line)
+            if len(line) % 2 or re.fullmatch(rb"[0-9A-Fa-f]+", line) is None:
+                raise ValueError("legacy row must be strict ASCII hex")
+            payload = bytes.fromhex(line.decode("ascii")).decode("utf-8")
+            row = json.loads(payload)
             if type(row) is not dict:
                 raise ValueError("legacy JSON row must be an object")
             rows.append(row)
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise BootstrapSourceError("Legacy mysql client returned invalid JSON") from exc
+    except (TypeError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise BootstrapSourceError(
+            "Legacy mysql client returned invalid ASCII hex JSON"
+        ) from exc
     return tuple(rows)
 
 
