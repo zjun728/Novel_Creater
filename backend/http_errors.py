@@ -52,3 +52,21 @@ class BindingProviderUnavailable(PublicDomainError):
     status_code = 422
     code = "BindingProviderUnavailable"
     message = "A selected provider is unavailable"
+
+
+class StoryEngineBatchNotFound(PublicDomainError):
+    status_code = 404
+    code = "StoryEngineBatchNotFound"
+    message = "Story engine batch or project not found"
+
+
+class StoryEngineBatchConflict(PublicDomainError):
+    status_code = 409
+    code = "StoryEngineBatchConflict"
+    message = "Story engine batch state changed; refresh and retry"
+
+
+class StoryEnginePreconditionFailed(PublicDomainError):
+    status_code = 422
+    code = "StoryEnginePreconditionFailed"
+    message = "Story engine prerequisites are unavailable"
