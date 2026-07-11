@@ -53,7 +53,13 @@ Provider 敏感行的内存核对为 `9/9`；API 明文敏感值命中 `0`，精
 ## 当前验收事实
 
 - 真实 MySQL 8 cross-server integration：`2/2`。
-- 最新已知 `npm test`：Python `393`、scripts `24`、frontend `11`；最终主控会 fresh 复跑。
+- Final M1 gate 代码快照：`f9bfd2f`。
+- `npm run test:milestone1`：exit `0`。
+- Unit：Python `393`、scripts `24`、frontend `11`。
+- Integration：`30 passed, 1 deselected`；disposable databases created `29`、cleaned `29`、remaining `0`。
+- Browser：`2/2`；browser disposable database 已 drop。
+- Post-test product DB counts：`PASS`。
+- Gate 结束后端口 `8000` / `5173`：free。
 - 产品浏览器：`8` 个产品 `GET` 请求，其中包含 `/api/providers` 配置读取；AI completion / upstream Provider model calls 为 `0`。
 - Console errors / warnings：`0 / 0`。
 - 截图只保存在本地忽略目录 `output/playwright/product-ui`，不进入 Git。

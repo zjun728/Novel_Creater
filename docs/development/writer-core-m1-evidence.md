@@ -51,15 +51,21 @@ No sensitive row values, raw source rows, connection material, or Provider diagn
 ## Automated evidence
 
 - Real MySQL 8 cross-server integration: `2/2` passed.
-- Latest known root test result before documentation closeout:
+- Final M1 gate code snapshot: `f9bfd2f`.
+- `npm run test:milestone1`: exit `0`.
+- Unit results:
   - Python: `393` passed
   - scripts Node tests: `24` passed
   - frontend Node tests: `11` passed
-
-These are the latest known results, not a substitute for the final controller gate. The main controller will rerun the required commands fresh after documentation closeout.
+- Integration suite: `30 passed, 1 deselected`.
+- Disposable database accounting: created `29`, cleaned `29`, remaining `0`.
+- Post-test product database counts: `PASS`.
+- Ports `8000` and `5173` after the gate: free.
 
 ## Product browser evidence
 
+- Browser suite: `2/2` passed.
+- Browser disposable database: dropped.
 - Product requests: `8`, all `GET`, including the `/api/providers` configuration read.
 - AI completion / upstream Provider model calls: `0`.
 - Console errors: `0`.
