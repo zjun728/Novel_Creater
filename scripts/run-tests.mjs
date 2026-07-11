@@ -1,0 +1,65 @@
+import { spawnSync } from 'node:child_process'
+import { readdirSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const suiteNames = ['unit', 'frontend-unit', 'integration', 'browser']
+
+export function discoverTestFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true })
+    .filter(entry => entry.isFile() && entry.name.endsWith('.test.mjs'))
+    .map(entry => entry.name)
+    .sort()
+    .map(name => path.join(directory, name))
+}
+
+function createSuites(rootDirectory) {
+  const python = process.env.PYTHON || 'python'
+  const node = process.execPath
+  const scriptTests = discoverTestFiles(path.join(rootDirectory, 'scripts', 'tests'))
+  const frontendTests = discoverTestFiles(path.join(rootDirectory, 'frontend', 'tests', 'unit'))
+
+  return {
+    unit: [
+      [python, ['-m', 'pytest', 'backend/tests/unit', 'backend/tests/api', '-q']],
+      [node, ['--test', ...scriptTests]],
+      [node, ['--test', ...frontendTests]],
+    ],
+    'frontend-unit': [[node, ['--test', ...frontendTests]]],
+    integration: [[python, ['-m', 'pytest', 'backend/tests/integration', '-m', 'mysql', '-q']]],
+    browser: [[node, ['frontend/e2e/run-milestone1.mjs']]],
+  }
+}
+
+export function usage() {
+  return `usage: node scripts/run-tests.mjs <${suiteNames.join('|')}> [suite-name]\n`
+}
+
+export function runSuites(requested, { rootDirectory = root, stderr = process.stderr } = {}) {
+  if (requested.length === 0 || requested.some(name => !suiteNames.includes(name))) {
+    stderr.write(usage())
+    return 2
+  }
+
+  const suites = createSuites(rootDirectory)
+  for (const suite of requested) {
+    for (const [command, args] of suites[suite]) {
+      const result = spawnSync(command, args, {
+        cwd: rootDirectory,
+        stdio: 'inherit',
+        shell: false,
+      })
+      if (result.status !== 0) return result.status ?? 1
+    }
+  }
+
+  return 0
+}
+
+const isCommandLineEntrypoint = process.argv[1]
+  && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url
+
+if (isCommandLineEntrypoint) {
+  process.exitCode = runSuites(process.argv.slice(2))
+}

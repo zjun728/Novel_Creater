@@ -162,67 +162,40 @@ git commit -m "docs: add writer core v1 execution contract"
 **Files:**
 
 - Create: `scripts/run-tests.mjs`
+- Create: `scripts/tests/run-tests.test.mjs`
 - Create: `backend/requirements-dev.txt`
 - Create: `pytest.ini`
 - Create: `backend/tests/unit/test_test_entrypoint.py`
+- Create: `frontend/tests/unit/testEntrypoint.test.mjs`
 - Modify: `package.json`
 - Modify: `frontend/package.json`
-- Move: `frontend/tests/promptQuality.test.mjs` to `frontend/tests/unit/promptQuality.test.mjs`
+- Move: `frontend/tests/promptQuality.test.mjs` to `frontend/tests/legacy/promptQuality.test.mjs`
 
-- [ ] **Step 1: Write the failing backend smoke test**
+- [ ] **Step 1: Record the legacy Prompt baseline without changing product prompts**
 
-```python
-# backend/tests/unit/test_test_entrypoint.py
-def test_official_backend_test_entrypoint_is_active():
-    assert True
+Run:
+
+```powershell
+node --test frontend/tests/promptQuality.test.mjs
 ```
 
-- [ ] **Step 2: Run the current root command and capture the expected failure**
+Expected historical evidence: 3 tests run and 3 fail. These assertions describe the retired rule-driven Prompt behavior and conflict with the approved V1 generation boundary. This result is baseline evidence only and is not a Ready gate. Do not change product Prompt code to satisfy it.
 
-Run: `npm test`
+- [ ] **Step 2: Write dispatcher behavior tests and verify RED**
 
-Expected: FAIL with `Error: no test specified`.
+`scripts/tests/run-tests.test.mjs` imports pure discovery behavior from `scripts/run-tests.mjs` and verifies stable explicit `.test.mjs` discovery, exclusion of non-test files/directories, empty and unknown suite exit code 2 with usage output, and import without command-line execution.
 
-- [ ] **Step 3: Add the cross-platform dispatcher**
+Run:
 
-```js
-// scripts/run-tests.mjs
-import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import { readdirSync } from 'node:fs'
-import path from 'node:path'
-
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const python = process.env.PYTHON || 'python'
-const node = process.execPath
-const frontendUnitFiles = readdirSync(path.join(root, 'frontend', 'tests', 'unit'))
-  .filter(name => name.endsWith('.test.mjs'))
-  .sort()
-  .map(name => path.join('frontend', 'tests', 'unit', name))
-
-const suites = {
-  unit: [
-    [python, ['-m', 'pytest', 'backend/tests/unit', 'backend/tests/api', '-q']],
-    [node, ['--test', ...frontendUnitFiles]],
-  ],
-  'frontend-unit': [[node, ['--test', ...frontendUnitFiles]]],
-  integration: [[python, ['-m', 'pytest', 'backend/tests/integration', '-m', 'mysql', '-q']]],
-  browser: [[node, ['frontend/e2e/run-milestone1.mjs']]],
-}
-
-const requested = process.argv.slice(2)
-if (!requested.length || requested.some(name => !(name in suites))) {
-  process.stderr.write(`usage: node scripts/run-tests.mjs <${Object.keys(suites).join('|')}> [suite-name]\n`)
-  process.exit(2)
-}
-
-for (const suite of requested) {
-  for (const [command, args] of suites[suite]) {
-    const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', shell: false })
-    if (result.status !== 0) process.exit(result.status ?? 1)
-  }
-}
+```powershell
+node --test scripts/tests/run-tests.test.mjs
 ```
+
+Expected: FAIL because the dispatcher module or required behavior is absent. Then add the minimum cross-platform dispatcher and rerun the same command to GREEN.
+
+- [ ] **Step 3: Add the official dispatcher and package entrypoints**
+
+The dispatcher uses `spawnSync(..., shell: false)`, `process.execPath` for Node, and `process.env.PYTHON || 'python'` for Python. It uses `readdirSync` to discover and stably sort only direct `*.test.mjs` files in `scripts/tests/` and `frontend/tests/unit/`, passing explicit file paths to Node. It supports `unit`, `frontend-unit`, `integration`, and `browser`, rejects empty or unknown suites with exit code 2 and usage, and immediately propagates a failing child exit code.
 
 Set root scripts to:
 
@@ -245,13 +218,14 @@ Set frontend scripts to:
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test:unit": "node ../scripts/run-tests.mjs frontend-unit",
-    "test:e2e": "playwright test"
+    "test:unit": "node ../scripts/run-tests.mjs frontend-unit"
   }
 }
 ```
 
-Move the existing prompt test into `frontend/tests/unit/` before running the new command so the only official frontend unit directory includes both the baseline prompt test and M1 tests.
+Move the old Prompt test with `git mv` into `frontend/tests/legacy/`. Formal test discovery never scans `legacy` or `tmp`. Add simple backend and frontend entrypoint smoke tests under their official unit directories, plus the required Python package initializers.
+
+- [ ] **Step 4: Add and verify development test dependencies**
 
 Create `backend/requirements-dev.txt`:
 
@@ -270,22 +244,22 @@ markers =
     mysql: requires an explicitly configured disposable MySQL server
 ```
 
-- [ ] **Step 4: Install test dependencies and run the official unit entrypoint**
-
 Run:
 
 ```powershell
 python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-npm --prefix frontend install
 npm test
+npm --prefix frontend run test:unit
+npm --prefix frontend run build
+git diff --check
 ```
 
-Expected: backend smoke test and existing frontend prompt test pass; no file under `tmp` is collected.
+Expected: all formal unit tests and the production build pass. `npm test` output contains neither `tmp` nor `legacy`; the 3/3 legacy Prompt failure remains historical evidence, not a formal failure and not a Ready claim.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add package.json scripts/run-tests.mjs backend/requirements-dev.txt pytest.ini backend/tests frontend/package.json frontend/package-lock.json
+git add package.json scripts backend/requirements-dev.txt backend/__init__.py backend/tests pytest.ini frontend/package.json frontend/tests docs/superpowers/plans/2026-07-11-writer-core-foundation.md
 git commit -m "test: add official writer core test entrypoints"
 ```
 

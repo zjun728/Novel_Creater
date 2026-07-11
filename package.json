@@ -7,7 +7,10 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node scripts/run-tests.mjs unit",
+    "test:integration": "node scripts/run-tests.mjs integration",
+    "test:browser": "node scripts/run-tests.mjs browser",
+    "test:milestone1": "node scripts/run-tests.mjs unit integration browser"
   },
   "repository": {
     "type": "git",
