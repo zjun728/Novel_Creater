@@ -4,7 +4,7 @@
 
 Provide one guarded command that reads the approved foundation inventory from a legacy MySQL 5.7 server and initializes an absent Writer Core V1 product database on the configured MySQL 8 server. Dry-run is the default. Execute requires `--execute`, `--confirm-bootstrap` equal to the configured target database, an absent target, and a private CLI authority that direct Python callers cannot construct.
 
-Product execution is limited to the configured `novel_creator` target. The core also accepts disposable `novel_creator_test_<32 lowercase hex>` targets so the MySQL 8 integration test can exercise the same DDL/transaction path without product access.
+Product execution is limited to the configured `novel_creator` target. The core also accepts disposable `novel_creator_test_<32 lowercase hex>` targets so the MySQL 8 integration test can exercise the same DDL/transaction path without product access. Every execute call, including a disposable target, requires the private CLI execute authority; the integration test injects that same private token explicitly. Dry-run retains separate product read authority.
 
 ## Legacy source boundary
 
@@ -26,9 +26,9 @@ The resulting foundation selects `典镇山河`, creates Canon revision zero and
 
 The target connection comes only from `require_mysql_config()` and the existing aiomysql admin connection factory. Both dry-run and execute verify the complete MySQL 8 capability gate, confirm the target schema is absent, load and map the full source inventory, and perform target-collation validation before DDL.
 
-Execute acquires a dedicated advisory lock, rechecks target absence, creates the database with `utf8mb4_0900_ai_ci`, calls the official initializer, starts a transaction, inserts the shared foundation state, verifies all expected foundation counts and every derived table count, commits, then releases the lock.
+Execute acquires a dedicated advisory lock, rechecks target absence, creates the database with `utf8mb4_0900_ai_ci`, calls the official initializer, starts a transaction, inserts the shared foundation state, verifies all expected foundation counts and every derived table count, commits, then releases the lock. The target is considered bootstrap-owned only after `CREATE DATABASE` returns successfully; a failed CREATE never authorizes a DROP.
 
-Any failure after DDL begins triggers best-effort rollback, drop of the incomplete target, and lock release. Cleanup failures are combined with the original failure in a `BaseExceptionGroup`. The source is never mutated.
+Any failure after owned DDL begins triggers best-effort rollback, drop of the incomplete target, and lock release. Cleanup failures are combined with the original failure in a `BaseExceptionGroup`. If CLI orchestration and target-session close both fail, both errors are likewise preserved. The source is never mutated.
 
 ## Output and secrecy
 

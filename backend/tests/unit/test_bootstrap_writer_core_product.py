@@ -212,6 +212,22 @@ def test_mapping_reuses_v1_rules_and_only_canonically_renames_preferred():
     assert state.preferred_provider["max_output_tokens"] == 4_096
 
 
+def test_mapping_rejects_duplicate_source_provider_ids_before_reordering():
+    preferred = inventory().providers[0]
+    duplicate_id_other_provider = provider_row(
+        preferred["id"],
+        "备用重复ID云",
+        "backup-model",
+        created_at=90,
+    )
+
+    with pytest.raises(bootstrap.BootstrapValidationError, match="provider id"):
+        bootstrap.map_legacy_inventory(inventory(providers=(
+            preferred,
+            duplicate_id_other_provider,
+        )))
+
+
 @pytest.mark.parametrize(
     "broken",
     (
@@ -370,6 +386,23 @@ async def test_execute_requires_confirmation_and_private_authority():
 
 
 @pytest.mark.asyncio
+async def test_disposable_execute_also_requires_private_cli_authority():
+    session = TargetSession()
+    disposable = "novel_creator_test_0123456789abcdef0123456789abcdef"
+
+    with pytest.raises(bootstrap.BootstrapSafetyError, match="authority"):
+        await bootstrap.bootstrap_writer_core_product(
+            session,
+            database_name=disposable,
+            source_loader=inventory,
+            execute=True,
+            confirm_bootstrap=disposable,
+        )
+
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
 async def test_existing_target_is_rejected_before_source_reader():
     session = TargetSession(target_exists=True)
     source_read = False
@@ -462,6 +495,54 @@ async def test_execute_failure_rolls_back_drops_incomplete_target_and_releases()
 
 
 @pytest.mark.asyncio
+async def test_commit_failure_rolls_back_drops_incomplete_target_and_releases():
+    session = TargetSession(fail_execute_contains="COMMIT")
+
+    async def initializer(*args):
+        return None
+
+    async def inserter(*args, **kwargs):
+        return None
+
+    with pytest.raises(RuntimeError, match="COMMIT"):
+        await bootstrap.bootstrap_writer_core_product(
+            session,
+            database_name=PRODUCT,
+            source_loader=inventory,
+            execute=True,
+            confirm_bootstrap=PRODUCT,
+            initializer=initializer,
+            inserter=inserter,
+            _product_authority=bootstrap._CLI_PRODUCT_EXECUTE_AUTHORITY,
+        )
+
+    executed = [sql for kind, sql, _ in session.calls if kind == "execute"]
+    assert "ROLLBACK" in executed
+    assert "DROP DATABASE IF EXISTS `novel_creator`" in executed
+    assert any("RELEASE_LOCK" in sql for _, sql, _ in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_create_failure_never_drops_a_target_not_owned_by_bootstrap():
+    session = TargetSession(fail_execute_contains="CREATE DATABASE")
+
+    with pytest.raises(RuntimeError, match="CREATE DATABASE"):
+        await bootstrap.bootstrap_writer_core_product(
+            session,
+            database_name=PRODUCT,
+            source_loader=inventory,
+            execute=True,
+            confirm_bootstrap=PRODUCT,
+            _product_authority=bootstrap._CLI_PRODUCT_EXECUTE_AUTHORITY,
+        )
+
+    executed = [sql for kind, sql, _ in session.calls if kind == "execute"]
+    assert any(sql.startswith("CREATE DATABASE") for sql in executed)
+    assert not any(sql.startswith("DROP DATABASE") for sql in executed)
+    assert any("RELEASE_LOCK" in sql for _, sql, _ in session.calls)
+
+
+@pytest.mark.asyncio
 async def test_execute_preserves_body_rollback_drop_and_release_failures():
     class CleanupFailureSession(TargetSession):
         async def execute(self, sql, parameters=None):
@@ -527,6 +608,34 @@ async def test_run_cli_uses_injected_connections_and_closes_target():
     assert result == 0
     assert captured[0]["password"] == "TARGET_PASSWORD_SENTINEL"
     assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_run_cli_preserves_core_and_target_close_failures():
+    body_error = None
+    close_error = RuntimeError("target close failed")
+
+    class FailingCloseSession(TargetSession):
+        async def close(self):
+            raise close_error
+
+    session = FailingCloseSession(target_exists=True)
+
+    async def connection_factory(config):
+        return session
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await bootstrap.run_cli(
+            ["--mysql-client", "C:/mysql57/bin/mysql.exe"],
+            connection_factory=connection_factory,
+            connection_config={"db": PRODUCT, "password": "test-only"},
+            source_reader=lambda *args, **kwargs: inventory(),
+            output=lambda message: None,
+        )
+
+    body_error = raised.value.exceptions[0]
+    assert isinstance(body_error, bootstrap.BootstrapSafetyError)
+    assert raised.value.exceptions[1] is close_error
 
 
 def test_cli_help_is_side_effect_free():

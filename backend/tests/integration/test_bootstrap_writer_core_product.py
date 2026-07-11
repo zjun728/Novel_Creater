@@ -5,6 +5,7 @@ import pytest
 
 from backend.scripts.bootstrap_writer_core_product import (
     LegacyInventory,
+    _CLI_PRODUCT_EXECUTE_AUTHORITY,
     bootstrap_writer_core_product,
 )
 from backend.scripts.reset_writer_core_data import (
@@ -75,6 +76,7 @@ async def test_cross_server_bootstrap_builds_verified_disposable_target():
             output=output.append,
             now_ms=lambda: 1_720_000_000_000,
             id_factory=lambda: next(ids),
+            _product_authority=_CLI_PRODUCT_EXECUTE_AUTHORITY,
         )
         database_connection = await aiomysql.connect(**{**config, "db": database_name})
         cursor = await database_connection.cursor(aiomysql.DictCursor)

@@ -219,19 +219,27 @@ def map_legacy_inventory(source: LegacyInventory) -> _PreservedState:
         or actual_seed_titles != Counter(SOURCE_SEED_TITLES)
     ):
         raise BootstrapValidationError("Bootstrap requires exactly three approved seeds")
-    preferred_rows = tuple(
-        row for row in source.providers
+    try:
+        _require_exact_unique(source.providers, "id", "provider")
+    except (KeyError, ResetValidationError) as exc:
+        raise BootstrapValidationError(
+            "Legacy source provider ids must be unique"
+        ) from exc
+    preferred_indexes = tuple(
+        index for index, row in enumerate(source.providers)
         if row.get("name") == SOURCE_PREFERRED_PROVIDER_NAME
         and row.get("model") == SOURCE_PREFERRED_MODEL
     )
-    if len(preferred_rows) != 1:
+    if len(preferred_indexes) != 1:
         raise BootstrapValidationError(
             "Bootstrap requires exactly one approved preferred Provider/model"
         )
-    preferred_id = preferred_rows[0].get("id")
+    preferred_index = preferred_indexes[0]
+    preferred_row = source.providers[preferred_index]
+    preferred_id = preferred_row.get("id")
     ordered = (
-        preferred_rows[0],
-        *(row for row in source.providers if row.get("id") != preferred_id),
+        preferred_row,
+        *(row for index, row in enumerate(source.providers) if index != preferred_index),
     )
     try:
         project = _map_project(source.projects[0])
@@ -329,12 +337,12 @@ def _guard_target(
         _guard_database(database_name, product_read_authorized)
     except ResetSafetyError as exc:
         raise BootstrapSafetyError("Refusing unsafe bootstrap target") from exc
+    if execute and not product_execute_authorized:
+        raise BootstrapSafetyError(
+            "Bootstrap execute requires private CLI execute authority"
+        )
     if execute and confirm_bootstrap != database_name:
         raise BootstrapSafetyError("Bootstrap confirmation does not match target")
-    if execute and database_name == PRODUCT_DATABASE and not product_execute_authorized:
-        raise BootstrapSafetyError(
-            "Product bootstrap requires private CLI execute authority"
-        )
 
 
 async def _assert_target_absent(target_session, database_name: str) -> None:
@@ -415,7 +423,7 @@ async def bootstrap_writer_core_product(
         return report
 
     acquired = False
-    ddl_started = False
+    ddl_owned = False
     transaction_started = False
     body_error: BaseException | None = None
     cleanup_errors: list[BaseException] = []
@@ -428,11 +436,11 @@ async def bootstrap_writer_core_product(
             raise BootstrapError("Could not acquire bootstrap advisory lock")
         acquired = True
         await _assert_target_absent(target_session, database_name)
-        ddl_started = True
         await target_session.execute(
             f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 "
             "COLLATE utf8mb4_0900_ai_ci"
         )
+        ddl_owned = True
         timestamp = (now_ms or (lambda: int(time.time() * 1000)))()
         await initializer(target_session, database_name, database_name, timestamp)
         await target_session.execute("START TRANSACTION")
@@ -454,7 +462,7 @@ async def bootstrap_writer_core_product(
                 await target_session.execute("ROLLBACK")
             except BaseException as rollback_error:
                 cleanup_errors.append(rollback_error)
-        if ddl_started:
+        if ddl_owned:
             try:
                 _guard_target(
                     database_name,
@@ -532,6 +540,7 @@ async def run_cli(
         raise BootstrapSafetyError("Configured target database is invalid")
     factory = connection_factory or _default_connection_factory
     target_session = await factory(connection_config)
+    body_error: BaseException | None = None
     try:
         source_loader = lambda: source_reader(
             args.mysql_client,
@@ -551,8 +560,22 @@ async def run_cli(
                 else _CLI_PRODUCT_READ_AUTHORITY
             ),
         )
-    finally:
+    except BaseException as exc:
+        body_error = exc
+    close_error: BaseException | None = None
+    try:
         await target_session.close()
+    except BaseException as exc:
+        close_error = exc
+    if body_error is not None and close_error is not None:
+        raise BaseExceptionGroup(
+            "Bootstrap CLI body and target close both failed",
+            [body_error, close_error],
+        ) from body_error
+    if body_error is not None:
+        raise body_error
+    if close_error is not None:
+        raise close_error
     return 0
 
 
