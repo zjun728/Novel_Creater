@@ -206,7 +206,7 @@ class MemoryStoryEngineRepository:
         if batch["status"] != "running" or batch["attempt_id"] != attempt_id:
             return False
         batch["status"] = "succeeded"
-        batch.update(row)
+        batch.update({**row, "raw_response_text": None})
         return True
 
     async def cas_fail_attempt(self, session, project_id, batch_id, attempt_id, row):
@@ -216,7 +216,7 @@ class MemoryStoryEngineRepository:
         if batch["status"] != "running" or batch["attempt_id"] != attempt_id:
             return False
         batch["status"] = "failed"
-        batch.update(row)
+        batch.update({**row, "raw_response_text": None})
         return True
 
     async def cas_fail_configuration(self, session, project_id, batch_id, row):

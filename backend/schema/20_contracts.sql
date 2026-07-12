@@ -29,8 +29,7 @@ CREATE TABLE story_engine_batches (
   FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT,
   CHECK (source_type IN ('provider','manual')),
   CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
-  CHECK ((raw_response_text IS NULL AND raw_response_hash IS NULL)
-    OR (raw_response_text IS NOT NULL AND raw_response_hash IS NOT NULL)),
+  CHECK (raw_response_text IS NULL),
   CHECK (
     (source_type = 'manual' AND binding_revision_id IS NULL AND binding_hash IS NULL
       AND provider_id IS NULL AND model_name_snapshot IS NULL AND attempt_id IS NULL
@@ -53,7 +52,7 @@ CREATE TABLE story_engine_batches (
       AND lease_expires_at IS NOT NULL AND raw_response_text IS NULL
       AND raw_response_hash IS NULL AND public_error_code IS NULL AND finished_at IS NULL)
     OR (status = 'succeeded' AND attempt_id IS NOT NULL AND attempt_started_at IS NOT NULL
-      AND lease_expires_at IS NOT NULL AND raw_response_text IS NOT NULL
+      AND lease_expires_at IS NOT NULL AND raw_response_text IS NULL
       AND raw_response_hash IS NOT NULL
       AND public_error_code IS NULL AND finished_at IS NOT NULL)
     OR (status = 'failed' AND public_error_code IS NOT NULL
@@ -67,8 +66,9 @@ CREATE TABLE story_engine_batches (
       AND raw_response_hash IS NULL AND finished_at IS NOT NULL)
     OR (status = 'failed' AND attempt_id IS NOT NULL
       AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL
-      AND public_error_code IS NOT NULL
-      AND public_error_code NOT IN ('not_started','provider_configuration')
+      AND ((public_error_code = 'invalid_response' AND raw_response_hash IS NOT NULL)
+        OR (public_error_code IN ('provider_failed','provider_timeout')
+          AND raw_response_hash IS NULL))
       AND finished_at IS NOT NULL)
     OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
       AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL

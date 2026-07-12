@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 import json
 
 import httpx
@@ -79,6 +80,31 @@ async def test_gateway_posts_one_fixed_json_mode_request(base_url, expected_url)
         "response_format": {"type": "json_object"},
         "stream": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_gateway_invalid_envelope_error_carries_only_exact_body_hash():
+    raw_body = b'{"bad":"SECRET_SENTINEL"}'
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, content=raw_body, request=request)
+
+    gateway = StoryEngineProviderGateway(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(StoryEngineProviderResponseError) as captured:
+        await gateway.generate(
+            provider={
+                "base_url": "https://provider.example/v1",
+                "api_key": "KEY_SENTINEL",
+                "model_name": "frozen-model",
+            },
+            messages=MESSAGES,
+            generation_config=GENERATION_CONFIG,
+        )
+
+    assert captured.value.response_hash == sha256(raw_body).hexdigest()
+    assert "SECRET_SENTINEL" not in str(captured.value)
+    assert "SECRET_SENTINEL" not in repr(captured.value)
 
 
 @pytest.mark.asyncio

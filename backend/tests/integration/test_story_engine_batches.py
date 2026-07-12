@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from hashlib import sha256
 
 import aiomysql
 import pytest
@@ -279,6 +280,8 @@ async def test_real_transition_cas_and_terminal_rows_are_immutable(disposable_my
         "project-1", reserved.id, running.attempt_id, "raw", three_options()
     )
     assert succeeded.status == "succeeded"
+    assert succeeded.raw_response_text is None
+    assert succeeded.raw_response_hash == sha256(b"raw").hexdigest()
     async with transaction() as session:
         assert not await repository.cas_fail_attempt(
             session,
@@ -508,6 +511,41 @@ async def test_real_two_connection_expired_running_success_races_reconcile(
         assert isinstance(success_result, StoryEngineBatchResult)
         assert success_result.status == reconcile_result.status == "succeeded"
         assert row["public_error_code"] is None
-        assert row["raw_response_text"] == "raw"
-        assert row["raw_response_hash"] is not None
+        assert row["raw_response_text"] is None
+        assert row["raw_response_hash"] == sha256(b"raw").hexdigest()
         assert option_count == {"count": 3}
+
+
+@pytest.mark.asyncio
+async def test_real_invalid_response_failure_persists_hash_without_plaintext(
+    disposable_mysql,
+):
+    await _bootstrap_facts(disposable_mysql.session)
+    service = _service(disposable_mysql)
+    reserved = await service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "invalid-response-hash")
+    )
+    running = await service.start_attempt("project-1", reserved.id)
+    raw = "not-json secret-shaped-but-not-stored"
+
+    failed = await service.fail_attempt(
+        "project-1",
+        reserved.id,
+        running.attempt_id,
+        "invalid_response",
+        raw_response_hash=sha256(raw.encode("utf-8")).hexdigest(),
+    )
+
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,raw_response_text,raw_response_hash,public_error_code
+           FROM story_engine_batches WHERE id=%s""",
+        (reserved.id,),
+    )
+    assert failed.raw_response_text is None
+    assert failed.raw_response_hash == sha256(raw.encode("utf-8")).hexdigest()
+    assert row == {
+        "status": "failed",
+        "raw_response_text": None,
+        "raw_response_hash": failed.raw_response_hash,
+        "public_error_code": "invalid_response",
+    }

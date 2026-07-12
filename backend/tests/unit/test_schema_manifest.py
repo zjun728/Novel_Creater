@@ -291,6 +291,19 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     assert "unique key uq_engine_batch_project_id (project_id, id)" in batches
     assert "check (source_type in ('provider','manual'))" in batches
     assert "check (status in ('reserved','running','succeeded','failed','outcome_unknown'))" in batches
+    assert "check (raw_response_text is null)" in batches
+    assert (
+        "status = 'succeeded' and attempt_id is not null "
+        "and attempt_started_at is not null and lease_expires_at is not null "
+        "and raw_response_text is null and raw_response_hash is not null"
+    ) in batches
+    assert (
+        "public_error_code = 'invalid_response' and raw_response_hash is not null"
+    ) in batches
+    assert (
+        "public_error_code in ('provider_failed','provider_timeout') "
+        "and raw_response_hash is null"
+    ) in batches
     assert batches.count("lease_expires_at is not null") == 4
     assert (
         "status = 'failed' and public_error_code is not null "
@@ -302,8 +315,9 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     assert (
         "status = 'failed' and attempt_id is not null "
         "and attempt_started_at is not null and lease_expires_at is not null "
-        "and public_error_code is not null "
-        "and public_error_code not in ('not_started','provider_configuration') "
+        "and ((public_error_code = 'invalid_response' and raw_response_hash is not null) "
+        "or (public_error_code in ('provider_failed','provider_timeout') "
+        "and raw_response_hash is null)) "
         "and finished_at is not null"
     ) in batches
     assert re.search(

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 import json
+import re
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -285,6 +288,13 @@ async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transa
 
     assert result.status == "succeeded"
     assert len(result.options) == 3
+    assert result.raw_response_text is None
+    assert result.raw_response_hash == sha256(
+        gateway.outcome.encode("utf-8")
+    ).hexdigest()
+    stored = harness.repository.batches[result.id]
+    assert stored["raw_response_text"] is None
+    assert stored["raw_response_hash"] == result.raw_response_hash
     assert len(gateway.calls) == 1
     assert harness.transaction_enter_count == 3
     provider, messages, generation_config = gateway.calls[0]
@@ -319,6 +329,120 @@ async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transa
     rendered = harness.repository.batches[result.id]["request_json"]
     assert "KEY_SENTINEL" not in rendered
     assert "https://provider.example" not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("secret_field", ("api_key", "base_url"))
+@pytest.mark.parametrize(
+    "encoding", ("exact", "stripped", "percent", "percent-lower", "json-slash")
+)
+async def test_provider_response_containing_connection_secret_fails_before_options_are_saved(
+    secret_field, encoding
+):
+    harness = StoryEngineHarness()
+    provider = harness.repository.providers["provider-seed"]
+    original = provider[secret_field]
+    provider[secret_field] = f"  {original}  "
+    normalized = original.strip()
+    rendered_secret = {
+        "exact": provider[secret_field],
+        "stripped": normalized,
+        "percent": quote(normalized, safe=""),
+        "percent-lower": re.sub(
+            r"%[0-9A-F]{2}",
+            lambda match: match.group(0).lower(),
+            quote(normalized, safe=""),
+        ),
+        "json-slash": normalized,
+    }[encoding]
+    raw = _provider_response()
+    payload = json.loads(raw)
+    payload["options"][1]["ensembleRoles"][0]["purpose"] = (
+        f"nested providerEcho={rendered_secret}"
+    )
+    raw = json.dumps(payload, ensure_ascii=False)
+    if encoding == "json-slash":
+        raw = raw.replace(normalized, normalized.replace("/", r"\/"))
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"secret-{secret_field}-{encoding}")
+    )
+
+    stored = harness.repository.batches[result.id]
+    assert result.status == "failed"
+    assert result.public_error_code == "invalid_response"
+    assert result.options == ()
+    assert stored["raw_response_text"] is None
+    assert result.raw_response_text is None
+    assert result.raw_response_hash == sha256(raw.encode("utf-8")).hexdigest()
+    assert stored["raw_response_hash"] == result.raw_response_hash
+    assert normalized not in str(result)
+    assert normalized not in canonical_json(stored)
+
+
+@pytest.mark.asyncio
+async def test_malformed_provider_content_keeps_only_exact_utf8_hash():
+    harness = StoryEngineHarness()
+    raw = '  {"options": [ invalid ]}\r\n'
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "malformed-hash")
+    )
+
+    stored = harness.repository.batches[result.id]
+    assert result.status == "failed"
+    assert result.public_error_code == "invalid_response"
+    assert result.raw_response_text is None
+    assert stored["raw_response_text"] is None
+    assert result.raw_response_hash == sha256(raw.encode("utf-8")).hexdigest()
+    assert stored["raw_response_hash"] == result.raw_response_hash
+    assert raw not in canonical_json(stored)
+
+
+@pytest.mark.asyncio
+async def test_safe_gateway_response_error_hash_is_persisted_without_raw_body():
+    harness = StoryEngineHarness()
+    response_hash = "f" * 64
+    gateway = ScriptedGateway(
+        harness,
+        StoryEngineProviderResponseError(
+            "provider response was invalid",
+            response_hash=response_hash,
+        ),
+    )
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "gateway-envelope-hash")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "invalid_response"
+    assert result.raw_response_text is None
+    assert result.raw_response_hash == response_hash
+
+
+@pytest.mark.asyncio
+async def test_gateway_protocol_error_without_definite_body_has_no_hash_evidence():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(
+        harness,
+        StoryEngineProviderResponseError("provider response was invalid"),
+    )
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "gateway-no-body")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "provider_failed"
+    assert result.raw_response_text is None
+    assert result.raw_response_hash is None
 
 
 @pytest.mark.asyncio
@@ -374,7 +498,9 @@ async def test_concurrent_same_key_has_one_outbound_call():
         "deleted",
         "disabled",
         "empty-key",
+        "short-key",
         "empty-base",
+        "short-base",
         "empty-model",
         "model-mismatch",
         "unsupported-type",
@@ -402,8 +528,12 @@ async def test_unavailable_configuration_fails_before_attempt_with_zero_transpor
         provider["enabled"] = 0
     elif configuration == "empty-key":
         provider["api_key"] = " "
+    elif configuration == "short-key":
+        provider["api_key"] = "short"
     elif configuration == "empty-base":
         provider["base_url"] = " "
+    elif configuration == "short-base":
+        provider["base_url"] = "http://"
     elif configuration == "empty-model":
         provider["model_name"] = " "
     elif configuration == "model-mismatch":
@@ -466,7 +596,7 @@ async def test_generation_config_is_frozen_before_current_profile_changes():
         ("not-json", "failed", "invalid_response"),
         ('{"options": []}', "failed", "invalid_response"),
         (StoryEngineProviderHTTPError("RAW_SENTINEL"), "failed", "provider_failed"),
-        (StoryEngineProviderResponseError("RAW_SENTINEL"), "failed", "invalid_response"),
+        (StoryEngineProviderResponseError("RAW_SENTINEL"), "failed", "provider_failed"),
         (TimeoutError("KEY_SENTINEL PRIVATE_URL_SENTINEL"), "outcome_unknown", "outcome_unknown"),
         (httpx.TransportError("KEY_SENTINEL PRIVATE_URL_SENTINEL"), "outcome_unknown", "outcome_unknown"),
     ),
@@ -487,3 +617,8 @@ async def test_generation_rejection_and_uncertain_transport_have_stable_classifi
     assert len(gateway.calls) == 1
     assert "KEY_SENTINEL" not in str(result)
     assert "PRIVATE_URL_SENTINEL" not in str(result)
+    assert result.raw_response_text is None
+    if isinstance(outcome, str):
+        assert result.raw_response_hash == sha256(outcome.encode("utf-8")).hexdigest()
+    else:
+        assert result.raw_response_hash is None

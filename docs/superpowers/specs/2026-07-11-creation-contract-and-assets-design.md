@@ -226,7 +226,7 @@ Schema 版本从 `writer-core-v1.0.0` 提升为 `writer-core-v1.1.0`。现有 M1
 
 现有 `provider_profiles` 在 M2 增加 `lifecycle_status IN ('active','deleted')` 和 `deleted_at`。删除命令原子写 `enabled=0`、`lifecycle_status='deleted'`、清空 `api_key/base_url` 连接配置；历史 binding item 只读取自身冻结的展示快照，永远不能借历史引用再次调用已删除 Provider。
 
-Provider batch 的 binding/provider/model 字段必须非空；`attempt_*` 只在进入 running 时写入，raw response 只在确实收到内容后写入。Manual batch 的 binding/provider/model/attempt/raw-response 字段必须为空，`request_json` 保存作者提交的规范化三方案，三个 option 与 batch 在同一事务写入后直接成功。两条路径使用同一 StoryEngine JSON Schema 和差异门禁。StyleTemplate、ExperienceCard 和 CorpusSource 的 `id` 表示具体不可变修订行；stable/source key 表示跨修订身份。
+Provider batch 的 binding/provider/model 字段必须非空；`attempt_*` 只在进入 running 时写入。Provider 原始响应明文永不落库、永不进入公开 DTO 或日志；确定收到的成功内容或严格解析失败内容只保存其原始 UTF-8 字节 SHA-256，`invalid_response` 必须携带该 hash，未取得确定内容的协议失败不伪造审计 hash。任何响应内容在解析或写入 option 前必须扫描当前连接的完整 API key/base URL（含裁剪和常见编码变体），命中后一律按安全的 `invalid_response` 失败且不写 option。`request_json/request_hash` 只含冻结业务事实，绝不含 API key/base URL。Manual batch 的 binding/provider/model/attempt/raw-response 字段必须为空，`request_json` 保存作者提交的规范化三方案，三个 option 与 batch 在同一事务写入后直接成功。两条路径使用同一 StoryEngine JSON Schema 和差异门禁。StyleTemplate、ExperienceCard 和 CorpusSource 的 `id` 表示具体不可变修订行；stable/source key 表示跨修订身份。
 
 ### 5.7 规范 JSON Contract
 

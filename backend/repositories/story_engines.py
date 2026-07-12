@@ -157,13 +157,13 @@ class StoryEngineRepository:
     ) -> bool:
         changed = await session.execute(
             """UPDATE story_engine_batches
-               SET status='succeeded',raw_response_text=%s,
+               SET status='succeeded',raw_response_text=NULL,
                    raw_response_hash=%s,finished_at=%s
                WHERE project_id=%s AND id=%s AND status='running'
                  AND attempt_id=%s""",
             (
-                row["raw_response_text"], row["raw_response_hash"],
-                row["finished_at"], project_id, batch_id, attempt_id,
+                row["raw_response_hash"], row["finished_at"],
+                project_id, batch_id, attempt_id,
             ),
         )
         return changed == 1
@@ -178,11 +178,14 @@ class StoryEngineRepository:
     ) -> bool:
         changed = await session.execute(
             """UPDATE story_engine_batches
-               SET status='failed',public_error_code=%s,finished_at=%s
+               SET status='failed',raw_response_text=NULL,raw_response_hash=%s,
+                   public_error_code=%s,finished_at=%s
                WHERE project_id=%s AND id=%s AND status='running'
                  AND attempt_id=%s""",
             (
-                row["public_error_code"], row["finished_at"],
+                row.get("raw_response_hash"),
+                row["public_error_code"],
+                row["finished_at"],
                 project_id, batch_id, attempt_id,
             ),
         )

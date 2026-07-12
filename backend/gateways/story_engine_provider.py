@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 
 import httpx
 
@@ -20,7 +21,9 @@ class StoryEngineProviderHTTPError(StoryEngineProviderError):
 
 
 class StoryEngineProviderResponseError(StoryEngineProviderError):
-    pass
+    def __init__(self, message: str, *, response_hash: str | None = None):
+        super().__init__(message)
+        self.response_hash = response_hash
 
 
 class StoryEngineProviderTransportError(httpx.TransportError):
@@ -85,10 +88,12 @@ class StoryEngineProviderGateway:
             content = payload["choices"][0]["message"]["content"]
         except (ValueError, TypeError, KeyError, IndexError):
             raise StoryEngineProviderResponseError(
-                "provider response was invalid"
+                "provider response was invalid",
+                response_hash=sha256(response.content).hexdigest(),
             ) from None
         if not isinstance(content, str) or not content.strip():
             raise StoryEngineProviderResponseError(
-                "provider response was invalid"
+                "provider response was invalid",
+                response_hash=sha256(response.content).hexdigest(),
             )
         return content

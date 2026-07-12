@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
+import re
 import time
 from types import MappingProxyType
 from typing import Literal
+from urllib.parse import quote, quote_plus
 from uuid import uuid4
 
 import httpx
@@ -36,6 +38,7 @@ _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "outcome_unknown"})
 _SAFE_FAILURE_CODES = frozenset(
     {"provider_failed", "provider_timeout", "invalid_response"}
 )
+_MIN_SCANNABLE_SECRET_LENGTH = 8
 DEFAULT_CHANNEL_PROFILE = MappingProxyType(
     {
         "schemaVersion": "writer-channel-profile-v1",
@@ -430,7 +433,49 @@ class StoryEngineService:
             and provider["provider_type"].strip().casefold()
             in {"openai", "openai-compatible"}
             and provider["model_name"] == model_name_snapshot
+            and len(provider["api_key"].strip()) >= _MIN_SCANNABLE_SECRET_LENGTH
+            and len(provider["base_url"].strip()) >= _MIN_SCANNABLE_SECRET_LENGTH
         )
+
+    @staticmethod
+    def _normalize_provider_connection(provider: dict) -> dict:
+        normalized = dict(provider)
+        for field in ("base_url", "api_key"):
+            value = normalized.get(field)
+            if isinstance(value, str):
+                normalized[field] = value.strip()
+        return normalized
+
+    @staticmethod
+    def _response_contains_connection_secret(
+        raw_response_text: str,
+        provider: dict,
+    ) -> bool:
+        variants: set[str] = set()
+        for field in ("api_key", "base_url"):
+            value = provider.get(field)
+            if not isinstance(value, str):
+                continue
+            secret = value.strip()
+            if len(secret) < _MIN_SCANNABLE_SECRET_LENGTH:
+                continue
+            secret_variants = {
+                secret,
+                quote(secret, safe=""),
+                quote_plus(secret, safe=""),
+                secret.replace("/", r"\/"),
+            }
+            encoded_case_variants = {
+                re.sub(
+                    r"%[0-9A-F]{2}",
+                    lambda match: match.group(0).lower(),
+                    variant,
+                )
+                for variant in secret_variants
+                if "%" in variant
+            }
+            variants.update(secret_variants | encoded_case_variants)
+        return any(variant and variant in raw_response_text for variant in variants)
 
     @staticmethod
     def _parse_provider_options(raw_response_text: str):
@@ -526,7 +571,7 @@ class StoryEngineService:
             )
             if not changed:
                 raise StoryEngineBatchConflict()
-            provider = dict(provider)
+            provider = self._normalize_provider_connection(dict(provider))
 
         messages = build_story_engine_messages(
             request["seed"]["payload"],
@@ -543,20 +588,42 @@ class StoryEngineService:
             return await self.fail_attempt(
                 command.project_id, batch.id, attempt_id, "provider_failed"
             )
-        except StoryEngineProviderResponseError:
+        except StoryEngineProviderResponseError as error:
+            if error.response_hash is not None:
+                return await self.fail_attempt(
+                    command.project_id,
+                    batch.id,
+                    attempt_id,
+                    "invalid_response",
+                    raw_response_hash=error.response_hash,
+                )
             return await self.fail_attempt(
-                command.project_id, batch.id, attempt_id, "invalid_response"
+                command.project_id, batch.id, attempt_id, "provider_failed"
             )
         except (TimeoutError, httpx.TransportError):
             return await self.mark_outcome_unknown(
                 command.project_id, batch.id, attempt_id
             )
 
+        raw_response_hash = sha256(raw_response_text.encode("utf-8")).hexdigest()
+        if self._response_contains_connection_secret(raw_response_text, provider):
+            return await self.fail_attempt(
+                command.project_id,
+                batch.id,
+                attempt_id,
+                "invalid_response",
+                raw_response_hash=raw_response_hash,
+            )
+
         try:
             options = self._parse_provider_options(raw_response_text)
         except (TypeError, ValueError):
             return await self.fail_attempt(
-                command.project_id, batch.id, attempt_id, "invalid_response"
+                command.project_id,
+                batch.id,
+                attempt_id,
+                "invalid_response",
+                raw_response_hash=raw_response_hash,
             )
         return await self.succeed_attempt(
             command.project_id,
@@ -617,7 +684,7 @@ class StoryEngineService:
                 batch_id,
                 attempt_id,
                 {
-                    "raw_response_text": raw_response_text,
+                    "raw_response_text": None,
                     "raw_response_hash": sha256(
                         raw_response_text.encode("utf-8")
                     ).hexdigest(),
@@ -637,9 +704,22 @@ class StoryEngineService:
         batch_id: str,
         attempt_id: str,
         public_error_code: str,
+        *,
+        raw_response_hash: str | None = None,
     ) -> StoryEngineBatchResult:
         if public_error_code not in _SAFE_FAILURE_CODES:
             raise ValueError("unsupported public error code")
+        if public_error_code == "invalid_response":
+            if raw_response_hash is None or (
+                len(raw_response_hash) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in raw_response_hash
+                )
+            ):
+                raise ValueError("invalid response hash evidence")
+        elif raw_response_hash is not None:
+            raise ValueError("invalid response hash evidence")
         async with self.transaction_factory() as session:
             if await self.repository.lock_project(session, project_id) is None:
                 raise StoryEngineBatchNotFound()
@@ -650,7 +730,12 @@ class StoryEngineService:
                 project_id,
                 batch_id,
                 attempt_id,
-                {"public_error_code": public_error_code, "finished_at": self.clock()},
+                {
+                    "raw_response_text": None,
+                    "raw_response_hash": raw_response_hash,
+                    "public_error_code": public_error_code,
+                    "finished_at": self.clock(),
+                },
             )
             if not changed:
                 raise StoryEngineBatchConflict()
