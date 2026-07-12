@@ -619,7 +619,7 @@ async def test_specialized_asset_refs_accept_valid_and_reject_invalid_revisions(
     await session.execute(
         """INSERT INTO experience_cards
            (id,stable_key,revision,title,category,payload_json,provenance_json,content_hash,status,created_at)
-           VALUES (%s,'card.test',1,'Card','plot',%s,%s,%s,'active',%s)""",
+           VALUES (%s,'card.test',1,'Card','plot_organization',%s,%s,%s,'active',%s)""",
         (card_id, '{}', '{}', HASH_B, NOW),
     )
     await session.execute(
@@ -636,12 +636,26 @@ async def test_specialized_asset_refs_accept_valid_and_reject_invalid_revisions(
         "INSERT INTO creation_contract_engine_refs (creation_contract_id,project_id,engine_option_id,engine_hash) VALUES (%s,%s,%s,%s)",
         (creation_id, PROJECT_ID, option_id, HASH_C),
     )
+    with pytest.raises(Exception):
+        await session.execute(
+            """INSERT INTO style_contract_template_refs
+               (style_contract_id,role,style_template_id,asset_revision,asset_hash,sort_order)
+               VALUES (%s,'primary',%s,1,%s,1)""",
+            (style_contract_id, style_asset_id, HASH_B),
+        )
     await session.execute(
         """INSERT INTO style_contract_template_refs
            (style_contract_id,role,style_template_id,asset_revision,asset_hash,sort_order)
            VALUES (%s,'primary',%s,1,%s,1)""",
         (style_contract_id, style_asset_id, HASH_A),
     )
+    with pytest.raises(Exception):
+        await session.execute(
+            """INSERT INTO creation_contract_experience_refs
+               (creation_contract_id,experience_card_id,asset_revision,asset_hash,sort_order)
+               VALUES (%s,%s,1,%s,1)""",
+            (creation_id, card_id, HASH_A),
+        )
     await session.execute(
         """INSERT INTO creation_contract_experience_refs
            (creation_contract_id,experience_card_id,asset_revision,asset_hash,sort_order)

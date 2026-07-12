@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 
 from backend import schema_manifest
+from backend.domain.assets import ASSET_CATEGORIES
 from backend.schema_manifest import (
     FRAGMENTS,
     created_table_names,
@@ -263,11 +264,17 @@ def test_global_assets_have_revision_heads_and_no_project_ownership():
         assert "project_id" not in _table_statement(table_name)
     styles = _table_statement("style_templates")
     assert "unique key uq_style_template_revision (stable_key, revision)" in styles
-    assert "unique key uq_style_template_identity (stable_key, id)" in styles
+    assert "unique key uq_style_template_head_ref (stable_key, id, revision, content_hash)" in styles
+    assert "unique key uq_style_template_contract_ref (id, revision, content_hash)" in styles
     style_heads = _table_statement("style_template_heads")
-    assert "foreign key (stable_key, style_template_id) references style_templates(stable_key, id) on delete restrict" in style_heads
+    assert "foreign key (stable_key, style_template_id, revision, content_hash) references style_templates(stable_key, id, revision, content_hash) on delete restrict" in style_heads
     cards = _table_statement("experience_cards")
-    assert "check (category in ('plot','ensemble','dialogue','emotion','interiority','information','rhythm','suspense'))" in cards
+    expected_categories = ",".join(f"'{category}'" for category in ASSET_CATEGORIES)
+    assert f"check (category in ({expected_categories}))" in cards
+    assert "unique key uq_experience_card_head_ref (stable_key, id, revision, content_hash)" in cards
+    assert "unique key uq_experience_card_contract_ref (id, revision, content_hash)" in cards
+    card_heads = _table_statement("experience_card_heads")
+    assert "foreign key (stable_key, experience_card_id, revision, content_hash) references experience_cards(stable_key, id, revision, content_hash) on delete restrict" in card_heads
     corpus = _table_statement("corpus_sources")
     assert "unique key uq_corpus_source_revision (source_key, revision)" in corpus
     assert "unique key uq_corpus_source_import (source_hash, parser_version, normalizer_version, fragmenter_version, index_version)" in corpus
@@ -325,8 +332,8 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
     assert "foreign key (project_id, engine_option_id) references story_engine_options(project_id, id) on delete restrict" in engine_refs
     assert "foreign key (creation_contract_id)" not in engine_refs
     assert "foreign key (engine_option_id)" not in engine_refs
-    assert "foreign key (style_template_id, asset_revision) references style_templates(id, revision) on delete restrict" in _table_statement("style_contract_template_refs")
-    assert "foreign key (experience_card_id, asset_revision) references experience_cards(id, revision) on delete restrict" in _table_statement("creation_contract_experience_refs")
+    assert "foreign key (style_template_id, asset_revision, asset_hash) references style_templates(id, revision, content_hash) on delete restrict" in _table_statement("style_contract_template_refs")
+    assert "foreign key (experience_card_id, asset_revision, asset_hash) references experience_cards(id, revision, content_hash) on delete restrict" in _table_statement("creation_contract_experience_refs")
     assert "foreign key (corpus_source_id, source_revision) references corpus_sources(id, revision) on delete restrict" in _table_statement("creation_contract_corpus_refs")
 
 

@@ -9,9 +9,8 @@ CREATE TABLE style_templates (
   status VARCHAR(24) NOT NULL,
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_style_template_revision (stable_key, revision),
-  UNIQUE KEY uq_style_template_identity (stable_key, id),
-  UNIQUE KEY uq_style_template_id_revision (id, revision),
-  UNIQUE KEY uq_style_template_head_identity (stable_key, id, revision),
+  UNIQUE KEY uq_style_template_head_ref (stable_key, id, revision, content_hash),
+  UNIQUE KEY uq_style_template_contract_ref (id, revision, content_hash),
   CHECK (revision > 0),
   CHECK (status IN ('active','archived'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -23,8 +22,7 @@ CREATE TABLE style_template_heads (
   revision INT NOT NULL,
   content_hash CHAR(64) NOT NULL,
   updated_at BIGINT NOT NULL,
-  FOREIGN KEY (stable_key, style_template_id) REFERENCES style_templates(stable_key, id) ON DELETE RESTRICT,
-  FOREIGN KEY (stable_key, style_template_id, revision) REFERENCES style_templates(stable_key, id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (stable_key, style_template_id, revision, content_hash) REFERENCES style_templates(stable_key, id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -41,11 +39,10 @@ CREATE TABLE experience_cards (
   status VARCHAR(24) NOT NULL,
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_experience_card_revision (stable_key, revision),
-  UNIQUE KEY uq_experience_card_identity (stable_key, id),
-  UNIQUE KEY uq_experience_card_id_revision (id, revision),
-  UNIQUE KEY uq_experience_card_head_identity (stable_key, id, revision),
+  UNIQUE KEY uq_experience_card_head_ref (stable_key, id, revision, content_hash),
+  UNIQUE KEY uq_experience_card_contract_ref (id, revision, content_hash),
   CHECK (revision > 0),
-  CHECK (category IN ('plot','ensemble','dialogue','emotion','interiority','information','rhythm','suspense')),
+  CHECK (category IN ('plot_organization','ensemble','dialogue','emotion','interiority','information_release','pacing','suspense','long_arc_continuity','progression_economy','character_arcs','action_conflict')),
   CHECK (status IN ('active','archived'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -56,8 +53,7 @@ CREATE TABLE experience_card_heads (
   revision INT NOT NULL,
   content_hash CHAR(64) NOT NULL,
   updated_at BIGINT NOT NULL,
-  FOREIGN KEY (stable_key, experience_card_id) REFERENCES experience_cards(stable_key, id) ON DELETE RESTRICT,
-  FOREIGN KEY (stable_key, experience_card_id, revision) REFERENCES experience_cards(stable_key, id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (stable_key, experience_card_id, revision, content_hash) REFERENCES experience_cards(stable_key, id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

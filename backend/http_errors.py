@@ -52,3 +52,21 @@ class BindingProviderUnavailable(PublicDomainError):
     status_code = 422
     code = "BindingProviderUnavailable"
     message = "A selected provider is unavailable"
+
+
+class AssetNotFound(PublicDomainError):
+    status_code = 404
+    code = "AssetNotFound"
+    message = "Asset or project not found"
+
+
+class AssetRecommendationConflict(PublicDomainError):
+    status_code = 409
+    code = "AssetRecommendationConflict"
+    message = "Asset recommendation inputs changed; refresh and retry"
+
+
+class AssetCatalogNotReady(PublicDomainError):
+    status_code = 503
+    code = "AssetCatalogNotReady"
+    message = "Approved writing assets are not ready"

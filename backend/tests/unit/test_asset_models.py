@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import traceback
+from pathlib import Path
 from typing import get_args
 
 import pytest
@@ -13,10 +14,12 @@ from backend.domain.assets import (
     PACKAGE_VERSION,
     AssetCategory,
     AssetFile,
+    AssetInventory,
     AssetManifest,
     AssetPackage,
     ExperienceCardRevision,
     StyleTemplateRevision,
+    validate_asset_inventory,
 )
 from backend.domain.json_contracts import canonical_hash
 
@@ -344,3 +347,26 @@ def test_literal_contracts_have_one_exact_runtime_source():
     assert get_args(AssetCategory) == ASSET_CATEGORIES
     assert dict(assets.ASSET_CATEGORY_COUNTS) == expected_category_counts
     assert get_args(assets.PackageVersion) == (PACKAGE_VERSION,)
+
+
+def test_manifest_free_inventory_has_same_exact_release_contract_as_package():
+    package = assets.load_asset_package(
+        Path(__file__).resolve().parents[2]
+        / "assets"
+        / "writer-core-v1.1.0"
+        / "manifest.json",
+        mode="release",
+    )
+    inventory = AssetInventory(
+        styles=package.styles,
+        experience_cards=package.experience_cards,
+    )
+
+    assert validate_asset_inventory(inventory, mode="release") is inventory
+    assert len(inventory.styles) == 10
+    assert len(inventory.experience_cards) == 64
+    with pytest.raises(ValidationError):
+        AssetInventory(
+            styles=inventory.styles[:-1],
+            experience_cards=inventory.experience_cards,
+        )

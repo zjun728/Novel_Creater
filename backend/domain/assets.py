@@ -385,6 +385,21 @@ class AssetPackage(_FrozenModel):
         return self.manifest.package_version
 
 
+class AssetInventory(_FrozenModel):
+    """Manifest-free immutable inventory loaded from approved database rows."""
+
+    styles: tuple[StyleTemplateRevision, ...] = Field(min_length=10, max_length=10)
+    experience_cards: tuple[ExperienceCardRevision, ...] = Field(
+        min_length=64,
+        max_length=64,
+    )
+
+    @field_validator("styles", "experience_cards", mode="before")
+    @classmethod
+    def freeze_sequences(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
+
+
 def _normalized_identity(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     return " ".join(normalized.split()).casefold()
@@ -396,8 +411,8 @@ def _ensure_unique(values: list[str], *, error: _AssetError) -> None:
         raise AssetPackageError(error)
 
 
-def _validate_release_review(package: AssetPackage) -> None:
-    for asset in (*package.styles, *package.experience_cards):
+def _validate_release_review(inventory: AssetInventory) -> None:
+    for asset in (*inventory.styles, *inventory.experience_cards):
         provenance = asset.provenance
         if (
             provenance.decision != "approved"
@@ -407,12 +422,76 @@ def _validate_release_review(package: AssetPackage) -> None:
             raise AssetPackageError(_AssetError.RELEASE_REVIEW_INCOMPLETE)
 
 
+def validate_asset_inventory(
+    inventory: AssetInventory | dict[str, object],
+    *,
+    mode: ValidationMode = "structural",
+) -> AssetInventory:
+    """Validate exact inventory, hashes, uniqueness and release approval."""
+
+    if mode not in ("structural", "release"):
+        raise AssetPackageError(_AssetError.VALIDATION_MODE_UNSUPPORTED)
+    if not isinstance(inventory, AssetInventory):
+        validation_failed = False
+        try:
+            inventory = AssetInventory.model_validate(inventory)
+        except ValidationError:
+            validation_failed = True
+        if validation_failed:
+            raise _validation_error("asset package")
+    if len(inventory.styles) != 10:
+        raise AssetPackageError(_AssetError.STYLE_COUNT)
+    if len(inventory.experience_cards) != 64:
+        raise AssetPackageError(_AssetError.CARD_COUNT)
+    category_counts = {
+        category: sum(
+            card.category == category for card in inventory.experience_cards
+        )
+        for category in ASSET_CATEGORIES
+    }
+    if category_counts != ASSET_CATEGORY_COUNTS:
+        raise AssetPackageError(_AssetError.CATEGORY_COVERAGE)
+
+    _ensure_unique(
+        [style.stable_key for style in inventory.styles],
+        error=_AssetError.STYLE_KEY_DUPLICATE,
+    )
+    _ensure_unique(
+        [card.stable_key for card in inventory.experience_cards],
+        error=_AssetError.CARD_KEY_DUPLICATE,
+    )
+    _ensure_unique(
+        [card.payload.method for card in inventory.experience_cards],
+        error=_AssetError.METHOD_DUPLICATE,
+    )
+    _ensure_unique(
+        [
+            card.payload.original_micro_demo
+            for card in inventory.experience_cards
+        ],
+        error=_AssetError.MICRO_DEMO_DUPLICATE,
+    )
+
+    assets = (*inventory.styles, *inventory.experience_cards)
+    hashes = [asset.content_hash for asset in assets]
+    if len(hashes) != len(set(hashes)):
+        raise AssetPackageError(_AssetError.CONTENT_HASH_DUPLICATE)
+    for asset in assets:
+        expected_hash = canonical_hash(asset.payload)
+        if asset.content_hash != expected_hash:
+            raise AssetPackageError(_AssetError.CONTENT_HASH_MISMATCH)
+
+    if mode == "release":
+        _validate_release_review(inventory)
+    return inventory
+
+
 def validate_asset_package(
     package: AssetPackage | dict[str, object],
     *,
     mode: ValidationMode = "structural",
 ) -> AssetPackage:
-    """Validate inventory, hashes, uniqueness and optional release approval."""
+    """Validate a file package and its embedded immutable inventory."""
 
     if mode not in ("structural", "release"):
         raise AssetPackageError(_AssetError.VALIDATION_MODE_UNSUPPORTED)
@@ -426,45 +505,13 @@ def validate_asset_package(
             raise _validation_error("asset package")
     if package.manifest.package_version != PACKAGE_VERSION:
         raise AssetPackageError(_AssetError.PACKAGE_VERSION)
-    if len(package.styles) != 10:
-        raise AssetPackageError(_AssetError.STYLE_COUNT)
-    if len(package.experience_cards) != 64:
-        raise AssetPackageError(_AssetError.CARD_COUNT)
-    category_counts = {
-        category: sum(card.category == category for card in package.experience_cards)
-        for category in ASSET_CATEGORIES
-    }
-    if category_counts != ASSET_CATEGORY_COUNTS:
-        raise AssetPackageError(_AssetError.CATEGORY_COVERAGE)
-
-    _ensure_unique(
-        [style.stable_key for style in package.styles],
-        error=_AssetError.STYLE_KEY_DUPLICATE,
+    validate_asset_inventory(
+        AssetInventory.model_construct(
+            styles=package.styles,
+            experience_cards=package.experience_cards,
+        ),
+        mode=mode,
     )
-    _ensure_unique(
-        [card.stable_key for card in package.experience_cards],
-        error=_AssetError.CARD_KEY_DUPLICATE,
-    )
-    _ensure_unique(
-        [card.payload.method for card in package.experience_cards],
-        error=_AssetError.METHOD_DUPLICATE,
-    )
-    _ensure_unique(
-        [card.payload.original_micro_demo for card in package.experience_cards],
-        error=_AssetError.MICRO_DEMO_DUPLICATE,
-    )
-
-    assets = (*package.styles, *package.experience_cards)
-    hashes = [asset.content_hash for asset in assets]
-    if len(hashes) != len(set(hashes)):
-        raise AssetPackageError(_AssetError.CONTENT_HASH_DUPLICATE)
-    for asset in assets:
-        expected_hash = canonical_hash(asset.payload)
-        if asset.content_hash != expected_hash:
-            raise AssetPackageError(_AssetError.CONTENT_HASH_MISMATCH)
-
-    if mode == "release":
-        _validate_release_review(package)
     return package
 
 
