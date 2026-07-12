@@ -9,7 +9,14 @@ import time
 from typing import Annotated, Literal, Mapping, Self
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from backend.domain.contracts import CreationContractPayload, StyleContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
@@ -23,8 +30,29 @@ MAX_REFS = 20
 MAX_PREFERENCES = 20
 MAX_TEXT = 2_000
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-Text = Annotated[str, Field(min_length=1, max_length=MAX_TEXT)]
-Identifier = Annotated[str, Field(min_length=1, max_length=36)]
+
+
+def _reject_path_shaped_text(value: str) -> str:
+    normalized_parts = value.replace("\\", "/").split("/")
+    if (
+        value.startswith(("/", "\\"))
+        or bool(PureWindowsPath(value).drive)
+        or PurePosixPath(value).is_absolute()
+        or ".." in normalized_parts
+    ):
+        raise ValueError("text must not contain a path")
+    return value
+
+
+Text = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_TEXT),
+    AfterValidator(_reject_path_shaped_text),
+]
+Identifier = Annotated[
+    str,
+    Field(min_length=1, max_length=36, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$"),
+]
 
 
 class ContractNotFound(PublicDomainError):
@@ -63,8 +91,6 @@ class CorpusSourceRef(AssetRevisionRef):
 
 class ContractDraftInput(_StrictValue):
     schemaVersion: Literal["contract-draft-v1"]
-    seedRevisionId: Identifier
-    seedHash: Hash
     engineOptionId: Identifier
     engineHash: Hash
     channelProfileKey: Text
@@ -98,12 +124,6 @@ class ContractDraftInput(_StrictValue):
             values = getattr(self, field_name)
             if len(set(values)) != len(values):
                 raise ValueError(f"{field_name} must not contain duplicates")
-            if any(
-                PureWindowsPath(value).is_absolute()
-                or PurePosixPath(value).is_absolute()
-                for value in values
-            ):
-                raise ValueError(f"{field_name} must not contain absolute paths")
         return self
 
 
@@ -116,6 +136,8 @@ class ModelBindingRef(_StrictValue):
 class ContractDraftPayload(ContractDraftInput):
     """Persisted draft enriched with a server-frozen binding reference."""
 
+    seedRevisionId: Identifier
+    seedHash: Hash
     modelBindingRef: ModelBindingRef
 
 
@@ -263,13 +285,20 @@ def _strict_style_from_primary(primary: Mapping, secondary: Mapping | None):
         schemaVersion="style-contract-v1",
         readingExperience=payload["reading_experience"],
         narrativeDistance=payload["narrative_distance"],
-        sentenceParagraphRhythm=payload["sentence_paragraph_rhythm"],
+        sentenceParagraphRhythm=payload["rhythm"],
         dictionDensity=payload["diction_density"],
-        dialogueAndSubtext=payload["dialogue_and_subtext"],
-        characterVoices=tuple(payload["character_voices"]),
-        emotionAndInteriority=payload["emotion_and_interiority"],
-        actionExplanationEnvironment=payload["action_explanation_environment"],
-        primaryRules=tuple(payload["primary_rules"]),
+        dialogueAndSubtext=(
+            f"对白：{payload['dialogue']}；潜台词：{payload['subtext']}"
+        ),
+        characterVoices=(payload["character_voices"],),
+        emotionAndInteriority=(
+            f"情绪：{payload['emotion']}；内心：{payload['interiority']}"
+        ),
+        actionExplanationEnvironment=(
+            f"动作：{payload['action']}；说明：{payload['explanation']}；"
+            f"环境：{payload['environment']}；身体反应：{payload['body_response']}"
+        ),
+        primaryRules=tuple(payload["preferred_techniques"]),
         secondaryFlavor=secondary_flavor,
         risks=tuple(payload["risks"]),
     )
@@ -317,7 +346,7 @@ class ContractService:
                     raw[key] = tuple(raw[key])
             draft = ContractDraftPayload(**raw)
         except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
-            raise ContractPreconditionFailed() from exc
+            raise ContractPreconditionFailed() from None
         if canonical_hash(draft) != row["content_hash"]:
             raise ContractPreconditionFailed()
         return ContractDraftResult(
@@ -369,6 +398,11 @@ class ContractService:
                     raise ContractPreconditionFailed()
                 if int(head["revision"]) != 0:
                     raise ContractConflict()
+            selected = await self.repository.lock_selected_seed(
+                session, command.project_id
+            )
+            if selected is None:
+                raise ContractPreconditionFailed()
             binding = await self.repository.lock_binding_snapshot(
                 session, command.project_id
             )
@@ -377,6 +411,8 @@ class ContractService:
                 raise ContractPreconditionFailed()
             persisted_draft = ContractDraftPayload(
                 **command.draft.model_dump(mode="python"),
+                seedRevisionId=selected["seed_revision_id"],
+                seedHash=selected["seed_hash"],
                 modelBindingRef=ModelBindingRef(
                     id=binding["binding_revision_id"],
                     revision=int(binding["revision"]),
@@ -430,7 +466,7 @@ class ContractService:
                 for item in tuple(binding.get("items") or ())
             )
         except (AttributeError, TypeError, ValidationError) as exc:
-            raise ContractPreconditionFailed() from exc
+            raise ContractPreconditionFailed() from None
 
     @staticmethod
     def _binding_ready(items, binding) -> bool:
@@ -512,7 +548,7 @@ class ContractService:
             engine_payload = _strict_engine(engine["payload_json"])
             style_payload = _strict_style_from_primary(primary, secondary)
         except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
-            raise ContractPreconditionFailed() from exc
+            raise ContractPreconditionFailed() from None
 
         reasons = []
         if selected is None or frozen_seed is None:
@@ -707,7 +743,7 @@ class ContractService:
                 # Parsing StyleContract here makes clone fail closed on a corrupt head.
                 _ = style
             except (KeyError, StopIteration, TypeError, ValueError, ValidationError) as exc:
-                raise ContractPreconditionFailed() from exc
+                raise ContractPreconditionFailed() from None
             now = self.clock()
             row = self._draft_row(
                 project_id, draft, draft_id=self.id_factory(),

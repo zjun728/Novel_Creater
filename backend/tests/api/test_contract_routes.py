@@ -80,6 +80,14 @@ def test_route_validation_rejects_unknown_long_duplicate_and_same_style_inputs()
             **valid,
             "draft": {
                 **valid["draft"],
+                "seedRevisionId": "forged-revision",
+                "seedHash": "f" * 64,
+            },
+        },
+        {
+            **valid,
+            "draft": {
+                **valid["draft"],
                 "modelBindingRef": {
                     "id": "client-controlled", "revision": 99,
                     "contentHash": "f" * 64,
@@ -101,6 +109,29 @@ def test_route_validation_rejects_unknown_long_duplicate_and_same_style_inputs()
     assert client.post(
         "/api/projects/p1/contracts/preview", json={"debug": True}
     ).status_code == 422
+
+
+def test_path_shaped_input_is_never_persisted_or_reloaded():
+    client, harness = make_client()
+    valid = save_body(harness)
+    sentinels = (
+        r"C:\private\novel.txt",
+        "/home/author/novel.txt",
+        r"\\server\share\novel.txt",
+        r"C:private\novel.txt",
+        "safe/../private/novel.txt",
+    )
+    for sentinel in sentinels:
+        payload = {
+            **valid,
+            "draft": {**valid["draft"], "channelProfileKey": sentinel},
+        }
+        response = client.put("/api/projects/p1/contract-draft", json=payload)
+        assert response.status_code == 422
+        assert sentinel not in response.text
+
+    assert harness.repository.write_count == 0
+    assert client.get("/api/projects/p1/contract-draft").status_code == 404
 
 
 def test_routes_return_stable_404_and_409_for_archived_and_stale_cas():

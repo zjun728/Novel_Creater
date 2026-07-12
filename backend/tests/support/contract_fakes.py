@@ -27,13 +27,18 @@ def style_asset(*, flavor: str, distance: str = "近距离第三人称") -> dict
         "schema_version": "style-template-v1",
         "reading_experience": flavor,
         "narrative_distance": distance,
-        "sentence_paragraph_rhythm": "行动段短促，反思段舒展",
+        "rhythm": "行动段短促，反思段舒展",
         "diction_density": "低修辞密度",
-        "dialogue_and_subtext": "对白简短，冲突藏在回避中",
-        "character_voices": ["主角克制", "县令锋利"],
-        "emotion_and_interiority": "以动作和选择承载情绪",
-        "action_explanation_environment": "先动作，后解释，环境参与阻碍",
-        "primary_rules": [flavor, "避免空泛抒情"],
+        "dialogue": "对白简短",
+        "subtext": "冲突藏在回避中",
+        "character_voices": "主角克制，县令锋利",
+        "emotion": "以选择承载情绪",
+        "interiority": "内心活动贴近当下感官",
+        "action": "先写动作",
+        "explanation": "动作后解释",
+        "environment": "环境参与阻碍",
+        "body_response": "压力通过呼吸与肌肉反应显现",
+        "preferred_techniques": [flavor, "避免空泛抒情"],
         "risks": ["节奏可能过冷"],
     }
 
@@ -192,6 +197,10 @@ class MemoryContractRepository:
     async def read_selected_seed(self, session, project_id):
         return deepcopy(self.selected_seeds.get(project_id))
 
+    async def lock_selected_seed(self, session, project_id):
+        self.events.append("lock-selected-seed")
+        return await self.read_selected_seed(session, project_id)
+
     async def read_seed_revision(self, session, project_id, revision_id):
         row = self.seed_revisions.get(revision_id)
         return deepcopy(row) if project_id == "p1" and row else None
@@ -267,12 +276,9 @@ def draft_values(repository: MemoryContractRepository, **overrides):
     secondary = repository.styles["style-secondary"]
     card = repository.cards["card-1"]
     source = repository.sources["source-1"]
-    seed = repository.selected_seeds["p1"]
     engine = repository.engines["engine-1"]
     values = {
         "schemaVersion": "contract-draft-v1",
-        "seedRevisionId": seed["seed_revision_id"],
-        "seedHash": seed["seed_hash"],
         "engineOptionId": engine["id"],
         "engineHash": engine["content_hash"],
         "channelProfileKey": "web-fiction",

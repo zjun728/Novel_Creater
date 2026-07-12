@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import traceback
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,7 +14,11 @@ from backend.services.contracts import (
     ContractPreconditionFailed,
     SaveContractDraft,
 )
-from backend.tests.support.contract_fakes import ContractHarness, draft_values
+from backend.tests.support.contract_fakes import (
+    SEED_PAYLOAD,
+    ContractHarness,
+    draft_values,
+)
 
 
 def command(harness, expected=0, **overrides):
@@ -20,6 +27,108 @@ def command(harness, expected=0, **overrides):
         expected_draft_version=expected,
         draft=ContractDraftInput(**draft_values(harness.repository, **overrides)),
     )
+
+
+def test_seed_reference_is_server_managed_and_client_input_forbids_forgery():
+    harness = ContractHarness()
+    values = draft_values(harness.repository)
+
+    draft = ContractDraftInput(**values)
+
+    assert "seedRevisionId" not in draft.model_dump()
+    assert "seedHash" not in draft.model_dump()
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**{
+            **values,
+            "seedRevisionId": "forged-revision",
+            "seedHash": "f" * 64,
+        })
+
+
+_UNSAFE_PATHS = (
+    r"C:\private\novel.txt",
+    "/home/author/novel.txt",
+    r"\\server\share\novel.txt",
+    r"C:private\novel.txt",
+    "safe/../private/novel.txt",
+)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "channelProfileKey",
+        "genreProfileKey",
+        "qualityCharterVersion",
+        "chapterCapacityPolicy",
+        "likes",
+        "dislikes",
+    ),
+)
+@pytest.mark.parametrize("unsafe_path", _UNSAFE_PATHS)
+def test_every_client_text_field_rejects_path_forms(field_name, unsafe_path):
+    harness = ContractHarness()
+    values = draft_values(harness.repository)
+    values[field_name] = (
+        (unsafe_path,) if field_name in {"likes", "dislikes"} else unsafe_path
+    )
+
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**values)
+
+
+@pytest.mark.parametrize("ref_kind", ("engine", "primary", "card", "corpus"))
+@pytest.mark.parametrize("unsafe_path", _UNSAFE_PATHS)
+def test_every_client_identifier_rejects_path_forms(ref_kind, unsafe_path):
+    harness = ContractHarness()
+    values = draft_values(harness.repository)
+    if ref_kind == "engine":
+        values["engineOptionId"] = unsafe_path
+    elif ref_kind == "primary":
+        values["primaryStyleRef"] = {
+            **values["primaryStyleRef"], "id": unsafe_path,
+        }
+    elif ref_kind == "card":
+        values["experienceCardRefs"] = ({
+            **values["experienceCardRefs"][0], "id": unsafe_path,
+        },)
+    else:
+        values["corpusSourceRefs"] = ({
+            **values["corpusSourceRefs"][0], "id": unsafe_path,
+        },)
+
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**values)
+
+
+def test_safe_text_validation_does_not_reject_normal_chinese_colons():
+    harness = ContractHarness()
+    values = draft_values(harness.repository)
+    values["channelProfileKey"] = "渠道：中文连载"
+    values["chapterCapacityPolicy"] = "节奏：每章推进一个不可逆选择"
+
+    draft = ContractDraftInput(**values)
+
+    assert draft.channelProfileKey == "渠道：中文连载"
+    assert draft.chapterCapacityPolicy.startswith("节奏：")
+
+
+@pytest.mark.asyncio
+async def test_corrupt_stored_path_is_not_echoed_through_exception_traceback():
+    harness = ContractHarness()
+    await harness.service.save_draft(command(harness))
+    sentinel = r"C:\private\novel-sentinel.txt"
+    row = harness.repository.drafts["p1"]
+    raw = json.loads(row["draft_json"])
+    raw["channelProfileKey"] = sentinel
+    row["draft_json"] = canonical_json(raw)
+    row["content_hash"] = canonical_hash(raw)
+
+    with pytest.raises(ContractPreconditionFailed) as captured:
+        await harness.service.get_draft("p1")
+
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert sentinel not in rendered
 
 
 @pytest.mark.asyncio
@@ -34,6 +143,9 @@ async def test_create_reload_update_uses_one_draft_and_version_cas_from_head_zer
 
     assert created.draft_version == 1
     assert created.base_head_revision == 0
+    assert created.draft.seedRevisionId == "seed-revision-1"
+    assert created.draft.seedHash == harness.repository.selected_seeds["p1"]["seed_hash"]
+    assert "lock-selected-seed" in harness.repository.events
     assert created.draft.modelBindingRef.id == "binding-revision-3"
     assert created.draft.modelBindingRef.revision == 3
     assert created.draft.modelBindingRef.contentHash == "b" * 64
@@ -125,6 +237,17 @@ async def test_preview_is_deterministic_read_only_and_freezes_exact_dependencies
     assert "rubric" not in first.creation_contract.model_dump()
     assert "checklist" not in first.creation_contract.model_dump()
     assert first.style_contract.narrativeDistance == "近距离第三人称"
+    assert first.style_contract.sentenceParagraphRhythm == "行动段短促，反思段舒展"
+    assert first.style_contract.dialogueAndSubtext == "对白：对白简短；潜台词：冲突藏在回避中"
+    assert first.style_contract.characterVoices == ("主角克制，县令锋利",)
+    assert first.style_contract.emotionAndInteriority == (
+        "情绪：以选择承载情绪；内心：内心活动贴近当下感官"
+    )
+    assert first.style_contract.actionExplanationEnvironment == (
+        "动作：先写动作；说明：动作后解释；环境：环境参与阻碍；"
+        "身体反应：压力通过呼吸与肌肉反应显现"
+    )
+    assert first.style_contract.primaryRules == ("克制现实主义", "避免空泛抒情")
     assert first.style_contract.secondaryFlavor == (
         "章回悬念：章回体悬念；仅作局部风味，不覆盖主风格的叙事距离、"
         "语言底色和整体阅读体验。"
@@ -187,6 +310,36 @@ async def test_resave_explicitly_refreshes_frozen_binding_and_restores_readiness
     assert saved.draft.modelBindingRef.revision == 4
     assert refreshed.contract_ready is True
     assert refreshed.creation_contract.modelBindingRevision == 4
+
+
+@pytest.mark.asyncio
+async def test_resave_refreshes_server_frozen_seed_and_exposes_old_engine_drift():
+    harness = ContractHarness()
+    await harness.service.save_draft(command(harness))
+    revised_payload = {
+        **SEED_PAYLOAD,
+        "title": "典镇山河·再修版",
+    }
+    revised_hash = canonical_hash(revised_payload)
+    revised = {
+        "seed_id": "seed-1",
+        "seed_revision_id": "seed-revision-2",
+        "seed_hash": revised_hash,
+        "payload_json": canonical_json(revised_payload),
+    }
+    harness.repository.selected_seeds["p1"] = revised
+    harness.repository.seed_revisions["seed-revision-2"] = revised
+
+    drifted = await harness.service.preview("p1")
+    saved = await harness.service.save_draft(command(harness, expected=1))
+    refreshed = await harness.service.preview("p1")
+
+    assert "seed_drift" in drifted.reasons
+    assert saved.draft.seedRevisionId == "seed-revision-2"
+    assert saved.draft.seedHash == revised_hash
+    assert "seed_drift" not in refreshed.reasons
+    assert "engine_seed_drift" in refreshed.reasons
+    assert refreshed.contract_ready is False
 
 
 @pytest.mark.asyncio

@@ -82,6 +82,18 @@ class ContractRepository:
             (project_id,),
         )
 
+    async def lock_selected_seed(self, session, project_id: str):
+        return await session.fetchone(
+            """SELECT selected.seed_id,selected.seed_revision_id,
+                      selected.seed_hash,revision.payload_json
+               FROM project_selected_seeds selected
+               JOIN creative_seed_revisions revision
+                 ON revision.project_id=selected.project_id
+                AND revision.id=selected.seed_revision_id
+               WHERE selected.project_id=%s FOR UPDATE""",
+            (project_id,),
+        )
+
     async def read_seed_revision(
         self, session, project_id: str, revision_id: str
     ):
