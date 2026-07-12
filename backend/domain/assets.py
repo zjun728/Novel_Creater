@@ -8,6 +8,7 @@ from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+from types import MappingProxyType
 from typing import Annotated, Literal, Self, get_args
 import unicodedata
 
@@ -38,8 +39,28 @@ AssetCategory = Literal[
     "information_release",
     "pacing",
     "suspense",
+    "long_arc_continuity",
+    "progression_economy",
+    "character_arcs",
+    "action_conflict",
 ]
 ASSET_CATEGORIES = get_args(AssetCategory)
+ASSET_CATEGORY_COUNTS = MappingProxyType(
+    {
+        "plot_organization": 6,
+        "ensemble": 6,
+        "dialogue": 6,
+        "emotion": 6,
+        "interiority": 6,
+        "information_release": 6,
+        "pacing": 6,
+        "suspense": 6,
+        "long_arc_continuity": 4,
+        "progression_economy": 4,
+        "character_arcs": 4,
+        "action_conflict": 4,
+    }
+)
 ReviewDecision = Literal["approved", "candidate", "rewrite", "rejected"]
 ValidationMode = Literal["structural", "release"]
 
@@ -150,15 +171,15 @@ class _AssetError(Enum):
     )
     STYLE_COUNT = (
         "ASSET_STYLE_COUNT_INVALID",
-        "asset package must contain exactly 8 styles",
+        "asset package must contain exactly 10 styles",
     )
     CARD_COUNT = (
         "ASSET_CARD_COUNT_INVALID",
-        "asset package must contain 40 to 60 experience cards",
+        "asset package must contain exactly 64 experience cards",
     )
     CATEGORY_COVERAGE = (
         "ASSET_CATEGORY_COVERAGE_INVALID",
-        "experience cards must cover all asset categories",
+        "experience cards must match approved category counts",
     )
     STYLE_KEY_DUPLICATE = (
         "ASSET_STYLE_KEY_DUPLICATE",
@@ -214,6 +235,7 @@ class StylePromptPayload(_FrozenModel):
     schemaVersion: SchemaVersion
     reading_experience: PromptText
     applicability: tuple[ListItem, ...] = Field(min_length=1, max_length=32)
+    non_applicability: tuple[ListItem, ...] = Field(min_length=1, max_length=32)
     standard_scene_example: ExampleText
     complete_application_example: ExampleText
     narrative_distance: PromptText
@@ -235,7 +257,13 @@ class StylePromptPayload(_FrozenModel):
     risks: tuple[ListItem, ...] = Field(min_length=1, max_length=32)
     original_anchor: PromptText
 
-    @field_validator("applicability", "preferred_techniques", "risks", mode="before")
+    @field_validator(
+        "applicability",
+        "non_applicability",
+        "preferred_techniques",
+        "risks",
+        mode="before",
+    )
     @classmethod
     def freeze_sequences(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
@@ -339,10 +367,10 @@ class AssetManifest(_FrozenModel):
 
 class AssetPackage(_FrozenModel):
     manifest: AssetManifest
-    styles: tuple[StyleTemplateRevision, ...] = Field(min_length=8, max_length=8)
+    styles: tuple[StyleTemplateRevision, ...] = Field(min_length=10, max_length=10)
     experience_cards: tuple[ExperienceCardRevision, ...] = Field(
-        min_length=40,
-        max_length=60,
+        min_length=64,
+        max_length=64,
     )
 
     @field_validator("styles", "experience_cards", mode="before")
@@ -398,11 +426,15 @@ def validate_asset_package(
             raise _validation_error("asset package")
     if package.manifest.package_version != PACKAGE_VERSION:
         raise AssetPackageError(_AssetError.PACKAGE_VERSION)
-    if len(package.styles) != 8:
+    if len(package.styles) != 10:
         raise AssetPackageError(_AssetError.STYLE_COUNT)
-    if not 40 <= len(package.experience_cards) <= 60:
+    if len(package.experience_cards) != 64:
         raise AssetPackageError(_AssetError.CARD_COUNT)
-    if {card.category for card in package.experience_cards} != set(ASSET_CATEGORIES):
+    category_counts = {
+        category: sum(card.category == category for card in package.experience_cards)
+        for category in ASSET_CATEGORIES
+    }
+    if category_counts != ASSET_CATEGORY_COUNTS:
         raise AssetPackageError(_AssetError.CATEGORY_COVERAGE)
 
     _ensure_unique(

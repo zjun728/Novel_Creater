@@ -26,6 +26,7 @@ def style_payload() -> dict[str, object]:
         "schemaVersion": "style-template-v1",
         "reading_experience": "Measured tension with lucid emotional stakes.",
         "applicability": ["Long-form ensemble fantasy"],
+        "non_applicability": ["A neutral reference entry without a scene"],
         "standard_scene_example": "The same gate closes while three witnesses disagree.",
         "complete_application_example": "A complete original scene built around delayed recognition.",
         "narrative_distance": "Close third person with controlled pull-backs.",
@@ -174,6 +175,24 @@ def test_prompt_tuple_fields_reject_blank_elements_and_excess_items(value, match
         ExperienceCardRevision.model_validate(values)
 
 
+def test_style_non_applicability_is_required_bounded_and_frozen():
+    values = style_values()
+    values["payload"].pop("non_applicability")
+    with pytest.raises(ValidationError, match="non_applicability"):
+        StyleTemplateRevision.model_validate(values)
+
+    for invalid in ([], ["   "], ["boundary"] * 33):
+        values = style_values()
+        values["payload"]["non_applicability"] = invalid
+        with pytest.raises(ValidationError, match="non_applicability"):
+            StyleTemplateRevision.model_validate(values)
+
+    parsed = StyleTemplateRevision.model_validate(style_values())
+    assert parsed.payload.non_applicability == (
+        "A neutral reference entry without a scene",
+    )
+
+
 @pytest.mark.parametrize(
     ("mutator", "match"),
     [
@@ -206,8 +225,8 @@ def test_manifest_and_package_are_strict_frozen_models():
     card = ExperienceCardRevision.model_validate(card_values())
     package = AssetPackage(
         manifest=manifest,
-        styles=(style,) * 8,
-        experience_cards=(card,) * 40,
+        styles=(style,) * 10,
+        experience_cards=(card,) * 64,
     )
 
     for model in (manifest, package):
@@ -271,20 +290,57 @@ def test_asset_package_model_enforces_inventory_lengths_directly():
     style = StyleTemplateRevision.model_validate(style_values())
     card = ExperienceCardRevision.model_validate(card_values())
 
-    with pytest.raises(ValidationError):
-        AssetPackage.model_validate(
-            {"manifest": manifest, "styles": [style] * 7, "experience_cards": [card] * 40}
-        )
-    with pytest.raises(ValidationError):
-        AssetPackage.model_validate(
-            {"manifest": manifest, "styles": [style] * 8, "experience_cards": [card] * 39}
-        )
-    with pytest.raises(ValidationError):
-        AssetPackage.model_validate(
-            {"manifest": manifest, "styles": [style] * 8, "experience_cards": [card] * 61}
-        )
+    for style_count in (9, 11):
+        with pytest.raises(ValidationError):
+            AssetPackage.model_validate(
+                {
+                    "manifest": manifest,
+                    "styles": [style] * style_count,
+                    "experience_cards": [card] * 64,
+                }
+            )
+    for card_count in (63, 65):
+        with pytest.raises(ValidationError):
+            AssetPackage.model_validate(
+                {
+                    "manifest": manifest,
+                    "styles": [style] * 10,
+                    "experience_cards": [card] * card_count,
+                }
+            )
 
 
 def test_literal_contracts_have_one_exact_runtime_source():
+    expected_categories = (
+        "plot_organization",
+        "ensemble",
+        "dialogue",
+        "emotion",
+        "interiority",
+        "information_release",
+        "pacing",
+        "suspense",
+        "long_arc_continuity",
+        "progression_economy",
+        "character_arcs",
+        "action_conflict",
+    )
+    expected_category_counts = {
+        "plot_organization": 6,
+        "ensemble": 6,
+        "dialogue": 6,
+        "emotion": 6,
+        "interiority": 6,
+        "information_release": 6,
+        "pacing": 6,
+        "suspense": 6,
+        "long_arc_continuity": 4,
+        "progression_economy": 4,
+        "character_arcs": 4,
+        "action_conflict": 4,
+    }
+
+    assert ASSET_CATEGORIES == expected_categories
     assert get_args(AssetCategory) == ASSET_CATEGORIES
+    assert dict(assets.ASSET_CATEGORY_COUNTS) == expected_category_counts
     assert get_args(assets.PackageVersion) == (PACKAGE_VERSION,)

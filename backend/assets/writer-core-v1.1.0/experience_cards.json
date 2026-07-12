@@ -1,0 +1,1742 @@
+[
+  {
+    "stable_key": "plot-goal-private-cost",
+    "revision": 1,
+    "title": "目标旁边放私人成本",
+    "category": "plot_organization",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "plot_organization",
+      "method": "先把场景的外部目标写清，再给主角一项不愿公开的私人成本；转折必须迫使他在目标与成本之间重新排序。",
+      "applicability": [
+        "目标明确但选择仍应有性格差异的章节"
+      ],
+      "non_applicability": [
+        "纯过场或成本已充分兑现的场景"
+      ],
+      "risks": [
+        "每次选择都二选一会显得刻意"
+      ],
+      "original_micro_demo": "城门将闭，闻舟必须送药入城，却不愿让守卒看见药袋上的家徽。守卒伸手时，他把通行钱推得更近：“钱你拿，袋子别碰。”身后的病童咳了一声，他最终拆下家徽递过去：“押这个，先开门。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "7f3e74798a5cff8646c27a09f86190651c9e073a9006c81c5e732da7e6d7dedc"
+  },
+  {
+    "stable_key": "plot-obstacle-rewrites-plan",
+    "revision": 1,
+    "title": "阻碍必须改写方案",
+    "category": "plot_organization",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "plot_organization",
+      "method": "阻碍出现后至少改变路径、资源、同伴分工或承诺之一，避免人物只是更用力重复原计划。",
+      "applicability": [
+        "追逃、调查、建设和试炼中的中段变局"
+      ],
+      "non_applicability": [
+        "展示压倒性力量且本就无法应对的瞬间"
+      ],
+      "risks": [
+        "改策过频会让主线失去方向"
+      ],
+      "original_micro_demo": "木桥被洪水冲断，顾遥没有再催马试跳。他让护卫拆车板扎筏，自己去上游放空货箱引开漂木。商人急道：“货怎么办？”顾遥割断绳索：“计划里原本没有给死人交货这一项。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "f4e7fa3ba2bf6a6589407d10a7a7f36f484a0df8f237f23b914897da0806ace5"
+  },
+  {
+    "stable_key": "plot-small-answer-new-pressure",
+    "revision": 1,
+    "title": "小答案换具体新压力",
+    "category": "plot_organization",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "plot_organization",
+      "method": "阶段推进先兑现一个可验证答案，再让该答案带出对象、时限或代价明确的新问题。",
+      "applicability": [
+        "线索链、成长任务和长篇章节收束"
+      ],
+      "non_applicability": [
+        "高潮已完整结束、需要情绪余波时"
+      ],
+      "risks": [
+        "只换问题不兑现会制造拖延感"
+      ],
+      "original_micro_demo": "失踪的粮车找到了，车轮全朝北。众人刚松气，车夫却从夹层摸出一张南门税票。林栖把票贴在地图上：“车没走错，是有人换过轮子。”答案不再是粮在哪，而是谁能在一夜间调动两座城门。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "67df2ab0dc637859ed2319892c236487b6bc42d663758a9ea18be697347abfa7"
+  },
+  {
+    "stable_key": "plot-cause-effect-relay",
+    "revision": 1,
+    "title": "让后果接棒下一场",
+    "category": "plot_organization",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "plot_organization",
+      "method": "上一场的损失、误会或承诺要成为下一场的入场条件，减少靠新任务凭空启动剧情。",
+      "applicability": [
+        "连续章节与多线汇流"
+      ],
+      "non_applicability": [
+        "篇章跳时或全新地域开篇"
+      ],
+      "risks": [
+        "因果链过紧会让世界显得只围着主角"
+      ],
+      "original_micro_demo": "秦野为救矿工炸开侧洞，第二天议事堂不是来奖赏他，而是追问被震裂的水井。井匠把账单拍在桌上：“人救了，半城的水也没了。”新的冲突从昨天的正确选择里长出来。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "d6b5a84dbecc7bbd2f02d9b1898d5b36bef37ab89193fee44e4e1e17f667e6a9"
+  },
+  {
+    "stable_key": "plot-choice-closes-route",
+    "revision": 1,
+    "title": "选择之后关掉一条退路",
+    "category": "plot_organization",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "plot_organization",
+      "method": "重大选择要立刻关闭至少一条原本可走的路线，让承诺产生方向和重量。",
+      "applicability": [
+        "立场确认、关系转折与篇章分岔"
+      ],
+      "non_applicability": [
+        "试探性选择或需要保留多解的调查初期"
+      ],
+      "risks": [
+        "过早封路会削弱人物回旋空间"
+      ],
+      "original_micro_demo": "商会给陆简两个席位：交出工匠名单，或带全队离港。他把名单投入炉中，火舌刚起，码头管事便收走了他们的船牌。伙伴低声问：“真没退路了？”陆简看着灰烬：“有，自己造船。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "ac3b3b773e9f09751d99b65a88189ecb8731cc13cee36533409ef9361e4ae7c4"
+  },
+  {
+    "stable_key": "plot-subplot-collides-main",
+    "revision": 1,
+    "title": "副线带着自己的事撞入主线",
+    "category": "plot_organization",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "plot_organization",
+      "method": "副线人物不是来递消息，而是因自身目标闯入主场景，并迫使主线角色处理额外利益。",
+      "applicability": [
+        "群像长篇和多关系线"
+      ],
+      "non_applicability": [
+        "主线高潮已满载、无法容纳新诉求时"
+      ],
+      "risks": [
+        "副线频繁抢场会冲淡核心矛盾"
+      ],
+      "original_micro_demo": "许棠正审问仓库失火案，欠租的铁匠却扛着门轴闯进来讨钱。门轴上的黑灰与仓墙一致。铁匠不是来送证据，只想拿回工钱；许棠若扣下门轴，就得先解决他一家今晚住哪。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "c32b574a2dda4984b48796fc6f631850f0dfb6bf82ada004c64d5e096165377d"
+  },
+  {
+    "stable_key": "ensemble-arrive-with-agendas",
+    "revision": 1,
+    "title": "同场人物各带一件未完事",
+    "category": "ensemble",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "ensemble",
+      "method": "安排关键人物入场时携带自己的期限、物件或麻烦，使他们对主事件的反应不完全受主角支配。",
+      "applicability": [
+        "市井、宗门、家族与团队场景"
+      ],
+      "non_applicability": [
+        "只需两人快速交换关键情报时"
+      ],
+      "risks": [
+        "未完事太多会分散读者注意"
+      ],
+      "original_micro_demo": "议粮会上，里正想保住官印，猎户赶着日落前收陷阱，寡妇只问借出的牛何时归还。闻舟提出开荒时，三人听见的分别是责任、时间和劳力，不可能齐声赞成。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "0a11b8b745b06f9651a51ea847cee9240823d93ba97212564d55bbaf9c382f73"
+  },
+  {
+    "stable_key": "ensemble-help-has-condition",
+    "revision": 1,
+    "title": "帮助要带边界和条件",
+    "category": "ensemble",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "ensemble",
+      "method": "配角愿意帮忙时保留其生计、名声或关系边界，让善意也有现实形状。",
+      "applicability": [
+        "求助、结盟与基层协作"
+      ],
+      "non_applicability": [
+        "无条件牺牲已被充分铺垫的时刻"
+      ],
+      "risks": [
+        "人人先谈条件会显得冷漠算计"
+      ],
+      "original_micro_demo": "船娘肯渡伤员，却先把新补的船板盖住：“人能上，带血的甲不能拖。”她递来麻布，“不是怕官差，是这条船还得载我女儿过冬。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "9f958be27a2ca0cb02f82612f3263834e51a86e34152295234ede0c10879c6f7"
+  },
+  {
+    "stable_key": "ensemble-different-reactions",
+    "revision": 1,
+    "title": "同一坏消息分叉成不同动作",
+    "category": "ensemble",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "ensemble",
+      "method": "不要让群体同步震惊；按人物风险偏好写成核账、逃避、照顾、质疑或抢先行动。",
+      "applicability": [
+        "灾变、失败与秘密揭露"
+      ],
+      "non_applicability": [
+        "需要整齐军令表现训练度时"
+      ],
+      "risks": [
+        "反应分叉过度会显得场面失控"
+      ],
+      "original_micro_demo": "听说山门封了，师兄先数干粮，师妹去扶受伤的杂役，老仆却悄悄把祖牌翻了个面。只有新弟子在问为什么。四个动作比四声惊呼更快写出他们怕什么。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "34a8e1ac4bcdfab727e671fbe5ac6a2966a3ecbf563efbd653266db13d511358"
+  },
+  {
+    "stable_key": "ensemble-absence-exerts-pressure",
+    "revision": 1,
+    "title": "让缺席者仍改变选择",
+    "category": "ensemble",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "ensemble",
+      "method": "用旧规矩、欠账、空位或他人顾忌，让不在场的人继续对当前场景施力。",
+      "applicability": [
+        "长线关系和组织权力"
+      ],
+      "non_applicability": [
+        "缺席者尚未建立影响力时"
+      ],
+      "risks": [
+        "频繁借缺席者控场会削弱现场人物"
+      ],
+      "original_micro_demo": "掌柜死后，柜台第三把椅子一直空着。伙计们争是否赊粮时，最凶的那个刚要坐下，又把椅子推回原位：“按老规矩，先记孩子的账。”没人提掌柜，决定却仍被他改变。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "7c275077f5a75e17d95a17e1126dbf75c37c3e4ac473c269f82eaf4ad13c75d2"
+  },
+  {
+    "stable_key": "ensemble-competence-pieces",
+    "revision": 1,
+    "title": "能力拆成互相需要的几块",
+    "category": "ensemble",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "ensemble",
+      "method": "把破局所需的观察、执行、交涉与承压分给不同人物，主角负责组合而非包办。",
+      "applicability": [
+        "团队试炼、调查、建设和战斗"
+      ],
+      "non_applicability": [
+        "突出单人极限或孤立主题时"
+      ],
+      "risks": [
+        "分工过于工整会像职业面板"
+      ],
+      "original_micro_demo": "岩洞漏气，季衡能辨风向却怕黑，阿篱敢钻窄缝却看不懂刻度，老陶只会骂人，却能让惊慌矿工排成队。三人的缺口咬在一起，才把最后一批人带出来。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "103146e3e695c661e34a7a9edf4da926a3ace3802146f4454e78ec1616689020"
+  },
+  {
+    "stable_key": "ensemble-debt-changes-hands",
+    "revision": 1,
+    "title": "人情债在关系网中转手",
+    "category": "ensemble",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "ensemble",
+      "method": "让一次帮助同时改变第三人的态度或负担，使关系不是主角与配角的单线连接。",
+      "applicability": [
+        "家族、商会、宗门和社区群像"
+      ],
+      "non_applicability": [
+        "关系网尚未建立的短篇开局"
+      ],
+      "risks": [
+        "债务关系太密会增加理解成本"
+      ],
+      "original_micro_demo": "卢婶替顾遥藏了伤员，却不收他的钱，只让他给隔壁木匠送一车炭。木匠见炭后沉默半晌，终于肯修守卒的断弩。顾遥这才明白，自己还的不是卢婶的人情，而是她欠了十年的歉。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "77b2ae80252eae03b646fd36a9ab90a75abab9b54a23f3674d01466dc8990da1"
+  },
+  {
+    "stable_key": "dialogue-bargain-real-need",
+    "revision": 1,
+    "title": "围着真正需求讨价还价",
+    "category": "dialogue",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "dialogue",
+      "method": "交易对白不要只报价格，先辨认双方真正急缺的是时间、安全、凭据还是面子，再让筹码改变语气。",
+      "applicability": [
+        "交易、求助与临时结盟"
+      ],
+      "non_applicability": [
+        "价格公开固定且无关系变化的购买"
+      ],
+      "risks": [
+        "每场对话都博弈会显得人物疲惫"
+      ],
+      "original_micro_demo": "车夫要五钱，乔音只给三钱。两人僵着时，乔音把官道图摊开：“钱只有三钱，但我能给你一条不查货的路。”车夫不再看钱袋：“先说那条路为什么没人走。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "98e7e2062c805eff8ff82894c5049821c3098fca7e07d3eaecfec5e6c8db6045"
+  },
+  {
+    "stable_key": "dialogue-voices-use-different-tools",
+    "revision": 1,
+    "title": "每个人用不同话术工具",
+    "category": "dialogue",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "dialogue",
+      "method": "依据身份和性格分配命令、反问、比喻、数字、沉默等表达工具，避免所有角色同样机灵。",
+      "applicability": [
+        "三人以上对话和固定班底"
+      ],
+      "non_applicability": [
+        "刻意隐藏身份、需要声音趋同时"
+      ],
+      "risks": [
+        "工具标签固定会让人物机械化"
+      ],
+      "original_micro_demo": "粮官说：“缺口一百二十石。”老农说：“够两村人饿到麦黄。”小吏只把算盘往前推。三个人没有争同一句话，却让同一个数字有了制度、生活和风险三层声音。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "b1aeae9cd77ea2977a324d361cfab6abc6645c980d73637708e3440981844224"
+  },
+  {
+    "stable_key": "dialogue-deflection-reveals",
+    "revision": 1,
+    "title": "回避也要泄露信息",
+    "category": "dialogue",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "dialogue",
+      "method": "人物不回答时，用纠正小词、改问旁事或处理物件暴露他真正介意的部分。",
+      "applicability": [
+        "隐瞒、审问和关系试探"
+      ],
+      "non_applicability": [
+        "读者急需明确行动指令时"
+      ],
+      "risks": [
+        "过多回避会让对话原地打转"
+      ],
+      "original_micro_demo": "“你昨夜去过北库？”纪澄问。管事把歪掉的灯罩扶正：“北库的锁该换了。”他没承认行踪，却先知道锁坏，纪澄便不再追问去了没有，而问：“你看见谁先进去？”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "16f84613e2b7c2e30528da55ddc2a7de0c4e93b4c891a2f7b6312f5cf1021fc0"
+  },
+  {
+    "stable_key": "dialogue-practical-talk-carries-emotion",
+    "revision": 1,
+    "title": "用实用话托住情绪",
+    "category": "dialogue",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "dialogue",
+      "method": "关系紧张时让人物先谈药、饭、路程或工具，真正关心由多做的一步显露。",
+      "applicability": [
+        "伤后、重逢、离别和争吵余波"
+      ],
+      "non_applicability": [
+        "必须公开表态或立誓的场景"
+      ],
+      "risks": [
+        "长期绕开情绪会显得逃避"
+      ],
+      "original_micro_demo": "岑禾给兄长缠绷带：“明天别走山路。”兄长说：“近。”她把结勒得更紧：“坟地也近。”两人都没提昨夜那场争吵，绷带却系了一个绝不会在赶路时松开的结。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "282039433e0fb388a059bbbee80a2bd3c7bf43c118682f67715ef72adb77db9e"
+  },
+  {
+    "stable_key": "dialogue-address-marks-distance",
+    "revision": 1,
+    "title": "称呼变化先于关系说明",
+    "category": "dialogue",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "dialogue",
+      "method": "用全名、旧称、官称或省略称呼的变化标记亲疏与权力，不另写旁白总结。",
+      "applicability": [
+        "身份冲突与关系转折"
+      ],
+      "non_applicability": [
+        "陌生人初次见面且称呼信息不足时"
+      ],
+      "risks": [
+        "频繁变称呼会让读者困惑"
+      ],
+      "original_micro_demo": "议事时，陶岚一直叫他“许主簿”。众人散后，她把门关上：“小川，你真要签这张征粮令？”一个旧称把公事下面的担心露了出来，也提醒他这次选择会伤到谁。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "714ea99d897cbf29cbbaa82f511f672a3918659e68ecdc4a4286ddb49e4082d2"
+  },
+  {
+    "stable_key": "dialogue-action-interrupts",
+    "revision": 1,
+    "title": "让动作打断完整台词",
+    "category": "dialogue",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "dialogue",
+      "method": "在人物将把辩解或表态说完整时插入必须处理的动作；动作后的改口、缩句或下意识反应必须增添真实信息，不能只是把原话延期。",
+      "applicability": [
+        "危机对话和情绪高点"
+      ],
+      "non_applicability": [
+        "需要完整交代复杂操作的安全指令"
+      ],
+      "risks": [
+        "打断过多会故作忙乱"
+      ],
+      "original_micro_demo": "“我可以保证，账册绝不是——”炉门突然爆出火星，沈葵的袖口着了。梁朔扑过去拍灭火，脱口道：“那页是我撕的，但数不是我改的。”沈葵把焦黑的袖口从他手里抽走：“这回是保证，还是实话？”梁朔没再接上原来那半句。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "22c7670c7d62c578e7d972ea89df82dbf311c165abc841eddbb38d3924e3839d"
+  },
+  {
+    "stable_key": "emotion-arrives-late",
+    "revision": 1,
+    "title": "让情绪晚于事件到达",
+    "category": "emotion",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "emotion",
+      "method": "危机中人物先处理现实动作，安全后再由小物件、失误或一句闲话触发迟来的反应。",
+      "applicability": [
+        "灾后、战后和强撑型人物"
+      ],
+      "non_applicability": [
+        "事件本身要求当场情绪爆发时"
+      ],
+      "risks": [
+        "延迟过久会削弱事件重量"
+      ],
+      "original_micro_demo": "火扑灭后，程一还在逐桶点数。数到第七只，他发现桶把上系着妹妹的红绳，才想起她刚才也在仓里。他把“七”重复了三遍，手终于扶不住桶沿。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "fa4505f2275ca0c4ec924384e8791936969a7685e40692a512d7b81803819475"
+  },
+  {
+    "stable_key": "emotion-mixed-outcome",
+    "revision": 1,
+    "title": "好消息里保留一笔失去",
+    "category": "emotion",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "emotion",
+      "method": "胜利或团聚不要只给单色反馈，让人物同时看见所得与不能复原的部分。",
+      "applicability": [
+        "阶段胜利、归来和成长兑现"
+      ],
+      "non_applicability": [
+        "纯喜剧短场景需要干净落点时"
+      ],
+      "risks": [
+        "处处苦涩会压制爽点"
+      ],
+      "original_micro_demo": "新渠终于出水，村人欢呼。老石匠却蹲在水边，把一块刻错名字的碑料翻过去当踏脚石。学徒问他不高兴吗，他洗了洗手：“高兴。就是你师兄没等到。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "113636664a7ec0dec87e2662a8c2967c4308adebf5f58608b6984665de672f17"
+  },
+  {
+    "stable_key": "emotion-changes-decision",
+    "revision": 1,
+    "title": "情绪必须改变一个选择",
+    "category": "emotion",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "emotion",
+      "method": "表现情绪后让它影响人物的顺序、风险或对象，避免身体反应只是装饰。",
+      "applicability": [
+        "关系冲突和道德两难"
+      ],
+      "non_applicability": [
+        "需要人物严格执行职责、不受情绪影响的对照场景"
+      ],
+      "risks": [
+        "为显情绪而做蠢事会损伤人设"
+      ],
+      "original_micro_demo": "听见旧友被捕，宁川先把逃城令收进袖里。他没有立刻劫牢，而是把原定今晚出发改成明早，并去找最讨厌自己的狱吏。害怕失去让他多担一夜风险，也让计划变得更谨慎。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "68b6e83cd3e98cd590ae3cee23773100f01729751a1859a870f7e104c9f12652"
+  },
+  {
+    "stable_key": "emotion-break-after-restraint",
+    "revision": 1,
+    "title": "克制要有具体破口",
+    "category": "emotion",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "emotion",
+      "method": "提前布置人物维持体面的动作，再用一句误称、坏掉的物件或重复失败击穿它。",
+      "applicability": [
+        "长线积压后的爆发"
+      ],
+      "non_applicability": [
+        "首次冲突、积累不足时"
+      ],
+      "risks": [
+        "破口过于象征化会显得设计感重"
+      ],
+      "original_micro_demo": "姚青一路都在擦父亲留下的刀，连葬礼也没掉泪。弟弟忽然问：“这刀以后归谁？”她手里的布停住，第一次吼道：“他还没走远，你就急着分东西？”真正击中她的是被迫承认以后。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "02a08bd7c728ed105840ec87136f7eb115f68dd215331c65e987a6b309cf26f4"
+  },
+  {
+    "stable_key": "emotion-relief-has-aftershock",
+    "revision": 1,
+    "title": "松口气后让消耗留下后效",
+    "category": "emotion",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "emotion",
+      "method": "危险解除后的后效应要来自人物刚才的具体消耗，可落在注意力偏移、行为失准、迟来的需求上，也允许人物暂时无明显反应；不强制从身体症状菜单中选一项。",
+      "applicability": [
+        "逃生、考试、谈判和守夜结束"
+      ],
+      "non_applicability": [
+        "节奏必须立即切入下一场追击时"
+      ],
+      "risks": [
+        "固定使用发抖会形成模板"
+      ],
+      "original_micro_demo": "城门落栓，追兵终于被隔在外面。陈望先笑了一声，随后发现自己咬着半截袖子。他松口时牙根发酸，第一句话竟是：“谁还有饼？”没人笑他，另外两个人也同时坐到了地上。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "a8698bef45662c821670940935dc3f48700d8fb6367dec582e68c44dac9dd76b"
+  },
+  {
+    "stable_key": "emotion-repair-without-verdict",
+    "revision": 1,
+    "title": "修复先不宣布原谅",
+    "category": "emotion",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "emotion",
+      "method": "关系受损后用一项有限合作或小照顾开启修复，同时保留旧账和边界。",
+      "applicability": [
+        "伙伴决裂、亲情和师徒线"
+      ],
+      "non_applicability": [
+        "需要公开裁决责任的组织场景"
+      ],
+      "risks": [
+        "无限拖延表态会让关系线停滞"
+      ],
+      "original_micro_demo": "苏桥没有原谅擅自出战的搭档，只把他的断枪修好一半：“枪头你自己磨。”搭档接过时问能否归队。她说：“明早来搬箭箱。搬完再谈。”门没全开，但也没有继续锁死。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "a7e55c82fa76f2e7713dd15013ab829ba3ac56f0612c1b5a8e04c6d1d39c2480"
+  },
+  {
+    "stable_key": "interiority-thought-leads-choice",
+    "revision": 1,
+    "title": "内心活动落到下一步",
+    "category": "interiority",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "interiority",
+      "method": "目标导向的较长思考最终至少有一处影响后续行动；不要求每个念头都产出观察、排除或决定。",
+      "applicability": [
+        "推理、权衡和临场计划"
+      ],
+      "non_applicability": [
+        "联想、情绪或记忆需要驻留且不承担即时产出时"
+      ],
+      "risks": [
+        "过度功利会挤掉人物联想"
+      ],
+      "original_micro_demo": "税吏的笑太快，说明他早知货单有误。江鹭没有继续争数字，而是故意收起账册：“那便按你说的退货。”对方手指立刻压住桌角。她得到答案：他要的不是税，是不让这批货离开。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "81ac603b979a56ea2a52925b8edc711704a8895d48a2bf833604c8c18ca67f0f"
+  },
+  {
+    "stable_key": "interiority-self-excuse-cracks",
+    "revision": 1,
+    "title": "让自我解释露出裂缝",
+    "category": "interiority",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "interiority",
+      "method": "人物可以用理性理由掩饰欲望，但让一个多余动作或反复念头暴露他并不全信自己。",
+      "applicability": [
+        "嘴硬、嫉妒、恐惧和内疚"
+      ],
+      "non_applicability": [
+        "需要清晰可靠判断的技术操作"
+      ],
+      "risks": [
+        "人人自欺会降低叙事可靠性"
+      ],
+      "original_micro_demo": "方砚告诉自己留下只是为了看守地图。他把地图卷好后仍没走，又替熟睡的同伴添了一块炭。炭火亮起时，他只好改口：再等一刻，是怕夜露打湿纸。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "de0cf30ff1738f6350d9044562fb8ca3a48d0f27dfab3199b491472576f9355d"
+  },
+  {
+    "stable_key": "interiority-sense-opens-memory",
+    "revision": 1,
+    "title": "用感官触发一小块过去",
+    "category": "interiority",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "interiority",
+      "method": "由当下气味、触感或声音唤起与选择有关的短记忆，回到现场时必须改变理解。",
+      "applicability": [
+        "故地、旧物和身份秘密"
+      ],
+      "non_applicability": [
+        "高速动作连续段"
+      ],
+      "risks": [
+        "回忆过长会切断现场压力"
+      ],
+      "original_micro_demo": "药炉飘出焦甜味，沈迟忽然想起母亲每次藏药都会多放一片橘皮。他原以为那是习惯，此刻看见桌上同样的皮，才明白失踪者曾在这间屋里主动留下记号。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "1964c1ddbd9c5e04a5ec4de2dc8cd9055841cd80d59ffac0e16f64816b7f733b"
+  },
+  {
+    "stable_key": "interiority-calculate-then-waver",
+    "revision": 1,
+    "title": "算清以后仍允许动摇",
+    "category": "interiority",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "interiority",
+      "method": "先让人物得出合理方案，再用关系、羞耻或未知代价制造短暂摇摆，最终选择需带着这份不确定。",
+      "applicability": [
+        "谨慎型主角与高风险决定"
+      ],
+      "non_applicability": [
+        "要求绝对果断的瞬时反应"
+      ],
+      "risks": [
+        "每次都动摇会显得优柔寡断"
+      ],
+      "original_micro_demo": "撤掉南哨能多救二十人，这是最优解。赵原写完调令，却在“南哨”二字上停笔——守哨的是刚替他背过处分的旧友。他没有改数字，只在调令末尾加上：“我亲自接应。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "8d2c30fbb8d383084b7580606b4e1cc15b81f0bf0e7999c43c5c8aa25f585ffb"
+  },
+  {
+    "stable_key": "interiority-private-desire-countercurrent",
+    "revision": 1,
+    "title": "给正确目标一股私人逆流",
+    "category": "interiority",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "interiority",
+      "method": "即使人物在做正确的事，也让他短暂希望事情失败、结束或由别人承担，增加人性毛边。",
+      "applicability": [
+        "责任重压和长期牺牲"
+      ],
+      "non_applicability": [
+        "英雄宣誓需要高度纯粹的仪式场景"
+      ],
+      "risks": [
+        "私欲写得过重会破坏核心担当"
+      ],
+      "original_micro_demo": "全村等着叶真试新井。他转动绞盘时，竟希望井底仍是干的；这样他就不必接下以后每口井的责任。水声传来，他先闭了一下眼，才朝众人笑。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "6fc5534d22081a7fae08e5410a5f741940b5c38ba16db11b7c9519d48d0c8b68"
+  },
+  {
+    "stable_key": "interiority-resists-realization",
+    "revision": 1,
+    "title": "认知变化要经过抵抗",
+    "category": "interiority",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "interiority",
+      "method": "新证据推翻旧判断时，先写人物寻找反例、重排细节或拒绝命名，再让结论真正改变行动。",
+      "applicability": [
+        "反转、背叛与世界观扩展"
+      ],
+      "non_applicability": [
+        "证据简单、人物无情感投入时"
+      ],
+      "risks": [
+        "拖延接受会显得人物迟钝"
+      ],
+      "original_micro_demo": "所有账都指向师父私卖兵器。唐沐先查笔迹，又核日期，甚至怀疑纸张被换。直到他发现账页夹着自己儿时写坏的字帖，才停止找借口，转身去封库，而不是继续等一个更舒服的解释。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "ee0b5dc81429be731eac647e2e40f210fa840e245e85c7b2e783f0173157b46e"
+  },
+  {
+    "stable_key": "info-rule-small-failure",
+    "revision": 1,
+    "title": "规则先从局部后果显形",
+    "category": "information_release",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "information_release",
+      "method": "规则可经由旁观、试探、误解或他人后果显露一部分；纠正只交付当前所需的输入、触发或边界，不要求先由主角失败。",
+      "applicability": [
+        "陌生秩序、功法与器物首次出现"
+      ],
+      "non_applicability": [
+        "失败会造成不可逆重灾且无人会冒险时",
+        "每条规则若都先安排一次失败才说明，会形成机械重复"
+      ],
+      "risks": [
+        "每条规则都靠吃亏展示会重复"
+      ],
+      "original_micro_demo": "孟秋排在夜门前。前面的货郎戴着厚手套把票按进门槽，铜纹刚亮便松了手；票被弹回，手套腕口结了一圈薄霜。守门人没有讲缘由，只用指节敲了敲门框上磨亮的掌形标记：“下一位，纹亮全再走。”轮到孟秋，他把手套夹在腋下，掌心覆住标记。第二圈铜纹亮满时，门闩退开。货郎还想追问，守门人已经朝队尾抬起下巴：“票拿好，别堵门。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "1502a08c88688e087bf9e4a056e3cbf19c7be665f03c940ea87e2c37ce922701"
+  },
+  {
+    "stable_key": "info-setting-through-price",
+    "revision": 1,
+    "title": "让价格和排队说明秩序",
+    "category": "information_release",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "information_release",
+      "method": "用谁付得起、谁能插队、谁必须担保来呈现资源与身份，不单列制度介绍。",
+      "applicability": [
+        "市井、宗门资源和灾年"
+      ],
+      "non_applicability": [
+        "价格与故事冲突完全无关时"
+      ],
+      "risks": [
+        "过分依赖金钱会窄化世界"
+      ],
+      "original_micro_demo": "同一碗净水，军户一文，外乡人三文，无籍者要押一件工具。顾遥没问阶层如何划分，只看见前面的木匠摘下锤子，便知道这城把一个人的生计也算作信用。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "b00abef38bd4975f4f8ebea41a27db67d53fe091d1ae41bbb52a598ed1db0556"
+  },
+  {
+    "stable_key": "info-history-through-dispute",
+    "revision": 1,
+    "title": "让过去从分歧里露出",
+    "category": "information_release",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "information_release",
+      "method": "两个人因当前利益引用不同版本的旧事，读者从矛盾处获得历史，而非听统一讲解。",
+      "applicability": [
+        "旧案、改革、家族和战争背景"
+      ],
+      "non_applicability": [
+        "事实必须立即精准执行的操作说明"
+      ],
+      "risks": [
+        "版本太多会让基本事实失焦"
+      ],
+      "original_micro_demo": "族老说北堤是先祖舍命修的，佃户却说当年正是修堤夺了三村田。两人争的是今日要不要拆闸，二十年前的功与债便随着各自站的位置露出。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "c6c65c5ac6f2ab4f725ac3add4c3e46552bc941e7a3611707826664ad4ed8298"
+  },
+  {
+    "stable_key": "info-power-shown-by-limit",
+    "revision": 1,
+    "title": "用能力边界解释力量",
+    "category": "information_release",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "information_release",
+      "method": "首次展示能力时同时写出不能做什么、需要什么或留下什么后果，让强弱可推演。",
+      "applicability": [
+        "玄幻、高武、仙侠能力登场"
+      ],
+      "non_applicability": [
+        "能力神秘性需要暂时保留时"
+      ],
+      "risks": [
+        "限制列得太全会像说明面板"
+      ],
+      "original_micro_demo": "黎照一掌熄灭六码灯火，却没能吹动最近的纸灰。师姐把纸灰拨开：“你能断焰，不能御风。别拿这一招去挡箭。”效果、边界和错误用途一次落地。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "90e12268bc1dfefeb6b9ccda6030b4e2dcc3016b04a97626f93079e6d28fbd0c"
+  },
+  {
+    "stable_key": "info-evidence-before-name",
+    "revision": 1,
+    "title": "先给证据再给概念名",
+    "category": "information_release",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "information_release",
+      "method": "先让读者看到物件反应、社会后果或操作差异，再由人物给出最短名称，避免术语先占满理解。",
+      "applicability": [
+        "新势力、新术式与异常现象"
+      ],
+      "non_applicability": [
+        "名称本身就是悬念核心时"
+      ],
+      "risks": [
+        "迟迟不给名称会增加阅读负担"
+      ],
+      "original_micro_demo": "井水每逢钟响便向上鼓，铁器靠近会生红锈。许川试过木勺和银针后，老匠才说：“这是返潮脉。”术语出现时，读者已经知道它能做什么。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "8b428181d6aa7d1f67c41b1d4e3505f1219e0cbcb654690a2e96237332675f99"
+  },
+  {
+    "stable_key": "info-answer-in-layers",
+    "revision": 1,
+    "title": "答案按行动需求分层",
+    "category": "information_release",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "information_release",
+      "method": "立即给全当前安全选择所需的风险边界和避险动作；确认人物脱险后，再分层补充背景、责任人和历史原因，后续信息不得推翻先前的安全判断。",
+      "applicability": [
+        "长篇世界观、阴谋和制度"
+      ],
+      "non_applicability": [
+        "终局揭密需要集中闭环时"
+      ],
+      "risks": [
+        "层层保留会被误解为故意拖延"
+      ],
+      "original_micro_demo": "向导在岔口先说清：“黑旗以内是疫区，越线可能染病；沿白石路退到上风坡，别碰路边水桶。”众人安全退开后，他才补充黑旗是昨夜守备营插的；进消毒棚后，又拿出旧令说明这种旗最早用于封锁兵变。致命风险和避险动作当场给足，责任人与来历留到安全后分层。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "03d74710a17e50f0d6b2f9411e2a9a55a844a158740bc143d0ce321cf397ac95"
+  },
+  {
+    "stable_key": "pacing-pressure-breath-pressure",
+    "revision": 1,
+    "title": "压力之间安排有功能的喘息",
+    "category": "pacing",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "pacing",
+      "method": "高压段后用处理伤口、分食或核对损失恢复关系与信息，再让新压力从该动作中生长。",
+      "applicability": [
+        "追逃、连战和灾难章节"
+      ],
+      "non_applicability": [
+        "倒计时已进入最后数息时"
+      ],
+      "risks": [
+        "喘息段过长会泄掉紧迫感"
+      ],
+      "original_micro_demo": "众人甩开狼群后躲进磨坊。没人复盘，先分掉一块硬饼。阿冉掰饼时发现少了一根手指套，那是开城锁的工具。磨坊外随即传来金属被踩碎的轻响，喘息自然接回压力。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "28d2f1df0a146f2500c9ab9ca3ea14c468266311f1929bbba43f0d42b571611c"
+  },
+  {
+    "stable_key": "pacing-compress-repeated-work",
+    "revision": 1,
+    "title": "重复过程只展开有变化的一次",
+    "category": "pacing",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "pacing",
+      "method": "训练、赶路或建设的重复动作可概括推进，把篇幅留给失败、关系变化或新发现。",
+      "applicability": [
+        "成长蒙太奇与长期工程"
+      ],
+      "non_applicability": [
+        "第一次建立流程、读者尚不理解时"
+      ],
+      "risks": [
+        "压缩过度会让成果没有重量"
+      ],
+      "original_micro_demo": "前三日他们只挖出湿泥，第四日木架开始成形。第五日照旧抬梁时，最沉默的学徒忽然要求换绳——前四日的重复被一句异常打断，也让读者知道他真正学会了看风险。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "224173848505d1037f4ada908ce5a006e81dba9dff6fbacd7fba1d133f09bf71"
+  },
+  {
+    "stable_key": "pacing-linger-on-choice",
+    "revision": 1,
+    "title": "在不可逆选择前多停一拍",
+    "category": "pacing",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "pacing",
+      "method": "关键决定前放慢到一个物件、视线或未说完的话，让读者感到人物确实看见代价。",
+      "applicability": [
+        "立场转变、牺牲与关系断裂"
+      ],
+      "non_applicability": [
+        "纯反射动作和突袭"
+      ],
+      "risks": [
+        "每次选择都慢镜会显得煽情"
+      ],
+      "original_micro_demo": "祁安握住烧契的火折，没有立刻点。纸角压着女儿画的小船，而毁约会让她失去学籍。他把画撕下收好，才把余下契纸送进火里。停顿不是拖延，而是代价被看见。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "7b7f0061f851358316cfd171f32d9024502341deddaa0087fe524b119c71560c"
+  },
+  {
+    "stable_key": "pacing-cut-on-consequence",
+    "revision": 1,
+    "title": "场景切在后果已经发生处",
+    "category": "pacing",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "pacing",
+      "method": "只压缩可预料的移动、重复操作或已经建立过的步骤；切换后从结果承接因果，不省略真正改变局势的行动。",
+      "applicability": [
+        "章节转场与多线叙事"
+      ],
+      "non_applicability": [
+        "过程本身包含关键线索时",
+        "首次突破、核心交锋或阶段爽点需要完整兑现时"
+      ],
+      "risks": [
+        "跳切太多会让读者失去空间"
+      ],
+      "original_micro_demo": "顾遥答应夜闯税仓。巡灯扫进内库时，他把账架推倒挡门，踩着倾斜的木架跃上窗台。守卒从侧门涌入，同伴留在架下死死托住横木，把内库印朝他掷去：“拿走，别让我白挡这一下。”顾遥伸手去拉他，横木却已经裂开；他攥住印，从窗缝翻进雨里。天亮时，顾遥袖口焦黑，桌上多出一枚内库印，同行者的位置却空着。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "5b1d68eeeadc47cf68745eaa07188c1f359ea318d03be1a53599ca724e5a6dfa"
+  },
+  {
+    "stable_key": "pacing-fast-with-clear-landmarks",
+    "revision": 1,
+    "title": "快场景保留清晰空间锚点",
+    "category": "pacing",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "pacing",
+      "method": "追逐或战斗保留足够稳定、并会影响路线选择的空间锚点，让人物绕行、截断或改道时仍可辨方向，不固定锚点数量。",
+      "applicability": [
+        "巷战、追逃和多人动作"
+      ],
+      "non_applicability": [
+        "梦境或刻意迷失的段落"
+      ],
+      "risks": [
+        "地标交代太勤会变成路线播报"
+      ],
+      "original_micro_demo": "纪澄从药铺后门起跑，目标是河埠头的红船，中间隔着正在落闸的鱼市。她钻过鱼架时听见追兵撞翻木盆；不必数每一步，读者仍知道谁离哪儿更近。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "45fb82535d6ce9530d53c5f9e2a71b693de8c840d400a3f0858b7acf2025f9df"
+  },
+  {
+    "stable_key": "pacing-end-on-residue",
+    "revision": 1,
+    "title": "章尾允许落在余波而非强钩子",
+    "category": "pacing",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "pacing",
+      "method": "章节已发生实质变化时，可用一个仍在继续的动作或关系残留收束，让下一章自然承接。",
+      "applicability": [
+        "关系章、阶段结算和生活线"
+      ],
+      "non_applicability": [
+        "悬念篇章必须立即给出危险时"
+      ],
+      "risks": [
+        "余波若无变化会显得平淡"
+      ],
+      "original_micro_demo": "新渠通水后，人群散了。老陶独自把写错水位的木牌拔掉，削去一层，重新刻字。许川没有等新的敌人出现，只看见制度第一次被错误教会了怎样修改。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "1045b0c555482bd02f98ae625e1c81250ca1b9c6e8e8adca4be43f25dcc8fc1f"
+  },
+  {
+    "stable_key": "suspense-question-object",
+    "revision": 1,
+    "title": "把疑问系在具体对象上",
+    "category": "suspense",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "suspense",
+      "method": "悬念要指向一件物品、一次时间差或一个人物选择，使读者知道自己在等什么答案。",
+      "applicability": [
+        "调查、阴谋和陌生规则"
+      ],
+      "non_applicability": [
+        "纯氛围恐惧、不可知感为核心时"
+      ],
+      "risks": [
+        "疑问过细会失去更大想象"
+      ],
+      "original_micro_demo": "仓门没有破，粮却少了。许川不问“谁在搞鬼”，只问：“每天封门前，为什么多出一只空秤砣？”读者的注意力被固定在可回看的东西上。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "0d4b14c375dc7fcf181b26aef58d9f8c8337ab023eebd7a57a6e947e147aeb91"
+  },
+  {
+    "stable_key": "suspense-fair-background-clue",
+    "revision": 1,
+    "title": "把公平线索放进正常动作",
+    "category": "suspense",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "suspense",
+      "method": "关键线索初次出现时先作为生活或工作细节存在，后续变义但不改写事实。",
+      "applicability": [
+        "需要回看快感的反转"
+      ],
+      "non_applicability": [
+        "读者必须立即识别证据的程序场景"
+      ],
+      "risks": [
+        "藏得太自然会让回收缺乏印象"
+      ],
+      "original_micro_demo": "开场时账房嫌灯油贵，只点左边一盏。失窃后他说自己看见右窗有人影。灯的位置早已出现，后来的证词因此自行裂开，而非作者临时补证据。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "e6a27f5fddeb875554f88bd35a1579eb2cf242e8f237a9a5c11d189f95ea2c49"
+  },
+  {
+    "stable_key": "suspense-suspect-has-daily-goal",
+    "revision": 1,
+    "title": "让可疑人物先忙自己的事",
+    "category": "suspense",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "suspense",
+      "method": "嫌疑人除了藏秘密，还要有挣钱、照顾家人或保住职位的现实目标，异常行为才有多种解释。",
+      "applicability": [
+        "人物悬疑与证词冲突"
+      ],
+      "non_applicability": [
+        "短场景中的明确追凶目标"
+      ],
+      "risks": [
+        "日常线过重会稀释案件"
+      ],
+      "original_micro_demo": "药童半夜进库房，看似偷药，却先把最便宜的止咳草塞进袖里。他确实说谎，但谎言可能为了病中的弟弟，也可能掩护真正失窃的灵砂。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "424efa0fb2c44d4d57422f9b95c403ff37a564f18fb23bf84146e9178ef28d43"
+  },
+  {
+    "stable_key": "suspense-evidence-changes-meaning",
+    "revision": 1,
+    "title": "新证据改写旧证据含义",
+    "category": "suspense",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "suspense",
+      "method": "反转不是增加更大的秘密，而是让读者重新理解已经见过的痕迹、证词或沉默。",
+      "applicability": [
+        "中段反转与真相重构"
+      ],
+      "non_applicability": [
+        "线性冒险不需要误导时"
+      ],
+      "risks": [
+        "连续改义会让任何证据都不可信"
+      ],
+      "original_micro_demo": "众人以为门外湿脚印证明凶手冒雨离开。井盖打开后，他们发现地下水道通向屋内。脚印不是离开的痕迹，而是有人从地下刚刚上来。旧证据仍真，方向却反了。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "73105fc7adba3a7d4b983477a20ec9ca00df972e8829abec7255e0ae4e9cf9b4"
+  },
+  {
+    "stable_key": "suspense-silence-has-cost",
+    "revision": 1,
+    "title": "沉默必须保护或损害某样东西",
+    "category": "suspense",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "suspense",
+      "method": "人物拒答时明确他在保住名声、关系、职位或他人安全，沉默才既可疑又有人性。",
+      "applicability": [
+        "审问、组织秘密和家庭旧案"
+      ],
+      "non_applicability": [
+        "纯粹制造神秘的非人存在"
+      ],
+      "risks": [
+        "所有沉默都可谅解会削弱罪责"
+      ],
+      "original_micro_demo": "守门人不肯说谁借过钥匙，县尉威胁革职时他仍不答。直到女儿来送饭，他先让她回家。许川明白，他的沉默保护的是一个亲近的人，不等于他无辜。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "a0665422ec8c341fc057961440dd7041c8689a691120b5ce6970f72223f788be"
+  },
+  {
+    "stable_key": "suspense-answer-opens-choice",
+    "revision": 1,
+    "title": "揭晓后把真相转成选择",
+    "category": "suspense",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "suspense",
+      "method": "真相揭开后，把它转成一次会影响行动或关系的选择；选择可发生在当前或后续场景，时机服从现场危险与人物承受度。",
+      "applicability": [
+        "阶段揭谜与身份暴露"
+      ],
+      "non_applicability": [
+        "终章需要完整回顾时"
+      ],
+      "risks": [
+        "选择过快会缺少情绪消化"
+      ],
+      "original_micro_demo": "密信证明城主没有通敌，而是在私运疫民出城。许川刚读完，巡检已到门外。真相不是句号：交信能洗清一人，却会暴露三百名疫民的去处。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "13e446b632aac0671980774fe52febba35c2c8c42e299ce8994f99ff1cb88cdc"
+  },
+  {
+    "stable_key": "arc-block-chapter-delta",
+    "revision": 1,
+    "title": "故事块跨章，每章改变一项状态",
+    "category": "long_arc_continuity",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "long_arc_continuity",
+      "method": "把长线任务拆成可跨章推进的故事块；本章实际承载该故事块推进时，优先兑现一个局部承诺，或改变资源、关系、风险、可选路径中的一项。允许铺垫、驻留与纯余波章节，不要求钩子、转折或闭环。",
+      "applicability": [
+        "追查、远行、建设等需要多章推进，又容易在单章原地踏步的故事块"
+      ],
+      "non_applicability": [
+        "本章只在背景中仅提及该故事块、不承担推进时",
+        "纯余波章只让既有结果沉淀时",
+        "刻意驻留于人物或氛围、暂不承担推进时"
+      ],
+      "risks": [
+        "为了满足每章变化而硬造转折，会让因果像刻度推进"
+      ],
+      "original_micro_demo": "沈棠想保住濒临解约的夜航线。第一章她答应让药船准时离岸，便拆下自家船的舵片补上货船；船开了，她却失去追赶工具。下一章她借渔网拖船，兑现追上船队的局部目标，却被迫与老对手共舵。对方把桨递来：“这回听谁的？”她接住：“先听潮，账靠岸再算。”航线尚未保住，资源与关系都已改变。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "e19da6974276f2e08905a4715d0d455c65ce94f4db3b6c514ccf1143584545fb"
+  },
+  {
+    "stable_key": "arc-setup-serves-now-payoff-changes-choice",
+    "revision": 1,
+    "title": "伏笔先服务当前戏，回收时改变选择",
+    "category": "long_arc_continuity",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "long_arc_continuity",
+      "method": "让跨章复用的能力、关系承诺、习惯或物件，首次出现先承担当前动作、关系或氛围功能；后续回收应改变人物对局势的理解或实际选择。用人物的新用法证明成长只是可选路径，不是统一要求；具体连续性事实归 Canon 维护。",
+      "applicability": [
+        "身份线索、旧物、习惯动作等需要隔段回收的长线叙事"
+      ],
+      "non_applicability": [
+        "只承担氛围、并不进入后续因果的意象"
+      ],
+      "risks": [
+        "把回收当成炫技，或故意扣住人物理应知道的信息，会损伤可信度"
+      ],
+      "original_micro_demo": "船队赶在风暴前修船，沈棠想让怕水的阿澈留在甲板帮忙。她握着他的手教会快解结：“拉这里，绳会松，人别跟着货沉。”当晚这只结让他们及时换下断帆。数章后，货船在急流中倾斜，阿澈没有等命令，割断系货绳放走珍贵货箱，腾出船舷救人。沈棠原想独自走浅滩，此刻把领航绳递给他：“信任你一次。你领船，我们改道北汊。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "b387fb565f5ccf89e3baaa1f8f8a8d276ab991f7c85b535c94ec9050f7411058"
+  },
+  {
+    "stable_key": "arc-pressure-waves",
+    "revision": 1,
+    "title": "长线压力要换来源并保留低谷",
+    "category": "long_arc_continuity",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "long_arc_continuity",
+      "method": "让前一种压力下的应对选择，因果地产生或暴露下一种压力来源；在两者之间的低压段，只完成一项关系、资源或认知变化，不复制固定的压迫、喘息、再压迫波形。",
+      "applicability": [
+        "逃亡、护送、竞赛等需要持续紧张又不能全程同压的篇幅"
+      ],
+      "non_applicability": [
+        "灾难高潮必须连续施压、停顿会违背现场逻辑的短段落"
+      ],
+      "risks": [
+        "机械复制紧张与喘息的波形，或把低谷写成假安全，会使节奏可预测"
+      ],
+      "original_micro_demo": "楚娘只想带戏班躲开骑哨。她放弃官道，带众人下到隐蔽河谷，答应让与她争执已久的副班主领路：“这次我跟你的旗。”短暂安静里，她只做了一件事——把队首位置让给他。午后暴雨落下，官道仍干，河谷却因此迅速涨水；他们躲过骑哨的选择，反把戏班困在低地。副班主指向崖边旧栈道：“还听我的？”楚娘解下队旗递过去：“走，但别丢下最后一辆车。”"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "bed41fd43208e45f14ec8916abb1870fe7338528d53956096a1ffd183e050349"
+  },
+  {
+    "stable_key": "arc-aftermath-new-normal",
+    "revision": 1,
+    "title": "高潮后建立带代价的新常态",
+    "category": "long_arc_continuity",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "long_arc_continuity",
+      "method": "高潮过后，把已改变的权力、资源、关系或伤势转化为下一阶段的行动条件，建立有所得也有代价的新常态；具体连续性事实归 Canon 维护。",
+      "applicability": [
+        "大战、灾难、政变或重大关系决裂之后的阶段转换"
+      ],
+      "non_applicability": [
+        "事件没有留下持续影响，且叙事明确以瞬时奇观为目的时"
+      ],
+      "risks": [
+        "把余波写成结算清单，或胜利后马上再爆更大危机，会让变化来不及成为生活"
+      ],
+      "original_micro_demo": "渠城脱险后，顾临想立刻重开码头，让城里有粮。他把夺回的闸印交给曾反对自己的周岑共同保管，又把仅余梁木先拨给塌屋街，自己的旧船只能继续漏雨。医师按住他受伤的手：“你再掌舵，伤就废了。”顾临收起船牌：“那我学着让别人开。”次日，周岑与他共签第一张泊船令；顾临坐在岸边指挥，粮船慢慢挤过尚未补宽的栈道。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "8b6019199ead3272d1195acb473668de470d35a11abe1433dc9e8d9f10e388bc"
+  },
+  {
+    "stable_key": "progression-breakthrough-earned-options",
+    "revision": 1,
+    "title": "突破来自反馈、准备与旧能力组合",
+    "category": "progression_economy",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "progression_economy",
+      "method": "让突破建立在先前失败的反馈、针对性准备与已有能力的组合上；突破应增加一种可行选项，而不是自动消除眼前难题。",
+      "applicability": [
+        "修炼、技艺精进或临场解法需要显得由人物挣得时"
+      ],
+      "non_applicability": [
+        "作品明确要表现无法解释的恩赐，且奇迹本身就是主题时"
+      ],
+      "risks": [
+        "把准备写成训练说明书，或临场补出从未出现的能力，会削弱突破的挣得感"
+      ],
+      "original_micro_demo": "窑火倒灌，陶工林乔想在窑梁塌下前救出师父。她手腕还留着前两次试引热流的灼痕，数日来一直在冷窑练导流手势；此刻她从砖缝的啸声听出回流，先浸湿旧隔热毡，再把多年听窑的本领与练习过的手势合用。火舌偏开一瞬，原本封死的侧道出现。师弟喊：“你能灭了它吗？”她裹紧焦黑的毡：“不能，只够我进去一次。”她钻入侧道，身后的火又合拢了。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "5a120ee6dbbc8b27cd708fc70433abee532a955c8c0cbb8fe794e8358941c825"
+  },
+  {
+    "stable_key": "progression-resource-loop-cost",
+    "revision": 1,
+    "title": "资源形成获取、转化、消耗、补给闭环",
+    "category": "progression_economy",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "progression_economy",
+      "method": "当资源稀缺且确实影响路线时，让一次重大消耗压缩或关闭一条真实备选；不要求每次出现都让资源完整经历获取、转化、消耗与补给，补给边界只需在会影响后续选择时交代。具体库存数量交由 Canon 记录。",
+      "applicability": [
+        "资源会影响路线、战法、交易或生存选择的连续剧情"
+      ],
+      "non_applicability": [
+        "一次性象征物，后续不再参与选择或补给时"
+      ],
+      "risks": [
+        "逐笔报账会变成流水账；让所有选择都标出价格，也会压扁人物的情感与价值判断"
+      ],
+      "original_micro_demo": "苏绫想赶在追兵封山前发出求援。旧塔下，她从车队早已建立的旧储备里取出一枚光芯；它原本要给矿道车灯续亮，也是队伍潜入暗道的凭借。她仍把光芯装进信标，扳下引火杆：“先让外面知道我们在这儿。”塔顶亮起，海雾深处只回闪了一点微光，可能有人看见，也可能只是浪。伙伴望向变黑的矿道：“补给呢？”苏绫摇头：“要等下次退潮。”求援仍未完成，矿道备选却已经失去。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "27f1dff59691597a1b886fdde7274709097aaf071468c1c69e45fd68d8e1feb8"
+  },
+  {
+    "stable_key": "progression-rank-changes-permission-risk",
+    "revision": 1,
+    "title": "境界与身份同时改变权限和风险",
+    "category": "progression_economy",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "progression_economy",
+      "method": "力量或身份提升时，同时改变人物能进入的场所、能调动的人、受到的关注或必须承担的义务，让权限和风险一起升级，不列固定等级表。",
+      "applicability": [
+        "升级会改变组织位置、社会可见度或责任范围的故事"
+      ],
+      "non_applicability": [
+        "能力变化完全私密，也不影响人物与社会关系的独处段落"
+      ],
+      "risks": [
+        "用大段设定解释新身份，或升级只替换称呼却不改变行动条件"
+      ],
+      "original_micro_demo": "绘图师罗槐只想查到旧堤决口的原因。晋任总绘师后，他凭铜章进入封存水图室，也立刻被要求为新堤图纸署名担责；过去能匿名走访的村落，如今都有官差跟随。主簿推来笔：“有章，就该落名。”罗槐接过笔，却先写下复测令：“那就先让我看他们不许看的河段。”水图室的门开了，跟随他的官差也把他的名字记进值守册。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "2115f3228b0108d9f279764755fe4099f6955faba345e0c3e764e9c01ef33de2"
+  },
+  {
+    "stable_key": "progression-new-tier-new-problem",
+    "revision": 1,
+    "title": "新层级带来新类型问题",
+    "category": "progression_economy",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "progression_economy",
+      "method": "升级后用新的约束、规则或反制替换旧层级的主要困难，使人物必须学习另一种解法，而不是只面对更高数值的同类敌手。",
+      "applicability": [
+        "人物跨入新地域、新组织层级或掌握显著新能力之后"
+      ],
+      "non_applicability": [
+        "旧层级问题仍需由原方法完成结算的章节"
+      ],
+      "risks": [
+        "旧矛盾尚未兑现就换地图，会让升级像逃离问题而非进入新层级"
+      ],
+      "original_micro_demo": "信使叶栖刚学会借风越峡，只想赶在日落前送到停战信。她升空后，守军没有增派弓手，而是放出染雾索标记气流；高处航道又受城约管制，无旗飞行会连累接应村。同行者喊：“直飞最快！”她割断亮色披风，压低翼面降向登记塔：“快不等于能到。”等她办下临时航旗，夕阳已压到峡口，她还得甩掉染在尾流里的红雾。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "02b433e30fe79bdef061aaf62b95166a38c5c047e6559f74ef951bdd633e6a34"
+  },
+  {
+    "stable_key": "character-antagonist-adapts-clock",
+    "revision": 1,
+    "title": "反派按自己的时钟行动并在受挫后改策",
+    "category": "character_arcs",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "character_arcs",
+      "method": "先给对手一个不依赖主角在场的目标、期限与可行路径，让其在主角视野外继续采取可观察的行动；受挫后，只依据对手实际获得的新信息，改换路线、顺序或合作对象。实际时钟推进归 Engine，已经发生的行动、信息与资源变化归 Canon。",
+      "applicability": [
+        "追捕、竞标或组织争夺中，对手需要持续制造因果压力时"
+      ],
+      "non_applicability": [
+        "对手已失去行动条件，或停滞本身就是其明确选择时"
+      ],
+      "risks": [
+        "让反派无来源地知道主角计划，会显得全知",
+        "每次改策都只为精准反制主角，会变成为反制而反制",
+        "用日志汇报代替场景后果，会削弱对手的现实存在感"
+      ],
+      "original_micro_demo": "林遥想阻止韩铎独占旧码头，便带船工守住公证所正门。她看不见的河埠上，韩铎仍赶着在午市前交保证金；送件人回来报告正门被堵，他没有猜林遥下一步，只看了被退回的封套，改请熟悉潮道的摆渡人从水门送件。账房问：“还等他们散吗？”韩铎把备用印章递过去：“不等，改走能到的门。”等林遥发现水门的船影，原来的封门计划已经失效，她只能放弃守点，转去争取码头共管条款。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "db6aeca3fdf45b50571db593714be2c0603182c7eb044d529602216507b59f1c"
+  },
+  {
+    "stable_key": "character-supporting-arc-changes-main",
+    "revision": 1,
+    "title": "配角的阶段选择反过来改变主线",
+    "category": "character_arcs",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "character_arcs",
+      "method": "先在配角自己的场景里建立欲望、底线与阶段代价；到支线和主线交叉处，让配角为自己的目标作出会改变资源、关系或公开立场的选择，迫使主角据此重排计划。选择应兑现配角此前显露的取舍，不临时补出便利能力或背叛动机。",
+      "applicability": [
+        "家庭、职业或组织关系中，配角拥有独立目标并会影响主线时"
+      ],
+      "non_applicability": [
+        "短暂功能角色只需完成一次信息传递，且没有独立发展空间时"
+      ],
+      "risks": [
+        "配角的阶段结果若包办核心矛盾，容易抢走主线",
+        "用突然背叛制造转折，会把配角写成临时工具人"
+      ],
+      "original_micro_demo": "纪帆想借连锁药房的投资保住母亲留下的社区诊所。妹妹纪禾是诊所共同继承人，也是用药事故发生时的责任医师；尽调补充合同必须由她签字，投资才会生效。纪禾一直想靠真实病例取得独立行医资格，投资方却要她删去事故记录。她拒绝签字，把原始记录交给医师协会，也失去了对方承诺的推荐名额。“哥，我不能拿病人的错账换自己的证。”纪帆看着投资失效通知，没有替她收回材料。他把原定翻修计划改成流动义诊募资；诊所得以保留底线，却必须先关闭住院层。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "afd7ecdf31d967d316ca9a64e360792c2ee5aca1dec7e0286a1a49062bca2b73"
+  },
+  {
+    "stable_key": "character-growth-proved-under-old-trigger",
+    "revision": 1,
+    "title": "成长要在旧诱因重现时由新选择证明",
+    "category": "character_arcs",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "character_arcs",
+      "method": "先明确人物在旧恐惧、诱惑或压力下曾经采取的回避方式；后来让同一种诱因以不同场景重新生效，并让人物用会付出真实代价的新行动证明变化，不用旁白宣布成长。旧诱因、旧选择与后续事实归 Canon 保持连续。",
+      "applicability": [
+        "人物需要用行为兑现信任、担当、节制或勇气的阶段节点"
+      ],
+      "non_applicability": [
+        "人物尚未经历足以产生变化的过程，当前选择只代表一次试探时"
+      ],
+      "risks": [
+        "机械复刻旧场景会让成长验证像标准答案",
+        "用一次正确选择洗白长期伤害，会抹掉修复所需的过程"
+      ],
+      "original_micro_demo": "设计师程苇想赢下城市家具赛。上次落选时，她因害怕再次被淘汰，把同伴的草图当成自己的方案递交。决赛前，评委私下表示，只要她删去共同署名就能进入终评，同样的诱惑又来了。程苇没有解释自己已经不同，只在展示屏上恢复同伴姓名，并把答辩的第一题交给他。“这样可能两个人都落选。”同伴低声说。她把遥控器递过去：“那也该由我们一起输。”他们失去单人推荐名额，却保住合作资格，并开始补做上次被她藏起的署名说明。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "483bdd3f14c16f2bbdb88e02277b602e074bc471cbf37e07c51c45b1ca20e878"
+  },
+  {
+    "stable_key": "character-antagonist-offers-valid-alternative",
+    "revision": 1,
+    "title": "反派提出有诱惑力的有效替代方案",
+    "category": "character_arcs",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "character_arcs",
+      "method": "把主角的重要欲望和当前缺口先写清，再让反派以已经拥有的资源、权限或能力提出确实可执行的替代方案；代价应落在主角珍视的价值、关系或他人利益上，而不是藏一个使方案自动失效的骗局。主角可以接受、拒绝或还价，但选择都要留下真实后果。",
+      "applicability": [
+        "谈判、招揽或停战场景需要检验主角价值排序时"
+      ],
+      "non_applicability": [
+        "反派只是制造即时危险，没有条件提供可兑现交换时"
+      ],
+      "risks": [
+        "把方案写得明显愚蠢，会强行降低主角判断力",
+        "只强调方案有效而略去受害者，会把反派的恶行合理化"
+      ],
+      "original_micro_demo": "档案修复师闻汀想救回火灾中受损的工人录音，私人基金会的冷库和设备确实能在一周内完成修复。基金会主席提出承担全部费用，条件是取得录音的独家展览权，其中包括家属不愿公开的临终留言。他推来已排好的修复席位：“你要的不是口号，是能工作的机器。”闻汀摸着父亲那盒开裂磁带，承认他说得对，却把独家条款划掉：“机器能救声音，不能替他们同意。”她拒绝现成席位，录音的霉变继续扩大，只能转去说服家属共同授权并筹一台较慢的设备。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "8e1adc215b7cecd802a0ff2c1e15c31d37b3c0913b2c2b0bc58e8f9069ed8414"
+  },
+  {
+    "stable_key": "action-competing-objectives",
+    "revision": 1,
+    "title": "胜负之外同时争夺另一项目标",
+    "category": "action_conflict",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "action_conflict",
+      "method": "为冲突选一项会迫使人物改变动作的次要目标，例如救人、保住证据、隐瞒身份、拖延时间或占据位置；在关键动作上让攻击或脱身与该目标发生取舍，使结果不只由谁受伤决定。一次场景突出一项即可，相关位置、伤势与资源事实归 Canon。",
+      "applicability": [
+        "战斗、逃脱或救援若只有伤害交换，缺少人物选择时"
+      ],
+      "non_applicability": [
+        "一击即结束的突发冲突，额外目标没有进入动作链的空间时"
+      ],
+      "risks": [
+        "同时塞入过多目标会让读者看不懂人物正在争什么"
+      ],
+      "original_micro_demo": "巡堤员阿祝想拦住破坏水闸的佣兵，也必须保住能证明雇主身份的铜牌。对方逼近时，他本可追着领头者跃过闸梁，却看见铜牌滑向泄水缝，便用撬杆卡住闸齿，转身去捞证物。伙伴扑向跳板，阿祝一把拽住他：“牌子在手，才知道往哪追。你去盯船。”领头者趁机登船逃走，阿祝失去当场制胜的机会，却留下了能把下一场追查指向幕后人的证据。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "4682f3845505fe7d1286454061c12c3d27dbc8317ce9b05264659b3ead21d3db"
+  },
+  {
+    "stable_key": "action-exchange-changes-state",
+    "revision": 1,
+    "title": "每轮交锋改变位置、信息或资源",
+    "category": "action_conflict",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "action_conflict",
+      "method": "保留那些会改变位置、暴露信息或消耗可用资源的交锋，让下一次动作必须回应刚形成的新状态；若连续攻击没有改变任何行动条件，就合并或压缩。按因果写动作，不要求游戏式回合，形成的具体状态归 Canon 记录。",
+      "applicability": [
+        "追捕、群体冲突或狭窄空间对抗需要保持动作推进时"
+      ],
+      "non_applicability": [
+        "重复动作本身用于表现仪式、麻木或徒劳感时"
+      ],
+      "risks": [
+        "逐回合播报会切碎速度感",
+        "罗列地形清单而不让地形改变选择，会制造无效细节"
+      ],
+      "original_micro_demo": "记者周漪在车站追偷走底片的人。她横过检票牌，窃贼翻越行李车时露出右腿不便。对方抓起零钱袋朝人群一撒，通道顷刻挤满；周漪停在广播室窗口，亮出记者证，把失窃经过和衣着特征报给站务员。话音从站内喇叭响起：“蓝围巾，右腿跛，往东出口。”窃贼听见后扔掉围巾，钻进搬运队。衣服认不成了，周漪却从他的换手动作看见仍攥着的底片筒，改从货台一侧截过去。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "ce064b9b2b1a7e355b1199517a3efb3aa6e44db76b68dbdbaa18bee90e6ba6a3"
+  },
+  {
+    "stable_key": "action-finish-established-combination",
+    "revision": 1,
+    "title": "终结手段来自前文建立的能力组合",
+    "category": "action_conflict",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "action_conflict",
+      "method": "从前文已经分散展示过的能力、物件或环境规律中，挑出能在新障碍下形成非显然配合的要素；可以由同一人物完成，也可以协作，但重点是预期方案失效后重新理解并组合旧要素，而不是把多人能力排成整齐分工。既有能力、物件与环境事实归 Canon，终结时不新增规则，也不要求所有铺垫同时回收。",
+      "applicability": [
+        "战斗收束、灾害救援或团队行动需要产生挣得感时"
+      ],
+      "non_applicability": [
+        "结局有意强调偶然、误解或无法控制的灾变时"
+      ],
+      "risks": [
+        "所有铺垫都在一刻整齐回收，会显得设计痕迹过重",
+        "让配角只递工具，会把协作写成主角的装备栏"
+      ],
+      "original_micro_demo": "旧剧院停电，场务林渡要拦住纵火者。前文里，他曾凭空台回声找过落下的螺帽，也独自修过卡涩的幕布配重；朋友送的强光手电一直没派上用场。原定用追光灯把人逼出侧幕，配电箱却被烧坏。林渡听见吊杆上方一声踩空，判断对方正借布景架横移，便松开旧幕的配重刹把，让厚幕顺轨落下，切断去天窗的落脚点。纵火者被迫跳到检修台，林渡在那里扣住他。手电没有用上，落下的幕布也被火星烧穿，次日演出只能取消。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "08a35cd3b5da9c39e5f8ba74c9d7fc86096df0d0b04d103be240d69ae8b9d872"
+  },
+  {
+    "stable_key": "action-injury-cost-changes-tactics",
+    "revision": 1,
+    "title": "伤势与损耗持续改变后续战术",
+    "category": "action_conflict",
+    "payload": {
+      "schemaVersion": "experience-card-v1",
+      "category": "action_conflict",
+      "method": "伤势或损耗发生后，用它改变下一步的动作选择、分工或路线，例如放弃需要受伤部位的动作、把关键任务交给别人，或改用更慢但可行的路径；不要只重复疼痛反应或降低抽象数值。实际伤势、人物状态与资源消耗归 Canon。",
+      "applicability": [
+        "连续战斗、救援或逃亡中，代价需要影响后续因果时"
+      ],
+      "non_applicability": [
+        "轻微擦伤仅用于瞬时感官强调，不足以改变行动方案时"
+      ],
+      "risks": [
+        "每次动作都发抖吐血会把伤势写成重复表演",
+        "伤势只降低数值却不改变战术，会让代价脱离场景"
+      ],
+      "original_micro_demo": "消防员陆茵想把旧戏院后台的孩子带出来。落梁擦伤她的右腕后，她没有继续逞强爬梯；水带压力又在破窗时耗尽，她便把破门斧交给能双手发力的新人，自己用左臂固定引导绳，改走较远的侧廊。新人问：“你不上前？”陆茵把绳结压在腰侧：“我守住回来的路，你开墙。”他们放弃最快的楼梯，从布景间破墙接到孩子，火也因此烧掉了原本还能抢救的道具库。"
+    },
+    "provenance": {
+      "reviewer": "author",
+      "review_time": "2026-07-12T14:38:09+08:00",
+      "decision": "approved"
+    },
+    "content_hash": "4eb0f1a8eaf084f2799af3edca4612f9443456cf918cf7c3ce865c0ba117bbfa"
+  }
+]
