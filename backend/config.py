@@ -1,4 +1,4 @@
-"""Fail-closed local MySQL configuration without a checked-in secret."""
+"""Fail-closed local configuration without checked-in secrets or path defaults."""
 
 from __future__ import annotations
 
@@ -10,13 +10,14 @@ from typing import Mapping
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_CONFIG_PATH = REPOSITORY_ROOT / ".env.local.json"
-_ALLOWED_FILE_KEYS = frozenset({
+_MYSQL_FILE_KEYS = frozenset({
     "MYSQL_HOST",
     "MYSQL_PORT",
     "MYSQL_USER",
     "MYSQL_PASSWORD",
     "MYSQL_DB",
 })
+_ALLOWED_FILE_KEYS = _MYSQL_FILE_KEYS | {"CORPUS_ROOT"}
 _OUTPUT_KEYS = {
     "MYSQL_HOST": "host",
     "MYSQL_PORT": "port",
@@ -35,6 +36,10 @@ _DEFAULTS: dict[str, object] = {
 
 class LocalMySQLConfigError(RuntimeError):
     """The private local MySQL configuration is absent or unsafe."""
+
+
+class LocalCorpusConfigError(RuntimeError):
+    """The explicitly configured local corpus root is absent or unsafe."""
 
 
 def _checked_port(value: object, *, environment_value: bool) -> int:
@@ -60,26 +65,31 @@ def _checked_text(name: str, value: object) -> str:
     return value
 
 
-def _read_local_document(config_path: Path) -> dict[str, object]:
+def _read_local_document(
+    config_path: Path,
+    *,
+    error_type: type[RuntimeError] = LocalMySQLConfigError,
+    subject: str = "MySQL",
+) -> dict[str, object]:
     try:
         source = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
     except (OSError, UnicodeError) as exc:
-        raise LocalMySQLConfigError(
-            "Could not read the repository-local MySQL configuration"
+        raise error_type(
+            f"Could not read the repository-local {subject} configuration"
         ) from exc
     try:
         document = json.loads(source)
     except (UnicodeError, json.JSONDecodeError) as exc:
-        raise LocalMySQLConfigError(
-            "Repository-local MySQL configuration is not valid JSON"
+        raise error_type(
+            f"Repository-local {subject} configuration is not valid JSON"
         ) from exc
     if type(document) is not dict:
-        raise LocalMySQLConfigError("Local MySQL configuration must be a JSON object")
+        raise error_type(f"Local {subject} configuration must be a JSON object")
     unknown = set(document) - _ALLOWED_FILE_KEYS
     if unknown:
-        raise LocalMySQLConfigError("Local MySQL configuration contains unknown keys")
+        raise error_type(f"Local {subject} configuration contains unknown keys")
     return document
 
 
@@ -93,12 +103,14 @@ def load_mysql_config(
     values = dict(_DEFAULTS)
     file_values = _read_local_document(Path(config_path))
     for name, value in file_values.items():
+        if name not in _MYSQL_FILE_KEYS:
+            continue
         values[name] = (
             _checked_port(value, environment_value=False)
             if name == "MYSQL_PORT"
             else _checked_text(name, value)
         )
-    for name in _ALLOWED_FILE_KEYS:
+    for name in _MYSQL_FILE_KEYS:
         if name not in source:
             continue
         value = source[name]
@@ -130,4 +142,51 @@ def require_mysql_config(
     return dict(selected)
 
 
+def _checked_corpus_root(value: object) -> Path:
+    if type(value) is not str or not value.strip():
+        raise LocalCorpusConfigError("CORPUS_ROOT must be non-empty absolute text")
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise LocalCorpusConfigError("CORPUS_ROOT must be an absolute path")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise LocalCorpusConfigError("CORPUS_ROOT does not exist safely") from exc
+    if not resolved.is_dir():
+        raise LocalCorpusConfigError("CORPUS_ROOT must identify a directory")
+    return resolved
+
+
+def load_corpus_root(
+    *,
+    environment: Mapping[str, str] | None = None,
+    config_path: Path = LOCAL_CONFIG_PATH,
+) -> Path | None:
+    """Load only an explicitly configured, existing corpus directory."""
+    source = os.environ if environment is None else environment
+    file_values = _read_local_document(
+        Path(config_path),
+        error_type=LocalCorpusConfigError,
+        subject="corpus",
+    )
+    selected = file_values.get("CORPUS_ROOT")
+    if "CORPUS_ROOT" in source:
+        selected = source["CORPUS_ROOT"]
+    if selected is None:
+        return None
+    return _checked_corpus_root(selected)
+
+
+_UNSET = object()
+
+
+def require_corpus_root(root: Path | None | object = _UNSET) -> Path:
+    """Return the configured corpus root or fail before any corpus file access."""
+    selected = CORPUS_ROOT if root is _UNSET else root
+    if not isinstance(selected, Path):
+        raise LocalCorpusConfigError("CORPUS_ROOT is not configured")
+    return _checked_corpus_root(str(selected))
+
+
 MYSQL_CONFIG = load_mysql_config()
+CORPUS_ROOT = load_corpus_root()
