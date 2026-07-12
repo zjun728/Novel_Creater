@@ -507,11 +507,15 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
         "creation_contract_id": "creation-7", "style_contract_id": "style-7",
         "creation_hash": preview.creation_hash, "style_hash": preview.style_hash,
     }
+    reference_manifest = harness.service._reference_manifest(preview)
     harness.repository.confirmed["p1"] = {
+        "project_id": "p1",
         "revision": 7,
+        "seed_id": preview.seed_ref.id,
         "seed_revision_id": initial.draft.seedRevisionId,
         "seed_hash": initial.draft.seedHash,
         "engine_option_id": initial.draft.engineOptionId,
+        "engine_batch_id": preview.engine_ref.batch_id,
         "engine_hash": initial.draft.engineHash,
         "binding_revision_id": preview.binding_ref.id,
         "binding_revision": preview.binding_ref.revision,
@@ -520,6 +524,10 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
         "style_hash": preview.style_hash,
         "head_creation_hash": preview.creation_hash,
         "head_style_hash": preview.style_hash,
+        "creation_contract_id": "creation-7",
+        "style_contract_id": "style-7",
+        "reference_manifest_json": canonical_json(reference_manifest),
+        "reference_manifest_hash": canonical_hash(reference_manifest),
         "creation_json": preview.creation_contract.model_dump(mode="json"),
         "style_json": preview.style_contract.model_dump(mode="json"),
         "likes_json": list(initial.draft.likes),
@@ -600,6 +608,32 @@ async def test_clone_requires_confirmed_nonzero_head():
     harness = ContractHarness()
     with pytest.raises(ContractConflict):
         await harness.service.clone_current("p1")
+
+
+@pytest.mark.parametrize("corruption", ("primary", "card", "corpus", "manifest"))
+@pytest.mark.asyncio
+async def test_clone_rejects_incomplete_or_tampered_reference_manifest(corruption):
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(saved, key=f"confirm-{corruption}"))
+    snapshot = harness.repository.confirmed["p1"]
+    if corruption == "primary":
+        snapshot["style_refs"] = tuple(
+            ref for ref in snapshot["style_refs"] if ref["role"] != "primary"
+        )
+    elif corruption == "card":
+        snapshot["experience_card_refs"] = ()
+    elif corruption == "corpus":
+        snapshot["corpus_source_refs"] = ()
+    else:
+        manifest = json.loads(snapshot["reference_manifest_json"])
+        manifest["schemaVersion"] = "tampered-manifest"
+        snapshot["reference_manifest_json"] = canonical_json(manifest)
+
+    with pytest.raises(ContractPreconditionFailed):
+        await harness.service.clone_current("p1")
+
+    assert "p1" not in harness.repository.drafts
 
 
 @pytest.mark.asyncio

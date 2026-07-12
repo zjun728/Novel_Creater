@@ -1035,6 +1035,10 @@ class ContractService:
             style_refs = tuple(ResolvedStyleRef(
                 ref["role"], ref["id"], int(ref["revision"]), ref["contentHash"]
             ) for ref in snapshot["style_refs"])
+            if tuple(ref.role for ref in style_refs) not in (
+                ("primary",), ("primary", "secondary")
+            ):
+                raise ValueError("confirmed style refs must have one primary")
             cards = tuple(ResolvedAssetRef(
                 ref["id"], int(ref["revision"]), ref["contentHash"]
             ) for ref in snapshot["experience_card_refs"])
@@ -1389,96 +1393,60 @@ class ContractService:
             if snapshot is None or int(snapshot["revision"]) != int(head["revision"]):
                 raise ContractConflict()
             try:
-                creation_json = dict(_json_object(snapshot["creation_json"]))
-                creation_json["totalWordRange"] = tuple(
-                    creation_json["totalWordRange"]
-                )
-                creation_json["selectedEngine"] = _strict_engine(
-                    creation_json["selectedEngine"]
-                )
-                creation = CreationContractPayload(**creation_json)
-                style_json = _json_object(snapshot["style_json"])
-                style = StyleContractPayload(**{
-                    **style_json,
-                    "characterVoices": tuple(style_json["characterVoices"]),
-                    "primaryRules": tuple(style_json["primaryRules"]),
-                    "risks": tuple(style_json["risks"]),
-                })
-                style_refs = tuple(snapshot["style_refs"])
-                primary = next(ref for ref in style_refs if ref["role"] == "primary")
-                secondary = next(
-                    (ref for ref in style_refs if ref["role"] == "secondary"), None
-                )
-                likes = tuple(_json_array(snapshot["likes_json"]))
-                dislikes = tuple(_json_array(snapshot["dislikes_json"]))
+                verified = self._result_from_snapshot(snapshot)
                 if (
-                    canonical_hash(creation) != snapshot["creation_hash"]
-                    or snapshot["creation_hash"] != head["creation_hash"]
-                    or style_contract_hash(style, likes, dislikes)
-                    != snapshot["style_hash"]
-                    or snapshot["style_hash"] != head["style_hash"]
-                    or canonical_hash(creation.selectedSeed) != snapshot["seed_hash"]
-                    or canonical_hash(creation.selectedEngine)
-                    != snapshot["engine_hash"]
-                    or creation.modelBindingRevision
-                    != int(snapshot["binding_revision"])
-                    or snapshot["binding_hash"]
-                    != snapshot.get("actual_binding_hash")
-                    or snapshot["seed_hash"] != snapshot.get("actual_seed_hash")
-                    or snapshot["engine_hash"]
-                    != snapshot.get("actual_engine_hash")
-                    or any(
-                        ref.get("contentHash") != ref.get("actualContentHash")
-                        for refs in (
-                            snapshot["style_refs"],
-                            snapshot["experience_card_refs"],
-                            snapshot["corpus_source_refs"],
-                        )
-                        for ref in refs
-                    )
+                    verified.creation_contract_id != head["creation_contract_id"]
+                    or verified.style_contract_id != head["style_contract_id"]
+                    or verified.creation_hash != head["creation_hash"]
+                    or verified.style_hash != head["style_hash"]
                 ):
-                    raise ValueError("confirmed contract hash mismatch")
+                    raise ValueError("confirmed contract head mismatch")
+                primary = verified.style_refs[0]
+                secondary = (
+                    verified.style_refs[1] if len(verified.style_refs) == 2 else None
+                )
+                creation = verified.creation_contract
                 draft = ContractDraftPayload(
                     schemaVersion="contract-draft-v1",
-                    seedRevisionId=snapshot["seed_revision_id"],
-                    seedHash=snapshot["seed_hash"],
-                    engineOptionId=snapshot["engine_option_id"],
-                    engineHash=snapshot["engine_hash"],
+                    seedRevisionId=verified.seed_ref.revision_id,
+                    seedHash=verified.seed_ref.content_hash,
+                    engineOptionId=verified.engine_ref.id,
+                    engineHash=verified.engine_ref.content_hash,
                     channelProfileKey=creation.channelProfileKey,
                     genreProfileKey=creation.genreProfileKey,
                     qualityCharterVersion=creation.qualityCharterVersion,
                     totalWordRange=creation.totalWordRange,
                     chapterCapacityPolicy=creation.chapterCapacityPolicy,
                     modelBindingRef=ModelBindingRef(
-                        id=snapshot["binding_revision_id"],
-                        revision=int(snapshot["binding_revision"]),
-                        contentHash=snapshot["binding_hash"],
+                        id=verified.binding_ref.id,
+                        revision=verified.binding_ref.revision,
+                        contentHash=verified.binding_ref.content_hash,
                     ),
-                    primaryStyleRef=AssetRevisionRef(**{
-                        key: primary[key] for key in ("id", "revision", "contentHash")
-                    }),
-                    secondaryStyleRef=AssetRevisionRef(**{
-                        key: secondary[key] for key in ("id", "revision", "contentHash")
-                    }) if secondary else None,
+                    primaryStyleRef=AssetRevisionRef(
+                        id=primary.id, revision=primary.revision,
+                        contentHash=primary.contentHash,
+                    ),
+                    secondaryStyleRef=AssetRevisionRef(
+                        id=secondary.id, revision=secondary.revision,
+                        contentHash=secondary.contentHash,
+                    ) if secondary else None,
                     experienceCardRefs=tuple(
-                        AssetRevisionRef(**{
-                            key: ref[key] for key in ("id", "revision", "contentHash")
-                        })
-                        for ref in snapshot["experience_card_refs"]
+                        AssetRevisionRef(
+                            id=ref.id, revision=ref.revision,
+                            contentHash=ref.contentHash,
+                        ) for ref in verified.experience_card_refs
                     ),
                     corpusSourceRefs=tuple(
-                        CorpusSourceRef(**{
-                            key: ref[key] for key in (
-                                "id", "revision", "contentHash", "selectionMode"
-                            )
-                        }) for ref in snapshot["corpus_source_refs"]
+                        CorpusSourceRef(
+                            id=ref.id, revision=ref.revision,
+                            contentHash=ref.contentHash,
+                            selectionMode=ref.selectionMode,
+                        ) for ref in verified.corpus_source_refs
                     ),
-                    likes=likes,
-                    dislikes=dislikes,
+                    likes=verified.likes,
+                    dislikes=verified.dislikes,
                 )
-                # Parsing StyleContract here makes clone fail closed on a corrupt head.
-                _ = style
-            except (KeyError, StopIteration, TypeError, ValueError, ValidationError) as exc:
+            except (KeyError, TypeError, ValueError, ValidationError):
                 raise ContractPreconditionFailed() from None
             now = self.clock()
             row = self._draft_row(

@@ -186,21 +186,21 @@ async def test_real_confirmation_rejects_any_binding_snapshot_drift(
         await service.confirm(_confirm(saved, key=f"binding-{drift}"))
 
 
-@pytest.mark.parametrize(("table", "owner_column", "owner_id"), (
-    ("style_contract_template_refs", "style_contract_id", "style_contract_id"),
-    ("creation_contract_experience_refs", "creation_contract_id", "creation_contract_id"),
-    ("creation_contract_corpus_refs", "creation_contract_id", "creation_contract_id"),
+@pytest.mark.parametrize(("table", "owner_column", "owner_id", "extra"), (
+    ("style_contract_template_refs", "style_contract_id", "style_contract_id", " AND role='primary'"),
+    ("creation_contract_experience_refs", "creation_contract_id", "creation_contract_id", ""),
+    ("creation_contract_corpus_refs", "creation_contract_id", "creation_contract_id", ""),
 ))
 @pytest.mark.asyncio
 async def test_real_reads_fail_closed_when_a_confirmed_ref_projection_is_deleted(
-    disposable_mysql, table, owner_column, owner_id
+    disposable_mysql, table, owner_column, owner_id, extra
 ):
     service = _service(disposable_mysql)
     _, saved = await _saved(disposable_mysql, service)
     confirmed = await service.confirm(_confirm(saved))
     owner = getattr(confirmed, owner_id)
     await disposable_mysql.session.execute(
-        f"DELETE FROM {table} WHERE {owner_column}=%s",
+        f"DELETE FROM {table} WHERE {owner_column}=%s{extra}",
         (owner,),
     )
 
@@ -208,6 +208,31 @@ async def test_real_reads_fail_closed_when_a_confirmed_ref_projection_is_deleted
         await service.get_head(PROJECT)
     with pytest.raises(ContractPreconditionFailed):
         await service.history(PROJECT)
+    with pytest.raises(ContractPreconditionFailed):
+        await service.clone_current(PROJECT)
+    assert await disposable_mysql.session.fetchone(
+        "SELECT id FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_real_clone_rejects_tampered_reference_manifest_without_draft(
+    disposable_mysql,
+):
+    service = _service(disposable_mysql)
+    _, saved = await _saved(disposable_mysql, service)
+    await service.confirm(_confirm(saved))
+    await disposable_mysql.session.execute(
+        """UPDATE creation_contracts SET reference_manifest_hash=%s
+           WHERE project_id=%s""",
+        ("f" * 64, PROJECT),
+    )
+
+    with pytest.raises(ContractPreconditionFailed):
+        await service.clone_current(PROJECT)
+    assert await disposable_mysql.session.fetchone(
+        "SELECT id FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
+    ) is None
 
 
 @pytest.mark.asyncio

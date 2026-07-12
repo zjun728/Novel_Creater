@@ -5,6 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.routers import contracts
 from backend.security.redaction import install_error_handlers
 from backend.services.contracts import ContractDraftInput
@@ -228,11 +229,15 @@ def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():
         "creation_contract_id": "creation-6", "style_contract_id": "style-6",
         "creation_hash": result.creation_hash, "style_hash": result.style_hash,
     }
+    reference_manifest = harness.service._reference_manifest(result)
     harness.repository.confirmed["p1"] = {
+        "project_id": "p1",
         "revision": 6,
+        "seed_id": result.seed_ref.id,
         "seed_revision_id": saved["seed_revision_id"],
         "seed_hash": saved["seed_hash"],
         "engine_option_id": saved["engine_option_id"],
+        "engine_batch_id": result.engine_ref.batch_id,
         "engine_hash": result.engine_ref.content_hash,
         "binding_revision_id": result.binding_ref.id,
         "binding_revision": result.binding_ref.revision,
@@ -241,6 +246,10 @@ def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():
         "style_hash": result.style_hash,
         "head_creation_hash": result.creation_hash,
         "head_style_hash": result.style_hash,
+        "creation_contract_id": "creation-6",
+        "style_contract_id": "style-6",
+        "reference_manifest_json": canonical_json(reference_manifest),
+        "reference_manifest_hash": canonical_hash(reference_manifest),
         "creation_json": result.creation_contract.model_dump(mode="json"),
         "style_json": result.style_contract.model_dump(mode="json"),
         "likes_json": list(result.likes),
@@ -290,6 +299,31 @@ def test_confirm_route_is_strict_returns_201_and_head_history_are_safe():
     )
     assert all(word not in (confirmed.text + head.text + history.text).lower()
                for word in forbidden)
+
+
+def test_clone_manifest_failure_is_fixed_422_and_redacts_internal_snapshot():
+    client, harness = make_client()
+    saved = client.put(
+        "/api/projects/p1/contract-draft", json=save_body(harness)
+    ).json()
+    confirmed = client.post("/api/projects/p1/contracts/confirm", json={
+        "idempotencyKey": "api-clone-corrupt",
+        "expectedDraftVersion": saved["draftVersion"],
+        "expectedDraftHash": saved["contentHash"],
+    })
+    assert confirmed.status_code == 201
+    sentinel = r"C:\private\manifest-sentinel.json"
+    harness.repository.confirmed["p1"]["reference_manifest_json"] = canonical_json({
+        "internalPath": sentinel,
+    })
+
+    response = client.post("/api/projects/p1/contracts/clone")
+
+    assert response.status_code == 422
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert response.json()["code"] == "ContractPreconditionFailed"
+    assert sentinel not in response.text
+    assert "reference_manifest" not in response.text.lower()
 
 
 @pytest.mark.parametrize("body", (
