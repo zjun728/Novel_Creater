@@ -334,7 +334,16 @@ async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transa
 @pytest.mark.asyncio
 @pytest.mark.parametrize("secret_field", ("api_key", "base_url"))
 @pytest.mark.parametrize(
-    "encoding", ("exact", "stripped", "percent", "percent-lower", "json-slash")
+    "encoding",
+    (
+        "exact",
+        "stripped",
+        "percent",
+        "percent-lower",
+        "json-slash",
+        "unicode-full",
+        "unicode-mixed",
+    ),
 )
 async def test_provider_response_containing_connection_secret_fails_before_options_are_saved(
     secret_field, encoding
@@ -354,6 +363,8 @@ async def test_provider_response_containing_connection_secret_fails_before_optio
             quote(normalized, safe=""),
         ),
         "json-slash": normalized,
+        "unicode-full": normalized,
+        "unicode-mixed": normalized,
     }[encoding]
     raw = _provider_response()
     payload = json.loads(raw)
@@ -363,6 +374,17 @@ async def test_provider_response_containing_connection_secret_fails_before_optio
     raw = json.dumps(payload, ensure_ascii=False)
     if encoding == "json-slash":
         raw = raw.replace(normalized, normalized.replace("/", r"\/"))
+    elif encoding == "unicode-full":
+        escaped = "".join(f"\\u{ord(character):04x}" for character in normalized)
+        raw = raw.replace(normalized, escaped)
+        assert normalized not in raw
+    elif encoding == "unicode-mixed":
+        escaped = "".join(
+            f"\\u{ord(character):04x}" if index % 2 == 0 else character
+            for index, character in enumerate(normalized)
+        )
+        raw = raw.replace(normalized, escaped)
+        assert normalized not in raw
     gateway = ScriptedGateway(harness, raw)
     harness.service.provider_gateway = gateway
 
@@ -380,6 +402,20 @@ async def test_provider_response_containing_connection_secret_fails_before_optio
     assert stored["raw_response_hash"] == result.raw_response_hash
     assert normalized not in str(result)
     assert normalized not in canonical_json(stored)
+
+
+def test_decoded_response_secret_scan_rejects_excessive_depth_or_nodes():
+    harness = StoryEngineHarness()
+    deep_payload: object = "value"
+    for _ in range(33):
+        deep_payload = [deep_payload]
+
+    for payload in (deep_payload, {"items": ["value"] * 10_001}):
+        with pytest.raises(ValueError, match="response structure exceeds scan limits"):
+            harness.service._decoded_payload_contains_connection_secret(
+                payload,
+                harness.repository.providers["provider-seed"],
+            )
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 import logging
 from pathlib import Path
 import socket
@@ -13,6 +14,7 @@ from urllib.request import urlopen
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import httpx
+import pytest
 
 from backend.gateways.story_engine_provider import StoryEngineProviderGateway
 from backend.routers import providers, story_engines
@@ -207,6 +209,71 @@ def test_story_engine_success_envelope_echoing_secret_is_rejected_before_api_out
     stored = next(iter(harness.repository.batches.values()))
     assert stored["raw_response_text"] is None
     assert stored["raw_response_hash"] is not None
+    rendered = response.text + caplog.text + json.dumps(stored, default=str)
+    assert SECRET not in rendered
+    assert PRIVATE_URL not in rendered
+
+
+@pytest.mark.parametrize(
+    ("secret_field", "escape_mode"),
+    (("api_key", "full"), ("base_url", "mixed")),
+)
+def test_story_engine_unicode_escaped_connection_secret_never_reaches_api_or_options(
+    caplog,
+    secret_field,
+    escape_mode,
+):
+    harness = StoryEngineHarness()
+    harness.repository.providers["provider-seed"].update(
+        api_key=SECRET,
+        base_url=PRIVATE_URL,
+    )
+    secret = harness.repository.providers["provider-seed"][secret_field]
+    options = [item.model_dump(mode="json") for item in three_options()]
+    options[1]["ensembleRoles"][0]["purpose"] = f"嵌套回显 {secret}"
+    raw_content = json.dumps({"options": options}, ensure_ascii=False)
+    if escape_mode == "full":
+        escaped = "".join(f"\\u{ord(character):04x}" for character in secret)
+    else:
+        escaped = "".join(
+            f"\\u{ord(character):04x}" if index % 2 == 0 else character
+            for index, character in enumerate(secret)
+        )
+    raw_content = raw_content.replace(secret, escaped)
+    assert secret not in raw_content
+    harness.service.provider_gateway = StoryEngineProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": raw_content}}]},
+                request=request,
+            )
+        )
+    )
+    app = FastAPI()
+    app.include_router(story_engines.router, prefix="/api")
+    app.dependency_overrides[
+        story_engines.get_story_engine_service
+    ] = lambda: harness.service
+    install_error_handlers(app)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post(
+            "/api/projects/p1/story-engine-batches",
+            json={"idempotencyKey": f"unicode-{secret_field}-{escape_mode}"},
+        )
+
+    stored = next(iter(harness.repository.batches.values()))
+    assert response.status_code == 201
+    assert response.json()["status"] == "failed"
+    assert response.json()["publicErrorCode"] == "invalid_response"
+    assert response.json()["options"] == []
+    assert stored["raw_response_text"] is None
+    assert stored["raw_response_hash"] == sha256(
+        raw_content.encode("utf-8")
+    ).hexdigest()
+    assert harness.repository.options[stored["id"]] == []
     rendered = response.text + caplog.text + json.dumps(stored, default=str)
     assert SECRET not in rendered
     assert PRIVATE_URL not in rendered
