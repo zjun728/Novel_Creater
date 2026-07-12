@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.services.contracts import (
+    ConfirmContracts,
     ContractConflict,
     ContractDraftInput,
     ContractNotFound,
@@ -590,3 +591,168 @@ async def test_plain_save_cannot_bypass_clone_after_a_confirmed_head():
 
     with pytest.raises(ContractConflict):
         await harness.service.save_draft(command(harness))
+
+
+def confirmation(saved, *, key="confirm-once", content_hash=None):
+    return ConfirmContracts(
+        project_id="p1",
+        idempotency_key=key,
+        expected_draft_version=saved.draft_version,
+        expected_draft_hash=content_hash or saved.content_hash,
+    )
+
+
+@pytest.mark.asyncio
+async def test_confirm_atomically_consumes_draft_and_freezes_all_relations():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+
+    result = await harness.service.confirm(confirmation(saved))
+
+    assert result.revision == 1
+    assert result.creation_contract_id
+    assert result.style_contract_id
+    assert result.creation_hash == canonical_hash(result.creation_contract)
+    assert result.style_hash == canonical_hash({
+        "mergedStyle": result.style_contract.model_dump(mode="json"),
+        "likes": list(result.likes),
+        "dislikes": list(result.dislikes),
+    })
+    assert result.binding_ref.revision == 3
+    assert len(result.binding_ref.items) == 8
+    assert result.engine_ref.id == "engine-1"
+    assert tuple(ref.role for ref in result.style_refs) == ("primary", "secondary")
+    assert result.experience_card_refs[0].id == "card-1"
+    assert result.corpus_source_refs[0].selectionMode == "author"
+    assert "p1" not in harness.repository.drafts
+    assert harness.repository.heads["p1"]["revision"] == 1
+    assert len(harness.repository.confirmation_requests) == 1
+    request = next(iter(harness.repository.confirmation_requests.values()))
+    assert request["id"] == saved.id
+    assert request["request_hash"] == canonical_hash({
+        "projectId": "p1", "draftId": saved.id,
+        "draftVersion": saved.draft_version, "draftHash": saved.content_hash,
+        "baseHeadRevision": saved.base_head_revision, "expectedRevision": 1,
+        "seedRef": {
+            "revisionId": result.seed_ref.revision_id,
+            "contentHash": result.seed_ref.content_hash,
+        },
+        "engineRef": {
+            "id": result.engine_ref.id,
+            "contentHash": result.engine_ref.content_hash,
+        },
+        "bindingRef": {
+            "id": result.binding_ref.id, "revision": result.binding_ref.revision,
+            "contentHash": result.binding_ref.content_hash,
+        },
+        "styleRefs": [ref.model_dump(mode="json") for ref in result.style_refs],
+        "experienceCardRefs": [
+            ref.model_dump(mode="json") for ref in result.experience_card_refs
+        ],
+        "corpusSourceRefs": [
+            ref.model_dump(mode="json") for ref in result.corpus_source_refs
+        ],
+    })
+
+
+@pytest.mark.asyncio
+async def test_confirm_same_key_replays_but_different_hash_is_stable_conflict():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    first = await harness.service.confirm(confirmation(saved))
+
+    replay = await harness.service.confirm(confirmation(saved))
+    with pytest.raises(ContractConflict):
+        await harness.service.confirm(confirmation(
+            saved, content_hash="f" * 64,
+        ))
+
+    assert replay == first
+    assert harness.repository.heads["p1"]["revision"] == 1
+    assert len(harness.repository.creation_contracts) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_replay_ignores_an_unrelated_newer_clone_draft():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    first = await harness.service.confirm(confirmation(saved))
+    cloned = await harness.service.clone_current("p1")
+    await harness.service.save_draft(command(
+        harness, expected=cloned.draft_version, likes=("新修订",),
+    ))
+
+    replay = await harness.service.confirm(confirmation(saved))
+
+    assert replay == first
+    assert harness.repository.drafts["p1"]["content_hash"] != saved.content_hash
+
+
+@pytest.mark.parametrize("stage", (
+    "after_confirmation_reserve", "after_creation_insert", "after_style_insert",
+    "after_engine_refs", "after_style_refs", "after_card_refs",
+    "after_corpus_refs", "after_head_cas", "after_draft_delete",
+    "before_request_success",
+))
+@pytest.mark.asyncio
+async def test_every_confirmation_failpoint_rolls_back_all_writes(stage):
+    harness = ContractHarness(failpoint=lambda current: (_ for _ in ()).throw(
+        RuntimeError(current)
+    ) if current == stage else None)
+    saved = await harness.service.save_draft(command(harness))
+    draft_before = dict(harness.repository.drafts["p1"])
+
+    with pytest.raises(RuntimeError, match=stage):
+        await harness.service.confirm(confirmation(saved))
+
+    assert harness.repository.drafts["p1"] == draft_before
+    assert harness.repository.heads["p1"]["revision"] == 0
+    assert harness.repository.confirmation_requests == {}
+    assert harness.repository.creation_contracts == {}
+    assert harness.repository.style_contracts == {}
+
+
+@pytest.mark.parametrize("drift", (
+    "seed", "engine", "binding", "style", "card", "corpus", "head",
+))
+@pytest.mark.asyncio
+async def test_confirmation_rejects_every_frozen_fact_or_head_drift(drift):
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    if drift == "seed":
+        harness.repository.selected_seeds["p1"]["seed_hash"] = "f" * 64
+    elif drift == "engine":
+        harness.repository.engines["engine-1"]["content_hash"] = "f" * 64
+    elif drift == "binding":
+        harness.repository.binding_head["head_hash"] = "f" * 64
+    elif drift == "style":
+        harness.repository.styles["style-primary"]["head_hash"] = "f" * 64
+    elif drift == "card":
+        harness.repository.cards["card-1"]["head_hash"] = "f" * 64
+    elif drift == "corpus":
+        harness.repository.sources["source-1"]["head_hash"] = "f" * 64
+    else:
+        harness.repository.heads["p1"]["revision"] = 1
+
+    with pytest.raises(ContractConflict):
+        await harness.service.confirm(confirmation(saved))
+
+    assert "p1" in harness.repository.drafts
+    assert harness.repository.confirmation_requests == {}
+    assert harness.repository.creation_contracts == {}
+
+
+@pytest.mark.asyncio
+async def test_head_readiness_tracks_current_eight_binding_provider_readiness_only():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(saved))
+    historical = await harness.service.history("p1")
+    harness.repository.binding["items"][0]["provider_ready"] = 0
+
+    head = await harness.service.get_head("p1")
+
+    assert head.contract_ready is False
+    assert head.reasons == ("binding_not_ready",)
+    assert historical[0].contract_ready is True
+    assert historical[0].reasons == ()

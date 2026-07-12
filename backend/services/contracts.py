@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
+import re
 from pathlib import PurePosixPath, PureWindowsPath
 import time
 from typing import Annotated, Literal, Mapping, Self
@@ -149,6 +150,14 @@ class SaveContractDraft:
 
 
 @dataclass(frozen=True)
+class ConfirmContracts:
+    project_id: str
+    idempotency_key: str
+    expected_draft_version: int
+    expected_draft_hash: str
+
+
+@dataclass(frozen=True)
 class ContractDraftResult:
     id: str
     project_id: str
@@ -247,6 +256,28 @@ class ContractPreviewResult:
     style_hash: str | None
 
 
+@dataclass(frozen=True)
+class ConfirmedContractResult:
+    project_id: str
+    revision: int
+    creation_contract_id: str
+    style_contract_id: str
+    contract_ready: bool
+    reasons: tuple[str, ...]
+    seed_ref: SeedContractRef
+    engine_ref: EngineContractRef
+    binding_ref: BindingContractRef
+    style_refs: tuple[ResolvedStyleRef, ...]
+    experience_card_refs: tuple[ResolvedAssetRef, ...]
+    corpus_source_refs: tuple[ResolvedCorpusRef, ...]
+    creation_contract: CreationContractPayload
+    style_contract: StyleContractPayload
+    likes: tuple[str, ...]
+    dislikes: tuple[str, ...]
+    creation_hash: str
+    style_hash: str
+
+
 def _json_object(value) -> dict:
     if isinstance(value, str):
         value = json.loads(value)
@@ -327,12 +358,14 @@ class ContractService:
         connection_factory,
         id_factory=lambda: str(uuid4()),
         clock=lambda: int(time.time() * 1000),
+        failpoint=lambda _stage: None,
     ):
         self.repository = repository
         self.transaction_factory = transaction_factory
         self.connection_factory = connection_factory
         self.id_factory = id_factory
         self.clock = clock
+        self.failpoint = failpoint
 
     @staticmethod
     def _draft_result(row) -> ContractDraftResult:
@@ -709,6 +742,547 @@ class ContractService:
             creation_hash=canonical_hash(creation) if creation is not None else None,
             style_hash=style_hash,
         )
+
+    @staticmethod
+    def _request_hash(
+        command: ConfirmContracts, *, draft_id: str,
+        base_head_revision: int, result,
+    ) -> str:
+        return canonical_hash({
+            "projectId": command.project_id,
+            "draftId": draft_id,
+            "draftVersion": command.expected_draft_version,
+            "draftHash": command.expected_draft_hash,
+            "baseHeadRevision": base_head_revision,
+            "expectedRevision": base_head_revision + 1,
+            "seedRef": {
+                "revisionId": result.seed_ref.revision_id,
+                "contentHash": result.seed_ref.content_hash,
+            },
+            "engineRef": {
+                "id": result.engine_ref.id,
+                "contentHash": result.engine_ref.content_hash,
+            },
+            "bindingRef": {
+                "id": result.binding_ref.id,
+                "revision": result.binding_ref.revision,
+                "contentHash": result.binding_ref.content_hash,
+            },
+            "styleRefs": [
+                ref.model_dump(mode="json") for ref in result.style_refs
+            ],
+            "experienceCardRefs": [
+                ref.model_dump(mode="json")
+                for ref in result.experience_card_refs
+            ],
+            "corpusSourceRefs": [
+                ref.model_dump(mode="json") for ref in result.corpus_source_refs
+            ],
+        })
+
+    def _assemble_confirmation(
+        self, saved, selected, frozen_seed, engine, binding,
+        primary, secondary, cards, sources,
+    ) -> ContractPreviewResult:
+        draft = saved.draft
+        try:
+            seed_payload = SeedPayload(**_json_object(frozen_seed["payload_json"]))
+            engine_payload = _strict_engine(engine["payload_json"])
+            binding_items = self._binding_items(binding)
+            style_payload = _strict_style_from_primary(primary, secondary)
+        except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+            raise ContractPreconditionFailed() from None
+        invalid = (
+            selected is None
+            or frozen_seed is None
+            or engine is None
+            or binding is None
+            or selected.get("seed_revision_id") != draft.seedRevisionId
+            or selected.get("seed_hash") != draft.seedHash
+            or frozen_seed.get("seed_revision_id") != draft.seedRevisionId
+            or frozen_seed.get("seed_hash") != draft.seedHash
+            or canonical_hash(seed_payload) != draft.seedHash
+            or engine.get("status") != "succeeded"
+            or engine.get("seed_revision_id") != draft.seedRevisionId
+            or engine.get("seed_hash") != draft.seedHash
+            or engine.get("content_hash") != draft.engineHash
+            or canonical_hash(engine_payload) != draft.engineHash
+            or binding.get("binding_revision_id") != draft.modelBindingRef.id
+            or int(binding.get("revision") or 0) != draft.modelBindingRef.revision
+            or binding.get("content_hash") != draft.modelBindingRef.contentHash
+            or binding.get("head_revision") != draft.modelBindingRef.revision
+            or binding.get("head_binding_revision_id") != draft.modelBindingRef.id
+            or binding.get("head_hash") != draft.modelBindingRef.contentHash
+            or not self._binding_ready(binding_items, binding)
+        )
+        if invalid:
+            raise ContractConflict()
+        asset_reasons = self._asset_reasons(
+            draft.primaryStyleRef, primary, kind="style", role="primary"
+        )
+        if draft.secondaryStyleRef:
+            asset_reasons += self._asset_reasons(
+                draft.secondaryStyleRef, secondary, kind="style", role="secondary"
+            )
+        for ref, asset in zip(draft.experienceCardRefs, cards):
+            asset_reasons += self._asset_reasons(ref, asset, kind="experience")
+        for ref, source in zip(draft.corpusSourceRefs, sources):
+            asset_reasons += self._asset_reasons(ref, source, kind="corpus")
+        if asset_reasons:
+            raise ContractConflict()
+        try:
+            creation = CreationContractPayload(
+                schemaVersion="creation-contract-v1",
+                channelProfileKey=draft.channelProfileKey,
+                genreProfileKey=draft.genreProfileKey,
+                qualityCharterVersion=draft.qualityCharterVersion,
+                selectedSeed=seed_payload,
+                selectedEngine=engine_payload,
+                totalWordRange=draft.totalWordRange,
+                chapterCapacityPolicy=draft.chapterCapacityPolicy,
+                modelBindingRevision=draft.modelBindingRef.revision,
+            )
+        except ValidationError:
+            raise ContractPreconditionFailed() from None
+        creation_hash = canonical_hash(creation)
+        style_hash = style_contract_hash(style_payload, draft.likes, draft.dislikes)
+        return ContractPreviewResult(
+            project_id=saved.project_id,
+            draft_version=saved.draft_version,
+            base_head_revision=saved.base_head_revision,
+            expected_revision=saved.base_head_revision + 1,
+            contract_ready=True,
+            reasons=(),
+            seed_ref=SeedContractRef(
+                id=frozen_seed.get("seed_id"),
+                revision_id=draft.seedRevisionId,
+                content_hash=draft.seedHash,
+            ),
+            engine_ref=EngineContractRef(
+                id=draft.engineOptionId,
+                batch_id=engine.get("batch_id"),
+                content_hash=draft.engineHash,
+            ),
+            binding_ref=BindingContractRef(
+                id=draft.modelBindingRef.id,
+                revision=draft.modelBindingRef.revision,
+                content_hash=draft.modelBindingRef.contentHash,
+                items=binding_items,
+            ),
+            style_refs=tuple(
+                [ResolvedStyleRef(
+                    "primary", draft.primaryStyleRef.id,
+                    draft.primaryStyleRef.revision, draft.primaryStyleRef.contentHash,
+                )] + ([ResolvedStyleRef(
+                    "secondary", draft.secondaryStyleRef.id,
+                    draft.secondaryStyleRef.revision,
+                    draft.secondaryStyleRef.contentHash,
+                )] if draft.secondaryStyleRef else [])
+            ),
+            experience_card_refs=tuple(
+                ResolvedAssetRef(ref.id, ref.revision, ref.contentHash)
+                for ref in draft.experienceCardRefs
+            ),
+            corpus_source_refs=tuple(
+                ResolvedCorpusRef(ref.id, ref.revision, ref.contentHash,
+                                  ref.selectionMode)
+                for ref in draft.corpusSourceRefs
+            ),
+            creation_contract=creation,
+            style_contract=style_payload,
+            likes=draft.likes,
+            dislikes=draft.dislikes,
+            creation_hash=creation_hash,
+            style_hash=style_hash,
+        )
+
+    @staticmethod
+    def _confirmed_result(preview, creation_id, style_id):
+        return ConfirmedContractResult(
+            project_id=preview.project_id,
+            revision=preview.expected_revision,
+            creation_contract_id=creation_id,
+            style_contract_id=style_id,
+            contract_ready=True,
+            reasons=(),
+            seed_ref=preview.seed_ref,
+            engine_ref=preview.engine_ref,
+            binding_ref=preview.binding_ref,
+            style_refs=preview.style_refs,
+            experience_card_refs=preview.experience_card_refs,
+            corpus_source_refs=preview.corpus_source_refs,
+            creation_contract=preview.creation_contract,
+            style_contract=preview.style_contract,
+            likes=preview.likes,
+            dislikes=preview.dislikes,
+            creation_hash=preview.creation_hash,
+            style_hash=preview.style_hash,
+        )
+
+    def _result_from_snapshot(self, snapshot) -> ConfirmedContractResult:
+        if snapshot is None:
+            raise ContractConflict()
+        try:
+            creation_json = _json_object(snapshot["creation_json"])
+            creation = CreationContractPayload(**{
+                **creation_json,
+                "totalWordRange": tuple(creation_json["totalWordRange"]),
+                "selectedEngine": _strict_engine(creation_json["selectedEngine"]),
+            })
+            style_json = _json_object(snapshot["style_json"])
+            style = StyleContractPayload(**{
+                **style_json,
+                "characterVoices": tuple(style_json["characterVoices"]),
+                "primaryRules": tuple(style_json["primaryRules"]),
+                "risks": tuple(style_json["risks"]),
+            })
+            likes = tuple(_json_array(snapshot["likes_json"]))
+            dislikes = tuple(_json_array(snapshot["dislikes_json"]))
+            binding_items = self._binding_items({
+                "items": snapshot.get("binding_items") or (),
+            })
+            style_refs = tuple(ResolvedStyleRef(
+                ref["role"], ref["id"], int(ref["revision"]), ref["contentHash"]
+            ) for ref in snapshot["style_refs"])
+            cards = tuple(ResolvedAssetRef(
+                ref["id"], int(ref["revision"]), ref["contentHash"]
+            ) for ref in snapshot["experience_card_refs"])
+            sources = tuple(ResolvedCorpusRef(
+                ref["id"], int(ref["revision"]), ref["contentHash"],
+                ref["selectionMode"],
+            ) for ref in snapshot["corpus_source_refs"])
+            if (
+                canonical_hash(creation) != snapshot["creation_hash"]
+                or style_contract_hash(style, likes, dislikes)
+                    != snapshot["style_hash"]
+                or canonical_hash(creation.selectedSeed) != snapshot["seed_hash"]
+                or canonical_hash(creation.selectedEngine) != snapshot["engine_hash"]
+                or creation.modelBindingRevision != int(snapshot["binding_revision"])
+                or snapshot["binding_hash"] != snapshot.get("actual_binding_hash")
+                or snapshot["seed_hash"] != snapshot.get("actual_seed_hash")
+                or snapshot["engine_hash"] != snapshot.get("actual_engine_hash")
+                or any(
+                    ref.get("contentHash") != ref.get("actualContentHash")
+                    for collection in (
+                        snapshot["style_refs"], snapshot["experience_card_refs"],
+                        snapshot["corpus_source_refs"],
+                    ) for ref in collection
+                )
+            ):
+                raise ValueError("confirmed snapshot hash mismatch")
+        except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+            raise ContractPreconditionFailed() from None
+        return ConfirmedContractResult(
+            project_id=snapshot.get("project_id", ""),
+            revision=int(snapshot["revision"]),
+            creation_contract_id=snapshot["creation_contract_id"],
+            style_contract_id=snapshot["style_contract_id"],
+            contract_ready=True, reasons=(),
+            seed_ref=SeedContractRef(
+                id=snapshot.get("seed_id"),
+                revision_id=snapshot["seed_revision_id"],
+                content_hash=snapshot["seed_hash"],
+            ),
+            engine_ref=EngineContractRef(
+                id=snapshot["engine_option_id"],
+                batch_id=snapshot.get("engine_batch_id"),
+                content_hash=snapshot["engine_hash"],
+            ),
+            binding_ref=BindingContractRef(
+                id=snapshot["binding_revision_id"],
+                revision=int(snapshot["binding_revision"]),
+                content_hash=snapshot["binding_hash"], items=binding_items,
+            ),
+            style_refs=style_refs, experience_card_refs=cards,
+            corpus_source_refs=sources, creation_contract=creation,
+            style_contract=style, likes=likes, dislikes=dislikes,
+            creation_hash=snapshot["creation_hash"],
+            style_hash=snapshot["style_hash"],
+        )
+
+    async def get_head(self, project_id: str):
+        async with self.connection_factory() as session:
+            if await self.repository.read_project(session, project_id) is None:
+                raise ContractNotFound()
+            head = await self.repository.read_contract_head(session, project_id)
+            if head is None:
+                raise ContractPreconditionFailed()
+            if int(head["revision"]) == 0:
+                return {
+                    "project_id": project_id, "revision": 0,
+                    "has_contract": False, "contract_ready": False,
+                    "reasons": ("contract_missing",),
+                }
+            snapshot = await self.repository.read_confirmed_snapshot(
+                session, project_id, int(head["revision"])
+            )
+            result = self._result_from_snapshot(snapshot)
+            reasons = []
+            if (
+                result.creation_contract_id != head.get("creation_contract_id")
+                or result.style_contract_id != head.get("style_contract_id")
+                or result.creation_hash != head.get("creation_hash")
+                or result.style_hash != head.get("style_hash")
+            ):
+                reasons.append("contract_head_drift")
+            selected = await self.repository.read_selected_seed(session, project_id)
+            if selected is None or (
+                selected.get("seed_revision_id") != result.seed_ref.revision_id
+                or selected.get("seed_hash") != result.seed_ref.content_hash
+            ):
+                reasons.append("seed_drift")
+            binding = await self.repository.read_binding_snapshot(session, project_id)
+            if binding is None or (
+                binding.get("binding_revision_id") != result.binding_ref.id
+                or int(binding.get("revision") or 0) != result.binding_ref.revision
+                or binding.get("content_hash") != result.binding_ref.content_hash
+            ):
+                reasons.append("binding_drift")
+            else:
+                try:
+                    current_items = self._binding_items(binding)
+                    if not self._binding_ready(current_items, binding):
+                        reasons.append("binding_not_ready")
+                except ContractPreconditionFailed:
+                    reasons.append("binding_not_ready")
+            return replace(
+                result, project_id=project_id,
+                contract_ready=not reasons, reasons=tuple(reasons),
+            )
+
+    async def history(self, project_id: str, limit: int = 20):
+        if not 1 <= limit <= 100:
+            raise ContractPreconditionFailed()
+        async with self.connection_factory() as session:
+            if await self.repository.read_project(session, project_id) is None:
+                raise ContractNotFound()
+            revisions = await self.repository.list_contract_revisions(
+                session, project_id, limit
+            )
+            results = []
+            for row in revisions:
+                snapshot = await self.repository.read_confirmed_snapshot(
+                    session, project_id, int(row["revision"])
+                )
+                results.append(replace(
+                    self._result_from_snapshot(snapshot), project_id=project_id
+                ))
+            return tuple(results)
+
+    async def confirm(self, command: ConfirmContracts) -> ConfirmedContractResult:
+        if (
+            not isinstance(command.idempotency_key, str)
+            or not 1 <= len(command.idempotency_key) <= 64
+            or _reject_path_shaped_text(command.idempotency_key)
+                != command.idempotency_key
+            or command.expected_draft_version <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", command.expected_draft_hash)
+        ):
+            raise ContractPreconditionFailed()
+        async with self.transaction_factory() as session:
+            if await self.repository.lock_project(session, command.project_id) is None:
+                raise ContractNotFound()
+            draft_row = await self.repository.lock_draft(session, command.project_id)
+            draft_matches = draft_row is not None and (
+                int(draft_row.get("draft_version") or 0)
+                == command.expected_draft_version
+                and draft_row.get("content_hash") == command.expected_draft_hash
+            )
+            if not draft_matches:
+                head = await self.repository.lock_contract_head(
+                    session, command.project_id
+                )
+                if head is None:
+                    raise ContractPreconditionFailed()
+                existing = await self.repository.read_confirmation_request(
+                    session, command.project_id, command.idempotency_key
+                )
+                if existing is None or existing.get("status") != "succeeded":
+                    raise ContractConflict()
+                snapshot = await self.repository.read_confirmed_snapshot(
+                    session, command.project_id, int(existing["result_revision"])
+                )
+                replay = self._result_from_snapshot(snapshot)
+                replay_hash = self._request_hash(
+                    command, draft_id=existing["id"],
+                    base_head_revision=replay.revision - 1, result=replay,
+                )
+                if existing.get("request_hash") != replay_hash:
+                    raise ContractConflict()
+                return replay
+            saved = self._draft_result(draft_row)
+            selected = frozen_seed = engine = binding = primary = secondary = None
+            cards = sources = ()
+            draft = saved.draft
+            selected = await self.repository.lock_selected_seed(
+                session, command.project_id
+            )
+            frozen_seed = await self.repository.read_seed_revision(
+                session, command.project_id, draft.seedRevisionId, lock=True
+            )
+            engine = await self.repository.read_engine_option(
+                session, command.project_id, draft.engineOptionId, lock=True
+            )
+            binding = await self.repository.lock_binding_snapshot(
+                session, command.project_id
+            )
+            primary = await self.repository.read_style_revision(
+                session, draft.primaryStyleRef.id, lock=True
+            )
+            secondary = (
+                await self.repository.read_style_revision(
+                    session, draft.secondaryStyleRef.id, lock=True
+                ) if draft.secondaryStyleRef else None
+            )
+            cards = tuple([
+                await self.repository.read_experience_revision(
+                    session, ref.id, lock=True
+                )
+                for ref in draft.experienceCardRefs
+            ])
+            sources = tuple([
+                await self.repository.read_corpus_revision(
+                    session, ref.id, lock=True
+                )
+                for ref in draft.corpusSourceRefs
+            ])
+            head = await self.repository.lock_contract_head(
+                session, command.project_id
+            )
+            if head is None:
+                raise ContractPreconditionFailed()
+            existing = await self.repository.read_confirmation_request(
+                session, command.project_id, command.idempotency_key
+            )
+            if existing is not None:
+                if existing.get("status") != "succeeded":
+                    raise ContractConflict()
+                snapshot = await self.repository.read_confirmed_snapshot(
+                    session, command.project_id, int(existing["result_revision"])
+                )
+                replay = self._result_from_snapshot(snapshot)
+                replay_hash = self._request_hash(
+                    command, draft_id=existing["id"],
+                    base_head_revision=replay.revision - 1, result=replay,
+                )
+                if existing.get("request_hash") != replay_hash:
+                    raise ContractConflict()
+                return replay
+            if int(head["revision"]) != saved.base_head_revision:
+                raise ContractConflict()
+            preview = self._assemble_confirmation(
+                saved, selected, frozen_seed, engine, binding,
+                primary, secondary, cards, sources,
+            )
+            request_hash = self._request_hash(
+                command, draft_id=saved.id,
+                base_head_revision=saved.base_head_revision, result=preview,
+            )
+            now = self.clock()
+            request_id = saved.id
+            creation_id, style_id = self.id_factory(), self.id_factory()
+            if not await self.repository.insert_confirmation_request(session, {
+                "id": request_id, "project_id": command.project_id,
+                "idempotency_key": command.idempotency_key,
+                "request_hash": request_hash, "created_at": now,
+            }):
+                raise ContractConflict()
+            self.failpoint("after_confirmation_reserve")
+            quality_match = re.search(r"(\d+)$", saved.draft.qualityCharterVersion)
+            quality_version = int(quality_match.group(1)) if quality_match else 1
+            if not await self.repository.insert_creation_contract(session, {
+                "id": creation_id, "project_id": command.project_id,
+                "revision": preview.expected_revision,
+                "seed_id": preview.seed_ref.id,
+                "seed_revision_id": preview.seed_ref.revision_id,
+                "seed_hash": preview.seed_ref.content_hash,
+                "binding_revision_id": preview.binding_ref.id,
+                "binding_hash": preview.binding_ref.content_hash,
+                "channel_profile_key": saved.draft.channelProfileKey,
+                "genre_profile_key": saved.draft.genreProfileKey,
+                "quality_charter_version": quality_version,
+                "total_word_min": saved.draft.totalWordRange[0],
+                "total_word_max": saved.draft.totalWordRange[1],
+                "chapter_char_min": 1, "chapter_char_target": 1,
+                "chapter_char_max": 1,
+                "content_json": canonical_json(preview.creation_contract),
+                "content_hash": preview.creation_hash, "confirmed_at": now,
+            }):
+                raise ContractConflict()
+            self.failpoint("after_creation_insert")
+            if not await self.repository.insert_style_contract(session, {
+                "id": style_id, "project_id": command.project_id,
+                "creation_contract_id": creation_id,
+                "revision": preview.expected_revision,
+                "merged_style_json": canonical_json(preview.style_contract),
+                "likes_json": canonical_json(preview.likes),
+                "dislikes_json": canonical_json(preview.dislikes),
+                "content_hash": preview.style_hash, "confirmed_at": now,
+            }):
+                raise ContractConflict()
+            self.failpoint("after_style_insert")
+            if not await self.repository.insert_engine_ref(session, {
+                "creation_contract_id": creation_id,
+                "project_id": command.project_id,
+                "engine_option_id": preview.engine_ref.id,
+                "engine_hash": preview.engine_ref.content_hash,
+            }):
+                raise ContractConflict()
+            self.failpoint("after_engine_refs")
+            style_rows = tuple({
+                "style_contract_id": style_id, "role": ref.role,
+                "style_template_id": ref.id, "asset_revision": ref.revision,
+                "asset_hash": ref.contentHash, "sort_order": index,
+            } for index, ref in enumerate(preview.style_refs, 1))
+            if not await self.repository.insert_style_refs(session, style_rows):
+                raise ContractConflict()
+            self.failpoint("after_style_refs")
+            card_rows = tuple({
+                "creation_contract_id": creation_id,
+                "experience_card_id": ref.id, "asset_revision": ref.revision,
+                "asset_hash": ref.contentHash, "sort_order": index,
+            } for index, ref in enumerate(preview.experience_card_refs, 1))
+            if not await self.repository.insert_experience_refs(session, card_rows):
+                raise ContractConflict()
+            self.failpoint("after_card_refs")
+            corpus_rows = tuple({
+                "creation_contract_id": creation_id,
+                "corpus_source_id": ref.id, "source_revision": ref.revision,
+                "source_hash": ref.contentHash,
+                "selection_mode": ref.selectionMode, "sort_order": index,
+            } for index, ref in enumerate(preview.corpus_source_refs, 1))
+            if not await self.repository.insert_corpus_refs(session, corpus_rows):
+                raise ContractConflict()
+            self.failpoint("after_corpus_refs")
+            if not await self.repository.cas_contract_head(session, {
+                "project_id": command.project_id,
+                "base_revision": saved.base_head_revision,
+                "revision": preview.expected_revision,
+                "creation_contract_id": creation_id,
+                "style_contract_id": style_id,
+                "creation_hash": preview.creation_hash,
+                "style_hash": preview.style_hash, "updated_at": now,
+            }):
+                raise ContractConflict()
+            self.failpoint("after_head_cas")
+            if not await self.repository.delete_draft_cas(
+                session, command.project_id, saved.draft_version,
+                saved.content_hash,
+            ):
+                raise ContractConflict()
+            self.failpoint("after_draft_delete")
+            self.failpoint("before_request_success")
+            if not await self.repository.succeed_confirmation_request(session, {
+                "project_id": command.project_id,
+                "idempotency_key": command.idempotency_key,
+                "request_hash": request_hash,
+                "creation_contract_id": creation_id,
+                "style_contract_id": style_id,
+                "result_revision": preview.expected_revision,
+                "completed_at": now,
+            }):
+                raise ContractConflict()
+            return self._confirmed_result(preview, creation_id, style_id)
 
     async def clone_current(self, project_id: str) -> ContractDraftResult:
         async with self.transaction_factory() as session:

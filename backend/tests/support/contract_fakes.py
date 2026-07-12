@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from copy import deepcopy
 
@@ -141,6 +142,13 @@ class MemoryContractRepository:
         }
         self.drafts: dict[str, dict] = {}
         self.confirmed: dict[str, dict] = {}
+        self.confirmation_requests: dict[tuple[str, str], dict] = {}
+        self.creation_contracts: dict[str, dict] = {}
+        self.style_contracts: dict[str, dict] = {}
+        self.engine_refs: dict[str, dict] = {}
+        self.style_refs: list[dict] = []
+        self.experience_refs: list[dict] = []
+        self.corpus_refs: list[dict] = []
         self.write_count = 0
         self.events: list[str] = []
 
@@ -178,6 +186,121 @@ class MemoryContractRepository:
         row = self.heads.get(project_id)
         return deepcopy(row) if row else None
 
+    async def lock_contract_head(self, session, project_id):
+        self.events.append("lock-contract-head")
+        return await self.read_contract_head(session, project_id)
+
+    async def read_confirmation_request(self, session, project_id, key):
+        return deepcopy(self.confirmation_requests.get((project_id, key)))
+
+    async def insert_confirmation_request(self, session, row):
+        key = (row["project_id"], row["idempotency_key"])
+        if key in self.confirmation_requests:
+            return False
+        self.confirmation_requests[key] = deepcopy(row) | {"status": "reserved"}
+        return True
+
+    async def insert_creation_contract(self, session, row):
+        if row["id"] in self.creation_contracts:
+            return False
+        self.creation_contracts[row["id"]] = deepcopy(row)
+        return True
+
+    async def insert_style_contract(self, session, row):
+        if row["id"] in self.style_contracts:
+            return False
+        self.style_contracts[row["id"]] = deepcopy(row)
+        return True
+
+    async def insert_engine_ref(self, session, row):
+        self.engine_refs[row["creation_contract_id"]] = deepcopy(row)
+        return True
+
+    async def insert_style_refs(self, session, rows):
+        self.style_refs.extend(deepcopy(rows))
+        return True
+
+    async def insert_experience_refs(self, session, rows):
+        self.experience_refs.extend(deepcopy(rows))
+        return True
+
+    async def insert_corpus_refs(self, session, rows):
+        self.corpus_refs.extend(deepcopy(rows))
+        return True
+
+    async def cas_contract_head(self, session, row):
+        current = self.heads.get(row["project_id"])
+        if current is None or current["revision"] != row["base_revision"]:
+            return False
+        self.heads[row["project_id"]] = {
+            "project_id": row["project_id"], "revision": row["revision"],
+            "creation_contract_id": row["creation_contract_id"],
+            "style_contract_id": row["style_contract_id"],
+            "creation_hash": row["creation_hash"], "style_hash": row["style_hash"],
+        }
+        return True
+
+    async def delete_draft_cas(self, session, project_id, version, content_hash):
+        row = self.drafts.get(project_id)
+        if row is None or row["draft_version"] != version or row["content_hash"] != content_hash:
+            return False
+        del self.drafts[project_id]
+        return True
+
+    async def succeed_confirmation_request(self, session, row):
+        key = (row["project_id"], row["idempotency_key"])
+        request = self.confirmation_requests.get(key)
+        if request is None or request["status"] != "reserved" or request["request_hash"] != row["request_hash"]:
+            return False
+        request.update(deepcopy(row) | {
+            "status": "succeeded", "result_revision": row["result_revision"],
+        })
+        creation = self.creation_contracts[row["creation_contract_id"]]
+        style = self.style_contracts[row["style_contract_id"]]
+        engine = self.engine_refs[row["creation_contract_id"]]
+        self.confirmed[row["project_id"]] = {
+            "project_id": row["project_id"],
+            "revision": row["result_revision"],
+            "seed_id": creation["seed_id"],
+            "seed_revision_id": creation["seed_revision_id"],
+            "seed_hash": creation["seed_hash"],
+            "engine_option_id": engine["engine_option_id"],
+            "engine_hash": engine["engine_hash"],
+            "engine_batch_id": self.engines[engine["engine_option_id"]]["batch_id"],
+            "binding_revision_id": creation["binding_revision_id"],
+            "binding_revision": int(json.loads(creation["content_json"])["modelBindingRevision"]),
+            "binding_hash": creation["binding_hash"],
+            "creation_hash": creation["content_hash"],
+            "style_hash": style["content_hash"],
+            "creation_json": creation["content_json"],
+            "style_json": style["merged_style_json"],
+            "likes_json": style["likes_json"],
+            "dislikes_json": style["dislikes_json"],
+            "style_contract_id": style["id"],
+            "creation_contract_id": creation["id"],
+            "style_refs": tuple({
+                "role": ref["role"], "id": ref["style_template_id"],
+                "revision": ref["asset_revision"], "contentHash": ref["asset_hash"],
+            } for ref in self.style_refs if ref["style_contract_id"] == style["id"]),
+            "experience_card_refs": tuple({
+                "id": ref["experience_card_id"], "revision": ref["asset_revision"],
+                "contentHash": ref["asset_hash"],
+            } for ref in self.experience_refs if ref["creation_contract_id"] == creation["id"]),
+            "corpus_source_refs": tuple({
+                "id": ref["corpus_source_id"], "revision": ref["source_revision"],
+                "contentHash": ref["source_hash"], "selectionMode": ref["selection_mode"],
+            } for ref in self.corpus_refs if ref["creation_contract_id"] == creation["id"]),
+        }
+        return True
+
+    async def list_contract_revisions(self, session, project_id, limit):
+        rows = [
+            {"revision": row["revision"]}
+            for row in self.creation_contracts.values()
+            if row["project_id"] == project_id
+        ]
+        return sorted(rows, key=lambda row: row["revision"], reverse=True)[:limit]
+
     async def insert_draft(self, session, row):
         self.events.append("insert-draft")
         self.write_count += 1
@@ -201,11 +324,11 @@ class MemoryContractRepository:
         self.events.append("lock-selected-seed")
         return await self.read_selected_seed(session, project_id)
 
-    async def read_seed_revision(self, session, project_id, revision_id):
+    async def read_seed_revision(self, session, project_id, revision_id, *, lock=False):
         row = self.seed_revisions.get(revision_id)
         return deepcopy(row) if project_id == "p1" and row else None
 
-    async def read_engine_option(self, session, project_id, option_id):
+    async def read_engine_option(self, session, project_id, option_id, *, lock=False):
         row = self.engines.get(option_id)
         return deepcopy(row) if row and row["project_id"] == project_id else None
 
@@ -223,21 +346,22 @@ class MemoryContractRepository:
     async def lock_binding_snapshot(self, session, project_id):
         return await self.read_binding_snapshot(session, project_id)
 
-    async def read_style_revision(self, session, asset_id):
+    async def read_style_revision(self, session, asset_id, *, lock=False):
         return deepcopy(self.styles.get(asset_id))
 
-    async def read_experience_revision(self, session, asset_id):
+    async def read_experience_revision(self, session, asset_id, *, lock=False):
         return deepcopy(self.cards.get(asset_id))
 
-    async def read_corpus_revision(self, session, asset_id):
+    async def read_corpus_revision(self, session, asset_id, *, lock=False):
         return deepcopy(self.sources.get(asset_id))
 
-    async def read_confirmed_snapshot(self, session, project_id):
+    async def read_confirmed_snapshot(self, session, project_id, revision=None):
         stored = self.confirmed.get(project_id)
-        if stored is None:
+        if stored is None or (revision is not None and stored["revision"] != revision):
             return None
         snapshot = deepcopy(stored)
         binding = self.binding_revisions.get(snapshot["binding_revision_id"])
+        snapshot["binding_items"] = deepcopy((binding or {}).get("items") or ())
         seed = self.seed_revisions.get(snapshot["seed_revision_id"])
         engine = self.engines.get(snapshot["engine_option_id"])
         snapshot["actual_binding_hash"] = (
@@ -269,7 +393,7 @@ class MemoryContractRepository:
 
 
 class ContractHarness:
-    def __init__(self):
+    def __init__(self, *, failpoint=lambda _stage: None):
         from backend.services.contracts import ContractService
 
         self.repository = MemoryContractRepository()
@@ -283,6 +407,7 @@ class ContractHarness:
             connection_factory=self.connection,
             id_factory=lambda: next(ids),
             clock=lambda: 1_000_000,
+            failpoint=failpoint,
         )
 
     @asynccontextmanager

@@ -261,3 +261,62 @@ def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():
     assert cloned.json()["baseHeadRevision"] == 6
     assert cloned.json()["draftVersion"] == 1
     assert second.status_code == 409
+
+
+def test_confirm_route_is_strict_returns_201_and_head_history_are_safe():
+    client, harness = make_client()
+    saved = client.put(
+        "/api/projects/p1/contract-draft", json=save_body(harness)
+    ).json()
+    body = {
+        "idempotencyKey": "api-confirm-1",
+        "expectedDraftVersion": saved["draftVersion"],
+        "expectedDraftHash": saved["contentHash"],
+    }
+
+    confirmed = client.post("/api/projects/p1/contracts/confirm", json=body)
+    head = client.get("/api/projects/p1/contracts/head")
+    history = client.get("/api/projects/p1/contracts/history")
+
+    assert confirmed.status_code == 201
+    assert head.status_code == history.status_code == 200
+    assert confirmed.json()["revision"] == head.json()["revision"] == 1
+    assert history.json()["items"] == [head.json()]
+    assert len(head.json()["bindingRef"]["items"]) == 8
+    assert head.json()["contractReady"] is True
+    forbidden = (
+        "api_key", "apikey", "base_url", "baseurl", "payload_json",
+        "raw", "path", "secret",
+    )
+    assert all(word not in (confirmed.text + head.text + history.text).lower()
+               for word in forbidden)
+
+
+@pytest.mark.parametrize("body", (
+    {},
+    {"idempotencyKey": "x", "expectedDraftVersion": 1,
+     "expectedDraftHash": "a" * 64, "extra": True},
+    {"idempotencyKey": "x" * 65, "expectedDraftVersion": 1,
+     "expectedDraftHash": "a" * 64},
+    {"idempotencyKey": "/private/key", "expectedDraftVersion": 1,
+     "expectedDraftHash": "a" * 64},
+))
+def test_confirm_route_manually_rejects_and_redacts_invalid_body(body):
+    client, _ = make_client()
+    response = client.post("/api/projects/p1/contracts/confirm", json=body)
+    assert response.status_code == 422
+    assert response.json()["code"] == "ContractRequestInvalid"
+    assert "/private/key" not in response.text
+
+
+def test_head_zero_and_history_limit_are_explicit_and_bounded():
+    client, _ = make_client()
+    head = client.get("/api/projects/p1/contracts/head")
+    assert head.status_code == 200
+    assert head.json() == {
+        "projectId": "p1", "revision": 0, "hasContract": False,
+        "contractReady": False, "reasons": ["contract_missing"],
+    }
+    assert client.get(
+        "/api/projects/p1/contracts/history?limit=101"
+    ).status_code == 422
