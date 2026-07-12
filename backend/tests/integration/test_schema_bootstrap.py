@@ -112,11 +112,12 @@ async def _insert_revision_one_contracts(session):
         """INSERT INTO creation_contracts
            (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,genre_profile_key,
-            quality_charter_version,total_word_min,total_word_max,chapter_char_min,
-            chapter_char_target,chapter_char_max,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy',1,
-                   80000,120000,2000,3000,4000,%s,%s,%s)""",
-        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, '{}', HASH_B, NOW),
+            quality_charter_version,total_word_min,total_word_max,
+            chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
+                   80000,120000,'按情节自然切章','{}',%s,%s,%s,%s)""",
+        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, HASH_A, '{}', HASH_B, NOW),
     )
     await session.execute(
         """INSERT INTO style_contracts
@@ -819,11 +820,12 @@ async def test_specialized_asset_refs_accept_valid_and_reject_invalid_revisions(
         """INSERT INTO creation_contracts
            (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,genre_profile_key,
-            quality_charter_version,total_word_min,total_word_max,chapter_char_min,
-            chapter_char_target,chapter_char_max,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy',1,
-                   80000,120000,2000,3000,4000,%s,%s,%s)""",
-        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, '{}', HASH_B, NOW),
+            quality_charter_version,total_word_min,total_word_max,
+            chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
+                   80000,120000,'按情节自然切章','{}',%s,%s,%s,%s)""",
+        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, HASH_A, '{}', HASH_B, NOW),
     )
     await session.execute(
         """INSERT INTO style_contracts

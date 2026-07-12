@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
-from backend.domain.model_bindings import TASK_KEYS
+from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
 from backend.tests.support.story_engine_fakes import option
 
 
@@ -79,20 +79,28 @@ class MemoryContractRepository:
                 "content_hash": engine_hash,
             }
         }
+        binding_items = tuple(BindingItem(
+            task_key=task,
+            resolution_status="bound",
+            provider_id=f"provider-{task}",
+            provider_name_snapshot=f"Provider {task}",
+            model_name_snapshot=f"model-{task}",
+        ) for task in TASK_KEYS)
+        binding_hash = canonical_hash(BindingRevision(
+            project_id="p1", revision=3, items=binding_items,
+        ))
         self.binding = {
+            "project_id": "p1",
             "revision": 3,
             "binding_revision_id": "binding-revision-3",
-            "content_hash": "b" * 64,
+            "content_hash": binding_hash,
             "items": tuple(
                 {
-                    "task_key": task,
-                    "resolution_status": "bound",
-                    "provider_id": f"provider-{task}",
-                    "provider_name_snapshot": f"Provider {task}",
-                    "model_name_snapshot": f"model-{task}",
+                    **item.model_dump(mode="python"),
+                    "item_hash": canonical_hash(item),
                     "provider_ready": 1,
                 }
-                for task in TASK_KEYS
+                for item in binding_items
             ),
         }
         self.binding_revisions = {
@@ -101,7 +109,7 @@ class MemoryContractRepository:
         self.binding_head = {
             "head_revision": 3,
             "head_binding_revision_id": "binding-revision-3",
-            "head_hash": "b" * 64,
+            "head_hash": binding_hash,
         }
         self.styles = {
             "style-primary": self._asset_row(
@@ -278,6 +286,8 @@ class MemoryContractRepository:
             "dislikes_json": style["dislikes_json"],
             "style_contract_id": style["id"],
             "creation_contract_id": creation["id"],
+            "reference_manifest_json": creation["reference_manifest_json"],
+            "reference_manifest_hash": creation["reference_manifest_hash"],
             "style_refs": tuple({
                 "role": ref["role"], "id": ref["style_template_id"],
                 "revision": ref["asset_revision"], "contentHash": ref["asset_hash"],
@@ -347,12 +357,18 @@ class MemoryContractRepository:
         return await self.read_binding_snapshot(session, project_id)
 
     async def read_style_revision(self, session, asset_id, *, lock=False):
+        if lock:
+            self.events.append(f"lock-asset:style:{asset_id}")
         return deepcopy(self.styles.get(asset_id))
 
     async def read_experience_revision(self, session, asset_id, *, lock=False):
+        if lock:
+            self.events.append(f"lock-asset:experience:{asset_id}")
         return deepcopy(self.cards.get(asset_id))
 
     async def read_corpus_revision(self, session, asset_id, *, lock=False):
+        if lock:
+            self.events.append(f"lock-asset:corpus:{asset_id}")
         return deepcopy(self.sources.get(asset_id))
 
     async def read_confirmed_snapshot(self, session, project_id, revision=None):

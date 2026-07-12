@@ -125,6 +125,15 @@ def test_creation_contract_validates_word_range_and_binding_revision():
         CreationContractPayload(**creation_values(modelBindingRevision=0))
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    ("channelProfileKey", "genreProfileKey", "qualityCharterVersion"),
+)
+def test_creation_contract_profile_and_version_keys_are_bounded_to_schema(field_name):
+    with pytest.raises(ValidationError):
+        CreationContractPayload(**creation_values(**{field_name: "x" * 121}))
+
+
 def test_style_contract_has_exact_approved_fields_and_requires_primary_style():
     payload = StyleContractPayload(**style_values())
 

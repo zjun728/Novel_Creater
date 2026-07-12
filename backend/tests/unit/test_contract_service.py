@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.model_bindings import BindingItem, BindingRevision
 from backend.services.contracts import (
     ConfirmContracts,
     ContractConflict,
@@ -114,6 +115,19 @@ def test_safe_text_validation_does_not_reject_normal_chinese_colons():
     assert draft.chapterCapacityPolicy.startswith("节奏：")
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    ("channelProfileKey", "genreProfileKey", "qualityCharterVersion"),
+)
+def test_relational_profile_and_version_keys_share_the_120_character_limit(field_name):
+    harness = ContractHarness()
+    values = draft_values(harness.repository)
+    values[field_name] = "x" * 121
+
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**values)
+
+
 @pytest.mark.asyncio
 async def test_corrupt_stored_path_is_not_echoed_through_exception_traceback():
     harness = ContractHarness()
@@ -149,7 +163,7 @@ async def test_create_reload_update_uses_one_draft_and_version_cas_from_head_zer
     assert "lock-selected-seed" in harness.repository.events
     assert created.draft.modelBindingRef.id == "binding-revision-3"
     assert created.draft.modelBindingRef.revision == 3
-    assert created.draft.modelBindingRef.contentHash == "b" * 64
+    assert created.draft.modelBindingRef.contentHash == harness.repository.binding["content_hash"]
     assert reloaded == created
     assert updated.draft_version == 2
     assert updated.base_head_revision == 0
@@ -249,7 +263,7 @@ async def test_preview_is_deterministic_read_only_and_freezes_exact_dependencies
     assert first.engine_ref.id == saved.draft.engineOptionId
     assert first.engine_ref.content_hash == saved.draft.engineHash
     assert first.binding_ref.revision == 3
-    assert first.binding_ref.content_hash == "b" * 64
+    assert first.binding_ref.content_hash == harness.repository.binding["content_hash"]
     assert first.style_refs[0].content_hash == saved.draft.primaryStyleRef.contentHash
     assert first.experience_card_refs[0].revision == 3
     assert first.corpus_source_refs[0].revision == 5
@@ -342,13 +356,21 @@ async def test_resave_explicitly_refreshes_frozen_binding_and_restores_readiness
         **harness.repository.binding,
         "revision": 4,
         "binding_revision_id": "binding-revision-4",
-        "content_hash": "c" * 64,
     }
+    revision4["content_hash"] = canonical_hash(BindingRevision(
+        project_id="p1", revision=4,
+        items=tuple(BindingItem(**{
+            key: row[key] for key in (
+                "task_key", "resolution_status", "provider_id",
+                "provider_name_snapshot", "model_name_snapshot",
+            )
+        }) for row in revision4["items"]),
+    ))
     harness.repository.binding_revisions["binding-revision-4"] = revision4
     harness.repository.binding_head = {
         "head_revision": 4,
         "head_binding_revision_id": "binding-revision-4",
-        "head_hash": "c" * 64,
+        "head_hash": revision4["content_hash"],
     }
 
     drifted = await harness.service.preview("p1")
@@ -653,6 +675,42 @@ async def test_confirm_atomically_consumes_draft_and_freezes_all_relations():
             ref.model_dump(mode="json") for ref in result.corpus_source_refs
         ],
     })
+
+
+@pytest.mark.asyncio
+async def test_confirm_locks_assets_by_stable_type_and_id_but_preserves_draft_order():
+    harness = ContractHarness()
+    original = harness.repository.cards["card-1"]
+    earlier = {
+        **original, "id": "card-0", "stable_key": "earlier-card",
+        "head_id": "card-0",
+    }
+    harness.repository.cards["card-0"] = earlier
+    refs = tuple({
+        "id": row["id"], "revision": row["revision"],
+        "contentHash": row["content_hash"],
+    } for row in (original, earlier))
+    saved = await harness.service.save_draft(command(
+        harness, experienceCardRefs=refs,
+    ))
+    harness.repository.events.clear()
+
+    result = await harness.service.confirm(confirmation(saved))
+
+    assert tuple(ref.id for ref in result.experience_card_refs) == (
+        "card-1", "card-0",
+    )
+    asset_locks = tuple(
+        event for event in harness.repository.events
+        if event.startswith("lock-asset:")
+    )
+    assert asset_locks == (
+        "lock-asset:corpus:source-1",
+        "lock-asset:experience:card-0",
+        "lock-asset:experience:card-1",
+        "lock-asset:style:style-primary",
+        "lock-asset:style:style-secondary",
+    )
 
 
 @pytest.mark.asyncio

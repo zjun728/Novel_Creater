@@ -344,9 +344,15 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
         "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete restrict",
         "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete restrict",
         "check (total_word_min > 0 and total_word_max >= total_word_min)",
-        "check (chapter_char_min > 0 and chapter_char_target >= chapter_char_min and chapter_char_max >= chapter_char_target)",
     ):
         assert contract in creation
+    assert "quality_charter_version varchar(120) not null" in creation
+    assert "chapter_capacity_policy text not null" in creation
+    assert "reference_manifest_json json not null" in creation
+    assert "reference_manifest_hash char(64) not null" in creation
+    assert "chapter_char_min" not in creation
+    assert "chapter_char_target" not in creation
+    assert "chapter_char_max" not in creation
     style = _table_statement("style_contracts")
     assert "foreign key (project_id, creation_contract_id, revision) references creation_contracts(project_id, id, revision) on delete restrict" in style
     engine_refs = _table_statement("creation_contract_engine_refs")

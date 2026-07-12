@@ -21,7 +21,7 @@ from pydantic import (
 
 from backend.domain.contracts import CreationContractPayload, StyleContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
-from backend.domain.model_bindings import TASK_KEYS, BindingItem
+from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
 from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption
 from backend.http_errors import PublicDomainError
@@ -48,6 +48,11 @@ def _reject_path_shaped_text(value: str) -> str:
 Text = Annotated[
     str,
     Field(min_length=1, max_length=MAX_TEXT),
+    AfterValidator(_reject_path_shaped_text),
+]
+ProfileOrVersionKey = Annotated[
+    str,
+    Field(min_length=1, max_length=120),
     AfterValidator(_reject_path_shaped_text),
 ]
 Identifier = Annotated[
@@ -94,9 +99,9 @@ class ContractDraftInput(_StrictValue):
     schemaVersion: Literal["contract-draft-v1"]
     engineOptionId: Identifier
     engineHash: Hash
-    channelProfileKey: Text
-    genreProfileKey: Text
-    qualityCharterVersion: Text
+    channelProfileKey: ProfileOrVersionKey
+    genreProfileKey: ProfileOrVersionKey
+    qualityCharterVersion: ProfileOrVersionKey
     totalWordRange: tuple[int, int]
     chapterCapacityPolicy: Text
     primaryStyleRef: AssetRevisionRef
@@ -508,11 +513,34 @@ class ContractService:
             raise ContractPreconditionFailed() from None
 
     @staticmethod
+    def _binding_integrity(items, binding) -> bool:
+        """Verify the persisted binding with the M2A canonical hash contract."""
+
+        try:
+            rows = tuple(binding.get("items") or ())
+            revision = BindingRevision(
+                project_id=binding["project_id"],
+                revision=int(binding["revision"]),
+                items=tuple(items),
+            )
+            return (
+                len(rows) == len(items)
+                and all(
+                    row.get("item_hash") == canonical_hash(item)
+                    for item, row in zip(items, rows)
+                )
+                and binding.get("content_hash") == canonical_hash(revision)
+            )
+        except (KeyError, TypeError, ValueError, ValidationError):
+            return False
+
+    @staticmethod
     def _binding_ready(items, binding) -> bool:
         rows = tuple(binding.get("items") or ()) if binding else ()
         return (
             tuple(item.task_key for item in items) == TASK_KEYS
             and len(rows) == len(items)
+            and ContractService._binding_integrity(items, binding)
             and all(
                 item.resolution_status == "bound"
                 and int(row.get("provider_ready") or 0) == 1
@@ -897,6 +925,69 @@ class ContractService:
         )
 
     @staticmethod
+    def _reference_manifest(result) -> dict:
+        """Canonical immutable source for every confirmed reference."""
+
+        return {
+            "schemaVersion": "contract-reference-manifest-v1",
+            "seedRef": {
+                "id": result.seed_ref.id,
+                "revisionId": result.seed_ref.revision_id,
+                "contentHash": result.seed_ref.content_hash,
+            },
+            "engineRef": {
+                "id": result.engine_ref.id,
+                "batchId": result.engine_ref.batch_id,
+                "contentHash": result.engine_ref.content_hash,
+            },
+            "bindingRef": {
+                "id": result.binding_ref.id,
+                "revision": result.binding_ref.revision,
+                "contentHash": result.binding_ref.content_hash,
+            },
+            "styleRefs": [ref.model_dump(mode="json") for ref in result.style_refs],
+            "experienceCardRefs": [
+                ref.model_dump(mode="json") for ref in result.experience_card_refs
+            ],
+            "corpusSourceRefs": [
+                ref.model_dump(mode="json") for ref in result.corpus_source_refs
+            ],
+        }
+
+    async def _lock_contract_assets(self, session, draft):
+        lock_requests = [
+            ("style", draft.primaryStyleRef.id),
+            *(((("style", draft.secondaryStyleRef.id),)
+               if draft.secondaryStyleRef else ())),
+            *(("experience", ref.id) for ref in draft.experienceCardRefs),
+            *(("corpus", ref.id) for ref in draft.corpusSourceRefs),
+        ]
+        locked_assets = {}
+        for kind, asset_id in sorted(lock_requests):
+            if kind == "style":
+                row = await self.repository.read_style_revision(
+                    session, asset_id, lock=True
+                )
+            elif kind == "experience":
+                row = await self.repository.read_experience_revision(
+                    session, asset_id, lock=True
+                )
+            else:
+                row = await self.repository.read_corpus_revision(
+                    session, asset_id, lock=True
+                )
+            locked_assets[(kind, asset_id)] = row
+        return (
+            locked_assets[("style", draft.primaryStyleRef.id)],
+            (locked_assets[("style", draft.secondaryStyleRef.id)]
+             if draft.secondaryStyleRef else None),
+            tuple(locked_assets[("experience", ref.id)]
+                  for ref in draft.experienceCardRefs),
+            tuple(locked_assets[("corpus", ref.id)]
+                  for ref in draft.corpusSourceRefs),
+        )
+
+    @staticmethod
     def _confirmed_result(preview, creation_id, style_id):
         return ConfirmedContractResult(
             project_id=preview.project_id,
@@ -959,6 +1050,12 @@ class ContractService:
                 or canonical_hash(creation.selectedEngine) != snapshot["engine_hash"]
                 or creation.modelBindingRevision != int(snapshot["binding_revision"])
                 or snapshot["binding_hash"] != snapshot.get("actual_binding_hash")
+                or not self._binding_integrity(binding_items, {
+                    "project_id": snapshot["project_id"],
+                    "revision": snapshot["binding_revision"],
+                    "content_hash": snapshot["binding_hash"],
+                    "items": snapshot.get("binding_items") or (),
+                })
                 or snapshot["seed_hash"] != snapshot.get("actual_seed_hash")
                 or snapshot["engine_hash"] != snapshot.get("actual_engine_hash")
                 or any(
@@ -972,7 +1069,7 @@ class ContractService:
                 raise ValueError("confirmed snapshot hash mismatch")
         except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
             raise ContractPreconditionFailed() from None
-        return ConfirmedContractResult(
+        result = ConfirmedContractResult(
             project_id=snapshot.get("project_id", ""),
             revision=int(snapshot["revision"]),
             creation_contract_id=snapshot["creation_contract_id"],
@@ -999,6 +1096,18 @@ class ContractService:
             creation_hash=snapshot["creation_hash"],
             style_hash=snapshot["style_hash"],
         )
+        try:
+            stored_manifest = _json_object(snapshot["reference_manifest_json"])
+            if (
+                canonical_hash(stored_manifest)
+                != snapshot["reference_manifest_hash"]
+                or canonical_json(stored_manifest)
+                != canonical_json(self._reference_manifest(result))
+            ):
+                raise ValueError("confirmed reference manifest mismatch")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            raise ContractPreconditionFailed() from None
+        return result
 
     async def get_head(self, project_id: str):
         async with self.connection_factory() as session:
@@ -1126,26 +1235,9 @@ class ContractService:
             binding = await self.repository.lock_binding_snapshot(
                 session, command.project_id
             )
-            primary = await self.repository.read_style_revision(
-                session, draft.primaryStyleRef.id, lock=True
+            primary, secondary, cards, sources = (
+                await self._lock_contract_assets(session, draft)
             )
-            secondary = (
-                await self.repository.read_style_revision(
-                    session, draft.secondaryStyleRef.id, lock=True
-                ) if draft.secondaryStyleRef else None
-            )
-            cards = tuple([
-                await self.repository.read_experience_revision(
-                    session, ref.id, lock=True
-                )
-                for ref in draft.experienceCardRefs
-            ])
-            sources = tuple([
-                await self.repository.read_corpus_revision(
-                    session, ref.id, lock=True
-                )
-                for ref in draft.corpusSourceRefs
-            ])
             head = await self.repository.lock_contract_head(
                 session, command.project_id
             )
@@ -1188,8 +1280,7 @@ class ContractService:
             }):
                 raise ContractConflict()
             self.failpoint("after_confirmation_reserve")
-            quality_match = re.search(r"(\d+)$", saved.draft.qualityCharterVersion)
-            quality_version = int(quality_match.group(1)) if quality_match else 1
+            reference_manifest = self._reference_manifest(preview)
             if not await self.repository.insert_creation_contract(session, {
                 "id": creation_id, "project_id": command.project_id,
                 "revision": preview.expected_revision,
@@ -1200,11 +1291,12 @@ class ContractService:
                 "binding_hash": preview.binding_ref.content_hash,
                 "channel_profile_key": saved.draft.channelProfileKey,
                 "genre_profile_key": saved.draft.genreProfileKey,
-                "quality_charter_version": quality_version,
+                "quality_charter_version": saved.draft.qualityCharterVersion,
                 "total_word_min": saved.draft.totalWordRange[0],
                 "total_word_max": saved.draft.totalWordRange[1],
-                "chapter_char_min": 1, "chapter_char_target": 1,
-                "chapter_char_max": 1,
+                "chapter_capacity_policy": saved.draft.chapterCapacityPolicy,
+                "reference_manifest_json": canonical_json(reference_manifest),
+                "reference_manifest_hash": canonical_hash(reference_manifest),
                 "content_json": canonical_json(preview.creation_contract),
                 "content_hash": preview.creation_hash, "confirmed_at": now,
             }):

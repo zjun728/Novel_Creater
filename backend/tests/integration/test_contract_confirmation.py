@@ -2,21 +2,28 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
 from backend.repositories.contracts import ContractRepository
 from backend.services.contracts import (
+    AssetRevisionRef,
     ConfirmContracts,
     ContractConflict,
+    ContractPreconditionFailed,
     ContractService,
     SaveContractDraft,
 )
+from backend.tests.support.contract_fakes import style_asset
 from backend.tests.integration.test_contract_drafts import (
     BINDING,
     CARD,
     ENGINE,
     PROJECT,
+    PROVIDER,
     SOURCE,
     STYLE,
     _bootstrap,
@@ -114,6 +121,15 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     )
     assert request["status"] == "succeeded"
     assert request["result_revision"] == 1
+    creation_row = await disposable_mysql.session.fetchone(
+        """SELECT quality_charter_version,chapter_capacity_policy
+             FROM creation_contracts WHERE project_id=%s""",
+        (PROJECT,),
+    )
+    assert creation_row == {
+        "quality_charter_version": saved.draft.qualityCharterVersion,
+        "chapter_capacity_policy": saved.draft.chapterCapacityPolicy,
+    }
     assert (await service.get_head(PROJECT)).revision == 1
     assert tuple(item.revision for item in await service.history(PROJECT)) == (1,)
 
@@ -133,6 +149,67 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     assert history[1].style_contract == first.style_contract
 
 
+@pytest.mark.parametrize("drift", ("item_content", "item_hash", "aggregate_hash"))
+@pytest.mark.asyncio
+async def test_real_confirmation_rejects_any_binding_snapshot_drift(
+    disposable_mysql, drift
+):
+    service = _service(disposable_mysql)
+    _, saved = await _saved(disposable_mysql, service)
+
+    if drift == "item_content":
+        await disposable_mysql.session.execute(
+            """UPDATE project_model_binding_items
+               SET model_name_snapshot='tampered-model'
+               WHERE binding_revision_id=%s AND task_key='writing'""",
+            (BINDING,),
+        )
+    elif drift == "item_hash":
+        await disposable_mysql.session.execute(
+            """UPDATE project_model_binding_items SET item_hash=%s
+               WHERE binding_revision_id=%s AND task_key='writing'""",
+            ("f" * 64, BINDING),
+        )
+    else:
+        await disposable_mysql.session.execute(
+            """UPDATE project_model_binding_revisions SET content_hash=%s
+               WHERE id=%s""",
+            ("f" * 64, BINDING),
+        )
+        await disposable_mysql.session.execute(
+            """UPDATE project_model_binding_heads SET content_hash=%s
+               WHERE binding_revision_id=%s""",
+            ("f" * 64, BINDING),
+        )
+
+    with pytest.raises(ContractConflict):
+        await service.confirm(_confirm(saved, key=f"binding-{drift}"))
+
+
+@pytest.mark.parametrize(("table", "owner_column", "owner_id"), (
+    ("style_contract_template_refs", "style_contract_id", "style_contract_id"),
+    ("creation_contract_experience_refs", "creation_contract_id", "creation_contract_id"),
+    ("creation_contract_corpus_refs", "creation_contract_id", "creation_contract_id"),
+))
+@pytest.mark.asyncio
+async def test_real_reads_fail_closed_when_a_confirmed_ref_projection_is_deleted(
+    disposable_mysql, table, owner_column, owner_id
+):
+    service = _service(disposable_mysql)
+    _, saved = await _saved(disposable_mysql, service)
+    confirmed = await service.confirm(_confirm(saved))
+    owner = getattr(confirmed, owner_id)
+    await disposable_mysql.session.execute(
+        f"DELETE FROM {table} WHERE {owner_column}=%s",
+        (owner,),
+    )
+
+    with pytest.raises(ContractPreconditionFailed):
+        await service.get_head(PROJECT)
+    with pytest.raises(ContractPreconditionFailed):
+        await service.history(PROJECT)
+
+
 @pytest.mark.asyncio
 async def test_real_two_first_confirmations_have_exactly_one_winner(disposable_mysql):
     service = _service(disposable_mysql)
@@ -148,6 +225,137 @@ async def test_real_two_first_confirmations_have_exactly_one_winner(disposable_m
     assert sum(isinstance(item, ContractConflict) for item in outcomes) == 1
     assert await _count(disposable_mysql.session, "creation_contracts") == 1
     assert await _count(disposable_mysql.session, "contract_confirmation_requests") == 1
+
+
+@pytest.mark.asyncio
+async def test_real_reverse_cross_project_provider_and_asset_locks_finish_without_deadlock(
+    disposable_mysql,
+):
+    await _bootstrap(disposable_mysql.session)
+    project2 = "84000000-0000-0000-0000-000000000001"
+    binding2 = "84000000-0000-0000-0000-000000000002"
+    provider2 = "84000000-0000-0000-0000-000000000003"
+    style2 = "84000000-0000-0000-0000-000000000004"
+    now = 1_900_000_000_500
+    await disposable_mysql.session.execute(
+        """INSERT INTO projects
+           (id,title,genre,description,target_words,target_chapters,status,
+            current_chapter,created_at,updated_at)
+           VALUES (%s,'reverse locks','fantasy','test',100000,100,'drafting',0,%s,%s)""",
+        (project2, now, now),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO provider_profiles
+           (id,name,provider_type,model_name,base_url,api_key,enabled,sort_order,
+            stream,max_context_tokens,max_output_tokens,temperature,top_p,
+            supports_json,supports_streaming,notes,thinking,lifecycle_status,
+            deleted_at,created_at,updated_at)
+           VALUES (%s,'Provider Two','test','model-two','https://test.invalid',
+                   'test-only-key',1,2,1,100000,4096,0.7,0.9,1,1,'',NULL,
+                   'active',NULL,%s,%s)""",
+        (provider2, now, now),
+    )
+
+    async def install_binding(project_id, binding_id, reverse):
+        items = tuple(BindingItem(
+            task_key=task, resolution_status="bound",
+            provider_id=(provider2 if (index % 2 == 0) ^ reverse else PROVIDER),
+            provider_name_snapshot=(
+                "Provider Two" if (index % 2 == 0) ^ reverse else "Contract Provider"
+            ),
+            model_name_snapshot=(
+                "model-two" if (index % 2 == 0) ^ reverse else "test-model"
+            ),
+        ) for index, task in enumerate(TASK_KEYS))
+        revision_hash = canonical_hash(BindingRevision(
+            project_id=project_id, revision=1, items=items,
+        ))
+        if binding_id == BINDING:
+            await disposable_mysql.session.execute(
+                "DELETE FROM project_model_binding_heads WHERE project_id=%s",
+                (project_id,),
+            )
+            await disposable_mysql.session.execute(
+                "DELETE FROM project_model_binding_items WHERE binding_revision_id=%s",
+                (binding_id,),
+            )
+            await disposable_mysql.session.execute(
+                "UPDATE project_model_binding_revisions SET content_hash=%s WHERE id=%s",
+                (revision_hash, binding_id),
+            )
+        else:
+            await disposable_mysql.session.execute(
+                """INSERT INTO project_model_binding_revisions
+                   (id,project_id,revision,content_hash,source_project_id,created_at)
+                   VALUES (%s,%s,1,%s,NULL,%s)""",
+                (binding_id, project_id, revision_hash, now),
+            )
+        for item in items:
+            await disposable_mysql.session.execute(
+                """INSERT INTO project_model_binding_items
+                   (binding_revision_id,task_key,resolution_status,provider_id,
+                    provider_name_snapshot,model_name_snapshot,item_hash)
+                   VALUES (%s,%s,'bound',%s,%s,%s,%s)""",
+                (binding_id, item.task_key, item.provider_id,
+                 item.provider_name_snapshot, item.model_name_snapshot,
+                 canonical_hash(item)),
+            )
+        await disposable_mysql.session.execute(
+            "INSERT INTO project_model_binding_heads VALUES (%s,1,%s,%s,%s)",
+            (project_id, binding_id, revision_hash, now),
+        )
+
+    await install_binding(PROJECT, BINDING, False)
+    await install_binding(project2, binding2, True)
+    style_payload = style_asset(flavor="反向锁测试")
+    style_hash = canonical_hash(style_payload)
+    await disposable_mysql.session.execute(
+        """INSERT INTO style_templates
+           (id,stable_key,revision,name,payload_json,provenance_json,content_hash,
+            status,created_at) VALUES (%s,'reverse-style',1,'Reverse Style',%s,
+            '{}',%s,'active',%s)""",
+        (style2, canonical_json(style_payload), style_hash, now),
+    )
+    await disposable_mysql.session.execute(
+        "INSERT INTO style_template_heads VALUES ('reverse-style',%s,1,%s,%s)",
+        (style2, style_hash, now),
+    )
+
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+    repository = ContractRepository()
+    service = _service(disposable_mysql)
+
+    async def lock_binding(project_id):
+        async with tx() as session:
+            await session.execute("SET SESSION innodb_lock_wait_timeout=2")
+            return await repository.lock_binding_snapshot(session, project_id)
+
+    binding_results = await asyncio.wait_for(asyncio.gather(
+        lock_binding(PROJECT), lock_binding(project2),
+    ), timeout=5)
+    assert all(len(result["items"]) == 8 for result in binding_results)
+
+    primary = AssetRevisionRef(id=STYLE, revision=1, contentHash=(
+        await disposable_mysql.session.fetchone(
+            "SELECT content_hash FROM style_templates WHERE id=%s", (STYLE,)
+        )
+    )["content_hash"])
+    secondary = AssetRevisionRef(id=style2, revision=1, contentHash=style_hash)
+
+    async def lock_assets(reverse):
+        async with tx() as session:
+            await session.execute("SET SESSION innodb_lock_wait_timeout=2")
+            draft = SimpleNamespace(
+                primaryStyleRef=secondary if reverse else primary,
+                secondaryStyleRef=primary if reverse else secondary,
+                experienceCardRefs=(), corpusSourceRefs=(),
+            )
+            return await service._lock_contract_assets(session, draft)
+
+    asset_results = await asyncio.wait_for(asyncio.gather(
+        lock_assets(False), lock_assets(True),
+    ), timeout=5)
+    assert tuple(result[0]["id"] for result in asset_results) == (STYLE, style2)
 
 
 @pytest.mark.parametrize("stage", (

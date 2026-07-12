@@ -69,8 +69,8 @@ class ContractRepository:
                (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
                 binding_revision_id,binding_hash,channel_profile_key,
                 genre_profile_key,quality_charter_version,total_word_min,
-                total_word_max,chapter_char_min,chapter_char_target,
-                chapter_char_max,content_json,content_hash,confirmed_at)
+                total_word_max,chapter_capacity_policy,reference_manifest_json,
+                reference_manifest_hash,content_json,content_hash,confirmed_at)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                        %s,%s,%s)""",
             tuple(row[key] for key in (
@@ -78,7 +78,8 @@ class ContractRepository:
                 "seed_hash", "binding_revision_id", "binding_hash",
                 "channel_profile_key", "genre_profile_key",
                 "quality_charter_version", "total_word_min", "total_word_max",
-                "chapter_char_min", "chapter_char_target", "chapter_char_max",
+                "chapter_capacity_policy", "reference_manifest_json",
+                "reference_manifest_hash",
                 "content_json", "content_hash", "confirmed_at",
             )),
         )
@@ -288,34 +289,69 @@ class ContractRepository:
             (project_id, binding_revision_id)
             if binding_revision_id is not None else (project_id,)
         )
-        lock_clause = " FOR UPDATE" if lock else ""
-        rows = await session.fetchall(
-            f"""SELECT revision.revision,revision.id AS binding_revision_id,
+        base_select = f"""SELECT revision.project_id,revision.revision,
+                       revision.id AS binding_revision_id,
                        revision.content_hash,
                        head.revision AS head_revision,
                        head.binding_revision_id AS head_binding_revision_id,
                        head.content_hash AS head_hash,
                        item.task_key,item.resolution_status,item.provider_id,
                        item.provider_name_snapshot,item.model_name_snapshot,
-                       CASE WHEN {_PROVIDER_READY} THEN 1 ELSE 0 END
-                         AS provider_ready
+                       item.item_hash
                 FROM project_model_binding_revisions revision
                 JOIN project_model_binding_heads head
                   ON head.project_id=revision.project_id
                 JOIN project_model_binding_items item
                   ON item.binding_revision_id=revision.id
-                LEFT JOIN provider_profiles provider ON provider.id=item.provider_id
                 WHERE revision.project_id=%s AND {revision_predicate}
                 ORDER BY FIELD(item.task_key,'seed','planning','writing','audit',
-                  'summary','extraction','polish','market'){lock_clause}""",
-            args,
-        )
+                  'summary','extraction','polish','market')"""
+        if lock:
+            # Lock project-owned rows first. Shared provider rows are then locked by
+            # provider id, so reverse task mappings across projects cannot invert
+            # the lock order.
+            rows = await session.fetchall(f"{base_select} FOR UPDATE", args)
+            provider_ids = tuple(sorted({
+                row["provider_id"] for row in rows if row.get("provider_id")
+            }))
+            readiness = {}
+            if provider_ids:
+                providers = await session.fetchall(
+                    f"""SELECT provider.id,
+                               CASE WHEN {_PROVIDER_READY} THEN 1 ELSE 0 END
+                                 AS provider_ready
+                          FROM provider_profiles provider
+                         WHERE provider.id IN ({','.join(['%s'] * len(provider_ids))})
+                         ORDER BY provider.id FOR UPDATE""",
+                    provider_ids,
+                )
+                readiness = {
+                    row["id"]: int(row["provider_ready"]) for row in providers
+                }
+            rows = [
+                dict(row) | {
+                    "provider_ready": readiness.get(row.get("provider_id"), 0)
+                }
+                for row in rows
+            ]
+        else:
+            rows = await session.fetchall(
+                f"""SELECT snapshot.*,
+                           CASE WHEN {_PROVIDER_READY} THEN 1 ELSE 0 END
+                             AS provider_ready
+                      FROM ({base_select}) snapshot
+                      LEFT JOIN provider_profiles provider
+                        ON provider.id=snapshot.provider_id
+                     ORDER BY FIELD(snapshot.task_key,'seed','planning','writing',
+                       'audit','summary','extraction','polish','market')""",
+                args,
+            )
         if not rows:
             return None
         first = rows[0]
         return {
             key: first[key] for key in (
-                "revision", "binding_revision_id", "content_hash",
+                "project_id", "revision", "binding_revision_id", "content_hash",
                 "head_revision", "head_binding_revision_id", "head_hash",
             )
         } | {"items": tuple(rows)}
@@ -382,6 +418,8 @@ class ContractRepository:
                       creation.seed_revision_id,creation.seed_hash,
                       creation.content_json AS creation_json,
                       creation.content_hash AS creation_hash,
+                      creation.reference_manifest_json,
+                      creation.reference_manifest_hash,
                       style.merged_style_json AS style_json,
                       style.likes_json,style.dislikes_json,
                       style.content_hash AS style_hash,

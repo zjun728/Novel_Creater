@@ -79,13 +79,13 @@ async def install_matching_contract(session, project_id: str, seed):
            (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,
             genre_profile_key,quality_charter_version,total_word_min,
-            total_word_max,chapter_char_min,chapter_char_target,
-            chapter_char_max,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'default','mystery',1,
-                   90000,110000,1800,2200,2600,'{}',%s,3)""",
+            total_word_max,chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'default','mystery','quality-v1',
+                   90000,110000,'按情节自然切章','{}',%s,'{}',%s,3)""",
         (
             creation_id, project_id, seed.id, seed.revision_id,
-            seed.content_hash, binding_id, "b" * 64, "c" * 64,
+            seed.content_hash, binding_id, "b" * 64, "e" * 64, "c" * 64,
         ),
     )
     await session.execute(

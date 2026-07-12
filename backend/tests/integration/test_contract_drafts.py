@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
-from backend.domain.model_bindings import TASK_KEYS
+from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
 from backend.repositories.contracts import ContractRepository
 from backend.services.contracts import (
     AssetRevisionRef,
@@ -46,7 +46,14 @@ async def _bootstrap(session):
     card_payload = {"schemaVersion": "experience-card-v1", "rule": "选择不可逆"}
     card_hash = canonical_hash(card_payload)
     source_hash = "e" * 64
-    binding_hash = "b" * 64
+    binding_items = tuple(BindingItem(
+        task_key=task, resolution_status="bound", provider_id=PROVIDER,
+        provider_name_snapshot="Contract Provider",
+        model_name_snapshot="test-model",
+    ) for task in TASK_KEYS)
+    binding_hash = canonical_hash(BindingRevision(
+        project_id=PROJECT, revision=1, items=binding_items,
+    ))
     now = 1_900_000_000_000
     await session.execute(
         """INSERT INTO projects
@@ -91,13 +98,13 @@ async def _bootstrap(session):
            VALUES (%s,%s,1,%s,NULL,%s)""",
         (BINDING, PROJECT, binding_hash, now),
     )
-    for task in TASK_KEYS:
+    for item in binding_items:
         await session.execute(
             """INSERT INTO project_model_binding_items
                (binding_revision_id,task_key,resolution_status,provider_id,
                 provider_name_snapshot,model_name_snapshot,item_hash)
                VALUES (%s,%s,'bound',%s,'Contract Provider','test-model',%s)""",
-            (BINDING, task, PROVIDER, canonical_hash({"task": task})),
+            (BINDING, item.task_key, PROVIDER, canonical_hash(item)),
         )
     await session.execute(
         "INSERT INTO project_model_binding_heads VALUES (%s,1,%s,%s,%s)",
@@ -231,18 +238,23 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
     preview = await service.preview(PROJECT)
 
     now = 1_900_000_000_200
+    reference_manifest = service._reference_manifest(preview)
     await disposable_mysql.session.execute(
         """INSERT INTO creation_contracts
            (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,
             genre_profile_key,quality_charter_version,total_word_min,total_word_max,
-            chapter_char_min,chapter_char_target,chapter_char_max,content_json,
-            content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web-fiction','fantasy',1,100000,
-                   200000,1000,2000,3000,%s,%s,%s)""",
+            chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,100000,
+                   200000,%s,%s,%s,%s,%s,%s)""",
         (CREATION, PROJECT, SEED, SEED_REV, facts["seed_hash"], BINDING,
-         facts["binding_hash"], canonical_json(preview.creation_contract),
-         preview.creation_hash, now),
+         facts["binding_hash"], preview.creation_contract.channelProfileKey,
+         preview.creation_contract.genreProfileKey,
+         preview.creation_contract.qualityCharterVersion,
+         preview.creation_contract.chapterCapacityPolicy,
+         canonical_json(reference_manifest), canonical_hash(reference_manifest),
+         canonical_json(preview.creation_contract), preview.creation_hash, now),
     )
     await disposable_mysql.session.execute(
         """INSERT INTO style_contracts

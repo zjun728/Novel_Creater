@@ -20,6 +20,7 @@ ContractText = Annotated[
     str,
     Field(min_length=1, max_length=CONTRACT_TEXT_MAX_LENGTH),
 ]
+ProfileOrVersionKey = Annotated[str, Field(min_length=1, max_length=120)]
 StyleContractText = Annotated[
     str,
     Field(min_length=1, max_length=STYLE_CONTRACT_TEXT_MAX_LENGTH),
@@ -37,9 +38,9 @@ class CreationContractPayload(BaseModel):
     )
 
     schemaVersion: ContractText
-    channelProfileKey: ContractText
-    genreProfileKey: ContractText
-    qualityCharterVersion: ContractText
+    channelProfileKey: ProfileOrVersionKey
+    genreProfileKey: ProfileOrVersionKey
+    qualityCharterVersion: ProfileOrVersionKey
     selectedSeed: SeedPayload
     selectedEngine: StoryEngineOption
     totalWordRange: tuple[PositiveInt, PositiveInt]
