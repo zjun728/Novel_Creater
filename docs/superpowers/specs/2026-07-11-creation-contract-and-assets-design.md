@@ -82,12 +82,13 @@ M2 的最终成果是一个不可变、可追溯、可创建新修订的创作�
 - 系统依据种子和已选故事发动机确定性推荐三个风格模板。
 - 每个推荐项展示阅读体验、适用范围、同一标准场景示例和完整应用示例。
 - 作者选择一个主风格，可选一个不同的次风格。
-- 次风格只能补充局部风味，不得覆盖主风格的叙事距离、语言底色和整体阅读体验。
+- 主风格控制叙事距离、主要节奏和核心阅读奖赏；次风格只能借用少量局部技法，不得完整叠加，也不得覆盖主风格的语言底色和整体阅读体验。
 - 作者可以记录喜欢的表现和不喜欢的表现，形成项目专属 StyleContract。
 
 ### 4.4 第四步：选择经验与语料范围
 
 - 展示系统推荐的经验卡，作者可以增删。
+- 单次生成只检索并注入最相关的 2–4 张经验卡，禁止把经验库全量注入 Prompt。
 - 展示本机已导入语料的名称、状态和章节数量。
 - 作者选择本项目允许使用的语料来源，或接受系统确定性推荐。
 - M2 只确定允许范围，不选择实际参考片段；实际片段检索和使用记录属于 M5。
@@ -214,7 +215,7 @@ Schema 版本从 `writer-core-v1.0.0` 提升为 `writer-core-v1.1.0`。现有 M1
 |---|---|
 | `style_templates` | `id, stable_key, revision, name, payload_json, provenance_json, content_hash, status, created_at`；PK `id`；UNIQUE `(stable_key,revision)`；`status IN ('active','archived')` |
 | `style_template_heads` | `stable_key, style_template_id, revision, content_hash, updated_at`；PK `stable_key`；FK 指向相同 stable key 的不可变修订 |
-| `experience_cards` | `id, stable_key, revision, title, category, payload_json, provenance_json, content_hash, status, created_at`；PK `id`；UNIQUE `(stable_key,revision)`；category 为批准的八类闭集 |
+| `experience_cards` | `id, stable_key, revision, title, category, payload_json, provenance_json, content_hash, status, created_at`；PK `id`；UNIQUE `(stable_key,revision)`；category 为批准的十二类闭集 |
 | `experience_card_heads` | `stable_key, experience_card_id, revision, content_hash, updated_at`；PK `stable_key`；FK 指向相同 stable key 的不可变修订 |
 | `corpus_sources` | `id, source_key, revision, relative_path, title, author, source_hash, file_size, encoding, parser_version, normalizer_version, fragmenter_version, index_version, status, public_error_code, imported_at, analyzed_at`；PK `id`；UNIQUE `(source_key,revision)`、`(source_hash,parser_version,normalizer_version,fragmenter_version,index_version)`；相同字节在分析版本变化时允许形成新修订 |
 | `corpus_chapters` | `id, corpus_source_id, chapter_order, title, raw_byte_start, raw_byte_end, normalized_char_start, normalized_char_end, normalized_text, content_hash, created_at`；UNIQUE `(corpus_source_id,chapter_order)` |
@@ -301,7 +302,7 @@ StyleTemplate、ExperienceCard 和 CorpusSource 都是本机安装级资产，�
 
 ### 8.1 风格模板
 
-M2 首批 seed manifest 必须提供恰好 8 个真正可区分的主风格模板；运行时目录和后续修订支持至少 8 个 active 模板，不把 8 写成永久上限。每个模板至少包含：
+M2 首批 seed manifest 必须提供恰好 10 个真正可区分的主风格模板：现有八类，加上“稳健求生积累型”（`cautious-survival-accumulation`）和“冷峻悲情逆命型”（`austere-tragic-defiance`）。当前版本以 10 个 active 模板为固定边界，完成本批后停止扩库。每个模板至少包含：
 
 - 名称、阅读体验、适用题材和不适用情形。
 - 叙事距离、句段节奏、词语密度和信息组织。
@@ -313,9 +314,11 @@ M2 首批 seed manifest 必须提供恰好 8 个真正可区分的主风格模�
 
 现有 `WRITING_STYLE_STANDARDS.md` 和前端风格数据只作为编辑材料，不能原样视为已完成模板。模板需在开发过程中统一分析、编写并由用户/产品主控人工确认一次；平台不建设审核或上架流程。
 
+穿越、系统、无敌、种田、权谋、诡异等属于题材、故事发动机或组合预设，不因此新增风格模板。主风格负责叙事距离、主要节奏和核心阅读奖赏；次风格只贡献少量局部技法，不能把两套完整规则同时施加给正文。
+
 ### 8.2 经验卡
 
-首批目标为 40–60 张经过人工确认、写作方法真正不同的经验卡，覆盖：
+首批必须提供恰好 64 张经过人工确认、写作方法真正不同的经验卡；当前版本完成 64 张后停止扩库。经验卡覆盖十二类：原有八类各 6 张，新增四类各 4 张。
 
 1. 情节组织。
 2. 人物群像。
@@ -325,8 +328,14 @@ M2 首批 seed manifest 必须提供恰好 8 个真正可区分的主风格模�
 6. 信息释放。
 7. 节奏。
 8. 悬念与阅读牵引。
+9. 长线连续性（`long_arc_continuity`）。
+10. 成长与资源循环（`progression_economy`）。
+11. 反派、配角与人物弧光（`character_arcs`）。
+12. 动作与冲突（`action_conflict`）。
 
 现有 28 个原创 micro-demo 可作为候选。旧 `realCorpusExperienceCards.v3.json` 虽有 46 条来源记录，但只包含少量重复方法，不得按 46 张成品计数；必须去重、合并和重写。不得用空卡、改名副本或来源记录凑数量。
+
+经验卡只指导当前具体场景的写作选择，每次生成只检索最相关的 2–4 张，禁止全量注入。故事发动机负责故事块、卷弧、资源循环和反派时钟；Canon 负责保存境界、库存、伤势、关系和伏笔等事实；风格契约与 QA 共同约束机械味和 AI 味。各层不得相互复制职责或重复生成事实。
 
 ### 8.3 资产落库
 
@@ -476,7 +485,7 @@ M2 实施顺序固定为：
 
 产品主控使用真实浏览器进行非固定探索，主动测试乱序、刷新、快速重复操作、失败恢复和不同选择组合。
 
-人工逐项检查首批 8 个风格模板和 40–60 张经验卡：内容完整、方法真实不同、示例可理解、没有空项、改名副本、机械重复或旧 artifact 自我认证。资产报告只能记录人工结果，不能自行证明质量。
+人工逐项检查首批 10 个风格模板和 64 张经验卡：内容完整、方法真实不同、示例可理解、没有空项、改名副本、机械重复或旧 artifact 自我认证；同时核对原有八类各 6 张、新增四类各 4 张。资产报告只能记录人工结果，不能自行证明质量。
 
 语料能力人工验收至少导入一份明确授权的真实 `.txt`，抽查原始字节 SHA-256、编码、章节数量、章节边界和数据库回读；同时记录配置 root 中发现、导入、跳过和失败的文件数量及原因，不用硬编码“40 本”或当前机器上的偶然文件数作为产品不变量。
 
@@ -500,7 +509,7 @@ M2 只有同时满足以下条件才能标记为 **L5 M2 Contract-Generation Rea
 
 - Schema 为 `writer-core-v1.1.0`，从空库初始化和版本拒绝均通过。
 - 正式产品库已明确重建，保留“永乐大典”、三个种子和 Provider 配置。
-- 全局资产已通过显式 manifest 写入：8 个风格模板、40–60 张人工确认的不同经验卡。
+- 全局资产已通过显式 manifest 写入：恰好 10 个风格模板、64 张人工确认的不同经验卡；原有八类各 6 张、新增四类各 4 张。
 - 原始小说文件未进入 Git，语料索引不暴露绝对路径或整本原文。
 - 适配 v1.1.0 的 M1 保留行为回归和 M2 L1/L2/L3 测试全部通过，L4 人工验收有可追溯记录。
 - 验收证据记录实际使用的 MySQL、Python、FastAPI、Starlette、Uvicorn、Node 和浏览器版本，避免只靠宽泛依赖下限形成不可复现结论。
