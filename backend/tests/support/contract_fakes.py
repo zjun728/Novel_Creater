@@ -233,7 +233,39 @@ class MemoryContractRepository:
         return deepcopy(self.sources.get(asset_id))
 
     async def read_confirmed_snapshot(self, session, project_id):
-        return deepcopy(self.confirmed.get(project_id))
+        stored = self.confirmed.get(project_id)
+        if stored is None:
+            return None
+        snapshot = deepcopy(stored)
+        binding = self.binding_revisions.get(snapshot["binding_revision_id"])
+        seed = self.seed_revisions.get(snapshot["seed_revision_id"])
+        engine = self.engines.get(snapshot["engine_option_id"])
+        snapshot["actual_binding_hash"] = (
+            binding["content_hash"] if binding else None
+        )
+        snapshot["actual_seed_hash"] = seed["seed_hash"] if seed else None
+        snapshot["actual_engine_hash"] = (
+            engine["content_hash"] if engine else None
+        )
+        for ref in snapshot["style_refs"]:
+            asset = self.styles.get(ref["id"])
+            ref["actualContentHash"] = (
+                asset["content_hash"]
+                if asset and asset["revision"] == ref["revision"] else None
+            )
+        for ref in snapshot["experience_card_refs"]:
+            asset = self.cards.get(ref["id"])
+            ref["actualContentHash"] = (
+                asset["content_hash"]
+                if asset and asset["revision"] == ref["revision"] else None
+            )
+        for ref in snapshot["corpus_source_refs"]:
+            asset = self.sources.get(ref["id"])
+            ref["actualContentHash"] = (
+                asset["source_hash"]
+                if asset and asset["revision"] == ref["revision"] else None
+            )
+        return snapshot
 
 
 class ContractHarness:

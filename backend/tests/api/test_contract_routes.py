@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -151,6 +153,61 @@ def test_routes_return_stable_404_and_409_for_archived_and_stale_cas():
     assert conflict.status_code == 409
     assert conflict.json()["code"] == "ContractConflict"
     assert set(conflict.json()) == {"code", "message", "correlationId"}
+
+
+def test_preview_missing_dependencies_is_stable_200_with_null_contracts():
+    cases = (
+        ("seed", "seed_missing", "creationContract"),
+        ("engine", "engine_missing", "creationContract"),
+        ("style", "style_missing:primary", "styleContract"),
+        ("binding", "binding_missing", "creationContract"),
+    )
+    for missing, reason, null_field in cases:
+        client, harness = make_client()
+        assert client.put(
+            "/api/projects/p1/contract-draft", json=save_body(harness)
+        ).status_code == 200
+        if missing == "seed":
+            harness.repository.seed_revisions.clear()
+        elif missing == "engine":
+            harness.repository.engines.clear()
+        elif missing == "style":
+            harness.repository.styles.pop("style-primary")
+        else:
+            harness.repository.binding_revisions.clear()
+
+        first = client.post("/api/projects/p1/contracts/preview")
+        second = client.post("/api/projects/p1/contracts/preview")
+
+        assert first.status_code == second.status_code == 200
+        assert first.json() == second.json()
+        assert reason in first.json()["reasons"]
+        assert first.json()[null_field] is None
+        assert "Internal server error" not in first.text
+
+
+@pytest.mark.parametrize("command", ("preview", "clone"))
+def test_contract_commands_strictly_reject_and_redact_nonempty_bodies(command):
+    client, harness = make_client()
+    sentinel = "/private/contract-sentinel"
+
+    response = client.post(
+        f"/api/projects/p1/contracts/{command}",
+        json={"unexpected": sentinel},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "ContractRequestInvalid"
+    assert sentinel not in response.text
+    assert harness.repository.write_count == 0
+
+
+@pytest.mark.parametrize("raw_body", ([], "", 0, False))
+def test_preview_rejects_falsey_nonobject_bodies(raw_body):
+    client, _ = make_client()
+    response = client.post("/api/projects/p1/contracts/preview", json=raw_body)
+    assert response.status_code == 422
+    assert response.json()["code"] == "ContractRequestInvalid"
 
 
 def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():

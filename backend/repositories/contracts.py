@@ -107,14 +107,15 @@ class ContractRepository:
 
     async def read_engine_option(self, session, project_id: str, option_id: str):
         return await session.fetchone(
-            """SELECT option.id,option.project_id,option.batch_id,
-                      option.payload_json,option.content_hash,batch.status,
+            """SELECT engine_option.id,engine_option.project_id,
+                      engine_option.batch_id,engine_option.payload_json,
+                      engine_option.content_hash,batch.status,
                       batch.seed_revision_id,batch.seed_hash
-               FROM story_engine_options option
+               FROM story_engine_options engine_option
                JOIN story_engine_batches batch
-                 ON batch.project_id=option.project_id
-                AND batch.id=option.batch_id
-               WHERE option.project_id=%s AND option.id=%s""",
+                 ON batch.project_id=engine_option.project_id
+                AND batch.id=engine_option.batch_id
+               WHERE engine_option.project_id=%s AND engine_option.id=%s""",
             (project_id, option_id),
         )
 
@@ -222,9 +223,12 @@ class ContractRepository:
                       style.likes_json,style.dislikes_json,
                       style.content_hash AS style_hash,
                       engine.engine_option_id,engine.engine_hash,
+                      option_actual.content_hash AS actual_engine_hash,
+                      seed_actual.content_hash AS actual_seed_hash,
                       creation.binding_revision_id,
                       binding.revision AS binding_revision,
                       creation.binding_hash,
+                      binding.content_hash AS actual_binding_hash,
                       style.id AS style_contract_id,
                       creation.id AS creation_contract_id
                FROM project_contract_heads head
@@ -237,33 +241,53 @@ class ContractRepository:
                JOIN creation_contract_engine_refs engine
                  ON engine.project_id=creation.project_id
                 AND engine.creation_contract_id=creation.id
-               JOIN project_model_binding_revisions binding
+               LEFT JOIN project_model_binding_revisions binding
                  ON binding.project_id=creation.project_id
                 AND binding.id=creation.binding_revision_id
+               LEFT JOIN creative_seed_revisions seed_actual
+                 ON seed_actual.project_id=creation.project_id
+                AND seed_actual.id=creation.seed_revision_id
+               LEFT JOIN story_engine_options option_actual
+                 ON option_actual.project_id=creation.project_id
+                AND option_actual.id=engine.engine_option_id
                WHERE head.project_id=%s AND head.revision>0""",
             (project_id,),
         )
         if current is None:
             return None
         style_refs = await session.fetchall(
-            """SELECT role,style_template_id AS id,asset_revision AS revision,
-                      asset_hash AS contentHash
-               FROM style_contract_template_refs WHERE style_contract_id=%s
+            """SELECT ref.role,ref.style_template_id AS id,
+                      ref.asset_revision AS revision,ref.asset_hash AS contentHash,
+                      asset.content_hash AS actualContentHash
+               FROM style_contract_template_refs ref
+               LEFT JOIN style_templates asset
+                 ON asset.id=ref.style_template_id
+                AND asset.revision=ref.asset_revision
+               WHERE ref.style_contract_id=%s
                ORDER BY sort_order""",
             (current["style_contract_id"],),
         )
         cards = await session.fetchall(
-            """SELECT experience_card_id AS id,asset_revision AS revision,
-                      asset_hash AS contentHash
-               FROM creation_contract_experience_refs
-               WHERE creation_contract_id=%s ORDER BY sort_order""",
+            """SELECT ref.experience_card_id AS id,
+                      ref.asset_revision AS revision,ref.asset_hash AS contentHash,
+                      asset.content_hash AS actualContentHash
+               FROM creation_contract_experience_refs ref
+               LEFT JOIN experience_cards asset
+                 ON asset.id=ref.experience_card_id
+                AND asset.revision=ref.asset_revision
+               WHERE ref.creation_contract_id=%s ORDER BY sort_order""",
             (current["creation_contract_id"],),
         )
         sources = await session.fetchall(
-            """SELECT corpus_source_id AS id,source_revision AS revision,
-                      source_hash AS contentHash,selection_mode AS selectionMode
-               FROM creation_contract_corpus_refs
-               WHERE creation_contract_id=%s ORDER BY sort_order""",
+            """SELECT ref.corpus_source_id AS id,
+                      ref.source_revision AS revision,ref.source_hash AS contentHash,
+                      ref.selection_mode AS selectionMode,
+                      asset.source_hash AS actualContentHash
+               FROM creation_contract_corpus_refs ref
+               LEFT JOIN corpus_sources asset
+                 ON asset.id=ref.corpus_source_id
+                AND asset.revision=ref.source_revision
+               WHERE ref.creation_contract_id=%s ORDER BY sort_order""",
             (current["creation_contract_id"],),
         )
         return dict(current) | {

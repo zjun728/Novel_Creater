@@ -159,6 +159,26 @@ async def test_create_reload_update_uses_one_draft_and_version_cas_from_head_zer
     assert harness.repository.drafts["p1"]["content_hash"] == canonical_hash(updated.draft)
 
 
+@pytest.mark.parametrize(
+    ("column", "tampered"),
+    (
+        ("seed_revision_id", "seed-revision-tampered"),
+        ("seed_hash", "f" * 64),
+        ("engine_option_id", "engine-tampered"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_reload_rejects_draft_json_and_index_column_mismatch(column, tampered):
+    harness = ContractHarness()
+    await harness.service.save_draft(command(harness))
+    harness.repository.drafts["p1"][column] = tampered
+
+    with pytest.raises(ContractPreconditionFailed) as captured:
+        await harness.service.get_draft("p1")
+
+    assert captured.value.__cause__ is None
+
+
 @pytest.mark.asyncio
 async def test_draft_create_and_update_reject_wrong_versions_and_archived_or_missing():
     harness = ContractHarness()
@@ -262,6 +282,36 @@ async def test_preview_is_deterministic_read_only_and_freezes_exact_dependencies
 
 
 @pytest.mark.asyncio
+async def test_preview_accepts_m2c_4000_char_prompts_and_composed_style_fields():
+    harness = ContractHarness()
+    row = harness.repository.styles["style-primary"]
+    payload = json.loads(row["payload_json"])
+    for field in (
+        "reading_experience", "narrative_distance", "rhythm",
+        "diction_density", "dialogue", "subtext", "character_voices",
+        "emotion", "interiority", "action", "explanation", "environment",
+        "body_response",
+    ):
+        payload[field] = field[0] * 4_000
+    payload["preferred_techniques"] = ("技" * 4_000,)
+    payload["risks"] = ("险" * 4_000,)
+    content_hash = canonical_hash(payload)
+    row.update({
+        "payload_json": canonical_json(payload),
+        "content_hash": content_hash,
+        "head_hash": content_hash,
+    })
+
+    await harness.service.save_draft(command(harness))
+    preview = await harness.service.preview("p1")
+
+    assert preview.style_contract is not None
+    assert len(preview.style_contract.characterVoices[0]) == 4_000
+    assert len(preview.style_contract.dialogueAndSubtext) > 8_000
+    assert len(preview.style_contract.actionExplanationEnvironment) > 16_000
+
+
+@pytest.mark.asyncio
 async def test_preview_reports_seed_and_binding_drift_without_substitution_or_write():
     harness = ContractHarness()
     await harness.service.save_draft(command(harness))
@@ -359,14 +409,68 @@ async def test_preview_reports_asset_head_drift_but_keeps_frozen_revision_and_ha
 
 
 @pytest.mark.asyncio
-async def test_preview_rejects_missing_draft_and_invalid_frozen_seed_payload():
+async def test_preview_rejects_missing_draft_but_reports_invalid_frozen_seed():
     harness = ContractHarness()
     with pytest.raises(ContractPreconditionFailed):
         await harness.service.preview("p1")
     await harness.service.save_draft(command(harness))
     harness.repository.seed_revisions["seed-revision-1"]["payload_json"] = '{"bad":true}'
-    with pytest.raises(ContractPreconditionFailed):
-        await harness.service.preview("p1")
+    preview = await harness.service.preview("p1")
+    assert preview.contract_ready is False
+    assert "seed_invalid" in preview.reasons
+    assert preview.creation_contract is None
+
+
+@pytest.mark.parametrize(
+    ("missing", "reason", "null_field"),
+    (
+        ("seed", "seed_missing", "creation_contract"),
+        ("engine", "engine_missing", "creation_contract"),
+        ("style", "style_missing:primary", "style_contract"),
+        ("binding", "binding_missing", "creation_contract"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_preview_missing_dependencies_returns_deterministic_readable_snapshot(
+    missing, reason, null_field
+):
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    writes = harness.repository.write_count
+    if missing == "seed":
+        harness.repository.seed_revisions.clear()
+    elif missing == "engine":
+        harness.repository.engines.clear()
+    elif missing == "style":
+        harness.repository.styles.pop("style-primary")
+    else:
+        harness.repository.binding_revisions.clear()
+
+    first = await harness.service.preview("p1")
+    second = await harness.service.preview("p1")
+
+    assert first == second
+    assert first.contract_ready is False
+    assert reason in first.reasons
+    assert getattr(first, null_field) is None
+    assert harness.repository.write_count == writes
+    assert first.seed_ref.revision_id == saved.draft.seedRevisionId
+    assert first.engine_ref.id == saved.draft.engineOptionId
+    assert first.binding_ref.id == saved.draft.modelBindingRef.id
+
+
+@pytest.mark.asyncio
+async def test_preview_invalid_binding_returns_null_creation_instead_of_422():
+    harness = ContractHarness()
+    await harness.service.save_draft(command(harness))
+    harness.repository.binding["items"][0]["task_key"] = "invalid-task"
+
+    preview = await harness.service.preview("p1")
+
+    assert preview.contract_ready is False
+    assert "binding_invalid" in preview.reasons
+    assert preview.creation_contract is None
+    assert preview.creation_hash is None
 
 
 @pytest.mark.asyncio
@@ -416,6 +520,41 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
         await harness.service.clone_current("p1")
     harness.repository.confirmed["p1"]["creation_hash"] = preview.creation_hash
 
+    corruptions = ("binding", "seed", "engine", "style", "card", "corpus")
+    for kind in corruptions:
+        target, field = {
+            "binding": (
+                harness.repository.binding_revisions["binding-revision-3"],
+                "content_hash",
+            ),
+            "seed": (
+                harness.repository.seed_revisions["seed-revision-1"], "seed_hash",
+            ),
+            "engine": (harness.repository.engines["engine-1"], "content_hash"),
+            "style": (harness.repository.styles["style-primary"], "content_hash"),
+            "card": (harness.repository.cards["card-1"], "content_hash"),
+            "corpus": (harness.repository.sources["source-1"], "source_hash"),
+        }[kind]
+        original = target[field]
+        target[field] = "f" * 64
+        with pytest.raises(ContractPreconditionFailed):
+            await harness.service.clone_current("p1")
+        # Rollback replaces fake repository containers; restore by semantic key.
+        if kind == "seed":
+            harness.repository.seed_revisions["seed-revision-1"][field] = original
+        elif kind == "corpus":
+            harness.repository.sources["source-1"][field] = original
+        elif kind == "engine":
+            harness.repository.engines["engine-1"][field] = original
+        elif kind == "style":
+            harness.repository.styles["style-primary"][field] = original
+        elif kind == "card":
+            harness.repository.cards["card-1"][field] = original
+        else:
+            harness.repository.binding_revisions["binding-revision-3"][field] = original
+
+    harness.repository.styles["style-primary"]["head_revision"] = 99
+    harness.repository.styles["style-primary"]["head_hash"] = "9" * 64
     cloned = await harness.service.clone_current("p1")
 
     assert cloned.draft_version == 1
@@ -426,7 +565,9 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
         "head_binding_revision_id": "binding-revision-4",
         "head_hash": "c" * 64,
     }
-    assert (await harness.service.preview("p1")).contract_ready is False
+    drifted_clone = await harness.service.preview("p1")
+    assert drifted_clone.contract_ready is False
+    assert "style_drift:primary" in drifted_clone.reasons
     with pytest.raises(ContractConflict):
         await harness.service.clone_current("p1")
 

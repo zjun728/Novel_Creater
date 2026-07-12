@@ -113,8 +113,14 @@ def _public_preview(result):
         "corpusSourceRefs": [
             ref.model_dump(mode="json") for ref in result.corpus_source_refs
         ],
-        "creationContract": result.creation_contract.model_dump(mode="json"),
-        "styleContract": result.style_contract.model_dump(mode="json"),
+        "creationContract": (
+            result.creation_contract.model_dump(mode="json")
+            if result.creation_contract is not None else None
+        ),
+        "styleContract": (
+            result.style_contract.model_dump(mode="json")
+            if result.style_contract is not None else None
+        ),
         "likes": list(result.likes),
         "dislikes": list(result.dislikes),
         "creationHash": result.creation_hash,
@@ -147,16 +153,24 @@ async def save_contract_draft(
 @router.post("/projects/{pid}/contracts/preview")
 async def preview_contracts(
     pid: str,
-    body: EmptyBody | None = Body(default=None),
+    raw_body: object = Body(default=None),
     service=Depends(get_contract_service),
 ):
+    try:
+        EmptyBody.model_validate({} if raw_body is None else raw_body)
+    except ValidationError:
+        raise ContractRequestInvalid() from None
     return _public_preview(await service.preview(pid))
 
 
 @router.post("/projects/{pid}/contracts/clone")
 async def clone_contracts(
     pid: str,
-    body: EmptyBody | None = Body(default=None),
+    raw_body: object = Body(default=None),
     service=Depends(get_contract_service),
 ):
+    try:
+        EmptyBody.model_validate({} if raw_body is None else raw_body)
+    except ValidationError:
+        raise ContractRequestInvalid() from None
     return _public_draft(await service.clone_current(pid))

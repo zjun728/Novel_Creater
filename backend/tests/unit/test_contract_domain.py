@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from backend.domain.contracts import (
     CONTRACT_TEXT_MAX_LENGTH,
+    STYLE_CONTRACT_TEXT_MAX_LENGTH,
     CreationContractPayload,
     StyleContractPayload,
 )
@@ -184,7 +185,7 @@ def test_style_contract_collections_are_non_empty_strict_tuples(field_name: str)
 @pytest.mark.parametrize("field_name", ("characterVoices", "primaryRules", "risks"))
 @pytest.mark.parametrize(
     "invalid_item",
-    ("", " \t\n", "x" * (CONTRACT_TEXT_MAX_LENGTH + 1), 1),
+    ("", " \t\n", "x" * (STYLE_CONTRACT_TEXT_MAX_LENGTH + 1), 1),
 )
 def test_style_contract_collection_items_are_bounded_and_strict(
     field_name: str,
@@ -215,3 +216,29 @@ def test_style_contract_collections_have_an_explicit_item_count_limit(
                 }
             )
         )
+
+
+def test_style_contract_text_supports_m2c_prompt_and_composed_field_lengths():
+    prompt_text = "风" * 4_000
+    composed_text = "合" * STYLE_CONTRACT_TEXT_MAX_LENGTH
+
+    payload = StyleContractPayload(**style_values(
+        readingExperience=prompt_text,
+        dialogueAndSubtext=composed_text,
+        characterVoices=(prompt_text,),
+        primaryRules=(prompt_text,),
+    ))
+
+    assert len(payload.readingExperience) == 4_000
+    assert len(payload.dialogueAndSubtext) == STYLE_CONTRACT_TEXT_MAX_LENGTH
+    with pytest.raises(ValidationError):
+        StyleContractPayload(**style_values(
+            actionExplanationEnvironment="超" * (STYLE_CONTRACT_TEXT_MAX_LENGTH + 1)
+        ))
+
+
+def test_creation_contract_text_remains_bounded_at_2000():
+    with pytest.raises(ValidationError):
+        CreationContractPayload(**creation_values(
+            chapterCapacityPolicy="章" * (CONTRACT_TEXT_MAX_LENGTH + 1)
+        ))

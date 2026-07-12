@@ -14,10 +14,15 @@ from backend.domain.story_engines import (
 
 
 CONTRACT_TEXT_MAX_LENGTH = 2_000
+STYLE_CONTRACT_TEXT_MAX_LENGTH = 20_000
 PositiveInt = Annotated[int, Field(gt=0)]
 ContractText = Annotated[
     str,
     Field(min_length=1, max_length=CONTRACT_TEXT_MAX_LENGTH),
+]
+StyleContractText = Annotated[
+    str,
+    Field(min_length=1, max_length=STYLE_CONTRACT_TEXT_MAX_LENGTH),
 ]
 
 
@@ -58,24 +63,24 @@ class StyleContractPayload(BaseModel):
         str_strip_whitespace=True,
     )
 
-    schemaVersion: ContractText
-    readingExperience: ContractText
-    narrativeDistance: ContractText
-    sentenceParagraphRhythm: ContractText
-    dictionDensity: ContractText
-    dialogueAndSubtext: ContractText
-    characterVoices: tuple[ContractText, ...] = Field(
+    schemaVersion: StyleContractText
+    readingExperience: StyleContractText
+    narrativeDistance: StyleContractText
+    sentenceParagraphRhythm: StyleContractText
+    dictionDensity: StyleContractText
+    dialogueAndSubtext: StyleContractText
+    characterVoices: tuple[StyleContractText, ...] = Field(
         min_length=1,
         max_length=CONTRACT_COLLECTION_MAX_ITEMS,
     )
-    emotionAndInteriority: ContractText
-    actionExplanationEnvironment: ContractText
-    primaryRules: tuple[ContractText, ...] = Field(
+    emotionAndInteriority: StyleContractText
+    actionExplanationEnvironment: StyleContractText
+    primaryRules: tuple[StyleContractText, ...] = Field(
         min_length=1,
         max_length=CONTRACT_COLLECTION_MAX_ITEMS,
     )
-    secondaryFlavor: ContractText | None = None
-    risks: tuple[ContractText, ...] = Field(
+    secondaryFlavor: StyleContractText | None = None
+    risks: tuple[StyleContractText, ...] = Field(
         min_length=1,
         max_length=CONTRACT_COLLECTION_MAX_ITEMS,
     )

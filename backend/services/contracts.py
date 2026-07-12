@@ -162,7 +162,7 @@ class ContractDraftResult:
 
 @dataclass(frozen=True)
 class SeedContractRef:
-    id: str
+    id: str | None
     revision_id: str
     content_hash: str
 
@@ -170,7 +170,7 @@ class SeedContractRef:
 @dataclass(frozen=True)
 class EngineContractRef:
     id: str
-    batch_id: str
+    batch_id: str | None
     content_hash: str
 
 
@@ -239,12 +239,12 @@ class ContractPreviewResult:
     style_refs: tuple[ResolvedStyleRef, ...]
     experience_card_refs: tuple[ResolvedAssetRef, ...]
     corpus_source_refs: tuple[ResolvedCorpusRef, ...]
-    creation_contract: CreationContractPayload
-    style_contract: StyleContractPayload
+    creation_contract: CreationContractPayload | None
+    style_contract: StyleContractPayload | None
     likes: tuple[str, ...]
     dislikes: tuple[str, ...]
-    creation_hash: str
-    style_hash: str
+    creation_hash: str | None
+    style_hash: str | None
 
 
 def _json_object(value) -> dict:
@@ -349,6 +349,12 @@ class ContractService:
             raise ContractPreconditionFailed() from None
         if canonical_hash(draft) != row["content_hash"]:
             raise ContractPreconditionFailed()
+        if (
+            row.get("seed_revision_id") != draft.seedRevisionId
+            or row.get("seed_hash") != draft.seedHash
+            or row.get("engine_option_id") != draft.engineOptionId
+        ):
+            raise ContractPreconditionFailed() from None
         return ContractDraftResult(
             id=row["id"], project_id=row["project_id"],
             base_head_revision=int(row["base_head_revision"]),
@@ -543,53 +549,87 @@ class ContractService:
                 for ref in draft.corpusSourceRefs
             ]
 
-        try:
-            seed_payload = SeedPayload(**_json_object(frozen_seed["payload_json"]))
-            engine_payload = _strict_engine(engine["payload_json"])
-            style_payload = _strict_style_from_primary(primary, secondary)
-        except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
-            raise ContractPreconditionFailed() from None
-
         reasons = []
-        if selected is None or frozen_seed is None:
+        seed_payload = None
+        if frozen_seed is None:
             reasons.append("seed_missing")
         else:
-            if (
+            try:
+                seed_payload = SeedPayload(**_json_object(frozen_seed["payload_json"]))
+            except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+                reasons.append("seed_invalid")
+            if selected is None:
+                reasons.append("seed_not_selected")
+            elif (
                 selected["seed_revision_id"] != draft.seedRevisionId
                 or selected["seed_hash"] != draft.seedHash
             ):
                 reasons.append("seed_drift")
             if (
+                seed_payload is not None
+                and (
                 frozen_seed.get("seed_hash") != draft.seedHash
                 or canonical_hash(seed_payload) != draft.seedHash
+                )
             ):
                 reasons.append("seed_invalid")
+
+        engine_payload = None
         if engine is None:
             reasons.append("engine_missing")
         else:
-            if engine["content_hash"] != draft.engineHash or canonical_hash(engine_payload) != draft.engineHash:
+            try:
+                engine_payload = _strict_engine(engine["payload_json"])
+            except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 reasons.append("engine_invalid")
-            if engine["status"] != "succeeded":
+            if (
+                engine_payload is not None
+                and (
+                    engine.get("content_hash") != draft.engineHash
+                    or canonical_hash(engine_payload) != draft.engineHash
+                )
+            ):
+                reasons.append("engine_invalid")
+            if engine.get("status") != "succeeded":
                 reasons.append("engine_not_succeeded")
             if (
-                engine["seed_revision_id"] != draft.seedRevisionId
-                or engine["seed_hash"] != draft.seedHash
+                engine.get("seed_revision_id") != draft.seedRevisionId
+                or engine.get("seed_hash") != draft.seedHash
             ):
                 reasons.append("engine_seed_drift")
-        binding_items = self._binding_items(binding)
-        if tuple(item.task_key for item in binding_items) != TASK_KEYS:
-            reasons.append("binding_incomplete")
-        if not self._binding_ready(binding_items, binding):
-            reasons.append("binding_not_ready")
-        if (
-            binding["binding_revision_id"] != draft.modelBindingRef.id
-            or int(binding["revision"]) != draft.modelBindingRef.revision
-            or binding["content_hash"] != draft.modelBindingRef.contentHash
-            or binding.get("head_revision") != draft.modelBindingRef.revision
-            or binding.get("head_binding_revision_id") != draft.modelBindingRef.id
-            or binding.get("head_hash") != draft.modelBindingRef.contentHash
+
+        binding_items = ()
+        binding_usable = binding is not None
+        if binding is None:
+            reasons.append("binding_missing")
+        else:
+            try:
+                binding_items = self._binding_items(binding)
+            except ContractPreconditionFailed:
+                reasons.append("binding_invalid")
+                binding_usable = False
+            if tuple(item.task_key for item in binding_items) != TASK_KEYS:
+                reasons.append("binding_incomplete")
+            if not self._binding_ready(binding_items, binding):
+                reasons.append("binding_not_ready")
+            if (
+                binding.get("binding_revision_id") != draft.modelBindingRef.id
+                or int(binding.get("revision") or 0) != draft.modelBindingRef.revision
+                or binding.get("content_hash") != draft.modelBindingRef.contentHash
+                or binding.get("head_revision") != draft.modelBindingRef.revision
+                or binding.get("head_binding_revision_id") != draft.modelBindingRef.id
+                or binding.get("head_hash") != draft.modelBindingRef.contentHash
+            ):
+                reasons.append("binding_drift")
+
+        style_payload = None
+        if primary is not None and (
+            draft.secondaryStyleRef is None or secondary is not None
         ):
-            reasons.append("binding_drift")
+            try:
+                style_payload = _strict_style_from_primary(primary, secondary)
+            except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+                reasons.append("style_invalid:primary")
         reasons.extend(self._asset_reasons(
             draft.primaryStyleRef, primary, kind="style", role="primary"
         ))
@@ -603,31 +643,40 @@ class ContractService:
             reasons.extend(self._asset_reasons(ref, source, kind="corpus"))
         reasons = list(dict.fromkeys(reasons))
 
-        creation = CreationContractPayload(
-            schemaVersion="creation-contract-v1",
-            channelProfileKey=draft.channelProfileKey,
-            genreProfileKey=draft.genreProfileKey,
-            qualityCharterVersion=draft.qualityCharterVersion,
-            selectedSeed=seed_payload,
-            selectedEngine=engine_payload,
-            totalWordRange=draft.totalWordRange,
-            chapterCapacityPolicy=draft.chapterCapacityPolicy,
-            modelBindingRevision=int(binding["revision"]),
+        creation = None
+        if seed_payload is not None and engine_payload is not None and binding_usable:
+            try:
+                creation = CreationContractPayload(
+                    schemaVersion="creation-contract-v1",
+                    channelProfileKey=draft.channelProfileKey,
+                    genreProfileKey=draft.genreProfileKey,
+                    qualityCharterVersion=draft.qualityCharterVersion,
+                    selectedSeed=seed_payload,
+                    selectedEngine=engine_payload,
+                    totalWordRange=draft.totalWordRange,
+                    chapterCapacityPolicy=draft.chapterCapacityPolicy,
+                    modelBindingRevision=draft.modelBindingRef.revision,
+                )
+            except ValidationError:
+                reasons.append("creation_invalid")
+        style_hash = (
+            style_contract_hash(style_payload, draft.likes, draft.dislikes)
+            if style_payload is not None else None
         )
-        style_hash = style_contract_hash(
-            style_payload, draft.likes, draft.dislikes
-        )
+        reasons = list(dict.fromkeys(reasons))
         return ContractPreviewResult(
             project_id=project_id, draft_version=saved.draft_version,
             base_head_revision=saved.base_head_revision,
             expected_revision=saved.base_head_revision + 1,
             contract_ready=not reasons, reasons=tuple(reasons),
             seed_ref=SeedContractRef(
-                id=frozen_seed["seed_id"], revision_id=draft.seedRevisionId,
+                id=(frozen_seed or selected or {}).get("seed_id"),
+                revision_id=draft.seedRevisionId,
                 content_hash=draft.seedHash,
             ),
             engine_ref=EngineContractRef(
-                id=draft.engineOptionId, batch_id=engine["batch_id"],
+                id=draft.engineOptionId,
+                batch_id=engine.get("batch_id") if engine else None,
                 content_hash=draft.engineHash,
             ),
             binding_ref=BindingContractRef(
@@ -657,7 +706,8 @@ class ContractService:
             ),
             creation_contract=creation, style_contract=style_payload,
             likes=draft.likes, dislikes=draft.dislikes,
-            creation_hash=canonical_hash(creation), style_hash=style_hash,
+            creation_hash=canonical_hash(creation) if creation is not None else None,
+            style_hash=style_hash,
         )
 
     async def clone_current(self, project_id: str) -> ContractDraftResult:
@@ -706,6 +756,20 @@ class ContractService:
                     != snapshot["engine_hash"]
                     or creation.modelBindingRevision
                     != int(snapshot["binding_revision"])
+                    or snapshot["binding_hash"]
+                    != snapshot.get("actual_binding_hash")
+                    or snapshot["seed_hash"] != snapshot.get("actual_seed_hash")
+                    or snapshot["engine_hash"]
+                    != snapshot.get("actual_engine_hash")
+                    or any(
+                        ref.get("contentHash") != ref.get("actualContentHash")
+                        for refs in (
+                            snapshot["style_refs"],
+                            snapshot["experience_card_refs"],
+                            snapshot["corpus_source_refs"],
+                        )
+                        for ref in refs
+                    )
                 ):
                     raise ValueError("confirmed contract hash mismatch")
                 draft = ContractDraftPayload(
@@ -731,11 +795,17 @@ class ContractService:
                         key: secondary[key] for key in ("id", "revision", "contentHash")
                     }) if secondary else None,
                     experienceCardRefs=tuple(
-                        AssetRevisionRef(**ref)
+                        AssetRevisionRef(**{
+                            key: ref[key] for key in ("id", "revision", "contentHash")
+                        })
                         for ref in snapshot["experience_card_refs"]
                     ),
                     corpusSourceRefs=tuple(
-                        CorpusSourceRef(**ref) for ref in snapshot["corpus_source_refs"]
+                        CorpusSourceRef(**{
+                            key: ref[key] for key in (
+                                "id", "revision", "contentHash", "selectionMode"
+                            )
+                        }) for ref in snapshot["corpus_source_refs"]
                     ),
                     likes=likes,
                     dislikes=dislikes,
