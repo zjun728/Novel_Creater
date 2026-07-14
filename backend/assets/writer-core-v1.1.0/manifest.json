@@ -1,0 +1,11 @@
+{
+  "package_version": "writer-core-v1.1.0",
+  "styles_file": {
+    "path": "style_templates.json",
+    "sha256": "7c2e6fb458774282b11a08b726b6c9c10bc61e32e212736e02e9c060879a9333"
+  },
+  "experience_cards_file": {
+    "path": "experience_cards.json",
+    "sha256": "60f7c6a713167a26d737b91a62c43012e5f77c8a9bb89e7b877099bf8f6e995b"
+  }
+}

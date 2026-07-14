@@ -241,7 +241,7 @@ CREATE TABLE style_contract_template_refs (
   UNIQUE KEY uq_style_template_asset (style_contract_id, style_template_id),
   UNIQUE KEY uq_style_template_sort (style_contract_id, sort_order),
   FOREIGN KEY (style_contract_id) REFERENCES style_contracts(id) ON DELETE RESTRICT,
-  FOREIGN KEY (style_template_id, asset_revision) REFERENCES style_templates(id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (style_template_id, asset_revision, asset_hash) REFERENCES style_templates(id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (role IN ('primary','secondary')),
   CHECK (asset_revision > 0),
   CHECK (sort_order > 0)
@@ -257,7 +257,7 @@ CREATE TABLE creation_contract_experience_refs (
   PRIMARY KEY (creation_contract_id, experience_card_id),
   UNIQUE KEY uq_experience_ref_sort (creation_contract_id, sort_order),
   FOREIGN KEY (creation_contract_id) REFERENCES creation_contracts(id) ON DELETE RESTRICT,
-  FOREIGN KEY (experience_card_id, asset_revision) REFERENCES experience_cards(id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (experience_card_id, asset_revision, asset_hash) REFERENCES experience_cards(id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (asset_revision > 0),
   CHECK (sort_order > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

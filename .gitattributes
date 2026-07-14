@@ -1,0 +1,2 @@
+# Package manifests hash exact bytes; keep approved JSON assets identical on every OS.
+backend/assets/**/*.json -text
