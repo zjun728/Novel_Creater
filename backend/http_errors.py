@@ -70,3 +70,27 @@ class AssetCatalogNotReady(PublicDomainError):
     status_code = 503
     code = "AssetCatalogNotReady"
     message = "Approved writing assets are not ready"
+
+
+class CorpusImportConflict(PublicDomainError):
+    status_code = 409
+    code = "CorpusImportConflict"
+    message = "Corpus import key was already used for a different request"
+
+
+class CorpusResourceNotFound(PublicDomainError):
+    status_code = 404
+    code = "CorpusResourceNotFound"
+    message = "Corpus resource not found"
+
+
+class CorpusImportFailed(PublicDomainError):
+    status_code = 422
+    code = "CorpusImportFailed"
+    message = "Corpus import could not be completed"
+
+
+class CorpusRequestInvalid(PublicDomainError):
+    status_code = 422
+    code = "CorpusRequestInvalid"
+    message = "Corpus request is invalid"
