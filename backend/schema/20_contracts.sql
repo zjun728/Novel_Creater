@@ -29,8 +29,7 @@ CREATE TABLE story_engine_batches (
   FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT,
   CHECK (source_type IN ('provider','manual')),
   CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
-  CHECK ((raw_response_text IS NULL AND raw_response_hash IS NULL)
-    OR (raw_response_text IS NOT NULL AND raw_response_hash IS NOT NULL)),
+  CHECK (raw_response_text IS NULL),
   CHECK (
     (source_type = 'manual' AND binding_revision_id IS NULL AND binding_hash IS NULL
       AND provider_id IS NULL AND model_name_snapshot IS NULL AND attempt_id IS NULL
@@ -38,8 +37,11 @@ CREATE TABLE story_engine_batches (
       AND raw_response_text IS NULL AND raw_response_hash IS NULL
       AND status = 'succeeded' AND public_error_code IS NULL AND finished_at IS NOT NULL)
     OR (source_type = 'provider' AND binding_revision_id IS NOT NULL
-      AND binding_hash IS NOT NULL AND provider_id IS NOT NULL
-      AND model_name_snapshot IS NOT NULL)
+      AND binding_hash IS NOT NULL
+      AND ((provider_id IS NULL AND model_name_snapshot IS NULL
+          AND (status = 'reserved' OR (status = 'failed' AND attempt_id IS NULL
+            AND public_error_code IN ('not_started','provider_configuration'))))
+        OR (provider_id IS NOT NULL AND model_name_snapshot IS NOT NULL)))
   ),
   CHECK (
     source_type = 'manual'
@@ -50,12 +52,28 @@ CREATE TABLE story_engine_batches (
       AND lease_expires_at IS NOT NULL AND raw_response_text IS NULL
       AND raw_response_hash IS NULL AND public_error_code IS NULL AND finished_at IS NULL)
     OR (status = 'succeeded' AND attempt_id IS NOT NULL AND attempt_started_at IS NOT NULL
-      AND lease_expires_at IS NOT NULL AND raw_response_text IS NOT NULL
+      AND lease_expires_at IS NOT NULL AND raw_response_text IS NULL
       AND raw_response_hash IS NOT NULL
       AND public_error_code IS NULL AND finished_at IS NOT NULL)
-    OR (status IN ('failed','outcome_unknown') AND attempt_id IS NOT NULL
+    OR (status = 'failed' AND public_error_code IS NOT NULL
+      AND public_error_code = 'not_started' AND attempt_id IS NULL
+      AND attempt_started_at IS NULL AND lease_expires_at IS NULL
+      AND raw_response_text IS NULL AND raw_response_hash IS NULL
+      AND finished_at IS NOT NULL)
+    OR (status = 'failed' AND public_error_code = 'provider_configuration'
+      AND attempt_id IS NULL AND attempt_started_at IS NULL
+      AND lease_expires_at IS NULL AND raw_response_text IS NULL
+      AND raw_response_hash IS NULL AND finished_at IS NOT NULL)
+    OR (status = 'failed' AND attempt_id IS NOT NULL
       AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL
-      AND public_error_code IS NOT NULL AND finished_at IS NOT NULL)
+      AND ((public_error_code = 'invalid_response' AND raw_response_hash IS NOT NULL)
+        OR (public_error_code IN ('provider_failed','provider_timeout')
+          AND raw_response_hash IS NULL))
+      AND finished_at IS NOT NULL)
+    OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
+      AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL
+      AND raw_response_text IS NULL AND raw_response_hash IS NULL
+      AND public_error_code = 'outcome_unknown' AND finished_at IS NOT NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -108,12 +126,12 @@ CREATE TABLE creation_contracts (
   binding_hash CHAR(64) NOT NULL,
   channel_profile_key VARCHAR(120) NOT NULL,
   genre_profile_key VARCHAR(120) NOT NULL,
-  quality_charter_version INT NOT NULL,
+  quality_charter_version VARCHAR(120) NOT NULL,
   total_word_min INT NOT NULL,
   total_word_max INT NOT NULL,
-  chapter_char_min INT NOT NULL,
-  chapter_char_target INT NOT NULL,
-  chapter_char_max INT NOT NULL,
+  chapter_capacity_policy TEXT NOT NULL,
+  reference_manifest_json JSON NOT NULL,
+  reference_manifest_hash CHAR(64) NOT NULL,
   content_json JSON NOT NULL,
   content_hash CHAR(64) NOT NULL,
   confirmed_at BIGINT NOT NULL,
@@ -125,9 +143,9 @@ CREATE TABLE creation_contracts (
   FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE RESTRICT,
   FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
   CHECK (revision > 0),
-  CHECK (quality_charter_version > 0),
   CHECK (total_word_min > 0 AND total_word_max >= total_word_min),
-  CHECK (chapter_char_min > 0 AND chapter_char_target >= chapter_char_min AND chapter_char_max >= chapter_char_target)
+  CHECK (CHAR_LENGTH(TRIM(quality_charter_version)) > 0),
+  CHECK (CHAR_LENGTH(TRIM(chapter_capacity_policy)) > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 

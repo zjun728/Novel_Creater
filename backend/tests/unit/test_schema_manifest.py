@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from hashlib import sha256
 
 from backend import schema_manifest
@@ -278,11 +279,54 @@ def test_global_assets_have_revision_heads_and_no_project_ownership():
 
 def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     batches = _table_statement("story_engine_batches")
+    assert "provider_id is null and model_name_snapshot is null" in batches
+    assert "provider_id is not null and model_name_snapshot is not null" in batches
+    assert (
+        "provider_id is null and model_name_snapshot is null "
+        "and (status = 'reserved' or (status = 'failed' and attempt_id is null "
+        "and public_error_code in ('not_started','provider_configuration')))"
+    ) in batches
+    assert "public_error_code = 'provider_configuration'" in batches
     assert "unique key uq_engine_batch_idempotency (project_id, idempotency_key)" in batches
     assert "unique key uq_engine_batch_project_id (project_id, id)" in batches
     assert "check (source_type in ('provider','manual'))" in batches
     assert "check (status in ('reserved','running','succeeded','failed','outcome_unknown'))" in batches
-    assert batches.count("lease_expires_at is not null") == 3
+    assert "check (raw_response_text is null)" in batches
+    assert (
+        "status = 'succeeded' and attempt_id is not null "
+        "and attempt_started_at is not null and lease_expires_at is not null "
+        "and raw_response_text is null and raw_response_hash is not null"
+    ) in batches
+    assert (
+        "public_error_code = 'invalid_response' and raw_response_hash is not null"
+    ) in batches
+    assert (
+        "public_error_code in ('provider_failed','provider_timeout') "
+        "and raw_response_hash is null"
+    ) in batches
+    assert batches.count("lease_expires_at is not null") == 4
+    assert (
+        "status = 'failed' and public_error_code is not null "
+        "and public_error_code = 'not_started' and attempt_id is null "
+        "and attempt_started_at is null and lease_expires_at is null "
+        "and raw_response_text is null and raw_response_hash is null "
+        "and finished_at is not null"
+    ) in batches
+    assert (
+        "status = 'failed' and attempt_id is not null "
+        "and attempt_started_at is not null and lease_expires_at is not null "
+        "and ((public_error_code = 'invalid_response' and raw_response_hash is not null) "
+        "or (public_error_code in ('provider_failed','provider_timeout') "
+        "and raw_response_hash is null)) "
+        "and finished_at is not null"
+    ) in batches
+    assert re.search(
+        r"status = 'outcome_unknown' and attempt_id is not null "
+        r"and attempt_started_at is not null and lease_expires_at is not null "
+        r"and raw_response_text is null and raw_response_hash is null "
+        r"and public_error_code = 'outcome_unknown' and finished_at is not null",
+        batches,
+    )
     options = _table_statement("story_engine_options")
     assert "project_id char(36) not null" in options
     assert "unique key uq_engine_option_order (batch_id, option_order)" in options
@@ -314,9 +358,15 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
         "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete restrict",
         "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete restrict",
         "check (total_word_min > 0 and total_word_max >= total_word_min)",
-        "check (chapter_char_min > 0 and chapter_char_target >= chapter_char_min and chapter_char_max >= chapter_char_target)",
     ):
         assert contract in creation
+    assert "quality_charter_version varchar(120) not null" in creation
+    assert "chapter_capacity_policy text not null" in creation
+    assert "reference_manifest_json json not null" in creation
+    assert "reference_manifest_hash char(64) not null" in creation
+    assert "chapter_char_min" not in creation
+    assert "chapter_char_target" not in creation
+    assert "chapter_char_max" not in creation
     style = _table_statement("style_contracts")
     assert "foreign key (project_id, creation_contract_id, revision) references creation_contracts(project_id, id, revision) on delete restrict" in style
     engine_refs = _table_statement("creation_contract_engine_refs")

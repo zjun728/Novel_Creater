@@ -1,3 +1,4 @@
+import aiomysql
 import pytest
 
 from backend.schema_manifest import manifest_hash
@@ -111,11 +112,12 @@ async def _insert_revision_one_contracts(session):
         """INSERT INTO creation_contracts
            (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,genre_profile_key,
-            quality_charter_version,total_word_min,total_word_max,chapter_char_min,
-            chapter_char_target,chapter_char_max,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy',1,
-                   80000,120000,2000,3000,4000,%s,%s,%s)""",
-        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, '{}', HASH_B, NOW),
+            quality_charter_version,total_word_min,total_word_max,
+            chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
+                   80000,120000,'按情节自然切章','{}',%s,%s,%s,%s)""",
+        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, HASH_A, '{}', HASH_B, NOW),
     )
     await session.execute(
         """INSERT INTO style_contracts
@@ -146,6 +148,115 @@ async def _insert_seed_revision(
         (revision_id, project_id, seed_id, '{}', content_hash, NOW),
     )
     return seed_id, revision_id
+
+
+async def _insert_provider_batch_state(
+    session,
+    *,
+    status,
+    attempt_id,
+    attempt_started_at,
+    lease_expires_at,
+    raw_response_text,
+    raw_response_hash,
+    public_error_code,
+    finished_at,
+    provider_bound=True,
+):
+    provider_id = "00000000-0000-0000-0000-000000000090"
+    batch_id = "00000000-0000-0000-0000-000000000091"
+    await _insert_foundation_project(session)
+    if provider_bound:
+        await _insert_active_provider(session, provider_id, "Provider batch state")
+    seed_id, seed_revision_id = await _insert_seed_revision(session)
+    columns = (
+        "id,project_id,source_type,seed_id,seed_revision_id,seed_hash,"
+        "binding_revision_id,binding_hash,provider_id,model_name_snapshot,"
+        "idempotency_key,request_json,request_hash,status,attempt_id,"
+        "attempt_started_at,lease_expires_at,raw_response_text,raw_response_hash,"
+        "public_error_code,created_at,finished_at"
+    )
+    placeholders = ",".join(("%s",) * 22)
+    await session.execute(
+        f"INSERT INTO story_engine_batches ({columns}) VALUES ({placeholders})",
+        (
+            batch_id, PROJECT_ID, "provider", seed_id, seed_revision_id, HASH_A,
+            BINDING_ID, HASH_A,
+            provider_id if provider_bound else None,
+            "model" if provider_bound else None,
+            "i" * 64, "{}", HASH_B,
+            status, attempt_id, attempt_started_at, lease_expires_at,
+            raw_response_text, raw_response_hash, public_error_code, NOW,
+            finished_at,
+        ),
+    )
+    return batch_id
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    ("status", "public_error_code", "finished_at"),
+    (
+        ("reserved", None, None),
+        ("failed", "not_started", NOW),
+        ("failed", "provider_configuration", NOW),
+    ),
+)
+async def test_provider_null_snapshot_accepts_only_unattempted_states(
+    disposable_mysql, status, public_error_code, finished_at,
+):
+    batch_id = await _insert_provider_batch_state(
+        disposable_mysql.session,
+        status=status,
+        attempt_id=None,
+        attempt_started_at=None,
+        lease_expires_at=None,
+        raw_response_text=None,
+        raw_response_hash=None,
+        public_error_code=public_error_code,
+        finished_at=finished_at,
+        provider_bound=False,
+    )
+    row = await disposable_mysql.session.fetchone(
+        "SELECT status,provider_id,attempt_id FROM story_engine_batches WHERE id=%s",
+        (batch_id,),
+    )
+    assert row == {"status": status, "provider_id": None, "attempt_id": None}
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    (
+        "status", "raw_response_text", "raw_response_hash",
+        "public_error_code",
+    ),
+    (
+        ("running", None, None, None),
+        ("succeeded", "raw", HASH_C, None),
+        ("failed", None, None, "provider_failed"),
+        ("outcome_unknown", None, None, "outcome_unknown"),
+    ),
+)
+async def test_provider_null_snapshot_rejects_every_attempted_state(
+    disposable_mysql,
+    status,
+    raw_response_text,
+    raw_response_hash,
+    public_error_code,
+):
+    with pytest.raises(aiomysql.OperationalError, match="Check constraint"):
+        await _insert_provider_batch_state(
+            disposable_mysql.session,
+            status=status,
+            attempt_id="00000000-0000-0000-0000-000000000092",
+            attempt_started_at=NOW,
+            lease_expires_at=NOW,
+            raw_response_text=raw_response_text,
+            raw_response_hash=raw_response_hash,
+            public_error_code=public_error_code,
+            finished_at=None if status == "running" else NOW,
+            provider_bound=False,
+        )
 
 
 async def _insert_cross_project_provenance_fixture(session):
@@ -547,6 +658,154 @@ async def test_provider_terminal_batch_rejects_missing_lease_marker(
 
 
 @pytest.mark.mysql
+async def test_provider_not_started_failure_accepts_no_attempt_or_raw_markers(
+    disposable_mysql,
+):
+    batch_id = await _insert_provider_batch_state(
+        disposable_mysql.session,
+        status="failed",
+        attempt_id=None,
+        attempt_started_at=None,
+        lease_expires_at=None,
+        raw_response_text=None,
+        raw_response_hash=None,
+        public_error_code="not_started",
+        finished_at=NOW,
+    )
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,public_error_code,attempt_id,attempt_started_at,
+                  lease_expires_at,raw_response_text,raw_response_hash,finished_at
+           FROM story_engine_batches WHERE id=%s""",
+        (batch_id,),
+    )
+    assert row == {
+        "status": "failed",
+        "public_error_code": "not_started",
+        "attempt_id": None,
+        "attempt_started_at": None,
+        "lease_expires_at": None,
+        "raw_response_text": None,
+        "raw_response_hash": None,
+        "finished_at": NOW,
+    }
+
+
+@pytest.mark.mysql
+async def test_provider_outcome_unknown_accepts_exact_attempt_state(
+    disposable_mysql,
+):
+    attempt_id = "00000000-0000-0000-0000-000000000092"
+    batch_id = await _insert_provider_batch_state(
+        disposable_mysql.session,
+        status="outcome_unknown",
+        attempt_id=attempt_id,
+        attempt_started_at=NOW,
+        lease_expires_at=NOW,
+        raw_response_text=None,
+        raw_response_hash=None,
+        public_error_code="outcome_unknown",
+        finished_at=NOW,
+    )
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,public_error_code,attempt_id,attempt_started_at,
+                  lease_expires_at,raw_response_text,raw_response_hash,finished_at
+           FROM story_engine_batches WHERE id=%s""",
+        (batch_id,),
+    )
+    assert row == {
+        "status": "outcome_unknown",
+        "public_error_code": "outcome_unknown",
+        "attempt_id": attempt_id,
+        "attempt_started_at": NOW,
+        "lease_expires_at": NOW,
+        "raw_response_text": None,
+        "raw_response_hash": None,
+        "finished_at": NOW,
+    }
+
+
+@pytest.mark.mysql
+async def test_provider_succeeded_accepts_hash_only_and_never_plaintext(
+    disposable_mysql,
+):
+    attempt_id = "00000000-0000-0000-0000-000000000092"
+    batch_id = await _insert_provider_batch_state(
+        disposable_mysql.session,
+        status="succeeded",
+        attempt_id=attempt_id,
+        attempt_started_at=NOW,
+        lease_expires_at=NOW,
+        raw_response_text=None,
+        raw_response_hash=HASH_C,
+        public_error_code=None,
+        finished_at=NOW,
+    )
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,raw_response_text,raw_response_hash
+           FROM story_engine_batches WHERE id=%s""",
+        (batch_id,),
+    )
+    assert row == {
+        "status": "succeeded",
+        "raw_response_text": None,
+        "raw_response_hash": HASH_C,
+    }
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    (
+        "status", "attempt_id", "attempt_started_at", "lease_expires_at",
+        "raw_response_text", "raw_response_hash", "public_error_code",
+        "finished_at",
+    ),
+    (
+        ("failed", "00000000-0000-0000-0000-000000000092", NOW, NOW,
+         None, None, "invalid_response", NOW),
+        ("failed", "00000000-0000-0000-0000-000000000092", NOW, NOW,
+         None, HASH_C, "provider_failed", NOW),
+        ("succeeded", "00000000-0000-0000-0000-000000000092", NOW, NOW,
+         None, None, None, NOW),
+        ("succeeded", "00000000-0000-0000-0000-000000000092", NOW, NOW,
+         "raw", HASH_C, None, NOW),
+        ("failed", "00000000-0000-0000-0000-000000000092", NOW, NOW,
+         None, None, "not_started", NOW),
+        ("failed", None, None, None, None, None, "provider_failed", NOW),
+        ("outcome_unknown", None, None, None, None, None, "outcome_unknown", NOW),
+        ("outcome_unknown", "00000000-0000-0000-0000-000000000092", NOW,
+         NOW, None, None, "provider_failed", NOW),
+        ("outcome_unknown", "00000000-0000-0000-0000-000000000092", NOW,
+         NOW, "raw", HASH_C, "outcome_unknown", NOW),
+        ("failed", None, None, None, "raw", HASH_C, "not_started", NOW),
+        ("failed", None, None, None, None, None, "not_started", None),
+    ),
+)
+async def test_provider_terminal_batch_rejects_non_exact_attempt_states(
+    disposable_mysql,
+    status,
+    attempt_id,
+    attempt_started_at,
+    lease_expires_at,
+    raw_response_text,
+    raw_response_hash,
+    public_error_code,
+    finished_at,
+):
+    with pytest.raises(aiomysql.OperationalError, match="Check constraint"):
+        await _insert_provider_batch_state(
+            disposable_mysql.session,
+            status=status,
+            attempt_id=attempt_id,
+            attempt_started_at=attempt_started_at,
+            lease_expires_at=lease_expires_at,
+            raw_response_text=raw_response_text,
+            raw_response_hash=raw_response_hash,
+            public_error_code=public_error_code,
+            finished_at=finished_at,
+        )
+
+
+@pytest.mark.mysql
 async def test_specialized_asset_refs_accept_valid_and_reject_invalid_revisions(disposable_mysql):
     session = disposable_mysql.session
     seed_id = "00000000-0000-0000-0000-000000000020"
@@ -597,11 +856,12 @@ async def test_specialized_asset_refs_accept_valid_and_reject_invalid_revisions(
         """INSERT INTO creation_contracts
            (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,genre_profile_key,
-            quality_charter_version,total_word_min,total_word_max,chapter_char_min,
-            chapter_char_target,chapter_char_max,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy',1,
-                   80000,120000,2000,3000,4000,%s,%s,%s)""",
-        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, '{}', HASH_B, NOW),
+            quality_charter_version,total_word_min,total_word_max,
+            chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
+                   80000,120000,'按情节自然切章','{}',%s,%s,%s,%s)""",
+        (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, HASH_A, '{}', HASH_B, NOW),
     )
     await session.execute(
         """INSERT INTO style_contracts
