@@ -354,7 +354,7 @@ def test_actual_service_failed_replay_has_same_safe_http_failure(tmp_path):
     assert unknown.json()["code"] == "CorpusImportFailed"
 
 
-def test_no_root_full_book_or_download_route_exists_and_main_stays_unwired():
+def test_main_registers_corpus_metadata_routes_without_full_book_or_download():
     client, _ = make_client()
     for path in (
         "/api/corpus/root", "/api/corpus/full-book", "/api/corpus/download",
@@ -362,7 +362,16 @@ def test_no_root_full_book_or_download_route_exists_and_main_stays_unwired():
     ):
         assert client.get(path).status_code == 404
     from backend import main
-    assert not any(route.path.startswith("/api/corpus") for route in main.app.routes)
+    registered = {route.path for route in main.app.routes}
+    assert "/api/corpus/discovery" in registered
+    assert "/api/corpus/imports" in registered
+    assert "/api/corpus/sources" in registered
+    assert not {
+        "/api/corpus/root",
+        "/api/corpus/full-book",
+        "/api/corpus/download",
+        "/api/corpus/sources/{source_id}/download",
+    } & registered
 
 
 @pytest.mark.parametrize(

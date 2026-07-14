@@ -9,8 +9,19 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.database import close_pool, connection
-from backend.routers import canon, model_bindings, projects, providers, seeds
+from backend.routers import (
+    assets,
+    canon,
+    contracts,
+    corpus,
+    model_bindings,
+    projects,
+    providers,
+    seeds,
+    story_engines,
+)
 from backend.schema_version import verify_schema_version
+from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
 
 
@@ -40,6 +51,10 @@ app.include_router(projects.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
 app.include_router(model_bindings.router, prefix="/api")
 app.include_router(seeds.router, prefix="/api")
+app.include_router(story_engines.router, prefix="/api")
+app.include_router(contracts.router, prefix="/api")
+app.include_router(assets.router, prefix="/api")
+app.include_router(corpus.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")
 
 
@@ -59,13 +74,10 @@ if FRONTEND_DIST.exists():
 
     @app.get("/")
     async def serve_frontend_index():
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(resolve_spa_file(FRONTEND_DIST, "index.html"))
 
     @app.get("/{path:path}")
     async def serve_frontend(path: str):
         if path.startswith("api/"):
             raise HTTPException(status_code=404, detail="API route not found")
-        file_path = FRONTEND_DIST / path
-        if file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(resolve_spa_file(FRONTEND_DIST, path))

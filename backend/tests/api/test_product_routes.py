@@ -1,14 +1,101 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend import main
 from backend.http_errors import ProjectNotFound
-from backend.routers import projects, seeds
+from backend.routers import assets, contracts, corpus, projects, seeds, story_engines
 from backend.domain.seeds import SeedPayload
 from backend.security.redaction import install_error_handlers
 from backend.services.projects import ProjectResult
 from backend.services.seeds import SeedResult
+
+
+def test_joined_m2_routes_expose_public_behavior_through_dependencies():
+    class FakeStoryEngineService:
+        async def get(self, project_id, batch_id):
+            assert (project_id, batch_id) == ("p1", "batch-1")
+            return SimpleNamespace(
+                id="batch-1",
+                project_id="p1",
+                source_type="manual",
+                seed_id="seed-1",
+                seed_revision_id="seed-revision-1",
+                seed_hash="a" * 64,
+                binding_revision_id="binding-revision-1",
+                binding_hash="b" * 64,
+                provider_id=None,
+                model_name_snapshot=None,
+                idempotency_key="joined-route-test",
+                request_hash="c" * 64,
+                status="succeeded",
+                public_error_code=None,
+                created_at="2026-07-14T00:00:00Z",
+                finished_at="2026-07-14T00:00:01Z",
+                options=(),
+            )
+
+    class FakeContractService:
+        async def get_head(self, project_id):
+            assert project_id == "p1"
+            return {
+                "project_id": "p1",
+                "revision": 0,
+                "has_contract": False,
+                "contract_ready": False,
+                "reasons": ("contractMissing",),
+            }
+
+    class FakeAssetService:
+        async def list_styles(self):
+            return ()
+
+    class FakeCorpusService:
+        async def discovery(self, cursor, limit):
+            assert cursor is None and limit == 50
+            return {
+                "items": (),
+                "nextCursor": None,
+                "reasonCounts": {},
+                "scanStrategy": "allowlist",
+            }
+
+    overrides = {
+        story_engines.get_story_engine_service: lambda: FakeStoryEngineService(),
+        contracts.get_contract_service: lambda: FakeContractService(),
+        assets.get_asset_service: lambda: FakeAssetService(),
+        corpus.get_corpus_service: lambda: FakeCorpusService(),
+    }
+    main.app.dependency_overrides.update(overrides)
+    client = TestClient(main.app)
+    try:
+        batch = client.get("/api/projects/p1/story-engine-batches/batch-1")
+        contract = client.get("/api/projects/p1/contracts/head")
+        styles = client.get("/api/assets/style-templates")
+        discovery = client.get("/api/corpus/discovery")
+    finally:
+        for dependency in overrides:
+            main.app.dependency_overrides.pop(dependency, None)
+
+    assert batch.status_code == 200
+    assert batch.json()["id"] == "batch-1"
+    assert contract.json() == {
+        "projectId": "p1",
+        "revision": 0,
+        "hasContract": False,
+        "contractReady": False,
+        "reasons": ["contractMissing"],
+    }
+    assert styles.json() == []
+    assert discovery.json() == {
+        "items": [],
+        "nextCursor": None,
+        "reasonCounts": {},
+        "scanStrategy": "allowlist",
+    }
 
 
 def test_seed_list_uses_service_dependency_and_revision_payload_contract():

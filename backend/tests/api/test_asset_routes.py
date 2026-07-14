@@ -278,16 +278,16 @@ def test_invalid_category_and_missing_engine_option_are_422():
     assert missing_engine.status_code == 422
 
 
-def test_production_asset_service_uses_explicit_transaction_and_main_stays_unwired():
+def test_production_asset_service_uses_transaction_and_main_registers_read_routes():
     service = assets.get_asset_service()
 
     assert service.transaction_factory is transaction
     from backend import main
 
     registered = {route.path for route in main.app.routes}
-    assert "/api/assets/style-templates" not in registered
-    assert "/api/assets/experience-cards" not in registered
-    assert "/api/projects/{pid}/asset-recommendations" not in registered
+    assert "/api/assets/style-templates" in registered
+    assert "/api/assets/experience-cards" in registered
+    assert "/api/projects/{pid}/asset-recommendations" in registered
 
 
 @pytest.mark.parametrize(

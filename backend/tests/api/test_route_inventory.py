@@ -15,34 +15,102 @@ DELETED_ROUTERS = (
     "export.py",
 )
 
+APPROVED_M2_ROUTES = {
+    ("GET", "/api/health"),
+    ("GET", "/api/projects"),
+    ("POST", "/api/projects"),
+    ("GET", "/api/projects/{pid}"),
+    ("GET", "/api/projects/{pid}/content-state"),
+    ("PUT", "/api/projects/{pid}"),
+    ("DELETE", "/api/projects/{pid}"),
+    ("GET", "/api/providers"),
+    ("POST", "/api/providers"),
+    ("PUT", "/api/providers/{provider_id}"),
+    ("DELETE", "/api/providers/{provider_id}"),
+    ("GET", "/api/projects/{pid}/bindings"),
+    ("GET", "/api/projects/{pid}/bindings/status"),
+    ("PUT", "/api/projects/{pid}/bindings"),
+    ("GET", "/api/projects/{pid}/seeds"),
+    ("POST", "/api/projects/{pid}/seeds"),
+    ("PUT", "/api/projects/{pid}/seeds/{seed_id}"),
+    ("DELETE", "/api/projects/{pid}/seeds/{seed_id}"),
+    ("GET", "/api/projects/{pid}/selected-seed"),
+    ("PUT", "/api/projects/{pid}/selected-seed"),
+    ("POST", "/api/projects/{pid}/story-engine-batches"),
+    ("POST", "/api/projects/{pid}/story-engine-batches/manual"),
+    ("GET", "/api/projects/{pid}/story-engine-batches/{batch_id}"),
+    ("POST", "/api/projects/{pid}/story-engine-batches/{batch_id}/reconcile"),
+    ("GET", "/api/projects/{pid}/contract-draft"),
+    ("PUT", "/api/projects/{pid}/contract-draft"),
+    ("POST", "/api/projects/{pid}/contracts/preview"),
+    ("POST", "/api/projects/{pid}/contracts/clone"),
+    ("POST", "/api/projects/{pid}/contracts/confirm"),
+    ("GET", "/api/projects/{pid}/contracts/head"),
+    ("GET", "/api/projects/{pid}/contracts/history"),
+    ("GET", "/api/assets/style-templates"),
+    ("GET", "/api/assets/style-templates/{revision_id}"),
+    ("GET", "/api/assets/experience-cards"),
+    ("GET", "/api/assets/experience-cards/{revision_id}"),
+    ("GET", "/api/projects/{pid}/asset-recommendations"),
+    ("GET", "/api/corpus/discovery"),
+    ("POST", "/api/corpus/imports"),
+    ("GET", "/api/corpus/imports/{import_id}"),
+    ("GET", "/api/corpus/sources"),
+    ("GET", "/api/corpus/sources/{source_id}"),
+    ("GET", "/api/corpus/sources/{source_id}/chapters"),
+    ("GET", "/api/corpus/chapters/{chapter_id}/fragments"),
+    ("GET", "/api/projects/{project_id}/writer-core/state"),
+    ("GET", "/api/projects/{project_id}/canon/head"),
+    ("GET", "/api/projects/{project_id}/canon/revisions"),
+    ("GET", "/api/projects/{project_id}/canon/entities"),
+    ("GET", "/api/projects/{project_id}/canon/entities/{entity_id}"),
+    ("GET", "/api/projects/{project_id}/canon/events"),
+    ("GET", "/api/projects/{project_id}/canon/aliases/resolve"),
+    ("GET", "/api/projects/{project_id}/projections/head"),
+    ("GET", "/api/projects/{project_id}/projections/current-state"),
+    ("GET", "/api/projects/{project_id}/projections/memories"),
+    ("GET", "/api/projects/{project_id}/projections/arcs"),
+    ("GET", "/api/projects/{project_id}/projections/plot-threads"),
+}
 
-def test_main_registers_only_m1_product_routes():
-    paths = {
-        route.path
+FORBIDDEN_LEGACY_PREFIXES = (
+    "/api/ai/",
+    "/api/market",
+    "/api/experience-cards",
+    "/api/planning",
+    "/api/drafts",
+    "/api/writer",
+    "/api/Writer",
+    "/api/finalization",
+    "/api/chapters",
+    "/api/novel",
+    "/api/export",
+    "/api/volumes",
+    "/api/story-blocks",
+    "/api/correction",
+    "/api/project-state",
+)
+
+
+def _api_methods_and_paths():
+    return {
+        (method, route.path)
         for route in main.app.routes
         if route.path.startswith("/api/")
+        for method in route.methods
     }
-    assert "/api/health" in paths
-    assert "/api/projects" in paths
-    assert "/api/providers" in paths
-    assert "/api/projects/{pid}/seeds" in paths
-    assert "/api/projects/{project_id}/writer-core/state" in paths
-    banned_fragments = (
-        "/chapters",
-        "/novel",
-        "/market",
-        "/experience-cards",
-        "/export",
-        "/volumes",
-        "/story-blocks",
-        "/correction",
-        "/project-state",
-        "/ai/",
-    )
+
+
+def test_main_registers_exact_frozen_m2_route_inventory():
+    assert _api_methods_and_paths() == APPROVED_M2_ROUTES
+
+
+def test_forbidden_legacy_route_prefixes_remain_absent():
+    paths = {path for _, path in _api_methods_and_paths()}
     assert not {
         path
         for path in paths
-        if any(fragment in path for fragment in banned_fragments)
+        if path.startswith(FORBIDDEN_LEGACY_PREFIXES)
     }
 
 
