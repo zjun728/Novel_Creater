@@ -76,6 +76,8 @@ def _public_draft(result):
         "baseHeadRevision": result.base_head_revision,
         "draftVersion": result.draft_version,
         "contentHash": result.content_hash,
+        "draftStage": result.draft.draftStage,
+        "isComplete": result.draft.is_complete,
         "draft": result.draft.model_dump(mode="json"),
         "createdAt": result.created_at,
         "updatedAt": result.updated_at,

@@ -11,6 +11,7 @@ from backend.domain.model_bindings import BindingItem, BindingRevision
 from backend.services.contracts import (
     ConfirmContracts,
     ContractConflict,
+    ContractDraftIncomplete,
     ContractDraftInput,
     ContractNotFound,
     ContractPreconditionFailed,
@@ -45,6 +46,60 @@ def test_seed_reference_is_server_managed_and_client_input_forbids_forgery():
             "seedRevisionId": "forged-revision",
             "seedHash": "f" * 64,
         })
+
+
+@pytest.mark.parametrize(
+    ("stage", "overrides", "complete"),
+    (
+        ("engine", {
+            "primaryStyleRef": None, "secondaryStyleRef": None,
+            "likes": None, "dislikes": None,
+            "experienceCardRefs": None, "corpusSourceRefs": None,
+        }, False),
+        ("style", {
+            "experienceCardRefs": None, "corpusSourceRefs": None,
+        }, False),
+        ("assets", {}, True),
+    ),
+)
+def test_contract_draft_v2_accepts_each_progressive_stage(stage, overrides, complete):
+    harness = ContractHarness()
+    draft = ContractDraftInput(**draft_values(
+        harness.repository, draftStage=stage, **overrides
+    ))
+
+    assert draft.schemaVersion == "contract-draft-v2"
+    assert draft.draftStage == stage
+    assert draft.is_complete is complete
+
+
+@pytest.mark.parametrize(
+    ("stage", "overrides"),
+    (
+        ("engine", {"primaryStyleRef": {"id": "style-primary", "revision": 2,
+                                        "contentHash": "a" * 64}}),
+        ("engine", {"likes": ()}),
+        ("style", {"primaryStyleRef": None}),
+        ("style", {"experienceCardRefs": ()}),
+        ("assets", {"likes": None}),
+        ("assets", {"experienceCardRefs": None}),
+    ),
+)
+def test_contract_draft_v2_rejects_fields_from_the_wrong_stage(stage, overrides):
+    harness = ContractHarness()
+    base = draft_values(harness.repository, draftStage=stage)
+    if stage == "engine":
+        base.update({
+            "primaryStyleRef": None, "secondaryStyleRef": None,
+            "likes": None, "dislikes": None,
+            "experienceCardRefs": None, "corpusSourceRefs": None,
+        })
+    elif stage == "style":
+        base.update({"experienceCardRefs": None, "corpusSourceRefs": None})
+    base.update(overrides)
+
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**base)
 
 
 _UNSAFE_PATHS = (
@@ -172,6 +227,59 @@ async def test_create_reload_update_uses_one_draft_and_version_cas_from_head_zer
     assert harness.repository.drafts["p1"]["seed_revision_id"] == "seed-revision-1"
     assert harness.repository.drafts["p1"]["engine_option_id"] == "engine-1"
     assert harness.repository.drafts["p1"]["content_hash"] == canonical_hash(updated.draft)
+
+
+@pytest.mark.asyncio
+async def test_save_accepts_not_ready_binding_and_can_return_to_engine_stage():
+    harness = ContractHarness()
+    harness.repository.binding["items"][0]["provider_ready"] = 0
+
+    created = await harness.service.save_draft(command(harness))
+    returned = await harness.service.save_draft(command(
+        harness,
+        expected=1,
+        draftStage="engine",
+        primaryStyleRef=None,
+        secondaryStyleRef=None,
+        likes=None,
+        dislikes=None,
+        experienceCardRefs=None,
+        corpusSourceRefs=None,
+    ))
+
+    assert created.draft_version == 1
+    assert returned.draft.draftStage == "engine"
+    assert returned.draft.primaryStyleRef is None
+    assert returned.draft.likes is None
+    assert returned.draft.experienceCardRefs is None
+
+
+@pytest.mark.asyncio
+async def test_preview_and_live_confirm_reject_incomplete_stage_before_dependency_locks():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(
+        harness,
+        draftStage="engine",
+        primaryStyleRef=None,
+        secondaryStyleRef=None,
+        likes=None,
+        dislikes=None,
+        experienceCardRefs=None,
+        corpusSourceRefs=None,
+    ))
+    harness.repository.events.clear()
+
+    with pytest.raises(ContractDraftIncomplete):
+        await harness.service.preview("p1")
+    with pytest.raises(ContractDraftIncomplete):
+        await harness.service.confirm(ConfirmContracts(
+            project_id="p1",
+            idempotency_key="incomplete-stage",
+            expected_draft_version=saved.draft_version,
+            expected_draft_hash=saved.content_hash,
+        ))
+
+    assert harness.repository.events == []
 
 
 @pytest.mark.parametrize(

@@ -79,7 +79,7 @@ const STORY_ENGINE_FIELDS = [
   'differentiation',
 ]
 const CONTRACT_DRAFT_FIELDS = [
-  'schemaVersion', 'engineOptionId', 'engineHash', 'channelProfileKey',
+  'schemaVersion', 'draftStage', 'engineOptionId', 'engineHash', 'channelProfileKey',
   'genreProfileKey', 'qualityCharterVersion', 'totalWordRange',
   'chapterCapacityPolicy', 'primaryStyleRef', 'secondaryStyleRef',
   'experienceCardRefs', 'corpusSourceRefs', 'likes', 'dislikes',
@@ -107,7 +107,7 @@ function storyEngineOption(value = {}) {
 
 function contractDraft(value = {}) {
   const draft = pickDefined(value, CONTRACT_DRAFT_FIELDS)
-  if (draft.primaryStyleRef !== undefined) draft.primaryStyleRef = assetRef(draft.primaryStyleRef)
+  if (draft.primaryStyleRef != null) draft.primaryStyleRef = assetRef(draft.primaryStyleRef)
   if (draft.secondaryStyleRef) draft.secondaryStyleRef = assetRef(draft.secondaryStyleRef)
   if (Array.isArray(draft.experienceCardRefs)) {
     draft.experienceCardRefs = draft.experienceCardRefs.map(assetRef)

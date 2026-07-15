@@ -10,7 +10,9 @@ from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevisio
 from backend.repositories.contracts import ContractRepository
 from backend.services.contracts import (
     AssetRevisionRef,
+    ConfirmContracts,
     ContractConflict,
+    ContractDraftIncomplete,
     ContractDraftInput,
     ContractService,
     CorpusSourceRef,
@@ -142,7 +144,7 @@ async def _bootstrap(session):
         """INSERT INTO experience_cards
            (id,stable_key,revision,title,category,payload_json,provenance_json,
             content_hash,status,created_at) VALUES (%s,'choice',1,'选择代价',
-            'plot',%s,'{}',%s,'active',%s)""",
+            'plot_organization',%s,'{}',%s,'active',%s)""",
         (CARD, canonical_json(card_payload), card_hash, now),
     )
     await session.execute(
@@ -172,29 +174,173 @@ async def _bootstrap(session):
     }
 
 
-def _draft(facts, *, likes=("选择有代价",)):
-    return ContractDraftInput(
-        schemaVersion="contract-draft-v1",
-        engineOptionId=ENGINE,
-        engineHash=facts["engine_hash"],
-        channelProfileKey="web-fiction",
-        genreProfileKey="fantasy",
-        qualityCharterVersion="quality-v1",
-        totalWordRange=(100_000, 200_000),
-        chapterCapacityPolicy="每章推进一个选择",
-        primaryStyleRef=AssetRevisionRef(
+_DEFAULT_REFS = object()
+
+
+def _draft(
+    facts,
+    *,
+    stage="assets",
+    likes=("选择有代价",),
+    dislikes=("空泛升级",),
+    experience_card_refs=_DEFAULT_REFS,
+    corpus_source_refs=_DEFAULT_REFS,
+):
+    common = {
+        "schemaVersion": "contract-draft-v2",
+        "draftStage": stage,
+        "engineOptionId": ENGINE,
+        "engineHash": facts["engine_hash"],
+        "channelProfileKey": "web-fiction",
+        "genreProfileKey": "fantasy",
+        "qualityCharterVersion": "quality-v1",
+        "totalWordRange": (100_000, 200_000),
+        "chapterCapacityPolicy": "每章推进一个选择",
+    }
+    if stage == "engine":
+        return ContractDraftInput(**common)
+
+    style = {
+        "primaryStyleRef": AssetRevisionRef(
             id=STYLE, revision=1, contentHash=facts["style_hash"]
         ),
-        experienceCardRefs=(AssetRevisionRef(
+        "likes": likes,
+        "dislikes": dislikes,
+    }
+    if stage == "style":
+        return ContractDraftInput(**common, **style)
+
+    if experience_card_refs is _DEFAULT_REFS:
+        experience_card_refs = (AssetRevisionRef(
             id=CARD, revision=1, contentHash=facts["card_hash"]
-        ),),
-        corpusSourceRefs=(CorpusSourceRef(
+        ),)
+    if corpus_source_refs is _DEFAULT_REFS:
+        corpus_source_refs = (CorpusSourceRef(
             id=SOURCE, revision=1, contentHash=facts["source_hash"],
             selectionMode="author",
-        ),),
-        likes=likes,
-        dislikes=("空泛升级",),
+        ),)
+    return ContractDraftInput(
+        **common,
+        **style,
+        experienceCardRefs=experience_card_refs,
+        corpusSourceRefs=corpus_source_refs,
     )
+
+
+async def _table_count(session, table):
+    row = await session.fetchone(f"SELECT COUNT(*) AS count FROM {table}")
+    return int(row["count"])
+
+
+@pytest.mark.asyncio
+async def test_real_progressive_draft_saves_engine_style_assets_as_versions_1_2_3(
+    disposable_mysql,
+):
+    facts = await _bootstrap(disposable_mysql.session)
+    service = _service(disposable_mysql)
+
+    engine = await service.save_draft(SaveContractDraft(
+        PROJECT, 0, _draft(facts, stage="engine")
+    ))
+    assert engine.draft_version == 1
+    assert engine.draft.draftStage == "engine"
+    assert engine.draft.primaryStyleRef is None
+    assert engine.draft.experienceCardRefs is None
+    assert await service.get_draft(PROJECT) == engine
+
+    style = await service.save_draft(SaveContractDraft(
+        PROJECT, 1, _draft(facts, stage="style")
+    ))
+    assert style.draft_version == 2
+    assert style.draft.draftStage == "style"
+    assert style.draft.primaryStyleRef.id == STYLE
+    assert style.draft.experienceCardRefs is None
+    assert await service.get_draft(PROJECT) == style
+
+    assets = await service.save_draft(SaveContractDraft(
+        PROJECT, 2, _draft(facts)
+    ))
+    assert assets.draft_version == 3
+    assert assets.draft.draftStage == "assets"
+    assert assets.draft.is_complete is True
+    assert assets.draft.experienceCardRefs[0].id == CARD
+    assert assets.draft.corpusSourceRefs[0].id == SOURCE
+    assert await service.get_draft(PROJECT) == assets
+
+
+@pytest.mark.parametrize("stage", ("engine", "style"))
+@pytest.mark.asyncio
+async def test_real_incomplete_draft_preview_and_confirm_are_422_without_writes(
+    disposable_mysql, stage
+):
+    facts = await _bootstrap(disposable_mysql.session)
+    service = _service(disposable_mysql)
+    saved = await service.save_draft(SaveContractDraft(
+        PROJECT, 0, _draft(facts, stage=stage)
+    ))
+
+    with pytest.raises(ContractDraftIncomplete) as preview_error:
+        await service.preview(PROJECT)
+    with pytest.raises(ContractDraftIncomplete) as confirm_error:
+        await service.confirm(ConfirmContracts(
+            project_id=PROJECT,
+            idempotency_key=f"incomplete-{stage}",
+            expected_draft_version=saved.draft_version,
+            expected_draft_hash=saved.content_hash,
+        ))
+
+    for error in (preview_error.value, confirm_error.value):
+        assert error.status_code == 422
+        assert error.code == "ContractDraftIncomplete"
+    for table in (
+        "creation_contracts",
+        "style_contracts",
+        "creation_contract_engine_refs",
+        "style_contract_template_refs",
+        "creation_contract_experience_refs",
+        "creation_contract_corpus_refs",
+        "contract_confirmation_requests",
+    ):
+        assert await _table_count(disposable_mysql.session, table) == 0
+    head = await disposable_mysql.session.fetchone(
+        "SELECT revision FROM project_contract_heads WHERE project_id=%s",
+        (PROJECT,),
+    )
+    assert head["revision"] == 0
+    assert await service.get_draft(PROJECT) == saved
+
+
+@pytest.mark.asyncio
+async def test_real_assets_stage_with_explicit_empty_arrays_can_preview(
+    disposable_mysql,
+):
+    facts = await _bootstrap(disposable_mysql.session)
+    service = _service(disposable_mysql)
+    saved = await service.save_draft(SaveContractDraft(
+        PROJECT,
+        0,
+        _draft(
+            facts,
+            likes=(),
+            dislikes=(),
+            experience_card_refs=(),
+            corpus_source_refs=(),
+        ),
+    ))
+
+    preview = await service.preview(PROJECT)
+
+    assert saved.draft.draftStage == "assets"
+    assert saved.draft.experienceCardRefs == ()
+    assert saved.draft.corpusSourceRefs == ()
+    assert preview.contract_ready is True
+    assert preview.reasons == ()
+    assert preview.experience_card_refs == ()
+    assert preview.corpus_source_refs == ()
+    assert preview.likes == ()
+    assert preview.dislikes == ()
+    assert preview.creation_contract is not None
+    assert preview.style_contract is not None
 
 
 def _service(disposable_mysql):

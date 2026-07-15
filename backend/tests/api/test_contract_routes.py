@@ -42,6 +42,9 @@ def test_save_reload_and_preview_routes_return_strict_safe_public_snapshots():
     assert reloaded.json() == saved.json()
     assert saved.json()["baseHeadRevision"] == 0
     assert saved.json()["draftVersion"] == 1
+    assert saved.json()["draftStage"] == "assets"
+    assert saved.json()["isComplete"] is True
+    assert saved.json()["draft"]["draftStage"] == "assets"
     assert saved.json()["draft"]["modelBindingRef"]["revision"] == 3
     assert saved.json()["draft"]["qualityCharterVersion"] == "writer-core-quality-v1"
     body = preview.json()
@@ -64,6 +67,39 @@ def test_save_reload_and_preview_routes_return_strict_safe_public_snapshots():
         "api_key", "base_url", "C:\\\\Users", "secret",
     )
     assert all(marker not in preview.text.lower() for marker in forbidden)
+
+
+@pytest.mark.parametrize("stage", ("engine", "style"))
+def test_progressive_draft_response_is_incomplete_and_preview_is_stable_422(stage):
+    client, harness = make_client()
+    overrides = {"draftStage": stage}
+    if stage == "engine":
+        overrides.update({
+            "primaryStyleRef": None, "secondaryStyleRef": None,
+            "likes": None, "dislikes": None,
+            "experienceCardRefs": None, "corpusSourceRefs": None,
+        })
+    else:
+        overrides.update({"experienceCardRefs": None, "corpusSourceRefs": None})
+
+    saved = client.put(
+        "/api/projects/p1/contract-draft", json=save_body(harness, **overrides)
+    )
+    preview = client.post("/api/projects/p1/contracts/preview")
+    confirm = client.post("/api/projects/p1/contracts/confirm", json={
+        "idempotencyKey": f"incomplete-{stage}",
+        "expectedDraftVersion": saved.json()["draftVersion"],
+        "expectedDraftHash": saved.json()["contentHash"],
+    })
+
+    assert saved.status_code == 200
+    assert saved.json()["draftStage"] == stage
+    assert saved.json()["isComplete"] is False
+    assert saved.json()["draft"]["draftStage"] == stage
+    assert preview.status_code == 422
+    assert preview.json()["code"] == "ContractDraftIncomplete"
+    assert confirm.status_code == 422
+    assert confirm.json()["code"] == "ContractDraftIncomplete"
 
 
 def test_route_validation_rejects_unknown_long_duplicate_and_same_style_inputs():

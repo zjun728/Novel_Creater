@@ -370,7 +370,7 @@ test('nested frozen DTOs discard secret and debug fields before transport', asyn
   }
   const ref = { id: 'asset-1', revision: 1, contentHash: 'a'.repeat(64), debug: 'must-not-send' }
   const draft = {
-    schemaVersion: 'contract-draft-v1', engineOptionId: 'engine-1',
+    schemaVersion: 'contract-draft-v2', draftStage: 'assets', engineOptionId: 'engine-1',
     engineHash: 'b'.repeat(64), channelProfileKey: 'qidian', genreProfileKey: 'xuanhuan',
     qualityCharterVersion: 'v1', totalWordRange: [1000000, 2000000],
     chapterCapacityPolicy: 'Manual chapter finalization', primaryStyleRef: ref,
@@ -402,6 +402,38 @@ test('nested frozen DTOs discard secret and debug fields before transport', asyn
   assert.equal(JSON.stringify(bodyOf(calls[3])).includes('must-not-send'), false)
   assert.deepEqual(bodyOf(calls[3]).draft.primaryStyleRef, {
     id: 'asset-1', revision: 1, contentHash: 'a'.repeat(64),
+  })
+})
+
+test('progressive contract drafts preserve explicit null downstream fields', async () => {
+  const draft = {
+    schemaVersion: 'contract-draft-v2',
+    draftStage: 'engine',
+    engineOptionId: 'engine-1',
+    engineHash: 'b'.repeat(64),
+    channelProfileKey: 'qidian',
+    genreProfileKey: 'xuanhuan',
+    qualityCharterVersion: 'v1',
+    totalWordRange: [1000000, 2000000],
+    chapterCapacityPolicy: 'Manual chapter finalization',
+    primaryStyleRef: null,
+    secondaryStyleRef: null,
+    experienceCardRefs: null,
+    corpusSourceRefs: null,
+    likes: null,
+    dislikes: null,
+  }
+
+  const calls = await captureRequests(async api => {
+    await api.contracts.draft.save('project-1', {
+      expectedDraftVersion: 0,
+      draft,
+    })
+  })
+
+  assert.deepEqual(bodyOf(calls[0]), {
+    expectedDraftVersion: 0,
+    draft,
   })
 })
 

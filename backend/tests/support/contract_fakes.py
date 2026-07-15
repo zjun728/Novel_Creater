@@ -451,7 +451,8 @@ def draft_values(repository: MemoryContractRepository, **overrides):
     source = repository.sources["source-1"]
     engine = repository.engines["engine-1"]
     values = {
-        "schemaVersion": "contract-draft-v1",
+        "schemaVersion": "contract-draft-v2",
+        "draftStage": "assets",
         "engineOptionId": engine["id"],
         "engineHash": engine["content_hash"],
         "channelProfileKey": "web-fiction",

@@ -79,6 +79,12 @@ class ContractPreconditionFailed(PublicDomainError):
     message = "Contract prerequisites are unavailable"
 
 
+class ContractDraftIncomplete(PublicDomainError):
+    status_code = 422
+    code = "ContractDraftIncomplete"
+    message = "Contract draft is not complete"
+
+
 class _StrictValue(BaseModel):
     model_config = ConfigDict(
         strict=True, frozen=True, extra="forbid", str_strip_whitespace=True
@@ -96,7 +102,8 @@ class CorpusSourceRef(AssetRevisionRef):
 
 
 class ContractDraftInput(_StrictValue):
-    schemaVersion: Literal["contract-draft-v1"]
+    schemaVersion: Literal["contract-draft-v2"]
+    draftStage: Literal["engine", "style", "assets"]
     engineOptionId: Identifier
     engineHash: Hash
     channelProfileKey: ProfileOrVersionKey
@@ -104,30 +111,73 @@ class ContractDraftInput(_StrictValue):
     qualityCharterVersion: ProfileOrVersionKey
     totalWordRange: tuple[int, int]
     chapterCapacityPolicy: Text
-    primaryStyleRef: AssetRevisionRef
+    primaryStyleRef: AssetRevisionRef | None = None
     secondaryStyleRef: AssetRevisionRef | None = None
-    experienceCardRefs: tuple[AssetRevisionRef, ...] = Field(
-        default=(), max_length=MAX_REFS
+    experienceCardRefs: tuple[AssetRevisionRef, ...] | None = Field(
+        default=None, max_length=MAX_REFS
     )
-    corpusSourceRefs: tuple[CorpusSourceRef, ...] = Field(
-        default=(), max_length=MAX_REFS
+    corpusSourceRefs: tuple[CorpusSourceRef, ...] | None = Field(
+        default=None, max_length=MAX_REFS
     )
-    likes: tuple[Text, ...] = Field(default=(), max_length=MAX_PREFERENCES)
-    dislikes: tuple[Text, ...] = Field(default=(), max_length=MAX_PREFERENCES)
+    likes: tuple[Text, ...] | None = Field(
+        default=None, max_length=MAX_PREFERENCES
+    )
+    dislikes: tuple[Text, ...] | None = Field(
+        default=None, max_length=MAX_PREFERENCES
+    )
+
+    @property
+    def is_complete(self) -> bool:
+        return self.draftStage == "assets"
 
     @model_validator(mode="after")
     def validate_contract_draft(self) -> Self:
         low, high = self.totalWordRange
         if low <= 0 or high < low:
             raise ValueError("totalWordRange must be positive and ordered")
-        if self.secondaryStyleRef and self.secondaryStyleRef.id == self.primaryStyleRef.id:
+        if (
+            self.primaryStyleRef
+            and self.secondaryStyleRef
+            and self.secondaryStyleRef.id == self.primaryStyleRef.id
+        ):
             raise ValueError("primary and secondary styles must be different")
+        if self.draftStage == "engine":
+            if any(value is not None for value in (
+                self.primaryStyleRef,
+                self.secondaryStyleRef,
+                self.experienceCardRefs,
+                self.corpusSourceRefs,
+                self.likes,
+                self.dislikes,
+            )):
+                raise ValueError("engine draft must not retain downstream choices")
+        elif self.draftStage == "style":
+            if (
+                self.primaryStyleRef is None
+                or self.likes is None
+                or self.dislikes is None
+                or self.experienceCardRefs is not None
+                or self.corpusSourceRefs is not None
+            ):
+                raise ValueError("style draft fields are incomplete")
+        elif (
+            self.primaryStyleRef is None
+            or self.likes is None
+            or self.dislikes is None
+            or self.experienceCardRefs is None
+            or self.corpusSourceRefs is None
+        ):
+            raise ValueError("asset draft fields are incomplete")
         for field_name in ("experienceCardRefs", "corpusSourceRefs"):
             refs = getattr(self, field_name)
+            if refs is None:
+                continue
             if len({ref.id for ref in refs}) != len(refs):
                 raise ValueError(f"{field_name} must not contain duplicate refs")
         for field_name in ("likes", "dislikes"):
             values = getattr(self, field_name)
+            if values is None:
+                continue
             if len(set(values)) != len(values):
                 raise ValueError(f"{field_name} must not contain duplicates")
         return self
@@ -451,7 +501,10 @@ class ContractService:
                 session, command.project_id
             )
             binding_items = self._binding_items(binding)
-            if not self._binding_ready(binding_items, binding):
+            if (
+                tuple(item.task_key for item in binding_items) != TASK_KEYS
+                or not self._binding_integrity(binding_items, binding)
+            ):
                 raise ContractPreconditionFailed()
             persisted_draft = ContractDraftPayload(
                 **command.draft.model_dump(mode="python"),
@@ -582,6 +635,8 @@ class ContractService:
                 raise ContractPreconditionFailed()
             saved = self._draft_result(row)
             draft = saved.draft
+            if not draft.is_complete:
+                raise ContractDraftIncomplete()
             selected = await self.repository.read_selected_seed(session, project_id)
             frozen_seed = await self.repository.read_seed_revision(
                 session, project_id, draft.seedRevisionId
@@ -1224,6 +1279,8 @@ class ContractService:
                     raise ContractConflict()
                 return replay
             saved = self._draft_result(draft_row)
+            if not saved.draft.is_complete:
+                raise ContractDraftIncomplete()
             selected = frozen_seed = engine = binding = primary = secondary = None
             cards = sources = ()
             draft = saved.draft
@@ -1407,7 +1464,8 @@ class ContractService:
                 )
                 creation = verified.creation_contract
                 draft = ContractDraftPayload(
-                    schemaVersion="contract-draft-v1",
+                    schemaVersion="contract-draft-v2",
+                    draftStage="assets",
                     seedRevisionId=verified.seed_ref.revision_id,
                     seedHash=verified.seed_ref.content_hash,
                     engineOptionId=verified.engine_ref.id,
