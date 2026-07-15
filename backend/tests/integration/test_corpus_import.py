@@ -79,6 +79,13 @@ async def test_import_is_idempotent_dedupes_analysis_identity_and_stores_relativ
         "corpus_sources": 1, "corpus_chapters": 2,
         "corpus_fragments": 2, "corpus_import_runs": 2,
     }
+    listed = await service.list_sources()
+    detail = await service.get_source(first["corpus_source_id"], 120)
+    assert len(listed) == 1
+    assert listed[0]["revision"] == detail["revision"] == 1
+    assert listed[0]["source_hash"] == detail["source_hash"] == sha256(
+        (root / "book.txt").read_bytes()
+    ).hexdigest()
     stored = await disposable_mysql.session.fetchall(
         "SELECT relative_path FROM corpus_sources UNION ALL "
         "SELECT relative_path FROM corpus_import_runs"

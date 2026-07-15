@@ -72,6 +72,8 @@ def _import_dto(row) -> dict:
 def _source_summary(row) -> dict:
     return {
         "id": row["id"],
+        "revision": int(row["revision"]),
+        "contentHash": row["source_hash"],
         "name": row["title"],
         "relativePath": row["relative_path"],
         "shortHash": _short_hash(row.get("source_hash")),

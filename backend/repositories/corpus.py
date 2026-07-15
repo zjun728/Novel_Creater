@@ -164,21 +164,21 @@ class CorpusRepository:
 
     async def list_sources(self, session, *, limit: int = 200):
         return await session.fetchall(
-            """SELECT s.id,s.title,s.relative_path,s.source_hash,s.encoding,
+            """SELECT s.id,s.revision,s.title,s.relative_path,s.source_hash,s.encoding,
                       s.status,COUNT(DISTINCT c.id) AS chapter_count,
                       COUNT(DISTINCT f.id) AS fragment_count
                FROM corpus_sources s
                LEFT JOIN corpus_chapters c ON c.corpus_source_id=s.id
                LEFT JOIN corpus_fragments f ON f.corpus_chapter_id=c.id
                WHERE s.status='analyzed'
-               GROUP BY s.id,s.title,s.relative_path,s.source_hash,s.encoding,s.status
+               GROUP BY s.id,s.revision,s.title,s.relative_path,s.source_hash,s.encoding,s.status
                ORDER BY s.imported_at DESC,s.id LIMIT %s""",
             (limit,),
         )
 
     async def find_source(self, session, source_id: str, preview_chars: int):
         return await session.fetchone(
-            """SELECT s.id,s.title,s.relative_path,s.source_hash,s.encoding,
+            """SELECT s.id,s.revision,s.title,s.relative_path,s.source_hash,s.encoding,
                       s.status,COUNT(DISTINCT c.id) AS chapter_count,
                       COUNT(DISTINCT f.id) AS fragment_count,
                       COALESCE((
@@ -191,7 +191,7 @@ class CorpusRepository:
                LEFT JOIN corpus_chapters c ON c.corpus_source_id=s.id
                LEFT JOIN corpus_fragments f ON f.corpus_chapter_id=c.id
                WHERE s.id=%s AND s.status='analyzed'
-               GROUP BY s.id,s.title,s.relative_path,s.source_hash,s.encoding,s.status""",
+               GROUP BY s.id,s.revision,s.title,s.relative_path,s.source_hash,s.encoding,s.status""",
             (preview_chars, source_id),
         )
 

@@ -81,7 +81,8 @@ class FakeCorpusService:
         self._raise()
         return ({
             "id": SOURCE_ID, "title": "book", "relative_path": "safe/book.txt",
-            "source_hash": "a" * 64, "encoding": "utf-8", "status": "analyzed",
+            "revision": 2, "source_hash": "a" * 64,
+            "encoding": "utf-8", "status": "analyzed",
             "chapter_count": 2, "fragment_count": 4,
             "normalized_text": "FULL_BOOK_SENTINEL",
         },)
@@ -91,7 +92,8 @@ class FakeCorpusService:
         self._raise()
         return {
             "id": source_id, "title": "book", "relative_path": "safe/book.txt",
-            "source_hash": "a" * 64, "encoding": "utf-8", "status": "analyzed",
+            "revision": 2, "source_hash": "a" * 64,
+            "encoding": "utf-8", "status": "analyzed",
             "chapter_count": 2, "fragment_count": 4,
             "preview": "预" * preview_chars,
             "normalized_text": "FULL_BOOK_SENTINEL",
@@ -160,9 +162,16 @@ def test_corpus_routes_are_exact_and_all_dtos_are_allowlisted():
     }
     assert set(bodies[3]) == {"items"}
     assert set(bodies[4]) == {
-        "id", "name", "relativePath", "shortHash", "encoding", "state",
+        "id", "revision", "contentHash", "name", "relativePath", "shortHash",
+        "encoding", "state",
         "chapterCount", "fragmentCount", "preview",
     }
+    assert set(bodies[3]["items"][0]) == {
+        "id", "revision", "contentHash", "name", "relativePath", "shortHash",
+        "encoding", "state", "chapterCount", "fragmentCount",
+    }
+    assert bodies[3]["items"][0]["revision"] == 2
+    assert bodies[3]["items"][0]["contentHash"] == "a" * 64
     assert set(bodies[5]["items"][0]) == {
         "id", "order", "title", "byteStart", "byteEnd", "charStart",
         "charEnd", "shortHash",
