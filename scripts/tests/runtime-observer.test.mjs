@@ -130,3 +130,69 @@ test('observer records fail-closed header body response console page and request
     'GET http://127.0.0.1:5173/missing connection closed',
   ])
 })
+
+test('observer enforces exact write method path status and count allowlists', async () => {
+  const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const evidence = {
+    apiResponses: [
+      { method: 'PUT', status: 200, url: 'http://127.0.0.1:8000/api/projects/p1/contract-draft' },
+      { method: 'PUT', status: 200, url: 'http://127.0.0.1:8000/api/projects/p1/contract-draft' },
+      { method: 'POST', status: 201, url: 'http://127.0.0.1:8000/api/projects/p1/contracts/confirm' },
+      { method: 'GET', status: 200, url: 'http://127.0.0.1:8000/api/projects/p1' },
+    ],
+  }
+  const allowlist = [
+    { method: 'PUT', path: /\/contract-draft$/, count: 2, statuses: [200] },
+    { method: 'POST', path: /\/contracts\/confirm$/, count: 1, statuses: [201] },
+  ]
+
+  assert.deepEqual(assertExactWrites(evidence, allowlist), { writeCount: 3 })
+  assert.throws(
+    () => assertExactWrites(evidence, [{ ...allowlist[0], count: 1 }, allowlist[1]]),
+    /count/i,
+  )
+  assert.throws(
+    () => assertExactWrites(evidence, [allowlist[0]]),
+    /unmatched/i,
+  )
+  assert.throws(
+    () => assertExactWrites(evidence, [allowlist[0], { ...allowlist[1], statuses: [200] }]),
+    /status/i,
+  )
+})
+
+test('runtime secret scan returns only a match count and covers all evidence surfaces', async () => {
+  const { scanRuntimeEvidence } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const secret = 'dynamic-private-corpus-root'
+  const result = scanRuntimeEvidence({
+    requests: [{ url: '/api/import', method: 'POST', headers: { private: secret }, body: secret }],
+    apiResponses: [{ url: '/api/import', method: 'POST', status: 200, headers: { private: secret }, body: secret }],
+    pageContent: `<main>${secret}</main>`,
+    consoleMessages: [`error: ${secret}`],
+    consoleErrors: [`error: ${secret}`],
+    pageErrors: [secret],
+    requestFailures: [`POST /api/import ${secret}`],
+    responseFailures: [`500 POST /api/import ${secret}`],
+  }, [secret])
+
+  assert.equal(result.matchCount, 10)
+  assert.deepEqual(Object.keys(result), ['matchCount'])
+  assert.equal(JSON.stringify(result).includes(secret), false)
+})
+
+test('runtime scan values include all fixed sentinels and the dynamic corpus root', async () => {
+  const { runtimeSensitiveValues } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const environment = {
+    BROWSER_SECRET_SENTINEL: 'fixed-secret',
+    BROWSER_PRIVATE_PROVIDER_URL: 'fixed-provider-url',
+    BROWSER_CORPUS_ROOT_SENTINEL: 'fixed-corpus-root',
+    BROWSER_ACTUAL_CORPUS_ROOT_SENTINEL: 'dynamic-corpus-root',
+  }
+
+  assert.deepEqual(runtimeSensitiveValues(environment), [
+    'fixed-secret',
+    'fixed-provider-url',
+    'fixed-corpus-root',
+    'dynamic-corpus-root',
+  ])
+})
