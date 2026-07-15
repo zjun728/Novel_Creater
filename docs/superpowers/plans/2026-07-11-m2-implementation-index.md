@@ -109,7 +109,7 @@ git rev-parse HEAD
 | Eight-task binding revisions, inheritance, unbound/ready, Provider soft-delete | M2A Task 5; M2E Tasks 3 and 7 |
 | Manual/Provider three-engine batches, idempotency, one attempt, reconcile | M2B Tasks 1–3; M2E Tasks 3 and 8 |
 | Recoverable draft, deterministic preview, append-only atomic confirmation | M2B Tasks 4–5; M2D Tasks 2–3 |
-| Eight reviewed styles and 40–60 reviewed experience cards | M2C Tasks 1–3; M2E Task 6 |
+| Exactly 10 reviewed style templates and 64 reviewed experience cards | M2C Tasks 1–3; M2E Task 6 |
 | Corpus root, encodings, hashes, boundaries, fragments, containment | M2C Tasks 4–6; M2E Tasks 3, 6 and 7 |
 | No secrets/base URL/DSN/absolute path/full novel in public surfaces | M2A Task 5; M2B Task 3; M2C Tasks 4 and 6; M2E Tasks 1–8 |
 | L1–L5 evidence hierarchy, no shadow QA, real UI entry | M2E Tasks 1–8 |

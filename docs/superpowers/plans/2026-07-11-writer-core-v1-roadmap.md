@@ -79,7 +79,7 @@ flowchart LR
 - [ ] 无 enabled model 时 AI 操作阻止，不使用 fake 或内置 fallback。
 - [ ] 《典镇山河》所有任务初始绑定“联通云 / deepseek-v4-flash”。
 - [ ] 导入语料文件时记录 SHA-256、章节边界、规范化文本和分析版本；原始文件不进入 Git。
-- [ ] 首批 8 个主风格模板和 40–60 张高质量经验卡通过人工资产检查。
+- [ ] 首批恰好 10 个主风格模板和 64 张高质量经验卡通过人工资产检查。
 
 ### Task 3: M3 — StoryBlock、StoryStage、SceneTask 和章节容量
 
