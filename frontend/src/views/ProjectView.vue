@@ -1,32 +1,20 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { NAlert, NButton, NResult, NSkeleton, NTag } from 'naive-ui'
 import { api } from '@/api/db/client'
+import CreationContractWizard from '@/components/project/CreationContractWizard.vue'
 import WriterCoreStateCard from '@/components/project/WriterCoreStateCard.vue'
 import { useProjectStore } from '@/stores/projectStore'
-import { useSeedStore } from '@/stores/seedStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
 
 const route = useRoute()
 const projectStore = useProjectStore()
-const seedStore = useSeedStore()
 const writerCoreState = ref(null)
 const loadedProject = ref(null)
 const loading = ref(true)
 const loadError = ref('')
 const foundationGuard = createLatestRequestGuard()
-
-const selectedSeedId = computed(() => seedStore.seeds.find(seed => seed.status === 'selected')?.id || '')
-
-function seedPremise(seed) {
-  return seed.premiseJSON && typeof seed.premiseJSON === 'object' ? seed.premiseJSON : {}
-}
-
-function seedSummary(seed) {
-  const premise = seedPremise(seed)
-  return premise.logline || premise.openingHook || '种子内容已保留，等待创作契约里程碑展开。'
-}
 
 async function loadFoundation(projectId) {
   const requestGeneration = foundationGuard.begin()
@@ -35,9 +23,8 @@ async function loadFoundation(projectId) {
   loadedProject.value = null
   writerCoreState.value = null
   try {
-    const [project, , state] = await Promise.all([
+    const [project, state] = await Promise.all([
       projectStore.openProject(projectId),
-      seedStore.loadSeeds(projectId),
       api.writerCore.state(projectId),
     ])
     if (!foundationGuard.isCurrent(requestGeneration)) return
@@ -62,7 +49,6 @@ watch(() => route.params.id, projectId => {
 onBeforeUnmount(() => {
   foundationGuard.invalidate()
   projectStore.invalidateOpenProject()
-  seedStore.invalidateLoadSeeds()
 })
 </script>
 
@@ -82,7 +68,7 @@ onBeforeUnmount(() => {
     <template v-else-if="loadedProject && writerCoreState">
       <header class="project-hero">
         <div class="hero-copy">
-          <p class="eyebrow">PRESERVED PROJECT / WRITER CORE V1</p>
+          <p class="eyebrow">CREATION CONTRACT / WRITER CORE V2</p>
           <div class="title-line">
             <h1>{{ loadedProject.title }}</h1>
             <n-tag round :bordered="false">{{ loadedProject.genre || '未分类' }}</n-tag>
@@ -96,34 +82,13 @@ onBeforeUnmount(() => {
       </header>
 
       <n-alert type="info" :bordered="false" class="reset-note">
-        派生写作数据已按设计重置。项目基础信息、三个种子和 Provider 配置被保留；旧章节、临时草稿、设定、故事块与 QA 状态不会进入新内核。
+        派生写作数据已按设计重置。项目基础信息、种子池和 Provider 配置被保留；旧章节、临时草稿、设定、故事块与 QA 状态不会进入新内核。
       </n-alert>
 
-      <section class="seed-section" aria-labelledby="seed-pool-heading">
-        <div class="section-heading">
-          <div>
-            <p class="section-index">01 / 种子池</p>
-            <h2 id="seed-pool-heading">保留的创作方向</h2>
-          </div>
-          <span>{{ seedStore.seeds.length }} 个种子 · 仅一个进入创作契约</span>
-        </div>
-
-        <div class="seed-grid">
-          <article v-for="seed in seedStore.seeds" :key="seed.id" class="seed-card" :class="{ 'seed-card--selected': seed.id === selectedSeedId }">
-            <div class="seed-card-top">
-              <span class="seed-number">{{ String(seedStore.seeds.indexOf(seed) + 1).padStart(2, '0') }}</span>
-              <n-tag v-if="seed.id === selectedSeedId" type="success" size="small" round>已选定</n-tag>
-              <n-tag v-else size="small" :bordered="false">候选</n-tag>
-            </div>
-            <h3>{{ seed.title }}</h3>
-            <p>{{ seedSummary(seed) }}</p>
-            <div class="seed-meta">
-              <span>{{ seedPremise(seed).genre || loadedProject.genre || '未分类' }}</span>
-              <span>{{ seedPremise(seed).source === 'ai' ? 'AI 生成' : '作者种子' }}</span>
-            </div>
-          </article>
-        </div>
-      </section>
+      <creation-contract-wizard
+        :project-id="String(route.params.id || '')"
+        :project="loadedProject"
+      />
 
       <section class="foundation-section" aria-labelledby="foundation-heading">
         <div class="section-heading">
@@ -152,7 +117,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .project-shell { --paper: #f4efe4; --ink: #2e2923; --muted: #796f62; min-height: 100%; padding: clamp(22px, 4vw, 50px); color: var(--ink); background: var(--paper); }
-.loading-sheet, .error-sheet, .project-hero, .seed-section, .foundation-section, .workspace-gate { width: min(1120px, 100%); margin-inline: auto; }
+.loading-sheet, .error-sheet, .project-hero, .foundation-section, .workspace-gate { width: min(1120px, 100%); margin-inline: auto; }
 .loading-sheet { display: grid; gap: 22px; padding: 36px; border: 1px solid #ddd3c0; border-radius: 14px; background: #fffdf8; }
 .loading-line { display: flex; justify-content: space-between; }
 .loading-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
@@ -169,23 +134,14 @@ h1 { margin: 0; font-size: clamp(34px, 6vw, 58px); font-weight: 600; letter-spac
 .project-targets strong { font-family: Georgia, serif; font-size: 25px; font-weight: 600; }
 .project-targets span { color: #8b8173; font-size: 11px; }
 .reset-note { width: min(1120px, 100%); margin: 22px auto 0; background: rgba(255, 253, 248, .76); }
-.seed-section, .foundation-section { margin-top: 42px; }
+.foundation-section { margin-top: 42px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
 .section-heading h2 { margin: 5px 0 0; font-size: 24px; font-weight: 650; }
 .section-heading > span { color: #8a8072; font-size: 12px; }
-.seed-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.seed-card { min-height: 190px; padding: 20px; border: 1px solid #dcd1bd; border-radius: 11px; background: rgba(255, 253, 248, .72); }
-.seed-card--selected { border-color: #6f8c70; background: #fffdf8; box-shadow: inset 0 3px 0 #52745b, 0 10px 28px rgba(61, 72, 54, .07); }
-.seed-card-top { display: flex; align-items: center; justify-content: space-between; }
-.seed-number { color: #b09a78; font-family: Georgia, serif; font-size: 12px; }
-.seed-card h3 { margin: 20px 0 9px; font-size: 20px; }
-.seed-card p { min-height: 50px; margin: 0; color: #746a5d; font-size: 13px; line-height: 1.7; }
-.seed-meta { display: flex; gap: 8px; margin-top: 18px; color: #958876; font-size: 11px; }
-.seed-meta span + span::before { margin-right: 8px; content: '·'; }
 .mismatch-alert { margin-top: 12px; }
 .workspace-gate { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 42px; padding: 24px 28px; border-top: 1px solid #d6cbb7; }
 .workspace-gate strong { font-family: Georgia, 'Noto Serif SC', serif; font-size: 17px; }
 .workspace-gate p { margin: 5px 0 0; color: #817668; font-size: 12px; }
-@media (max-width: 820px) { .project-hero { align-items: flex-start; flex-direction: column; } .project-targets div { text-align: left; } .seed-grid { grid-template-columns: 1fr; } }
+@media (max-width: 820px) { .project-hero { align-items: flex-start; flex-direction: column; } .project-targets div { text-align: left; } }
 @media (max-width: 560px) { .project-shell { padding: 20px 14px; } .section-heading, .workspace-gate { align-items: flex-start; flex-direction: column; } .loading-grid { grid-template-columns: 1fr; } }
 </style>

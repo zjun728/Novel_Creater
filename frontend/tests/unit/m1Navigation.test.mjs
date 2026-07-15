@@ -45,7 +45,7 @@ test('the writer route mounts only the unavailable foundation view', async () =>
   assert.match(unavailable, /返回项目/)
 })
 
-test('the M1 project page depends only on project seed and writer core reads', async () => {
+test('the M2 project shell depends only on project and writer core foundation reads', async () => {
   const projectView = await readSource('views/ProjectView.vue')
   for (const forbidden of [
     'useWriterStore', 'useNovelStore', 'useSettingStore', 'useVolumeStore',
@@ -54,13 +54,74 @@ test('the M1 project page depends only on project seed and writer core reads', a
     assert.equal(projectView.includes(forbidden), false, `legacy project dependency remains: ${forbidden}`)
   }
   assert.equal((projectView.match(/projectStore\.openProject\(/g) || []).length, 1)
-  assert.equal((projectView.match(/seedStore\.loadSeeds\(/g) || []).length, 1)
+  assert.equal((projectView.match(/seedStore\.loadSeeds\(/g) || []).length, 0)
   assert.equal((projectView.match(/api\.writerCore\.state\(/g) || []).length, 1)
   assert.match(projectView, /watch\(\s*\(\)\s*=>\s*route\.params\.id/)
   assert.match(projectView, /createLatestRequestGuard/)
   assert.match(projectView, /onBeforeUnmount/)
   assert.match(projectView, /派生写作数据.*重置/s)
   assert.match(projectView, /进入写作台/)
+})
+
+test('the formal project page mounts one five-step creation contract wizard', async () => {
+  const [projectView, wizard, seed, engine, style, assets, preview, head] = await Promise.all([
+    readSource('views/ProjectView.vue'),
+    readSource('components/project/CreationContractWizard.vue'),
+    readSource('components/project/contract/SeedSelectionStep.vue'),
+    readSource('components/project/contract/StoryEngineStep.vue'),
+    readSource('components/project/contract/StyleSelectionStep.vue'),
+    readSource('components/project/contract/AssetScopeStep.vue'),
+    readSource('components/project/contract/ContractPreviewStep.vue'),
+    readSource('components/project/ContractHeadSummary.vue'),
+  ])
+  const componentTree = [wizard, seed, engine, style, assets, preview, head].join('\n')
+
+  assert.match(projectView, /CreationContractWizard/)
+  assert.match(projectView, /<creation-contract-wizard/)
+  assert.equal((projectView.match(/seedStore\.loadSeeds\(/g) || []).length, 0)
+  assert.match(wizard, /选择种子/)
+  assert.match(wizard, /故事发动机/)
+  assert.match(wizard, /风格契约/)
+  assert.match(wizard, /素材范围/)
+  assert.match(wizard, /冻结并确认/)
+  assert.match(wizard, /ContractHeadSummary/)
+  assert.match(wizard, /onBeforeRouteLeave/)
+  assert.match(wizard, /onBeforeRouteUpdate/)
+  assert.match(wizard, /beforeunload/)
+  assert.match(wizard, /seedRevisionId/)
+  assert.match(wizard, /selectedSeed\.revisionId/)
+  assert.match(wizard, /seedHash/)
+  assert.match(wizard, /selectedSeed\.contentHash/)
+  assert.match(wizard, /writeBusy/)
+  assert.match(wizard, /contractStore\.saving/)
+  assert.match(wizard, /contractStore\.confirming/)
+  assert.match(wizard, /contractStore\.cloning/)
+  assert.match(wizard, /:disabled="writeBusy \|\| !canOpen/)
+  assert.match(wizard, /:disabled="writeBusy" @click="loadWizard/)
+  assert.match(seed, /busy-change/)
+  assert.match(preview, /等待滚动规划/)
+  assert.match(preview, /作者即将确认的创作约定/)
+  assert.match(preview, /章节容量策略/)
+  assert.match(preview, /喜欢的表现/)
+  assert.match(preview, /明确避开/)
+  assert.match(head, /创建新修订/)
+  assert.match(engine, /store\.draft !== saved/)
+  assert.match(style, /contractStore\.draft !== saved/)
+  assert.match(assets, /contractStore\.draft !== saved/)
+  for (const asyncStep of [style, assets]) {
+    assert.match(asyncStep, /onBeforeUnmount/)
+    assert.match(asyncStep, /loadEpoch \+= 1/)
+    assert.match(asyncStep, /reloadContract: true/)
+    assert.match(asyncStep, /if \(contractStore\.saving\) return/)
+    assert.match(asyncStep, /contractStore\.requiresReload/)
+  }
+
+  for (const forbidden of [
+    /\bfetch\s*\(/, /localStorage/, /createAdapter/, /chatCompletion/,
+    /page\.request/, /ExperienceCardsView/, /experienceCardProduct/,
+  ]) {
+    assert.doesNotMatch(componentTree, forbidden)
+  }
 })
 
 test('active navigation exposes no retired import export backup or provider call', async () => {

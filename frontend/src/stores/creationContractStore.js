@@ -45,6 +45,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const previewing = ref(false)
   const confirming = ref(false)
   const cloning = ref(false)
+  const engineLoading = ref(false)
   const reconciling = ref(false)
 
   const loadGuard = createLatestRequestGuard()
@@ -52,10 +53,10 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const previewGuard = createLatestRequestGuard()
   const confirmGuard = createLatestRequestGuard()
   const cloneGuard = createLatestRequestGuard()
-  const reconcileGuard = createLatestRequestGuard()
+  const engineGuard = createLatestRequestGuard()
   const guards = [
     loadGuard, saveGuard, previewGuard, confirmGuard, cloneGuard,
-    reconcileGuard,
+    engineGuard,
   ]
   const confirmCommands = new Map()
   let contractStateGeneration = 0
@@ -101,6 +102,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     previewing.value = false
     confirming.value = false
     cloning.value = false
+    engineLoading.value = false
     reconciling.value = false
     confirmCommands.clear()
   }
@@ -122,6 +124,10 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   function markUnsavedChanges() {
+    // A local edit is a newer state boundary than any read already in flight.
+    // Without this generation bump, a late load could clear the dirty flag and
+    // silently replace the draft underneath the active form.
+    contractStateGeneration += 1
     hasUnsavedChanges.value = true
   }
 
@@ -302,23 +308,56 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     }
   }
 
-  async function reconcileBatch(nextProjectId, batchId) {
+  async function runEngineRequest(nextProjectId, operation, { reconcile = false } = {}) {
     const targetProjectId = enterProject(nextProjectId)
-    const generation = reconcileGuard.begin()
-    reconciling.value = true
+    const generation = engineGuard.begin()
+    engineLoading.value = true
+    reconciling.value = reconcile
     try {
-      const result = await api.storyEngines.reconcile(targetProjectId, batchId)
-      if (current(reconcileGuard, generation, targetProjectId)) {
+      const result = await operation(targetProjectId)
+      if (current(engineGuard, generation, targetProjectId)) {
         engineBatch.value = result
         error.value = null
       }
       return result
     } catch (failure) {
-      recordFailure(failure, reconcileGuard, generation, targetProjectId)
+      recordFailure(failure, engineGuard, generation, targetProjectId)
       throw failure
     } finally {
-      if (current(reconcileGuard, generation, targetProjectId)) reconciling.value = false
+      if (current(engineGuard, generation, targetProjectId)) {
+        engineLoading.value = false
+        reconciling.value = false
+      }
     }
+  }
+
+  function generateEngineBatch(nextProjectId, command) {
+    return runEngineRequest(
+      nextProjectId,
+      targetProjectId => api.storyEngines.generate(targetProjectId, command),
+    )
+  }
+
+  function createManualEngineBatch(nextProjectId, command) {
+    return runEngineRequest(
+      nextProjectId,
+      targetProjectId => api.storyEngines.manual(targetProjectId, command),
+    )
+  }
+
+  function loadEngineBatch(nextProjectId, batchId) {
+    return runEngineRequest(
+      nextProjectId,
+      targetProjectId => api.storyEngines.get(targetProjectId, batchId),
+    )
+  }
+
+  function reconcileBatch(nextProjectId, batchId) {
+    return runEngineRequest(
+      nextProjectId,
+      targetProjectId => api.storyEngines.reconcile(targetProjectId, batchId),
+      { reconcile: true },
+    )
   }
 
   return {
@@ -337,6 +376,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     previewing,
     confirming,
     cloning,
+    engineLoading,
     reconciling,
     lastSavedStage,
     readiness,
@@ -350,6 +390,9 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     preview,
     confirm,
     cloneRevision,
+    generateEngineBatch,
+    createManualEngineBatch,
+    loadEngineBatch,
     reconcileBatch,
   }
 })

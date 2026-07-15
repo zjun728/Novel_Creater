@@ -188,6 +188,29 @@ test('unsaved edit tracking is local-only and can be explicitly discarded withou
   })
 })
 
+test('a local edit invalidates an older load before it can clear the unsaved checkpoint', async () => {
+  const pendingDraft = deferred()
+  const pendingHead = deferred()
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => pendingDraft.promise],
+    [api.contracts, 'head', async () => pendingHead.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    const load = store.load('project-1')
+
+    store.markUnsavedChanges()
+    pendingDraft.resolve(publicDraft('assets', 3))
+    pendingHead.resolve({ contractReady: true, reasons: [] })
+    await load
+
+    assert.equal(store.hasUnsavedChanges, true)
+    assert.equal(store.draft, null)
+    assert.equal(store.head, null)
+  })
+})
+
 test('successful load, save, confirm and clone checkpoints clear unsaved edit state', async () => {
   let loadVersion = 3
 
@@ -432,6 +455,90 @@ test('outcome_unknown remains pending until reconcileBatch is called explicitly'
     assert.equal(store.providerOutcomeUnknown, true)
     assert.equal(reconciles, 1)
     assert.equal(generates, 0)
+  })
+})
+
+test('Provider and manual story-engine batches are created only by one explicit store command', async () => {
+  const providerCalls = []
+  const manualCalls = []
+  const options = [{ name: '甲案' }, { name: '乙案' }, { name: '丙案' }]
+
+  await withApiMethods([
+    [api.storyEngines, 'generate', async (projectId, command) => {
+      providerCalls.push({ projectId, command: structuredClone(command) })
+      return { id: 'provider-batch', status: 'succeeded', options }
+    }],
+    [api.storyEngines, 'manual', async (projectId, command) => {
+      manualCalls.push({ projectId, command: structuredClone(command) })
+      return { id: 'manual-batch', status: 'succeeded', options }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+
+    assert.equal(providerCalls.length, 0)
+    assert.equal(manualCalls.length, 0)
+    const provider = await store.generateEngineBatch('project-1', {
+      idempotencyKey: 'provider-explicit-1',
+    })
+    assert.equal(provider.id, 'provider-batch')
+    assert.deepEqual(providerCalls, [{
+      projectId: 'project-1',
+      command: { idempotencyKey: 'provider-explicit-1' },
+    }])
+
+    const manual = await store.createManualEngineBatch('project-1', {
+      idempotencyKey: 'manual-explicit-1',
+      options,
+    })
+    assert.equal(manual.id, 'manual-batch')
+    assert.deepEqual(manualCalls, [{
+      projectId: 'project-1',
+      command: { idempotencyKey: 'manual-explicit-1', options },
+    }])
+    assert.equal(store.engineBatch.id, 'manual-batch')
+  })
+})
+
+test('latest story-engine command wins and an outcome_unknown result never triggers hidden recovery', async () => {
+  const slowGenerate = deferred()
+  const fastLoad = deferred()
+  let generates = 0
+  let reads = 0
+  let reconciles = 0
+
+  await withApiMethods([
+    [api.storyEngines, 'generate', async () => {
+      generates += 1
+      return slowGenerate.promise
+    }],
+    [api.storyEngines, 'get', async () => {
+      reads += 1
+      return fastLoad.promise
+    }],
+    [api.storyEngines, 'reconcile', async () => {
+      reconciles += 1
+      throw new Error('reconcile must remain explicit')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+
+    const generate = store.generateEngineBatch('project-1', {
+      idempotencyKey: 'provider-explicit-2',
+    })
+    const load = store.loadEngineBatch('project-1', 'batch-newer')
+    fastLoad.resolve({ id: 'batch-newer', status: 'outcome_unknown', options: [] })
+    await load
+    slowGenerate.resolve({ id: 'batch-older', status: 'succeeded', options: [] })
+    await generate
+    await Promise.resolve()
+
+    assert.equal(generates, 1)
+    assert.equal(reads, 1)
+    assert.equal(reconciles, 0)
+    assert.equal(store.engineBatch.id, 'batch-newer')
+    assert.equal(store.providerOutcomeUnknown, true)
   })
 })
 
