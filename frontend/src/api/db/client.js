@@ -63,11 +63,12 @@ function pickDefined(value = {}, fields = []) {
 const PROJECT_FIELDS = [
   'title', 'genre', 'description', 'targetWords', 'targetChapters',
 ]
-const PROVIDER_FIELDS = [
+const PROVIDER_CREATE_FIELDS = [
   'name', 'providerType', 'model', 'baseURL', 'apiKey', 'enabled', 'sortOrder',
   'stream', 'maxContextTokens', 'maxOutputTokens', 'temperature', 'topP',
   'supportsJSON', 'supportsStreaming', 'notes', 'thinking',
 ]
+const PROVIDER_UPDATE_FIELDS = PROVIDER_CREATE_FIELDS.filter(field => field !== 'providerType')
 const SEED_FIELDS = [
   'title', 'genre', 'logline', 'protagonist', 'desire', 'coreConflict',
   'worldPressure', 'openingHook', 'differentiation',
@@ -206,10 +207,10 @@ export const api = {
 
   providers: {
     list: () => get('/providers'),
-    create: data => post('/providers', pickDefined(data, PROVIDER_FIELDS)),
+    create: data => post('/providers', pickDefined(data, PROVIDER_CREATE_FIELDS)),
     update: (providerId, data) => put(
       `/providers/${segment(providerId)}`,
-      pickDefined(data, PROVIDER_FIELDS),
+      pickDefined(data, PROVIDER_UPDATE_FIELDS),
     ),
     delete: providerId => del(`/providers/${segment(providerId)}`),
   },

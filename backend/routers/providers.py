@@ -13,12 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from backend.database import fetchall, transaction
 from backend.serializers.provider import provider_public, providers_public
 
-
 router = APIRouter(tags=["providers"])
 
 _PROVIDER_UPDATE_COLUMNS = {
     "name": "name",
-    "providerType": "provider_type",
     "model": "model_name",
     "baseURL": "base_url",
     "apiKey": "api_key",
@@ -72,7 +70,6 @@ class ProviderUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Optional[str] = None
-    providerType: Optional[str] = None
     model: Optional[str] = None
     baseURL: Optional[str] = None
     apiKey: Optional[str] = None
@@ -88,7 +85,7 @@ class ProviderUpdate(BaseModel):
     notes: Optional[str] = None
     thinking: Optional[dict] = None
 
-    @field_validator("name", "providerType", "model")
+    @field_validator("name", "model")
     @classmethod
     def active_fields_are_not_blank(cls, value: str | None):
         if value is not None and not value.strip():
@@ -97,7 +94,7 @@ class ProviderUpdate(BaseModel):
 
     @model_validator(mode="after")
     def active_required_fields_cannot_be_cleared(self):
-        required = {"name", "providerType", "model", "baseURL", "apiKey", "notes"}
+        required = {"name", "model", "baseURL", "apiKey", "notes"}
         if any(
             field in self.model_fields_set and getattr(self, field) is None
             for field in required
@@ -113,7 +110,6 @@ async def list_providers():
            ORDER BY sort_order, created_at, id"""
     )
     return providers_public(rows)
-
 
 @router.post("/providers")
 async def create_provider(data: ProviderCreate):
@@ -144,7 +140,6 @@ async def create_provider(data: ProviderCreate):
             (provider_id,),
         )
     return provider_public(created)
-
 
 @router.put("/providers/{provider_id}")
 async def update_provider(provider_id: str, data: ProviderUpdate):

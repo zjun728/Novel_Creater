@@ -36,6 +36,11 @@ def _sanitize(value, secrets: tuple[str, ...]):
         return {
             _sanitize(key, secrets): _sanitize(item, secrets)
             for key, item in value.items()
+            if not (
+                isinstance(key, str)
+                and key.lower().replace("_", "").replace("-", "")
+                in {"apikey", "baseurl"}
+            )
         }
     if isinstance(value, list):
         return [_sanitize(item, secrets) for item in value]

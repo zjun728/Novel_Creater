@@ -335,7 +335,7 @@ test('project and provider writes use explicit transport allowlists', async () =
       enabled: true, debug: 'must-not-send', rawText: 'must-not-send',
     })
     await api.providers.update('provider-1', {
-      name: '联通云', apiKey: 'replacement-request-only-secret',
+      name: '联通云', providerType: 'anthropic', apiKey: 'replacement-request-only-secret',
       baseURL: 'https://provider.example/v2', unexpected: 'must-not-send',
     })
   })

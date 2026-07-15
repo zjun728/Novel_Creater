@@ -16,12 +16,20 @@ test('public provider state retains configuration flags without inventing secret
     model: 'deepseek-v4-flash',
     hasKey: true,
     hasBaseURL: true,
+    thinking: {
+      credentials: { API_KEY: 'nested-secret', region: 'local' },
+      transport: { 'base-url': 'nested-secret', mode: 'safe' },
+    },
   })
 
   assert.equal(provider.hasKey, true)
   assert.equal(provider.hasBaseURL, true)
   assert.equal(Object.hasOwn(provider, 'apiKey'), false)
   assert.equal(Object.hasOwn(provider, 'baseURL'), false)
+  assert.deepEqual(provider.thinking, {
+    credentials: { region: 'local' },
+    transport: { mode: 'safe' },
+  })
 })
 
 test('blank secret inputs preserve stored values and clear flags never enter transport', () => {

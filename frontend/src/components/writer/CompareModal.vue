@@ -22,7 +22,7 @@ const step = ref('select')
 const selectedModels = ref([])
 
 const writableProviders = computed(() =>
-  providerStore.providers.filter(provider => provider.apiKey && provider.model)
+  providerStore.availableProviders
 )
 
 const doneCount = computed(() =>

@@ -12,6 +12,7 @@ from backend.routers import providers
 
 SECRET = "sk-plain-secret-must-never-leave-backend"
 PRIVATE_URL = "https://private-provider.example/v1"
+NESTED_SECRET = "unrelated-nested-secret-must-never-leave"
 
 
 def provider_row(**overrides):
@@ -32,9 +33,11 @@ def provider_row(**overrides):
         "supports_json": 1,
         "supports_streaming": 1,
         "notes": f"nested {SECRET} {PRIVATE_URL}",
-        "thinking": json.dumps(
-            {"nested": [SECRET, {"url": PRIVATE_URL}]}, ensure_ascii=False
-        ),
+        "thinking": json.dumps({
+            "nested": [SECRET, {"url": PRIVATE_URL}],
+            "credentials": {"API_KEY": NESTED_SECRET, "region": "local"},
+            "transport": {"base-url": NESTED_SECRET, "mode": "safe"},
+        }, ensure_ascii=False),
         "lifecycle_status": "active",
         "deleted_at": None,
         "created_at": 10,
@@ -48,13 +51,16 @@ def assert_public_provider(payload):
     rendered = json.dumps(payload, ensure_ascii=False)
     assert SECRET not in rendered
     assert PRIVATE_URL not in rendered
+    assert NESTED_SECRET not in rendered
     assert "apiKey" not in payload and "api_key" not in payload
     assert "baseURL" not in payload and "base_url" not in payload
     assert payload["hasKey"] is True
     assert payload["hasBaseURL"] is True
     assert payload["notes"] == "nested [REDACTED] [REDACTED]"
     assert payload["thinking"] == {
-        "nested": ["[REDACTED]", {"url": "[REDACTED]"}]
+        "nested": ["[REDACTED]", {"url": "[REDACTED]"}],
+        "credentials": {"region": "local"},
+        "transport": {"mode": "safe"},
     }
 
 
@@ -167,7 +173,11 @@ def valid_create():
         "enabled": True,
         "sortOrder": 2,
         "notes": f"nested {SECRET} {PRIVATE_URL}",
-        "thinking": {"nested": [SECRET, {"url": PRIVATE_URL}]},
+        "thinking": {
+            "nested": [SECRET, {"url": PRIVATE_URL}],
+            "credentials": {"API_KEY": NESTED_SECRET, "region": "local"},
+            "transport": {"base-url": NESTED_SECRET, "mode": "safe"},
+        },
     }
 
 
@@ -294,6 +304,11 @@ def test_provider_list_create_update_are_active_only_and_recursively_redacted(pr
             f"/api/providers/{provider_id}", json={field: None}
         )
         assert rejected.status_code == 422
+
+    immutable_type = client.put(
+        f"/api/providers/{provider_id}", json={"providerType": "anthropic"}
+    )
+    assert immutable_type.status_code == 422
 
 
 def test_delete_soft_deletes_in_one_transaction_and_is_repeatable_404(provider_api):

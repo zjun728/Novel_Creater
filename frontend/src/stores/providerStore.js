@@ -21,14 +21,19 @@ const EDITABLE_PROVIDER_FIELDS = [
   'supportsJSON', 'supportsStreaming', 'notes', 'thinking',
 ]
 
-const SENSITIVE_RESPONSE_KEYS = new Set(['apiKey', 'api_key', 'baseURL', 'base_url'])
+const SENSITIVE_RESPONSE_KEYS = new Set(['apikey', 'baseurl'])
+
+function isSensitiveResponseKey(key) {
+  return typeof key === 'string'
+    && SENSITIVE_RESPONSE_KEYS.has(key.toLowerCase().replaceAll('_', '').replaceAll('-', ''))
+}
 
 function stripSensitiveResponseKeys(value) {
   if (Array.isArray(value)) return value.map(stripSensitiveResponseKeys)
   if (!value || typeof value !== 'object') return value
   const result = {}
   for (const [key, item] of Object.entries(value)) {
-    if (!SENSITIVE_RESPONSE_KEYS.has(key)) result[key] = stripSensitiveResponseKeys(item)
+    if (!isSensitiveResponseKey(key)) result[key] = stripSensitiveResponseKeys(item)
   }
   return result
 }
