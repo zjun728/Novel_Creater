@@ -1,0 +1,533 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import { createPinia, setActivePinia } from 'pinia'
+
+import { api } from '../../src/api/db/client.js'
+import { useCreationContractStore } from '../../src/stores/creationContractStore.js'
+
+const HASH_A = 'a'.repeat(64)
+const HASH_B = 'b'.repeat(64)
+
+function draftValues(stage) {
+  const common = {
+    schemaVersion: 'contract-draft-v2',
+    draftStage: stage,
+    engineOptionId: 'engine-1',
+    engineHash: HASH_A,
+    channelProfileKey: 'qidian',
+    genreProfileKey: 'xuanhuan',
+    qualityCharterVersion: 'writer-core-quality-v1',
+    totalWordRange: [1000000, 2000000],
+    chapterCapacityPolicy: 'manual-finalization',
+  }
+  if (stage === 'engine') {
+    return {
+      ...common,
+      primaryStyleRef: null,
+      secondaryStyleRef: null,
+      experienceCardRefs: null,
+      corpusSourceRefs: null,
+      likes: null,
+      dislikes: null,
+    }
+  }
+  const style = {
+    ...common,
+    primaryStyleRef: { id: 'style-1', revision: 1, contentHash: HASH_B },
+    secondaryStyleRef: null,
+    likes: ['情节丰满'],
+    dislikes: ['干巴巴'],
+  }
+  if (stage === 'style') {
+    return {
+      ...style,
+      experienceCardRefs: null,
+      corpusSourceRefs: null,
+    }
+  }
+  return {
+    ...style,
+    experienceCardRefs: [],
+    corpusSourceRefs: [],
+  }
+}
+
+function publicDraft(stage, version) {
+  return {
+    id: 'draft-1',
+    projectId: 'project-1',
+    baseHeadRevision: 0,
+    draftVersion: version,
+    contentHash: version % 2 ? HASH_A : HASH_B,
+    draftStage: stage,
+    isComplete: stage === 'assets',
+    draft: draftValues(stage),
+  }
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
+async function withApiMethods(replacements, run) {
+  const originals = []
+  for (const [owner, key, replacement] of replacements) {
+    originals.push([owner, key, owner[key]])
+    owner[key] = replacement
+  }
+  try {
+    return await run()
+  } finally {
+    for (const [owner, key, original] of originals.reverse()) owner[key] = original
+  }
+}
+
+function installThrowingLocalStorage() {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      throw new Error('creation contract state must not access localStorage')
+    },
+  })
+  return () => {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor)
+    else delete globalThis.localStorage
+  }
+}
+
+test('progressive wizard writes only on three explicit saves and refresh restores assets stage', async () => {
+  const restoreStorage = installThrowingLocalStorage()
+  const saveCalls = []
+  let backendDraft = null
+
+  try {
+    await withApiMethods([
+      [api.contracts.draft, 'get', async () => {
+        if (backendDraft) return backendDraft
+        throw Object.assign(new Error('missing'), { status: 404, code: 'ContractNotFound' })
+      }],
+      [api.contracts, 'head', async projectId => ({
+        projectId, revision: 0, hasContract: false,
+        contractReady: false, reasons: ['contract_missing'],
+      })],
+      [api.contracts.draft, 'save', async (projectId, command) => {
+        saveCalls.push(structuredClone(command))
+        backendDraft = {
+          ...publicDraft(command.draft.draftStage, command.expectedDraftVersion + 1),
+          projectId,
+          draft: structuredClone(command.draft),
+        }
+        return backendDraft
+      }],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = useCreationContractStore()
+      await store.load('project-1')
+
+      const engine = draftValues('engine')
+      const style = draftValues('style')
+      const assets = draftValues('assets')
+
+      // Changing local controls is deliberately outside the store and does not write.
+      assert.equal(saveCalls.length, 0)
+      await store.saveDraft('project-1', engine)
+      assert.equal(saveCalls.length, 1)
+      await store.saveDraft('project-1', style)
+      assert.equal(saveCalls.length, 2)
+      await store.saveDraft('project-1', assets)
+      assert.equal(saveCalls.length, 3)
+      assert.deepEqual(saveCalls.map(call => call.expectedDraftVersion), [0, 1, 2])
+      assert.deepEqual(saveCalls.map(call => call.draft.draftStage), ['engine', 'style', 'assets'])
+
+      setActivePinia(createPinia())
+      const refreshed = useCreationContractStore()
+      await refreshed.load('project-1')
+      assert.equal(refreshed.draft.draftStage, 'assets')
+      assert.equal(refreshed.draft.draftVersion, 3)
+      assert.equal(refreshed.lastSavedStage, 'assets')
+    })
+  } finally {
+    restoreStorage()
+  }
+})
+
+test('unsaved edit tracking is local-only and can be explicitly discarded without an API call', async () => {
+  let calls = 0
+  const unexpectedCall = async () => {
+    calls += 1
+    throw new Error('unsaved edit tracking must stay local')
+  }
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', unexpectedCall],
+    [api.contracts.draft, 'save', unexpectedCall],
+    [api.contracts, 'head', unexpectedCall],
+    [api.contracts, 'preview', unexpectedCall],
+    [api.contracts, 'confirm', unexpectedCall],
+    [api.contracts, 'clone', unexpectedCall],
+    [api.storyEngines, 'reconcile', unexpectedCall],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+
+    assert.equal(store.hasUnsavedChanges, false)
+    store.markUnsavedChanges()
+    assert.equal(store.hasUnsavedChanges, true)
+    store.discardUnsavedChanges()
+    assert.equal(store.hasUnsavedChanges, false)
+    await Promise.resolve()
+    assert.equal(calls, 0)
+  })
+})
+
+test('successful load, save, confirm and clone checkpoints clear unsaved edit state', async () => {
+  let loadVersion = 3
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => publicDraft('assets', loadVersion)],
+    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
+    [api.contracts.draft, 'save', async () => publicDraft('assets', 4)],
+    [api.contracts, 'confirm', async () => ({
+      projectId: 'project-1', revision: 1, contractReady: true, reasons: [],
+    })],
+    [api.contracts, 'clone', async () => publicDraft('assets', 1)],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+
+    store.markUnsavedChanges()
+    await store.load('project-1')
+    assert.equal(store.hasUnsavedChanges, false)
+
+    store.markUnsavedChanges()
+    await store.saveDraft('project-1', draftValues('assets'))
+    assert.equal(store.hasUnsavedChanges, false)
+
+    store.markUnsavedChanges()
+    await store.confirm('project-1', { idempotencyKey: 'checkpoint-confirm' })
+    assert.equal(store.hasUnsavedChanges, false)
+
+    loadVersion = 1
+    store.markUnsavedChanges()
+    await store.cloneRevision('project-1')
+    assert.equal(store.hasUnsavedChanges, false)
+  })
+})
+
+test('draft CAS conflict requires an explicit reload and never retries or overwrites', async () => {
+  let current = publicDraft('engine', 1)
+  let saves = 0
+  let reads = 0
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => {
+      reads += 1
+      return current
+    }],
+    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
+    [api.contracts.draft, 'save', async () => {
+      saves += 1
+      throw Object.assign(new Error('stale'), {
+        status: 409,
+        code: 'ContractConflict',
+        correlationId: 'cid-conflict',
+      })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    await assert.rejects(store.saveDraft('project-1', draftValues('style')), error => (
+      error.status === 409 && error.code === 'ContractConflict'
+    ))
+
+    assert.equal(saves, 1)
+    assert.equal(reads, 1)
+    assert.equal(store.requiresReload, true)
+    assert.equal(store.conflict.code, 'ContractConflict')
+    assert.equal(store.draft.draftStage, 'engine')
+
+    current = publicDraft('style', 2)
+    await store.load('project-1')
+    assert.equal(reads, 2)
+    assert.equal(store.requiresReload, false)
+    assert.equal(store.conflict, null)
+    assert.equal(store.draft.draftStage, 'style')
+  })
+})
+
+test('late load results cannot replace the currently active project state', async () => {
+  const first = deferred()
+  const second = deferred()
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', projectId => (
+      projectId === 'project-a' ? first.promise : second.promise
+    )],
+    [api.contracts, 'head', async projectId => ({
+      projectId, revision: 0, contractReady: false, reasons: [],
+    })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    const loadA = store.load('project-a')
+    const loadB = store.load('project-b')
+
+    second.resolve({ ...publicDraft('style', 2), projectId: 'project-b' })
+    await loadB
+    first.resolve({ ...publicDraft('engine', 1), projectId: 'project-a' })
+    await loadA
+
+    assert.equal(store.projectId, 'project-b')
+    assert.equal(store.draft.projectId, 'project-b')
+    assert.equal(store.draft.draftStage, 'style')
+  })
+})
+
+test('a late save response cannot overwrite a newer explicit reload of the same project', async () => {
+  const pendingSave = deferred()
+  const loadedDrafts = [publicDraft('engine', 1), publicDraft('assets', 3)]
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => loadedDrafts.shift()],
+    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
+    [api.contracts.draft, 'save', async () => pendingSave.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    const save = store.saveDraft('project-1', draftValues('style'))
+    await store.load('project-1')
+    pendingSave.resolve(publicDraft('style', 2))
+    await save
+
+    assert.equal(store.draft.draftStage, 'assets')
+    assert.equal(store.draft.draftVersion, 3)
+  })
+})
+
+test('contract readiness is copied from backend responses and never inferred from a complete draft', async () => {
+  const previews = [
+    {
+      contractReady: true,
+      reasons: ['binding_drift'],
+      seedRef: { revisionId: 'seed-revision-1', contentHash: HASH_A },
+      bindingRef: { revision: 7, contentHash: HASH_B },
+    },
+    {
+      contractReady: true,
+      reasons: [],
+      seedRef: { revisionId: 'seed-revision-1', contentHash: HASH_A },
+      bindingRef: { revision: 7, contentHash: HASH_B },
+    },
+  ]
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
+    [api.contracts, 'head', async () => ({ contractReady: true, reasons: [] })],
+    [api.contracts, 'preview', async () => previews.shift()],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    assert.equal(store.draft.isComplete, true)
+    assert.equal(store.contractReady, false)
+    await store.preview('project-1')
+    assert.equal(store.contractReady, false)
+    assert.deepEqual(store.readinessReasons, ['binding_drift'])
+    await store.preview('project-1')
+    assert.equal(store.contractReady, true)
+    assert.deepEqual(store.readinessReasons, [])
+    assert.deepEqual(store.readiness, {
+      ready: true,
+      reasons: [],
+      seedRevisionId: 'seed-revision-1',
+      seedHash: HASH_A,
+      bindingRevision: 7,
+      bindingHash: HASH_B,
+    })
+  })
+})
+
+for (const reason of ['seed_drift', 'binding_drift']) {
+  test(`${reason} from backend keeps UI contract readiness false`, async () => {
+    await withApiMethods([
+      [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
+      [api.contracts, 'head', async () => ({ contractReady: true, reasons: [] })],
+      [api.contracts, 'preview', async () => ({
+        contractReady: false,
+        reasons: [reason],
+        seedRef: { revisionId: 'seed-revision-drift', contentHash: HASH_A },
+        bindingRef: { revision: 9, contentHash: HASH_B },
+      })],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = useCreationContractStore()
+      await store.load('project-1')
+      await store.preview('project-1')
+
+      assert.equal(store.readiness.ready, false)
+      assert.deepEqual(store.readiness.reasons, [reason])
+      assert.equal(store.contractReady, false)
+    })
+  })
+}
+
+test('a preview for an older draft cannot restore stale readiness after a newer save', async () => {
+  const pendingPreview = deferred()
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
+    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
+    [api.contracts, 'preview', async () => pendingPreview.promise],
+    [api.contracts.draft, 'save', async () => publicDraft('assets', 4)],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    const preview = store.preview('project-1')
+    await store.saveDraft('project-1', draftValues('assets'))
+    pendingPreview.resolve({ contractReady: true, reasons: [] })
+    await preview
+
+    assert.equal(store.draft.draftVersion, 4)
+    assert.equal(store.previewResult, null)
+    assert.equal(store.contractReady, false)
+  })
+})
+
+test('outcome_unknown remains pending until reconcileBatch is called explicitly', async () => {
+  let reconciles = 0
+  let generates = 0
+
+  await withApiMethods([
+    [api.storyEngines, 'generate', async () => {
+      generates += 1
+      throw new Error('must not generate automatically')
+    }],
+    [api.storyEngines, 'reconcile', async (projectId, batchId) => {
+      reconciles += 1
+      return { projectId, id: batchId, status: 'outcome_unknown' }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+
+    assert.equal(reconciles, 0)
+    assert.equal(generates, 0)
+    const result = await store.reconcileBatch('project-1', 'batch-1')
+    assert.equal(result.status, 'outcome_unknown')
+    assert.equal(store.providerOutcomeUnknown, true)
+    assert.equal(reconciles, 1)
+    assert.equal(generates, 0)
+  })
+})
+
+test('confirm replays the exact command for the same idempotency key after draft consumption', async () => {
+  const confirmCalls = []
+  const confirmed = {
+    projectId: 'project-1', revision: 1, hasContract: true,
+    contractReady: true, reasons: [],
+  }
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
+    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
+    [api.contracts, 'confirm', async (projectId, command) => {
+      confirmCalls.push({ projectId, command: structuredClone(command) })
+      return confirmed
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    const first = await store.confirm('project-1', { idempotencyKey: 'confirm-1' })
+    assert.equal(store.draft, null)
+    const replay = await store.confirm('project-1', { idempotencyKey: 'confirm-1' })
+
+    assert.equal(first, confirmed)
+    assert.equal(replay, confirmed)
+    assert.equal(confirmCalls.length, 2)
+    assert.deepEqual(confirmCalls[1], confirmCalls[0])
+    assert.deepEqual(confirmCalls[0].command, {
+      idempotencyKey: 'confirm-1',
+      expectedDraftVersion: 3,
+      expectedDraftHash: HASH_A,
+    })
+    assert.equal(store.confirmed, confirmed)
+    assert.equal(store.contractReady, true)
+  })
+})
+
+test('cloneRevision performs one formal API call and installs the returned backend draft', async () => {
+  let clones = 0
+
+  await withApiMethods([
+    [api.contracts, 'clone', async projectId => {
+      clones += 1
+      return { ...publicDraft('assets', 1), projectId, baseHeadRevision: 4 }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    const result = await store.cloneRevision('project-1')
+
+    assert.equal(clones, 1)
+    assert.equal(result.baseHeadRevision, 4)
+    assert.equal(store.draft, result)
+    assert.equal(store.lastSavedStage, 'assets')
+  })
+})
+
+test('clone clears prior confirmation replay so the same key confirms the new draft snapshot', async () => {
+  const confirmCalls = []
+  const cloned = {
+    ...publicDraft('assets', 1),
+    contentHash: HASH_B,
+    baseHeadRevision: 1,
+  }
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
+    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
+    [api.contracts, 'confirm', async (_projectId, command) => {
+      confirmCalls.push(structuredClone(command))
+      return { revision: confirmCalls.length, contractReady: true, reasons: [] }
+    }],
+    [api.contracts, 'clone', async () => cloned],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    await store.confirm('project-1', { idempotencyKey: 'reused-key' })
+    await store.cloneRevision('project-1')
+    await store.confirm('project-1', { idempotencyKey: 'reused-key' })
+
+    assert.deepEqual(confirmCalls, [
+      {
+        idempotencyKey: 'reused-key',
+        expectedDraftVersion: 3,
+        expectedDraftHash: HASH_A,
+      },
+      {
+        idempotencyKey: 'reused-key',
+        expectedDraftVersion: 1,
+        expectedDraftHash: HASH_B,
+      },
+    ])
+  })
+})

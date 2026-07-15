@@ -82,7 +82,10 @@ test('active navigation exposes no retired import export backup or provider call
   assert.match(home, /删除失败/)
   assert.doesNotMatch(app, /BackupReminder/)
   assert.doesNotMatch(providerSettings, /testConnection|测试连接/)
-  assert.doesNotMatch(seedStore, /createSeed|updateSeed|deleteSeed|clearSeeds|selectSeed|generateSeeds/)
+  assert.doesNotMatch(seedStore, /clearSeeds|generateSeeds|chatCompletion|createAdapter|localStorage/)
+  for (const formalMethod of ['list', 'selected', 'create', 'update', 'delete', 'select']) {
+    assert.match(seedStore, new RegExp(`api\\.seeds\\.${formalMethod}\\(`))
+  }
   assert.match(seedStore, /createLatestRequestGuard/)
   assert.match(seedStore, /seeds\.value = \[\]/)
   assert.match(seedStore, /invalidateLoadSeeds/)
