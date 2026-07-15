@@ -16,7 +16,7 @@ const PUBLIC_PROVIDER_FIELDS = [
 ]
 
 const EDITABLE_PROVIDER_FIELDS = [
-  'name', 'providerType', 'model', 'enabled', 'sortOrder', 'stream',
+  'name', 'model', 'enabled', 'sortOrder', 'stream',
   'maxContextTokens', 'maxOutputTokens', 'temperature', 'topP',
   'supportsJSON', 'supportsStreaming', 'notes', 'thinking',
 ]
@@ -89,12 +89,21 @@ export function buildProviderUpdatePayload(value = {}) {
     if (value[field] !== undefined) payload[field] = value[field]
   }
 
-  if (value.clearApiKey === true) payload.clearApiKey = true
-  else if (typeof value.apiKey === 'string' && value.apiKey.trim()) payload.apiKey = value.apiKey.trim()
+  if (typeof value.apiKey === 'string' && value.apiKey.trim()) payload.apiKey = value.apiKey.trim()
 
-  if (value.clearBaseURL === true) payload.clearBaseURL = true
-  else if (typeof value.baseURL === 'string' && value.baseURL.trim()) payload.baseURL = value.baseURL.trim()
+  if (typeof value.baseURL === 'string' && value.baseURL.trim()) payload.baseURL = value.baseURL.trim()
 
+  return payload
+}
+
+export function buildProviderCreatePayload(value = {}) {
+  const payload = buildProviderUpdatePayload(value)
+  if (typeof value.providerType === 'string' && value.providerType.trim()) {
+    payload.providerType = value.providerType.trim()
+  }
+  if (!payload.apiKey || !payload.baseURL) {
+    throw new TypeError('新增 Provider 必须输入 API Key 与 Base URL')
+  }
   return payload
 }
 
@@ -109,7 +118,11 @@ export const useProviderStore = defineStore('provider', () => {
   const bindingStatusCache = ref({})
   const bindingsLoading = ref(false)
   const bindingStatusLoading = ref(false)
+  const bindingSaving = ref(false)
   let loadPromise = null
+  let providerMutationEpoch = 0
+  let bindingSavePromise = null
+  let bindingSaveSignature = ''
   let bindingProjectEpoch = 0
   const bindingGuard = createLatestRequestGuard()
   const bindingStatusGuard = createLatestRequestGuard()
@@ -130,22 +143,30 @@ export const useProviderStore = defineStore('provider', () => {
     if (loading.value && loadPromise) return loadPromise
     if (loaded.value && !force) return providers.value
     loading.value = true
-    loadPromise = api.providers.list()
+    const mutationEpoch = providerMutationEpoch
+    const request = api.providers.list()
       .then(rows => {
-        providers.value = (rows || []).map(normalizePublicProvider)
-        loaded.value = true
-        return providers.value
+        const normalized = (rows || []).map(normalizePublicProvider)
+        if (providerMutationEpoch === mutationEpoch) {
+          providers.value = normalized
+          loaded.value = true
+        }
+        return normalized
       })
       .finally(() => {
-        loading.value = false
-        loadPromise = null
+        if (loadPromise === request) {
+          loading.value = false
+          loadPromise = null
+        }
       })
-    return loadPromise
+    loadPromise = request
+    return request
   }
 
   async function addProvider(config) {
-    const payload = buildProviderUpdatePayload(config)
+    const payload = buildProviderCreatePayload(config)
     const created = normalizePublicProvider(await api.providers.create(payload))
+    providerMutationEpoch += 1
     providers.value.push(created)
     loaded.value = true
     return created
@@ -155,6 +176,7 @@ export const useProviderStore = defineStore('provider', () => {
     const updated = normalizePublicProvider(
       await api.providers.update(provider.id, buildProviderUpdatePayload(provider)),
     )
+    providerMutationEpoch += 1
     const index = providers.value.findIndex(item => item.id === updated.id)
     if (index !== -1) providers.value[index] = updated
     invalidateBindingStatuses()
@@ -163,6 +185,7 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function deleteProvider(providerId) {
     await api.providers.delete(providerId)
+    providerMutationEpoch += 1
     providers.value = providers.value.filter(provider => provider.id !== providerId)
     invalidateBindingStatuses()
   }
@@ -212,29 +235,48 @@ export const useProviderStore = defineStore('provider', () => {
   }
 
   async function replaceBindings(projectId, { expectedRevision, entries }) {
+    const canonicalEntries = canonicalBindingEntries(entries)
+    const signature = JSON.stringify({ projectId, expectedRevision, entries: canonicalEntries })
+    if (bindingSavePromise) {
+      if (signature === bindingSaveSignature) return bindingSavePromise
+      throw new Error('另一份模型绑定正在保存，请等待结果明确后再操作')
+    }
+
     activateBindingProject(projectId)
     const writeEpoch = bindingProjectEpoch
-    const result = normalizeBinding(await api.bindings.replace(projectId, {
-      expectedRevision,
-      entries: canonicalBindingEntries(entries),
-    }))
-    bindingCache.value[projectId] = result
-    const statuses = { ...bindingStatusCache.value }
-    delete statuses[projectId]
-    bindingStatusCache.value = statuses
+    bindingSaving.value = true
+    bindingSaveSignature = signature
+    bindingSavePromise = (async () => {
+      const result = normalizeBinding(await api.bindings.replace(projectId, {
+        expectedRevision,
+        entries: canonicalEntries,
+      }))
+      bindingCache.value[projectId] = result
+      const statuses = { ...bindingStatusCache.value }
+      delete statuses[projectId]
+      bindingStatusCache.value = statuses
 
-    if (
-      bindingProjectId.value !== projectId
-      || bindingProjectEpoch !== writeEpoch
-    ) return result
+      if (
+        bindingProjectId.value !== projectId
+        || bindingProjectEpoch !== writeEpoch
+      ) return result
 
-    bindingGuard.invalidate()
-    bindingsLoading.value = false
-    binding.value = result
-    bindingStatusGuard.invalidate()
-    bindingStatus.value = null
-    bindingStatusLoading.value = false
-    return result
+      bindingGuard.invalidate()
+      bindingsLoading.value = false
+      binding.value = result
+      bindingStatusGuard.invalidate()
+      bindingStatus.value = null
+      bindingStatusLoading.value = false
+      return result
+    })()
+
+    try {
+      return await bindingSavePromise
+    } finally {
+      bindingSavePromise = null
+      bindingSaveSignature = ''
+      bindingSaving.value = false
+    }
   }
 
   function invalidateBindingStatuses() {
@@ -282,6 +324,9 @@ export const useProviderStore = defineStore('provider', () => {
     }
     return result
   })
+  const availableProviders = computed(() => providers.value.filter(provider => (
+    provider.enabled === true && provider.hasKey === true && provider.hasBaseURL === true
+  )))
 
   return {
     providers,
@@ -293,9 +338,11 @@ export const useProviderStore = defineStore('provider', () => {
     bindingCache,
     bindingStatusCache,
     bindingLoading,
+    bindingSaving,
     bindingComplete,
     bindingReady,
     bindingReasons,
+    availableProviders,
     providersByType,
     loadProviders,
     addProvider,

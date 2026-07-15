@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useCorpusStore } from '../../src/stores/corpusStore.js'
+
+const frontendRoot = path.resolve(import.meta.dirname, '../..')
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -201,4 +205,47 @@ test('corpus previews and fragment pages use the API client bounds', async () =>
   assert.equal(calls[0].searchParams.get('limit'), '200')
   assert.equal(calls[1].searchParams.get('cursor'), '0')
   assert.equal(calls[1].searchParams.get('limit'), '20')
+})
+
+test('clearing fragments prevents a late chapter response from crossing into another source', async () => {
+  setActivePinia(createPinia())
+  const store = useCorpusStore()
+  const pending = deferred()
+  assert.equal(typeof store.clearFragments, 'function')
+
+  await withBrowserGuards(() => pending.promise, async () => {
+    const staleRead = store.loadFragments('old-chapter', { cursor: 0, limit: 20 })
+    assert.equal(store.loadingFragments, true)
+    store.clearFragments()
+    assert.equal(store.fragmentPage, null)
+    assert.equal(store.loadingFragments, false)
+
+    pending.resolve(jsonResponse({
+      items: [{ id: 'stale-fragment', order: 1, preview: '旧来源片段' }],
+      nextCursor: null,
+    }))
+    await staleRead
+  })
+
+  assert.equal(store.fragmentPage, null)
+  assert.equal(store.loadingFragments, false)
+})
+
+test('corpus settings keep discovery relative and render previews inside the 240/4800 budget', async () => {
+  const source = await readFile(
+    path.join(frontendRoot, 'src/components/settings/CorpusSettings.vue'),
+    'utf8',
+  )
+
+  assert.match(source, /relativePath/)
+  assert.match(source, /getSource\(/)
+  assert.match(source, /loadFragments\([^)]*\{[^}]*limit:\s*20/s)
+  assert.match(source, /PREVIEW_ITEM_LIMIT\s*=\s*240/)
+  assert.match(source, /PREVIEW_PAGE_BUDGET\s*=\s*4_800/)
+  assert.match(source, /priorRun\?\.status\s*===\s*['"]failed['"][\s\S]*importKeys\.delete\(relativePath\)/)
+  assert.match(source, /error\?\.code\s*===\s*['"]CorpusImportFailed['"][\s\S]*importKeys\.delete\(relativePath\)/)
+  assert.match(source, /chapterEpoch/)
+  assert.match(source, /epoch\s*===\s*chapterEpoch/)
+  assert.doesNotMatch(source, /\bfetch\s*\(|localStorage|type=["']file["']/)
+  assert.doesNotMatch(source, /\{\{[^}]*contentHash[^}]*\}\}/)
 })

@@ -128,6 +128,12 @@ export const useCorpusStore = defineStore('corpus', () => {
     }
   }
 
+  function clearFragments() {
+    fragmentGuard.invalidate()
+    fragmentPage.value = null
+    loadingFragments.value = false
+  }
+
   function toContractRef(source, selectionMode = 'author') {
     immutableKey(source?.id, source?.revision, source?.contentHash)
     if (selectionMode !== 'author' && selectionMode !== 'system') {
@@ -144,13 +150,11 @@ export const useCorpusStore = defineStore('corpus', () => {
   function invalidateQueryState() {
     discoveryGuard.invalidate()
     sourceListGuard.invalidate()
-    fragmentGuard.invalidate()
     discovery.value = null
     sources.value = []
-    fragmentPage.value = null
     loadingDiscovery.value = false
     loadingSources.value = false
-    loadingFragments.value = false
+    clearFragments()
   }
 
   return {
@@ -170,6 +174,7 @@ export const useCorpusStore = defineStore('corpus', () => {
     getSource,
     loadChapters,
     loadFragments,
+    clearFragments,
     toContractRef,
     invalidateSourceList,
     invalidateQueryState,

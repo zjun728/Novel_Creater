@@ -1,5 +1,6 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { NAlert, NButton, NCard, NEmpty, NModal, NSpace, NTag, useDialog } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
 import { useProviderStore } from '@/stores/providerStore'
@@ -12,6 +13,20 @@ const dialog = useDialog()
 const showForm = ref(false)
 const editingProvider = ref(null)
 const loadError = ref('')
+const saving = ref(false)
+const deletingId = ref('')
+const formEpoch = ref(0)
+const bindingRefreshKey = ref(0)
+const bindingOperationBusy = ref(false)
+const bindingDirty = ref(false)
+const operationInFlight = computed(() => (
+  saving.value
+  || Boolean(deletingId.value)
+  || providerStore.bindingSaving
+  || bindingOperationBusy.value
+))
+const hasPendingChanges = computed(() => showForm.value || bindingDirty.value)
+const providerActionBusy = computed(() => operationInFlight.value || bindingDirty.value)
 
 async function loadProviders() {
   loadError.value = ''
@@ -22,19 +37,58 @@ async function loadProviders() {
   }
 }
 
-onMounted(loadProviders)
+function handleBeforeUnload(event) {
+  if (!hasPendingChanges.value && !operationInFlight.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+function confirmRouteLeave() {
+  if (operationInFlight.value) {
+    message.warning('操作正在提交或核验，请等待结果明确后再离开设置页。')
+    return false
+  }
+  if (!hasPendingChanges.value) return true
+  if (typeof window === 'undefined') return false
+  return window.confirm('当前有未保存的 Provider 表单或八项模型绑定。放弃这些修改并离开吗？')
+}
+
+onBeforeRouteLeave(() => confirmRouteLeave())
+onMounted(() => {
+  if (typeof window !== 'undefined') window.addEventListener('beforeunload', handleBeforeUnload)
+  loadProviders()
+})
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') window.removeEventListener('beforeunload', handleBeforeUnload)
+})
 
 function openNew() {
+  if (providerActionBusy.value) return
   editingProvider.value = null
+  formEpoch.value += 1
   showForm.value = true
 }
 
 function openEdit(provider) {
+  if (providerActionBusy.value) return
   editingProvider.value = { ...provider }
+  formEpoch.value += 1
   showForm.value = true
 }
 
+function setFormVisibility(value) {
+  if (!value && saving.value) return
+  showForm.value = value
+  if (!value) {
+    editingProvider.value = null
+    formEpoch.value += 1
+  }
+}
+
 async function handleSave(formData) {
+  if (providerActionBusy.value) return
+  saving.value = true
+  let saved = false
   try {
     if (editingProvider.value?.id) {
       await providerStore.updateProvider({ ...editingProvider.value, ...formData })
@@ -43,26 +97,37 @@ async function handleSave(formData) {
       await providerStore.addProvider(formData)
       message.success('Provider 配置已添加')
     }
-    showForm.value = false
-    editingProvider.value = null
+    bindingRefreshKey.value += 1
+    saved = true
   } catch (error) {
     message.error(`保存失败：${error.message}`)
+  } finally {
+    saving.value = false
   }
+  if (saved) setFormVisibility(false)
 }
 
 function handleDelete(provider) {
+  if (providerActionBusy.value) return
   dialog.warning({
-    title: '确认删除',
-    content: `确定删除「${provider.name}」吗？已有绑定会因此失效。`,
-    positiveText: '删除',
+    title: '停用并清除私密配置',
+    content: `此操作会软删除「${provider.name}」，服务端同时擦除 API Key 与 Base URL。引用它的项目绑定会变为不 Ready，需要重新选择 Provider。`,
+    positiveText: '停用并清除',
     negativeText: '取消',
     onPositiveClick: async () => {
+      if (deletingId.value) return false
+      deletingId.value = provider.id
       try {
         await providerStore.deleteProvider(provider.id)
-        message.success('Provider 已删除')
+        bindingRefreshKey.value += 1
+        message.success('Provider 已停用，私密配置已由服务端清除')
       } catch (error) {
-        message.error(`删除失败：${error.message}`)
+        message.error(`停用失败：${error.message}`)
+        return false
+      } finally {
+        deletingId.value = ''
       }
+      return true
     },
   })
 }
@@ -75,11 +140,11 @@ function handleDelete(provider) {
         <p class="eyebrow">本机模型档案</p>
         <h3 id="provider-heading">AI Provider 配置</h3>
       </div>
-      <n-button type="primary" size="small" @click="openNew">新增 Provider</n-button>
+      <n-button type="primary" size="small" :disabled="providerActionBusy" @click="openNew">新增 Provider</n-button>
     </header>
 
     <n-alert type="info" :bordered="false" class="mb-4">
-      M1 只管理本机配置，不调用模型。密钥与真实 Base URL 始终留在后端，浏览器只显示是否已配置。
+      浏览器只保留公开摘要与“是否已配置”标记；API Key 和 Base URL 不会出现在任何响应、列表或编辑回显中。
     </n-alert>
     <n-alert v-if="loadError" type="error" class="mb-4">
       {{ loadError }}
@@ -105,19 +170,45 @@ function handleDelete(provider) {
         </div>
         <template #footer>
           <n-space justify="end">
-            <n-button size="tiny" @click="openEdit(provider)">编辑</n-button>
-            <n-button size="tiny" type="error" quaternary @click="handleDelete(provider)">删除</n-button>
+            <n-button size="tiny" :disabled="providerActionBusy" @click="openEdit(provider)">编辑</n-button>
+            <n-button
+              size="tiny"
+              type="error"
+              quaternary
+              :loading="deletingId === provider.id"
+              :disabled="providerActionBusy"
+              @click="handleDelete(provider)"
+            >停用并清除私密配置</n-button>
           </n-space>
         </template>
       </n-card>
     </div>
 
-    <n-card title="任务模型映射 · 只读" size="small" class="binding-card">
-      <TaskModelBinding />
+    <n-card title="项目任务模型绑定" size="small" class="binding-card">
+      <TaskModelBinding
+        :key="bindingRefreshKey"
+        @busy-change="bindingOperationBusy = $event"
+        @dirty-change="bindingDirty = $event"
+      />
     </n-card>
 
-    <n-modal v-model:show="showForm" preset="card" :title="editingProvider ? '编辑 Provider' : '新增 Provider'" style="width: min(640px, 94vw)">
-      <ProviderForm :initial="editingProvider" @save="handleSave" @cancel="showForm = false" />
+    <n-modal
+      :show="showForm"
+      preset="card"
+      :title="editingProvider ? '编辑 Provider' : '新增 Provider'"
+      :mask-closable="!saving"
+      :close-on-esc="!saving"
+      :closable="!saving"
+      style="width: min(640px, 94vw)"
+      @update:show="setFormVisibility"
+    >
+      <ProviderForm
+        :key="formEpoch"
+        :initial="editingProvider"
+        :saving="saving"
+        @save="handleSave"
+        @cancel="setFormVisibility(false)"
+      />
     </n-modal>
   </section>
 </template>

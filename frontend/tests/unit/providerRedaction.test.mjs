@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import {
+  buildProviderCreatePayload,
   buildProviderUpdatePayload,
   normalizePublicProvider,
 } from '../../src/stores/providerStore.js'
@@ -23,7 +24,7 @@ test('public provider state retains configuration flags without inventing secret
   assert.equal(Object.hasOwn(provider, 'baseURL'), false)
 })
 
-test('blank secret inputs preserve stored values and explicit clear flags are intentional', () => {
+test('blank secret inputs preserve stored values and clear flags never enter transport', () => {
   const preserved = buildProviderUpdatePayload({
     name: '联通云',
     model: 'deepseek-v4-flash',
@@ -41,10 +42,17 @@ test('blank secret inputs preserve stored values and explicit clear flags are in
     clearApiKey: true,
     clearBaseURL: true,
   })
-  assert.equal(cleared.clearApiKey, true)
-  assert.equal(cleared.clearBaseURL, true)
+  assert.equal(Object.hasOwn(cleared, 'clearApiKey'), false)
+  assert.equal(Object.hasOwn(cleared, 'clearBaseURL'), false)
   assert.equal(Object.hasOwn(cleared, 'apiKey'), false)
   assert.equal(Object.hasOwn(cleared, 'baseURL'), false)
+
+  const immutableType = buildProviderUpdatePayload({ providerType: 'anthropic' })
+  assert.equal(Object.hasOwn(immutableType, 'providerType'), false)
+  const created = buildProviderCreatePayload({
+    providerType: 'anthropic', apiKey: 'request-only', baseURL: 'https://provider.example/v1',
+  })
+  assert.equal(created.providerType, 'anthropic')
 })
 
 test('the active API client contains no retired or secret-bearing endpoint', async () => {

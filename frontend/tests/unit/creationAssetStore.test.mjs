@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useCreationAssetStore } from '../../src/stores/creationAssetStore.js'
+
+const frontendRoot = path.resolve(import.meta.dirname, '../..')
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -133,4 +137,21 @@ test('asset recommendations are latest-request guarded backend facts', async () 
     assert.equal(store.recommendations.engineOptionId, 'engine-new')
     assert.equal(store.recommendations.seedRevisionId, 'seed-new')
   })
+})
+
+test('creation asset settings expose a bounded read-only inventory without full hashes', async () => {
+  const source = await readFile(
+    path.join(frontendRoot, 'src/components/settings/CreationAssetSettings.vue'),
+    'utf8',
+  )
+
+  assert.match(source, /writer-core-v1\.1\.0/)
+  assert.match(source, /10\s*套风格/)
+  assert.match(source, /64\s*张经验卡/)
+  assert.match(source, /getStyleTemplate\(/)
+  assert.match(source, /getExperienceCard\(/)
+  assert.match(source, /shortHash/)
+  assert.match(source, /boundedText/)
+  assert.doesNotMatch(source, /\bfetch\s*\(|localStorage|marketplace|上架|审核|编辑资产/)
+  assert.doesNotMatch(source, /\{\{[^}]*contentHash[^}]*\}\}/)
 })

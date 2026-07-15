@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -75,6 +76,110 @@ test('provider API responses never retain plaintext apiKey or baseURL in fronten
   assert.equal(rendered.includes('baseURL'), false)
 })
 
+test('provider creation requires key and base URL before issuing a request', async () => {
+  setActivePinia(createPinia())
+  const store = useProviderStore()
+  let requests = 0
+
+  await withBrowserGuards(async () => {
+    requests += 1
+    return jsonResponse({})
+  }, async () => {
+    await assert.rejects(
+      store.addProvider({
+        name: '联通云', providerType: 'openai-compatible', model: 'deepseek-v4-flash',
+        apiKey: '   ', baseURL: '',
+      }),
+      /API Key.*Base URL|Base URL.*API Key/i,
+    )
+  })
+
+  assert.equal(requests, 0)
+})
+
+test('binding options expose only enabled public provider summaries that are fully configured', async () => {
+  setActivePinia(createPinia())
+  const store = useProviderStore()
+
+  await withBrowserGuards(async () => jsonResponse([
+    {
+      id: 'ready', name: '联通云', providerType: 'openai-compatible', model: 'deepseek-v4-flash',
+      enabled: true, hasKey: true, hasBaseURL: true, apiKey: 'must-not-survive',
+    },
+    {
+      id: 'disabled', name: '已停用', providerType: 'openai-compatible', model: 'old',
+      enabled: false, hasKey: true, hasBaseURL: true,
+    },
+    {
+      id: 'missing-key', name: '缺密钥', providerType: 'openai-compatible', model: 'old',
+      enabled: true, hasKey: false, hasBaseURL: true,
+    },
+  ]), async () => {
+    await store.loadProviders()
+  })
+
+  assert.deepEqual(store.availableProviders.map(provider => provider.id), ['ready'])
+  assert.equal(JSON.stringify(store.availableProviders).includes('must-not-survive'), false)
+})
+
+test('an older provider list cannot overwrite later provider updates or additions', async () => {
+  setActivePinia(createPinia())
+  const store = useProviderStore()
+  const oldUpdateList = deferred()
+  const oldAddList = deferred()
+  let listReads = 0
+
+  await withBrowserGuards((url, options) => {
+    const path = new URL(String(url)).pathname
+    if (options.method === 'GET') {
+      listReads += 1
+      if (listReads === 1) return Promise.resolve(jsonResponse([{
+        id: 'provider-1', name: '旧名称', providerType: 'openai-compatible', model: 'old-model',
+        enabled: true, hasKey: true, hasBaseURL: true,
+      }]))
+      if (listReads === 2) return oldUpdateList.promise
+      return oldAddList.promise
+    }
+    if (options.method === 'PUT' && path.endsWith('/provider-1')) {
+      return Promise.resolve(jsonResponse({
+        id: 'provider-1', name: '新名称', providerType: 'openai-compatible', model: 'new-model',
+        enabled: true, hasKey: true, hasBaseURL: true,
+      }))
+    }
+    if (options.method === 'POST') {
+      return Promise.resolve(jsonResponse({
+        id: 'provider-2', name: '新增模型', providerType: 'openai-compatible', model: 'second-model',
+        enabled: true, hasKey: true, hasBaseURL: true,
+      }))
+    }
+    throw new Error(`unexpected request ${options.method} ${path}`)
+  }, async () => {
+    await store.loadProviders()
+
+    const staleUpdateRead = store.loadProviders(true)
+    await store.updateProvider({ id: 'provider-1', name: '新名称', model: 'new-model' })
+    oldUpdateList.resolve(jsonResponse([{
+      id: 'provider-1', name: '旧名称', providerType: 'openai-compatible', model: 'old-model',
+      enabled: true, hasKey: true, hasBaseURL: true,
+    }]))
+    await staleUpdateRead
+    assert.equal(store.providers[0].model, 'new-model')
+
+    const staleAddRead = store.loadProviders(true)
+    await store.addProvider({
+      name: '新增模型', providerType: 'openai-compatible', model: 'second-model',
+      apiKey: 'request-only', baseURL: 'https://request-only.example/v1',
+    })
+    oldAddList.resolve(jsonResponse([{
+      id: 'provider-1', name: '新名称', providerType: 'openai-compatible', model: 'new-model',
+      enabled: true, hasKey: true, hasBaseURL: true,
+    }]))
+    await staleAddRead
+  })
+
+  assert.deepEqual(store.providers.map(provider => provider.id), ['provider-1', 'provider-2'])
+})
+
 test('all eight model bindings are replaced by one atomic CAS write', async () => {
   setActivePinia(createPinia())
   const store = useProviderStore()
@@ -103,6 +208,62 @@ test('all eight model bindings are replaced by one atomic CAS write', async () =
     entries: TASK_KEYS.map(taskKey => ({ taskKey, providerId: 'provider-1' })),
   })
   assert.equal(store.bindingStatus, null, 'replace response cannot invent backend readiness')
+})
+
+test('repeating the same binding save while it is pending issues only one CAS write', async () => {
+  setActivePinia(createPinia())
+  const store = useProviderStore()
+  const writes = []
+  const entries = TASK_KEYS.map(taskKey => ({ taskKey, providerId: 'provider-1' }))
+
+  await withBrowserGuards((_url, options) => {
+    const response = deferred()
+    writes.push(response)
+    return response.promise
+  }, async () => {
+    const first = store.replaceBindings('p1', { expectedRevision: 3, entries })
+    const duplicate = store.replaceBindings('p1', { expectedRevision: 3, entries })
+    assert.equal(store.bindingSaving, true)
+
+    for (const response of writes) {
+      response.resolve(jsonResponse({
+        projectId: 'p1', revision: 4, contentHash: 'b'.repeat(64),
+        items: TASK_KEYS.map(taskKey => ({ taskKey, resolutionStatus: 'bound', providerId: 'provider-1' })),
+      }))
+    }
+    await Promise.all([first, duplicate])
+  })
+
+  assert.equal(writes.length, 1)
+  assert.equal(store.binding.revision, 4)
+  assert.equal(store.bindingSaving, false)
+})
+
+test('settings source exposes an editable eight-row binding ledger without secret-clear transport', async () => {
+  const [settings, form, bindings] = await Promise.all([
+    readFile(new URL('../../src/components/settings/ProviderSettings.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/components/settings/ProviderForm.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/components/settings/TaskModelBinding.vue', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(settings, /停用并清除私密配置/)
+  assert.doesNotMatch(`${settings}\n${form}`, /clearApiKey|clearBaseURL|清除当前 API Key|清除当前 Base URL/)
+  assert.match(bindings, /一次保存八项绑定/)
+  assert.match(bindings, /replaceBindings/)
+  assert.match(bindings, /bindingComplete/)
+  assert.match(bindings, /bindingReady/)
+  assert.match(bindings, /bindingReasons/)
+  assert.match(bindings, /window\.confirm/)
+  assert.match(bindings, /beforeunload/)
+  assert.match(settings, /:mask-closable="!saving"/)
+  assert.match(settings, /:close-on-esc="!saving"/)
+  assert.match(settings, /onBeforeRouteLeave/)
+  assert.match(settings, /beforeunload/)
+  assert.match(settings, /showForm\.value\s*\|\|\s*bindingDirty\.value/)
+  assert.match(form, /:disabled="saving\s*\|\|\s*editing"/)
+  assert.match(form, /Provider 类型创建后不可更改/)
+  assert.doesNotMatch(bindings, /M1 只读|只读映射/)
+  assert.doesNotMatch(`${settings}\n${form}\n${bindings}`, /\bfetch\s*\(|localStorage/)
 })
 
 test('binding complete and ready stay distinct and use only the latest backend status', async () => {
