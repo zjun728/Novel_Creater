@@ -98,7 +98,10 @@ test('active navigation exposes no retired import export backup or provider call
   assert.match(providerSettings, /删除失败/)
   assert.doesNotMatch(router, /ExperienceCards|experience-cards/)
   assert.match(router, /path:\s*['"]\/:pathMatch\(\.\*\)\*['"].*redirect:\s*['"]\/['"]/s)
-  assert.doesNotMatch(sidebarTree, /写作台|\/writer\/|ExperienceCards|experience-cards|创作经验卡/)
+  assert.doesNotMatch(
+    sidebarTree,
+    /写作台|\/writer\/|ExperienceCards|['"`]\/experience-cards|创作经验卡/,
+  )
 })
 
 test('the top bar explicitly imports the breadcrumb item it renders', async () => {

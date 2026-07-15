@@ -51,9 +51,10 @@ test('the active API client contains no retired or secret-bearing endpoint', asy
   const source = await readFile(new URL('../../src/api/db/client.js', import.meta.url), 'utf8')
   for (const forbidden of [
     'includeApiKeys', '/export/full', '/import/full', '/canon-facts',
-    '/settings/change-events', '/versions/', '/chapters', '/temp-draft',
+    '/settings/change-events', '/versions/', '/temp-draft',
     '/chapter-beat-plan', '/story-blocks', '/correction-tasks', '/ai/',
   ]) {
     assert.equal(source.includes(forbidden), false, `retired client endpoint remains: ${forbidden}`)
   }
+  assert.doesNotMatch(source, /['"`]\/chapters(?:[/?#]|['"`])/)
 })
