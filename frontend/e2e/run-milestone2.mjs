@@ -837,8 +837,23 @@ async function runOneSpec({
       {
         settleAbortedOperation(settledOperation) {
           if (!settledOperation.value) return
-          const scanError = scanProcessResult(settledOperation.value, values)
-          if (scanError) throw scanError
+          const settleErrors = []
+          try {
+            const scanError = scanProcessResult(settledOperation.value, values)
+            if (scanError) settleErrors.push(scanError)
+          } catch (error) {
+            settleErrors.push(error)
+          }
+          if (settledOperation.value.error) {
+            settleErrors.push(settledOperation.value.error)
+          }
+          if (settleErrors.length === 1) throw settleErrors[0]
+          if (settleErrors.length > 1) {
+            throw new AggregateError(
+              settleErrors,
+              'browser log scan and bounded abort both failed',
+            )
+          }
         },
       },
     )

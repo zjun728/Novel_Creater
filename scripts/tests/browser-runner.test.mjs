@@ -814,12 +814,15 @@ test('M2 runner aborts and settles a losing browser operation before cleanup', a
           completed = true
           clearTimeout(naturalClose)
           events.push(label)
-          resolve(cleanResult({
-            finish() {
-              events.push('browser-log-finish')
-              return { matchCount: 0, truncated: false }
+          resolve({
+            status: null,
+            logObserver: {
+              finish() {
+                events.push('browser-log-finish')
+                return { matchCount: 0, truncated: false }
+              },
             },
-          }))
+          })
         }
         signal?.addEventListener('abort', () => {
           events.push('browser-terminate')
@@ -871,6 +874,102 @@ test('M2 runner aborts and settles a losing browser operation before cleanup', a
   ].map(event => events.indexOf(event))
   assert.equal(positions.every(position => position >= 0), true, events.join(' -> '))
   assert.deepEqual([...positions].sort((a, b) => a - b), positions, events.join(' -> '))
+})
+
+test('M2 runner preserves bounded browser abort and scan failures before cleanup', async () => {
+  const { defaultRun, runMilestone2 } = await import(M2_MODULE)
+  const events = []
+  const browserKillCalls = []
+  let backend
+  let nextPort = 45500
+
+  const browserChild = new EventEmitter()
+  browserChild.stdout = new EventEmitter()
+  browserChild.stderr = new EventEmitter()
+  browserChild.exitCode = null
+  browserChild.kill = signal => {
+    browserKillCalls.push(signal)
+    return false
+  }
+  browserChild.stdout.on('removeListener', event => {
+    if (event === 'data') events.push('browser-log-finish')
+  })
+
+  const cleanResult = () => ({ status: 0 })
+  const processRunner = {
+    run(command, args, options, { sensitiveValues = [], signal } = {}) {
+      if (args.includes('--drop')) {
+        events.push('db-cleanup')
+        return Promise.resolve(cleanResult())
+      }
+      if (!args.includes('test')) return Promise.resolve(cleanResult())
+      const result = defaultRun(command, args, options, {
+        sensitiveValues,
+        signal,
+        spawnImpl: () => browserChild,
+        abortGraceMs: 5,
+        finalCloseMs: 5,
+      })
+      browserChild.stdout.emit('data', Buffer.from(TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD))
+      queueMicrotask(() => {
+        backend.exitCode = 7
+        backend.emit('exit', 7, null)
+        backend.emit('close', 7, null)
+      })
+      return result
+    },
+    start(_command, args) {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.exitCode = null
+      child.label = args.includes('uvicorn') ? 'backend' : 'vite'
+      if (child.label === 'backend') backend = child
+      return child
+    },
+    async stop(child) {
+      if (child.exitCode !== null) return
+      child.exitCode = 0
+      child.emit('exit', 0, null)
+      child.emit('close', 0, null)
+    },
+  }
+
+  await assert.rejects(runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => DATABASE,
+    mkdtempImpl: () => ownedCorpusRoot('abort-error-owner'),
+    writeFileImpl: () => {},
+    rmImpl: () => { events.push('corpus-rm') },
+    processRunner,
+    portReservationFactory: async () => ({ port: ++nextPort, release: async () => {} }),
+    nonceFactory: () => 'abort-error-owner',
+    waitForUrlImpl: async () => {},
+    serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
+  }), error => {
+    const messages = []
+    const collect = current => {
+      messages.push(String(current))
+      for (const nested of current?.errors || []) collect(nested)
+    }
+    collect(error)
+    const rendered = messages.join('\n')
+    assert.match(rendered, /backend.*7/i)
+    assert.match(rendered, /sensitive match count was 1/i)
+    assert.match(rendered, /rejected SIGTERM during abort/i)
+    assert.match(rendered, /rejected SIGKILL during abort/i)
+    assert.match(rendered, /abort did not reach close/i)
+    assert.equal(rendered.includes(TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD), false)
+    return true
+  })
+
+  assert.deepEqual(browserKillCalls, ['SIGTERM', 'SIGKILL'])
+  assert.deepEqual(events, [
+    'browser-log-finish',
+    'db-cleanup',
+    'corpus-rm',
+  ])
 })
 
 test('M2 runner aborts and settles a hanging health wait before cleanup', async () => {
