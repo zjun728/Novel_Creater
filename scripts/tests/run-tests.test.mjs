@@ -178,6 +178,12 @@ function assertApprovedPytestStage(stage) {
   assert.doesNotMatch(stage, /keep-me/u)
 }
 
+const noOpPytestTempLifecycle = Object.freeze({
+  prepare() {},
+  cleanupStage() {},
+  cleanupAll() {},
+})
+
 const tempSecretSentinel = 'temp-secret-sentinel'
 const lifecycleFailureEnvironment = Object.freeze({
   ...requiredIntegrationEnvironment,
@@ -285,6 +291,7 @@ test('milestone2 composes retained M1, unit API, integration, and M2 browser in 
     let stderr = ''
     const exitCode = runSuites(requested, {
       environment: requiredIntegrationEnvironment,
+      pytestTempLifecycle: noOpPytestTempLifecycle,
       spawnSyncImpl(command, args, options) {
         calls.push({ command, args, options })
         return { status: 0 }
@@ -485,6 +492,59 @@ test('a pytest stage cleanup failure still runs cleanup-all and returns non-zero
   ])
   assertSafeLifecycleStderr(stderr.value(), 'PYTEST_TEMP_CLEANUP_FAILED', 'integration')
 })
+
+for (const scenario of [
+  {
+    name: 'turns a successful child into a failure',
+    childResult: { status: 0 },
+    expectedExitCode: 1,
+    expectedErrorCodes: ['PYTEST_TEMP_CLEANUP_ALL_FAILED'],
+  },
+  {
+    name: 'preserves an existing child failure status',
+    childResult: { status: 7 },
+    expectedExitCode: 7,
+    expectedErrorCodes: ['PYTEST_CHILD_FAILED', 'PYTEST_TEMP_CLEANUP_ALL_FAILED'],
+  },
+]) {
+  test(`a cleanup-all failure ${scenario.name} without leaking secrets`, () => {
+    const events = []
+    const stderr = captureStderr()
+    const exitCode = runSuites(['integration'], {
+      environment: lifecycleFailureEnvironment,
+      pytestTempLifecycle: {
+        prepare(_rootDirectory, stage) {
+          assertApprovedPytestStage(stage)
+          events.push(`prepare:${path.basename(stage)}`)
+        },
+        cleanupStage(_rootDirectory, stage) {
+          assertApprovedPytestStage(stage)
+          events.push(`cleanup:${path.basename(stage)}`)
+        },
+        cleanupAll() {
+          events.push('cleanup-all')
+          throw new Error(`synthetic aggregate cleanup failure: ${tempSecretSentinel}`)
+        },
+      },
+      spawnSyncImpl(_command, args) {
+        events.push(`spawn:${pytestBasetempLabel(args)}`)
+        return scenario.childResult
+      },
+      stderr: stderr.stream,
+    })
+
+    assert.equal(exitCode, scenario.expectedExitCode)
+    assert.deepEqual(events, [
+      'prepare:integration',
+      'spawn:integration',
+      'cleanup:integration',
+      'cleanup-all',
+    ])
+    for (const errorCode of scenario.expectedErrorCodes) {
+      assertSafeLifecycleStderr(stderr.value(), errorCode, 'integration')
+    }
+  })
+}
 
 for (const scenario of [
   {
