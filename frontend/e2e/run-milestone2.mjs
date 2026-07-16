@@ -198,41 +198,80 @@ function childOptions(cwd, env) {
 export function defaultRun(command, args, options, {
   sensitiveValues = [],
   signal,
+  spawnImpl = spawn,
+  abortGraceMs = 5_000,
+  finalCloseMs = 5_000,
 } = {}) {
-  return new Promise(resolve => {
-    const child = spawn(command, args, options)
-    const logObserver = createServerLogObserver(child, { sensitiveValues })
-    let spawnError = null
-    let closed = false
-    let forcedStopTimer = null
-    const removeAbortListener = () => signal?.removeEventListener('abort', stopChild)
-    const stopChild = () => {
-      if (closed || (child.exitCode !== null && child.exitCode !== undefined)) return
-      try {
-        if (child.kill('SIGTERM') === false && !spawnError) {
-          spawnError = new Error('process rejected abort signal')
-        }
-      } catch (error) {
-        if (!spawnError) spawnError = error
-      }
-      forcedStopTimer = setTimeout(() => {
-        if (closed) return
-        try {
-          child.kill('SIGKILL')
-        } catch (error) {
-          if (!spawnError) spawnError = error
-        }
-      }, 5_000)
-      forcedStopTimer.unref?.()
+  for (const [label, timeoutMs] of [
+    ['abort grace', abortGraceMs],
+    ['final close', finalCloseMs],
+  ]) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+      throw new TypeError(`${label} timeout must be a non-negative finite number`)
     }
-    child.once('error', error => {
-      spawnError = error
-    })
-    child.once('close', code => {
-      closed = true
+  }
+  return new Promise(resolve => {
+    const child = spawnImpl(command, args, options)
+    const logObserver = createServerLogObserver(child, { sensitiveValues })
+    const processErrors = []
+    let settled = false
+    let abortRequested = false
+    let gracefulStopTimer = null
+    let forcedStopTimer = null
+    const recordError = error => {
+      if (error) processErrors.push(error)
+    }
+    const resultError = () => {
+      if (processErrors.length === 0) return null
+      if (processErrors.length === 1) return processErrors[0]
+      return new AggregateError(processErrors, 'process abort failed before close')
+    }
+    const removeAbortListener = () => signal?.removeEventListener('abort', stopChild)
+    const finish = (status, error = null) => {
+      if (settled) return
+      settled = true
+      clearTimeout(gracefulStopTimer)
       clearTimeout(forcedStopTimer)
       removeAbortListener()
-      resolve({ status: code, error: spawnError, logObserver })
+      recordError(error)
+      resolve({ status, error: resultError(), logObserver })
+    }
+    const sendStopSignal = stopSignal => {
+      try {
+        if (child.kill(stopSignal) === false) {
+          recordError(new Error(`process rejected ${stopSignal} during abort`))
+        }
+      } catch (error) {
+        recordError(new Error(`process ${stopSignal} failed during abort`, { cause: error }))
+      }
+    }
+    const forceStopChild = () => {
+      if (settled) return
+      if (child.exitCode === null || child.exitCode === undefined) {
+        sendStopSignal('SIGKILL')
+      }
+      if (settled) return
+      forcedStopTimer = setTimeout(() => {
+        finish(
+          child.exitCode ?? null,
+          new Error('process abort did not reach close before final timeout'),
+        )
+      }, finalCloseMs)
+    }
+    const stopChild = () => {
+      if (settled || abortRequested) return
+      abortRequested = true
+      if (child.exitCode === null || child.exitCode === undefined) {
+        sendStopSignal('SIGTERM')
+      }
+      if (settled) return
+      gracefulStopTimer = setTimeout(forceStopChild, abortGraceMs)
+    }
+    child.once('error', error => {
+      recordError(error)
+    })
+    child.once('close', code => {
+      finish(code)
     })
     if (signal?.aborted) stopChild()
     else signal?.addEventListener('abort', stopChild, { once: true })
@@ -541,13 +580,44 @@ function assertProcessResult(label, result, values) {
 }
 
 
-function assertServicesStillLive(states) {
+function findEarlyServiceFailure(states) {
   for (const state of states) {
     const earlyFailure = detectEarlyLifecycleFailure(state)
     if (!earlyFailure) continue
     state.earlyFailureObserved = true
-    throw earlyFailure
+    return earlyFailure
   }
+  return null
+}
+
+
+async function throwAfterSettlingOperation(
+  serviceError,
+  settledOperation,
+  settleAbortedOperation,
+) {
+  const settleErrors = []
+  if (
+    settledOperation.error
+    && settledOperation.error !== serviceError
+    && settledOperation.error?.name !== 'AbortError'
+  ) {
+    settleErrors.push(settledOperation.error)
+  }
+  if (settleAbortedOperation) {
+    try {
+      await settleAbortedOperation(settledOperation)
+    } catch (error) {
+      settleErrors.push(error)
+    }
+  }
+  if (settleErrors.length > 0) {
+    throw new AggregateError(
+      [serviceError, ...settleErrors],
+      'M2 server failed while the active operation was settling',
+    )
+  }
+  throw serviceError
 }
 
 
@@ -569,31 +639,21 @@ export async function runWhileServicesLive(operation, states, {
     outcome.state.earlyFailureObserved = true
     operationController.abort(outcome.error)
     const settledOperation = await operationOutcome
-    const settleErrors = []
-    if (
-      settledOperation.error
-      && settledOperation.error !== outcome.error
-      && settledOperation.error?.name !== 'AbortError'
-    ) {
-      settleErrors.push(settledOperation.error)
-    }
-    if (settleAbortedOperation) {
-      try {
-        await settleAbortedOperation(settledOperation)
-      } catch (error) {
-        settleErrors.push(error)
-      }
-    }
-    if (settleErrors.length > 0) {
-      throw new AggregateError(
-        [outcome.error, ...settleErrors],
-        'M2 server failed while the active operation was settling',
-      )
-    }
-    throw outcome.error
+    await throwAfterSettlingOperation(
+      outcome.error,
+      settledOperation,
+      settleAbortedOperation,
+    )
   }
   if (outcome.error) throw outcome.error
-  assertServicesStillLive(states)
+  const earlyFailure = findEarlyServiceFailure(states)
+  if (earlyFailure) {
+    await throwAfterSettlingOperation(
+      earlyFailure,
+      outcome,
+      settleAbortedOperation,
+    )
+  }
   return outcome.value
 }
 

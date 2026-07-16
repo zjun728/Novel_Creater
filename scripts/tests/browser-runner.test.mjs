@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, getEventListeners } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -435,6 +435,83 @@ test('default process run aborts its child, waits for close, and preserves obser
   }
 })
 
+test('default process run settles boundedly when forced termination never closes the child', async t => {
+  const { defaultRun } = await import(M2_MODULE)
+  const scenarios = [
+    {
+      name: 'both signals accepted without close',
+      kill: () => true,
+    },
+    {
+      name: 'both signals rejected without close',
+      kill: () => false,
+    },
+    {
+      name: 'forced signal throws without close',
+      kill: signal => {
+        if (signal === 'SIGKILL') throw new Error('injected forced termination failure')
+        return true
+      },
+    },
+  ]
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.exitCode = null
+      const killCalls = []
+      child.kill = signal => {
+        killCalls.push(signal)
+        return scenario.kill(signal)
+      }
+      const controller = new AbortController()
+      let watchdog
+
+      try {
+        const resultPromise = defaultRun(
+          process.execPath,
+          ['-e', 'setInterval(() => {}, 1000)'],
+          { shell: false, stdio: ['ignore', 'pipe', 'pipe'] },
+          {
+            signal: controller.signal,
+            sensitiveValues: ['bounded-observer-secret'],
+            spawnImpl: () => child,
+            abortGraceMs: 5,
+            finalCloseMs: 5,
+          },
+        )
+        child.stdout.emit('data', Buffer.from('bounded-observer-secret', 'utf8'))
+        controller.abort(new Error('service failed'))
+        const result = await Promise.race([
+          resultPromise,
+          new Promise((_, reject) => {
+            watchdog = setTimeout(
+              () => reject(new Error('bounded abort settlement watchdog expired')),
+              250,
+            )
+          }),
+        ])
+
+        assert.deepEqual(killCalls, ['SIGTERM', 'SIGKILL'])
+        assert.equal(result.status, null)
+        assert.match(String(result.error), /abort.*close|close.*abort/i)
+        assert.equal(String(result.error).includes('bounded-observer-secret'), false)
+        assert.deepEqual(result.logObserver.finish(['bounded-observer-secret']), {
+          matchCount: 1,
+          truncated: false,
+        })
+        assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+        await new Promise(resolve => setTimeout(resolve, 25))
+        assert.deepEqual(killCalls, ['SIGTERM', 'SIGKILL'])
+      } finally {
+        clearTimeout(watchdog)
+      }
+    })
+  }
+})
+
 test('M2 runner fails on early child exit, waits for close-tail scan, and still cleans up', async () => {
   const { runMilestone2 } = await import(M2_MODULE)
   const password = '中文密钥不可泄漏'
@@ -584,6 +661,79 @@ test('M2 runner rejects when browser success is immediately followed by a code-z
 
   assert.equal(runCount >= 3, true)
   assert.equal(children.length, 2)
+})
+
+test('M2 runner settles operation-win browser logs before cleanup and aggregates an early exit scan failure', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  const events = []
+  let backend
+  let nextPort = 43500
+
+  const cleanResult = logObserver => ({ status: 0, logObserver })
+  const processRunner = {
+    async run(_command, args) {
+      if (args.includes('--drop')) {
+        events.push('db-cleanup')
+        return cleanResult()
+      }
+      if (!args.includes('test')) return cleanResult()
+      backend.exitCode = 0
+      return cleanResult({
+        finish() {
+          events.push('browser-log-finish')
+          return { matchCount: 1, truncated: false }
+        },
+      })
+    },
+    start(_command, args) {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.exitCode = null
+      child.closedForTest = false
+      child.label = args.includes('uvicorn') ? 'backend' : 'vite'
+      if (child.label === 'backend') backend = child
+      return child
+    },
+    async stop(child) {
+      if (child.closedForTest) return
+      child.closedForTest = true
+      child.exitCode ??= 0
+      child.emit('exit', child.exitCode, null)
+      child.emit('close', child.exitCode, null)
+    },
+  }
+
+  await assert.rejects(runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => DATABASE,
+    mkdtempImpl: () => ownedCorpusRoot('operation-win-scan-owner'),
+    writeFileImpl: () => {},
+    rmImpl: () => { events.push('corpus-rm') },
+    processRunner,
+    portReservationFactory: async () => ({ port: ++nextPort, release: async () => {} }),
+    nonceFactory: () => 'operation-win-scan-owner',
+    waitForUrlImpl: async () => {},
+    serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
+  }), error => {
+    const messages = []
+    const collect = current => {
+      messages.push(String(current))
+      for (const nested of current?.errors || []) collect(nested)
+    }
+    collect(error)
+    const rendered = messages.join('\n')
+    assert.match(rendered, /backend.*status 0/i)
+    assert.match(rendered, /sensitive match count was 1/i)
+    return true
+  })
+
+  assert.deepEqual(events, [
+    'browser-log-finish',
+    'db-cleanup',
+    'corpus-rm',
+  ])
 })
 
 test('M2 runner does not mistake normal requested code-zero stops for early exits', async () => {
