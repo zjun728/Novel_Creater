@@ -22,6 +22,8 @@ from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
 from backend.domain.seeds import SeedPayload
 from backend.schema_manifest import created_table_names
+from backend.schema_manifest import manifest_hash
+from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.initialize_database import (
     _default_connection_factory,
     initialize_database,
@@ -33,6 +35,20 @@ from backend.services.projections import build_projection_bundle
 PRODUCT_DATABASE = "novel_creator"
 RESET_LOCK_NAME = "novel_creator_writer_core_reset"
 SELECTED_SEED_TITLE = "典镇山河"
+M1_SCHEMA_VERSION = "writer-core-v1.0.0"
+M1_MANIFEST_HASH = "0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826"
+M1_TABLE_NAMES = (
+    "schema_metadata", "projects", "creative_seeds", "project_selected_seeds",
+    "provider_profiles", "task_model_bindings", "task_model_binding_items",
+    "creation_contracts", "style_contracts", "contract_asset_refs",
+    "volume_plans", "story_blocks", "story_stages", "scene_tasks",
+    "chapter_sessions", "working_drafts", "draft_candidates",
+    "finalization_change_sets", "finalization_records", "final_chapters",
+    "canon_entities", "entity_aliases", "canon_revisions", "canon_events",
+    "current_state_projections", "memory_views", "arc_projections",
+    "plot_thread_projections", "projection_heads", "corpus_sources",
+    "corpus_chapters", "style_templates", "experience_cards", "reference_uses",
+)
 FOUNDATION_TABLES = frozenset({
     "schema_metadata",
     "projects",
@@ -85,6 +101,17 @@ _PROVIDER_COLUMNS = (
     "supports_streaming", "notes", "thinking", "lifecycle_status", "deleted_at",
     "created_at", "updated_at",
 )
+_M1_PROJECT_COLUMNS = _PROJECT_COLUMNS
+_M1_SEED_COLUMNS = (
+    "id", "project_id", "title", "premise_json", "content_hash", "status",
+    "created_at",
+)
+_M1_PROVIDER_COLUMNS = (
+    "id", "name", "provider_type", "model_name", "base_url", "api_key",
+    "enabled", "sort_order", "stream", "max_context_tokens",
+    "max_output_tokens", "temperature", "top_p", "supports_json",
+    "supports_streaming", "notes", "thinking", "created_at", "updated_at",
+)
 
 
 class ResetError(RuntimeError):
@@ -101,6 +128,44 @@ class ResetValidationError(ResetError):
 
 class ResetPartialStateError(ResetError):
     """DDL started and the target may now contain partial reset state."""
+
+
+async def _classify_reset_source(admin_session, database_name: str) -> str:
+    """Accept only the frozen M1 product manifest or current M2 manifest."""
+
+    table_rows = await admin_session.fetchall(
+        "SELECT TABLE_NAME FROM information_schema.TABLES "
+        "WHERE TABLE_SCHEMA=%s ORDER BY TABLE_NAME",
+        (database_name,),
+    )
+    tables = {row["TABLE_NAME"] for row in table_rows}
+    metadata = None
+    if "schema_metadata" in tables:
+        metadata = await admin_session.fetchone(
+            f"SELECT schema_version,manifest_hash FROM "
+            f"{_qualified(database_name, 'schema_metadata')} WHERE singleton_id=1"
+        )
+    if (
+        tables == set(M1_TABLE_NAMES)
+        and metadata == {
+            "schema_version": M1_SCHEMA_VERSION,
+            "manifest_hash": M1_MANIFEST_HASH,
+        }
+    ):
+        return "m1-v1.0"
+    if (
+        tables == set(created_table_names())
+        and metadata == {
+            "schema_version": EXPECTED_SCHEMA_VERSION,
+            "manifest_hash": manifest_hash(),
+        }
+    ):
+        return "m2-v1.1"
+    if database_name != PRODUCT_DATABASE and "schema_metadata" not in tables:
+        return "historical-disposable"
+    raise ResetValidationError(
+        "Reset source must be the exact M1 v1.0 or M2 v1.1 manifest"
+    )
 
 
 def _trimmed(value: object, field_name: str) -> str:
@@ -520,6 +585,290 @@ async def _load_preserved_state(admin_session, database_name: str, request: Rese
     )
 
 
+def _map_m1_project(row: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "id": _identifier(row["id"], "project.id"),
+        "title": _text(row["title"], "project.title", max_length=200),
+        "genre": _text(row["genre"], "project.genre", max_length=120),
+        "description": _text(row["description"], "project.description", max_length=65_535),
+        "target_words": _integer(row["target_words"], "project.target_words", minimum=1),
+        "target_chapters": _integer(row["target_chapters"], "project.target_chapters", minimum=1),
+        "status": "drafting",
+        "current_chapter": 0,
+        "created_at": _integer(row["created_at"], "project.created_at"),
+        "updated_at": _integer(row["updated_at"], "project.updated_at"),
+    }
+
+
+def _map_m1_seed(row: Mapping[str, object], project_id: str) -> dict[str, object]:
+    seed_id = _identifier(row["id"], "seed.id")
+    owner_id = _identifier(row["project_id"], "seed.project_id")
+    if owner_id != project_id:
+        raise ResetValidationError("M1 requested seed belongs to another project")
+    try:
+        decoded = json.loads(row["premise_json"]) if isinstance(row["premise_json"], str) else row["premise_json"]
+        payload = SeedPayload.model_validate(decoded)
+    except (TypeError, ValueError) as exc:
+        raise ResetValidationError("M1 seed premise_json is not a valid SeedPayload") from exc
+    title = _text(row["title"], "seed.title", max_length=200)
+    if payload.title != title:
+        raise ResetValidationError("M1 seed title and premise_json disagree")
+    content_hash = canonical_hash(payload)
+    if row["content_hash"] != content_hash:
+        raise ResetValidationError("M1 seed content_hash does not match premise_json")
+    created_at = _integer(row["created_at"], "seed.created_at")
+    return {
+        "id": seed_id,
+        "project_id": owner_id,
+        "title": title,
+        "status": "candidate",
+        "payload_json": canonical_json(payload),
+        "content_hash": content_hash,
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+
+def _map_m1_provider(row: Mapping[str, object]) -> dict[str, object]:
+    base_url = _text(row["base_url"], "provider.base_url", max_length=2048)
+    api_key = _text(row["api_key"], "provider.api_key", max_length=65_535)
+    if not base_url or not api_key:
+        raise ResetValidationError("M1 Provider requires non-empty connection fields")
+    return {
+        "id": _identifier(row["id"], "provider.id"),
+        "name": _text(row["name"], "provider.name", max_length=120),
+        "provider_type": _text(row["provider_type"], "provider.provider_type", max_length=64),
+        "model_name": _text(row["model_name"], "provider.model_name", max_length=160),
+        "base_url": base_url,
+        "api_key": api_key,
+        "enabled": _flag(row["enabled"], "provider.enabled"),
+        "sort_order": _integer(row["sort_order"], "provider.sort_order"),
+        "stream": _flag(row["stream"], "provider.stream"),
+        "max_context_tokens": _integer(row["max_context_tokens"], "provider.max_context_tokens", minimum=1),
+        "max_output_tokens": _integer(row["max_output_tokens"], "provider.max_output_tokens", minimum=1),
+        "temperature": _decimal(row["temperature"], "provider.temperature", default="0.8"),
+        "top_p": _decimal(row["top_p"], "provider.top_p", default="0.9"),
+        "supports_json": _flag(row["supports_json"], "provider.supports_json"),
+        "supports_streaming": _flag(row["supports_streaming"], "provider.supports_streaming"),
+        "notes": _text(row["notes"], "provider.notes", max_length=65_535),
+        "thinking": _json_text(row["thinking"], "provider.thinking"),
+        "lifecycle_status": "active",
+        "deleted_at": None,
+        "created_at": _integer(row["created_at"], "provider.created_at"),
+        "updated_at": _integer(row["updated_at"], "provider.updated_at"),
+    }
+
+
+async def _verify_zero_tables(admin_session, database_name: str, tables: Sequence[str]) -> None:
+    for table in tables:
+        row = await admin_session.fetchone(
+            f"SELECT COUNT(*) AS count FROM {_qualified(database_name, table)}"
+        )
+        if row is None or row.get("count") != 0:
+            raise ResetValidationError(f"Reset source contains advanced rows in {table}")
+
+
+async def _load_m1_preserved_state(
+    admin_session, database_name: str, request: ResetRequest,
+) -> _PreservedState:
+    projects = await admin_session.fetchall(
+        f"SELECT {', '.join(_M1_PROJECT_COLUMNS)} FROM {_qualified(database_name, 'projects')} WHERE title=%s",
+        (request.project_title,),
+    )
+    if len(projects) != 1:
+        raise ResetValidationError("M1 reset requires exactly one requested project")
+    project = _map_m1_project(projects[0])
+    total_projects = await admin_session.fetchone(
+        f"SELECT COUNT(*) AS count FROM {_qualified(database_name, 'projects')}"
+    )
+    if (total_projects or {}).get("count") != 1:
+        raise ResetValidationError("M1 reset requires exactly one project total")
+
+    placeholders = ",".join(("%s",) * len(request.seed_titles))
+    seed_rows = await admin_session.fetchall(
+        f"SELECT {', '.join(_M1_SEED_COLUMNS)} FROM {_qualified(database_name, 'creative_seeds')} "
+        f"WHERE project_id=%s AND title IN ({placeholders}) ORDER BY title,id",
+        (project["id"], *request.seed_titles),
+    )
+    if len(seed_rows) != 3 or Counter(row["title"] for row in seed_rows) != Counter(request.seed_titles):
+        raise ResetValidationError("M1 reset requires exactly the three requested seeds")
+    seeds = tuple(_map_m1_seed(row, str(project["id"])) for row in seed_rows)
+    total_seeds = await admin_session.fetchone(
+        f"SELECT COUNT(*) AS count FROM {_qualified(database_name, 'creative_seeds')}"
+    )
+    if (total_seeds or {}).get("count") != 3:
+        raise ResetValidationError("M1 reset requires exactly three seeds total")
+    selected = await admin_session.fetchone(
+        f"SELECT s.title FROM {_qualified(database_name, 'project_selected_seeds')} x "
+        f"JOIN {_qualified(database_name, 'creative_seeds')} s ON s.id=x.seed_id "
+        "WHERE x.project_id=%s",
+        (project["id"],),
+    )
+    if selected != {"title": SELECTED_SEED_TITLE}:
+        raise ResetValidationError(f"M1 selected seed must be {SELECTED_SEED_TITLE}")
+
+    provider_rows = await admin_session.fetchall(
+        f"SELECT {', '.join(_M1_PROVIDER_COLUMNS)} FROM {_qualified(database_name, 'provider_profiles')} ORDER BY sort_order,id"
+    )
+    if not provider_rows:
+        raise ResetValidationError("M1 reset requires preserved Providers")
+    providers = tuple(_map_m1_provider(row) for row in provider_rows)
+    _require_exact_unique(providers, "id", "provider")
+    preferred = tuple(
+        row for row in providers
+        if row["name"] == request.preferred_provider_name
+        and row["model_name"] == request.preferred_model
+        and row["enabled"] == 1
+    )
+    if len(preferred) != 1:
+        raise ResetValidationError("M1 requires exactly one enabled preferred Provider/model")
+
+    binding = await admin_session.fetchone(
+        f"SELECT (SELECT COUNT(*) FROM {_qualified(database_name, 'task_model_bindings')} b WHERE b.project_id=%s) AS binding_count,"
+        f"(SELECT COUNT(*) FROM {_qualified(database_name, 'task_model_binding_items')} i WHERE i.project_id=%s) AS item_count,"
+        f"(SELECT COUNT(DISTINCT i.task_key) FROM {_qualified(database_name, 'task_model_binding_items')} i WHERE i.project_id=%s) AS task_count",
+        (project["id"], project["id"], project["id"]),
+    )
+    if binding != {"binding_count": 1, "item_count": len(TASK_KEYS), "task_count": len(TASK_KEYS)}:
+        raise ResetValidationError("M1 foundation binding inventory is not head0-ready")
+    task_rows = await admin_session.fetchall(
+        f"SELECT task_key FROM {_qualified(database_name, 'task_model_binding_items')} WHERE project_id=%s ORDER BY task_key",
+        (project["id"],),
+    )
+    if {row.get("task_key") for row in task_rows} != set(TASK_KEYS):
+        raise ResetValidationError("M1 foundation binding task keys are not the exact closed set")
+    canon = await admin_session.fetchone(
+        f"SELECT COUNT(*) AS count,MIN(revision_number) AS min_revision,MAX(revision_number) AS max_revision "
+        f"FROM {_qualified(database_name, 'canon_revisions')} WHERE project_id=%s",
+        (project["id"],),
+    )
+    projection = await admin_session.fetchone(
+        f"SELECT canon_revision_number,projection_revision_number FROM {_qualified(database_name, 'projection_heads')} WHERE project_id=%s",
+        (project["id"],),
+    )
+    if canon != {"count": 1, "min_revision": 0, "max_revision": 0} or projection != {
+        "canon_revision_number": 0, "projection_revision_number": 0,
+    }:
+        raise ResetValidationError("M1 Canon/Projection must be exactly head0")
+    foundation = {
+        "schema_metadata", "projects", "creative_seeds", "project_selected_seeds",
+        "provider_profiles", "task_model_bindings", "task_model_binding_items",
+        "canon_revisions", "projection_heads",
+    }
+    await _verify_zero_tables(
+        admin_session, database_name,
+        tuple(table for table in M1_TABLE_NAMES if table not in foundation),
+    )
+    return _PreservedState(project, seeds, providers, preferred[0])
+
+
+async def _load_v11_preserved_state(
+    admin_session, database_name: str, request: ResetRequest,
+) -> _PreservedState:
+    projects = await admin_session.fetchall(
+        f"SELECT {', '.join(_PROJECT_COLUMNS)} FROM {_qualified(database_name, 'projects')} WHERE title=%s",
+        (request.project_title,),
+    )
+    if len(projects) != 1:
+        raise ResetValidationError("M2 fresh state requires exactly one requested project")
+    project = _map_m1_project(projects[0])
+    seed_rows = await admin_session.fetchall(
+        f"SELECT s.id,s.project_id,JSON_UNQUOTE(JSON_EXTRACT(r.payload_json,'$.title')) AS title,"
+        f"r.payload_json AS premise_json,r.content_hash,s.status,s.created_at,"
+        f"h.revision AS head_revision,r.revision AS source_revision "
+        f"FROM {_qualified(database_name, 'creative_seeds')} s "
+        f"JOIN {_qualified(database_name, 'creative_seed_heads')} h ON h.seed_id=s.id "
+        f"JOIN {_qualified(database_name, 'creative_seed_revisions')} r ON r.id=h.revision_id "
+        "WHERE s.project_id=%s ORDER BY title,s.id",
+        (project["id"],),
+    )
+    if len(seed_rows) != 3 or Counter(row["title"] for row in seed_rows) != Counter(request.seed_titles):
+        raise ResetValidationError("M2 fresh state requires exactly the requested three seeds")
+    if any(
+        row.get("head_revision") != 1 or row.get("source_revision") != 1
+        for row in seed_rows
+    ):
+        raise ResetValidationError("M2 seed heads must all be revision 1")
+    seeds = tuple(_map_m1_seed(row, str(project["id"])) for row in seed_rows)
+    selected = await admin_session.fetchone(
+        f"SELECT JSON_UNQUOTE(JSON_EXTRACT(r.payload_json,'$.title')) AS title,x.seed_hash,r.content_hash,x.selection_revision "
+        f"FROM {_qualified(database_name, 'project_selected_seeds')} x "
+        f"JOIN {_qualified(database_name, 'creative_seed_revisions')} r ON r.id=x.seed_revision_id "
+        "WHERE x.project_id=%s",
+        (project["id"],),
+    )
+    if (
+        selected is None
+        or selected.get("title") != SELECTED_SEED_TITLE
+        or selected.get("seed_hash") != selected.get("content_hash")
+        or selected.get("selection_revision") != 1
+    ):
+        raise ResetValidationError(f"M2 selected seed must be {SELECTED_SEED_TITLE}")
+    provider_rows = await admin_session.fetchall(
+        f"SELECT {', '.join(_PROVIDER_COLUMNS)} FROM {_qualified(database_name, 'provider_profiles')} ORDER BY sort_order,id"
+    )
+    providers = tuple(_map_m1_provider(row) for row in provider_rows)
+    preferred = tuple(
+        row for row in providers
+        if row["name"] == request.preferred_provider_name
+        and row["model_name"] == request.preferred_model
+        and row["enabled"] == 1
+    )
+    if len(preferred) != 1:
+        raise ResetValidationError("M2 requires exactly one enabled preferred Provider/model")
+    expected_counts = {
+        "schema_metadata": 1, "projects": 1, "creative_seeds": 3,
+        "creative_seed_revisions": 3, "creative_seed_heads": 3,
+        "project_selected_seeds": 1, "provider_profiles": len(providers),
+        "project_model_binding_revisions": 1,
+        "project_model_binding_items": len(TASK_KEYS),
+        "project_model_binding_heads": 1, "canon_revisions": 1,
+        "projection_heads": 1, "project_contract_heads": 1,
+    }
+    for table in created_table_names():
+        row = await admin_session.fetchone(
+            f"SELECT COUNT(*) AS count FROM {_qualified(database_name, table)}"
+        )
+        if row is None or row.get("count") != expected_counts.get(table, 0):
+            raise ResetValidationError(f"M2 state is advanced or incomplete in {table}")
+    binding = await admin_session.fetchone(
+        f"SELECT h.revision,h.content_hash AS head_hash,r.content_hash AS revision_hash,"
+        f"(SELECT COUNT(*) FROM {_qualified(database_name, 'project_model_binding_items')} i WHERE i.binding_revision_id=h.binding_revision_id AND i.resolution_status='bound') AS bound_count "
+        f"FROM {_qualified(database_name, 'project_model_binding_heads')} h "
+        f"JOIN {_qualified(database_name, 'project_model_binding_revisions')} r ON r.id=h.binding_revision_id WHERE h.project_id=%s",
+        (project["id"],),
+    )
+    if (
+        binding is None or binding.get("revision") != 1
+        or binding.get("head_hash") != binding.get("revision_hash")
+        or binding.get("bound_count") != len(TASK_KEYS)
+    ):
+        raise ResetValidationError("M2 binding head must be revision1 with eight bound tasks")
+    head = await admin_session.fetchone(
+        f"SELECT revision,creation_contract_id,style_contract_id,creation_hash,style_hash "
+        f"FROM {_qualified(database_name, 'project_contract_heads')} WHERE project_id=%s",
+        (project["id"],),
+    )
+    canon = await admin_session.fetchone(
+        f"SELECT revision_number,content_hash FROM {_qualified(database_name, 'canon_revisions')} WHERE project_id=%s",
+        (project["id"],),
+    )
+    projection = await admin_session.fetchone(
+        f"SELECT canon_revision_number,projection_revision_number,content_hash FROM {_qualified(database_name, 'projection_heads')} WHERE project_id=%s",
+        (project["id"],),
+    )
+    empty_hash = build_projection_bundle(0, ()).content_hash
+    if head != {
+        "revision": 0, "creation_contract_id": None, "style_contract_id": None,
+        "creation_hash": None, "style_hash": None,
+    } or canon != {"revision_number": 0, "content_hash": empty_hash} or projection != {
+        "canon_revision_number": 0, "projection_revision_number": 0,
+        "content_hash": empty_hash,
+    }:
+        raise ResetValidationError("M2 fresh state must remain Contract/Canon/Projection head0")
+    return _PreservedState(project, seeds, providers, preferred[0])
+
+
 def _report(
     database_name: str,
     state: _PreservedState,
@@ -558,40 +907,47 @@ def _report(
 
 
 def format_reset_report(report: ResetReport) -> str:
-    """Render only identifiers, public labels, counts and manifest table names."""
-    lines = [
-        f"mode={'execute' if report.executed else 'dry-run'}",
-        f"database={report.database_name}",
-        "projects.count=1",
-        f"project.id={report.project_id}",
-        f"project.title={report.project_title}",
-        f"seeds.count={report.seed_count}",
-    ]
-    lines.extend(
-        f"seed.id={seed_id} seed.title={title}"
-        for seed_id, title in report.seeds
+    """Render one escaped JSON receipt containing only public allowlisted fields."""
+    receipt = {
+        "mode": "execute" if report.executed else "dry-run",
+        "database": report.database_name,
+        "project": {"id": report.project_id, "title": report.project_title},
+        "seeds": [
+            {"id": seed_id, "title": title} for seed_id, title in report.seeds
+        ],
+        "providers": [
+            {
+                "id": provider_id,
+                "name": name,
+                "model": model,
+                "enabled": enabled,
+            }
+            for provider_id, name, model, enabled in report.providers
+        ],
+        "preferredProviderId": report.preferred_provider_id,
+        "counts": {
+            "projects": 1,
+            "seeds": report.seed_count,
+            "providers": report.provider_count,
+            "seedRevisions": report.seed_revision_count,
+            "seedHeads": report.seed_head_count,
+            "bindingRevisions": report.binding_revision_count,
+            "bindingItems": report.binding_item_count,
+            "bindingHeads": report.binding_head_count,
+            "canonRevisions": report.canon_revision_count,
+            "projectionHeads": report.projection_head_count,
+            "contractHeads": report.contract_head_count,
+        },
+        "tables": list(report.table_names),
+        "verifiedEmptyTables": list(report.verified_empty_tables),
+    }
+    return json.dumps(
+        receipt,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     )
-    lines.append(f"providers.count={report.provider_count}")
-    lines.extend(
-        f"provider.id={provider_id} provider.name={name} "
-        f"provider.model={model} provider.enabled={str(enabled).lower()}"
-        for provider_id, name, model, enabled in report.providers
-    )
-    lines.extend((
-        f"preferred_provider.id={report.preferred_provider_id}",
-        f"seed_revisions.count={report.seed_revision_count}",
-        f"seed_heads.count={report.seed_head_count}",
-        f"binding_revisions.count={report.binding_revision_count}",
-        f"binding_items.count={report.binding_item_count}",
-        f"binding_heads.count={report.binding_head_count}",
-        f"canon_revisions.count={report.canon_revision_count}",
-        f"projection_heads.count={report.projection_head_count}",
-        f"contract_heads.count={report.contract_head_count}",
-        "tables=" + ",".join(report.table_names),
-    ))
-    if report.executed:
-        lines.append("verified_empty_tables=" + ",".join(report.verified_empty_tables))
-    return "\n".join(lines)
 
 
 def _db_json(value: object) -> object:
@@ -815,17 +1171,26 @@ async def reset_writer_core_data(
         raise ResetSafetyError(
             "Refusing product database reset without explicit CLI execute authorization"
         )
+    source_kind = await _classify_reset_source(admin_session, database_name)
 
+    async def load_state(kind: str) -> _PreservedState:
+        if kind == "m1-v1.0":
+            return await _load_m1_preserved_state(admin_session, database_name, request)
+        if kind == "m2-v1.1":
+            return await _load_v11_preserved_state(admin_session, database_name, request)
+        return await _load_preserved_state(admin_session, database_name, request)
+
+    initial_state = await load_state(source_kind)
     if not execute:
-        state = await _load_preserved_state(admin_session, database_name, request)
-        report = _report(database_name, state, executed=False)
+        report = _report(database_name, initial_state, executed=False)
         output(format_reset_report(report))
         return report
 
     acquired = False
-    ddl_started = False
-    body_error = None
-    report = None
+    ddl_owned = False
+    transaction_started = False
+    body_error: BaseException | None = None
+    report: ResetReport | None = None
     try:
         lock = await admin_session.fetchone(
             "SELECT GET_LOCK(%s, %s) AS acquired", (RESET_LOCK_NAME, 30)
@@ -833,78 +1198,106 @@ async def reset_writer_core_data(
         if lock is None or lock["acquired"] != 1:
             raise ResetError("Could not acquire Writer Core reset advisory lock")
         acquired = True
-        await _verify_reset_server_capabilities(admin_session)
-        state = await _load_preserved_state(admin_session, database_name, request)
-
-        _guard_database(database_name, product_execute_authorized)
-        ddl_started = True
-        await admin_session.execute(f"DROP DATABASE `{database_name}`")
-        _guard_database(database_name, product_execute_authorized)
-        await admin_session.execute(
-            f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 "
-            "COLLATE utf8mb4_0900_ai_ci"
+        locked_kind = (
+            source_kind
+            if source_kind == "historical-disposable"
+            else await _classify_reset_source(admin_session, database_name)
         )
-        _guard_database(database_name, product_execute_authorized)
-        timestamp = (now_ms or (lambda: int(time.time() * 1000)))()
-        await initialize_database(
-            admin_session,
-            database_name,
-            database_name,
-            timestamp,
-        )
-        await admin_session.execute("START TRANSACTION")
-        try:
+        if locked_kind != source_kind:
+            raise ResetValidationError("Reset source inventory changed while waiting for lock")
+        locked_state = await load_state(locked_kind)
+        if locked_state != initial_state:
+            raise ResetValidationError("Reset foundation changed while waiting for lock")
+        if locked_kind == "m2-v1.1":
+            report = _report(database_name, locked_state, executed=False)
+        else:
+            await _verify_reset_server_capabilities(admin_session)
+            _guard_database(database_name, product_execute_authorized)
+            await admin_session.execute(f"DROP DATABASE `{database_name}`")
+            ddl_owned = True
+            _guard_database(database_name, product_execute_authorized)
+            await admin_session.execute(
+                f"CREATE DATABASE `{database_name}` CHARACTER SET utf8mb4 "
+                "COLLATE utf8mb4_0900_ai_ci"
+            )
+            timestamp = (now_ms or (lambda: int(time.time() * 1000)))()
+            await initialize_database(
+                admin_session, database_name, database_name, timestamp,
+            )
+            await admin_session.execute("START TRANSACTION")
+            transaction_started = True
             await _insert_preserved_state(
                 admin_session,
-                state,
+                locked_state,
                 now_ms=timestamp,
                 id_factory=id_factory or (lambda: str(uuid4())),
             )
             await _verify_empty_tables(admin_session)
-        except BaseException as insert_error:
-            try:
-                await admin_session.execute("ROLLBACK")
-            except BaseException as rollback_error:
-                raise BaseExceptionGroup(
-                    "Writer Core restore and rollback both failed",
-                    [insert_error, rollback_error],
-                ) from insert_error
-            raise
-        else:
             try:
                 await admin_session.execute("COMMIT")
             except BaseException as commit_error:
-                # Recovery explicitly releases the named lock before closing; an
-                # aiomysql transport close alone does not synchronously prove the
-                # server has processed COM_QUIT and released the lock.
-                acquired = False
-                await _recover_failed_commit(admin_session, commit_error)
-        report = _report(database_name, state, executed=True)
+                if source_kind == "historical-disposable":
+                    transaction_started = False
+                    acquired = False
+                    await _recover_failed_commit(admin_session, commit_error)
+                raise
+            transaction_started = False
+            if await _classify_reset_source(admin_session, database_name) != "m2-v1.1":
+                raise ResetValidationError("Rebuilt database does not match the M2 manifest")
+            readback_state = await _load_v11_preserved_state(
+                admin_session, database_name, request,
+            )
+            if readback_state != locked_state:
+                raise ResetValidationError("Rebuilt M2 foundation differs from the locked snapshot")
+            report = _report(database_name, readback_state, executed=True)
+            ddl_owned = False
     except BaseException as exc:
         body_error = exc
     finally:
-        release_error = None
+        cleanup_errors: list[BaseException] = []
+        if body_error is not None and transaction_started:
+            try:
+                await admin_session.execute("ROLLBACK")
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        should_drop_incomplete = ddl_owned and source_kind != "historical-disposable"
+        if body_error is not None and should_drop_incomplete:
+            try:
+                _guard_database(database_name, product_execute_authorized)
+                await admin_session.execute(f"DROP DATABASE IF EXISTS `{database_name}`")
+                ddl_owned = False
+            except BaseException as exc:
+                cleanup_errors.append(exc)
         if acquired:
             try:
                 await _release_lock(admin_session)
             except BaseException as exc:
-                release_error = exc
-        if body_error is not None and release_error is not None:
-            raise BaseExceptionGroup(
-                "Writer Core reset and advisory lock release both failed",
-                [body_error, release_error],
-            ) from body_error
+                cleanup_errors.append(exc)
         if body_error is not None:
-            if isinstance(body_error, (ResetSafetyError, ResetValidationError)):
-                raise body_error
-            if not ddl_started:
-                raise body_error
+            if cleanup_errors:
+                combined = BaseExceptionGroup(
+                    "Writer Core reset failed and cleanup also failed",
+                    [body_error, *cleanup_errors],
+                )
+            else:
+                combined = body_error
+            if isinstance(body_error, (ResetSafetyError, ResetValidationError)) and not ddl_owned:
+                raise combined
+            if source_kind == "historical-disposable" and ddl_owned:
+                raise ResetPartialStateError(
+                    f"Writer Core reset failed; {database_name} may remain partially reset"
+                ) from combined
             raise ResetPartialStateError(
-                f"Writer Core reset failed; {database_name} may remain partially reset"
-            ) from body_error
-        if release_error is not None:
-            raise release_error
+                f"Writer Core reset failed; incomplete {database_name} was removed"
+            ) from combined
+        if cleanup_errors:
+            if len(cleanup_errors) == 1:
+                raise cleanup_errors[0]
+            raise BaseExceptionGroup(
+                "Writer Core reset cleanup failed", cleanup_errors,
+            )
 
+    assert report is not None
     output(format_reset_report(report))
     return report
 
@@ -949,8 +1342,14 @@ async def run_cli(
         from backend.config import require_mysql_config
 
         connection_config = require_mysql_config()
+    configured_database = connection_config.get("db")
+    if configured_database != args.database:
+        raise ResetSafetyError(
+            "The configured database does not match the explicit reset target"
+        )
     factory = connection_factory or _default_connection_factory
     session = await factory(connection_config)
+    errors: list[BaseException] = []
     try:
         reset_callable = reset_function or reset_writer_core_data
         await reset_callable(
@@ -967,8 +1366,18 @@ async def run_cli(
                 else _CLI_PRODUCT_READ_AUTHORITY
             ),
         )
-    finally:
+    except BaseException as exc:
+        errors.append(exc)
+    try:
         await session.close()
+    except BaseException as exc:
+        errors.append(exc)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup(
+            "Writer Core reset command and connection close both failed", errors,
+        )
     return 0
 
 

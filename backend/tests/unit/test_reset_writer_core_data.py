@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import subprocess
 import sys
 
@@ -10,6 +11,9 @@ from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.seeds import SeedPayload
 from backend.scripts.reset_writer_core_data import (
+    M1_MANIFEST_HASH,
+    M1_SCHEMA_VERSION,
+    M1_TABLE_NAMES,
     RESET_LOCK_NAME,
     _recover_failed_commit,
     ResetPartialStateError,
@@ -24,7 +28,11 @@ from backend.scripts.reset_writer_core_data import (
     _map_project,
     _map_provider,
     _map_seed,
+    _classify_reset_source,
+    format_reset_report,
 )
+from backend.schema_manifest import created_table_names, manifest_hash
+from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.tests.support.legacy_writer_core import (
     LEGACY_BASELINE_COMMIT,
     PROJECTS_DDL,
@@ -112,6 +120,11 @@ class RecordingAdminSession:
 
     async def fetchall(self, sql, args=None):
         self.calls.append(("fetchall", " ".join(sql.split()), args))
+        if "information_schema.TABLES" in sql:
+            return [
+                {"TABLE_NAME": name}
+                for name in ("projects", "creative_seeds", "provider_profiles")
+            ]
         if ".`projects`" in sql:
             return [{
                 "id": "project", "title": "永乐大典", "genre": "历史",
@@ -168,6 +181,140 @@ def request(**changes):
     }
     values.update(changes)
     return ResetRequest(**values)
+
+
+class InventorySession:
+    def __init__(self, tables, version, manifest):
+        self.tables = tuple(tables)
+        self.version = version
+        self.manifest = manifest
+        self.calls = []
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append(("fetchall", " ".join(sql.split()), args))
+        assert "information_schema.TABLES" in sql
+        return [{"TABLE_NAME": table} for table in self.tables]
+
+    async def fetchone(self, sql, args=None):
+        self.calls.append(("fetchone", " ".join(sql.split()), args))
+        assert "schema_metadata" in sql
+        return {"schema_version": self.version, "manifest_hash": self.manifest}
+
+
+def test_reset_source_contract_freezes_m1_and_current_manifest_inventory():
+    assert M1_SCHEMA_VERSION == "writer-core-v1.0.0"
+    assert M1_MANIFEST_HASH == "0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826"
+    assert len(M1_TABLE_NAMES) == 34
+    assert len(set(M1_TABLE_NAMES)) == 34
+    assert M1_TABLE_NAMES == (
+        "schema_metadata", "projects", "creative_seeds", "project_selected_seeds",
+        "provider_profiles", "task_model_bindings", "task_model_binding_items",
+        "creation_contracts", "style_contracts", "contract_asset_refs",
+        "volume_plans", "story_blocks", "story_stages", "scene_tasks",
+        "chapter_sessions", "working_drafts", "draft_candidates",
+        "finalization_change_sets", "finalization_records", "final_chapters",
+        "canon_entities", "entity_aliases", "canon_revisions", "canon_events",
+        "current_state_projections", "memory_views", "arc_projections",
+        "plot_thread_projections", "projection_heads", "corpus_sources",
+        "corpus_chapters", "style_templates", "experience_cards", "reference_uses",
+    )
+    assert len(created_table_names()) == 49
+    assert manifest_hash() == "cf993ccf7f000935aaa5777bfb9adda4cd6cbd47cb4f83be5d073d7d3e6b30c5"
+
+
+def test_reset_receipt_is_one_strict_json_document_and_cannot_forge_fields():
+    source = RecordingAdminSession()
+    project = _map_project(__import__("asyncio").run(source.fetchall("FROM .`projects`"))[0])
+    seeds = tuple(
+        _map_seed(row, project["id"])
+        for row in __import__("asyncio").run(source.fetchall("FROM .`creative_seeds`"))
+    )
+    provider = _map_provider(
+        {
+            **__import__("asyncio").run(source.fetchall("FROM .`provider_profiles`"))[0],
+            "name": "safe-name\napi_key=forged",
+        },
+        0,
+    )
+    from backend.scripts.reset_writer_core_data import _report
+
+    rendered = format_reset_report(
+        _report(
+            DISPOSABLE,
+            _PreservedState(project, seeds, (provider,), provider),
+            executed=False,
+        )
+    )
+    decoded = json.loads(rendered)
+    assert decoded["mode"] == "dry-run"
+    assert decoded["providers"][0]["name"] == "safe-name\napi_key=forged"
+    assert rendered.count("\n") == 0
+    for forbidden in ("base_url", "api_key\":", "notes", "thinking", "dsn"):
+        assert forbidden not in rendered.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tables,version,manifest,expected",
+    [
+        (M1_TABLE_NAMES, M1_SCHEMA_VERSION, M1_MANIFEST_HASH, "m1-v1.0"),
+        (created_table_names(), EXPECTED_SCHEMA_VERSION, manifest_hash(), "m2-v1.1"),
+    ],
+)
+async def test_reset_classifies_only_exact_m1_or_current_inventory(
+    tables, version, manifest, expected
+):
+    session = InventorySession(tables, version, manifest)
+    assert await _classify_reset_source(session, DISPOSABLE) == expected
+    assert session.calls[0][2] == (DISPOSABLE,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tables,version,manifest",
+    [
+        (M1_TABLE_NAMES[:-1], M1_SCHEMA_VERSION, M1_MANIFEST_HASH),
+        ((*M1_TABLE_NAMES, "unexpected_table"), M1_SCHEMA_VERSION, M1_MANIFEST_HASH),
+        (M1_TABLE_NAMES, EXPECTED_SCHEMA_VERSION, M1_MANIFEST_HASH),
+        (created_table_names(), EXPECTED_SCHEMA_VERSION, "0" * 64),
+    ],
+)
+async def test_reset_rejects_mixed_or_tampered_inventory_before_ddl(
+    tables, version, manifest
+):
+    session = InventorySession(tables, version, manifest)
+    with pytest.raises(ResetValidationError, match="exact M1 v1.0 or M2 v1.1"):
+        await _classify_reset_source(session, DISPOSABLE)
+    assert not any(call[0] == "execute" for call in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_cli_requires_configured_database_to_match_explicit_target_before_connection():
+    connected = False
+
+    async def connection_factory(_config):
+        nonlocal connected
+        connected = True
+
+    with pytest.raises(ResetSafetyError, match="configured database"):
+        await run_cli(
+            [
+                "--database", DISPOSABLE,
+                "--confirm-reset", DISPOSABLE,
+                "--project-title", "永乐大典",
+                "--seed-title", "永乐长明",
+                "--seed-title", "文渊山海",
+                "--seed-title", "典镇山河",
+                "--preferred-provider-name", "联通云",
+                "--preferred-model", "deepseek-v4-flash",
+            ],
+            connection_config={
+                "host": "127.0.0.1", "port": 3308, "user": "tester",
+                "password": "secret", "db": "different_database",
+            },
+            connection_factory=connection_factory,
+        )
+    assert not connected
 
 
 def test_seed_mapping_builds_exact_immutable_nine_field_payload():
@@ -331,7 +478,7 @@ async def test_execute_confirmation_mismatch_rejects_before_connection():
                 "--execute",
             ],
             connection_factory=connection_factory,
-            connection_config={"password": "PASSWORD_SENTINEL"},
+            connection_config={"password": "PASSWORD_SENTINEL", "db": DISPOSABLE},
         )
 
     assert called is False
@@ -358,10 +505,13 @@ async def test_direct_core_call_cannot_authorize_product_database(execute):
 @pytest.mark.asyncio
 async def test_cli_product_dry_run_connects_read_only_and_reports_without_ddl():
     session = RecordingAdminSession()
-    output = []
+    captured = []
 
     async def connection_factory(config):
         return session
+
+    async def reset_function(admin_session, **kwargs):
+        captured.append((admin_session, kwargs))
 
     result = await run_cli(
         [
@@ -375,19 +525,15 @@ async def test_cli_product_dry_run_connects_read_only_and_reports_without_ddl():
             "--preferred-model", "deepseek-v4-flash",
         ],
         connection_factory=connection_factory,
-        connection_config={},
-        output=output.append,
+        connection_config={"db": "novel_creator"},
+        reset_function=reset_function,
     )
 
     assert result == 0
     assert session.closed
-    assert sum(kind == "fetchall" for kind, _, _ in session.calls) == 3
-    assert all(
-        kind == "fetchall" or (kind == "fetchone" and "collation_conflict" in sql)
-        for kind, sql, _ in session.calls
-    )
     assert not any(kind == "execute" for kind, _, _ in session.calls)
-    assert "mode=dry-run" in "\n".join(output)
+    assert captured[0][1]["execute"] is False
+    assert captured[0][1]["allow_product_database"] is True
 
 
 @pytest.mark.asyncio
@@ -414,7 +560,7 @@ async def test_only_matching_cli_execute_authorizes_product_core_flag():
             "--execute",
         ],
         connection_factory=connection_factory,
-        connection_config={},
+        connection_config={"db": "novel_creator"},
         reset_function=reset_function,
     )
 
@@ -431,7 +577,7 @@ async def test_cli_dry_run_uses_injected_server_session_and_closes_it():
     output = []
 
     async def connection_factory(config):
-        assert config == {"password": "PASSWORD_SENTINEL"}
+        assert config == {"password": "PASSWORD_SENTINEL", "db": DISPOSABLE}
         return session
 
     result = await run_cli(
@@ -446,13 +592,46 @@ async def test_cli_dry_run_uses_injected_server_session_and_closes_it():
             "--preferred-model", "deepseek-v4-flash",
         ],
         connection_factory=connection_factory,
-        connection_config={"password": "PASSWORD_SENTINEL"},
+        connection_config={"password": "PASSWORD_SENTINEL", "db": DISPOSABLE},
         output=output.append,
     )
 
     assert result == 0
     assert session.closed
     assert "PASSWORD_SENTINEL" not in "\n".join(output)
+
+
+@pytest.mark.asyncio
+async def test_cli_combines_reset_and_connection_close_failures():
+    class CloseFailingSession(RecordingAdminSession):
+        async def close(self):
+            raise RuntimeError("close failed")
+
+    async def connection_factory(_config):
+        return CloseFailingSession()
+
+    async def reset_function(_session, **_kwargs):
+        raise RuntimeError("body failed")
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await run_cli(
+            [
+                "--database", DISPOSABLE,
+                "--confirm-reset", DISPOSABLE,
+                "--project-title", "永乐大典",
+                "--seed-title", "永乐长明",
+                "--seed-title", "文渊山海",
+                "--seed-title", "典镇山河",
+                "--preferred-provider-name", "联通云",
+                "--preferred-model", "deepseek-v4-flash",
+            ],
+            connection_config={"db": DISPOSABLE},
+            connection_factory=connection_factory,
+            reset_function=reset_function,
+        )
+    assert [str(error) for error in raised.value.exceptions] == [
+        "body failed", "close failed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -510,16 +689,17 @@ async def test_ddl_failure_reports_partial_state_and_releases_advisory_lock():
         if sql.startswith("DROP DATABASE")
     )
     before_drop = session.calls[:drop_index]
-    assert before_drop[0][0] == "fetchone" and "GET_LOCK" in before_drop[0][1]
+    lock_index = next(
+        index for index, (_, sql, _) in enumerate(before_drop) if "GET_LOCK" in sql
+    )
+    assert lock_index > 0
     preserved_selects = [
         sql for kind, sql, _ in before_drop
         if kind == "fetchall"
     ]
-    assert len(preserved_selects) == 3
-    assert all(
-        any(f".`{table}`" in sql for table in ("projects", "creative_seeds", "provider_profiles"))
-        for sql in preserved_selects
-    )
+    assert sum("information_schema.TABLES" in sql for sql in preserved_selects) == 1
+    for table in ("projects", "creative_seeds", "provider_profiles"):
+        assert sum(f".`{table}`" in sql for sql in preserved_selects) == 2
 
 
 @pytest.mark.asyncio
@@ -570,6 +750,8 @@ async def test_mysql_57_is_rejected_before_preserve_reads_or_any_ddl():
                 return {"acquired": 1}
             if "VERSION()" in sql:
                 return {"version": "5.7.44"}
+            if "collation_conflict" in sql:
+                return {"collation_conflict": 0}
             if "RELEASE_LOCK" in sql:
                 return {"released": 1}
             raise AssertionError(f"unexpected SELECT: {sql}")
@@ -585,6 +767,9 @@ async def test_mysql_57_is_rejected_before_preserve_reads_or_any_ddl():
             output=lambda value: None,
         )
 
-    assert not any(kind == "fetchall" for kind, _, _ in session.calls)
+    assert any(
+        kind == "fetchall" and "information_schema.TABLES" in sql
+        for kind, sql, _ in session.calls
+    )
     assert not any(kind == "execute" for kind, _, _ in session.calls)
     assert any("RELEASE_LOCK" in sql for _, sql, _ in session.calls)
