@@ -16,6 +16,7 @@ from backend.scripts.reset_writer_core_data import (
     M1_TABLE_NAMES,
     ResetPartialStateError,
     ResetRequest,
+    ResetValidationError,
     reset_writer_core_data,
 )
 from backend.scripts.verify_milestone2_product import verify_milestone2_product
@@ -184,6 +185,7 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
 ):
     await create_m1_product_state(empty_disposable_mysql.session)
     dry_proxy = RecordingProxy(empty_disposable_mysql.admin_session)
+    dry_output = []
     dry = await reset_writer_core_data(
         dry_proxy,
         database_name=empty_disposable_mysql.database_name,
@@ -191,10 +193,22 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
         request=request(),
         execute=False,
         allow_product_database=False,
-        output=lambda _value: None,
+        output=dry_output.append,
     )
     assert not dry.executed
     assert not any(kind == "execute" for kind, _, _ in dry_proxy.calls)
+    dry_receipt = json.loads(dry_output[0])
+    assert dry_receipt["source"]["kind"] == "m1-v1.0"
+    assert dry_receipt["source"]["schemaVersion"] == M1_SCHEMA_VERSION
+    assert dry_receipt["source"]["manifestHash"] == M1_MANIFEST_HASH
+    assert len(dry_receipt["source"]["tables"]) == 34
+    assert "seedRevisions" not in dry_receipt["source"]["counts"]
+    assert dry_receipt["target"]["kind"] == "m2-v1.1"
+    assert dry_receipt["target"]["schemaVersion"] == EXPECTED_SCHEMA_VERSION
+    assert len(dry_receipt["target"]["tables"]) == 49
+    assert dry_receipt["target"]["verified"] is False
+    assert "private-" not in dry_output[0]
+    assert "api_key" not in dry_output[0].lower()
 
     report = await reset_writer_core_data(
         empty_disposable_mysql.admin_session,
@@ -209,7 +223,9 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
 
     connection, session = await open_database(empty_disposable_mysql.connection_config)
     try:
-        receipt = await verify_milestone2_product(session)
+        receipt = await verify_milestone2_product(
+            session, expected_database=empty_disposable_mysql.database_name
+        )
         assert receipt["schemaVersion"] == EXPECTED_SCHEMA_VERSION
         assert receipt["manifestHash"] == manifest_hash()
         assert receipt["project"]["selectedSeedTitle"] == "典镇山河"
@@ -218,6 +234,7 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
         connection.close()
 
     noop_proxy = RecordingProxy(empty_disposable_mysql.admin_session)
+    noop_output = []
     noop = await reset_writer_core_data(
         noop_proxy,
         database_name=empty_disposable_mysql.database_name,
@@ -225,13 +242,173 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
         request=request(),
         execute=True,
         allow_product_database=False,
-        output=lambda _value: None,
+        output=noop_output.append,
     )
     assert not noop.executed
+    assert noop.mode == "no-op"
+    noop_receipt = json.loads(noop_output[0])
+    assert noop_receipt["source"]["kind"] == "m2-v1.1"
+    assert noop_receipt["source"]["counts"] == noop_receipt["target"]["expectedCounts"]
+    assert noop_receipt["target"]["verified"] is True
+    assert "private-" not in noop_output[0]
+    assert "api_key" not in noop_output[0].lower()
     forbidden = ("DROP DATABASE", "CREATE DATABASE", "CREATE TABLE", "INSERT ", "UPDATE ", "DELETE ")
     assert not any(
         kind == "execute" and sql.lstrip().upper().startswith(forbidden)
         for kind, sql, _ in noop_proxy.calls
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "mutation", "error_match", "disable_foreign_keys"),
+    [
+        pytest.param(
+            "project-status", "UPDATE {database}.projects SET status='archived'",
+            "drafting", False, id="project-status",
+        ),
+        pytest.param(
+            "project-progress", "UPDATE {database}.projects SET current_chapter=1",
+            "current chapter 0", False, id="project-progress",
+        ),
+        pytest.param(
+            "seed-status",
+            "UPDATE {database}.creative_seeds SET status='archived' "
+            "WHERE id='22222222-2222-2222-2222-222222222223'",
+            "seeds must remain candidates", False, id="seed-status",
+        ),
+        pytest.param(
+            "seed-payload",
+            "UPDATE {database}.creative_seed_revisions SET payload_json='{{}}' "
+            "WHERE seed_id='22222222-2222-2222-2222-222222222223'",
+            "requested three seeds", False, id="seed-payload",
+        ),
+        pytest.param(
+            "seed-revision-hash",
+            "UPDATE {database}.creative_seed_revisions SET content_hash=REPEAT('0',64) "
+            "WHERE seed_id='22222222-2222-2222-2222-222222222223'",
+            "seed heads", True, id="seed-revision-hash",
+        ),
+        pytest.param(
+            "seed-head-hash",
+            "UPDATE {database}.creative_seed_heads SET content_hash=REPEAT('f',64) "
+            "WHERE seed_id='22222222-2222-2222-2222-222222222223'",
+            "seed heads", True, id="seed-head-hash",
+        ),
+        pytest.param(
+            "binding-item-hash",
+            "UPDATE {database}.project_model_binding_items SET item_hash=REPEAT('0',64) "
+            "WHERE task_key='seed'",
+            "binding head", False, id="binding-item-hash",
+        ),
+        pytest.param(
+            "binding-provider-snapshot",
+            "UPDATE {database}.project_model_binding_items "
+            "SET provider_name_snapshot='tampered-provider' WHERE task_key='seed'",
+            "binding head", False, id="binding-provider-snapshot",
+        ),
+        pytest.param(
+            "binding-revision-hash",
+            "UPDATE {database}.project_model_binding_revisions "
+            "SET content_hash=REPEAT('0',64)",
+            "binding head", False, id="binding-revision-hash",
+        ),
+        pytest.param(
+            "binding-head-hash",
+            "UPDATE {database}.project_model_binding_heads SET content_hash=REPEAT('f',64)",
+            "binding head", False, id="binding-head-hash",
+        ),
+        pytest.param(
+            "binding-head-revision",
+            "UPDATE {database}.project_model_binding_heads SET revision=2",
+            "binding head", True, id="binding-head-revision",
+        ),
+        pytest.param(
+            "provider-enabled",
+            "UPDATE {database}.provider_profiles SET enabled=0 WHERE name='联通云'",
+            "enabled preferred Provider", False, id="provider-enabled",
+        ),
+        pytest.param(
+            "provider-deleted",
+            "UPDATE {database}.provider_profiles SET lifecycle_status='deleted',"
+            "deleted_at=123,enabled=0,api_key='',base_url='' WHERE name='备用模型'",
+            "every Provider to be active and not deleted", False, id="provider-deleted",
+        ),
+        pytest.param(
+            "provider-model-snapshot",
+            "UPDATE {database}.provider_profiles SET model_name='tampered-model' "
+            "WHERE name='联通云'",
+            "preferred Provider/model", False, id="provider-model-snapshot",
+        ),
+        pytest.param(
+            "contract-head",
+            "DELETE FROM {database}.project_contract_heads",
+            "project_contract_heads", False, id="contract-head",
+        ),
+        pytest.param(
+            "canon-idempotency",
+            "UPDATE {database}.canon_revisions SET idempotency_key=REPEAT('0',64)",
+            "Contract/Canon/Projection head0", False, id="canon-idempotency",
+        ),
+        pytest.param(
+            "canon-bootstrap-source",
+            "UPDATE {database}.canon_revisions SET source_type='manual_test',"
+            "source_id='77777777-7777-7777-7777-777777777777',parent_revision_number=1",
+            "Contract/Canon/Projection head0", False, id="canon-bootstrap-source",
+        ),
+        pytest.param(
+            "projection-head",
+            "UPDATE {database}.projection_heads SET canon_revision_number=1,"
+            "content_hash=REPEAT('f',64)",
+            "Contract/Canon/Projection head0", False, id="projection-head",
+        ),
+        pytest.param(
+            "derived-row",
+            "INSERT INTO {database}.canon_entities "
+            "(id,project_id,entity_type,canonical_name,normalized_name,created_revision,created_at) "
+            "VALUES ('88888888-8888-8888-8888-888888888888',"
+            f"'{PROJECT_ID}','person','tampered','tampered',0,1)",
+            "canon_entities", False, id="derived-row",
+        ),
+    ],
+)
+@pytest.mark.mysql
+@pytest.mark.asyncio
+async def test_m2_noop_rejects_any_tampered_foundation_fact_before_ddl(
+    empty_disposable_mysql, case, mutation, error_match, disable_foreign_keys,
+):
+    await create_m1_product_state(empty_disposable_mysql.session)
+    await reset_writer_core_data(
+        empty_disposable_mysql.admin_session,
+        database_name=empty_disposable_mysql.database_name,
+        confirm_reset=empty_disposable_mysql.database_name,
+        request=request(),
+        execute=True,
+        output=lambda _value: None,
+    )
+    if disable_foreign_keys:
+        await empty_disposable_mysql.admin_session.execute("SET FOREIGN_KEY_CHECKS=0")
+    try:
+        await empty_disposable_mysql.admin_session.execute(
+            mutation.format(database=f"`{empty_disposable_mysql.database_name}`")
+        )
+    finally:
+        if disable_foreign_keys:
+            await empty_disposable_mysql.admin_session.execute("SET FOREIGN_KEY_CHECKS=1")
+    proxy = RecordingProxy(empty_disposable_mysql.admin_session)
+    with pytest.raises(ResetValidationError, match=error_match):
+        await reset_writer_core_data(
+            proxy,
+            database_name=empty_disposable_mysql.database_name,
+            confirm_reset=empty_disposable_mysql.database_name,
+            request=request(),
+            execute=True,
+            output=lambda _value: None,
+        )
+    assert case
+    forbidden = ("DROP DATABASE", "CREATE DATABASE", "CREATE TABLE", "INSERT ", "DELETE ")
+    assert not any(
+        kind == "execute" and sql.lstrip().upper().startswith(forbidden)
+        for kind, sql, _ in proxy.calls
     )
 
 
@@ -262,6 +439,46 @@ async def test_failed_m1_rebuild_drops_incomplete_database_and_releases_lock(
     assert any("RELEASE_LOCK" in sql for kind, sql, _ in proxy.calls if kind == "fetchone")
     # Restore an empty disposable shell so the shared fixture can account for
     # its own created/cleaned lifecycle in the terminal summary.
+    await empty_disposable_mysql.admin_session.execute(
+        f"CREATE DATABASE `{empty_disposable_mysql.database_name}` "
+        "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
+    )
+
+
+@pytest.mark.mysql
+@pytest.mark.asyncio
+async def test_failed_cleanup_drop_reports_database_may_remain_and_keeps_both_errors(
+    empty_disposable_mysql,
+):
+    await create_m1_product_state(empty_disposable_mysql.session)
+
+    class CleanupDropFailingProxy(RecordingProxy):
+        async def execute(self, sql, args=None):
+            self.calls.append(("execute", sql, args))
+            if "INSERT INTO projects" in sql:
+                raise RuntimeError("BODY_FAILURE_SENTINEL")
+            if sql.startswith("DROP DATABASE IF EXISTS"):
+                raise RuntimeError("CLEANUP_DROP_FAILURE_SENTINEL")
+            return await self.session.execute(sql, args)
+
+    proxy = CleanupDropFailingProxy(empty_disposable_mysql.admin_session)
+    with pytest.raises(ResetPartialStateError, match="may remain") as raised:
+        await reset_writer_core_data(
+            proxy,
+            database_name=empty_disposable_mysql.database_name,
+            confirm_reset=empty_disposable_mysql.database_name,
+            request=request(),
+            execute=True,
+            output=lambda _value: None,
+        )
+    evidence = repr(raised.value.__cause__)
+    assert "BODY_FAILURE_SENTINEL" in evidence
+    assert "CLEANUP_DROP_FAILURE_SENTINEL" in evidence
+    assert "was removed" not in str(raised.value)
+    # Restore a shell database for the disposable fixture's own lifecycle counter.
+    await empty_disposable_mysql.admin_session.execute(
+        f"DROP DATABASE IF EXISTS `{empty_disposable_mysql.database_name}`"
+    )
     await empty_disposable_mysql.admin_session.execute(
         f"CREATE DATABASE `{empty_disposable_mysql.database_name}` "
         "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"

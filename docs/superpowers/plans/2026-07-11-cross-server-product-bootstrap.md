@@ -1,5 +1,12 @@
 # Cross-Server Product Bootstrap Implementation Plan
 
+> [!CAUTION]
+> **整份计划已退役 / ENTIRE PLAN RETIRED（2026-07-16）**
+>
+> 本计划关联的 bootstrap 脚本已经删除。下方所有 checkbox、命令和实现步骤仅保留用于历史追溯，**不得执行**，也不得作为当前产品事实或当前实现依据。当前唯一有效路径为：**Writer Core M1 MySQL 8 exact-34 → Writer Core M2 v1.1 exact-49 reset/verify**。
+>
+> The associated bootstrap scripts have been deleted. Every checkbox, command, and implementation step below remains only for historical traceability and **must not be executed or treated as current product fact or implementation authority**. The sole current path is **Writer Core M1 on MySQL 8 exact-34 → Writer Core M2 v1.1 exact-49 reset/verify**.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a guarded one-time command that snapshots the approved foundation rows from legacy MySQL 5.7 and initializes an absent Writer Core V1 target on MySQL 8.

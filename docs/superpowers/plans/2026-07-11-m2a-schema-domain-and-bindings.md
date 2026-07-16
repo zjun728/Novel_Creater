@@ -313,6 +313,9 @@ Expected: only the Task 2 Schema/version/tests are modified. Do not create an in
 
 ### Task 3: Adapt explicit reset/bootstrap foundation creation
 
+> [!NOTE]
+> **局部历史说明（2026-07-16）：**本任务中提到的 bootstrap 文件和命令已经退役并删除；仅 reset 相关内容作为历史记录保留。不得运行下方 bootstrap pytest 命令，也不得执行包含 bootstrap 文件的 `git add` 命令。本说明只适用于本 Task 3，不表示整份 M2A 计划退役。
+
 **Files:**
 - Modify: `backend/scripts/reset_writer_core_data.py`
 - Modify: `backend/scripts/bootstrap_writer_core_product.py`

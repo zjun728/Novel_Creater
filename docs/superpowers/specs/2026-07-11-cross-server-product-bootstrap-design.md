@@ -1,5 +1,12 @@
 # Cross-Server Writer Core Product Bootstrap Design
 
+> [!CAUTION]
+> **已退役的历史证据 / RETIRED HISTORICAL EVIDENCE（2026-07-16）**
+>
+> 本文关联的 bootstrap 脚本已经删除。本文不得执行，也不得作为当前产品事实或当前实现依据；保留全文仅供历史追溯。当前唯一有效路径为：**Writer Core M1 MySQL 8 exact-34 → Writer Core M2 v1.1 exact-49 reset/verify**。
+>
+> The associated bootstrap scripts have been deleted. Do not execute this document or treat it as current product fact or implementation authority; its contents remain only for historical traceability. The sole current path is **Writer Core M1 on MySQL 8 exact-34 → Writer Core M2 v1.1 exact-49 reset/verify**.
+
 ## Goal and authority
 
 Provide one guarded command that reads the approved foundation inventory from a legacy MySQL 5.7 server and initializes an absent Writer Core V1 product database on the configured MySQL 8 server. Dry-run is the default. Execute requires `--execute`, `--confirm-bootstrap` equal to the configured target database, an absent target, and a private CLI authority that direct Python callers cannot construct.
