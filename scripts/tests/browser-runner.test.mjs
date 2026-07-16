@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import {
@@ -30,6 +32,11 @@ const FORMAL_SPECS = [
   { path: 'e2e/m2-wizard-recovery.spec.ts', scenario: 'recovery' },
   { path: 'e2e/m2-settings-assets-corpus.spec.ts', scenario: 'settings' },
 ]
+
+const ownedCorpusRoot = (nonce, suffix = 'fixture') => path.join(
+  path.resolve(os.tmpdir()),
+  `novel-creator-m2-corpus-${nonce}-${suffix}`,
+)
 
 test('requires every explicit disposable MySQL variable', () => {
   const environment = { ...TEST_ENVIRONMENT }
@@ -143,10 +150,10 @@ test('M2 runner gives every injected spec an isolated database and external corp
   const { runMilestone2 } = await import(M2_MODULE)
   const calls = []
   const roots = [
-    'C:\\Temp\\novel-creator-m2-corpus-a',
-    'C:\\Temp\\novel-creator-m2-corpus-b',
-    'C:\\Temp\\novel-creator-m2-corpus-c',
-    'C:\\Temp\\novel-creator-m2-corpus-d',
+    ownedCorpusRoot('owner-a'),
+    ownedCorpusRoot('owner-b'),
+    ownedCorpusRoot('owner-c'),
+    ownedCorpusRoot('owner-d'),
   ]
   const databases = [
     DATABASE,
@@ -182,7 +189,7 @@ test('M2 runner gives every injected spec an isolated database and external corp
     environment: TEST_ENVIRONMENT,
     databaseNameFactory: () => databases.shift(),
     mkdtempImpl: prefix => {
-      assert.match(prefix, /novel-creator-m2-corpus-$/)
+      assert.match(prefix, /novel-creator-m2-corpus-owner-[a-d]-$/)
       return roots.shift()
     },
     writeFileImpl: (file, body, encoding) => writes.push({ file, body, encoding }),
@@ -207,10 +214,10 @@ test('M2 runner gives every injected spec an isolated database and external corp
   assert.equal(writes.every(write => write.encoding === 'utf8'), true)
   assert.equal(writes.every(write => write.body.includes('第一章') && write.body.includes('第二章')), true)
   assert.deepEqual(removed.map(item => item.root), [
-    'C:\\Temp\\novel-creator-m2-corpus-a',
-    'C:\\Temp\\novel-creator-m2-corpus-b',
-    'C:\\Temp\\novel-creator-m2-corpus-c',
-    'C:\\Temp\\novel-creator-m2-corpus-d',
+    ownedCorpusRoot('owner-a'),
+    ownedCorpusRoot('owner-b'),
+    ownedCorpusRoot('owner-c'),
+    ownedCorpusRoot('owner-d'),
   ])
   assert.equal(removed.every(item => item.options.recursive && item.options.force), true)
 
@@ -246,10 +253,10 @@ test('M2 runner gives every injected spec an isolated database and external corp
   assert.equal(runs.filter(call => call.args.includes('playwright.m2.config.ts')).length, 4)
   assert.equal(runs.every(call => call.options.shell === false), true)
   assert.equal(observed.length, 8)
-  assert.equal(observed[0].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-a'), true)
-  assert.equal(observed[2].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-b'), true)
-  assert.equal(observed[4].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-c'), true)
-  assert.equal(observed[6].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-d'), true)
+  assert.equal(observed[0].sensitiveValues.includes(ownedCorpusRoot('owner-a')), true)
+  assert.equal(observed[2].sensitiveValues.includes(ownedCorpusRoot('owner-b')), true)
+  assert.equal(observed[4].sensitiveValues.includes(ownedCorpusRoot('owner-c')), true)
+  assert.equal(observed[6].sensitiveValues.includes(ownedCorpusRoot('owner-d')), true)
 })
 
 test('owned health wait ignores a healthy response from the wrong process', async () => {
@@ -269,6 +276,163 @@ test('owned health wait ignores a healthy response from the wrong process', asyn
   })
 
   assert.equal(seen.length, 2)
+})
+
+test('owned health wait aborts a hanging fetch within its total deadline', async () => {
+  const { waitForOwnedUrl } = await import(M2_MODULE)
+  let abortCount = 0
+  const startedAt = Date.now()
+  let watchdog
+
+  try {
+    await assert.rejects(Promise.race([
+      waitForOwnedUrl('http://127.0.0.1:45678/api/health', {
+        expectedNonce: 'expected-owner',
+        intervalMs: 1,
+        timeoutMs: 40,
+        fetchImpl: (_url, { signal } = {}) => new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            abortCount += 1
+            const error = new Error('request aborted')
+            error.name = 'AbortError'
+            reject(error)
+          }, { once: true })
+        }),
+      }),
+      new Promise((_, reject) => {
+        watchdog = setTimeout(() => reject(new Error('test watchdog expired')), 250)
+      }),
+    ]), /timed out waiting/i)
+  } finally {
+    clearTimeout(watchdog)
+  }
+
+  assert.equal(abortCount, 1)
+  assert.equal(Date.now() - startedAt < 200, true)
+})
+
+test('owned health wait aborts a hanging JSON body within its total deadline', async () => {
+  const { waitForOwnedUrl } = await import(M2_MODULE)
+  let bodyAbortCount = 0
+  const startedAt = Date.now()
+  let watchdog
+
+  try {
+    await assert.rejects(Promise.race([
+      waitForOwnedUrl('http://127.0.0.1:45678/api/health', {
+        expectedNonce: 'expected-owner',
+        intervalMs: 1,
+        timeoutMs: 40,
+        fetchImpl: async (_url, { signal } = {}) => ({
+          ok: true,
+          json: () => new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => {
+              bodyAbortCount += 1
+              const error = new Error('body aborted')
+              error.name = 'AbortError'
+              reject(error)
+            }, { once: true })
+          }),
+        }),
+      }),
+      new Promise((_, reject) => {
+        watchdog = setTimeout(() => reject(new Error('test watchdog expired')), 250)
+      }),
+    ]), /timed out waiting/i)
+  } finally {
+    clearTimeout(watchdog)
+  }
+
+  assert.equal(bodyAbortCount, 1)
+  assert.equal(Date.now() - startedAt < 200, true)
+})
+
+test('owned health wait composes an external cancellation signal with its request deadline', async () => {
+  const { waitForOwnedUrl } = await import(M2_MODULE)
+  const controller = new AbortController()
+  let requestAborted = false
+  let watchdog
+
+  setTimeout(() => controller.abort(new Error('service failed')), 20)
+  try {
+    await assert.rejects(Promise.race([
+      waitForOwnedUrl('http://127.0.0.1:45678/api/health', {
+        expectedNonce: 'expected-owner',
+        intervalMs: 1,
+        timeoutMs: 10_000,
+        signal: controller.signal,
+        fetchImpl: (_url, { signal } = {}) => new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            requestAborted = true
+            const error = new Error('request aborted')
+            error.name = 'AbortError'
+            reject(error)
+          }, { once: true })
+        }),
+      }),
+      new Promise((_, reject) => {
+        watchdog = setTimeout(() => reject(new Error('test watchdog expired')), 250)
+      }),
+    ]), error => error?.name === 'AbortError' || /service failed/i.test(String(error)))
+  } finally {
+    clearTimeout(watchdog)
+  }
+
+  assert.equal(requestAborted, true)
+})
+
+test('service-live operation cannot outrun a same-tick recorded code-zero exit', async () => {
+  const { runWhileServicesLive } = await import(M2_MODULE)
+  const earlyFailure = new Error('backend server exited before completion with status 0')
+  const state = {
+    label: 'backend',
+    child: { exitCode: null },
+    exitSeen: false,
+    closeSeen: false,
+    exitCode: null,
+    earlyFailure: null,
+    failurePromise: new Promise(() => {}),
+  }
+
+  await assert.rejects(runWhileServicesLive(async () => {
+    state.child.exitCode = 0
+    state.exitSeen = true
+    state.exitCode = 0
+    state.earlyFailure = earlyFailure
+    return 'operation-result'
+  }, [state]), /backend.*status 0/i)
+})
+
+test('default process run aborts its child, waits for close, and preserves observation data', async () => {
+  const { defaultRun } = await import(M2_MODULE)
+  const controller = new AbortController()
+  let watchdog
+  const abortTimer = setTimeout(() => controller.abort(new Error('service failed')), 30)
+
+  try {
+    const result = await Promise.race([
+      defaultRun(
+        process.execPath,
+        ['-e', 'setInterval(() => {}, 1000)'],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env },
+          shell: false,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+        { signal: controller.signal, sensitiveValues: [] },
+      ),
+      new Promise((_, reject) => {
+        watchdog = setTimeout(() => reject(new Error('child close watchdog expired')), 3_000)
+      }),
+    ])
+    assert.notEqual(result.status, 0)
+    assert.equal(Object.hasOwn(result, 'error'), true)
+    assert.deepEqual(result.logObserver.finish([]), { matchCount: 0, truncated: false })
+  } finally {
+    clearTimeout(abortTimer)
+    clearTimeout(watchdog)
+  }
 })
 
 test('M2 runner fails on early child exit, waits for close-tail scan, and still cleans up', async () => {
@@ -325,7 +489,7 @@ test('M2 runner fails on early child exit, waits for close-tail scan, and still 
     environment,
     specs: FORMAL_SPECS,
     databaseNameFactory: () => DATABASE,
-    mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-early-exit',
+    mkdtempImpl: () => ownedCorpusRoot('early-exit-owner'),
     writeFileImpl: () => {},
     rmImpl: (root, options) => removed.push({ root, options }),
     processRunner,
@@ -351,6 +515,286 @@ test('M2 runner fails on early child exit, waits for close-tail scan, and still 
   assert.equal(removed.length, 1)
 })
 
+test('M2 runner rejects when browser success is immediately followed by a code-zero server exit', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  let backend
+  const children = []
+  let runCount = 0
+  let databaseIndex = 0
+
+  const fakeChild = label => {
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+    child.label = label
+    children.push(child)
+    return child
+  }
+
+  const cleanResult = () => ({
+    status: 0,
+    logObserver: { finish: () => ({ matchCount: 0, truncated: false }) },
+  })
+  const processRunner = {
+    run(_command, args) {
+      runCount += 1
+      if (!args.includes('test')) return Promise.resolve(cleanResult())
+      return Promise.resolve().then(() => {
+        queueMicrotask(() => queueMicrotask(() => {
+          backend.exitCode = 0
+          backend.emit('exit', 0, null)
+          backend.emit('close', 0, null)
+        }))
+        return cleanResult()
+      })
+    },
+    start(_command, args) {
+      const child = fakeChild(args.includes('uvicorn') ? 'backend' : 'vite')
+      if (child.label === 'backend') backend = child
+      return child
+    },
+    async stop(child) {
+      if (child.exitCode === null) {
+        child.exitCode = 0
+        child.emit('exit', 0, null)
+        child.emit('close', 0, null)
+      }
+    },
+  }
+
+  await assert.rejects(runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => (
+      `novel_creator_test_${String(++databaseIndex).padStart(32, '0')}`
+    ),
+    mkdtempImpl: () => ownedCorpusRoot('browser-success-owner'),
+    writeFileImpl: () => {},
+    rmImpl: () => {},
+    processRunner,
+    portReservationFactory: (() => {
+      let port = 43000
+      return async () => ({ port: ++port, release: async () => {} })
+    })(),
+    nonceFactory: () => 'browser-success-owner',
+    waitForUrlImpl: async () => {},
+    serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
+  }), /backend.*status 0/i)
+
+  assert.equal(runCount >= 3, true)
+  assert.equal(children.length, 2)
+})
+
+test('M2 runner does not mistake normal requested code-zero stops for early exits', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  let databaseIndex = 0
+  let corpusIndex = 0
+  let nextPort = 44000
+  const stopped = []
+  const processRunner = {
+    async run() {
+      return {
+        status: 0,
+        logObserver: { finish: () => ({ matchCount: 0, truncated: false }) },
+      }
+    },
+    start(_command, args) {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.exitCode = null
+      child.label = args.includes('uvicorn') ? 'backend' : 'vite'
+      return child
+    },
+    async stop(child) {
+      stopped.push(child.label)
+      child.exitCode = 0
+      child.emit('exit', 0, null)
+      child.emit('close', 0, null)
+    },
+  }
+
+  assert.equal(await runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => (
+      `novel_creator_test_${String(++databaseIndex).padStart(32, '0')}`
+    ),
+    mkdtempImpl: () => ownedCorpusRoot('normal-stop-owner', `fixture-${++corpusIndex}`),
+    writeFileImpl: () => {},
+    rmImpl: () => {},
+    processRunner,
+    portReservationFactory: async () => ({ port: ++nextPort, release: async () => {} }),
+    nonceFactory: () => 'normal-stop-owner',
+    waitForUrlImpl: async () => {},
+    serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
+  }), 0)
+
+  assert.equal(stopped.length, 8)
+})
+
+test('M2 runner aborts and settles a losing browser operation before cleanup', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  const events = []
+  let backend
+  let nextPort = 45000
+
+  const fakeChild = label => {
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+    child.label = label
+    return child
+  }
+  const cleanResult = logObserver => ({ status: 0, logObserver })
+  const processRunner = {
+    run(_command, args, _options, { signal } = {}) {
+      if (args.includes('--drop')) {
+        events.push('db-cleanup')
+        return Promise.resolve(cleanResult())
+      }
+      if (!args.includes('test')) return Promise.resolve(cleanResult())
+
+      return new Promise(resolve => {
+        let completed = false
+        const complete = label => {
+          if (completed) return
+          completed = true
+          clearTimeout(naturalClose)
+          events.push(label)
+          resolve(cleanResult({
+            finish() {
+              events.push('browser-log-finish')
+              return { matchCount: 0, truncated: false }
+            },
+          }))
+        }
+        signal?.addEventListener('abort', () => {
+          events.push('browser-terminate')
+          setTimeout(() => complete('browser-close'), 5)
+        }, { once: true })
+        const naturalClose = setTimeout(() => complete('browser-natural-close'), 80)
+        queueMicrotask(() => {
+          backend.exitCode = 7
+          backend.emit('exit', 7, null)
+          backend.emit('close', 7, null)
+        })
+      })
+    },
+    start(_command, args) {
+      const child = fakeChild(args.includes('uvicorn') ? 'backend' : 'vite')
+      if (child.label === 'backend') backend = child
+      return child
+    },
+    async stop(child) {
+      if (child.exitCode === null) {
+        child.exitCode = 0
+        child.emit('exit', 0, null)
+        child.emit('close', 0, null)
+      }
+    },
+  }
+
+  await assert.rejects(runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => DATABASE,
+    mkdtempImpl: () => ownedCorpusRoot('abort-browser-owner'),
+    writeFileImpl: () => {},
+    rmImpl: () => { events.push('corpus-rm') },
+    processRunner,
+    portReservationFactory: async () => ({ port: ++nextPort, release: async () => {} }),
+    nonceFactory: () => 'abort-browser-owner',
+    waitForUrlImpl: async () => {},
+    serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
+  }), /backend.*7/i)
+  await new Promise(resolve => setTimeout(resolve, 100))
+
+  const positions = [
+    'browser-terminate',
+    'browser-close',
+    'browser-log-finish',
+    'db-cleanup',
+    'corpus-rm',
+  ].map(event => events.indexOf(event))
+  assert.equal(positions.every(position => position >= 0), true, events.join(' -> '))
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions, events.join(' -> '))
+})
+
+test('M2 runner aborts and settles a hanging health wait before cleanup', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  const events = []
+  let backend
+  let nextPort = 46000
+
+  const processRunner = {
+    async run(_command, args) {
+      if (args.includes('--drop')) events.push('db-cleanup')
+      return {
+        status: 0,
+        logObserver: { finish: () => ({ matchCount: 0, truncated: false }) },
+      }
+    },
+    start(_command, args) {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter()
+      child.stderr = new EventEmitter()
+      child.exitCode = null
+      child.label = args.includes('uvicorn') ? 'backend' : 'vite'
+      if (child.label === 'backend') backend = child
+      return child
+    },
+    async stop(child) {
+      if (child.exitCode === null) {
+        child.exitCode = 0
+        child.emit('exit', 0, null)
+        child.emit('close', 0, null)
+      }
+    },
+  }
+  let healthCalls = 0
+  const waitForUrlImpl = (_url, { signal } = {}) => {
+    healthCalls += 1
+    setTimeout(() => {
+      backend.exitCode = 9
+      backend.emit('exit', 9, null)
+      backend.emit('close', 9, null)
+    }, 1)
+    return new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => {
+        events.push('health-abort')
+        const error = new Error('health aborted')
+        error.name = 'AbortError'
+        reject(error)
+      }, { once: true })
+    }).finally(() => { events.push('health-settle') })
+  }
+
+  await assert.rejects(runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => DATABASE,
+    mkdtempImpl: () => ownedCorpusRoot('abort-health-owner'),
+    writeFileImpl: () => {},
+    rmImpl: () => { events.push('corpus-rm') },
+    processRunner,
+    portReservationFactory: async () => ({ port: ++nextPort, release: async () => {} }),
+    nonceFactory: () => 'abort-health-owner',
+    waitForUrlImpl,
+    serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
+  }), /backend.*9/i)
+
+  assert.equal(healthCalls, 1)
+  assert.deepEqual(events, [
+    'health-abort',
+    'health-settle',
+    'db-cleanup',
+    'corpus-rm',
+  ])
+})
+
 test('M2 runner removes an owned temp directory when post-create validation fails', async () => {
   const { runMilestone2 } = await import(M2_MODULE)
   const removed = []
@@ -360,18 +804,19 @@ test('M2 runner removes an owned temp directory when post-create validation fail
     environment: TEST_ENVIRONMENT,
     specs: FORMAL_SPECS,
     databaseNameFactory: () => DATABASE,
-    mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-invalidated',
+    mkdtempImpl: () => ownedCorpusRoot('invalidated-owner'),
     writeFileImpl: () => {},
     rmImpl: (root, options) => removed.push({ root, options }),
     assertExternalCorpusRootImpl: () => {
       validatorCalls += 1
       throw new Error('injected post-create validation failure')
     },
+    nonceFactory: () => 'invalidated-owner',
   }), /post-create validation failure/i)
 
   assert.equal(validatorCalls, 1)
   assert.deepEqual(removed, [{
-    root: 'C:\\Temp\\novel-creator-m2-corpus-invalidated',
+    root: ownedCorpusRoot('invalidated-owner'),
     options: { recursive: true, force: true },
   }])
 })
@@ -419,11 +864,12 @@ test('M2 runner preserves body, server stop, DB cleanup, and directory cleanup e
       specs: FORMAL_SPECS,
       environment: TEST_ENVIRONMENT,
       databaseNameFactory: () => DATABASE,
-      mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-errors',
+      mkdtempImpl: () => ownedCorpusRoot('errors-owner'),
       writeFileImpl: () => {},
       rmImpl: () => { throw new Error('injected directory cleanup failure') },
       processRunner,
       waitForUrlImpl: async () => {},
+      nonceFactory: () => 'errors-owner',
       serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
     }),
     error => {
@@ -457,7 +903,7 @@ test('M2 runner rejects duplicate injected databases across specs', async () => 
       environment: TEST_ENVIRONMENT,
       specs: FORMAL_SPECS,
       databaseNameFactory: () => DATABASE,
-      mkdtempImpl: () => `C:\\Temp\\novel-creator-m2-corpus-${++rootCount}`,
+      mkdtempImpl: prefix => `${prefix}${++rootCount}`,
       writeFileImpl: () => {},
       rmImpl: () => {},
       processRunner: {
@@ -473,20 +919,35 @@ test('M2 runner rejects duplicate injected databases across specs', async () => 
   assert.equal(rootCount, 1)
 })
 
-test('M2 runner never recursively removes a path that fails external-root validation', async () => {
+test('M2 runner rejects and never removes unowned or suffix-free corpus paths', async () => {
   const { runMilestone2 } = await import(M2_MODULE)
-  const removed = []
-  await assert.rejects(
-    runMilestone2({
-      environment: TEST_ENVIRONMENT,
-      specs: FORMAL_SPECS,
-      databaseNameFactory: () => DATABASE,
-      mkdtempImpl: () => process.cwd(),
-      rmImpl: (root, options) => removed.push({ root, options }),
-    }),
-    /outside the repository/i,
-  )
-  assert.deepEqual(removed, [])
+  const tempParent = path.resolve(os.tmpdir())
+  const nonce = 'path-audit-owner'
+  const invalidRoots = [
+    tempParent,
+    path.join(tempParent, 'unrelated-directory'),
+    path.resolve(tempParent, '..', 'arbitrary-m2-audit-directory'),
+    path.join(tempParent, `novel-creator-m2-corpus-${nonce}-`),
+  ]
+
+  for (const invalidRoot of invalidRoots) {
+    const removed = []
+    let writes = 0
+    await assert.rejects(
+      runMilestone2({
+        environment: TEST_ENVIRONMENT,
+        specs: FORMAL_SPECS,
+        databaseNameFactory: () => DATABASE,
+        mkdtempImpl: () => invalidRoot,
+        writeFileImpl: () => { writes += 1 },
+        rmImpl: (root, options) => removed.push({ root, options }),
+        nonceFactory: () => nonce,
+      }),
+      /owned corpus/i,
+    )
+    assert.equal(writes, 0)
+    assert.deepEqual(removed, [])
+  }
 })
 
 test('M2 runner scans bounded browser output even when Playwright fails', async () => {
@@ -512,11 +973,12 @@ test('M2 runner scans bounded browser output even when Playwright fails', async 
     environment: TEST_ENVIRONMENT,
     specs: FORMAL_SPECS,
     databaseNameFactory: () => DATABASE,
-    mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-scan-failure',
+    mkdtempImpl: () => ownedCorpusRoot('scan-failure-owner'),
     writeFileImpl: () => {},
     rmImpl: () => {},
     processRunner,
     waitForUrlImpl: async () => {},
+    nonceFactory: () => 'scan-failure-owner',
     serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
   }), /browser.*17/i)
   assert.equal(browserScanned, true)
@@ -541,11 +1003,12 @@ test('M2 server scan failures report only a count without echoing sensitive valu
     environment: TEST_ENVIRONMENT,
     specs: FORMAL_SPECS,
     databaseNameFactory: () => DATABASE,
-    mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-log-leak',
+    mkdtempImpl: () => ownedCorpusRoot('log-leak-owner'),
     writeFileImpl: () => {},
     rmImpl: () => {},
     processRunner,
     waitForUrlImpl: async () => {},
+    nonceFactory: () => 'log-leak-owner',
     serverLogObserverFactory: (_child, { sensitiveValues }) => {
       const observerIndex = ++observerCount
       scannedValues = sensitiveValues

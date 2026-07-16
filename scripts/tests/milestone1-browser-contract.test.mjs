@@ -92,10 +92,11 @@ test('M1 browser goals cover foundation state, disabled writer, settings read an
   )
 })
 
-test('frontend exposes only the guarded runner as its e2e command', async () => {
+test('frontend retains the guarded M1 runner while defaulting e2e to formal M2', async () => {
   const packageJson = JSON.parse(await readWorkspaceFile('frontend/package.json'))
 
-  assert.equal(packageJson.scripts?.['test:e2e'], 'node e2e/run-milestone1.mjs')
+  assert.equal(packageJson.scripts?.['test:e2e:m1'], 'node e2e/run-milestone1.mjs')
+  assert.equal(packageJson.scripts?.['test:e2e'], 'node e2e/run-milestone2.mjs')
 })
 
 test('runner injects fixture leak sentinels while the spec contains no literal values', async () => {

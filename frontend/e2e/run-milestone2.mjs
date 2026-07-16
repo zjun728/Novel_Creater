@@ -195,17 +195,47 @@ function childOptions(cwd, env) {
 }
 
 
-function defaultRun(command, args, options, { sensitiveValues = [] } = {}) {
+export function defaultRun(command, args, options, {
+  sensitiveValues = [],
+  signal,
+} = {}) {
   return new Promise(resolve => {
     const child = spawn(command, args, options)
     const logObserver = createServerLogObserver(child, { sensitiveValues })
     let spawnError = null
+    let closed = false
+    let forcedStopTimer = null
+    const removeAbortListener = () => signal?.removeEventListener('abort', stopChild)
+    const stopChild = () => {
+      if (closed || (child.exitCode !== null && child.exitCode !== undefined)) return
+      try {
+        if (child.kill('SIGTERM') === false && !spawnError) {
+          spawnError = new Error('process rejected abort signal')
+        }
+      } catch (error) {
+        if (!spawnError) spawnError = error
+      }
+      forcedStopTimer = setTimeout(() => {
+        if (closed) return
+        try {
+          child.kill('SIGKILL')
+        } catch (error) {
+          if (!spawnError) spawnError = error
+        }
+      }, 5_000)
+      forcedStopTimer.unref?.()
+    }
     child.once('error', error => {
       spawnError = error
     })
     child.once('close', code => {
+      closed = true
+      clearTimeout(forcedStopTimer)
+      removeAbortListener()
       resolve({ status: code, error: spawnError, logObserver })
     })
+    if (signal?.aborted) stopChild()
+    else signal?.addEventListener('abort', stopChild, { once: true })
   })
 }
 
@@ -219,6 +249,9 @@ function trackChildLifecycle(child, label) {
       child,
       label,
       supportsEvents: false,
+      stopRequested: false,
+      earlyFailure: null,
+      earlyFailureObserved: false,
       failurePromise: new Promise(() => {}),
       closePromise: Promise.resolve(),
     }
@@ -237,6 +270,9 @@ function trackChildLifecycle(child, label) {
     exitCode: null,
     signal: null,
     childError: null,
+    stopRequested: false,
+    earlyFailure: null,
+    earlyFailureObserved: false,
     failurePromise: new Promise(resolve => { resolveFailure = resolve }),
     closePromise: supportsEvents
       ? new Promise(resolve => { resolveClose = resolve })
@@ -244,8 +280,9 @@ function trackChildLifecycle(child, label) {
   }
   let failureReported = false
   const reportFailure = error => {
-    if (failureReported) return
+    if (state.stopRequested || failureReported) return
     failureReported = true
+    state.earlyFailure = error
     resolveFailure(error)
   }
   if (supportsEvents) {
@@ -278,6 +315,36 @@ function trackChildLifecycle(child, label) {
 }
 
 
+function detectEarlyLifecycleFailure(state) {
+  if (!state || state.stopRequested) return state?.earlyFailure || null
+  if (state.earlyFailure) return state.earlyFailure
+  if (state.childError) {
+    state.earlyFailure = new Error(
+      `${state.label} server emitted an error before browser completion`,
+    )
+    return state.earlyFailure
+  }
+  const childExitCode = state.child?.exitCode
+  const exited = state.exitSeen
+    || state.closeSeen
+    || (childExitCode !== null && childExitCode !== undefined)
+  if (!exited) return null
+  const exitCode = state.exitCode ?? childExitCode
+  state.exitCode = exitCode
+  state.earlyFailure = new Error(
+    `${state.label} server exited before browser completion with status ${String(exitCode)}`,
+  )
+  return state.earlyFailure
+}
+
+
+function markStopRequested(state) {
+  const earlyFailure = detectEarlyLifecycleFailure(state)
+  state.stopRequested = true
+  return earlyFailure
+}
+
+
 function waitForLifecycleClose(state, timeoutMs) {
   if (!state.supportsEvents || state.closeSeen) return Promise.resolve()
   return new Promise((resolve, reject) => {
@@ -296,8 +363,8 @@ function waitForLifecycleClose(state, timeoutMs) {
 async function defaultStop(child) {
   if (!child) return
   const state = trackChildLifecycle(child, 'owned')
-  const exitedBeforeStop = state.exitSeen
-    || (child.exitCode !== null && child.exitCode !== undefined)
+  const earlyFailure = markStopRequested(state)
+  const exitedBeforeStop = Boolean(earlyFailure)
   if (!exitedBeforeStop && child.kill('SIGTERM') === false) {
     throw new Error('server rejected stop signal')
   }
@@ -314,10 +381,9 @@ async function defaultStop(child) {
       )
     }
   }
-  if (exitedBeforeStop && (state.childError || state.exitCode !== 0)) {
-    throw new Error(
-      `${state.label} server exited abnormally before stop with status ${String(state.exitCode)}`,
-    )
+  if (earlyFailure && !state.earlyFailureObserved) {
+    state.earlyFailureObserved = true
+    throw earlyFailure
   }
 }
 
@@ -338,24 +404,94 @@ export async function waitForOwnedUrl(url, {
   fetchImpl = fetch,
   timeoutMs = 30_000,
   intervalMs = 100,
+  signal,
 } = {}) {
   if (typeof expectedNonce !== 'string' || expectedNonce.length === 0) {
     throw new TypeError('owned browser health requires a non-empty nonce')
   }
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw abortReason(signal)
+    const remainingMs = deadline - Date.now()
+    const requestController = new AbortController()
+    const forwardAbort = () => requestController.abort(abortReason(signal))
+    signal?.addEventListener('abort', forwardAbort, { once: true })
+    const requestTimer = setTimeout(
+      () => requestController.abort(new Error('owned health request timed out')),
+      Math.max(1, Math.min(remainingMs, 2_000)),
+    )
     try {
-      const response = await fetchImpl(url)
+      const response = await awaitAbortable(
+        () => fetchImpl(url, { signal: requestController.signal }),
+        requestController.signal,
+      )
       if (response.ok) {
-        const body = await response.json()
+        const body = await awaitAbortable(
+          () => response.json(),
+          requestController.signal,
+        )
         if (body?.browserRunNonce === expectedNonce) return
       }
     } catch {
+      if (signal?.aborted) throw abortReason(signal)
       // A refused connection is expected while the owned process starts.
+    } finally {
+      clearTimeout(requestTimer)
+      signal?.removeEventListener('abort', forwardAbort)
     }
-    await new Promise(resolve => setTimeout(resolve, intervalMs))
+    const sleepMs = Math.min(intervalMs, Math.max(0, deadline - Date.now()))
+    if (sleepMs > 0) await sleepWithAbort(sleepMs, signal)
   }
-  throw new Error('runner-owned browser server did not prove ownership before timeout')
+  throw new Error('timed out waiting for runner-owned browser server to prove ownership')
+}
+
+
+function abortReason(signal) {
+  if (signal?.reason instanceof Error) return signal.reason
+  const error = new Error('operation aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+
+function awaitAbortable(operation, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortReason(signal))
+      return
+    }
+    let settled = false
+    const finish = callback => value => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      callback(value)
+    }
+    const onAbort = () => finish(reject)(abortReason(signal))
+    signal.addEventListener('abort', onAbort, { once: true })
+    Promise.resolve().then(operation).then(finish(resolve), finish(reject))
+  })
+}
+
+
+function sleepWithAbort(timeoutMs, signal) {
+  if (!signal) return new Promise(resolve => setTimeout(resolve, timeoutMs))
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(abortReason(signal))
+      return
+    }
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      reject(abortReason(signal))
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, timeoutMs)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 
@@ -405,23 +541,84 @@ function assertProcessResult(label, result, values) {
 }
 
 
-async function runWhileServicesLive(operation, states) {
-  const operationOutcome = Promise.resolve().then(operation).then(
-    value => ({ value }),
-    error => ({ error }),
-  )
+function assertServicesStillLive(states) {
+  for (const state of states) {
+    const earlyFailure = detectEarlyLifecycleFailure(state)
+    if (!earlyFailure) continue
+    state.earlyFailureObserved = true
+    throw earlyFailure
+  }
+}
+
+
+export async function runWhileServicesLive(operation, states, {
+  settleAbortedOperation,
+} = {}) {
+  const operationController = new AbortController()
+  const operationOutcome = Promise.resolve()
+    .then(() => operation(operationController.signal))
+    .then(
+      value => ({ kind: 'operation', value }),
+      error => ({ kind: 'operation', error }),
+    )
   const serviceFailure = Promise.race(
-    states.map(state => state.failurePromise),
-  ).then(error => ({ error }))
+    states.map(state => state.failurePromise.then(error => ({ state, error }))),
+  ).then(({ state, error }) => ({ kind: 'service', state, error }))
   const outcome = await Promise.race([operationOutcome, serviceFailure])
+  if (outcome.kind === 'service') {
+    outcome.state.earlyFailureObserved = true
+    operationController.abort(outcome.error)
+    const settledOperation = await operationOutcome
+    const settleErrors = []
+    if (
+      settledOperation.error
+      && settledOperation.error !== outcome.error
+      && settledOperation.error?.name !== 'AbortError'
+    ) {
+      settleErrors.push(settledOperation.error)
+    }
+    if (settleAbortedOperation) {
+      try {
+        await settleAbortedOperation(settledOperation)
+      } catch (error) {
+        settleErrors.push(error)
+      }
+    }
+    if (settleErrors.length > 0) {
+      throw new AggregateError(
+        [outcome.error, ...settleErrors],
+        'M2 server failed while the active operation was settling',
+      )
+    }
+    throw outcome.error
+  }
   if (outcome.error) throw outcome.error
+  assertServicesStillLive(states)
   return outcome.value
 }
 
 
-function isWithin(parent, candidate) {
-  const relative = path.relative(path.resolve(parent), path.resolve(candidate))
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+export function assertOwnedCorpusRoot(corpusRoot, corpusPrefix, tempParent = os.tmpdir()) {
+  if (typeof corpusRoot !== 'string' || typeof corpusPrefix !== 'string') {
+    throw new TypeError('owned corpus root and prefix must be strings')
+  }
+  const resolvedParent = path.resolve(tempParent)
+  const resolvedPrefix = path.resolve(corpusPrefix)
+  const resolvedRoot = path.resolve(corpusRoot)
+  const prefixName = path.basename(resolvedPrefix)
+  const rootName = path.basename(resolvedRoot)
+  if (
+    path.dirname(resolvedPrefix) !== resolvedParent
+    || !prefixName.startsWith(CORPUS_PREFIX)
+    || prefixName.length === CORPUS_PREFIX.length
+    || resolvedRoot === resolvedParent
+    || path.dirname(resolvedRoot) !== resolvedParent
+    || !rootName.startsWith(prefixName)
+    || rootName.length === prefixName.length
+  ) {
+    throw new Error('M2 owned corpus root must be this run\'s mkdtemp result')
+  }
+  return resolvedRoot
 }
 
 
@@ -466,9 +663,10 @@ async function runOneSpec({
   let childEnvironment = null
   let values = []
   let databaseLifecycleStarted = false
+  let corpusPrefix = null
   const reservations = []
   const releasedReservations = new Set()
-  const corpusPrefix = path.join(os.tmpdir(), CORPUS_PREFIX)
+  const tempParent = path.resolve(os.tmpdir())
 
   const releaseReservation = async reservation => {
     if (!reservation || releasedReservations.has(reservation)) return
@@ -477,19 +675,20 @@ async function runOneSpec({
   }
 
   try {
-    assertExternalCorpusRoot(path.dirname(corpusPrefix))
-    corpusRoot = mkdtempImpl(corpusPrefix)
-    if (isWithin(path.dirname(corpusPrefix), corpusRoot)) {
-      corpusRootOwned = true
-    } else {
-      assertExternalCorpusRoot(corpusRoot)
-      corpusRootOwned = true
-    }
-    assertExternalCorpusRootImpl(corpusRoot)
     const nonce = nonceFactory()
-    if (typeof nonce !== 'string' || nonce.length === 0) {
-      throw new TypeError('M2 browser run nonce must be a non-empty string')
+    if (
+      typeof nonce !== 'string'
+      || nonce.length === 0
+      || !/^[A-Za-z0-9_-]+$/.test(nonce)
+    ) {
+      throw new TypeError('M2 browser run nonce must be a non-empty path-safe string')
     }
+    corpusPrefix = path.join(tempParent, `${CORPUS_PREFIX}${nonce}-`)
+    assertExternalCorpusRoot(tempParent)
+    corpusRoot = mkdtempImpl(corpusPrefix)
+    corpusRoot = assertOwnedCorpusRoot(corpusRoot, corpusPrefix, tempParent)
+    corpusRootOwned = true
+    assertExternalCorpusRootImpl(corpusRoot)
     const backendReservation = await portReservationFactory()
     reservations.push(backendReservation)
     const viteReservation = await portReservationFactory()
@@ -553,22 +752,35 @@ async function runOneSpec({
     viteLogs = serverLogObserverFactory(vite, { sensitiveValues: values })
     const states = [backendState, viteState]
     await runWhileServicesLive(
-      () => waitForUrlImpl(`${backendUrl}/api/health`, { expectedNonce: nonce }),
+      signal => waitForUrlImpl(`${backendUrl}/api/health`, {
+        expectedNonce: nonce,
+        signal,
+      }),
       states,
     )
     await runWhileServicesLive(
-      () => waitForUrlImpl(`${viteUrl}/__m2-browser-owner`, { expectedNonce: nonce }),
+      signal => waitForUrlImpl(`${viteUrl}/__m2-browser-owner`, {
+        expectedNonce: nonce,
+        signal,
+      }),
       states,
     )
 
     const browser = await runWhileServicesLive(
-      () => processRunner.run(
+      signal => processRunner.run(
         process.execPath,
         [playwrightCli, 'test', spec.path, '--config', 'playwright.m2.config.ts'],
         childOptions(frontendRoot, childEnvironment),
-        { sensitiveValues: values },
+        { sensitiveValues: values, signal },
       ),
       states,
+      {
+        settleAbortedOperation(settledOperation) {
+          if (!settledOperation.value) return
+          const scanError = scanProcessResult(settledOperation.value, values)
+          if (scanError) throw scanError
+        },
+      },
     )
     assertProcessResult('browser test', browser, values)
   } catch (error) {
@@ -576,6 +788,11 @@ async function runOneSpec({
   } finally {
     for (const [child, state] of [[vite, viteState], [backend, backendState]]) {
       if (!child) continue
+      const earlyFailure = markStopRequested(state)
+      if (earlyFailure && !state.earlyFailureObserved) {
+        state.earlyFailureObserved = true
+        serverErrors.push(earlyFailure)
+      }
       try {
         await processRunner.stop(child)
       } catch (error) {
@@ -626,7 +843,8 @@ async function runOneSpec({
 
     if (corpusRootOwned) {
       try {
-        await rmImpl(corpusRoot, { recursive: true, force: true })
+        const ownedRoot = assertOwnedCorpusRoot(corpusRoot, corpusPrefix, tempParent)
+        await rmImpl(ownedRoot, { recursive: true, force: true })
       } catch (error) {
         bodyErrors.push({ directoryCleanup: true, error })
       }
