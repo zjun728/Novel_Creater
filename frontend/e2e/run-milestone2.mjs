@@ -6,10 +6,12 @@ import {
   writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
+import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { createServerLogObserver } from './server-log-observer.mjs'
+import { runtimeSensitiveValues } from './runtime-observer.mjs'
 
 
 export const REQUIRED_TEST_VARIABLES = [
@@ -76,6 +78,39 @@ export function createDatabaseName(uuidFactory = randomUUID) {
   const databaseName = `novel_creator_test_${uuidFactory().replaceAll('-', '').toLowerCase()}`
   assertDatabaseName(databaseName)
   return databaseName
+}
+
+
+export function reserveLocalPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    const onError = error => reject(error)
+    server.unref()
+    server.once('error', onError)
+    server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, () => {
+      server.off('error', onError)
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close()
+        reject(new Error('local port reservation did not return a TCP port'))
+        return
+      }
+      let released = false
+      resolve({
+        port: address.port,
+        release() {
+          if (released) return Promise.resolve()
+          released = true
+          return new Promise((releaseResolve, releaseReject) => {
+            server.close(error => {
+              if (error) releaseReject(error)
+              else releaseResolve()
+            })
+          })
+        },
+      })
+    })
+  })
 }
 
 
@@ -175,42 +210,103 @@ function defaultRun(command, args, options, { sensitiveValues = [] } = {}) {
 }
 
 
-function waitForClose(child, timeoutMs) {
-  if (child.exitCode !== null && child.exitCode !== undefined) return Promise.resolve()
+const childLifecycles = new WeakMap()
+
+
+function trackChildLifecycle(child, label) {
+  if (!child || (typeof child !== 'object' && typeof child !== 'function')) {
+    return {
+      child,
+      label,
+      supportsEvents: false,
+      failurePromise: new Promise(() => {}),
+      closePromise: Promise.resolve(),
+    }
+  }
+  const existing = childLifecycles.get(child)
+  if (existing) return existing
+  const supportsEvents = typeof child.once === 'function'
+  let resolveFailure
+  let resolveClose
+  const state = {
+    child,
+    label,
+    supportsEvents,
+    exitSeen: false,
+    closeSeen: false,
+    exitCode: null,
+    signal: null,
+    childError: null,
+    failurePromise: new Promise(resolve => { resolveFailure = resolve }),
+    closePromise: supportsEvents
+      ? new Promise(resolve => { resolveClose = resolve })
+      : Promise.resolve(),
+  }
+  let failureReported = false
+  const reportFailure = error => {
+    if (failureReported) return
+    failureReported = true
+    resolveFailure(error)
+  }
+  if (supportsEvents) {
+    child.once('error', error => {
+      state.childError = error
+      reportFailure(new Error(`${label} server emitted an error before browser completion`))
+    })
+    child.once('exit', (code, signal) => {
+      state.exitSeen = true
+      state.exitCode = code
+      state.signal = signal
+      reportFailure(new Error(
+        `${label} server exited before browser completion with status ${String(code)}`,
+      ))
+    })
+    child.once('close', (code, signal) => {
+      state.closeSeen = true
+      if (!state.exitSeen) {
+        state.exitCode = code
+        state.signal = signal
+        reportFailure(new Error(
+          `${label} server closed before browser completion with status ${String(code)}`,
+        ))
+      }
+      resolveClose()
+    })
+  }
+  childLifecycles.set(child, state)
+  return state
+}
+
+
+function waitForLifecycleClose(state, timeoutMs) {
+  if (!state.supportsEvents || state.closeSeen) return Promise.resolve()
   return new Promise((resolve, reject) => {
-    let timer
-    const clean = () => {
+    const timer = setTimeout(
+      () => reject(new Error(`${state.label} server close timed out`)),
+      timeoutMs,
+    )
+    state.closePromise.then(() => {
       clearTimeout(timer)
-      child.off?.('close', onClose)
-      child.off?.('error', onError)
-    }
-    const onClose = () => {
-      clean()
       resolve()
-    }
-    const onError = error => {
-      clean()
-      reject(error)
-    }
-    child.once?.('close', onClose)
-    child.once?.('error', onError)
-    timer = setTimeout(() => {
-      clean()
-      reject(new Error('server stop timed out'))
-    }, timeoutMs)
+    })
   })
 }
 
 
 async function defaultStop(child) {
-  if (!child || (child.exitCode !== null && child.exitCode !== undefined)) return
-  if (child.kill('SIGTERM') === false) throw new Error('server rejected stop signal')
+  if (!child) return
+  const state = trackChildLifecycle(child, 'owned')
+  const exitedBeforeStop = state.exitSeen
+    || (child.exitCode !== null && child.exitCode !== undefined)
+  if (!exitedBeforeStop && child.kill('SIGTERM') === false) {
+    throw new Error('server rejected stop signal')
+  }
   try {
-    await waitForClose(child, 5_000)
+    await waitForLifecycleClose(state, 5_000)
   } catch (gracefulError) {
-    if (child.exitCode === null || child.exitCode === undefined) child.kill('SIGKILL')
+    if (!state.closeSeen) child.kill('SIGKILL')
     try {
-      await waitForClose(child, 5_000)
+      await waitForLifecycleClose(state, 5_000)
     } catch (forcedError) {
       throw new AggregateError(
         [gracefulError, forcedError],
@@ -218,34 +314,48 @@ async function defaultStop(child) {
       )
     }
   }
+  if (exitedBeforeStop && (state.childError || state.exitCode !== 0)) {
+    throw new Error(
+      `${state.label} server exited abnormally before stop with status ${String(state.exitCode)}`,
+    )
+  }
 }
 
 
 const defaultProcessRunner = {
   run: defaultRun,
-  start(command, args, options) {
-    return spawn(command, args, options)
+  start(command, args, options, { label = 'owned' } = {}) {
+    const child = spawn(command, args, options)
+    trackChildLifecycle(child, label)
+    return child
   },
   stop: defaultStop,
 }
 
 
-export async function waitForUrl(url, {
+export async function waitForOwnedUrl(url, {
+  expectedNonce,
   fetchImpl = fetch,
   timeoutMs = 30_000,
   intervalMs = 100,
 } = {}) {
+  if (typeof expectedNonce !== 'string' || expectedNonce.length === 0) {
+    throw new TypeError('owned browser health requires a non-empty nonce')
+  }
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
       const response = await fetchImpl(url)
-      if (response.ok) return
+      if (response.ok) {
+        const body = await response.json()
+        if (body?.browserRunNonce === expectedNonce) return
+      }
     } catch {
       // A refused connection is expected while the owned process starts.
     }
     await new Promise(resolve => setTimeout(resolve, intervalMs))
   }
-  throw new Error('owned browser server did not become healthy before timeout')
+  throw new Error('runner-owned browser server did not prove ownership before timeout')
 }
 
 
@@ -261,26 +371,7 @@ function processError(label, result) {
 
 
 export function browserSensitiveValues(environment, databaseName, corpusRoot) {
-  assertDatabaseName(databaseName)
-  const host = String(environment.TEST_MYSQL_HOST)
-  const port = String(environment.TEST_MYSQL_PORT)
-  const user = String(environment.TEST_MYSQL_USER)
-  const password = String(environment.TEST_MYSQL_PASSWORD)
-  const rawAuthority = `${user}:${password}@${host}:${port}/${databaseName}`
-  const encodedAuthority = `${encodeURIComponent(user)}:${encodeURIComponent(password)}`
-    + `@${host}:${port}/${encodeURIComponent(databaseName)}`
-  return [...new Set([
-    BROWSER_SECRET_SENTINEL,
-    BROWSER_PRIVATE_PROVIDER_URL,
-    BROWSER_CORPUS_ROOT_SENTINEL,
-    corpusRoot,
-    databaseName,
-    password,
-    `mysql://${rawAuthority}`,
-    `mysql://${encodedAuthority}`,
-    `mysql+aiomysql://${rawAuthority}`,
-    `mysql+aiomysql://${encodedAuthority}`,
-  ])]
+  return runtimeSensitiveValues(buildChildEnvironment(environment, databaseName, corpusRoot))
 }
 
 
@@ -314,6 +405,26 @@ function assertProcessResult(label, result, values) {
 }
 
 
+async function runWhileServicesLive(operation, states) {
+  const operationOutcome = Promise.resolve().then(operation).then(
+    value => ({ value }),
+    error => ({ error }),
+  )
+  const serviceFailure = Promise.race(
+    states.map(state => state.failurePromise),
+  ).then(error => ({ error }))
+  const outcome = await Promise.race([operationOutcome, serviceFailure])
+  if (outcome.error) throw outcome.error
+  return outcome.value
+}
+
+
+function isWithin(parent, candidate) {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate))
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+
 async function runOneSpec({
   spec,
   environment,
@@ -324,14 +435,12 @@ async function runOneSpec({
   processRunner,
   waitForUrlImpl,
   serverLogObserverFactory,
+  portReservationFactory,
+  nonceFactory,
+  assertExternalCorpusRootImpl,
 }) {
   const databaseName = databaseNameFactory()
   assertDatabaseName(databaseName)
-  const corpusRoot = mkdtempImpl(path.join(os.tmpdir(), CORPUS_PREFIX))
-  assertExternalCorpusRoot(corpusRoot)
-  const childEnvironment = buildChildEnvironment(environment, databaseName, corpusRoot)
-  const values = browserSensitiveValues(environment, databaseName, corpusRoot)
-  const corpusFile = path.join(corpusRoot, 'synthetic-browser-corpus.txt')
   const python = environment.PYTHON || 'python'
   const prepareArgs = [
     '-m',
@@ -350,9 +459,66 @@ async function runOneSpec({
   let vite = null
   let backendLogs = null
   let viteLogs = null
+  let backendState = null
+  let viteState = null
+  let corpusRoot = null
+  let corpusRootOwned = false
+  let childEnvironment = null
+  let values = []
+  let databaseLifecycleStarted = false
+  const reservations = []
+  const releasedReservations = new Set()
+  const corpusPrefix = path.join(os.tmpdir(), CORPUS_PREFIX)
+
+  const releaseReservation = async reservation => {
+    if (!reservation || releasedReservations.has(reservation)) return
+    releasedReservations.add(reservation)
+    await reservation.release()
+  }
 
   try {
+    assertExternalCorpusRoot(path.dirname(corpusPrefix))
+    corpusRoot = mkdtempImpl(corpusPrefix)
+    if (isWithin(path.dirname(corpusPrefix), corpusRoot)) {
+      corpusRootOwned = true
+    } else {
+      assertExternalCorpusRoot(corpusRoot)
+      corpusRootOwned = true
+    }
+    assertExternalCorpusRootImpl(corpusRoot)
+    const nonce = nonceFactory()
+    if (typeof nonce !== 'string' || nonce.length === 0) {
+      throw new TypeError('M2 browser run nonce must be a non-empty string')
+    }
+    const backendReservation = await portReservationFactory()
+    reservations.push(backendReservation)
+    const viteReservation = await portReservationFactory()
+    reservations.push(viteReservation)
+    for (const reservation of reservations) {
+      if (
+        !Number.isInteger(reservation?.port)
+        || reservation.port < 1
+        || reservation.port > 65535
+        || typeof reservation.release !== 'function'
+      ) {
+        throw new TypeError('M2 browser port reservation is invalid')
+      }
+    }
+    if (backendReservation.port === viteReservation.port) {
+      throw new Error('M2 browser backend and Vite ports must be distinct')
+    }
+    const backendUrl = `http://127.0.0.1:${backendReservation.port}`
+    const viteUrl = `http://127.0.0.1:${viteReservation.port}`
+    childEnvironment = {
+      ...buildChildEnvironment(environment, databaseName, corpusRoot),
+      M2_BROWSER_RUN_NONCE: nonce,
+      VITE_API_BASE_URL: `${backendUrl}/api`,
+      PLAYWRIGHT_BASE_URL: viteUrl,
+    }
+    values = runtimeSensitiveValues(childEnvironment)
+    const corpusFile = path.join(corpusRoot, 'synthetic-browser-corpus.txt')
     writeFileImpl(corpusFile, SYNTHETIC_CORPUS, 'utf8')
+    databaseLifecycleStarted = true
     const preparation = await processRunner.run(
       python,
       prepareArgs,
@@ -361,35 +527,71 @@ async function runOneSpec({
     )
     assertProcessResult('database preparation', preparation, values)
 
+    await releaseReservation(backendReservation)
     backend = processRunner.start(
       python,
-      ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', '8000'],
+      [
+        '-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1',
+        '--port', String(backendReservation.port),
+      ],
       childOptions(repositoryRoot, childEnvironment),
+      { label: 'backend' },
     )
+    backendState = trackChildLifecycle(backend, 'backend')
     backendLogs = serverLogObserverFactory(backend, { sensitiveValues: values })
+    await releaseReservation(viteReservation)
     vite = processRunner.start(
       process.execPath,
-      [viteCli, '--host', '127.0.0.1', '--port', '5173', '--strictPort'],
+      [
+        viteCli, '--host', '127.0.0.1', '--port', String(viteReservation.port),
+        '--strictPort',
+      ],
       childOptions(frontendRoot, childEnvironment),
+      { label: 'vite' },
     )
+    viteState = trackChildLifecycle(vite, 'vite')
     viteLogs = serverLogObserverFactory(vite, { sensitiveValues: values })
-    await waitForUrlImpl('http://127.0.0.1:8000/api/health')
-    await waitForUrlImpl('http://127.0.0.1:5173')
+    const states = [backendState, viteState]
+    await runWhileServicesLive(
+      () => waitForUrlImpl(`${backendUrl}/api/health`, { expectedNonce: nonce }),
+      states,
+    )
+    await runWhileServicesLive(
+      () => waitForUrlImpl(`${viteUrl}/__m2-browser-owner`, { expectedNonce: nonce }),
+      states,
+    )
 
-    const browser = await processRunner.run(
-      process.execPath,
-      [playwrightCli, 'test', spec.path, '--config', 'playwright.m2.config.ts'],
-      childOptions(frontendRoot, childEnvironment),
-      { sensitiveValues: values },
+    const browser = await runWhileServicesLive(
+      () => processRunner.run(
+        process.execPath,
+        [playwrightCli, 'test', spec.path, '--config', 'playwright.m2.config.ts'],
+        childOptions(frontendRoot, childEnvironment),
+        { sensitiveValues: values },
+      ),
+      states,
     )
     assertProcessResult('browser test', browser, values)
   } catch (error) {
     bodyErrors.push(error)
   } finally {
-    for (const child of [vite, backend]) {
+    for (const [child, state] of [[vite, viteState], [backend, backendState]]) {
       if (!child) continue
       try {
         await processRunner.stop(child)
+      } catch (error) {
+        serverErrors.push(error)
+      }
+      if (state?.supportsEvents) {
+        try {
+          await waitForLifecycleClose(state, 5_000)
+        } catch (error) {
+          serverErrors.push(error)
+        }
+      }
+    }
+    for (const reservation of reservations) {
+      try {
+        await releaseReservation(reservation)
       } catch (error) {
         serverErrors.push(error)
       }
@@ -408,22 +610,26 @@ async function runOneSpec({
       }
     }
 
-    try {
-      const cleanup = await processRunner.run(
-        python,
-        cleanupArgs,
-        childOptions(repositoryRoot, childEnvironment),
-        { sensitiveValues: values },
-      )
-      assertProcessResult('database cleanup', cleanup, values)
-    } catch (error) {
-      bodyErrors.push({ cleanup: true, error })
+    if (databaseLifecycleStarted) {
+      try {
+        const cleanup = await processRunner.run(
+          python,
+          cleanupArgs,
+          childOptions(repositoryRoot, childEnvironment),
+          { sensitiveValues: values },
+        )
+        assertProcessResult('database cleanup', cleanup, values)
+      } catch (error) {
+        bodyErrors.push({ cleanup: true, error })
+      }
     }
 
-    try {
-      await rmImpl(corpusRoot, { recursive: true, force: true })
-    } catch (error) {
-      bodyErrors.push({ directoryCleanup: true, error })
+    if (corpusRootOwned) {
+      try {
+        await rmImpl(corpusRoot, { recursive: true, force: true })
+      } catch (error) {
+        bodyErrors.push({ directoryCleanup: true, error })
+      }
     }
   }
 
@@ -451,8 +657,11 @@ export async function runMilestone2({
   writeFileImpl = writeFileSync,
   rmImpl = rmSync,
   processRunner = defaultProcessRunner,
-  waitForUrlImpl = waitForUrl,
+  waitForUrlImpl = waitForOwnedUrl,
   serverLogObserverFactory = createServerLogObserver,
+  portReservationFactory = reserveLocalPort,
+  nonceFactory = randomUUID,
+  assertExternalCorpusRootImpl = assertExternalCorpusRoot,
 } = {}) {
   validateTestEnvironment(environment)
   const closedSpecs = validateSpecs(specs)
@@ -477,6 +686,9 @@ export async function runMilestone2({
       processRunner,
       waitForUrlImpl,
       serverLogObserverFactory,
+      portReservationFactory,
+      nonceFactory,
+      assertExternalCorpusRootImpl,
     })
   }
   return 0

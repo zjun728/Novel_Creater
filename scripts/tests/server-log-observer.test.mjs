@@ -90,3 +90,21 @@ test('server observer detects password database or DSN leaks after truncation wi
     assert.equal(JSON.stringify(result).includes(leaked), false)
   }
 })
+
+
+test('server observer decodes a non-ASCII secret split inside one UTF-8 code point', async () => {
+  const { createServerLogObserver } = await import('../../frontend/e2e/server-log-observer.mjs')
+  const child = fakeChild()
+  const secret = '中文密钥不可泄漏'
+  const encoded = Buffer.from(secret, 'utf8')
+  const splitAt = Buffer.from('中', 'utf8').length + 1
+  const observer = createServerLogObserver(child, {
+    maxBytes: 4,
+    sensitiveValues: [secret],
+  })
+
+  child.stdout.emit('data', encoded.subarray(0, splitAt))
+  child.stdout.emit('data', encoded.subarray(splitAt))
+
+  assert.deepEqual(observer.finish([secret]), { matchCount: 1, truncated: true })
+})

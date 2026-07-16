@@ -74,12 +74,31 @@ export function assertExactWrites(evidence, allowlist) {
   if (!Array.isArray(allowlist)) throw new TypeError('write allowlist must be an array')
   const ruleKeys = new Set()
   for (const entry of allowlist) {
-    const method = String(entry?.method).toUpperCase()
-    const pathKey = typeof entry?.path === 'string'
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(entry?.method)) {
+      throw new TypeError('write allowlist method must be POST, PUT, PATCH, or DELETE')
+    }
+    if (
+      !((typeof entry.path === 'string' && entry.path.length > 0)
+      || entry.path instanceof RegExp)
+    ) {
+      throw new TypeError('write allowlist path must be a non-empty string or RegExp')
+    }
+    if (!Number.isInteger(entry.count) || entry.count < 1) {
+      throw new TypeError('write allowlist count must be a positive integer')
+    }
+    if (
+      !Array.isArray(entry.statuses)
+      || entry.statuses.length === 0
+      || entry.statuses.some(status => (
+        !Number.isInteger(status) || status < 100 || status > 599
+      ))
+    ) {
+      throw new TypeError('write allowlist statuses must contain valid HTTP status integers')
+    }
+    const method = entry.method
+    const pathKey = typeof entry.path === 'string'
       ? `string:${entry.path}`
-      : entry?.path instanceof RegExp
-        ? `regexp:${entry.path.source}/${entry.path.flags}`
-        : 'invalid'
+      : `regexp:${entry.path.source}/${entry.path.flags}`
     const ruleKey = `${method}:${pathKey}`
     if (ruleKeys.has(ruleKey)) {
       throw new Error(`Duplicate or overlapping runtime write rule: ${method}`)
@@ -94,23 +113,24 @@ export function assertExactWrites(evidence, allowlist) {
   for (const write of writes) {
     const method = String(write.method).toUpperCase()
     const path = renderedPath(write.url)
-    const matchIndex = allowlist.findIndex(entry => (
-      String(entry.method).toUpperCase() === method && matchesPath(entry.path, path)
+    const matchIndexes = allowlist.flatMap((entry, index) => (
+      entry.method === method && matchesPath(entry.path, path) ? [index] : []
     ))
-    if (matchIndex === -1) {
+    if (matchIndexes.length === 0) {
       throw new Error(`Unmatched runtime write: ${method} ${path}`)
     }
+    if (matchIndexes.length !== 1) {
+      throw new Error(`Runtime write matched multiple overlapping rules: ${method} ${path}`)
+    }
+    const [matchIndex] = matchIndexes
     const entry = allowlist[matchIndex]
-    if (!Array.isArray(entry.statuses) || !entry.statuses.includes(write.status)) {
+    if (!entry.statuses.includes(write.status)) {
       throw new Error(`Unexpected runtime write status for ${method} ${path}`)
     }
     matched.get(matchIndex).push(write)
   }
 
   for (const [index, entry] of allowlist.entries()) {
-    if (!Number.isInteger(entry.count) || entry.count < 0) {
-      throw new TypeError('write allowlist count must be a non-negative integer')
-    }
     if (matched.get(index).length !== entry.count) {
       throw new Error(`Runtime write count did not match allowlist entry ${index}`)
     }
@@ -127,7 +147,7 @@ function countMatches(value, sensitiveValues) {
 }
 
 export function runtimeSensitiveValues(environment = process.env) {
-  return [
+  const values = [
     'BROWSER_SECRET_SENTINEL',
     'BROWSER_PRIVATE_PROVIDER_URL',
     'BROWSER_CORPUS_ROOT_SENTINEL',
@@ -135,6 +155,29 @@ export function runtimeSensitiveValues(environment = process.env) {
   ].map(name => environment[name]).filter(value => (
     typeof value === 'string' && value.length > 0
   ))
+  const host = environment.MYSQL_HOST
+  const port = environment.MYSQL_PORT
+  const user = environment.MYSQL_USER
+  const password = environment.MYSQL_PASSWORD
+  const database = environment.MYSQL_DB || environment.BROWSER_TEST_DATABASE
+  if ([host, port, user, password, database].every(value => (
+    typeof value === 'string' && value.length > 0
+  ))) {
+    const rawAuthority = `${user}:${password}@${host}:${port}/${database}`
+    const encodedPassword = encodeURIComponent(password)
+    const encodedAuthority = `${encodeURIComponent(user)}:${encodedPassword}`
+      + `@${host}:${port}/${encodeURIComponent(database)}`
+    values.push(
+      password,
+      encodedPassword,
+      database,
+      `mysql://${rawAuthority}`,
+      `mysql://${encodedAuthority}`,
+      `mysql+aiomysql://${rawAuthority}`,
+      `mysql+aiomysql://${encodedAuthority}`,
+    )
+  }
+  return [...new Set(values)]
 }
 
 export function scanRuntimeEvidence(

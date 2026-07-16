@@ -76,6 +76,12 @@ test('formal M2 specs start only from their assigned product pages', () => {
   assert.equal((settings.match(/page\.goto\(/g) || []).length, 1)
 })
 
+test('formal browser config requires the runner-owned dynamic Vite base URL', () => {
+  const source = requireFormalBrowserSource('playwright.m2.config.ts')
+  assert.match(source, /process\.env\.PLAYWRIGHT_BASE_URL/u)
+  assert.doesNotMatch(source, /baseURL:\s*['"]http:\/\/127\.0\.0\.1:5173/u)
+})
+
 test('manual wizard declares the exact write contract and no Provider creation route', () => {
   const source = requireFormalBrowserSource('e2e/m2-wizard-manual.spec.ts')
   const expectedEntries = [
@@ -166,6 +172,8 @@ test('approved formal goals use only real semantic UI locators without ordinal s
     const source = requireFormalBrowserSource(spec)
     assert.doesNotMatch(source, /\.first\(\)|\.last\(\)|\.nth\(/u)
     assert.doesNotMatch(source, /\.locator\(/u)
+    assert.equal(source.includes('runtimeSensitiveValues()'), true)
+    assert.equal(source.includes("requiredEnvironment('BROWSER_TEST_DATABASE')"), false)
   }
 })
 

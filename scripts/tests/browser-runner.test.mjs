@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import test from 'node:test'
 
 import {
@@ -108,7 +109,8 @@ test('M2 child environment strips parent MySQL authority and adds fixed sentinel
 })
 
 test('M2 sensitive values cover database password and raw plus encoded DSNs', async () => {
-  const { browserSensitiveValues } = await import(M2_MODULE)
+  const { browserSensitiveValues, buildChildEnvironment } = await import(M2_MODULE)
+  const { runtimeSensitiveValues } = await import('../../frontend/e2e/runtime-observer.mjs')
   const environment = {
     ...TEST_ENVIRONMENT,
     TEST_MYSQL_USER: 'browser:user',
@@ -116,6 +118,11 @@ test('M2 sensitive values cover database password and raw plus encoded DSNs', as
   }
   const corpusRoot = 'C:\\Temp\\novel-creator-m2-corpus-sensitive'
   const values = browserSensitiveValues(environment, DATABASE, corpusRoot)
+
+  assert.deepEqual(
+    values,
+    runtimeSensitiveValues(buildChildEnvironment(environment, DATABASE, corpusRoot)),
+  )
 
   assert.equal(values.includes(DATABASE), true)
   assert.equal(values.includes(environment.TEST_MYSQL_PASSWORD), true)
@@ -147,6 +154,11 @@ test('M2 runner gives every injected spec an isolated database and external corp
     'novel_creator_test_11111111111111111111111111111111',
     'novel_creator_test_22222222222222222222222222222222',
   ]
+  const ports = [41001, 41002, 41003, 41004, 41005, 41006, 41007, 41008]
+  const pendingPorts = [...ports]
+  const releasedPorts = []
+  const nonces = ['owner-a', 'owner-b', 'owner-c', 'owner-d']
+  const pendingNonces = [...nonces]
   const processRunner = {
     async run(command, args, options) {
       calls.push({ type: 'run', command, args, options })
@@ -176,7 +188,12 @@ test('M2 runner gives every injected spec an isolated database and external corp
     writeFileImpl: (file, body, encoding) => writes.push({ file, body, encoding }),
     rmImpl: (root, options) => removed.push({ root, options }),
     processRunner,
-    waitForUrlImpl: async url => calls.push({ type: 'health', url }),
+    portReservationFactory: async () => {
+      const port = pendingPorts.shift()
+      return { port, release: async () => { releasedPorts.push(port) } }
+    },
+    nonceFactory: () => pendingNonces.shift(),
+    waitForUrlImpl: async (url, options) => calls.push({ type: 'health', url, options }),
     serverLogObserverFactory: child => ({
       finish(sensitiveValues) {
         observed.push({ child, sensitiveValues })
@@ -204,7 +221,25 @@ test('M2 runner gives every injected spec an isolated database and external corp
     JSON.stringify(call.child.options.stdio) === JSON.stringify(['ignore', 'pipe', 'pipe'])
   )), true)
   assert.equal(calls.filter(call => call.type === 'health').length, 8)
+  assert.deepEqual(releasedPorts, ports)
   assert.equal(calls.filter(call => call.type === 'stop').length, 8)
+
+  const backendStarts = starts.filter(call => call.child.args.includes('uvicorn'))
+  const viteStarts = starts.filter(call => call.child.args.some(arg => String(arg).includes('vite')))
+  assert.deepEqual(backendStarts.map(call => Number(call.child.args.at(-1))), [41001, 41003, 41005, 41007])
+  assert.deepEqual(viteStarts.map(call => Number(call.child.args[call.child.args.indexOf('--port') + 1])), [41002, 41004, 41006, 41008])
+  for (const [index, call] of backendStarts.entries()) {
+    assert.equal(call.child.options.env.M2_BROWSER_RUN_NONCE, nonces[index])
+    assert.equal(call.child.options.env.VITE_API_BASE_URL, `http://127.0.0.1:${ports[index * 2]}/api`)
+    assert.equal(call.child.options.env.PLAYWRIGHT_BASE_URL, `http://127.0.0.1:${ports[index * 2 + 1]}`)
+  }
+  const healthCalls = calls.filter(call => call.type === 'health')
+  for (const [index, nonce] of nonces.entries()) {
+    assert.equal(healthCalls[index * 2].url, `http://127.0.0.1:${ports[index * 2]}/api/health`)
+    assert.equal(healthCalls[index * 2 + 1].url, `http://127.0.0.1:${ports[index * 2 + 1]}/__m2-browser-owner`)
+    assert.equal(healthCalls[index * 2].options.expectedNonce, nonce)
+    assert.equal(healthCalls[index * 2 + 1].options.expectedNonce, nonce)
+  }
 
   const runs = calls.filter(call => call.type === 'run')
   assert.equal(runs.filter(call => call.args.includes('--drop')).length, 4)
@@ -215,6 +250,154 @@ test('M2 runner gives every injected spec an isolated database and external corp
   assert.equal(observed[2].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-b'), true)
   assert.equal(observed[4].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-c'), true)
   assert.equal(observed[6].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-d'), true)
+})
+
+test('owned health wait ignores a healthy response from the wrong process', async () => {
+  const { waitForOwnedUrl } = await import(M2_MODULE)
+  const seen = []
+  const responses = ['wrong-owner', 'expected-owner']
+
+  await waitForOwnedUrl('http://127.0.0.1:45678/api/health', {
+    expectedNonce: 'expected-owner',
+    intervalMs: 0,
+    timeoutMs: 100,
+    fetchImpl: async url => {
+      seen.push(url)
+      const browserRunNonce = responses.shift()
+      return { ok: true, json: async () => ({ ok: true, browserRunNonce }) }
+    },
+  })
+
+  assert.equal(seen.length, 2)
+})
+
+test('M2 runner fails on early child exit, waits for close-tail scan, and still cleans up', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  const password = '中文密钥不可泄漏'
+  const environment = { ...TEST_ENVIRONMENT, TEST_MYSQL_PASSWORD: password }
+  const children = []
+  const removed = []
+  const runs = []
+  const stops = []
+  let nextPort = 42000
+
+  function fakeChild(label) {
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+    child.label = label
+    return child
+  }
+
+  const processRunner = {
+    async run(_command, args) {
+      runs.push(args)
+      return {
+        status: 0,
+        logObserver: { finish: () => ({ matchCount: 0, truncated: false }) },
+      }
+    },
+    start(_command, args) {
+      const child = fakeChild(args.includes('uvicorn') ? 'backend' : 'vite')
+      children.push(child)
+      if (child.label === 'backend') {
+        setTimeout(() => {
+          child.exitCode = 7
+          child.emit('exit', 7, null)
+        }, 1)
+        setTimeout(() => child.stdout.emit('data', Buffer.from(password, 'utf8')), 10)
+        setTimeout(() => child.emit('close', 7, null), 15)
+      }
+      return child
+    },
+    async stop(child) {
+      stops.push(child.label)
+      if (child.exitCode === null) {
+        child.exitCode = 0
+        child.emit('exit', 0, null)
+        child.emit('close', 0, null)
+      }
+    },
+  }
+
+  await assert.rejects(runMilestone2({
+    environment,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => DATABASE,
+    mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-early-exit',
+    writeFileImpl: () => {},
+    rmImpl: (root, options) => removed.push({ root, options }),
+    processRunner,
+    portReservationFactory: async () => ({ port: ++nextPort, release: async () => {} }),
+    nonceFactory: () => 'early-exit-owner',
+    waitForUrlImpl: async () => new Promise(resolve => setTimeout(resolve, 3)),
+  }), error => {
+    const messages = []
+    const collect = current => {
+      messages.push(String(current))
+      for (const nested of current?.errors || []) collect(nested)
+    }
+    collect(error)
+    const rendered = messages.join('\n')
+    assert.match(rendered, /backend.*exit.*7/i)
+    assert.match(rendered, /sensitive match count was 1/i)
+    assert.equal(rendered.includes(password), false)
+    return true
+  })
+
+  assert.equal(runs.some(args => args.includes('--drop')), true)
+  assert.deepEqual(stops.sort(), ['backend', 'vite'])
+  assert.equal(removed.length, 1)
+})
+
+test('M2 runner removes an owned temp directory when post-create validation fails', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  const removed = []
+  let validatorCalls = 0
+
+  await assert.rejects(runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => DATABASE,
+    mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-invalidated',
+    writeFileImpl: () => {},
+    rmImpl: (root, options) => removed.push({ root, options }),
+    assertExternalCorpusRootImpl: () => {
+      validatorCalls += 1
+      throw new Error('injected post-create validation failure')
+    },
+  }), /post-create validation failure/i)
+
+  assert.equal(validatorCalls, 1)
+  assert.deepEqual(removed, [{
+    root: 'C:\\Temp\\novel-creator-m2-corpus-invalidated',
+    options: { recursive: true, force: true },
+  }])
+})
+
+test('Vite exposes the owner nonce only through its conditional runner middleware', async () => {
+  const { m2BrowserOwnershipPlugin } = await import('../../frontend/vite.config.js')
+  const registrations = []
+  const plugin = m2BrowserOwnershipPlugin('vite-owner-123')
+  plugin.configureServer({
+    middlewares: { use: (route, handler) => registrations.push({ route, handler }) },
+  })
+  assert.equal(registrations.length, 1)
+  assert.equal(registrations[0].route, '/__m2-browser-owner')
+
+  const headers = new Map()
+  let body = ''
+  registrations[0].handler(
+    { method: 'GET' },
+    {
+      setHeader: (name, value) => headers.set(name, value),
+      end: value => { body = value },
+    },
+    () => { throw new Error('owned GET must not fall through') },
+  )
+  assert.equal(headers.get('content-type'), 'application/json; charset=utf-8')
+  assert.deepEqual(JSON.parse(body), { browserRunNonce: 'vite-owner-123' })
 })
 
 test('M2 runner preserves body, server stop, DB cleanup, and directory cleanup errors', async () => {

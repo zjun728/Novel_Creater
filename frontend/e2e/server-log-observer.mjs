@@ -1,3 +1,6 @@
+import { StringDecoder } from 'node:string_decoder'
+
+
 const DEFAULT_MAX_BYTES = 64 * 1024
 
 
@@ -58,10 +61,12 @@ export function createServerLogObserver(child, {
   const configuredValues = normalizedValues(sensitiveValues)
   const stdoutScanner = createStreamScanner(configuredValues)
   const stderrScanner = createStreamScanner(configuredValues)
+  const stdoutDecoder = new StringDecoder('utf8')
+  const stderrDecoder = new StringDecoder('utf8')
 
-  const capture = (chunk, scanner) => {
+  const capture = (chunk, scanner, decoder) => {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8')
-    scanner.scan(buffer.toString('utf8'))
+    scanner.scan(decoder.write(buffer))
     const available = maxBytes - capturedBytes
     if (available <= 0) {
       truncated = true
@@ -73,8 +78,8 @@ export function createServerLogObserver(child, {
     if (accepted.length < buffer.length) truncated = true
   }
 
-  const captureStdout = chunk => capture(chunk, stdoutScanner)
-  const captureStderr = chunk => capture(chunk, stderrScanner)
+  const captureStdout = chunk => capture(chunk, stdoutScanner, stdoutDecoder)
+  const captureStderr = chunk => capture(chunk, stderrScanner, stderrDecoder)
 
   child?.stdout?.on?.('data', captureStdout)
   child?.stderr?.on?.('data', captureStderr)
@@ -85,6 +90,8 @@ export function createServerLogObserver(child, {
       finished = true
       child?.stdout?.off?.('data', captureStdout)
       child?.stderr?.off?.('data', captureStderr)
+      stdoutScanner.scan(stdoutDecoder.end())
+      stderrScanner.scan(stderrDecoder.end())
       const text = Buffer.concat(chunks).toString('utf8')
       const values = normalizedValues(sensitiveValues)
       const streamMatchCount = stdoutScanner.matchCount() + stderrScanner.matchCount()

@@ -16,12 +16,6 @@ const manualWizardWrites = [
   { method: 'POST', path: /\/contracts\/confirm$/, count: 1, statuses: [201] },
 ]
 
-function requiredEnvironment(name: string): string {
-  const value = process.env[name]
-  if (!value) throw new Error(`Missing required browser test environment: ${name}`)
-  return value
-}
-
 async function assertManualRuntime(observer: ReturnType<typeof observeRuntime>) {
   const evidence = await observer.finish()
   const expectedReadMiss = (entry: { method: string, status: number, url: string }) => (
@@ -53,10 +47,7 @@ async function assertManualRuntime(observer: ReturnType<typeof observeRuntime>) 
   expect(unexpectedConsoleErrors, 'no unexpected console.error is allowed').toEqual([])
   expect(evidence.pageErrors, 'uncaught page errors must stay empty').toEqual([])
   expect(evidence.requestFailures, 'network requests must not fail').toEqual([])
-  expect(scanRuntimeEvidence(evidence, [
-    ...runtimeSensitiveValues(),
-    requiredEnvironment('BROWSER_TEST_DATABASE'),
-  ])).toEqual({ matchCount: 0 })
+  expect(scanRuntimeEvidence(evidence, runtimeSensitiveValues())).toEqual({ matchCount: 0 })
 }
 
 test('completes and confirms the five-step wizard with manual three-engine options', async ({ page }) => {

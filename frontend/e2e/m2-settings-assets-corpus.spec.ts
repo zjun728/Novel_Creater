@@ -11,12 +11,6 @@ const settingsWrites = [
   { method: 'POST', path: /\/corpus\/imports$/, count: 1, statuses: [200] },
 ]
 
-function requiredEnvironment(name: string): string {
-  const value = process.env[name]
-  if (!value) throw new Error(`Missing required browser test environment: ${name}`)
-  return value
-}
-
 async function assertSettingsRuntime(observer: ReturnType<typeof observeRuntime>) {
   const evidence = await observer.finish()
   const responsesFor = (path: string) => evidence.apiResponses.filter(entry => (
@@ -37,10 +31,7 @@ async function assertSettingsRuntime(observer: ReturnType<typeof observeRuntime>
   expect(JSON.parse(styleInventories[0].body)).toHaveLength(10)
   expect(experienceInventories, 'the settings asset tab loads the experience inventory API once').toHaveLength(1)
   expect(JSON.parse(experienceInventories[0].body)).toHaveLength(64)
-  expect(scanRuntimeEvidence(evidence, [
-    ...runtimeSensitiveValues(),
-    requiredEnvironment('BROWSER_TEST_DATABASE'),
-  ])).toEqual({ matchCount: 0 })
+  expect(scanRuntimeEvidence(evidence, runtimeSensitiveValues())).toEqual({ matchCount: 0 })
 }
 
 test('reviews the complete assets and imports only the bounded synthetic corpus', async ({ page }) => {

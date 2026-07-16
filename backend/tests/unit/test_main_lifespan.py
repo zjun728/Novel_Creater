@@ -71,3 +71,17 @@ async def test_lifespan_closes_pool_when_yielded_application_fails(monkeypatch):
 
     assert suppressed is False
     assert events == ["connection-enter", "verify", "connection-exit", "close"]
+
+
+@pytest.mark.asyncio
+async def test_health_echoes_browser_owner_nonce_only_when_explicitly_injected(
+    monkeypatch,
+):
+    monkeypatch.delenv("M2_BROWSER_RUN_NONCE", raising=False)
+    assert await main.health() == {"ok": True}
+
+    monkeypatch.setenv("M2_BROWSER_RUN_NONCE", "owned-browser-child-123")
+    assert await main.health() == {
+        "ok": True,
+        "browserRunNonce": "owned-browser-child-123",
+    }

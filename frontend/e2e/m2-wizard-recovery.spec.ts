@@ -14,12 +14,6 @@ const recoveryWrites = [
   { method: 'POST', path: /\/story-engine-batches\/[^/]+\/reconcile$/, count: 2, statuses: [200] },
 ]
 
-function requiredEnvironment(name: string): string {
-  const value = process.env[name]
-  if (!value) throw new Error(`Missing required browser test environment: ${name}`)
-  return value
-}
-
 async function createManualEngine(page: Page) {
   await page.getByRole('button', { name: '高级手动 JSON' }).click()
   await page.getByRole('textbox').fill(JSON.stringify(SYNTHETIC_STORY_ENGINE_OPTIONS))
@@ -79,10 +73,7 @@ async function assertRecoveryRuntime(observers: Array<ReturnType<typeof observeR
   expect(unexpectedConsoleErrors, 'no unexpected console.error is allowed').toEqual([])
   expect(evidence.pageErrors, 'uncaught page errors must stay empty').toEqual([])
   expect(evidence.requestFailures, 'network requests must not fail').toEqual([])
-  expect(scanRuntimeEvidence(evidence, [
-    ...runtimeSensitiveValues(),
-    requiredEnvironment('BROWSER_TEST_DATABASE'),
-  ])).toEqual({ matchCount: 0 })
+  expect(scanRuntimeEvidence(evidence, runtimeSensitiveValues())).toEqual({ matchCount: 0 })
 }
 
 test('reconciles interrupted batches and proves real two-tab draft CAS', async ({ page }) => {

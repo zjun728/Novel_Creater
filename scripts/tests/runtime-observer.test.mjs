@@ -187,6 +187,35 @@ test('observer enforces exact write method path status and count allowlists', as
     () => assertExactWrites(evidence, [allowlist[0], { ...allowlist[0] }]),
     /duplicate|overlap/i,
   )
+  assert.throws(
+    () => assertExactWrites(evidence, [
+      allowlist[0],
+      { method: 'PUT', path: /\/projects\/p1\/contract-draft$/, count: 2, statuses: [200] },
+      allowlist[1],
+    ]),
+    /multiple|overlap/i,
+  )
+})
+
+test('write allowlist rejects invalid rules even when no writes occur', async () => {
+  const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const evidence = { apiResponses: [] }
+  const invalidRules = [
+    { method: '', path: '/api/write', count: 1, statuses: [200] },
+    { method: 'POST', path: 42, count: 1, statuses: [200] },
+    { method: 'POST', path: '/api/write', count: 0, statuses: [200] },
+    { method: 'POST', path: '/api/write', count: 1, statuses: [] },
+    { method: 'POST', path: '/api/write', count: 1, statuses: [200.5] },
+  ]
+
+  for (const rule of invalidRules) {
+    assert.throws(() => assertExactWrites(evidence, [rule]), /allowlist|rule|method|path|count|status/i)
+  }
+  assert.throws(() => assertExactWrites({
+    apiResponses: [{ method: 'INVALID', status: 200, url: 'http://127.0.0.1/api/write' }],
+  }, [
+    { method: 'INVALID', path: '/api/write', count: 1, statuses: [200] },
+  ]), /method/i)
 })
 
 test('runtime secret scan returns only a match count and covers all evidence surfaces', async () => {
@@ -208,19 +237,37 @@ test('runtime secret scan returns only a match count and covers all evidence sur
   assert.equal(JSON.stringify(result).includes(secret), false)
 })
 
-test('runtime scan values include all fixed sentinels and the dynamic corpus root', async () => {
+test('runtime scan values include sentinels plus raw and encoded database credentials', async () => {
   const { runtimeSensitiveValues } = await import('../../frontend/e2e/runtime-observer.mjs')
   const environment = {
     BROWSER_SECRET_SENTINEL: 'fixed-secret',
     BROWSER_PRIVATE_PROVIDER_URL: 'fixed-provider-url',
     BROWSER_CORPUS_ROOT_SENTINEL: 'fixed-corpus-root',
     BROWSER_ACTUAL_CORPUS_ROOT_SENTINEL: 'dynamic-corpus-root',
+    MYSQL_HOST: '127.0.0.1',
+    MYSQL_PORT: '33060',
+    MYSQL_USER: 'browser:user',
+    MYSQL_PASSWORD: '中文:p@ss/word',
+    MYSQL_DB: 'novel_creator_test_0123456789abcdef0123456789abcdef',
   }
+  const values = runtimeSensitiveValues(environment)
+  const encodedUser = encodeURIComponent(environment.MYSQL_USER)
+  const encodedPassword = encodeURIComponent(environment.MYSQL_PASSWORD)
+  const encodedDatabase = encodeURIComponent(environment.MYSQL_DB)
 
-  assert.deepEqual(runtimeSensitiveValues(environment), [
+  for (const expected of [
     'fixed-secret',
     'fixed-provider-url',
     'fixed-corpus-root',
     'dynamic-corpus-root',
-  ])
+    environment.MYSQL_PASSWORD,
+    encodedPassword,
+    environment.MYSQL_DB,
+    `mysql://${environment.MYSQL_USER}:${environment.MYSQL_PASSWORD}@127.0.0.1:33060/${environment.MYSQL_DB}`,
+    `mysql://${encodedUser}:${encodedPassword}@127.0.0.1:33060/${encodedDatabase}`,
+    `mysql+aiomysql://${environment.MYSQL_USER}:${environment.MYSQL_PASSWORD}@127.0.0.1:33060/${environment.MYSQL_DB}`,
+    `mysql+aiomysql://${encodedUser}:${encodedPassword}@127.0.0.1:33060/${encodedDatabase}`,
+  ]) assert.equal(values.includes(expected), true, expected)
+  assert.equal(values.includes(environment.MYSQL_HOST), false)
+  assert.equal(values.includes(environment.MYSQL_USER), false)
 })

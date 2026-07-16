@@ -1,6 +1,7 @@
 """Novel Creator Writer Core V1 FastAPI entrypoint."""
 
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -60,7 +61,11 @@ app.include_router(canon.router, prefix="/api")
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True}
+    payload = {"ok": True}
+    browser_run_nonce = os.environ.get("M2_BROWSER_RUN_NONCE")
+    if browser_run_nonce:
+        payload["browserRunNonce"] = browser_run_nonce
+    return payload
 
 
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
