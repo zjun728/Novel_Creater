@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -154,6 +155,29 @@ const requiredIntegrationEnvironment = {
   TEST_MYSQL_PASSWORD: 'test-only-secret',
 }
 
+const approvedPytestTempStages = Object.freeze({
+  m1Regression: path.join('.codex-test-artifacts', 'pytest', 'm1-regression'),
+  unitApi: path.join('.codex-test-artifacts', 'pytest', 'unit-api'),
+  integration: path.join('.codex-test-artifacts', 'pytest', 'integration'),
+})
+
+function pytestBasetemp(call) {
+  const index = call.args.indexOf('--basetemp')
+  if (index === -1 || index + 1 >= call.args.length) return null
+  assert.equal(call.args.indexOf('--basetemp', index + 1), -1)
+  return call.args[index + 1]
+}
+
+function pytestBasetempLabel(args) {
+  const stage = pytestBasetemp({ args })
+  return stage === null ? 'missing-basetemp' : path.basename(stage)
+}
+
+function assertApprovedPytestStage(stage) {
+  assert.equal(Object.values(approvedPytestTempStages).includes(stage), true)
+  assert.doesNotMatch(stage, /keep-me/u)
+}
+
 for (const missingName of Object.keys(requiredIntegrationEnvironment)) {
   test(`integration fails closed before pytest when ${missingName} is missing`, () => {
     const environment = { ...requiredIntegrationEnvironment }
@@ -238,6 +262,191 @@ test('milestone2 composes retained M1, unit API, integration, and M2 browser in 
     /scripts[\\/]run-tests\.mjs|[\\/]tmp[\\/]|phase-e|e\.23|run-milestone1|milestone1\.spec/iu,
   )
   assert.equal(milestone2.every(call => call.options.shell === false), true)
+
+  const pythonCalls = milestone2.filter(
+    call => call.args.slice(0, 2).join(' ') === '-m pytest',
+  )
+  assert.deepEqual(pythonCalls.map(pytestBasetemp), [
+    approvedPytestTempStages.m1Regression,
+    approvedPytestTempStages.unitApi,
+    approvedPytestTempStages.integration,
+  ])
+})
+
+test('prepares and cleans the fixed pytest stage around a successful child', () => {
+  const events = []
+  const exitCode = runSuites(['integration'], {
+    environment: requiredIntegrationEnvironment,
+    preparePytestTempImpl(_rootDirectory, stage) {
+      assertApprovedPytestStage(stage)
+      assert.equal(stage, approvedPytestTempStages.integration)
+      events.push(`prepare:${path.basename(stage)}`)
+    },
+    spawnSyncImpl(_command, args) {
+      events.push(`spawn:${pytestBasetempLabel(args)}`)
+      return { status: 0 }
+    },
+    cleanupPytestTempImpl(_rootDirectory, stage) {
+      if (stage === undefined) {
+        events.push('cleanup-all')
+        return
+      }
+      assertApprovedPytestStage(stage)
+      assert.equal(stage, approvedPytestTempStages.integration)
+      events.push(`cleanup:${path.basename(stage)}`)
+    },
+  })
+
+  assert.equal(exitCode, 0)
+  assert.deepEqual(events, [
+    'prepare:integration',
+    'spawn:integration',
+    'cleanup:integration',
+    'cleanup-all',
+  ])
+})
+
+test('a pytest temp preparation failure prevents spawn and still cleans all stages', () => {
+  const events = []
+  const exitCode = runSuites(['integration'], {
+    environment: requiredIntegrationEnvironment,
+    preparePytestTempImpl(_rootDirectory, stage) {
+      assertApprovedPytestStage(stage)
+      assert.equal(stage, approvedPytestTempStages.integration)
+      events.push(`prepare:${path.basename(stage)}`)
+      throw new Error('synthetic preparation failure')
+    },
+    spawnSyncImpl() {
+      events.push('spawn')
+      return { status: 0 }
+    },
+    cleanupPytestTempImpl(_rootDirectory, stage) {
+      if (stage !== undefined) assertApprovedPytestStage(stage)
+      events.push(stage === undefined ? 'cleanup-all' : `cleanup:${path.basename(stage)}`)
+    },
+    stderr: { write() {} },
+  })
+
+  assert.notEqual(exitCode, 0)
+  assert.deepEqual(events, ['prepare:integration', 'cleanup-all'])
+})
+
+for (const scenario of [
+  {
+    name: 'a non-zero pytest child',
+    childResult: { status: 7 },
+    expectedExitCode: 7,
+  },
+  {
+    name: 'a pytest spawn error',
+    childResult: {
+      status: null,
+      error: Object.assign(new Error('synthetic spawn failure'), { code: 'ESYNTHETIC' }),
+    },
+    expectedExitCode: 1,
+  },
+]) {
+  test(`${scenario.name} cleans the stage and aggregate namespace`, () => {
+    const events = []
+    const exitCode = runSuites(['integration'], {
+      environment: requiredIntegrationEnvironment,
+      preparePytestTempImpl(_rootDirectory, stage) {
+        assertApprovedPytestStage(stage)
+        events.push(`prepare:${path.basename(stage)}`)
+      },
+      spawnSyncImpl(_command, args) {
+        events.push(`spawn:${pytestBasetempLabel(args)}`)
+        return scenario.childResult
+      },
+      cleanupPytestTempImpl(_rootDirectory, stage) {
+        if (stage !== undefined) assertApprovedPytestStage(stage)
+        events.push(stage === undefined ? 'cleanup-all' : `cleanup:${path.basename(stage)}`)
+      },
+      stderr: { write() {} },
+    })
+
+    assert.equal(exitCode, scenario.expectedExitCode)
+    assert.deepEqual(events, [
+      'prepare:integration',
+      'spawn:integration',
+      'cleanup:integration',
+      'cleanup-all',
+    ])
+  })
+}
+
+test('a pytest stage cleanup failure still runs cleanup-all and returns non-zero', () => {
+  const events = []
+  const exitCode = runSuites(['integration'], {
+    environment: requiredIntegrationEnvironment,
+    preparePytestTempImpl(_rootDirectory, stage) {
+      assertApprovedPytestStage(stage)
+      events.push(`prepare:${path.basename(stage)}`)
+    },
+    spawnSyncImpl(_command, args) {
+      events.push(`spawn:${pytestBasetempLabel(args)}`)
+      return { status: 0 }
+    },
+    cleanupPytestTempImpl(_rootDirectory, stage) {
+      if (stage === undefined) {
+        events.push('cleanup-all')
+        return
+      }
+      assertApprovedPytestStage(stage)
+      events.push(`cleanup:${path.basename(stage)}`)
+      throw new Error('synthetic cleanup failure')
+    },
+    stderr: { write() {} },
+  })
+
+  assert.notEqual(exitCode, 0)
+  assert.deepEqual(events, [
+    'prepare:integration',
+    'spawn:integration',
+    'cleanup:integration',
+    'cleanup-all',
+  ])
+})
+
+test('the default lifecycle removes only its pytest namespace', () => {
+  const rootDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-lifecycle-root-'))
+  const scriptTests = path.join(rootDirectory, 'scripts', 'tests')
+  const frontendTests = path.join(rootDirectory, 'frontend', 'tests', 'unit')
+  const keepEvidence = path.join(
+    rootDirectory,
+    '.codex-test-artifacts',
+    'keep-me',
+    'evidence.txt',
+  )
+  const stalePytestEvidence = path.join(
+    rootDirectory,
+    approvedPytestTempStages.unitApi,
+    'stale.txt',
+  )
+
+  try {
+    mkdirSync(scriptTests, { recursive: true })
+    mkdirSync(frontendTests, { recursive: true })
+    mkdirSync(path.dirname(keepEvidence), { recursive: true })
+    mkdirSync(path.dirname(stalePytestEvidence), { recursive: true })
+    writeFileSync(path.join(scriptTests, 'formal.test.mjs'), '')
+    writeFileSync(path.join(frontendTests, 'formal.test.mjs'), '')
+    writeFileSync(keepEvidence, 'preserve this evidence')
+    writeFileSync(stalePytestEvidence, 'remove stale pytest content')
+
+    const exitCode = runSuites(['unit'], {
+      rootDirectory,
+      spawnSyncImpl() {
+        return { status: 0 }
+      },
+    })
+
+    assert.equal(exitCode, 0)
+    assert.equal(existsSync(keepEvidence), true)
+    assert.equal(existsSync(path.join(rootDirectory, '.codex-test-artifacts', 'pytest')), false)
+  } finally {
+    rmSync(rootDirectory, { recursive: true, force: true })
+  }
 })
 
 test('browser-m2 rejects a root missing any formal spec before child execution', () => {
