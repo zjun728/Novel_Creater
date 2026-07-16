@@ -38,6 +38,7 @@ APPROVED_M2_ROUTES = {
     ("PUT", "/api/projects/{pid}/selected-seed"),
     ("POST", "/api/projects/{pid}/story-engine-batches"),
     ("POST", "/api/projects/{pid}/story-engine-batches/manual"),
+    ("GET", "/api/projects/{pid}/story-engine-batches/recoverable"),
     ("GET", "/api/projects/{pid}/story-engine-batches/{batch_id}"),
     ("POST", "/api/projects/{pid}/story-engine-batches/{batch_id}/reconcile"),
     ("GET", "/api/projects/{pid}/contract-draft"),

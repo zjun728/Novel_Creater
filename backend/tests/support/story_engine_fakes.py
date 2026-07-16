@@ -104,6 +104,8 @@ class MemoryStoryEngineRepository:
         self.batches: dict[str, dict] = {}
         self.options: dict[str, list[dict]] = {}
         self.events: list[str] = []
+        self.recoverable_rows: list[dict] = []
+        self.recoverable_calls: list[tuple[str, int]] = []
         self.fail_option_order: int | None = None
         self.on_lock_provider_connection = None
 
@@ -120,6 +122,12 @@ class MemoryStoryEngineRepository:
         if row is None or row["status"] == "archived":
             return None
         return dict(row)
+
+    async def list_recoverable_batches(
+        self, session, project_id, *, limit
+    ):
+        self.recoverable_calls.append((project_id, limit))
+        return [dict(row) for row in self.recoverable_rows[:limit]]
 
     async def lock_selected_seed(self, session, project_id):
         self.events.append("lock-seed")

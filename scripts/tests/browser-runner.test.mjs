@@ -23,6 +23,12 @@ const TEST_ENVIRONMENT = {
   MYSQL_PASSWORD: 'product-password',
   MYSQL_DB: 'novel_creator',
 }
+const FORMAL_SPECS = [
+  { path: 'e2e/m2-foundation-regression.spec.ts', scenario: 'foundation' },
+  { path: 'e2e/m2-wizard-manual.spec.ts', scenario: 'manual' },
+  { path: 'e2e/m2-wizard-recovery.spec.ts', scenario: 'recovery' },
+  { path: 'e2e/m2-settings-assets-corpus.spec.ts', scenario: 'settings' },
+]
 
 test('requires every explicit disposable MySQL variable', () => {
   const environment = { ...TEST_ENVIRONMENT }
@@ -104,10 +110,17 @@ test('M2 child environment strips parent MySQL authority and adds fixed sentinel
 test('M2 runner gives every injected spec an isolated database and external corpus', async () => {
   const { runMilestone2 } = await import(M2_MODULE)
   const calls = []
-  const roots = ['C:\\Temp\\novel-creator-m2-corpus-a', 'C:\\Temp\\novel-creator-m2-corpus-b']
+  const roots = [
+    'C:\\Temp\\novel-creator-m2-corpus-a',
+    'C:\\Temp\\novel-creator-m2-corpus-b',
+    'C:\\Temp\\novel-creator-m2-corpus-c',
+    'C:\\Temp\\novel-creator-m2-corpus-d',
+  ]
   const databases = [
     DATABASE,
     'novel_creator_test_fedcba9876543210fedcba9876543210',
+    'novel_creator_test_11111111111111111111111111111111',
+    'novel_creator_test_22222222222222222222222222222222',
   ]
   const processRunner = {
     async run(command, args, options) {
@@ -128,10 +141,7 @@ test('M2 runner gives every injected spec an isolated database and external corp
   const removed = []
 
   assert.equal(await runMilestone2({
-    specs: [
-      { path: 'e2e/injected-foundation.spec.ts', scenario: 'foundation' },
-      { path: 'e2e/injected-recovery.spec.ts', scenario: 'recovery' },
-    ],
+    specs: FORMAL_SPECS,
     environment: TEST_ENVIRONMENT,
     databaseNameFactory: () => databases.shift(),
     mkdtempImpl: prefix => {
@@ -150,32 +160,36 @@ test('M2 runner gives every injected spec an isolated database and external corp
     }),
   }), 0)
 
-  assert.equal(writes.length, 2)
+  assert.equal(writes.length, 4)
   assert.equal(writes.every(write => write.file.endsWith('synthetic-browser-corpus.txt')), true)
   assert.equal(writes.every(write => write.encoding === 'utf8'), true)
   assert.equal(writes.every(write => write.body.includes('第一章') && write.body.includes('第二章')), true)
   assert.deepEqual(removed.map(item => item.root), [
     'C:\\Temp\\novel-creator-m2-corpus-a',
     'C:\\Temp\\novel-creator-m2-corpus-b',
+    'C:\\Temp\\novel-creator-m2-corpus-c',
+    'C:\\Temp\\novel-creator-m2-corpus-d',
   ])
   assert.equal(removed.every(item => item.options.recursive && item.options.force), true)
 
   const starts = calls.filter(call => call.type === 'start')
-  assert.equal(starts.length, 4)
+  assert.equal(starts.length, 8)
   assert.equal(starts.every(call => call.child.options.shell === false), true)
   assert.equal(starts.every(call => (
     JSON.stringify(call.child.options.stdio) === JSON.stringify(['ignore', 'pipe', 'pipe'])
   )), true)
-  assert.equal(calls.filter(call => call.type === 'health').length, 4)
-  assert.equal(calls.filter(call => call.type === 'stop').length, 4)
+  assert.equal(calls.filter(call => call.type === 'health').length, 8)
+  assert.equal(calls.filter(call => call.type === 'stop').length, 8)
 
   const runs = calls.filter(call => call.type === 'run')
-  assert.equal(runs.filter(call => call.args.includes('--drop')).length, 2)
-  assert.equal(runs.filter(call => call.args.includes('playwright.m2.config.ts')).length, 2)
+  assert.equal(runs.filter(call => call.args.includes('--drop')).length, 4)
+  assert.equal(runs.filter(call => call.args.includes('playwright.m2.config.ts')).length, 4)
   assert.equal(runs.every(call => call.options.shell === false), true)
-  assert.equal(observed.length, 4)
+  assert.equal(observed.length, 8)
   assert.equal(observed[0].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-a'), true)
   assert.equal(observed[2].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-b'), true)
+  assert.equal(observed[4].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-c'), true)
+  assert.equal(observed[6].sensitiveValues.includes('C:\\Temp\\novel-creator-m2-corpus-d'), true)
 })
 
 test('M2 runner preserves body, server stop, DB cleanup, and directory cleanup errors', async () => {
@@ -194,7 +208,7 @@ test('M2 runner preserves body, server stop, DB cleanup, and directory cleanup e
 
   await assert.rejects(
     runMilestone2({
-      specs: [{ path: 'e2e/injected.spec.ts', scenario: 'manual' }],
+      specs: FORMAL_SPECS,
       environment: TEST_ENVIRONMENT,
       databaseNameFactory: () => DATABASE,
       mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-errors',
@@ -217,17 +231,14 @@ test('M2 runner preserves body, server stop, DB cleanup, and directory cleanup e
   assert.equal(runCount, 3)
 })
 
-test('M2 runner requires an explicit closed spec list in Task 2', async () => {
-  const { runMilestone2 } = await import(M2_MODULE)
+test('M2 runner requires the exact formal spec list', async () => {
+  const { runMilestone2, validateSpecs } = await import(M2_MODULE)
 
   await assert.rejects(runMilestone2({ environment: TEST_ENVIRONMENT }), /explicit.*spec/i)
-  await assert.rejects(
-    runMilestone2({
-      environment: TEST_ENVIRONMENT,
-      specs: [{ path: '../outside.spec.ts', scenario: 'unknown' }],
-    }),
-    /scenario|spec/i,
-  )
+  assert.throws(() => validateSpecs([
+    ...FORMAL_SPECS.slice(0, 3),
+    { path: '../outside.spec.ts', scenario: 'unknown' },
+  ]), /closed|formal|spec/i)
 })
 
 test('M2 runner rejects duplicate injected databases across specs', async () => {
@@ -236,10 +247,7 @@ test('M2 runner rejects duplicate injected databases across specs', async () => 
   await assert.rejects(
     runMilestone2({
       environment: TEST_ENVIRONMENT,
-      specs: [
-        { path: 'e2e/injected-one.spec.ts', scenario: 'foundation' },
-        { path: 'e2e/injected-two.spec.ts', scenario: 'settings' },
-      ],
+      specs: FORMAL_SPECS,
       databaseNameFactory: () => DATABASE,
       mkdtempImpl: () => `C:\\Temp\\novel-creator-m2-corpus-${++rootCount}`,
       writeFileImpl: () => {},
@@ -263,7 +271,7 @@ test('M2 runner never recursively removes a path that fails external-root valida
   await assert.rejects(
     runMilestone2({
       environment: TEST_ENVIRONMENT,
-      specs: [{ path: 'e2e/injected.spec.ts', scenario: 'settings' }],
+      specs: FORMAL_SPECS,
       databaseNameFactory: () => DATABASE,
       mkdtempImpl: () => process.cwd(),
       rmImpl: (root, options) => removed.push({ root, options }),
@@ -294,7 +302,7 @@ test('M2 runner scans bounded browser output even when Playwright fails', async 
   }
   await assert.rejects(runMilestone2({
     environment: TEST_ENVIRONMENT,
-    specs: [{ path: 'e2e/injected.spec.ts', scenario: 'manual' }],
+    specs: FORMAL_SPECS,
     databaseNameFactory: () => DATABASE,
     mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-scan-failure',
     writeFileImpl: () => {},

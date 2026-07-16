@@ -185,6 +185,49 @@ async def test_reconcile_stale_reserved_and_expired_running_without_gateway_call
 
 
 @pytest.mark.asyncio
+async def test_recoverable_batches_are_read_only_bounded_public_summaries():
+    harness = StoryEngineHarness()
+    harness.repository.recoverable_rows = [
+        {
+            "id": "batch-running",
+            "status": "running",
+            "public_error_code": None,
+            "created_at": 10,
+            "finished_at": None,
+        },
+        {
+            "id": "batch-unknown",
+            "status": "outcome_unknown",
+            "public_error_code": "outcome_unknown",
+            "created_at": 20,
+            "finished_at": 30,
+        },
+    ]
+
+    result = await harness.service.list_recoverable("p1")
+
+    assert [item.id for item in result] == ["batch-running", "batch-unknown"]
+    assert result[1].public_error_code == "outcome_unknown"
+    assert set(result[0].model_dump()) == {
+        "id", "status", "public_error_code", "created_at", "finished_at"
+    }
+    assert harness.gateway.calls == 0
+    assert harness.repository.recoverable_calls == [("p1", 10)]
+    assert harness.transaction_enter_count == 0
+
+
+@pytest.mark.asyncio
+async def test_recoverable_batches_missing_project_uses_public_not_found():
+    harness = StoryEngineHarness()
+
+    with pytest.raises(StoryEngineBatchNotFound):
+        await harness.service.list_recoverable("missing")
+
+    assert harness.gateway.calls == 0
+    assert harness.transaction_enter_count == 0
+
+
+@pytest.mark.asyncio
 async def test_provider_deadline_plus_sixty_second_margin_keeps_live_attempt_running():
     assert PROVIDER_TIMEOUT_SECONDS == 180
     assert RUNNING_LEASE_MS == (PROVIDER_TIMEOUT_SECONDS + 60) * 1000

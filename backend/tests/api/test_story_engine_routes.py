@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -36,6 +38,20 @@ class FakeService:
     async def reconcile(self, project_id, batch_id):
         self.calls.append(("reconcile", project_id, batch_id))
         return _result("failed", public_error_code="not_started")
+
+    async def list_recoverable(self, project_id):
+        self.calls.append(("list-recoverable", project_id))
+        if project_id == "missing":
+            raise StoryEngineBatchNotFound()
+        return (
+            SimpleNamespace(
+                id="batch-running",
+                status="running",
+                public_error_code=None,
+                created_at=10,
+                finished_at=None,
+            ),
+        )
 
 
 def _result(status, *, options=(), public_error_code=None):
@@ -92,6 +108,38 @@ def test_fixed_routes_delegate_and_return_camel_case_dto():
     assert reconcile.json()["publicErrorCode"] == "not_started"
     assert service.calls[0][0] == "generate"
     assert service.calls[0][1].project_id == "p1"
+
+
+def test_recoverable_route_is_static_and_returns_only_the_five_public_fields():
+    client, service = make_client()
+
+    response = client.get("/api/projects/p1/story-engine-batches/recoverable")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "id": "batch-running",
+                "status": "running",
+                "publicErrorCode": None,
+                "createdAt": 10,
+                "finishedAt": None,
+            }
+        ]
+    }
+    assert set(response.json()["items"][0]) == {
+        "id", "status", "publicErrorCode", "createdAt", "finishedAt"
+    }
+    assert service.calls == [("list-recoverable", "p1")]
+
+
+def test_recoverable_route_missing_project_uses_existing_public_404():
+    client, _ = make_client()
+
+    response = client.get("/api/projects/missing/story-engine-batches/recoverable")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "StoryEngineBatchNotFound"
 
 
 def test_all_public_batch_responses_redact_raw_audit_and_attempt_markers():

@@ -54,6 +54,15 @@ function renderedPath(url) {
   }
 }
 
+function isApiUrl(url) {
+  try {
+    const pathname = new URL(url).pathname
+    return pathname === '/api' || pathname.startsWith('/api/')
+  } catch {
+    return false
+  }
+}
+
 function matchesPath(expected, actual) {
   if (typeof expected === 'string') return expected === actual
   if (!(expected instanceof RegExp)) return false
@@ -152,10 +161,10 @@ export function observeRuntime(page) {
     const method = response.request().method()
     const status = response.status()
     const url = response.url()
-    if (status < 200 || status >= 300) {
+    if ((status < 200 || status >= 300) && status !== 304) {
       responseFailures.push(`${status} ${method} ${url}`)
     }
-    if (!url.includes('/api/')) return
+    if (!isApiUrl(url)) return
     pendingApiBodies.add(captureApiResponse(response, { url, method, status }))
   }
   const onRequest = request => {

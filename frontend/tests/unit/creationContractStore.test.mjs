@@ -77,8 +77,14 @@ function deferred() {
 }
 
 async function withApiMethods(replacements, run) {
+  const effectiveReplacements = replacements.some(([owner, key]) => (
+    owner === api.storyEngines && key === 'recoverable'
+  )) ? replacements : [
+    ...replacements,
+    [api.storyEngines, 'recoverable', async () => ({ items: [] })],
+  ]
   const originals = []
-  for (const [owner, key, replacement] of replacements) {
+  for (const [owner, key, replacement] of effectiveReplacements) {
     originals.push([owner, key, owner[key]])
     owner[key] = replacement
   }
@@ -455,6 +461,164 @@ test('outcome_unknown remains pending until reconcileBatch is called explicitly'
     assert.equal(store.providerOutcomeUnknown, true)
     assert.equal(reconciles, 1)
     assert.equal(generates, 0)
+  })
+})
+
+test('load installs recoverable summaries only for the current project', async () => {
+  const projectARecovery = deferred()
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async projectId => ({ projectId, hasContract: false })],
+    [api.storyEngines, 'recoverable', async projectId => (
+      projectId === 'project-a'
+        ? projectARecovery.promise
+        : { items: [{ id: 'project-b-running', status: 'running' }] }
+    )],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    const loadA = store.load('project-a')
+    await store.load('project-b')
+
+    projectARecovery.resolve({
+      items: [{ id: 'project-a-running', status: 'running' }],
+    })
+    await loadA
+
+    assert.equal(store.projectId, 'project-b')
+    assert.deepEqual(store.recoverableBatches, [
+      { id: 'project-b-running', status: 'running' },
+    ])
+  })
+})
+
+test('recoverable reconciliation is explicit, per-row fail-closed, and never generates', async () => {
+  const pendingReserved = deferred()
+  let generations = 0
+  const reconciles = []
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async () => ({ hasContract: false })],
+    [api.storyEngines, 'recoverable', async () => ({
+      items: [
+        { id: 'reserved', status: 'reserved' },
+        { id: 'running', status: 'running' },
+      ],
+    })],
+    [api.storyEngines, 'generate', async () => {
+      generations += 1
+      throw new Error('recovery must never generate')
+    }],
+    [api.storyEngines, 'reconcile', async (_projectId, batchId) => {
+      reconciles.push(batchId)
+      if (batchId === 'reserved') return pendingReserved.promise
+      return {
+        id: 'running',
+        status: 'outcome_unknown',
+        publicErrorCode: 'outcome_unknown',
+      }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    assert.equal('installRecoverableForTestOnly' in store, false)
+    await store.load('project-1')
+
+    assert.deepEqual(reconciles, [])
+    const first = store.reconcileRecoverableBatch('project-1', 'reserved')
+    const duplicate = await store.reconcileRecoverableBatch('project-1', 'reserved')
+    assert.equal(duplicate, null)
+    assert.deepEqual(reconciles, ['reserved'])
+    assert.deepEqual(store.reconcilingBatchIds, ['reserved'])
+
+    pendingReserved.resolve({
+      id: 'reserved', status: 'failed', publicErrorCode: 'not_started',
+    })
+    await first
+    assert.deepEqual(store.recoverableBatches.map(row => row.id), ['running'])
+    assert.deepEqual(store.reconcilingBatchIds, [])
+
+    await store.reconcileRecoverableBatch('project-1', 'running')
+    assert.deepEqual(store.recoverableBatches, [{
+      id: 'running', status: 'outcome_unknown', publicErrorCode: 'outcome_unknown',
+    }])
+    assert.equal(store.engineBatch.id, 'running')
+    assert.equal(store.providerOutcomeUnknown, true)
+    assert.equal(generations, 0)
+  })
+})
+
+test('recoverable reserved rows and public failures remain visible without retry', async () => {
+  let reconciles = 0
+  const failure = Object.assign(new Error('bounded public failure'), {
+    status: 503,
+    code: 'StoryEngineUnavailable',
+    correlationId: 'cid-recovery',
+  })
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async () => ({ hasContract: false })],
+    [api.storyEngines, 'recoverable', async () => ({
+      items: [{ id: 'reserved', status: 'reserved' }],
+    })],
+    [api.storyEngines, 'reconcile', async () => {
+      reconciles += 1
+      throw failure
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    await assert.rejects(
+      store.reconcileRecoverableBatch('project-1', 'reserved'),
+      failure,
+    )
+    await Promise.resolve()
+
+    assert.equal(reconciles, 1)
+    assert.deepEqual(store.recoverableBatches, [{ id: 'reserved', status: 'reserved' }])
+    assert.deepEqual(store.error, {
+      status: 503,
+      code: 'StoryEngineUnavailable',
+      message: 'bounded public failure',
+      correlationId: 'cid-recovery',
+    })
+  })
+})
+
+test('late recoverable reconciliation cannot cross a project switch', async () => {
+  const pendingReconcile = deferred()
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async projectId => ({ projectId, hasContract: false })],
+    [api.storyEngines, 'recoverable', async projectId => ({
+      items: [{ id: `${projectId}-running`, status: 'running' }],
+    })],
+    [api.storyEngines, 'reconcile', async () => pendingReconcile.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-a')
+    const reconcile = store.reconcileRecoverableBatch('project-a', 'project-a-running')
+    await store.load('project-b')
+
+    pendingReconcile.resolve({
+      id: 'project-a-running',
+      status: 'outcome_unknown',
+      publicErrorCode: 'outcome_unknown',
+    })
+    await reconcile
+
+    assert.equal(store.projectId, 'project-b')
+    assert.deepEqual(store.recoverableBatches, [
+      { id: 'project-b-running', status: 'running' },
+    ])
+    assert.equal(store.engineBatch, null)
   })
 })
 

@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:unit": "node ../scripts/run-tests.mjs frontend-unit",
-    "test:e2e": "node e2e/run-milestone1.mjs"
+    "test:e2e:m1": "node e2e/run-milestone1.mjs",
+    "test:e2e:m2": "node e2e/run-milestone2.mjs",
+    "test:e2e": "node e2e/run-milestone2.mjs"
   },
   "dependencies": {
     "naive-ui": "^2.41.0",

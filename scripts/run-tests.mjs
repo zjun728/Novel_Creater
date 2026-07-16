@@ -1,15 +1,59 @@
 import { spawnSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const suiteNames = ['unit', 'frontend-unit', 'integration', 'browser']
+const suiteNames = [
+  'unit',
+  'frontend-unit',
+  'integration',
+  'browser',
+  'm1-regression',
+  'browser-m2',
+  'milestone2',
+]
 const integrationEnvironmentNames = [
   'TEST_MYSQL_HOST',
   'TEST_MYSQL_PORT',
   'TEST_MYSQL_USER',
   'TEST_MYSQL_PASSWORD',
+]
+const mysqlSuites = new Set(['integration', 'browser', 'browser-m2', 'milestone2'])
+const m1RegressionPythonFiles = [
+  'backend/tests/unit/test_schema_manifest.py',
+  'backend/tests/unit/test_schema_version.py',
+  'backend/tests/unit/test_initialize_database.py',
+  'backend/tests/unit/test_database_transaction.py',
+  'backend/tests/unit/test_backend_launcher.py',
+  'backend/tests/unit/test_main_lifespan.py',
+  'backend/tests/unit/test_no_runtime_ddl.py',
+  'backend/tests/unit/test_canon_identity.py',
+  'backend/tests/unit/test_canon_conflicts.py',
+  'backend/tests/unit/test_canon_revision.py',
+  'backend/tests/unit/test_canon_idempotency.py',
+  'backend/tests/unit/test_canon_rollback.py',
+  'backend/tests/unit/test_canon_repository.py',
+  'backend/tests/unit/test_projections.py',
+  'backend/tests/unit/test_project_creation.py',
+  'backend/tests/api/test_canon_routes.py',
+  'backend/tests/api/test_product_routes.py',
+  'backend/tests/api/test_provider_redaction.py',
+  'backend/tests/api/test_public_domain_errors.py',
+  'backend/tests/api/test_secret_error_redaction.py',
+]
+const m1RegressionNodeFiles = [
+  'frontend/tests/unit/latestRequest.test.mjs',
+  'frontend/tests/unit/m1Navigation.test.mjs',
+  'frontend/tests/unit/providerRedaction.test.mjs',
+  'frontend/tests/unit/testEntrypoint.test.mjs',
+  'frontend/tests/unit/writerCoreApi.test.mjs',
+]
+const milestone2BrowserFiles = [
+  'frontend/e2e/m2-foundation-regression.spec.ts',
+  'frontend/e2e/m2-wizard-manual.spec.ts',
+  'frontend/e2e/m2-wizard-recovery.spec.ts',
+  'frontend/e2e/m2-settings-assets-corpus.spec.ts',
 ]
 
 export function discoverTestFiles(directory) {
@@ -27,17 +71,38 @@ function createSuites(rootDirectory, environment) {
   const frontendTestDirectory = path.join(rootDirectory, 'frontend', 'tests', 'unit')
   const scriptTests = discoverTestFiles(scriptTestDirectory)
   const frontendTests = discoverTestFiles(frontendTestDirectory)
+  const absolute = files => files.map(file => path.join(rootDirectory, file))
+  const m1PythonTests = absolute(m1RegressionPythonFiles)
+  const m1NodeTests = absolute(m1RegressionNodeFiles)
+  const m2BrowserTests = absolute(milestone2BrowserFiles)
+  const retainedM1 = [
+    [python, ['-m', 'pytest', ...m1RegressionPythonFiles, '-q']],
+    [node, ['--test', ...m1RegressionNodeFiles]],
+  ]
+  const unit = [
+    [python, ['-m', 'pytest', 'backend/tests/unit', 'backend/tests/api', '-q']],
+    [node, ['--test', ...scriptTests]],
+    [node, ['--test', ...frontendTests]],
+  ]
+  const integration = [
+    [python, ['-m', 'pytest', 'backend/tests/integration', '-m', 'mysql', '-q']],
+  ]
+  const browserM2 = [[node, ['frontend/e2e/run-milestone2.mjs']]]
 
   return {
     commands: {
-      unit: [
-        [python, ['-m', 'pytest', 'backend/tests/unit', 'backend/tests/api', '-q']],
-        [node, ['--test', ...scriptTests]],
-        [node, ['--test', ...frontendTests]],
-      ],
+      unit,
       'frontend-unit': [[node, ['--test', ...frontendTests]]],
-      integration: [[python, ['-m', 'pytest', 'backend/tests/integration', '-m', 'mysql', '-q']]],
+      integration,
       browser: [[node, ['frontend/e2e/run-milestone1.mjs']]],
+      'm1-regression': retainedM1,
+      'browser-m2': browserM2,
+      milestone2: [
+        ...retainedM1,
+        ...unit,
+        ...integration,
+        ...browserM2,
+      ],
     },
     formalTests: {
       unit: [
@@ -45,6 +110,18 @@ function createSuites(rootDirectory, environment) {
         [frontendTestDirectory, frontendTests],
       ],
       'frontend-unit': [[frontendTestDirectory, frontendTests]],
+      'm1-regression': [
+        ['M1 v1.1 Python regression', m1PythonTests],
+        ['M1 v1.1 frontend regression', m1NodeTests],
+      ],
+      'browser-m2': [['M2 Playwright specs', m2BrowserTests]],
+      milestone2: [
+        [scriptTestDirectory, scriptTests],
+        [frontendTestDirectory, frontendTests],
+        ['M1 v1.1 Python regression', m1PythonTests],
+        ['M1 v1.1 frontend regression', m1NodeTests],
+        ['M2 Playwright specs', m2BrowserTests],
+      ],
     },
   }
 }
@@ -64,10 +141,10 @@ export function runSuites(requested, {
     return 2
   }
 
-  if (requested.includes('integration')) {
+  if (requested.some(name => mysqlSuites.has(name))) {
     const missing = integrationEnvironmentNames.filter(name => !(name in environment))
     if (missing.length > 0) {
-      stderr.write(`Integration requires explicit variables: ${missing.join(', ')}\n`)
+      stderr.write(`Integration/browser requires explicit variables: ${missing.join(', ')}\n`)
       return 2
     }
   }
@@ -77,6 +154,11 @@ export function runSuites(requested, {
     for (const [directory, files] of formalTests[suite] ?? []) {
       if (files.length === 0) {
         stderr.write(`No formal tests found in ${directory}\n`)
+        return 2
+      }
+      const missing = files.find(file => !existsSync(file))
+      if (missing) {
+        stderr.write(`Missing formal test: ${missing}\n`)
         return 2
       }
     }

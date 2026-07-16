@@ -25,6 +25,7 @@ const manualJson = ref('')
 const manualOpen = ref(false)
 const allowNewBatchAfterUnknown = ref(false)
 const errorMessage = ref('')
+const recoveryNotice = ref('')
 const localDirty = ref(false)
 
 const batch = computed(() => store.engineBatch)
@@ -116,6 +117,34 @@ async function reconcileUnknownBatch() {
   errorMessage.value = ''
   try {
     installBatch(await store.reconcileBatch(props.projectId, batch.value.id))
+  } catch (error) {
+    errorMessage.value = safeMessage(error, '批次核对失败')
+  }
+}
+
+function boundedBatchId(batchId) {
+  return String(batchId || '').slice(-8)
+}
+
+function recoveryStatusText(item) {
+  return {
+    reserved: '已预留，等待手动核对',
+    running: '正在处理，等待手动核对',
+    outcome_unknown: '结果未知，需要手动核对',
+  }[item?.status] || '公开状态待核对'
+}
+
+async function reconcileRecoverable(item) {
+  recoveryNotice.value = ''
+  errorMessage.value = ''
+  try {
+    const result = await store.reconcileRecoverableBatch(props.projectId, item.id)
+    if (!result) return
+    if (result.status === 'failed' && result.publicErrorCode === 'not_started') {
+      recoveryNotice.value = '未开始，已安全结束'
+    } else if (result.status === 'outcome_unknown') {
+      recoveryNotice.value = '结果未知，系统不会自动重试'
+    }
   } catch (error) {
     errorMessage.value = safeMessage(error, '批次核对失败')
   }
@@ -223,6 +252,32 @@ watch(manualJson, syncDirty)
     <n-alert v-if="errorMessage" type="error" class="dossier-alert" closable @close="errorMessage = ''">
       {{ errorMessage }}
     </n-alert>
+
+    <section
+      v-if="store.recoverableBatches.length"
+      class="recovery-ledger"
+      aria-labelledby="recoverable-batches-heading"
+    >
+      <h4 id="recoverable-batches-heading">待恢复的故事发动机批次</h4>
+      <n-alert v-if="recoveryNotice" type="info">{{ recoveryNotice }}</n-alert>
+      <div class="recovery-rows">
+        <article v-for="item in store.recoverableBatches" :key="item.id" class="recovery-row">
+          <div>
+            <p>{{ recoveryStatusText(item) }}</p>
+            <code>{{ boundedBatchId(item.id) }}</code>
+          </div>
+          <n-button
+            size="small"
+            :aria-label="`核对批次 ${boundedBatchId(item.id)}`"
+            :loading="store.reconcilingBatchIds.includes(item.id)"
+            :disabled="store.reconcilingBatchIds.includes(item.id)"
+            @click="reconcileRecoverable(item)"
+          >
+            核对本批次结果
+          </n-button>
+        </article>
+      </div>
+    </section>
 
     <n-alert v-if="store.providerOutcomeUnknown" type="warning" class="unknown-slip" title="上一批生成结果尚不确定">
       <p>系统不会暗中重试，也不会把未知结果当作失败。先用原批次号核对；确认仍要放弃它时，才新建另一批。</p>
@@ -347,6 +402,12 @@ watch(manualJson, syncDirty)
 .step-heading p:last-child { margin: 10px 0 0; color: var(--muted); font-size: 13px; line-height: 1.8; }
 .generation-actions { display: flex; flex: 0 0 auto; gap: 8px; }
 .dossier-alert, .unknown-slip { margin-top: 16px; background: rgba(255, 252, 244, .76); }
+.recovery-ledger { margin-top: 16px; padding: 18px; border: 1px solid #cbb99c; background: rgba(255, 252, 244, .72); }
+.recovery-ledger > h4 { margin: 0 0 12px; font-family: Georgia, 'Noto Serif SC', serif; font-size: 17px; }
+.recovery-rows { display: grid; gap: 9px; margin-top: 12px; }
+.recovery-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 11px 13px; border-top: 1px solid #dfd3be; }
+.recovery-row p { margin: 0 0 4px; color: var(--muted); font-size: 12px; }
+.recovery-row code { color: var(--cinnabar); font-size: 11px; letter-spacing: .08em; }
 .unknown-slip p { margin: 0 0 10px; line-height: 1.7; }
 .unknown-actions { display: flex; align-items: center; gap: 16px; }
 .manual-sheet { display: grid; grid-template-columns: minmax(210px, .65fr) minmax(360px, 1.35fr); gap: 22px; margin-top: 18px; padding: 22px; border: 1px solid #cbb99c; background: rgba(255, 252, 244, .9); box-shadow: 0 14px 34px rgba(69, 57, 39, .08); }

@@ -106,6 +106,16 @@ class StoryEngineBatchResult(BaseModel):
     options: tuple[StoryEngineOptionResult, ...]
 
 
+class RecoverableStoryEngineBatchResult(BaseModel):
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    id: str
+    status: Literal["reserved", "running", "outcome_unknown"]
+    public_error_code: str | None
+    created_at: int
+    finished_at: int | None
+
+
 class StoryEngineService:
     def __init__(
         self,
@@ -124,6 +134,30 @@ class StoryEngineService:
         self.clock = clock or (lambda: int(time.time() * 1000))
         # Reserved for Task 3 dependency injection. Task 2 never calls it.
         self.provider_gateway = provider_gateway
+
+    async def list_recoverable(
+        self, project_id: str
+    ) -> tuple[RecoverableStoryEngineBatchResult, ...]:
+        async with self.connection_factory() as session:
+            if await self.repository.read_project(session, project_id) is None:
+                raise StoryEngineBatchNotFound()
+            rows = await self.repository.list_recoverable_batches(
+                session, project_id, limit=10
+            )
+        return tuple(
+            RecoverableStoryEngineBatchResult(
+                id=row["id"],
+                status=row["status"],
+                public_error_code=row.get("public_error_code"),
+                created_at=int(row["created_at"]),
+                finished_at=(
+                    int(row["finished_at"])
+                    if row.get("finished_at") is not None
+                    else None
+                ),
+            )
+            for row in rows
+        )
 
     @staticmethod
     def _request(

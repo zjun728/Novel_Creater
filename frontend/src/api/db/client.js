@@ -236,6 +236,9 @@ export const api = {
         options: Array.isArray(data.options) ? data.options.map(storyEngineOption) : data.options,
       },
     ),
+    recoverable: projectId => get(
+      `/projects/${segment(projectId)}/story-engine-batches/recoverable`,
+    ),
     get: (projectId, batchId) => get(
       `/projects/${segment(projectId)}/story-engine-batches/${segment(batchId)}`,
     ),

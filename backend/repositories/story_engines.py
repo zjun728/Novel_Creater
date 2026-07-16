@@ -17,6 +17,32 @@ class StoryEngineRepository:
     async def read_project(self, session, project_id: str):
         return await read_active_project(session, project_id)
 
+    async def list_recoverable_batches(
+        self, session, project_id: str, *, limit: int
+    ):
+        if limit != 10:
+            raise ValueError("recoverable batch limit must be 10")
+        return await session.fetchall(
+            """SELECT batch.id,batch.status,batch.public_error_code,
+                      batch.created_at,batch.finished_at
+                 FROM story_engine_batches batch
+                 JOIN project_selected_seeds selected
+                   ON selected.project_id=batch.project_id
+                  AND selected.seed_id=batch.seed_id
+                  AND selected.seed_revision_id=batch.seed_revision_id
+                  AND selected.seed_hash=batch.seed_hash
+                 JOIN project_model_binding_heads binding
+                   ON binding.project_id=batch.project_id
+                  AND binding.binding_revision_id=batch.binding_revision_id
+                  AND binding.content_hash=batch.binding_hash
+                WHERE batch.project_id=%s
+                  AND batch.source_type='provider'
+                  AND batch.status IN ('reserved','running','outcome_unknown')
+                ORDER BY batch.created_at ASC,batch.id ASC
+                LIMIT 10""",
+            (project_id,),
+        )
+
     async def lock_selected_seed(self, session, project_id: str):
         return await session.fetchone(
             """SELECT selected.seed_id,

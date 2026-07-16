@@ -23,6 +23,24 @@ export const BROWSER_SECRET_SENTINEL = 'browser-secret-must-not-leak'
 export const BROWSER_PRIVATE_PROVIDER_URL = 'https://private-provider.example/v1'
 export const BROWSER_CORPUS_ROOT_SENTINEL = 'C:/private/corpus-root-must-not-leak'
 export const SCENARIOS = new Set(['foundation', 'manual', 'recovery', 'settings'])
+export const FORMAL_SPECS = Object.freeze([
+  Object.freeze({
+    path: 'e2e/m2-foundation-regression.spec.ts',
+    scenario: 'foundation',
+  }),
+  Object.freeze({
+    path: 'e2e/m2-wizard-manual.spec.ts',
+    scenario: 'manual',
+  }),
+  Object.freeze({
+    path: 'e2e/m2-wizard-recovery.spec.ts',
+    scenario: 'recovery',
+  }),
+  Object.freeze({
+    path: 'e2e/m2-settings-assets-corpus.spec.ts',
+    scenario: 'settings',
+  }),
+])
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryRoot = path.resolve(frontendRoot, '..')
@@ -87,22 +105,37 @@ export function buildChildEnvironment(environment, databaseName, corpusRoot) {
 }
 
 
-function validateSpecs(specs) {
-  if (!Array.isArray(specs) || specs.length === 0) {
-    throw new Error('Task 2 requires an explicit closed spec list')
+export function validateSpecs(specs) {
+  if (!Array.isArray(specs) || specs.length !== FORMAL_SPECS.length) {
+    throw new Error('M2 browser requires the exact explicit closed formal spec list')
   }
-  return specs.map(spec => {
+  return specs.map((spec, index) => {
+    const expected = FORMAL_SPECS[index]
+    const keys = spec && typeof spec === 'object'
+      ? Object.keys(spec).sort()
+      : []
     if (
-      !spec
-      || typeof spec !== 'object'
-      || !SCENARIOS.has(spec.scenario)
-      || typeof spec.path !== 'string'
-      || !/^e2e\/[a-z0-9][a-z0-9-]*\.spec\.ts$/.test(spec.path)
+      keys.length !== 2
+      || keys[0] !== 'path'
+      || keys[1] !== 'scenario'
+      || spec.path !== expected.path
+      || spec.scenario !== expected.scenario
     ) {
-      throw new Error('M2 browser spec path or scenario is outside the closed set')
+      throw new Error('M2 browser spec path and scenario must match the closed formal map')
     }
-    return { path: spec.path, scenario: spec.scenario }
+    return { path: expected.path, scenario: expected.scenario }
   })
+}
+
+
+export function resolveCommandLineSpecs(argumentsList) {
+  if (!Array.isArray(argumentsList)) {
+    throw new TypeError('M2 browser CLI arguments must be an array')
+  }
+  if (argumentsList.length !== 0) {
+    throw new Error('M2 browser CLI does not accept spec paths')
+  }
+  return FORMAL_SPECS.map(spec => ({ ...spec }))
 }
 
 
@@ -440,7 +473,14 @@ const isMain = process.argv[1]
   && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
 if (isMain) {
-  runMilestone2().then(
+  let specs
+  try {
+    specs = resolveCommandLineSpecs(process.argv.slice(2))
+  } catch {
+    console.error('M2 browser runner does not accept spec paths.')
+    process.exitCode = 2
+  }
+  if (specs) runMilestone2({ specs }).then(
     status => { process.exitCode = status },
     () => {
       console.error('M2 browser runner failed.')

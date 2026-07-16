@@ -103,6 +103,16 @@ def _public_batch(result) -> dict:
     }
 
 
+def _public_recoverable_batch(result) -> dict:
+    return {
+        "id": result.id,
+        "status": result.status,
+        "publicErrorCode": result.public_error_code,
+        "createdAt": result.created_at,
+        "finishedAt": result.finished_at,
+    }
+
+
 @router.post("/projects/{pid}/story-engine-batches", status_code=201)
 async def reserve_batch(
     pid: str,
@@ -127,6 +137,19 @@ async def create_manual_batch(
             CreateManualStoryEngineBatch(pid, body.idempotencyKey, body.options)
         )
     )
+
+
+@router.get("/projects/{pid}/story-engine-batches/recoverable")
+async def list_recoverable_batches(
+    pid: str,
+    service=Depends(get_story_engine_service),
+):
+    return {
+        "items": [
+            _public_recoverable_batch(item)
+            for item in await service.list_recoverable(pid)
+        ]
+    }
 
 
 @router.get("/projects/{pid}/story-engine-batches/{batch_id}")

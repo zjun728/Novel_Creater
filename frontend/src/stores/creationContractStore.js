@@ -35,6 +35,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const confirmed = shallowRef(null)
   const head = shallowRef(null)
   const engineBatch = shallowRef(null)
+  const recoverableBatches = shallowRef([])
+  const reconcilingBatchIds = ref([])
   const conflict = shallowRef(null)
   const error = shallowRef(null)
   const requiresReload = ref(false)
@@ -59,6 +61,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     engineGuard,
   ]
   const confirmCommands = new Map()
+  const recoverableCommands = new Map()
   let contractStateGeneration = 0
 
   const lastSavedStage = computed(() => (
@@ -93,6 +96,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     confirmed.value = null
     head.value = null
     engineBatch.value = null
+    recoverableBatches.value = []
+    reconcilingBatchIds.value = []
     conflict.value = null
     error.value = null
     requiresReload.value = false
@@ -105,6 +110,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     engineLoading.value = false
     reconciling.value = false
     confirmCommands.clear()
+    recoverableCommands.clear()
   }
 
   function enterProject(nextProjectId) {
@@ -172,13 +178,17 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     const stateGeneration = ++contractStateGeneration
     loading.value = true
     try {
-      const [loadedDraft, loadedHead] = await Promise.all([
+      const [loadedDraft, loadedHead, recovery] = await Promise.all([
         readDraft(targetProjectId),
         api.contracts.head(targetProjectId),
+        api.storyEngines.recoverable(targetProjectId),
       ])
       if (currentContractState(loadGuard, generation, targetProjectId, stateGeneration)) {
         draft.value = loadedDraft
         head.value = loadedHead
+        recoverableBatches.value = Array.isArray(recovery?.items)
+          ? recovery.items.map(item => ({ ...item }))
+          : []
         confirmed.value = null
         previewResult.value = null
         conflict.value = null
@@ -186,7 +196,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
         requiresReload.value = false
         hasUnsavedChanges.value = false
       }
-      return { draft: loadedDraft, head: loadedHead }
+      return { draft: loadedDraft, head: loadedHead, recovery }
     } catch (failure) {
       recordFailure(failure, loadGuard, generation, targetProjectId, stateGeneration)
       throw failure
@@ -360,6 +370,58 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     )
   }
 
+  async function reconcileRecoverableBatch(nextProjectId, batchId) {
+    const targetProjectId = enterProject(nextProjectId)
+    const normalizedId = String(batchId || '')
+    if (!normalizedId) throw new TypeError('batchId is required')
+    if (recoverableCommands.has(normalizedId)) return null
+    const stateGeneration = contractStateGeneration
+    const commandToken = Symbol(normalizedId)
+    recoverableCommands.set(normalizedId, commandToken)
+    reconcilingBatchIds.value = [...reconcilingBatchIds.value, normalizedId]
+    try {
+      const result = await api.storyEngines.reconcile(targetProjectId, normalizedId)
+      if (
+        projectId.value !== targetProjectId
+        || contractStateGeneration !== stateGeneration
+      ) {
+        return result
+      }
+      if (result.status === 'failed' && result.publicErrorCode === 'not_started') {
+        recoverableBatches.value = recoverableBatches.value.filter(
+          item => item.id !== normalizedId,
+        )
+      } else {
+        recoverableBatches.value = recoverableBatches.value.map(item => (
+          item.id === normalizedId ? { ...item, ...result } : item
+        ))
+      }
+      if (result.status === 'outcome_unknown') engineBatch.value = result
+      error.value = null
+      return result
+    } catch (failure) {
+      if (
+        projectId.value === targetProjectId
+        && contractStateGeneration === stateGeneration
+      ) {
+        const safe = publicError(failure)
+        error.value = safe
+        if (isConflict(failure)) {
+          conflict.value = safe
+          requiresReload.value = true
+        }
+      }
+      throw failure
+    } finally {
+      if (recoverableCommands.get(normalizedId) === commandToken) {
+        recoverableCommands.delete(normalizedId)
+        reconcilingBatchIds.value = reconcilingBatchIds.value.filter(
+          id => id !== normalizedId,
+        )
+      }
+    }
+  }
+
   return {
     projectId,
     draft,
@@ -367,6 +429,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     confirmed,
     head,
     engineBatch,
+    recoverableBatches,
+    reconcilingBatchIds,
     conflict,
     error,
     requiresReload,
@@ -394,5 +458,6 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     createManualEngineBatch,
     loadEngineBatch,
     reconcileBatch,
+    reconcileRecoverableBatch,
   }
 })

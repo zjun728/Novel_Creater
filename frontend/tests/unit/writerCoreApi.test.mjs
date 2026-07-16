@@ -161,6 +161,7 @@ test('bindings and story-engine methods send only explicit revision and idempote
       options,
       apiKey: 'must-not-send',
     })
+    await api.storyEngines.recoverable('project-1')
     await api.storyEngines.get('project-1', 'batch-1')
     await api.storyEngines.reconcile('project-1', 'batch-1')
   })
@@ -171,13 +172,15 @@ test('bindings and story-engine methods send only explicit revision and idempote
     ['PUT', '/api/projects/project-1/bindings'],
     ['POST', '/api/projects/project-1/story-engine-batches'],
     ['POST', '/api/projects/project-1/story-engine-batches/manual'],
+    ['GET', '/api/projects/project-1/story-engine-batches/recoverable'],
     ['GET', '/api/projects/project-1/story-engine-batches/batch-1'],
     ['POST', '/api/projects/project-1/story-engine-batches/batch-1/reconcile'],
   ])
   assert.deepEqual(bodyOf(calls[2]), { expectedRevision: 4, entries })
   assert.deepEqual(bodyOf(calls[3]), { idempotencyKey: 'engine-provider-1' })
   assert.deepEqual(bodyOf(calls[4]), { idempotencyKey: 'engine-manual-1', options })
-  assert.equal(bodyOf(calls[6]), undefined)
+  assert.equal(bodyOf(calls[5]), undefined)
+  assert.equal(bodyOf(calls[7]), undefined)
 })
 
 test('asset catalog and recommendations are read-only and query encoded', async () => {

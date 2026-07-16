@@ -1,10 +1,138 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
   assertSafeBrowserGraph,
   assertSafeBrowserSource,
 } from '../browser-source-contract.mjs'
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+)
+const formalSpecs = [
+  'e2e/m2-foundation-regression.spec.ts',
+  'e2e/m2-wizard-manual.spec.ts',
+  'e2e/m2-wizard-recovery.spec.ts',
+  'e2e/m2-settings-assets-corpus.spec.ts',
+]
+
+function readFormalBrowserSource(fileName) {
+  try {
+    return readFileSync(path.join(repositoryRoot, 'frontend', fileName), 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+function requireFormalBrowserSource(fileName) {
+  const source = readFormalBrowserSource(fileName)
+  assert.equal(typeof source, 'string', `missing formal M2 browser source: ${fileName}`)
+  return source
+}
+
+test('all formal M2 browser specs and their local import closures are safe', () => {
+  for (const spec of formalSpecs) {
+    assert.doesNotThrow(
+      () => assertSafeBrowserGraph(spec, readFormalBrowserSource),
+      `unsafe formal M2 browser graph: ${spec}`,
+    )
+  }
+})
+
+test('formal M2 specs start only from their assigned product pages', () => {
+  for (const spec of formalSpecs.slice(0, 3)) {
+    const source = requireFormalBrowserSource(spec)
+    assert.match(
+      source,
+      /page\.goto\(['"]\/project\/00000000-0000-0000-0000-000000000201['"]\)/,
+    )
+    assert.equal((source.match(/page\.goto\(/g) || []).length, 1)
+  }
+  const settings = requireFormalBrowserSource(formalSpecs[3])
+  assert.match(settings, /page\.goto\(['"]\/settings['"]\)/)
+  assert.equal((settings.match(/page\.goto\(/g) || []).length, 1)
+})
+
+test('manual wizard declares the exact write contract and no Provider creation route', () => {
+  const source = requireFormalBrowserSource('e2e/m2-wizard-manual.spec.ts')
+  const expectedEntries = [
+    "{ method: 'PUT', path: /\\/selected-seed$/, count: 1, statuses: [200] }",
+    "{ method: 'POST', path: /\\/story-engine-batches\\/manual$/, count: 1, statuses: [201] }",
+    "{ method: 'PUT', path: /\\/contract-draft$/, count: 3, statuses: [200] }",
+    "{ method: 'POST', path: /\\/contracts\\/preview$/, count: 1, statuses: [200] }",
+    "{ method: 'POST', path: /\\/contracts\\/confirm$/, count: 1, statuses: [201] }",
+  ]
+
+  for (const entry of expectedEntries) assert.equal(source.includes(entry), true, entry)
+  assert.doesNotMatch(source, /story-engine-batches\s*\/?['"`]/)
+  assert.doesNotMatch(source, /生成三套方案|生成新三案/)
+})
+
+test('recovery wizard permits only two explicit reconcile writes and no Provider creation', () => {
+  const source = requireFormalBrowserSource('e2e/m2-wizard-recovery.spec.ts')
+
+  assert.equal(source.includes("method: 'POST'"), true)
+  assert.equal(
+    source.includes('path: /\\/story-engine-batches\\/[^/]+\\/reconcile$/'),
+    true,
+  )
+  assert.equal(source.includes('count: 2'), true)
+  assert.equal(source.includes('statuses: [200]'), true)
+  assert.doesNotMatch(source, /story-engine-batches\\\/manual/u)
+  assert.doesNotMatch(source, /生成三套方案|生成新三案/u)
+  assert.equal(source.includes('核对批次 00000701'), true)
+  assert.equal(source.includes('核对批次 00000702'), true)
+})
+
+test('foundation and settings goals cover the retained v1.1 and bounded asset corpus UI', () => {
+  const foundation = requireFormalBrowserSource('e2e/m2-foundation-regression.spec.ts')
+  for (const required of [
+    'writer-core-v1.1.0',
+    'Canon 0',
+    'Projection 0',
+    '进入写作台',
+    'toBeDisabled',
+    '本书创作契约',
+  ]) assert.equal(foundation.includes(required), true, required)
+
+  const settings = requireFormalBrowserSource('e2e/m2-settings-assets-corpus.spec.ts')
+  for (const required of [
+    '创作资产',
+    'writer-core-v1.1.0',
+    '10 / 10',
+    '64 / 64',
+    '本机语料',
+    'synthetic-browser-corpus.txt',
+  ]) assert.equal(settings.includes(required), true, required)
+  assert.doesNotMatch(settings, /打开有界预览|章节索引|片段预览/u)
+  assert.equal(
+    settings.includes("getByText('创作资产', { exact: true })"),
+    true,
+  )
+  assert.equal(
+    settings.includes("getByText('本机语料', { exact: true })"),
+    true,
+  )
+  assert.equal(
+    settings.includes("getByRole('region', { name: '已导入语料修订' })"),
+    true,
+  )
+  assert.doesNotMatch(settings, /getByRole\(['"]tab['"]/u)
+})
+
+test('approved formal goals use only real semantic UI locators without ordinal selectors', () => {
+  for (const spec of formalSpecs) {
+    const source = requireFormalBrowserSource(spec)
+    assert.doesNotMatch(source, /\.first\(\)|\.last\(\)|\.nth\(/u)
+    assert.doesNotMatch(source, /\.locator\(/u)
+  }
+})
 
 test('source contract accepts UI actions and rejects shadow writes', () => {
   assert.doesNotThrow(() => assertSafeBrowserSource(

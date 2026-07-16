@@ -131,6 +131,30 @@ test('observer records fail-closed header body response console page and request
   ])
 })
 
+test('observer excludes Vite source paths containing api and accepts cache revalidation', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const observer = observeRuntime(page)
+  page.emit('response', fakeResponse({
+    url: 'http://127.0.0.1:5173/src/api/db/client.js',
+    status: 304,
+    text: async () => { throw new Error('304 response body is unavailable') },
+  }))
+  page.emit('response', fakeResponse({
+    url: 'http://127.0.0.1:8000/api/projects/project-1',
+    status: 200,
+    body: '{"id":"project-1"}',
+  }))
+
+  const evidence = await observer.finish()
+
+  assert.deepEqual(
+    evidence.apiResponses.map(response => new URL(response.url).pathname),
+    ['/api/projects/project-1'],
+  )
+  assert.deepEqual(evidence.responseFailures, [])
+})
+
 test('observer enforces exact write method path status and count allowlists', async () => {
   const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
   const evidence = {
