@@ -36,6 +36,23 @@ function requireFormalBrowserSource(fileName) {
   return source
 }
 
+function declaredWriteRules(source) {
+  const rules = source.split(/\r?\n/u)
+    .map(line => line.trim().replace(/,$/u, ''))
+    .filter(line => /^\{ method: '[A-Z]+', path: .+, count: \d+, statuses: \[\d+(?:, ?\d+)*\] \}$/u.test(line))
+  assert.equal(
+    rules.length,
+    (source.match(/\bmethod:\s*'[A-Z]+'/gu) || []).length,
+    'every write rule must be one exact auditable entry',
+  )
+  const identities = rules.map(rule => {
+    const match = rule.match(/^\{ method: '([^']+)', path: (.+), count:/u)
+    return `${match[1]} ${match[2]}`
+  })
+  assert.equal(new Set(identities).size, identities.length, 'write rules must not overlap')
+  return rules
+}
+
 test('all formal M2 browser specs and their local import closures are safe', () => {
   for (const spec of formalSpecs) {
     assert.doesNotThrow(
@@ -69,25 +86,34 @@ test('manual wizard declares the exact write contract and no Provider creation r
     "{ method: 'POST', path: /\\/contracts\\/confirm$/, count: 1, statuses: [201] }",
   ]
 
-  for (const entry of expectedEntries) assert.equal(source.includes(entry), true, entry)
+  assert.deepEqual(declaredWriteRules(source), expectedEntries)
   assert.doesNotMatch(source, /story-engine-batches\s*\/?['"`]/)
   assert.doesNotMatch(source, /生成三套方案|生成新三案/)
+  for (const required of [
+    '返回故事发动机',
+    '.dblclick()',
+    'page.reload()',
+    '当前生效的创作契约',
+    '创建新修订',
+  ]) assert.equal(source.includes(required), true, required)
 })
 
-test('recovery wizard permits only two explicit reconcile writes and no Provider creation', () => {
+test('recovery wizard freezes reconcile plus real two-tab draft CAS without Provider creation', () => {
   const source = requireFormalBrowserSource('e2e/m2-wizard-recovery.spec.ts')
-
-  assert.equal(source.includes("method: 'POST'"), true)
-  assert.equal(
-    source.includes('path: /\\/story-engine-batches\\/[^/]+\\/reconcile$/'),
-    true,
-  )
-  assert.equal(source.includes('count: 2'), true)
-  assert.equal(source.includes('statuses: [200]'), true)
-  assert.doesNotMatch(source, /story-engine-batches\\\/manual/u)
+  assert.deepEqual(declaredWriteRules(source), [
+    "{ method: 'POST', path: /\\/story-engine-batches\\/manual$/, count: 2, statuses: [201] }",
+    "{ method: 'PUT', path: /\\/contract-draft$/, count: 2, statuses: [200, 409] }",
+    "{ method: 'POST', path: /\\/story-engine-batches\\/[^/]+\\/reconcile$/, count: 2, statuses: [200] }",
+  ])
+  assert.doesNotMatch(source, /path: \/\\\/story-engine-batches\\\/$/u)
   assert.doesNotMatch(source, /生成三套方案|生成新三案/u)
-  assert.equal(source.includes('核对批次 00000701'), true)
-  assert.equal(source.includes('核对批次 00000702'), true)
+  for (const required of [
+    '核对批次 00000701',
+    '核对批次 00000702',
+    'context().newPage()',
+    '草稿版本已经变化',
+    'statuses: [200, 409]',
+  ]) assert.equal(source.includes(required), true, required)
 })
 
 test('foundation and settings goals cover the retained v1.1 and bounded asset corpus UI', () => {
@@ -99,7 +125,11 @@ test('foundation and settings goals cover the retained v1.1 and bounded asset co
     '进入写作台',
     'toBeDisabled',
     '本书创作契约',
+    'Not Ready · 暂不可生成',
+    'task_unbound:writing',
+    '正文写作尚未绑定',
   ]) assert.equal(foundation.includes(required), true, required)
+  assert.deepEqual(declaredWriteRules(foundation), [])
 
   const settings = requireFormalBrowserSource('e2e/m2-settings-assets-corpus.spec.ts')
   for (const required of [
@@ -124,6 +154,11 @@ test('foundation and settings goals cover the retained v1.1 and bounded asset co
     true,
   )
   assert.doesNotMatch(settings, /getByRole\(['"]tab['"]/u)
+  assert.deepEqual(declaredWriteRules(settings), [
+    "{ method: 'POST', path: /\\/corpus\\/imports$/, count: 1, statuses: [200] }",
+  ])
+  assert.equal(settings.includes('apiResponses.filter'), true)
+  assert.equal((settings.match(/toHaveLength\(1\)/gu) || []).length >= 2, true)
 })
 
 test('approved formal goals use only real semantic UI locators without ordinal selectors', () => {

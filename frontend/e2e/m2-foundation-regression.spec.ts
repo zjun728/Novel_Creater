@@ -63,5 +63,11 @@ test('retains the writer-core v1.1 foundation on the formal project page', async
   await expect(page.getByText('状态同步', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '进入写作台' })).toBeDisabled()
 
+  await page.getByRole('menuitem', { name: /设置/ }).click()
+  await expect(page.getByRole('heading', { name: 'AI Provider 配置' })).toBeVisible()
+  await expect(page.getByText('Not Ready · 暂不可生成', { exact: true })).toBeVisible()
+  await expect(page.getByText('task_unbound:writing', { exact: true })).toBeVisible()
+  await expect(page.getByText('正文写作尚未绑定', { exact: true })).toBeVisible()
+
   await assertFoundationRuntime(observer)
 })

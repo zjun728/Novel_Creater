@@ -195,7 +195,12 @@ async def _insert_assets(session, now_ms: int) -> None:
         )
 
 
-async def _insert_foundation(session, now_ms: int) -> tuple[str, str]:
+async def _insert_foundation(
+    session,
+    now_ms: int,
+    *,
+    unbound_writing: bool = False,
+) -> tuple[str, str]:
     await session.execute(
         """INSERT INTO projects
            (id,title,genre,description,target_words,target_chapters,status,
@@ -287,10 +292,22 @@ async def _insert_foundation(session, now_ms: int) -> tuple[str, str]:
     binding_items = tuple(
         BindingItem(
             task_key=task_key,
-            resolution_status="bound",
-            provider_id=PROVIDER_ID,
-            provider_name_snapshot="合成浏览器 Provider",
-            model_name_snapshot="browser-test-model",
+            resolution_status=(
+                "unbound" if unbound_writing and task_key == "writing" else "bound"
+            ),
+            provider_id=(
+                None if unbound_writing and task_key == "writing" else PROVIDER_ID
+            ),
+            provider_name_snapshot=(
+                None
+                if unbound_writing and task_key == "writing"
+                else "合成浏览器 Provider"
+            ),
+            model_name_snapshot=(
+                None
+                if unbound_writing and task_key == "writing"
+                else "browser-test-model"
+            ),
         )
         for task_key in TASK_KEYS
     )
@@ -441,7 +458,11 @@ async def seed_scenario(session, scenario: str, now_ms: int) -> None:
         raise BrowserDatabaseSafetyError(f"Unsupported M2 browser scenario: {scenario!r}")
     await session.execute("START TRANSACTION")
     try:
-        selected_hash, binding_hash = await _insert_foundation(session, now_ms)
+        selected_hash, binding_hash = await _insert_foundation(
+            session,
+            now_ms,
+            unbound_writing=scenario == "foundation",
+        )
         if scenario == "recovery":
             await _insert_recovery_batches(
                 session,
@@ -536,7 +557,7 @@ async def run_cli(
             errors,
         )
     action = "dropped" if args.drop else "prepared"
-    output(f"browser_database={args.database} scenario={args.scenario} action={action}")
+    output(f"scenario={args.scenario} action={action}")
     return 0
 
 

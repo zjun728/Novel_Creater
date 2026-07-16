@@ -183,6 +183,10 @@ test('observer enforces exact write method path status and count allowlists', as
     () => assertExactWrites(evidence, [allowlist[0], { ...allowlist[1], statuses: [200] }]),
     /status/i,
   )
+  assert.throws(
+    () => assertExactWrites(evidence, [allowlist[0], { ...allowlist[0] }]),
+    /duplicate|overlap/i,
+  )
 })
 
 test('runtime secret scan returns only a match count and covers all evidence surfaces', async () => {

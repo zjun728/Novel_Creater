@@ -107,6 +107,31 @@ test('M2 child environment strips parent MySQL authority and adds fixed sentinel
   assert.notEqual(child.MYSQL_HOST, TEST_ENVIRONMENT.MYSQL_HOST)
 })
 
+test('M2 sensitive values cover database password and raw plus encoded DSNs', async () => {
+  const { browserSensitiveValues } = await import(M2_MODULE)
+  const environment = {
+    ...TEST_ENVIRONMENT,
+    TEST_MYSQL_USER: 'browser:user',
+    TEST_MYSQL_PASSWORD: 'p@ss:/word',
+  }
+  const corpusRoot = 'C:\\Temp\\novel-creator-m2-corpus-sensitive'
+  const values = browserSensitiveValues(environment, DATABASE, corpusRoot)
+
+  assert.equal(values.includes(DATABASE), true)
+  assert.equal(values.includes(environment.TEST_MYSQL_PASSWORD), true)
+  assert.equal(values.includes(
+    `mysql://${environment.TEST_MYSQL_USER}:${environment.TEST_MYSQL_PASSWORD}`
+      + `@${environment.TEST_MYSQL_HOST}:${environment.TEST_MYSQL_PORT}/${DATABASE}`,
+  ), true)
+  assert.equal(values.includes(
+    `mysql://${encodeURIComponent(environment.TEST_MYSQL_USER)}`
+      + `:${encodeURIComponent(environment.TEST_MYSQL_PASSWORD)}`
+      + `@${environment.TEST_MYSQL_HOST}:${environment.TEST_MYSQL_PORT}/${DATABASE}`,
+  ), true)
+  assert.equal(values.includes(environment.TEST_MYSQL_HOST), false)
+  assert.equal(values.includes(environment.TEST_MYSQL_USER), false)
+})
+
 test('M2 runner gives every injected spec an isolated database and external corpus', async () => {
   const { runMilestone2 } = await import(M2_MODULE)
   const calls = []
@@ -312,4 +337,51 @@ test('M2 runner scans bounded browser output even when Playwright fails', async 
     serverLogObserverFactory: () => ({ finish: () => ({ matchCount: 0 }) }),
   }), /browser.*17/i)
   assert.equal(browserScanned, true)
+})
+
+test('M2 server scan failures report only a count without echoing sensitive values', async () => {
+  const { runMilestone2 } = await import(M2_MODULE)
+  let observerCount = 0
+  let scannedValues = []
+  const processRunner = {
+    async run() {
+      return {
+        status: 0,
+        logObserver: { finish: () => ({ matchCount: 0, truncated: false }) },
+      }
+    },
+    start() { return {} },
+    async stop() {},
+  }
+
+  await assert.rejects(runMilestone2({
+    environment: TEST_ENVIRONMENT,
+    specs: FORMAL_SPECS,
+    databaseNameFactory: () => DATABASE,
+    mkdtempImpl: () => 'C:\\Temp\\novel-creator-m2-corpus-log-leak',
+    writeFileImpl: () => {},
+    rmImpl: () => {},
+    processRunner,
+    waitForUrlImpl: async () => {},
+    serverLogObserverFactory: (_child, { sensitiveValues }) => {
+      const observerIndex = ++observerCount
+      scannedValues = sensitiveValues
+      return {
+        finish: () => ({
+          matchCount: observerIndex === 1 ? 1 : 0,
+          truncated: true,
+        }),
+      }
+    },
+  }), error => {
+    const rendered = String(error)
+    assert.match(rendered, /sensitive match count was 1/i)
+    assert.equal(rendered.includes(TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD), false)
+    assert.equal(rendered.includes(DATABASE), false)
+    assert.equal(rendered.includes('mysql://'), false)
+    return true
+  })
+  assert.equal(scannedValues.includes(TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD), true)
+  assert.equal(scannedValues.includes(DATABASE), true)
+  assert.equal(scannedValues.some(value => value.startsWith('mysql://')), true)
 })

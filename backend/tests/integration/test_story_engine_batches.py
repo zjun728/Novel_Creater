@@ -361,6 +361,34 @@ async def test_recoverable_discovery_filters_current_facts_orders_and_limits(
 
 
 @pytest.mark.asyncio
+async def test_recoverable_discovery_is_empty_when_only_selected_seed_is_missing(
+    disposable_mysql,
+):
+    session = disposable_mysql.session
+    await _bootstrap_facts(session)
+    await _insert_recovery_batch(session, batch_id="batch-selected-seed-missing")
+    await session.execute(
+        "DELETE FROM project_selected_seeds WHERE project_id='project-1'"
+    )
+
+    assert await _service(disposable_mysql).list_recoverable("project-1") == ()
+
+
+@pytest.mark.asyncio
+async def test_recoverable_discovery_is_empty_when_only_binding_head_is_missing(
+    disposable_mysql,
+):
+    session = disposable_mysql.session
+    await _bootstrap_facts(session)
+    await _insert_recovery_batch(session, batch_id="batch-binding-head-missing")
+    await session.execute(
+        "DELETE FROM project_model_binding_heads WHERE project_id='project-1'"
+    )
+
+    assert await _service(disposable_mysql).list_recoverable("project-1") == ()
+
+
+@pytest.mark.asyncio
 async def test_m2a_schema_enforces_unique_key_fk_and_exact_three_manual_options(
     disposable_mysql,
 ):

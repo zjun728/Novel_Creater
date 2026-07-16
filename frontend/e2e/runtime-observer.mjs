@@ -72,6 +72,20 @@ function matchesPath(expected, actual) {
 
 export function assertExactWrites(evidence, allowlist) {
   if (!Array.isArray(allowlist)) throw new TypeError('write allowlist must be an array')
+  const ruleKeys = new Set()
+  for (const entry of allowlist) {
+    const method = String(entry?.method).toUpperCase()
+    const pathKey = typeof entry?.path === 'string'
+      ? `string:${entry.path}`
+      : entry?.path instanceof RegExp
+        ? `regexp:${entry.path.source}/${entry.path.flags}`
+        : 'invalid'
+    const ruleKey = `${method}:${pathKey}`
+    if (ruleKeys.has(ruleKey)) {
+      throw new Error(`Duplicate or overlapping runtime write rule: ${method}`)
+    }
+    ruleKeys.add(ruleKey)
+  }
   const writes = (evidence.apiResponses || []).filter(response => (
     !['GET', 'HEAD', 'OPTIONS'].includes(String(response.method).toUpperCase())
   ))

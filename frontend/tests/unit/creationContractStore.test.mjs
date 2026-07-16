@@ -590,6 +590,42 @@ test('recoverable reserved rows and public failures remain visible without retry
   })
 })
 
+test('non-expired reserved and running recovery results stay visible without retry or generation', async () => {
+  const reconciles = []
+  let generations = 0
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => null],
+    [api.contracts, 'head', async () => ({ hasContract: false })],
+    [api.storyEngines, 'recoverable', async () => ({
+      items: [
+        { id: 'reserved-live', status: 'reserved' },
+        { id: 'running-live', status: 'running' },
+      ],
+    })],
+    [api.storyEngines, 'generate', async () => { generations += 1 }],
+    [api.storyEngines, 'reconcile', async (_projectId, batchId) => {
+      reconciles.push(batchId)
+      return { id: batchId, status: batchId === 'reserved-live' ? 'reserved' : 'running' }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    await store.load('project-1')
+
+    await store.reconcileRecoverableBatch('project-1', 'reserved-live')
+    await store.reconcileRecoverableBatch('project-1', 'running-live')
+    await Promise.resolve()
+
+    assert.deepEqual(reconciles, ['reserved-live', 'running-live'])
+    assert.equal(generations, 0)
+    assert.deepEqual(store.recoverableBatches, [
+      { id: 'reserved-live', status: 'reserved' },
+      { id: 'running-live', status: 'running' },
+    ])
+  })
+})
+
 test('late recoverable reconciliation cannot cross a project switch', async () => {
   const pendingReconcile = deferred()
 

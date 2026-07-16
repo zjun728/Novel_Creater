@@ -260,13 +260,27 @@ function processError(label, result) {
 }
 
 
-function sensitiveValues(corpusRoot) {
-  return [
+export function browserSensitiveValues(environment, databaseName, corpusRoot) {
+  assertDatabaseName(databaseName)
+  const host = String(environment.TEST_MYSQL_HOST)
+  const port = String(environment.TEST_MYSQL_PORT)
+  const user = String(environment.TEST_MYSQL_USER)
+  const password = String(environment.TEST_MYSQL_PASSWORD)
+  const rawAuthority = `${user}:${password}@${host}:${port}/${databaseName}`
+  const encodedAuthority = `${encodeURIComponent(user)}:${encodeURIComponent(password)}`
+    + `@${host}:${port}/${encodeURIComponent(databaseName)}`
+  return [...new Set([
     BROWSER_SECRET_SENTINEL,
     BROWSER_PRIVATE_PROVIDER_URL,
     BROWSER_CORPUS_ROOT_SENTINEL,
     corpusRoot,
-  ]
+    databaseName,
+    password,
+    `mysql://${rawAuthority}`,
+    `mysql://${encodedAuthority}`,
+    `mysql+aiomysql://${rawAuthority}`,
+    `mysql+aiomysql://${encodedAuthority}`,
+  ])]
 }
 
 
@@ -316,7 +330,7 @@ async function runOneSpec({
   const corpusRoot = mkdtempImpl(path.join(os.tmpdir(), CORPUS_PREFIX))
   assertExternalCorpusRoot(corpusRoot)
   const childEnvironment = buildChildEnvironment(environment, databaseName, corpusRoot)
-  const values = sensitiveValues(corpusRoot)
+  const values = browserSensitiveValues(environment, databaseName, corpusRoot)
   const corpusFile = path.join(corpusRoot, 'synthetic-browser-corpus.txt')
   const python = environment.PYTHON || 'python'
   const prepareArgs = [

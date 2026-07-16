@@ -84,6 +84,7 @@ async def test_prepare_initializes_v11_and_seeds_only_scenario_preconditions(
         initialized.append((active_session, database, confirmation, now_ms))
 
     monkeypatch.setattr(browser_db, "initialize_database", fake_initialize)
+    output_messages = []
 
     async def connection_factory(config):
         assert config["host"] == TEST_ENVIRONMENT["TEST_MYSQL_HOST"]
@@ -95,10 +96,12 @@ async def test_prepare_initializes_v11_and_seeds_only_scenario_preconditions(
         environment=TEST_ENVIRONMENT,
         connection_factory=connection_factory,
         now_ms=lambda: 1_720_000_000_000,
-        output=lambda _message: None,
+        output=output_messages.append,
     ) == 0
 
     assert initialized == [(session, DATABASE, DATABASE, 1_720_000_000_000)]
+    assert output_messages == [f"scenario={scenario} action=prepared"]
+    assert DATABASE not in output_messages[0]
     sql = "\n".join(call[1] for call in session.calls)
     assert "INSERT INTO projects" in sql
     assert "INSERT INTO project_contract_heads" in sql
@@ -107,6 +110,23 @@ async def test_prepare_initializes_v11_and_seeds_only_scenario_preconditions(
     assert "INSERT INTO contract_confirmation_requests" not in sql
     batch_calls = [call for call in session.calls if "INSERT INTO story_engine_batches" in call[1]]
     assert len(batch_calls) == (2 if scenario == "recovery" else 0)
+    binding_item_calls = [
+        call for call in session.calls
+        if "INSERT INTO project_model_binding_items" in call[1]
+    ]
+    assert len(binding_item_calls) == 8
+    binding_by_task = {call[2][1]: call[2] for call in binding_item_calls}
+    if scenario == "foundation":
+        assert binding_by_task["writing"][2:6] == (
+            "unbound", None, None, None
+        )
+        assert all(
+            parameters[2] == "bound"
+            for task_key, parameters in binding_by_task.items()
+            if task_key != "writing"
+        )
+    else:
+        assert all(parameters[2] == "bound" for parameters in binding_by_task.values())
 
     if scenario == "recovery":
         flattened = [value for call in batch_calls for value in (call[2] or ())]

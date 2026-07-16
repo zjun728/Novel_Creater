@@ -19,11 +19,11 @@ function requiredEnvironment(name: string): string {
 
 async function assertSettingsRuntime(observer: ReturnType<typeof observeRuntime>) {
   const evidence = await observer.finish()
-  const responseFor = (path: string) => evidence.apiResponses.find(entry => (
+  const responsesFor = (path: string) => evidence.apiResponses.filter(entry => (
     entry.method === 'GET' && new URL(entry.url).pathname === path
   ))
-  const styleInventory = responseFor('/api/assets/style-templates')
-  const experienceInventory = responseFor('/api/assets/experience-cards')
+  const styleInventories = responsesFor('/api/assets/style-templates')
+  const experienceInventories = responsesFor('/api/assets/experience-cards')
 
   expect(assertExactWrites(evidence, settingsWrites)).toEqual({ writeCount: 1 })
   expect(evidence.apiResponses.filter(entry => entry.status < 200 || entry.status >= 300)).toEqual([])
@@ -33,10 +33,10 @@ async function assertSettingsRuntime(observer: ReturnType<typeof observeRuntime>
   expect(evidence.consoleErrors, 'console.error must stay empty').toEqual([])
   expect(evidence.pageErrors, 'uncaught page errors must stay empty').toEqual([])
   expect(evidence.requestFailures, 'network requests must not fail').toEqual([])
-  expect(styleInventory, 'the settings asset tab must load the style inventory API').toBeDefined()
-  expect(JSON.parse(styleInventory?.body || 'null')).toHaveLength(10)
-  expect(experienceInventory, 'the settings asset tab must load the experience inventory API').toBeDefined()
-  expect(JSON.parse(experienceInventory?.body || 'null')).toHaveLength(64)
+  expect(styleInventories, 'the settings asset tab loads the style inventory API once').toHaveLength(1)
+  expect(JSON.parse(styleInventories[0].body)).toHaveLength(10)
+  expect(experienceInventories, 'the settings asset tab loads the experience inventory API once').toHaveLength(1)
+  expect(JSON.parse(experienceInventories[0].body)).toHaveLength(64)
   expect(scanRuntimeEvidence(evidence, [
     ...runtimeSensitiveValues(),
     requiredEnvironment('BROWSER_TEST_DATABASE'),
