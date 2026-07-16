@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import {
   existsSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
@@ -238,6 +240,29 @@ function createFormalFakeRoot({ pytestNamespaceAsFile = false } = {}) {
   }
 
   return { keepEvidence, pytestNamespace, rootDirectory }
+}
+
+function createReparsePointFixture(location) {
+  const rootDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-reparse-root-'))
+  const externalDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-reparse-external-'))
+  const scriptTests = path.join(rootDirectory, 'scripts', 'tests')
+  const frontendTests = path.join(rootDirectory, 'frontend', 'tests', 'unit')
+  const artifactRoot = path.join(rootDirectory, '.codex-test-artifacts')
+  const pytestNamespace = path.join(artifactRoot, 'pytest')
+  const stage = path.join(pytestNamespace, 'unit-api')
+  const sentinel = path.join(externalDirectory, 'external-sentinel.txt')
+
+  mkdirSync(scriptTests, { recursive: true })
+  mkdirSync(frontendTests, { recursive: true })
+  writeFileSync(path.join(scriptTests, 'formal.test.mjs'), '')
+  writeFileSync(path.join(frontendTests, 'formal.test.mjs'), '')
+  writeFileSync(sentinel, 'preserve external evidence')
+
+  const link = { artifactRoot, pytestNamespace, stage }[location]
+  mkdirSync(path.dirname(link), { recursive: true })
+  symlinkSync(externalDirectory, link, 'junction')
+
+  return { externalDirectory, link, rootDirectory, sentinel }
 }
 
 for (const missingName of Object.keys(requiredIntegrationEnvironment)) {
@@ -624,6 +649,41 @@ test('a default preparation failure spawns no child and redacts its environment'
     rmSync(fixture.rootDirectory, { recursive: true, force: true })
   }
 })
+
+for (const location of ['artifactRoot', 'pytestNamespace', 'stage']) {
+  test(`the default lifecycle rejects a ${location} junction without touching its target`, () => {
+    const fixture = createReparsePointFixture(location)
+    const stderr = captureStderr()
+    let spawnCount = 0
+
+    try {
+      const exitCode = runSuites(['unit'], {
+        rootDirectory: fixture.rootDirectory,
+        environment: lifecycleFailureEnvironment,
+        spawnSyncImpl() {
+          spawnCount += 1
+          return { status: 0 }
+        },
+        stderr: stderr.stream,
+      })
+
+      assert.notEqual(exitCode, 0)
+      assert.equal(spawnCount, 0)
+      assert.equal(existsSync(fixture.externalDirectory), true)
+      assert.equal(existsSync(fixture.sentinel), true)
+      assert.equal(existsSync(fixture.link), true)
+      assert.equal(lstatSync(fixture.link).isSymbolicLink(), true)
+      assertSafeLifecycleStderr(stderr.value(), 'PYTEST_TEMP_PREPARE_FAILED', 'unit-api')
+      assert.doesNotMatch(stderr.value(), new RegExp(escapeRegExp(fixture.externalDirectory), 'iu'))
+    } finally {
+      try {
+        rmSync(fixture.externalDirectory, { recursive: true, force: true })
+      } finally {
+        rmSync(fixture.rootDirectory, { recursive: true, force: true })
+      }
+    }
+  })
+}
 
 test('browser-m2 rejects a root missing any formal spec before child execution', () => {
   const rootDirectory = mkdtempSync(path.join(scriptsDirectory, 'formal-browser-root-'))

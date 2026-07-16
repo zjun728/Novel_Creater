@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  rmdirSync,
+} from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -175,54 +183,180 @@ function resolvePytestTemp(rootDirectory, stage) {
   if (path.dirname(target) !== namespace) {
     throw new Error('pytest temp stage is outside its namespace')
   }
-  return { namespace, target }
+  return {
+    artifactRoot: path.resolve(rootDirectory, '.codex-test-artifacts'),
+    namespace,
+    rootDirectory: path.resolve(rootDirectory),
+    target,
+  }
 }
 
-function removeEmptyDirectory(directory, { ignoreNotEmpty = false } = {}) {
+function lstatExisting(entry) {
   try {
-    const entry = lstatSync(directory)
-    if (entry.isDirectory()) {
-      rmdirSync(directory)
-    } else {
-      rmSync(directory, { force: true })
-    }
+    return lstatSync(entry)
   } catch (error) {
-    if (error?.code === 'ENOENT') return
-    if (ignoreNotEmpty && (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST')) return
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+function normalizedPathIdentity(entry) {
+  const normalized = path.resolve(entry)
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+function assertDirectRealChild(entry, parentRealPath, stats, { requireDirectory = false } = {}) {
+  if (stats.isSymbolicLink()) throw new Error('pytest temp path is a reparse point')
+  if (requireDirectory && !stats.isDirectory()) {
+    throw new Error('pytest temp path is not a directory')
+  }
+
+  const realEntry = realpathSync(entry)
+  const expectedEntry = path.join(parentRealPath, path.basename(entry))
+  if (normalizedPathIdentity(realEntry) !== normalizedPathIdentity(expectedEntry)) {
+    throw new Error('pytest temp path does not belong to its real parent')
+  }
+  return realEntry
+}
+
+function inspectPytestTemp(rootDirectory, stage, { allowNamespaceFile = false } = {}) {
+  const resolved = resolvePytestTemp(rootDirectory, stage)
+  const rootRealPath = realpathSync(resolved.rootDirectory)
+  const artifactStats = lstatExisting(resolved.artifactRoot)
+  if (!artifactStats) return { ...resolved, artifactStats, rootRealPath }
+
+  const artifactRealPath = assertDirectRealChild(
+    resolved.artifactRoot,
+    rootRealPath,
+    artifactStats,
+    { requireDirectory: true },
+  )
+  const namespaceStats = lstatExisting(resolved.namespace)
+  if (!namespaceStats) {
+    return { ...resolved, artifactRealPath, artifactStats, namespaceStats, rootRealPath }
+  }
+
+  const namespaceRealPath = assertDirectRealChild(
+    resolved.namespace,
+    artifactRealPath,
+    namespaceStats,
+    { requireDirectory: !allowNamespaceFile },
+  )
+  if (!namespaceStats.isDirectory() && !namespaceStats.isFile()) {
+    throw new Error('pytest temp namespace is not a regular entry')
+  }
+  if (!namespaceStats.isDirectory()) {
+    return {
+      ...resolved,
+      artifactRealPath,
+      artifactStats,
+      namespaceRealPath,
+      namespaceStats,
+      rootRealPath,
+    }
+  }
+
+  const targetStats = lstatExisting(resolved.target)
+  if (!targetStats) {
+    return {
+      ...resolved,
+      artifactRealPath,
+      artifactStats,
+      namespaceRealPath,
+      namespaceStats,
+      rootRealPath,
+      targetStats,
+    }
+  }
+  if (!targetStats.isDirectory() && !targetStats.isFile()) {
+    throw new Error('pytest temp stage is not a regular entry')
+  }
+  const targetRealPath = assertDirectRealChild(
+    resolved.target,
+    namespaceRealPath,
+    targetStats,
+  )
+  return {
+    ...resolved,
+    artifactRealPath,
+    artifactStats,
+    namespaceRealPath,
+    namespaceStats,
+    rootRealPath,
+    targetRealPath,
+    targetStats,
+  }
+}
+
+function cleanupPytestStage(rootDirectory, stage) {
+  const inspected = inspectPytestTemp(rootDirectory, stage, { allowNamespaceFile: true })
+  if (!inspected.namespaceStats?.isDirectory() || !inspected.targetStats) return
+
+  inspectPytestTemp(rootDirectory, stage)
+  rmSync(inspected.target, { recursive: true, force: true })
+}
+
+function cleanupPytestNamespace(rootDirectory) {
+  const inspected = inspectPytestTemp(rootDirectory, pytestTempStages.unitApi, {
+    allowNamespaceFile: true,
+  })
+  if (!inspected.namespaceStats) return
+
+  const verified = inspectPytestTemp(rootDirectory, pytestTempStages.unitApi, {
+    allowNamespaceFile: true,
+  })
+  if (verified.namespaceStats.isDirectory()) {
+    rmdirSync(verified.namespace)
+  } else {
+    rmSync(verified.namespace, { force: true })
+  }
+}
+
+function cleanupArtifactRoot(rootDirectory) {
+  const inspected = inspectPytestTemp(rootDirectory, pytestTempStages.unitApi, {
+    allowNamespaceFile: true,
+  })
+  if (!inspected.artifactStats) return
+
+  const verified = inspectPytestTemp(rootDirectory, pytestTempStages.unitApi, {
+    allowNamespaceFile: true,
+  })
+  try {
+    rmdirSync(verified.artifactRoot)
+  } catch (error) {
+    if (error?.code === 'ENOTEMPTY' || error?.code === 'EEXIST') return
     throw error
   }
 }
 
 export const defaultPytestTempLifecycle = Object.freeze({
   prepare(rootDirectory, stage) {
-    const { namespace, target } = resolvePytestTemp(rootDirectory, stage)
-    mkdirSync(namespace, { recursive: true })
-    rmSync(target, { recursive: true, force: true })
+    const beforeCreate = inspectPytestTemp(rootDirectory, stage)
+    mkdirSync(beforeCreate.namespace, { recursive: true })
+    inspectPytestTemp(rootDirectory, stage)
+    cleanupPytestStage(rootDirectory, stage)
   },
   cleanupStage(rootDirectory, stage) {
-    const { target } = resolvePytestTemp(rootDirectory, stage)
-    rmSync(target, { recursive: true, force: true })
+    cleanupPytestStage(rootDirectory, stage)
   },
   cleanupAll(rootDirectory) {
     let firstError
     for (const stage of Object.values(pytestTempStages)) {
       try {
-        this.cleanupStage(rootDirectory, stage)
+        cleanupPytestStage(rootDirectory, stage)
       } catch (error) {
         firstError ??= error
       }
     }
 
-    const namespace = path.resolve(rootDirectory, '.codex-test-artifacts', 'pytest')
     try {
-      removeEmptyDirectory(namespace)
+      cleanupPytestNamespace(rootDirectory)
     } catch (error) {
       firstError ??= error
     }
 
-    const artifactRoot = path.resolve(rootDirectory, '.codex-test-artifacts')
     try {
-      removeEmptyDirectory(artifactRoot, { ignoreNotEmpty: true })
+      cleanupArtifactRoot(rootDirectory)
     } catch (error) {
       firstError ??= error
     }
