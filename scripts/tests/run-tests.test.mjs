@@ -178,6 +178,62 @@ function assertApprovedPytestStage(stage) {
   assert.doesNotMatch(stage, /keep-me/u)
 }
 
+const tempSecretSentinel = 'temp-secret-sentinel'
+const lifecycleFailureEnvironment = Object.freeze({
+  ...requiredIntegrationEnvironment,
+  TEST_MYSQL_PASSWORD: tempSecretSentinel,
+})
+
+function captureStderr() {
+  let value = ''
+  return {
+    stream: { write(chunk) { value += chunk } },
+    value() { return value },
+  }
+}
+
+function assertSafeLifecycleStderr(stderr, expectedCode, expectedStage) {
+  assert.doesNotMatch(stderr, new RegExp(tempSecretSentinel, 'u'))
+  assert.doesNotMatch(stderr, /TEST_MYSQL_|127\.0\.0\.1|33060/iu)
+  assert.match(stderr, new RegExp(`\\[${expectedCode}\\] stage=${expectedStage}(?: |\\n|$)`, 'u'))
+  for (const line of stderr.trim().split(/\r?\n/u).filter(Boolean)) {
+    assert.match(
+      line,
+      /^\[PYTEST_[A-Z_]+\] stage=(?:m1-regression|unit-api|integration)(?: (?:code|status)=[A-Z0-9_-]+)?$/u,
+    )
+  }
+}
+
+function createFormalFakeRoot({ pytestNamespaceAsFile = false } = {}) {
+  const rootDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-lifecycle-root-'))
+  const scriptTests = path.join(rootDirectory, 'scripts', 'tests')
+  const frontendTests = path.join(rootDirectory, 'frontend', 'tests', 'unit')
+  const artifactRoot = path.join(rootDirectory, '.codex-test-artifacts')
+  const pytestNamespace = path.join(artifactRoot, 'pytest')
+  const keepEvidence = path.join(artifactRoot, 'keep-me', 'evidence.txt')
+
+  mkdirSync(scriptTests, { recursive: true })
+  mkdirSync(frontendTests, { recursive: true })
+  mkdirSync(path.dirname(keepEvidence), { recursive: true })
+  writeFileSync(path.join(scriptTests, 'formal.test.mjs'), '')
+  writeFileSync(path.join(frontendTests, 'formal.test.mjs'), '')
+  writeFileSync(keepEvidence, 'preserve this evidence')
+
+  if (pytestNamespaceAsFile) {
+    writeFileSync(pytestNamespace, 'block pytest namespace creation')
+  } else {
+    const staleEvidence = path.join(
+      rootDirectory,
+      approvedPytestTempStages.unitApi,
+      'stale.txt',
+    )
+    mkdirSync(path.dirname(staleEvidence), { recursive: true })
+    writeFileSync(staleEvidence, 'remove stale pytest content')
+  }
+
+  return { keepEvidence, pytestNamespace, rootDirectory }
+}
+
 for (const missingName of Object.keys(requiredIntegrationEnvironment)) {
   test(`integration fails closed before pytest when ${missingName} is missing`, () => {
     const environment = { ...requiredIntegrationEnvironment }
@@ -277,23 +333,24 @@ test('prepares and cleans the fixed pytest stage around a successful child', () 
   const events = []
   const exitCode = runSuites(['integration'], {
     environment: requiredIntegrationEnvironment,
-    preparePytestTempImpl(_rootDirectory, stage) {
-      assertApprovedPytestStage(stage)
-      assert.equal(stage, approvedPytestTempStages.integration)
-      events.push(`prepare:${path.basename(stage)}`)
+    pytestTempLifecycle: {
+      prepare(_rootDirectory, stage) {
+        assertApprovedPytestStage(stage)
+        assert.equal(stage, approvedPytestTempStages.integration)
+        events.push(`prepare:${path.basename(stage)}`)
+      },
+      cleanupStage(_rootDirectory, stage) {
+        assertApprovedPytestStage(stage)
+        assert.equal(stage, approvedPytestTempStages.integration)
+        events.push(`cleanup:${path.basename(stage)}`)
+      },
+      cleanupAll() {
+        events.push('cleanup-all')
+      },
     },
     spawnSyncImpl(_command, args) {
       events.push(`spawn:${pytestBasetempLabel(args)}`)
       return { status: 0 }
-    },
-    cleanupPytestTempImpl(_rootDirectory, stage) {
-      if (stage === undefined) {
-        events.push('cleanup-all')
-        return
-      }
-      assertApprovedPytestStage(stage)
-      assert.equal(stage, approvedPytestTempStages.integration)
-      events.push(`cleanup:${path.basename(stage)}`)
     },
   })
 
@@ -308,27 +365,33 @@ test('prepares and cleans the fixed pytest stage around a successful child', () 
 
 test('a pytest temp preparation failure prevents spawn and still cleans all stages', () => {
   const events = []
+  const stderr = captureStderr()
   const exitCode = runSuites(['integration'], {
-    environment: requiredIntegrationEnvironment,
-    preparePytestTempImpl(_rootDirectory, stage) {
-      assertApprovedPytestStage(stage)
-      assert.equal(stage, approvedPytestTempStages.integration)
-      events.push(`prepare:${path.basename(stage)}`)
-      throw new Error('synthetic preparation failure')
+    environment: lifecycleFailureEnvironment,
+    pytestTempLifecycle: {
+      prepare(_rootDirectory, stage) {
+        assertApprovedPytestStage(stage)
+        assert.equal(stage, approvedPytestTempStages.integration)
+        events.push(`prepare:${path.basename(stage)}`)
+        throw new Error(`synthetic preparation failure: ${tempSecretSentinel}`)
+      },
+      cleanupStage(_rootDirectory, stage) {
+        events.push(`unexpected-cleanup:${path.basename(stage)}`)
+      },
+      cleanupAll() {
+        events.push('cleanup-all')
+      },
     },
     spawnSyncImpl() {
       events.push('spawn')
       return { status: 0 }
     },
-    cleanupPytestTempImpl(_rootDirectory, stage) {
-      if (stage !== undefined) assertApprovedPytestStage(stage)
-      events.push(stage === undefined ? 'cleanup-all' : `cleanup:${path.basename(stage)}`)
-    },
-    stderr: { write() {} },
+    stderr: stderr.stream,
   })
 
   assert.notEqual(exitCode, 0)
   assert.deepEqual(events, ['prepare:integration', 'cleanup-all'])
+  assertSafeLifecycleStderr(stderr.value(), 'PYTEST_TEMP_PREPARE_FAILED', 'integration')
 })
 
 for (const scenario of [
@@ -336,33 +399,44 @@ for (const scenario of [
     name: 'a non-zero pytest child',
     childResult: { status: 7 },
     expectedExitCode: 7,
+    expectedErrorCode: 'PYTEST_CHILD_FAILED',
   },
   {
     name: 'a pytest spawn error',
     childResult: {
       status: null,
-      error: Object.assign(new Error('synthetic spawn failure'), { code: 'ESYNTHETIC' }),
+      error: Object.assign(
+        new Error(`synthetic spawn failure: ${tempSecretSentinel}`),
+        { code: 'ESYNTHETIC' },
+      ),
     },
     expectedExitCode: 1,
+    expectedErrorCode: 'PYTEST_CHILD_START_FAILED',
   },
 ]) {
   test(`${scenario.name} cleans the stage and aggregate namespace`, () => {
     const events = []
+    const stderr = captureStderr()
     const exitCode = runSuites(['integration'], {
-      environment: requiredIntegrationEnvironment,
-      preparePytestTempImpl(_rootDirectory, stage) {
-        assertApprovedPytestStage(stage)
-        events.push(`prepare:${path.basename(stage)}`)
+      environment: lifecycleFailureEnvironment,
+      pytestTempLifecycle: {
+        prepare(_rootDirectory, stage) {
+          assertApprovedPytestStage(stage)
+          events.push(`prepare:${path.basename(stage)}`)
+        },
+        cleanupStage(_rootDirectory, stage) {
+          assertApprovedPytestStage(stage)
+          events.push(`cleanup:${path.basename(stage)}`)
+        },
+        cleanupAll() {
+          events.push('cleanup-all')
+        },
       },
       spawnSyncImpl(_command, args) {
         events.push(`spawn:${pytestBasetempLabel(args)}`)
         return scenario.childResult
       },
-      cleanupPytestTempImpl(_rootDirectory, stage) {
-        if (stage !== undefined) assertApprovedPytestStage(stage)
-        events.push(stage === undefined ? 'cleanup-all' : `cleanup:${path.basename(stage)}`)
-      },
-      stderr: { write() {} },
+      stderr: stderr.stream,
     })
 
     assert.equal(exitCode, scenario.expectedExitCode)
@@ -372,31 +446,34 @@ for (const scenario of [
       'cleanup:integration',
       'cleanup-all',
     ])
+    assertSafeLifecycleStderr(stderr.value(), scenario.expectedErrorCode, 'integration')
   })
 }
 
 test('a pytest stage cleanup failure still runs cleanup-all and returns non-zero', () => {
   const events = []
+  const stderr = captureStderr()
   const exitCode = runSuites(['integration'], {
-    environment: requiredIntegrationEnvironment,
-    preparePytestTempImpl(_rootDirectory, stage) {
-      assertApprovedPytestStage(stage)
-      events.push(`prepare:${path.basename(stage)}`)
+    environment: lifecycleFailureEnvironment,
+    pytestTempLifecycle: {
+      prepare(_rootDirectory, stage) {
+        assertApprovedPytestStage(stage)
+        events.push(`prepare:${path.basename(stage)}`)
+      },
+      cleanupStage(_rootDirectory, stage) {
+        assertApprovedPytestStage(stage)
+        events.push(`cleanup:${path.basename(stage)}`)
+        throw new Error(`synthetic cleanup failure: ${tempSecretSentinel}`)
+      },
+      cleanupAll() {
+        events.push('cleanup-all')
+      },
     },
     spawnSyncImpl(_command, args) {
       events.push(`spawn:${pytestBasetempLabel(args)}`)
       return { status: 0 }
     },
-    cleanupPytestTempImpl(_rootDirectory, stage) {
-      if (stage === undefined) {
-        events.push('cleanup-all')
-        return
-      }
-      assertApprovedPytestStage(stage)
-      events.push(`cleanup:${path.basename(stage)}`)
-      throw new Error('synthetic cleanup failure')
-    },
-    stderr: { write() {} },
+    stderr: stderr.stream,
   })
 
   assert.notEqual(exitCode, 0)
@@ -406,46 +483,84 @@ test('a pytest stage cleanup failure still runs cleanup-all and returns non-zero
     'cleanup:integration',
     'cleanup-all',
   ])
+  assertSafeLifecycleStderr(stderr.value(), 'PYTEST_TEMP_CLEANUP_FAILED', 'integration')
 })
 
-test('the default lifecycle removes only its pytest namespace', () => {
-  const rootDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-lifecycle-root-'))
-  const scriptTests = path.join(rootDirectory, 'scripts', 'tests')
-  const frontendTests = path.join(rootDirectory, 'frontend', 'tests', 'unit')
-  const keepEvidence = path.join(
-    rootDirectory,
-    '.codex-test-artifacts',
-    'keep-me',
-    'evidence.txt',
-  )
-  const stalePytestEvidence = path.join(
-    rootDirectory,
-    approvedPytestTempStages.unitApi,
-    'stale.txt',
-  )
+for (const scenario of [
+  {
+    name: 'success',
+    result: { status: 0 },
+    expectedExitCode: 0,
+  },
+  {
+    name: 'child non-zero',
+    result: { status: 7 },
+    expectedExitCode: 7,
+    expectedErrorCode: 'PYTEST_CHILD_FAILED',
+  },
+  {
+    name: 'spawn error',
+    result: {
+      status: null,
+      error: Object.assign(
+        new Error(`default spawn failure: ${tempSecretSentinel}`),
+        { code: 'ESYNTHETIC' },
+      ),
+    },
+    expectedExitCode: 1,
+    expectedErrorCode: 'PYTEST_CHILD_START_FAILED',
+  },
+]) {
+  test(`the default lifecycle preserves unrelated evidence after ${scenario.name}`, () => {
+    const fixture = createFormalFakeRoot()
+    const stderr = captureStderr()
+
+    try {
+      const exitCode = runSuites(['unit'], {
+        rootDirectory: fixture.rootDirectory,
+        environment: lifecycleFailureEnvironment,
+        spawnSyncImpl() {
+          return scenario.result
+        },
+        stderr: stderr.stream,
+      })
+
+      assert.equal(exitCode, scenario.expectedExitCode)
+      assert.equal(existsSync(fixture.keepEvidence), true)
+      if (scenario.expectedErrorCode) {
+        assertSafeLifecycleStderr(stderr.value(), scenario.expectedErrorCode, 'unit-api')
+      } else {
+        assert.equal(stderr.value(), '')
+      }
+      assert.equal(existsSync(fixture.pytestNamespace), false)
+    } finally {
+      rmSync(fixture.rootDirectory, { recursive: true, force: true })
+    }
+  })
+}
+
+test('a default preparation failure spawns no child and redacts its environment', () => {
+  const fixture = createFormalFakeRoot({ pytestNamespaceAsFile: true })
+  const stderr = captureStderr()
+  let spawnCount = 0
 
   try {
-    mkdirSync(scriptTests, { recursive: true })
-    mkdirSync(frontendTests, { recursive: true })
-    mkdirSync(path.dirname(keepEvidence), { recursive: true })
-    mkdirSync(path.dirname(stalePytestEvidence), { recursive: true })
-    writeFileSync(path.join(scriptTests, 'formal.test.mjs'), '')
-    writeFileSync(path.join(frontendTests, 'formal.test.mjs'), '')
-    writeFileSync(keepEvidence, 'preserve this evidence')
-    writeFileSync(stalePytestEvidence, 'remove stale pytest content')
-
     const exitCode = runSuites(['unit'], {
-      rootDirectory,
+      rootDirectory: fixture.rootDirectory,
+      environment: lifecycleFailureEnvironment,
       spawnSyncImpl() {
+        spawnCount += 1
         return { status: 0 }
       },
+      stderr: stderr.stream,
     })
 
-    assert.equal(exitCode, 0)
-    assert.equal(existsSync(keepEvidence), true)
-    assert.equal(existsSync(path.join(rootDirectory, '.codex-test-artifacts', 'pytest')), false)
+    assert.notEqual(exitCode, 0)
+    assert.equal(spawnCount, 0)
+    assert.equal(existsSync(fixture.keepEvidence), true)
+    assertSafeLifecycleStderr(stderr.value(), 'PYTEST_TEMP_PREPARE_FAILED', 'unit-api')
   } finally {
-    rmSync(rootDirectory, { recursive: true, force: true })
+    rmSync(fixture.rootDirectory, { recursive: true, force: true })
   }
 })
 
