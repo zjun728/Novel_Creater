@@ -558,6 +558,7 @@ test('a default preparation failure spawns no child and redacts its environment'
     assert.notEqual(exitCode, 0)
     assert.equal(spawnCount, 0)
     assert.equal(existsSync(fixture.keepEvidence), true)
+    assert.equal(existsSync(fixture.pytestNamespace), false)
     assertSafeLifecycleStderr(stderr.value(), 'PYTEST_TEMP_PREPARE_FAILED', 'unit-api')
   } finally {
     rmSync(fixture.rootDirectory, { recursive: true, force: true })
