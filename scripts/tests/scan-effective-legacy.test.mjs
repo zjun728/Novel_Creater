@@ -25,6 +25,25 @@ const formalAcceptancePlans = [
   'docs/superpowers/plans/2026-07-11-m2e-verification-and-live-acceptance.md',
   'docs/superpowers/plans/2026-07-16-formal-test-runner-pytest-temp.md',
 ]
+const frozenBaseline = 'bc0919a2f8464a552c979a9601258fb148d98cac'
+const normativeAmendment = 'b9b19e8ebdeefc3f88e547042cfc925da4adb1cf'
+const expectedFormalGateBlock = `$approvedM2PlanCommit = 'bc0919a2f8464a552c979a9601258fb148d98cac'
+if (-not $env:APPROVED_M2_PLAN_COMMIT) {
+    throw 'APPROVED_M2_PLAN_COMMIT is required'
+}
+if ($env:APPROVED_M2_PLAN_COMMIT -ne $approvedM2PlanCommit) {
+    throw 'APPROVED_M2_PLAN_COMMIT does not match the frozen M2 plan baseline'
+}
+node scripts/scan-m2-artifacts.mjs --base $env:APPROVED_M2_PLAN_COMMIT
+if ($LASTEXITCODE -ne 0) { throw 'M2 artifact gate failed' }
+node scripts/scan-effective-legacy.mjs
+if ($LASTEXITCODE -ne 0) { throw 'Effective legacy gate failed' }`
+const expectedFormalAmendmentParagraph = `The diff baseline remains \`bc0919a2f8464a552c979a9601258fb148d98cac\`.
+The later \`b9b19e8ebdeefc3f88e547042cfc925da4adb1cf\` commit is the normative
+10-style/64-card plan amendment and does not reset the implementation baseline.`
+const rawLegacyAssignmentPattern = (
+  /\$legacyMatches\s*=\s*@\(\s*git\s+diff/iu
+)
 
 const ownDefinition = `// BEGIN RETIRED SHADOW PATTERNS
 export const RETIRED_SHADOW_PATTERNS = Object.freeze([
@@ -110,10 +129,29 @@ function captureCli(dependencies = {}, args = []) {
   return { status, stderr, stdout }
 }
 
-test('formal acceptance plans use the frozen baseline and typed repository gates', async t => {
-  const frozenBaseline = 'bc0919a2f8464a552c979a9601258fb148d98cac'
-  const normativeAmendment = 'b9b19e8ebdeefc3f88e547042cfc925da4adb1cf'
+function countOccurrences(source, fragment) {
+  return source.split(fragment).length - 1
+}
 
+function assertFormalAcceptancePlanContract(source) {
+  assert.equal(
+    countOccurrences(source, expectedFormalGateBlock),
+    1,
+    'formal acceptance plan must contain exactly one approved gate block',
+  )
+  assert.equal(
+    countOccurrences(source, expectedFormalAmendmentParagraph),
+    1,
+    'formal acceptance plan must contain exactly one baseline amendment paragraph',
+  )
+  assert.doesNotMatch(
+    source,
+    rawLegacyAssignmentPattern,
+    'formal acceptance plan must not contain a raw legacy diff assignment',
+  )
+}
+
+test('formal acceptance plans use the frozen baseline and typed repository gates', async t => {
   for (const relativePath of formalAcceptancePlans) {
     await t.test(relativePath, () => {
       const source = readFileSync(
@@ -121,27 +159,41 @@ test('formal acceptance plans use the frozen baseline and typed repository gates
         'utf8',
       )
 
-      assert.deepEqual({
-        frozenBaseline: source.includes(frozenBaseline),
-        normativeAmendment: source.includes(normativeAmendment),
-        typedArtifactGate: source.includes(
-          'node scripts/scan-m2-artifacts.mjs --base $env:APPROVED_M2_PLAN_COMMIT',
-        ),
-        typedLegacyGate: source.includes(
-          'node scripts/scan-effective-legacy.mjs',
-        ),
-        rawLegacyAssignmentAbsent: !source.toLowerCase().includes(
-          '$legacymatches = @(git diff',
-        ),
-      }, {
-        frozenBaseline: true,
-        normativeAmendment: true,
-        typedArtifactGate: true,
-        typedLegacyGate: true,
-        rawLegacyAssignmentAbsent: true,
-      })
+      assertFormalAcceptancePlanContract(source)
     })
   }
+})
+
+test('formal acceptance plan contract rejects a swapped baseline assignment', () => {
+  const validSource = [
+    expectedFormalGateBlock,
+    expectedFormalAmendmentParagraph,
+  ].join('\n\n')
+  const swappedBaselineSource = validSource.replace(
+    `$approvedM2PlanCommit = '${frozenBaseline}'`,
+    `$approvedM2PlanCommit = '${normativeAmendment}'`,
+  )
+
+  assert.throws(
+    () => assertFormalAcceptancePlanContract(swappedBaselineSource),
+    /exactly one approved gate block/u,
+  )
+})
+
+test('formal acceptance plan contract rejects a whitespace-obfuscated raw scan', () => {
+  const validSource = [
+    expectedFormalGateBlock,
+    expectedFormalAmendmentParagraph,
+  ].join('\n\n')
+  const spacedRawSource = [
+    validSource,
+    '$legacyMatches  =  @(\n  git   diff baseline...HEAD\n)',
+  ].join('\n\n')
+
+  assert.throws(
+    () => assertFormalAcceptancePlanContract(spacedRawSource),
+    /must not contain a raw legacy diff assignment/u,
+  )
 })
 
 test('retired pattern inventory is exact and each pattern matches only its own code', () => {
