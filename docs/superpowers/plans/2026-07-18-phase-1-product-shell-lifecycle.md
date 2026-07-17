@@ -609,7 +609,9 @@ Test the store with injected API fakes:
 - rename, archive, restore, and permanent delete for one project are sent and
   applied in invocation order, while different projects remain independent;
 - a failed mutation does not poison the next queued mutation, and a later
-  failure cannot erase an earlier successful mutation.
+  failure cannot erase an earlier successful mutation;
+- a same-project mutation invoked synchronously from inside an adapter cannot
+  start before the outer mutation settles.
 
 Run:
 
@@ -679,6 +681,8 @@ new read starts. A failed read for the new route remains empty; lifecycle
 results for another project cannot repopulate or clear that route-owned slot.
 
 Serialize the four project-ID lifecycle mutations through one per-project tail
+queue. Start even the first operation from a resolved predecessor continuation,
+so its tail is installed before a synchronous adapter can re-enter the same
 queue. Store a rejection-swallowing continuation as the tail but return each
 operation's original promise to its caller. Remove a settled tail only when it
 is still the map entry for that project, so an older completion cannot delete a
@@ -715,18 +719,22 @@ Assert route matching:
 - a project-route refresh calls `loadProject(route.params.projectId)`;
 - an archived response selects `ArchivedProjectStatusView`;
 - a missing project selects `NotFoundView`;
-- a real memory router lazy-loads and server-renders at least one route SFC
-  through Vite's Vue transform.
+- a real memory router lazy-loads and server-renders the loading state of at
+  least one route SFC through Vite's Vue transform.
 
 The repository has no DOM mount harness (`@vue/test-utils`, `jsdom`, or
 `happy-dom`), so this atomic gate uses Vue's server renderer and stubs only
-Naive UI's visual components. DOM event behavior remains the browser gate's
-responsibility; do not add a new test dependency for this task.
+Naive UI's visual components. Its middleware-only Vite server disables HMR and
+WebSocket listeners and must restore global test state even when server
+creation fails. This test covers only lazy SFC loading and its initial loading
+render. Real DOM behavior for archived-to-restored clicks and the missing/error
+views remains mandatory in Task 10's browser gate; do not add a new DOM test
+dependency for this task.
 
 Run:
 
 ```powershell
-node --test frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs
+node --test frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/projectRouteSfcIntegration.test.mjs frontend/tests/unit/m1Navigation.test.mjs
 ```
 
 Expected: FAIL because old routes and wildcard-home redirect remain.
@@ -1086,12 +1094,17 @@ Using real UI actions and API observation:
 7. rename it;
 8. archive it and prove no dialog appeared;
 9. click toast `撤销` and verify it returns;
-10. archive again, open the archived page, and restore directly;
+10. archive again, open the archived page, assert the read-only archived DOM,
+    click its `恢复项目` button, and verify the active overview returns;
 11. archive a third time;
 12. start permanent delete, cancel, and prove no DELETE request occurred;
 13. confirm permanent delete once and prove the project disappears;
-14. visit old and unknown URLs and verify the not-found page;
-15. inspect all captured responses and page text for the secret sentinel.
+14. visit the deleted project's canonical overview and verify the missing
+    project DOM rather than another project or a generic loading shell;
+15. intercept one project detail GET with a deterministic 500 response and
+    verify the recoverable error DOM and retry control;
+16. visit old and unknown URLs and verify the not-found page;
+17. inspect all captured responses and page text for the secret sentinel.
 
 - [ ] **Step 5: Run the browser lane**
 
@@ -1167,6 +1180,8 @@ The acceptance report must include:
 - exact commands and exit codes;
 - disposable database name pattern, never credentials;
 - browser actions completed;
+- explicit browser evidence for archived-to-restored DOM interaction and the
+  project missing/error route states;
 - confirmation that no provider/model was called;
 - confirmation that the product database was not read or written;
 - known deferred scope: Creative Assets, contract/bible, planning, writer loop,

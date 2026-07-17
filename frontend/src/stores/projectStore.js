@@ -24,10 +24,8 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
 
     function enqueueProjectMutation(projectId, operation) {
       const key = String(projectId)
-      const previous = mutationTails.get(key)
-      const result = previous
-        ? previous.then(operation)
-        : Promise.resolve(operation())
+      const previous = mutationTails.get(key) ?? Promise.resolve()
+      const result = previous.then(() => operation())
       const tail = result.then(
         () => undefined,
         () => undefined,
