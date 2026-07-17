@@ -118,10 +118,20 @@ export function runArtifactScannerCli(args = process.argv.slice(2), dependencies
   const listChangedFiles = dependencies.listChangedFiles ?? (requestedBase => (
     listNewGitFiles(rootDirectory, requestedBase)
   ))
-  const readContent = dependencies.readContent ?? (filePath => (
-    readHeadContent(rootDirectory, filePath)
-  ))
-  const getSize = dependencies.getSize ?? (filePath => getHeadSize(rootDirectory, filePath))
+  const verifiedHeadBlobs = new Set()
+  const verifyHeadBlob = filePath => {
+    if (verifiedHeadBlobs.has(filePath)) return
+    assertHeadBlob(rootDirectory, filePath)
+    verifiedHeadBlobs.add(filePath)
+  }
+  const readContent = dependencies.readContent ?? (filePath => {
+    verifyHeadBlob(filePath)
+    return readHeadContent(rootDirectory, filePath)
+  })
+  const getSize = dependencies.getSize ?? (filePath => {
+    verifyHeadBlob(filePath)
+    return getHeadSize(rootDirectory, filePath)
+  })
 
   let findings
   try {
@@ -162,10 +172,11 @@ function listNewGitFiles(rootDirectory, base) {
     'diff',
     '--name-only',
     '--diff-filter=A',
+    '-z',
     verifiedBase + '...HEAD',
     '--',
   ])
-  return result.stdout.split(/\r?\n/u).map(value => value.trim()).filter(Boolean)
+  return result.stdout.split('\0').filter(value => value.length > 0)
 }
 
 function verifyGitCommit(rootDirectory, base) {
@@ -182,6 +193,11 @@ function verifyGitCommit(rootDirectory, base) {
 
 function readHeadContent(rootDirectory, filePath) {
   return spawnGit(rootDirectory, ['show', 'HEAD:' + filePath]).stdout
+}
+
+function assertHeadBlob(rootDirectory, filePath) {
+  const result = spawnGit(rootDirectory, ['cat-file', '-t', 'HEAD:' + filePath])
+  if (result.stdout.trim() !== 'blob') throw new Error('git object is not a blob')
 }
 
 function getHeadSize(rootDirectory, filePath) {

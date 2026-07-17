@@ -49,6 +49,7 @@ function createTemporaryGitRepository(t) {
   runGit(rootDirectory, ['init'])
   runGit(rootDirectory, ['config', 'user.name', 'Artifact Scanner Test'])
   runGit(rootDirectory, ['config', 'user.email', 'artifact-scanner@example.invalid'])
+  runGit(rootDirectory, ['config', 'core.quotePath', 'true'])
   commitRepositoryFile(rootDirectory, 'README.md', 'baseline\n', 'baseline')
   return {
     baseline: runGit(rootDirectory, ['rev-parse', 'HEAD']),
@@ -468,4 +469,59 @@ test('artifact scanner CLI reads a safe committed file larger than the default s
 
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.equal(result.stdout, '')
+})
+
+test('artifact scanner CLI fails closed for a committed gitlink without leaking object details', t => {
+  const { baseline, rootDirectory } = createTemporaryGitRepository(t)
+  const referencedCommit = runGit(rootDirectory, ['rev-parse', 'HEAD'])
+  runGit(rootDirectory, [
+    'update-index',
+    '--add',
+    '--cacheinfo',
+    `160000,${referencedCommit},artifacts/reference`,
+  ])
+  runGit(rootDirectory, ['commit', '-m', 'add gitlink'])
+
+  const result = runScanner(rootDirectory, baseline)
+
+  assert.equal(result.status, 2, result.stderr || result.stdout)
+  assert.equal(result.stdout, '')
+  assert.equal(result.stderr, 'M2 artifact scan failed.\n')
+  assert.equal((result.stdout + result.stderr).includes(referencedCommit), false)
+})
+
+test('artifact scanner CLI preserves a committed Unicode path in findings', t => {
+  const { baseline, rootDirectory } = createTemporaryGitRepository(t)
+  const filePath = 'evidence/证据收据.json'
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  commitRepositoryFile(
+    rootDirectory,
+    filePath,
+    JSON.stringify({ value: syntheticSentinel }),
+    'add Unicode evidence',
+  )
+
+  const result = runScanner(rootDirectory, baseline)
+
+  assert.equal(result.status, 1, result.stderr || result.stdout)
+  assert.equal(result.stdout, `${filePath}: private sentinel content\n`)
+  assert.equal(result.stderr, '')
+  assert.equal((result.stdout + result.stderr).includes(syntheticSentinel), false)
+})
+
+test('artifact scanner CLI preserves a safe top-level path with a leading space', t => {
+  const { baseline, rootDirectory } = createTemporaryGitRepository(t)
+  const filePath = ' evidence.json'
+  commitRepositoryFile(
+    rootDirectory,
+    filePath,
+    JSON.stringify({ matchCount: 0, publicHash: 'safe' }),
+    'add leading-space evidence',
+  )
+
+  const result = runScanner(rootDirectory, baseline)
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.equal(result.stdout, '')
+  assert.equal(result.stderr, '')
 })
