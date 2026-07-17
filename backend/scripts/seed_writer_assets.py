@@ -120,29 +120,36 @@ async def run_cli(
     _validate_database_args(args, connection_config)
     selected_repository = repository or AssetRepository()
 
-    if args.dry_run:
-        if connection_factory is None:
-            from backend.database import connection as connection_factory
+    database_pool_closer = None
+    try:
+        if args.dry_run:
+            if connection_factory is None:
+                from backend.database import close_pool as database_pool_closer
+                from backend.database import connection as connection_factory
+
+            service = AssetSeedService(
+                selected_repository,
+                transaction_factory=None,
+                connection_factory=connection_factory,
+            )
+            report = await service.dry_run(package)
+            output(_format_report(report, mode="dry-run"))
+            return 0
+
+        if transaction_factory is None:
+            from backend.database import close_pool as database_pool_closer
+            from backend.database import transaction as transaction_factory
 
         service = AssetSeedService(
             selected_repository,
-            transaction_factory=None,
-            connection_factory=connection_factory,
+            transaction_factory=transaction_factory,
         )
-        report = await service.dry_run(package)
-        output(_format_report(report, mode="dry-run"))
+        report = await service.seed(package)
+        output(_format_report(report, mode="execute"))
         return 0
-
-    if transaction_factory is None:
-        from backend.database import transaction as transaction_factory
-
-    service = AssetSeedService(
-        selected_repository,
-        transaction_factory=transaction_factory,
-    )
-    report = await service.seed(package)
-    output(_format_report(report, mode="execute"))
-    return 0
+    finally:
+        if database_pool_closer is not None:
+            await database_pool_closer()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

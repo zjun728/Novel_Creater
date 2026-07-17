@@ -474,6 +474,168 @@ async def test_cli_validate_only_uses_fixed_release_manifest_without_database_im
 
 
 @pytest.mark.asyncio
+async def test_cli_dry_run_closes_default_database_pool(monkeypatch, package):
+    repository = MemoryAssetRepository()
+    events = []
+
+    async def close_pool():
+        events.append("close")
+
+    database_runtime = type("DatabaseRuntime", (), {})()
+    database_runtime.connection = readonly_connection(repository)
+    database_runtime.close_pool = close_pool
+    monkeypatch.setitem(
+        __import__("sys").modules, "backend.database", database_runtime
+    )
+
+    code = await run_cli(
+        ["--dry-run", "--database", "writer_core_test"],
+        repository=repository,
+        connection_config={"db": "writer_core_test"},
+        output=lambda value: None,
+    )
+
+    assert code == 0
+    assert events == ["close"]
+
+
+@pytest.mark.asyncio
+async def test_cli_dry_run_closes_default_database_pool_after_service_error(
+    monkeypatch, package
+):
+    repository = MemoryAssetRepository()
+    events = []
+
+    async def fail_list_heads(session, asset_type, *, for_update):
+        raise RuntimeError("injected dry-run failure")
+
+    async def close_pool():
+        events.append("close")
+
+    monkeypatch.setattr(repository, "list_heads", fail_list_heads)
+    database_runtime = type("DatabaseRuntime", (), {})()
+    database_runtime.connection = readonly_connection(repository)
+    database_runtime.close_pool = close_pool
+    monkeypatch.setitem(
+        __import__("sys").modules, "backend.database", database_runtime
+    )
+
+    with pytest.raises(RuntimeError, match="injected dry-run failure"):
+        await run_cli(
+            ["--dry-run", "--database", "writer_core_test"],
+            repository=repository,
+            connection_config={"db": "writer_core_test"},
+        )
+
+    assert events == ["close"]
+
+
+@pytest.mark.asyncio
+async def test_cli_execute_closes_default_database_pool(monkeypatch, package):
+    repository = MemoryAssetRepository()
+    events = []
+
+    async def close_pool():
+        events.append("close")
+
+    database_runtime = type("DatabaseRuntime", (), {})()
+    database_runtime.transaction = MemoryTransactionFactory(repository)
+    database_runtime.close_pool = close_pool
+    monkeypatch.setitem(
+        __import__("sys").modules, "backend.database", database_runtime
+    )
+
+    code = await run_cli(
+        [
+            "--execute",
+            "--database",
+            "writer_core_test",
+            "--confirm-seed",
+            "writer_core_test",
+        ],
+        repository=repository,
+        connection_config={"db": "writer_core_test"},
+        output=lambda value: None,
+    )
+
+    assert code == 0
+    assert events == ["close"]
+
+
+@pytest.mark.asyncio
+async def test_cli_execute_closes_default_database_pool_after_service_error(
+    monkeypatch, package
+):
+    repository = MemoryAssetRepository()
+    repository.fail_on = ("style", package.styles[0].stable_key)
+    events = []
+
+    async def close_pool():
+        events.append("close")
+
+    database_runtime = type("DatabaseRuntime", (), {})()
+    database_runtime.transaction = MemoryTransactionFactory(repository)
+    database_runtime.close_pool = close_pool
+    monkeypatch.setitem(
+        __import__("sys").modules, "backend.database", database_runtime
+    )
+
+    with pytest.raises(RuntimeError, match="injected asset insert failure"):
+        await run_cli(
+            [
+                "--execute",
+                "--database",
+                "writer_core_test",
+                "--confirm-seed",
+                "writer_core_test",
+            ],
+            repository=repository,
+            connection_config={"db": "writer_core_test"},
+        )
+
+    assert events == ["close"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ("dry-run", "execute"))
+async def test_cli_injected_database_factory_does_not_touch_default_pool(
+    monkeypatch, mode
+):
+    class ForbiddenDatabaseModule:
+        def __getattr__(self, name):
+            raise AssertionError(f"injected {mode} imported database member {name}")
+
+    repository = MemoryAssetRepository()
+    monkeypatch.setitem(
+        __import__("sys").modules, "backend.database", ForbiddenDatabaseModule()
+    )
+    if mode == "dry-run":
+        argv = ["--dry-run", "--database", "writer_core_test"]
+        factories = {"connection_factory": readonly_connection(repository)}
+    else:
+        argv = [
+            "--execute",
+            "--database",
+            "writer_core_test",
+            "--confirm-seed",
+            "writer_core_test",
+        ]
+        factories = {
+            "transaction_factory": MemoryTransactionFactory(repository)
+        }
+
+    code = await run_cli(
+        argv,
+        repository=repository,
+        connection_config={"db": "writer_core_test"},
+        output=lambda value: None,
+        **factories,
+    )
+
+    assert code == 0
+
+
+@pytest.mark.asyncio
 async def test_cli_dry_run_reads_heads_but_performs_zero_dml(package):
     repository = MemoryAssetRepository()
     await service_for(repository).seed(package)
