@@ -57,6 +57,25 @@ def seed_payload(title):
     )
 
 
+def m1_seed_premise(title):
+    payload = seed_payload(title)
+    return {
+        "genre": payload.genre,
+        "logline": payload.logline,
+        "protagonist": payload.protagonist,
+        "desire": payload.desire,
+        "coreConflict": payload.coreConflict,
+        "worldPressure": payload.worldPressure,
+        "openingHook": payload.openingHook,
+        "emotionalPromise": "读者看见普通人逐步改变时代",
+        "differentiation": payload.differentiation,
+        "styleTarget": "通俗、具体、以故事推进",
+        "source": "user",
+        "riskNotes": "避免设定堆砌",
+        "endingAnchor": "",
+    }
+
+
 async def create_m1_product_state(session):
     ddl = {
         "schema_metadata": """CREATE TABLE schema_metadata (
@@ -106,10 +125,18 @@ async def create_m1_product_state(session):
         (PROJECT_ID, "永乐大典", "历史穿越", "M1 foundation", 1_000_000, 300, "drafting"),
     )
     for seed_id, title in SEEDS:
-        payload = seed_payload(title)
+        premise = m1_seed_premise(title)
+        status = "selected" if title == "典镇山河" else "candidate"
         await session.execute(
-            "INSERT INTO creative_seeds VALUES (%s,%s,%s,%s,%s,'candidate',1)",
-            (seed_id, PROJECT_ID, title, canonical_json(payload), canonical_hash(payload)),
+            "INSERT INTO creative_seeds VALUES (%s,%s,%s,%s,%s,%s,1)",
+            (
+                seed_id,
+                PROJECT_ID,
+                title,
+                canonical_json(premise),
+                canonical_hash({"title": title, "premise": premise}),
+                status,
+            ),
         )
     await session.execute(
         "INSERT INTO project_selected_seeds VALUES (%s,%s,1)",
@@ -223,6 +250,39 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
 
     connection, session = await open_database(empty_disposable_mysql.connection_config)
     try:
+        seed_rows = await session.fetchall(
+            """SELECT s.id AS seed_id,s.status AS identity_status,
+                      h.revision_id AS head_revision_id,h.revision AS head_revision,
+                      h.content_hash AS head_content_hash,
+                      r.id AS revision_id,r.revision,
+                      r.payload_json,r.content_hash AS revision_content_hash
+               FROM creative_seeds s
+               JOIN creative_seed_heads h ON h.seed_id=s.id
+               JOIN creative_seed_revisions r
+                 ON r.seed_id=h.seed_id AND r.id=h.revision_id
+               WHERE s.project_id=%s
+               ORDER BY s.id""",
+            (PROJECT_ID,),
+        )
+        assert len(seed_rows) == len(SEEDS)
+        assert {row["seed_id"] for row in seed_rows} == {
+            seed_id for seed_id, _ in SEEDS
+        }
+        assert {
+            row["identity_status"] for row in seed_rows
+        } == {"candidate"}
+        for row in seed_rows:
+            assert row["head_revision_id"] == row["revision_id"]
+            assert row["head_revision"] == row["revision"] == 1
+            payload = row["payload_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            assert type(payload) is dict
+            assert set(payload) == set(SeedPayload.model_fields)
+            expected_hash = canonical_hash(payload)
+            assert row["revision_content_hash"] == expected_hash
+            assert row["head_content_hash"] == expected_hash
+
         receipt = await verify_milestone2_product(
             session, expected_database=empty_disposable_mysql.database_name
         )
@@ -274,7 +334,7 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
             "seed-status",
             "UPDATE {database}.creative_seeds SET status='archived' "
             "WHERE id='22222222-2222-2222-2222-222222222223'",
-            "seeds must remain candidates", False, id="seed-status",
+            "seed identities must remain candidates", False, id="seed-status",
         ),
         pytest.param(
             "seed-payload",
