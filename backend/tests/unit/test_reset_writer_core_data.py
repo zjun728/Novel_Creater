@@ -747,6 +747,14 @@ def test_m1_seed_mapping_rejects_oversized_retained_field():
         _map_m1_seed(row, "project")
 
 
+def test_m1_seed_mapping_rejects_title_outside_historical_contract():
+    with pytest.raises(ResetValidationError, match="title/status contract"):
+        _map_m1_seed(
+            _m1_seed_row("陌生种子", status="candidate"),
+            "project",
+        )
+
+
 @pytest.mark.parametrize(
     ("title", "status"),
     (

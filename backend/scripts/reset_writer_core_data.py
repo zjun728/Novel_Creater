@@ -106,6 +106,11 @@ _M2_RETAINED_PREMISE_FIELDS = (
     "genre", "logline", "protagonist", "desire", "coreConflict",
     "worldPressure", "openingHook", "differentiation",
 )
+_M1_SEED_STATUS_BY_TITLE = {
+    "永乐长明": "candidate",
+    "文渊山海": "candidate",
+    "典镇山河": "selected",
+}
 _M1_PROVIDER_COLUMNS = (
     "id", "name", "provider_type", "model_name", "base_url", "api_key",
     "enabled", "sort_order", "stream", "max_context_tokens",
@@ -459,6 +464,12 @@ def _map_m1_seed(row: Mapping[str, object], project_id: str) -> dict[str, object
         raise ResetValidationError("M1 requested seed belongs to another project")
     title = _text(row["title"], "seed.title", max_length=200)
     try:
+        expected_status = _M1_SEED_STATUS_BY_TITLE[title]
+    except KeyError:
+        raise ResetValidationError(
+            "M1 seed title/status contract is not recognized"
+        ) from None
+    try:
         decoded = (
             json.loads(row["premise_json"])
             if isinstance(row["premise_json"], str)
@@ -481,7 +492,6 @@ def _map_m1_seed(row: Mapping[str, object], project_id: str) -> dict[str, object
         raise ResetValidationError(
             "M1 seed content_hash does not match the historical envelope"
         )
-    expected_status = "selected" if title == SELECTED_SEED_TITLE else "candidate"
     if _text(row["status"], "seed.status", max_length=24) != expected_status:
         raise ResetValidationError(
             "M1 seed status does not match its selection role"
