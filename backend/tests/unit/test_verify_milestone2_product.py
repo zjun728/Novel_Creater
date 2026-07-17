@@ -854,6 +854,10 @@ async def test_verifier_requires_exact_explicit_database_identity():
             "Provider count must be positive",
         ),
         (
+            lambda rows: rows["foundation"].update(provider_count=-1),
+            "Provider count must be positive",
+        ),
+        (
             lambda rows: rows["foundation"].update(provider_count=True),
             "field provider_count must be an integer",
         ),

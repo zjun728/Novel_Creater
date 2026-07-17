@@ -69,7 +69,7 @@ def verification_fixture(*, require_l5=False):
             "seedCount": 3,
             "selectedSeedId": "seed-id",
             "selectedSeedTitle": "典镇山河",
-            "providerCount": 2,
+            "providerCount": 9,
             "bindingRevision": 1,
             "contractRevision": 1 if require_l5 else 0,
             "canonRevision": 0,
@@ -181,7 +181,7 @@ async def test_product_session_is_closed_mode_read_only_and_never_drops(
         return {
             "scanValues": provider_secrets,
             "providerFingerprint": "7" * 64,
-            "providerCount": 2,
+            "providerCount": 9,
         }
 
     async def wait_for_input(_prompt):
@@ -377,8 +377,8 @@ async def test_product_session_scans_pre_and_post_secret_snapshots_and_keeps_ver
 
     events = []
     snapshots = iter((
-        {"scanValues": {"pre-key", "https://pre.invalid"}, "providerFingerprint": "9" * 64, "providerCount": 1},
-        {"scanValues": {"pre-key", "https://pre.invalid"}, "providerFingerprint": "9" * 64, "providerCount": 1},
+        {"scanValues": {"pre-key", "https://pre.invalid"}, "providerFingerprint": "9" * 64, "providerCount": 9},
+        {"scanValues": {"pre-key", "https://pre.invalid"}, "providerFingerprint": "9" * 64, "providerCount": 9},
     ))
 
     class Child(FakeChild):
@@ -453,8 +453,8 @@ async def test_product_session_rejects_provider_fingerprint_change_without_secre
     )
 
     snapshots = iter((
-        {"scanValues": {"SECRET_BEFORE"}, "providerFingerprint": "a" * 64, "providerCount": 1},
-        {"scanValues": {"SECRET_AFTER"}, "providerFingerprint": "b" * 64, "providerCount": 1},
+        {"scanValues": {"SECRET_BEFORE"}, "providerFingerprint": "a" * 64, "providerCount": 9},
+        {"scanValues": {"SECRET_AFTER"}, "providerFingerprint": "b" * 64, "providerCount": 9},
     ))
 
     async def loader(*_args):
@@ -548,6 +548,19 @@ async def _async_identity(*_args):
         {"scanValues": set(), "providerFingerprint": "A" * 64, "providerCount": 0},
         {"scanValues": set(), "providerFingerprint": "a" * 64},
         {"scanValues": set(), "providerFingerprint": "a" * 64, "providerCount": -1},
+        {"scanValues": {"secret"}, "providerFingerprint": "a" * 64, "providerCount": 0},
+        {"scanValues": set(), "providerFingerprint": "a" * 64, "providerCount": 1},
+        {
+            "scanValues": {"one", "two", "three"},
+            "providerFingerprint": "a" * 64,
+            "providerCount": 1,
+        },
+        {
+            "scanValues": {"secret", 1},
+            "providerFingerprint": "a" * 64,
+            "providerCount": 1,
+        },
+        {"scanValues": {"secret"}, "providerFingerprint": "a" * 64, "providerCount": True},
     ],
 )
 def test_provider_secret_snapshot_requires_canonical_hash_and_explicit_count(snapshot):
@@ -558,6 +571,24 @@ def test_provider_secret_snapshot_requires_canonical_hash_and_explicit_count(sna
 
     with pytest.raises(ProductSessionSafetyError, match="snapshot"):
         _normalize_sensitive_snapshot(snapshot)
+
+
+def test_provider_secret_snapshot_allows_shared_values_for_dynamic_inventory():
+    from backend.scripts.run_milestone2_product_session import (
+        _normalize_sensitive_snapshot,
+    )
+
+    snapshot = _normalize_sensitive_snapshot({
+        "scanValues": {"shared-key", "https://shared-provider.invalid"},
+        "providerFingerprint": "a" * 64,
+        "providerCount": 9,
+    })
+
+    assert snapshot == {
+        "scanValues": {"shared-key", "https://shared-provider.invalid"},
+        "providerFingerprint": "a" * 64,
+        "providerCount": 9,
+    }
 
 
 def _invalid_exact_receipts():
@@ -591,7 +622,39 @@ def test_product_verification_receipt_requires_exact_mode_schema(mode, receipt):
     )
 
     with pytest.raises(ProductSessionSafetyError, match="verification"):
-        _sanitize_product_verification(receipt, HASH, mode)
+        _sanitize_product_verification(
+            receipt, HASH, mode, expected_provider_count=9
+        )
+
+
+@pytest.mark.parametrize(
+    ("receipt_count", "expected_count"),
+    [
+        (8, 9),
+        (0, 9),
+        (True, 9),
+        (9, 0),
+        (9, True),
+    ],
+)
+def test_product_verification_provider_count_must_match_sensitive_snapshot(
+    receipt_count, expected_count,
+):
+    from backend.scripts.run_milestone2_product_session import (
+        ProductSessionSafetyError,
+        _sanitize_product_verification,
+    )
+
+    receipt = verification_fixture()
+    receipt["product"]["project"]["providerCount"] = receipt_count
+
+    with pytest.raises(ProductSessionSafetyError, match="verification"):
+        _sanitize_product_verification(
+            receipt,
+            HASH,
+            "corpus-import",
+            expected_provider_count=expected_count,
+        )
 
 
 @pytest.mark.parametrize(
@@ -622,7 +685,9 @@ def test_product_verification_rejects_noncanonical_or_unsafe_relative_path(
     receipt = verification_fixture()
     receipt["product"]["corpus"]["relativePath"] = relative_path
     with pytest.raises(ProductSessionSafetyError, match="relativePath"):
-        _sanitize_product_verification(receipt, HASH, "corpus-import")
+        _sanitize_product_verification(
+            receipt, HASH, "corpus-import", expected_provider_count=9
+        )
 
 
 @pytest.mark.asyncio

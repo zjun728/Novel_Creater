@@ -191,15 +191,14 @@ def _normalize_sensitive_snapshot(value: object) -> dict[str, object]:
         or any(not isinstance(item, str) for item in raw_values)
         or not isinstance(fingerprint, str)
         or _HASH.fullmatch(fingerprint) is None
-        or not isinstance(count, int)
-        or isinstance(count, bool)
+        or type(count) is not int
         or count < 0
     ):
         raise ProductSessionSafetyError("Provider secret snapshot was invalid")
     scan_values = {item for item in raw_values if item}
     if (
         (count == 0) != (not scan_values)
-        or (count > 0 and not count <= len(scan_values) <= count * 2)
+        or len(scan_values) > count * 2
     ):
         raise ProductSessionSafetyError(
             "Provider secret snapshot count did not match its normalized values"
@@ -306,7 +305,11 @@ def _exact_versions(value: object, label: str) -> dict[str, str]:
 
 
 def _sanitize_product_verification(
-    value: object, source_hash: str, mode: str,
+    value: object,
+    source_hash: str,
+    mode: str,
+    *,
+    expected_provider_count: int,
 ) -> dict[str, object]:
     _assert_bounded_public_value(value)
     top = _assert_allowed_keys(value, frozenset({"corpus", "product"}), "receipt")
@@ -348,9 +351,17 @@ def _sanitize_product_verification(
     if project["title"] != "永乐大典" or project["selectedSeedTitle"] != "典镇山河":
         raise ProductSessionSafetyError("Product verification project identity is invalid")
     expected_contract_revision = 1 if mode == "provider-l5" else 0
+    provider_count = _require_count(
+        project["providerCount"], "project.providerCount", positive=True
+    )
+    if provider_count != _require_count(
+        expected_provider_count, "expectedProviderCount", positive=True
+    ):
+        raise ProductSessionSafetyError(
+            "Product verification Provider count does not match the secret snapshot"
+        )
     expected_project_values = {
         "seedCount": 3,
-        "providerCount": 2,
         "bindingRevision": 1,
         "contractRevision": expected_contract_revision,
         "canonRevision": 0,
@@ -629,7 +640,10 @@ async def run_product_session(
         )
         _assert_services_live(children)
         verification_evidence = _sanitize_product_verification(
-            raw_verification, source_hash, mode
+            raw_verification,
+            source_hash,
+            mode,
+            expected_provider_count=pre_snapshot["providerCount"],
         )
     except BaseException as exc:
         errors.append(exc)
