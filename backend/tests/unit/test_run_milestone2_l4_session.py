@@ -58,6 +58,7 @@ async def test_l4_session_uses_only_test_authority_and_cleans_in_strict_order(wo
     child_envs = []
     database_envs = []
     commands = []
+    environment = {**TEST_ENV, "USERNAME": "l4-test-operator"}
 
     async def prepare(database, env, log_dir):
         events.append(f"prepare:{database}")
@@ -104,7 +105,7 @@ async def test_l4_session_uses_only_test_authority_and_cleans_in_strict_order(wo
     receipt = await run_l4_session(
         corpus_root=root,
         relative_file="approved.txt",
-        environment=TEST_ENV,
+        environment=environment,
         database_name_factory=lambda: DATABASE,
         nonce_factory=lambda: "strict-order-nonce",
         temp_parent=tmp_path,
@@ -128,14 +129,18 @@ async def test_l4_session_uses_only_test_authority_and_cleans_in_strict_order(wo
     assert all("product-host" not in str(env) for env in child_envs)
     assert all(not any(key.startswith("TEST_MYSQL_") for key in env) for env in child_envs)
     assert database_envs == [
-        {key: TEST_ENV[key] for key in (
-            "TEST_MYSQL_HOST",
-            "TEST_MYSQL_PORT",
-            "TEST_MYSQL_USER",
-            "TEST_MYSQL_PASSWORD",
-        )}
+        {
+            "USERNAME": "l4-test-operator",
+            **{key: TEST_ENV[key] for key in (
+                "TEST_MYSQL_HOST",
+                "TEST_MYSQL_PORT",
+                "TEST_MYSQL_USER",
+                "TEST_MYSQL_PASSWORD",
+            )},
+        }
     ] * 2
     assert all(not any(key.startswith("MYSQL_") for key in env) for env in database_envs)
+    assert all(env["USERNAME"] == "l4-test-operator" for env in child_envs)
     assert commands[0][1] != commands[1][1]
     assert Path(commands[1][1]).name.lower() in {"node", "node.exe"}
     assert commands[1][2][0].endswith("vite.js")
