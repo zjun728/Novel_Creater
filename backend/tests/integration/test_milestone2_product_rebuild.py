@@ -8,10 +8,10 @@ import pytest
 
 from backend.database import DatabaseSession
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
 from backend.domain.seeds import SeedPayload
 from backend.schema_manifest import created_table_names, manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
-from backend.scripts.initialize_database import initialize_database
 from backend.scripts.reset_writer_core_data import (
     V11_MANIFEST_HASH,
     V11_SCHEMA_VERSION,
@@ -19,14 +19,17 @@ from backend.scripts.reset_writer_core_data import (
     ResetPartialStateError,
     ResetRequest,
     ResetValidationError,
-    _PreservedState,
-    _insert_preserved_state,
-    _map_project,
-    _map_provider,
-    _map_v11_seed,
     reset_writer_core_data,
 )
 from backend.scripts.verify_milestone2_product import verify_milestone2_product
+from backend.services.projects import ProjectService
+from backend.services.projections import build_projection_bundle
+from backend.tests.support.frozen_writer_core_v11 import (
+    FROZEN_V11_MANIFEST_HASH,
+    FROZEN_V11_SCHEMA_VERSION,
+    FROZEN_V11_TABLE_NAMES,
+    initialize_frozen_writer_core_v11,
+)
 
 
 pytestmark = pytest.mark.mysql
@@ -73,86 +76,248 @@ def provider_row(
     enabled: int,
     sort_order: int,
 ) -> dict[str, object]:
-    return _map_provider(
-        {
-            "id": provider_id,
-            "name": name,
-            "provider_type": "openai-compatible",
-            "model_name": model,
-            "base_url": f"https://{name}.example/v1",
-            "api_key": f"private-{provider_id}",
-            "enabled": enabled,
-            "sort_order": sort_order,
-            "stream": 1,
-            "max_context_tokens": 200_000,
-            "max_output_tokens": 4_096,
-            "temperature": Decimal("0.800"),
-            "top_p": Decimal("0.900"),
-            "supports_json": 1,
-            "supports_streaming": 1,
-            "notes": "private notes",
-            "thinking": {"mode": "private"},
-            "lifecycle_status": "active",
-            "deleted_at": None,
-            "created_at": 1,
-            "updated_at": 1,
-        }
-    )
+    return {
+        "id": provider_id,
+        "name": name,
+        "provider_type": "openai-compatible",
+        "model_name": model,
+        "base_url": f"https://{name}.example/v1",
+        "api_key": f"private-{provider_id}",
+        "enabled": enabled,
+        "sort_order": sort_order,
+        "stream": 1,
+        "max_context_tokens": 200_000,
+        "max_output_tokens": 4_096,
+        "temperature": Decimal("0.800"),
+        "top_p": Decimal("0.900"),
+        "supports_json": 1,
+        "supports_streaming": 1,
+        "notes": "private notes",
+        "thinking": {"mode": "private"},
+        "lifecycle_status": "active",
+        "deleted_at": None,
+        "created_at": 1,
+        "updated_at": 1,
+    }
 
 
 async def create_frozen_v11_product_state(disposable) -> None:
     """Build a test-only v1.1 source inventory without product DB access."""
-    await initialize_database(
+    assert FROZEN_V11_SCHEMA_VERSION == V11_SCHEMA_VERSION
+    assert FROZEN_V11_MANIFEST_HASH == V11_MANIFEST_HASH
+    assert FROZEN_V11_TABLE_NAMES == V11_TABLE_NAMES
+    await initialize_frozen_writer_core_v11(
         disposable.admin_session,
         disposable.database_name,
-        disposable.database_name,
-        1,
     )
-    project = _map_project(
-        {
-            "id": PROJECT_ID,
-            "title": "永乐大典",
-            "genre": "历史穿越",
-            "description": "v1.1 foundation",
-            "target_words": 1_000_000,
-            "target_chapters": 300,
-            "status": "drafting",
-            "current_chapter": 0,
-            "created_at": 1,
-            "updated_at": 1,
-        }
-    )
+    project = {
+        "id": PROJECT_ID,
+        "title": "永乐大典",
+        "genre": "历史穿越",
+        "description": "v1.1 foundation",
+        "target_words": 1_000_000,
+        "target_chapters": 300,
+        "status": "drafting",
+        "current_chapter": 0,
+        "created_at": 1,
+        "updated_at": 1,
+    }
     seeds = []
     for seed_id, title in SEEDS:
         payload = seed_payload(title)
         seeds.append(
-            _map_v11_seed(
-                {
-                    "id": seed_id,
-                    "project_id": PROJECT_ID,
-                    "title": title,
-                    "premise_json": canonical_json(payload),
-                    "content_hash": canonical_hash(payload),
-                    "status": "candidate",
-                    "created_at": 1,
-                },
-                PROJECT_ID,
-            )
+            {
+                "id": seed_id,
+                "project_id": PROJECT_ID,
+                "title": title,
+                "payload_json": canonical_json(payload),
+                "content_hash": canonical_hash(payload),
+                "status": "candidate",
+                "created_at": 1,
+                "updated_at": 1,
+            }
         )
     providers = tuple(provider_row(*row) for row in PROVIDERS)
     ids = (
         f"44444444-4444-4444-4444-{index:012d}" for index in range(100)
     )
-    await _insert_preserved_state(
-        disposable.session,
-        _PreservedState(project, tuple(seeds), providers, providers[0]),
-        now_ms=1,
-        id_factory=ids.__next__,
+    await disposable.session.execute(
+        """INSERT INTO projects
+           (id,title,genre,description,target_words,target_chapters,status,
+            current_chapter,created_at,updated_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        tuple(
+            project[column]
+            for column in (
+                "id",
+                "title",
+                "genre",
+                "description",
+                "target_words",
+                "target_chapters",
+                "status",
+                "current_chapter",
+                "created_at",
+                "updated_at",
+            )
+        ),
+    )
+    for provider in providers:
+        await disposable.session.execute(
+            """INSERT INTO provider_profiles
+               (id,name,provider_type,model_name,base_url,api_key,enabled,
+                sort_order,stream,max_context_tokens,max_output_tokens,
+                temperature,top_p,supports_json,supports_streaming,notes,
+                thinking,lifecycle_status,deleted_at,created_at,updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s)""",
+            (
+                provider["id"],
+                provider["name"],
+                provider["provider_type"],
+                provider["model_name"],
+                provider["base_url"],
+                provider["api_key"],
+                provider["enabled"],
+                provider["sort_order"],
+                provider["stream"],
+                provider["max_context_tokens"],
+                provider["max_output_tokens"],
+                provider["temperature"],
+                provider["top_p"],
+                provider["supports_json"],
+                provider["supports_streaming"],
+                provider["notes"],
+                json.dumps(provider["thinking"], separators=(",", ":")),
+                provider["lifecycle_status"],
+                provider["deleted_at"],
+                provider["created_at"],
+                provider["updated_at"],
+            ),
+        )
+    seed_revisions = {}
+    for seed in seeds:
+        await disposable.session.execute(
+            """INSERT INTO creative_seeds
+               (id,project_id,status,created_at,updated_at)
+               VALUES (%s,%s,%s,%s,%s)""",
+            (
+                seed["id"],
+                seed["project_id"],
+                seed["status"],
+                seed["created_at"],
+                seed["updated_at"],
+            ),
+        )
+        revision_id = ids.__next__()
+        seed_revisions[str(seed["id"])] = revision_id
+        await disposable.session.execute(
+            """INSERT INTO creative_seed_revisions
+               (id,project_id,seed_id,revision,payload_json,content_hash,
+                created_at)
+               VALUES (%s,%s,%s,1,%s,%s,%s)""",
+            (
+                revision_id,
+                seed["project_id"],
+                seed["id"],
+                seed["payload_json"],
+                seed["content_hash"],
+                seed["created_at"],
+            ),
+        )
+        await disposable.session.execute(
+            """INSERT INTO creative_seed_heads
+               (seed_id,revision_id,revision,content_hash,updated_at)
+               VALUES (%s,%s,1,%s,1)""",
+            (seed["id"], revision_id, seed["content_hash"]),
+        )
+    selected_seed = next(
+        seed for seed in seeds if seed["title"] == "典镇山河"
     )
     await disposable.session.execute(
-        """UPDATE schema_metadata
-           SET schema_version=%s,manifest_hash=%s WHERE singleton_id=1""",
-        (V11_SCHEMA_VERSION, V11_MANIFEST_HASH),
+        """INSERT INTO project_selected_seeds
+           (project_id,seed_id,seed_revision_id,seed_hash,selection_revision,
+            selected_at,updated_at)
+           VALUES (%s,%s,%s,%s,1,1,1)""",
+        (
+            PROJECT_ID,
+            selected_seed["id"],
+            seed_revisions[str(selected_seed["id"])],
+            selected_seed["content_hash"],
+        ),
+    )
+    preferred = providers[0]
+    binding_items = tuple(
+        BindingItem(
+            task_key=task_key,
+            resolution_status="bound",
+            provider_id=str(preferred["id"]),
+            provider_name_snapshot=str(preferred["name"]),
+            model_name_snapshot=str(preferred["model_name"]),
+        )
+        for task_key in TASK_KEYS
+    )
+    binding = BindingRevision(
+        project_id=PROJECT_ID,
+        revision=1,
+        items=binding_items,
+    )
+    binding_id = ids.__next__()
+    binding_hash = canonical_hash(binding)
+    await disposable.session.execute(
+        """INSERT INTO project_model_binding_revisions
+           (id,project_id,revision,content_hash,source_project_id,created_at)
+           VALUES (%s,%s,1,%s,NULL,1)""",
+        (binding_id, PROJECT_ID, binding_hash),
+    )
+    for item in binding_items:
+        await disposable.session.execute(
+            """INSERT INTO project_model_binding_items
+               (binding_revision_id,task_key,resolution_status,provider_id,
+                provider_name_snapshot,model_name_snapshot,item_hash)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                binding_id,
+                item.task_key,
+                item.resolution_status,
+                item.provider_id,
+                item.provider_name_snapshot,
+                item.model_name_snapshot,
+                canonical_hash(item),
+            ),
+        )
+    await disposable.session.execute(
+        """INSERT INTO project_model_binding_heads
+           (project_id,revision,binding_revision_id,content_hash,updated_at)
+           VALUES (%s,1,%s,%s,1)""",
+        (PROJECT_ID, binding_id, binding_hash),
+    )
+    empty_hash = build_projection_bundle(0, ()).content_hash
+    await disposable.session.execute(
+        """INSERT INTO canon_revisions
+           (id,project_id,revision_number,parent_revision_number,
+            idempotency_key,source_type,source_id,content_hash,created_at)
+           VALUES (%s,%s,0,0,%s,'bootstrap',NULL,%s,1)""",
+        (
+            ids.__next__(),
+            PROJECT_ID,
+            ProjectService.bootstrap_idempotency_key(PROJECT_ID),
+            empty_hash,
+        ),
+    )
+    await disposable.session.execute(
+        """INSERT INTO projection_heads
+           (project_id,canon_revision_number,projection_revision_number,
+            content_hash,updated_at)
+           VALUES (%s,0,0,%s,1)""",
+        (PROJECT_ID, empty_hash),
+    )
+    await disposable.session.execute(
+        """INSERT INTO project_contract_heads
+           (project_id,revision,creation_contract_id,style_contract_id,
+            creation_hash,style_hash,updated_at)
+           VALUES (%s,0,NULL,NULL,NULL,NULL,1)""",
+        (PROJECT_ID,),
     )
 
 
@@ -182,6 +347,53 @@ async def open_database(config):
     return connection, DatabaseSession(connection)
 
 
+async def assert_frozen_v11_source_schema(session) -> None:
+    metadata = await session.fetchone(
+        """SELECT schema_version,manifest_hash FROM schema_metadata
+           WHERE singleton_id=1"""
+    )
+    assert metadata == {
+        "schema_version": FROZEN_V11_SCHEMA_VERSION,
+        "manifest_hash": FROZEN_V11_MANIFEST_HASH,
+    }
+    tables = await session.fetchall(
+        """SELECT TABLE_NAME FROM information_schema.TABLES
+           WHERE TABLE_SCHEMA=DATABASE() ORDER BY TABLE_NAME"""
+    )
+    assert tuple(sorted(row["TABLE_NAME"] for row in tables)) == tuple(
+        sorted(FROZEN_V11_TABLE_NAMES)
+    )
+    project_columns = await session.fetchall(
+        """SELECT COLUMN_NAME FROM information_schema.COLUMNS
+           WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='projects'
+           ORDER BY ORDINAL_POSITION"""
+    )
+    assert tuple(row["COLUMN_NAME"] for row in project_columns) == (
+        "id",
+        "title",
+        "genre",
+        "description",
+        "target_words",
+        "target_chapters",
+        "status",
+        "current_chapter",
+        "created_at",
+        "updated_at",
+    )
+    project_table = await session.fetchone("SHOW CREATE TABLE projects")
+    ddl = project_table["Create Table"].lower().replace("`", "")
+    assert "archived_at" not in ddl
+    assert "lifecycle_revision" not in ddl
+    assert "'archived'" in ddl
+    seed_owner_fk = await session.fetchone(
+        """SELECT DELETE_RULE FROM information_schema.REFERENTIAL_CONSTRAINTS
+           WHERE CONSTRAINT_SCHEMA=DATABASE()
+             AND TABLE_NAME='creative_seed_revisions'
+             AND REFERENCED_TABLE_NAME='creative_seeds'"""
+    )
+    assert seed_owner_fk == {"DELETE_RULE": "RESTRICT"}
+
+
 def assert_no_mutating_ddl(proxy: RecordingProxy) -> None:
     forbidden = ("DROP DATABASE", "CREATE DATABASE", "CREATE TABLE")
     assert not any(
@@ -195,6 +407,7 @@ async def test_frozen_v11_rebuilds_to_v12_then_v12_execute_is_noop(
     empty_disposable_mysql,
 ):
     await create_frozen_v11_product_state(empty_disposable_mysql)
+    await assert_frozen_v11_source_schema(empty_disposable_mysql.session)
 
     dry_proxy = RecordingProxy(empty_disposable_mysql.admin_session)
     dry_output = []
