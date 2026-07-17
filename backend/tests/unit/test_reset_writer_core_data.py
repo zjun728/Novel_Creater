@@ -667,6 +667,7 @@ async def test_cli_requires_configured_database_to_match_explicit_target_before_
 
 def test_m1_seed_mapping_converts_exact_historical_envelope_to_current_payload():
     row = _m1_seed_row()
+    assert set(json.loads(row["premise_json"])) == set(M1_PREMISE_FIELDS)
 
     mapped = _map_m1_seed(row, "project")
 
@@ -774,10 +775,32 @@ def test_v11_seed_mapping_accepts_only_current_payload_and_candidate_status():
     mapped = _map_v11_seed(current, "project")
     assert mapped["payload_json"] == canonical_json(payload)
 
-    with pytest.raises(ResetValidationError):
-        _map_v11_seed(_m1_seed_row(), "project")
+    legacy_premise = _m1_premise("典镇山河")
+    legacy = _m1_seed_row(
+        premise_json=canonical_json(legacy_premise),
+        content_hash=canonical_hash(legacy_premise),
+        status="candidate",
+    )
+    with pytest.raises(ResetValidationError, match="current SeedPayload"):
+        _map_v11_seed(legacy, "project")
     with pytest.raises(ResetValidationError, match="candidates"):
         _map_v11_seed({**current, "status": "selected"}, "project")
+
+
+def test_v11_seed_mapping_rejects_current_content_hash_mismatch():
+    payload = _seed_payload("典镇山河")
+    current = {
+        "id": "seed",
+        "project_id": "project",
+        "title": payload.title,
+        "premise_json": canonical_json(payload),
+        "content_hash": "0" * 64,
+        "status": "candidate",
+        "created_at": 1,
+    }
+
+    with pytest.raises(ResetValidationError, match="content_hash"):
+        _map_v11_seed(current, "project")
 
 
 @pytest.mark.asyncio
