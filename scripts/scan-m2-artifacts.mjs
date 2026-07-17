@@ -1,5 +1,4 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -12,6 +11,7 @@ export const M2_REQUIREMENTS_LOCK = 'backend/requirements-m2.lock.txt'
 
 export const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
 export const MAX_TOTAL_ARTIFACT_BYTES = 20 * 1024 * 1024
+const MAX_GIT_OUTPUT_BYTES = 6 * 1024 * 1024
 
 const FORBIDDEN_EBOOK_EXTENSION = /\.(?:epub|mobi)$/iu
 const RAW_TEXT_EXTENSION = /\.txt$/iu
@@ -118,11 +118,10 @@ export function runArtifactScannerCli(args = process.argv.slice(2), dependencies
   const listChangedFiles = dependencies.listChangedFiles ?? (requestedBase => (
     listNewGitFiles(rootDirectory, requestedBase)
   ))
-  const resolvePath = filePath => path.join(rootDirectory, ...filePath.split('/'))
   const readContent = dependencies.readContent ?? (filePath => (
-    readFileSync(resolvePath(filePath), 'utf8')
+    readHeadContent(rootDirectory, filePath)
   ))
-  const getSize = dependencies.getSize ?? (filePath => statSync(resolvePath(filePath)).size)
+  const getSize = dependencies.getSize ?? (filePath => getHeadSize(rootDirectory, filePath))
 
   let findings
   try {
@@ -131,8 +130,8 @@ export function runArtifactScannerCli(args = process.argv.slice(2), dependencies
       getSize,
       readContent,
     })
-  } catch (error) {
-    stderr.write('M2 artifact scan failed: ' + error.message + '\n')
+  } catch {
+    stderr.write('M2 artifact scan failed.\n')
     return 2
   }
 
@@ -181,14 +180,23 @@ function verifyGitCommit(rootDirectory, base) {
   return commit
 }
 
+function readHeadContent(rootDirectory, filePath) {
+  return spawnGit(rootDirectory, ['show', 'HEAD:' + filePath]).stdout
+}
+
+function getHeadSize(rootDirectory, filePath) {
+  const result = spawnGit(rootDirectory, ['cat-file', '-s', 'HEAD:' + filePath])
+  return validateSize(Number(result.stdout.trim()), filePath)
+}
+
 function spawnGit(rootDirectory, args) {
   const result = spawnSync('git', args, {
     cwd: rootDirectory,
     encoding: 'utf8',
+    maxBuffer: MAX_GIT_OUTPUT_BYTES,
     shell: false,
   })
-  if (result.error) throw result.error
-  if (result.status !== 0) throw new Error((result.stderr || 'git command failed').trim())
+  if (result.error || result.status !== 0) throw new Error('git command failed')
   return result
 }
 

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +17,52 @@ const {
 
 const scriptsDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const scannerPath = path.join(scriptsDirectory, 'scan-m2-artifacts.mjs')
+
+function runGit(rootDirectory, args) {
+  const result = spawnSync('git', args, {
+    cwd: rootDirectory,
+    encoding: 'utf8',
+    shell: false,
+  })
+  assert.equal(result.error, undefined)
+  assert.equal(result.status, 0, result.stderr)
+  return result.stdout.trim()
+}
+
+function writeRepositoryFile(rootDirectory, filePath, content) {
+  const absolutePath = path.join(rootDirectory, ...filePath.split('/'))
+  mkdirSync(path.dirname(absolutePath), { recursive: true })
+  writeFileSync(absolutePath, content, 'utf8')
+  return absolutePath
+}
+
+function commitRepositoryFile(rootDirectory, filePath, content, message) {
+  const absolutePath = writeRepositoryFile(rootDirectory, filePath, content)
+  runGit(rootDirectory, ['add', '--', filePath])
+  runGit(rootDirectory, ['commit', '-m', message])
+  return absolutePath
+}
+
+function createTemporaryGitRepository(t) {
+  const rootDirectory = mkdtempSync(path.join(tmpdir(), 'scan-m2-artifacts-'))
+  t.after(() => rmSync(rootDirectory, { recursive: true, force: true }))
+  runGit(rootDirectory, ['init'])
+  runGit(rootDirectory, ['config', 'user.name', 'Artifact Scanner Test'])
+  runGit(rootDirectory, ['config', 'user.email', 'artifact-scanner@example.invalid'])
+  commitRepositoryFile(rootDirectory, 'README.md', 'baseline\n', 'baseline')
+  return {
+    baseline: runGit(rootDirectory, ['rev-parse', 'HEAD']),
+    rootDirectory,
+  }
+}
+
+function runScanner(rootDirectory, baseline) {
+  return spawnSync(process.execPath, [scannerPath, '--base', baseline], {
+    cwd: rootDirectory,
+    encoding: 'utf8',
+    shell: false,
+  })
+}
 
 test('artifact classifier exports the M2 requirements lock and assigns repository roles', () => {
   assert.equal(artifactScanner.M2_REQUIREMENTS_LOCK, 'backend/requirements-m2.lock.txt')
@@ -346,4 +394,78 @@ test('artifact scanner CLI requires an explicit base commit', () => {
 
   assert.equal(result.status, 2)
   assert.match(result.stderr, /--base is required/)
+})
+
+test('artifact scanner CLI reads committed HEAD instead of the dirty worktree', t => {
+  const { baseline, rootDirectory } = createTemporaryGitRepository(t)
+  const safeReceipt = JSON.stringify({ matchCount: 0, publicHash: 'safe' })
+  const receiptPath = commitRepositoryFile(
+    rootDirectory,
+    'evidence/receipt.json',
+    safeReceipt,
+    'add safe receipt',
+  )
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  writeFileSync(receiptPath, JSON.stringify({ value: syntheticSentinel }), 'utf8')
+
+  const result = runScanner(rootDirectory, baseline)
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.equal(readFileSync(receiptPath, 'utf8'), JSON.stringify({ value: syntheticSentinel }))
+  assert.equal((result.stdout + result.stderr).includes(syntheticSentinel), false)
+})
+
+test('artifact scanner CLI reports a committed sentinel by path without echoing its value', t => {
+  const { baseline, rootDirectory } = createTemporaryGitRepository(t)
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  commitRepositoryFile(
+    rootDirectory,
+    'evidence/receipt.json',
+    JSON.stringify({ value: syntheticSentinel }),
+    'add unsafe receipt',
+  )
+
+  const result = runScanner(rootDirectory, baseline)
+
+  assert.equal(result.status, 1, result.stderr)
+  assert.equal(result.stdout, 'evidence/receipt.json: private sentinel content\n')
+  assert.equal(result.stderr, '')
+  assert.equal((result.stdout + result.stderr).includes(syntheticSentinel), false)
+})
+
+test('artifact scanner CLI suppresses injected reader error details', () => {
+  let stdout = ''
+  let stderr = ''
+  const privateReaderMessage = 'PRIVATE_READER_MESSAGE'
+
+  const status = runArtifactScannerCli(['--base', 'baseline'], {
+    getSize: () => 2,
+    listChangedFiles: () => ['evidence/receipt.json'],
+    readContent() {
+      throw new Error(privateReaderMessage)
+    },
+    stderr: { write(chunk) { stderr += chunk } },
+    stdout: { write(chunk) { stdout += chunk } },
+  })
+
+  assert.equal(status, 2)
+  assert.equal(stdout, '')
+  assert.equal(stderr, 'M2 artifact scan failed.\n')
+  assert.equal(stderr.includes(privateReaderMessage), false)
+})
+
+test('artifact scanner CLI reads a safe committed file larger than the default spawn buffer', t => {
+  const { baseline, rootDirectory } = createTemporaryGitRepository(t)
+  const largeSafeSource = '#'.repeat(Math.floor(1.28 * 1024 * 1024))
+  commitRepositoryFile(
+    rootDirectory,
+    'backend/large.py',
+    largeSafeSource,
+    'add large safe source',
+  )
+
+  const result = runScanner(rootDirectory, baseline)
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.equal(result.stdout, '')
 })
