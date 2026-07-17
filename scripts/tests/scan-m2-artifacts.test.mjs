@@ -593,3 +593,73 @@ test('artifact scanner CLI with fully injected readers never touches an invalid 
   assert.equal(stdout, '')
   assert.equal(stderr, '')
 })
+
+test('artifact scanner CLI rejects a raw Git path that normalizes to another blob', t => {
+  const { rootDirectory } = createTemporaryGitRepository(t)
+  commitRepositoryFile(
+    rootDirectory,
+    'evidence/a/b.json',
+    JSON.stringify({ matchCount: 0, publicHash: 'safe' }),
+    'add safe nested evidence',
+  )
+  let stdout = ''
+  let stderr = ''
+
+  const status = runArtifactScannerCli(['--base', 'baseline'], {
+    listChangedFiles: () => ['evidence/a\\b.json'],
+    rootDirectory,
+    stderr: { write(chunk) { stderr += chunk } },
+    stdout: { write(chunk) { stdout += chunk } },
+  })
+
+  assert.equal(status, 2)
+  assert.equal(stdout, '')
+  assert.equal(stderr, 'M2 artifact scan failed.\n')
+})
+
+test('artifact scanner CLI keeps Windows-style paths compatible with fully injected readers', () => {
+  const sizedPaths = []
+  const readPaths = []
+  let stdout = ''
+  let stderr = ''
+
+  const status = runArtifactScannerCli(['--base', 'baseline'], {
+    getSize(filePath) {
+      sizedPaths.push(filePath)
+      return 2
+    },
+    listChangedFiles: () => ['backend\\safe.py'],
+    readContent(filePath) {
+      readPaths.push(filePath)
+      return '#\n'
+    },
+    stderr: { write(chunk) { stderr += chunk } },
+    stdout: { write(chunk) { stdout += chunk } },
+  })
+
+  assert.equal(status, 0)
+  assert.equal(stdout, '')
+  assert.equal(stderr, '')
+  assert.deepEqual(sizedPaths, ['backend/safe.py'])
+  assert.deepEqual(readPaths, ['backend/safe.py'])
+})
+
+test('artifact scanner CLI escapes control characters in finding paths', () => {
+  const filePath = 'evidence/line\nbreak.json'
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  let stdout = ''
+  let stderr = ''
+
+  const status = runArtifactScannerCli(['--base', 'baseline'], {
+    getSize: () => syntheticSentinel.length,
+    listChangedFiles: () => [filePath],
+    readContent: () => syntheticSentinel,
+    stderr: { write(chunk) { stderr += chunk } },
+    stdout: { write(chunk) { stdout += chunk } },
+  })
+
+  assert.equal(status, 1)
+  assert.equal(stdout, 'evidence/line\\nbreak.json: private sentinel content\n')
+  assert.equal(stderr, '')
+  assert.equal(stdout.includes(filePath), false)
+})

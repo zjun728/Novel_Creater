@@ -30,6 +30,7 @@ const PRIVATE_SENTINELS = [
   ['C:', '/private/corpus-root-must-not-leak'].join(''),
 ]
 const PRIVATE_DSN = /\b(?:mysql(?:\+[a-z0-9_-]+)?|postgres(?:ql)?):\/\/[^\s'"\x60]+/iu
+const DIAGNOSTIC_CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/gu
 const LARGE_TEXT_MINIMUM = 20_000
 const LARGE_CJK_MINIMUM = 1_000
 const LARGE_WORD_MINIMUM = 3_000
@@ -137,12 +138,18 @@ export function runArtifactScannerCli(args = process.argv.slice(2), dependencies
 
   let findings
   try {
-    const changedFiles = listChangedFiles(base).map(normalizeRepositoryPath)
+    const rawChangedFiles = listChangedFiles(base)
+    const normalizedChangedFiles = rawChangedFiles.map(normalizeRepositoryPath)
     if (usesDefaultReadContent || usesDefaultGetSize) {
-      for (const filePath of changedFiles) verifyHeadBlob(filePath)
+      for (let index = 0; index < rawChangedFiles.length; index += 1) {
+        if (rawChangedFiles[index] !== normalizedChangedFiles[index]) {
+          throw new Error('ambiguous artifact path')
+        }
+      }
+      for (const filePath of normalizedChangedFiles) verifyHeadBlob(filePath)
     }
     findings = scanM2Artifacts({
-      changedFiles,
+      changedFiles: normalizedChangedFiles,
       getSize,
       readContent,
     })
@@ -152,7 +159,7 @@ export function runArtifactScannerCli(args = process.argv.slice(2), dependencies
   }
 
   for (const finding of findings) {
-    stdout.write(finding.path + ': ' + finding.reason + '\n')
+    stdout.write(escapeDiagnosticPath(finding.path) + ': ' + finding.reason + '\n')
   }
   return findings.length === 0 ? 0 : 1
 }
@@ -271,6 +278,17 @@ function normalizeRepositoryPath(value) {
     throw new Error('changed file is outside repository: ' + value)
   }
   return normalized
+}
+
+function escapeDiagnosticPath(value) {
+  return value.replace(DIAGNOSTIC_CONTROL_CHARACTER, character => {
+    if (character === '\b') return '\\b'
+    if (character === '\t') return '\\t'
+    if (character === '\n') return '\\n'
+    if (character === '\f') return '\\f'
+    if (character === '\r') return '\\r'
+    return '\\u' + character.codePointAt(0).toString(16).padStart(4, '0')
+  })
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : ''
