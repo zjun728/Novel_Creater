@@ -241,7 +241,7 @@ def test_revisioned_seed_and_selection_contracts_are_exact():
     assert "foreign key (seed_id, revision_id, revision, content_hash) references creative_seed_revisions(seed_id, id, revision, content_hash) on delete cascade" in heads
     selected = _table_statement("project_selected_seeds")
     assert "foreign key (project_id, seed_id) references creative_seeds(project_id, id) on delete cascade" in selected
-    assert "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete cascade" in selected
+    assert "foreign key (project_id, seed_id, seed_revision_id) references creative_seed_revisions(project_id, seed_id, id) on delete cascade" in selected
 
 
 def test_provider_and_binding_revisions_encode_closed_state_spaces():
@@ -385,7 +385,7 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
     for contract in (
         "unique key uq_creation_contract_revision (project_id, revision)",
         "unique key uq_creation_contract_id (project_id, id)",
-        "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete cascade",
+        "foreign key (project_id, seed_id, seed_revision_id) references creative_seed_revisions(project_id, seed_id, id) on delete cascade",
         "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete cascade",
         "check (total_word_min > 0 and total_word_max >= total_word_min)",
     ):
@@ -420,3 +420,114 @@ def test_existing_planning_draft_canon_and_projection_tables_remain_present():
         "plot_thread_projections", "projection_heads", "reference_uses",
     }
     assert unchanged <= set(created_table_names())
+
+
+def test_project_private_parent_child_edges_are_project_scoped():
+    expected_contracts = {
+        "project_selected_seeds": (
+            "foreign key (project_id, seed_id, seed_revision_id) references "
+            "creative_seed_revisions(project_id, seed_id, id) on delete cascade",
+        ),
+        "story_engine_batches": (
+            "foreign key (project_id, seed_id, seed_revision_id) references "
+            "creative_seed_revisions(project_id, seed_id, id) on delete cascade",
+        ),
+        "creation_contracts": (
+            "foreign key (project_id, seed_id, seed_revision_id) references "
+            "creative_seed_revisions(project_id, seed_id, id) on delete cascade",
+        ),
+        "story_blocks": (
+            "foreign key (project_id, volume_plan_id) references "
+            "volume_plans(project_id, id) on delete cascade",
+        ),
+        "story_stages": (
+            "foreign key (project_id, story_block_id) references "
+            "story_blocks(project_id, id) on delete cascade",
+        ),
+        "scene_tasks": (
+            "foreign key (project_id, story_stage_id) references "
+            "story_stages(project_id, id) on delete cascade",
+        ),
+        "chapter_sessions": (
+            "foreign key (project_id, story_block_id) references "
+            "story_blocks(project_id, id) on delete cascade",
+        ),
+        "working_drafts": (
+            "foreign key (project_id, chapter_session_id) references "
+            "chapter_sessions(project_id, id) on delete cascade",
+        ),
+        "draft_candidates": (
+            "foreign key (project_id, chapter_session_id) references "
+            "chapter_sessions(project_id, id) on delete cascade",
+        ),
+        "finalization_change_sets": (
+            "foreign key (project_id, draft_candidate_id) references "
+            "draft_candidates(project_id, id) on delete cascade",
+        ),
+        "finalization_records": (
+            "foreign key (project_id, chapter_session_id) references "
+            "chapter_sessions(project_id, id) on delete cascade",
+            "foreign key (project_id, draft_candidate_id) references "
+            "draft_candidates(project_id, id) on delete cascade",
+            "foreign key (project_id, change_set_id) references "
+            "finalization_change_sets(project_id, id) on delete cascade",
+        ),
+        "final_chapters": (
+            "foreign key (project_id, chapter_session_id) references "
+            "chapter_sessions(project_id, id) on delete cascade",
+            "foreign key (project_id, draft_candidate_id) references "
+            "draft_candidates(project_id, id) on delete cascade",
+            "foreign key (project_id, finalization_record_id) references "
+            "finalization_records(project_id, id) on delete cascade",
+        ),
+        "entity_aliases": (
+            "foreign key (project_id, entity_id) references "
+            "canon_entities(project_id, id) on delete cascade",
+        ),
+        "canon_events": (
+            "foreign key (project_id, revision_id) references "
+            "canon_revisions(project_id, id) on delete cascade",
+            "foreign key (project_id, entity_id) references "
+            "canon_entities(project_id, id) on delete cascade",
+        ),
+        "current_state_projections": (
+            "foreign key (project_id, entity_id) references "
+            "canon_entities(project_id, id) on delete cascade",
+        ),
+        "memory_views": (
+            "foreign key (project_id, entity_id) references "
+            "canon_entities(project_id, id) on delete cascade",
+        ),
+        "arc_projections": (
+            "foreign key (project_id, entity_id) references "
+            "canon_entities(project_id, id) on delete cascade",
+        ),
+        "plot_thread_projections": (
+            "foreign key (project_id, entity_id) references "
+            "canon_entities(project_id, id) on delete cascade",
+        ),
+        "reference_uses": (
+            "foreign key (project_id, chapter_session_id) references "
+            "chapter_sessions(project_id, id) on delete cascade",
+            "foreign key (project_id, draft_candidate_id) references "
+            "draft_candidates(project_id, id) on delete cascade",
+        ),
+    }
+    for table_name, contracts in expected_contracts.items():
+        statement = _table_statement(table_name)
+        for contract in contracts:
+            assert contract in statement
+
+    for parent in (
+        "creative_seed_revisions",
+        "volume_plans",
+        "story_blocks",
+        "story_stages",
+        "chapter_sessions",
+        "draft_candidates",
+        "finalization_change_sets",
+        "finalization_records",
+        "canon_entities",
+        "canon_revisions",
+    ):
+        assert "(project_id, id)" in _table_statement(parent)

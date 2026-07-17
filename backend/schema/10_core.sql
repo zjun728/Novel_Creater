@@ -42,6 +42,7 @@ CREATE TABLE creative_seed_revisions (
   UNIQUE KEY uq_seed_revision (seed_id, revision),
   UNIQUE KEY uq_seed_revision_id (seed_id, id),
   UNIQUE KEY uq_seed_revision_project_id (project_id, id),
+  UNIQUE KEY uq_seed_revision_project_seed_id (project_id, seed_id, id),
   UNIQUE KEY uq_seed_revision_fact (seed_id, id, revision, content_hash),
   FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
   CHECK (revision > 0)
@@ -69,7 +70,7 @@ CREATE TABLE project_selected_seeds (
   selected_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, seed_id, seed_revision_id) REFERENCES creative_seed_revisions(project_id, seed_id, id) ON DELETE CASCADE,
   CHECK (selection_revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

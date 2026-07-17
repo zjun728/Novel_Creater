@@ -10,8 +10,9 @@ CREATE TABLE chapter_sessions (
   created_at BIGINT NOT NULL,
   finalized_at BIGINT NULL,
   UNIQUE KEY uq_chapter_session_num (project_id, chapter_num),
+  UNIQUE KEY uq_chapter_session_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (story_block_id) REFERENCES story_blocks(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, story_block_id) REFERENCES story_blocks(project_id, id) ON DELETE CASCADE,
   CHECK (chapter_num > 0),
   CHECK (expected_canon_revision >= 0),
   CHECK (expected_story_block_revision > 0),
@@ -30,7 +31,7 @@ CREATE TABLE working_drafts (
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_working_draft_session (chapter_session_id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (chapter_session_id) REFERENCES chapter_sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -45,8 +46,9 @@ CREATE TABLE draft_candidates (
   provenance_json JSON NOT NULL,
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_candidate_hash (chapter_session_id, content_hash),
+  UNIQUE KEY uq_candidate_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (chapter_session_id) REFERENCES chapter_sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
   CHECK (working_draft_revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -64,8 +66,9 @@ CREATE TABLE finalization_change_sets (
   created_at BIGINT NOT NULL,
   confirmed_at BIGINT NULL,
   UNIQUE KEY uq_changeset_candidate (draft_candidate_id, candidate_hash, expected_canon_revision),
+  UNIQUE KEY uq_changeset_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (draft_candidate_id) REFERENCES draft_candidates(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, draft_candidate_id) REFERENCES draft_candidates(project_id, id) ON DELETE CASCADE,
   CHECK (expected_canon_revision >= 0),
   CHECK (expected_story_block_revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -86,10 +89,11 @@ CREATE TABLE finalization_records (
   finalized_at BIGINT NOT NULL,
   UNIQUE KEY uq_finalization_idempotency (idempotency_key),
   UNIQUE KEY uq_finalization_session (chapter_session_id),
+  UNIQUE KEY uq_finalization_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (chapter_session_id) REFERENCES chapter_sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (draft_candidate_id) REFERENCES draft_candidates(id) ON DELETE CASCADE,
-  FOREIGN KEY (change_set_id) REFERENCES finalization_change_sets(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, draft_candidate_id) REFERENCES draft_candidates(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, change_set_id) REFERENCES finalization_change_sets(project_id, id) ON DELETE CASCADE,
   CHECK (expected_canon_revision >= 0),
   CHECK (committed_canon_revision > expected_canon_revision)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -113,9 +117,9 @@ CREATE TABLE final_chapters (
   UNIQUE KEY uq_final_chapter_candidate (draft_candidate_id),
   UNIQUE KEY uq_final_chapter_record (finalization_record_id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (chapter_session_id) REFERENCES chapter_sessions(id) ON DELETE CASCADE,
-  FOREIGN KEY (draft_candidate_id) REFERENCES draft_candidates(id) ON DELETE CASCADE,
-  FOREIGN KEY (finalization_record_id) REFERENCES finalization_records(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, draft_candidate_id) REFERENCES draft_candidates(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, finalization_record_id) REFERENCES finalization_records(project_id, id) ON DELETE CASCADE,
   CHECK (chapter_num > 0),
   CHECK (canon_revision > 0),
   CHECK (story_block_revision > 0)

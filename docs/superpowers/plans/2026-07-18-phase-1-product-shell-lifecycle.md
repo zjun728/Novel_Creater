@@ -61,12 +61,19 @@
 - Modify: `backend/schema/60_projections.sql`
 - Modify: `backend/schema/70_corpus.sql`
 - Modify: `backend/schema_version.py`
+- Modify: `backend/repositories/project_lifecycle.py`
+- Modify: `backend/repositories/projects.py`
+- Modify: `backend/repositories/model_bindings.py`
 - Modify: `backend/scripts/reset_writer_core_data.py`
 - Modify: `backend/scripts/run_milestone2_product_session.py`
 - Modify: `backend/tests/unit/test_schema_version.py`
 - Modify: `backend/tests/unit/test_schema_manifest.py`
 - Rewrite: `backend/tests/unit/test_reset_writer_core_data.py`
 - Modify: `backend/tests/unit/test_run_milestone2_product_session.py`
+- Modify: `backend/tests/unit/test_project_lifecycle_repository.py`
+- Modify: `backend/tests/unit/test_project_creation.py`
+- Modify: `backend/tests/integration/test_project_archive.py`
+- Rewrite: `backend/tests/integration/test_milestone2_product_rebuild.py`
 - Create: `backend/tests/integration/test_project_ownership_delete.py`
 
 - [ ] **Step 1: Write the schema contract tests**
@@ -85,8 +92,12 @@ assert (
 
 Add a MySQL integration test that initializes a fresh schema, creates two
 projects, gives the second project a binding revision cloned from the first,
-populates the first with a seed, engine option, confirmed contracts, planning,
-chapter session, draft candidate, Canon rows, and projections, then executes:
+populates every project-private table in the ownership graph, and adds shared
+style-template, experience-card, corpus-fragment, and corpus-import descendants.
+Before deleting the source project, attempt representative cross-project parent
+references from the seed, binding, contract, planning, draft/finalization,
+Canon, projection, and reference-use families and assert that every insert is
+rejected. Then execute:
 
 ```python
 await session.execute("DELETE FROM projects WHERE id=%s", (source_project_id,))
@@ -101,6 +112,10 @@ clone = await session.fetchone(
 assert remaining is None
 assert clone["source_project_id"] is None
 ```
+
+After deletion, assert every project-private table has no source-project rows,
+the clone revision remains with a null source, and every shared row and shared
+descendant remains.
 
 - [ ] **Step 2: Run the new tests and verify they fail**
 
@@ -134,6 +149,11 @@ citation history. Keep references to shared rows—provider profiles, style
 templates, experience cards, corpus sources, and corpus chapters—non-cascading;
 project deletion must not delete shared assets.
 
+For every project-private child that also stores `project_id`, scope its parent
+foreign key as `(project_id, parent_id)` and add the matching parent
+`UNIQUE (project_id, id)` key. A globally valid parent ID from another project
+must never satisfy a private child edge.
+
 Set:
 
 ```python
@@ -163,14 +183,19 @@ Run:
 
 ```powershell
 python -m pytest backend/tests/unit/test_schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_reset_writer_core_data.py backend/tests/unit/test_run_milestone2_product_session.py backend/tests/integration/test_project_ownership_delete.py -q
+python -m pytest backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py -q
+python -m pytest backend/tests/integration/test_project_archive.py -q
+python -m pytest backend/tests/integration/test_milestone2_product_rebuild.py -q
 ```
 
-Expected: PASS. The test database is removed by the fixture.
+Expected: PASS. Archive writes preserve workflow status and use
+`archived_at`; the frozen v1.1 reset fixture rebuilds to v1.2; all test
+databases are removed by their fixtures.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add backend/schema backend/schema_version.py backend/scripts/reset_writer_core_data.py backend/scripts/run_milestone2_product_session.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_reset_writer_core_data.py backend/tests/unit/test_run_milestone2_product_session.py backend/tests/integration/test_project_ownership_delete.py
+git add backend/schema backend/schema_version.py backend/repositories/project_lifecycle.py backend/repositories/projects.py backend/repositories/model_bindings.py backend/scripts/reset_writer_core_data.py backend/scripts/run_milestone2_product_session.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_reset_writer_core_data.py backend/tests/unit/test_run_milestone2_product_session.py backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/integration/test_project_archive.py backend/tests/integration/test_milestone2_product_rebuild.py backend/tests/integration/test_project_ownership_delete.py
 git commit -m "feat: define project lifecycle ownership"
 ```
 

@@ -212,12 +212,12 @@ async def test_repository_project_reads_hide_archived_rows():
     assert session.calls == [
         (
             "fetchall",
-            "SELECT * FROM projects WHERE status<>'archived' ORDER BY updated_at DESC, id DESC",
+            "SELECT * FROM projects WHERE archived_at IS NULL ORDER BY updated_at DESC, id DESC",
             None,
         ),
         (
             "fetchone",
-            "SELECT * FROM projects WHERE id=%s AND status<>'archived'",
+            "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL",
             ("p1",),
         ),
     ]
@@ -232,7 +232,7 @@ async def test_repository_locks_only_active_project_on_explicit_session():
     assert session.calls == [
         (
             "fetchone",
-            "SELECT * FROM projects WHERE id=%s AND status<>'archived' FOR UPDATE",
+            "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL FOR UPDATE",
             ("p1",),
         )
     ]
@@ -249,8 +249,8 @@ async def test_repository_archive_checks_conditional_update_rowcount(affected, e
     assert session.calls == [
         (
             "execute",
-            "UPDATE projects SET status='archived',updated_at=%s WHERE id=%s AND status<>'archived'",
-            (123, "p1"),
+            "UPDATE projects SET archived_at=%s,lifecycle_revision=lifecycle_revision+1,updated_at=%s WHERE id=%s AND archived_at IS NULL",
+            (123, 123, "p1"),
         )
     ]
 
@@ -268,7 +268,7 @@ async def test_repository_update_is_conditional_on_active_project(affected, expe
     assert session.calls == [
         (
             "execute",
-            "UPDATE projects SET title=%s, updated_at=%s WHERE id=%s AND status<>'archived'",
+            "UPDATE projects SET title=%s, updated_at=%s WHERE id=%s AND archived_at IS NULL",
             ("Changed", 456, "p1"),
         )
     ]

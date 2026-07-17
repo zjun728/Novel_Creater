@@ -9,6 +9,7 @@ CREATE TABLE volume_plans (
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_volume_num (project_id, volume_num),
+  UNIQUE KEY uq_volume_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (volume_num > 0),
   CHECK (revision > 0),
@@ -28,8 +29,9 @@ CREATE TABLE story_blocks (
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_block_num (project_id, block_num),
+  UNIQUE KEY uq_block_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (volume_plan_id) REFERENCES volume_plans(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, volume_plan_id) REFERENCES volume_plans(project_id, id) ON DELETE CASCADE,
   CHECK (block_num > 0),
   CHECK (revision > 0),
   CHECK (status IN ('planned','active','completed','failed','redirected'))
@@ -48,8 +50,9 @@ CREATE TABLE story_stages (
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_stage_order (story_block_id, stage_order),
+  UNIQUE KEY uq_stage_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (story_block_id) REFERENCES story_blocks(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, story_block_id) REFERENCES story_blocks(project_id, id) ON DELETE CASCADE,
   CHECK (stage_order > 0),
   CHECK (revision > 0),
   CHECK (status IN ('pending','in_progress','completed','cancelled'))
@@ -68,7 +71,7 @@ CREATE TABLE scene_tasks (
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_scene_order (story_stage_id, task_order),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (story_stage_id) REFERENCES story_stages(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, story_stage_id) REFERENCES story_stages(project_id, id) ON DELETE CASCADE,
   CHECK (task_order > 0),
   CHECK (revision > 0),
   CHECK (status IN ('pending','in_progress','completed','cancelled'))

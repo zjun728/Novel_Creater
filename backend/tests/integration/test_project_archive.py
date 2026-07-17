@@ -162,7 +162,9 @@ async def test_delete_archives_project_without_changing_immutable_foundations(
         "SELECT * FROM projects WHERE id=%s", (PROJECT_ID,)
     )
     assert archived is not None
-    assert archived["status"] == "archived"
+    assert archived["status"] == "drafting"
+    assert archived["archived_at"] is not None
+    assert archived["lifecycle_revision"] == 1
     assert await _foundation_snapshot(disposable_mysql.session) == before
     assert not await service.list()
     assert await service.get(PROJECT_ID) is None
@@ -249,9 +251,14 @@ async def test_stale_update_cannot_revive_project_after_concurrent_archive(
     assert not isinstance(update_result, BaseException)
     assert delete_result is None
     row = await disposable_mysql.session.fetchone(
-        "SELECT title,status FROM projects WHERE id=%s", (PROJECT_ID,)
+        """SELECT title,status,archived_at,lifecycle_revision
+             FROM projects WHERE id=%s""",
+        (PROJECT_ID,),
     )
-    assert row == {"title": "Stale title", "status": "archived"}
+    assert row["title"] == "Stale title"
+    assert row["status"] == "drafting"
+    assert row["archived_at"] is not None
+    assert row["lifecycle_revision"] == 1
 
 
 @pytest.mark.asyncio
@@ -303,9 +310,15 @@ async def test_concurrent_double_delete_has_one_success_and_preserves_history(
     assert sum(isinstance(result, http_errors.ProjectNotFound) for result in results) == 1
     assert (
         await disposable_mysql.session.fetchone(
-            "SELECT status FROM projects WHERE id=%s", (PROJECT_ID,)
+            """SELECT status,archived_at,lifecycle_revision
+                 FROM projects WHERE id=%s""",
+            (PROJECT_ID,),
         )
-    )["status"] == "archived"
+    ) == {
+        "status": "drafting",
+        "archived_at": 4_000,
+        "lifecycle_revision": 1,
+    }
     assert await _foundation_snapshot(disposable_mysql.session) == before
 
 

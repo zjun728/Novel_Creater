@@ -5,7 +5,7 @@ from __future__ import annotations
 
 async def read_active_project(session, project_id: str):
     return await session.fetchone(
-        "SELECT * FROM projects WHERE id=%s AND status<>'archived'",
+        "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL",
         (project_id,),
     )
 
@@ -13,6 +13,6 @@ async def read_active_project(session, project_id: str):
 async def lock_active_project(session, project_id: str):
     return await session.fetchone(
         """SELECT * FROM projects
-           WHERE id=%s AND status<>'archived' FOR UPDATE""",
+           WHERE id=%s AND archived_at IS NULL FOR UPDATE""",
         (project_id,),
     )

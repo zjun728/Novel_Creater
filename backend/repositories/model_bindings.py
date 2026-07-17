@@ -37,7 +37,7 @@ class ModelBindingRepository:
     async def lock_previous_project(self, session, project_id: str):
         return await session.fetchone(
             """SELECT id FROM projects
-               WHERE id<>%s AND status<>'archived'
+               WHERE id<>%s AND archived_at IS NULL
                ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE""",
             (project_id,),
         )

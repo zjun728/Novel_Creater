@@ -40,7 +40,7 @@ class ProjectRepository:
 
     async def list(self, session):
         return await session.fetchall(
-            """SELECT * FROM projects WHERE status<>'archived'
+            """SELECT * FROM projects WHERE archived_at IS NULL
                ORDER BY updated_at DESC, id DESC"""
         )
 
@@ -51,10 +51,12 @@ class ProjectRepository:
         return await lock_active_project(session, project_id)
 
     async def archive(self, session, project_id: str) -> bool:
+        now = self._clock()
         changed = await session.execute(
-            """UPDATE projects SET status='archived',updated_at=%s
-               WHERE id=%s AND status<>'archived'""",
-            (self._clock(), project_id),
+            """UPDATE projects
+               SET archived_at=%s,lifecycle_revision=lifecycle_revision+1,updated_at=%s
+               WHERE id=%s AND archived_at IS NULL""",
+            (now, now, project_id),
         )
         return changed == 1
 
@@ -77,7 +79,7 @@ class ProjectRepository:
         args.extend((self._clock(), project_id))
         changed = await session.execute(
             f"UPDATE projects SET {', '.join(sets)} "
-            "WHERE id=%s AND status<>'archived'",
+            "WHERE id=%s AND archived_at IS NULL",
             tuple(args),
         )
         return changed == 1

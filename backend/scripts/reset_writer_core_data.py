@@ -446,7 +446,9 @@ def _map_provider(row: Mapping[str, object]) -> dict[str, object]:
     base_url = _text(row["base_url"], "provider.base_url", max_length=2048)
     api_key = _text(row["api_key"], "provider.api_key", max_length=65_535)
     if not base_url or not api_key:
-        raise ResetValidationError("M1 Provider requires non-empty connection fields")
+        raise ResetValidationError(
+            "Preserved Provider requires non-empty connection fields"
+        )
     lifecycle_status = _text(
         row.get("lifecycle_status", "active"),
         "provider.lifecycle_status",

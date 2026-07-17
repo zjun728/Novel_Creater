@@ -30,11 +30,11 @@ async def test_shared_project_lifecycle_reads_and_locks_only_active_projects():
 
     assert session.calls == [
         (
-            "SELECT * FROM projects WHERE id=%s AND status<>'archived'",
+            "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL",
             ("p1",),
         ),
         (
-            "SELECT * FROM projects WHERE id=%s AND status<>'archived' FOR UPDATE",
+            "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL FOR UPDATE",
             ("p1",),
         ),
     ]
@@ -93,7 +93,7 @@ async def test_previous_binding_source_excludes_archived_projects():
 
     assert session.calls == [
         (
-            "SELECT id FROM projects WHERE id<>%s AND status<>'archived' ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE",
+            "SELECT id FROM projects WHERE id<>%s AND archived_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE",
             ("p1",),
         )
     ]

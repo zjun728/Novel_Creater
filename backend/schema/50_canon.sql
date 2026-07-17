@@ -7,6 +7,7 @@ CREATE TABLE canon_entities (
   created_revision INT NOT NULL,
   created_at BIGINT NOT NULL,
   KEY ix_entity_name (project_id, entity_type, normalized_name),
+  UNIQUE KEY uq_entity_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (entity_type IN ('person','organization','place','item')),
   CHECK (created_revision >= 0)
@@ -24,7 +25,7 @@ CREATE TABLE entity_aliases (
   UNIQUE KEY uq_entity_alias (project_id, entity_id, normalized_alias),
   KEY ix_alias_lookup (project_id, normalized_alias),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, entity_id) REFERENCES canon_entities(project_id, id) ON DELETE CASCADE,
   CHECK (created_revision >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -41,6 +42,7 @@ CREATE TABLE canon_revisions (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_revision_number (project_id, revision_number),
   UNIQUE KEY uq_revision_idempotency (project_id, idempotency_key),
+  UNIQUE KEY uq_revision_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   CHECK (revision_number >= 0),
   CHECK (parent_revision_number >= 0),
@@ -67,8 +69,8 @@ CREATE TABLE canon_events (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_event_order (project_id, revision_number, event_order),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (revision_id) REFERENCES canon_revisions(id) ON DELETE CASCADE,
-  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, revision_id) REFERENCES canon_revisions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, entity_id) REFERENCES canon_entities(project_id, id) ON DELETE CASCADE,
   CHECK (revision_number >= 0),
   CHECK (event_order > 0),
   CHECK (fact_kind IN ('stable_definition','dynamic_event','claim')),

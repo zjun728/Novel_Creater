@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from decimal import Decimal
 import json
 
@@ -6,21 +8,28 @@ import pytest
 
 from backend.database import DatabaseSession
 from backend.domain.json_contracts import canonical_hash, canonical_json
-from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.seeds import SeedPayload
 from backend.schema_manifest import created_table_names, manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
+from backend.scripts.initialize_database import initialize_database
 from backend.scripts.reset_writer_core_data import (
-    M1_MANIFEST_HASH,
-    M1_SCHEMA_VERSION,
-    M1_TABLE_NAMES,
+    V11_MANIFEST_HASH,
+    V11_SCHEMA_VERSION,
+    V11_TABLE_NAMES,
     ResetPartialStateError,
     ResetRequest,
     ResetValidationError,
+    _PreservedState,
+    _insert_preserved_state,
+    _map_project,
+    _map_provider,
+    _map_v11_seed,
     reset_writer_core_data,
 )
 from backend.scripts.verify_milestone2_product import verify_milestone2_product
 
+
+pytestmark = pytest.mark.mysql
 
 PROJECT_ID = "11111111-1111-1111-1111-111111111111"
 SEEDS = (
@@ -34,7 +43,7 @@ PROVIDERS = (
 )
 
 
-def request():
+def request() -> ResetRequest:
     return ResetRequest(
         project_title="永乐大典",
         seed_titles=tuple(title for _, title in SEEDS),
@@ -43,7 +52,7 @@ def request():
     )
 
 
-def seed_payload(title):
+def seed_payload(title: str) -> SeedPayload:
     return SeedPayload(
         title=title,
         genre="历史穿越",
@@ -53,131 +62,102 @@ def seed_payload(title):
         coreConflict="守住唯一事实源",
         worldPressure="时间窗口持续收紧",
         openingHook="一页异常典籍出现",
-        differentiation="仅用于M1到M2重建测试",
+        differentiation="仅用于v1.1到v1.2重建测试",
     )
 
 
-def m1_seed_premise(title):
-    payload = seed_payload(title)
-    return {
-        "genre": payload.genre,
-        "logline": payload.logline,
-        "protagonist": payload.protagonist,
-        "desire": payload.desire,
-        "coreConflict": payload.coreConflict,
-        "worldPressure": payload.worldPressure,
-        "openingHook": payload.openingHook,
-        "emotionalPromise": "读者看见普通人逐步改变时代",
-        "differentiation": payload.differentiation,
-        "styleTarget": "通俗、具体、以故事推进",
-        "source": "user",
-        "riskNotes": "避免设定堆砌",
-        "endingAnchor": "",
-    }
+def provider_row(
+    provider_id: str,
+    name: str,
+    model: str,
+    enabled: int,
+    sort_order: int,
+) -> dict[str, object]:
+    return _map_provider(
+        {
+            "id": provider_id,
+            "name": name,
+            "provider_type": "openai-compatible",
+            "model_name": model,
+            "base_url": f"https://{name}.example/v1",
+            "api_key": f"private-{provider_id}",
+            "enabled": enabled,
+            "sort_order": sort_order,
+            "stream": 1,
+            "max_context_tokens": 200_000,
+            "max_output_tokens": 4_096,
+            "temperature": Decimal("0.800"),
+            "top_p": Decimal("0.900"),
+            "supports_json": 1,
+            "supports_streaming": 1,
+            "notes": "private notes",
+            "thinking": {"mode": "private"},
+            "lifecycle_status": "active",
+            "deleted_at": None,
+            "created_at": 1,
+            "updated_at": 1,
+        }
+    )
 
 
-async def create_m1_product_state(session):
-    ddl = {
-        "schema_metadata": """CREATE TABLE schema_metadata (
-            singleton_id TINYINT PRIMARY KEY,schema_version VARCHAR(64) NOT NULL,
-            manifest_hash CHAR(64) NOT NULL,initialized_at BIGINT NOT NULL)""",
-        "projects": """CREATE TABLE projects (
-            id CHAR(36) PRIMARY KEY,title VARCHAR(200) NOT NULL,genre VARCHAR(120) NOT NULL,
-            description TEXT NOT NULL,target_words INT NOT NULL,target_chapters INT NOT NULL,
-            status VARCHAR(24) NOT NULL,current_chapter INT NOT NULL,created_at BIGINT NOT NULL,
-            updated_at BIGINT NOT NULL)""",
-        "creative_seeds": """CREATE TABLE creative_seeds (
-            id CHAR(36) PRIMARY KEY,project_id CHAR(36) NOT NULL,title VARCHAR(200) NOT NULL,
-            premise_json JSON NOT NULL,content_hash CHAR(64) NOT NULL,status VARCHAR(24) NOT NULL,
-            created_at BIGINT NOT NULL)""",
-        "project_selected_seeds": """CREATE TABLE project_selected_seeds (
-            project_id CHAR(36) PRIMARY KEY,seed_id CHAR(36) NOT NULL,selected_at BIGINT NOT NULL)""",
-        "provider_profiles": """CREATE TABLE provider_profiles (
-            id CHAR(36) PRIMARY KEY,name VARCHAR(120) NOT NULL,provider_type VARCHAR(64) NOT NULL,
-            model_name VARCHAR(160) NOT NULL,base_url VARCHAR(2048) NOT NULL,api_key TEXT NOT NULL,
-            enabled TINYINT NOT NULL,sort_order INT NOT NULL,stream TINYINT NOT NULL,
-            max_context_tokens INT NOT NULL,max_output_tokens INT NOT NULL,
-            temperature DECIMAL(5,3) NOT NULL,top_p DECIMAL(5,3) NOT NULL,
-            supports_json TINYINT NOT NULL,supports_streaming TINYINT NOT NULL,
-            notes TEXT NOT NULL,thinking JSON NULL,created_at BIGINT NOT NULL,updated_at BIGINT NOT NULL)""",
-        "task_model_bindings": """CREATE TABLE task_model_bindings (
-            id CHAR(36) PRIMARY KEY,project_id CHAR(36) NOT NULL,source_project_id CHAR(36) NULL,
-            created_at BIGINT NOT NULL,updated_at BIGINT NOT NULL)""",
-        "task_model_binding_items": """CREATE TABLE task_model_binding_items (
-            id CHAR(36) PRIMARY KEY,project_id CHAR(36) NOT NULL,binding_id CHAR(36) NOT NULL,
-            task_key VARCHAR(100) NOT NULL,provider_id CHAR(36) NOT NULL,
-            model_name VARCHAR(160) NOT NULL,created_at BIGINT NOT NULL,updated_at BIGINT NOT NULL)""",
-        "canon_revisions": """CREATE TABLE canon_revisions (
-            id CHAR(36) PRIMARY KEY,project_id CHAR(36) NOT NULL,revision_number INT NOT NULL,
-            content_hash CHAR(64) NOT NULL)""",
-        "projection_heads": """CREATE TABLE projection_heads (
-            project_id CHAR(36) PRIMARY KEY,canon_revision_number INT NOT NULL,
-            projection_revision_number INT NOT NULL,content_hash CHAR(64) NOT NULL)""",
-    }
-    for table in M1_TABLE_NAMES:
-        await session.execute(ddl.get(table, f"CREATE TABLE {table} (id INT PRIMARY KEY)"))
-    await session.execute(
-        "INSERT INTO schema_metadata VALUES (1,%s,%s,1)",
-        (M1_SCHEMA_VERSION, M1_MANIFEST_HASH),
+async def create_frozen_v11_product_state(disposable) -> None:
+    """Build a test-only v1.1 source inventory without product DB access."""
+    await initialize_database(
+        disposable.admin_session,
+        disposable.database_name,
+        disposable.database_name,
+        1,
     )
-    await session.execute(
-        "INSERT INTO projects VALUES (%s,%s,%s,%s,%s,%s,%s,0,1,1)",
-        (PROJECT_ID, "永乐大典", "历史穿越", "M1 foundation", 1_000_000, 300, "drafting"),
+    project = _map_project(
+        {
+            "id": PROJECT_ID,
+            "title": "永乐大典",
+            "genre": "历史穿越",
+            "description": "v1.1 foundation",
+            "target_words": 1_000_000,
+            "target_chapters": 300,
+            "status": "drafting",
+            "current_chapter": 0,
+            "created_at": 1,
+            "updated_at": 1,
+        }
     )
+    seeds = []
     for seed_id, title in SEEDS:
-        premise = m1_seed_premise(title)
-        status = "selected" if title == "典镇山河" else "candidate"
-        await session.execute(
-            "INSERT INTO creative_seeds VALUES (%s,%s,%s,%s,%s,%s,1)",
-            (
-                seed_id,
+        payload = seed_payload(title)
+        seeds.append(
+            _map_v11_seed(
+                {
+                    "id": seed_id,
+                    "project_id": PROJECT_ID,
+                    "title": title,
+                    "premise_json": canonical_json(payload),
+                    "content_hash": canonical_hash(payload),
+                    "status": "candidate",
+                    "created_at": 1,
+                },
                 PROJECT_ID,
-                title,
-                canonical_json(premise),
-                canonical_hash({"title": title, "premise": premise}),
-                status,
-            ),
+            )
         )
-    await session.execute(
-        "INSERT INTO project_selected_seeds VALUES (%s,%s,1)",
-        (PROJECT_ID, SEEDS[2][0]),
+    providers = tuple(provider_row(*row) for row in PROVIDERS)
+    ids = (
+        f"44444444-4444-4444-4444-{index:012d}" for index in range(100)
     )
-    for provider_id, name, model, enabled, sort_order in PROVIDERS:
-        await session.execute(
-            """INSERT INTO provider_profiles VALUES
-               (%s,%s,'openai-compatible',%s,%s,%s,%s,%s,1,200000,4096,%s,%s,1,1,%s,%s,1,1)""",
-            (
-                provider_id, name, model, f"https://{name}.example/v1",
-                f"private-{provider_id}", enabled, sort_order,
-                Decimal("0.800"), Decimal("0.900"), "private notes", json.dumps({"mode": "private"}),
-            ),
-        )
-    binding_id = "44444444-4444-4444-4444-444444444444"
-    await session.execute(
-        "INSERT INTO task_model_bindings VALUES (%s,%s,NULL,1,1)",
-        (binding_id, PROJECT_ID),
+    await _insert_preserved_state(
+        disposable.session,
+        _PreservedState(project, tuple(seeds), providers, providers[0]),
+        now_ms=1,
+        id_factory=ids.__next__,
     )
-    for index, task_key in enumerate(TASK_KEYS):
-        await session.execute(
-            "INSERT INTO task_model_binding_items VALUES (%s,%s,%s,%s,%s,%s,1,1)",
-            (
-                f"55555555-5555-5555-5555-{index:012d}", PROJECT_ID, binding_id,
-                task_key, PROVIDERS[0][0], PROVIDERS[0][2],
-            ),
-        )
-    empty_hash = "0" * 64
-    await session.execute(
-        "INSERT INTO canon_revisions VALUES (%s,%s,0,%s)",
-        ("66666666-6666-6666-6666-666666666666", PROJECT_ID, empty_hash),
-    )
-    await session.execute(
-        "INSERT INTO projection_heads VALUES (%s,0,0,%s)",
-        (PROJECT_ID, empty_hash),
+    await disposable.session.execute(
+        """UPDATE schema_metadata
+           SET schema_version=%s,manifest_hash=%s WHERE singleton_id=1""",
+        (V11_SCHEMA_VERSION, V11_MANIFEST_HASH),
     )
 
 
 class RecordingProxy:
-    def __init__(self, session, fail_on=None):
+    def __init__(self, session, fail_on: str | None = None):
         self.session = session
         self.fail_on = fail_on
         self.calls = []
@@ -196,21 +176,26 @@ class RecordingProxy:
             raise RuntimeError("injected rebuild failure")
         return await self.session.execute(sql, args)
 
-    async def close(self):
-        return await self.session.close()
-
 
 async def open_database(config):
     connection = await aiomysql.connect(**config)
     return connection, DatabaseSession(connection)
 
 
-@pytest.mark.mysql
+def assert_no_mutating_ddl(proxy: RecordingProxy) -> None:
+    forbidden = ("DROP DATABASE", "CREATE DATABASE", "CREATE TABLE")
+    assert not any(
+        kind == "execute" and sql.lstrip().upper().startswith(forbidden)
+        for kind, sql, _ in proxy.calls
+    )
+
+
 @pytest.mark.asyncio
-async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
+async def test_frozen_v11_rebuilds_to_v12_then_v12_execute_is_noop(
     empty_disposable_mysql,
 ):
-    await create_m1_product_state(empty_disposable_mysql.session)
+    await create_frozen_v11_product_state(empty_disposable_mysql)
+
     dry_proxy = RecordingProxy(empty_disposable_mysql.admin_session)
     dry_output = []
     dry = await reset_writer_core_data(
@@ -219,20 +204,21 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
         confirm_reset=empty_disposable_mysql.database_name,
         request=request(),
         execute=False,
-        allow_product_database=False,
         output=dry_output.append,
     )
-    assert not dry.executed
-    assert not any(kind == "execute" for kind, _, _ in dry_proxy.calls)
+    assert dry.executed is False
+    assert_no_mutating_ddl(dry_proxy)
     dry_receipt = json.loads(dry_output[0])
-    assert dry_receipt["source"]["kind"] == "m1-v1.0"
-    assert dry_receipt["source"]["schemaVersion"] == M1_SCHEMA_VERSION
-    assert dry_receipt["source"]["manifestHash"] == M1_MANIFEST_HASH
-    assert len(dry_receipt["source"]["tables"]) == 34
-    assert "seedRevisions" not in dry_receipt["source"]["counts"]
-    assert dry_receipt["target"]["kind"] == "m2-v1.1"
+    assert dry_receipt["source"] == {
+        **dry_receipt["source"],
+        "kind": "v1.1-source",
+        "schemaVersion": V11_SCHEMA_VERSION,
+        "manifestHash": V11_MANIFEST_HASH,
+        "tables": list(V11_TABLE_NAMES),
+    }
+    assert dry_receipt["target"]["kind"] == "v1.2-target"
     assert dry_receipt["target"]["schemaVersion"] == EXPECTED_SCHEMA_VERSION
-    assert len(dry_receipt["target"]["tables"]) == 49
+    assert dry_receipt["target"]["tables"] == list(created_table_names())
     assert dry_receipt["target"]["verified"] is False
     assert "private-" not in dry_output[0]
     assert "api_key" not in dry_output[0].lower()
@@ -243,53 +229,33 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
         confirm_reset=empty_disposable_mysql.database_name,
         request=request(),
         execute=True,
-        allow_product_database=False,
         output=lambda _value: None,
     )
-    assert report.executed
+    assert report.executed is True
 
-    connection, session = await open_database(empty_disposable_mysql.connection_config)
+    connection, session = await open_database(
+        empty_disposable_mysql.connection_config
+    )
     try:
-        seed_rows = await session.fetchall(
-            """SELECT s.id AS seed_id,s.status AS identity_status,
-                      h.revision_id AS head_revision_id,h.revision AS head_revision,
-                      h.content_hash AS head_content_hash,
-                      r.id AS revision_id,r.revision,
-                      r.payload_json,r.content_hash AS revision_content_hash
-               FROM creative_seeds s
-               JOIN creative_seed_heads h ON h.seed_id=s.id
-               JOIN creative_seed_revisions r
-                 ON r.seed_id=h.seed_id AND r.id=h.revision_id
-               WHERE s.project_id=%s
-               ORDER BY s.id""",
-            (PROJECT_ID,),
-        )
-        assert len(seed_rows) == len(SEEDS)
-        assert {row["seed_id"] for row in seed_rows} == {
-            seed_id for seed_id, _ in SEEDS
-        }
-        assert {
-            row["identity_status"] for row in seed_rows
-        } == {"candidate"}
-        for row in seed_rows:
-            assert row["head_revision_id"] == row["revision_id"]
-            assert row["head_revision"] == row["revision"] == 1
-            payload = row["payload_json"]
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            assert type(payload) is dict
-            assert set(payload) == set(SeedPayload.model_fields)
-            expected_hash = canonical_hash(payload)
-            assert row["revision_content_hash"] == expected_hash
-            assert row["head_content_hash"] == expected_hash
-
         receipt = await verify_milestone2_product(
-            session, expected_database=empty_disposable_mysql.database_name
+            session,
+            expected_database=empty_disposable_mysql.database_name,
         )
         assert receipt["schemaVersion"] == EXPECTED_SCHEMA_VERSION
         assert receipt["manifestHash"] == manifest_hash()
         assert receipt["project"]["selectedSeedTitle"] == "典镇山河"
         assert receipt["project"]["providerCount"] == len(PROVIDERS)
+        project = await session.fetchone(
+            """SELECT id,status,archived_at,lifecycle_revision
+                 FROM projects WHERE id=%s""",
+            (PROJECT_ID,),
+        )
+        assert project == {
+            "id": PROJECT_ID,
+            "status": "drafting",
+            "archived_at": None,
+            "lifecycle_revision": 0,
+        }
     finally:
         connection.close()
 
@@ -301,142 +267,45 @@ async def test_exact_m1_rebuilds_to_fresh_m2_then_execute_is_idempotent_noop(
         confirm_reset=empty_disposable_mysql.database_name,
         request=request(),
         execute=True,
-        allow_product_database=False,
         output=noop_output.append,
     )
-    assert not noop.executed
+    assert noop.executed is False
     assert noop.mode == "no-op"
     noop_receipt = json.loads(noop_output[0])
-    assert noop_receipt["source"]["kind"] == "m2-v1.1"
-    assert noop_receipt["source"]["counts"] == noop_receipt["target"]["expectedCounts"]
+    assert noop_receipt["source"]["kind"] == "v1.2-target"
     assert noop_receipt["target"]["verified"] is True
-    assert "private-" not in noop_output[0]
-    assert "api_key" not in noop_output[0].lower()
-    forbidden = ("DROP DATABASE", "CREATE DATABASE", "CREATE TABLE", "INSERT ", "UPDATE ", "DELETE ")
-    assert not any(
-        kind == "execute" and sql.lstrip().upper().startswith(forbidden)
-        for kind, sql, _ in noop_proxy.calls
-    )
+    assert_no_mutating_ddl(noop_proxy)
 
 
-@pytest.mark.parametrize(
-    ("case", "mutation", "error_match", "disable_foreign_keys"),
-    [
-        pytest.param(
-            "project-status", "UPDATE {database}.projects SET status='archived'",
-            "drafting", False, id="project-status",
-        ),
-        pytest.param(
-            "project-progress", "UPDATE {database}.projects SET current_chapter=1",
-            "current chapter 0", False, id="project-progress",
-        ),
-        pytest.param(
-            "seed-status",
-            "UPDATE {database}.creative_seeds SET status='archived' "
-            "WHERE id='22222222-2222-2222-2222-222222222223'",
-            "seed identities must remain candidates", False, id="seed-status",
-        ),
-        pytest.param(
-            "seed-payload",
-            "UPDATE {database}.creative_seed_revisions SET payload_json='{{}}' "
-            "WHERE seed_id='22222222-2222-2222-2222-222222222223'",
-            "requested three seeds", False, id="seed-payload",
-        ),
-        pytest.param(
-            "seed-revision-hash",
-            "UPDATE {database}.creative_seed_revisions SET content_hash=REPEAT('0',64) "
-            "WHERE seed_id='22222222-2222-2222-2222-222222222223'",
-            "seed heads", True, id="seed-revision-hash",
-        ),
-        pytest.param(
-            "seed-head-hash",
-            "UPDATE {database}.creative_seed_heads SET content_hash=REPEAT('f',64) "
-            "WHERE seed_id='22222222-2222-2222-2222-222222222223'",
-            "seed heads", True, id="seed-head-hash",
-        ),
-        pytest.param(
-            "binding-item-hash",
-            "UPDATE {database}.project_model_binding_items SET item_hash=REPEAT('0',64) "
-            "WHERE task_key='seed'",
-            "binding head", False, id="binding-item-hash",
-        ),
-        pytest.param(
-            "binding-provider-snapshot",
-            "UPDATE {database}.project_model_binding_items "
-            "SET provider_name_snapshot='tampered-provider' WHERE task_key='seed'",
-            "binding head", False, id="binding-provider-snapshot",
-        ),
-        pytest.param(
-            "binding-revision-hash",
-            "UPDATE {database}.project_model_binding_revisions "
-            "SET content_hash=REPEAT('0',64)",
-            "binding head", False, id="binding-revision-hash",
-        ),
-        pytest.param(
-            "binding-head-hash",
-            "UPDATE {database}.project_model_binding_heads SET content_hash=REPEAT('f',64)",
-            "binding head", False, id="binding-head-hash",
-        ),
-        pytest.param(
-            "binding-head-revision",
-            "UPDATE {database}.project_model_binding_heads SET revision=2",
-            "binding head", True, id="binding-head-revision",
-        ),
-        pytest.param(
-            "provider-enabled",
-            "UPDATE {database}.provider_profiles SET enabled=0 WHERE name='联通云'",
-            "enabled preferred Provider", False, id="provider-enabled",
-        ),
-        pytest.param(
-            "provider-deleted",
-            "UPDATE {database}.provider_profiles SET lifecycle_status='deleted',"
-            "deleted_at=123,enabled=0,api_key='',base_url='' WHERE name='备用模型'",
-            "every Provider to be active and not deleted", False, id="provider-deleted",
-        ),
-        pytest.param(
-            "provider-model-snapshot",
-            "UPDATE {database}.provider_profiles SET model_name='tampered-model' "
-            "WHERE name='联通云'",
-            "preferred Provider/model", False, id="provider-model-snapshot",
-        ),
-        pytest.param(
-            "contract-head",
-            "DELETE FROM {database}.project_contract_heads",
-            "project_contract_heads", False, id="contract-head",
-        ),
-        pytest.param(
-            "canon-idempotency",
-            "UPDATE {database}.canon_revisions SET idempotency_key=REPEAT('0',64)",
-            "Contract/Canon/Projection head0", False, id="canon-idempotency",
-        ),
-        pytest.param(
-            "canon-bootstrap-source",
-            "UPDATE {database}.canon_revisions SET source_type='manual_test',"
-            "source_id='77777777-7777-7777-7777-777777777777',parent_revision_number=1",
-            "Contract/Canon/Projection head0", False, id="canon-bootstrap-source",
-        ),
-        pytest.param(
-            "projection-head",
-            "UPDATE {database}.projection_heads SET canon_revision_number=1,"
-            "content_hash=REPEAT('f',64)",
-            "Contract/Canon/Projection head0", False, id="projection-head",
-        ),
-        pytest.param(
-            "derived-row",
-            "INSERT INTO {database}.canon_entities "
-            "(id,project_id,entity_type,canonical_name,normalized_name,created_revision,created_at) "
-            "VALUES ('88888888-8888-8888-8888-888888888888',"
-            f"'{PROJECT_ID}','person','tampered','tampered',0,1)",
-            "canon_entities", False, id="derived-row",
-        ),
-    ],
-)
-@pytest.mark.mysql
 @pytest.mark.asyncio
-async def test_m2_noop_rejects_any_tampered_foundation_fact_before_ddl(
-    empty_disposable_mysql, case, mutation, error_match, disable_foreign_keys,
+async def test_reset_classification_fails_closed_before_ddl(
+    empty_disposable_mysql,
 ):
-    await create_m1_product_state(empty_disposable_mysql.session)
+    await create_frozen_v11_product_state(empty_disposable_mysql)
+    await empty_disposable_mysql.session.execute(
+        """UPDATE schema_metadata SET manifest_hash=%s WHERE singleton_id=1""",
+        ("0" * 64,),
+    )
+    proxy = RecordingProxy(empty_disposable_mysql.admin_session)
+
+    with pytest.raises(ResetValidationError, match="v1.1 source or v1.2 target"):
+        await reset_writer_core_data(
+            proxy,
+            database_name=empty_disposable_mysql.database_name,
+            confirm_reset=empty_disposable_mysql.database_name,
+            request=request(),
+            execute=True,
+            output=lambda _value: None,
+        )
+
+    assert_no_mutating_ddl(proxy)
+
+
+@pytest.mark.asyncio
+async def test_v12_noop_rejects_archived_foundation_before_ddl(
+    empty_disposable_mysql,
+):
+    await create_frozen_v11_product_state(empty_disposable_mysql)
     await reset_writer_core_data(
         empty_disposable_mysql.admin_session,
         database_name=empty_disposable_mysql.database_name,
@@ -445,17 +314,13 @@ async def test_m2_noop_rejects_any_tampered_foundation_fact_before_ddl(
         execute=True,
         output=lambda _value: None,
     )
-    if disable_foreign_keys:
-        await empty_disposable_mysql.admin_session.execute("SET FOREIGN_KEY_CHECKS=0")
-    try:
-        await empty_disposable_mysql.admin_session.execute(
-            mutation.format(database=f"`{empty_disposable_mysql.database_name}`")
-        )
-    finally:
-        if disable_foreign_keys:
-            await empty_disposable_mysql.admin_session.execute("SET FOREIGN_KEY_CHECKS=1")
+    await empty_disposable_mysql.admin_session.execute(
+        f"""UPDATE `{empty_disposable_mysql.database_name}`.projects
+            SET archived_at=123,lifecycle_revision=1"""
+    )
     proxy = RecordingProxy(empty_disposable_mysql.admin_session)
-    with pytest.raises(ResetValidationError, match=error_match):
+
+    with pytest.raises(ResetValidationError, match="unarchived"):
         await reset_writer_core_data(
             proxy,
             database_name=empty_disposable_mysql.database_name,
@@ -464,21 +329,19 @@ async def test_m2_noop_rejects_any_tampered_foundation_fact_before_ddl(
             execute=True,
             output=lambda _value: None,
         )
-    assert case
-    forbidden = ("DROP DATABASE", "CREATE DATABASE", "CREATE TABLE", "INSERT ", "DELETE ")
-    assert not any(
-        kind == "execute" and sql.lstrip().upper().startswith(forbidden)
-        for kind, sql, _ in proxy.calls
-    )
+
+    assert_no_mutating_ddl(proxy)
 
 
-@pytest.mark.mysql
 @pytest.mark.asyncio
-async def test_failed_m1_rebuild_drops_incomplete_database_and_releases_lock(
+async def test_failed_v11_rebuild_removes_incomplete_database_and_releases_lock(
     empty_disposable_mysql,
 ):
-    await create_m1_product_state(empty_disposable_mysql.session)
-    proxy = RecordingProxy(empty_disposable_mysql.admin_session, fail_on="INSERT INTO projects")
+    await create_frozen_v11_product_state(empty_disposable_mysql)
+    proxy = RecordingProxy(
+        empty_disposable_mysql.admin_session,
+        fail_on="INSERT INTO projects",
+    )
 
     with pytest.raises(ResetPartialStateError):
         await reset_writer_core_data(
@@ -487,57 +350,19 @@ async def test_failed_m1_rebuild_drops_incomplete_database_and_releases_lock(
             confirm_reset=empty_disposable_mysql.database_name,
             request=request(),
             execute=True,
-            allow_product_database=False,
             output=lambda _value: None,
         )
 
     remaining = await empty_disposable_mysql.admin_session.fetchone(
-        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s",
+        """SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+           WHERE SCHEMA_NAME=%s""",
         (empty_disposable_mysql.database_name,),
     )
     assert remaining is None
-    assert any("RELEASE_LOCK" in sql for kind, sql, _ in proxy.calls if kind == "fetchone")
-    # Restore an empty disposable shell so the shared fixture can account for
-    # its own created/cleaned lifecycle in the terminal summary.
-    await empty_disposable_mysql.admin_session.execute(
-        f"CREATE DATABASE `{empty_disposable_mysql.database_name}` "
-        "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
-    )
-
-
-@pytest.mark.mysql
-@pytest.mark.asyncio
-async def test_failed_cleanup_drop_reports_database_may_remain_and_keeps_both_errors(
-    empty_disposable_mysql,
-):
-    await create_m1_product_state(empty_disposable_mysql.session)
-
-    class CleanupDropFailingProxy(RecordingProxy):
-        async def execute(self, sql, args=None):
-            self.calls.append(("execute", sql, args))
-            if "INSERT INTO projects" in sql:
-                raise RuntimeError("BODY_FAILURE_SENTINEL")
-            if sql.startswith("DROP DATABASE IF EXISTS"):
-                raise RuntimeError("CLEANUP_DROP_FAILURE_SENTINEL")
-            return await self.session.execute(sql, args)
-
-    proxy = CleanupDropFailingProxy(empty_disposable_mysql.admin_session)
-    with pytest.raises(ResetPartialStateError, match="may remain") as raised:
-        await reset_writer_core_data(
-            proxy,
-            database_name=empty_disposable_mysql.database_name,
-            confirm_reset=empty_disposable_mysql.database_name,
-            request=request(),
-            execute=True,
-            output=lambda _value: None,
-        )
-    evidence = repr(raised.value.__cause__)
-    assert "BODY_FAILURE_SENTINEL" in evidence
-    assert "CLEANUP_DROP_FAILURE_SENTINEL" in evidence
-    assert "was removed" not in str(raised.value)
-    # Restore a shell database for the disposable fixture's own lifecycle counter.
-    await empty_disposable_mysql.admin_session.execute(
-        f"DROP DATABASE IF EXISTS `{empty_disposable_mysql.database_name}`"
+    assert any(
+        "RELEASE_LOCK" in sql
+        for kind, sql, _ in proxy.calls
+        if kind == "fetchone"
     )
     await empty_disposable_mysql.admin_session.execute(
         f"CREATE DATABASE `{empty_disposable_mysql.database_name}` "

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -191,6 +192,10 @@ def test_reset_source_contract_freezes_only_v11_and_current_v12():
     assert not hasattr(reset_module, "M1_TABLE_NAMES")
     assert not hasattr(reset_module, "_map_m1_seed")
     assert not hasattr(reset_module, "_load_m1_preserved_state")
+
+
+def test_reset_source_validation_has_no_stale_m1_labels():
+    assert "M1 Provider" not in inspect.getsource(reset_module)
 
 
 @pytest.mark.asyncio
