@@ -23,9 +23,9 @@ CREATE TABLE story_engine_batches (
   finished_at BIGINT NULL,
   UNIQUE KEY uq_engine_batch_idempotency (project_id, idempotency_key),
   UNIQUE KEY uq_engine_batch_project_id (project_id, id),
-  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE CASCADE,
   FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT,
   CHECK (source_type IN ('provider','manual')),
   CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
@@ -89,7 +89,7 @@ CREATE TABLE story_engine_options (
   UNIQUE KEY uq_engine_option_order (batch_id, option_order),
   UNIQUE KEY uq_engine_option_hash (batch_id, content_hash),
   UNIQUE KEY uq_engine_option_project_id (project_id, id),
-  FOREIGN KEY (project_id, batch_id) REFERENCES story_engine_batches(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, batch_id) REFERENCES story_engine_batches(project_id, id) ON DELETE CASCADE,
   CHECK (option_order BETWEEN 1 AND 3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -108,8 +108,8 @@ CREATE TABLE project_contract_drafts (
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_contract_draft_id (id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, seed_revision_id) REFERENCES creative_seed_revisions(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, engine_option_id) REFERENCES story_engine_options(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, seed_revision_id) REFERENCES creative_seed_revisions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, engine_option_id) REFERENCES story_engine_options(project_id, id) ON DELETE CASCADE,
   CHECK (base_head_revision >= 0),
   CHECK (draft_version > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -138,10 +138,10 @@ CREATE TABLE creation_contracts (
   UNIQUE KEY uq_creation_contract_revision (project_id, revision),
   UNIQUE KEY uq_creation_contract_id (project_id, id),
   UNIQUE KEY uq_creation_contract_identity (project_id, id, revision),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE CASCADE,
   CHECK (revision > 0),
   CHECK (total_word_min > 0 AND total_word_max >= total_word_min),
   CHECK (CHAR_LENGTH(TRIM(quality_charter_version)) > 0),
@@ -163,8 +163,8 @@ CREATE TABLE style_contracts (
   UNIQUE KEY uq_style_contract_creation (creation_contract_id),
   UNIQUE KEY uq_style_contract_id (project_id, id),
   UNIQUE KEY uq_style_contract_identity (project_id, id, revision),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, creation_contract_id, revision) REFERENCES creation_contracts(project_id, id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, creation_contract_id, revision) REFERENCES creation_contracts(project_id, id, revision) ON DELETE CASCADE,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -178,10 +178,10 @@ CREATE TABLE project_contract_heads (
   style_hash CHAR(64) NULL,
   updated_at BIGINT NOT NULL,
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, creation_contract_id) REFERENCES creation_contracts(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, creation_contract_id, revision) REFERENCES creation_contracts(project_id, id, revision) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, style_contract_id) REFERENCES style_contracts(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, style_contract_id, revision) REFERENCES style_contracts(project_id, id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, creation_contract_id) REFERENCES creation_contracts(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, creation_contract_id, revision) REFERENCES creation_contracts(project_id, id, revision) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, style_contract_id) REFERENCES style_contracts(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, style_contract_id, revision) REFERENCES style_contracts(project_id, id, revision) ON DELETE CASCADE,
   CHECK (revision >= 0),
   CHECK ((revision = 0 AND creation_contract_id IS NULL AND style_contract_id IS NULL
       AND creation_hash IS NULL AND style_hash IS NULL)
@@ -203,9 +203,9 @@ CREATE TABLE contract_confirmation_requests (
   created_at BIGINT NOT NULL,
   completed_at BIGINT NULL,
   UNIQUE KEY uq_contract_confirmation_idempotency (project_id, idempotency_key),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, creation_contract_id, result_revision) REFERENCES creation_contracts(project_id, id, revision) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, style_contract_id, result_revision) REFERENCES style_contracts(project_id, id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, creation_contract_id, result_revision) REFERENCES creation_contracts(project_id, id, revision) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, style_contract_id, result_revision) REFERENCES style_contracts(project_id, id, revision) ON DELETE CASCADE,
   CHECK (status IN ('reserved','succeeded','failed')),
   CHECK (
     (status = 'reserved' AND creation_contract_id IS NULL AND style_contract_id IS NULL
@@ -225,8 +225,8 @@ CREATE TABLE creation_contract_engine_refs (
   project_id CHAR(36) NOT NULL,
   engine_option_id CHAR(36) NOT NULL,
   engine_hash CHAR(64) NOT NULL,
-  FOREIGN KEY (project_id, creation_contract_id) REFERENCES creation_contracts(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, engine_option_id) REFERENCES story_engine_options(project_id, id) ON DELETE RESTRICT
+  FOREIGN KEY (project_id, creation_contract_id) REFERENCES creation_contracts(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, engine_option_id) REFERENCES story_engine_options(project_id, id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -240,7 +240,7 @@ CREATE TABLE style_contract_template_refs (
   PRIMARY KEY (style_contract_id, role),
   UNIQUE KEY uq_style_template_asset (style_contract_id, style_template_id),
   UNIQUE KEY uq_style_template_sort (style_contract_id, sort_order),
-  FOREIGN KEY (style_contract_id) REFERENCES style_contracts(id) ON DELETE RESTRICT,
+  FOREIGN KEY (style_contract_id) REFERENCES style_contracts(id) ON DELETE CASCADE,
   FOREIGN KEY (style_template_id, asset_revision, asset_hash) REFERENCES style_templates(id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (role IN ('primary','secondary')),
   CHECK (asset_revision > 0),
@@ -256,7 +256,7 @@ CREATE TABLE creation_contract_experience_refs (
   sort_order INT NOT NULL,
   PRIMARY KEY (creation_contract_id, experience_card_id),
   UNIQUE KEY uq_experience_ref_sort (creation_contract_id, sort_order),
-  FOREIGN KEY (creation_contract_id) REFERENCES creation_contracts(id) ON DELETE RESTRICT,
+  FOREIGN KEY (creation_contract_id) REFERENCES creation_contracts(id) ON DELETE CASCADE,
   FOREIGN KEY (experience_card_id, asset_revision, asset_hash) REFERENCES experience_cards(id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (asset_revision > 0),
   CHECK (sort_order > 0)
@@ -272,7 +272,7 @@ CREATE TABLE creation_contract_corpus_refs (
   sort_order INT NOT NULL,
   PRIMARY KEY (creation_contract_id, corpus_source_id),
   UNIQUE KEY uq_corpus_ref_sort (creation_contract_id, sort_order),
-  FOREIGN KEY (creation_contract_id) REFERENCES creation_contracts(id) ON DELETE RESTRICT,
+  FOREIGN KEY (creation_contract_id) REFERENCES creation_contracts(id) ON DELETE CASCADE,
   FOREIGN KEY (corpus_source_id, source_revision) REFERENCES corpus_sources(id, revision) ON DELETE RESTRICT,
   CHECK (source_revision > 0),
   CHECK (selection_mode IN ('author','system')),

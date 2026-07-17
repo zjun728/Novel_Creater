@@ -91,6 +91,15 @@ def _table_statement(table_name: str) -> str:
     )
 
 
+def _raw_table_statement(table_name: str) -> str:
+    prefix = f"CREATE TABLE {table_name} "
+    return next(
+        statement
+        for statement in read_statements()
+        if statement.startswith(prefix)
+    )
+
+
 def test_manifest_has_exact_ordered_fragments_and_tables():
     assert FRAGMENTS == EXPECTED_FRAGMENTS
     assert set(created_table_names()) == EXPECTED_TABLES
@@ -224,25 +233,39 @@ def test_revisioned_seed_and_selection_contracts_are_exact():
         "unique key uq_seed_revision (seed_id, revision)",
         "unique key uq_seed_revision_id (seed_id, id)",
         "unique key uq_seed_revision_project_id (project_id, id)",
-        "foreign key (project_id, seed_id) references creative_seeds(project_id, id) on delete restrict",
+        "foreign key (project_id, seed_id) references creative_seeds(project_id, id) on delete cascade",
         "check (revision > 0)",
     ):
         assert contract in revisions
     heads = _table_statement("creative_seed_heads")
-    assert "foreign key (seed_id, revision_id, revision, content_hash) references creative_seed_revisions(seed_id, id, revision, content_hash) on delete restrict" in heads
+    assert "foreign key (seed_id, revision_id, revision, content_hash) references creative_seed_revisions(seed_id, id, revision, content_hash) on delete cascade" in heads
     selected = _table_statement("project_selected_seeds")
-    assert "foreign key (project_id, seed_id) references creative_seeds(project_id, id) on delete restrict" in selected
-    assert "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete restrict" in selected
+    assert "foreign key (project_id, seed_id) references creative_seeds(project_id, id) on delete cascade" in selected
+    assert "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete cascade" in selected
 
 
 def test_provider_and_binding_revisions_encode_closed_state_spaces():
+    project_statement = _table_statement("projects")
+    raw_project_statement = _raw_table_statement("projects")
+    assert "archived_at BIGINT NULL" in raw_project_statement
+    assert "lifecycle_revision INT NOT NULL DEFAULT 0" in raw_project_statement
+    assert "check (status in ('drafting','active','completed'))" in project_statement
+    assert "check (lifecycle_revision >= 0)" in project_statement
+
     providers = _table_statement("provider_profiles")
     assert "lifecycle_status varchar(16) not null" in providers
     assert "deleted_at bigint null" in providers
     assert "check (lifecycle_status in ('active','deleted'))" in providers
     revisions = _table_statement("project_model_binding_revisions")
+    binding_revision_statement = _raw_table_statement(
+        "project_model_binding_revisions"
+    )
     assert "unique key uq_binding_revision (project_id, revision)" in revisions
     assert "unique key uq_binding_revision_id (project_id, id)" in revisions
+    assert (
+        "FOREIGN KEY (source_project_id) REFERENCES projects(id) "
+        "ON DELETE SET NULL"
+    ) in binding_revision_statement
     items = _table_statement("project_model_binding_items")
     assert "primary key (binding_revision_id, task_key)" in items
     for task_key in (
@@ -253,7 +276,7 @@ def test_provider_and_binding_revisions_encode_closed_state_spaces():
     assert "check (resolution_status in ('bound','unbound'))" in items
     assert "foreign key (provider_id) references provider_profiles(id) on delete restrict" in items
     heads = _table_statement("project_model_binding_heads")
-    assert "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete restrict" in heads
+    assert "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete cascade" in heads
 
 
 def test_global_assets_have_revision_heads_and_no_project_ownership():
@@ -338,23 +361,23 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     assert "project_id char(36) not null" in options
     assert "unique key uq_engine_option_order (batch_id, option_order)" in options
     assert "unique key uq_engine_option_project_id (project_id, id)" in options
-    assert "foreign key (project_id, batch_id) references story_engine_batches(project_id, id) on delete restrict" in options
+    assert "foreign key (project_id, batch_id) references story_engine_batches(project_id, id) on delete cascade" in options
     assert "foreign key (batch_id)" not in options
     assert "check (option_order between 1 and 3)" in options
     drafts = _table_statement("project_contract_drafts")
     assert "project_id char(36) primary key" in drafts
     assert "unique key uq_contract_draft_id (id)" in drafts
-    assert "foreign key (project_id, seed_revision_id) references creative_seed_revisions(project_id, id) on delete restrict" in drafts
-    assert "foreign key (project_id, engine_option_id) references story_engine_options(project_id, id) on delete restrict" in drafts
+    assert "foreign key (project_id, seed_revision_id) references creative_seed_revisions(project_id, id) on delete cascade" in drafts
+    assert "foreign key (project_id, engine_option_id) references story_engine_options(project_id, id) on delete cascade" in drafts
     assert "foreign key (seed_revision_id)" not in drafts
     assert "foreign key (engine_option_id)" not in drafts
     heads = _table_statement("project_contract_heads")
     assert "check ((revision = 0" in heads
-    assert "foreign key (project_id, creation_contract_id) references creation_contracts(project_id, id) on delete restrict" in heads
+    assert "foreign key (project_id, creation_contract_id) references creation_contracts(project_id, id) on delete cascade" in heads
     requests = _table_statement("contract_confirmation_requests")
     assert "unique key uq_contract_confirmation_idempotency (project_id, idempotency_key)" in requests
-    assert "foreign key (project_id, creation_contract_id, result_revision) references creation_contracts(project_id, id, revision) on delete restrict" in requests
-    assert "foreign key (project_id, style_contract_id, result_revision) references style_contracts(project_id, id, revision) on delete restrict" in requests
+    assert "foreign key (project_id, creation_contract_id, result_revision) references creation_contracts(project_id, id, revision) on delete cascade" in requests
+    assert "foreign key (project_id, style_contract_id, result_revision) references style_contracts(project_id, id, revision) on delete cascade" in requests
 
 
 def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
@@ -362,8 +385,8 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
     for contract in (
         "unique key uq_creation_contract_revision (project_id, revision)",
         "unique key uq_creation_contract_id (project_id, id)",
-        "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete restrict",
-        "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete restrict",
+        "foreign key (seed_id, seed_revision_id) references creative_seed_revisions(seed_id, id) on delete cascade",
+        "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete cascade",
         "check (total_word_min > 0 and total_word_max >= total_word_min)",
     ):
         assert contract in creation
@@ -375,11 +398,11 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
     assert "chapter_char_target" not in creation
     assert "chapter_char_max" not in creation
     style = _table_statement("style_contracts")
-    assert "foreign key (project_id, creation_contract_id, revision) references creation_contracts(project_id, id, revision) on delete restrict" in style
+    assert "foreign key (project_id, creation_contract_id, revision) references creation_contracts(project_id, id, revision) on delete cascade" in style
     engine_refs = _table_statement("creation_contract_engine_refs")
     assert "project_id char(36) not null" in engine_refs
-    assert "foreign key (project_id, creation_contract_id) references creation_contracts(project_id, id) on delete restrict" in engine_refs
-    assert "foreign key (project_id, engine_option_id) references story_engine_options(project_id, id) on delete restrict" in engine_refs
+    assert "foreign key (project_id, creation_contract_id) references creation_contracts(project_id, id) on delete cascade" in engine_refs
+    assert "foreign key (project_id, engine_option_id) references story_engine_options(project_id, id) on delete cascade" in engine_refs
     assert "foreign key (creation_contract_id)" not in engine_refs
     assert "foreign key (engine_option_id)" not in engine_refs
     assert "foreign key (style_template_id, asset_revision, asset_hash) references style_templates(id, revision, content_hash) on delete restrict" in _table_statement("style_contract_template_refs")

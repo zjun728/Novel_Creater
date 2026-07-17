@@ -9,7 +9,7 @@ CREATE TABLE current_state_projections (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_current_state_key (project_id, revision_number, entity_id, field_path),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE RESTRICT,
+  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE CASCADE,
   CHECK (revision_number >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -25,7 +25,7 @@ CREATE TABLE memory_views (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_memory_key (project_id, revision_number, subject_key),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE RESTRICT,
+  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE CASCADE,
   CHECK (revision_number >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -41,7 +41,7 @@ CREATE TABLE arc_projections (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_arc_key (project_id, revision_number, entity_id, arc_key),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE RESTRICT,
+  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE CASCADE,
   CHECK (revision_number >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -58,7 +58,7 @@ CREATE TABLE plot_thread_projections (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_plot_thread_key (project_id, revision_number, subject_key, field_path),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE RESTRICT,
+  FOREIGN KEY (entity_id) REFERENCES canon_entities(id) ON DELETE CASCADE,
   CHECK (revision_number >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

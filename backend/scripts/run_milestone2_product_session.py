@@ -15,6 +15,7 @@ import tempfile
 from typing import Callable, Mapping, Sequence
 from uuid import uuid4
 
+from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.run_milestone2_l4_session import (
     FRONTEND_ROOT,
     REPOSITORY_ROOT,
@@ -342,7 +343,7 @@ def _sanitize_product_verification(
     product = _assert_allowed_keys(
         raw_product, frozenset(expected_product_keys), "product evidence"
     )
-    if product["schemaVersion"] != "writer-core-v1.1.0":
+    if product["schemaVersion"] != EXPECTED_SCHEMA_VERSION:
         raise ProductSessionSafetyError("Product verification schemaVersion is invalid")
     _require_hash(product["manifestHash"], "manifestHash")
     project = _assert_allowed_keys(product["project"], _PROJECT_KEYS, "project evidence")

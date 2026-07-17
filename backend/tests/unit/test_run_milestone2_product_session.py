@@ -3,6 +3,8 @@ import tempfile
 
 import pytest
 
+from backend.schema_version import EXPECTED_SCHEMA_VERSION
+
 
 DATABASE = "novel_creator"
 HASH = "a" * 64
@@ -61,7 +63,7 @@ async def test_default_product_verifier_connects_explicit_source_hash_to_product
 
 def verification_fixture(*, require_l5=False):
     product = {
-        "schemaVersion": "writer-core-v1.1.0",
+        "schemaVersion": EXPECTED_SCHEMA_VERSION,
         "manifestHash": "b" * 64,
         "project": {
             "id": "project-id",

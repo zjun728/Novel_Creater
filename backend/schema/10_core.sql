@@ -7,10 +7,13 @@ CREATE TABLE projects (
   target_chapters INT NOT NULL,
   status VARCHAR(24) NOT NULL,
   current_chapter INT NOT NULL DEFAULT 0,
+  archived_at BIGINT NULL,
+  lifecycle_revision INT NOT NULL DEFAULT 0,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
-  CHECK (status IN ('drafting','active','completed','archived')),
+  CHECK (status IN ('drafting','active','completed')),
   CHECK (current_chapter >= 0),
+  CHECK (lifecycle_revision >= 0),
   CHECK (target_words > 0),
   CHECK (target_chapters > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -40,7 +43,7 @@ CREATE TABLE creative_seed_revisions (
   UNIQUE KEY uq_seed_revision_id (seed_id, id),
   UNIQUE KEY uq_seed_revision_project_id (project_id, id),
   UNIQUE KEY uq_seed_revision_fact (seed_id, id, revision, content_hash),
-  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -52,7 +55,7 @@ CREATE TABLE creative_seed_heads (
   content_hash CHAR(64) NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_seed_head_revision (seed_id, revision_id),
-  FOREIGN KEY (seed_id, revision_id, revision, content_hash) REFERENCES creative_seed_revisions(seed_id, id, revision, content_hash) ON DELETE RESTRICT,
+  FOREIGN KEY (seed_id, revision_id, revision, content_hash) REFERENCES creative_seed_revisions(seed_id, id, revision, content_hash) ON DELETE CASCADE,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -65,8 +68,8 @@ CREATE TABLE project_selected_seeds (
   selection_revision INT NOT NULL,
   selected_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
-  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (seed_id, seed_revision_id) REFERENCES creative_seed_revisions(seed_id, id) ON DELETE CASCADE,
   CHECK (selection_revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -122,8 +125,8 @@ CREATE TABLE project_model_binding_revisions (
   UNIQUE KEY uq_binding_revision (project_id, revision),
   UNIQUE KEY uq_binding_revision_id (project_id, id),
   UNIQUE KEY uq_binding_revision_identity (project_id, id, revision),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE RESTRICT,
-  FOREIGN KEY (source_project_id) REFERENCES projects(id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_project_id) REFERENCES projects(id) ON DELETE SET NULL,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -137,7 +140,7 @@ CREATE TABLE project_model_binding_items (
   model_name_snapshot VARCHAR(160) NULL,
   item_hash CHAR(64) NOT NULL,
   PRIMARY KEY (binding_revision_id, task_key),
-  FOREIGN KEY (binding_revision_id) REFERENCES project_model_binding_revisions(id) ON DELETE RESTRICT,
+  FOREIGN KEY (binding_revision_id) REFERENCES project_model_binding_revisions(id) ON DELETE CASCADE,
   FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT,
   CHECK (task_key IN ('seed','planning','writing','audit','summary','extraction','polish','market')),
   CHECK (resolution_status IN ('bound','unbound')),
@@ -156,8 +159,8 @@ CREATE TABLE project_model_binding_heads (
   binding_revision_id CHAR(36) NOT NULL,
   content_hash CHAR(64) NOT NULL,
   updated_at BIGINT NOT NULL,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, binding_revision_id, revision) REFERENCES project_model_binding_revisions(project_id, id, revision) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, binding_revision_id, revision) REFERENCES project_model_binding_revisions(project_id, id, revision) ON DELETE CASCADE,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

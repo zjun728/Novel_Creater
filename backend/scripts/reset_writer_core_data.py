@@ -1,4 +1,4 @@
-"""Reset the exact M1 foundation into M2, or verify an exact M2 no-op."""
+"""Reset the frozen v1.1 foundation into v1.2, or verify a v1.2 no-op."""
 
 from __future__ import annotations
 
@@ -33,19 +33,26 @@ PRODUCT_HOST = "127.0.0.1"
 PRODUCT_PORT = 3307
 RESET_LOCK_NAME = "novel_creator_writer_core_reset"
 SELECTED_SEED_TITLE = "典镇山河"
-M1_SCHEMA_VERSION = "writer-core-v1.0.0"
-M1_MANIFEST_HASH = "0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826"
-M1_TABLE_NAMES = (
-    "schema_metadata", "projects", "creative_seeds", "project_selected_seeds",
-    "provider_profiles", "task_model_bindings", "task_model_binding_items",
-    "creation_contracts", "style_contracts", "contract_asset_refs",
-    "volume_plans", "story_blocks", "story_stages", "scene_tasks",
-    "chapter_sessions", "working_drafts", "draft_candidates",
-    "finalization_change_sets", "finalization_records", "final_chapters",
-    "canon_entities", "entity_aliases", "canon_revisions", "canon_events",
-    "current_state_projections", "memory_views", "arc_projections",
-    "plot_thread_projections", "projection_heads", "corpus_sources",
-    "corpus_chapters", "style_templates", "experience_cards", "reference_uses",
+V11_SCHEMA_VERSION = "writer-core-v1.1.0"
+V11_MANIFEST_HASH = "cf993ccf7f000935aaa5777bfb9adda4cd6cbd47cb4f83be5d073d7d3e6b30c5"
+V11_TABLE_NAMES = (
+    "schema_metadata", "projects", "creative_seeds", "creative_seed_revisions",
+    "creative_seed_heads", "project_selected_seeds", "provider_profiles",
+    "project_model_binding_revisions", "project_model_binding_items",
+    "project_model_binding_heads", "style_templates", "style_template_heads",
+    "experience_cards", "experience_card_heads", "corpus_sources",
+    "corpus_chapters", "corpus_fragments", "corpus_import_runs",
+    "story_engine_batches", "story_engine_options", "project_contract_drafts",
+    "creation_contracts", "style_contracts", "project_contract_heads",
+    "contract_confirmation_requests", "creation_contract_engine_refs",
+    "style_contract_template_refs", "creation_contract_experience_refs",
+    "creation_contract_corpus_refs", "volume_plans", "story_blocks",
+    "story_stages", "scene_tasks", "chapter_sessions", "working_drafts",
+    "draft_candidates", "finalization_change_sets", "finalization_records",
+    "final_chapters", "canon_entities", "entity_aliases", "canon_revisions",
+    "canon_events", "current_state_projections", "memory_views",
+    "arc_projections", "plot_thread_projections", "projection_heads",
+    "reference_uses",
 )
 FOUNDATION_TABLES = frozenset({
     "schema_metadata",
@@ -71,7 +78,12 @@ _CLI_PRODUCT_EXECUTE_AUTHORITY = object()
 
 _PROJECT_COLUMNS = (
     "id", "title", "genre", "description", "target_words",
-    "target_chapters", "status", "current_chapter", "created_at", "updated_at",
+    "target_chapters", "status", "current_chapter", "archived_at",
+    "lifecycle_revision", "created_at", "updated_at",
+)
+_V11_PROJECT_COLUMNS = tuple(
+    column for column in _PROJECT_COLUMNS
+    if column not in {"archived_at", "lifecycle_revision"}
 )
 _SEED_COLUMNS = (
     "id", "project_id", "status", "created_at", "updated_at",
@@ -82,40 +94,6 @@ _PROVIDER_COLUMNS = (
     "max_output_tokens", "temperature", "top_p", "supports_json",
     "supports_streaming", "notes", "thinking", "lifecycle_status", "deleted_at",
     "created_at", "updated_at",
-)
-_M1_FOUNDATION_TABLES = frozenset({
-    "schema_metadata", "projects", "creative_seeds", "project_selected_seeds",
-    "provider_profiles", "task_model_bindings", "task_model_binding_items",
-    "canon_revisions", "projection_heads",
-})
-_M1_VERIFIED_EMPTY_TABLES = tuple(
-    table for table in M1_TABLE_NAMES if table not in _M1_FOUNDATION_TABLES
-)
-_M1_PROJECT_COLUMNS = _PROJECT_COLUMNS
-_M1_SEED_COLUMNS = (
-    "id", "project_id", "title", "premise_json", "content_hash", "status",
-    "created_at",
-)
-_M1_PREMISE_FIELDS = frozenset({
-    "genre", "logline", "protagonist", "desire", "coreConflict",
-    "worldPressure", "openingHook", "emotionalPromise",
-    "differentiation", "styleTarget", "source", "riskNotes",
-    "endingAnchor",
-})
-_M2_RETAINED_PREMISE_FIELDS = (
-    "genre", "logline", "protagonist", "desire", "coreConflict",
-    "worldPressure", "openingHook", "differentiation",
-)
-_M1_SEED_STATUS_BY_TITLE = {
-    "永乐长明": "candidate",
-    "文渊山海": "candidate",
-    "典镇山河": "selected",
-}
-_M1_PROVIDER_COLUMNS = (
-    "id", "name", "provider_type", "model_name", "base_url", "api_key",
-    "enabled", "sort_order", "stream", "max_context_tokens",
-    "max_output_tokens", "temperature", "top_p", "supports_json",
-    "supports_streaming", "notes", "thinking", "created_at", "updated_at",
 )
 
 
@@ -136,7 +114,7 @@ class ResetPartialStateError(ResetError):
 
 
 async def _classify_reset_source(admin_session, database_name: str) -> str:
-    """Accept only the frozen M1 product manifest or current M2 manifest."""
+    """Accept only the frozen v1.1 source or current v1.2 target manifest."""
 
     table_rows = await admin_session.fetchall(
         "SELECT TABLE_NAME FROM information_schema.TABLES "
@@ -151,13 +129,13 @@ async def _classify_reset_source(admin_session, database_name: str) -> str:
             f"{_qualified(database_name, 'schema_metadata')} WHERE singleton_id=1"
         )
     if (
-        tables == set(M1_TABLE_NAMES)
+        tables == set(V11_TABLE_NAMES)
         and metadata == {
-            "schema_version": M1_SCHEMA_VERSION,
-            "manifest_hash": M1_MANIFEST_HASH,
+            "schema_version": V11_SCHEMA_VERSION,
+            "manifest_hash": V11_MANIFEST_HASH,
         }
     ):
-        return "m1-v1.0"
+        return "v1.1-source"
     if (
         tables == set(created_table_names())
         and metadata == {
@@ -165,9 +143,9 @@ async def _classify_reset_source(admin_session, database_name: str) -> str:
             "manifest_hash": manifest_hash(),
         }
     ):
-        return "m2-v1.1"
+        return "v1.2-target"
     raise ResetValidationError(
-        "Reset source must be the exact M1 v1.0 or M2 v1.1 manifest"
+        "Reset source must be the exact v1.1 source or v1.2 target manifest"
     )
 
 
@@ -349,39 +327,6 @@ def _json_text(value: object, field_name: str) -> str | None:
         raise ResetValidationError(f"Legacy {field_name} must be valid JSON") from exc
 
 
-def _require_exact_unique(
-    rows: Sequence[Mapping[str, object]], field: str, noun: str,
-) -> None:
-    seen: set[object] = set()
-    for row in rows:
-        value = row[field]
-        if value in seen:
-            raise ResetValidationError(f"Legacy {noun} {field} values must be unique")
-        seen.add(value)
-
-
-async def _require_target_collation_unique(
-    admin_session,
-    rows: Sequence[Mapping[str, object]],
-    field: str,
-    noun: str,
-) -> None:
-    for index, row in enumerate(rows):
-        for other in rows[index + 1:]:
-            comparison = await admin_session.fetchone(
-                """SELECT (
-                         CONVERT(%s USING utf8mb4) COLLATE utf8mb4_0900_ai_ci =
-                         CONVERT(%s USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
-                       ) AS collation_conflict""",
-                (row[field], other[field]),
-            )
-            if (comparison or {}).get("collation_conflict") != 1:
-                continue
-            raise ResetValidationError(
-                f"Legacy {noun} {field} values conflict under target collation"
-            )
-
-
 async def _verify_reset_server_capabilities(admin_session) -> str:
     version_row = await admin_session.fetchone("SELECT VERSION() AS version")
     version = (version_row or {}).get("version")
@@ -414,7 +359,7 @@ async def _verify_reset_server_capabilities(admin_session) -> str:
     return version
 
 
-def _map_m1_project(row: Mapping[str, object]) -> dict[str, object]:
+def _map_project(row: Mapping[str, object]) -> dict[str, object]:
     status = _text(row["status"], "project.status", max_length=24)
     current_chapter = _integer(
         row["current_chapter"], "project.current_chapter", minimum=0,
@@ -422,6 +367,10 @@ def _map_m1_project(row: Mapping[str, object]) -> dict[str, object]:
     if status != "drafting" or current_chapter != 0:
         raise ResetValidationError(
             "Reset foundation project must be drafting at current chapter 0"
+        )
+    if row.get("archived_at") is not None or row.get("lifecycle_revision", 0) != 0:
+        raise ResetValidationError(
+            "Reset foundation project must be unarchived at lifecycle revision 0"
         )
     return {
         "id": _identifier(row["id"], "project.id"),
@@ -432,6 +381,8 @@ def _map_m1_project(row: Mapping[str, object]) -> dict[str, object]:
         "target_chapters": _integer(row["target_chapters"], "project.target_chapters", minimum=1),
         "status": status,
         "current_chapter": current_chapter,
+        "archived_at": None,
+        "lifecycle_revision": 0,
         "created_at": _integer(row["created_at"], "project.created_at"),
         "updated_at": _integer(row["updated_at"], "project.updated_at"),
     }
@@ -455,66 +406,6 @@ def _mapped_seed(
         "created_at": created_at,
         "updated_at": created_at,
     }
-
-
-def _map_m1_seed(row: Mapping[str, object], project_id: str) -> dict[str, object]:
-    seed_id = _identifier(row["id"], "seed.id")
-    owner_id = _identifier(row["project_id"], "seed.project_id")
-    if owner_id != project_id:
-        raise ResetValidationError("M1 requested seed belongs to another project")
-    title = _text(row["title"], "seed.title", max_length=200)
-    try:
-        expected_status = _M1_SEED_STATUS_BY_TITLE[title]
-    except KeyError:
-        raise ResetValidationError(
-            "M1 seed title/status contract is not recognized"
-        ) from None
-    try:
-        decoded = (
-            json.loads(row["premise_json"])
-            if isinstance(row["premise_json"], str)
-            else row["premise_json"]
-        )
-    except (TypeError, ValueError):
-        raise ResetValidationError(
-            "M1 seed premise_json is not the exact historical object"
-        ) from None
-    if (
-        type(decoded) is not dict
-        or set(decoded) != _M1_PREMISE_FIELDS
-        or any(type(decoded[field]) is not str for field in _M1_PREMISE_FIELDS)
-    ):
-        raise ResetValidationError(
-            "M1 seed premise_json is not the exact historical object"
-        )
-    historical_hash = canonical_hash({"title": title, "premise": decoded})
-    if row["content_hash"] != historical_hash:
-        raise ResetValidationError(
-            "M1 seed content_hash does not match the historical envelope"
-        )
-    if _text(row["status"], "seed.status", max_length=24) != expected_status:
-        raise ResetValidationError(
-            "M1 seed status does not match its selection role"
-        )
-    try:
-        payload = SeedPayload(
-            title=title,
-            **{
-                field: decoded[field]
-                for field in _M2_RETAINED_PREMISE_FIELDS
-            },
-        )
-    except (TypeError, ValueError):
-        raise ResetValidationError(
-            "M1 seed retained fields are not a valid current SeedPayload"
-        ) from None
-    return _mapped_seed(
-        seed_id=seed_id,
-        owner_id=owner_id,
-        title=title,
-        payload=payload,
-        created_at=_integer(row["created_at"], "seed.created_at"),
-    )
 
 
 def _map_v11_seed(
@@ -551,7 +442,7 @@ def _map_v11_seed(
     )
 
 
-def _map_m1_provider(row: Mapping[str, object]) -> dict[str, object]:
+def _map_provider(row: Mapping[str, object]) -> dict[str, object]:
     base_url = _text(row["base_url"], "provider.base_url", max_length=2048)
     api_key = _text(row["api_key"], "provider.api_key", max_length=65_535)
     if not base_url or not api_key:
@@ -592,119 +483,21 @@ def _map_m1_provider(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-async def _verify_zero_tables(admin_session, database_name: str, tables: Sequence[str]) -> None:
-    for table in tables:
-        row = await admin_session.fetchone(
-            f"SELECT COUNT(*) AS count FROM {_qualified(database_name, table)}"
-        )
-        if row is None or row.get("count") != 0:
-            raise ResetValidationError(f"Reset source contains advanced rows in {table}")
-
-
-async def _load_m1_preserved_state(
-    admin_session, database_name: str, request: ResetRequest,
-) -> _PreservedState:
-    projects = await admin_session.fetchall(
-        f"SELECT {', '.join(_M1_PROJECT_COLUMNS)} FROM {_qualified(database_name, 'projects')} WHERE title=%s",
-        (request.project_title,),
-    )
-    if len(projects) != 1:
-        raise ResetValidationError("M1 reset requires exactly one requested project")
-    project = _map_m1_project(projects[0])
-    total_projects = await admin_session.fetchone(
-        f"SELECT COUNT(*) AS count FROM {_qualified(database_name, 'projects')}"
-    )
-    if (total_projects or {}).get("count") != 1:
-        raise ResetValidationError("M1 reset requires exactly one project total")
-
-    placeholders = ",".join(("%s",) * len(request.seed_titles))
-    seed_rows = await admin_session.fetchall(
-        f"SELECT {', '.join(_M1_SEED_COLUMNS)} FROM {_qualified(database_name, 'creative_seeds')} "
-        f"WHERE project_id=%s AND title IN ({placeholders}) ORDER BY title,id",
-        (project["id"], *request.seed_titles),
-    )
-    if len(seed_rows) != 3 or Counter(row["title"] for row in seed_rows) != Counter(request.seed_titles):
-        raise ResetValidationError("M1 reset requires exactly the three requested seeds")
-    seeds = tuple(_map_m1_seed(row, str(project["id"])) for row in seed_rows)
-    total_seeds = await admin_session.fetchone(
-        f"SELECT COUNT(*) AS count FROM {_qualified(database_name, 'creative_seeds')}"
-    )
-    if (total_seeds or {}).get("count") != 3:
-        raise ResetValidationError("M1 reset requires exactly three seeds total")
-    selected = await admin_session.fetchone(
-        f"SELECT s.title FROM {_qualified(database_name, 'project_selected_seeds')} x "
-        f"JOIN {_qualified(database_name, 'creative_seeds')} s ON s.id=x.seed_id "
-        "WHERE x.project_id=%s",
-        (project["id"],),
-    )
-    if selected != {"title": SELECTED_SEED_TITLE}:
-        raise ResetValidationError(f"M1 selected seed must be {SELECTED_SEED_TITLE}")
-
-    provider_rows = await admin_session.fetchall(
-        f"SELECT {', '.join(_M1_PROVIDER_COLUMNS)} FROM {_qualified(database_name, 'provider_profiles')} ORDER BY sort_order,id"
-    )
-    if not provider_rows:
-        raise ResetValidationError("M1 reset requires preserved Providers")
-    providers = tuple(_map_m1_provider(row) for row in provider_rows)
-    _require_exact_unique(providers, "id", "provider")
-    preferred = tuple(
-        row for row in providers
-        if row["name"] == request.preferred_provider_name
-        and row["model_name"] == request.preferred_model
-        and row["enabled"] == 1
-    )
-    if len(preferred) != 1:
-        raise ResetValidationError("M1 requires exactly one enabled preferred Provider/model")
-
-    binding = await admin_session.fetchone(
-        f"SELECT (SELECT COUNT(*) FROM {_qualified(database_name, 'task_model_bindings')} b WHERE b.project_id=%s) AS binding_count,"
-        f"(SELECT COUNT(*) FROM {_qualified(database_name, 'task_model_binding_items')} i WHERE i.project_id=%s) AS item_count,"
-        f"(SELECT COUNT(DISTINCT i.task_key) FROM {_qualified(database_name, 'task_model_binding_items')} i WHERE i.project_id=%s) AS task_count",
-        (project["id"], project["id"], project["id"]),
-    )
-    if binding != {"binding_count": 1, "item_count": len(TASK_KEYS), "task_count": len(TASK_KEYS)}:
-        raise ResetValidationError("M1 foundation binding inventory is not head0-ready")
-    task_rows = await admin_session.fetchall(
-        f"SELECT task_key FROM {_qualified(database_name, 'task_model_binding_items')} WHERE project_id=%s ORDER BY task_key",
-        (project["id"],),
-    )
-    if {row.get("task_key") for row in task_rows} != set(TASK_KEYS):
-        raise ResetValidationError("M1 foundation binding task keys are not the exact closed set")
-    canon = await admin_session.fetchone(
-        f"SELECT COUNT(*) AS count,MIN(revision_number) AS min_revision,MAX(revision_number) AS max_revision "
-        f"FROM {_qualified(database_name, 'canon_revisions')} WHERE project_id=%s",
-        (project["id"],),
-    )
-    projection = await admin_session.fetchone(
-        f"SELECT canon_revision_number,projection_revision_number FROM {_qualified(database_name, 'projection_heads')} WHERE project_id=%s",
-        (project["id"],),
-    )
-    if canon != {"count": 1, "min_revision": 0, "max_revision": 0} or projection != {
-        "canon_revision_number": 0, "projection_revision_number": 0,
-    }:
-        raise ResetValidationError("M1 Canon/Projection must be exactly head0")
-    foundation = {
-        "schema_metadata", "projects", "creative_seeds", "project_selected_seeds",
-        "provider_profiles", "task_model_bindings", "task_model_binding_items",
-        "canon_revisions", "projection_heads",
-    }
-    await _verify_zero_tables(
-        admin_session, database_name,
-        tuple(table for table in M1_TABLE_NAMES if table not in foundation),
-    )
-    return _PreservedState(project, seeds, providers, preferred[0])
-
-
 async def _load_v11_preserved_state(
-    admin_session, database_name: str, request: ResetRequest,
+    admin_session,
+    database_name: str,
+    request: ResetRequest,
+    *,
+    target_schema: bool = False,
 ) -> _PreservedState:
+    project_columns = _PROJECT_COLUMNS if target_schema else _V11_PROJECT_COLUMNS
     projects = await admin_session.fetchall(
-        f"SELECT {', '.join(_PROJECT_COLUMNS)} FROM {_qualified(database_name, 'projects')} WHERE title=%s",
+        f"SELECT {', '.join(project_columns)} FROM {_qualified(database_name, 'projects')} WHERE title=%s",
         (request.project_title,),
     )
     if len(projects) != 1:
         raise ResetValidationError("M2 fresh state requires exactly one requested project")
-    project = _map_m1_project(projects[0])
+    project = _map_project(projects[0])
     seed_rows = await admin_session.fetchall(
         f"SELECT s.id,s.project_id,JSON_UNQUOTE(JSON_EXTRACT(r.payload_json,'$.title')) AS title,"
         f"r.payload_json AS premise_json,r.content_hash,s.status,s.created_at,"
@@ -761,7 +554,7 @@ async def _load_v11_preserved_state(
         raise ResetValidationError(
             "M2 fresh state requires every Provider to be active and not deleted"
         )
-    providers = tuple(_map_m1_provider(row) for row in provider_rows)
+    providers = tuple(_map_provider(row) for row in provider_rows)
     preferred = tuple(
         row for row in providers
         if row["name"] == request.preferred_provider_name
@@ -901,22 +694,13 @@ def _report(
         ("projectionHeads", 1),
         ("contractHeads", 1),
     )
-    if source_kind == "m1-v1.0":
-        source_schema_version = M1_SCHEMA_VERSION
-        source_manifest_hash = M1_MANIFEST_HASH
-        source_table_names = M1_TABLE_NAMES
-        source_counts = (
-            ("projects", 1),
-            ("seeds", len(state.seeds)),
-            ("selectedSeeds", 1),
-            ("providers", len(state.providers)),
-            ("taskModelBindings", 1),
-            ("taskModelBindingItems", len(TASK_KEYS)),
-            ("canonRevisions", 1),
-            ("projectionHeads", 1),
-        )
-        source_verified_empty_tables = _M1_VERIFIED_EMPTY_TABLES
-    elif source_kind == "m2-v1.1":
+    if source_kind == "v1.1-source":
+        source_schema_version = V11_SCHEMA_VERSION
+        source_manifest_hash = V11_MANIFEST_HASH
+        source_table_names = V11_TABLE_NAMES
+        source_counts = target_counts
+        source_verified_empty_tables = VERIFIED_EMPTY_TABLES
+    elif source_kind == "v1.2-target":
         source_schema_version = EXPECTED_SCHEMA_VERSION
         source_manifest_hash = manifest_hash()
         source_table_names = created_table_names()
@@ -986,7 +770,7 @@ def format_reset_report(report: ResetReport) -> str:
             "verifiedEmptyTables": list(report.source_verified_empty_tables),
         },
         "target": {
-            "kind": "m2-v1.1",
+            "kind": "v1.2-target",
             "schemaVersion": report.target_schema_version,
             "manifestHash": report.target_manifest_hash,
             "tables": list(report.target_table_names),
@@ -1205,10 +989,14 @@ async def reset_writer_core_data(
     source_kind = await _classify_reset_source(admin_session, database_name)
 
     async def load_state(kind: str) -> _PreservedState:
-        if kind == "m1-v1.0":
-            return await _load_m1_preserved_state(admin_session, database_name, request)
-        if kind == "m2-v1.1":
-            return await _load_v11_preserved_state(admin_session, database_name, request)
+        if kind == "v1.1-source":
+            return await _load_v11_preserved_state(
+                admin_session, database_name, request,
+            )
+        if kind == "v1.2-target":
+            return await _load_v11_preserved_state(
+                admin_session, database_name, request, target_schema=True,
+            )
         raise ResetValidationError("Unsupported reset source manifest")
 
     initial_state = await load_state(source_kind)
@@ -1238,7 +1026,7 @@ async def reset_writer_core_data(
         locked_state = await load_state(locked_kind)
         if locked_state != initial_state:
             raise ResetValidationError("Reset foundation changed while waiting for lock")
-        if locked_kind == "m2-v1.1":
+        if locked_kind == "v1.2-target":
             report = _report(
                 database_name, locked_state, executed=False, mode="no-op",
                 source_kind=source_kind,
@@ -1272,13 +1060,13 @@ async def reset_writer_core_data(
             except BaseException:
                 raise
             transaction_started = False
-            if await _classify_reset_source(admin_session, database_name) != "m2-v1.1":
-                raise ResetValidationError("Rebuilt database does not match the M2 manifest")
+            if await _classify_reset_source(admin_session, database_name) != "v1.2-target":
+                raise ResetValidationError("Rebuilt database does not match the v1.2 manifest")
             readback_state = await _load_v11_preserved_state(
-                admin_session, database_name, request,
+                admin_session, database_name, request, target_schema=True,
             )
             if readback_state != locked_state:
-                raise ResetValidationError("Rebuilt M2 foundation differs from the locked snapshot")
+                raise ResetValidationError("Rebuilt v1.2 foundation differs from the locked snapshot")
             report = _report(
                 database_name, readback_state, executed=True, source_kind=source_kind,
             )
