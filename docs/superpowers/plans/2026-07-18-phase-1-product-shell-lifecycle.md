@@ -551,16 +551,33 @@ git add backend/repositories/project_lifecycle.py backend/repositories/canon.py 
 git commit -m "fix: fence writes for archived projects"
 ```
 
-### Task 5: Build the frontend lifecycle API and store
+### Tasks 5-6: Build lifecycle state and canonical route context atomically
 
 **Files:**
 
 - Modify: `frontend/src/api/db/client.js`
 - Rewrite: `frontend/src/stores/projectStore.js`
+- Create: `frontend/src/router/projectRoutes.js`
+- Rewrite: `frontend/src/router/index.js`
+- Create: `frontend/src/views/NotFoundView.vue`
+- Create: `frontend/src/views/ProjectOverviewView.vue`
+- Create: `frontend/src/views/ArchivedProjectStatusView.vue`
+- Create: `frontend/src/views/ProviderSettingsView.vue`
+- Create: `frontend/src/views/ProjectLibraryView.vue`
+- Create: `frontend/src/views/ArchivedProjectsView.vue`
+- Create: `frontend/src/composables/useRouteProject.js`
+- Modify: `frontend/src/views/ChapterWriterView.vue`
+- Modify: `frontend/src/components/settings/TaskModelBinding.vue`
 - Modify: `frontend/tests/unit/writerCoreApi.test.mjs`
 - Create: `frontend/tests/unit/projectLifecycleStore.test.mjs`
+- Create: `frontend/tests/unit/projectRoutes.test.mjs`
+- Rewrite: `frontend/tests/unit/m1Navigation.test.mjs`
 
-- [ ] **Step 1: Write API and store tests**
+The state rewrite and route replacement are one atomic implementation and
+review gate. The old active router calls the retired store surface, so there
+must not be a commit or handoff between the two halves.
+
+- [ ] **Step 1: Write API and store tests, then verify RED**
 
 Test these client calls:
 
@@ -583,9 +600,9 @@ Test the store with injected API fakes:
 - undo calls restore and returns the same project to the active list;
 - failed requests leave both lists and current project unchanged;
 - an older `loadProject` response cannot overwrite a newer route context;
-- permanent delete removes only an archived project after server success.
-
-- [ ] **Step 2: Run frontend unit tests and verify failure**
+- late list or project reads cannot overwrite a newer lifecycle write;
+- permanent delete removes only an archived project after server success and a
+  late read cannot resurrect it.
 
 Run:
 
@@ -596,7 +613,7 @@ node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/proje
 Expected: FAIL because the client has ambiguous `delete` semantics and the
 store has a single list plus `invalidateOpenProject()`.
 
-- [ ] **Step 3: Implement narrow API payloads**
+- [ ] **Step 2: Implement narrow API payloads and route-safe state**
 
 Replace the project client block with:
 
@@ -627,8 +644,6 @@ projects: {
 
 Remove `PROJECT_FIELDS` and `projects.delete`.
 
-- [ ] **Step 4: Implement the route-safe Pinia store**
-
 Expose:
 
 ```javascript
@@ -646,10 +661,13 @@ permanentlyDeleteProject(projectId, expectedLifecycleRevision)
 ```
 
 Retain `createLatestRequestGuard`, but do not clear `currentProject` on route
-component unmount. Only replace it when the route project ID changes or the
-project is permanently deleted.
+component unmount. Replace it only from the latest route load or a successful
+lifecycle mutation for that same project, and clear it only when that route
+project is permanently deleted. Guard list loads and route loads so a response
+started before a successful create, rename, archive, restore, or delete cannot
+overwrite the committed lifecycle result.
 
-- [ ] **Step 5: Run frontend unit tests**
+- [ ] **Step 3: Run the API and store tests**
 
 Run:
 
@@ -659,28 +677,7 @@ node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/proje
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
-
-```powershell
-git add frontend/src/api/db/client.js frontend/src/stores/projectStore.js frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs
-git commit -m "feat: add frontend project lifecycle state"
-```
-
-### Task 6: Replace the route registry and restore context from the URL
-
-**Files:**
-
-- Create: `frontend/src/router/projectRoutes.js`
-- Rewrite: `frontend/src/router/index.js`
-- Create: `frontend/src/views/NotFoundView.vue`
-- Create: `frontend/src/views/ProjectOverviewView.vue`
-- Create: `frontend/src/views/ArchivedProjectStatusView.vue`
-- Create: `frontend/src/views/ProviderSettingsView.vue`
-- Create: `frontend/src/composables/useRouteProject.js`
-- Create: `frontend/tests/unit/projectRoutes.test.mjs`
-- Rewrite: `frontend/tests/unit/m1Navigation.test.mjs`
-
-- [ ] **Step 1: Write pure route and context tests**
+- [ ] **Step 4: Write pure route and context tests, then verify RED**
 
 Assert builders:
 
@@ -701,8 +698,6 @@ Assert route matching:
 - an archived response selects `ArchivedProjectStatusView`;
 - a missing project selects `NotFoundView`.
 
-- [ ] **Step 2: Run the route tests and verify failure**
-
 Run:
 
 ```powershell
@@ -711,7 +706,7 @@ node --test frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Nav
 
 Expected: FAIL because old routes and wildcard-home redirect remain.
 
-- [ ] **Step 3: Add route builders and the registry**
+- [ ] **Step 5: Add the registry, route context, and minimal route shells**
 
 Export frozen named path builders from `projectRoutes.js`. Define these Phase 1
 routes:
@@ -731,37 +726,49 @@ phase, but it must use the canonical URL and a required positive chapter
 number. Do not expose a navigation link until Phase 4 unless the project has a
 real resumable session.
 
-- [ ] **Step 4: Implement route-owned project context**
-
 `useRouteProject()` observes `route.params.projectId`, calls
 `store.loadProject()`, and returns explicit `loading`, `active`, `archived`,
 `missing`, and `error` states. `ProjectOverviewView` renders only the active
 overview shell. `ArchivedProjectStatusView` is read-only and exposes restore
 and return actions.
 
-- [ ] **Step 5: Run route tests**
+Create minimal accessible `ProjectLibraryView` and `ArchivedProjectsView`
+route shells that only load and summarize their corresponding lists. Task 7
+adds cards, dialogs, and lifecycle interactions. Wrap only the existing
+Provider/model component in `ProviderSettingsView`; migrate its active
+`TaskModelBinding` child to `activeProjects` and `loadActiveProjects` without a
+compatibility alias. Change the existing writer's return action to
+`projectOverviewPath()`.
+
+- [ ] **Step 6: Run the atomic frontend gate**
 
 Run:
 
 ```powershell
+node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs
 node --test frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs
+npm --prefix frontend run test:unit
+npm --prefix frontend run build
+rg "PROJECT_FIELDS|api\.projects\.delete|invalidateOpenProject" frontend/src/api/db/client.js frontend/src/stores/projectStore.js
+rg "path:\s*['\"]/project/|path:\s*['\"]/writer/|views/(HomeView|ProjectView|SettingsView)\.vue" frontend/src/router
 ```
 
-Expected: PASS.
+Expected: all tests and the build pass. The final `rg` returns no active client,
+store, or route match.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit the atomic gate**
 
 ```powershell
-git add frontend/src/router frontend/src/views/NotFoundView.vue frontend/src/views/ProjectOverviewView.vue frontend/src/views/ArchivedProjectStatusView.vue frontend/src/views/ProviderSettingsView.vue frontend/src/composables/useRouteProject.js frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs
-git commit -m "feat: add canonical product routes"
+git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/api/db/client.js frontend/src/stores/projectStore.js frontend/src/router frontend/src/views/NotFoundView.vue frontend/src/views/ProjectOverviewView.vue frontend/src/views/ArchivedProjectStatusView.vue frontend/src/views/ProviderSettingsView.vue frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/composables/useRouteProject.js frontend/src/views/ChapterWriterView.vue frontend/src/components/settings/TaskModelBinding.vue frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs
+git commit -m "feat: add project lifecycle routes and state"
 ```
 
 ### Task 7: Build project library and archived-project interactions
 
 **Files:**
 
-- Create: `frontend/src/views/ProjectLibraryView.vue`
-- Create: `frontend/src/views/ArchivedProjectsView.vue`
+- Modify: `frontend/src/views/ProjectLibraryView.vue`
+- Modify: `frontend/src/views/ArchivedProjectsView.vue`
 - Create: `frontend/src/components/projects/ProjectCard.vue`
 - Create: `frontend/src/components/projects/ProjectNameDialog.vue`
 - Create: `frontend/src/components/projects/ProjectEmptyState.vue`
@@ -789,7 +796,8 @@ Run:
 node --test frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs
 ```
 
-Expected: FAIL because the components do not exist.
+Expected: FAIL because the route shells do not yet have cards, dialogs, or
+lifecycle interactions and the components do not exist.
 
 - [ ] **Step 3: Implement the components**
 

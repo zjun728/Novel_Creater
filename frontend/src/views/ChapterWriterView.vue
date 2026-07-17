@@ -16,6 +16,7 @@ import { api } from '@/api/db/client'
 import { useChapterSessionStore } from '@/stores/chapterSessionStore'
 import { usePlanningStore } from '@/stores/planningStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
+import { projectOverviewPath } from '@/router/projectRoutes'
 
 const route = useRoute()
 const router = useRouter()
@@ -112,7 +113,7 @@ async function saveCandidate() {
 }
 
 function backToProject() {
-  router.push(`/project/${encodeURIComponent(projectId.value)}`)
+  router.push(projectOverviewPath(projectId.value))
 }
 
 watch(() => route.params.projectId, nextProjectId => {

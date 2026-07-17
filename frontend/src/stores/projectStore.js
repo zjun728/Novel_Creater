@@ -3,83 +3,126 @@ import { ref } from 'vue'
 import { api } from '../api/db/client.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
-export const useProjectStore = defineStore('project', () => {
-  const projects = ref([])
-  const currentProject = ref(null)
-  const loading = ref(false)
-  const openGuard = createLatestRequestGuard()
+function replaceExisting(rows, replacement) {
+  return rows.map(row => (row.id === replacement.id ? replacement : row))
+}
 
-  async function loadProjects() {
-    loading.value = true
-    try {
-      projects.value = await api.projects.list() || []
-      return projects.value
-    } finally {
-      loading.value = false
+function upsertFirst(rows, project) {
+  return [project, ...rows.filter(row => row.id !== project.id)]
+}
+
+export function createProjectStore(projectApi = api.projects, storeId = 'project') {
+  return defineStore(storeId, () => {
+    const activeProjects = ref([])
+    const archivedProjects = ref([])
+    const currentProject = ref(null)
+    const projectGuard = createLatestRequestGuard()
+    const activeListGuard = createLatestRequestGuard()
+    const archivedListGuard = createLatestRequestGuard()
+    let routeProjectId = ''
+
+    async function loadActiveProjects() {
+      const generation = activeListGuard.begin()
+      const projects = await projectApi.listActive()
+      const rows = Array.isArray(projects) ? [...projects] : []
+      if (activeListGuard.isCurrent(generation)) activeProjects.value = rows
+      return rows
     }
-  }
 
-  async function createProject({ title, genre, description, targetWords, targetChapters }) {
-    const project = await api.projects.create({
-      title,
-      genre: genre || '',
-      description: description || '',
-      targetWords: targetWords || 100000,
-      targetChapters: targetChapters || 100,
-    })
-    projects.value.unshift(project)
-    return project
-  }
+    async function loadArchivedProjects() {
+      const generation = archivedListGuard.begin()
+      const projects = await projectApi.listArchived()
+      const rows = Array.isArray(projects) ? [...projects] : []
+      if (archivedListGuard.isCurrent(generation)) archivedProjects.value = rows
+      return rows
+    }
 
-  async function openProject(projectId) {
-    const requestGeneration = openGuard.begin()
-    currentProject.value = null
-    loading.value = true
-    try {
-      const project = await api.projects.get(projectId)
-      if (openGuard.isCurrent(requestGeneration)) currentProject.value = project
+    async function loadProject(projectId) {
+      routeProjectId = String(projectId)
+      const requestGeneration = projectGuard.begin()
+      const project = await projectApi.get(projectId)
+      if (projectGuard.isCurrent(requestGeneration)) currentProject.value = project
       return project
-    } finally {
-      if (openGuard.isCurrent(requestGeneration)) loading.value = false
     }
-  }
 
-  function invalidateOpenProject() {
-    openGuard.invalidate()
-    currentProject.value = null
-    loading.value = false
-  }
+    async function createProject(title) {
+      const created = await projectApi.create({ title })
+      activeListGuard.invalidate()
+      activeProjects.value = upsertFirst(activeProjects.value, created)
+      return created
+    }
 
-  async function updateProject(project) {
-    const updated = await api.projects.update(project.id, {
-      title: project.title,
-      genre: project.genre,
-      description: project.description,
-      targetWords: project.targetWords,
-      targetChapters: project.targetChapters,
-      status: project.status,
-    })
-    const index = projects.value.findIndex(item => item.id === updated.id)
-    if (index !== -1) projects.value[index] = updated
-    if (currentProject.value?.id === updated.id) currentProject.value = updated
-    return updated
-  }
+    async function renameProject(projectId, title) {
+      const renamed = await projectApi.rename(projectId, { title })
+      activeListGuard.invalidate()
+      archivedListGuard.invalidate()
+      activeProjects.value = replaceExisting(activeProjects.value, renamed)
+      archivedProjects.value = replaceExisting(archivedProjects.value, renamed)
+      if (routeProjectId === renamed.id) {
+        projectGuard.invalidate()
+        currentProject.value = renamed
+      } else if (currentProject.value?.id === renamed.id) {
+        currentProject.value = renamed
+      }
+      return renamed
+    }
 
-  async function deleteProject(projectId) {
-    await api.projects.delete(projectId)
-    projects.value = projects.value.filter(project => project.id !== projectId)
-    if (currentProject.value?.id === projectId) currentProject.value = null
-  }
+    async function archiveProject(projectId, expectedLifecycleRevision) {
+      const archived = await projectApi.archive(projectId, expectedLifecycleRevision)
+      activeListGuard.invalidate()
+      archivedListGuard.invalidate()
+      activeProjects.value = activeProjects.value.filter(project => project.id !== projectId)
+      archivedProjects.value = upsertFirst(archivedProjects.value, archived)
+      if (routeProjectId === archived.id) {
+        projectGuard.invalidate()
+        currentProject.value = archived
+      } else if (currentProject.value?.id === archived.id) {
+        currentProject.value = archived
+      }
+      return archived
+    }
 
-  return {
-    projects,
-    currentProject,
-    loading,
-    loadProjects,
-    createProject,
-    openProject,
-    invalidateOpenProject,
-    updateProject,
-    deleteProject,
-  }
-})
+    async function restoreProject(projectId, expectedLifecycleRevision) {
+      const restored = await projectApi.restore(projectId, expectedLifecycleRevision)
+      activeListGuard.invalidate()
+      archivedListGuard.invalidate()
+      archivedProjects.value = archivedProjects.value.filter(project => project.id !== projectId)
+      activeProjects.value = upsertFirst(activeProjects.value, restored)
+      if (routeProjectId === restored.id) {
+        projectGuard.invalidate()
+        currentProject.value = restored
+      } else if (currentProject.value?.id === restored.id) {
+        currentProject.value = restored
+      }
+      return restored
+    }
+
+    async function permanentlyDeleteProject(projectId, expectedLifecycleRevision) {
+      await projectApi.permanentlyDelete(projectId, expectedLifecycleRevision)
+      archivedListGuard.invalidate()
+      archivedProjects.value = archivedProjects.value.filter(project => project.id !== projectId)
+      if (routeProjectId === projectId) {
+        projectGuard.invalidate()
+        currentProject.value = null
+      } else if (currentProject.value?.id === projectId) {
+        currentProject.value = null
+      }
+    }
+
+    return {
+      activeProjects,
+      archivedProjects,
+      currentProject,
+      loadActiveProjects,
+      loadArchivedProjects,
+      loadProject,
+      createProject,
+      renameProject,
+      archiveProject,
+      restoreProject,
+      permanentlyDeleteProject,
+    }
+  })
+}
+
+export const useProjectStore = createProjectStore()

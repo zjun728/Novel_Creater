@@ -30,7 +30,7 @@ const taskLabels = {
   summary: '章节摘要', extraction: '状态提取', polish: '修订润色', market: '市场选题',
 }
 
-const projectOptions = computed(() => projectStore.projects.map(project => ({
+const projectOptions = computed(() => projectStore.activeProjects.map(project => ({
   label: project.title,
   value: project.id,
 })))
@@ -190,14 +190,14 @@ async function loadProjectsAndProviders(force = false) {
     }
   })
   try {
-    if (force || !projectStore.projects.length) await projectStore.loadProjects()
+    if (force || !projectStore.activeProjects.length) await projectStore.loadActiveProjects()
     await providerLoad
     if (!projectsGuard.isCurrent(requestGeneration)) return
     const currentSelection = selectedProjectId.value
-    const selectionStillExists = projectStore.projects.some(project => project.id === currentSelection)
+    const selectionStillExists = projectStore.activeProjects.some(project => project.id === currentSelection)
     const nextProjectId = selectionStillExists
       ? currentSelection
-      : (projectStore.currentProject?.id || projectStore.projects[0]?.id || '')
+      : (projectStore.currentProject?.id || projectStore.activeProjects[0]?.id || '')
     if (nextProjectId !== currentSelection && currentSelection && !confirmDiscard()) return
     selectedProjectId.value = nextProjectId
     if (!nextProjectId) {

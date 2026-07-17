@@ -56,42 +56,44 @@ test('writer core state performs one read through the product API', async () => 
   }
 })
 
-test('project update sends only mutable public fields', async () => {
-  const originalFetch = global.fetch
-  const calls = []
-  global.fetch = async (url, options) => {
-    calls.push({ url, options })
-    return new Response(JSON.stringify({ id: 'project-1' }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
+test('project lifecycle client uses narrow endpoints and CAS request bodies', async () => {
+  const calls = await captureRequests(async api => {
+    await api.projects.listActive()
+    await api.projects.listArchived()
+    await api.projects.create({
+      title: '  典镇山河  ',
+      genre: 'must-not-send',
+      apiKey: 'must-not-send',
     })
-  }
+    await api.projects.get('project/one')
+    await api.projects.rename('project/one', {
+      title: '山河新章',
+      description: 'must-not-send',
+    })
+    await api.projects.archive('project/one', 3)
+    await api.projects.restore('project/one', 4)
+    await api.projects.permanentlyDelete('project/one', 5)
+  })
 
-  try {
-    const { api } = await import('../../src/api/db/client.js')
-    await api.projects.update('project-1', {
-      title: 'Changed',
-      genre: 'history',
-      description: 'Description',
-      targetWords: 1000,
-      targetChapters: 10,
-      currentChapter: 4,
-      status: 'drafting',
-      unexpected: 'discard me',
-    })
-
-    assert.equal(calls.length, 1)
-    assert.equal(calls[0].options.method, 'PUT')
-    assert.deepEqual(JSON.parse(calls[0].options.body), {
-      title: 'Changed',
-      genre: 'history',
-      description: 'Description',
-      targetWords: 1000,
-      targetChapters: 10,
-    })
-  } finally {
-    global.fetch = originalFetch
-  }
+  assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
+    ['GET', '/api/projects'],
+    ['GET', '/api/projects/archived'],
+    ['POST', '/api/projects'],
+    ['GET', '/api/projects/project%2Fone'],
+    ['PUT', '/api/projects/project%2Fone'],
+    ['POST', '/api/projects/project%2Fone/archive'],
+    ['POST', '/api/projects/project%2Fone/restore'],
+    ['DELETE', '/api/projects/project%2Fone'],
+  ])
+  assert.equal(bodyOf(calls[0]), undefined)
+  assert.equal(bodyOf(calls[1]), undefined)
+  assert.deepEqual(bodyOf(calls[2]), { title: '  典镇山河  ' })
+  assert.equal(bodyOf(calls[3]), undefined)
+  assert.deepEqual(bodyOf(calls[4]), { title: '山河新章' })
+  assert.deepEqual(bodyOf(calls[5]), { expectedLifecycleRevision: 3 })
+  assert.deepEqual(bodyOf(calls[6]), { expectedLifecycleRevision: 4 })
+  assert.deepEqual(bodyOf(calls[7]), { expectedLifecycleRevision: 5 })
+  assert.equal(new URL(calls[7].url).search, '')
 })
 
 test('seed CRUD and selection expose exact CAS payloads', async () => {
@@ -390,9 +392,10 @@ test('chapter working draft generation uses a long model timeout', async () => {
 test('every shared client path segment is encoded without changing route structure', async () => {
   const calls = await captureRequests(async api => {
     await api.projects.get('project/one')
-    await api.projects.contentState('project/one')
-    await api.projects.update('project/one', {})
-    await api.projects.delete('project/one')
+    await api.projects.rename('project/one', { title: 'Renamed' })
+    await api.projects.archive('project/one', 1)
+    await api.projects.restore('project/one', 2)
+    await api.projects.permanentlyDelete('project/one', 3)
     await api.providers.update('provider/one', {})
     await api.providers.delete('provider/one')
     await api.writerCore.state('project/one')
@@ -412,8 +415,9 @@ test('every shared client path segment is encoded without changing route structu
 
   assert.deepEqual(calls.map(call => new URL(call.url).pathname), [
     '/api/projects/project%2Fone',
-    '/api/projects/project%2Fone/content-state',
     '/api/projects/project%2Fone',
+    '/api/projects/project%2Fone/archive',
+    '/api/projects/project%2Fone/restore',
     '/api/projects/project%2Fone',
     '/api/providers/provider%2Fone',
     '/api/providers/provider%2Fone',
@@ -426,8 +430,8 @@ test('every shared client path segment is encoded without changing route structu
     '/api/projects/project%2Fone/canon/aliases/resolve',
     '/api/projects/project%2Fone/projections/head',
   ])
-  assert.equal(new URL(calls[12].url).searchParams.get('name'), '张 三/别名')
-  assert.equal(new URL(calls[8].url).search, '')
+  assert.equal(new URL(calls[13].url).searchParams.get('name'), '张 三/别名')
+  assert.equal(new URL(calls[9].url).search, '')
 })
 
 test('project and provider writes use explicit transport allowlists', async () => {
@@ -449,8 +453,7 @@ test('project and provider writes use explicit transport allowlists', async () =
   })
 
   assert.deepEqual(bodyOf(calls[0]), {
-    title: 'Project', genre: '玄幻', description: 'Description',
-    targetWords: 100000, targetChapters: 100,
+    title: 'Project',
   })
   assert.deepEqual(bodyOf(calls[1]), {
     name: '联通云', providerType: 'openai-compatible', model: 'deepseek-v4-flash',

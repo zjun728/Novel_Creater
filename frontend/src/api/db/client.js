@@ -61,9 +61,6 @@ function pickDefined(value = {}, fields = []) {
   return result
 }
 
-const PROJECT_FIELDS = [
-  'title', 'genre', 'description', 'targetWords', 'targetChapters',
-]
 const PROVIDER_CREATE_FIELDS = [
   'name', 'providerType', 'model', 'baseURL', 'apiKey', 'enabled', 'sortOrder',
   'stream', 'maxContextTokens', 'maxOutputTokens', 'temperature', 'topP',
@@ -163,15 +160,26 @@ export const api = {
   health: () => get('/health'),
 
   projects: {
-    list: () => get('/projects'),
-    create: data => post('/projects', pickDefined(data, PROJECT_FIELDS)),
+    listActive: () => get('/projects'),
+    listArchived: () => get('/projects/archived'),
+    create: ({ title }) => post('/projects', { title }),
     get: projectId => get(`/projects/${segment(projectId)}`),
-    contentState: projectId => get(`/projects/${segment(projectId)}/content-state`),
-    update: (projectId, data) => put(
+    rename: (projectId, { title }) => put(
       `/projects/${segment(projectId)}`,
-      pickDefined(data, PROJECT_FIELDS),
+      { title },
     ),
-    delete: projectId => del(`/projects/${segment(projectId)}`),
+    archive: (projectId, expectedLifecycleRevision) => post(
+      `/projects/${segment(projectId)}/archive`,
+      { expectedLifecycleRevision },
+    ),
+    restore: (projectId, expectedLifecycleRevision) => post(
+      `/projects/${segment(projectId)}/restore`,
+      { expectedLifecycleRevision },
+    ),
+    permanentlyDelete: (projectId, expectedLifecycleRevision) => del(
+      `/projects/${segment(projectId)}`,
+      { expectedLifecycleRevision },
+    ),
   },
 
   seeds: {
