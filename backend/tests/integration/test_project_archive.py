@@ -959,6 +959,70 @@ class _ArchiveAttemptRepository(ProjectRepository):
         return await super().lock_any(session, project_id)
 
 
+def _consume_future_exception(future):
+    if not future.cancelled():
+        future.exception()
+
+
+async def _settle_race_tasks(tasks, *, timeout=10):
+    tasks = tuple(task for task in tasks if task is not None)
+    if not tasks:
+        return ()
+
+    aggregate = asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        return tuple(
+            await asyncio.wait_for(asyncio.shield(aggregate), timeout=timeout)
+        )
+    except asyncio.TimeoutError:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        cleanup = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            return tuple(
+                await asyncio.wait_for(asyncio.shield(cleanup), timeout=timeout)
+            )
+        except asyncio.TimeoutError:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            aggregate.add_done_callback(_consume_future_exception)
+            cleanup.add_done_callback(_consume_future_exception)
+            raise
+
+
+@pytest.mark.asyncio
+async def test_generation_archive_cleanup_bounds_and_consumes_early_failures():
+    blocker_started = asyncio.Event()
+    blocker_cancelled = asyncio.Event()
+
+    async def fail_early():
+        raise RuntimeError("controlled early archive failure")
+
+    async def block_until_cancelled():
+        blocker_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            blocker_cancelled.set()
+
+    failed = asyncio.create_task(fail_early())
+    blocked = asyncio.create_task(block_until_cancelled())
+    await _wait(blocker_started)
+
+    results = await asyncio.wait_for(
+        _settle_race_tasks((failed, blocked), timeout=0.1),
+        timeout=1,
+    )
+
+    assert isinstance(results[0], RuntimeError)
+    assert isinstance(results[1], asyncio.CancelledError)
+    assert blocker_cancelled.is_set()
+    assert failed.done() and blocked.done()
+
+
 async def _run_generation_archive_race(
     disposable_mysql,
     *,
@@ -1004,22 +1068,12 @@ async def _run_generation_archive_race(
             await asyncio.wait_for(archive_completed.wait(), timeout=0.1)
         assert not archive_task.done()
         gateway.release.set()
-        generation_result, archive_result = await asyncio.wait_for(
-            asyncio.gather(
-                generation_task,
-                archive_task,
-                return_exceptions=True,
-            ),
-            timeout=10,
+        generation_result, archive_result = await _settle_race_tasks(
+            (generation_task, archive_task)
         )
     finally:
         gateway.release.set()
-        pending = [
-            task for task in (generation_task, archive_task)
-            if task is not None and not task.done()
-        ]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        await _settle_race_tasks((generation_task, archive_task))
 
     return {
         "workspace": workspace,
