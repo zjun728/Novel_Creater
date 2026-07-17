@@ -47,6 +47,10 @@ test('chapter session store edits working draft without creating candidate', asy
       calls.push(['draft', projectId, sessionId, structuredClone(command)])
       return workspace({ content: command.content, revision: command.expectedRevision + 1 })
     }],
+    [api.chapterSessions, 'generateWorkingDraft', async (projectId, sessionId, command) => {
+      calls.push(['generate', projectId, sessionId, structuredClone(command)])
+      return workspace({ content: 'AI 生成正文', revision: command.expectedWorkingDraftRevision + 1 })
+    }],
     [api.chapterSessions, 'saveCandidate', async (projectId, sessionId, command) => {
       calls.push(['candidate', projectId, sessionId, structuredClone(command)])
       return workspace({
@@ -65,12 +69,19 @@ test('chapter session store edits working draft without creating candidate', asy
     })
     await store.saveWorkingDraft('project-1', '正文')
     assert.equal(store.candidates.length, 0)
+    await store.generateWorkingDraft('project-1', '多一点市井对话')
+    assert.equal(store.workingDraft.content, 'AI 生成正文')
+    assert.equal(store.candidates.length, 0)
     await store.saveCandidate('project-1')
     assert.equal(store.candidates.length, 1)
     assert.deepEqual(calls, [
       ['create', 'project-1', { expectedStoryBlockRevision: 1, expectedCanonRevision: 0 }],
       ['draft', 'project-1', 'session-1', { expectedRevision: 1, content: '正文' }],
-      ['candidate', 'project-1', 'session-1', { expectedWorkingDraftRevision: 2 }],
+      ['generate', 'project-1', 'session-1', {
+        expectedWorkingDraftRevision: 2,
+        authorInstruction: '多一点市井对话',
+      }],
+      ['candidate', 'project-1', 'session-1', { expectedWorkingDraftRevision: 3 }],
     ])
   })
 })

@@ -63,17 +63,41 @@ class FakeChapterSessionService:
         return self.workspace()
 
 
+class FakeChapterDraftGenerationService:
+    def __init__(self, chapter_service):
+        self.chapter_service = chapter_service
+        self.commands = []
+
+    async def generate_working_draft(self, command):
+        self.commands.append(command)
+        self.chapter_service.draft = WorkingDraftView(
+            id="draft-1", project_id="p1", chapter_session_id="session-1",
+            revision=command.expected_working_draft_revision + 1,
+            content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
+            content_hash="b" * 64,
+            source_payload={
+                "source": "ai-generation",
+                "authorInstruction": command.author_instruction,
+            },
+        )
+        return self.chapter_service.workspace()
+
+
 def make_client():
     service = FakeChapterSessionService()
+    generation_service = FakeChapterDraftGenerationService(service)
     app = FastAPI()
     app.include_router(chapter_sessions.router, prefix="/api")
     app.dependency_overrides[chapter_sessions.get_chapter_session_service] = lambda: service
+    app.dependency_overrides[
+        chapter_sessions.get_chapter_draft_generation_service
+    ] = lambda: generation_service
     install_error_handlers(app)
-    return TestClient(app, raise_server_exceptions=False), service
+    return TestClient(app, raise_server_exceptions=False), service, generation_service
 
 
 def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
-    client, service = make_client()
+    client, service, _ = make_client()
 
     created = client.post("/api/projects/p1/chapter-sessions", json={
         "expectedStoryBlockRevision": 1,
@@ -97,13 +121,54 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
 
 
 def test_chapter_session_routes_reject_unknown_fields():
-    client, _ = make_client()
+    client, _, _ = make_client()
 
     response = client.put("/api/projects/p1/chapter-sessions/session-1/working-draft", json={
         "expectedRevision": 1,
         "content": "正文",
         "apiKey": "must-not-send",
     })
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "ChapterSessionRequestInvalid"
+
+
+def test_generate_working_draft_route_updates_draft_without_candidate():
+    client, _, generation_service = make_client()
+
+    response = client.post(
+        "/api/projects/p1/chapter-sessions/session-1/generate-working-draft",
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "authorInstruction": "多一点市井对话",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["workingDraft"]["revision"] == 2
+    assert body["workingDraft"]["content"].startswith("沈清源")
+    assert body["workingDraft"]["sourcePayload"]["source"] == "ai-generation"
+    assert body["workingDraft"]["sourcePayload"]["authorInstruction"] == "多一点市井对话"
+    assert body["candidates"] == []
+    assert len(generation_service.commands) == 1
+    command = generation_service.commands[0]
+    assert command.project_id == "p1"
+    assert command.chapter_session_id == "session-1"
+    assert command.expected_working_draft_revision == 1
+
+
+def test_generate_working_draft_route_rejects_secret_debug_fields():
+    client, _, _ = make_client()
+
+    response = client.post(
+        "/api/projects/p1/chapter-sessions/session-1/generate-working-draft",
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "authorInstruction": "正文更活一点",
+            "apiKey": "must-not-send",
+        },
+    )
 
     assert response.status_code == 422
     assert response.json()["code"] == "ChapterSessionRequestInvalid"

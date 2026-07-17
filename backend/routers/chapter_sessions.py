@@ -6,6 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from backend.database import connection, transaction
 from backend.http_errors import PublicDomainError
 from backend.repositories.chapter_sessions import ChapterSessionRepository
+from backend.services.chapter_draft_generation import (
+    ChapterDraftGenerationConflict,
+    ChapterDraftGenerationFailed,
+    ChapterDraftGenerationPreconditionFailed,
+    ChapterDraftGenerationService,
+    GenerateWorkingDraft,
+)
 from backend.services.chapter_sessions import (
     ChapterSessionConflict,
     ChapterSessionNotFound,
@@ -23,10 +30,17 @@ _service = ChapterSessionService(
     ChapterSessionRepository(), transaction_factory=transaction,
     connection_factory=connection,
 )
+_generation_service = ChapterDraftGenerationService(
+    ChapterSessionRepository(), transaction_factory=transaction,
+)
 
 
 def get_chapter_session_service() -> ChapterSessionService:
     return _service
+
+
+def get_chapter_draft_generation_service() -> ChapterDraftGenerationService:
+    return _generation_service
 
 
 class ChapterSessionRequestInvalid(PublicDomainError):
@@ -53,6 +67,12 @@ class ChapterSessionPreconditionUnavailable(PublicDomainError):
     message = "Chapter session prerequisites are unavailable"
 
 
+class ChapterDraftGenerationUnavailable(PublicDomainError):
+    status_code = 502
+    code = "ChapterDraftGenerationFailed"
+    message = "Chapter draft generation failed"
+
+
 class _StrictBody(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
@@ -71,6 +91,11 @@ class SaveCandidateBody(_StrictBody):
     expectedWorkingDraftRevision: int = Field(ge=1)
 
 
+class GenerateWorkingDraftBody(_StrictBody):
+    expectedWorkingDraftRevision: int = Field(ge=1)
+    authorInstruction: str = Field(default="", max_length=2000)
+
+
 def _raise_public(error: Exception):
     if isinstance(error, ChapterSessionNotFound):
         raise ChapterSessionResourceNotFound() from None
@@ -80,6 +105,12 @@ def _raise_public(error: Exception):
         raise ChapterSessionStateConflict() from None
     if isinstance(error, ChapterSessionPreconditionFailed):
         raise ChapterSessionPreconditionUnavailable() from None
+    if isinstance(error, ChapterDraftGenerationConflict):
+        raise ChapterSessionStateConflict() from None
+    if isinstance(error, ChapterDraftGenerationPreconditionFailed):
+        raise ChapterSessionPreconditionUnavailable() from None
+    if isinstance(error, ChapterDraftGenerationFailed):
+        raise ChapterDraftGenerationUnavailable() from None
     raise error
 
 
@@ -157,6 +188,26 @@ async def save_working_draft(
             chapter_session_id=session_id,
             expected_revision=body.expectedRevision,
             content=body.content,
+        ))
+    except ValidationError:
+        raise ChapterSessionRequestInvalid() from None
+    except Exception as error:
+        _raise_public(error)
+    return _public_workspace(workspace)
+
+
+@router.post("/projects/{pid}/chapter-sessions/{session_id}/generate-working-draft", status_code=201)
+async def generate_working_draft(
+    pid: str, session_id: str, raw_body: object = Body(...),
+    service=Depends(get_chapter_draft_generation_service),
+):
+    try:
+        body = GenerateWorkingDraftBody.model_validate(raw_body)
+        workspace = await service.generate_working_draft(GenerateWorkingDraft(
+            project_id=pid,
+            chapter_session_id=session_id,
+            expected_working_draft_revision=body.expectedWorkingDraftRevision,
+            author_instruction=body.authorInstruction,
         ))
     except ValidationError:
         raise ChapterSessionRequestInvalid() from None

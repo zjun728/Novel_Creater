@@ -343,6 +343,13 @@ export const api = {
         content: data.content,
       },
     ),
+    generateWorkingDraft: (projectId, sessionId, data) => post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/generate-working-draft`,
+      {
+        expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
+        authorInstruction: data.authorInstruction,
+      },
+    ),
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,
       { expectedWorkingDraftRevision: data.expectedWorkingDraftRevision },

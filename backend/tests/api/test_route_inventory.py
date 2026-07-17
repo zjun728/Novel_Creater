@@ -54,6 +54,7 @@ APPROVED_FORMAL_ROUTES = {
     ("POST", "/api/projects/{pid}/chapter-sessions"),
     ("PUT", "/api/projects/{pid}/chapter-sessions/{session_id}/working-draft"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/candidates"),
+    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/generate-working-draft"),
     ("GET", "/api/assets/style-templates"),
     ("GET", "/api/assets/style-templates/{revision_id}"),
     ("GET", "/api/assets/experience-cards"),

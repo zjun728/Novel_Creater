@@ -34,7 +34,7 @@ async function readActiveDependencyTree(entry, visited = new Set()) {
   return `${entry}\n${source}\n${children.join('\n')}`
 }
 
-test('the writer route mounts the M4 chapter workspace without old writer or generation paths', async () => {
+test('the writer route mounts the M5 chapter workspace without old provider or finalization paths', async () => {
   const router = await readSource('router/index.js')
   const workspace = await readSource('views/ChapterWriterView.vue')
 
@@ -43,9 +43,12 @@ test('the writer route mounts the M4 chapter workspace without old writer or gen
   assert.match(workspace, /useChapterSessionStore/)
   assert.match(workspace, /创建章节会话/)
   assert.match(workspace, /保存工作稿/)
+  assert.match(workspace, /AI 生成工作稿/)
+  assert.match(workspace, /generateWorkingDraft/)
+  assert.match(workspace, /作者临时要求/)
   assert.match(workspace, /保存为候选/)
   assert.match(workspace, /编辑不会自动生成候选/)
-  assert.doesNotMatch(workspace, /chatCompletion|providerAdapter|applyAdapter|finalize|定稿|生成正文/)
+  assert.doesNotMatch(workspace, /chatCompletion|createAdapter|providerAdapter|applyAdapter|finalize|定稿|生成候选稿|AI 生成候选/)
 })
 
 test('the M3 project shell depends only on formal project writer core and planning reads', async () => {
