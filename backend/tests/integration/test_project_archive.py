@@ -8,6 +8,7 @@ import pytest
 from backend import http_errors
 from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.seeds import SeedPayload
+from backend.gateways.chapter_draft_provider import ChapterDraftProviderError
 from backend.repositories.canon import CanonRepository
 from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.contracts import ContractRepository
@@ -18,6 +19,7 @@ from backend.repositories.seeds import SeedRepository
 from backend.repositories.story_engines import StoryEngineRepository
 from backend.services.canon import CanonService, CommitCanonRevision
 from backend.services.chapter_draft_generation import (
+    ChapterDraftGenerationFailed,
     ChapterDraftGenerationService,
     GenerateWorkingDraft,
 )
@@ -832,6 +834,261 @@ class _GeneratedDraftGateway:
     async def generate(self, **_kwargs):
         self.calls += 1
         return "测试生成正文"
+
+
+async def _prepare_generation_race(disposable_mysql):
+    facts = await bootstrap_contract_fixture(disposable_mysql.session)
+    now = 1_900_000_000_050
+    empty_hash = build_projection_bundle(0, ()).content_hash
+    await disposable_mysql.session.execute(
+        """INSERT INTO canon_revisions
+           (id,project_id,revision_number,parent_revision_number,idempotency_key,
+            source_type,source_id,content_hash,created_at)
+           VALUES ('8e000000-0000-0000-0000-000000000001',%s,0,0,%s,
+                   'bootstrap',NULL,%s,%s)""",
+        (WRITE_FENCE_PROJECT, "0" * 64, empty_hash, now),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO projection_heads
+           (project_id,canon_revision_number,projection_revision_number,
+            content_hash,updated_at)
+           VALUES (%s,0,0,%s,%s)""",
+        (WRITE_FENCE_PROJECT, empty_hash, now),
+    )
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    contract_service = ContractService(
+        ContractRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+        id_factory=iter(
+            f"8e000000-0000-0000-0001-{number:012d}"
+            for number in range(100, 500)
+        ).__next__,
+        clock=lambda: now,
+    )
+    saved_contract = await contract_service.save_draft(
+        SaveContractDraft(
+            WRITE_FENCE_PROJECT,
+            0,
+            contract_draft(facts),
+        )
+    )
+    confirmed = await contract_service.confirm(
+        ConfirmContracts(
+            WRITE_FENCE_PROJECT,
+            "generation-race-confirm",
+            saved_contract.draft_version,
+            saved_contract.content_hash,
+        )
+    )
+    planning_service = PlanningService(
+        PlanningRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+    )
+    plan = await planning_service.create_initial_plan(
+        CreateInitialPlan(
+            WRITE_FENCE_PROJECT,
+            confirmed.revision,
+            "generation-race-plan",
+        )
+    )
+    chapter_service = ChapterSessionService(
+        ChapterSessionRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+    )
+    workspace = await chapter_service.create_session(
+        CreateChapterSession(
+            WRITE_FENCE_PROJECT,
+            plan.active_block.revision,
+            0,
+        )
+    )
+    workspace = await chapter_service.save_working_draft(
+        SaveWorkingDraft(
+            WRITE_FENCE_PROJECT,
+            workspace.session.id,
+            workspace.working_draft.revision,
+            "归档竞争前的作者正文。",
+        )
+    )
+    return transaction, workspace
+
+
+class _BlockingGenerationGateway:
+    def __init__(self, *, outcome):
+        self.outcome = outcome
+        self.calls = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def generate(self, **_kwargs):
+        self.calls += 1
+        self.entered.set()
+        await _wait(self.release)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+class _GenerationConnectionRepository(ChapterSessionRepository):
+    def __init__(self, connection_ids):
+        super().__init__()
+        self.connection_ids = connection_ids
+
+    async def lock_project(self, session, project_id):
+        self.connection_ids["generation"] = id(session.raw)
+        return await super().lock_project(session, project_id)
+
+
+class _ArchiveAttemptRepository(ProjectRepository):
+    def __init__(self, attempted, connection_ids):
+        super().__init__()
+        self.attempted = attempted
+        self.connection_ids = connection_ids
+
+    async def lock_any(self, session, project_id):
+        self.connection_ids["archive"] = id(session.raw)
+        self.attempted.set()
+        return await super().lock_any(session, project_id)
+
+
+async def _run_generation_archive_race(
+    disposable_mysql,
+    *,
+    provider_outcome,
+):
+    transaction, workspace = await _prepare_generation_race(disposable_mysql)
+    connection_ids = {}
+    archive_attempted = asyncio.Event()
+    archive_completed = asyncio.Event()
+    gateway = _BlockingGenerationGateway(outcome=provider_outcome)
+    generation_service = ChapterDraftGenerationService(
+        _GenerationConnectionRepository(connection_ids),
+        provider_gateway=gateway,
+        transaction_factory=transaction,
+    )
+    archive_service = ProjectLifecycleService(
+        _ArchiveAttemptRepository(archive_attempted, connection_ids),
+        transaction,
+    )
+    command = GenerateWorkingDraft(
+        WRITE_FENCE_PROJECT,
+        workspace.session.id,
+        workspace.working_draft.revision,
+    )
+
+    async def archive_with_completion():
+        try:
+            return await archive_service.archive(WRITE_FENCE_PROJECT, 0)
+        finally:
+            archive_completed.set()
+
+    generation_task = asyncio.create_task(
+        generation_service.generate_working_draft(command)
+    )
+    archive_task = None
+    try:
+        await _wait(gateway.entered)
+        archive_task = asyncio.create_task(archive_with_completion())
+        await _wait(archive_attempted)
+        assert set(connection_ids) == {"generation", "archive"}
+        assert len(set(connection_ids.values())) == 2
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(archive_completed.wait(), timeout=0.1)
+        assert not archive_task.done()
+        gateway.release.set()
+        generation_result, archive_result = await asyncio.wait_for(
+            asyncio.gather(
+                generation_task,
+                archive_task,
+                return_exceptions=True,
+            ),
+            timeout=10,
+        )
+    finally:
+        gateway.release.set()
+        pending = [
+            task for task in (generation_task, archive_task)
+            if task is not None and not task.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    return {
+        "workspace": workspace,
+        "gateway": gateway,
+        "generation_result": generation_result,
+        "archive_result": archive_result,
+    }
+
+
+@pytest.mark.asyncio
+async def test_real_generation_lock_then_archive_commits_draft_before_archive(
+    disposable_mysql,
+):
+    generated = "模型完成的测试正文。"
+    race = await _run_generation_archive_race(
+        disposable_mysql,
+        provider_outcome=generated,
+    )
+
+    assert race["gateway"].calls == 1
+    assert race["generation_result"].working_draft.content == generated
+    assert isinstance(race["archive_result"], ProjectResult)
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT revision,content FROM working_drafts
+           WHERE chapter_session_id=%s""",
+        (race["workspace"].session.id,),
+    )
+    project = await disposable_mysql.session.fetchone(
+        """SELECT archived_at,lifecycle_revision FROM projects WHERE id=%s""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert draft == {
+        "revision": race["workspace"].working_draft.revision + 1,
+        "content": generated,
+    }
+    assert project["archived_at"] is not None
+    assert project["lifecycle_revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_real_generation_failure_rolls_back_then_archive_succeeds(
+    disposable_mysql,
+):
+    race = await _run_generation_archive_race(
+        disposable_mysql,
+        provider_outcome=ChapterDraftProviderError("fake provider failure"),
+    )
+
+    assert race["gateway"].calls == 1
+    assert isinstance(
+        race["generation_result"],
+        ChapterDraftGenerationFailed,
+    )
+    assert isinstance(race["archive_result"], ProjectResult)
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT revision,content FROM working_drafts
+           WHERE chapter_session_id=%s""",
+        (race["workspace"].session.id,),
+    )
+    project = await disposable_mysql.session.fetchone(
+        """SELECT archived_at,lifecycle_revision FROM projects WHERE id=%s""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert draft == {
+        "revision": race["workspace"].working_draft.revision,
+        "content": race["workspace"].working_draft.content,
+    }
+    assert project["archived_at"] is not None
+    assert project["lifecycle_revision"] == 1
 
 
 @pytest.mark.asyncio

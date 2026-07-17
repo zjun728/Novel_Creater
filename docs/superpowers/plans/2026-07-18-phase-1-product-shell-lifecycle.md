@@ -440,7 +440,6 @@ git commit -m "feat: add transactional project lifecycle api"
 - Modify: `backend/services/chapter_sessions.py`
 - Modify: `backend/services/chapter_draft_generation.py`
 - Modify: `backend/services/story_engines.py`
-- Modify: `backend/repositories/projects.py`
 - Modify: `backend/tests/unit/test_canon_revision.py`
 - Modify: `backend/tests/unit/test_canon_idempotency.py`
 - Modify: `backend/tests/unit/test_chapter_session_service.py`
@@ -466,9 +465,18 @@ Extend MySQL integration coverage:
 6. prove a normal write succeeds;
 7. reserve a story-engine operation and assert archive returns `ProjectBusy`.
 
-Add a small inventory test that imports each project write service and verifies
-its repository exposes `lock_project`/`lock_active_project`; do not inspect
-source text.
+Add an explicit active-project write-entrypoint inventory. Invoke every entry
+with a guard-probe repository, assert the guard is the first repository action,
+and prove an archived error stops all downstream repository and Provider calls.
+Do not inspect source text.
+
+Add real disposable-MySQL generation/archive races using two independent
+connections and an event-gated fake Provider:
+
+- a successful generation holds the project row lock until its draft update
+  commits, then archive completes;
+- a failed generation rolls back, releases the lock, and archive completes
+  without changing the original draft.
 
 - [ ] **Step 2: Run focused tests and verify the known gaps**
 
@@ -539,7 +547,7 @@ Expected: PASS without provider calls.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add backend/repositories/project_lifecycle.py backend/repositories/canon.py backend/services/canon.py backend/services/chapter_sessions.py backend/services/chapter_draft_generation.py backend/services/story_engines.py backend/repositories/projects.py backend/tests/unit/test_canon_revision.py backend/tests/unit/test_chapter_session_service.py backend/tests/unit/test_chapter_draft_generation_service.py backend/tests/unit/test_story_engine_service.py backend/tests/integration/test_project_archive.py backend/tests/unit/test_archived_write_inventory.py
+git add backend/repositories/project_lifecycle.py backend/repositories/canon.py backend/services/canon.py backend/services/chapter_sessions.py backend/services/chapter_draft_generation.py backend/services/story_engines.py backend/tests/unit/test_canon_revision.py backend/tests/unit/test_canon_idempotency.py backend/tests/unit/test_chapter_session_service.py backend/tests/unit/test_chapter_draft_generation_service.py backend/tests/unit/test_story_engine_service.py backend/tests/unit/test_project_lifecycle_repository.py backend/tests/integration/test_project_archive.py backend/tests/support/canon_fakes.py backend/tests/support/story_engine_fakes.py backend/tests/unit/test_archived_write_inventory.py docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md
 git commit -m "fix: fence writes for archived projects"
 ```
 
