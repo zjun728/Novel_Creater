@@ -38,7 +38,9 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
     }
 
     async function loadProject(projectId) {
-      routeProjectId = String(projectId)
+      const targetProjectId = String(projectId)
+      if (routeProjectId !== targetProjectId) currentProject.value = null
+      routeProjectId = targetProjectId
       const requestGeneration = projectGuard.begin()
       const project = await projectApi.get(projectId)
       if (projectGuard.isCurrent(requestGeneration)) currentProject.value = project
@@ -58,10 +60,8 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       archivedListGuard.invalidate()
       activeProjects.value = replaceExisting(activeProjects.value, renamed)
       archivedProjects.value = replaceExisting(archivedProjects.value, renamed)
-      if (routeProjectId === renamed.id) {
+      if (routeProjectId === String(renamed.id)) {
         projectGuard.invalidate()
-        currentProject.value = renamed
-      } else if (currentProject.value?.id === renamed.id) {
         currentProject.value = renamed
       }
       return renamed
@@ -73,10 +73,8 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       archivedListGuard.invalidate()
       activeProjects.value = activeProjects.value.filter(project => project.id !== projectId)
       archivedProjects.value = upsertFirst(archivedProjects.value, archived)
-      if (routeProjectId === archived.id) {
+      if (routeProjectId === String(archived.id)) {
         projectGuard.invalidate()
-        currentProject.value = archived
-      } else if (currentProject.value?.id === archived.id) {
         currentProject.value = archived
       }
       return archived
@@ -88,10 +86,8 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       archivedListGuard.invalidate()
       archivedProjects.value = archivedProjects.value.filter(project => project.id !== projectId)
       activeProjects.value = upsertFirst(activeProjects.value, restored)
-      if (routeProjectId === restored.id) {
+      if (routeProjectId === String(restored.id)) {
         projectGuard.invalidate()
-        currentProject.value = restored
-      } else if (currentProject.value?.id === restored.id) {
         currentProject.value = restored
       }
       return restored
@@ -101,10 +97,8 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       await projectApi.permanentlyDelete(projectId, expectedLifecycleRevision)
       archivedListGuard.invalidate()
       archivedProjects.value = archivedProjects.value.filter(project => project.id !== projectId)
-      if (routeProjectId === projectId) {
+      if (routeProjectId === String(projectId)) {
         projectGuard.invalidate()
-        currentProject.value = null
-      } else if (currentProject.value?.id === projectId) {
         currentProject.value = null
       }
     }

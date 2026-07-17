@@ -4,6 +4,7 @@ import { NAlert, NButton, NEmpty, NSelect, NSpin, NTag } from 'naive-ui'
 import { useProjectStore } from '@/stores/projectStore'
 import { TASK_KEYS, useProviderStore } from '@/stores/providerStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
+import { chooseActiveProjectId } from './projectBindingSelection.js'
 
 const projectStore = useProjectStore()
 const providerStore = useProviderStore()
@@ -194,10 +195,11 @@ async function loadProjectsAndProviders(force = false) {
     await providerLoad
     if (!projectsGuard.isCurrent(requestGeneration)) return
     const currentSelection = selectedProjectId.value
-    const selectionStillExists = projectStore.activeProjects.some(project => project.id === currentSelection)
-    const nextProjectId = selectionStillExists
-      ? currentSelection
-      : (projectStore.currentProject?.id || projectStore.activeProjects[0]?.id || '')
+    const nextProjectId = chooseActiveProjectId(
+      projectStore.activeProjects,
+      currentSelection,
+      projectStore.currentProject,
+    )
     if (nextProjectId !== currentSelection && currentSelection && !confirmDiscard()) return
     selectedProjectId.value = nextProjectId
     if (!nextProjectId) {

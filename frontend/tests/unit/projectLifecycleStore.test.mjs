@@ -187,7 +187,7 @@ test('an older project load cannot overwrite a newer route context', async () =>
   assert.equal('invalidateOpenProject' in store, false)
 })
 
-test('a failed route load keeps the established current project unchanged', async () => {
+test('a failed load for a new route cannot retain the previous route project', async () => {
   const established = project('project-1')
   const store = createStore({
     get: async projectId => {
@@ -198,7 +198,7 @@ test('a failed route load keeps the established current project unchanged', asyn
 
   await store.loadProject('project-1')
   await assert.rejects(() => store.loadProject('project-2'), /missing/)
-  assert.deepEqual(store.currentProject, established)
+  assert.equal(store.currentProject, null)
 })
 
 test('permanent delete removes only the archived copy after server success', async () => {
@@ -278,4 +278,120 @@ test('late project reads cannot undo archive or resurrect a permanently deleted 
   oldDeleteRead.resolve(project('delete-me', { archivedAt: 123, lifecycleRevision: 4 }))
   await deleteRead
   assert.equal(deleteStore.currentProject, null)
+})
+
+const ROUTE_ISOLATION_MUTATIONS = Object.freeze([
+  {
+    name: 'rename',
+    install(projectApi, succeeds, changed) {
+      projectApi.rename = async () => {
+        if (!succeeds) throw new Error('rename failed')
+        return changed
+      }
+    },
+    run(store) {
+      return store.renameProject('project-a', 'renamed-a')
+    },
+    changed: project('project-a', { title: 'renamed-a', lifecycleRevision: 4 }),
+  },
+  {
+    name: 'archive',
+    install(projectApi, succeeds, changed) {
+      projectApi.archive = async () => {
+        if (!succeeds) throw new Error('archive failed')
+        return changed
+      }
+    },
+    run(store) {
+      return store.archiveProject('project-a', 3)
+    },
+    changed: project('project-a', { archivedAt: 123, lifecycleRevision: 4 }),
+  },
+  {
+    name: 'restore',
+    install(projectApi, succeeds, changed) {
+      projectApi.restore = async () => {
+        if (!succeeds) throw new Error('restore failed')
+        return changed
+      }
+    },
+    run(store) {
+      return store.restoreProject('project-a', 3)
+    },
+    changed: project('project-a', { lifecycleRevision: 4 }),
+  },
+  {
+    name: 'permanent delete',
+    install(projectApi, succeeds) {
+      projectApi.permanentlyDelete = async () => {
+        if (!succeeds) throw new Error('permanent delete failed')
+      }
+    },
+    run(store) {
+      return store.permanentlyDeleteProject('project-a', 3)
+    },
+    changed: null,
+  },
+])
+
+test('lifecycle mutations cannot change currentProject for a different pending route', async t => {
+  for (const mutation of ROUTE_ISOLATION_MUTATIONS) {
+    for (const mutationSucceeds of [true, false]) {
+      for (const routeSucceeds of [true, false]) {
+        await t.test(
+          `${mutation.name}; mutation ${mutationSucceeds ? 'success' : 'failure'}; route ${routeSucceeds ? 'success' : 'failure'}`,
+          async () => {
+            const projectA = project('project-a', { title: 'original-a', lifecycleRevision: 3 })
+            const projectB = project('project-b')
+            const pendingB = deferred()
+            let firstRead = true
+            const projectApi = {
+              get: projectId => {
+                if (projectId === 'project-a' && firstRead) {
+                  firstRead = false
+                  return Promise.resolve(projectA)
+                }
+                assert.equal(projectId, 'project-b')
+                return pendingB.promise
+              },
+            }
+            mutation.install(projectApi, mutationSucceeds, mutation.changed)
+            const store = createStore(projectApi)
+            await store.loadProject('project-a')
+            const routeB = store.loadProject('project-b')
+            assert.equal(
+              store.currentProject,
+              null,
+              'starting a different route load must clear the prior route project',
+            )
+
+            if (mutationSucceeds) {
+              await mutation.run(store)
+            } else {
+              await assert.rejects(mutation.run(store), /failed/)
+            }
+            assert.deepEqual(
+              store.currentProject,
+              null,
+              'a non-route mutation must not replace currentProject',
+            )
+
+            if (routeSucceeds) {
+              pendingB.resolve(projectB)
+              await routeB
+              assert.deepEqual(store.currentProject, projectB)
+            } else {
+              pendingB.reject(new Error('project-b load failed'))
+              await assert.rejects(routeB, /project-b load failed/)
+              assert.equal(
+                store.currentProject,
+                null,
+                'a failed target route must not resurrect the previous project',
+              )
+            }
+          },
+        )
+      }
+    }
+  }
 })

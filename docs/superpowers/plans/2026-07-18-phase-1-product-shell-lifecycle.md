@@ -568,10 +568,12 @@ git commit -m "fix: fence writes for archived projects"
 - Create: `frontend/src/composables/useRouteProject.js`
 - Modify: `frontend/src/views/ChapterWriterView.vue`
 - Modify: `frontend/src/components/settings/TaskModelBinding.vue`
+- Create: `frontend/src/components/settings/projectBindingSelection.js`
 - Modify: `frontend/tests/unit/writerCoreApi.test.mjs`
 - Create: `frontend/tests/unit/projectLifecycleStore.test.mjs`
 - Create: `frontend/tests/unit/projectRoutes.test.mjs`
 - Rewrite: `frontend/tests/unit/m1Navigation.test.mjs`
+- Modify: `frontend/tests/unit/modelBindingStore.test.mjs`
 
 The state rewrite and route replacement are one atomic implementation and
 review gate. The old active router calls the retired store surface, so there
@@ -598,7 +600,7 @@ Test the store with injected API fakes:
 - create/rename insert or replace only after a successful response;
 - archive moves the project only after success;
 - undo calls restore and returns the same project to the active list;
-- failed requests leave both lists and current project unchanged;
+- failed lifecycle writes leave both lists and current project unchanged;
 - an older `loadProject` response cannot overwrite a newer route context;
 - late list or project reads cannot overwrite a newer lifecycle write;
 - permanent delete removes only an archived project after server success and a
@@ -666,6 +668,10 @@ lifecycle mutation for that same project, and clear it only when that route
 project is permanently deleted. Guard list loads and route loads so a response
 started before a successful create, rename, archive, restore, or delete cannot
 overwrite the committed lifecycle result.
+
+When the route project ID changes, clear the prior `currentProject` before the
+new read starts. A failed read for the new route remains empty; lifecycle
+results for another project cannot repopulate or clear that route-owned slot.
 
 - [ ] **Step 3: Run the API and store tests**
 
@@ -737,8 +743,10 @@ route shells that only load and summarize their corresponding lists. Task 7
 adds cards, dialogs, and lifecycle interactions. Wrap only the existing
 Provider/model component in `ProviderSettingsView`; migrate its active
 `TaskModelBinding` child to `activeProjects` and `loadActiveProjects` without a
-compatibility alias. Change the existing writer's return action to
-`projectOverviewPath()`.
+compatibility alias. Its initial selection may reuse `currentProject` only when
+that ID is present in `activeProjects`; an archived current project falls back
+to the first active project or an empty selection. Change the existing writer's
+return action to `projectOverviewPath()`.
 
 - [ ] **Step 6: Run the atomic frontend gate**
 
@@ -759,7 +767,7 @@ store, or route match.
 - [ ] **Step 7: Commit the atomic gate**
 
 ```powershell
-git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/api/db/client.js frontend/src/stores/projectStore.js frontend/src/router frontend/src/views/NotFoundView.vue frontend/src/views/ProjectOverviewView.vue frontend/src/views/ArchivedProjectStatusView.vue frontend/src/views/ProviderSettingsView.vue frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/composables/useRouteProject.js frontend/src/views/ChapterWriterView.vue frontend/src/components/settings/TaskModelBinding.vue frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs
+git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/api/db/client.js frontend/src/stores/projectStore.js frontend/src/router frontend/src/views/NotFoundView.vue frontend/src/views/ProjectOverviewView.vue frontend/src/views/ArchivedProjectStatusView.vue frontend/src/views/ProviderSettingsView.vue frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/composables/useRouteProject.js frontend/src/views/ChapterWriterView.vue frontend/src/components/settings/TaskModelBinding.vue frontend/src/components/settings/projectBindingSelection.js frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs frontend/tests/unit/modelBindingStore.test.mjs
 git commit -m "feat: add project lifecycle routes and state"
 ```
 
