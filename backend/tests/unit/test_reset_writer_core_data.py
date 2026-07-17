@@ -27,6 +27,7 @@ from backend.scripts.reset_writer_core_data import (
     _map_m1_project,
     _map_m1_provider,
     _map_m1_seed,
+    _map_v11_seed,
     _classify_reset_source,
     _report,
     format_reset_report,
@@ -189,6 +190,47 @@ def _seed_payload(title):
     )
 
 
+M1_PREMISE_FIELDS = (
+    "genre", "logline", "protagonist", "desire", "coreConflict",
+    "worldPressure", "openingHook", "emotionalPromise",
+    "differentiation", "styleTarget", "source", "riskNotes",
+    "endingAnchor",
+)
+
+
+def _m1_premise(title):
+    return {
+        "genre": "历史穿越",
+        "logline": f"{title}的测试梗概",
+        "protagonist": "测试主角",
+        "desire": "完成目标",
+        "coreConflict": "守住唯一事实源",
+        "worldPressure": "时间窗口收紧",
+        "openingHook": "一页异常典籍出现",
+        "emotionalPromise": "读者看见普通人逐步改变时代",
+        "differentiation": "只用于重建测试",
+        "styleTarget": "通俗、具体、以故事推进",
+        "source": "user",
+        "riskNotes": "避免设定堆砌",
+        "endingAnchor": "",
+    }
+
+
+def _m1_seed_row(title="典镇山河", **changes):
+    premise = _m1_premise(title)
+    row = {
+        "id": "seed",
+        "project_id": "project",
+        "title": title,
+        "premise_json": canonical_json(premise),
+        "content_hash": canonical_hash({"title": title, "premise": premise}),
+        "status": "selected" if title == "典镇山河" else "candidate",
+        "created_at": 1,
+    }
+    row.update(changes)
+    return row
+
+
 def _foundation_state_values():
     project = _map_m1_project({
         "id": "project", "title": "永乐大典", "genre": "历史穿越",
@@ -199,7 +241,7 @@ def _foundation_state_values():
     seeds = []
     for index, title in enumerate(("永乐长明", "文渊山海", "典镇山河"), 1):
         payload = _seed_payload(title)
-        seeds.append(_map_m1_seed({
+        seeds.append(_map_v11_seed({
             "id": f"seed-{index}", "project_id": "project", "title": title,
             "premise_json": canonical_json(payload),
             "content_hash": canonical_hash(payload), "status": "candidate",
@@ -623,29 +665,119 @@ async def test_cli_requires_configured_database_to_match_explicit_target_before_
     assert not connected
 
 
-def test_seed_mapping_preserves_exact_validated_nine_field_payload():
-    payload = _seed_payload("典镇山河")
-    row = {
-        "id": "seed", "project_id": "project", "title": payload.title,
-        "premise_json": canonical_json(payload),
-        "content_hash": canonical_hash(payload), "status": "candidate",
-        "created_at": 1,
-    }
+def test_m1_seed_mapping_converts_exact_historical_envelope_to_current_payload():
+    row = _m1_seed_row()
+
     mapped = _map_m1_seed(row, "project")
 
-    assert {key: mapped[key] for key in (
-        "id", "project_id", "status", "payload_json", "content_hash", "created_at"
-    )} == {
-        "id": row["id"],
+    expected = SeedPayload(
+        title="典镇山河",
+        **{
+            field: _m1_premise("典镇山河")[field]
+            for field in (
+                "genre", "logline", "protagonist", "desire",
+                "coreConflict", "worldPressure", "openingHook",
+                "differentiation",
+            )
+        },
+    )
+    assert mapped["payload_json"] == canonical_json(expected)
+    assert mapped["content_hash"] == canonical_hash(expected)
+    assert mapped["status"] == "candidate"
+    assert set(json.loads(mapped["payload_json"])) == set(SeedPayload.model_fields)
+    assert not set(json.loads(mapped["payload_json"])) & {
+        "emotionalPromise", "styleTarget", "source", "riskNotes",
+        "endingAnchor",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda premise: premise.pop("riskNotes"),
+        lambda premise: premise.__setitem__("legacyExtra", "forbidden"),
+        lambda premise: premise.__setitem__("source", 1),
+        lambda premise: premise.__setitem__("openingHook", ""),
+    ),
+)
+def test_m1_seed_mapping_rejects_non_exact_or_invalid_historical_premise(mutate):
+    premise = _m1_premise("典镇山河")
+    mutate(premise)
+    row = _m1_seed_row(
+        premise_json=canonical_json(premise),
+        content_hash=canonical_hash({
+            "title": "典镇山河",
+            "premise": premise,
+        }),
+    )
+
+    with pytest.raises(ResetValidationError):
+        _map_m1_seed(row, "project")
+
+
+def test_m1_seed_mapping_rejects_historical_envelope_hash_mismatch():
+    with pytest.raises(ResetValidationError, match="content_hash"):
+        _map_m1_seed(_m1_seed_row(content_hash="0" * 64), "project")
+
+
+@pytest.mark.parametrize("premise_json", ("[]", "null"))
+def test_m1_seed_mapping_rejects_non_object_json(premise_json):
+    with pytest.raises(ResetValidationError, match="historical object"):
+        _map_m1_seed(
+            _m1_seed_row(
+                premise_json=premise_json,
+                content_hash="0" * 64,
+            ),
+            "project",
+        )
+
+
+def test_m1_seed_mapping_rejects_oversized_retained_field():
+    premise = _m1_premise("典镇山河")
+    premise["openingHook"] = "x" * 2001
+    row = _m1_seed_row(
+        premise_json=canonical_json(premise),
+        content_hash=canonical_hash({
+            "title": "典镇山河",
+            "premise": premise,
+        }),
+    )
+    with pytest.raises(ResetValidationError, match="current SeedPayload"):
+        _map_m1_seed(row, "project")
+
+
+@pytest.mark.parametrize(
+    ("title", "status"),
+    (
+        ("典镇山河", "candidate"),
+        ("永乐长明", "selected"),
+        ("文渊山海", "archived"),
+    ),
+)
+def test_m1_seed_mapping_rejects_wrong_historical_status(title, status):
+    with pytest.raises(ResetValidationError, match="status"):
+        _map_m1_seed(_m1_seed_row(title, status=status), "project")
+
+
+def test_v11_seed_mapping_accepts_only_current_payload_and_candidate_status():
+    payload = _seed_payload("典镇山河")
+    current = {
+        "id": "seed",
         "project_id": "project",
-        "status": "candidate",
-        "payload_json": canonical_json(payload),
+        "title": payload.title,
+        "premise_json": canonical_json(payload),
         "content_hash": canonical_hash(payload),
+        "status": "candidate",
         "created_at": 1,
     }
-    assert mapped["updated_at"] == 1
-    rendered = mapped["payload_json"]
-    assert json.loads(rendered) == payload.model_dump(mode="json")
+
+    mapped = _map_v11_seed(current, "project")
+    assert mapped["payload_json"] == canonical_json(payload)
+
+    with pytest.raises(ResetValidationError):
+        _map_v11_seed(_m1_seed_row(), "project")
+    with pytest.raises(ResetValidationError, match="candidates"):
+        _map_v11_seed({**current, "status": "selected"}, "project")
 
 
 @pytest.mark.asyncio
