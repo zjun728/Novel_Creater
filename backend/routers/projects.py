@@ -45,7 +45,7 @@ class ProjectRename(BaseModel):
 
 
 class ProjectLifecycleCommand(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(strict=True, extra="forbid")
 
     expectedLifecycleRevision: int = Field(ge=0)
 

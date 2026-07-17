@@ -131,6 +131,8 @@ class ProjectLifecycleService:
                 if row is None:
                     raise ProjectNotFound()
                 raise ProjectArchived()
+            if row["title"] == title:
+                return ProjectResult.from_row(row)
             if not await self.repository.rename(session, project_id, title):
                 raise ProjectLifecycleConflict()
             updated = await self.repository.get_any(session, project_id)

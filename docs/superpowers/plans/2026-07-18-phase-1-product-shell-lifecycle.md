@@ -207,14 +207,13 @@ git add backend/schema backend/schema_version.py backend/repositories/project_li
 git commit -m "feat: define project lifecycle ownership"
 ```
 
-### Task 2: Implement one backend project lifecycle service
+### Tasks 2–3: Replace the backend project lifecycle atomically
 
-> **Atomic gate with Task 3:** the old `backend/services/projects.py` module is
-> imported by the current HTTP layer and lifecycle integration tests. Tasks 2
-> and 3 therefore ship and review as one inseparable backend unit: replace all
-> direct consumers, expose the explicit lifecycle routes, and only then delete
-> the old service. No compatibility shim or temporarily broken commit is
-> permitted.
+The old `backend/services/projects.py` module is imported by the current HTTP
+layer, scripts, and lifecycle integration tests. Service replacement and the
+explicit HTTP API therefore form one implementation, verification, review, and
+commit gate. No intermediate commit may delete the old service while leaving a
+direct consumer broken, and no compatibility shim is permitted.
 
 **Files:**
 
@@ -226,6 +225,10 @@ git commit -m "feat: define project lifecycle ownership"
 - Modify: `backend/tests/unit/test_project_lifecycle_repository.py`
 - Modify: `backend/tests/unit/test_project_creation.py`
 - Create: `backend/tests/unit/test_project_lifecycle_service.py`
+- Modify: `backend/routers/projects.py`
+- Modify: `backend/tests/api/test_product_routes.py`
+- Modify: `backend/tests/api/test_route_inventory.py`
+- Modify: `backend/tests/api/test_public_domain_errors.py`
 - Modify: `backend/scripts/prepare_milestone1_browser_db.py`
 - Modify: `backend/scripts/prepare_milestone2_browser_db.py`
 - Modify: `backend/scripts/reset_writer_core_data.py`
@@ -239,7 +242,7 @@ The additional script and test files above are direct import consumers of the
 deleted service. They move to `ProjectLifecycleService` in the same atomic gate;
 they do not restore old CRUD behavior.
 
-- [ ] **Step 1: Write domain and repository tests**
+- [ ] **Step 1: Write domain, repository, HTTP, and real race tests**
 
 Cover:
 
@@ -256,6 +259,12 @@ Cover:
 - permanent delete locks an archived project and deletes it;
 - permanent delete of active, missing, or busy projects returns a stable domain
   error.
+- same-title rename succeeds without relying on MySQL affected-row count;
+- lifecycle command JSON accepts only an exact integer, rejecting booleans,
+  floats, strings, missing fields, and extra fields;
+- two independent MySQL transactions cover both rename/archive lock orders,
+  same-revision double archive/restore/delete, and both archive/reservation lock
+  orders without sleeps or mocked connections.
 
 Use explicit error types:
 
@@ -276,16 +285,20 @@ class ProjectBusy(PublicDomainError):
     message = "Project has an unfinished operation"
 ```
 
-- [ ] **Step 2: Run focused tests and verify failure**
+- [ ] **Step 2: Run both focused groups and race tests, then verify failure**
 
 Run:
 
 ```powershell
 python -m pytest backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/unit/test_project_lifecycle_service.py -q
+python -m pytest backend/tests/api/test_product_routes.py backend/tests/api/test_route_inventory.py backend/tests/api/test_public_domain_errors.py -q
+python -m pytest backend/tests/integration/test_project_archive.py -q
 ```
 
 Expected: FAIL because restore, archived reads, busy guards, and permanent
-delete do not exist and `CreateProject` still requires old public fields.
+delete do not exist, `CreateProject` still requires old public fields, the old
+router still maps `DELETE` to archive, lifecycle JSON is coercive, and the real
+race invariants are not yet protected.
 
 - [ ] **Step 3: Add shared lifecycle reads and locks**
 
@@ -339,7 +352,7 @@ WHERE id=%s AND archived_at IS NOT NULL AND lifecycle_revision=%s
 
 The schema, not a Python table list, owns private-row cleanup.
 
-- [ ] **Step 5: Implement the service commands**
+- [ ] **Step 5: Implement the service and replace every direct consumer**
 
 Make the create command title-focused:
 
@@ -373,41 +386,7 @@ can perform the next CAS operation without a refetch. Put these operations in
 All commands use one transaction and a row lock. Do not retain
 `ProjectService.delete()` or general-purpose `UpdateProject`.
 
-- [ ] **Step 6: Run focused tests**
-
-Run:
-
-```powershell
-python -m pytest backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/unit/test_project_lifecycle_service.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```powershell
-git add backend/http_errors.py backend/repositories/project_lifecycle.py backend/repositories/projects.py backend/services/project_lifecycle.py backend/services/projects.py backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/unit/test_project_lifecycle_service.py
-git commit -m "feat: add transactional project lifecycle"
-```
-
-### Task 3: Expose explicit lifecycle HTTP routes
-
-> **Atomic gate with Task 2:** this route replacement is completed in the same
-> implementation and verification gate as the transactional service. The gate
-> is green only when no `ProjectService`, `UpdateProject`, old
-> `DELETE`-means-archive behavior, or import of `backend.services.projects`
-> remains.
-
-**Files:**
-
-- Modify: `backend/routers/projects.py`
-- Modify: `backend/tests/api/test_product_routes.py`
-- Modify: `backend/tests/api/test_route_inventory.py`
-- Modify: `backend/tests/api/test_public_domain_errors.py`
-
-- [ ] **Step 1: Write API behavior tests**
-
-Assert the exact API:
+Replace the project router in the same working tree state with exactly:
 
 ```text
 GET    /api/projects
@@ -420,62 +399,35 @@ POST   /api/projects/{project_id}/restore
 DELETE /api/projects/{project_id}
 ```
 
-Test that create and update reject extra fields with `422`, archive no longer
-uses `DELETE`, lifecycle commands require `expectedLifecycleRevision`, and
-permanent delete returns `204`. Verify the public JSON error
-shape for `ProjectArchived`, `ProjectLifecycleConflict`, and `ProjectBusy`
-contains
-only stable code/message fields and no SQL, secrets, or exception repr.
+`ProjectCreate` and `ProjectRename` forbid extra fields.
+`ProjectLifecycleCommand` uses strict validation and requires the exact
+non-negative JSON integer `expectedLifecycleRevision`. Declare
+`/projects/archived` before the dynamic project route. Permanent delete returns
+`204`. Migrate all four scripts and every listed integration/unit consumer to
+`ProjectLifecycleService`, then delete `backend/services/projects.py`.
 
-- [ ] **Step 2: Run API tests and verify failure**
-
-Run:
-
-```powershell
-python -m pytest backend/tests/api/test_product_routes.py backend/tests/api/test_route_inventory.py backend/tests/api/test_public_domain_errors.py -q
-```
-
-Expected: FAIL because the old route still maps `DELETE` to archive and accepts
-genre, description, word count, and chapter count.
-
-- [ ] **Step 3: Replace route DTOs and handlers**
-
-Use:
-
-```python
-class ProjectCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1, max_length=200)
-
-class ProjectRename(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1, max_length=200)
-
-class ProjectLifecycleCommand(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    expectedLifecycleRevision: int = Field(ge=0)
-```
-
-Declare `/projects/archived` before `/projects/{pid}`. Use status `204` for
-successful permanent deletion. `GET /projects/{pid}` may return an archived
-row so direct archived routes can render a restoration page; every mutation
-other than restore/permanent delete remains active-only.
-
-- [ ] **Step 4: Run API tests**
+- [ ] **Step 6: Run the single atomic verification gate**
 
 Run:
 
 ```powershell
+python -m pytest backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/unit/test_project_lifecycle_service.py -q
 python -m pytest backend/tests/api/test_product_routes.py backend/tests/api/test_route_inventory.py backend/tests/api/test_public_domain_errors.py -q
+python -m pytest backend/tests/integration/test_project_archive.py backend/tests/integration/test_model_binding_revisions.py -q
+python -m pytest backend/tests/integration/test_project_archive.py -q
+python -m pytest backend/tests/unit/test_prepare_milestone1_browser_db.py backend/tests/unit/test_prepare_milestone2_browser_db.py backend/tests/unit/test_reset_writer_core_data.py backend/tests/unit/test_verify_milestone2_product.py -q
+rg "backend\.services\.projects|services\.projects|\bProjectService\b|\bUpdateProject\b" backend
 ```
 
-Expected: PASS.
+Expected: both focused groups and all affected tests PASS, race tests PASS in at
+least two consecutive runs with disposable-database residual zero, and `rg`
+finds no forbidden import or retired class.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Make one atomic commit only after the whole gate is green**
 
 ```powershell
-git add backend/routers/projects.py backend/tests/api/test_product_routes.py backend/tests/api/test_route_inventory.py backend/tests/api/test_public_domain_errors.py
-git commit -m "feat: expose explicit project lifecycle api"
+git add backend/http_errors.py backend/repositories/project_lifecycle.py backend/repositories/projects.py backend/services/project_lifecycle.py backend/services/projects.py backend/routers/projects.py backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/unit/test_project_lifecycle_service.py backend/tests/api/test_product_routes.py backend/tests/api/test_route_inventory.py backend/tests/api/test_public_domain_errors.py backend/scripts/prepare_milestone1_browser_db.py backend/scripts/prepare_milestone2_browser_db.py backend/scripts/reset_writer_core_data.py backend/scripts/verify_milestone2_product.py backend/tests/integration/test_model_binding_revisions.py backend/tests/integration/test_milestone2_product_rebuild.py backend/tests/integration/test_project_archive.py backend/tests/unit/test_verify_milestone2_product.py docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md
+git commit -m "feat: add transactional project lifecycle api"
 ```
 
 ### Task 4: Close archived-project write gaps

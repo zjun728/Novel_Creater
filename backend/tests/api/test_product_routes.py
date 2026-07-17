@@ -350,3 +350,27 @@ def test_project_rename_and_lifecycle_commands_forbid_extra_or_missing_fields(
     assert rename.status_code == 422
     assert missing_revision.status_code == 422
     assert extra_revision.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "invalid_revision",
+    [True, 1.0, "1"],
+)
+def test_project_lifecycle_revision_requires_an_exact_json_integer(
+    monkeypatch, invalid_revision
+):
+    class FakeService:
+        async def archive(self, project_id, expected_lifecycle_revision):
+            raise AssertionError("coerced revision must not reach service")
+
+    monkeypatch.setattr(projects, "_service", FakeService())
+    app = FastAPI()
+    app.include_router(projects.router, prefix="/api")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/projects/p1/archive",
+        json={"expectedLifecycleRevision": invalid_revision},
+    )
+
+    assert response.status_code == 422

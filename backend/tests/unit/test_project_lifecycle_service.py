@@ -256,6 +256,20 @@ async def test_rename_locks_active_project_and_changes_only_title():
 
 
 @pytest.mark.asyncio
+async def test_same_title_rename_succeeds_without_depending_on_affected_row_count():
+    repository = MemoryLifecycleRepository(project_row(title="Unchanged"))
+    repository.force_cas_failure = True
+    service, transactions, _ = make_service(repository)
+
+    result = await service.rename("p1", "Unchanged")
+
+    assert result.title == "Unchanged"
+    assert [call[0] for call in repository.calls] == ["lock_active_project"]
+    assert transactions.commit_count == 1
+    assert transactions.rollback_count == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("row", "error_type"),
     [
