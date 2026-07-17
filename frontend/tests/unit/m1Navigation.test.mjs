@@ -45,7 +45,7 @@ test('the writer route mounts only the unavailable foundation view', async () =>
   assert.match(unavailable, /返回项目/)
 })
 
-test('the M2 project shell depends only on project and writer core foundation reads', async () => {
+test('the M3 project shell depends only on formal project writer core and planning reads', async () => {
   const projectView = await readSource('views/ProjectView.vue')
   for (const forbidden of [
     'useWriterStore', 'useNovelStore', 'useSettingStore', 'useVolumeStore',
@@ -56,6 +56,9 @@ test('the M2 project shell depends only on project and writer core foundation re
   assert.equal((projectView.match(/projectStore\.openProject\(/g) || []).length, 1)
   assert.equal((projectView.match(/seedStore\.loadSeeds\(/g) || []).length, 0)
   assert.equal((projectView.match(/api\.writerCore\.state\(/g) || []).length, 1)
+  assert.match(projectView, /usePlanningStore/)
+  assert.match(projectView, /planningStore\.load\(/)
+  assert.match(projectView, /PlanningWorkspace/)
   assert.match(projectView, /watch\(\s*\(\)\s*=>\s*route\.params\.id/)
   assert.match(projectView, /createLatestRequestGuard/)
   assert.match(projectView, /onBeforeUnmount/)
@@ -64,9 +67,10 @@ test('the M2 project shell depends only on project and writer core foundation re
 })
 
 test('the formal project page mounts one five-step creation contract wizard', async () => {
-  const [projectView, wizard, seed, engine, style, assets, preview, head] = await Promise.all([
+  const [projectView, wizard, planning, seed, engine, style, assets, preview, head] = await Promise.all([
     readSource('views/ProjectView.vue'),
     readSource('components/project/CreationContractWizard.vue'),
+    readSource('components/planning/PlanningWorkspace.vue'),
     readSource('components/project/contract/SeedSelectionStep.vue'),
     readSource('components/project/contract/StoryEngineStep.vue'),
     readSource('components/project/contract/StyleSelectionStep.vue'),
@@ -78,6 +82,11 @@ test('the formal project page mounts one five-step creation contract wizard', as
 
   assert.match(projectView, /CreationContractWizard/)
   assert.match(projectView, /<creation-contract-wizard/)
+  assert.match(projectView, /<planning-workspace/)
+  assert.match(planning, /创建滚动规划/)
+  assert.match(planning, /当前故事块/)
+  assert.match(planning, /SceneTask/)
+  assert.match(planning, /expectedContractRevision/)
   assert.equal((projectView.match(/seedStore\.loadSeeds\(/g) || []).length, 0)
   assert.match(wizard, /选择种子/)
   assert.match(wizard, /故事发动机/)

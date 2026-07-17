@@ -289,6 +289,28 @@ test('contract draft, preview, confirm, history and clone use the formal endpoin
   assert.equal(bodyOf(calls[6]), undefined)
 })
 
+test('planning client reads state and creates only explicit initial plan payload', async () => {
+  const calls = await captureRequests(async api => {
+    await api.planning.get('project-1')
+    await api.planning.createInitial('project-1', {
+      expectedContractRevision: 1,
+      idempotencyKey: 'planning-1',
+      apiKey: 'must-not-send',
+      rawText: 'must-not-send',
+    })
+  })
+
+  assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
+    ['GET', '/api/projects/project-1/planning'],
+    ['POST', '/api/projects/project-1/planning/initial'],
+  ])
+  assert.equal(bodyOf(calls[0]), undefined)
+  assert.deepEqual(bodyOf(calls[1]), {
+    expectedContractRevision: 1,
+    idempotencyKey: 'planning-1',
+  })
+})
+
 test('every shared client path segment is encoded without changing route structure', async () => {
   const calls = await captureRequests(async api => {
     await api.projects.get('project/one')
@@ -298,6 +320,11 @@ test('every shared client path segment is encoded without changing route structu
     await api.providers.update('provider/one', {})
     await api.providers.delete('provider/one')
     await api.writerCore.state('project/one')
+    await api.planning.get('project/one')
+    await api.planning.createInitial('project/one', {
+      expectedContractRevision: 1,
+      idempotencyKey: 'planning-1',
+    })
     await api.canon.head('project/one')
     await api.canon.entities('project/one', {
       apiKey: 'must-not-send', rawText: 'must-not-send', absolutePath: 'C:/must-not-send',
@@ -315,13 +342,15 @@ test('every shared client path segment is encoded without changing route structu
     '/api/providers/provider%2Fone',
     '/api/providers/provider%2Fone',
     '/api/projects/project%2Fone/writer-core/state',
+    '/api/projects/project%2Fone/planning',
+    '/api/projects/project%2Fone/planning/initial',
     '/api/projects/project%2Fone/canon/head',
     '/api/projects/project%2Fone/canon/entities',
     '/api/projects/project%2Fone/canon/entities/entity%2Fone',
     '/api/projects/project%2Fone/canon/aliases/resolve',
     '/api/projects/project%2Fone/projections/head',
   ])
-  assert.equal(new URL(calls[10].url).searchParams.get('name'), '张 三/别名')
+  assert.equal(new URL(calls[12].url).searchParams.get('name'), '张 三/别名')
   assert.equal(new URL(calls[8].url).search, '')
 })
 

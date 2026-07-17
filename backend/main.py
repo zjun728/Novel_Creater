@@ -16,6 +16,7 @@ from backend.routers import (
     contracts,
     corpus,
     model_bindings,
+    planning,
     projects,
     providers,
     seeds,
@@ -54,6 +55,7 @@ app.include_router(model_bindings.router, prefix="/api")
 app.include_router(seeds.router, prefix="/api")
 app.include_router(story_engines.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
+app.include_router(planning.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(corpus.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")

@@ -5,11 +5,14 @@ import { NAlert, NButton, NResult, NSkeleton, NTag } from 'naive-ui'
 import { api } from '@/api/db/client'
 import CreationContractWizard from '@/components/project/CreationContractWizard.vue'
 import WriterCoreStateCard from '@/components/project/WriterCoreStateCard.vue'
+import PlanningWorkspace from '@/components/planning/PlanningWorkspace.vue'
+import { usePlanningStore } from '@/stores/planningStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
 
 const route = useRoute()
 const projectStore = useProjectStore()
+const planningStore = usePlanningStore()
 const writerCoreState = ref(null)
 const loadedProject = ref(null)
 const loading = ref(true)
@@ -26,6 +29,7 @@ async function loadFoundation(projectId) {
     const [project, state] = await Promise.all([
       projectStore.openProject(projectId),
       api.writerCore.state(projectId),
+      planningStore.load(projectId),
     ])
     if (!foundationGuard.isCurrent(requestGeneration)) return
     loadedProject.value = project
@@ -49,6 +53,7 @@ watch(() => route.params.id, projectId => {
 onBeforeUnmount(() => {
   foundationGuard.invalidate()
   projectStore.invalidateOpenProject()
+  planningStore.invalidate()
 })
 </script>
 
@@ -90,10 +95,12 @@ onBeforeUnmount(() => {
         :project="loadedProject"
       />
 
+      <planning-workspace :project-id="String(route.params.id || '')" />
+
       <section class="foundation-section" aria-labelledby="foundation-heading">
         <div class="section-heading">
           <div>
-            <p class="section-index">02 / 状态地基</p>
+            <p class="section-index">03 / 状态地基</p>
             <h2 id="foundation-heading">唯一事实源与投影</h2>
           </div>
           <span>只读诊断，不产生正式状态</span>
@@ -107,7 +114,8 @@ onBeforeUnmount(() => {
       <footer class="workspace-gate">
         <div>
           <strong>下一站：ChapterSession</strong>
-          <p>章节会话、WorkingDraft 与显式候选保存尚未进入本里程碑。</p>
+          <p v-if="planningStore.planningReady">滚动规划已就绪；下一里程碑将开放章节会话、WorkingDraft 与显式候选保存。</p>
+          <p v-else>请先完成本书创作契约和首个滚动规划，再进入章节会话里程碑。</p>
         </div>
         <n-button type="primary" size="large" disabled>进入写作台</n-button>
       </footer>

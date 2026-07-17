@@ -15,7 +15,7 @@ DELETED_ROUTERS = (
     "export.py",
 )
 
-APPROVED_M2_ROUTES = {
+APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/health"),
     ("GET", "/api/projects"),
     ("POST", "/api/projects"),
@@ -48,6 +48,8 @@ APPROVED_M2_ROUTES = {
     ("POST", "/api/projects/{pid}/contracts/confirm"),
     ("GET", "/api/projects/{pid}/contracts/head"),
     ("GET", "/api/projects/{pid}/contracts/history"),
+    ("GET", "/api/projects/{pid}/planning"),
+    ("POST", "/api/projects/{pid}/planning/initial"),
     ("GET", "/api/assets/style-templates"),
     ("GET", "/api/assets/style-templates/{revision_id}"),
     ("GET", "/api/assets/experience-cards"),
@@ -102,8 +104,8 @@ def _api_methods_and_paths():
     }
 
 
-def test_main_registers_exact_frozen_m2_route_inventory():
-    assert _api_methods_and_paths() == APPROVED_M2_ROUTES
+def test_main_registers_exact_formal_route_inventory():
+    assert _api_methods_and_paths() == APPROVED_FORMAL_ROUTES
 
 
 def test_forbidden_legacy_route_prefixes_remain_absent():

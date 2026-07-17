@@ -319,6 +319,17 @@ export const api = {
     state: projectId => get(`/projects/${segment(projectId)}/writer-core/state`),
   },
 
+  planning: {
+    get: projectId => get(`/projects/${segment(projectId)}/planning`),
+    createInitial: (projectId, data) => post(
+      `/projects/${segment(projectId)}/planning/initial`,
+      {
+        expectedContractRevision: data.expectedContractRevision,
+        idempotencyKey: data.idempotencyKey,
+      },
+    ),
+  },
+
   canon: {
     head: projectId => get(`/projects/${segment(projectId)}/canon/head`),
     entities: projectId => get(`/projects/${segment(projectId)}/canon/entities`),
