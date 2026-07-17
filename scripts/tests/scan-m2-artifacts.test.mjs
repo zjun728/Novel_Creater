@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import * as artifactScanner from '../scan-m2-artifacts.mjs'
 
 const {
+  MAX_ARTIFACT_BYTES,
   REVIEWED_ASSET_JSON_ALLOWLIST,
   runArtifactScannerCli,
   scanM2Artifacts,
@@ -53,6 +54,45 @@ test('artifact classifier exports the M2 requirements lock and assigns repositor
   for (const filePath of strictArtifacts) {
     assert.equal(artifactScanner.classifyM2ArtifactPath(filePath), 'strict-artifact', filePath)
   }
+})
+
+test('artifact classifier matches implementation suffixes case-insensitively', () => {
+  const implementationDefinitions = [
+    'backend/service.PY',
+    'frontend/app.TsX',
+    'scripts/check.MJS',
+    'tools/config.YaML',
+    'docs/superpowers/specs/design.MD',
+    'docs/superpowers/plans/nested/release.mD',
+  ]
+  for (const filePath of implementationDefinitions) {
+    assert.equal(
+      artifactScanner.classifyM2ArtifactPath(filePath),
+      'implementation-definition',
+      filePath,
+    )
+  }
+
+  for (const filePath of ['backend/assets/service.PY', 'backend/evidence/service.PY']) {
+    assert.equal(artifactScanner.classifyM2ArtifactPath(filePath), 'strict-artifact', filePath)
+  }
+})
+
+test('artifact scanner accepts upper-case implementation suffixes with strict-only content', () => {
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  const largeProse = '这是一段完全合成的测试故事。'.repeat(2500)
+  const changedFiles = [
+    'backend/service.PY',
+    'frontend/app.TSX',
+    'scripts/check.MJS',
+    'tools/config.YAML',
+    'docs/superpowers/specs/design.MD',
+  ]
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles,
+    readContent: () => `${syntheticSentinel}\n${largeProse}`,
+  }), [])
 })
 
 test('artifact scanner accepts only the exact requirements lock among raw text extensions', () => {
@@ -215,6 +255,32 @@ test('artifact scanner applies size limits to every repository role', () => {
     path: filePath,
     reason: 'oversized artifact',
   })))
+})
+
+test('artifact scanner applies the aggregate size limit across mixed repository roles', () => {
+  const changedFiles = [
+    [...REVIEWED_ASSET_JSON_ALLOWLIST][0],
+    'backend/app.py',
+    '.gitattributes',
+    'notes/metadata.json',
+    'frontend/final.ts',
+  ]
+  const sizes = new Map(changedFiles.map((filePath, index) => [
+    filePath,
+    index === changedFiles.length - 1 ? 1 : MAX_ARTIFACT_BYTES,
+  ]))
+  const readPaths = []
+  const boundedContent = 'bounded metadata\n'.repeat(4)
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles,
+    getSize: filePath => sizes.get(filePath),
+    readContent(filePath) {
+      readPaths.push(filePath)
+      return boundedContent
+    },
+  }), [{ path: changedFiles.at(-1), reason: 'oversized artifact' }])
+  assert.deepEqual(readPaths, changedFiles.slice(0, -1))
 })
 
 test('artifact scanner accepts ordinary source and metadata changes', () => {

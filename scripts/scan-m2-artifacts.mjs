@@ -16,10 +16,13 @@ export const MAX_TOTAL_ARTIFACT_BYTES = 20 * 1024 * 1024
 const FORBIDDEN_EBOOK_EXTENSION = /\.(?:epub|mobi)$/iu
 const RAW_TEXT_EXTENSION = /\.txt$/iu
 const IMPLEMENTATION_ROOT = /^(?:backend|frontend|scripts|tools)\//u
-const IMPLEMENTATION_SOURCE_EXTENSION = /\.(?:py|pyi|js|mjs|cjs|ts|tsx|vue|css|scss|html|sql|toml|ini|cfg|yaml|yml)$/u
+const IMPLEMENTATION_SOURCE_EXTENSIONS = new Set([
+  '.py', '.pyi', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.vue', '.css', '.scss',
+  '.html', '.sql', '.toml', '.ini', '.cfg', '.yaml', '.yml',
+])
 const STRICT_DIRECTORY = /^(?:backend\/assets|docs\/development)(?:\/|$)/u
 const STRICT_PATH_SEGMENT = /(?:^|\/)(?:evidence|output|artifacts)(?:\/|$)/u
-const SUPERPOWERS_DEFINITION = /^docs\/superpowers\/(?:specs|plans)\/.+\.md$/u
+const SUPERPOWERS_DEFINITION_PATH = /^docs\/superpowers\/(?:specs|plans)\/.+/u
 const RFC8785_RESTRICTED_VECTORS = 'tools/control-plane-qa/fixtures/rfc8785-restricted-vectors.json'
 const PRIVATE_SENTINELS = [
   ['browser', 'secret', 'must', 'not', 'leak'].join('-'),
@@ -40,12 +43,13 @@ export function classifyM2ArtifactPath(value) {
   if (STRICT_DIRECTORY.test(filePath) || STRICT_PATH_SEGMENT.test(filePath)) {
     return 'strict-artifact'
   }
-  if (IMPLEMENTATION_ROOT.test(filePath) && IMPLEMENTATION_SOURCE_EXTENSION.test(filePath)) {
+  const extension = path.posix.extname(filePath).toLowerCase()
+  if (IMPLEMENTATION_ROOT.test(filePath) && IMPLEMENTATION_SOURCE_EXTENSIONS.has(extension)) {
     return 'implementation-definition'
   }
   if (filePath === RFC8785_RESTRICTED_VECTORS
     || filePath === '.gitattributes'
-    || SUPERPOWERS_DEFINITION.test(filePath)) {
+    || (extension === '.md' && SUPERPOWERS_DEFINITION_PATH.test(filePath))) {
     return 'implementation-definition'
   }
   return 'strict-artifact'
