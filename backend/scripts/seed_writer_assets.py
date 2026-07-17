@@ -121,6 +121,7 @@ async def run_cli(
     selected_repository = repository or AssetRepository()
 
     database_pool_closer = None
+    errors: list[BaseException] = []
     try:
         if args.dry_run:
             if connection_factory is None:
@@ -134,22 +135,32 @@ async def run_cli(
             )
             report = await service.dry_run(package)
             output(_format_report(report, mode="dry-run"))
-            return 0
+        else:
+            if transaction_factory is None:
+                from backend.database import close_pool as database_pool_closer
+                from backend.database import transaction as transaction_factory
 
-        if transaction_factory is None:
-            from backend.database import close_pool as database_pool_closer
-            from backend.database import transaction as transaction_factory
-
-        service = AssetSeedService(
-            selected_repository,
-            transaction_factory=transaction_factory,
-        )
-        report = await service.seed(package)
-        output(_format_report(report, mode="execute"))
-        return 0
-    finally:
-        if database_pool_closer is not None:
+            service = AssetSeedService(
+                selected_repository,
+                transaction_factory=transaction_factory,
+            )
+            report = await service.seed(package)
+            output(_format_report(report, mode="execute"))
+    except BaseException as error:
+        errors.append(error)
+    if database_pool_closer is not None:
+        try:
             await database_pool_closer()
+        except BaseException as error:
+            errors.append(error)
+    if len(errors) == 1:
+        raise errors[0]
+    if errors:
+        raise BaseExceptionGroup(
+            "Writer asset seed command and database pool close both failed",
+            errors,
+        )
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -504,10 +504,11 @@ async def test_cli_dry_run_closes_default_database_pool_after_service_error(
     monkeypatch, package
 ):
     repository = MemoryAssetRepository()
+    service_error = RuntimeError("injected dry-run failure")
     events = []
 
     async def fail_list_heads(session, asset_type, *, for_update):
-        raise RuntimeError("injected dry-run failure")
+        raise service_error
 
     async def close_pool():
         events.append("close")
@@ -520,14 +521,71 @@ async def test_cli_dry_run_closes_default_database_pool_after_service_error(
         __import__("sys").modules, "backend.database", database_runtime
     )
 
-    with pytest.raises(RuntimeError, match="injected dry-run failure"):
+    with pytest.raises(RuntimeError) as raised:
         await run_cli(
             ["--dry-run", "--database", "writer_core_test"],
             repository=repository,
             connection_config={"db": "writer_core_test"},
         )
 
+    assert raised.value is service_error
     assert events == ["close"]
+
+
+@pytest.mark.asyncio
+async def test_cli_preserves_service_and_default_pool_close_failures(monkeypatch):
+    repository = MemoryAssetRepository()
+    service_error = RuntimeError("service failure")
+    close_error = OSError("close failure")
+
+    async def fail_list_heads(session, asset_type, *, for_update):
+        raise service_error
+
+    async def close_pool():
+        raise close_error
+
+    monkeypatch.setattr(repository, "list_heads", fail_list_heads)
+    database_runtime = type("DatabaseRuntime", (), {})()
+    database_runtime.connection = readonly_connection(repository)
+    database_runtime.close_pool = close_pool
+    monkeypatch.setitem(
+        __import__("sys").modules, "backend.database", database_runtime
+    )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await run_cli(
+            ["--dry-run", "--database", "writer_core_test"],
+            repository=repository,
+            connection_config={"db": "writer_core_test"},
+        )
+
+    assert raised.value.exceptions == (service_error, close_error)
+
+
+@pytest.mark.asyncio
+async def test_cli_preserves_default_pool_close_failure(monkeypatch):
+    repository = MemoryAssetRepository()
+    close_error = OSError("close failure")
+
+    async def close_pool():
+        raise close_error
+
+    database_runtime = type("DatabaseRuntime", (), {})()
+    database_runtime.connection = readonly_connection(repository)
+    database_runtime.close_pool = close_pool
+    monkeypatch.setitem(
+        __import__("sys").modules, "backend.database", database_runtime
+    )
+
+    with pytest.raises(OSError) as raised:
+        await run_cli(
+            ["--dry-run", "--database", "writer_core_test"],
+            repository=repository,
+            connection_config={"db": "writer_core_test"},
+            output=lambda value: None,
+        )
+
+    assert raised.value is close_error
 
 
 @pytest.mark.asyncio
