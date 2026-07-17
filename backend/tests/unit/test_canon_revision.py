@@ -123,6 +123,19 @@ async def test_expected_head_mismatch_writes_nothing():
 
 
 @pytest.mark.asyncio
+async def test_commit_locks_project_before_reading_canon_head():
+    repo = FakeCanonRepository()
+    instance, _ = service(repo)
+
+    await instance.commit(request())
+
+    assert [call[0] for call in repo.calls[:2]] == [
+        "lock_project",
+        "lock_head",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_revision_rows_share_new_revision_and_one_session():
     repo = FakeCanonRepository()
     instance, transaction = service(repo)

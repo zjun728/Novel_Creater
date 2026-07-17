@@ -8,16 +8,38 @@ import pytest
 from backend import http_errors
 from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.seeds import SeedPayload
+from backend.repositories.canon import CanonRepository
+from backend.repositories.chapter_sessions import ChapterSessionRepository
+from backend.repositories.contracts import ContractRepository
 from backend.repositories.model_bindings import ModelBindingRepository
+from backend.repositories.planning import PlanningRepository
 from backend.repositories.projects import ProjectRepository
 from backend.repositories.seeds import SeedRepository
 from backend.repositories.story_engines import StoryEngineRepository
+from backend.services.canon import CanonService, CommitCanonRevision
+from backend.services.chapter_draft_generation import (
+    ChapterDraftGenerationService,
+    GenerateWorkingDraft,
+)
+from backend.services.chapter_sessions import (
+    ChapterSessionService,
+    CreateChapterSession,
+    SaveDraftCandidate,
+    SaveWorkingDraft,
+)
+from backend.services.contracts import (
+    ConfirmContracts,
+    ContractService,
+    SaveContractDraft,
+)
 from backend.services.model_bindings import ModelBindingService
+from backend.services.planning import CreateInitialPlan, PlanningService
 from backend.services.project_lifecycle import (
     CreateProject,
     ProjectLifecycleService,
     ProjectResult,
 )
+from backend.services.projections import build_projection_bundle
 from backend.services.seeds import (
     CreateSeed,
     DeleteSeed,
@@ -26,12 +48,21 @@ from backend.services.seeds import (
     SelectSeed,
 )
 from backend.services.story_engines import (
+    CreateManualStoryEngineBatch,
     ReserveStoryEngineBatch,
     StoryEngineBatchResult,
     StoryEngineService,
 )
+from backend.tests.integration.test_contract_drafts import (
+    BATCH as CONTRACT_BATCH,
+    BINDING as CONTRACT_BINDING,
+    PROJECT as WRITE_FENCE_PROJECT,
+    PROVIDER as CONTRACT_PROVIDER,
+    _bootstrap as bootstrap_contract_fixture,
+    _draft as contract_draft,
+)
 from backend.tests.support.disposable_mysql import transaction_factory_for
-from backend.tests.support.story_engine_fakes import CountingGateway
+from backend.tests.support.story_engine_fakes import CountingGateway, three_options
 
 
 pytestmark = pytest.mark.mysql
@@ -668,9 +699,7 @@ async def test_real_archive_lock_then_reservation_cannot_create_busy_operation(
                 task.cancel()
 
     assert isinstance(archive_result, ProjectResult)
-    assert isinstance(
-        reservation_result, http_errors.StoryEngineBatchNotFound
-    )
+    assert isinstance(reservation_result, http_errors.ProjectArchived)
     assert gateway.calls == 0
     project = await disposable_mysql.session.fetchone(
         """SELECT archived_at,lifecycle_revision
@@ -775,13 +804,18 @@ async def test_archived_project_blocks_seed_and_binding_resources_and_inheritanc
     ]
 
     assert all(
+        isinstance(result, http_errors.ProjectArchived)
+        for result in seed_results[:4]
+    )
+    assert all(
         isinstance(result, http_errors.SeedNotFound)
-        for result in seed_results
+        for result in seed_results[4:]
     )
     assert all(
         isinstance(result, http_errors.BindingNotFound)
-        for result in binding_results
+        for result in binding_results[:2]
     )
+    assert isinstance(binding_results[2], http_errors.ProjectArchived)
     assert await _seed_snapshot(disposable_mysql.session) == seeds_before
     assert await _foundation_snapshot(disposable_mysql.session) == foundation_before
 
@@ -789,3 +823,298 @@ async def test_archived_project_blocks_seed_and_binding_resources_and_inheritanc
     await projects.create(_project(next_project_id, "No archived inheritance"))
     inherited = await bindings.get_current(next_project_id)
     assert inherited.source_project_id is None
+
+
+class _GeneratedDraftGateway:
+    def __init__(self):
+        self.calls = 0
+
+    async def generate(self, **_kwargs):
+        self.calls += 1
+        return "测试生成正文"
+
+
+@pytest.mark.asyncio
+async def test_archived_project_rejects_every_known_write_and_restore_reopens_writes(
+    disposable_mysql,
+):
+    facts = await bootstrap_contract_fixture(disposable_mysql.session)
+    now = 1_900_000_000_050
+    empty_hash = build_projection_bundle(0, ()).content_hash
+    await disposable_mysql.session.execute(
+        """INSERT INTO canon_revisions
+           (id,project_id,revision_number,parent_revision_number,idempotency_key,
+            source_type,source_id,content_hash,created_at)
+           VALUES ('8f000000-0000-0000-0000-000000000001',%s,0,0,%s,
+                   'bootstrap',NULL,%s,%s)""",
+        (WRITE_FENCE_PROJECT, empty_hash, empty_hash, now),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO projection_heads
+           (project_id,canon_revision_number,projection_revision_number,
+            content_hash,updated_at)
+           VALUES (%s,0,0,%s,%s)""",
+        (WRITE_FENCE_PROJECT, empty_hash, now),
+    )
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    project_service = ProjectLifecycleService(
+        ProjectRepository(), transaction, read_connection
+    )
+    seed_service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+        id_factory=iter(
+            f"8f000000-0000-0000-0000-{number:012d}"
+            for number in range(100, 200)
+        ).__next__,
+    )
+    binding_service = ModelBindingService(
+        ModelBindingRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+    )
+    contract_service = ContractService(
+        ContractRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+        id_factory=iter(
+            f"8f000000-0000-0000-0001-{number:012d}"
+            for number in range(100, 500)
+        ).__next__,
+        clock=lambda: now,
+    )
+    saved_contract = await contract_service.save_draft(
+        SaveContractDraft(
+            WRITE_FENCE_PROJECT,
+            0,
+            contract_draft(facts),
+        )
+    )
+    confirmed = await contract_service.confirm(
+        ConfirmContracts(
+            WRITE_FENCE_PROJECT,
+            "write-fence-confirm",
+            saved_contract.draft_version,
+            saved_contract.content_hash,
+        )
+    )
+    planning_service = PlanningService(
+        PlanningRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+    )
+    plan = await planning_service.create_initial_plan(
+        CreateInitialPlan(
+            WRITE_FENCE_PROJECT,
+            confirmed.revision,
+            "write-fence-plan",
+        )
+    )
+    chapter_repository = ChapterSessionRepository()
+    chapter_service = ChapterSessionService(
+        chapter_repository,
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+    )
+    workspace = await chapter_service.create_session(
+        CreateChapterSession(
+            WRITE_FENCE_PROJECT,
+            plan.active_block.revision,
+            0,
+        )
+    )
+    await chapter_service.save_working_draft(
+        SaveWorkingDraft(
+            WRITE_FENCE_PROJECT,
+            workspace.session.id,
+            workspace.working_draft.revision,
+            "归档前的有效工作稿。",
+        )
+    )
+    generated_gateway = _GeneratedDraftGateway()
+    generation_service = ChapterDraftGenerationService(
+        chapter_repository,
+        provider_gateway=generated_gateway,
+        transaction_factory=transaction,
+    )
+    story_service = StoryEngineService(
+        StoryEngineRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+        provider_gateway=CountingGateway(),
+    )
+    canon_service = CanonService(
+        CanonRepository(),
+        transaction_factory=transaction,
+        id_factory=lambda: "8f000000-0000-0000-0002-000000000001",
+        clock=lambda: now,
+    )
+
+    await project_service.archive(WRITE_FENCE_PROJECT, 0)
+    await disposable_mysql.session.execute(
+        """UPDATE story_engine_batches
+              SET source_type='provider',binding_revision_id=%s,binding_hash=%s,
+                  provider_id=%s,model_name_snapshot='test-model',
+                  status='running',
+                  attempt_id='8f000000-0000-0000-0003-000000000001',
+                  attempt_started_at=%s,lease_expires_at=%s,finished_at=NULL
+            WHERE id=%s""",
+        (
+            CONTRACT_BINDING,
+            facts["binding_hash"],
+            CONTRACT_PROVIDER,
+            now,
+            now + 60_000,
+            CONTRACT_BATCH,
+        ),
+    )
+
+    async def capture(awaitable):
+        try:
+            return await awaitable
+        except BaseException as exc:
+            return exc
+
+    results = {
+        "seed": await capture(
+            seed_service.create(
+                CreateSeed(
+                    project_id=WRITE_FENCE_PROJECT,
+                    payload=_seed_payload("Blocked seed"),
+                )
+            )
+        ),
+        "binding": await capture(
+            binding_service.replace_all(
+                WRITE_FENCE_PROJECT,
+                1,
+                {task_key: None for task_key in TASK_KEYS},
+            )
+        ),
+        "contract": await capture(
+            contract_service.save_draft(
+                SaveContractDraft(
+                    WRITE_FENCE_PROJECT,
+                    0,
+                    contract_draft(facts),
+                )
+            )
+        ),
+        "planning": await capture(
+            planning_service.create_initial_plan(
+                CreateInitialPlan(
+                    WRITE_FENCE_PROJECT,
+                    confirmed.revision,
+                    "blocked-plan",
+                )
+            )
+        ),
+        "story-engine": await capture(
+            story_service.create_manual(
+                CreateManualStoryEngineBatch(
+                    WRITE_FENCE_PROJECT,
+                    "blocked-manual",
+                    three_options(),
+                )
+            )
+        ),
+        "chapter-session": await capture(
+            chapter_service.create_session(
+                CreateChapterSession(
+                    WRITE_FENCE_PROJECT,
+                    plan.active_block.revision,
+                    0,
+                )
+            )
+        ),
+    }
+    current_draft = await disposable_mysql.session.fetchone(
+        "SELECT revision FROM working_drafts WHERE chapter_session_id=%s",
+        (workspace.session.id,),
+    )
+    results["working-draft"] = await capture(
+        chapter_service.save_working_draft(
+            SaveWorkingDraft(
+                WRITE_FENCE_PROJECT,
+                workspace.session.id,
+                int(current_draft["revision"]),
+                "不能落入归档项目。",
+            )
+        )
+    )
+    current_draft = await disposable_mysql.session.fetchone(
+        "SELECT revision FROM working_drafts WHERE chapter_session_id=%s",
+        (workspace.session.id,),
+    )
+    results["candidate"] = await capture(
+        chapter_service.save_candidate(
+            SaveDraftCandidate(
+                WRITE_FENCE_PROJECT,
+                workspace.session.id,
+                int(current_draft["revision"]),
+            )
+        )
+    )
+    results["generated-draft"] = await capture(
+        generation_service.generate_working_draft(
+            GenerateWorkingDraft(
+                WRITE_FENCE_PROJECT,
+                workspace.session.id,
+                int(current_draft["revision"]),
+            )
+        )
+    )
+    results["outcome-unknown"] = await capture(
+        story_service.mark_outcome_unknown(
+            WRITE_FENCE_PROJECT,
+            CONTRACT_BATCH,
+            "8f000000-0000-0000-0003-000000000001",
+        )
+    )
+    results["canon"] = await capture(
+        canon_service.commit(
+            CommitCanonRevision(
+                project_id=WRITE_FENCE_PROJECT,
+                expected_head=0,
+                idempotency_key="f" * 64,
+                source_type="manual_test",
+                source_id=None,
+                entities=(),
+                aliases=(),
+                events=(),
+            )
+        )
+    )
+
+    assert all(
+        isinstance(result, http_errors.ProjectArchived)
+        for result in results.values()
+    ), {
+        name: type(result).__name__
+        for name, result in results.items()
+    }
+    assert generated_gateway.calls == 0
+
+    await disposable_mysql.session.execute(
+        """UPDATE story_engine_batches
+              SET status='failed',public_error_code='provider_failed',
+                  raw_response_hash=NULL,finished_at=%s
+            WHERE id=%s""",
+        (now + 1, CONTRACT_BATCH),
+    )
+    restored = await project_service.restore(WRITE_FENCE_PROJECT, 1)
+    created_after_restore = await seed_service.create(
+        CreateSeed(
+            project_id=WRITE_FENCE_PROJECT,
+            payload=_seed_payload("Restored seed"),
+        )
+    )
+
+    assert restored.archived_at is None
+    assert created_after_restore.project_id == WRITE_FENCE_PROJECT

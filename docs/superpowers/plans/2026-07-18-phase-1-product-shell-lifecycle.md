@@ -442,10 +442,14 @@ git commit -m "feat: add transactional project lifecycle api"
 - Modify: `backend/services/story_engines.py`
 - Modify: `backend/repositories/projects.py`
 - Modify: `backend/tests/unit/test_canon_revision.py`
+- Modify: `backend/tests/unit/test_canon_idempotency.py`
 - Modify: `backend/tests/unit/test_chapter_session_service.py`
 - Modify: `backend/tests/unit/test_chapter_draft_generation_service.py`
 - Modify: `backend/tests/unit/test_story_engine_service.py`
+- Modify: `backend/tests/unit/test_project_lifecycle_repository.py`
 - Modify: `backend/tests/integration/test_project_archive.py`
+- Modify: `backend/tests/support/canon_fakes.py`
+- Modify: `backend/tests/support/story_engine_fakes.py`
 - Create: `backend/tests/unit/test_archived_write_inventory.py`
 
 - [ ] **Step 1: Add a behavioral write-fence matrix**

@@ -9,6 +9,7 @@ import time
 from uuid import uuid4
 
 from backend.domain.canon import CanonEventInput, thaw_json
+from backend.repositories.project_lifecycle import lock_active_project
 from backend.services.projections import GLOBAL_PROJECTION_KEY, ProjectionBundle
 
 
@@ -36,6 +37,9 @@ class CanonRepository:
     def __init__(self, *, id_factory=None, clock=None):
         self._id_factory = id_factory or (lambda: str(uuid4()))
         self._clock = clock or (lambda: int(time.time() * 1000))
+
+    async def lock_project(self, session, project_id: str):
+        return await lock_active_project(session, project_id)
 
     async def lock_head(self, session, project_id: str) -> int:
         row = await session.fetchone(

@@ -15,6 +15,7 @@ from backend.domain.canon import (
     CanonConflict, CanonEventInput, CanonValidationError, EntityType,
     find_hard_conflicts, normalize_name, resolve_alias, thaw_json,
 )
+from backend.http_errors import ProjectNotFound
 from backend.services.projections import build_projection_bundle
 
 
@@ -194,6 +195,10 @@ class CanonService:
         if type(request) is not CommitCanonRevision:
             raise CanonValidationError("request must be a CommitCanonRevision")
         async with self.transaction_factory() as session:
+            if await self.repository.lock_project(
+                session, request.project_id
+            ) is None:
+                raise ProjectNotFound()
             head = await self.repository.lock_head(session, request.project_id)
             existing = await self.repository.find_idempotent(
                 session, request.project_id, request.idempotency_key,

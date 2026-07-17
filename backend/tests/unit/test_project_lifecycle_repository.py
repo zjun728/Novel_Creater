@@ -21,7 +21,7 @@ class RecordingSession:
         execute_result: int = 1,
     ):
         self.row = (
-            {"id": "p1", "status": "drafting"}
+            {"id": "p1", "status": "drafting", "archived_at": None}
             if row is self._UNSET
             else row
         )
@@ -59,7 +59,7 @@ async def test_shared_project_lifecycle_exposes_active_and_any_status_reads_and_
         ),
         (
             "fetchone",
-            "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL FOR UPDATE",
+            "SELECT * FROM projects WHERE id=%s FOR UPDATE",
             ("p1",),
         ),
         ("fetchone", "SELECT * FROM projects WHERE id=%s", ("p1",)),

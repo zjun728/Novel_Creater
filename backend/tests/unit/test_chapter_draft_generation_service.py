@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from backend import http_errors
+
 
 class FakeChapterRepository:
     def __init__(self):
+        self.archived = False
         self.provider = {
             "id": "provider-writing",
             "name": "联通云",
@@ -42,6 +45,11 @@ class FakeChapterRepository:
         }
         self.candidates = []
         self.upsert_calls = []
+
+    async def lock_project(self, session, project_id):
+        if self.archived:
+            raise http_errors.ProjectArchived()
+        return {"id": project_id} if project_id == "p1" else None
 
     async def read_session_by_id(self, session, project_id, chapter_session_id):
         if project_id == "p1" and chapter_session_id == "session-1":
@@ -180,3 +188,28 @@ async def test_generation_provider_failure_does_not_mutate_draft():
     assert len(gateway.calls) == 1
     assert repo.upsert_calls == []
     assert repo.working_draft["revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_archived_generation_stops_before_provider_and_draft_reads():
+    from backend.services.chapter_draft_generation import (
+        ChapterDraftGenerationService,
+        GenerateWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    repo.archived = True
+    gateway = FakeGateway()
+    service = ChapterDraftGenerationService(
+        repo, provider_gateway=gateway, transaction_factory=tx_factory,
+    )
+
+    with pytest.raises(http_errors.ProjectArchived):
+        await service.generate_working_draft(GenerateWorkingDraft(
+            project_id="p1",
+            chapter_session_id="session-1",
+            expected_working_draft_revision=1,
+        ))
+
+    assert gateway.calls == []
+    assert repo.upsert_calls == []

@@ -25,7 +25,11 @@ async def test_existing_idempotency_precedes_stale_head_and_writes_nothing():
     assert result.projection_hash == "b" * 64
     assert result.idempotent is True
     assert repo.write_calls == []
-    assert [call[0] for call in repo.calls] == ["lock_head", "find_idempotent"]
+    assert [call[0] for call in repo.calls] == [
+        "lock_project",
+        "lock_head",
+        "find_idempotent",
+    ]
     assert transaction.commit_count == 1
 
 

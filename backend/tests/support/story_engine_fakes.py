@@ -110,10 +110,14 @@ class MemoryStoryEngineRepository:
         self.on_lock_provider_connection = None
 
     async def lock_project(self, session, project_id):
+        from backend.http_errors import ProjectArchived
+
         self.events.append("lock-project")
         row = self.projects.get(project_id)
-        if row is None or row["status"] == "archived":
+        if row is None:
             return None
+        if row["status"] == "archived":
+            raise ProjectArchived()
         return dict(row)
 
     async def read_project(self, session, project_id):

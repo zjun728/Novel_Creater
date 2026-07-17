@@ -9,6 +9,7 @@ from backend.gateways.chapter_draft_provider import (
     ChapterDraftProviderError,
     ChapterDraftProviderGateway,
 )
+from backend.http_errors import ProjectNotFound
 from backend.prompts.chapter_draft import build_chapter_draft_messages
 from backend.services.chapter_sessions import (
     ChapterSessionConflict,
@@ -56,6 +57,10 @@ class ChapterDraftGenerationService:
 
     async def generate_working_draft(self, command: GenerateWorkingDraft):
         async with self.transaction_factory() as session:
+            if await self.repository.lock_project(
+                session, command.project_id
+            ) is None:
+                raise ProjectNotFound()
             chapter_session = await self.repository.read_session_by_id(
                 session, command.project_id, command.chapter_session_id,
             )

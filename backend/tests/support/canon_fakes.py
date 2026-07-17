@@ -63,6 +63,7 @@ class FakeCanonTransactionFactory:
 
 class FakeCanonRepository:
     def __init__(self):
+        self.project = {"id": "project-1"}
         self.head = 0
         self.projection_head = 0
         self.head_hash = "0" * 64
@@ -90,6 +91,10 @@ class FakeCanonRepository:
         self.write_calls.append(name)
         if self.fail_on == name:
             raise RuntimeError(f"{name} failed")
+
+    async def lock_project(self, session, project_id):
+        self._call("lock_project", session, project_id)
+        return self.project if project_id == self.project["id"] else None
 
     async def lock_head(self, session, project_id):
         self._call("lock_head", session, project_id)

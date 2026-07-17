@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from backend import http_errors
+
 
 class FakeChapterRepository:
     def __init__(self):
+        self.archived = False
         self.project = {"id": "p1", "current_chapter": 0}
         self.canon = {"canon_revision_number": 0}
         self.plan = {
@@ -29,6 +32,8 @@ class FakeChapterRepository:
         self.candidates = []
 
     async def lock_project(self, session, project_id):
+        if self.archived:
+            raise http_errors.ProjectArchived()
         return self.project if project_id == "p1" else None
 
     async def read_active_plan(self, session, project_id):
@@ -178,3 +183,48 @@ async def test_save_candidate_freezes_current_working_draft_explicitly():
     assert result.candidates[0].working_draft_revision == 2
     assert result.candidates[0].content == result.working_draft.content
     assert result.candidates[0].content_hash == result.working_draft.content_hash
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("working-draft", "candidate"))
+async def test_existing_draft_writes_recheck_active_project(operation):
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        CreateChapterSession,
+        SaveDraftCandidate,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(CreateChapterSession(
+        project_id="p1", expected_story_block_revision=1,
+        expected_canon_revision=0,
+    ))
+    await service.save_working_draft(SaveWorkingDraft(
+        project_id="p1",
+        chapter_session_id=created.session.id,
+        expected_revision=1,
+        content="归档前正文",
+    ))
+    repo.archived = True
+
+    if operation == "working-draft":
+        awaitable = service.save_working_draft(SaveWorkingDraft(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_revision=2,
+            content="不能保存",
+        ))
+    else:
+        awaitable = service.save_candidate(SaveDraftCandidate(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_working_draft_revision=2,
+        ))
+
+    with pytest.raises(http_errors.ProjectArchived):
+        await awaitable
+
+    assert repo.working_draft["content"] == "归档前正文"
+    assert repo.candidates == []

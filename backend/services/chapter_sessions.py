@@ -12,6 +12,7 @@ from backend.domain.drafts import (
     DraftCandidateView,
     WorkingDraftView,
 )
+from backend.http_errors import ProjectNotFound
 
 
 class ChapterSessionError(RuntimeError):
@@ -119,6 +120,10 @@ class ChapterSessionService:
 
     async def save_working_draft(self, command: SaveWorkingDraft) -> ChapterWorkspace:
         async with self.transaction_factory() as session:
+            if await self.repository.lock_project(
+                session, command.project_id
+            ) is None:
+                raise ProjectNotFound()
             chapter_session = await self.repository.read_session_by_id(
                 session, command.project_id, command.chapter_session_id,
             ) if hasattr(self.repository, "read_session_by_id") else None
@@ -152,6 +157,10 @@ class ChapterSessionService:
 
     async def save_candidate(self, command: SaveDraftCandidate) -> ChapterWorkspace:
         async with self.transaction_factory() as session:
+            if await self.repository.lock_project(
+                session, command.project_id
+            ) is None:
+                raise ProjectNotFound()
             chapter_session = await self.repository.read_session_by_id(
                 session, command.project_id, command.chapter_session_id,
             ) if hasattr(self.repository, "read_session_by_id") else None

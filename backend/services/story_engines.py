@@ -25,6 +25,7 @@ from backend.gateways.story_engine_provider import (
     StoryEngineProviderResponseError,
 )
 from backend.http_errors import (
+    ProjectNotFound,
     StoryEngineBatchConflict,
     StoryEngineBatchNotFound,
     StoryEnginePreconditionFailed,
@@ -582,6 +583,8 @@ class StoryEngineService:
         self, project_id: str, batch_id: str, attempt_id: str
     ) -> StoryEngineBatchResult:
         async with self.transaction_factory() as session:
+            if await self.repository.lock_project(session, project_id) is None:
+                raise ProjectNotFound()
             changed = await self.repository.cas_unknown_attempt(
                 session,
                 project_id,

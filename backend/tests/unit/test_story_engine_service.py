@@ -16,6 +16,7 @@ from backend.gateways.story_engine_provider import (
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.http_errors import (
+    ProjectArchived,
     StoryEngineBatchConflict,
     StoryEngineBatchNotFound,
     StoryEnginePreconditionFailed,
@@ -185,6 +186,23 @@ async def test_reconcile_stale_reserved_and_expired_running_without_gateway_call
 
 
 @pytest.mark.asyncio
+async def test_mark_outcome_unknown_rechecks_active_project_before_writeback():
+    harness = StoryEngineHarness()
+    reserved = await harness.service.reserve_provider(
+        ReserveStoryEngineBatch("p1", "archived-writeback")
+    )
+    running = await harness.service.start_attempt("p1", reserved.id)
+    harness.repository.projects["p1"]["status"] = "archived"
+
+    with pytest.raises(ProjectArchived):
+        await harness.service.mark_outcome_unknown(
+            "p1", running.id, running.attempt_id
+        )
+
+    assert harness.repository.batches[running.id]["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_recoverable_batches_are_read_only_bounded_public_summaries():
     harness = StoryEngineHarness()
     harness.repository.recoverable_rows = [
@@ -258,7 +276,7 @@ async def test_missing_archived_and_missing_prerequisites_are_stable_public_erro
     with pytest.raises(StoryEngineBatchNotFound):
         await harness.service.get("p1", "missing")
     harness.repository.projects["p1"]["status"] = "archived"
-    with pytest.raises(StoryEngineBatchNotFound):
+    with pytest.raises(ProjectArchived):
         await harness.service.create_manual(
             CreateManualStoryEngineBatch("p1", "archived", three_options())
         )
