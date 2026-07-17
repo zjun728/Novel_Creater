@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -20,6 +21,10 @@ import {
 const scriptsDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const repositoryRoot = path.dirname(scriptsDirectory)
 const scannerPath = path.join(scriptsDirectory, 'scan-effective-legacy.mjs')
+const formalAcceptancePlans = [
+  'docs/superpowers/plans/2026-07-11-m2e-verification-and-live-acceptance.md',
+  'docs/superpowers/plans/2026-07-16-formal-test-runner-pytest-temp.md',
+]
 
 const ownDefinition = `// BEGIN RETIRED SHADOW PATTERNS
 export const RETIRED_SHADOW_PATTERNS = Object.freeze([
@@ -104,6 +109,40 @@ function captureCli(dependencies = {}, args = []) {
   })
   return { status, stderr, stdout }
 }
+
+test('formal acceptance plans use the frozen baseline and typed repository gates', async t => {
+  const frozenBaseline = 'bc0919a2f8464a552c979a9601258fb148d98cac'
+  const normativeAmendment = 'b9b19e8ebdeefc3f88e547042cfc925da4adb1cf'
+
+  for (const relativePath of formalAcceptancePlans) {
+    await t.test(relativePath, () => {
+      const source = readFileSync(
+        path.join(repositoryRoot, ...relativePath.split('/')),
+        'utf8',
+      )
+
+      assert.deepEqual({
+        frozenBaseline: source.includes(frozenBaseline),
+        normativeAmendment: source.includes(normativeAmendment),
+        typedArtifactGate: source.includes(
+          'node scripts/scan-m2-artifacts.mjs --base $env:APPROVED_M2_PLAN_COMMIT',
+        ),
+        typedLegacyGate: source.includes(
+          'node scripts/scan-effective-legacy.mjs',
+        ),
+        rawLegacyAssignmentAbsent: !source.toLowerCase().includes(
+          '$legacymatches = @(git diff',
+        ),
+      }, {
+        frozenBaseline: true,
+        normativeAmendment: true,
+        typedArtifactGate: true,
+        typedLegacyGate: true,
+        rawLegacyAssignmentAbsent: true,
+      })
+    })
+  }
+})
 
 test('retired pattern inventory is exact and each pattern matches only its own code', () => {
   assert.deepEqual(RETIRED_SHADOW_PATTERNS.map(item => ({

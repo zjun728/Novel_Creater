@@ -215,12 +215,22 @@ Expected: build transforms the production frontend successfully; compile/diff pa
 - [ ] **Step 3: Run the formal safety scans**
 
 ```powershell
-if (-not $env:APPROVED_M2_PLAN_COMMIT) { throw 'APPROVED_M2_PLAN_COMMIT is required' }
+$approvedM2PlanCommit = 'bc0919a2f8464a552c979a9601258fb148d98cac'
+if (-not $env:APPROVED_M2_PLAN_COMMIT) {
+    throw 'APPROVED_M2_PLAN_COMMIT is required'
+}
+if ($env:APPROVED_M2_PLAN_COMMIT -ne $approvedM2PlanCommit) {
+    throw 'APPROVED_M2_PLAN_COMMIT does not match the frozen M2 plan baseline'
+}
 node scripts/scan-m2-artifacts.mjs --base $env:APPROVED_M2_PLAN_COMMIT
-$legacyMatches = @(git diff "$env:APPROVED_M2_PLAN_COMMIT...HEAD" -- backend frontend scripts package.json | rg -n "phase-e|e\.23|applyAdapter|providerAdapter")
-if ($LASTEXITCODE -eq 0) { throw "New formal diff references shadow QA: $($legacyMatches -join '; ')" }
-if ($LASTEXITCODE -ne 1) { throw "rg failed with exit code $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw 'M2 artifact gate failed' }
+node scripts/scan-effective-legacy.mjs
+if ($LASTEXITCODE -ne 0) { throw 'Effective legacy gate failed' }
 ```
+
+The diff baseline remains `bc0919a2f8464a552c979a9601258fb148d98cac`.
+The later `b9b19e8ebdeefc3f88e547042cfc925da4adb1cf` commit is the normative
+10-style/64-card plan amendment and does not reset the implementation baseline.
 
 Expected: artifact scan exits zero and the legacy-name scan finds no match.
 
