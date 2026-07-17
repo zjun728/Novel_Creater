@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 import backend.scripts.reset_writer_core_data as reset_module
+from backend import config as backend_config
+from backend.config import LocalMySQLConfigError
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.seeds import SeedPayload
@@ -522,3 +525,731 @@ def test_cli_help_exits_zero_with_empty_stderr():
     assert result.returncode == 0
     assert "usage:" in result.stdout
     assert result.stderr == ""
+
+
+def test_destructive_cli_safety_regression_inventory_is_complete():
+    required = {
+        "test_cli_default_config_rejects_missing_password_before_connection",
+        "test_cli_main_still_converts_runtime_failures_to_exit_one",
+        "test_cli_requires_configured_database_to_match_explicit_target_before_connection",
+        "test_execute_confirmation_mismatch_rejects_before_connection",
+        "test_cli_product_dry_run_uses_read_authority",
+        "test_cli_product_execute_uses_destructive_authority",
+        "test_cli_dry_run_uses_injected_server_session_and_closes_it",
+        "test_cli_combines_reset_and_connection_close_failures",
+        "test_cli_connection_failure_never_runs_reset_or_close",
+        "test_reset_connection_factory_combines_cursor_and_close_failures",
+        "test_locked_recheck_runtime_failure_before_drop_is_not_partial",
+        "test_drop_call_failure_is_partial_without_unowned_cleanup_drop",
+        "test_failure_after_successful_destructive_drop_is_partial",
+        "test_reset_rejects_unversioned_shape_before_preserve_reads_or_ddl",
+        "test_product_cli_binds_exact_local_host_port_before_connect",
+        "test_product_cli_rechecks_selected_database_and_server_identity_before_reset",
+        "test_product_cli_four_tuple_authority_checks_identity_before_core",
+    }
+    present = {
+        name
+        for name, value in globals().items()
+        if name.startswith("test_") and callable(value)
+    }
+    assert required <= present
+
+
+@pytest.mark.asyncio
+async def test_reset_rejects_unversioned_shape_before_preserve_reads_or_ddl():
+    class UnversionedSession:
+        def __init__(self):
+            self.calls = []
+
+        async def fetchall(self, sql, args=None):
+            self.calls.append(("fetchall", sql, args))
+            if "information_schema.TABLES" in sql:
+                return [
+                    {"TABLE_NAME": name}
+                    for name in (
+                        "projects",
+                        "creative_seeds",
+                        "provider_profiles",
+                    )
+                ]
+            raise AssertionError("unversioned shape reached preserve reads")
+
+        async def fetchone(self, sql, args=None):
+            self.calls.append(("fetchone", sql, args))
+            raise AssertionError("unversioned shape reached row reads")
+
+        async def execute(self, sql, args=None):
+            self.calls.append(("execute", sql, args))
+            raise AssertionError("unversioned shape reached DDL/DML")
+
+    session = UnversionedSession()
+
+    with pytest.raises(
+        reset_module.ResetValidationError,
+        match="exact v1.1 source or v1.2 target",
+    ):
+        await reset_module.reset_writer_core_data(
+            session,
+            database_name=DISPOSABLE,
+            confirm_reset=DISPOSABLE,
+            request=_request(),
+            execute=True,
+            output=lambda _value: None,
+        )
+
+    assert len(session.calls) == 1
+    assert "information_schema.TABLES" in session.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_locked_recheck_runtime_failure_before_drop_is_not_partial(
+    monkeypatch,
+):
+    state = _foundation_state()
+    classifications = iter(
+        ("v1.1-source", RuntimeError("LOCKED_RECHECK_SENTINEL"))
+    )
+
+    async def classify(_session, _database_name):
+        outcome = next(classifications)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    async def load(*_args, **_kwargs):
+        return state
+
+    class Session:
+        def __init__(self):
+            self.execute_calls = []
+            self.lock_released = False
+
+        async def fetchone(self, sql, args=None):
+            if "GET_LOCK" in sql:
+                return {"acquired": 1}
+            if "RELEASE_LOCK" in sql:
+                self.lock_released = True
+                return {"released": 1}
+            raise AssertionError(sql)
+
+        async def execute(self, sql, args=None):
+            self.execute_calls.append((sql, args))
+            raise AssertionError("DDL/DML ran before the locked recheck")
+
+    monkeypatch.setattr(reset_module, "_classify_reset_source", classify)
+    monkeypatch.setattr(reset_module, "_load_v11_preserved_state", load)
+    session = Session()
+
+    with pytest.raises(RuntimeError, match="LOCKED_RECHECK_SENTINEL"):
+        await reset_module.reset_writer_core_data(
+            session,
+            database_name=DISPOSABLE,
+            confirm_reset=DISPOSABLE,
+            request=_request(),
+            execute=True,
+            output=lambda _value: None,
+        )
+
+    assert session.execute_calls == []
+    assert session.lock_released is True
+
+
+@pytest.mark.asyncio
+async def test_drop_call_failure_is_partial_without_unowned_cleanup_drop(
+    monkeypatch,
+):
+    state = _foundation_state()
+
+    async def classify(_session, _database_name):
+        return "v1.1-source"
+
+    async def load(*_args, **_kwargs):
+        return state
+
+    async def verify_capabilities(_session):
+        return "8.0-test"
+
+    class Session:
+        def __init__(self):
+            self.execute_calls = []
+            self.lock_released = False
+
+        async def fetchone(self, sql, args=None):
+            if "GET_LOCK" in sql:
+                return {"acquired": 1}
+            if "RELEASE_LOCK" in sql:
+                self.lock_released = True
+                return {"released": 1}
+            raise AssertionError(sql)
+
+        async def execute(self, sql, args=None):
+            self.execute_calls.append(sql)
+            if sql.startswith("DROP DATABASE `"):
+                raise RuntimeError("DROP_OUTCOME_UNKNOWN_SENTINEL")
+            raise AssertionError("DDL followed an outcome-unknown DROP")
+
+    monkeypatch.setattr(reset_module, "_classify_reset_source", classify)
+    monkeypatch.setattr(reset_module, "_load_v11_preserved_state", load)
+    monkeypatch.setattr(
+        reset_module,
+        "_verify_reset_server_capabilities",
+        verify_capabilities,
+    )
+    session = Session()
+
+    with pytest.raises(
+        reset_module.ResetPartialStateError,
+        match="may remain",
+    ) as raised:
+        await reset_module.reset_writer_core_data(
+            session,
+            database_name=DISPOSABLE,
+            confirm_reset=DISPOSABLE,
+            request=_request(),
+            execute=True,
+            output=lambda _value: None,
+        )
+
+    assert "DROP_OUTCOME_UNKNOWN_SENTINEL" in repr(raised.value.__cause__)
+    assert session.execute_calls == [f"DROP DATABASE `{DISPOSABLE}`"]
+    assert session.lock_released is True
+
+
+@pytest.mark.asyncio
+async def test_failure_after_successful_destructive_drop_is_partial(
+    monkeypatch,
+):
+    state = _foundation_state()
+
+    async def classify(_session, _database_name):
+        return "v1.1-source"
+
+    async def load(*_args, **_kwargs):
+        return state
+
+    async def verify_capabilities(_session):
+        return "8.0-test"
+
+    class Session:
+        def __init__(self):
+            self.execute_calls = []
+
+        async def fetchone(self, sql, args=None):
+            if "GET_LOCK" in sql:
+                return {"acquired": 1}
+            if "RELEASE_LOCK" in sql:
+                return {"released": 1}
+            raise AssertionError(sql)
+
+        async def execute(self, sql, args=None):
+            self.execute_calls.append(sql)
+            if sql.startswith("CREATE DATABASE"):
+                raise RuntimeError("AFTER_DROP_SENTINEL")
+
+    monkeypatch.setattr(reset_module, "_classify_reset_source", classify)
+    monkeypatch.setattr(reset_module, "_load_v11_preserved_state", load)
+    monkeypatch.setattr(
+        reset_module,
+        "_verify_reset_server_capabilities",
+        verify_capabilities,
+    )
+    session = Session()
+
+    with pytest.raises(
+        reset_module.ResetPartialStateError,
+        match="may remain",
+    ) as raised:
+        await reset_module.reset_writer_core_data(
+            session,
+            database_name=DISPOSABLE,
+            confirm_reset=DISPOSABLE,
+            request=_request(),
+            execute=True,
+            output=lambda _value: None,
+        )
+
+    assert "AFTER_DROP_SENTINEL" in repr(raised.value.__cause__)
+    assert session.execute_calls[0].startswith("DROP DATABASE `")
+    assert session.execute_calls[1].startswith("CREATE DATABASE `")
+    assert session.execute_calls[2].startswith("DROP DATABASE IF EXISTS `")
+
+
+def _cli_args(
+    *,
+    database=DISPOSABLE,
+    confirm_reset=DISPOSABLE,
+    execute=False,
+):
+    values = [
+        "--database",
+        database,
+        "--confirm-reset",
+        confirm_reset,
+        "--project-title",
+        "永乐大典",
+        "--seed-title",
+        "永乐长明",
+        "--seed-title",
+        "文渊山海",
+        "--seed-title",
+        "典镇山河",
+        "--preferred-provider-name",
+        "联通云",
+        "--preferred-model",
+        "deepseek-v4-flash",
+    ]
+    if execute:
+        values.append("--execute")
+    return values
+
+
+def _product_cli_args(*, execute=False, host="127.0.0.1", port=3307):
+    return [
+        *_cli_args(
+            database=reset_module.PRODUCT_DATABASE,
+            confirm_reset=reset_module.PRODUCT_DATABASE,
+            execute=execute,
+        ),
+        "--confirm-host",
+        host,
+        "--confirm-port",
+        str(port),
+    ]
+
+
+class RecordingAdminSession:
+    def __init__(self):
+        self.calls = []
+        self.closed = False
+
+    async def close(self):
+        self.calls.append(("close", None))
+        self.closed = True
+
+
+class ProductIdentitySession(RecordingAdminSession):
+    def __init__(
+        self,
+        *,
+        database="novel_creator",
+        port=3307,
+        identity="local-mysql8",
+    ):
+        super().__init__()
+        self.database = database
+        self.port = port
+        self.identity = identity
+
+    async def fetchone(self, sql, args=None):
+        self.calls.append(("fetchone", " ".join(sql.split()), args))
+        if "DATABASE()" in sql and "@@port" in sql and "@@server_uuid" in sql:
+            return {
+                "database_name": self.database,
+                "server_port": self.port,
+                "server_identity": self.identity,
+            }
+        raise AssertionError(f"unexpected product identity query: {sql}")
+
+
+@pytest.mark.asyncio
+async def test_cli_default_config_rejects_missing_password_before_connection(
+    monkeypatch,
+):
+    called = False
+
+    async def connection_factory(_connection_config):
+        nonlocal called
+        called = True
+        raise AssertionError("must not connect")
+
+    monkeypatch.setattr(
+        backend_config,
+        "MYSQL_CONFIG",
+        dict(backend_config.MYSQL_CONFIG, password=None),
+    )
+
+    with pytest.raises(LocalMySQLConfigError, match="MYSQL_PASSWORD"):
+        await reset_module.run_cli(
+            _cli_args(),
+            connection_factory=connection_factory,
+        )
+
+    assert called is False
+
+
+def test_cli_main_still_converts_runtime_failures_to_exit_one(monkeypatch, capsys):
+    def fail_run(coroutine):
+        coroutine.close()
+        raise RuntimeError("runtime sentinel")
+
+    monkeypatch.setattr(reset_module.asyncio, "run", fail_run)
+
+    assert reset_module.main([]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Writer Core data reset failed.\n"
+
+
+@pytest.mark.asyncio
+async def test_cli_requires_configured_database_to_match_explicit_target_before_connection():
+    connected = False
+
+    async def connection_factory(_config):
+        nonlocal connected
+        connected = True
+        raise AssertionError("must not connect")
+
+    with pytest.raises(
+        reset_module.ResetSafetyError,
+        match="configured database",
+    ):
+        await reset_module.run_cli(
+            _cli_args(),
+            connection_config={
+                "host": "127.0.0.1",
+                "port": 3308,
+                "user": "tester",
+                "password": "secret",
+                "db": "different_database",
+            },
+            connection_factory=connection_factory,
+        )
+
+    assert connected is False
+
+
+@pytest.mark.asyncio
+async def test_execute_confirmation_mismatch_rejects_before_connection():
+    connected = False
+
+    async def connection_factory(_config):
+        nonlocal connected
+        connected = True
+        raise AssertionError("must not connect")
+
+    with pytest.raises(reset_module.ResetSafetyError, match="confirmation"):
+        await reset_module.run_cli(
+            _cli_args(
+                confirm_reset=(
+                    "novel_creator_test_ffffffffffffffffffffffffffffffff"
+                ),
+                execute=True,
+            ),
+            connection_factory=connection_factory,
+            connection_config={"password": "PASSWORD_SENTINEL", "db": DISPOSABLE},
+        )
+
+    assert connected is False
+
+
+@pytest.mark.asyncio
+async def test_cli_product_dry_run_uses_read_authority():
+    session = ProductIdentitySession()
+    captured = []
+
+    async def connection_factory(_config):
+        return session
+
+    async def reset_function(admin_session, **kwargs):
+        captured.append((admin_session, kwargs))
+
+    result = await reset_module.run_cli(
+        _product_cli_args(),
+        connection_factory=connection_factory,
+        connection_config={
+            "host": "127.0.0.1",
+            "port": 3307,
+            "db": "novel_creator",
+        },
+        reset_function=reset_function,
+    )
+
+    assert result == 0
+    assert session.closed is True
+    assert len(captured) == 1
+    assert captured[0][0] is session
+    assert captured[0][1]["execute"] is False
+    assert captured[0][1]["allow_product_database"] is True
+    assert (
+        captured[0][1]["_product_authority"]
+        is reset_module._CLI_PRODUCT_READ_AUTHORITY
+    )
+
+
+@pytest.mark.asyncio
+async def test_cli_product_execute_uses_destructive_authority():
+    session = ProductIdentitySession()
+    captured = []
+
+    async def connection_factory(_config):
+        return session
+
+    async def reset_function(admin_session, **kwargs):
+        captured.append((admin_session, kwargs))
+
+    result = await reset_module.run_cli(
+        _product_cli_args(execute=True),
+        connection_factory=connection_factory,
+        connection_config={
+            "host": "127.0.0.1",
+            "port": 3307,
+            "db": "novel_creator",
+        },
+        reset_function=reset_function,
+    )
+
+    assert result == 0
+    assert session.closed is True
+    assert len(captured) == 1
+    assert captured[0][0] is session
+    assert captured[0][1]["execute"] is True
+    assert captured[0][1]["allow_product_database"] is True
+    assert (
+        captured[0][1]["_product_authority"]
+        is reset_module._CLI_PRODUCT_EXECUTE_AUTHORITY
+    )
+
+
+@pytest.mark.asyncio
+async def test_cli_dry_run_uses_injected_server_session_and_closes_it():
+    session = RecordingAdminSession()
+    captured = []
+
+    async def connection_factory(config):
+        assert config == {"password": "PASSWORD_SENTINEL", "db": DISPOSABLE}
+        return session
+
+    async def reset_function(admin_session, **kwargs):
+        captured.append((admin_session, kwargs))
+
+    result = await reset_module.run_cli(
+        _cli_args(),
+        connection_factory=connection_factory,
+        connection_config={"password": "PASSWORD_SENTINEL", "db": DISPOSABLE},
+        reset_function=reset_function,
+    )
+
+    assert result == 0
+    assert captured[0][0] is session
+    assert captured[0][1]["execute"] is False
+    assert captured[0][1]["allow_product_database"] is False
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cli_combines_reset_and_connection_close_failures():
+    class CloseFailingSession(RecordingAdminSession):
+        async def close(self):
+            raise RuntimeError("close failed")
+
+    async def connection_factory(_config):
+        return CloseFailingSession()
+
+    async def reset_function(_session, **_kwargs):
+        raise RuntimeError("body failed")
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await reset_module.run_cli(
+            _cli_args(),
+            connection_config={"db": DISPOSABLE},
+            connection_factory=connection_factory,
+            reset_function=reset_function,
+        )
+
+    assert [str(error) for error in raised.value.exceptions] == [
+        "body failed",
+        "close failed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cli_connection_failure_never_runs_reset_or_close():
+    events = []
+
+    async def connection_factory(_config):
+        events.append("connect")
+        raise RuntimeError("connect failed")
+
+    async def reset_function(_session, **_kwargs):
+        events.append("reset")
+
+    with pytest.raises(RuntimeError, match="connect failed"):
+        await reset_module.run_cli(
+            _cli_args(),
+            connection_config={"db": DISPOSABLE},
+            connection_factory=connection_factory,
+            reset_function=reset_function,
+        )
+
+    assert events == ["connect"]
+
+
+@pytest.mark.asyncio
+async def test_reset_connection_factory_combines_cursor_and_close_failures(
+    monkeypatch,
+):
+    class FailingConnection:
+        async def cursor(self, _cursor_type):
+            raise RuntimeError("cursor failed")
+
+        async def ensure_closed(self):
+            raise RuntimeError("connection close failed")
+
+    async def connect(**_kwargs):
+        return FailingConnection()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "aiomysql",
+        SimpleNamespace(connect=connect, DictCursor=object()),
+    )
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await reset_module._reset_connection_factory(
+            {
+                "host": "127.0.0.1",
+                "port": 3307,
+                "user": "tester",
+                "password": "private",
+                "db": DISPOSABLE,
+            }
+        )
+
+    assert [str(error) for error in raised.value.exceptions] == [
+        "cursor failed",
+        "connection close failed",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config,confirm_host,confirm_port,match",
+    [
+        ({"host": "remote.example", "port": 3307}, "127.0.0.1", 3307, "loopback"),
+        ({"host": "127.0.0.1", "port": 3306}, "127.0.0.1", 3307, "3307"),
+        (
+            {"host": "127.0.0.1", "port": 3307},
+            "localhost",
+            3307,
+            "host confirmation",
+        ),
+        (
+            {"host": "127.0.0.1", "port": 3307},
+            "127.0.0.1",
+            3306,
+            "port confirmation",
+        ),
+    ],
+)
+async def test_product_cli_binds_exact_local_host_port_before_connect(
+    config,
+    confirm_host,
+    confirm_port,
+    match,
+):
+    connected = False
+
+    async def connection_factory(_config):
+        nonlocal connected
+        connected = True
+        raise AssertionError("must not connect")
+
+    with pytest.raises(reset_module.ResetSafetyError, match=match):
+        await reset_module.run_cli(
+            _product_cli_args(host=confirm_host, port=confirm_port),
+            connection_config={
+                **config,
+                "user": "root",
+                "password": "PRIVATE",
+                "db": "novel_creator",
+            },
+            connection_factory=connection_factory,
+        )
+
+    assert connected is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "database,port,identity,match",
+    [
+        ("other", 3307, "local-mysql8", "selected database"),
+        ("novel_creator", 3306, "local-mysql8", "server port"),
+        ("novel_creator", 3307, "", "server identity"),
+    ],
+)
+async def test_product_cli_rechecks_selected_database_and_server_identity_before_reset(
+    database,
+    port,
+    identity,
+    match,
+):
+    session = ProductIdentitySession(
+        database=database,
+        port=port,
+        identity=identity,
+    )
+    reset_called = False
+
+    async def connection_factory(_config):
+        return session
+
+    async def reset_function(_session, **_kwargs):
+        nonlocal reset_called
+        reset_called = True
+
+    with pytest.raises(reset_module.ResetSafetyError, match=match):
+        await reset_module.run_cli(
+            _product_cli_args(execute=True),
+            connection_config={
+                "host": "127.0.0.1",
+                "port": 3307,
+                "user": "root",
+                "password": "PRIVATE",
+                "db": "novel_creator",
+            },
+            connection_factory=connection_factory,
+            reset_function=reset_function,
+        )
+
+    assert reset_called is False
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("execute", (False, True))
+async def test_product_cli_four_tuple_authority_checks_identity_before_core(
+    execute,
+):
+    session = ProductIdentitySession()
+    events = []
+
+    async def connection_factory(config):
+        events.append(("connect", dict(config)))
+        return session
+
+    async def reset_function(_session, **kwargs):
+        events.append(("reset", kwargs))
+
+    await reset_module.run_cli(
+        _product_cli_args(execute=execute),
+        connection_config={
+            "host": "127.0.0.1",
+            "port": 3307,
+            "user": "root",
+            "password": "PRIVATE",
+            "db": "novel_creator",
+        },
+        connection_factory=connection_factory,
+        reset_function=reset_function,
+    )
+
+    assert session.calls[0][0] == "fetchone"
+    assert "DATABASE()" in session.calls[0][1]
+    assert events[-1][0] == "reset"
+    assert events[-1][1]["_product_authority"] is (
+        reset_module._CLI_PRODUCT_EXECUTE_AUTHORITY
+        if execute
+        else reset_module._CLI_PRODUCT_READ_AUTHORITY
+    )
+    assert session.closed is True

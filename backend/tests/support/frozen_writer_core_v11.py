@@ -13,6 +13,8 @@ from hashlib import sha256
 from pathlib import Path
 import re
 
+from backend.tests.support.disposable_mysql import assert_disposable_name
+
 
 FROZEN_V11_SCHEMA_VERSION = "writer-core-v1.1.0"
 FROZEN_V11_MANIFEST_HASH = (
@@ -137,6 +139,7 @@ def read_frozen_v11_statements() -> tuple[str, ...]:
 
 async def initialize_frozen_writer_core_v11(admin_session, database_name: str) -> None:
     """Apply only the frozen v1.1 fixture to an existing disposable database."""
+    assert_disposable_name(database_name)
     await admin_session.execute(f"USE `{database_name}`")
     for statement in read_frozen_v11_statements():
         await admin_session.execute(statement)

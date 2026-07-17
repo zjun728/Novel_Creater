@@ -72,6 +72,9 @@
 - Modify: `backend/tests/unit/test_run_milestone2_product_session.py`
 - Modify: `backend/tests/unit/test_project_lifecycle_repository.py`
 - Modify: `backend/tests/unit/test_project_creation.py`
+- Create: `backend/tests/unit/test_frozen_writer_core_v11.py`
+- Create: `backend/tests/support/frozen_writer_core_v11.py`
+- Create: `backend/tests/fixtures/writer_core_v11_schema.sql.gz.b64`
 - Modify: `backend/tests/integration/test_project_archive.py`
 - Rewrite: `backend/tests/integration/test_milestone2_product_rebuild.py`
 - Create: `backend/tests/integration/test_project_ownership_delete.py`
@@ -172,6 +175,10 @@ hard-coded schema comparison with `EXPECTED_SCHEMA_VERSION`.
 Rewrite the explicit development reset command so it recognizes exactly the
 frozen current product source (`writer-core-v1.1.0` plus its frozen manifest)
 and the new v1.2 target. Remove the older M1 v1.0 branch and its mapping code.
+Build reset integration sources from a repository-contained snapshot of the
+actual v1.1 DDL, protected by its raw SQL, compressed payload, manifest, and
+49-table inventory hashes. The test fixture initializer must reject every
+non-disposable database name before issuing `USE` or any DDL.
 This one-time, explicitly confirmed rebuild path is not imported by runtime.
 It preserves only the approved project identity, three seeds, and provider
 configuration; it must never run as part of this phase's tests against the
@@ -183,6 +190,7 @@ Run:
 
 ```powershell
 python -m pytest backend/tests/unit/test_schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_reset_writer_core_data.py backend/tests/unit/test_run_milestone2_product_session.py backend/tests/integration/test_project_ownership_delete.py -q
+python -m pytest backend/tests/unit/test_frozen_writer_core_v11.py -q
 python -m pytest backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py -q
 python -m pytest backend/tests/integration/test_project_archive.py -q
 python -m pytest backend/tests/integration/test_milestone2_product_rebuild.py -q
@@ -195,7 +203,7 @@ databases are removed by their fixtures.
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add backend/schema backend/schema_version.py backend/repositories/project_lifecycle.py backend/repositories/projects.py backend/repositories/model_bindings.py backend/scripts/reset_writer_core_data.py backend/scripts/run_milestone2_product_session.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_reset_writer_core_data.py backend/tests/unit/test_run_milestone2_product_session.py backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/integration/test_project_archive.py backend/tests/integration/test_milestone2_product_rebuild.py backend/tests/integration/test_project_ownership_delete.py
+git add backend/schema backend/schema_version.py backend/repositories/project_lifecycle.py backend/repositories/projects.py backend/repositories/model_bindings.py backend/scripts/reset_writer_core_data.py backend/scripts/run_milestone2_product_session.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_reset_writer_core_data.py backend/tests/unit/test_run_milestone2_product_session.py backend/tests/unit/test_project_lifecycle_repository.py backend/tests/unit/test_project_creation.py backend/tests/unit/test_frozen_writer_core_v11.py backend/tests/support/frozen_writer_core_v11.py backend/tests/fixtures/writer_core_v11_schema.sql.gz.b64 backend/tests/integration/test_project_archive.py backend/tests/integration/test_milestone2_product_rebuild.py backend/tests/integration/test_project_ownership_delete.py
 git commit -m "feat: define project lifecycle ownership"
 ```
 
