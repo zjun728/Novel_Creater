@@ -56,10 +56,12 @@ async def test_l4_session_uses_only_test_authority_and_cleans_in_strict_order(wo
     root, _ = source_fixture(tmp_path)
     events = []
     child_envs = []
+    database_envs = []
     commands = []
 
     async def prepare(database, env, log_dir):
         events.append(f"prepare:{database}")
+        database_envs.append(dict(env))
 
     def start(label, command, args, cwd, env, log_dir):
         events.append(f"start:{label}")
@@ -94,6 +96,7 @@ async def test_l4_session_uses_only_test_authority_and_cleans_in_strict_order(wo
 
     async def drop(database, env, log_dir):
         events.append(f"drop:{database}")
+        database_envs.append(dict(env))
 
     def remove(path):
         events.append("remove-temp")
@@ -123,6 +126,16 @@ async def test_l4_session_uses_only_test_authority_and_cleans_in_strict_order(wo
     assert all(env["MYSQL_DB"] == DATABASE for env in child_envs)
     assert all(env["MYSQL_HOST"] == "127.0.0.1" for env in child_envs)
     assert all("product-host" not in str(env) for env in child_envs)
+    assert all(not any(key.startswith("TEST_MYSQL_") for key in env) for env in child_envs)
+    assert database_envs == [
+        {key: TEST_ENV[key] for key in (
+            "TEST_MYSQL_HOST",
+            "TEST_MYSQL_PORT",
+            "TEST_MYSQL_USER",
+            "TEST_MYSQL_PASSWORD",
+        )}
+    ] * 2
+    assert all(not any(key.startswith("MYSQL_") for key in env) for env in database_envs)
     assert commands[0][1] != commands[1][1]
     assert Path(commands[1][1]).name.lower() in {"node", "node.exe"}
     assert commands[1][2][0].endswith("vite.js")

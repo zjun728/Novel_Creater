@@ -139,6 +139,19 @@ def _minimal_inherited_environment(environment: Mapping[str, str]) -> dict[str, 
     }
 
 
+def build_test_database_environment(
+    environment: Mapping[str, str],
+) -> dict[str, str]:
+    _test_config(environment)
+    return {
+        **_minimal_inherited_environment(environment),
+        **{
+            key: str(environment[key])
+            for key in _REQUIRED_TEST_VARIABLES
+        },
+    }
+
+
 def build_test_child_environment(
     environment: Mapping[str, str], database: str, corpus_root: Path,
 ) -> dict[str, str]:
@@ -1562,6 +1575,7 @@ async def run_l4_session(
     source_payload = source.read_bytes()
     source_hash = sha256(source_payload).hexdigest()
     source_text = source_payload.decode("utf-8", errors="replace")
+    database_environment = build_test_database_environment(source_environment)
     child_environment = build_test_child_environment(source_environment, database, root)
     sensitive_values = private_scan_values(
         config, database, str(root), source_text,
@@ -1602,7 +1616,7 @@ async def run_l4_session(
     try:
         database_started = True
         await _bounded_await(
-            _await(prepare(database, child_environment, log_dir)), "L4 prepare"
+            _await(prepare(database, database_environment, log_dir)), "L4 prepare"
         )
         release_reservation(0)
         backend = start_process(
@@ -1664,7 +1678,7 @@ async def run_l4_session(
         if database_started:
             try:
                 await _bounded_await(
-                    _await(drop(database, child_environment, log_dir)), "L4 drop"
+                    _await(drop(database, database_environment, log_dir)), "L4 drop"
                 )
                 remaining_database = 0
             except BaseException as exc:
@@ -1683,6 +1697,7 @@ async def run_l4_session(
             remaining_temp_paths = 0
         except BaseException as exc:
             errors.append(exc)
+        database_environment.clear()
         child_environment.clear()
         sensitive_values.clear()
     _raise_errors(errors, "M2 L4 session body and cleanup failed")
