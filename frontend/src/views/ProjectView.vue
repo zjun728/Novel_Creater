@@ -1,6 +1,6 @@
 <script setup>
 import { onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NButton, NResult, NSkeleton, NTag } from 'naive-ui'
 import { api } from '@/api/db/client'
 import CreationContractWizard from '@/components/project/CreationContractWizard.vue'
@@ -11,6 +11,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
 
 const route = useRoute()
+const router = useRouter()
 const projectStore = useProjectStore()
 const planningStore = usePlanningStore()
 const writerCoreState = ref(null)
@@ -44,6 +45,11 @@ async function loadFoundation(projectId) {
 
 function retryFoundation() {
   return loadFoundation(String(route.params.id || ''))
+}
+
+function openWriterWorkspace() {
+  if (!planningStore.planningReady) return
+  router.push(`/writer/${encodeURIComponent(String(route.params.id || ''))}`)
 }
 
 watch(() => route.params.id, projectId => {
@@ -117,7 +123,14 @@ onBeforeUnmount(() => {
           <p v-if="planningStore.planningReady">滚动规划已就绪；下一里程碑将开放章节会话、WorkingDraft 与显式候选保存。</p>
           <p v-else>请先完成本书创作契约和首个滚动规划，再进入章节会话里程碑。</p>
         </div>
-        <n-button type="primary" size="large" disabled>进入写作台</n-button>
+        <n-button
+          type="primary"
+          size="large"
+          :disabled="!planningStore.planningReady"
+          @click="openWriterWorkspace"
+        >
+          进入写作台
+        </n-button>
       </footer>
     </template>
   </main>

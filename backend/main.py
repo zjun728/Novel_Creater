@@ -13,6 +13,7 @@ from backend.database import close_pool, connection
 from backend.routers import (
     assets,
     canon,
+    chapter_sessions,
     contracts,
     corpus,
     model_bindings,
@@ -56,6 +57,7 @@ app.include_router(seeds.router, prefix="/api")
 app.include_router(story_engines.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
 app.include_router(planning.router, prefix="/api")
+app.include_router(chapter_sessions.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(corpus.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")

@@ -330,6 +330,25 @@ export const api = {
     ),
   },
 
+  chapterSessions: {
+    current: projectId => get(`/projects/${segment(projectId)}/chapter-sessions/current`),
+    create: (projectId, data) => post(`/projects/${segment(projectId)}/chapter-sessions`, {
+      expectedStoryBlockRevision: data.expectedStoryBlockRevision,
+      expectedCanonRevision: data.expectedCanonRevision,
+    }),
+    saveWorkingDraft: (projectId, sessionId, data) => put(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/working-draft`,
+      {
+        expectedRevision: data.expectedRevision,
+        content: data.content,
+      },
+    ),
+    saveCandidate: (projectId, sessionId, data) => post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,
+      { expectedWorkingDraftRevision: data.expectedWorkingDraftRevision },
+    ),
+  },
+
   canon: {
     head: projectId => get(`/projects/${segment(projectId)}/canon/head`),
     entities: projectId => get(`/projects/${segment(projectId)}/canon/entities`),

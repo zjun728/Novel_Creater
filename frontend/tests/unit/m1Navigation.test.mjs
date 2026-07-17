@@ -34,15 +34,18 @@ async function readActiveDependencyTree(entry, visited = new Set()) {
   return `${entry}\n${source}\n${children.join('\n')}`
 }
 
-test('the writer route mounts only the unavailable foundation view', async () => {
+test('the writer route mounts the M4 chapter workspace without old writer or generation paths', async () => {
   const router = await readSource('router/index.js')
-  const unavailable = await readSource('views/WriterUnavailableView.vue')
+  const workspace = await readSource('views/ChapterWriterView.vue')
 
-  assert.match(router, /WriterUnavailableView\.vue/)
-  assert.doesNotMatch(router, /WriterView\.vue/)
-  assert.match(unavailable, /写作内核尚未开放/)
-  assert.match(unavailable, /旧章节、临时草稿和版本定稿链已停用/)
-  assert.match(unavailable, /返回项目/)
+  assert.match(router, /ChapterWriterView\.vue/)
+  assert.doesNotMatch(router, /@\/views\/WriterView\.vue/)
+  assert.match(workspace, /useChapterSessionStore/)
+  assert.match(workspace, /创建章节会话/)
+  assert.match(workspace, /保存工作稿/)
+  assert.match(workspace, /保存为候选/)
+  assert.match(workspace, /编辑不会自动生成候选/)
+  assert.doesNotMatch(workspace, /chatCompletion|providerAdapter|applyAdapter|finalize|定稿|生成正文/)
 })
 
 test('the M3 project shell depends only on formal project writer core and planning reads', async () => {
@@ -64,6 +67,8 @@ test('the M3 project shell depends only on formal project writer core and planni
   assert.match(projectView, /onBeforeUnmount/)
   assert.match(projectView, /派生写作数据.*重置/s)
   assert.match(projectView, /进入写作台/)
+  assert.match(projectView, /openWriterWorkspace/)
+  assert.match(projectView, /planningStore\.planningReady/)
 })
 
 test('the formal project page mounts one five-step creation contract wizard', async () => {
