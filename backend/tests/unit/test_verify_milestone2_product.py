@@ -640,6 +640,69 @@ async def test_l5_requires_one_provider_attempt_three_options_and_consistent_con
 
 
 @pytest.mark.asyncio
+async def test_l5_allows_multiple_experience_card_refs_with_canonical_order():
+    from backend.scripts.verify_milestone2_product import verify_milestone2_product
+
+    rows = _valid_l5_rows()
+    package = load_asset_package(MANIFEST_PATH, mode="release")
+    second = package.experience_cards[1]
+    rows["later_counts"]["creation_contract_experience_refs"] = 2
+    rows["l5_experience_refs"].append({
+        "experience_card_id": "10000000-0000-0000-0000-000000000102",
+        "asset_revision": 1,
+        "asset_hash": second.content_hash,
+        "actual_asset_hash": second.content_hash,
+        "sort_order": 2,
+    })
+    manifest = json.loads(rows["l5_contract_payload"]["reference_manifest_json"])
+    manifest["experienceCardRefs"].append({
+        "id": "10000000-0000-0000-0000-000000000102",
+        "revision": 1,
+        "contentHash": second.content_hash,
+    })
+    rows["l5_contract_payload"]["reference_manifest_json"] = canonical_json(manifest)
+    rows["l5_contract_payload"]["reference_manifest_hash"] = canonical_hash(manifest)
+
+    receipt = await verify_milestone2_product(
+        ReceiptSession(rows),
+        expected_database=DATABASE,
+        require_l5=True,
+        expected_source_hash="c" * 64,
+    )
+
+    assert receipt["l5"]["referenceManifestHash"] == canonical_hash(manifest)
+
+
+@pytest.mark.asyncio
+async def test_l5_allows_manual_story_engine_batch_without_provider_attempt():
+    from backend.scripts.verify_milestone2_product import verify_milestone2_product
+
+    rows = _valid_l5_rows()
+    rows["l5"].update({
+        "source_type": "manual",
+        "attempt_id": None,
+        "request_hash": "5" * 64,
+        "raw_response_hash": None,
+        "batch_provider_id": None,
+        "batch_model_name": None,
+        "batch_binding_revision_id": None,
+        "batch_binding_hash": None,
+    })
+
+    receipt = await verify_milestone2_product(
+        ReceiptSession(rows),
+        expected_database=DATABASE,
+        require_l5=True,
+        expected_source_hash="c" * 64,
+    )
+
+    assert receipt["l5"]["batchId"] == BATCH_ID
+    assert receipt["l5"]["requestHash"] == "5" * 64
+    assert receipt["l5"]["attemptCount"] == 0
+    assert receipt["l5"]["attemptId"] is None
+
+
+@pytest.mark.asyncio
 async def test_require_l5_implies_assets_and_corpus_and_rejects_head_zero():
     from backend.scripts.verify_milestone2_product import verify_milestone2_product
 

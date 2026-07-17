@@ -463,6 +463,7 @@ async def _verify_counts(session, *, require_l5: bool) -> None:
     row = await session.fetchone(_LATER_COUNTS_SQL)
     _require(row is not None, "M2 later-domain counts are missing")
     expected = {key: 0 for key in row}
+    ranged: dict[str, tuple[int, int]] = {}
     if require_l5:
         expected.update({
             "story_engine_batches": 1, "story_engine_options": 3,
@@ -470,14 +471,22 @@ async def _verify_counts(session, *, require_l5: bool) -> None:
             "contract_confirmation_requests": 1,
             "creation_contract_engine_refs": 1,
             "style_contract_template_refs": 1,
-            "creation_contract_experience_refs": 1,
             "creation_contract_corpus_refs": 1,
         })
-    for key, value in expected.items():
+        ranged["creation_contract_experience_refs"] = (1, 4)
+    for key in row:
+        value = expected[key]
         actual = _integer(row, key)
         label = key.replace("canon", "Canon")
-        _require(actual == value,
-                 f"M2 closed mode count mismatch for {label}")
+        if key in ranged:
+            low, high = ranged[key]
+            _require(
+                low <= actual <= high,
+                f"M2 closed mode count mismatch for {label}",
+            )
+        else:
+            _require(actual == value,
+                     f"M2 closed mode count mismatch for {label}")
 
 
 def _asset_domain(row: Mapping[str, object], *, card: bool):
@@ -586,26 +595,49 @@ async def _verify_l5(
     row = await session.fetchone(_L5_SQL)
     _require(row is not None, "M2 L5 evidence is missing")
     _require(_integer(row, "batch_count") == 1,
-             "M2 L5 requires exactly one Provider batch")
-    _require(row.get("source_type") == "provider" and row.get("batch_status") == "succeeded",
-             "M2 L5 batch must be a succeeded Provider batch")
-    _require(isinstance(row.get("attempt_id"), str) and bool(row.get("attempt_id")),
-             "M2 L5 requires exactly one Provider attempt")
-    for key in ("request_hash", "raw_response_hash"):
-        _hash(row.get(key), f"M2 L5 {key}")
-    _require(row.get("batch_provider_id") == row.get("binding_provider_id")
-             and row.get("provider_enabled") == 1
+             "M2 L5 requires exactly one story-engine batch")
+    source_type = row.get("source_type")
+    _require(source_type in {"provider", "manual"}
+             and row.get("batch_status") == "succeeded",
+             "M2 L5 batch must be a succeeded Provider or manual batch")
+    _require(row.get("provider_enabled") == 1
              and row.get("provider_lifecycle") == "active"
              and row.get("provider_name") == row.get("binding_provider_name") == "联通云"
              and row.get("provider_model") == row.get("binding_model_name")
-             == row.get("batch_model_name") == "deepseek-v4-flash",
-             "M2 L5 must use active 联通云/deepseek-v4-flash")
+             == "deepseek-v4-flash",
+             "M2 L5 binding must use active 联通云/deepseek-v4-flash")
+    if source_type == "provider":
+        _require(isinstance(row.get("attempt_id"), str) and bool(row.get("attempt_id")),
+                 "M2 L5 requires exactly one Provider attempt")
+        for key in ("request_hash", "raw_response_hash"):
+            _hash(row.get(key), f"M2 L5 {key}")
+        _require(row.get("batch_provider_id") == row.get("binding_provider_id")
+                 and row.get("batch_model_name") == "deepseek-v4-flash",
+                 "M2 L5 Provider batch must match the active 联通云/deepseek-v4-flash binding")
+        attempt_count = 1
+    else:
+        _hash(row.get("request_hash"), "M2 L5 manual request_hash")
+        _require(row.get("attempt_id") is None
+                 and row.get("raw_response_hash") is None
+                 and row.get("batch_provider_id") is None
+                 and row.get("batch_model_name") is None,
+                 "M2 L5 manual batch must not carry Provider attempt evidence")
+        attempt_count = 0
     for actual, expected in (
         ("batch_seed_id", "selected_seed_id"),
         ("batch_seed_revision_id", "selected_seed_revision_id"),
         ("batch_seed_hash", "selected_seed_hash"),
+    ):
+        _require(row.get(actual) == foundation.get(expected),
+                 "M2 L5 seed refs mismatch")
+    if source_type == "provider":
+        for actual, expected in (
         ("batch_binding_revision_id", "binding_revision_id"),
         ("batch_binding_hash", "binding_hash"),
+        ):
+            _require(row.get(actual) == foundation.get(expected),
+                     "M2 L5 Provider batch binding refs mismatch")
+    for actual, expected in (
         ("creation_seed_id", "selected_seed_id"),
         ("creation_seed_revision_id", "selected_seed_revision_id"),
         ("creation_seed_hash", "selected_seed_hash"),
@@ -695,12 +727,14 @@ async def _verify_l5(
              "M2 L5 style ref mismatch")
     _require(_integer(style_rows[0], "sort_order") == 1,
              "M2 L5 style ref sort order mismatch")
-    _require(len(card_rows) == 1
-             and card_rows[0].get("asset_hash")
-             == card_rows[0].get("actual_asset_hash"),
+    _require(1 <= len(card_rows) <= 4,
              "M2 L5 experience-card ref mismatch")
-    _require(_integer(card_rows[0], "sort_order") == 1,
-             "M2 L5 experience-card ref sort order mismatch")
+    for expected_sort_order, card_row in enumerate(card_rows, start=1):
+        _require(card_row.get("asset_hash")
+                 == card_row.get("actual_asset_hash"),
+                 "M2 L5 experience-card ref mismatch")
+        _require(_integer(card_row, "sort_order") == expected_sort_order,
+                 "M2 L5 experience-card ref sort order mismatch")
     _require(
         len(corpus_rows) == 1
         and corpus_rows[0].get("corpus_source_id") == verified_corpus.get("sourceId")
@@ -768,7 +802,7 @@ async def _verify_l5(
     return {
         "batchId": row.get("batch_id"), "requestHash": row.get("request_hash"),
         "attemptId": row.get("attempt_id"), "rawResponseHash": row.get("raw_response_hash"),
-        "attemptCount": 1, "optionCount": 3, "options": public_options,
+        "attemptCount": attempt_count, "optionCount": 3, "options": public_options,
         "selectedEngineOptionId": row.get("selected_engine_option_id"),
         "contractRevision": 1, "creationContractId": row.get("creation_contract_id"),
         "styleContractId": row.get("style_contract_id"),
