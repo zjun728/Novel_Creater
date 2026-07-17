@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const SCANNER_PATH = 'scripts/scan-effective-legacy.mjs'
 const GATEWAY_PATH = 'tools/control-plane-qa/ai-proxy-gateway.mjs'
+const HEAD_PATHS = ['backend', 'frontend', 'scripts', 'tools', 'package.json']
 const EFFECTIVE_PREFIXES = ['backend/', 'frontend/', 'scripts/', 'tools/']
 const EXCLUDED_TEST_PATHS = [
   /^backend\/tests\//u,
@@ -15,6 +16,10 @@ const BLOCK_START = '// BEGIN RETIRED SHADOW PATTERNS'
 const BLOCK_END = '// END RETIRED SHADOW PATTERNS'
 const MAX_GIT_OUTPUT_BYTES = 6 * 1024 * 1024
 const DIAGNOSTIC_CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/gu
+const UNICODE_SIMPLE_FOLD_SUPPLEMENTS = new Map([
+  ['k', '\u212A'],
+  ['s', '\u017F'],
+])
 
 // BEGIN RETIRED SHADOW PATTERNS
 export const RETIRED_SHADOW_PATTERNS = Object.freeze([
@@ -67,10 +72,11 @@ export function runEffectiveLegacyCli(args = process.argv.slice(2), dependencies
 
   const rootDirectory = dependencies.rootDirectory ?? process.cwd()
   const spawnSyncImpl = dependencies.spawnSyncImpl ?? spawnSync
+  const usesDefaultListFiles = dependencies.listFiles == null
+  const usesDefaultReadContent = dependencies.readContent == null
   const listFiles = dependencies.listFiles ?? (() => (
     listHeadFiles(rootDirectory, spawnSyncImpl)
   ))
-  const usesDefaultReadContent = dependencies.readContent == null
   const verifiedHeadBlobs = new Set()
   const verifyHeadBlob = filePath => {
     if (verifiedHeadBlobs.has(filePath)) return
@@ -84,20 +90,24 @@ export function runEffectiveLegacyCli(args = process.argv.slice(2), dependencies
 
   let findings
   try {
-    const rawFiles = listFiles()
-    if (!Array.isArray(rawFiles)) throw new TypeError('file inventory must be an array')
-    const normalizedFiles = rawFiles.map(normalizeRepositoryPath)
-    if (usesDefaultReadContent) {
-      for (let index = 0; index < rawFiles.length; index += 1) {
-        if (rawFiles[index] !== normalizedFiles[index]) {
-          throw new Error('ambiguous tracked path')
+    if (usesDefaultListFiles && usesDefaultReadContent) {
+      findings = scanDefaultHead(rootDirectory, spawnSyncImpl)
+    } else {
+      const rawFiles = listFiles()
+      if (!Array.isArray(rawFiles)) throw new TypeError('file inventory must be an array')
+      const normalizedFiles = rawFiles.map(normalizeRepositoryPath)
+      if (usesDefaultReadContent) {
+        for (let index = 0; index < rawFiles.length; index += 1) {
+          if (rawFiles[index] !== normalizedFiles[index]) {
+            throw new Error('ambiguous tracked path')
+          }
+        }
+        for (const filePath of new Set(normalizedFiles)) {
+          if (isEffectivePath(filePath)) verifyHeadBlob(filePath)
         }
       }
-      for (const filePath of new Set(normalizedFiles)) {
-        if (isEffectivePath(filePath)) verifyHeadBlob(filePath)
-      }
+      findings = scanEffectiveLegacy({ files: normalizedFiles, readContent })
     }
-    findings = scanEffectiveLegacy({ files: normalizedFiles, readContent })
   } catch {
     stderr.write('Effective legacy scan failed.\n')
     return 2
@@ -200,35 +210,143 @@ function removeGatewayProtectiveEntries(source) {
   )).join('\n')
 }
 
+function scanDefaultHead(rootDirectory, spawnSyncImpl) {
+  const inventory = listHeadInventory(rootDirectory, spawnSyncImpl)
+  const rawFiles = inventory.map(entry => entry.path)
+  const normalizedFiles = rawFiles.map(normalizeRepositoryPath)
+  const inventoryPaths = new Set()
+
+  for (let index = 0; index < inventory.length; index += 1) {
+    const entry = inventory[index]
+    const filePath = normalizedFiles[index]
+    if (entry.path !== filePath) throw new Error('ambiguous tracked path')
+    if (inventoryPaths.has(filePath)) throw new Error('duplicate tracked path')
+    inventoryPaths.add(filePath)
+    if (isEffectivePath(filePath) && entry.type !== 'blob') {
+      throw new Error('git object is not a blob')
+    }
+  }
+
+  const candidates = new Set()
+  for (const rawCandidate of listHeadCandidates(rootDirectory, spawnSyncImpl)) {
+    const candidate = normalizeRepositoryPath(rawCandidate)
+    if (rawCandidate !== candidate) throw new Error('ambiguous tracked path')
+    if (!inventoryPaths.has(candidate)) throw new Error('unexpected grep path')
+    if (isEffectivePath(candidate)) candidates.add(candidate)
+  }
+  for (const protectivePath of [SCANNER_PATH, GATEWAY_PATH]) {
+    if (inventoryPaths.has(protectivePath)) candidates.add(protectivePath)
+  }
+
+  const contentCache = new Map()
+  const readContent = filePath => {
+    if (!candidates.has(filePath)) return ''
+    if (!contentCache.has(filePath)) {
+      contentCache.set(
+        filePath,
+        readHeadContent(rootDirectory, filePath, spawnSyncImpl),
+      )
+    }
+    return contentCache.get(filePath)
+  }
+  return scanEffectiveLegacy({ files: normalizedFiles, readContent })
+}
+
 function listHeadFiles(rootDirectory, spawnSyncImpl) {
-  return spawnGit(rootDirectory, [
-    'ls-tree', '-r', '-z', '--name-only', 'HEAD', '--',
-    'backend', 'frontend', 'scripts', 'tools', 'package.json',
-  ], spawnSyncImpl).split('\0').filter(value => value.length > 0)
+  return listHeadInventory(rootDirectory, spawnSyncImpl).map(entry => entry.path)
+}
+
+function listHeadInventory(rootDirectory, spawnSyncImpl) {
+  const result = spawnGit(rootDirectory, [
+    'ls-tree', '-r', '-z', 'HEAD', '--', ...HEAD_PATHS,
+  ], spawnSyncImpl)
+  return splitNulRecords(result.stdout).map(record => {
+    const match = /^([0-7]{6}) ([a-z]+) ((?:[0-9a-f]{40}|[0-9a-f]{64}))\t([\s\S]+)$/u
+      .exec(record)
+    if (!match) throw new Error('invalid ls-tree inventory')
+    return {
+      mode: match[1],
+      type: match[2],
+      object: match[3],
+      path: match[4],
+    }
+  })
+}
+
+function listHeadCandidates(rootDirectory, spawnSyncImpl) {
+  const candidatePatterns = new Set(RETIRED_SHADOW_PATTERNS.flatMap(item => (
+    gitFixedPatternVariants(item.code)
+  )))
+  const patternArguments = [...candidatePatterns].flatMap(pattern => ['-e', pattern])
+  const result = spawnGit(rootDirectory, [
+    'grep', '-z', '-l', '-i', '-F',
+    ...patternArguments,
+    'HEAD', '--', ...HEAD_PATHS,
+  ], spawnSyncImpl, [0, 1])
+  if (result.status === 1) {
+    if (result.stdout !== '') throw new Error('invalid grep result')
+    return []
+  }
+  return splitNulRecords(result.stdout).map(record => {
+    if (!record.startsWith('HEAD:') || record.length === 'HEAD:'.length) {
+      throw new Error('invalid grep path')
+    }
+    return record.slice('HEAD:'.length)
+  })
+}
+
+function gitFixedPatternVariants(value) {
+  let variants = ['']
+  for (const character of value) {
+    const alternatives = [character]
+    const supplement = UNICODE_SIMPLE_FOLD_SUPPLEMENTS.get(character.toLowerCase())
+    if (supplement) alternatives.push(supplement)
+    variants = variants.flatMap(prefix => (
+      alternatives.map(alternative => prefix + alternative)
+    ))
+  }
+  return variants
+}
+
+function splitNulRecords(output) {
+  if (typeof output !== 'string') throw new TypeError('git did not return text')
+  if (output === '') return []
+  if (!output.endsWith('\0')) throw new Error('unterminated Git output')
+  const records = output.slice(0, -1).split('\0')
+  if (records.some(record => record.length === 0)) {
+    throw new Error('empty Git output record')
+  }
+  return records
 }
 
 function assertHeadBlob(rootDirectory, filePath, spawnSyncImpl) {
-  const output = spawnGit(
+  const result = spawnGit(
     rootDirectory,
     ['cat-file', '-t', `HEAD:${filePath}`],
     spawnSyncImpl,
   )
-  if (output.trim() !== 'blob') throw new Error('git object is not a blob')
+  if (result.stdout.trim() !== 'blob') throw new Error('git object is not a blob')
 }
 
 function readHeadContent(rootDirectory, filePath, spawnSyncImpl) {
-  return spawnGit(rootDirectory, ['show', `HEAD:${filePath}`], spawnSyncImpl)
+  return spawnGit(
+    rootDirectory,
+    ['show', `HEAD:${filePath}`],
+    spawnSyncImpl,
+  ).stdout
 }
 
-function spawnGit(rootDirectory, args, spawnSyncImpl) {
+function spawnGit(rootDirectory, args, spawnSyncImpl, allowedStatuses = [0]) {
   const result = spawnSyncImpl('git', args, {
     cwd: rootDirectory,
     encoding: 'utf8',
     maxBuffer: MAX_GIT_OUTPUT_BYTES,
     shell: false,
   })
-  if (result.error || result.status !== 0) throw new Error('git command failed')
-  return result.stdout
+  if (result.error || !allowedStatuses.includes(result.status)) {
+    throw new Error('git command failed')
+  }
+  return result
 }
 
 function escapeDiagnosticPath(value) {

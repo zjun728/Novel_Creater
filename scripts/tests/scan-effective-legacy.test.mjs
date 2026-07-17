@@ -41,6 +41,16 @@ const gatewayDefinition = `const FORBIDDEN_NORMALIZED_KEYS = new Set([
 ])
 `
 
+const syntheticBlobId = '1'.repeat(40)
+
+function lsTreeRecord(filePath, {
+  mode = '100644',
+  object = syntheticBlobId,
+  type = 'blob',
+} = {}) {
+  return `${mode} ${type} ${object}\t${filePath}\0`
+}
+
 function runGit(cwd, args) {
   const result = spawnSync('git', args, {
     cwd,
@@ -393,15 +403,25 @@ test('a fully injected CLI accepts Windows paths and never touches Git', () => {
   assert.deepEqual(readPaths, ['backend/main.py'])
 })
 
-test('default Git commands use NUL inventory, blob preflight, committed content, and fixed options', () => {
+test('default Git orchestration batches inventory and skips safe noncandidate content', () => {
   const calls = []
   const result = captureCli({
     rootDirectory: 'synthetic-root',
     spawnSyncImpl(command, args, options) {
       calls.push({ command, args, options })
       if (args[0] === 'ls-tree') {
-        return { status: 0, stdout: 'backend/ leading.py\0backend/证据.py\0' }
+        if (args.includes('--name-only')) {
+          return { status: 0, stdout: 'backend/ leading.py\0backend/证据.py\0' }
+        }
+        return {
+          status: 0,
+          stdout: [
+            lsTreeRecord('backend/ leading.py'),
+            lsTreeRecord('backend/证据.py'),
+          ].join(''),
+        }
       }
+      if (args[0] === 'grep') return { status: 1, stdout: '' }
       if (args[0] === 'cat-file') return { status: 0, stdout: 'blob\n' }
       if (args[0] === 'show') return { status: 0, stdout: 'safe\n' }
       return { status: 1, stdout: '', stderr: 'unexpected private git detail' }
@@ -411,13 +431,19 @@ test('default Git commands use NUL inventory, blob preflight, committed content,
   assert.deepEqual(result, { status: 0, stderr: '', stdout: '' })
   assert.deepEqual(calls.map(call => call.args), [
     [
-      'ls-tree', '-r', '-z', '--name-only', 'HEAD', '--',
+      'ls-tree', '-r', '-z', 'HEAD', '--',
       'backend', 'frontend', 'scripts', 'tools', 'package.json',
     ],
-    ['cat-file', '-t', 'HEAD:backend/ leading.py'],
-    ['cat-file', '-t', 'HEAD:backend/证据.py'],
-    ['show', 'HEAD:backend/ leading.py'],
-    ['show', 'HEAD:backend/证据.py'],
+    [
+      'grep', '-z', '-l', '-i', '-F',
+      '-e', 'phase-e',
+      '-e', 'pha\u017Fe-e',
+      '-e', 'e.23',
+      '-e', 'applyAdapter',
+      '-e', 'providerAdapter',
+      'HEAD', '--',
+      'backend', 'frontend', 'scripts', 'tools', 'package.json',
+    ],
   ])
   for (const call of calls) {
     assert.equal(call.command, 'git')
@@ -426,6 +452,190 @@ test('default Git commands use NUL inventory, blob preflight, committed content,
     assert.equal(call.options.maxBuffer, 6 * 1024 * 1024)
     assert.equal(call.options.shell, false)
   }
+})
+
+test('default clean orchestration uses a small constant number of Git processes', () => {
+  const files = Array.from({ length: 40 }, (_value, index) => (
+    `backend/safe-${index}.py`
+  ))
+  const calls = []
+  const result = captureCli({
+    rootDirectory: 'synthetic-root',
+    spawnSyncImpl(_command, args) {
+      calls.push(args)
+      if (args[0] === 'ls-tree') {
+        if (args.includes('--name-only')) {
+          return { status: 0, stdout: files.join('\0') + '\0' }
+        }
+        return {
+          status: 0,
+          stdout: files.map(filePath => lsTreeRecord(filePath)).join(''),
+        }
+      }
+      if (args[0] === 'grep') return { status: 1, stdout: '' }
+      if (args[0] === 'cat-file') return { status: 0, stdout: 'blob\n' }
+      if (args[0] === 'show') return { status: 0, stdout: 'safe\n' }
+      return { status: 2, stdout: '', stderr: 'PRIVATE_GIT_DETAIL' }
+    },
+  })
+
+  assert.deepEqual(result, { status: 0, stderr: '', stdout: '' })
+  assert.ok(calls.length <= 5, `expected at most 5 Git processes, received ${calls.length}`)
+  assert.equal(calls.some(args => args[0] === 'cat-file'), false)
+  assert.equal(calls.some(args => args[0] === 'show'), false)
+})
+
+test('default candidate grep is NUL-safe and reads only effective matching blobs', () => {
+  const files = [
+    'backend/safe.py',
+    'backend/ leading.py',
+    'backend/证据.py',
+    'backend/tests/excluded.py',
+  ]
+  const calls = []
+  const result = captureCli({
+    rootDirectory: 'synthetic-root',
+    spawnSyncImpl(_command, args) {
+      calls.push(args)
+      if (args[0] === 'ls-tree') {
+        if (args.includes('--name-only')) {
+          return { status: 0, stdout: files.join('\0') + '\0' }
+        }
+        return {
+          status: 0,
+          stdout: files.map(filePath => lsTreeRecord(filePath)).join(''),
+        }
+      }
+      if (args[0] === 'grep') {
+        return {
+          status: 0,
+          stdout: [
+            'HEAD:backend/ leading.py\0',
+            'HEAD:backend/证据.py\0',
+            'HEAD:backend/tests/excluded.py\0',
+          ].join(''),
+        }
+      }
+      if (args[0] === 'cat-file') return { status: 0, stdout: 'blob\n' }
+      if (args[0] === 'show') {
+        const filePath = args[1].slice('HEAD:'.length)
+        const source = filePath === 'backend/ leading.py'
+          ? "value = 'E.23'\n"
+          : filePath === 'backend/证据.py'
+            ? 'providerAdapter = True\n'
+            : 'safe\n'
+        return { status: 0, stdout: source }
+      }
+      return { status: 2, stdout: '', stderr: 'PRIVATE_GIT_DETAIL' }
+    },
+  })
+
+  assert.deepEqual(result, {
+    status: 1,
+    stderr: '',
+    stdout: [
+      'backend/ leading.py: retired shadow reference\n',
+      'backend/证据.py: retired shadow reference\n',
+    ].join(''),
+  })
+  assert.deepEqual(calls.filter(args => args[0] === 'show'), [
+    ['show', 'HEAD:backend/ leading.py'],
+    ['show', 'HEAD:backend/证据.py'],
+  ])
+})
+
+test('default orchestration reads the scanner even when grep finds no retired term', () => {
+  const calls = []
+  const result = captureCli({
+    rootDirectory: 'synthetic-root',
+    spawnSyncImpl(_command, args) {
+      calls.push(args)
+      if (args[0] === 'ls-tree') {
+        if (args.includes('--name-only')) {
+          return { status: 0, stdout: 'scripts/scan-effective-legacy.mjs\0' }
+        }
+        return {
+          status: 0,
+          stdout: lsTreeRecord('scripts/scan-effective-legacy.mjs'),
+        }
+      }
+      if (args[0] === 'grep') return { status: 1, stdout: '' }
+      if (args[0] === 'cat-file') return { status: 0, stdout: 'blob\n' }
+      if (args[0] === 'show') return { status: 0, stdout: 'export const safe = true\n' }
+      return { status: 2, stdout: '', stderr: 'PRIVATE_GIT_DETAIL' }
+    },
+  })
+
+  assert.deepEqual(result, {
+    status: 2,
+    stderr: 'Effective legacy scan failed.\n',
+    stdout: '',
+  })
+  assert.deepEqual(calls.filter(args => args[0] === 'show'), [
+    ['show', 'HEAD:scripts/scan-effective-legacy.mjs'],
+  ])
+})
+
+test('default orchestration reads the gateway even when grep finds no retired term', () => {
+  const calls = []
+  const result = captureCli({
+    rootDirectory: 'synthetic-root',
+    spawnSyncImpl(_command, args) {
+      calls.push(args)
+      if (args[0] === 'ls-tree') {
+        if (args.includes('--name-only')) {
+          return {
+            status: 0,
+            stdout: 'tools/control-plane-qa/ai-proxy-gateway.mjs\0',
+          }
+        }
+        return {
+          status: 0,
+          stdout: lsTreeRecord('tools/control-plane-qa/ai-proxy-gateway.mjs'),
+        }
+      }
+      if (args[0] === 'grep') return { status: 1, stdout: '' }
+      if (args[0] === 'cat-file') return { status: 0, stdout: 'blob\n' }
+      if (args[0] === 'show') return { status: 0, stdout: 'export const safe = true\n' }
+      return { status: 2, stdout: '', stderr: 'PRIVATE_GIT_DETAIL' }
+    },
+  })
+
+  assert.deepEqual(result, {
+    status: 1,
+    stderr: '',
+    stdout: 'tools/control-plane-qa/ai-proxy-gateway.mjs: retired shadow reference\n',
+  })
+  assert.deepEqual(calls.filter(args => args[0] === 'show'), [
+    ['show', 'HEAD:tools/control-plane-qa/ai-proxy-gateway.mjs'],
+  ])
+})
+
+test('default orchestration treats grep status above one as a redacted failure', () => {
+  const result = captureCli({
+    rootDirectory: 'synthetic-root',
+    spawnSyncImpl(_command, args) {
+      if (args[0] === 'ls-tree') {
+        if (args.includes('--name-only')) {
+          return { status: 0, stdout: 'backend/safe.py\0' }
+        }
+        return { status: 0, stdout: lsTreeRecord('backend/safe.py') }
+      }
+      if (args[0] === 'grep') {
+        return { status: 2, stdout: '', stderr: 'PRIVATE_GREP_FAILURE' }
+      }
+      if (args[0] === 'cat-file') return { status: 0, stdout: 'blob\n' }
+      if (args[0] === 'show') return { status: 0, stdout: 'safe\n' }
+      return { status: 2, stdout: '', stderr: 'PRIVATE_GIT_DETAIL' }
+    },
+  })
+
+  assert.deepEqual(result, {
+    status: 2,
+    stderr: 'Effective legacy scan failed.\n',
+    stdout: '',
+  })
+  assert.equal((result.stdout + result.stderr).includes('PRIVATE_GREP_FAILURE'), false)
 })
 
 test('default Git reader rejects a raw path alias before object reads', () => {
@@ -472,7 +682,7 @@ test('default Git reader preflights each effective normalized blob only once', (
   ])
 })
 
-test('real committed HEAD effective scan is clean before the scanner is committed', () => {
+test('real committed HEAD effective scan is clean', () => {
   const result = runScanner(repositoryRoot)
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.equal(result.stdout, '')
@@ -504,6 +714,25 @@ test('effective legacy CLI reads a large committed HEAD source rather than dirty
   )
   assert.equal(committedResult.stderr, '')
   assert.doesNotMatch(committedResult.stdout, /applyAdapter/u)
+})
+
+test('default committed scan preserves JavaScript Unicode simple-fold matching', t => {
+  const rootDirectory = createTemporaryGitRepository(t)
+  const filePath = 'backend/unicode-fold.py'
+  const unicodeFoldReference = 'pha\u017Fe-e = True\n'
+  assert.equal(RETIRED_SHADOW_PATTERNS[0].pattern.test(unicodeFoldReference), true)
+  commitRepositoryFile(
+    rootDirectory,
+    filePath,
+    unicodeFoldReference,
+    'Unicode fold reference',
+  )
+
+  const result = runScanner(rootDirectory)
+  assert.equal(result.status, 1, result.stderr)
+  assert.equal(result.stdout, `${filePath}: retired shadow reference\n`)
+  assert.equal(result.stderr, '')
+  assert.equal(result.stdout.includes(unicodeFoldReference.trim()), false)
 })
 
 test('default inventory preserves Unicode and leading-space effective paths', t => {
