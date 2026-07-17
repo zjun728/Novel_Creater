@@ -374,13 +374,19 @@ async def _verify_foundation(
              and row.get("selected_revision_hash") == selected.get("content_hash")
              and _integer(row, "selection_revision") == 1,
              "M2 selected seed must be 典镇山河 at revision 1")
-    _require(_integer(row, "provider_count") == 2, "M2 requires exactly two Providers")
+    provider_count = _integer(row, "provider_count")
+    _require(provider_count > 0, "M2 Provider count must be positive")
     providers = await session.fetchall(_PROVIDERS_SQL)
-    _require(len(providers) == 2, "M2 requires exactly two Provider rows")
+    _require(
+        len(providers) == provider_count,
+        "M2 Provider row count must match the foundation count",
+    )
+    provider_ids = set()
+    provider_names = set()
     for provider in providers:
         _require(
             all(
-                isinstance(provider.get(key), str) and bool(provider.get(key))
+                type(provider.get(key)) is str and bool(provider.get(key))
                 for key in ("id", "name", "model_name")
             )
             and type(provider.get("enabled")) is int
@@ -389,6 +395,16 @@ async def _verify_foundation(
             and provider.get("deleted_at") is None,
             "M2 Provider rows must all be active and non-deleted",
         )
+        provider_ids.add(provider["id"])
+        provider_names.add(provider["name"])
+    _require(
+        len(provider_ids) == provider_count,
+        "M2 Provider ids must be unique",
+    )
+    _require(
+        len(provider_names) == provider_count,
+        "M2 Provider names must be unique",
+    )
     item_rows = await session.fetchall(_BINDING_ITEMS_SQL, (row.get("binding_revision_id"),))
     try:
         items = tuple(BindingItem.model_validate({key: item.get(key) for key in (
@@ -848,7 +864,12 @@ class _ConnectionSession:
 
 async def _default_connection(config: Mapping[str, object]):
     import aiomysql
-    return _ConnectionSession(await aiomysql.connect(**config))
+    connection_config = {
+        key: config[key]
+        for key in ("host", "port", "user", "password", "db", "charset", "autocommit")
+        if key in config
+    }
+    return _ConnectionSession(await aiomysql.connect(**connection_config))
 
 
 def _parser() -> argparse.ArgumentParser:

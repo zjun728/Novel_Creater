@@ -1,4 +1,6 @@
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -30,6 +32,59 @@ STYLE_ASSET_ID = "00000000-0000-0000-0000-000000000061"
 CARD_ASSET_ID = "00000000-0000-0000-0000-000000000062"
 CORPUS_SOURCE_ID = "00000000-0000-0000-0000-000000000051"
 DATABASE = "m2_test_database"
+
+
+class NonExactString(str):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_default_connection_passes_only_single_connection_kwargs_and_closes(
+    monkeypatch, capsys,
+):
+    from backend.scripts.verify_milestone2_product import _default_connection
+
+    captured = {}
+
+    class FakeConnection:
+        def __init__(self):
+            self.closed = False
+
+        async def ensure_closed(self):
+            self.closed = True
+
+    raw = FakeConnection()
+
+    async def connect(**kwargs):
+        captured.update(kwargs)
+        return raw
+
+    monkeypatch.setitem(sys.modules, "aiomysql", SimpleNamespace(connect=connect))
+    session = await _default_connection({
+        "host": "db.internal",
+        "port": 3307,
+        "user": "writer",
+        "password": "secret",
+        "db": DATABASE,
+        "charset": "utf8mb4",
+        "autocommit": True,
+        "minsize": 1,
+        "maxsize": 10,
+        "unknown_option": "must-not-leak",
+    })
+    await session.close()
+
+    assert captured == {
+        "host": "db.internal",
+        "port": 3307,
+        "user": "writer",
+        "password": "secret",
+        "db": DATABASE,
+        "charset": "utf8mb4",
+        "autocommit": True,
+    }
+    assert raw.closed is True
+    assert capsys.readouterr() == ("", "")
 
 
 class ReceiptSession:
@@ -134,7 +189,7 @@ def base_rows():
             "selected_seed_hash": seed_rows[-1]["content_hash"],
             "selected_revision_hash": seed_rows[-1]["content_hash"],
             "selection_revision": 1,
-            "provider_count": 2,
+            "provider_count": 9,
             "binding_revision_id": BINDING_REVISION_ID,
             "binding_revision": 1,
             "binding_hash": binding_hash,
@@ -167,14 +222,14 @@ def base_rows():
                 "lifecycle_status": "active",
                 "deleted_at": None,
             },
-            {
-                "id": "00000000-0000-0000-0000-000000000023",
-                "name": "备用模型",
-                "model_name": "fallback-model",
+            *({
+                "id": f"00000000-0000-0000-0000-{index:012d}",
+                "name": f"备用模型{index}",
+                "model_name": f"fallback-model-{index}",
                 "enabled": 0,
                 "lifecycle_status": "active",
                 "deleted_at": None,
-            },
+            } for index in range(23, 31)),
         ],
         "binding_items": [
             {
@@ -461,7 +516,7 @@ async def test_base_receipt_is_select_only_bounded_and_requires_fresh_head_zero(
         "seedCount": 3,
         "selectedSeedId": SEED_ID,
         "selectedSeedTitle": "典镇山河",
-        "providerCount": 2,
+        "providerCount": 9,
         "bindingRevision": 1,
         "contractRevision": 0,
         "canonRevision": 0,
@@ -791,15 +846,76 @@ async def test_verifier_requires_exact_explicit_database_identity():
         )
 
 
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        (
+            lambda rows: rows["foundation"].update(provider_count=0),
+            "Provider count must be positive",
+        ),
+        (
+            lambda rows: rows["foundation"].update(provider_count=True),
+            "field provider_count must be an integer",
+        ),
+        (
+            lambda rows: rows["providers"].pop(),
+            "Provider row count must match the foundation count",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(id=rows["providers"][0]["id"]),
+            "Provider ids must be unique",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(name=rows["providers"][0]["name"]),
+            "Provider names must be unique",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(
+                lifecycle_status="deleted", deleted_at=123
+            ),
+            "Provider rows must all be active",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(lifecycle_status="disabled"),
+            "Provider rows must all be active",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(deleted_at=123),
+            "Provider rows must all be active",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(id=""),
+            "Provider rows must all be active",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(
+                name=NonExactString("备用模型")
+            ),
+            "Provider rows must all be active",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(
+                model_name=NonExactString("fallback-model")
+            ),
+            "Provider rows must all be active",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(enabled=True),
+            "Provider rows must all be active",
+        ),
+        (
+            lambda rows: rows["providers"][1].update(enabled=2),
+            "Provider rows must all be active",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_verifier_requires_exactly_two_active_non_deleted_provider_rows():
+async def test_verifier_fails_closed_on_invalid_provider_inventory(mutation, match):
     from backend.scripts.verify_milestone2_product import verify_milestone2_product
 
     rows = base_rows()
-    rows["providers"][1].update(
-        lifecycle_status="deleted", deleted_at=123, enabled=0
-    )
-    with pytest.raises(RuntimeError, match="Provider.*active"):
+    mutation(rows)
+    with pytest.raises(RuntimeError, match=match):
         await verify_milestone2_product(
             ReceiptSession(rows), expected_database=DATABASE
         )
