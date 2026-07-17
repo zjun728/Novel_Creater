@@ -525,3 +525,71 @@ test('artifact scanner CLI preserves a safe top-level path with a leading space'
   assert.equal(result.stdout, '')
   assert.equal(result.stderr, '')
 })
+
+test('artifact scanner CLI preflights a raw-extension gitlink before policy findings', t => {
+  const { baseline, rootDirectory } = createTemporaryGitRepository(t)
+  const referencedCommit = runGit(rootDirectory, ['rev-parse', 'HEAD'])
+  runGit(rootDirectory, [
+    'update-index',
+    '--add',
+    '--cacheinfo',
+    `160000,${referencedCommit},evidence/reference.txt`,
+  ])
+  runGit(rootDirectory, ['commit', '-m', 'add raw-extension gitlink'])
+
+  const result = runScanner(rootDirectory, baseline)
+
+  assert.equal(result.status, 2, result.stderr || result.stdout)
+  assert.equal(result.stdout, '')
+  assert.equal(result.stderr, 'M2 artifact scan failed.\n')
+  assert.equal((result.stdout + result.stderr).includes(referencedCommit), false)
+})
+
+test('artifact scanner CLI preflights a gitlink before an injected oversized finding', t => {
+  const { rootDirectory } = createTemporaryGitRepository(t)
+  const filePath = 'artifacts/reference'
+  const referencedCommit = runGit(rootDirectory, ['rev-parse', 'HEAD'])
+  runGit(rootDirectory, [
+    'update-index',
+    '--add',
+    '--cacheinfo',
+    `160000,${referencedCommit},${filePath}`,
+  ])
+  runGit(rootDirectory, ['commit', '-m', 'add oversized gitlink'])
+  let stdout = ''
+  let stderr = ''
+
+  const status = runArtifactScannerCli(['--base', 'baseline'], {
+    getSize: () => MAX_ARTIFACT_BYTES + 1,
+    listChangedFiles: () => [filePath],
+    rootDirectory,
+    stderr: { write(chunk) { stderr += chunk } },
+    stdout: { write(chunk) { stdout += chunk } },
+  })
+
+  assert.equal(status, 2)
+  assert.equal(stdout, '')
+  assert.equal(stderr, 'M2 artifact scan failed.\n')
+  assert.equal((stdout + stderr).includes(referencedCommit), false)
+})
+
+test('artifact scanner CLI with fully injected readers never touches an invalid Git root', () => {
+  let stdout = ''
+  let stderr = ''
+
+  const status = runArtifactScannerCli(['--base', 'baseline'], {
+    getSize: () => 2,
+    listChangedFiles: () => ['evidence/receipt.json'],
+    readContent: () => '{}',
+    rootDirectory: path.join(
+      tmpdir(),
+      `missing-artifact-scanner-root-${process.pid}-${Date.now()}`,
+    ),
+    stderr: { write(chunk) { stderr += chunk } },
+    stdout: { write(chunk) { stdout += chunk } },
+  })
+
+  assert.equal(status, 0)
+  assert.equal(stdout, '')
+  assert.equal(stderr, '')
+})

@@ -118,6 +118,8 @@ export function runArtifactScannerCli(args = process.argv.slice(2), dependencies
   const listChangedFiles = dependencies.listChangedFiles ?? (requestedBase => (
     listNewGitFiles(rootDirectory, requestedBase)
   ))
+  const usesDefaultReadContent = dependencies.readContent == null
+  const usesDefaultGetSize = dependencies.getSize == null
   const verifiedHeadBlobs = new Set()
   const verifyHeadBlob = filePath => {
     if (verifiedHeadBlobs.has(filePath)) return
@@ -135,8 +137,12 @@ export function runArtifactScannerCli(args = process.argv.slice(2), dependencies
 
   let findings
   try {
+    const changedFiles = listChangedFiles(base).map(normalizeRepositoryPath)
+    if (usesDefaultReadContent || usesDefaultGetSize) {
+      for (const filePath of changedFiles) verifyHeadBlob(filePath)
+    }
     findings = scanM2Artifacts({
-      changedFiles: listChangedFiles(base),
+      changedFiles,
       getSize,
       readContent,
     })
