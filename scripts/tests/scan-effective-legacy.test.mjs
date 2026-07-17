@@ -134,18 +134,19 @@ function countOccurrences(source, fragment) {
 }
 
 function assertFormalAcceptancePlanContract(source) {
+  const normalizedSource = source.replaceAll('\r\n', '\n')
   assert.equal(
-    countOccurrences(source, expectedFormalGateBlock),
+    countOccurrences(normalizedSource, expectedFormalGateBlock),
     1,
     'formal acceptance plan must contain exactly one approved gate block',
   )
   assert.equal(
-    countOccurrences(source, expectedFormalAmendmentParagraph),
+    countOccurrences(normalizedSource, expectedFormalAmendmentParagraph),
     1,
     'formal acceptance plan must contain exactly one baseline amendment paragraph',
   )
   assert.doesNotMatch(
-    source,
+    normalizedSource,
     rawLegacyAssignmentPattern,
     'formal acceptance plan must not contain a raw legacy diff assignment',
   )
@@ -162,6 +163,17 @@ test('formal acceptance plans use the frozen baseline and typed repository gates
       assertFormalAcceptancePlanContract(source)
     })
   }
+})
+
+test('formal acceptance plan contract accepts CRLF line endings', () => {
+  const validSource = [
+    expectedFormalGateBlock,
+    expectedFormalAmendmentParagraph,
+  ].join('\n\n')
+
+  assert.doesNotThrow(
+    () => assertFormalAcceptancePlanContract(validSource.replaceAll('\n', '\r\n')),
+  )
 })
 
 test('formal acceptance plan contract rejects a swapped baseline assignment', () => {
@@ -474,6 +486,22 @@ test('CLI findings contain only escaped paths and the stable reason', () => {
   })
 })
 
+test('CLI findings escape injected C1 controls without leaking raw diagnostics', () => {
+  const filePath = 'backend/csi\u009B-phase-e.py'
+  const result = captureCli({
+    listFiles: () => [filePath],
+    readContent: () => assert.fail('path findings do not need content'),
+  })
+
+  assert.deepEqual(result, {
+    status: 1,
+    stderr: '',
+    stdout: 'backend/csi\\u009b-phase-e.py: retired shadow reference\n',
+  })
+  assert.equal(result.stdout.split('\n').length, 2)
+  assert.equal(result.stdout.includes('\u009B'), false)
+})
+
 test('a fully injected CLI accepts Windows paths and never touches Git', () => {
   const missingRoot = path.join(
     os.tmpdir(),
@@ -501,9 +529,6 @@ test('default Git orchestration batches inventory and skips safe noncandidate co
     spawnSyncImpl(command, args, options) {
       calls.push({ command, args, options })
       if (args[0] === 'ls-tree') {
-        if (args.includes('--name-only')) {
-          return { status: 0, stdout: 'backend/ leading.py\0backend/证据.py\0' }
-        }
         return {
           status: 0,
           stdout: [
@@ -555,9 +580,6 @@ test('default clean orchestration uses a small constant number of Git processes'
     spawnSyncImpl(_command, args) {
       calls.push(args)
       if (args[0] === 'ls-tree') {
-        if (args.includes('--name-only')) {
-          return { status: 0, stdout: files.join('\0') + '\0' }
-        }
         return {
           status: 0,
           stdout: files.map(filePath => lsTreeRecord(filePath)).join(''),
@@ -589,9 +611,6 @@ test('default candidate grep is NUL-safe and reads only effective matching blobs
     spawnSyncImpl(_command, args) {
       calls.push(args)
       if (args[0] === 'ls-tree') {
-        if (args.includes('--name-only')) {
-          return { status: 0, stdout: files.join('\0') + '\0' }
-        }
         return {
           status: 0,
           stdout: files.map(filePath => lsTreeRecord(filePath)).join(''),
@@ -642,9 +661,6 @@ test('default orchestration reads the scanner even when grep finds no retired te
     spawnSyncImpl(_command, args) {
       calls.push(args)
       if (args[0] === 'ls-tree') {
-        if (args.includes('--name-only')) {
-          return { status: 0, stdout: 'scripts/scan-effective-legacy.mjs\0' }
-        }
         return {
           status: 0,
           stdout: lsTreeRecord('scripts/scan-effective-legacy.mjs'),
@@ -674,12 +690,6 @@ test('default orchestration reads the gateway even when grep finds no retired te
     spawnSyncImpl(_command, args) {
       calls.push(args)
       if (args[0] === 'ls-tree') {
-        if (args.includes('--name-only')) {
-          return {
-            status: 0,
-            stdout: 'tools/control-plane-qa/ai-proxy-gateway.mjs\0',
-          }
-        }
         return {
           status: 0,
           stdout: lsTreeRecord('tools/control-plane-qa/ai-proxy-gateway.mjs'),
@@ -707,9 +717,6 @@ test('default orchestration treats grep status above one as a redacted failure',
     rootDirectory: 'synthetic-root',
     spawnSyncImpl(_command, args) {
       if (args[0] === 'ls-tree') {
-        if (args.includes('--name-only')) {
-          return { status: 0, stdout: 'backend/safe.py\0' }
-        }
         return { status: 0, stdout: lsTreeRecord('backend/safe.py') }
       }
       if (args[0] === 'grep') {

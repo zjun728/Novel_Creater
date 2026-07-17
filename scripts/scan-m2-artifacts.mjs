@@ -30,7 +30,7 @@ const PRIVATE_SENTINELS = [
   ['C:', '/private/corpus-root-must-not-leak'].join(''),
 ]
 const PRIVATE_DSN = /\b(?:mysql(?:\+[a-z0-9_-]+)?|postgres(?:ql)?):\/\/[^\s'"\x60]+/iu
-const DIAGNOSTIC_CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/gu
+const DIAGNOSTIC_CONTROL_CHARACTER = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/gu
 const LARGE_TEXT_MINIMUM = 20_000
 const LARGE_CJK_MINIMUM = 1_000
 const LARGE_WORD_MINIMUM = 3_000

@@ -663,3 +663,24 @@ test('artifact scanner CLI escapes control characters in finding paths', () => {
   assert.equal(stderr, '')
   assert.equal(stdout.includes(filePath), false)
 })
+
+test('artifact scanner CLI escapes injected C1 controls in finding paths', () => {
+  const filePath = 'evidence/csi\u009B.json'
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  let stdout = ''
+  let stderr = ''
+
+  const status = runArtifactScannerCli(['--base', 'baseline'], {
+    getSize: () => syntheticSentinel.length,
+    listChangedFiles: () => [filePath],
+    readContent: () => syntheticSentinel,
+    stderr: { write(chunk) { stderr += chunk } },
+    stdout: { write(chunk) { stdout += chunk } },
+  })
+
+  assert.equal(status, 1)
+  assert.equal(stdout, 'evidence/csi\\u009b.json: private sentinel content\n')
+  assert.equal(stdout.split('\n').length, 2)
+  assert.equal(stdout.includes('\u009B'), false)
+  assert.equal(stderr, '')
+})
