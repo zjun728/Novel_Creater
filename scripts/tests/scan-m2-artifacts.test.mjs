@@ -4,19 +4,62 @@ import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import {
+import * as artifactScanner from '../scan-m2-artifacts.mjs'
+
+const {
   REVIEWED_ASSET_JSON_ALLOWLIST,
   runArtifactScannerCli,
   scanM2Artifacts,
-} from '../scan-m2-artifacts.mjs'
+} = artifactScanner
 
 const scriptsDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const scannerPath = path.join(scriptsDirectory, 'scan-m2-artifacts.mjs')
 
-test('artifact scanner rejects every baseline-new raw novel extension case-insensitively', () => {
+test('artifact classifier exports the M2 requirements lock and assigns repository roles', () => {
+  assert.equal(artifactScanner.M2_REQUIREMENTS_LOCK, 'backend/requirements-m2.lock.txt')
+  assert.equal(typeof artifactScanner.classifyM2ArtifactPath, 'function')
+
+  for (const filePath of REVIEWED_ASSET_JSON_ALLOWLIST) {
+    assert.equal(artifactScanner.classifyM2ArtifactPath(filePath), 'reviewed-asset')
+  }
+
+  const implementationDefinitions = [
+    artifactScanner.M2_REQUIREMENTS_LOCK,
+    'backend/app.py',
+    'frontend/src/app.vue',
+    'scripts/check.mjs',
+    'tools/check.ts',
+    'tools/control-plane-qa/fixtures/rfc8785-restricted-vectors.json',
+    '.gitattributes',
+    'docs/superpowers/specs/m2-contract.md',
+    'docs/superpowers/plans/nested/m2-plan.md',
+  ]
+  for (const filePath of implementationDefinitions) {
+    assert.equal(
+      artifactScanner.classifyM2ArtifactPath(filePath),
+      'implementation-definition',
+      filePath,
+    )
+  }
+
+  const strictArtifacts = [
+    'backend/assets/source-looking.py',
+    'docs/development/source-looking.ts',
+    'backend/evidence/source-looking.py',
+    'frontend/output/source-looking.mjs',
+    'scripts/artifacts/source-looking.ts',
+    'notes/story.md',
+  ]
+  for (const filePath of strictArtifacts) {
+    assert.equal(artifactScanner.classifyM2ArtifactPath(filePath), 'strict-artifact', filePath)
+  }
+})
+
+test('artifact scanner accepts only the exact requirements lock among raw text extensions', () => {
   const changedFiles = [
     'evidence/chapter.txt',
     'evidence/chapter.TXT',
+    'backend/requirements-m2.lock.TXT',
     'evidence/book.epub',
     'evidence/book.MOBI',
   ]
@@ -25,6 +68,60 @@ test('artifact scanner rejects every baseline-new raw novel extension case-insen
   assert.equal(findings.length, changedFiles.length)
   assert.deepEqual(findings.map(finding => finding.path), changedFiles)
   assert.ok(findings.every(finding => finding.reason === 'forbidden raw source extension'))
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles: [artifactScanner.M2_REQUIREMENTS_LOCK],
+    readContent: () => ['browser', 'secret', 'must', 'not', 'leak'].join('-'),
+  }), [])
+})
+
+test('artifact scanner rejects epub and mobi files for every repository role', () => {
+  const changedFiles = [
+    'backend/book.epub',
+    'frontend/book.MOBI',
+  ]
+  const findings = scanM2Artifacts({ changedFiles, readContent: () => '' })
+
+  assert.equal(findings.length, changedFiles.length)
+  assert.deepEqual(findings.map(finding => finding.path), changedFiles)
+  assert.ok(findings.every(finding => finding.reason === 'forbidden raw source extension'))
+})
+
+test('artifact scanner skips sentinel and large-prose checks for implementation definitions', () => {
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  const largeProse = '这是一段完全合成的测试故事。'.repeat(2500)
+  const changedFiles = [
+    'backend/app.py',
+    'frontend/e2e/acceptance.mjs',
+    'scripts/tests/scanner.test.mjs',
+    'docs/superpowers/specs/m2-contract.md',
+    'tools/control-plane-qa/fixtures/rfc8785-restricted-vectors.json',
+    '.gitattributes',
+  ]
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles,
+    readContent: () => `${syntheticSentinel}\n${largeProse}`,
+  }), [])
+})
+
+test('artifact scanner keeps strict paths strict before source-looking extension rules', () => {
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  const changedFiles = [
+    'backend/assets/source-looking.py',
+    'docs/development/source-looking.ts',
+    'backend/evidence/source-looking.py',
+    'frontend/output/source-looking.mjs',
+    'scripts/artifacts/source-looking.ts',
+  ]
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles,
+    readContent: () => syntheticSentinel,
+  }), changedFiles.map(filePath => ({
+    path: filePath,
+    reason: 'private sentinel content',
+  })))
 })
 
 test('artifact scanner rejects fixed secret, provider URL, DSN, and absolute-root sentinels', () => {
@@ -68,6 +165,56 @@ test('artifact scanner rejects large source-like text outside reviewed asset JSO
     changedFiles: [allowedPath],
     readContent: () => novelLikeText,
   }), [])
+})
+
+test('artifact scanner rejects sentinels in reviewed assets and prose in unreviewed assets', () => {
+  const allowedPath = [...REVIEWED_ASSET_JSON_ALLOWLIST][0]
+  const unreviewedPath = 'backend/assets/unreviewed.json'
+  const syntheticSentinel = ['browser', 'secret', 'must', 'not', 'leak'].join('-')
+  const largeProse = '这是一段完全合成的测试故事。'.repeat(2500)
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles: [allowedPath],
+    readContent: () => syntheticSentinel,
+  }), [{ path: allowedPath, reason: 'private sentinel content' }])
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles: [unreviewedPath],
+    readContent: () => largeProse,
+  }), [{
+    path: unreviewedPath,
+    reason: 'large source-like text outside reviewed assets',
+  }])
+})
+
+test('artifact scanner rejects large prose at unknown textual paths', () => {
+  const filePath = 'notes/generated-story.md'
+  const largeProse = 'synthetic narrative words '.repeat(3500)
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles: [filePath],
+    readContent: () => largeProse,
+  }), [{
+    path: filePath,
+    reason: 'large source-like text outside reviewed assets',
+  }])
+})
+
+test('artifact scanner applies size limits to every repository role', () => {
+  const changedFiles = [
+    [...REVIEWED_ASSET_JSON_ALLOWLIST][0],
+    'backend/app.py',
+    'notes/generated-story.md',
+  ]
+
+  assert.deepEqual(scanM2Artifacts({
+    changedFiles,
+    getSize: () => 6 * 1024 * 1024,
+    readContent: () => assert.fail('oversized content must not be read'),
+  }), changedFiles.map(filePath => ({
+    path: filePath,
+    reason: 'oversized artifact',
+  })))
 })
 
 test('artifact scanner accepts ordinary source and metadata changes', () => {

@@ -8,11 +8,19 @@ export const REVIEWED_ASSET_JSON_ALLOWLIST = new Set([
   'backend/assets/writer-core-v1.1.0/style_templates.json',
   'backend/assets/writer-core-v1.1.0/experience_cards.json',
 ])
+export const M2_REQUIREMENTS_LOCK = 'backend/requirements-m2.lock.txt'
 
 export const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
 export const MAX_TOTAL_ARTIFACT_BYTES = 20 * 1024 * 1024
 
-const FORBIDDEN_RAW_EXTENSION = /\.(?:txt|epub|mobi)$/iu
+const FORBIDDEN_EBOOK_EXTENSION = /\.(?:epub|mobi)$/iu
+const RAW_TEXT_EXTENSION = /\.txt$/iu
+const IMPLEMENTATION_ROOT = /^(?:backend|frontend|scripts|tools)\//u
+const IMPLEMENTATION_SOURCE_EXTENSION = /\.(?:py|pyi|js|mjs|cjs|ts|tsx|vue|css|scss|html|sql|toml|ini|cfg|yaml|yml)$/u
+const STRICT_DIRECTORY = /^(?:backend\/assets|docs\/development)(?:\/|$)/u
+const STRICT_PATH_SEGMENT = /(?:^|\/)(?:evidence|output|artifacts)(?:\/|$)/u
+const SUPERPOWERS_DEFINITION = /^docs\/superpowers\/(?:specs|plans)\/.+\.md$/u
+const RFC8785_RESTRICTED_VECTORS = 'tools/control-plane-qa/fixtures/rfc8785-restricted-vectors.json'
 const PRIVATE_SENTINELS = [
   ['browser', 'secret', 'must', 'not', 'leak'].join('-'),
   ['https://private-provider', '.example/v1'].join(''),
@@ -25,6 +33,24 @@ const LARGE_WORD_MINIMUM = 3_000
 const CJK_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u
 const LETTER_CHARACTER = /\p{L}/u
 
+export function classifyM2ArtifactPath(value) {
+  const filePath = normalizeRepositoryPath(value)
+  if (REVIEWED_ASSET_JSON_ALLOWLIST.has(filePath)) return 'reviewed-asset'
+  if (filePath === M2_REQUIREMENTS_LOCK) return 'implementation-definition'
+  if (STRICT_DIRECTORY.test(filePath) || STRICT_PATH_SEGMENT.test(filePath)) {
+    return 'strict-artifact'
+  }
+  if (IMPLEMENTATION_ROOT.test(filePath) && IMPLEMENTATION_SOURCE_EXTENSION.test(filePath)) {
+    return 'implementation-definition'
+  }
+  if (filePath === RFC8785_RESTRICTED_VECTORS
+    || filePath === '.gitattributes'
+    || SUPERPOWERS_DEFINITION.test(filePath)) {
+    return 'implementation-definition'
+  }
+  return 'strict-artifact'
+}
+
 export function scanM2Artifacts({ changedFiles, readContent, getSize }) {
   if (!Array.isArray(changedFiles)) throw new TypeError('changedFiles must be an array')
   if (typeof readContent !== 'function') throw new TypeError('readContent must be a function')
@@ -36,10 +62,11 @@ export function scanM2Artifacts({ changedFiles, readContent, getSize }) {
   let totalBytes = 0
   for (const rawPath of changedFiles) {
     const filePath = normalizeRepositoryPath(rawPath)
-    if (FORBIDDEN_RAW_EXTENSION.test(filePath)) {
+    if (hasForbiddenRawExtension(filePath)) {
       findings.push({ path: filePath, reason: 'forbidden raw source extension' })
       continue
     }
+    const role = classifyM2ArtifactPath(filePath)
 
     const declaredSize = getSize ? validateSize(getSize(filePath), filePath) : null
     if (declaredSize !== null
@@ -61,11 +88,11 @@ export function scanM2Artifacts({ changedFiles, readContent, getSize }) {
     }
     totalBytes += contentBytes
 
-    if (containsPrivateSentinel(content)) {
+    if (role !== 'implementation-definition' && containsPrivateSentinel(content)) {
       findings.push({ path: filePath, reason: 'private sentinel content' })
       continue
     }
-    if (!REVIEWED_ASSET_JSON_ALLOWLIST.has(filePath) && looksLikeLargeSourceText(content)) {
+    if (role === 'strict-artifact' && looksLikeLargeSourceText(content)) {
       findings.push({ path: filePath, reason: 'large source-like text outside reviewed assets' })
     }
   }
@@ -166,6 +193,11 @@ function validateSize(value, filePath) {
     throw new TypeError('invalid artifact size: ' + filePath)
   }
   return value
+}
+
+function hasForbiddenRawExtension(filePath) {
+  if (FORBIDDEN_EBOOK_EXTENSION.test(filePath)) return true
+  return filePath !== M2_REQUIREMENTS_LOCK && RAW_TEXT_EXTENSION.test(filePath)
 }
 
 function containsPrivateSentinel(content) {
