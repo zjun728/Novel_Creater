@@ -26,7 +26,7 @@ from backend.schema_manifest import created_table_names, manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.seed_writer_assets import MANIFEST_PATH
 from backend.services.contracts import ContractService, _strict_engine, style_contract_hash
-from backend.services.projects import ProjectService
+from backend.services.project_lifecycle import ProjectLifecycleService
 from backend.services.projections import build_projection_bundle
 
 
@@ -446,7 +446,7 @@ async def _verify_foundation(
     empty_hash = build_projection_bundle(0, ()).content_hash
     _require(_integer(row, "canon_revision") == 0
              and _integer(row, "canon_parent_revision") == 0
-             and row.get("canon_idempotency_key") == ProjectService.bootstrap_idempotency_key(
+             and row.get("canon_idempotency_key") == ProjectLifecycleService.bootstrap_idempotency_key(
                  str(row.get("project_id")))
              and row.get("canon_source_type") == "bootstrap"
              and row.get("canon_source_id") is None

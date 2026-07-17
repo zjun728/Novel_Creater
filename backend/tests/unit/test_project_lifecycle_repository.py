@@ -1,42 +1,69 @@
 from __future__ import annotations
 
-import importlib
-import importlib.util
-
 import pytest
 
 from backend.repositories import model_bindings, projects, seeds
+from backend.repositories import project_lifecycle
+
+
+def compact(sql: str) -> str:
+    return " ".join(sql.split())
 
 
 class RecordingSession:
-    def __init__(self, row=None):
-        self.row = row or {"id": "p1", "status": "drafting"}
+    _UNSET = object()
+
+    def __init__(
+        self,
+        *,
+        row=_UNSET,
+        rows=None,
+        execute_result: int = 1,
+    ):
+        self.row = (
+            {"id": "p1", "status": "drafting"}
+            if row is self._UNSET
+            else row
+        )
+        self.rows = [] if rows is None else rows
+        self.execute_result = execute_result
         self.calls = []
 
     async def fetchone(self, sql, args=None):
-        self.calls.append((" ".join(sql.split()), args))
+        self.calls.append(("fetchone", compact(sql), args))
         return self.row
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append(("fetchall", compact(sql), args))
+        return self.rows
+
+    async def execute(self, sql, args=None):
+        self.calls.append(("execute", compact(sql), args))
+        return self.execute_result
 
 
 @pytest.mark.asyncio
-async def test_shared_project_lifecycle_reads_and_locks_only_active_projects():
-    spec = importlib.util.find_spec("backend.repositories.project_lifecycle")
-    assert spec is not None, "shared project lifecycle repository is missing"
-    lifecycle = importlib.import_module("backend.repositories.project_lifecycle")
+async def test_shared_project_lifecycle_exposes_active_and_any_status_reads_and_locks():
     session = RecordingSession()
 
-    assert await lifecycle.read_active_project(session, "p1") == session.row
-    assert await lifecycle.lock_active_project(session, "p1") == session.row
+    assert await project_lifecycle.read_active_project(session, "p1") == session.row
+    assert await project_lifecycle.lock_active_project(session, "p1") == session.row
+    assert await project_lifecycle.read_project(session, "p1") == session.row
+    assert await project_lifecycle.lock_project(session, "p1") == session.row
 
     assert session.calls == [
         (
+            "fetchone",
             "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL",
             ("p1",),
         ),
         (
+            "fetchone",
             "SELECT * FROM projects WHERE id=%s AND archived_at IS NULL FOR UPDATE",
             ("p1",),
         ),
+        ("fetchone", "SELECT * FROM projects WHERE id=%s", ("p1",)),
+        ("fetchone", "SELECT * FROM projects WHERE id=%s FOR UPDATE", ("p1",)),
     ]
 
 
@@ -44,7 +71,6 @@ async def test_shared_project_lifecycle_reads_and_locks_only_active_projects():
 @pytest.mark.parametrize(
     ("module", "repository", "method", "guard_name"),
     [
-        (projects, projects.ProjectRepository(), "get", "read_active_project"),
         (
             projects,
             projects.ProjectRepository(),
@@ -67,7 +93,7 @@ async def test_shared_project_lifecycle_reads_and_locks_only_active_projects():
         ),
     ],
 )
-async def test_project_repositories_delegate_active_boundary(
+async def test_ordinary_project_mutations_keep_using_active_boundary(
     monkeypatch, module, repository, method, guard_name
 ):
     calls = []
@@ -76,7 +102,7 @@ async def test_project_repositories_delegate_active_boundary(
         calls.append((session, project_id))
         return {"id": project_id}
 
-    monkeypatch.setattr(module, guard_name, guard, raising=False)
+    monkeypatch.setattr(module, guard_name, guard)
     session = object()
 
     assert await getattr(repository, method)(session, "p1") == {"id": "p1"}
@@ -93,7 +119,180 @@ async def test_previous_binding_source_excludes_archived_projects():
 
     assert session.calls == [
         (
-            "SELECT id FROM projects WHERE id<>%s AND archived_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE",
+            "fetchone",
+            "SELECT id FROM projects WHERE id<>%s AND archived_at IS NULL "
+            "ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE",
             ("p1",),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_active_and_archived_lists_are_disjoint_and_stably_ordered():
+    session = RecordingSession(rows=[])
+    repository = projects.ProjectRepository()
+
+    assert await repository.list_active(session) == []
+    assert await repository.list_archived(session) == []
+
+    assert session.calls == [
+        (
+            "fetchall",
+            "SELECT * FROM projects WHERE archived_at IS NULL "
+            "ORDER BY updated_at DESC, id DESC",
+            None,
+        ),
+        (
+            "fetchall",
+            "SELECT * FROM projects WHERE archived_at IS NOT NULL "
+            "ORDER BY archived_at DESC, id DESC",
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_any_status_reads_and_locks_delegate_to_shared_helpers(
+    monkeypatch,
+):
+    calls = []
+
+    async def read(session, project_id):
+        calls.append(("read", session, project_id))
+        return {"id": project_id, "archived_at": 123}
+
+    async def lock(session, project_id):
+        calls.append(("lock", session, project_id))
+        return {"id": project_id, "archived_at": 123}
+
+    monkeypatch.setattr(projects, "read_project", read)
+    monkeypatch.setattr(projects, "lock_project", lock)
+    repository = projects.ProjectRepository()
+    session = object()
+
+    assert (await repository.get_any(session, "p1"))["archived_at"] == 123
+    assert (await repository.lock_any(session, "p1"))["archived_at"] == 123
+    assert calls == [
+        ("read", session, "p1"),
+        ("lock", session, "p1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unfinished_operation_checks_only_reserved_running_and_unknown_batches():
+    session = RecordingSession(row={"present": 1})
+
+    assert (
+        await projects.ProjectRepository().has_unfinished_operation(
+            session, "p1"
+        )
+        is True
+    )
+
+    assert session.calls == [
+        (
+            "fetchone",
+            "SELECT 1 AS present FROM story_engine_batches "
+            "WHERE project_id=%s AND status IN "
+            "('reserved','running','outcome_unknown') LIMIT 1",
+            ("p1",),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unfinished_operation_returns_false_without_matching_batch():
+    session = RecordingSession(row=None)
+
+    assert (
+        await projects.ProjectRepository().has_unfinished_operation(
+            session, "p1"
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
+async def test_archive_is_revision_guarded_compare_and_swap(affected, expected):
+    session = RecordingSession(execute_result=affected)
+
+    changed = await projects.ProjectRepository(clock=lambda: 123).archive(
+        session, "p1", 4
+    )
+
+    assert changed is expected
+    assert session.calls == [
+        (
+            "execute",
+            "UPDATE projects SET archived_at=%s, "
+            "lifecycle_revision=lifecycle_revision+1, updated_at=%s "
+            "WHERE id=%s AND archived_at IS NULL AND lifecycle_revision=%s",
+            (123, 123, "p1", 4),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
+async def test_restore_clears_archive_marker_with_revision_compare_and_swap(
+    affected, expected
+):
+    session = RecordingSession(execute_result=affected)
+
+    changed = await projects.ProjectRepository(clock=lambda: 456).restore(
+        session, "p1", 7
+    )
+
+    assert changed is expected
+    assert session.calls == [
+        (
+            "execute",
+            "UPDATE projects SET archived_at=NULL, "
+            "lifecycle_revision=lifecycle_revision+1, updated_at=%s "
+            "WHERE id=%s AND archived_at IS NOT NULL AND lifecycle_revision=%s",
+            (456, "p1", 7),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
+async def test_permanent_delete_relies_on_schema_cascade_and_revision_guard(
+    affected, expected
+):
+    session = RecordingSession(execute_result=affected)
+
+    changed = await projects.ProjectRepository().permanently_delete(
+        session, "p1", 9
+    )
+
+    assert changed is expected
+    assert session.calls == [
+        (
+            "execute",
+            "DELETE FROM projects WHERE id=%s AND archived_at IS NOT NULL "
+            "AND lifecycle_revision=%s",
+            ("p1", 9),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
+async def test_rename_changes_only_title_on_an_active_project(affected, expected):
+    session = RecordingSession(execute_result=affected)
+
+    changed = await projects.ProjectRepository(clock=lambda: 789).rename(
+        session, "p1", "Changed"
+    )
+
+    assert changed is expected
+    assert session.calls == [
+        (
+            "execute",
+            "UPDATE projects SET title=%s, updated_at=%s "
+            "WHERE id=%s AND archived_at IS NULL",
+            ("Changed", 789, "p1"),
         )
     ]

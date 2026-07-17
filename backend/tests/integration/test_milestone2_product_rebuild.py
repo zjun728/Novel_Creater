@@ -22,7 +22,7 @@ from backend.scripts.reset_writer_core_data import (
     reset_writer_core_data,
 )
 from backend.scripts.verify_milestone2_product import verify_milestone2_product
-from backend.services.projects import ProjectService
+from backend.services.project_lifecycle import ProjectLifecycleService
 from backend.services.projections import build_projection_bundle
 from backend.tests.support.frozen_writer_core_v11 import (
     FROZEN_V11_MANIFEST_HASH,
@@ -301,7 +301,7 @@ async def create_frozen_v11_product_state(disposable) -> None:
         (
             ids.__next__(),
             PROJECT_ID,
-            ProjectService.bootstrap_idempotency_key(PROJECT_ID),
+            ProjectLifecycleService.bootstrap_idempotency_key(PROJECT_ID),
             empty_hash,
         ),
     )

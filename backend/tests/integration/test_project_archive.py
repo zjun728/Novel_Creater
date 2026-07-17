@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -12,7 +11,10 @@ from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
 from backend.repositories.seeds import SeedRepository
 from backend.services.model_bindings import ModelBindingService
-from backend.services.projects import CreateProject, ProjectService, UpdateProject
+from backend.services.project_lifecycle import (
+    CreateProject,
+    ProjectLifecycleService,
+)
 from backend.services.seeds import (
     CreateSeed,
     DeleteSeed,
@@ -32,14 +34,7 @@ PROJECT_ID = "60000000-0000-0000-0000-000000000001"
 def _project(
     project_id: str = PROJECT_ID, title: str = "Archive integration"
 ) -> CreateProject:
-    return CreateProject(
-        id=project_id,
-        title=title,
-        genre="history",
-        description="test only",
-        target_words=1_000,
-        target_chapters=10,
-    )
+    return CreateProject(id=project_id, title=title)
 
 
 async def _foundation_snapshot(session, project_id: str = PROJECT_ID) -> dict:
@@ -125,10 +120,7 @@ async def _seed_snapshot(session, project_id: str = PROJECT_ID) -> dict:
     }
 
 
-@pytest.mark.asyncio
-async def test_delete_archives_project_without_changing_immutable_foundations(
-    disposable_mysql,
-):
+def _services(disposable_mysql):
     transaction = transaction_factory_for(disposable_mysql.connection_config)
 
     @asynccontextmanager
@@ -140,220 +132,89 @@ async def test_delete_archives_project_without_changing_immutable_foundations(
         transaction_factory=transaction,
         connection_factory=read_connection,
     )
-    service = ProjectService(
+    projects = ProjectLifecycleService(
         ProjectRepository(),
         transaction,
         read_connection,
         model_binding_service=bindings,
     )
+    return projects, bindings, transaction, read_connection
 
-    await service.create(_project())
+
+@pytest.mark.asyncio
+async def test_archive_and_restore_preserve_workflow_and_foundations(
+    disposable_mysql,
+):
+    projects, _, _, _ = _services(disposable_mysql)
+    await projects.create(_project())
     before = await _foundation_snapshot(disposable_mysql.session)
-    assert len(before["canon"]) == 1
-    assert len(before["projection"]) == 1
-    assert len(before["contract"]) == 1
-    assert len(before["binding_revisions"]) == 1
-    assert len(before["binding_head"]) == 1
-    assert len(before["binding_items"]) == len(TASK_KEYS) == 8
 
-    await service.delete(PROJECT_ID)
+    archived = await projects.archive(PROJECT_ID, 0)
 
-    archived = await disposable_mysql.session.fetchone(
-        "SELECT * FROM projects WHERE id=%s", (PROJECT_ID,)
-    )
-    assert archived is not None
-    assert archived["status"] == "drafting"
-    assert archived["archived_at"] is not None
-    assert archived["lifecycle_revision"] == 1
+    assert archived.status == "drafting"
+    assert archived.archived_at is not None
+    assert archived.lifecycle_revision == 1
+    assert await projects.list_active() == []
+    assert [row.id for row in await projects.list_archived()] == [PROJECT_ID]
+    with pytest.raises(http_errors.ProjectArchived):
+        await projects.get(PROJECT_ID)
+    assert (
+        await projects.get(PROJECT_ID, include_archived=True)
+    ).lifecycle_revision == 1
+    with pytest.raises(http_errors.ProjectArchived):
+        await projects.archive(PROJECT_ID, 1)
     assert await _foundation_snapshot(disposable_mysql.session) == before
-    assert not await service.list()
-    assert await service.get(PROJECT_ID) is None
-    with pytest.raises(http_errors.ProjectNotFound):
-        await service.content_state(PROJECT_ID)
 
-    archived_before_second_delete = dict(archived)
-    with pytest.raises(http_errors.ProjectNotFound):
-        await service.delete(PROJECT_ID)
+    restored = await projects.restore(PROJECT_ID, 1)
+
+    assert restored.status == "drafting"
+    assert restored.archived_at is None
+    assert restored.lifecycle_revision == 2
+    assert [row.id for row in await projects.list_active()] == [PROJECT_ID]
+    assert await projects.list_archived() == []
+    assert await _foundation_snapshot(disposable_mysql.session) == before
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_cas_and_archived_only_permanent_delete(
+    disposable_mysql,
+):
+    projects, _, _, _ = _services(disposable_mysql)
+    await projects.create(_project())
+
+    with pytest.raises(http_errors.ProjectLifecycleConflict):
+        await projects.permanently_delete(PROJECT_ID, 0)
+    await projects.archive(PROJECT_ID, 0)
+    with pytest.raises(http_errors.ProjectLifecycleConflict):
+        await projects.restore(PROJECT_ID, 0)
+    await projects.restore(PROJECT_ID, 1)
+    with pytest.raises(http_errors.ProjectLifecycleConflict):
+        await projects.archive(PROJECT_ID, 1)
+    await projects.archive(PROJECT_ID, 2)
+    with pytest.raises(http_errors.ProjectLifecycleConflict):
+        await projects.permanently_delete(PROJECT_ID, 2)
+
+    await projects.permanently_delete(PROJECT_ID, 3)
 
     assert await disposable_mysql.session.fetchone(
         "SELECT * FROM projects WHERE id=%s", (PROJECT_ID,)
-    ) == archived_before_second_delete
-    assert await _foundation_snapshot(disposable_mysql.session) == before
-
-
-@pytest.mark.asyncio
-async def test_stale_update_cannot_revive_project_after_concurrent_archive(
-    disposable_mysql,
-):
-    transaction = transaction_factory_for(disposable_mysql.connection_config)
-    update_write_reached = asyncio.Event()
-    allow_update_write = asyncio.Event()
-    update_lock_acquired = asyncio.Event()
-    delete_lock_attempted = asyncio.Event()
-
-    @asynccontextmanager
-    async def read_connection():
-        yield disposable_mysql.session
-
-    class UpdateGateRepository(ProjectRepository):
-        async def lock_active_project(self, session, project_id):
-            row = await super().lock_active_project(session, project_id)
-            update_lock_acquired.set()
-            return row
-
-        async def update(self, session, project_id, changes):
-            update_write_reached.set()
-            await allow_update_write.wait()
-            return await super().update(session, project_id, changes)
-
-    class DeleteGateRepository(ProjectRepository):
-        async def lock_active_project(self, session, project_id):
-            delete_lock_attempted.set()
-            return await super().lock_active_project(session, project_id)
-
-    bindings = ModelBindingService(
-        ModelBindingRepository(), transaction_factory=transaction
-    )
-    creator = ProjectService(
-        ProjectRepository(clock=iter(range(1_000, 2_000)).__next__),
-        transaction,
-        read_connection,
-        model_binding_service=bindings,
-    )
-    await creator.create(_project())
-    update_service = ProjectService(
-        UpdateGateRepository(clock=iter(range(2_000, 3_000)).__next__),
-        transaction,
-        read_connection,
-    )
-    delete_service = ProjectService(
-        DeleteGateRepository(clock=iter(range(3_000, 4_000)).__next__),
-        transaction,
-        read_connection,
-    )
-
-    update_task = asyncio.create_task(
-        update_service.update(
-            PROJECT_ID, UpdateProject(title="Stale title", status="drafting")
-        )
-    )
-    await update_write_reached.wait()
-    delete_task = asyncio.create_task(delete_service.delete(PROJECT_ID))
-    await delete_lock_attempted.wait()
-
-    if not update_lock_acquired.is_set():
-        await delete_task
-    allow_update_write.set()
-    update_result, delete_result = await asyncio.gather(
-        update_task, delete_task, return_exceptions=True
-    )
-
-    assert not isinstance(update_result, BaseException)
-    assert delete_result is None
-    row = await disposable_mysql.session.fetchone(
-        """SELECT title,status,archived_at,lifecycle_revision
-             FROM projects WHERE id=%s""",
-        (PROJECT_ID,),
-    )
-    assert row["title"] == "Stale title"
-    assert row["status"] == "drafting"
-    assert row["archived_at"] is not None
-    assert row["lifecycle_revision"] == 1
-
-
-@pytest.mark.asyncio
-async def test_concurrent_double_delete_has_one_success_and_preserves_history(
-    disposable_mysql,
-):
-    transaction = transaction_factory_for(disposable_mysql.connection_config)
-    both_attempted = asyncio.Event()
-    release_locks = asyncio.Event()
-
-    @asynccontextmanager
-    async def read_connection():
-        yield disposable_mysql.session
-
-    class PairGateRepository(ProjectRepository):
-        def __init__(self):
-            super().__init__(clock=iter(range(4_000, 5_000)).__next__)
-            self.attempts = 0
-
-        async def lock_active_project(self, session, project_id):
-            self.attempts += 1
-            if self.attempts == 2:
-                both_attempted.set()
-            await release_locks.wait()
-            return await super().lock_active_project(session, project_id)
-
-    bindings = ModelBindingService(
-        ModelBindingRepository(), transaction_factory=transaction
-    )
-    creator = ProjectService(
-        ProjectRepository(clock=iter(range(5_000, 6_000)).__next__),
-        transaction,
-        read_connection,
-        model_binding_service=bindings,
-    )
-    await creator.create(_project())
-    before = await _foundation_snapshot(disposable_mysql.session)
-    service = ProjectService(PairGateRepository(), transaction, read_connection)
-
-    tasks = [
-        asyncio.create_task(service.delete(PROJECT_ID)),
-        asyncio.create_task(service.delete(PROJECT_ID)),
-    ]
-    await both_attempted.wait()
-    release_locks.set()
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    assert sum(result is None for result in results) == 1
-    assert sum(isinstance(result, http_errors.ProjectNotFound) for result in results) == 1
-    assert (
-        await disposable_mysql.session.fetchone(
-            """SELECT status,archived_at,lifecycle_revision
-                 FROM projects WHERE id=%s""",
-            (PROJECT_ID,),
-        )
-    ) == {
-        "status": "drafting",
-        "archived_at": 4_000,
-        "lifecycle_revision": 1,
-    }
-    assert await _foundation_snapshot(disposable_mysql.session) == before
+    ) is None
+    after_delete = await _foundation_snapshot(disposable_mysql.session)
+    assert all(not rows for rows in after_delete.values()), after_delete
 
 
 @pytest.mark.asyncio
 async def test_archived_project_blocks_seed_and_binding_resources_and_inheritance(
     disposable_mysql,
 ):
-    transaction = transaction_factory_for(disposable_mysql.connection_config)
-
-    @asynccontextmanager
-    async def read_connection():
-        yield disposable_mysql.session
-
-    bindings = ModelBindingService(
-        ModelBindingRepository(
-            id_factory=(f"71000000-0000-0000-0000-{n:012d}" for n in range(50)).__next__,
-            clock=iter(range(7_000, 8_000)).__next__,
-        ),
-        transaction_factory=transaction,
-        connection_factory=read_connection,
-    )
-    projects = ProjectService(
-        ProjectRepository(
-            id_factory=(f"72000000-0000-0000-0000-{n:012d}" for n in range(50)).__next__,
-            clock=iter(range(8_000, 9_000)).__next__,
-        ),
-        transaction,
-        read_connection,
-        model_binding_service=bindings,
-    )
+    projects, bindings, transaction, read_connection = _services(disposable_mysql)
     seeds = SeedService(
         SeedRepository(),
         transaction_factory=transaction,
         connection_factory=read_connection,
-        id_factory=(f"73000000-0000-0000-0000-{n:012d}" for n in range(50)).__next__,
+        id_factory=(
+            f"73000000-0000-0000-0000-{n:012d}" for n in range(50)
+        ).__next__,
         clock=iter(range(9_000, 10_000)).__next__,
     )
     await projects.create(_project())
@@ -370,7 +231,7 @@ async def test_archived_project_blocks_seed_and_binding_resources_and_inheritanc
     )
     foundation_before = await _foundation_snapshot(disposable_mysql.session)
     seeds_before = await _seed_snapshot(disposable_mysql.session)
-    await projects.delete(PROJECT_ID)
+    await projects.archive(PROJECT_ID, 0)
 
     async def capture(awaitable):
         try:
@@ -428,7 +289,10 @@ async def test_archived_project_blocks_seed_and_binding_resources_and_inheritanc
         ),
     ]
 
-    assert all(isinstance(result, http_errors.SeedNotFound) for result in seed_results)
+    assert all(
+        isinstance(result, http_errors.SeedNotFound)
+        for result in seed_results
+    )
     assert all(
         isinstance(result, http_errors.BindingNotFound)
         for result in binding_results

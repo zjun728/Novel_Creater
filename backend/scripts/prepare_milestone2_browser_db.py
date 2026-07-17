@@ -21,7 +21,7 @@ from backend.scripts.initialize_database import (
     initialize_database,
 )
 from backend.scripts.seed_writer_assets import MANIFEST_PATH
-from backend.services.projects import ProjectService
+from backend.services.project_lifecycle import ProjectLifecycleService
 from backend.services.projections import build_projection_bundle
 
 
@@ -355,7 +355,7 @@ async def _insert_foundation(
         (
             "00000000-0000-0000-0000-000000000601",
             PROJECT_ID,
-            ProjectService.bootstrap_idempotency_key(PROJECT_ID),
+            ProjectLifecycleService.bootstrap_idempotency_key(PROJECT_ID),
             empty_hash,
             now_ms,
         ),

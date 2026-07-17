@@ -15,7 +15,7 @@ from backend.schema_version import EXPECTED_SCHEMA_VERSION
 from backend.scripts.seed_writer_assets import MANIFEST_PATH
 from backend.services.projections import build_projection_bundle
 from backend.services.contracts import style_contract_hash
-from backend.services.projects import ProjectService
+from backend.services.project_lifecycle import ProjectLifecycleService
 
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
@@ -204,7 +204,7 @@ def base_rows():
             "style_hash": None,
             "canon_revision": 0,
             "canon_parent_revision": 0,
-            "canon_idempotency_key": ProjectService.bootstrap_idempotency_key(PROJECT_ID),
+            "canon_idempotency_key": ProjectLifecycleService.bootstrap_idempotency_key(PROJECT_ID),
             "canon_source_type": "bootstrap",
             "canon_source_id": None,
             "canon_hash": empty_hash,

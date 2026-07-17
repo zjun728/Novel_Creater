@@ -16,7 +16,7 @@ from backend.scripts.initialize_database import (
     _default_connection_factory,
     initialize_database,
 )
-from backend.services.projects import ProjectService
+from backend.services.project_lifecycle import ProjectLifecycleService
 from backend.services.projections import build_projection_bundle
 
 
@@ -175,7 +175,7 @@ async def _insert_fixture(session, now_ms: int) -> None:
             (
                 "revision-0",
                 PROJECT_ID,
-                ProjectService.bootstrap_idempotency_key(PROJECT_ID),
+                ProjectLifecycleService.bootstrap_idempotency_key(PROJECT_ID),
                 empty_hash,
                 now_ms,
             ),

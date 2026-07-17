@@ -209,6 +209,13 @@ git commit -m "feat: define project lifecycle ownership"
 
 ### Task 2: Implement one backend project lifecycle service
 
+> **Atomic gate with Task 3:** the old `backend/services/projects.py` module is
+> imported by the current HTTP layer and lifecycle integration tests. Tasks 2
+> and 3 therefore ship and review as one inseparable backend unit: replace all
+> direct consumers, expose the explicit lifecycle routes, and only then delete
+> the old service. No compatibility shim or temporarily broken commit is
+> permitted.
+
 **Files:**
 
 - Modify: `backend/http_errors.py`
@@ -219,6 +226,18 @@ git commit -m "feat: define project lifecycle ownership"
 - Modify: `backend/tests/unit/test_project_lifecycle_repository.py`
 - Modify: `backend/tests/unit/test_project_creation.py`
 - Create: `backend/tests/unit/test_project_lifecycle_service.py`
+- Modify: `backend/scripts/prepare_milestone1_browser_db.py`
+- Modify: `backend/scripts/prepare_milestone2_browser_db.py`
+- Modify: `backend/scripts/reset_writer_core_data.py`
+- Modify: `backend/scripts/verify_milestone2_product.py`
+- Modify: `backend/tests/integration/test_model_binding_revisions.py`
+- Modify: `backend/tests/integration/test_milestone2_product_rebuild.py`
+- Modify: `backend/tests/integration/test_project_archive.py`
+- Modify: `backend/tests/unit/test_verify_milestone2_product.py`
+
+The additional script and test files above are direct import consumers of the
+deleted service. They move to `ProjectLifecycleService` in the same atomic gate;
+they do not restore old CRUD behavior.
 
 - [ ] **Step 1: Write domain and repository tests**
 
@@ -372,6 +391,12 @@ git commit -m "feat: add transactional project lifecycle"
 ```
 
 ### Task 3: Expose explicit lifecycle HTTP routes
+
+> **Atomic gate with Task 2:** this route replacement is completed in the same
+> implementation and verification gate as the transactional service. The gate
+> is green only when no `ProjectService`, `UpdateProject`, old
+> `DELETE`-means-archive behavior, or import of `backend.services.projects`
+> remains.
 
 **Files:**
 

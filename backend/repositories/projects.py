@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import time
 from uuid import uuid4
 
 from backend.repositories.project_lifecycle import (
     lock_active_project,
-    read_active_project,
+    lock_project,
+    read_project,
 )
 
 
@@ -38,72 +38,89 @@ class ProjectRepository:
             ),
         )
 
-    async def list(self, session):
+    async def list_active(self, session):
         return await session.fetchall(
             """SELECT * FROM projects WHERE archived_at IS NULL
                ORDER BY updated_at DESC, id DESC"""
         )
 
-    async def get(self, session, project_id: str):
-        return await read_active_project(session, project_id)
+    async def list_archived(self, session):
+        return await session.fetchall(
+            """SELECT * FROM projects WHERE archived_at IS NOT NULL
+               ORDER BY archived_at DESC, id DESC"""
+        )
+
+    async def get_any(self, session, project_id: str):
+        return await read_project(session, project_id)
+
+    async def lock_any(self, session, project_id: str):
+        return await lock_project(session, project_id)
 
     async def lock_active_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)
 
-    async def archive(self, session, project_id: str) -> bool:
+    async def has_unfinished_operation(self, session, project_id: str) -> bool:
+        row = await session.fetchone(
+            """SELECT 1 AS present
+               FROM story_engine_batches
+               WHERE project_id=%s
+                 AND status IN ('reserved','running','outcome_unknown')
+               LIMIT 1""",
+            (project_id,),
+        )
+        return row is not None
+
+    async def archive(
+        self, session, project_id: str, expected_revision: int
+    ) -> bool:
         now = self._clock()
         changed = await session.execute(
             """UPDATE projects
-               SET archived_at=%s,lifecycle_revision=lifecycle_revision+1,updated_at=%s
-               WHERE id=%s AND archived_at IS NULL""",
-            (now, now, project_id),
+               SET archived_at=%s,
+                   lifecycle_revision=lifecycle_revision+1,
+                   updated_at=%s
+               WHERE id=%s
+                 AND archived_at IS NULL
+                 AND lifecycle_revision=%s""",
+            (now, now, project_id, expected_revision),
         )
         return changed == 1
 
-    async def update(self, session, project_id: str, changes: Mapping) -> bool:
-        if not changes:
-            return True
-        allowed = {
-            "title",
-            "genre",
-            "description",
-            "target_words",
-            "target_chapters",
-            "current_chapter",
-        }
-        if not set(changes) <= allowed:
-            raise ValueError("project update contains unsupported fields")
-        sets = [f"{field}=%s" for field in changes]
-        args = [changes[field] for field in changes]
-        sets.append("updated_at=%s")
-        args.extend((self._clock(), project_id))
+    async def restore(
+        self, session, project_id: str, expected_revision: int
+    ) -> bool:
         changed = await session.execute(
-            f"UPDATE projects SET {', '.join(sets)} "
-            "WHERE id=%s AND archived_at IS NULL",
-            tuple(args),
+            """UPDATE projects
+               SET archived_at=NULL,
+                   lifecycle_revision=lifecycle_revision+1,
+                   updated_at=%s
+               WHERE id=%s
+                 AND archived_at IS NOT NULL
+                 AND lifecycle_revision=%s""",
+            (self._clock(), project_id, expected_revision),
         )
         return changed == 1
 
-    async def content_state(self, session, project_id: str) -> dict:
-        row = await session.fetchone(
-            """SELECT
-                 (SELECT COUNT(*) FROM creative_seeds WHERE project_id=%s)
-                   AS seeds_count,
-                 COALESCE((SELECT canon_revision_number FROM projection_heads
-                           WHERE project_id=%s), 0) AS canon_head_revision,
-                 (SELECT COUNT(*) FROM final_chapters WHERE project_id=%s)
-                   AS final_chapters_count""",
-            (project_id, project_id, project_id),
+    async def permanently_delete(
+        self, session, project_id: str, expected_revision: int
+    ) -> bool:
+        changed = await session.execute(
+            """DELETE FROM projects
+               WHERE id=%s
+                 AND archived_at IS NOT NULL
+                 AND lifecycle_revision=%s""",
+            (project_id, expected_revision),
         )
-        return {
-            "seeds_count": int((row or {}).get("seeds_count") or 0),
-            "canon_head_revision": int(
-                (row or {}).get("canon_head_revision") or 0
-            ),
-            "has_final_chapters": bool(
-                (row or {}).get("final_chapters_count")
-            ),
-        }
+        return changed == 1
+
+    async def rename(self, session, project_id: str, title: str) -> bool:
+        changed = await session.execute(
+            """UPDATE projects
+               SET title=%s, updated_at=%s
+               WHERE id=%s AND archived_at IS NULL""",
+            (title, self._clock(), project_id),
+        )
+        return changed == 1
 
     async def insert_bootstrap_revision(
         self, session, project_id: str, *, content_hash: str, idempotency_key: str

@@ -1,21 +1,19 @@
-"""Writer Core project CRUD backed by explicit repository sessions."""
+"""Explicit project lifecycle routes."""
 
 from __future__ import annotations
 
-from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.database import connection, transaction
 from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
 from backend.services.model_bindings import ModelBindingService
-from backend.services.projects import (
+from backend.services.project_lifecycle import (
     CreateProject,
-    ProjectService,
-    UpdateProject,
+    ProjectLifecycleService,
 )
 from .helpers import convert_row, convert_rows
 
@@ -26,7 +24,7 @@ _binding_service = ModelBindingService(
     transaction_factory=transaction,
     connection_factory=connection,
 )
-_service = ProjectService(
+_service = ProjectLifecycleService(
     ProjectRepository(),
     transaction,
     connection,
@@ -35,27 +33,39 @@ _service = ProjectService(
 
 
 class ProjectCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
-    genre: str = ""
-    description: str = ""
-    targetWords: int = Field(default=100_000, gt=0)
-    targetChapters: int = Field(default=100, gt=0)
-
-
-class ProjectUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: Optional[str] = None
-    genre: Optional[str] = None
-    description: Optional[str] = None
-    targetWords: Optional[int] = Field(default=None, gt=0)
-    targetChapters: Optional[int] = Field(default=None, gt=0)
-    currentChapter: Optional[int] = Field(default=None, ge=0)
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ProjectRename(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ProjectLifecycleCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expectedLifecycleRevision: int = Field(ge=0)
+
+
+def _convert_result(result):
+    return convert_row(result.model_dump())
+
+
+def _convert_results(results):
+    return convert_rows([result.model_dump() for result in results])
 
 
 @router.get("/projects")
 async def list_projects():
-    return convert_rows(await _service.list())
+    return _convert_results(await _service.list_active())
+
+
+@router.get("/projects/archived")
+async def list_archived_projects():
+    return _convert_results(await _service.list_archived())
 
 
 @router.post("/projects")
@@ -64,52 +74,59 @@ async def create_project(data: ProjectCreate):
         CreateProject(
             id=str(uuid4()),
             title=data.title,
-            genre=data.genre,
-            description=data.description,
-            target_words=data.targetWords,
-            target_chapters=data.targetChapters,
         )
     )
-    return convert_row(result.model_dump())
+    return _convert_result(result)
 
 
-@router.get("/projects/{pid}")
-async def get_project(pid: str):
-    row = await _service.get(pid)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return convert_row(row)
-
-
-@router.get("/projects/{pid}/content-state")
-async def get_project_content_state(pid: str):
-    state = await _service.content_state(pid)
-    return {
-        "seedsCount": state["seeds_count"],
-        "canonHeadRevision": state["canon_head_revision"],
-        "hasFinalChapters": state["has_final_chapters"],
-        "writerEnabled": False,
-    }
-
-
-@router.put("/projects/{pid}")
-async def update_project(pid: str, data: ProjectUpdate):
-    incoming = data.model_dump(exclude_none=True)
-    mapping = {
-        "targetWords": "target_words",
-        "targetChapters": "target_chapters",
-        "currentChapter": "current_chapter",
-    }
-    command = UpdateProject(
-        **{mapping.get(key, key): value for key, value in incoming.items()}
+@router.get("/projects/{project_id}")
+async def get_project(project_id: str):
+    return _convert_result(
+        await _service.get(project_id, include_archived=True)
     )
-    row = await _service.update(pid, command)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return convert_row(row)
 
 
-@router.delete("/projects/{pid}")
-async def delete_project(pid: str):
-    await _service.delete(pid)
-    return {"ok": True}
+@router.put("/projects/{project_id}")
+async def rename_project(project_id: str, data: ProjectRename):
+    return _convert_result(await _service.rename(project_id, data.title))
+
+
+@router.post("/projects/{project_id}/archive")
+async def archive_project(
+    project_id: str,
+    command: ProjectLifecycleCommand,
+):
+    return _convert_result(
+        await _service.archive(
+            project_id,
+            command.expectedLifecycleRevision,
+        )
+    )
+
+
+@router.post("/projects/{project_id}/restore")
+async def restore_project(
+    project_id: str,
+    command: ProjectLifecycleCommand,
+):
+    return _convert_result(
+        await _service.restore(
+            project_id,
+            command.expectedLifecycleRevision,
+        )
+    )
+
+
+@router.delete(
+    "/projects/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def permanently_delete_project(
+    project_id: str,
+    command: ProjectLifecycleCommand,
+):
+    await _service.permanently_delete(
+        project_id,
+        command.expectedLifecycleRevision,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

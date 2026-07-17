@@ -18,6 +18,24 @@ class ProjectNotFound(PublicDomainError):
     message = "Project not found"
 
 
+class ProjectArchived(PublicDomainError):
+    status_code = 409
+    code = "ProjectArchived"
+    message = "Project is archived"
+
+
+class ProjectLifecycleConflict(PublicDomainError):
+    status_code = 409
+    code = "ProjectLifecycleConflict"
+    message = "Project lifecycle changed; refresh and retry"
+
+
+class ProjectBusy(PublicDomainError):
+    status_code = 409
+    code = "ProjectBusy"
+    message = "Project has an unfinished operation"
+
+
 class SeedNotFound(PublicDomainError):
     status_code = 404
     code = "SeedNotFound"

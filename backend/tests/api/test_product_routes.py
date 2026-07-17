@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend import main
-from backend.http_errors import ProjectNotFound
+from backend.http_errors import ProjectArchived
 from backend.routers import assets, contracts, corpus, projects, seeds, story_engines
 from backend.domain.seeds import SeedPayload
 from backend.security.redaction import install_error_handlers
-from backend.services.projects import ProjectResult
+from backend.services.project_lifecycle import CreateProject, ProjectResult
 from backend.services.seeds import SeedResult
 
 
@@ -133,25 +134,87 @@ def test_seed_list_uses_service_dependency_and_revision_payload_contract():
     assert not hasattr(seeds, "fetchall")
 
 
-def test_project_routes_delegate_create_delete_and_public_content_state(monkeypatch):
+def project_result(
+    *,
+    project_id="p1",
+    title="Project",
+    archived_at=None,
+    lifecycle_revision=0,
+):
+    return ProjectResult(
+        id=project_id,
+        title=title,
+        genre="",
+        description="",
+        target_words=100_000,
+        target_chapters=100,
+        current_chapter=0,
+        status="drafting",
+        archived_at=archived_at,
+        lifecycle_revision=lifecycle_revision,
+    )
+
+
+def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
     class FakeService:
         def __init__(self):
-            self.created = None
-            self.deleted = None
+            self.calls = []
 
-        async def create(self, command):
-            self.created = command
+        async def list_active(self):
+            self.calls.append(("list_active",))
+            return [project_result()]
+
+        async def list_archived(self):
+            self.calls.append(("list_archived",))
+            return [
+                project_result(
+                    project_id="archived",
+                    archived_at=123,
+                    lifecycle_revision=2,
+                )
+            ]
+
+        async def create(self, command: CreateProject):
+            self.calls.append(("create", command))
             return ProjectResult.from_command(command)
 
-        async def delete(self, project_id):
-            self.deleted = project_id
+        async def get(self, project_id, include_archived=False):
+            self.calls.append(("get", project_id, include_archived))
+            return project_result(
+                project_id=project_id,
+                archived_at=123 if project_id == "archived" else None,
+                lifecycle_revision=2 if project_id == "archived" else 0,
+            )
 
-        async def content_state(self, project_id):
-            return {
-                "seeds_count": 3,
-                "canon_head_revision": 2,
-                "has_final_chapters": True,
-            }
+        async def rename(self, project_id, title):
+            self.calls.append(("rename", project_id, title))
+            return project_result(project_id=project_id, title=title)
+
+        async def archive(self, project_id, expected_lifecycle_revision):
+            self.calls.append(
+                ("archive", project_id, expected_lifecycle_revision)
+            )
+            return project_result(
+                project_id=project_id,
+                archived_at=123,
+                lifecycle_revision=expected_lifecycle_revision + 1,
+            )
+
+        async def restore(self, project_id, expected_lifecycle_revision):
+            self.calls.append(
+                ("restore", project_id, expected_lifecycle_revision)
+            )
+            return project_result(
+                project_id=project_id,
+                lifecycle_revision=expected_lifecycle_revision + 1,
+            )
+
+        async def permanently_delete(
+            self, project_id, expected_lifecycle_revision
+        ):
+            self.calls.append(
+                ("permanently_delete", project_id, expected_lifecycle_revision)
+            )
 
     service = FakeService()
     monkeypatch.setattr(projects, "_service", service)
@@ -159,36 +222,64 @@ def test_project_routes_delegate_create_delete_and_public_content_state(monkeypa
     app.include_router(projects.router, prefix="/api")
     client = TestClient(app)
 
-    created = client.post(
-        "/api/projects",
-        json={
-            "title": "Project",
-            "genre": "历史",
-            "description": "Description",
-            "targetWords": 1000,
-            "targetChapters": 10,
-        },
+    active = client.get("/api/projects")
+    archived = client.get("/api/projects/archived")
+    created = client.post("/api/projects", json={"title": "New"})
+    direct_archived = client.get("/api/projects/archived-id")
+    renamed = client.put("/api/projects/p1", json={"title": "Changed"})
+    archived_command = client.post(
+        "/api/projects/p1/archive",
+        json={"expectedLifecycleRevision": 4},
     )
+    restored_command = client.post(
+        "/api/projects/p1/restore",
+        json={"expectedLifecycleRevision": 5},
+    )
+    deleted = client.request(
+        "DELETE",
+        "/api/projects/p1",
+        json={"expectedLifecycleRevision": 6},
+    )
+
+    assert active.status_code == 200
+    assert [row["id"] for row in active.json()] == ["p1"]
+    assert archived.status_code == 200
+    assert archived.json()[0]["archivedAt"] == 123
     assert created.status_code == 200
-    assert service.created.title == "Project"
-    assert service.created.target_words == 1000
-    state = client.get(f"/api/projects/{service.created.id}/content-state")
-    assert state.json() == {
-        "seedsCount": 3,
-        "canonHeadRevision": 2,
-        "hasFinalChapters": True,
-        "writerEnabled": False,
+    assert created.json()["title"] == "New"
+    assert created.json()["targetWords"] == 100_000
+    assert direct_archived.status_code == 200
+    assert renamed.json()["title"] == "Changed"
+    assert archived_command.json()["lifecycleRevision"] == 5
+    assert restored_command.json()["lifecycleRevision"] == 6
+    assert deleted.status_code == 204
+    assert deleted.content == b""
+    assert service.calls == [
+        ("list_active",),
+        ("list_archived",),
+        ("create", service.calls[2][1]),
+        ("get", "archived-id", True),
+        ("rename", "p1", "Changed"),
+        ("archive", "p1", 4),
+        ("restore", "p1", 5),
+        ("permanently_delete", "p1", 6),
+    ]
+    assert service.calls[2][1].model_dump() == {
+        "id": service.calls[2][1].id,
+        "title": "New",
+        "genre": "",
+        "description": "",
+        "target_words": 100_000,
+        "target_chapters": 100,
     }
-    deleted = client.delete(f"/api/projects/{service.created.id}")
-    assert deleted.json() == {"ok": True}
-    assert service.deleted == service.created.id
 
 
-def test_archived_project_content_state_has_exact_domain_404(monkeypatch):
+def test_archived_project_get_has_exact_safe_domain_error(monkeypatch):
     class FakeService:
-        async def content_state(self, project_id):
+        async def get(self, project_id, include_archived=False):
             assert project_id == "archived-project"
-            raise ProjectNotFound()
+            assert include_archived is True
+            raise ProjectArchived()
 
     monkeypatch.setattr(projects, "_service", FakeService())
     app = FastAPI()
@@ -196,29 +287,66 @@ def test_archived_project_content_state_has_exact_domain_404(monkeypatch):
     install_error_handlers(app)
     client = TestClient(app, raise_server_exceptions=False)
 
-    response = client.get("/api/projects/archived-project/content-state")
+    response = client.get("/api/projects/archived-project")
 
-    assert response.status_code == 404
+    assert response.status_code == 409
     assert set(response.json()) == {"code", "message", "correlationId"}
-    assert response.json()["code"] == "ProjectNotFound"
-    assert response.json()["message"] == ProjectNotFound.message
+    assert response.json()["code"] == "ProjectArchived"
+    assert response.json()["message"] == ProjectArchived.message
     assert response.json()["correlationId"]
 
 
-def test_project_update_rejects_status_as_an_extra_field(monkeypatch):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"title": "Project", "genre": "历史"},
+        {"title": "Project", "description": "Description"},
+        {"title": "Project", "targetWords": 1000},
+        {"title": "Project", "targetChapters": 10},
+    ],
+)
+def test_project_create_rejects_old_public_fields(monkeypatch, payload):
     class FakeService:
-        async def update(self, project_id, command):
-            raise AssertionError("status payload must be rejected before service")
+        async def create(self, command):
+            raise AssertionError("extra payload must be rejected before service")
 
     monkeypatch.setattr(projects, "_service", FakeService())
     app = FastAPI()
     app.include_router(projects.router, prefix="/api")
     client = TestClient(app, raise_server_exceptions=False)
 
-    response = client.put(
-        "/api/projects/p1", json={"title": "Changed", "status": "drafting"}
-    )
+    response = client.post("/api/projects", json=payload)
 
     assert response.status_code == 422
     detail = response.json()["detail"]
-    assert any(item["loc"][-1] == "status" for item in detail)
+    assert any(item["loc"][-1] != "title" for item in detail)
+
+
+def test_project_rename_and_lifecycle_commands_forbid_extra_or_missing_fields(
+    monkeypatch,
+):
+    class FakeService:
+        async def rename(self, project_id, title):
+            raise AssertionError("invalid rename must not reach service")
+
+        async def archive(self, project_id, expected_lifecycle_revision):
+            raise AssertionError("invalid archive must not reach service")
+
+    monkeypatch.setattr(projects, "_service", FakeService())
+    app = FastAPI()
+    app.include_router(projects.router, prefix="/api")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    rename = client.put(
+        "/api/projects/p1",
+        json={"title": "Changed", "status": "drafting"},
+    )
+    missing_revision = client.post("/api/projects/p1/archive", json={})
+    extra_revision = client.post(
+        "/api/projects/p1/archive",
+        json={"expectedLifecycleRevision": 0, "force": True},
+    )
+
+    assert rename.status_code == 422
+    assert missing_revision.status_code == 422
+    assert extra_revision.status_code == 422

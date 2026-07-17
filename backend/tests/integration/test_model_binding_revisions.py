@@ -11,7 +11,7 @@ from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
 from backend.routers import providers
 from backend.services.model_bindings import ModelBindingService
-from backend.services.projects import CreateProject, ProjectService
+from backend.services.project_lifecycle import CreateProject, ProjectLifecycleService
 from backend.tests.support.disposable_mysql import transaction_factory_for
 
 
@@ -71,7 +71,7 @@ async def test_revision_inheritance_cas_soft_delete_and_history_immutability(
         transaction_factory=tx,
         connection_factory=read_connection,
     )
-    projects_service = ProjectService(
+    projects_service = ProjectLifecycleService(
         ProjectRepository(
             id_factory=(
                 f"30000000-0000-0000-0000-{number:012d}"
@@ -184,7 +184,7 @@ async def test_no_provider_is_complete_unbound_and_binding_failure_rolls_back(
         ModelBindingRepository(), transaction_factory=tx,
         connection_factory=read_connection,
     )
-    service = ProjectService(
+    service = ProjectLifecycleService(
         ProjectRepository(), tx, read_connection,
         model_binding_service=bindings,
     )
@@ -208,7 +208,7 @@ async def test_no_provider_is_complete_unbound_and_binding_failure_rolls_back(
             raise RuntimeError("binding failed")
 
     failed_id = "50000000-0000-0000-0000-000000000002"
-    failing = ProjectService(
+    failing = ProjectLifecycleService(
         ProjectRepository(), tx, read_connection,
         model_binding_service=FailingBindings(),
     )
@@ -237,7 +237,7 @@ async def test_provider_delete_waits_until_initialize_writes_and_commits(
 
     repository = BlockingRepository()
     bindings = ModelBindingService(repository, transaction_factory=tx)
-    service = ProjectService(
+    service = ProjectLifecycleService(
         ProjectRepository(), tx, model_binding_service=bindings
     )
     await insert_provider(
@@ -314,7 +314,7 @@ async def test_concurrent_project_creation_waits_on_global_guard_before_insert(
     bindings = ModelBindingService(
         GuardProbeRepository(), transaction_factory=tx
     )
-    service = ProjectService(
+    service = ProjectLifecycleService(
         InsertProbeRepository(), tx, model_binding_service=bindings
     )
     first_id = "70000000-0000-0000-0000-000000000001"

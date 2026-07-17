@@ -24,7 +24,7 @@ from backend.scripts.initialize_database import (
     _AiomysqlAdminSession,
     initialize_database,
 )
-from backend.services.projects import ProjectService
+from backend.services.project_lifecycle import ProjectLifecycleService
 from backend.services.projections import build_projection_bundle
 
 
@@ -659,7 +659,7 @@ async def _load_v11_preserved_state(
     } or canon != {
         "revision_number": 0,
         "parent_revision_number": 0,
-        "idempotency_key": ProjectService.bootstrap_idempotency_key(
+        "idempotency_key": ProjectLifecycleService.bootstrap_idempotency_key(
             str(project["id"])
         ),
         "source_type": "bootstrap",
@@ -919,7 +919,7 @@ async def _insert_preserved_state(
         (
             id_factory(),
             project["id"],
-            ProjectService.bootstrap_idempotency_key(str(project["id"])),
+            ProjectLifecycleService.bootstrap_idempotency_key(str(project["id"])),
             empty_hash,
             now_ms,
         ),
