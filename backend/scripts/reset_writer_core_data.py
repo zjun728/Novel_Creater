@@ -96,6 +96,16 @@ _M1_SEED_COLUMNS = (
     "id", "project_id", "title", "premise_json", "content_hash", "status",
     "created_at",
 )
+_M1_PREMISE_FIELDS = frozenset({
+    "genre", "logline", "protagonist", "desire", "coreConflict",
+    "worldPressure", "openingHook", "emotionalPromise",
+    "differentiation", "styleTarget", "source", "riskNotes",
+    "endingAnchor",
+})
+_M2_RETAINED_PREMISE_FIELDS = (
+    "genre", "logline", "protagonist", "desire", "coreConflict",
+    "worldPressure", "openingHook", "differentiation",
+)
 _M1_PROVIDER_COLUMNS = (
     "id", "name", "provider_type", "model_name", "base_url", "api_key",
     "enabled", "sort_order", "stream", "max_context_tokens",
@@ -422,35 +432,113 @@ def _map_m1_project(row: Mapping[str, object]) -> dict[str, object]:
     }
 
 
-def _map_m1_seed(row: Mapping[str, object], project_id: str) -> dict[str, object]:
-    seed_id = _identifier(row["id"], "seed.id")
-    owner_id = _identifier(row["project_id"], "seed.project_id")
-    if owner_id != project_id:
-        raise ResetValidationError("M1 requested seed belongs to another project")
-    try:
-        decoded = json.loads(row["premise_json"]) if isinstance(row["premise_json"], str) else row["premise_json"]
-        payload = SeedPayload.model_validate(decoded)
-    except (TypeError, ValueError) as exc:
-        raise ResetValidationError("M1 seed premise_json is not a valid SeedPayload") from exc
-    title = _text(row["title"], "seed.title", max_length=200)
-    if payload.title != title:
-        raise ResetValidationError("M1 seed title and premise_json disagree")
-    content_hash = canonical_hash(payload)
-    if row["content_hash"] != content_hash:
-        raise ResetValidationError("M1 seed content_hash does not match premise_json")
-    if _text(row["status"], "seed.status", max_length=24) != "candidate":
-        raise ResetValidationError("Reset foundation seeds must remain candidates")
-    created_at = _integer(row["created_at"], "seed.created_at")
+def _mapped_seed(
+    *,
+    seed_id: str,
+    owner_id: str,
+    title: str,
+    payload: SeedPayload,
+    created_at: int,
+) -> dict[str, object]:
     return {
         "id": seed_id,
         "project_id": owner_id,
         "title": title,
         "status": "candidate",
         "payload_json": canonical_json(payload),
-        "content_hash": content_hash,
+        "content_hash": canonical_hash(payload),
         "created_at": created_at,
         "updated_at": created_at,
     }
+
+
+def _map_m1_seed(row: Mapping[str, object], project_id: str) -> dict[str, object]:
+    seed_id = _identifier(row["id"], "seed.id")
+    owner_id = _identifier(row["project_id"], "seed.project_id")
+    if owner_id != project_id:
+        raise ResetValidationError("M1 requested seed belongs to another project")
+    title = _text(row["title"], "seed.title", max_length=200)
+    try:
+        decoded = (
+            json.loads(row["premise_json"])
+            if isinstance(row["premise_json"], str)
+            else row["premise_json"]
+        )
+    except (TypeError, ValueError):
+        raise ResetValidationError(
+            "M1 seed premise_json is not the exact historical object"
+        ) from None
+    if (
+        type(decoded) is not dict
+        or set(decoded) != _M1_PREMISE_FIELDS
+        or any(type(decoded[field]) is not str for field in _M1_PREMISE_FIELDS)
+    ):
+        raise ResetValidationError(
+            "M1 seed premise_json is not the exact historical object"
+        )
+    historical_hash = canonical_hash({"title": title, "premise": decoded})
+    if row["content_hash"] != historical_hash:
+        raise ResetValidationError(
+            "M1 seed content_hash does not match the historical envelope"
+        )
+    expected_status = "selected" if title == SELECTED_SEED_TITLE else "candidate"
+    if _text(row["status"], "seed.status", max_length=24) != expected_status:
+        raise ResetValidationError(
+            "M1 seed status does not match its selection role"
+        )
+    try:
+        payload = SeedPayload(
+            title=title,
+            **{
+                field: decoded[field]
+                for field in _M2_RETAINED_PREMISE_FIELDS
+            },
+        )
+    except (TypeError, ValueError):
+        raise ResetValidationError(
+            "M1 seed retained fields are not a valid current SeedPayload"
+        ) from None
+    return _mapped_seed(
+        seed_id=seed_id,
+        owner_id=owner_id,
+        title=title,
+        payload=payload,
+        created_at=_integer(row["created_at"], "seed.created_at"),
+    )
+
+
+def _map_v11_seed(
+    row: Mapping[str, object], project_id: str,
+) -> dict[str, object]:
+    seed_id = _identifier(row["id"], "seed.id")
+    owner_id = _identifier(row["project_id"], "seed.project_id")
+    if owner_id != project_id:
+        raise ResetValidationError("M2 requested seed belongs to another project")
+    title = _text(row["title"], "seed.title", max_length=200)
+    try:
+        decoded = (
+            json.loads(row["premise_json"])
+            if isinstance(row["premise_json"], str)
+            else row["premise_json"]
+        )
+        payload = SeedPayload.model_validate(decoded)
+    except (TypeError, ValueError):
+        raise ResetValidationError(
+            "M2 seed payload is not a valid current SeedPayload"
+        ) from None
+    if payload.title != title:
+        raise ResetValidationError("M2 seed title and payload disagree")
+    if row["content_hash"] != canonical_hash(payload):
+        raise ResetValidationError("M2 seed content_hash does not match payload")
+    if _text(row["status"], "seed.status", max_length=24) != "candidate":
+        raise ResetValidationError("M2 seed identities must remain candidates")
+    return _mapped_seed(
+        seed_id=seed_id,
+        owner_id=owner_id,
+        title=title,
+        payload=payload,
+        created_at=_integer(row["created_at"], "seed.created_at"),
+    )
 
 
 def _map_m1_provider(row: Mapping[str, object]) -> dict[str, object]:
@@ -629,7 +717,7 @@ async def _load_v11_preserved_state(
         for row in seed_rows
     ):
         raise ResetValidationError("M2 seed heads must all be revision 1")
-    seeds = tuple(_map_m1_seed(row, str(project["id"])) for row in seed_rows)
+    seeds = tuple(_map_v11_seed(row, str(project["id"])) for row in seed_rows)
     selected = await admin_session.fetchone(
         f"SELECT x.seed_id,x.seed_revision_id,"
         f"JSON_UNQUOTE(JSON_EXTRACT(r.payload_json,'$.title')) AS title,"
