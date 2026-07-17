@@ -360,6 +360,33 @@ test('chapter session client separates session draft and explicit candidate writ
   assert.deepEqual(bodyOf(calls[4]), { expectedWorkingDraftRevision: 3 })
 })
 
+test('chapter working draft generation uses a long model timeout', async () => {
+  const originalFetch = global.fetch
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const timeouts = []
+  global.fetch = async () => jsonResponse()
+  global.setTimeout = (callback, timeoutMs) => {
+    timeouts.push(timeoutMs)
+    return { callback, timeoutMs }
+  }
+  global.clearTimeout = () => {}
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await api.chapterSessions.generateWorkingDraft('project-1', 'session-1', {
+      expectedWorkingDraftRevision: 2,
+      authorInstruction: '放慢节奏，多写人物反应',
+    })
+
+    assert.equal(timeouts.at(-1), 1_200_000)
+  } finally {
+    global.fetch = originalFetch
+    global.setTimeout = originalSetTimeout
+    global.clearTimeout = originalClearTimeout
+  }
+})
+
 test('every shared client path segment is encoded without changing route structure', async () => {
   const calls = await captureRequests(async api => {
     await api.projects.get('project/one')

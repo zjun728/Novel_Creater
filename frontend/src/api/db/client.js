@@ -4,6 +4,7 @@ import { ApiError, parseApiError } from './api-error.js'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
+const CHAPTER_DRAFT_GENERATION_TIMEOUT = 1_200_000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   const controller = new AbortController()
@@ -46,7 +47,7 @@ async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   }
 }
 const get = path => request('GET', path)
-const post = (path, body) => request('POST', path, body)
+const post = (path, body, timeoutMs) => request('POST', path, body, timeoutMs)
 const put = (path, body) => request('PUT', path, body)
 const del = (path, body) => request('DELETE', path, body)
 
@@ -349,6 +350,7 @@ export const api = {
         expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
         authorInstruction: data.authorInstruction,
       },
+      CHAPTER_DRAFT_GENERATION_TIMEOUT,
     ),
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,
