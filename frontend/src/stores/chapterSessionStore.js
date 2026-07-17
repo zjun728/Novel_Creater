@@ -34,10 +34,12 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   const creating = ref(false)
   const savingDraft = ref(false)
   const savingCandidate = ref(false)
+  const generatingDraft = ref(false)
   const loadGuard = createLatestRequestGuard()
   const createGuard = createLatestRequestGuard()
   const draftGuard = createLatestRequestGuard()
   const candidateGuard = createLatestRequestGuard()
+  const generationGuard = createLatestRequestGuard()
   let stateGeneration = 0
 
   const session = computed(() => workspace.value?.session || null)
@@ -55,12 +57,14 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       createGuard.invalidate()
       draftGuard.invalidate()
       candidateGuard.invalidate()
+      generationGuard.invalidate()
       workspace.value = null
       error.value = null
       loading.value = false
       creating.value = false
       savingDraft.value = false
       savingCandidate.value = false
+      generatingDraft.value = false
       projectId.value = normalized
     }
     return normalized
@@ -185,12 +189,44 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
+  async function generateWorkingDraft(nextProjectId, authorInstruction = '') {
+    const targetProjectId = enterProject(nextProjectId)
+    const current = requireWorkspace(workspace.value)
+    const generation = generationGuard.begin()
+    const targetStateGeneration = ++stateGeneration
+    generatingDraft.value = true
+    try {
+      const generated = await api.chapterSessions.generateWorkingDraft(
+        targetProjectId,
+        current.session.id,
+        {
+          expectedWorkingDraftRevision: current.workingDraft.revision,
+          authorInstruction,
+        },
+      )
+      if (isCurrent(generationGuard, generation, targetProjectId, targetStateGeneration)) {
+        acceptWorkspace(generated)
+      }
+      return generated
+    } catch (failure) {
+      if (isCurrent(generationGuard, generation, targetProjectId, targetStateGeneration)) {
+        error.value = publicError(failure)
+      }
+      throw failure
+    } finally {
+      if (projectId.value === targetProjectId && generationGuard.isCurrent(generation)) {
+        generatingDraft.value = false
+      }
+    }
+  }
+
   function invalidate() {
     stateGeneration += 1
     loadGuard.invalidate()
     createGuard.invalidate()
     draftGuard.invalidate()
     candidateGuard.invalidate()
+    generationGuard.invalidate()
   }
 
   return {
@@ -201,6 +237,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating,
     savingDraft,
     savingCandidate,
+    generatingDraft,
     session,
     workingDraft,
     candidates,
@@ -208,6 +245,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     load,
     create,
     saveWorkingDraft,
+    generateWorkingDraft,
     saveCandidate,
     invalidate,
   }

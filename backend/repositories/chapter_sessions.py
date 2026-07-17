@@ -112,6 +112,30 @@ class ChapterSessionRepository:
         )
         return [self._candidate(row) for row in rows]
 
+    async def resolve_writing_provider(self, session, project_id: str):
+        row = await session.fetchone(
+            """SELECT p.id,p.name,p.provider_type,p.model_name,p.base_url,p.api_key,
+                      p.temperature,p.max_output_tokens
+               FROM project_model_binding_heads h
+               JOIN project_model_binding_revisions r
+                 ON r.project_id=h.project_id AND r.id=h.binding_revision_id
+               JOIN project_model_binding_items i
+                 ON i.binding_revision_id=r.id
+               JOIN provider_profiles p ON p.id=i.provider_id
+               WHERE h.project_id=%s
+                 AND i.task_key='writing'
+                 AND i.resolution_status='bound'
+                 AND p.lifecycle_status='active'
+                 AND p.enabled=1
+                 AND p.provider_type IS NOT NULL AND TRIM(p.provider_type)<>''
+                 AND p.model_name IS NOT NULL AND TRIM(p.model_name)<>''
+                 AND p.base_url IS NOT NULL AND TRIM(p.base_url)<>''
+                 AND p.api_key IS NOT NULL AND TRIM(p.api_key)<>''
+               LIMIT 1""",
+            (project_id,),
+        )
+        return dict(row) if row else None
+
     def _json(self, value):
         if isinstance(value, dict):
             return value

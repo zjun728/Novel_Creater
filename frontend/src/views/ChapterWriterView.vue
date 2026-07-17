@@ -27,6 +27,7 @@ const loading = ref(true)
 const pageError = ref('')
 const writerCoreState = ref(null)
 const editorContent = ref('')
+const authorInstruction = ref('')
 const lastLoadedDraftRevision = ref(null)
 
 const projectId = computed(() => String(route.params.projectId || ''))
@@ -41,6 +42,11 @@ const canCreateSession = computed(() => (
   && !chapterSessionStore.hasSession
 ))
 const canSaveDraft = computed(() => chapterSessionStore.hasSession && !chapterSessionStore.savingDraft)
+const canGenerateDraft = computed(() => (
+  chapterSessionStore.hasSession
+  && !chapterSessionStore.generatingDraft
+  && workingDraft.value?.revision != null
+))
 const canSaveCandidate = computed(() => (
   chapterSessionStore.hasSession
   && !chapterSessionStore.savingCandidate
@@ -96,6 +102,11 @@ async function saveWorkingDraft() {
   syncEditorFromWorkspace()
 }
 
+async function generateWorkingDraft() {
+  await chapterSessionStore.generateWorkingDraft(projectId.value, authorInstruction.value)
+  syncEditorFromWorkspace()
+}
+
 async function saveCandidate() {
   await chapterSessionStore.saveCandidate(projectId.value)
 }
@@ -134,7 +145,7 @@ onBeforeUnmount(() => {
     <template v-else>
       <header class="writer-hero">
         <div>
-          <p class="eyebrow">M4 / CHAPTER SESSION</p>
+          <p class="eyebrow">M5 / AI WORKING DRAFT</p>
           <h1>章节工作台</h1>
           <p>编辑不会自动生成候选；只有点击“保存为候选”才会冻结当前工作稿。</p>
         </div>
@@ -164,9 +175,21 @@ onBeforeUnmount(() => {
             v-model:value="editorContent"
             type="textarea"
             :autosize="{ minRows: 22 }"
-            placeholder="在这里手动输入或粘贴章节正文。当前里程碑不调用模型。"
+            placeholder="在这里手动输入、粘贴或继续编辑章节正文。AI 生成只会进入工作稿，不会自动保存候选。"
             :disabled="!session"
           />
+
+          <div class="generation-box">
+            <label for="author-instruction">作者临时要求</label>
+            <n-input
+              id="author-instruction"
+              v-model:value="authorInstruction"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 4 }"
+              placeholder="可选：例如“多一点市井对话”“情绪更压迫”“不要写成设定说明”。"
+              :disabled="!session || chapterSessionStore.generatingDraft"
+            />
+          </div>
 
           <div class="editor-actions">
             <n-button
@@ -176,6 +199,15 @@ onBeforeUnmount(() => {
               @click="createChapterSession"
             >
               创建章节会话
+            </n-button>
+            <n-button
+              type="primary"
+              secondary
+              :disabled="!canGenerateDraft"
+              :loading="chapterSessionStore.generatingDraft"
+              @click="generateWorkingDraft"
+            >
+              AI 生成工作稿
             </n-button>
             <n-button
               :disabled="!canSaveDraft"
@@ -234,6 +266,8 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .card-header strong { display: block; font-family: Georgia, 'Noto Serif SC', serif; font-size: 18px; }
 .card-header span { color: #82786b; font-size: 12px; }
+.generation-box { display: grid; gap: 8px; margin-top: 14px; }
+.generation-box label { color: #70675c; font-size: 12px; font-weight: 700; }
 .editor-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .side-stack { display: grid; align-content: start; gap: 16px; }
 .muted { margin: 0; color: #81776a; line-height: 1.7; }
