@@ -572,6 +572,7 @@ git commit -m "fix: fence writes for archived projects"
 - Modify: `frontend/tests/unit/writerCoreApi.test.mjs`
 - Create: `frontend/tests/unit/projectLifecycleStore.test.mjs`
 - Create: `frontend/tests/unit/projectRoutes.test.mjs`
+- Create: `frontend/tests/unit/projectRouteSfcIntegration.test.mjs`
 - Rewrite: `frontend/tests/unit/m1Navigation.test.mjs`
 - Modify: `frontend/tests/unit/modelBindingStore.test.mjs`
 
@@ -604,7 +605,11 @@ Test the store with injected API fakes:
 - an older `loadProject` response cannot overwrite a newer route context;
 - late list or project reads cannot overwrite a newer lifecycle write;
 - permanent delete removes only an archived project after server success and a
-  late read cannot resurrect it.
+  late read cannot resurrect it;
+- rename, archive, restore, and permanent delete for one project are sent and
+  applied in invocation order, while different projects remain independent;
+- a failed mutation does not poison the next queued mutation, and a later
+  failure cannot erase an earlier successful mutation.
 
 Run:
 
@@ -673,6 +678,13 @@ When the route project ID changes, clear the prior `currentProject` before the
 new read starts. A failed read for the new route remains empty; lifecycle
 results for another project cannot repopulate or clear that route-owned slot.
 
+Serialize the four project-ID lifecycle mutations through one per-project tail
+queue. Store a rejection-swallowing continuation as the tail but return each
+operation's original promise to its caller. Remove a settled tail only when it
+is still the map entry for that project, so an older completion cannot delete a
+newer chain. Project creation remains outside this queue because no project ID
+exists before its response.
+
 - [ ] **Step 3: Run the API and store tests**
 
 Run:
@@ -702,7 +714,14 @@ Assert route matching:
   resolve to `NotFound`;
 - a project-route refresh calls `loadProject(route.params.projectId)`;
 - an archived response selects `ArchivedProjectStatusView`;
-- a missing project selects `NotFoundView`.
+- a missing project selects `NotFoundView`;
+- a real memory router lazy-loads and server-renders at least one route SFC
+  through Vite's Vue transform.
+
+The repository has no DOM mount harness (`@vue/test-utils`, `jsdom`, or
+`happy-dom`), so this atomic gate uses Vue's server renderer and stubs only
+Naive UI's visual components. DOM event behavior remains the browser gate's
+responsibility; do not add a new test dependency for this task.
 
 Run:
 
@@ -754,7 +773,7 @@ Run:
 
 ```powershell
 node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs
-node --test frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs
+node --test frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/projectRouteSfcIntegration.test.mjs frontend/tests/unit/m1Navigation.test.mjs
 npm --prefix frontend run test:unit
 npm --prefix frontend run build
 rg "PROJECT_FIELDS|api\.projects\.delete|invalidateOpenProject" frontend/src/api/db/client.js frontend/src/stores/projectStore.js
@@ -767,7 +786,7 @@ store, or route match.
 - [ ] **Step 7: Commit the atomic gate**
 
 ```powershell
-git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/api/db/client.js frontend/src/stores/projectStore.js frontend/src/router frontend/src/views/NotFoundView.vue frontend/src/views/ProjectOverviewView.vue frontend/src/views/ArchivedProjectStatusView.vue frontend/src/views/ProviderSettingsView.vue frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/composables/useRouteProject.js frontend/src/views/ChapterWriterView.vue frontend/src/components/settings/TaskModelBinding.vue frontend/src/components/settings/projectBindingSelection.js frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/m1Navigation.test.mjs frontend/tests/unit/modelBindingStore.test.mjs
+git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/api/db/client.js frontend/src/stores/projectStore.js frontend/src/router frontend/src/views/NotFoundView.vue frontend/src/views/ProjectOverviewView.vue frontend/src/views/ArchivedProjectStatusView.vue frontend/src/views/ProviderSettingsView.vue frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/composables/useRouteProject.js frontend/src/views/ChapterWriterView.vue frontend/src/components/settings/TaskModelBinding.vue frontend/src/components/settings/projectBindingSelection.js frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectLifecycleStore.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/projectRouteSfcIntegration.test.mjs frontend/tests/unit/m1Navigation.test.mjs frontend/tests/unit/modelBindingStore.test.mjs
 git commit -m "feat: add project lifecycle routes and state"
 ```
 

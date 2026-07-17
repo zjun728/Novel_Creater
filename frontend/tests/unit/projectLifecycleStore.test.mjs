@@ -395,3 +395,225 @@ test('lifecycle mutations cannot change currentProject for a different pending r
     }
   }
 })
+
+test('same-project rename and archive are sent and applied in invocation order', async () => {
+  const original = project('project-1', { title: '旧名', lifecycleRevision: 3 })
+  const renamed = project('project-1', { title: '新名', lifecycleRevision: 3 })
+  const archived = project('project-1', {
+    title: '新名',
+    archivedAt: 123,
+    lifecycleRevision: 4,
+  })
+  const pendingRename = deferred()
+  const pendingArchive = deferred()
+  const calls = []
+  const store = createStore({
+    listActive: async () => [original],
+    listArchived: async () => [],
+    get: async () => original,
+    rename: async () => {
+      calls.push('rename')
+      return pendingRename.promise
+    },
+    archive: async () => {
+      calls.push('archive')
+      return pendingArchive.promise
+    },
+  })
+  await store.loadActiveProjects()
+  await store.loadArchivedProjects()
+  await store.loadProject('project-1')
+
+  const renaming = store.renameProject('project-1', '新名')
+  const archiving = store.archiveProject('project-1', 3)
+  assert.deepEqual(calls, ['rename'])
+
+  pendingRename.resolve(renamed)
+  await renaming
+  await Promise.resolve()
+  assert.deepEqual(calls, ['rename', 'archive'])
+  assert.deepEqual(store.activeProjects, [renamed])
+  assert.deepEqual(store.currentProject, renamed)
+
+  pendingArchive.resolve(archived)
+  await archiving
+  assert.deepEqual(store.activeProjects, [])
+  assert.deepEqual(store.archivedProjects, [archived])
+  assert.deepEqual(store.currentProject, archived)
+})
+
+test('a failed project mutation does not poison the next queued mutation', async () => {
+  const original = project('project-1', { lifecycleRevision: 3 })
+  const archived = project('project-1', { archivedAt: 123, lifecycleRevision: 4 })
+  const pendingRename = deferred()
+  const pendingArchive = deferred()
+  const calls = []
+  const store = createStore({
+    listActive: async () => [original],
+    listArchived: async () => [],
+    get: async () => original,
+    rename: async () => {
+      calls.push('rename')
+      return pendingRename.promise
+    },
+    archive: async () => {
+      calls.push('archive')
+      return pendingArchive.promise
+    },
+  })
+  await store.loadActiveProjects()
+  await store.loadArchivedProjects()
+  await store.loadProject('project-1')
+
+  const renaming = store.renameProject('project-1', '失败的新名')
+  const renameFailure = assert.rejects(renaming, /rename failed/)
+  const archiving = store.archiveProject('project-1', 3)
+  assert.deepEqual(calls, ['rename'])
+
+  pendingRename.reject(new Error('rename failed'))
+  await renameFailure
+  await Promise.resolve()
+  assert.deepEqual(calls, ['rename', 'archive'])
+  assert.deepEqual(store.activeProjects, [original])
+  assert.deepEqual(store.currentProject, original)
+
+  pendingArchive.resolve(archived)
+  await archiving
+  assert.deepEqual(store.activeProjects, [])
+  assert.deepEqual(store.archivedProjects, [archived])
+  assert.deepEqual(store.currentProject, archived)
+})
+
+test('archive and restore preserve CAS invocation order for one project', async () => {
+  const original = project('project-1', { lifecycleRevision: 3 })
+  const archived = project('project-1', { archivedAt: 123, lifecycleRevision: 4 })
+  const restored = project('project-1', { lifecycleRevision: 5 })
+  const pendingArchive = deferred()
+  const pendingRestore = deferred()
+  const calls = []
+  const store = createStore({
+    listActive: async () => [original],
+    listArchived: async () => [],
+    get: async () => original,
+    archive: async (_projectId, revision) => {
+      calls.push(['archive', revision])
+      return pendingArchive.promise
+    },
+    restore: async (_projectId, revision) => {
+      calls.push(['restore', revision])
+      return pendingRestore.promise
+    },
+  })
+  await store.loadActiveProjects()
+  await store.loadArchivedProjects()
+  await store.loadProject('project-1')
+
+  const archiving = store.archiveProject('project-1', 3)
+  const restoring = store.restoreProject('project-1', 4)
+  assert.deepEqual(calls, [['archive', 3]])
+
+  pendingArchive.resolve(archived)
+  await archiving
+  await Promise.resolve()
+  assert.deepEqual(calls, [['archive', 3], ['restore', 4]])
+  assert.deepEqual(store.currentProject, archived)
+
+  pendingRestore.resolve(restored)
+  await restoring
+  assert.deepEqual(store.activeProjects, [restored])
+  assert.deepEqual(store.archivedProjects, [])
+  assert.deepEqual(store.currentProject, restored)
+})
+
+test('permanent delete waits for the earlier archive of the same project', async () => {
+  const original = project('project-1', { lifecycleRevision: 3 })
+  const archived = project('project-1', { archivedAt: 123, lifecycleRevision: 4 })
+  const pendingArchive = deferred()
+  const pendingDelete = deferred()
+  const calls = []
+  const store = createStore({
+    listActive: async () => [original],
+    listArchived: async () => [],
+    get: async () => original,
+    archive: async (_projectId, revision) => {
+      calls.push(['archive', revision])
+      return pendingArchive.promise
+    },
+    permanentlyDelete: async (_projectId, revision) => {
+      calls.push(['delete', revision])
+      return pendingDelete.promise
+    },
+  })
+  await store.loadActiveProjects()
+  await store.loadArchivedProjects()
+  await store.loadProject('project-1')
+
+  const archiving = store.archiveProject('project-1', 3)
+  const deleting = store.permanentlyDeleteProject('project-1', 4)
+  assert.deepEqual(calls, [['archive', 3]])
+
+  pendingArchive.resolve(archived)
+  await archiving
+  await Promise.resolve()
+  assert.deepEqual(calls, [['archive', 3], ['delete', 4]])
+  assert.deepEqual(store.archivedProjects, [archived])
+  assert.deepEqual(store.currentProject, archived)
+
+  pendingDelete.resolve()
+  await deleting
+  assert.deepEqual(store.archivedProjects, [])
+  assert.equal(store.currentProject, null)
+})
+
+test('a later queued failure does not erase an earlier successful mutation', async () => {
+  const original = project('project-1', { title: '旧名', lifecycleRevision: 3 })
+  const renamed = project('project-1', { title: '新名', lifecycleRevision: 3 })
+  const store = createStore({
+    listActive: async () => [original],
+    listArchived: async () => [],
+    get: async () => original,
+    rename: async () => renamed,
+    archive: async () => {
+      throw new Error('archive failed')
+    },
+  })
+  await store.loadActiveProjects()
+  await store.loadArchivedProjects()
+  await store.loadProject('project-1')
+
+  const renaming = store.renameProject('project-1', '新名')
+  const archiving = store.archiveProject('project-1', 3)
+  await renaming
+  await assert.rejects(archiving, /archive failed/)
+
+  assert.deepEqual(store.activeProjects, [renamed])
+  assert.deepEqual(store.archivedProjects, [])
+  assert.deepEqual(store.currentProject, renamed)
+})
+
+test('mutations for different projects are not serialized together', async () => {
+  const pendingRename = deferred()
+  const pendingArchive = deferred()
+  const calls = []
+  const store = createStore({
+    rename: async projectId => {
+      calls.push(['rename', projectId])
+      return pendingRename.promise
+    },
+    archive: async projectId => {
+      calls.push(['archive', projectId])
+      return pendingArchive.promise
+    },
+  })
+
+  const renaming = store.renameProject('project-a', '新名')
+  const archiving = store.archiveProject('project-b', 2)
+  assert.deepEqual(calls, [
+    ['rename', 'project-a'],
+    ['archive', 'project-b'],
+  ])
+
+  pendingRename.resolve(project('project-a', { title: '新名' }))
+  pendingArchive.resolve(project('project-b', { archivedAt: 123, lifecycleRevision: 3 }))
+  await Promise.all([renaming, archiving])
+})
