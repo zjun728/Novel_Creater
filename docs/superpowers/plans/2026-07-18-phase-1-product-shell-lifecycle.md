@@ -819,6 +819,7 @@ git commit -m "feat: add project lifecycle routes and state"
 - Create: `frontend/tests/unit/projectNameDialog.test.mjs`
 - Create: `frontend/tests/unit/projectLibraryViews.test.mjs`
 - Create: `frontend/tests/unit/appFeedback.test.mjs`
+- Modify: `frontend/tests/unit/m1Navigation.test.mjs`
 
 - [ ] **Step 1: Write component behavior tests**
 

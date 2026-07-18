@@ -5,6 +5,7 @@ export function createDangerousConfirmation(dialog) {
     return new Promise(resolve => {
       let settled = false
       let actionPromise
+      let actionStarted = false
 
       function settle(result) {
         if (settled) return
@@ -17,16 +18,18 @@ export function createDangerousConfirmation(dialog) {
       }
 
       function runPositiveAction() {
-        if (actionPromise) return actionPromise
+        if (actionStarted) return actionPromise
+        if (settled) return Promise.resolve()
+        actionStarted = true
         actionPromise = Promise.resolve()
           .then(() => options.onConfirm?.())
           .then(result => {
             settle(true)
             return result
           })
-          .catch(error => {
-            actionPromise = null
-            throw error
+          .catch(() => {
+            settle(false)
+            return undefined
           })
         return actionPromise
       }

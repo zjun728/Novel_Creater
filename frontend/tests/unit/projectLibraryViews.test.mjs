@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 
+import { createDangerousConfirmation } from '../../src/composables/useDangerousConfirmation.js'
+
 const naiveUiStubId = '\0project-library-naive-ui-stub'
 const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
 const naiveUiStubPlugin = {
@@ -300,6 +302,55 @@ test('permanent delete calls no API on cancel and runs once through danger confi
 
   await confirmationOptions.onConfirm()
   assert.deepEqual(calls, [['delete', 'project-1', 3]])
+})
+
+test('failed permanent delete settles, cleans pending state, and reports no success', async () => {
+  const archived = project({ archivedAt: 123 })
+  const calls = []
+  let dialogOptions
+  const feedback = messageRecorder()
+  const confirmation = createDangerousConfirmation({
+    warning(options) {
+      dialogOptions = options
+      return {}
+    },
+  })
+  const controller = archivedModule.createArchivedProjectsController({
+    store: {
+      archivedProjects: [archived],
+      permanentlyDeleteProject: async (id, revision) => {
+        calls.push(['delete', id, revision])
+        throw new Error('项目删除失败')
+      },
+    },
+    message: feedback.message,
+    confirmation,
+  })
+
+  const deleting = controller.permanentlyDelete(archived)
+  const first = await dialogOptions.onPositiveClick().then(
+    value => value,
+    error => error,
+  )
+  const second = await dialogOptions.onPositiveClick().then(
+    value => value,
+    error => error,
+  )
+  const settled = await Promise.race([
+    deleting.then(() => 'settled'),
+    new Promise(resolve => setTimeout(() => resolve('timeout'), 100)),
+  ])
+
+  assert.equal(first, undefined)
+  assert.equal(second, undefined)
+  assert.equal(settled, 'settled')
+  assert.deepEqual(calls, [['delete', 'project-1', 3]])
+  assert.equal(controller.actionError.value, '项目删除失败')
+  assert.equal(controller.isProjectPending('project-1'), false)
+  assert.equal(
+    feedback.calls.some(call => call.type === 'success'),
+    false,
+  )
 })
 
 test('both pages expose recoverable load errors and retry the same list', async () => {

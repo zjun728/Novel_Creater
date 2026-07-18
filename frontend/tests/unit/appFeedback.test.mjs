@@ -119,6 +119,41 @@ test('cancel, Escape, and close settle false without invoking the destructive ca
   }
 })
 
+test('a rejected dangerous action settles false and remains single-use', async () => {
+  let dialogOptions
+  let actionCalls = 0
+  const confirmation = createDangerousConfirmation({
+    warning(options) {
+      dialogOptions = options
+      return {}
+    },
+  })
+  const result = confirmation.confirm({
+    onConfirm: async () => {
+      actionCalls += 1
+      throw new Error('delete failed')
+    },
+  })
+
+  const first = await dialogOptions.onPositiveClick().then(
+    value => value,
+    error => error,
+  )
+  const second = await dialogOptions.onPositiveClick().then(
+    value => value,
+    error => error,
+  )
+  const settled = await Promise.race([
+    result,
+    new Promise(resolve => setTimeout(() => resolve('timeout'), 100)),
+  ])
+
+  assert.equal(first, undefined)
+  assert.equal(second, undefined)
+  assert.equal(settled, false)
+  assert.equal(actionCalls, 1)
+})
+
 const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
 let vite
 let overlayComponent
