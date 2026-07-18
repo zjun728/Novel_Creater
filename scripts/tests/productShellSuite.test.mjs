@@ -13,6 +13,15 @@ const runnerModule = '../../frontend/e2e/run-product-shell.mjs'
 const DATABASE_A = 'novel_creator_test_0123456789abcdef0123456789abcdef'
 const DATABASE_B = 'novel_creator_test_fedcba9876543210fedcba9876543210'
 const TEST_ENVIRONMENT = Object.freeze({
+  PATH: 'C:\\test-tools',
+  SystemRoot: 'C:\\Windows',
+  TEMP: 'C:\\Temp',
+  TMP: 'C:\\Temp',
+  USERPROFILE: 'C:\\Users\\browser-test',
+  APPDATA: 'C:\\Users\\browser-test\\AppData\\Roaming',
+  LOCALAPPDATA: 'C:\\Users\\browser-test\\AppData\\Local',
+  PLAYWRIGHT_BROWSERS_PATH: 'C:\\playwright-browsers',
+  PYTHONPATH: 'C:\\test-python-path',
   TEST_MYSQL_HOST: '127.0.0.1',
   TEST_MYSQL_PORT: '33060',
   TEST_MYSQL_USER: 'root',
@@ -22,34 +31,53 @@ const TEST_ENVIRONMENT = Object.freeze({
   MYSQL_USER: 'product-user',
   MYSQL_PASSWORD: 'product-secret',
   MYSQL_DB: 'novel_creator',
+  GITHUB_TOKEN: 'unrelated-parent-secret',
+  AWS_SECRET_ACCESS_KEY: 'unrelated-cloud-secret',
 })
 
-function fakeResult(status = 0) {
+function fakeResult(status = 0, { finishError = null } = {}) {
   return {
     status,
     error: null,
     logObserver: {
       finish(values) {
         assert.ok(values.includes(TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD))
+        if (finishError) throw finishError
         return { matchCount: 0, truncated: false }
       },
     },
   }
 }
 
-function fakeChild(label) {
+function fakeChild(label, pid) {
   const child = new EventEmitter()
   child.label = label
+  child.pid = pid
   child.stdout = new EventEmitter()
   child.stderr = new EventEmitter()
   child.exitCode = null
+  child.closed = false
   return child
+}
+
+function closeFakeChild(child, code = 0, { emitExit = true } = {}) {
+  if (child.closed) return
+  child.exitCode = code
+  if (emitExit) child.emit('exit', code, null)
+  child.stdout.emit('end')
+  child.stderr.emit('end')
+  child.closed = true
+  child.emit('close', code, null)
 }
 
 function createHarness({
   databases = [DATABASE_A],
   ports = [41001, 41002],
   browserStatus = 0,
+  browserLogScanError = null,
+  hangPhase = '',
+  healthMode = 'resolve',
+  serverFailure = null,
 } = {}) {
   const events = []
   const databaseQueue = [...databases]
@@ -59,19 +87,35 @@ function createHarness({
   const processRunner = {
     async run(command, args, options, runtime) {
       events.push({ kind: 'run', command, args: [...args], options, runtime })
-      if (args.some(argument => /playwright[\\/]cli\.js$/u.test(String(argument)))) {
-        return fakeResult(browserStatus)
+      const isBrowser = args.some(argument => /playwright[\\/]cli\.js$/u.test(String(argument)))
+      const isCleanup = args.includes('--drop')
+      const phase = isBrowser ? 'browser' : isCleanup ? 'cleanup' : 'prepare'
+      if (hangPhase === phase) return new Promise(() => {})
+      if (isBrowser) {
+        return fakeResult(browserStatus, { finishError: browserLogScanError })
       }
       return fakeResult()
     },
     start(command, args, options, metadata) {
-      const child = fakeChild(metadata.label)
+      const child = fakeChild(metadata.label, 5300 + children.length)
       children.push(child)
       events.push({ kind: 'start', command, args: [...args], options, metadata, child })
+      if (serverFailure?.label === metadata.label) {
+        if (serverFailure.kind === 'error') child.on('error', () => {})
+        queueMicrotask(() => {
+          if (serverFailure.kind === 'error') {
+            child.emit('error', new Error('synthetic spawn failure containing no credentials'))
+            closeFakeChild(child, 1, { emitExit: false })
+            return
+          }
+          closeFakeChild(child, serverFailure.code ?? 3)
+        })
+      }
       return child
     },
     async stop(child) {
       events.push({ kind: 'stop', child })
+      closeFakeChild(child)
     },
   }
   const reservations = []
@@ -90,9 +134,11 @@ function createHarness({
   const healthCalls = []
   const waitForUrlImpl = async (url, options) => {
     healthCalls.push({ url, options })
+    if (healthMode === 'hang') return new Promise(() => {})
   }
-  const serverLogObserverFactory = (_child, { sensitiveValues }) => ({
+  const serverLogObserverFactory = (child, { sensitiveValues }) => ({
     finish(values) {
+      assert.equal(child.closed, true, 'server logs must be scanned only after close/drain')
       observerFinishes.push({ sensitiveValues, values })
       return { matchCount: 0, truncated: false }
     },
@@ -111,6 +157,41 @@ function createHarness({
     reservations,
     serverLogObserverFactory,
     waitForUrlImpl,
+  }
+}
+
+function assertExactEnvironment(actual, expected) {
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(actual).sort(([left], [right]) => left.localeCompare(right))),
+    Object.fromEntries(Object.entries(expected).sort(([left], [right]) => left.localeCompare(right))),
+  )
+}
+
+function boundedTestDeadlines() {
+  return {
+    prepareMs: 10,
+    healthMs: 10,
+    browserMs: 10,
+    cleanupMs: 10,
+    stopMs: 20,
+    settleMs: 10,
+  }
+}
+
+async function settleWithin(promise, timeoutMs = 500) {
+  let timer
+  try {
+    return await Promise.race([
+      promise.then(
+        value => ({ status: 'resolved', value }),
+        error => ({ status: 'rejected', error }),
+      ),
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve({ status: 'watchdog' }), timeoutMs)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -226,15 +307,51 @@ test('one formal spec owns one fresh database, two distinct ports, nonce health,
   assert.match(browser.args.join(' '), /product-shell-lifecycle\.spec\.ts/)
   assert.match(browser.args.join(' '), /playwright\.product-shell\.config\.ts/)
 
-  const childEnvironment = starts[0].options.env
-  assert.equal(childEnvironment.MYSQL_HOST, TEST_ENVIRONMENT.TEST_MYSQL_HOST)
-  assert.equal(childEnvironment.MYSQL_PORT, TEST_ENVIRONMENT.TEST_MYSQL_PORT)
-  assert.equal(childEnvironment.MYSQL_USER, TEST_ENVIRONMENT.TEST_MYSQL_USER)
-  assert.equal(childEnvironment.MYSQL_PASSWORD, TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD)
-  assert.equal(childEnvironment.MYSQL_DB, DATABASE_A)
-  assert.equal(childEnvironment.BROWSER_TEST_DATABASE, DATABASE_A)
-  assert.equal(childEnvironment.M2_BROWSER_RUN_NONCE, 'product-shell-owner')
-  assert.equal(childEnvironment.MYSQL_DB === TEST_ENVIRONMENT.MYSQL_DB, false)
+  const baseEnvironment = Object.fromEntries(
+    runner.BASE_ENV_ALLOWLIST
+      .filter(name => Object.hasOwn(TEST_ENVIRONMENT, name))
+      .map(name => [name, TEST_ENVIRONMENT[name]]),
+  )
+  assertExactEnvironment(prepare.options.env, {
+    ...baseEnvironment,
+    TEST_MYSQL_HOST: TEST_ENVIRONMENT.TEST_MYSQL_HOST,
+    TEST_MYSQL_PORT: TEST_ENVIRONMENT.TEST_MYSQL_PORT,
+    TEST_MYSQL_USER: TEST_ENVIRONMENT.TEST_MYSQL_USER,
+    TEST_MYSQL_PASSWORD: TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD,
+  })
+  assertExactEnvironment(starts[0].options.env, {
+    ...baseEnvironment,
+    MYSQL_HOST: TEST_ENVIRONMENT.TEST_MYSQL_HOST,
+    MYSQL_PORT: TEST_ENVIRONMENT.TEST_MYSQL_PORT,
+    MYSQL_USER: TEST_ENVIRONMENT.TEST_MYSQL_USER,
+    MYSQL_PASSWORD: TEST_ENVIRONMENT.TEST_MYSQL_PASSWORD,
+    MYSQL_DB: DATABASE_A,
+    M2_BROWSER_RUN_NONCE: 'product-shell-owner',
+  })
+  assertExactEnvironment(starts[1].options.env, {
+    ...baseEnvironment,
+    M2_BROWSER_RUN_NONCE: 'product-shell-owner',
+    VITE_API_BASE_URL: 'http://127.0.0.1:41001/api',
+  })
+  assertExactEnvironment(browser.options.env, {
+    ...baseEnvironment,
+    PLAYWRIGHT_BASE_URL: 'http://127.0.0.1:41002',
+    BROWSER_TEST_DATABASE: DATABASE_A,
+    BROWSER_SECRET_SENTINEL: runner.PRODUCT_SHELL_SECRET_SENTINEL,
+  })
+  assertExactEnvironment(cleanup.options.env, prepare.options.env)
+  for (const event of [...runs, ...starts]) {
+    assert.equal('GITHUB_TOKEN' in event.options.env, false)
+    assert.equal('AWS_SECRET_ACCESS_KEY' in event.options.env, false)
+    assert.equal(
+      Object.values(event.options.env).includes(TEST_ENVIRONMENT.MYSQL_PASSWORD),
+      false,
+    )
+  }
+  assert.equal('TEST_MYSQL_PASSWORD' in starts[0].options.env, false)
+  assert.equal('TEST_MYSQL_PASSWORD' in starts[1].options.env, false)
+  assert.equal('MYSQL_PASSWORD' in starts[1].options.env, false)
+  assert.equal('MYSQL_PASSWORD' in browser.options.env, false)
 
   assert.deepEqual(harness.reservations.map(item => item.port), [41001, 41002])
   assert.equal(harness.reservations.every(item => item.releaseCalls === 1), true)
@@ -310,6 +427,203 @@ test('browser failure still stops only owned children and drops only this databa
       '--drop',
     ],
   )
+})
+
+test('browser execution and log-scan failures are aggregated before owned cleanup', async () => {
+  const runner = await import(runnerModule)
+  const harness = createHarness({
+    browserStatus: 7,
+    browserLogScanError: new Error('synthetic log scan failure'),
+  })
+
+  await assert.rejects(
+    runner.runProductShell({
+      specs: runner.FORMAL_SPECS,
+      environment: TEST_ENVIRONMENT,
+      databaseNameFactory: harness.databaseNameFactory,
+      portReservationFactory: harness.portReservationFactory,
+      processRunner: harness.processRunner,
+      waitForUrlImpl: harness.waitForUrlImpl,
+      serverLogObserverFactory: harness.serverLogObserverFactory,
+      nonceFactory: () => 'aggregate-owner',
+    }),
+    error => {
+      assert.ok(error instanceof AggregateError)
+      assert.match(error.errors.map(item => item.message).join('\n'), /browser.*status 7/i)
+      assert.match(error.errors.map(item => item.message).join('\n'), /browser.*log scan/i)
+      return true
+    },
+  )
+  assert.deepEqual(
+    harness.events.filter(event => event.kind === 'stop').map(event => event.child),
+    harness.children.toReversed(),
+  )
+  assert.ok(harness.events.some(event => event.kind === 'run' && event.args.includes('--drop')))
+})
+
+for (const [label, serverFailure, expected] of [
+  [
+    'backend async spawn error',
+    { label: 'backend', kind: 'error' },
+    /backend.*error|backend.*failed/i,
+  ],
+  [
+    'Vite async spawn error',
+    { label: 'vite', kind: 'error' },
+    /vite.*error|vite.*failed/i,
+  ],
+  [
+    'backend early exit',
+    { label: 'backend', kind: 'exit', code: 19 },
+    /backend.*19|backend.*exit/i,
+  ],
+]) {
+  test(`${label} is controlled and still stops owned children and drops the database`, async () => {
+    const runner = await import(runnerModule)
+    const harness = createHarness({
+      healthMode: 'hang',
+      serverFailure,
+    })
+
+    const outcome = await settleWithin(runner.runProductShell({
+      specs: runner.FORMAL_SPECS,
+      environment: TEST_ENVIRONMENT,
+      databaseNameFactory: harness.databaseNameFactory,
+      portReservationFactory: harness.portReservationFactory,
+      processRunner: harness.processRunner,
+      waitForUrlImpl: harness.waitForUrlImpl,
+      serverLogObserverFactory: harness.serverLogObserverFactory,
+      nonceFactory: () => 'server-failure-owner',
+      deadlines: boundedTestDeadlines(),
+    }))
+    assert.equal(outcome.status, 'rejected', `${label} must reject before the watchdog`)
+    assert.match(String(outcome.error?.message), expected)
+
+    const stops = harness.events.filter(event => event.kind === 'stop')
+    const cleanup = harness.events.find(event => (
+      event.kind === 'run' && event.args.includes('--drop')
+    ))
+    assert.deepEqual(stops.map(event => event.child), harness.children.toReversed())
+    assert.ok(cleanup)
+  })
+}
+
+test('owned process options and terminators target only a validated owned process tree', async () => {
+  const runner = await import(runnerModule)
+  const windowsOptions = runner.ownedChildOptions({ shell: true }, 'win32')
+  const posixOptions = runner.ownedChildOptions({ shell: true }, 'linux')
+  assert.equal(windowsOptions.shell, false)
+  assert.equal(windowsOptions.detached, false)
+  assert.equal(windowsOptions.windowsHide, true)
+  assert.equal(posixOptions.shell, false)
+  assert.equal(posixOptions.detached, true)
+
+  const windowsChild = fakeChild('windows-owned', 7311)
+  const taskkillCalls = []
+  await runner.terminateOwnedProcessTree(windowsChild, {
+    platform: 'win32',
+    timeoutMs: 50,
+    spawnImpl(command, args, options) {
+      const terminator = fakeChild('taskkill', 8112)
+      taskkillCalls.push({ command, args, options })
+      queueMicrotask(() => {
+        closeFakeChild(windowsChild)
+        closeFakeChild(terminator)
+      })
+      return terminator
+    },
+  })
+  assert.deepEqual(taskkillCalls, [{
+    command: 'taskkill',
+    args: ['/PID', '7311', '/T', '/F'],
+    options: {
+      shell: false,
+      windowsHide: true,
+      stdio: 'ignore',
+    },
+  }])
+  assert.equal(windowsChild.closed, true)
+
+  const posixChild = fakeChild('posix-owned', 7312)
+  const groupSignals = []
+  await runner.terminateOwnedProcessTree(posixChild, {
+    platform: 'linux',
+    timeoutMs: 50,
+    killImpl(pid, signal) {
+      groupSignals.push([pid, signal])
+      queueMicrotask(() => closeFakeChild(posixChild))
+    },
+  })
+  assert.deepEqual(groupSignals, [[-7312, 'SIGTERM']])
+  assert.equal(posixChild.closed, true)
+
+  let unsafeTerminatorCalls = 0
+  const unsafeChild = fakeChild('unsafe', 0)
+  await assert.rejects(
+    runner.terminateOwnedProcessTree(
+      unsafeChild,
+      {
+        platform: 'win32',
+        spawnImpl() {
+          unsafeTerminatorCalls += 1
+        },
+      },
+    ),
+    /owned.*pid|pid.*owned|positive integer/i,
+  )
+  assert.equal(unsafeTerminatorCalls, 0)
+})
+
+for (const phase of ['prepare', 'health', 'browser', 'cleanup']) {
+  test(`hanging ${phase} operation is bounded and preserves owned cleanup`, async () => {
+    const runner = await import(runnerModule)
+    const harness = createHarness({
+      hangPhase: phase === 'health' ? '' : phase,
+      healthMode: phase === 'health' ? 'hang' : 'resolve',
+    })
+    const outcome = await settleWithin(runner.runProductShell({
+      specs: runner.FORMAL_SPECS,
+      environment: TEST_ENVIRONMENT,
+      databaseNameFactory: harness.databaseNameFactory,
+      portReservationFactory: harness.portReservationFactory,
+      processRunner: harness.processRunner,
+      waitForUrlImpl: harness.waitForUrlImpl,
+      serverLogObserverFactory: harness.serverLogObserverFactory,
+      nonceFactory: () => `${phase}-deadline-owner`,
+      deadlines: boundedTestDeadlines(),
+    }))
+
+    assert.equal(outcome.status, 'rejected', `${phase} must reject before the watchdog`)
+    assert.match(String(outcome.error?.message), new RegExp(`${phase}|timed out|deadline`, 'i'))
+    const cleanupRuns = harness.events.filter(event => (
+      event.kind === 'run' && event.args.includes('--drop')
+    ))
+    if (phase !== 'cleanup') assert.equal(cleanupRuns.length, 1)
+    if (phase === 'prepare') {
+      assert.equal(harness.events.filter(event => event.kind === 'start').length, 0)
+    } else {
+      assert.deepEqual(
+        harness.events.filter(event => event.kind === 'stop').map(event => event.child),
+        harness.children.toReversed(),
+      )
+    }
+  })
+}
+
+test('product-shell spec releases held DELETE and preserves body plus audit failures', () => {
+  const source = readFileSync(
+    path.join(repositoryRoot, 'frontend', 'e2e', 'product-shell-lifecycle.spec.ts'),
+    'utf8',
+  )
+
+  assert.match(source, /assertExactWrites\s*\(/u)
+  assert.match(source, /finally\s*\{[^}]*releasePendingDelete\(\)[^}]*unroute/su)
+  assert.match(source, /bodyError/su)
+  assert.match(source, /auditError/su)
+  assert.match(source, /new AggregateError\s*\(\s*\[\s*bodyError\s*,\s*auditError\s*\]/su)
+  assert.match(source, /consoleErrors[^]*deliberate 404\/500[^]*toEqual\(\[/u)
+  assert.match(source, /requestFailures[^]*toEqual\(\[\]\)/u)
+  assert.match(source, /responseFailures/u)
 })
 
 test('dispatcher exposes a closed product-shell suite and fails before spawn without test MySQL', () => {

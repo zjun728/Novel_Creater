@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Response } from '@playwright/test'
 
 import {
+  assertExactWrites,
   observeRuntime,
   runtimeSensitiveValues,
   scanRuntimeEvidence,
@@ -18,6 +19,13 @@ function apiPath(response: Response) {
 
 function projectOverviewPath(projectId: string) {
   return `/projects/${encodeURIComponent(projectId)}/overview`
+}
+
+
+function normalizedResponseFailure(failure: string) {
+  const match = /^(?<status>\d{3}) (?<method>[A-Z]+) (?<url>.+)$/u.exec(failure)
+  if (!match?.groups) throw new Error('Runtime response failure had an invalid shape')
+  return `${match.groups.status} ${match.groups.method} ${new URL(match.groups.url).pathname}`
 }
 
 
@@ -52,6 +60,10 @@ async function archiveFromLibrary(page: Page, title: string) {
 
 test('product shell lifecycle is accessible, durable, owned, and secret-safe', async ({ page }) => {
   const runtimeObserver = observeRuntime(page)
+  let bodyError: unknown
+  let auditError: unknown
+  let projectId = ''
+  const recoverableId = 'recoverable-error-project'
   let createRequests = 0
   let deleteRequests = 0
   const countWrites = (request: { method(): string, url(): string }) => {
@@ -154,7 +166,7 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     const createResponse = await createResponsePromise
     expect(createResponse.ok()).toBe(true)
     const createdProject = await createResponse.json()
-    const projectId = String(createdProject.id)
+    projectId = String(createdProject.id)
     const overviewPath = projectOverviewPath(projectId)
     await expect.poll(() => createRequests).toBe(1)
     await expect(page).toHaveURL(new RegExp(`${overviewPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`, 'u'))
@@ -257,9 +269,16 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     expect(deleteRequests).toBe(0)
 
     let releaseDelete: (() => void) | undefined
+    let deleteReleased = false
     let deleteInFlight = 0
     let deleteRequestPayload: { expectedLifecycleRevision?: number } | undefined
-    await page.route(`**/api/projects/${encodeURIComponent(projectId)}`, async route => {
+    const deleteRoute = `**/api/projects/${encodeURIComponent(projectId)}`
+    const releasePendingDelete = () => {
+      if (deleteReleased || !releaseDelete) return
+      deleteReleased = true
+      releaseDelete()
+    }
+    await page.route(deleteRoute, async route => {
       if (route.request().method() !== 'DELETE') {
         await route.continue()
         return
@@ -274,49 +293,52 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       }
     })
 
-    await card.getByRole('button', { name: '永久删除', exact: true }).click()
-    dangerousDialog = page.getByRole('dialog').filter({
-      hasText: `永久删除《${RENAMED_TITLE}》？`,
-    })
-    const confirmDelete = dangerousDialog.getByRole('button').filter({
-      hasText: '永久删除',
-    })
-    const cancelDelete = dangerousDialog.getByRole('button', { name: '取消', exact: true })
-    await confirmDelete.click()
-    await expect.poll(() => deleteInFlight).toBe(1)
-    expect(deleteRequests).toBe(1)
-    expect(deleteRequestPayload).toEqual({
-      expectedLifecycleRevision: thirdArchived.lifecycleRevision,
-    })
-    await expect(confirmDelete).toBeDisabled()
-    await expect(confirmDelete).toHaveClass(/n-button--loading/u)
-    await expect(cancelDelete).toBeDisabled()
+    try {
+      await card.getByRole('button', { name: '永久删除', exact: true }).click()
+      dangerousDialog = page.getByRole('dialog').filter({
+        hasText: `永久删除《${RENAMED_TITLE}》？`,
+      })
+      const confirmDelete = dangerousDialog.getByRole('button').filter({
+        hasText: '永久删除',
+      })
+      const cancelDelete = dangerousDialog.getByRole('button', { name: '取消', exact: true })
+      await confirmDelete.click()
+      await expect.poll(() => deleteInFlight).toBe(1)
+      expect(deleteRequests).toBe(1)
+      expect(deleteRequestPayload).toEqual({
+        expectedLifecycleRevision: thirdArchived.lifecycleRevision,
+      })
+      await expect(confirmDelete).toBeDisabled()
+      await expect(confirmDelete).toHaveClass(/n-button--loading/u)
+      await expect(cancelDelete).toBeDisabled()
 
-    await page.keyboard.press('Escape')
-    await cancelDelete.click({ force: true })
-    await page.mouse.click(5, 5)
-    await confirmDelete.click({ force: true })
-    await expect(dangerousDialog).toBeVisible()
-    expect(deleteInFlight).toBe(1)
-    expect(deleteRequests).toBe(1)
+      await page.keyboard.press('Escape')
+      await cancelDelete.click({ force: true })
+      await page.mouse.click(5, 5)
+      await confirmDelete.click({ force: true })
+      await expect(dangerousDialog).toBeVisible()
+      expect(deleteInFlight).toBe(1)
+      expect(deleteRequests).toBe(1)
 
-    const deleteResponsePromise = page.waitForResponse(response => (
-      response.request().method() === 'DELETE'
-      && apiPath(response) === `/api/projects/${projectId}`
-    ))
-    expect(releaseDelete).toBeDefined()
-    releaseDelete?.()
-    const deleteResponse = await deleteResponsePromise
-    expect(deleteResponse.status()).toBe(204)
-    await expect(dangerousDialog).toBeHidden()
-    await expect(card).toHaveCount(0)
-    await page.unroute(`**/api/projects/${encodeURIComponent(projectId)}`)
+      const deleteResponsePromise = page.waitForResponse(response => (
+        response.request().method() === 'DELETE'
+        && apiPath(response) === `/api/projects/${projectId}`
+      ))
+      expect(releaseDelete).toBeDefined()
+      releasePendingDelete()
+      const deleteResponse = await deleteResponsePromise
+      expect(deleteResponse.status()).toBe(204)
+      await expect(dangerousDialog).toBeHidden()
+      await expect(card).toHaveCount(0)
+    } finally {
+      releasePendingDelete()
+      await page.unroute(deleteRoute)
+    }
 
     await page.goto(overviewPath)
     await expect(page.getByText('项目不存在或已被删除', { exact: true })).toBeVisible()
     await expect(page.getByText('项目暂时无法加载', { exact: true })).toHaveCount(0)
 
-    const recoverableId = 'recoverable-error-project'
     let detailFailureInjected = false
     await page.route(`**/api/projects/${recoverableId}`, async route => {
       if (!detailFailureInjected && route.request().method() === 'GET') {
@@ -474,12 +496,76 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
       useOperationStore().finish(latestNotice)
     }, overlap)
     await expect(page.locator('.app-operation-overlay')).toHaveCount(0)
+  } catch (error) {
+    bodyError = error
   } finally {
     page.off('request', countWrites)
-    const evidence = await runtimeObserver.finish()
-    const scan = scanRuntimeEvidence(evidence, runtimeSensitiveValues(process.env))
-    if (scan.matchCount !== 0) {
-      throw new Error('Product-shell browser evidence contained a runtime-sensitive value')
+    try {
+      const evidence = await runtimeObserver.finish()
+      assertExactWrites(evidence, [
+        {
+          method: 'POST',
+          path: '/api/projects',
+          statuses: [200],
+          count: 1,
+        },
+        {
+          method: 'PUT',
+          path: `/api/projects/${projectId}`,
+          statuses: [200],
+          count: 1,
+        },
+        {
+          method: 'POST',
+          path: `/api/projects/${projectId}/archive`,
+          statuses: [200],
+          count: 3,
+        },
+        {
+          method: 'POST',
+          path: `/api/projects/${projectId}/restore`,
+          statuses: [200],
+          count: 2,
+        },
+        {
+          method: 'DELETE',
+          path: `/api/projects/${projectId}`,
+          statuses: [204],
+          count: 1,
+        },
+      ])
+      expect(
+        evidence.consoleErrors.sort(),
+        'only console errors caused by the deliberate 404/500 responses are allowed',
+      ).toEqual([
+        'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
+        'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
+        'error: Failed to load resource: the server responded with a status of 500 (Internal Server Error)',
+      ].sort())
+      expect(evidence.pageErrors, 'page errors must stay empty').toEqual([])
+      expect(evidence.requestFailures, 'request failures must stay empty').toEqual([])
+      expect(
+        evidence.responseFailures.map(normalizedResponseFailure).sort(),
+        'only the deliberately injected 404/500 responses are allowed',
+      ).toEqual([
+        `404 GET /api/projects/${projectId}`,
+        `404 GET /api/projects/${recoverableId}`,
+        `500 GET /api/projects/${recoverableId}`,
+      ].sort())
+      const scan = scanRuntimeEvidence(evidence, runtimeSensitiveValues(process.env))
+      if (scan.matchCount !== 0) {
+        throw new Error('Product-shell browser evidence contained a runtime-sensitive value')
+      }
+    } catch (error) {
+      auditError = error
     }
+    if (bodyError && auditError) {
+      throw new AggregateError(
+        [bodyError, auditError],
+        'Product-shell browser behavior and runtime audit both failed',
+      )
+    }
+    if (bodyError) throw bodyError
+    if (auditError) throw auditError
   }
 })
