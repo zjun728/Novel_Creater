@@ -334,7 +334,9 @@ class SeedService:
                 reasons=("creation_contract_missing",),
             )
         matches = (
-            contract.get("seed_id") == result.id
+            int(contract.get("selection_revision") or 0)
+            == result.selection_revision
+            and contract.get("seed_id") == result.id
             and contract.get("seed_revision_id") == result.revision_id
             and contract.get("seed_hash") == result.content_hash
         )

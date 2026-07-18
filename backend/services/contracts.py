@@ -1471,6 +1471,9 @@ class ContractService:
                 raise ContractNotFound()
             if await self.repository.lock_draft(session, project_id) is not None:
                 raise ContractConflict()
+            selected = await self.repository.lock_selected_seed(session, project_id)
+            if selected is None:
+                raise ContractConflict()
             head = await self.repository.read_contract_head(session, project_id)
             if head is None or int(head["revision"]) == 0:
                 raise ContractConflict()
@@ -1486,6 +1489,16 @@ class ContractService:
                     or verified.style_hash != head["style_hash"]
                 ):
                     raise ValueError("confirmed contract head mismatch")
+                if (
+                    int(selected.get("selection_revision") or 0)
+                    != verified.selection_revision
+                    or selected.get("seed_id") != verified.seed_ref.id
+                    or selected.get("seed_revision_id")
+                    != verified.seed_ref.revision_id
+                    or selected.get("seed_hash")
+                    != verified.seed_ref.content_hash
+                ):
+                    raise ContractConflict()
                 primary = verified.style_refs[0]
                 secondary = (
                     verified.style_refs[1] if len(verified.style_refs) == 2 else None

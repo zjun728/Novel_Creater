@@ -411,6 +411,7 @@ async def test_selected_readiness_is_backend_fact_and_reports_seed_drift_after_e
     )
     harness.repo.contracts["p1"] = {
         "revision": 1,
+        "selection_revision": selection.selection_revision,
         "seed_id": created.id,
         "seed_revision_id": created.revision_id,
         "seed_hash": created.content_hash,
@@ -431,6 +432,45 @@ async def test_selected_readiness_is_backend_fact_and_reports_seed_drift_after_e
     assert drifted.seed_ready is False
     assert drifted.contract_ready is False
     assert "selected_seed_drift" in drifted.reasons
+
+
+@pytest.mark.asyncio
+async def test_same_seed_reselection_supersedes_old_contract_readiness_generation():
+    harness = Harness()
+    created = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload())
+    )
+    selection_one = await harness.service.select(
+        SelectSeed(
+            project_id="p1",
+            seed_id=created.id,
+            expected_seed_revision=1,
+            expected_selection_revision=0,
+        )
+    )
+    harness.repo.contracts["p1"] = {
+        "revision": 1,
+        "selection_revision": selection_one.selection_revision,
+        "seed_id": created.id,
+        "seed_revision_id": created.revision_id,
+        "seed_hash": created.content_hash,
+    }
+    assert (await harness.service.get_selected("p1")).seed_ready is True
+
+    selection_two = await harness.service.select(
+        SelectSeed(
+            project_id="p1",
+            seed_id=created.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selection_one.selection_revision,
+        )
+    )
+    superseded = await harness.service.get_selected("p1")
+
+    assert selection_two.selection_revision == 2
+    assert superseded.seed_ready is False
+    assert superseded.contract_ready is False
+    assert superseded.reasons == ("selected_seed_drift",)
 
 
 @pytest.mark.asyncio

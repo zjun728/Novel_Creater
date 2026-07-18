@@ -715,6 +715,22 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
 
 
 @pytest.mark.asyncio
+async def test_clone_rejects_confirmed_head_from_superseded_same_seed_selection():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    assert confirmed.selection_revision == 7
+    assert harness.repository.drafts == {}
+
+    harness.repository.selected_seeds["p1"]["selection_revision"] = 8
+
+    with pytest.raises(ContractConflict):
+        await harness.service.clone_current("p1")
+
+    assert harness.repository.drafts == {}
+
+
+@pytest.mark.asyncio
 async def test_clone_requires_confirmed_nonzero_head():
     harness = ContractHarness()
     with pytest.raises(ContractConflict):

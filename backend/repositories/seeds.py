@@ -231,7 +231,8 @@ class SeedRepository:
 
     async def read_contract_facts(self, session, project_id: str):
         return await session.fetchone(
-            """SELECT h.revision, c.seed_id, c.seed_revision_id, c.seed_hash
+            """SELECT h.revision, c.selection_revision, c.seed_id,
+                      c.seed_revision_id, c.seed_hash
                FROM project_contract_heads h
                LEFT JOIN creation_contracts c
                  ON c.project_id=h.project_id

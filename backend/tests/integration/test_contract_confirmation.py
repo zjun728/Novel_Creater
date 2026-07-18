@@ -10,6 +10,7 @@ from pymysql.err import IntegrityError
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
 from backend.repositories.contracts import ContractRepository
+from backend.repositories.seeds import SeedRepository
 from backend.services.contracts import (
     AssetRevisionRef,
     ConfirmContracts,
@@ -18,6 +19,7 @@ from backend.services.contracts import (
     ContractService,
     SaveContractDraft,
 )
+from backend.services.seeds import SeedService, SelectSeed
 from backend.tests.support.contract_fakes import style_asset
 from backend.tests.integration.test_contract_drafts import (
     BINDING,
@@ -25,6 +27,7 @@ from backend.tests.integration.test_contract_drafts import (
     ENGINE,
     PROJECT,
     PROVIDER,
+    SEED,
     SOURCE,
     STYLE,
     _bootstrap,
@@ -61,6 +64,21 @@ def _service(disposable_mysql, *, failpoint=lambda _stage: None):
         connection_factory=read_connection,
         id_factory=lambda: next(ids), clock=lambda: 1_900_000_000_300,
         failpoint=failpoint,
+    )
+
+
+def _seed_service(disposable_mysql):
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    return SeedService(
+        SeedRepository(),
+        transaction_factory=tx,
+        connection_factory=read_connection,
+        clock=lambda: 1_900_000_000_400,
     )
 
 
@@ -148,6 +166,47 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     assert old_replay == first
     assert history[1].creation_contract == first.creation_contract
     assert history[1].style_contract == first.style_contract
+
+
+@pytest.mark.asyncio
+async def test_real_same_seed_reselection_supersedes_readiness_and_clone_generation(
+    disposable_mysql,
+):
+    contract_service = _service(disposable_mysql)
+    seed_service = _seed_service(disposable_mysql)
+    _, saved = await _saved(disposable_mysql, contract_service)
+    confirmed = await contract_service.confirm(_confirm(saved))
+    assert confirmed.selection_revision == 1
+    assert (await seed_service.get_selected(PROJECT)).seed_ready is True
+
+    selection_two = await seed_service.select(
+        SelectSeed(
+            project_id=PROJECT,
+            seed_id=SEED,
+            expected_seed_revision=1,
+            expected_selection_revision=1,
+        )
+    )
+    readiness = await seed_service.get_selected(PROJECT)
+
+    assert selection_two.selection_revision == 2
+    assert readiness.seed_ready is False
+    assert readiness.reasons == ("selected_seed_drift",)
+    with pytest.raises(ContractConflict):
+        await contract_service.clone_current(PROJECT)
+    assert await disposable_mysql.session.fetchone(
+        "SELECT id FROM project_contract_drafts WHERE project_id=%s",
+        (PROJECT,),
+    ) is None
+    generations = await disposable_mysql.session.fetchall(
+        """SELECT selection_revision,COUNT(*) AS contract_count
+             FROM creation_contracts
+            WHERE project_id=%s
+            GROUP BY selection_revision
+            ORDER BY selection_revision""",
+        (PROJECT,),
+    )
+    assert generations == [{"selection_revision": 1, "contract_count": 1}]
 
 
 @pytest.mark.parametrize("drift", ("item_content", "item_hash", "aggregate_hash"))
