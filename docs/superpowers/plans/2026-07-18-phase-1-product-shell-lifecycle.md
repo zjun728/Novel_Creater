@@ -1166,9 +1166,9 @@ git commit -m "test: add product shell browser acceptance"
 
 **Files:**
 
-- Modify: `docs/CURRENT_PROJECT_STATE.md`
-- Modify: `docs/PRODUCT_DEVELOPMENT_PLAN.md`
-- Modify: `docs/DEVELOPMENT_LOG.md`
+- Modify: `CURRENT_PROJECT_STATE.md`
+- Modify: `PRODUCT_DEVELOPMENT_PLAN.md`
+- Modify: `DEVELOPMENT_LOG.md`
 - Create: `docs/acceptance/2026-07-18-phase-1-product-shell.md`
 
 - [ ] **Step 1: Run all non-provider verification**
@@ -1237,7 +1237,7 @@ as complete. Do not claim the full product rebuild or writing loop is complete.
 - [ ] **Step 4: Commit the evidence**
 
 ```powershell
-git add docs/CURRENT_PROJECT_STATE.md docs/PRODUCT_DEVELOPMENT_PLAN.md docs/DEVELOPMENT_LOG.md docs/acceptance/2026-07-18-phase-1-product-shell.md
+git add CURRENT_PROJECT_STATE.md PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md docs/acceptance/2026-07-18-phase-1-product-shell.md
 git commit -m "docs: record phase one product shell acceptance"
 ```
 

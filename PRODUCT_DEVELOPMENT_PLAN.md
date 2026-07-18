@@ -1,89 +1,91 @@
 # 产品开发规划
 
-> 当前有效规划。日期：`2026-07-11`。
+> 当前有效规划。日期：`2026-07-18`。
 
-## 1. 产品权威层级
+## 1. 产品目标
 
-产品和实现判断按以下层级执行：
+Novel Creator 要帮助作者持续写出长篇、连贯、可控并且让人愿意继续读的小说。
+目标不是追求高级文笔或文学奖式深度，而是把故事写得有血有肉：
 
-1. `STORY_QUALITY_CHARTER.md`：最高产品质量原则。
-2. `docs/superpowers/specs/2026-07-11-writer-core-v1-design.md`：Writer Core V1 实现权威。
-3. `docs/superpowers/plans/2026-07-11-writer-core-v1-roadmap.md`：M1–M8 交付权威。
+- 情节有因果、阻力、变化和余波，不是大纲扩写或历史材料；
+- 人物有欲望、判断、行动和彼此不同的声音；
+- 对话符合身份、关系和情绪，有潜台词与自然反应；
+- 情绪来自处境和选择，不依赖模板化身体反应；
+- 允许未完成情节自然跨章，不强制每章钩子；
+- 作者对候选、事实变更和定稿拥有最终决定权。
 
-`STORY_QUALITY_CHARTER.md` 的质量总纲不能被 Writer Core design/roadmap 替代。总体设计定义实现规则，roadmap 定义交付顺序；本文件只汇总当前完成度和下一里程碑授权。
+产品主规格为
+`docs/superpowers/specs/2026-07-18-product-rebuild-and-writer-loop-design.md`。
+不兼容旧数据库、旧 API、旧 Store、旧写作页或 shadow QA 链。
 
-实施分支为 `codex/writer-core-v1`，唯一基线为 `4b85e8d`。旧数据库结构、旧 API、旧独立写作状态链、旧 runner 和旧 artifact 不恢复，不增加兼容层、dual-write 或 fallback。
+## 2. 交付顺序
 
-远端 `main` 在 `4b85e8d` 后已有 `13` 个尚未合并的旧 control-plane 分叉提交。`codex/writer-core-v1` 可以安全推送为独立分支，但 canonical `main` 的 promotion/replacement policy 必须单独明确；禁止把旧分叉或兼容链无脑 merge/cherry-pick 回来。
+| 阶段 | 范围 | 状态 |
+| --- | --- | --- |
+| Phase 1 | 产品壳层与项目生命周期 | 已完成门禁 |
+| Phase 2 | 创作资产、Provider/模型设置、市场来源、选题与种子、契约、圣经、模型继承与资产冻结 | 下一阶段 |
+| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 待开始 |
+| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 待开始 |
+| Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 待开始 |
+| Phase 6 | 小说下载、安全备份、预检与导入 | 待开始 |
+| Phase 7 | 产品库、真实 Provider、自由浏览器探索、《典镇山河》30 章人工验收 | 待开始 |
 
-## 2. 产品目标
+## 3. Phase 1 完成边界
 
-Writer Core V1 采用“保留产品外壳、替换写作内核”的路线：后端是正式状态的唯一写入口，Canon 是已发生事实的唯一事实源，作者对候选、ChangeSet 和定稿拥有最终决定权。
+Phase 1 已交付真实产品壳层和完整项目生命周期：
 
-完整 V1 目标仍是通过正式产品 UI 手动完成《典镇山河》前 30 章，并经过 Provider、事务、浏览器和人工内容验收。M1 只是这一依赖链的基础，不代表完整产品可写。
+- 创建、打开、重命名、归档、撤销、恢复和永久删除；
+- 路由驱动项目上下文、刷新恢复和明确的 missing/error/archived 页面；
+- Toast、单一危险确认和统一操作遮罩；
+- 后端事务、CAS revision、归档写入围栏和项目数据所有权；
+- Provider 公共响应不返回明文 Key 或 Base URL；
+- disposable MySQL 8 集成与真实浏览器验收。
 
-## 3. M1 — 已完成
+Phase 1 没有调用 Provider、没有生成正文、没有读写产品数据库，也没有证明内容质量。
+源码 Schema 已升级到 `writer-core-v1.2.0`，但产品数据库未在本阶段重建。
 
-M1 已完成干净 Schema、Canon/Projection 基础、实体身份、事务边界和产品基础页收束。
+## 4. Phase 2 规划要求
 
-当前证据：
+下一阶段先写详细计划，再以 TDD 实施。计划必须覆盖：
 
-- 等级：**L4 M1 No-Provider Ready**
-- 产品数据库：MySQL `8.4.10`，`127.0.0.1:3307/novel_creator`
-- Schema：`writer-core-v1.0.0`
-- Manifest：`0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826`
-- Foundation：`永乐大典`、三个种子、9 个 Provider profiles、8 个任务级绑定项
-- Canon/Projection：`0 / 0`
-- 空派生写作表：`25/25`
-- Writer：停用；旧 Writer 入口返回项目库
-- AI completion / upstream Provider model calls：`0`
+- 全局“创作资产”一级导航：10 套批准风格模板、64 张批准经验卡、本地语料；
+- Provider/模型设置继续服从“任何响应、日志、导出均无明文秘密”；
+- 新项目模型绑定：最近有效项目 → 明确 fallback → 稳定顺序第一个 enabled model；
+- 市场来源快照和趋势分析，不伪装成模型已经“全网抓取”；
+- 一个项目可有多个种子，但只能选择一个活动种子；
+- 故事发动机、主/辅风格示例、经验卡和语料引用形成可确认创作契约；
+- 契约与圣经使用不可变 revision，切换种子后旧下游只读 superseded；
+- 系统模板只读，个人本地平台不增加审核、上架、发布或管理员流程；
+- 正常启动只验证 Schema，不执行历史 `ensure_schema` DDL。
 
-完整证据见 `docs/development/writer-core-m1-evidence.md`。
+Phase 2 的页面只展示已真实可用的入口，不提前放 Phase 3–6 的死按钮。
 
-## 4. M2 — 待编写并审计详细计划
+## 5. 写作链路的先决修复
 
-M2 名称：创作契约、模型绑定、风格/语料/经验资产。
+既有 `ChapterWriterView` 是临时最小路径。进入 Phase 4 或任何正式正文生成验收前，
+必须完成 WorkingDraft Integrity：
 
-详细计划文件尚待创建：
+1. AI 新稿、改写、扩写、压缩和候选冻结都以作者屏幕上看到的同一正文快照为输入；
+2. 作者未保存编辑不能被迟到响应覆盖；
+3. 点击“保存为候选”才创建不可变候选，每次键入不自动生成候选；
+4. Provider 调用不持有长数据库事务，最终提交使用 manifest hash、幂等键和 CAS；
+5. fake adapter 只能授予单元证据，不能授予 Provider/DB/内容 Ready。
 
-`docs/superpowers/plans/2026-07-11-creation-contract-and-assets.md`
+随后建设单一 `FinalizationChangeSet`、Canon 唯一事实源和单事务定稿。设定、记忆、
+人物弧光、伏笔和故事块状态只能由同一批已确认 Canon 变化投影，不能各自重新读正文。
 
-M2 的规划范围必须覆盖：
+## 6. 每阶段共同门禁
 
-- `CreationContract`：从 selected seed、故事发动机和作者选择形成明确的项目创作契约。
-- `StyleContract`：主风格、次要风味、偏好和禁忌的可确认契约。
-- Corpus assets：本机原始语料、文件哈希、章节边界、规范化文本、索引和分析版本。
-- Experience assets：可复用的高质量经验卡、原创微示范和结构化方法。
-- Model bindings：新项目复制与逐项确定性回退；无 enabled model 时阻止 AI 操作。
+- 从 `main` 的上一已验收阶段创建隔离分支/worktree；
+- 先批准详细计划，后按 TDD 实现；
+- Python、Node、前端、MySQL 8 集成、真实浏览器和构建按风险完整验证；
+- 测试使用 disposable 数据库并证明 created=cleaned、remaining=0；
+- 真实 Provider 和产品数据库只在对应阶段明确批准后使用；
+- 任何 API、错误、日志、截图、诊断、下载或备份都不得包含明文秘密；
+- 不使用 fake adapter、源码正则或旧 artifact 冒充产品链证据；
+- 只宣告实际取得的阶段，不跨阶段授予 Ready。
 
-M2 详细计划必须先对照总体设计和 roadmap 审计，明确 Schema/API/UI、TDD 顺序、资产质量门禁、敏感信息边界和验收证据。当前只允许写计划和做审计，**不开始实现**。
+## 7. 完成定义
 
-## 5. M3–M8 顺序
-
-M2 获批并完成后，严格按 roadmap 推进：
-
-1. M3：StoryBlock、StoryStage、SceneTask 和章节容量。
-2. M4：ChapterSession、WorkingDraft、DraftCandidate 和编辑流程。
-3. M5：分场景生成、参考检索、防复制和质量审核。
-4. M6：FinalizationChangeSet 与原子定稿。
-5. M7：Writer UI 收束和跨层浏览器诊断。
-6. M8：《典镇山河》前 30 章人工验收。
-
-不得跨里程碑提前恢复写作入口，也不得用低等级 evidence 代替 Provider 或人工内容验收。
-
-## 6. 共同门禁
-
-每个后续里程碑都必须：
-
-- 从上一个已验收里程碑继续，不引入旧兼容链。
-- 先批准详细计划，再以 TDD 实现。
-- 通过正式 unit、必要的 disposable MySQL integration 和固定 browser 回归。
-- 由主控执行真实浏览器探索并审计同次状态证据。
-- 不在 API、日志、错误、诊断、导出或浏览器 payload 中暴露 Provider 敏感值。
-- 只授予实际取得的证据等级。
-
-真实 Provider 和正文生成只在相应后续里程碑明确授权后运行。M1 文档不得据此推导任何正文或内容质量结论。
-
-## 7. 当前授权
-
-当前唯一授权任务是：创建、评审并批准 M2 detailed plan。完成该审计前停止，不进入 M2 代码、资产导入、Provider 调用或正文生成。
+只有七个阶段全部完成，并由作者在网页中逐章阅读《典镇山河》前 30 章，确认故事丰满、
+人物鲜活、对话人物化、机械味和 AI 味较淡且愿意继续读，才能宣布本轮产品重构完成。

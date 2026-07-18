@@ -1,63 +1,71 @@
 # 开发日志
 
-> 只保留当前仍有效的决策级记录。日期：`2026-07-11`。不粘贴密钥、原始运行日志或本地截图。
+> 只记录当前有效的决策与证据摘要。日期：`2026-07-18`。不记录密钥、DSN、原始运行日志或本地截图。
 
-## 2026-07-11 Writer Core V1 reset 决策
+## 2026-07-18 产品主规格重置
 
-- 批准 `docs/superpowers/specs/2026-07-11-writer-core-v1-design.md` 为总体产品设计。
-- 批准 `docs/superpowers/plans/2026-07-11-writer-core-v1-roadmap.md` 为 M1–M8 交付顺序。
-- 唯一实施基线为 `4b85e8d`，实施分支为 `codex/writer-core-v1`。
-- 采用“保留产品外壳、替换写作内核”，不恢复旧数据库结构、旧 API、旧状态链、dual-write、legacy fallback 或旧 runner。
-- M1 只建设 Schema、Canon/Projection、实体身份、事务基础和只读产品入口；Writer 在 M1 保持停用。
+- 批准
+  `docs/superpowers/specs/2026-07-18-product-rebuild-and-writer-loop-design.md`
+  为当前产品主规格。
+- 产品目标冻结为“故事好看、内容丰满、人物鲜活、作者可控”，不以高级文学性为首要目标。
+- 采用 Canon 唯一事实源、已发生事实与未来计划分离、作者一次确认完整
+  `FinalizationChangeSet`、后端单事务定稿。
+- 不兼容旧数据库、旧 API、旧 Store、旧写作页、phase-e shadow QA 或旧 artifact。
+- 七阶段按纵向闭环交付，第一阶段只交付产品壳层和项目生命周期。
 
-## 2026-07-11 跨库 reconciliation
+## 2026-07-18 Phase 1 实现
 
-本机产品状态统一到 MySQL `8.4.10` 的 `127.0.0.1:3307/novel_creator`。MySQL `5.7.25-log` 只读保留为回滚来源，不参与产品运行。
+- 分支：`codex/product-shell-lifecycle`。
+- 代码验收快照：`dd40cf2e452243c6c8085fd486a3831b6e059796`。
+- 新增正式项目库、项目概览、已归档项目页、只读归档状态页、Provider 设置页和 Not Found。
+- 项目卡片只通过明确按钮导航；有可恢复 Session 时才显示“继续写作”。
+- 创建和重命名仅编辑项目名称。
+- 归档立即执行并提供 Toast 撤销；恢复立即执行；永久删除只在已归档页并要求一次危险确认。
+- 后端用 `archived_at` 与 `lifecycle_revision` 区分生命周期和写作状态，采用事务、行锁和 CAS。
+- Schema 所有权负责项目私有数据级联清理；跨项目来源置空；共享资产保留。
+- 所有正式写服务统一增加 active-project 写入围栏。
+- 路由成为项目上下文来源；刷新、深链接、missing/error/archived 状态均有明确页面。
+- 全局反馈改为 Toast/就地错误；阻断操作使用单一 overlay、shell inert、焦点恢复和路由守卫。
+- 旧 `/project/...`、旧 `/writer/...` 字面路由和旧项目删除实现从生产代码清除。
 
-迁移后的 foundation：
+## 2026-07-18 Phase 1 发布门禁
 
-- `永乐大典`，Project ID `88d63943-ab7d-42c4-9319-998b6d61e413`
-- `典镇山河`（selected）、`文渊山海`、`永乐长明`
-- `9` 个 Provider profiles
-- Preferred Provider/model：`联通云 / deepseek-v4-flash`
-- `8` 个任务级绑定项
+环境变量只核对存在性，没有打印值。基于 `dd40cf2`：
 
-未迁移旧派生写作状态。Writer Core Schema 为 `writer-core-v1.0.0`，manifest 为 `0697b6da4826b98c8e502ff7ad68a61b51fe7037b167b6d8175ae9d78dcff826`，共 `34` 张表；Canon/Projection heads 为 `0/0`，`25/25` 张派生写作表为空。
+- `npm test` exit `0`：
+  - Python `1398 passed, 3 skipped`
+  - scripts `185 passed`
+  - frontend `184 passed`
+- `npm run test:integration` exit `0`：
+  - `154 passed`
+  - disposable databases `created=153`、`cleaned=153`、`remaining=0`
+- `npm run test:browser:product-shell` exit `0`
+- `npm --prefix frontend run build` exit `0`，`2855 modules transformed`
+- `git diff --check` exit `0`
+- Schema source：`writer-core-v1.2.0`
+- Manifest：
+  `6164f0f57d3acd59dcab054549d634a4138b82a18962f145140fd56f0244ab4b`
+- Provider/model calls：`0`
+- Product DB reads/writes：`0/0`
 
-## 2026-07-11 实机 dry-run 编码修复
+真实浏览器验收覆盖创建、打开、刷新、重命名、归档、撤销、恢复、永久删除、
+missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻断 overlay、
+键盘/程序化/Back 导航拦截、重叠 operation token 和敏感值扫描。
 
-跨库 dry-run 暴露并通过 TDD 修复两个 MySQL 5.7 编码边界：
+浏览器 runner 仅启动并清理自己拥有的动态端口进程；不会终止用户已有服务。
+测试库名严格符合 `^novel_creator_test_[a-f0-9]{32}$`。
 
-1. `latin1` 连接下，非 ASCII title literal 的普通等值无法稳定命中相同 UTF-8 bytes。固定项目/种子过滤条件改为 ASCII-only 的 UTF-8 hex `BINARY` 精确比较。
-2. mysql client stdout 可能包含非 UTF-8 byte，导致 text-mode subprocess 在 reader thread 失败。四条固定 source `SELECT` 统一输出 `HEX(JSON_OBJECT(...))`；客户端捕获 bytes，并严格执行 ASCII hex、UTF-8 和 JSON object 解码。
+## 2026-07-18 安全与数据库边界
 
-修复没有扩大 whitelist、表或列，也没有写入旧库。错误路径只返回泛化错误，不回显原始输出。
+- Provider 公共序列化删除 `apiKey/api_key/baseURL/base_url`，只返回配置状态布尔值。
+- Provider 列表、创建和更新响应统一经过该序列化器。
+- 本阶段未启动、查询或重建产品数据库。
+- 源码 Schema 已前进到 v1.2，但产品数据库现存版本未在本阶段重新验证。
+- 产品服务按 v1.2 正式启动前，需要单独明确批准一次开发数据库重建；正常启动不得自动执行 DDL。
+- 本阶段没有真实 Provider、正文生成或作者内容阅读，不能推导正文质量。
 
-## 2026-07-11 M1 证据与结论
+## 下一步
 
-- 证据等级：**L4 M1 No-Provider Ready**，仅此等级。
-- Provider 敏感行内存核对：`9/9`。
-- API 明文敏感值命中：`0`；精确禁止键命中：`0`。
-- 真实 MySQL 8 cross-server integration：`2/2`。
-- Final M1 gate 基于代码快照 `bc52a1d`；`npm run test:milestone1` exit `0`。
-- Unit：Python `395`、scripts `24`、frontend `11`。
-- Integration：`30 passed, 1 deselected`；disposable databases created `29`、cleaned `29`、remaining `0`。
-- Browser：`2/2`，browser disposable database 已 drop。
-- Post-test product DB counts：`PASS`；gate 结束后端口 `8000` / `5173` free。
-- 产品浏览器：`8` 个产品请求，全部为 `GET`，其中包含 `/api/providers` 配置读取；AI completion / upstream Provider model calls `0`；console errors/warnings `0/0`。
-- 旧 Writer 入口返回项目库，Writer 明确停用。
-- 截图保存在本地忽略目录 `output/playwright/product-ui`，不进入 Git。
-- Final security review 发现 Starlette 发送泛化 500 response 后仍 re-raise，可能由 `uvicorn.error` 通过原始 `exc_info` 记录明文；real-Uvicorn RED 证实 body 安全但 stderr 命中测试 sentinel。
-- `bc52a1d` 为 exact `uvicorn.error` 幂等安装 redaction filter；focused `5/5`，response/process logs sentinel hits `0`，production 无 test routes；final reviewer：`APPROVED`。
-
-完整收口证据见 `docs/development/writer-core-m1-evidence.md`。
-
-M1 没有 AI completion / upstream Provider model call、正文生成或人工内容验收，因此没有正文质量结论，也不授予更高 Ready 等级。
-
-## 下一步决策
-
-当前只允许编写和审计 M2 detailed plan，范围为 `CreationContract`、`StyleContract`、Corpus assets 和 Experience assets。详细计划批准前不开始 M2 实现。M3–M8 继续服从 Writer Core V1 roadmap。
-
-## 日志纪律
-
-本文只记录当前有效决策和证据摘要。原始 DB 输出、浏览器 network/console dump、Provider 配置值、截图和完整测试日志不进入本文档。
+Phase 1 完成最终审计后合并 `main`。随后编写并审计 Phase 2“创作准备”详细计划。
+正式正文生成前必须先修复既有最小写作路径的 WorkingDraft Integrity，不能让服务端旧稿、
+迟到响应或长事务覆盖作者屏幕可见正文。
