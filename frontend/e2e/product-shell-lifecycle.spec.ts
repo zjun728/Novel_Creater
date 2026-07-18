@@ -236,6 +236,14 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     const archivedRows = await archivedListResponse.json()
     const archivedRow = archivedRows.find((row: { id: string }) => String(row.id) === projectId)
     expect(archivedRow.lifecycleRevision).toBe(thirdArchived.lifecycleRevision)
+    const archivedStoreRevision = await page.evaluate(async targetProjectId => {
+      const { useProjectStore } = await import('/src/stores/projectStore.js')
+      const project = useProjectStore().archivedProjects.find(
+        ({ id }: { id: string }) => String(id) === targetProjectId,
+      )
+      return project?.lifecycleRevision
+    }, projectId)
+    expect(archivedStoreRevision).toBe(thirdArchived.lifecycleRevision)
     await expect(page.locator('.project-card--archived').filter({ hasText: RENAMED_TITLE })).toBeVisible()
 
     card = page.locator('.project-card--archived').filter({ hasText: RENAMED_TITLE })
@@ -250,12 +258,14 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
 
     let releaseDelete: (() => void) | undefined
     let deleteInFlight = 0
+    let deleteRequestPayload: { expectedLifecycleRevision?: number } | undefined
     await page.route(`**/api/projects/${encodeURIComponent(projectId)}`, async route => {
       if (route.request().method() !== 'DELETE') {
         await route.continue()
         return
       }
       deleteInFlight += 1
+      deleteRequestPayload = route.request().postDataJSON()
       await new Promise<void>(resolve => { releaseDelete = resolve })
       try {
         await route.continue()
@@ -275,6 +285,9 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     await confirmDelete.click()
     await expect.poll(() => deleteInFlight).toBe(1)
     expect(deleteRequests).toBe(1)
+    expect(deleteRequestPayload).toEqual({
+      expectedLifecycleRevision: thirdArchived.lifecycleRevision,
+    })
     await expect(confirmDelete).toBeDisabled()
     await expect(confirmDelete).toHaveClass(/n-button--loading/u)
     await expect(cancelDelete).toBeDisabled()
@@ -365,6 +378,22 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     await page.keyboard.press('Tab')
     await page.keyboard.press('Enter')
     expect(page.url()).toBe(blockedUrl)
+    const blockedFocus = await page.evaluate(() => {
+      const activeElement = document.activeElement
+      const boundary = document.querySelector('.app-interaction-boundary')
+      const globalNavigation = document.querySelector('[aria-label="全局导航"]')
+      const overlay = document.querySelector('.app-operation-overlay--blocking')
+      return {
+        inInteractionBoundary: Boolean(activeElement && boundary?.contains(activeElement)),
+        inGlobalNavigation: Boolean(activeElement && globalNavigation?.contains(activeElement)),
+        overlayOutsideBoundary: Boolean(overlay && boundary && !boundary.contains(overlay)),
+      }
+    })
+    expect(blockedFocus).toEqual({
+      inInteractionBoundary: false,
+      inGlobalNavigation: false,
+      overlayOutsideBoundary: true,
+    })
     await page.evaluate(async () => {
       const router = (await import('/src/router/index.js')).default
       await router.push('/settings/providers')
