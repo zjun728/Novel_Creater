@@ -4,6 +4,7 @@ import {
   defineComponent,
   nextTick,
   onMounted,
+  onUnmounted,
   ref,
   toRef,
   watch,
@@ -40,6 +41,7 @@ export function createProjectNameDialogController({
 
   function handleKeydown(event) {
     if (event?.key !== 'Enter') return false
+    if (event.isComposing || event.keyCode === 229) return false
     event.preventDefault?.()
     return submit()
   }
@@ -50,6 +52,76 @@ export function createProjectNameDialogController({
     disabled,
     submit,
     handleKeydown,
+  }
+}
+
+export function createProjectNameDialogFocusManager({
+  getDocument = () => globalThis.document,
+  getDialog = () => null,
+  getInput = () => null,
+} = {}) {
+  let appRoot = null
+  let restoreTarget = null
+  let previousInert = null
+
+  function mount() {
+    const documentRef = getDocument?.()
+    if (!documentRef) return
+    restoreTarget = documentRef.activeElement
+    appRoot = documentRef.querySelector?.('#app') ?? null
+    if (appRoot) {
+      previousInert = {
+        property: appRoot.inert,
+        hadAttribute: appRoot.hasAttribute('inert'),
+        attribute: appRoot.getAttribute('inert'),
+      }
+      appRoot.inert = true
+      appRoot.setAttribute('inert', '')
+    }
+    getInput()?.focus()
+  }
+
+  function trapTab(event) {
+    if (event?.key !== 'Tab') return false
+    const focusable = Array.from(getDialog()?.querySelectorAll?.(
+      'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ) ?? [])
+    if (!focusable.length) return false
+    const documentRef = getDocument?.()
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    const activeElement = documentRef?.activeElement
+    let destination = null
+    if (event.shiftKey && activeElement === first) destination = last
+    if (!event.shiftKey && activeElement === last) destination = first
+    if (!focusable.includes(activeElement)) {
+      destination = event.shiftKey ? last : first
+    }
+    if (!destination) return false
+    event.preventDefault?.()
+    destination.focus()
+    return true
+  }
+
+  function unmount() {
+    if (appRoot && previousInert) {
+      appRoot.inert = previousInert.property
+      if (previousInert.hadAttribute) {
+        appRoot.setAttribute('inert', previousInert.attribute ?? '')
+      } else {
+        appRoot.removeAttribute('inert')
+      }
+    }
+    if (restoreTarget?.isConnected !== false) restoreTarget?.focus?.()
+    appRoot = null
+    restoreTarget = null
+    previousInert = null
+  }
+
+  return {
+    mount,
+    trapTab,
+    unmount,
   }
 }
 
@@ -84,6 +156,7 @@ export default defineComponent({
   emits: ['submit'],
   setup(props, { emit }) {
     const input = ref(null)
+    const dialog = ref(null)
     const controller = createProjectNameDialogController({
       initialTitle: props.initialTitle,
       pending: toRef(props, 'pending'),
@@ -92,24 +165,33 @@ export default defineComponent({
     })
     const visibleError = computed(() => controller.error.value || props.serverError)
     const dialogTitle = computed(() => props.title)
+    const focusManager = createProjectNameDialogFocusManager({
+      getDialog: () => dialog.value,
+      getInput: () => input.value,
+    })
 
     function cancel() {
       if (!controller.disabled.value) props.onCancel()
     }
 
     function handleDialogKeydown(event) {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      cancel()
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        cancel()
+        return
+      }
+      focusManager.trapTab(event)
     }
 
     onMounted(() => {
-      void nextTick(() => input.value?.focus())
+      focusManager.mount()
     })
+    onUnmounted(focusManager.unmount)
 
     return {
       ...controller,
       input,
+      dialog,
       visibleError,
       dialogTitle,
       cancel,
@@ -120,47 +202,50 @@ export default defineComponent({
 </script>
 
 <template>
-  <div class="name-dialog-backdrop" @keydown="handleDialogKeydown">
-    <section
-      class="name-dialog"
-      role="dialog"
-      aria-modal="true"
-      :aria-labelledby="`${$attrs.id || 'project-name'}-title`"
-    >
-      <header>
-        <p>PROJECT IDENTITY</p>
-        <h2 :id="`${$attrs.id || 'project-name'}-title`">{{ dialogTitle }}</h2>
-      </header>
-      <form @submit.prevent="submit">
-        <label for="project-name-input">项目名称</label>
-        <input
-          id="project-name-input"
-          ref="input"
-          v-model="title"
-          name="projectName"
-          type="text"
-          maxlength="200"
-          autocomplete="off"
-          aria-describedby="project-name-error"
-          :aria-invalid="Boolean(visibleError)"
-          :disabled="pending"
-          @input="error = ''"
-          @keydown="handleKeydown"
-        >
-        <p id="project-name-error" class="name-dialog__error" aria-live="polite">
-          {{ visibleError }}
-        </p>
-        <footer>
-          <button type="button" class="name-dialog__cancel" :disabled="pending" @click="cancel">
-            取消
-          </button>
-          <button type="submit" class="name-dialog__submit" :disabled="disabled">
-            {{ pending ? '正在保存…' : submitLabel }}
-          </button>
-        </footer>
-      </form>
-    </section>
-  </div>
+  <Teleport to="body">
+    <div class="name-dialog-backdrop" @keydown="handleDialogKeydown">
+      <section
+        ref="dialog"
+        class="name-dialog"
+        role="dialog"
+        aria-modal="true"
+        :aria-labelledby="`${$attrs.id || 'project-name'}-title`"
+      >
+        <header>
+          <p>PROJECT IDENTITY</p>
+          <h2 :id="`${$attrs.id || 'project-name'}-title`">{{ dialogTitle }}</h2>
+        </header>
+        <form @submit.prevent="submit">
+          <label for="project-name-input">项目名称</label>
+          <input
+            id="project-name-input"
+            ref="input"
+            v-model="title"
+            name="projectName"
+            type="text"
+            maxlength="200"
+            autocomplete="off"
+            aria-describedby="project-name-error"
+            :aria-invalid="Boolean(visibleError)"
+            :disabled="pending"
+            @input="error = ''"
+            @keydown="handleKeydown"
+          >
+          <p id="project-name-error" class="name-dialog__error" aria-live="polite">
+            {{ visibleError }}
+          </p>
+          <footer>
+            <button type="button" class="name-dialog__cancel" :disabled="pending" @click="cancel">
+              取消
+            </button>
+            <button type="submit" class="name-dialog__submit" :disabled="disabled">
+              {{ pending ? '正在保存…' : submitLabel }}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>

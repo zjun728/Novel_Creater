@@ -1062,25 +1062,51 @@ call a model.
 Using real UI actions and API observation:
 
 1. open `/projects`;
-2. confirm the create form has only `项目名称`;
-3. create `典镇山河`;
-4. click card whitespace and prove the route does not change;
-5. click `打开项目` and verify canonical overview URL;
-6. refresh and verify project context and breadcrumb restore;
-7. rename it;
-8. archive it and prove no dialog appeared;
-9. click toast `撤销` and verify it returns;
-10. archive again, open the archived page, assert the read-only archived DOM,
+2. focus the `新建项目` trigger, open the name dialog, and prove the real
+   teleported dialog focuses its only input while the application shell is
+   inert;
+3. dispatch composition Enter and legacy IME key code `229`, prove neither
+   submits nor prevents composition, then use real Tab and Shift+Tab keys to
+   prove focus loops through input, cancel, and submit without entering the
+   inert shell;
+4. press Escape, prove focus returns to the original trigger, reopen the
+   dialog, and confirm the create form has only `项目名称`;
+5. submit `典镇山河` with ordinary Enter and prove exactly one create request;
+6. click card whitespace and prove the route does not change;
+7. click `打开项目` and verify canonical overview URL;
+8. refresh and verify project context and breadcrumb restore;
+9. rename it through the same real dialog and prove the active-project page
+   reflects the returned server title;
+10. archive it and prove no dialog appeared;
+11. click toast `撤销` and verify it returns on the active-project page;
+12. archive again, open the archived page, assert the read-only archived DOM,
     click its `恢复项目` button, and verify the active overview returns;
-11. archive a third time;
-12. start permanent delete, cancel, and prove no DELETE request occurred;
-13. confirm permanent delete once and prove the project disappears;
-14. visit the deleted project's canonical overview and verify the missing
+13. archive a third time and prove the archived-project page shows the same
+    project revision returned by the server;
+14. start permanent delete, cancel, and prove no DELETE request occurred;
+15. start permanent delete again, hold the DELETE response pending, and prove
+    Escape, cancel, and close attempts cannot settle or close the dialog,
+    confirmation shows loading, both actions are disabled, and only one DELETE
+    request remains in flight; release the response and prove success closes
+    the dialog;
+16. visit the deleted project's canonical overview and verify the missing
     project DOM rather than another project or a generic loading shell;
-15. intercept one project detail GET with a deterministic 500 response and
+17. intercept one project detail GET with a deterministic 500 response and
     verify the recoverable error DOM and retry control;
-16. visit old and unknown URLs and verify the not-found page;
-17. inspect all captured responses and page text for the secret sentinel.
+18. create one blocker through the running app's real operation store, then
+    prove the shell alone is inert, the named overlay receives focus, keyboard
+    interaction cannot reach shell navigation, `router.push()` and browser
+    Back remain on the current route, and finishing that exact token restores
+    prior focus and re-enables all three navigation paths;
+19. overlap a notice and two blockers in the real store, finish old and new
+    tokens out of order, and prove the latest blocker remains current until its
+    own token ends, after which the latest notice is shown;
+20. inspect all captured responses and page text for the secret sentinel.
+
+The no-DOM unit harness intentionally covers controller, SSR, and memory-router
+behavior only. It does not waive the real-browser IME, focus trap, Tab order,
+focus restoration, active and archived page flows, overlay focus, shell inert,
+keyboard navigation, programmatic navigation, or browser Back checks above.
 
 - [ ] **Step 5: Run the browser lane**
 
@@ -1156,6 +1182,12 @@ The acceptance report must include:
 - exact commands and exit codes;
 - disposable database name pattern, never credentials;
 - browser actions completed;
+- real-browser evidence for NameDialog composition Enter/key code `229`, Tab
+  loop, Escape close, and trigger-focus restoration;
+- real-browser evidence for active-project and archived-project page flows;
+- real-browser evidence that the blocking overlay focuses itself, makes only
+  the shell inert, blocks keyboard, programmatic, and browser Back navigation,
+  preserves overlapping operation tokens, then restores prior focus;
 - explicit browser evidence for archived-to-restored DOM interaction and the
   project missing/error route states;
 - confirmation that no provider/model was called;

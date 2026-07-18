@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 import { createPinia, setActivePinia } from 'pinia'
 import { createSSRApp } from 'vue'
 import { renderToString } from '@vue/server-renderer'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 
@@ -67,13 +69,14 @@ test('archive toast renders Undo and invokes its action once', async () => {
 
 test('danger confirmation defaults to one red positive action and neutral cancel', async () => {
   let dialogOptions
+  const dialogHandle = {}
   let release
   const actionGate = new Promise(resolve => { release = resolve })
   let actionCalls = 0
   const confirmation = createDangerousConfirmation({
     warning(options) {
       dialogOptions = options
-      return {}
+      return dialogHandle
     },
   })
   const result = confirmation.confirm({
@@ -93,6 +96,21 @@ test('danger confirmation defaults to one red positive action and neutral cancel
   const second = dialogOptions.onPositiveClick()
   await Promise.resolve()
   assert.equal(actionCalls, 1)
+  assert.equal(dialogHandle.loading, true)
+  assert.equal(dialogHandle.closeOnEsc, false)
+  assert.equal(dialogHandle.positiveButtonProps.loading, true)
+  assert.equal(dialogHandle.positiveButtonProps.disabled, true)
+  assert.equal(dialogHandle.negativeButtonProps.disabled, true)
+
+  let resultSettled = false
+  void result.then(() => { resultSettled = true })
+  assert.equal(dialogOptions.onNegativeClick(), false)
+  assert.equal(dialogOptions.onEsc(), false)
+  assert.equal(dialogOptions.onClose(), false)
+  await Promise.resolve()
+  assert.equal(resultSettled, false)
+  assert.equal(actionCalls, 1)
+
   release()
   await Promise.all([first, second])
   assert.equal(await result, true)
@@ -157,6 +175,8 @@ test('a rejected dangerous action settles false and remains single-use', async (
 const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
 let vite
 let overlayComponent
+let overlayModule
+let boundaryComponent
 
 test.before(async () => {
   vite = await createServer({
@@ -168,8 +188,12 @@ test.before(async () => {
     plugins: [vuePlugin()],
     optimizeDeps: { noDiscovery: true },
   })
-  overlayComponent = (await vite.ssrLoadModule(
+  overlayModule = await vite.ssrLoadModule(
     '/src/components/common/AppOperationOverlay.vue',
+  )
+  overlayComponent = overlayModule.default
+  boundaryComponent = (await vite.ssrLoadModule(
+    '/src/components/common/AppInteractionBoundary.vue',
   )).default
 })
 
@@ -197,4 +221,118 @@ test('operation overlay blocks app navigation only for blocking operations', asy
   assert.doesNotMatch(nonBlocking, /aria-modal="true"/)
   assert.match(blocking, /data-blocks-navigation="true"/)
   assert.match(blocking, /aria-modal="true"/)
+  assert.match(blocking, /aria-labelledby="app-operation-overlay-title"/)
+  assert.match(blocking, /tabindex="-1"/)
+})
+
+test('operation tokens prefer the latest blocker and finish only their own work', () => {
+  setActivePinia(createPinia())
+  const store = createOperationStore('operation-overlap')()
+  const oldNotice = store.start({ label: '旧提示', blocking: false })
+  const oldBlocker = store.start({ label: '旧阻断', blocking: true })
+  const latestNotice = store.start({ label: '新提示', blocking: false })
+  const latestBlocker = store.start({ label: '新阻断', blocking: true })
+
+  assert.equal(store.blocking, true)
+  assert.equal(store.current.label, '新阻断')
+  assert.equal(store.finish(oldNotice), true)
+  assert.equal(store.current.label, '新阻断')
+  assert.equal(store.finish(oldBlocker), true)
+  assert.equal(store.current.label, '新阻断')
+  assert.equal(store.finish('unknown-token'), false)
+  assert.equal(store.finish(latestBlocker), true)
+  assert.equal(store.blocking, false)
+  assert.equal(store.current.label, '新提示')
+  assert.equal(store.finish(latestNotice), true)
+  assert.equal(store.current, null)
+})
+
+test('memory-router guard blocks push and back navigation only while an operation blocks', async () => {
+  const { installOperationNavigationGuard } = await import(
+    '../../src/router/operationNavigationGuard.js'
+  )
+  setActivePinia(createPinia())
+  const store = createOperationStore('operation-navigation')()
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/first', component: { template: '<div />' } },
+      { path: '/second', component: { template: '<div />' } },
+      { path: '/third', component: { template: '<div />' } },
+    ],
+  })
+  installOperationNavigationGuard(router, () => store)
+  await router.push('/first')
+  await router.push('/second')
+
+  const blocker = store.start({ label: '正在导入', blocking: true })
+  await router.push('/third')
+  assert.equal(router.currentRoute.value.path, '/second')
+
+  router.back()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(router.currentRoute.value.path, '/second')
+
+  store.finish(blocker)
+  await router.push('/third')
+  assert.equal(router.currentRoute.value.path, '/third')
+})
+
+test('interaction boundary makes only the shell inert while overlay remains a sibling', async () => {
+  const app = createSSRApp({
+    components: { boundaryComponent },
+    template: `
+      <boundary-component :blocking="true">
+        <main data-shell-content>正文</main>
+        <template #overlay><aside data-overlay>处理中</aside></template>
+      </boundary-component>
+    `,
+  })
+  const html = await renderToString(app)
+
+  assert.match(html, /class="app-interaction-boundary"[^>]*inert/)
+  assert.match(html, /<\/div>[\s\S]*<aside data-overlay/)
+})
+
+test('blocking overlay captures focus, focuses itself, and restores the prior element', () => {
+  const documentRef = { activeElement: null }
+  const trigger = {
+    isConnected: true,
+    focusCalls: 0,
+    focus() {
+      this.focusCalls += 1
+      documentRef.activeElement = this
+    },
+  }
+  const overlay = {
+    focusCalls: 0,
+    focus() {
+      this.focusCalls += 1
+      documentRef.activeElement = this
+    },
+  }
+  documentRef.activeElement = trigger
+  const manager = overlayModule.createOperationOverlayFocusManager({
+    getDocument: () => documentRef,
+    getOverlay: () => overlay,
+    schedule: callback => callback(),
+  })
+
+  manager.setBlocking(true)
+  assert.equal(documentRef.activeElement, overlay)
+  manager.setBlocking(true)
+  assert.equal(overlay.focusCalls, 1)
+  manager.setBlocking(false)
+  assert.equal(documentRef.activeElement, trigger)
+  assert.equal(trigger.focusCalls, 1)
+})
+
+test('reduced-motion users do not receive infinite operation or skeleton animation', async () => {
+  const [globalCss, libraryCss] = await Promise.all([
+    readFile(new URL('../../src/style.css', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/components/projects/projectLibrary.css', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(globalCss, /prefers-reduced-motion:\s*reduce[\s\S]*app-operation-overlay__progress[\s\S]*animation:\s*none/)
+  assert.match(libraryCss, /prefers-reduced-motion:\s*reduce[\s\S]*(project-library-skeleton|archived-projects-skeleton)[\s\S]*animation:\s*none/)
 })

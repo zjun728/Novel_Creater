@@ -17,16 +17,20 @@ export function createProjectLibraryController({ store, router, message }) {
   const renamePending = ref(false)
   const renameError = ref('')
   const pendingProjectIds = reactive(new Set())
+  let loadGeneration = 0
 
   async function load() {
+    const generation = ++loadGeneration
     loading.value = true
     loadError.value = ''
     try {
       await store.loadActiveProjects?.()
     } catch (error) {
-      loadError.value = publicError(error, '项目库加载失败')
+      if (generation === loadGeneration) {
+        loadError.value = publicError(error, '项目库加载失败')
+      }
     } finally {
-      loading.value = false
+      if (generation === loadGeneration) loading.value = false
     }
   }
 
@@ -189,16 +193,20 @@ export function createArchivedProjectsController({
   const actionError = ref('')
   const pendingProjectIds = reactive(new Set())
   const confirmingProjectIds = reactive(new Set())
+  let loadGeneration = 0
 
   async function load() {
+    const generation = ++loadGeneration
     loading.value = true
     loadError.value = ''
     try {
       await store.loadArchivedProjects?.()
     } catch (error) {
-      loadError.value = publicError(error, '已归档项目加载失败')
+      if (generation === loadGeneration) {
+        loadError.value = publicError(error, '已归档项目加载失败')
+      }
     } finally {
-      loading.value = false
+      if (generation === loadGeneration) loading.value = false
     }
   }
 

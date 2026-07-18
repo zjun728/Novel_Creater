@@ -29,6 +29,10 @@ body {
   height: 100vh;
 }
 
+.app-interaction-boundary {
+  height: 100%;
+}
+
 .app-message-with-action {
   display: inline-flex;
   gap: 14px;
@@ -122,4 +126,10 @@ body {
 
 @keyframes nc-operation-spin {
   to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-operation-overlay__progress {
+    animation: none;
+  }
 }

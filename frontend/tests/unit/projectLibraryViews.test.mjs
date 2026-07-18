@@ -375,3 +375,60 @@ test('both pages expose recoverable load errors and retry the same list', async 
   assert.equal(controller.loadError.value, '')
   assert.equal(attempts, 2)
 })
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
+for (const page of [
+  {
+    label: 'active',
+    createController: store => libraryModule.createProjectLibraryController({
+      store,
+      router: { push: async () => {} },
+      message: messageRecorder().message,
+    }),
+    loadMethod: 'loadActiveProjects',
+  },
+  {
+    label: 'archived',
+    createController: store => archivedModule.createArchivedProjectsController({
+      store,
+      message: messageRecorder().message,
+      confirmation: { confirm: async () => false },
+    }),
+    loadMethod: 'loadArchivedProjects',
+  },
+]) {
+  test(`${page.label} page ignores stale load errors and stale finally state`, async () => {
+    const first = deferred()
+    const second = deferred()
+    let calls = 0
+    const controller = page.createController({
+      activeProjects: [],
+      archivedProjects: [],
+      [page.loadMethod]: () => {
+        calls += 1
+        return calls === 1 ? first.promise : second.promise
+      },
+    })
+
+    const oldLoad = controller.load()
+    const latestLoad = controller.load()
+    first.reject(new Error('过期的加载失败'))
+    await oldLoad
+    assert.equal(controller.loading.value, true)
+    assert.equal(controller.loadError.value, '')
+
+    second.resolve()
+    await latestLoad
+    assert.equal(controller.loading.value, false)
+    assert.equal(controller.loadError.value, '')
+  })
+}

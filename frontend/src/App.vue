@@ -2,15 +2,19 @@
 import { NConfigProvider, NMessageProvider, NDialogProvider, NLayout, NLayoutSider, NLayoutContent, NAlert, zhCN, dateZhCN } from 'naive-ui'
 import { darkTheme } from 'naive-ui'
 import { ref, onMounted, onUnmounted, onErrorCaptured } from 'vue'
+import { storeToRefs } from 'pinia'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import TopBar from '@/components/layout/TopBar.vue'
+import AppInteractionBoundary from '@/components/common/AppInteractionBoundary.vue'
 import AppOperationOverlay from '@/components/common/AppOperationOverlay.vue'
 import { useHealthCheck } from '@/composables/useHealthCheck'
+import { useOperationStore } from '@/stores/operationStore.js'
 
 const darkMode = ref(false)
 const theme = ref(null)
 
 const { backendOnline, startPeriodic, stopPeriodic } = useHealthCheck()
+const { blocking } = storeToRefs(useOperationStore())
 
 onMounted(() => {
   startPeriodic(60000)
@@ -35,28 +39,32 @@ onErrorCaptured((err, instance, info) => {
   <n-config-provider :locale="zhCN" :date-locale="dateZhCN" :theme="theme">
     <n-message-provider>
       <n-dialog-provider>
-        <n-layout class="h-screen" has-sider>
-          <n-layout-sider
-            bordered
-            :width="220"
-            :collapsed-width="64"
-            :collapsed="false"
-            :native-scrollbar="false"
-            class="sidebar-sider"
-          >
-            <Sidebar />
-          </n-layout-sider>
-          <n-layout>
-            <TopBar />
-            <n-alert v-if="!backendOnline" type="error" :bordered="false" class="rounded-none">
-              后端服务连接失败，请确认 API 服务已启动（python -m backend.main）
-            </n-alert>
-            <n-layout-content class="main-content">
-              <router-view />
-            </n-layout-content>
+        <AppInteractionBoundary :blocking="blocking">
+          <n-layout class="h-screen" has-sider>
+            <n-layout-sider
+              bordered
+              :width="220"
+              :collapsed-width="64"
+              :collapsed="false"
+              :native-scrollbar="false"
+              class="sidebar-sider"
+            >
+              <Sidebar />
+            </n-layout-sider>
+            <n-layout>
+              <TopBar />
+              <n-alert v-if="!backendOnline" type="error" :bordered="false" class="rounded-none">
+                后端服务连接失败，请确认 API 服务已启动（python -m backend.main）
+              </n-alert>
+              <n-layout-content class="main-content">
+                <router-view />
+              </n-layout-content>
+            </n-layout>
           </n-layout>
-        </n-layout>
-        <AppOperationOverlay />
+          <template #overlay>
+            <AppOperationOverlay />
+          </template>
+        </AppInteractionBoundary>
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>

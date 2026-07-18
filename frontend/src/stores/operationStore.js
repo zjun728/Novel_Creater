@@ -5,9 +5,13 @@ let operationSequence = 0
 
 export function createOperationStore(storeId = 'operation') {
   return defineStore(storeId, () => {
-    const current = ref(null)
-    const active = computed(() => Boolean(current.value))
-    const blocking = computed(() => Boolean(current.value?.blocking))
+    const operations = ref([])
+    const current = computed(() => {
+      const blockers = operations.value.filter(operation => operation.blocking)
+      return blockers.at(-1) ?? operations.value.at(-1) ?? null
+    })
+    const active = computed(() => operations.value.length > 0)
+    const blocking = computed(() => operations.value.some(operation => operation.blocking))
 
     function start({
       label = '正在处理',
@@ -21,14 +25,14 @@ export function createOperationStore(storeId = 'operation') {
         detail: String(detail || ''),
         blocking: Boolean(shouldBlock),
       }
-      current.value = operation
+      operations.value.push(operation)
       return operation.id
     }
 
     function finish(operationId) {
-      if (!current.value) return false
-      if (operationId && current.value.id !== operationId) return false
-      current.value = null
+      const index = operations.value.findIndex(operation => operation.id === operationId)
+      if (index < 0) return false
+      operations.value.splice(index, 1)
       return true
     }
 

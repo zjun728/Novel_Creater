@@ -6,6 +6,7 @@ export function createDangerousConfirmation(dialog) {
       let settled = false
       let actionPromise
       let actionStarted = false
+      let dialogHandle
 
       function settle(result) {
         if (settled) return
@@ -14,13 +15,31 @@ export function createDangerousConfirmation(dialog) {
       }
 
       function cancel() {
+        if (actionStarted && !settled) return false
         settle(false)
+        return undefined
+      }
+
+      function markActionPending() {
+        if (!dialogHandle) return
+        dialogHandle.loading = true
+        dialogHandle.closeOnEsc = false
+        dialogHandle.positiveButtonProps = {
+          ...dialogHandle.positiveButtonProps,
+          loading: true,
+          disabled: true,
+        }
+        dialogHandle.negativeButtonProps = {
+          ...dialogHandle.negativeButtonProps,
+          disabled: true,
+        }
       }
 
       function runPositiveAction() {
         if (actionStarted) return actionPromise
         if (settled) return Promise.resolve()
         actionStarted = true
+        markActionPending()
         actionPromise = Promise.resolve()
           .then(() => options.onConfirm?.())
           .then(result => {
@@ -34,7 +53,7 @@ export function createDangerousConfirmation(dialog) {
         return actionPromise
       }
 
-      dialog.warning({
+      dialogHandle = dialog.warning({
         title: options.title || '确认永久删除',
         content: options.content || '此操作无法恢复。',
         positiveText: options.positiveText || '永久删除',

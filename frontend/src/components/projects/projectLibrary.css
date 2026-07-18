@@ -193,6 +193,13 @@
   to { background-position: -140% 0; }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .project-library-skeleton span,
+  .archived-projects-skeleton span {
+    animation: none;
+  }
+}
+
 @media (max-width: 720px) {
   .project-library-heading,
   .archived-projects-heading {
