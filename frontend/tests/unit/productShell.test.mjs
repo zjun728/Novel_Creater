@@ -442,7 +442,9 @@ test('unreachable writer views cannot reintroduce retired project navigation', a
   const combined = sources.join('\n')
 
   assert.doesNotMatch(combined, /\/project\//)
+  assert.doesNotMatch(combined, /[`'"]\/writer\//)
   assert.doesNotMatch(combined, /router\.push\(['"]\/['"]\)/)
+  assert.match(combined, /chapterWriterPath/)
   assert.match(combined, /projectOverviewPath/)
   assert.match(combined, /projectLibraryPath/)
 })

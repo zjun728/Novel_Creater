@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Response } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Response } from '@playwright/test'
 
 import {
   assertExactWrites,
@@ -38,6 +38,12 @@ async function waitForProjectMutation(
     response.request().method() === method
     && apiPath(response).endsWith(suffix)
   ))
+}
+
+
+async function waitForRouteReady(page: Page, routeSurface: Locator) {
+  await expect(routeSurface).toBeVisible()
+  await page.waitForLoadState('networkidle')
 }
 
 
@@ -170,6 +176,10 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     const overviewPath = projectOverviewPath(projectId)
     await expect.poll(() => createRequests).toBe(1)
     await expect(page).toHaveURL(new RegExp(`${overviewPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`, 'u'))
+    await waitForRouteReady(
+      page,
+      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+    )
 
     await page.goto('/projects')
     const activeCard = page.locator('.project-card').filter({ hasText: PROJECT_TITLE })
@@ -179,9 +189,17 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     expect(page.url()).toBe(beforeWhitespaceClick)
     await activeCard.getByRole('button', { name: '打开项目', exact: true }).click()
     await expect(page).toHaveURL(new RegExp(`${overviewPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}$`, 'u'))
+    await waitForRouteReady(
+      page,
+      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+    )
     await expect(page.getByRole('heading', { name: PROJECT_TITLE, exact: true })).toBeVisible()
 
     await page.reload()
+    await waitForRouteReady(
+      page,
+      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+    )
     await expect(page.getByRole('heading', { name: PROJECT_TITLE, exact: true })).toBeVisible()
     await expect(page.locator('.product-sidebar__project-title')).toHaveText(PROJECT_TITLE)
     await expect(page.locator('.product-topbar__breadcrumbs').getByRole('link', {
@@ -209,6 +227,10 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     await expect(page.locator('.project-card').filter({ hasText: RENAMED_TITLE })).toBeVisible()
     await page.locator('.project-card').filter({ hasText: RENAMED_TITLE })
       .getByRole('button', { name: '打开项目', exact: true }).click()
+    await waitForRouteReady(
+      page,
+      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+    )
     await expect(page.getByRole('heading', { name: renamedProject.title, exact: true })).toBeVisible()
 
     await page.goto('/projects')
@@ -234,7 +256,10 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     await page.getByRole('button', { name: '恢复项目', exact: true }).click()
     const directRestoreResponse = await directRestoreResponsePromise
     expect(directRestoreResponse.ok()).toBe(true)
-    await expect(page.getByText('PROJECT OVERVIEW', { exact: true })).toBeVisible()
+    await waitForRouteReady(
+      page,
+      page.locator('.overview-sheet').filter({ hasText: 'PROJECT OVERVIEW' }),
+    )
     await expect(page.getByRole('heading', { name: RENAMED_TITLE, exact: true })).toBeVisible()
 
     await page.goto('/projects')
@@ -336,7 +361,10 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     }
 
     await page.goto(overviewPath)
-    await expect(page.getByText('项目不存在或已被删除', { exact: true })).toBeVisible()
+    await waitForRouteReady(
+      page,
+      page.locator('.route-state-page').filter({ hasText: '项目不存在或已被删除' }),
+    )
     await expect(page.getByText('项目暂时无法加载', { exact: true })).toHaveCount(0)
 
     let detailFailureInjected = false
@@ -362,16 +390,25 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     const retry = page.getByRole('button', { name: '重试', exact: true })
     await expect(retry).toBeVisible()
     await retry.click()
-    await expect(page.getByText('项目不存在或已被删除', { exact: true })).toBeVisible()
+    await waitForRouteReady(
+      page,
+      page.locator('.route-state-page').filter({ hasText: '项目不存在或已被删除' }),
+    )
     await page.unroute(`**/api/projects/${recoverableId}`)
 
     await page.goto('/projects')
+    await waitForRouteReady(page, page.locator('.project-library-page'))
     await page.evaluate(async () => {
       const router = (await import('/src/router/index.js')).default
       await router.push('/settings/providers')
+    })
+    await waitForRouteReady(page, page.locator('.provider-route'))
+    await page.evaluate(async () => {
+      const router = (await import('/src/router/index.js')).default
       await router.push('/projects')
     })
     await expect(page).toHaveURL(/\/projects$/u)
+    await waitForRouteReady(page, page.locator('.project-library-page'))
     const globalNavigation = page.getByRole('navigation', { name: '全局导航' })
     const priorFocus = globalNavigation.getByRole('link', {
       name: '项目库',
@@ -461,13 +498,16 @@ test('product shell lifecycle is accessible, durable, owned, and secret-safe', a
     await settingsLink.focus()
     await page.keyboard.press('Enter')
     await expect(page).toHaveURL(/\/settings\/providers$/u)
+    await waitForRouteReady(page, page.locator('.provider-route'))
     await page.evaluate(async () => {
       const router = (await import('/src/router/index.js')).default
       await router.push('/projects')
     })
     await expect(page).toHaveURL(/\/projects$/u)
+    await waitForRouteReady(page, page.locator('.project-library-page'))
     await page.goBack()
     await expect(page).toHaveURL(/\/settings\/providers$/u)
+    await waitForRouteReady(page, page.locator('.provider-route'))
 
     const overlap = await page.evaluate(async () => {
       const { useOperationStore } = await import('/src/stores/operationStore.js')

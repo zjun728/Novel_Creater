@@ -41,7 +41,11 @@ import { buildWritingContext } from '@/utils/contextBuilder'
 import { assertContextPackHealthy } from '@/utils/contextPackV2'
 import { auditIssueTypeLabel, auditSeverityLabel } from '@/utils/auditLabels'
 import { api } from '@/api/db/client'
-import { projectLibraryPath, projectOverviewPath } from '@/router/projectRoutes'
+import {
+  chapterWriterPath,
+  projectLibraryPath,
+  projectOverviewPath
+} from '@/router/projectRoutes'
 import { downloadFile, exportTxt, exportMarkdown } from '@/utils/export'
 import { formatChapterDisplayTitle, getChapterTitleQuality, isDefaultChapterTitle } from '@/prompts/chapter'
 import AIActionPanel from '@/components/writer/AIActionPanel.vue'
@@ -480,7 +484,7 @@ watch(chapterNum, async (newNum) => {
   recentChapterEndings.value = []
   compareStore.clearComparison()
   await loadChapter()
-  router.replace(`/writer/${projectId.value}/${newNum}`)
+  router.replace(chapterWriterPath(projectId.value, newNum))
 })
 
 async function loadContextData() {
