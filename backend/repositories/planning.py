@@ -23,10 +23,24 @@ class PlanningRepository:
             (creation_contract_id,),
         )
 
+    async def read_bible_head(self, session, project_id: str):
+        return await session.fetchone(
+            """SELECT head.revision,head.bible_revision_id,head.content_hash,
+                      bible.selection_revision,bible.contract_revision,
+                      bible.contract_hash
+               FROM project_bible_heads head
+               LEFT JOIN creation_bible_revisions bible
+                 ON bible.project_id=head.project_id
+                AND bible.id=head.bible_revision_id
+               WHERE head.project_id=%s""",
+            (project_id,),
+        )
+
     async def read_selected_seed(self, session, project_id: str):
         return await session.fetchone(
             """SELECT selected.seed_id,selected.seed_revision_id,
-                      selected.seed_hash,revision.payload_json
+                      selected.seed_hash,selected.selection_revision,
+                      revision.payload_json
                FROM project_selected_seeds selected
                JOIN creative_seed_revisions revision
                  ON revision.project_id=selected.project_id
@@ -37,9 +51,21 @@ class PlanningRepository:
 
     async def read_current_plan(self, session, project_id: str):
         volume = await session.fetchone(
-            """SELECT * FROM volume_plans
-               WHERE project_id=%s AND status='active'
-               ORDER BY volume_num LIMIT 1""",
+            """SELECT volume.*
+               FROM volume_plans volume
+               JOIN project_selected_seeds selected
+                 ON selected.project_id=volume.project_id
+                AND selected.selection_revision=volume.selection_revision
+               JOIN project_contract_heads contract_head
+                 ON contract_head.project_id=volume.project_id
+                AND contract_head.revision=volume.contract_revision
+                AND contract_head.creation_hash=volume.contract_hash
+               JOIN project_bible_heads bible_head
+                 ON bible_head.project_id=volume.project_id
+                AND bible_head.revision=volume.bible_revision
+                AND bible_head.content_hash=volume.bible_hash
+               WHERE volume.project_id=%s AND volume.status='active'
+               ORDER BY volume.volume_num LIMIT 1""",
             (project_id,),
         )
         if volume is None:
@@ -76,14 +102,13 @@ class PlanningRepository:
             "stages": tuple(self._stage(row) for row in stages),
             "scene_tasks": tuple(self._task(row) for row in tasks),
         }
-        bundle["manifest_hash"] = canonical_hash({
-            "contractRevision": self._contract_revision(
-                await self.read_contract_head(session, project_id)
-            ),
-            "volume": bundle["volume"]["payload"],
-            "block": bundle["block"]["payload"],
-            "stages": [stage["payload"] for stage in bundle["stages"]],
-            "sceneTasks": [task["payload"] for task in bundle["scene_tasks"]],
+        bundle.update({
+            "selection_revision": int(volume["selection_revision"]),
+            "contract_revision": int(volume["contract_revision"]),
+            "contract_hash": volume["contract_hash"],
+            "bible_revision": int(volume["bible_revision"]),
+            "bible_hash": volume["bible_hash"],
+            "manifest_hash": volume["manifest_hash"],
         })
         return bundle
 
@@ -92,11 +117,17 @@ class PlanningRepository:
         block = bundle["block"]
         if await session.execute(
             """INSERT INTO volume_plans
-               (id,project_id,volume_num,title,direction_json,revision,status,created_at,updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               (id,project_id,selection_revision,contract_revision,contract_hash,
+                bible_revision,bible_hash,manifest_hash,volume_num,title,
+                direction_json,revision,status,created_at,updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
-                volume["id"], volume["project_id"], volume["volume_num"],
-                volume["title"], canonical_json(volume["payload"]),
+                volume["id"], volume["project_id"],
+                volume["selection_revision"], volume["contract_revision"],
+                volume["contract_hash"], volume["bible_revision"],
+                volume["bible_hash"], volume["manifest_hash"],
+                volume["volume_num"], volume["title"],
+                canonical_json(volume["payload"]),
                 volume["revision"], volume["status"],
                 volume["created_at"], volume["updated_at"],
             ),
@@ -158,6 +189,12 @@ class PlanningRepository:
     def _volume(self, row):
         return {
             "id": row["id"], "project_id": row["project_id"],
+            "selection_revision": row["selection_revision"],
+            "contract_revision": row["contract_revision"],
+            "contract_hash": row["contract_hash"],
+            "bible_revision": row["bible_revision"],
+            "bible_hash": row["bible_hash"],
+            "manifest_hash": row["manifest_hash"],
             "volume_num": row["volume_num"], "title": row["title"],
             "payload": self._json(row["direction_json"]),
             "revision": row["revision"], "status": row["status"],

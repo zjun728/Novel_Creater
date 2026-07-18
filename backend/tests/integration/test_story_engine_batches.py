@@ -74,6 +74,12 @@ async def _bootstrap_facts(session, project_id: str = "project-1") -> None:
         ("a" * 64, now),
     )
     await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES (%s,1,'seed-1','seed-revision-1',%s,%s)""",
+        (project_id, "a" * 64, now),
+    )
+    await session.execute(
         """INSERT INTO project_selected_seeds
            (project_id,seed_id,seed_revision_id,seed_hash,
             selection_revision,selected_at,updated_at)
@@ -176,6 +182,7 @@ async def _insert_recovery_batch(
     seed_id: str = "seed-1",
     seed_revision_id: str = "seed-revision-1",
     seed_hash: str = "a" * 64,
+    selection_revision: int = 1,
     binding_revision_id: str | None = "binding-revision-1",
     binding_hash: str | None = "b" * 64,
     status: str = "reserved",
@@ -199,16 +206,17 @@ async def _insert_recovery_batch(
         finished_at = created_at + 1
     await session.execute(
         """INSERT INTO story_engine_batches
-           (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,provider_id,model_name_snapshot,
             idempotency_key,request_json,request_hash,status,attempt_id,
             attempt_started_at,lease_expires_at,raw_response_text,
             raw_response_hash,public_error_code,created_at,finished_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                    NULL,%s,%s,%s,%s)""",
         (
             batch_id,
             project_id,
+            selection_revision,
             source_type,
             seed_id,
             seed_revision_id,
@@ -255,6 +263,12 @@ async def _bootstrap_secondary_recovery_project(session) -> None:
         (canonical_json({"test": "other project"}), "2" * 64, now),
     )
     await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES ('project-2',1,'seed-2','seed-revision-2',%s,%s)""",
+        ("2" * 64, now),
+    )
+    await session.execute(
         """INSERT INTO project_selected_seeds
            (project_id,seed_id,seed_revision_id,seed_hash,
             selection_revision,selected_at,updated_at)
@@ -289,6 +303,12 @@ async def test_recoverable_discovery_filters_current_facts_orders_and_limits(
         (canonical_json({"test": "stale seed"}), "4" * 64),
     )
     await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES ('project-1',2,'seed-1','seed-revision-stale',%s,2)""",
+        ("4" * 64,),
+    )
+    await session.execute(
         """INSERT INTO project_model_binding_revisions
            (id,project_id,revision,content_hash,source_project_id,created_at)
            VALUES ('binding-revision-stale','project-1',2,%s,NULL,2)""",
@@ -320,6 +340,7 @@ async def test_recoverable_discovery_filters_current_facts_orders_and_limits(
     await _insert_recovery_batch(
         session,
         batch_id="batch-stale-seed",
+        selection_revision=2,
         seed_revision_id="seed-revision-stale",
         seed_hash="4" * 64,
         created_at=1,
@@ -403,12 +424,12 @@ async def test_m2a_schema_enforces_unique_key_fk_and_exact_three_manual_options(
     with pytest.raises(aiomysql.IntegrityError):
         await disposable_mysql.session.execute(
             """INSERT INTO story_engine_batches
-               (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+               (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
                 binding_revision_id,binding_hash,provider_id,model_name_snapshot,
                 idempotency_key,request_json,request_hash,status,attempt_id,
                 attempt_started_at,lease_expires_at,raw_response_text,
                 raw_response_hash,public_error_code,created_at,finished_at)
-               SELECT 'duplicate-batch',project_id,source_type,seed_id,
+               SELECT 'duplicate-batch',project_id,selection_revision,source_type,seed_id,
                       seed_revision_id,seed_hash,binding_revision_id,binding_hash,
                       provider_id,model_name_snapshot,idempotency_key,request_json,
                       request_hash,status,attempt_id,attempt_started_at,
@@ -420,8 +441,8 @@ async def test_m2a_schema_enforces_unique_key_fk_and_exact_three_manual_options(
     with pytest.raises(aiomysql.IntegrityError):
         await disposable_mysql.session.execute(
             """INSERT INTO story_engine_options
-               (id,project_id,batch_id,option_order,payload_json,content_hash,created_at)
-               VALUES ('bad-fk','wrong-project',%s,1,'{}',%s,1)""",
+               (id,project_id,selection_revision,batch_id,option_order,payload_json,content_hash,created_at)
+               VALUES ('bad-fk','wrong-project',1,%s,1,'{}',%s,1)""",
             (result.id, "d" * 64),
         )
 

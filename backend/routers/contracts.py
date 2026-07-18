@@ -73,6 +73,7 @@ def _public_draft(result):
     return {
         "id": result.id,
         "projectId": result.project_id,
+        "selectionRevision": result.selection_revision,
         "baseHeadRevision": result.base_head_revision,
         "draftVersion": result.draft_version,
         "contentHash": result.content_hash,
@@ -97,6 +98,7 @@ def _public_binding_item(item):
 def _public_preview(result):
     return {
         "projectId": result.project_id,
+        "selectionRevision": result.selection_revision,
         "draftVersion": result.draft_version,
         "baseHeadRevision": result.base_head_revision,
         "expectedRevision": result.expected_revision,
@@ -144,6 +146,7 @@ def _public_confirmed(result):
     return {
         "projectId": result.project_id,
         "revision": result.revision,
+        "selectionRevision": result.selection_revision,
         "hasContract": True,
         "creationContractId": result.creation_contract_id,
         "styleContractId": result.style_contract_id,

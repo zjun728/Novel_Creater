@@ -60,7 +60,8 @@ async def test_verifier_uses_select_only_and_emits_exact_bounded_receipt():
         assert sql.lstrip().upper().startswith("SELECT")
         assert forbidden.search(sql) is None
         assert args == ("source-1",)
-        assert "ORDER BY s.imported_at DESC,s.id DESC LIMIT 1" in sql
+        assert "FROM corpus_source_revisions r" in sql
+        assert "ORDER BY r.imported_at DESC,r.id DESC LIMIT 1" in sql
         assert "ORDER BY s.revision DESC" not in sql
     rendered = json.dumps(receipt)
     assert "BODY_TEXT_SENTINEL" not in rendered

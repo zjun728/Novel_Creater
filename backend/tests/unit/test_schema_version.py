@@ -17,8 +17,8 @@ EXPECTED_QUERY = (
 )
 
 
-def test_expected_schema_version_is_writer_core_v1_2():
-    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.2.0"
+def test_expected_schema_version_is_writer_core_v1_3():
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.3.0"
 
 
 class FakeVersionSession:

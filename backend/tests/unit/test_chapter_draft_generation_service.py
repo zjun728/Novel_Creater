@@ -31,6 +31,13 @@ class FakeChapterRepository:
                 "sceneTasks": [{"task": "织机故障引出沈清源的判断"}],
             },
             "status": "drafting",
+            "selection_revision": 1,
+            "contract_revision": 1,
+            "contract_hash": "a" * 64,
+            "bible_revision": 1,
+            "bible_hash": "b" * 64,
+            "volume_plan_id": "volume-1",
+            "planning_manifest_hash": "c" * 64,
         }
         self.working_draft = {
             "id": "draft-1",

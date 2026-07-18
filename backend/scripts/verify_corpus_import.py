@@ -26,27 +26,42 @@ async def build_receipt(
         raise ValueError("exactly one source selector is required")
     if source_hash is not None and _HASH.fullmatch(source_hash) is None:
         raise ValueError("source hash must be 64 lowercase hexadecimal characters")
-    column = "s.id" if source_id is not None else "s.source_hash"
+    current_join = (
+        "JOIN corpus_source_heads h ON h.source_id=s.id "
+        "AND h.revision_id=r.id "
+        if source_id is not None else ""
+    )
+    column = "s.id" if source_id is not None else "r.content_hash"
     selector = source_id if source_id is not None else source_hash
     row = await session.fetchone(
-        f"""SELECT s.relative_path,s.source_hash,s.encoding,s.file_size,
-                    s.parser_version,s.normalizer_version,s.fragmenter_version,
-                    s.index_version,s.status,
+        f"""SELECT r.relative_path,r.content_hash AS source_hash,r.encoding,
+                    r.byte_length AS file_size,r.parser_version,
+                    r.normalizer_version,r.fragmenter_version,
+                    r.index_version,r.status,
                     (SELECT COUNT(*) FROM corpus_chapters c
-                      WHERE c.corpus_source_id=s.id) AS chapter_count,
+                      WHERE c.corpus_source_id=s.id
+                        AND c.source_revision_id=r.id) AS chapter_count,
                     (SELECT COUNT(*) FROM corpus_fragments f
                       JOIN corpus_chapters c ON c.id=f.corpus_chapter_id
-                      WHERE c.corpus_source_id=s.id) AS fragment_count,
+                      WHERE c.corpus_source_id=s.id
+                        AND c.source_revision_id=r.id) AS fragment_count,
                     (SELECT MIN(c.raw_byte_start) FROM corpus_chapters c
-                      WHERE c.corpus_source_id=s.id) AS first_byte_start,
+                      WHERE c.corpus_source_id=s.id
+                        AND c.source_revision_id=r.id) AS first_byte_start,
                     (SELECT MAX(c.raw_byte_end) FROM corpus_chapters c
-                      WHERE c.corpus_source_id=s.id) AS last_byte_end,
+                      WHERE c.corpus_source_id=s.id
+                        AND c.source_revision_id=r.id) AS last_byte_end,
                     (SELECT MIN(c.normalized_char_start) FROM corpus_chapters c
-                      WHERE c.corpus_source_id=s.id) AS first_char_start,
+                      WHERE c.corpus_source_id=s.id
+                        AND c.source_revision_id=r.id) AS first_char_start,
                     (SELECT MAX(c.normalized_char_end) FROM corpus_chapters c
-                      WHERE c.corpus_source_id=s.id) AS last_char_end
-             FROM corpus_sources s WHERE {column}=%s
-             ORDER BY s.imported_at DESC,s.id DESC LIMIT 1""",
+                      WHERE c.corpus_source_id=s.id
+                        AND c.source_revision_id=r.id) AS last_char_end
+             FROM corpus_source_revisions r
+             JOIN corpus_sources s ON s.id=r.source_id
+             {current_join}
+             WHERE {column}=%s
+             ORDER BY r.imported_at DESC,r.id DESC LIMIT 1""",
         (selector,),
     )
     if row is None:

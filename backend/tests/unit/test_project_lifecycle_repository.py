@@ -258,7 +258,7 @@ async def test_restore_clears_archive_marker_with_revision_compare_and_swap(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("affected, expected", [(1, True), (0, False), (2, False)])
-async def test_permanent_delete_relies_on_schema_cascade_and_revision_guard(
+async def test_permanent_delete_guards_then_deletes_owned_graph_in_order(
     affected, expected
 ):
     session = RecordingSession(execute_result=affected)
@@ -268,7 +268,49 @@ async def test_permanent_delete_relies_on_schema_cascade_and_revision_guard(
     )
 
     assert changed is expected
-    assert session.calls == [
+    assert session.calls[0] == (
+        "fetchone",
+        "SELECT id FROM projects WHERE id=%s AND archived_at IS NOT NULL "
+        "AND lifecycle_revision=%s FOR UPDATE",
+        ("p1", 9),
+    )
+    direct_deletes = session.calls[1:1 + len(projects._PROJECT_OWNED_DELETE_ORDER)]
+    assert direct_deletes == [
+        (
+            "execute",
+            f"DELETE FROM {table_name} WHERE project_id=%s",
+            ("p1",),
+        )
+        for table_name in projects._PROJECT_OWNED_DELETE_ORDER
+    ]
+    assert session.calls[-6:] == [
+        (
+            "execute",
+            "DELETE heads FROM creative_seed_heads heads "
+            "JOIN creative_seeds seeds ON seeds.id=heads.seed_id "
+            "WHERE seeds.project_id=%s",
+            ("p1",),
+        ),
+        (
+            "execute",
+            "DELETE FROM creative_seed_revisions WHERE project_id=%s",
+            ("p1",),
+        ),
+        (
+            "execute",
+            "DELETE FROM creative_seeds WHERE project_id=%s",
+            ("p1",),
+        ),
+        (
+            "execute",
+            "DELETE FROM project_model_binding_heads WHERE project_id=%s",
+            ("p1",),
+        ),
+        (
+            "execute",
+            "DELETE FROM project_model_binding_revisions WHERE project_id=%s",
+            ("p1",),
+        ),
         (
             "execute",
             "DELETE FROM projects WHERE id=%s AND archived_at IS NOT NULL "
@@ -276,6 +318,21 @@ async def test_permanent_delete_relies_on_schema_cascade_and_revision_guard(
             ("p1", 9),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_guard_failure_does_not_touch_owned_rows():
+    session = RecordingSession(row=None)
+
+    assert await projects.ProjectRepository().permanently_delete(
+        session, "p1", 9
+    ) is False
+    assert session.calls == [(
+        "fetchone",
+        "SELECT id FROM projects WHERE id=%s AND archived_at IS NOT NULL "
+        "AND lifecycle_revision=%s FOR UPDATE",
+        ("p1", 9),
+    )]
 
 
 @pytest.mark.asyncio

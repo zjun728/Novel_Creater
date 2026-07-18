@@ -189,7 +189,15 @@ def base_rows():
             "selected_seed_hash": seed_rows[-1]["content_hash"],
             "selected_revision_hash": seed_rows[-1]["content_hash"],
             "selection_revision": 1,
+            "history_selection_revision": 1,
+            "history_seed_id": SEED_ID,
+            "history_seed_revision_id": SEED_REVISION_ID,
+            "history_seed_hash": seed_rows[-1]["content_hash"],
             "provider_count": 9,
+            "application_settings_count": 1,
+            "application_settings_revision": 0,
+            "fallback_provider_id": None,
+            "application_settings_updated_at": 0,
             "binding_revision_id": BINDING_REVISION_ID,
             "binding_revision": 1,
             "binding_hash": binding_hash,
@@ -202,6 +210,9 @@ def base_rows():
             "style_contract_id": None,
             "creation_hash": None,
             "style_hash": None,
+            "bible_revision": 0,
+            "bible_revision_id": None,
+            "bible_hash": None,
             "canon_revision": 0,
             "canon_parent_revision": 0,
             "canon_idempotency_key": ProjectLifecycleService.bootstrap_idempotency_key(PROJECT_ID),
@@ -267,10 +278,31 @@ def base_rows():
             "arc_projections": 0,
             "plot_thread_projections": 0,
             "reference_uses": 0,
+            "provider_profile_mutation_requests": 0,
+            "market_sources": 0,
+            "market_source_policy_revisions": 0,
+            "market_source_policy_heads": 0,
+            "market_snapshots": 0,
+            "market_snapshot_entries": 0,
+            "market_snapshot_manifests": 0,
+            "market_source_refresh_states": 0,
+            "market_refresh_requests": 0,
+            "market_analyses": 0,
+            "seed_inspiration_attempts": 0,
+            "seed_inspiration_requests": 0,
+            "asset_recommendation_attempts": 0,
+            "asset_recommendation_requests": 0,
+            "style_trial_attempts": 0,
+            "style_trial_requests": 0,
+            "project_bible_drafts": 0,
+            "bible_generation_attempts": 0,
+            "creation_bible_revisions": 0,
+            "bible_confirmation_requests": 0,
             "creation_contract_engine_refs": 0,
             "style_contract_template_refs": 0,
             "creation_contract_experience_refs": 0,
             "creation_contract_corpus_refs": 0,
+            "creation_contract_corpus_fragment_refs": 0,
         },
     }
 
@@ -311,6 +343,7 @@ def corpus_rows():
     return {
         "corpus": {
             "source_id": CORPUS_SOURCE_ID,
+            "source_revision_id": "00000000-0000-0000-0000-000000000051",
             "relative_path": "approved/reference.txt",
             "source_hash": "c" * 64,
             "source_revision": 1,
@@ -349,7 +382,7 @@ def l5_rows():
         risks=(f"风险{index}",), differentiation=f"差异{index}",
     ) for index in range(1, 4))
     option_rows = [{
-        "id": option_id, "option_order": index,
+        "id": option_id, "selection_revision": 1, "option_order": index,
         "payload_json": canonical_json(option), "content_hash": canonical_hash(option),
     } for index, (option_id, option) in enumerate(zip(option_ids, options, strict=True), 1)]
     seed_payload = SeedPayload(
@@ -368,7 +401,7 @@ def l5_rows():
     creation_payload = CreationContractPayload(
         schemaVersion="creation-contract-v1", channelProfileKey="qidian-male",
         genreProfileKey="historical-crossing", qualityCharterVersion="quality-v1",
-        selectedSeed=seed_payload, selectedEngine=options[0],
+        selectionRevision=1, selectedSeed=seed_payload, selectedEngine=options[0],
         totalWordRange=(800000, 1200000),
         chapterCapacityPolicy="故事块按情节自然跨章", modelBindingRevision=1,
     )
@@ -424,6 +457,7 @@ def l5_rows():
             "batch_seed_id": SEED_ID,
             "batch_seed_revision_id": SEED_REVISION_ID,
             "batch_seed_hash": canonical_hash(seed_payload),
+            "batch_selection_revision": 1,
             "batch_binding_revision_id": BINDING_REVISION_ID,
             "batch_binding_hash": binding_hash,
             "attempt_count": 1,
@@ -450,6 +484,7 @@ def l5_rows():
             "head_style_hash": style_hash,
             "creation_revision": 1,
             "style_revision": 1,
+            "creation_selection_revision": 1,
             "creation_seed_id": SEED_ID,
             "creation_seed_revision_id": SEED_REVISION_ID,
             "creation_seed_hash": canonical_hash(seed_payload),
@@ -466,6 +501,7 @@ def l5_rows():
         "l5_options": option_rows,
         "l5_confirmations": [{
             "id": "00000000-0000-0000-0000-000000000043",
+            "selection_revision": 1,
             "status": "succeeded",
             "creation_contract_id": CREATION_ID,
             "style_contract_id": STYLE_ID,
@@ -820,6 +856,13 @@ def _valid_l5_rows():
         "creation_contract_corpus_refs": 1,
     })
     return {**base, **asset_rows(), **corpus_rows(), **l5}
+
+
+def test_explicit_corpus_hash_verifies_an_immutable_revision_not_only_current_head():
+    from backend.scripts.verify_milestone2_product import _CORPUS_SQL
+
+    assert "JOIN corpus_source_revisions r ON r.source_id=s.id" in _CORPUS_SQL
+    assert "JOIN corpus_source_heads" not in _CORPUS_SQL
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""Reset the frozen v1.1 foundation into v1.2, or verify a v1.2 no-op."""
+"""Reset the frozen v1.1 foundation into v1.3, or verify a v1.3 no-op."""
 
 from __future__ import annotations
 
@@ -56,10 +56,12 @@ V11_TABLE_NAMES = (
 )
 FOUNDATION_TABLES = frozenset({
     "schema_metadata",
+    "application_settings",
     "projects",
     "creative_seeds",
     "creative_seed_revisions",
     "creative_seed_heads",
+    "project_seed_selection_revisions",
     "project_selected_seeds",
     "provider_profiles",
     "project_model_binding_revisions",
@@ -68,9 +70,13 @@ FOUNDATION_TABLES = frozenset({
     "canon_revisions",
     "projection_heads",
     "project_contract_heads",
+    "project_bible_heads",
 })
 VERIFIED_EMPTY_TABLES = tuple(
     table for table in created_table_names() if table not in FOUNDATION_TABLES
+)
+V11_VERIFIED_EMPTY_TABLES = tuple(
+    table for table in V11_TABLE_NAMES if table not in FOUNDATION_TABLES
 )
 _DISPOSABLE_DATABASE = re.compile(r"novel_creator_test_[a-f0-9]{32}")
 _CLI_PRODUCT_READ_AUTHORITY = object()
@@ -92,8 +98,11 @@ _PROVIDER_COLUMNS = (
     "id", "name", "provider_type", "model_name", "base_url", "api_key",
     "enabled", "sort_order", "stream", "max_context_tokens",
     "max_output_tokens", "temperature", "top_p", "supports_json",
-    "supports_streaming", "notes", "thinking", "lifecycle_status", "deleted_at",
-    "created_at", "updated_at",
+    "supports_streaming", "notes", "thinking", "lifecycle_status", "revision",
+    "deleted_at", "created_at", "updated_at",
+)
+_V11_PROVIDER_COLUMNS = tuple(
+    column for column in _PROVIDER_COLUMNS if column != "revision"
 )
 
 
@@ -114,7 +123,7 @@ class ResetPartialStateError(ResetError):
 
 
 async def _classify_reset_source(admin_session, database_name: str) -> str:
-    """Accept only the frozen v1.1 source or current v1.2 target manifest."""
+    """Accept only the frozen v1.1 source or current v1.3 target manifest."""
 
     table_rows = await admin_session.fetchall(
         "SELECT TABLE_NAME FROM information_schema.TABLES "
@@ -143,9 +152,9 @@ async def _classify_reset_source(admin_session, database_name: str) -> str:
             "manifest_hash": manifest_hash(),
         }
     ):
-        return "v1.2-target"
+        return "v1.3-target"
     raise ResetValidationError(
-        "Reset source must be the exact v1.1 source or v1.2 target manifest"
+        "Reset source must be the exact v1.1 source or v1.3 target manifest"
     )
 
 
@@ -479,6 +488,9 @@ def _map_provider(row: Mapping[str, object]) -> dict[str, object]:
         "notes": _text(row["notes"], "provider.notes", max_length=65_535),
         "thinking": _json_text(row["thinking"], "provider.thinking"),
         "lifecycle_status": lifecycle_status,
+        "revision": _integer(
+            row.get("revision"), "provider.revision", default=0, minimum=0,
+        ),
         "deleted_at": deleted_at,
         "created_at": _integer(row["created_at"], "provider.created_at"),
         "updated_at": _integer(row["updated_at"], "provider.updated_at"),
@@ -546,8 +558,9 @@ async def _load_v11_preserved_state(
         )
     ):
         raise ResetValidationError(f"M2 selected seed must be {SELECTED_SEED_TITLE}")
+    provider_columns = _PROVIDER_COLUMNS if target_schema else _V11_PROVIDER_COLUMNS
     provider_rows = await admin_session.fetchall(
-        f"SELECT {', '.join(_PROVIDER_COLUMNS)} FROM {_qualified(database_name, 'provider_profiles')} ORDER BY sort_order,id"
+        f"SELECT {', '.join(provider_columns)} FROM {_qualified(database_name, 'provider_profiles')} ORDER BY sort_order,id"
     )
     if any(
         row.get("lifecycle_status") != "active" or row.get("deleted_at") is not None
@@ -574,12 +587,60 @@ async def _load_v11_preserved_state(
         "project_model_binding_heads": 1, "canon_revisions": 1,
         "projection_heads": 1, "project_contract_heads": 1,
     }
-    for table in created_table_names():
+    if target_schema:
+        expected_counts.update({
+            "application_settings": 1,
+            "project_seed_selection_revisions": 1,
+            "project_bible_heads": 1,
+        })
+    inventory = created_table_names() if target_schema else V11_TABLE_NAMES
+    for table in inventory:
         row = await admin_session.fetchone(
             f"SELECT COUNT(*) AS count FROM {_qualified(database_name, table)}"
         )
         if row is None or row.get("count") != expected_counts.get(table, 0):
             raise ResetValidationError(f"M2 state is advanced or incomplete in {table}")
+    if target_schema:
+        selection = await admin_session.fetchone(
+            f"SELECT seed_id,seed_revision_id,seed_hash,selection_revision "
+            f"FROM {_qualified(database_name, 'project_seed_selection_revisions')} "
+            "WHERE project_id=%s",
+            (project["id"],),
+        )
+        if selection != {
+            "seed_id": selected["seed_id"],
+            "seed_revision_id": selected["seed_revision_id"],
+            "seed_hash": selected["seed_hash"],
+            "selection_revision": 1,
+        }:
+            raise ResetValidationError(
+                "M2 selection history must exactly match selected seed revision 1"
+            )
+        bible_head = await admin_session.fetchone(
+            f"SELECT revision,bible_revision_id,content_hash "
+            f"FROM {_qualified(database_name, 'project_bible_heads')} "
+            "WHERE project_id=%s",
+            (project["id"],),
+        )
+        if bible_head != {
+            "revision": 0,
+            "bible_revision_id": None,
+            "content_hash": None,
+        }:
+            raise ResetValidationError("M2 Bible head must remain at revision 0")
+        settings = await admin_session.fetchone(
+            f"SELECT singleton_id,fallback_provider_id,revision,updated_at "
+            f"FROM {_qualified(database_name, 'application_settings')}"
+        )
+        if settings != {
+            "singleton_id": 1,
+            "fallback_provider_id": None,
+            "revision": 0,
+            "updated_at": 0,
+        }:
+            raise ResetValidationError(
+                "M2 application settings must remain at singleton revision 0"
+            )
     binding = await admin_session.fetchone(
         f"SELECT r.id,r.project_id,r.revision,r.content_hash,r.source_project_id,"
         f"h.revision AS head_revision,h.binding_revision_id,"
@@ -689,20 +750,31 @@ def _report(
         ("providers", len(state.providers)),
         ("seedRevisions", len(state.seeds)),
         ("seedHeads", len(state.seeds)),
+        ("selectionRevisions", 1),
         ("bindingRevisions", 1),
         ("bindingItems", len(TASK_KEYS)),
         ("bindingHeads", 1),
         ("canonRevisions", 1),
         ("projectionHeads", 1),
         ("contractHeads", 1),
+        ("bibleHeads", 1),
+        ("applicationSettings", 1),
+    )
+    v11_counts = tuple(
+        item for item in target_counts
+        if item[0] not in {
+            "selectionRevisions",
+            "bibleHeads",
+            "applicationSettings",
+        }
     )
     if source_kind == "v1.1-source":
         source_schema_version = V11_SCHEMA_VERSION
         source_manifest_hash = V11_MANIFEST_HASH
         source_table_names = V11_TABLE_NAMES
-        source_counts = target_counts
-        source_verified_empty_tables = VERIFIED_EMPTY_TABLES
-    elif source_kind == "v1.2-target":
+        source_counts = v11_counts
+        source_verified_empty_tables = V11_VERIFIED_EMPTY_TABLES
+    elif source_kind == "v1.3-target":
         source_schema_version = EXPECTED_SCHEMA_VERSION
         source_manifest_hash = manifest_hash()
         source_table_names = created_table_names()
@@ -772,7 +844,7 @@ def format_reset_report(report: ResetReport) -> str:
             "verifiedEmptyTables": list(report.source_verified_empty_tables),
         },
         "target": {
-            "kind": "v1.2-target",
+            "kind": "v1.3-target",
             "schemaVersion": report.target_schema_version,
             "manifestHash": report.target_manifest_hash,
             "tables": list(report.target_table_names),
@@ -860,6 +932,16 @@ async def _insert_preserved_state(
     )
     selected_revision = seed_revisions[str(selected_seed["id"])]
     await admin_session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id, selection_revision, seed_id, seed_revision_id,
+            seed_hash, selected_at)
+           VALUES (%s,1,%s,%s,%s,%s)""",
+        (
+            project["id"], selected_seed["id"], selected_revision["id"],
+            selected_revision["content_hash"], now_ms,
+        ),
+    )
+    await admin_session.execute(
         """INSERT INTO project_selected_seeds
            (project_id, seed_id, seed_revision_id, seed_hash,
             selection_revision, selected_at, updated_at)
@@ -937,6 +1019,12 @@ async def _insert_preserved_state(
            VALUES (%s,0,NULL,NULL,NULL,NULL,%s)""",
         (project["id"], now_ms),
     )
+    await admin_session.execute(
+        """INSERT INTO project_bible_heads
+           (project_id, revision, bible_revision_id, content_hash, updated_at)
+           VALUES (%s,0,NULL,NULL,%s)""",
+        (project["id"], now_ms),
+    )
 
 
 async def _verify_empty_tables(admin_session) -> None:
@@ -995,7 +1083,7 @@ async def reset_writer_core_data(
             return await _load_v11_preserved_state(
                 admin_session, database_name, request,
             )
-        if kind == "v1.2-target":
+        if kind == "v1.3-target":
             return await _load_v11_preserved_state(
                 admin_session, database_name, request, target_schema=True,
             )
@@ -1028,7 +1116,7 @@ async def reset_writer_core_data(
         locked_state = await load_state(locked_kind)
         if locked_state != initial_state:
             raise ResetValidationError("Reset foundation changed while waiting for lock")
-        if locked_kind == "v1.2-target":
+        if locked_kind == "v1.3-target":
             report = _report(
                 database_name, locked_state, executed=False, mode="no-op",
                 source_kind=source_kind,
@@ -1062,13 +1150,13 @@ async def reset_writer_core_data(
             except BaseException:
                 raise
             transaction_started = False
-            if await _classify_reset_source(admin_session, database_name) != "v1.2-target":
-                raise ResetValidationError("Rebuilt database does not match the v1.2 manifest")
+            if await _classify_reset_source(admin_session, database_name) != "v1.3-target":
+                raise ResetValidationError("Rebuilt database does not match the v1.3 manifest")
             readback_state = await _load_v11_preserved_state(
                 admin_session, database_name, request, target_schema=True,
             )
             if readback_state != locked_state:
-                raise ResetValidationError("Rebuilt v1.2 foundation differs from the locked snapshot")
+                raise ResetValidationError("Rebuilt v1.3 foundation differs from the locked snapshot")
             report = _report(
                 database_name, readback_state, executed=True, source_kind=source_kind,
             )

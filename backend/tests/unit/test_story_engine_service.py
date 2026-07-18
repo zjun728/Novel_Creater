@@ -41,6 +41,8 @@ async def test_manual_create_is_atomic_canonical_and_has_exactly_three_null_prov
 
     stored = harness.repository.batches[result.id]
     assert result.status == "succeeded"
+    assert result.selection_revision == 7
+    assert stored["selection_revision"] == 7
     assert len(result.options) == 3
     assert [item.option_order for item in result.options] == [1, 2, 3]
     assert stored["binding_revision_id"] is None
@@ -52,6 +54,7 @@ async def test_manual_create_is_atomic_canonical_and_has_exactly_three_null_prov
     assert result.raw_response_hash is None
     assert stored["request_hash"] == canonical_hash(stored["request"])
     for item, domain_option in zip(harness.repository.options[result.id], result.options):
+        assert item["selection_revision"] == 7
         assert item["payload_json"] == canonical_json(domain_option.payload)
         assert item["content_hash"] == canonical_hash(domain_option.payload)
 

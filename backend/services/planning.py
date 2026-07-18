@@ -82,11 +82,18 @@ class PlanningService:
             if creation is None:
                 raise PlanningPreconditionFailed("confirmed contract payload is missing")
             seed = await self.repository.read_selected_seed(session, command.project_id)
+            bible = await self.repository.read_bible_head(
+                session, command.project_id
+            )
+            self._require_bible_generation(
+                bible, selected_seed=seed, contract_head=head
+            )
             bundle = self._initial_bundle(
                 project=project,
                 head=head,
                 creation_contract=creation,
                 selected_seed=seed or {},
+                bible_head=bible,
             )
             inserted = await self.repository.insert_initial_plan(session, bundle)
             if not inserted:
@@ -111,6 +118,26 @@ class PlanningService:
         if head.get("contract_ready") is False:
             raise PlanningPreconditionFailed("confirmed contract is not ready")
 
+    def _require_bible_generation(
+        self,
+        bible: Mapping[str, Any] | None,
+        *,
+        selected_seed: Mapping[str, Any] | None,
+        contract_head: Mapping[str, Any],
+    ) -> None:
+        if not bible or int(bible.get("revision") or 0) < 1:
+            raise PlanningPreconditionFailed("confirmed Bible is required")
+        if not selected_seed:
+            raise PlanningPreconditionFailed("selected seed is required")
+        if (
+            int(bible.get("selection_revision") or 0)
+            != int(selected_seed.get("selection_revision") or 0)
+            or int(bible.get("contract_revision") or 0)
+            != int(contract_head.get("revision") or 0)
+            or bible.get("contract_hash") != contract_head.get("creation_hash")
+        ):
+            raise PlanningPreconditionFailed("confirmed Bible is superseded")
+
     def _initial_bundle(
         self,
         *,
@@ -118,6 +145,7 @@ class PlanningService:
         head: Mapping[str, Any],
         creation_contract: Mapping[str, Any],
         selected_seed: Mapping[str, Any],
+        bible_head: Mapping[str, Any],
     ) -> dict[str, Any]:
         now = int(time.time() * 1000)
         project_id = str(project["id"])
@@ -196,7 +224,11 @@ class PlanningService:
             },
         )
         manifest_hash = canonical_hash({
+            "selectionRevision": int(selected_seed["selection_revision"]),
             "contractRevision": int(head["revision"]),
+            "contractHash": head["creation_hash"],
+            "bibleRevision": int(bible_head["revision"]),
+            "bibleHash": bible_head["content_hash"],
             "volume": volume_payload,
             "block": block_payload,
             "stages": list(stage_payloads),
@@ -206,9 +238,20 @@ class PlanningService:
         block_id = str(uuid4())
         stage_ids = [str(uuid4()) for _ in stage_payloads]
         return {
+            "selection_revision": int(selected_seed["selection_revision"]),
+            "contract_revision": int(head["revision"]),
+            "contract_hash": head["creation_hash"],
+            "bible_revision": int(bible_head["revision"]),
+            "bible_hash": bible_head["content_hash"],
             "manifest_hash": manifest_hash,
             "volume": {
                 "id": volume_id, "project_id": project_id, "volume_num": 1,
+                "selection_revision": int(selected_seed["selection_revision"]),
+                "contract_revision": int(head["revision"]),
+                "contract_hash": head["creation_hash"],
+                "bible_revision": int(bible_head["revision"]),
+                "bible_hash": bible_head["content_hash"],
+                "manifest_hash": manifest_hash,
                 "title": "第一卷 山河初启", "payload": volume_payload,
                 "revision": 1, "status": "active",
                 "created_at": now, "updated_at": now,
@@ -281,6 +324,10 @@ class PlanningService:
                 revision=int(task["revision"]), status=task["status"],
             ) for task in tasks),
             manifest_hash=plan.get("manifest_hash"),
+            selection_revision=int(plan.get("selection_revision") or 0),
+            contract_hash=plan.get("contract_hash"),
+            bible_revision=int(plan.get("bible_revision") or 0),
+            bible_hash=plan.get("bible_hash"),
         )
 
     def _json_object(self, value: Any) -> dict[str, Any]:

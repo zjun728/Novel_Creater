@@ -11,8 +11,11 @@ SCHEMA_DIR = Path(__file__).with_name("schema")
 FRAGMENTS = (
     "00_metadata.sql",
     "10_core.sql",
+    "12_application.sql",
     "15_assets.sql",
+    "18_market.sql",
     "20_contracts.sql",
+    "25_bible.sql",
     "30_planning.sql",
     "40_drafts.sql",
     "50_canon.sql",

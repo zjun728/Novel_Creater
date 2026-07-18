@@ -58,15 +58,40 @@ CREATE TABLE experience_card_heads (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
+CREATE TABLE corpus_blobs (
+  content_hash CHAR(64) PRIMARY KEY,
+  byte_length BIGINT NOT NULL,
+  storage_key VARCHAR(2048) NOT NULL,
+  created_at BIGINT NOT NULL,
+  CHECK (byte_length >= 0),
+  CHECK (CHAR_LENGTH(TRIM(storage_key)) > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
 CREATE TABLE corpus_sources (
   id CHAR(36) PRIMARY KEY,
   source_key VARCHAR(200) NOT NULL,
+  archived_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE KEY uq_corpus_source_key (source_key),
+  UNIQUE KEY uq_corpus_source_identity (source_key, id),
+  CHECK (CHAR_LENGTH(TRIM(source_key)) > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE corpus_source_revisions (
+  id CHAR(36) PRIMARY KEY,
+  source_id CHAR(36) NOT NULL,
   revision INT NOT NULL,
+  content_hash CHAR(64) NOT NULL,
   relative_path VARCHAR(2048) NOT NULL,
-  title VARCHAR(300) NOT NULL,
+  display_name VARCHAR(300) NOT NULL,
   author VARCHAR(200) NOT NULL,
-  source_hash CHAR(64) NOT NULL,
-  file_size BIGINT NOT NULL,
+  reference_tags_json JSON NOT NULL,
+  notes TEXT NOT NULL,
+  provenance_json JSON NOT NULL,
+  byte_length BIGINT NOT NULL,
   encoding VARCHAR(64) NOT NULL,
   parser_version VARCHAR(64) NOT NULL,
   normalizer_version VARCHAR(64) NOT NULL,
@@ -76,11 +101,16 @@ CREATE TABLE corpus_sources (
   public_error_code VARCHAR(64) NULL,
   imported_at BIGINT NOT NULL,
   analyzed_at BIGINT NULL,
-  UNIQUE KEY uq_corpus_source_revision (source_key, revision),
-  UNIQUE KEY uq_corpus_source_id_revision (id, revision),
-  UNIQUE KEY uq_corpus_source_import (source_hash, parser_version, normalizer_version, fragmenter_version, index_version),
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_corpus_source_revision (source_id, revision),
+  UNIQUE KEY uq_corpus_source_revision_hash (source_id, revision, content_hash),
+  UNIQUE KEY uq_corpus_source_revision_id (source_id, id),
+  UNIQUE KEY uq_corpus_source_revision_identity (source_id, id, revision, content_hash),
+  UNIQUE KEY uq_corpus_source_import (content_hash, parser_version, normalizer_version, fragmenter_version, index_version),
+  FOREIGN KEY (source_id) REFERENCES corpus_sources(id) ON DELETE RESTRICT,
+  FOREIGN KEY (content_hash) REFERENCES corpus_blobs(content_hash) ON DELETE RESTRICT,
   CHECK (revision > 0),
-  CHECK (file_size >= 0),
+  CHECK (byte_length >= 0),
   CHECK (status IN ('imported','analyzed','failed')),
   CHECK (
     (status = 'imported' AND public_error_code IS NULL AND analyzed_at IS NULL)
@@ -91,9 +121,23 @@ CREATE TABLE corpus_sources (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
+CREATE TABLE corpus_source_heads (
+  source_id CHAR(36) PRIMARY KEY,
+  revision_id CHAR(36) NOT NULL,
+  revision INT NOT NULL,
+  content_hash CHAR(64) NOT NULL,
+  updated_at BIGINT NOT NULL,
+  FOREIGN KEY (source_id, revision_id, revision, content_hash) REFERENCES corpus_source_revisions(source_id, id, revision, content_hash) ON DELETE RESTRICT,
+  CHECK (revision > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
 CREATE TABLE corpus_chapters (
   id CHAR(36) PRIMARY KEY,
   corpus_source_id CHAR(36) NOT NULL,
+  source_revision_id CHAR(36) NOT NULL,
+  source_revision INT NOT NULL,
+  source_hash CHAR(64) NOT NULL,
   chapter_order INT NOT NULL,
   title VARCHAR(300) NOT NULL,
   raw_byte_start BIGINT NOT NULL,
@@ -103,8 +147,11 @@ CREATE TABLE corpus_chapters (
   normalized_text LONGTEXT NOT NULL,
   content_hash CHAR(64) NOT NULL,
   created_at BIGINT NOT NULL,
-  UNIQUE KEY uq_corpus_chapter_order (corpus_source_id, chapter_order),
-  FOREIGN KEY (corpus_source_id) REFERENCES corpus_sources(id) ON DELETE RESTRICT,
+  UNIQUE KEY uq_corpus_chapter_order (source_revision_id, chapter_order),
+  UNIQUE KEY uq_corpus_chapter_source_id (corpus_source_id, id),
+  UNIQUE KEY uq_corpus_chapter_identity (corpus_source_id, id, content_hash),
+  FOREIGN KEY (corpus_source_id, source_revision_id, source_revision, source_hash) REFERENCES corpus_source_revisions(source_id, id, revision, content_hash) ON DELETE RESTRICT,
+  CHECK (source_revision > 0),
   CHECK (chapter_order > 0),
   CHECK (raw_byte_start >= 0 AND raw_byte_end >= raw_byte_start),
   CHECK (normalized_char_start >= 0 AND normalized_char_end >= normalized_char_start)
@@ -113,6 +160,7 @@ CREATE TABLE corpus_chapters (
 
 CREATE TABLE corpus_fragments (
   id CHAR(36) PRIMARY KEY,
+  corpus_source_id CHAR(36) NOT NULL,
   corpus_chapter_id CHAR(36) NOT NULL,
   fragment_order INT NOT NULL,
   chapter_char_start BIGINT NOT NULL,
@@ -123,7 +171,9 @@ CREATE TABLE corpus_fragments (
   analysis_version VARCHAR(64) NOT NULL,
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_corpus_fragment_order (corpus_chapter_id, fragment_order),
-  FOREIGN KEY (corpus_chapter_id) REFERENCES corpus_chapters(id) ON DELETE RESTRICT,
+  UNIQUE KEY uq_corpus_fragment_source_id (corpus_source_id, id),
+  UNIQUE KEY uq_corpus_fragment_identity (corpus_source_id, corpus_chapter_id, id, content_hash),
+  FOREIGN KEY (corpus_source_id, corpus_chapter_id) REFERENCES corpus_chapters(corpus_source_id, id) ON DELETE RESTRICT,
   CHECK (fragment_order > 0),
   CHECK (chapter_char_start >= 0 AND chapter_char_end > chapter_char_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
@@ -134,22 +184,28 @@ CREATE TABLE corpus_import_runs (
   idempotency_key CHAR(64) NOT NULL,
   request_hash CHAR(64) NOT NULL,
   relative_path VARCHAR(2048) NOT NULL,
-  source_hash CHAR(64) NOT NULL,
+  content_hash CHAR(64) NOT NULL,
   status VARCHAR(24) NOT NULL,
   corpus_source_id CHAR(36) NULL,
+  source_revision_id CHAR(36) NULL,
+  source_revision INT NULL,
   public_error_code VARCHAR(64) NULL,
   parser_versions_json JSON NOT NULL,
   created_at BIGINT NOT NULL,
   completed_at BIGINT NULL,
   UNIQUE KEY uq_corpus_import_idempotency (idempotency_key),
-  FOREIGN KEY (corpus_source_id) REFERENCES corpus_sources(id) ON DELETE RESTRICT,
+  FOREIGN KEY (content_hash) REFERENCES corpus_blobs(content_hash) ON DELETE RESTRICT,
+  FOREIGN KEY (corpus_source_id, source_revision_id, source_revision, content_hash) REFERENCES corpus_source_revisions(source_id, id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (status IN ('reserved','running','succeeded','failed')),
   CHECK (
     (status IN ('reserved','running') AND corpus_source_id IS NULL
+      AND source_revision_id IS NULL AND source_revision IS NULL
       AND public_error_code IS NULL AND completed_at IS NULL)
     OR (status = 'succeeded' AND corpus_source_id IS NOT NULL
+      AND source_revision_id IS NOT NULL AND source_revision > 0
       AND public_error_code IS NULL AND completed_at IS NOT NULL)
     OR (status = 'failed' AND corpus_source_id IS NULL
+      AND source_revision_id IS NULL AND source_revision IS NULL
       AND public_error_code IS NOT NULL AND completed_at IS NOT NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

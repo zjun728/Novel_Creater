@@ -14,6 +14,13 @@ class ChapterSessionView:
     expected_story_block_revision: int
     planning_snapshot: Mapping[str, Any]
     status: str
+    selection_revision: int = 0
+    contract_revision: int = 0
+    contract_hash: str = ""
+    bible_revision: int = 0
+    bible_hash: str = ""
+    volume_plan_id: str = ""
+    planning_manifest_hash: str = ""
 
 
 @dataclass(frozen=True)

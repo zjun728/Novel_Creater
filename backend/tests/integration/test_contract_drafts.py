@@ -80,6 +80,12 @@ async def _bootstrap(session):
         (SEED, SEED_REV, seed_hash, now),
     )
     await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES (%s,1,%s,%s,%s,%s)""",
+        (PROJECT, SEED, SEED_REV, seed_hash, now),
+    )
+    await session.execute(
         "INSERT INTO project_selected_seeds VALUES (%s,%s,%s,%s,1,%s,%s)",
         (PROJECT, SEED, SEED_REV, seed_hash, now, now),
     )
@@ -114,19 +120,19 @@ async def _bootstrap(session):
     )
     await session.execute(
         """INSERT INTO story_engine_batches
-           (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,provider_id,model_name_snapshot,
             idempotency_key,request_json,request_hash,status,attempt_id,
             attempt_started_at,lease_expires_at,raw_response_text,
             raw_response_hash,public_error_code,created_at,finished_at)
-           VALUES (%s,%s,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,'manual-key',
+           VALUES (%s,%s,1,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,'manual-key',
                    '{}',%s,'succeeded',NULL,NULL,NULL,NULL,NULL,NULL,%s,%s)""",
         (BATCH, PROJECT, SEED, SEED_REV, seed_hash, "a" * 64, now, now),
     )
     await session.execute(
         """INSERT INTO story_engine_options
-           (id,project_id,batch_id,option_order,payload_json,content_hash,created_at)
-           VALUES (%s,%s,%s,1,%s,%s,%s)""",
+           (id,project_id,selection_revision,batch_id,option_order,payload_json,content_hash,created_at)
+           VALUES (%s,%s,1,%s,1,%s,%s,%s)""",
         (ENGINE, PROJECT, BATCH, canonical_json(engine_payload), engine_hash, now),
     )
     await session.execute(
@@ -152,13 +158,33 @@ async def _bootstrap(session):
         (CARD, card_hash, now),
     )
     await session.execute(
+        """INSERT INTO corpus_blobs
+           (content_hash,byte_length,storage_key,created_at)
+           VALUES (%s,10,'corpus/authorized',%s)""",
+        (source_hash, now),
+    )
+    await session.execute(
         """INSERT INTO corpus_sources
-           (id,source_key,revision,relative_path,title,author,source_hash,file_size,
-            encoding,parser_version,normalizer_version,fragmenter_version,
-            index_version,status,public_error_code,imported_at,analyzed_at)
-           VALUES (%s,'authorized',1,'authorized.txt','授权作品','作者',%s,10,
-                   'utf-8','p1','n1','f1','i1','analyzed',NULL,%s,%s)""",
-        (SOURCE, source_hash, now, now),
+           (id,source_key,archived_at,created_at,updated_at)
+           VALUES (%s,'authorized',NULL,%s,%s)""",
+        (SOURCE, now, now),
+    )
+    await session.execute(
+        """INSERT INTO corpus_source_revisions
+           (id,source_id,revision,content_hash,relative_path,display_name,author,
+            reference_tags_json,notes,provenance_json,byte_length,encoding,
+            parser_version,normalizer_version,fragmenter_version,index_version,
+            status,public_error_code,imported_at,analyzed_at,created_at)
+           VALUES ('81000000-0000-0000-0000-000000000013',%s,1,%s,
+                   'authorized.txt','授权作品','作者','[]','','{}',10,'utf-8',
+                   'p1','n1','f1','i1','analyzed',NULL,%s,%s,%s)""",
+        (SOURCE, source_hash, now, now, now),
+    )
+    await session.execute(
+        """INSERT INTO corpus_source_heads
+           (source_id,revision_id,revision,content_hash,updated_at)
+           VALUES (%s,'81000000-0000-0000-0000-000000000013',1,%s,%s)""",
+        (SOURCE, source_hash, now),
     )
     await session.execute(
         "INSERT INTO project_contract_heads VALUES (%s,0,NULL,NULL,NULL,NULL,%s)",
@@ -333,7 +359,7 @@ async def test_real_assets_stage_with_explicit_empty_arrays_can_preview(
     assert saved.draft.draftStage == "assets"
     assert saved.draft.experienceCardRefs == ()
     assert saved.draft.corpusSourceRefs == ()
-    assert preview.contract_ready is True
+    assert preview.contract_ready is True, preview.reasons
     assert preview.reasons == ()
     assert preview.experience_card_refs == ()
     assert preview.corpus_source_refs == ()
@@ -367,7 +393,7 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
     created = await service.save_draft(SaveContractDraft(PROJECT, 0, _draft(facts)))
     assert (await service.get_draft(PROJECT)) == created
     preview = await service.preview(PROJECT)
-    assert preview.contract_ready is True
+    assert preview.contract_ready is True, preview.reasons
     assert preview.creation_hash and preview.style_hash
 
     contenders = await asyncio.gather(
@@ -387,12 +413,12 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
     reference_manifest = service._reference_manifest(preview)
     await disposable_mysql.session.execute(
         """INSERT INTO creation_contracts
-           (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,
             genre_profile_key,quality_charter_version,total_word_min,total_word_max,
             chapter_capacity_policy,reference_manifest_json,
             reference_manifest_hash,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,100000,
+           VALUES (%s,%s,1,1,%s,%s,%s,%s,%s,%s,%s,%s,100000,
                    200000,%s,%s,%s,%s,%s,%s)""",
         (CREATION, PROJECT, SEED, SEED_REV, facts["seed_hash"], BINDING,
          facts["binding_hash"], preview.creation_contract.channelProfileKey,

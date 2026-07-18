@@ -49,7 +49,8 @@ class AssetRepository:
 
     async def read_selected_seed(self, session, project_id: str):
         return await session.fetchone(
-            """SELECT selected.seed_id, selected.seed_revision_id,
+            """SELECT selected.seed_id, selected.selection_revision,
+                      selected.seed_revision_id,
                       r.revision AS seed_revision,
                       selected.seed_hash, r.content_hash AS revision_hash,
                       r.payload_json
@@ -70,7 +71,7 @@ class AssetRepository:
     ):
         return await session.fetchone(
             """SELECT o.id, o.project_id, o.payload_json, o.content_hash,
-                      b.status AS batch_status, b.seed_id,
+                      b.status AS batch_status, b.selection_revision, b.seed_id,
                       b.seed_revision_id, b.seed_hash
                FROM story_engine_options o
                JOIN story_engine_batches b

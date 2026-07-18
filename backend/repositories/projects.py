@@ -12,6 +12,42 @@ from backend.repositories.project_lifecycle import (
 )
 
 
+_PROJECT_OWNED_DELETE_ORDER = (
+    "reference_uses",
+    "final_chapters",
+    "finalization_records",
+    "finalization_change_sets",
+    "draft_candidates",
+    "working_drafts",
+    "chapter_sessions",
+    "scene_tasks",
+    "story_stages",
+    "story_blocks",
+    "volume_plans",
+    "project_bible_heads",
+    "bible_confirmation_requests",
+    "project_bible_drafts",
+    "bible_generation_attempts",
+    "creation_bible_revisions",
+    "project_contract_heads",
+    "contract_confirmation_requests",
+    "style_contracts",
+    "project_contract_drafts",
+    "creation_contracts",
+    "story_engine_options",
+    "story_engine_batches",
+    "seed_inspiration_requests",
+    "asset_recommendation_requests",
+    "style_trial_requests",
+    "seed_inspiration_attempts",
+    "asset_recommendation_attempts",
+    "style_trial_attempts",
+    "market_analyses",
+    "project_selected_seeds",
+    "project_seed_selection_revisions",
+)
+
+
 class ProjectRepository:
     """All methods require the caller's explicit database session."""
 
@@ -104,6 +140,17 @@ class ProjectRepository:
     async def permanently_delete(
         self, session, project_id: str, expected_revision: int
     ) -> bool:
+        eligible = await session.fetchone(
+            """SELECT id FROM projects
+               WHERE id=%s
+                 AND archived_at IS NOT NULL
+                 AND lifecycle_revision=%s
+               FOR UPDATE""",
+            (project_id, expected_revision),
+        )
+        if eligible is None:
+            return False
+        await self._delete_owned_graph(session, project_id)
         changed = await session.execute(
             """DELETE FROM projects
                WHERE id=%s
@@ -112,6 +159,43 @@ class ProjectRepository:
             (project_id, expected_revision),
         )
         return changed == 1
+
+    async def _delete_owned_graph(self, session, project_id: str) -> None:
+        """Delete only project-owned rows before the guarded project delete.
+
+        Immutable lineage foreign keys remain restrictive for every ordinary
+        delete. This method is reachable only from the archived-project
+        permanent-delete entry point and runs in that entry point's transaction.
+        Shared providers, assets, and corpus identities are deliberately absent.
+        """
+
+        for table_name in _PROJECT_OWNED_DELETE_ORDER:
+            await session.execute(
+                f"DELETE FROM {table_name} WHERE project_id=%s",
+                (project_id,),
+            )
+        await session.execute(
+            """DELETE heads FROM creative_seed_heads heads
+               JOIN creative_seeds seeds ON seeds.id=heads.seed_id
+               WHERE seeds.project_id=%s""",
+            (project_id,),
+        )
+        await session.execute(
+            "DELETE FROM creative_seed_revisions WHERE project_id=%s",
+            (project_id,),
+        )
+        await session.execute(
+            "DELETE FROM creative_seeds WHERE project_id=%s",
+            (project_id,),
+        )
+        await session.execute(
+            "DELETE FROM project_model_binding_heads WHERE project_id=%s",
+            (project_id,),
+        )
+        await session.execute(
+            "DELETE FROM project_model_binding_revisions WHERE project_id=%s",
+            (project_id,),
+        )
 
     async def rename(self, session, project_id: str, title: str) -> bool:
         changed = await session.execute(
@@ -155,5 +239,13 @@ class ProjectRepository:
                (project_id, revision, creation_contract_id, style_contract_id,
                 creation_hash, style_hash, updated_at)
                VALUES (%s,0,NULL,NULL,NULL,NULL,%s)""",
+            (project_id, self._clock()),
+        )
+
+    async def insert_bible_head0(self, session, project_id: str) -> None:
+        await session.execute(
+            """INSERT INTO project_bible_heads
+               (project_id, revision, bible_revision_id, content_hash, updated_at)
+               VALUES (%s,0,NULL,NULL,%s)""",
             (project_id, self._clock()),
         )

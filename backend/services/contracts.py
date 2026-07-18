@@ -216,6 +216,7 @@ class ConfirmContracts:
 class ContractDraftResult:
     id: str
     project_id: str
+    selection_revision: int
     base_head_revision: int
     draft_version: int
     content_hash: str
@@ -292,6 +293,7 @@ class ResolvedCorpusRef(ResolvedAssetRef):
 @dataclass(frozen=True)
 class ContractPreviewResult:
     project_id: str
+    selection_revision: int
     draft_version: int
     base_head_revision: int
     expected_revision: int
@@ -315,6 +317,7 @@ class ContractPreviewResult:
 class ConfirmedContractResult:
     project_id: str
     revision: int
+    selection_revision: int
     creation_contract_id: str
     style_contract_id: str
     contract_ready: bool
@@ -445,6 +448,7 @@ class ContractService:
             raise ContractPreconditionFailed() from None
         return ContractDraftResult(
             id=row["id"], project_id=row["project_id"],
+            selection_revision=int(row["selection_revision"]),
             base_head_revision=int(row["base_head_revision"]),
             draft_version=int(row["draft_version"]),
             content_hash=row["content_hash"], draft=draft,
@@ -452,13 +456,15 @@ class ContractService:
         )
 
     def _draft_row(
-        self, project_id, draft, *, draft_id, base_revision, version, created_at
+        self, project_id, draft, *, selection_revision, draft_id,
+        base_revision, version, created_at
     ):
         now = self.clock()
         return {
             "project_id": project_id,
             "id": draft_id,
             "base_head_revision": base_revision,
+            "selection_revision": int(selection_revision),
             "seed_revision_id": draft.seedRevisionId,
             "seed_hash": draft.seedHash,
             "engine_option_id": draft.engineOptionId,
@@ -520,6 +526,7 @@ class ContractService:
                 now = self.clock()
                 row = self._draft_row(
                     command.project_id, persisted_draft,
+                    selection_revision=int(selected["selection_revision"]),
                     draft_id=self.id_factory(),
                     base_revision=int(head["revision"]), version=1,
                     created_at=now,
@@ -528,6 +535,7 @@ class ContractService:
             else:
                 row = self._draft_row(
                     command.project_id, persisted_draft,
+                    selection_revision=int(selected["selection_revision"]),
                     draft_id=current["id"],
                     base_revision=int(current["base_head_revision"]),
                     version=command.expected_draft_version + 1,
@@ -619,7 +627,8 @@ class ContractService:
         if row.get("status") not in ({"analyzed"} if kind == "corpus" else {"active"}):
             reasons.append(f"{kind}_inactive{suffix}")
         if (
-            row.get("head_id") != row.get("id")
+            row.get("head_id")
+            != row.get("revision_id" if kind == "corpus" else "id")
             or int(row.get("head_revision") or 0) != ref.revision
             or row.get("head_hash") != ref.contentHash
         ):
@@ -677,6 +686,9 @@ class ContractService:
             if selected is None:
                 reasons.append("seed_not_selected")
             elif (
+                int(selected.get("selection_revision") or 0)
+                != saved.selection_revision
+                or
                 selected["seed_revision_id"] != draft.seedRevisionId
                 or selected["seed_hash"] != draft.seedHash
             ):
@@ -767,6 +779,7 @@ class ContractService:
                     channelProfileKey=draft.channelProfileKey,
                     genreProfileKey=draft.genreProfileKey,
                     qualityCharterVersion=draft.qualityCharterVersion,
+                    selectionRevision=saved.selection_revision,
                     selectedSeed=seed_payload,
                     selectedEngine=engine_payload,
                     totalWordRange=draft.totalWordRange,
@@ -781,7 +794,9 @@ class ContractService:
         )
         reasons = list(dict.fromkeys(reasons))
         return ContractPreviewResult(
-            project_id=project_id, draft_version=saved.draft_version,
+            project_id=project_id,
+            selection_revision=saved.selection_revision,
+            draft_version=saved.draft_version,
             base_head_revision=saved.base_head_revision,
             expected_revision=saved.base_head_revision + 1,
             contract_ready=not reasons, reasons=tuple(reasons),
@@ -838,6 +853,7 @@ class ContractService:
             "draftHash": command.expected_draft_hash,
             "baseHeadRevision": base_head_revision,
             "expectedRevision": base_head_revision + 1,
+            "selectionRevision": result.selection_revision,
             "seedRef": {
                 "revisionId": result.seed_ref.revision_id,
                 "contentHash": result.seed_ref.content_hash,
@@ -881,11 +897,15 @@ class ContractService:
             or engine is None
             or binding is None
             or selected.get("seed_revision_id") != draft.seedRevisionId
+            or int(selected.get("selection_revision") or 0)
+                != saved.selection_revision
             or selected.get("seed_hash") != draft.seedHash
             or frozen_seed.get("seed_revision_id") != draft.seedRevisionId
             or frozen_seed.get("seed_hash") != draft.seedHash
             or canonical_hash(seed_payload) != draft.seedHash
             or engine.get("status") != "succeeded"
+            or int(engine.get("selection_revision") or 0)
+                != saved.selection_revision
             or engine.get("seed_revision_id") != draft.seedRevisionId
             or engine.get("seed_hash") != draft.seedHash
             or engine.get("content_hash") != draft.engineHash
@@ -919,6 +939,7 @@ class ContractService:
                 channelProfileKey=draft.channelProfileKey,
                 genreProfileKey=draft.genreProfileKey,
                 qualityCharterVersion=draft.qualityCharterVersion,
+                selectionRevision=saved.selection_revision,
                 selectedSeed=seed_payload,
                 selectedEngine=engine_payload,
                 totalWordRange=draft.totalWordRange,
@@ -931,6 +952,7 @@ class ContractService:
         style_hash = style_contract_hash(style_payload, draft.likes, draft.dislikes)
         return ContractPreviewResult(
             project_id=saved.project_id,
+            selection_revision=saved.selection_revision,
             draft_version=saved.draft_version,
             base_head_revision=saved.base_head_revision,
             expected_revision=saved.base_head_revision + 1,
@@ -1047,6 +1069,7 @@ class ContractService:
         return ConfirmedContractResult(
             project_id=preview.project_id,
             revision=preview.expected_revision,
+            selection_revision=preview.selection_revision,
             creation_contract_id=creation_id,
             style_contract_id=style_id,
             contract_ready=True,
@@ -1131,6 +1154,7 @@ class ContractService:
         result = ConfirmedContractResult(
             project_id=snapshot.get("project_id", ""),
             revision=int(snapshot["revision"]),
+            selection_revision=int(snapshot["selection_revision"]),
             creation_contract_id=snapshot["creation_contract_id"],
             style_contract_id=snapshot["style_contract_id"],
             contract_ready=True, reasons=(),
@@ -1195,7 +1219,9 @@ class ContractService:
                 reasons.append("contract_head_drift")
             selected = await self.repository.read_selected_seed(session, project_id)
             if selected is None or (
-                selected.get("seed_revision_id") != result.seed_ref.revision_id
+                int(selected.get("selection_revision") or 0)
+                    != result.selection_revision
+                or selected.get("seed_revision_id") != result.seed_ref.revision_id
                 or selected.get("seed_hash") != result.seed_ref.content_hash
             ):
                 reasons.append("seed_drift")
@@ -1336,6 +1362,7 @@ class ContractService:
             creation_id, style_id = self.id_factory(), self.id_factory()
             if not await self.repository.insert_confirmation_request(session, {
                 "id": request_id, "project_id": command.project_id,
+                "selection_revision": saved.selection_revision,
                 "idempotency_key": command.idempotency_key,
                 "request_hash": request_hash, "created_at": now,
             }):
@@ -1345,6 +1372,7 @@ class ContractService:
             if not await self.repository.insert_creation_contract(session, {
                 "id": creation_id, "project_id": command.project_id,
                 "revision": preview.expected_revision,
+                "selection_revision": saved.selection_revision,
                 "seed_id": preview.seed_ref.id,
                 "seed_revision_id": preview.seed_ref.revision_id,
                 "seed_hash": preview.seed_ref.content_hash,
@@ -1509,6 +1537,7 @@ class ContractService:
             now = self.clock()
             row = self._draft_row(
                 project_id, draft, draft_id=self.id_factory(),
+                selection_revision=verified.selection_revision,
                 base_revision=int(head["revision"]), version=1, created_at=now,
             )
             await self.repository.insert_draft(session, row)

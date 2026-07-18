@@ -38,6 +38,7 @@ class MemorySeedRepository:
         self.seeds: dict[str, dict] = {}
         self.revisions: dict[str, list[dict]] = {}
         self.selections: dict[str, dict] = {}
+        self.selection_revisions: dict[str, list[dict]] = {}
         self.dependencies: set[str] = set()
         self.contracts: dict[str, dict] = {}
         self.events: list[str] = []
@@ -89,13 +90,19 @@ class MemorySeedRepository:
         self.events.append("insert-selection")
         self.selections[row["project_id"]] = dict(row)
 
+    async def insert_selection_revision(self, session, row):
+        self.events.append("selection-revision")
+        self.selection_revisions.setdefault(row["project_id"], []).append(dict(row))
+
     async def advance_selected_revision(self, session, row):
         self.events.append("advance-selected-revision")
         self.selections[row["project_id"]].update(row)
+        return True
 
     async def replace_selection(self, session, row):
         self.events.append("replace-selection")
         self.selections[row["project_id"]] = dict(row)
+        return True
 
     async def dependency_count(self, session, project_id, seed_id):
         self.events.append("dependencies")
@@ -299,9 +306,11 @@ async def test_edit_appends_revision_preserves_history_and_moves_selected_fact()
     assert harness.repo.selections["p1"]["seed_revision_id"] == edited.revision_id
     assert harness.repo.selections["p1"]["seed_hash"] == edited.content_hash
     assert harness.repo.selections["p1"]["selection_revision"] == 2
-    assert harness.repo.events[-6:] == [
+    assert [row["selection_revision"] for row in harness.repo.selection_revisions["p1"]] == [1, 2]
+    assert harness.repo.selection_revisions["p1"][0]["seed_revision_id"] == created.revision_id
+    assert harness.repo.events[-7:] == [
         "project", "seed", "selection", "revision", "update-head",
-        "advance-selected-revision",
+        "selection-revision", "advance-selected-revision",
     ]
 
 
@@ -348,6 +357,9 @@ async def test_select_is_project_scoped_and_cas_advances_one_revision():
         )
     )
     assert selected.selection_revision == 1
+    assert harness.repo.events[-2:] == [
+        "selection-revision", "insert-selection",
+    ]
     with pytest.raises(SeedConflict):
         await harness.service.select(
             SelectSeed(

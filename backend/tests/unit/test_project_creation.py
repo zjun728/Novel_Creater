@@ -39,7 +39,9 @@ class FakeTransactionFactory:
 
 
 class FakeProjectRepository:
-    STEPS = ("guard", "project", "revision", "projection", "contract", "binding")
+    STEPS = (
+        "guard", "project", "revision", "projection", "contract", "bible", "binding",
+    )
 
     def __init__(self):
         self.calls = []
@@ -49,6 +51,7 @@ class FakeProjectRepository:
         self.revision = None
         self.projection = None
         self.contract = None
+        self.bible = None
 
     def _record(self, step, session):
         self.calls.append(step)
@@ -80,6 +83,10 @@ class FakeProjectRepository:
     async def insert_contract_head0(self, session, project_id):
         self.contract = {"project_id": project_id, "revision": 0}
         self._record("contract", session)
+
+    async def insert_bible_head0(self, session, project_id):
+        self.bible = {"project_id": project_id, "revision": 0}
+        self._record("bible", session)
 
 
 class FakeBindingService:
@@ -151,6 +158,7 @@ async def test_create_builds_foundations_and_binding_in_one_transaction():
         "content_hash": empty_hash,
     }
     assert repository.contract == {"project_id": "p1", "revision": 0}
+    assert repository.bible == {"project_id": "p1", "revision": 0}
     assert bindings.calls == [
         ("guard", repository.sessions[0], None),
         ("binding", repository.sessions[0], "p1"),

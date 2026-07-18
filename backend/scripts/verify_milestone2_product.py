@@ -117,7 +117,18 @@ SELECT p.id AS project_id,p.title AS project_title,p.status AS project_status,
        JSON_UNQUOTE(JSON_EXTRACT(sr.payload_json,'$.title')) AS selected_seed_title,
        ss.seed_hash AS selected_seed_hash,sr.content_hash AS selected_revision_hash,
        ss.selection_revision,
+       sh.selection_revision AS history_selection_revision,
+       sh.seed_id AS history_seed_id,
+       sh.seed_revision_id AS history_seed_revision_id,
+       sh.seed_hash AS history_seed_hash,
        (SELECT COUNT(*) FROM provider_profiles) AS provider_count,
+       (SELECT COUNT(*) FROM application_settings) AS application_settings_count,
+       (SELECT revision FROM application_settings WHERE singleton_id=1)
+         AS application_settings_revision,
+       (SELECT fallback_provider_id FROM application_settings WHERE singleton_id=1)
+         AS fallback_provider_id,
+       (SELECT updated_at FROM application_settings WHERE singleton_id=1)
+         AS application_settings_updated_at,
        bh.binding_revision_id,bh.revision AS binding_revision,
        br.content_hash AS binding_hash,bh.content_hash AS binding_head_hash,
        br.source_project_id AS binding_source_project_id,
@@ -128,6 +139,8 @@ SELECT p.id AS project_id,p.title AS project_title,p.status AS project_status,
             AND bi.resolution_status='bound') AS bound_item_count,
        ch.revision AS contract_revision,ch.creation_contract_id,ch.style_contract_id,
        ch.creation_hash,ch.style_hash,
+       bible.revision AS bible_revision,
+       bible.bible_revision_id,bible.content_hash AS bible_hash,
        cr.revision_number AS canon_revision,
        cr.parent_revision_number AS canon_parent_revision,
        cr.idempotency_key AS canon_idempotency_key,
@@ -138,10 +151,17 @@ SELECT p.id AS project_id,p.title AS project_title,p.status AS project_status,
        ph.content_hash AS projection_hash
 FROM projects p
 JOIN project_selected_seeds ss ON ss.project_id=p.id
+JOIN project_seed_selection_revisions sh
+  ON sh.project_id=ss.project_id
+ AND sh.selection_revision=ss.selection_revision
+ AND sh.seed_id=ss.seed_id
+ AND sh.seed_revision_id=ss.seed_revision_id
+ AND sh.seed_hash=ss.seed_hash
 JOIN creative_seed_revisions sr ON sr.id=ss.seed_revision_id AND sr.seed_id=ss.seed_id
 JOIN project_model_binding_heads bh ON bh.project_id=p.id
 JOIN project_model_binding_revisions br ON br.id=bh.binding_revision_id
 JOIN project_contract_heads ch ON ch.project_id=p.id
+JOIN project_bible_heads bible ON bible.project_id=p.id
 JOIN projection_heads ph ON ph.project_id=p.id
 JOIN canon_revisions cr ON cr.project_id=p.id AND cr.revision_number=ph.canon_revision_number
 LIMIT 2"""
@@ -193,10 +213,32 @@ SELECT
  (SELECT COUNT(*) FROM arc_projections) AS arc_projections,
  (SELECT COUNT(*) FROM plot_thread_projections) AS plot_thread_projections,
  (SELECT COUNT(*) FROM reference_uses) AS reference_uses,
+ (SELECT COUNT(*) FROM provider_profile_mutation_requests) AS provider_profile_mutation_requests,
+ (SELECT COUNT(*) FROM market_sources) AS market_sources,
+ (SELECT COUNT(*) FROM market_source_policy_revisions) AS market_source_policy_revisions,
+ (SELECT COUNT(*) FROM market_source_policy_heads) AS market_source_policy_heads,
+ (SELECT COUNT(*) FROM market_snapshots) AS market_snapshots,
+ (SELECT COUNT(*) FROM market_snapshot_entries) AS market_snapshot_entries,
+ (SELECT COUNT(*) FROM market_snapshot_manifests) AS market_snapshot_manifests,
+ (SELECT COUNT(*) FROM market_source_refresh_states) AS market_source_refresh_states,
+ (SELECT COUNT(*) FROM market_refresh_requests) AS market_refresh_requests,
+ (SELECT COUNT(*) FROM market_analyses) AS market_analyses,
+ (SELECT COUNT(*) FROM seed_inspiration_attempts) AS seed_inspiration_attempts,
+ (SELECT COUNT(*) FROM seed_inspiration_requests) AS seed_inspiration_requests,
+ (SELECT COUNT(*) FROM asset_recommendation_attempts) AS asset_recommendation_attempts,
+ (SELECT COUNT(*) FROM asset_recommendation_requests) AS asset_recommendation_requests,
+ (SELECT COUNT(*) FROM style_trial_attempts) AS style_trial_attempts,
+ (SELECT COUNT(*) FROM style_trial_requests) AS style_trial_requests,
+ (SELECT COUNT(*) FROM project_bible_drafts) AS project_bible_drafts,
+ (SELECT COUNT(*) FROM bible_generation_attempts) AS bible_generation_attempts,
+ (SELECT COUNT(*) FROM creation_bible_revisions) AS creation_bible_revisions,
+ (SELECT COUNT(*) FROM bible_confirmation_requests) AS bible_confirmation_requests,
  (SELECT COUNT(*) FROM creation_contract_engine_refs) AS creation_contract_engine_refs,
  (SELECT COUNT(*) FROM style_contract_template_refs) AS style_contract_template_refs,
  (SELECT COUNT(*) FROM creation_contract_experience_refs) AS creation_contract_experience_refs,
- (SELECT COUNT(*) FROM creation_contract_corpus_refs) AS creation_contract_corpus_refs"""
+ (SELECT COUNT(*) FROM creation_contract_corpus_refs) AS creation_contract_corpus_refs,
+ (SELECT COUNT(*) FROM creation_contract_corpus_fragment_refs)
+   AS creation_contract_corpus_fragment_refs"""
 
 _ASSET_COUNTS_SQL = """/* m2:asset_counts */
 SELECT (SELECT COUNT(*) FROM style_template_heads) AS style_head_count,
@@ -225,36 +267,45 @@ FROM experience_card_heads h JOIN experience_cards c ON c.id=h.experience_card_i
 ORDER BY c.stable_key"""
 
 _CORPUS_SQL = """/* m2:corpus */
-SELECT s.id AS source_id,s.relative_path,s.source_hash,s.revision AS source_revision,
-       s.file_size,s.status,s.parser_version,s.normalizer_version,
-       s.fragmenter_version,s.index_version,
-       (SELECT COUNT(*) FROM corpus_chapters c WHERE c.corpus_source_id=s.id) AS chapter_count,
+SELECT s.id AS source_id,r.id AS source_revision_id,
+       r.relative_path,r.content_hash AS source_hash,r.revision AS source_revision,
+       r.byte_length AS file_size,r.status,r.parser_version,r.normalizer_version,
+       r.fragmenter_version,r.index_version,
+       (SELECT COUNT(*) FROM corpus_chapters c
+          WHERE c.source_revision_id=r.id) AS chapter_count,
        (SELECT COUNT(*) FROM corpus_fragments f JOIN corpus_chapters c
-          ON c.id=f.corpus_chapter_id WHERE c.corpus_source_id=s.id) AS fragment_count,
-       (SELECT COUNT(*) FROM corpus_import_runs r
-          WHERE r.corpus_source_id=s.id AND r.status='succeeded') AS succeeded_run_count,
-       (SELECT COUNT(*) FROM corpus_chapters c WHERE c.corpus_source_id=s.id AND
+          ON c.id=f.corpus_chapter_id WHERE c.source_revision_id=r.id) AS fragment_count,
+       (SELECT COUNT(*) FROM corpus_import_runs run
+          WHERE run.source_revision_id=r.id AND run.status='succeeded') AS succeeded_run_count,
+       (SELECT COUNT(*) FROM corpus_chapters c WHERE c.source_revision_id=r.id AND
           (c.raw_byte_start<0 OR c.raw_byte_end<c.raw_byte_start OR
            c.normalized_char_start<0 OR c.normalized_char_end<c.normalized_char_start))
           AS invalid_boundary_count,
-       (SELECT COUNT(*) FROM corpus_import_runs r WHERE r.corpus_source_id=s.id
-          AND r.status='succeeded' AND (
-            NOT (JSON_UNQUOTE(JSON_EXTRACT(r.parser_versions_json,'$.parserVersion')) <=> s.parser_version) OR
-            NOT (JSON_UNQUOTE(JSON_EXTRACT(r.parser_versions_json,'$.normalizerVersion')) <=> s.normalizer_version) OR
-            NOT (JSON_UNQUOTE(JSON_EXTRACT(r.parser_versions_json,'$.fragmenterVersion')) <=> s.fragmenter_version) OR
-            NOT (JSON_UNQUOTE(JSON_EXTRACT(r.parser_versions_json,'$.indexVersion')) <=> s.index_version)))
+       (SELECT COUNT(*) FROM corpus_import_runs run WHERE run.source_revision_id=r.id
+          AND run.status='succeeded' AND (
+            NOT (JSON_UNQUOTE(JSON_EXTRACT(run.parser_versions_json,'$.parserVersion')) <=> r.parser_version) OR
+            NOT (JSON_UNQUOTE(JSON_EXTRACT(run.parser_versions_json,'$.normalizerVersion')) <=> r.normalizer_version) OR
+            NOT (JSON_UNQUOTE(JSON_EXTRACT(run.parser_versions_json,'$.fragmenterVersion')) <=> r.fragmenter_version) OR
+            NOT (JSON_UNQUOTE(JSON_EXTRACT(run.parser_versions_json,'$.indexVersion')) <=> r.index_version)))
           AS invalid_version_count,
-       (SELECT MIN(c.raw_byte_start) FROM corpus_chapters c WHERE c.corpus_source_id=s.id) AS first_byte_start,
-       (SELECT MAX(c.raw_byte_end) FROM corpus_chapters c WHERE c.corpus_source_id=s.id) AS last_byte_end,
-       (SELECT MIN(c.normalized_char_start) FROM corpus_chapters c WHERE c.corpus_source_id=s.id) AS first_char_start,
-       (SELECT MAX(c.normalized_char_end) FROM corpus_chapters c WHERE c.corpus_source_id=s.id) AS last_char_end
-FROM corpus_sources s WHERE s.source_hash=%s ORDER BY s.imported_at DESC,s.id DESC LIMIT 2"""
+       (SELECT MIN(c.raw_byte_start) FROM corpus_chapters c
+          WHERE c.source_revision_id=r.id) AS first_byte_start,
+       (SELECT MAX(c.raw_byte_end) FROM corpus_chapters c
+          WHERE c.source_revision_id=r.id) AS last_byte_end,
+       (SELECT MIN(c.normalized_char_start) FROM corpus_chapters c
+          WHERE c.source_revision_id=r.id) AS first_char_start,
+       (SELECT MAX(c.normalized_char_end) FROM corpus_chapters c
+          WHERE c.source_revision_id=r.id) AS last_char_end
+FROM corpus_sources s
+JOIN corpus_source_revisions r ON r.source_id=s.id
+WHERE r.content_hash=%s ORDER BY r.imported_at DESC,r.id DESC LIMIT 2"""
 
 _L5_SQL = """/* m2:l5 */
 SELECT b.id AS batch_id,
        (SELECT COUNT(*) FROM story_engine_batches x WHERE x.project_id=ss.project_id) AS batch_count,
        b.source_type,b.status AS batch_status,b.seed_id AS batch_seed_id,
        b.seed_revision_id AS batch_seed_revision_id,b.seed_hash AS batch_seed_hash,
+       b.selection_revision AS batch_selection_revision,
        b.binding_revision_id AS batch_binding_revision_id,b.binding_hash AS batch_binding_hash,
        b.attempt_id, b.request_hash,b.raw_response_hash,b.provider_id AS batch_provider_id,
        b.model_name_snapshot AS batch_model_name,
@@ -270,6 +321,7 @@ SELECT b.id AS batch_id,
        c.content_hash AS creation_hash,h.creation_hash AS head_creation_hash,
        st.content_hash AS style_hash,h.style_hash AS head_style_hash,
        c.revision AS creation_revision,st.revision AS style_revision,
+       c.selection_revision AS creation_selection_revision,
        c.seed_id AS creation_seed_id,c.seed_revision_id AS creation_seed_revision_id,
        c.seed_hash AS creation_seed_hash,c.binding_revision_id AS creation_binding_revision_id,
        c.binding_hash AS creation_binding_hash,er.engine_option_id,er.engine_hash,
@@ -289,10 +341,10 @@ JOIN story_engine_batches b ON b.id=o.batch_id
 LIMIT 2"""
 
 _L5_OPTIONS_SQL = """/* m2:l5_options */
-SELECT id,option_order,payload_json,content_hash FROM story_engine_options
+SELECT id,selection_revision,option_order,payload_json,content_hash FROM story_engine_options
 WHERE batch_id=%s ORDER BY option_order"""
 _L5_CONFIRMATIONS_SQL = """/* m2:l5_confirmations */
-SELECT id,status,creation_contract_id,style_contract_id,result_revision
+SELECT id,selection_revision,status,creation_contract_id,style_contract_id,result_revision
 FROM contract_confirmation_requests WHERE project_id=%s ORDER BY created_at,id"""
 _L5_CONTRACT_PAYLOAD_SQL = """/* m2:l5_contract_payload */
 SELECT c.content_json AS creation_json,c.content_hash AS creation_content_hash,
@@ -312,10 +364,11 @@ FROM creation_contract_experience_refs r LEFT JOIN experience_cards a
  ON a.id=r.experience_card_id AND a.revision=r.asset_revision
 WHERE r.creation_contract_id=%s ORDER BY r.sort_order"""
 _L5_CORPUS_REFS_SQL = """/* m2:l5_corpus_refs */
-SELECT r.corpus_source_id,r.source_revision,r.source_hash,a.source_hash AS actual_source_hash,
+SELECT r.corpus_source_id,r.source_revision,r.source_hash,a.content_hash AS actual_source_hash,
        r.selection_mode,r.sort_order
-FROM creation_contract_corpus_refs r LEFT JOIN corpus_sources a
- ON a.id=r.corpus_source_id AND a.revision=r.source_revision
+FROM creation_contract_corpus_refs r LEFT JOIN corpus_source_revisions a
+ ON a.source_id=r.corpus_source_id AND a.revision=r.source_revision
+ AND a.content_hash=r.source_hash
 WHERE r.creation_contract_id=%s ORDER BY r.sort_order"""
 
 
@@ -330,8 +383,9 @@ async def _verify_foundation(
     )
     inventory = await session.fetchall(_SCHEMA_INVENTORY_SQL)
     names = tuple(row.get("TABLE_NAME") for row in inventory)
-    _require(len(names) == 49 and set(names) == set(created_table_names()),
-             "M2 table inventory must be the exact 49-table closed set")
+    expected_names = created_table_names()
+    _require(len(names) == len(expected_names) and set(names) == set(expected_names),
+             f"M2 table inventory must be the exact {len(expected_names)}-table closed set")
     metadata = await session.fetchone(_METADATA_SQL)
     _require(metadata is not None, "M2 schema metadata is missing")
     _require(metadata.get("schema_version") == EXPECTED_SCHEMA_VERSION,
@@ -374,6 +428,20 @@ async def _verify_foundation(
              and row.get("selected_revision_hash") == selected.get("content_hash")
              and _integer(row, "selection_revision") == 1,
              "M2 selected seed must be 典镇山河 at revision 1")
+    _require(
+        _integer(row, "history_selection_revision") == 1
+        and row.get("history_seed_id") == row.get("selected_seed_id")
+        and row.get("history_seed_revision_id") == row.get("selected_seed_revision_id")
+        and row.get("history_seed_hash") == row.get("selected_seed_hash"),
+        "M2 selected seed must have an exact immutable selection-revision fact",
+    )
+    _require(
+        _integer(row, "application_settings_count") == 1
+        and _integer(row, "application_settings_revision") == 0
+        and row.get("fallback_provider_id") is None
+        and _integer(row, "application_settings_updated_at") == 0,
+        "M2 application settings singleton must remain at head0",
+    )
     provider_count = _integer(row, "provider_count")
     _require(provider_count > 0, "M2 Provider count must be positive")
     providers = await session.fetchall(_PROVIDERS_SQL)
@@ -443,6 +511,12 @@ async def _verify_foundation(
         _require(all(row.get(key) is None for key in (
             "creation_contract_id", "style_contract_id", "creation_hash", "style_hash"
         )), "Head zero must not reference contracts")
+    _require(
+        _integer(row, "bible_revision") == 0
+        and row.get("bible_revision_id") is None
+        and row.get("bible_hash") is None,
+        "M2 Bible head must remain at head0",
+    )
     empty_hash = build_projection_bundle(0, ()).content_hash
     _require(_integer(row, "canon_revision") == 0
              and _integer(row, "canon_parent_revision") == 0
@@ -576,8 +650,14 @@ async def _verify_corpus(session, expected_source_hash: str) -> dict[str, object
                  "Corpus analysis versions are incomplete")
         versions[public] = value
     source_id = row.get("source_id")
+    source_revision_id = row.get("source_revision_id")
     source_revision = _integer(row, "source_revision")
-    _require(isinstance(source_id, str) and bool(source_id) and source_revision > 0,
+    _require(
+        isinstance(source_id, str)
+        and bool(source_id)
+        and isinstance(source_revision_id, str)
+        and bool(source_revision_id)
+        and source_revision > 0,
              "Corpus source identity/revision is invalid")
     return {"sourceId": source_id, "sourceRevision": source_revision,
             "relativePath": relative_path, "sourceHash": source_hash,
@@ -624,6 +704,7 @@ async def _verify_l5(
                  "M2 L5 manual batch must not carry Provider attempt evidence")
         attempt_count = 0
     for actual, expected in (
+        ("batch_selection_revision", "selection_revision"),
         ("batch_seed_id", "selected_seed_id"),
         ("batch_seed_revision_id", "selected_seed_revision_id"),
         ("batch_seed_hash", "selected_seed_hash"),
@@ -638,6 +719,7 @@ async def _verify_l5(
             _require(row.get(actual) == foundation.get(expected),
                      "M2 L5 Provider batch binding refs mismatch")
     for actual, expected in (
+        ("creation_selection_revision", "selection_revision"),
         ("creation_seed_id", "selected_seed_id"),
         ("creation_seed_revision_id", "selected_seed_revision_id"),
         ("creation_seed_hash", "selected_seed_hash"),
@@ -661,8 +743,10 @@ async def _verify_l5(
         except (KeyError, TypeError, ValueError, ValidationError):
             raise ProductVerificationError("M2 story-engine option payload is invalid") from None
         _require(_integer(option_row, "option_order") == expected_order
+                 and _integer(option_row, "selection_revision")
+                 == _integer(foundation, "selection_revision")
                  and option_row.get("content_hash") == canonical_hash(option),
-                 "M2 story-engine option canonical hash/order mismatch")
+                 "M2 story-engine option canonical hash/order/selection mismatch")
         option_by_id[option_row.get("id")] = option_row
         public_options.append({key: option_row.get(key) for key in (
             "id", "option_order", "content_hash"
@@ -681,6 +765,8 @@ async def _verify_l5(
     _require(len(confirmations) == 1, "M2 L5 requires exactly one confirmation")
     confirmation = confirmations[0]
     _require(confirmation.get("status") == "succeeded"
+             and _integer(confirmation, "selection_revision")
+             == _integer(foundation, "selection_revision")
              and confirmation.get("creation_contract_id") == row.get("creation_contract_id")
              and confirmation.get("style_contract_id") == row.get("style_contract_id")
              and _integer(confirmation, "result_revision") == 1,
@@ -702,6 +788,10 @@ async def _verify_l5(
              == row.get("creation_hash") == row.get("head_creation_hash")
              == foundation.get("creation_hash"),
              "M2 CreationContract canonical hash mismatch")
+    _require(
+        creation.selectionRevision == _integer(foundation, "selection_revision"),
+        "M2 CreationContract selection revision mismatch",
+    )
     try:
         style_json = _json_object(payload.get("style_json"), "StyleContract")
         style = StyleContractPayload.model_validate({
@@ -764,6 +854,7 @@ async def _verify_l5(
     } for ref in corpus_rows)
     snapshot = {
         "project_id": foundation.get("project_id"), "revision": 1,
+        "selection_revision": foundation.get("selection_revision"),
         "seed_id": foundation.get("selected_seed_id"),
         "seed_revision_id": foundation.get("selected_seed_revision_id"),
         "seed_hash": foundation.get("selected_seed_hash"),

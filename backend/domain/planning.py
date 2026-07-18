@@ -60,6 +60,10 @@ class PlanningState:
     stages: tuple[StoryStageView, ...]
     scene_tasks: tuple[SceneTaskView, ...]
     manifest_hash: str | None
+    selection_revision: int = 0
+    contract_hash: str | None = None
+    bible_revision: int = 0
+    bible_hash: str | None = None
 
     @property
     def planning_ready(self) -> bool:

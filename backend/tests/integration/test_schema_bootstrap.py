@@ -8,16 +8,30 @@ from backend.scripts.initialize_database import InitializationError, initialize_
 
 EXPECTED_TABLES = {
     "schema_metadata", "projects", "creative_seeds", "creative_seed_revisions",
-    "creative_seed_heads", "project_selected_seeds", "provider_profiles",
+    "creative_seed_heads", "project_seed_selection_revisions",
+    "project_selected_seeds", "provider_profiles",
+    "provider_profile_mutation_requests", "application_settings",
     "project_model_binding_revisions", "project_model_binding_items",
     "project_model_binding_heads", "style_templates", "style_template_heads",
-    "experience_cards", "experience_card_heads", "corpus_sources",
+    "experience_cards", "experience_card_heads", "corpus_blobs",
+    "corpus_sources", "corpus_source_revisions", "corpus_source_heads",
     "corpus_chapters", "corpus_fragments", "corpus_import_runs",
+    "market_sources", "market_source_refresh_states",
+    "market_source_policy_revisions", "market_source_policy_heads",
+    "market_refresh_requests", "market_snapshots", "market_snapshot_entries",
+    "market_snapshot_manifests", "market_analyses",
+    "seed_inspiration_attempts", "seed_inspiration_requests",
+    "asset_recommendation_attempts", "asset_recommendation_requests",
+    "style_trial_attempts", "style_trial_requests",
     "story_engine_batches", "story_engine_options", "project_contract_drafts",
     "creation_contracts", "style_contracts", "project_contract_heads",
     "contract_confirmation_requests", "creation_contract_engine_refs",
     "style_contract_template_refs", "creation_contract_experience_refs",
-    "creation_contract_corpus_refs", "volume_plans", "story_blocks",
+    "creation_contract_corpus_refs",
+    "creation_contract_corpus_fragment_refs",
+    "project_bible_drafts", "bible_generation_attempts",
+    "creation_bible_revisions", "project_bible_heads",
+    "bible_confirmation_requests", "volume_plans", "story_blocks",
     "story_stages", "scene_tasks", "chapter_sessions", "working_drafts",
     "draft_candidates", "finalization_change_sets", "finalization_records",
     "final_chapters", "canon_entities", "entity_aliases", "canon_revisions",
@@ -77,6 +91,12 @@ async def _insert_foundation_project(session):
            VALUES (%s,0,NULL,NULL,NULL,NULL,%s)""",
         (PROJECT_ID, NOW),
     )
+    await session.execute(
+        """INSERT INTO project_bible_heads
+           (project_id,revision,bible_revision_id,content_hash,updated_at)
+           VALUES (%s,0,NULL,NULL,%s)""",
+        (PROJECT_ID, NOW),
+    )
 
 
 async def _insert_active_provider(session, provider_id, name):
@@ -109,13 +129,26 @@ async def _insert_revision_one_contracts(session):
         (seed_revision_id, PROJECT_ID, seed_id, '{}', HASH_A, NOW),
     )
     await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES (%s,1,%s,%s,%s,%s)""",
+        (PROJECT_ID, seed_id, seed_revision_id, HASH_A, NOW),
+    )
+    await session.execute(
+        """INSERT INTO project_selected_seeds
+           (project_id,seed_id,seed_revision_id,seed_hash,selection_revision,
+            selected_at,updated_at)
+           VALUES (%s,%s,%s,%s,1,%s,%s)""",
+        (PROJECT_ID, seed_id, seed_revision_id, HASH_A, NOW, NOW),
+    )
+    await session.execute(
         """INSERT INTO creation_contracts
-           (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,genre_profile_key,
             quality_charter_version,total_word_min,total_word_max,
             chapter_capacity_policy,reference_manifest_json,
             reference_manifest_hash,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
+           VALUES (%s,%s,1,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
                    80000,120000,'按情节自然切章','{}',%s,%s,%s,%s)""",
         (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, HASH_A, '{}', HASH_B, NOW),
     )
@@ -150,6 +183,26 @@ async def _insert_seed_revision(
     return seed_id, revision_id
 
 
+async def _insert_selection_revision(
+    session,
+    *,
+    project_id=PROJECT_ID,
+    seed_id,
+    seed_revision_id,
+    seed_hash=HASH_A,
+    selection_revision=1,
+):
+    await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES (%s,%s,%s,%s,%s,%s)""",
+        (
+            project_id, selection_revision, seed_id, seed_revision_id,
+            seed_hash, NOW,
+        ),
+    )
+
+
 async def _insert_provider_batch_state(
     session,
     *,
@@ -169,18 +222,21 @@ async def _insert_provider_batch_state(
     if provider_bound:
         await _insert_active_provider(session, provider_id, "Provider batch state")
     seed_id, seed_revision_id = await _insert_seed_revision(session)
+    await _insert_selection_revision(
+        session, seed_id=seed_id, seed_revision_id=seed_revision_id,
+    )
     columns = (
-        "id,project_id,source_type,seed_id,seed_revision_id,seed_hash,"
+        "id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,"
         "binding_revision_id,binding_hash,provider_id,model_name_snapshot,"
         "idempotency_key,request_json,request_hash,status,attempt_id,"
         "attempt_started_at,lease_expires_at,raw_response_text,raw_response_hash,"
         "public_error_code,created_at,finished_at"
     )
-    placeholders = ",".join(("%s",) * 22)
+    placeholders = ",".join(("%s",) * 23)
     await session.execute(
         f"INSERT INTO story_engine_batches ({columns}) VALUES ({placeholders})",
         (
-            batch_id, PROJECT_ID, "provider", seed_id, seed_revision_id, HASH_A,
+            batch_id, PROJECT_ID, 1, "provider", seed_id, seed_revision_id, HASH_A,
             BINDING_ID, HASH_A,
             provider_id if provider_bound else None,
             "model" if provider_bound else None,
@@ -273,14 +329,20 @@ async def _insert_cross_project_provenance_fixture(session):
         seed_id=other_seed,
         revision_id=other_seed_revision,
     )
+    await _insert_selection_revision(
+        session,
+        project_id=other_project,
+        seed_id=other_seed,
+        seed_revision_id=other_seed_revision,
+    )
     await session.execute(
         """INSERT INTO story_engine_batches
-           (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,provider_id,model_name_snapshot,
             idempotency_key,request_json,request_hash,status,attempt_id,
             attempt_started_at,lease_expires_at,raw_response_text,raw_response_hash,
             public_error_code,created_at,finished_at)
-           VALUES (%s,%s,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,%s,%s,%s,
+           VALUES (%s,%s,1,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,%s,%s,%s,
                    'succeeded',NULL,NULL,NULL,NULL,NULL,NULL,%s,%s)""",
         (
             other_batch, other_project, other_seed, other_seed_revision,
@@ -289,23 +351,41 @@ async def _insert_cross_project_provenance_fixture(session):
     )
     await session.execute(
         """INSERT INTO story_engine_options
-           (id,project_id,batch_id,option_order,payload_json,content_hash,created_at)
-           VALUES (%s,%s,%s,1,%s,%s,%s)""",
+           (id,project_id,selection_revision,batch_id,option_order,payload_json,content_hash,created_at)
+           VALUES (%s,%s,1,%s,1,%s,%s,%s)""",
         (other_option, other_project, other_batch, '{}', HASH_C, NOW),
     )
     return creation_id, other_seed_revision, other_option
 
 
 async def _insert_corpus_source(session, status, public_error_code, analyzed_at):
+    source_id = "00000000-0000-0000-0000-000000000080"
+    revision_id = "00000000-0000-0000-0000-000000000081"
+    content_hash = "8" * 64
     await session.execute(
         """INSERT INTO corpus_sources
-           (id,source_key,revision,relative_path,title,author,source_hash,file_size,
-            encoding,parser_version,normalizer_version,fragmenter_version,index_version,
-            status,public_error_code,imported_at,analyzed_at)
-           VALUES ('00000000-0000-0000-0000-000000000080','source.state',1,
-                   'state.txt','State','Author',%s,10,'utf-8','p1','n1','f1','i1',
-                   %s,%s,%s,%s)""",
-        ("8" * 64, status, public_error_code, NOW, analyzed_at),
+           (id,source_key,archived_at,created_at,updated_at)
+           VALUES (%s,'source.state',NULL,%s,%s)""",
+        (source_id, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO corpus_blobs
+           (content_hash,byte_length,storage_key,created_at)
+           VALUES (%s,10,'corpus/source.state',%s)""",
+        (content_hash, NOW),
+    )
+    await session.execute(
+        """INSERT INTO corpus_source_revisions
+           (id,source_id,revision,content_hash,relative_path,display_name,author,
+            reference_tags_json,notes,provenance_json,byte_length,encoding,
+            parser_version,normalizer_version,fragmenter_version,index_version,
+            status,public_error_code,imported_at,analyzed_at,created_at)
+           VALUES (%s,%s,1,%s,'state.txt','State','Author','[]','','{}',10,
+                   'utf-8','p1','n1','f1','i1',%s,%s,%s,%s,%s)""",
+        (
+            revision_id, source_id, content_hash, status, public_error_code,
+            NOW, analyzed_at, NOW,
+        ),
     )
 
 
@@ -329,8 +409,6 @@ async def _index_column_sequences(session, table_name):
         (1, "", ""),
         (0, "secret", ""),
         (0, "", "https://provider.test"),
-        (0, None, ""),
-        (0, "", None),
     ),
 )
 async def test_deleted_provider_rejects_enabled_or_retained_connection_secrets(
@@ -404,10 +482,11 @@ async def test_contract_provenance_rejects_cross_project_seed_or_option(
     )
     if reference_kind == "draft":
         sql = """INSERT INTO project_contract_drafts
-                 (project_id,id,base_head_revision,seed_revision_id,seed_hash,
+                 (project_id,id,base_head_revision,selection_revision,
+                  seed_revision_id,seed_hash,
                   engine_option_id,draft_json,content_hash,draft_version,
                   created_at,updated_at)
-                 VALUES (%s,'00000000-0000-0000-0000-000000000075',0,%s,
+                 VALUES (%s,'00000000-0000-0000-0000-000000000075',0,1,%s,
                          %s,%s,%s,%s,1,%s,%s)"""
         params = (
             PROJECT_ID, other_seed_revision, HASH_A, other_option, '{}',
@@ -464,11 +543,11 @@ async def test_provenance_composite_foreign_keys_have_mysql_indexes(disposable_m
         "story_engine_batches": {("project_id", "id")},
         "story_engine_options": {
             ("project_id", "id"),
-            ("project_id", "batch_id"),
+            ("project_id", "batch_id", "selection_revision"),
         },
         "project_contract_drafts": {
             ("project_id", "seed_revision_id"),
-            ("project_id", "engine_option_id"),
+            ("project_id", "engine_option_id", "selection_revision"),
         },
         "creation_contract_engine_refs": {
             ("project_id", "creation_contract_id"),
@@ -495,14 +574,24 @@ async def test_fresh_bootstrap_has_exact_mysql8_schema_and_no_business_rows(disp
 
     assert {row["TABLE_NAME"] for row in rows} == EXPECTED_TABLES
     assert int(version["version"].split(".", 1)[0]) == 8
-    assert len(rows) == 49
+    assert len(rows) == len(EXPECTED_TABLES)
     assert {row["ENGINE"] for row in rows} == {"InnoDB"}
     assert {row["TABLE_COLLATION"] for row in rows} == {"utf8mb4_0900_ai_ci"}
     assert metadata == {
         "schema_version": EXPECTED_SCHEMA_VERSION,
         "manifest_hash": manifest_hash(),
     }
-    for table_name in EXPECTED_TABLES - {"schema_metadata"}:
+    settings = await disposable_mysql.session.fetchone(
+        "SELECT singleton_id,fallback_provider_id,revision,updated_at "
+        "FROM application_settings"
+    )
+    assert settings == {
+        "singleton_id": 1,
+        "fallback_provider_id": None,
+        "revision": 0,
+        "updated_at": 0,
+    }
+    for table_name in EXPECTED_TABLES - {"schema_metadata", "application_settings"}:
         row = await disposable_mysql.session.fetchone(f"SELECT COUNT(*) AS count FROM `{table_name}`")
         assert row["count"] == 0, table_name
 
@@ -571,6 +660,12 @@ async def test_seed_foreign_keys_are_composite_and_assets_are_global(disposable_
             (other_seed_id, revision_id, HASH_A, NOW),
         )
     await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES (%s,1,%s,%s,%s,%s)""",
+        (PROJECT_ID, seed_id, revision_id, HASH_A, NOW),
+    )
+    await session.execute(
         """INSERT INTO project_selected_seeds
            (project_id,seed_id,seed_revision_id,seed_hash,selection_revision,selected_at,updated_at)
            VALUES (%s,%s,%s,%s,1,%s,%s)""",
@@ -586,8 +681,9 @@ async def test_seed_foreign_keys_are_composite_and_assets_are_global(disposable_
 
     global_tables = (
         "style_templates", "style_template_heads", "experience_cards",
-        "experience_card_heads", "corpus_sources", "corpus_chapters",
-        "corpus_fragments", "corpus_import_runs",
+        "experience_card_heads", "corpus_blobs", "corpus_sources",
+        "corpus_source_revisions", "corpus_source_heads",
+        "corpus_chapters", "corpus_fragments", "corpus_import_runs",
     )
     for table_name in global_tables:
         columns = await session.fetchall(
@@ -604,10 +700,10 @@ async def test_succeeded_confirmation_rejects_result_revision_not_owned_by_contr
     with pytest.raises(Exception):
         await disposable_mysql.session.execute(
             """INSERT INTO contract_confirmation_requests
-               (id,project_id,idempotency_key,request_hash,status,
+               (id,project_id,selection_revision,idempotency_key,request_hash,status,
                 creation_contract_id,style_contract_id,result_revision,
                 public_error_code,created_at,completed_at)
-               VALUES ('00000000-0000-0000-0000-000000000044',%s,%s,%s,
+               VALUES ('00000000-0000-0000-0000-000000000044',%s,1,%s,%s,
                        'succeeded',%s,%s,99,NULL,%s,%s)""",
             (PROJECT_ID, "d" * 64, "e" * 64, creation_id, style_id, NOW, NOW),
         )
@@ -637,15 +733,18 @@ async def test_provider_terminal_batch_rejects_missing_lease_marker(
            VALUES (%s,%s,%s,1,%s,%s,%s)""",
         (seed_revision_id, PROJECT_ID, seed_id, '{}', HASH_A, NOW),
     )
+    await _insert_selection_revision(
+        session, seed_id=seed_id, seed_revision_id=seed_revision_id,
+    )
     with pytest.raises(Exception):
         await session.execute(
             """INSERT INTO story_engine_batches
-               (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+               (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
                 binding_revision_id,binding_hash,provider_id,model_name_snapshot,
                 idempotency_key,request_json,request_hash,status,attempt_id,
                 attempt_started_at,lease_expires_at,raw_response_text,
                 raw_response_hash,public_error_code,created_at,finished_at)
-               VALUES ('00000000-0000-0000-0000-000000000053',%s,'provider',
+               VALUES ('00000000-0000-0000-0000-000000000053',%s,1,'provider',
                        %s,%s,%s,%s,%s,%s,'model',%s,%s,%s,%s,
                        '00000000-0000-0000-0000-000000000054',%s,NULL,
                        'response',%s,%s,%s,%s)""",
@@ -828,38 +927,41 @@ async def test_specialized_asset_refs_accept_valid_and_reject_invalid_revisions(
            VALUES (%s,%s,%s,1,%s,%s,%s)""",
         (seed_revision_id, PROJECT_ID, seed_id, '{}', HASH_A, NOW),
     )
+    await _insert_selection_revision(
+        session, seed_id=seed_id, seed_revision_id=seed_revision_id,
+    )
     await session.execute(
         """INSERT INTO story_engine_batches
-           (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,provider_id,model_name_snapshot,
             idempotency_key,request_json,request_hash,status,attempt_id,
             attempt_started_at,lease_expires_at,raw_response_text,raw_response_hash,
             public_error_code,created_at,finished_at)
-           VALUES (%s,%s,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,%s,%s,%s,
+           VALUES (%s,%s,1,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,%s,%s,%s,
                    'succeeded',NULL,NULL,NULL,NULL,NULL,NULL,%s,%s)""",
         (batch_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, HASH_B, '{}', HASH_B, NOW, NOW),
     )
     await session.execute(
         """INSERT INTO story_engine_options
-           (id,project_id,batch_id,option_order,payload_json,content_hash,created_at)
-           VALUES (%s,%s,%s,1,%s,%s,%s)""",
+           (id,project_id,selection_revision,batch_id,option_order,payload_json,content_hash,created_at)
+           VALUES (%s,%s,1,%s,1,%s,%s,%s)""",
         (option_id, PROJECT_ID, batch_id, '{}', HASH_C, NOW),
     )
     await session.execute(
         """INSERT INTO project_contract_drafts
-           (project_id,id,base_head_revision,seed_revision_id,seed_hash,
+           (project_id,id,base_head_revision,selection_revision,seed_revision_id,seed_hash,
             engine_option_id,draft_json,content_hash,draft_version,created_at,updated_at)
-           VALUES (%s,'00000000-0000-0000-0000-000000000029',0,%s,%s,%s,%s,%s,1,%s,%s)""",
+           VALUES (%s,'00000000-0000-0000-0000-000000000029',0,1,%s,%s,%s,%s,%s,1,%s,%s)""",
         (PROJECT_ID, seed_revision_id, HASH_A, option_id, '{}', HASH_B, NOW, NOW),
     )
     await session.execute(
         """INSERT INTO creation_contracts
-           (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,genre_profile_key,
             quality_charter_version,total_word_min,total_word_max,
             chapter_capacity_policy,reference_manifest_json,
             reference_manifest_hash,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
+           VALUES (%s,%s,1,1,%s,%s,%s,%s,%s,'web','fantasy','quality-v1',
                    80000,120000,'按情节自然切章','{}',%s,%s,%s,%s)""",
         (creation_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A, BINDING_ID, HASH_A, HASH_A, '{}', HASH_B, NOW),
     )
@@ -883,13 +985,27 @@ async def test_specialized_asset_refs_accept_valid_and_reject_invalid_revisions(
         (card_id, '{}', '{}', HASH_B, NOW),
     )
     await session.execute(
+        """INSERT INTO corpus_blobs
+           (content_hash,byte_length,storage_key,created_at)
+           VALUES (%s,10,'corpus/source.test',%s)""",
+        (HASH_C, NOW),
+    )
+    await session.execute(
         """INSERT INTO corpus_sources
-           (id,source_key,revision,relative_path,title,author,source_hash,file_size,
-            encoding,parser_version,normalizer_version,fragmenter_version,index_version,
-            status,public_error_code,imported_at,analyzed_at)
-           VALUES (%s,'source.test',1,'book.txt','Book','Author',%s,10,'utf-8',
-                   'p1','n1','f1','i1','analyzed',NULL,%s,%s)""",
-        (source_id, HASH_C, NOW, NOW),
+           (id,source_key,archived_at,created_at,updated_at)
+           VALUES (%s,'source.test',NULL,%s,%s)""",
+        (source_id, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO corpus_source_revisions
+           (id,source_id,revision,content_hash,relative_path,display_name,author,
+            reference_tags_json,notes,provenance_json,byte_length,encoding,
+            parser_version,normalizer_version,fragmenter_version,index_version,
+            status,public_error_code,imported_at,analyzed_at,created_at)
+           VALUES ('00000000-0000-0000-0000-000000000035',%s,1,%s,
+                   'book.txt','Book','Author','[]','','{}',10,'utf-8',
+                   'p1','n1','f1','i1','analyzed',NULL,%s,%s,%s)""",
+        (source_id, HASH_C, NOW, NOW, NOW),
     )
 
     await session.execute(

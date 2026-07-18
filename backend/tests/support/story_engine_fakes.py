@@ -55,6 +55,7 @@ class MemoryStoryEngineRepository:
     def __init__(self):
         self.projects = {"p1": {"id": "p1", "status": "drafting"}}
         self.seed = {
+            "selection_revision": 7,
             "seed_id": "seed-1",
             "seed_revision_id": "seed-revision-1",
             "seed_hash": "a" * 64,

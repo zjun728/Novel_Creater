@@ -86,6 +86,7 @@ def _public_batch(result) -> dict:
         "id": result.id,
         "projectId": result.project_id,
         "sourceType": result.source_type,
+        "selectionRevision": result.selection_revision,
         "seedId": result.seed_id,
         "seedRevisionId": result.seed_revision_id,
         "seedHash": result.seed_hash,

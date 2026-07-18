@@ -76,15 +76,15 @@ async def install_matching_contract(session, project_id: str, seed):
     )
     await session.execute(
         """INSERT INTO creation_contracts
-           (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,
             genre_profile_key,quality_charter_version,total_word_min,
             total_word_max,chapter_capacity_policy,reference_manifest_json,
             reference_manifest_hash,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'default','mystery','quality-v1',
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,'default','mystery','quality-v1',
                    90000,110000,'按情节自然切章','{}',%s,'{}',%s,3)""",
         (
-            creation_id, project_id, seed.id, seed.revision_id,
+            creation_id, project_id, seed.selection_revision, seed.id, seed.revision_id,
             seed.content_hash, binding_id, "b" * 64, "e" * 64, "c" * 64,
         ),
     )
@@ -188,7 +188,7 @@ async def test_selected_edit_reports_contract_drift_and_delete_preserves_depende
             expected_seed_revision=1, expected_selection_revision=0,
         )
     )
-    await install_matching_contract(disposable_mysql.session, "p1", selected_seed)
+    await install_matching_contract(disposable_mysql.session, "p1", selection)
     ready = await service.get_selected("p1")
     assert ready.seed_ready is True
     assert ready.reasons == ("binding_not_verified",)

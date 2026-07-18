@@ -85,6 +85,7 @@ class StoryEngineBatchResult(BaseModel):
     project_id: str
     source_type: Literal["provider", "manual"]
     seed_id: str
+    selection_revision: int
     seed_revision_id: str
     seed_hash: str
     binding_revision_id: str | None
@@ -175,6 +176,7 @@ class StoryEngineService:
         request = {
             "sourceType": source_type,
             "seed": {
+                "selectionRevision": seed["selection_revision"],
                 "id": seed["seed_id"],
                 "revisionId": seed["seed_revision_id"],
                 "hash": seed["seed_hash"],
@@ -231,6 +233,7 @@ class StoryEngineService:
             project_id=batch["project_id"],
             source_type=batch["source_type"],
             seed_id=batch["seed_id"],
+            selection_revision=int(batch["selection_revision"]),
             seed_revision_id=batch["seed_revision_id"],
             seed_hash=batch["seed_hash"],
             binding_revision_id=batch.get("binding_revision_id"),
@@ -278,6 +281,7 @@ class StoryEngineService:
         return {
             "id": self.id_factory(),
             "project_id": project_id,
+            "selection_revision": int(seed["selection_revision"]),
             "source_type": source_type,
             "seed_id": seed["seed_id"],
             "seed_revision_id": seed["seed_revision_id"],
@@ -305,6 +309,7 @@ class StoryEngineService:
         self,
         project_id: str,
         batch_id: str,
+        selection_revision: int,
         options: tuple[StoryEngineOption, ...],
         now: int,
     ) -> tuple[dict, ...]:
@@ -313,6 +318,7 @@ class StoryEngineService:
             {
                 "id": self.id_factory(),
                 "project_id": project_id,
+                "selection_revision": selection_revision,
                 "batch_id": batch_id,
                 "option_order": index,
                 "payload_json": canonical_json(option),
@@ -353,7 +359,13 @@ class StoryEngineService:
             await self.repository.insert_batch(session, row)
             await self.repository.insert_options(
                 session,
-                self._option_rows(command.project_id, row["id"], options, now),
+                self._option_rows(
+                    command.project_id,
+                    row["id"],
+                    int(seed["selection_revision"]),
+                    options,
+                    now,
+                ),
             )
             return await self._load_result(session, command.project_id, row["id"])
 
@@ -771,7 +783,14 @@ class StoryEngineService:
             if not changed:
                 raise StoryEngineBatchConflict()
             await self.repository.insert_options(
-                session, self._option_rows(project_id, batch_id, options, now)
+                session,
+                self._option_rows(
+                    project_id,
+                    batch_id,
+                    int(batch["selection_revision"]),
+                    options,
+                    now,
+                ),
             )
             return await self._load_result(session, project_id, batch_id)
 

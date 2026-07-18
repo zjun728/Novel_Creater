@@ -41,6 +41,7 @@ class CreationContractPayload(BaseModel):
     channelProfileKey: ProfileOrVersionKey
     genreProfileKey: ProfileOrVersionKey
     qualityCharterVersion: ProfileOrVersionKey
+    selectionRevision: PositiveInt
     selectedSeed: SeedPayload
     selectedEngine: StoryEngineOption
     totalWordRange: tuple[PositiveInt, PositiveInt]

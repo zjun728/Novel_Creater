@@ -98,6 +98,13 @@ class ChapterSessionService:
             now = int(time.time() * 1000)
             session_row = {
                 "id": str(uuid4()), "project_id": command.project_id,
+                "selection_revision": int(plan["selection_revision"]),
+                "contract_revision": int(plan["contract_revision"]),
+                "contract_hash": plan["contract_hash"],
+                "bible_revision": int(plan["bible_revision"]),
+                "bible_hash": plan["bible_hash"],
+                "volume_plan_id": plan["volume"]["id"],
+                "planning_manifest_hash": plan["manifest_hash"],
                 "story_block_id": block["id"], "chapter_num": chapter_num,
                 "expected_canon_revision": canon_revision,
                 "expected_story_block_revision": int(block["revision"]),
@@ -135,7 +142,12 @@ class ChapterSessionService:
                     chapter_session = latest
             if chapter_session is None:
                 raise ChapterSessionNotFound("Chapter session not found")
-            if chapter_session["status"] != "drafting":
+            effective_status = chapter_session.get(
+                "effective_status", chapter_session["status"]
+            )
+            if effective_status == "superseded":
+                raise ChapterSessionConflict("Chapter session is superseded")
+            if effective_status != "drafting":
                 raise ChapterSessionConflict("Chapter session is finalized")
             current = await self.repository.read_working_draft(
                 session, command.chapter_session_id,
@@ -172,6 +184,10 @@ class ChapterSessionService:
                     chapter_session = latest
             if chapter_session is None:
                 raise ChapterSessionNotFound("Chapter session not found")
+            if chapter_session.get(
+                "effective_status", chapter_session["status"]
+            ) == "superseded":
+                raise ChapterSessionConflict("Chapter session is superseded")
             draft = await self.repository.read_working_draft(session, command.chapter_session_id)
             if draft is None:
                 raise ChapterSessionPreconditionFailed("working draft is required")
@@ -237,7 +253,14 @@ class ChapterSessionService:
             expected_canon_revision=int(row["expected_canon_revision"]),
             expected_story_block_revision=int(row["expected_story_block_revision"]),
             planning_snapshot=row["planning_snapshot"],
-            status=row["status"],
+            status=row.get("effective_status", row["status"]),
+            selection_revision=int(row["selection_revision"]),
+            contract_revision=int(row["contract_revision"]),
+            contract_hash=row["contract_hash"],
+            bible_revision=int(row["bible_revision"]),
+            bible_hash=row["bible_hash"],
+            volume_plan_id=row["volume_plan_id"],
+            planning_manifest_hash=row["planning_manifest_hash"],
         )
 
     def _draft_view(self, row) -> WorkingDraftView:

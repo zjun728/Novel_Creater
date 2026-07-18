@@ -27,7 +27,8 @@ class StoryEngineRepository:
                       batch.created_at,batch.finished_at
                  FROM story_engine_batches batch
                  JOIN project_selected_seeds selected
-                   ON selected.project_id=batch.project_id
+                  ON selected.project_id=batch.project_id
+                  AND selected.selection_revision=batch.selection_revision
                   AND selected.seed_id=batch.seed_id
                   AND selected.seed_revision_id=batch.seed_revision_id
                   AND selected.seed_hash=batch.seed_hash
@@ -46,6 +47,7 @@ class StoryEngineRepository:
     async def lock_selected_seed(self, session, project_id: str):
         return await session.fetchone(
             """SELECT selected.seed_id,
+                      selected.selection_revision,
                       selected.seed_revision_id,
                       selected.seed_hash,
                       revision.payload_json,
@@ -103,16 +105,17 @@ class StoryEngineRepository:
     async def insert_batch(self, session, row: dict) -> None:
         await session.execute(
             """INSERT INTO story_engine_batches
-               (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+               (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
                 binding_revision_id,binding_hash,provider_id,model_name_snapshot,
                 idempotency_key,request_json,request_hash,status,attempt_id,
                 attempt_started_at,lease_expires_at,raw_response_text,
                 raw_response_hash,public_error_code,created_at,finished_at)
                VALUES
                (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                %s,%s,%s,%s)""",
+                %s,%s,%s,%s,%s)""",
             (
-                row["id"], row["project_id"], row["source_type"],
+                row["id"], row["project_id"], row["selection_revision"],
+                row["source_type"],
                 row["seed_id"], row["seed_revision_id"], row["seed_hash"],
                 row["binding_revision_id"], row["binding_hash"],
                 row["provider_id"], row["model_name_snapshot"],
@@ -129,11 +132,12 @@ class StoryEngineRepository:
         for row in rows:
             await session.execute(
                 """INSERT INTO story_engine_options
-                   (id,project_id,batch_id,option_order,payload_json,
+                   (id,project_id,selection_revision,batch_id,option_order,payload_json,
                     content_hash,created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
-                    row["id"], row["project_id"], row["batch_id"],
+                    row["id"], row["project_id"], row["selection_revision"],
+                    row["batch_id"],
                     row["option_order"], row["payload_json"],
                     row["content_hash"], row["created_at"],
                 ),
@@ -147,7 +151,7 @@ class StoryEngineRepository:
 
     async def list_options(self, session, project_id: str, batch_id: str):
         return await session.fetchall(
-            """SELECT id,project_id,batch_id,option_order,payload_json,
+            """SELECT id,project_id,selection_revision,batch_id,option_order,payload_json,
                       content_hash,created_at
                FROM story_engine_options
                WHERE project_id=%s AND batch_id=%s

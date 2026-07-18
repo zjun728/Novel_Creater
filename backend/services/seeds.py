@@ -205,16 +205,24 @@ class SeedService:
             selection_revision = _selection_revision(selection)
             if is_selected:
                 selection_revision += 1
-                await self.repository.advance_selected_revision(
-                    session,
-                    {
-                        "project_id": command.project_id,
-                        "seed_revision_id": revision_id,
-                        "seed_hash": content_hash,
-                        "selection_revision": selection_revision,
-                        "updated_at": now,
-                    },
+                selection_row = {
+                    "project_id": command.project_id,
+                    "seed_id": command.seed_id,
+                    "seed_revision_id": revision_id,
+                    "seed_hash": content_hash,
+                    "selection_revision": selection_revision,
+                    "selected_at": selection["selected_at"],
+                    "updated_at": now,
+                    "expected_selection_revision": selection_revision - 1,
+                }
+                await self.repository.insert_selection_revision(
+                    session, selection_row
                 )
+                changed = await self.repository.advance_selected_revision(
+                    session, selection_row
+                )
+                if changed is False:
+                    raise SeedConflict()
         return SeedResult(
             id=command.seed_id, project_id=command.project_id,
             status=head["status"], revision=revision_number,
@@ -249,11 +257,15 @@ class SeedService:
                 "selection_revision": new_revision,
                 "selected_at": now,
                 "updated_at": now,
+                "expected_selection_revision": current_revision,
             }
+            await self.repository.insert_selection_revision(session, row)
             if selection is None:
                 await self.repository.insert_selection(session, row)
             else:
-                await self.repository.replace_selection(session, row)
+                changed = await self.repository.replace_selection(session, row)
+                if changed is False:
+                    raise SeedConflict()
         return self._result(
             head, is_selected=True, selection_revision=new_revision
         )

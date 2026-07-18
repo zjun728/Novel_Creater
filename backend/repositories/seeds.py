@@ -129,32 +129,46 @@ class SeedRepository:
             ),
         )
 
-    async def advance_selected_revision(self, session, row: dict) -> None:
+    async def insert_selection_revision(self, session, row: dict) -> None:
         await session.execute(
-            """UPDATE project_selected_seeds
-               SET seed_revision_id=%s, seed_hash=%s,
-                   selection_revision=%s, updated_at=%s
-               WHERE project_id=%s""",
+            """INSERT INTO project_seed_selection_revisions
+               (project_id, selection_revision, seed_id, seed_revision_id,
+                seed_hash, selected_at)
+               VALUES (%s,%s,%s,%s,%s,%s)""",
             (
-                row["seed_revision_id"], row["seed_hash"],
-                row["selection_revision"], row["updated_at"],
-                row["project_id"],
+                row["project_id"], row["selection_revision"], row["seed_id"],
+                row["seed_revision_id"], row["seed_hash"], row["selected_at"],
             ),
         )
 
-    async def replace_selection(self, session, row: dict) -> None:
-        await session.execute(
+    async def advance_selected_revision(self, session, row: dict) -> bool:
+        changed = await session.execute(
+            """UPDATE project_selected_seeds
+               SET seed_revision_id=%s, seed_hash=%s,
+                   selection_revision=%s, updated_at=%s
+               WHERE project_id=%s AND selection_revision=%s""",
+            (
+                row["seed_revision_id"], row["seed_hash"],
+                row["selection_revision"], row["updated_at"],
+                row["project_id"], row["expected_selection_revision"],
+            ),
+        )
+        return changed == 1
+
+    async def replace_selection(self, session, row: dict) -> bool:
+        changed = await session.execute(
             """UPDATE project_selected_seeds
                SET seed_id=%s, seed_revision_id=%s, seed_hash=%s,
                    selection_revision=%s, selected_at=%s, updated_at=%s
-               WHERE project_id=%s""",
+               WHERE project_id=%s AND selection_revision=%s""",
             (
                 row["seed_id"], row["seed_revision_id"], row["seed_hash"],
                 row["selection_revision"], row["selected_at"],
-                row["updated_at"],
-                row["project_id"],
+                row["updated_at"], row["project_id"],
+                row["expected_selection_revision"],
             ),
         )
+        return changed == 1
 
     async def dependency_count(
         self, session, project_id: str, seed_id: str

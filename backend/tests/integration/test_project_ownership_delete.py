@@ -3,6 +3,9 @@ from __future__ import annotations
 import pytest
 from pymysql.err import IntegrityError
 
+from backend.repositories.projects import ProjectRepository
+from backend.tests.support.disposable_mysql import transaction_factory_for
+
 
 pytestmark = pytest.mark.mysql
 
@@ -26,6 +29,8 @@ CORPUS_SOURCE_ID = "60000000-0000-0000-0000-000000000003"
 CORPUS_CHAPTER_ID = "60000000-0000-0000-0000-000000000004"
 CORPUS_FRAGMENT_ID = "60000000-0000-0000-0000-000000000005"
 CORPUS_IMPORT_ID = "60000000-0000-0000-0000-000000000006"
+CORPUS_REVISION_ID = "60000000-0000-0000-0000-000000000007"
+BIBLE_REVISION_ID = "60000000-0000-0000-0000-000000000008"
 VOLUME_ID = "70000000-0000-0000-0000-000000000001"
 BLOCK_ID = "70000000-0000-0000-0000-000000000002"
 SESSION_ID = "70000000-0000-0000-0000-000000000003"
@@ -44,6 +49,7 @@ PRIVATE_TABLES_WITHOUT_CLONE_ROWS = (
     "creative_seeds",
     "creative_seed_revisions",
     "creative_seed_heads",
+    "project_seed_selection_revisions",
     "project_selected_seeds",
     "project_model_binding_items",
     "project_model_binding_heads",
@@ -58,6 +64,8 @@ PRIVATE_TABLES_WITHOUT_CLONE_ROWS = (
     "style_contract_template_refs",
     "creation_contract_experience_refs",
     "creation_contract_corpus_refs",
+    "creation_bible_revisions",
+    "project_bible_heads",
     "volume_plans",
     "story_blocks",
     "story_stages",
@@ -131,42 +139,76 @@ async def _insert_shared_rows(session) -> None:
         (EXPERIENCE_CARD_ID, "b" * 64, NOW),
     )
     await session.execute(
+        """INSERT INTO corpus_blobs
+           (content_hash,byte_length,storage_key,created_at)
+           VALUES (%s,4,'corpus/shared-source',%s)""",
+        ("c" * 64, NOW),
+    )
+    await session.execute(
         """INSERT INTO corpus_sources
-           (id,source_key,revision,relative_path,title,author,source_hash,file_size,
-            encoding,parser_version,normalizer_version,fragmenter_version,
-            index_version,status,public_error_code,imported_at,analyzed_at)
-           VALUES (%s,'shared-source',1,'shared.txt','Shared Source','Test',%s,4,
-                   'utf-8','p1','n1','f1','i1','analyzed',NULL,%s,%s)""",
-        (CORPUS_SOURCE_ID, "c" * 64, NOW, NOW),
+           (id,source_key,archived_at,created_at,updated_at)
+           VALUES (%s,'shared-source',NULL,%s,%s)""",
+        (CORPUS_SOURCE_ID, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO corpus_source_revisions
+           (id,source_id,revision,content_hash,relative_path,display_name,author,
+            reference_tags_json,notes,provenance_json,byte_length,encoding,
+            parser_version,normalizer_version,fragmenter_version,index_version,
+            status,public_error_code,imported_at,analyzed_at,created_at)
+           VALUES (%s,%s,1,%s,'shared.txt','Shared Source','Test','[]','','{}',
+                   4,'utf-8','p1','n1','f1','i1','analyzed',NULL,%s,%s,%s)""",
+        (CORPUS_REVISION_ID, CORPUS_SOURCE_ID, "c" * 64, NOW, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO corpus_source_heads
+           (source_id,revision_id,revision,content_hash,updated_at)
+           VALUES (%s,%s,1,%s,%s)""",
+        (CORPUS_SOURCE_ID, CORPUS_REVISION_ID, "c" * 64, NOW),
     )
     await session.execute(
         """INSERT INTO corpus_chapters
-           (id,corpus_source_id,chapter_order,title,raw_byte_start,raw_byte_end,
+           (id,corpus_source_id,source_revision_id,source_revision,source_hash,
+            chapter_order,title,raw_byte_start,raw_byte_end,
             normalized_char_start,normalized_char_end,normalized_text,
             content_hash,created_at)
-           VALUES (%s,%s,1,'Shared Chapter',0,4,0,4,'text',%s,%s)""",
-        (CORPUS_CHAPTER_ID, CORPUS_SOURCE_ID, "d" * 64, NOW),
+           VALUES (%s,%s,%s,1,%s,1,'Shared Chapter',0,4,0,4,'text',%s,%s)""",
+        (
+            CORPUS_CHAPTER_ID,
+            CORPUS_SOURCE_ID,
+            CORPUS_REVISION_ID,
+            "c" * 64,
+            "d" * 64,
+            NOW,
+        ),
     )
     await session.execute(
         """INSERT INTO corpus_fragments
-           (id,corpus_chapter_id,fragment_order,chapter_char_start,
+           (id,corpus_source_id,corpus_chapter_id,fragment_order,chapter_char_start,
             chapter_char_end,normalized_text,content_hash,index_payload,
             analysis_version,created_at)
-           VALUES (%s,%s,1,0,4,'text',%s,'{}','a1',%s)""",
-        (CORPUS_FRAGMENT_ID, CORPUS_CHAPTER_ID, "3" * 64, NOW),
+           VALUES (%s,%s,%s,1,0,4,'text',%s,'{}','a1',%s)""",
+        (
+            CORPUS_FRAGMENT_ID,
+            CORPUS_SOURCE_ID,
+            CORPUS_CHAPTER_ID,
+            "3" * 64,
+            NOW,
+        ),
     )
     await session.execute(
         """INSERT INTO corpus_import_runs
-           (id,idempotency_key,request_hash,relative_path,source_hash,status,
-            corpus_source_id,public_error_code,parser_versions_json,created_at,
-            completed_at)
-           VALUES (%s,%s,%s,'shared.txt',%s,'succeeded',%s,NULL,'{}',%s,%s)""",
+           (id,idempotency_key,request_hash,relative_path,content_hash,status,
+            corpus_source_id,source_revision_id,source_revision,public_error_code,
+            parser_versions_json,created_at,completed_at)
+           VALUES (%s,%s,%s,'shared.txt',%s,'succeeded',%s,%s,1,NULL,'{}',%s,%s)""",
         (
             CORPUS_IMPORT_ID,
             "4" * 64,
             "5" * 64,
             "c" * 64,
             CORPUS_SOURCE_ID,
+            CORPUS_REVISION_ID,
             NOW,
             NOW,
         ),
@@ -191,6 +233,13 @@ async def _insert_seed_engine_and_contracts(session) -> None:
            (seed_id,revision_id,revision,content_hash,updated_at)
            VALUES (%s,%s,1,%s,%s)""",
         (SEED_ID, SEED_REVISION_ID, "e" * 64, NOW),
+    )
+    await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,
+            selected_at)
+           VALUES (%s,1,%s,%s,%s,%s)""",
+        (PROJECT_ID, SEED_ID, SEED_REVISION_ID, "e" * 64, NOW),
     )
     await session.execute(
         """INSERT INTO project_selected_seeds
@@ -226,12 +275,12 @@ async def _insert_seed_engine_and_contracts(session) -> None:
     )
     await session.execute(
         """INSERT INTO story_engine_batches
-           (id,project_id,source_type,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,provider_id,model_name_snapshot,
             idempotency_key,request_json,request_hash,status,attempt_id,
             attempt_started_at,lease_expires_at,raw_response_text,
             raw_response_hash,public_error_code,created_at,finished_at)
-           VALUES (%s,%s,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,%s,'{}',%s,
+           VALUES (%s,%s,1,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,%s,'{}',%s,
                    'succeeded',NULL,NULL,NULL,NULL,NULL,NULL,%s,%s)""",
         (
             BATCH_ID,
@@ -247,16 +296,17 @@ async def _insert_seed_engine_and_contracts(session) -> None:
     )
     await session.execute(
         """INSERT INTO story_engine_options
-           (id,project_id,batch_id,option_order,payload_json,content_hash,created_at)
-           VALUES (%s,%s,%s,1,'{}',%s,%s)""",
+           (id,project_id,selection_revision,batch_id,option_order,payload_json,
+            content_hash,created_at)
+           VALUES (%s,%s,1,%s,1,'{}',%s,%s)""",
         (OPTION_ID, PROJECT_ID, BATCH_ID, "5" * 64, NOW),
     )
     await session.execute(
         """INSERT INTO project_contract_drafts
-           (project_id,id,base_head_revision,seed_revision_id,seed_hash,
+           (project_id,id,selection_revision,base_head_revision,seed_revision_id,seed_hash,
             engine_option_id,draft_json,content_hash,draft_version,created_at,
             updated_at)
-           VALUES (%s,%s,0,%s,%s,%s,'{}',%s,1,%s,%s)""",
+           VALUES (%s,%s,1,0,%s,%s,%s,'{}',%s,1,%s,%s)""",
         (
             PROJECT_ID,
             CONTRACT_DRAFT_ID,
@@ -270,12 +320,12 @@ async def _insert_seed_engine_and_contracts(session) -> None:
     )
     await session.execute(
         """INSERT INTO creation_contracts
-           (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,seed_hash,
             binding_revision_id,binding_hash,channel_profile_key,genre_profile_key,
             quality_charter_version,total_word_min,total_word_max,
             chapter_capacity_policy,reference_manifest_json,
             reference_manifest_hash,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,'channel','genre','q1',1,2,
+           VALUES (%s,%s,1,1,%s,%s,%s,%s,%s,'channel','genre','q1',1,2,
                    'fixed','{}',%s,'{}',%s,%s)""",
         (
             CREATION_ID,
@@ -313,10 +363,10 @@ async def _insert_seed_engine_and_contracts(session) -> None:
     )
     await session.execute(
         """INSERT INTO contract_confirmation_requests
-           (id,project_id,idempotency_key,request_hash,status,
+           (id,project_id,selection_revision,idempotency_key,request_hash,status,
             creation_contract_id,style_contract_id,result_revision,
             public_error_code,created_at,completed_at)
-           VALUES (%s,%s,%s,%s,'succeeded',%s,%s,1,NULL,%s,%s)""",
+           VALUES (%s,%s,1,%s,%s,'succeeded',%s,%s,1,NULL,%s,%s)""",
         (
             CONFIRMATION_ID,
             PROJECT_ID,
@@ -355,15 +405,41 @@ async def _insert_seed_engine_and_contracts(session) -> None:
            VALUES (%s,%s,1,%s,'author',1)""",
         (CREATION_ID, CORPUS_SOURCE_ID, "c" * 64),
     )
+    await session.execute(
+        """INSERT INTO creation_bible_revisions
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,contract_revision,contract_hash,binding_revision_id,
+            binding_hash,policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,'test-bible-v1','{}',%s,%s)""",
+        (
+            BIBLE_REVISION_ID,
+            PROJECT_ID,
+            SEED_ID,
+            SEED_REVISION_ID,
+            "e" * 64,
+            "7" * 64,
+            BINDING_ID,
+            "f" * 64,
+            "0" * 64,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO project_bible_heads
+           (project_id,revision,bible_revision_id,content_hash,updated_at)
+           VALUES (%s,1,%s,%s,%s)""",
+        (PROJECT_ID, BIBLE_REVISION_ID, "0" * 64, NOW),
+    )
 
 
 async def _insert_planning_draft_canon_and_projections(session) -> None:
     await session.execute(
         """INSERT INTO volume_plans
-           (id,project_id,volume_num,title,direction_json,revision,status,
-            created_at,updated_at)
-           VALUES (%s,%s,1,'Volume','{}',1,'active',%s,%s)""",
-        (VOLUME_ID, PROJECT_ID, NOW, NOW),
+           (id,project_id,selection_revision,contract_revision,contract_hash,
+            bible_revision,bible_hash,manifest_hash,volume_num,title,
+            direction_json,revision,status,created_at,updated_at)
+           VALUES (%s,%s,1,1,%s,1,%s,%s,1,'Volume','{}',1,'active',%s,%s)""",
+        (VOLUME_ID, PROJECT_ID, "7" * 64, "0" * 64, "2" * 64, NOW, NOW),
     )
     await session.execute(
         """INSERT INTO story_blocks
@@ -388,11 +464,22 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
     )
     await session.execute(
         """INSERT INTO chapter_sessions
-           (id,project_id,story_block_id,chapter_num,expected_canon_revision,
+           (id,project_id,selection_revision,contract_revision,contract_hash,
+            bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,
+            story_block_id,chapter_num,expected_canon_revision,
             expected_story_block_revision,planning_snapshot_json,status,
             created_at,finalized_at)
-           VALUES (%s,%s,%s,1,1,1,'{}','drafting',%s,NULL)""",
-        (SESSION_ID, PROJECT_ID, BLOCK_ID, NOW),
+           VALUES (%s,%s,1,1,%s,1,%s,%s,%s,%s,1,1,1,'{}','drafting',%s,NULL)""",
+        (
+            SESSION_ID,
+            PROJECT_ID,
+            "7" * 64,
+            "0" * 64,
+            VOLUME_ID,
+            "2" * 64,
+            BLOCK_ID,
+            NOW,
+        ),
     )
     await session.execute(
         """INSERT INTO working_drafts
@@ -547,7 +634,7 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_direct_project_delete_cascades_private_rows_and_detaches_clone_provenance(
+async def test_permanent_delete_removes_owned_graph_and_detaches_clone_provenance(
     disposable_mysql,
 ):
     session = disposable_mysql.session
@@ -558,8 +645,13 @@ async def test_direct_project_delete_cascades_private_rows_and_detaches_clone_pr
     await _insert_planning_draft_canon_and_projections(session)
 
     assert await session.execute(
-        "DELETE FROM projects WHERE id=%s", (PROJECT_ID,)
+        """UPDATE projects SET archived_at=%s,lifecycle_revision=1
+           WHERE id=%s""",
+        (NOW, PROJECT_ID),
     ) == 1
+    assert await ProjectRepository().permanently_delete(
+        session, PROJECT_ID, 1
+    ) is True
 
     assert await session.fetchone(
         "SELECT id FROM projects WHERE id=%s", (PROJECT_ID,)
@@ -587,6 +679,7 @@ async def test_direct_project_delete_cascades_private_rows_and_detaches_clone_pr
         ("corpus_chapters", CORPUS_CHAPTER_ID),
         ("corpus_fragments", CORPUS_FRAGMENT_ID),
         ("corpus_import_runs", CORPUS_IMPORT_ID),
+        ("corpus_source_revisions", CORPUS_REVISION_ID),
     ):
         assert await session.fetchone(
             f"SELECT id FROM {table} WHERE id=%s", (row_id,)
@@ -599,6 +692,67 @@ async def test_direct_project_delete_cascades_private_rows_and_detaches_clone_pr
         """SELECT experience_card_id FROM experience_card_heads
            WHERE stable_key='shared-card'"""
     ) == {"experience_card_id": EXPERIENCE_CARD_ID}
+    assert await session.fetchone(
+        """SELECT revision_id FROM corpus_source_heads
+           WHERE source_id=%s""",
+        (CORPUS_SOURCE_ID,),
+    ) == {"revision_id": CORPUS_REVISION_ID}
+    assert await session.fetchone(
+        "SELECT content_hash FROM corpus_blobs WHERE content_hash=%s",
+        ("c" * 64,),
+    ) == {"content_hash": "c" * 64}
+
+
+@pytest.mark.asyncio
+async def test_permanent_delete_failure_rolls_back_the_entire_owned_graph(
+    disposable_mysql,
+):
+    session = disposable_mysql.session
+    await _insert_project(session, PROJECT_ID, "Rollback")
+    await _insert_project(session, CLONE_ID, "Clone")
+    await _insert_shared_rows(session)
+    await _insert_seed_engine_and_contracts(session)
+    await _insert_planning_draft_canon_and_projections(session)
+    await session.execute(
+        """UPDATE projects SET archived_at=%s,lifecycle_revision=1
+           WHERE id=%s""",
+        (NOW, PROJECT_ID),
+    )
+
+    class FailingDeleteRepository(ProjectRepository):
+        async def _delete_owned_graph(self, tx_session, project_id):
+            await super()._delete_owned_graph(tx_session, project_id)
+            raise RuntimeError("controlled permanent-delete failure")
+
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+    with pytest.raises(RuntimeError, match="controlled permanent-delete failure"):
+        async with transaction() as tx_session:
+            await FailingDeleteRepository().permanently_delete(
+                tx_session, PROJECT_ID, 1
+            )
+
+    assert await session.fetchone(
+        "SELECT id FROM projects WHERE id=%s", (PROJECT_ID,)
+    ) == {"id": PROJECT_ID}
+    for table in (
+        "project_seed_selection_revisions",
+        "creation_contracts",
+        "creation_bible_revisions",
+        "volume_plans",
+        "chapter_sessions",
+        "final_chapters",
+    ):
+        assert await session.fetchone(
+            f"SELECT COUNT(*) AS count FROM {table} WHERE project_id=%s",
+            (PROJECT_ID,),
+        ) == {"count": 1}, table
+    assert await session.fetchone(
+        "SELECT source_project_id FROM project_model_binding_revisions WHERE id=%s",
+        (CLONE_BINDING_ID,),
+    ) == {"source_project_id": PROJECT_ID}
+    assert await session.fetchone(
+        "SELECT id FROM corpus_sources WHERE id=%s", (CORPUS_SOURCE_ID,)
+    ) == {"id": CORPUS_SOURCE_ID}
 
 
 @pytest.mark.asyncio
@@ -635,10 +789,11 @@ async def test_cross_project_private_parent_references_are_rejected_by_family(
         (
             "contracts",
             """INSERT INTO project_contract_drafts
-               (project_id,id,base_head_revision,seed_revision_id,seed_hash,
+               (project_id,id,selection_revision,base_head_revision,
+                seed_revision_id,seed_hash,
                 engine_option_id,draft_json,content_hash,draft_version,
                 created_at,updated_at)
-               VALUES (%s,'99000000-0000-0000-0000-000000000001',0,%s,%s,
+               VALUES (%s,'99000000-0000-0000-0000-000000000001',1,0,%s,%s,
                        %s,'{}',%s,1,%s,%s)""",
             (
                 CLONE_ID,
@@ -655,12 +810,22 @@ async def test_cross_project_private_parent_references_are_rejected_by_family(
         (
             "planning",
             """INSERT INTO chapter_sessions
-               (id,project_id,story_block_id,chapter_num,
+               (id,project_id,selection_revision,contract_revision,contract_hash,
+                bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,
+                story_block_id,chapter_num,
                 expected_canon_revision,expected_story_block_revision,
                 planning_snapshot_json,status,created_at,finalized_at)
-               VALUES ('99000000-0000-0000-0000-000000000002',%s,%s,2,
-                       1,1,'{}','drafting',%s,NULL)""",
-            (CLONE_ID, BLOCK_ID, NOW),
+               VALUES ('99000000-0000-0000-0000-000000000002',%s,1,1,%s,
+                       1,%s,%s,%s,%s,2,1,1,'{}','drafting',%s,NULL)""",
+            (
+                CLONE_ID,
+                "7" * 64,
+                "0" * 64,
+                VOLUME_ID,
+                "2" * 64,
+                BLOCK_ID,
+                NOW,
+            ),
             """DELETE FROM chapter_sessions
                WHERE id='99000000-0000-0000-0000-000000000002'""",
             None,

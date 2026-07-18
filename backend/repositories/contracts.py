@@ -56,9 +56,10 @@ class ContractRepository:
     async def insert_confirmation_request(self, session, row: dict) -> bool:
         changed = await session.execute(
             """INSERT INTO contract_confirmation_requests
-               (id,project_id,idempotency_key,request_hash,status,created_at)
-               VALUES (%s,%s,%s,%s,'reserved',%s)""",
-            (row["id"], row["project_id"], row["idempotency_key"],
+               (id,project_id,selection_revision,idempotency_key,request_hash,status,created_at)
+               VALUES (%s,%s,%s,%s,%s,'reserved',%s)""",
+            (row["id"], row["project_id"], row["selection_revision"],
+             row["idempotency_key"],
              row["request_hash"], row["created_at"]),
         )
         return changed == 1
@@ -66,15 +67,16 @@ class ContractRepository:
     async def insert_creation_contract(self, session, row: dict) -> bool:
         changed = await session.execute(
             """INSERT INTO creation_contracts
-               (id,project_id,revision,seed_id,seed_revision_id,seed_hash,
+               (id,project_id,revision,selection_revision,seed_id,seed_revision_id,seed_hash,
                 binding_revision_id,binding_hash,channel_profile_key,
                 genre_profile_key,quality_charter_version,total_word_min,
                 total_word_max,chapter_capacity_policy,reference_manifest_json,
                 reference_manifest_hash,content_json,content_hash,confirmed_at)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                       %s,%s,%s)""",
+                       %s,%s,%s,%s)""",
             tuple(row[key] for key in (
-                "id", "project_id", "revision", "seed_id", "seed_revision_id",
+                "id", "project_id", "revision", "selection_revision",
+                "seed_id", "seed_revision_id",
                 "seed_hash", "binding_revision_id", "binding_hash",
                 "channel_profile_key", "genre_profile_key",
                 "quality_charter_version", "total_word_min", "total_word_max",
@@ -196,12 +198,13 @@ class ContractRepository:
     async def insert_draft(self, session, row: dict) -> None:
         await session.execute(
             """INSERT INTO project_contract_drafts
-               (project_id,id,base_head_revision,seed_revision_id,seed_hash,
+               (project_id,id,base_head_revision,selection_revision,seed_revision_id,seed_hash,
                 engine_option_id,draft_json,content_hash,draft_version,
                 created_at,updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
                 row["project_id"], row["id"], row["base_head_revision"],
+                row["selection_revision"],
                 row["seed_revision_id"], row["seed_hash"],
                 row["engine_option_id"], row["draft_json"],
                 row["content_hash"], row["draft_version"],
@@ -214,11 +217,11 @@ class ContractRepository:
     ) -> bool:
         changed = await session.execute(
             """UPDATE project_contract_drafts
-               SET seed_revision_id=%s,seed_hash=%s,engine_option_id=%s,
+               SET selection_revision=%s,seed_revision_id=%s,seed_hash=%s,engine_option_id=%s,
                    draft_json=%s,content_hash=%s,draft_version=%s,updated_at=%s
                WHERE project_id=%s AND draft_version=%s""",
             (
-                row["seed_revision_id"], row["seed_hash"],
+                row["selection_revision"], row["seed_revision_id"], row["seed_hash"],
                 row["engine_option_id"], row["draft_json"],
                 row["content_hash"], row["draft_version"], row["updated_at"],
                 row["project_id"], expected_version,
@@ -228,7 +231,7 @@ class ContractRepository:
 
     async def read_selected_seed(self, session, project_id: str):
         return await session.fetchone(
-            """SELECT selected.seed_id,selected.seed_revision_id,
+            """SELECT selected.seed_id,selected.selection_revision,selected.seed_revision_id,
                       selected.seed_hash,revision.payload_json
                FROM project_selected_seeds selected
                JOIN creative_seed_revisions revision
@@ -240,7 +243,7 @@ class ContractRepository:
 
     async def lock_selected_seed(self, session, project_id: str):
         return await session.fetchone(
-            """SELECT selected.seed_id,selected.seed_revision_id,
+            """SELECT selected.seed_id,selected.selection_revision,selected.seed_revision_id,
                       selected.seed_hash,revision.payload_json
                FROM project_selected_seeds selected
                JOIN creative_seed_revisions revision
@@ -268,6 +271,7 @@ class ContractRepository:
             f"""SELECT engine_option.id,engine_option.project_id,
                       engine_option.batch_id,engine_option.payload_json,
                       engine_option.content_hash,batch.status,
+                      batch.selection_revision,
                       batch.seed_revision_id,batch.seed_hash
                FROM story_engine_options engine_option
                JOIN story_engine_batches batch
@@ -394,17 +398,19 @@ class ContractRepository:
 
     async def read_corpus_revision(self, session, asset_id: str, *, lock=False):
         return await session.fetchone(
-            f"""SELECT source.id,source.source_key,source.revision,
-                      source.source_hash,source.status,source.title,source.author,
-                      latest.id AS head_id,latest.revision AS head_revision,
-                      latest.source_hash AS head_hash
-               FROM corpus_sources source
-               LEFT JOIN corpus_sources latest
-                 ON latest.source_key=source.source_key
-                AND latest.revision=(
-                  SELECT MAX(candidate.revision) FROM corpus_sources candidate
-                  WHERE candidate.source_key=source.source_key)
-               WHERE source.id=%s{_FOR_UPDATE if lock else ''}""",
+            f"""SELECT identity.id,identity.source_key,
+                      revision.id AS revision_id,revision.revision,
+                      revision.content_hash AS source_hash,revision.status,
+                      revision.display_name AS title,revision.author,
+                      head.revision_id AS head_id,
+                      head.revision AS head_revision,
+                      head.content_hash AS head_hash
+               FROM corpus_sources identity
+               JOIN corpus_source_heads head ON head.source_id=identity.id
+               JOIN corpus_source_revisions revision
+                 ON revision.source_id=identity.id
+                AND revision.id=head.revision_id
+               WHERE identity.id=%s{_FOR_UPDATE if lock else ''}""",
             (asset_id,),
         )
 
@@ -414,7 +420,8 @@ class ContractRepository:
         revision_clause = " AND creation.revision=%s" if revision is not None else ""
         args = (project_id, revision) if revision is not None else (project_id,)
         current = await session.fetchone(
-            f"""SELECT creation.project_id,creation.revision,creation.seed_id,
+            f"""SELECT creation.project_id,creation.revision,
+                      creation.selection_revision,creation.seed_id,
                       creation.seed_revision_id,creation.seed_hash,
                       creation.content_json AS creation_json,
                       creation.content_hash AS creation_hash,
@@ -482,11 +489,11 @@ class ContractRepository:
             """SELECT ref.corpus_source_id AS id,
                       ref.source_revision AS revision,ref.source_hash AS contentHash,
                       ref.selection_mode AS selectionMode,
-                      asset.source_hash AS actualContentHash
+                       asset.content_hash AS actualContentHash
                FROM creation_contract_corpus_refs ref
-               LEFT JOIN corpus_sources asset
-                 ON asset.id=ref.corpus_source_id
-                AND asset.revision=ref.source_revision
+                LEFT JOIN corpus_source_revisions asset
+                  ON asset.source_id=ref.corpus_source_id
+                 AND asset.revision=ref.source_revision
                WHERE ref.creation_contract_id=%s ORDER BY sort_order""",
             (current["creation_contract_id"],),
         )

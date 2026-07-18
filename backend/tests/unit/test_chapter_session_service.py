@@ -12,6 +12,12 @@ class FakeChapterRepository:
         self.canon = {"canon_revision_number": 0}
         self.plan = {
             "manifest_hash": "a" * 64,
+            "selection_revision": 3,
+            "contract_revision": 1,
+            "contract_hash": "c" * 64,
+            "bible_revision": 2,
+            "bible_hash": "b" * 64,
+            "volume": {"id": "volume-1"},
             "block": {
                 "id": "block-1", "project_id": "p1", "revision": 1,
                 "title": "典籍入山河", "payload": {"goal": "入局"},
@@ -28,6 +34,7 @@ class FakeChapterRepository:
             }],
         }
         self.session = None
+        self.generation_current = True
         self.working_draft = None
         self.candidates = []
 
@@ -48,7 +55,13 @@ class FakeChapterRepository:
         return None
 
     async def read_latest_chapter_session(self, session, project_id):
-        return self.session
+        if self.session is None:
+            return None
+        return self.session | {
+            "effective_status": (
+                self.session["status"] if self.generation_current else "superseded"
+            )
+        }
 
     async def insert_chapter_session(self, session, row):
         self.session = row
@@ -120,6 +133,13 @@ async def test_create_session_creates_empty_working_draft_without_candidate():
     assert result.working_draft.content == ""
     assert result.candidates == ()
     assert repo.session["expected_story_block_revision"] == 1
+    assert repo.session["selection_revision"] == 3
+    assert repo.session["contract_revision"] == 1
+    assert repo.session["contract_hash"] == "c" * 64
+    assert repo.session["bible_revision"] == 2
+    assert repo.session["bible_hash"] == "b" * 64
+    assert repo.session["volume_plan_id"] == "volume-1"
+    assert repo.session["planning_manifest_hash"] == "a" * 64
     assert repo.working_draft["source_payload"]["source"] == "manual-empty"
 
 
@@ -149,6 +169,44 @@ async def test_save_working_draft_updates_revision_and_does_not_create_candidate
     assert updated.working_draft.content.startswith("沈清源")
     assert updated.candidates == ()
     assert repo.candidates == []
+
+
+@pytest.mark.asyncio
+async def test_generation_drift_returns_superseded_workspace_and_rejects_writes():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+        CreateChapterSession,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(
+        repo,
+        transaction_factory=tx_factory,
+        connection_factory=tx_factory,
+    )
+    created = await service.create_session(
+        CreateChapterSession(
+            project_id="p1",
+            expected_story_block_revision=1,
+            expected_canon_revision=0,
+        )
+    )
+    repo.generation_current = False
+
+    current = await service.get_current("p1")
+    assert current.session.status == "superseded"
+
+    with pytest.raises(ChapterSessionConflict, match="superseded"):
+        await service.save_working_draft(
+            SaveWorkingDraft(
+                project_id="p1",
+                chapter_session_id=created.session.id,
+                expected_revision=1,
+                content="不得复活旧代际",
+            )
+        )
 
 
 @pytest.mark.asyncio

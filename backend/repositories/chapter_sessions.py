@@ -7,6 +7,38 @@ from backend.repositories.planning import PlanningRepository
 from backend.repositories.project_lifecycle import lock_active_project
 
 
+_GENERATION_JOINS = """
+LEFT JOIN project_selected_seeds selected
+  ON selected.project_id=session.project_id
+LEFT JOIN project_contract_heads contract_head
+  ON contract_head.project_id=session.project_id
+LEFT JOIN project_bible_heads bible_head
+  ON bible_head.project_id=session.project_id
+LEFT JOIN volume_plans planning_root
+  ON planning_root.project_id=session.project_id
+ AND planning_root.id=session.volume_plan_id
+"""
+_EFFECTIVE_STATUS = """
+CASE WHEN selected.selection_revision=session.selection_revision
+  AND contract_head.revision=session.contract_revision
+  AND contract_head.creation_hash=session.contract_hash
+  AND bible_head.revision=session.bible_revision
+  AND bible_head.content_hash=session.bible_hash
+  AND planning_root.manifest_hash=session.planning_manifest_hash
+  AND planning_root.selection_revision=session.selection_revision
+  AND planning_root.contract_revision=session.contract_revision
+  AND planning_root.contract_hash=session.contract_hash
+  AND planning_root.bible_revision=session.bible_revision
+  AND planning_root.bible_hash=session.bible_hash
+THEN session.status ELSE 'superseded' END
+"""
+_SESSION_SELECT = f"""
+SELECT session.*,{_EFFECTIVE_STATUS} AS effective_status
+  FROM chapter_sessions session
+  {_GENERATION_JOINS}
+"""
+
+
 class ChapterSessionRepository:
     def __init__(self):
         self.planning = PlanningRepository()
@@ -25,25 +57,25 @@ class ChapterSessionRepository:
 
     async def read_chapter_session(self, session, project_id: str, chapter_num: int):
         row = await session.fetchone(
-            """SELECT * FROM chapter_sessions
-               WHERE project_id=%s AND chapter_num=%s""",
+            f"""{_SESSION_SELECT}
+                 WHERE session.project_id=%s AND session.chapter_num=%s""",
             (project_id, chapter_num),
         )
         return self._session(row) if row else None
 
     async def read_session_by_id(self, session, project_id: str, chapter_session_id: str):
         row = await session.fetchone(
-            """SELECT * FROM chapter_sessions
-               WHERE project_id=%s AND id=%s""",
+            f"""{_SESSION_SELECT}
+                 WHERE session.project_id=%s AND session.id=%s""",
             (project_id, chapter_session_id),
         )
         return self._session(row) if row else None
 
     async def read_latest_chapter_session(self, session, project_id: str):
         row = await session.fetchone(
-            """SELECT * FROM chapter_sessions
-               WHERE project_id=%s
-               ORDER BY chapter_num DESC LIMIT 1""",
+            f"""{_SESSION_SELECT}
+                 WHERE session.project_id=%s
+                 ORDER BY session.chapter_num DESC LIMIT 1""",
             (project_id,),
         )
         return self._session(row) if row else None
@@ -51,12 +83,18 @@ class ChapterSessionRepository:
     async def insert_chapter_session(self, session, row: dict) -> bool:
         return await session.execute(
             """INSERT INTO chapter_sessions
-               (id,project_id,story_block_id,chapter_num,expected_canon_revision,
+               (id,project_id,selection_revision,contract_revision,contract_hash,
+                bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,
+                story_block_id,chapter_num,expected_canon_revision,
                 expected_story_block_revision,planning_snapshot_json,status,
                 created_at,finalized_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
-                row["id"], row["project_id"], row["story_block_id"],
+                row["id"], row["project_id"], row["selection_revision"],
+                row["contract_revision"], row["contract_hash"],
+                row["bible_revision"], row["bible_hash"],
+                row["volume_plan_id"], row["planning_manifest_hash"],
+                row["story_block_id"],
                 row["chapter_num"], row["expected_canon_revision"],
                 row["expected_story_block_revision"],
                 canonical_json(row["planning_snapshot"]),
@@ -66,7 +104,12 @@ class ChapterSessionRepository:
 
     async def read_working_draft(self, session, chapter_session_id: str):
         row = await session.fetchone(
-            "SELECT * FROM working_drafts WHERE chapter_session_id=%s",
+            f"""SELECT draft.*,state.effective_status
+                  FROM working_drafts draft
+                  JOIN ({_SESSION_SELECT}) state
+                    ON state.project_id=draft.project_id
+                   AND state.id=draft.chapter_session_id
+                 WHERE draft.chapter_session_id=%s""",
             (chapter_session_id,),
         )
         return self._draft(row) if row else None
@@ -106,8 +149,13 @@ class ChapterSessionRepository:
 
     async def list_candidates(self, session, chapter_session_id: str):
         rows = await session.fetchall(
-            """SELECT * FROM draft_candidates
-               WHERE chapter_session_id=%s ORDER BY created_at,id""",
+            f"""SELECT candidate.*,state.effective_status
+                  FROM draft_candidates candidate
+                  JOIN ({_SESSION_SELECT}) state
+                    ON state.project_id=candidate.project_id
+                   AND state.id=candidate.chapter_session_id
+                 WHERE candidate.chapter_session_id=%s
+                 ORDER BY candidate.created_at,candidate.id""",
             (chapter_session_id,),
         )
         return [self._candidate(row) for row in rows]
@@ -150,11 +198,19 @@ class ChapterSessionRepository:
         return {
             "id": row["id"], "project_id": row["project_id"],
             "story_block_id": row["story_block_id"],
+            "selection_revision": row["selection_revision"],
+            "contract_revision": row["contract_revision"],
+            "contract_hash": row["contract_hash"],
+            "bible_revision": row["bible_revision"],
+            "bible_hash": row["bible_hash"],
+            "volume_plan_id": row["volume_plan_id"],
+            "planning_manifest_hash": row["planning_manifest_hash"],
             "chapter_num": row["chapter_num"],
             "expected_canon_revision": row["expected_canon_revision"],
             "expected_story_block_revision": row["expected_story_block_revision"],
             "planning_snapshot": self._json(row["planning_snapshot_json"]),
-            "status": row["status"], "created_at": row["created_at"],
+            "status": row.get("effective_status", row["status"]),
+            "stored_status": row["status"], "created_at": row["created_at"],
             "finalized_at": row["finalized_at"],
         }
 

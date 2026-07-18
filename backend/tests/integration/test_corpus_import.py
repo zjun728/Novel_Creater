@@ -87,7 +87,7 @@ async def test_import_is_idempotent_dedupes_analysis_identity_and_stores_relativ
         (root / "book.txt").read_bytes()
     ).hexdigest()
     stored = await disposable_mysql.session.fetchall(
-        "SELECT relative_path FROM corpus_sources UNION ALL "
+        "SELECT relative_path FROM corpus_source_revisions UNION ALL "
         "SELECT relative_path FROM corpus_import_runs"
     )
     assert {row["relative_path"] for row in stored} == {"book.txt"}
@@ -125,10 +125,11 @@ async def test_any_analysis_version_change_creates_new_immutable_revision(
 
     second = await changed.import_source("book.txt", "b" * 32)
 
-    assert second["corpus_source_id"] != first["corpus_source_id"]
+    assert second["corpus_source_id"] == first["corpus_source_id"]
     rows = await disposable_mysql.session.fetchall(
-        "SELECT revision,source_hash,parser_version,normalizer_version,"
-        "fragmenter_version,index_version FROM corpus_sources "
+        "SELECT revision,content_hash AS source_hash,parser_version,"
+        "normalizer_version,fragmenter_version,index_version "
+        "FROM corpus_source_revisions "
         "ORDER BY revision"
     )
     assert [row["revision"] for row in rows] == [1, 2]
@@ -207,8 +208,14 @@ async def test_committed_incomplete_run_replay_resumes_and_converges_once(
     })
     run_id = f"9000000{0 if persisted_status == 'reserved' else 1}-0000-0000-0000-000000000000"
     await disposable_mysql.session.execute(
+        """INSERT INTO corpus_blobs
+           (content_hash,byte_length,storage_key,created_at)
+           VALUES (%s,%s,%s,%s)""",
+        (source_hash, len(raw), f"sha256/{source_hash}", 1_720_000_000_000),
+    )
+    await disposable_mysql.session.execute(
         """INSERT INTO corpus_import_runs
-           (id,idempotency_key,request_hash,relative_path,source_hash,status,
+           (id,idempotency_key,request_hash,relative_path,content_hash,status,
             corpus_source_id,public_error_code,parser_versions_json,
             created_at,completed_at)
            VALUES (%s,%s,%s,%s,%s,%s,NULL,NULL,%s,%s,NULL)""",
@@ -312,11 +319,13 @@ async def test_hash_verifier_selects_global_latest_version_with_timestamp_tie(
         "10000000-0000-0000-0000-000000000001",
         "10000000-0000-0000-0000-000000000002",
         "10000000-0000-0000-0000-000000000003",
+        "10000000-0000-0000-0000-000000000004",
     ))
     new_ids = iter((
         "20000000-0000-0000-0000-000000000001",
         "20000000-0000-0000-0000-000000000002",
         "20000000-0000-0000-0000-000000000003",
+        "20000000-0000-0000-0000-000000000004",
     ))
     old = CorpusImportService(
         CorpusRepository(), corpus_root=tmp_path,

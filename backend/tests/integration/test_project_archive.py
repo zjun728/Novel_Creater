@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from backend import http_errors
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.seeds import SeedPayload
 from backend.gateways.chapter_draft_provider import ChapterDraftProviderError
@@ -181,6 +182,49 @@ def _services(disposable_mysql):
         model_binding_service=bindings,
     )
     return projects, bindings, transaction, read_connection
+
+
+async def _insert_confirmed_bible(
+    session,
+    confirmed,
+    *,
+    bible_id: str,
+    now: int,
+) -> None:
+    content = {
+        "schemaVersion": "creation-bible-v1",
+        "projectId": confirmed.project_id,
+        "contractRevision": confirmed.revision,
+    }
+    content_hash = canonical_hash(content)
+    await session.execute(
+        """INSERT INTO creation_bible_revisions
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,contract_revision,contract_hash,binding_revision_id,
+            binding_hash,policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,'test-bible-v1',%s,%s,%s)""",
+        (
+            bible_id,
+            confirmed.project_id,
+            confirmed.selection_revision,
+            confirmed.seed_ref.id,
+            confirmed.seed_ref.revision_id,
+            confirmed.seed_ref.content_hash,
+            confirmed.revision,
+            confirmed.creation_hash,
+            confirmed.binding_ref.id,
+            confirmed.binding_ref.content_hash,
+            canonical_json(content),
+            content_hash,
+            now,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO project_bible_heads
+           (project_id,revision,bible_revision_id,content_hash,updated_at)
+           VALUES (%s,1,%s,%s,%s)""",
+        (confirmed.project_id, bible_id, content_hash, now),
+    )
 
 
 async def _wait(event: asyncio.Event) -> None:
@@ -886,6 +930,12 @@ async def _prepare_generation_race(disposable_mysql):
             saved_contract.content_hash,
         )
     )
+    await _insert_confirmed_bible(
+        disposable_mysql.session,
+        confirmed,
+        bible_id="8e000000-0000-0000-0002-000000000001",
+        now=now,
+    )
     planning_service = PlanningService(
         PlanningRepository(),
         transaction_factory=transaction,
@@ -1214,6 +1264,12 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
             saved_contract.draft_version,
             saved_contract.content_hash,
         )
+    )
+    await _insert_confirmed_bible(
+        disposable_mysql.session,
+        confirmed,
+        bible_id="8f000000-0000-0000-0004-000000000001",
+        now=now,
     )
     planning_service = PlanningService(
         PlanningRepository(),

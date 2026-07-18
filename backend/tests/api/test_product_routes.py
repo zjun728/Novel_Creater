@@ -20,10 +20,11 @@ def test_joined_m2_routes_expose_public_behavior_through_dependencies():
         async def get(self, project_id, batch_id):
             assert (project_id, batch_id) == ("p1", "batch-1")
             return SimpleNamespace(
-                id="batch-1",
-                project_id="p1",
-                source_type="manual",
-                seed_id="seed-1",
+                    id="batch-1",
+                    project_id="p1",
+                    source_type="manual",
+                    selection_revision=1,
+                    seed_id="seed-1",
                 seed_revision_id="seed-revision-1",
                 seed_hash="a" * 64,
                 binding_revision_id="binding-revision-1",

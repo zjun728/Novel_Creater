@@ -269,6 +269,7 @@ def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():
     harness.repository.confirmed["p1"] = {
         "project_id": "p1",
         "revision": 6,
+        "selection_revision": result.selection_revision,
         "seed_id": result.seed_ref.id,
         "seed_revision_id": saved["seed_revision_id"],
         "seed_hash": saved["seed_hash"],

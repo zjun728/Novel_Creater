@@ -212,6 +212,7 @@ async def test_create_reload_update_uses_one_draft_and_version_cas_from_head_zer
     )
 
     assert created.draft_version == 1
+    assert created.selection_revision == 7
     assert created.base_head_revision == 0
     assert created.draft.seedRevisionId == "seed-revision-1"
     assert created.draft.seedHash == harness.repository.selected_seeds["p1"]["seed_hash"]
@@ -504,6 +505,7 @@ async def test_resave_refreshes_server_frozen_seed_and_exposes_old_engine_drift(
     revised_hash = canonical_hash(revised_payload)
     revised = {
         "seed_id": "seed-1",
+        "selection_revision": 8,
         "seed_revision_id": "seed-revision-2",
         "seed_hash": revised_hash,
         "payload_json": canonical_json(revised_payload),
@@ -619,6 +621,7 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
     harness.repository.confirmed["p1"] = {
         "project_id": "p1",
         "revision": 7,
+        "selection_revision": initial.selection_revision,
         "seed_id": preview.seed_ref.id,
         "seed_revision_id": initial.draft.seedRevisionId,
         "seed_hash": initial.draft.seedHash,
@@ -774,6 +777,13 @@ async def test_confirm_atomically_consumes_draft_and_freezes_all_relations():
     result = await harness.service.confirm(confirmation(saved))
 
     assert result.revision == 1
+    assert result.selection_revision == 7
+    assert harness.repository.creation_contracts[
+        result.creation_contract_id
+    ]["selection_revision"] == 7
+    assert harness.repository.confirmation_requests[
+        ("p1", "confirm-once")
+    ]["selection_revision"] == 7
     assert result.creation_contract_id
     assert result.style_contract_id
     assert result.creation_hash == canonical_hash(result.creation_contract)
@@ -797,6 +807,7 @@ async def test_confirm_atomically_consumes_draft_and_freezes_all_relations():
         "projectId": "p1", "draftId": saved.id,
         "draftVersion": saved.draft_version, "draftHash": saved.content_hash,
         "baseHeadRevision": saved.base_head_revision, "expectedRevision": 1,
+        "selectionRevision": saved.selection_revision,
         "seedRef": {
             "revisionId": result.seed_ref.revision_id,
             "contentHash": result.seed_ref.content_hash,

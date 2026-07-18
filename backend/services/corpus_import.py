@@ -288,6 +288,7 @@ class CorpusImportService:
         relative_path: str,
         source_hash: str,
         request_hash: str,
+        byte_length: int,
     ) -> tuple[dict, bool]:
         async with self.transaction_factory() as session:
             await self.repository.lock_schema_guard(session)
@@ -304,6 +305,7 @@ class CorpusImportService:
                 "request_hash": request_hash,
                 "relative_path": relative_path,
                 "source_hash": source_hash,
+                "byte_length": byte_length,
                 "status": "reserved",
                 "versions": self.versions,
                 "created_at": self.clock(),
@@ -399,7 +401,8 @@ class CorpusImportService:
             completed_at = self.clock()
             if dedupe is not None:
                 await self.repository.mark_import_succeeded(
-                    session, run["id"], dedupe["id"], completed_at
+                    session, run["id"], dedupe["id"],
+                    dedupe["revision_id"], int(dedupe["revision"]), completed_at,
                 )
                 return {
                     **existing_run,
@@ -415,9 +418,13 @@ class CorpusImportService:
             revisions = [int(row["revision"]) for row in history]
             if revisions and revisions != list(range(1, revisions[-1] + 1)):
                 raise RuntimeError("corpus source revision history is invalid")
-            source_id = self.id_factory()
+            source_id = (
+                history[0]["source_id"] if history else self.id_factory()
+            )
+            revision_id = self.id_factory()
             source_row = {
                 "id": source_id,
+                "revision_id": revision_id,
                 "source_key": source_key,
                 "revision": revisions[-1] + 1 if revisions else 1,
                 "relative_path": relative_path,
@@ -438,6 +445,9 @@ class CorpusImportService:
                 await self.repository.insert_chapter(session, {
                     "id": chapter_id,
                     "corpus_source_id": source_id,
+                    "source_revision_id": revision_id,
+                    "source_revision": source_row["revision"],
+                    "source_hash": decoded.source_hash,
                     "chapter_order": chapter.chapter_order,
                     "title": chapter.title,
                     "raw_byte_start": chapter.raw_byte_start,
@@ -451,6 +461,7 @@ class CorpusImportService:
                 for fragment in fragments:
                     await self.repository.insert_fragment(session, {
                         "id": fragment.id,
+                        "corpus_source_id": source_id,
                         "corpus_chapter_id": chapter_id,
                         "fragment_order": fragment.fragment_order,
                         "chapter_char_start": fragment.chapter_char_start,
@@ -468,7 +479,8 @@ class CorpusImportService:
                         "created_at": completed_at,
                     })
             await self.repository.mark_import_succeeded(
-                session, run["id"], source_id, completed_at
+                session, run["id"], source_id, revision_id,
+                int(source_row["revision"]), completed_at,
             )
             return {
                 **existing_run,
@@ -493,6 +505,7 @@ class CorpusImportService:
             relative_path=relative_path,
             source_hash=source_hash,
             request_hash=request_hash,
+            byte_length=len(raw),
         )
         if not created:
             completed = self._completed_run(run)

@@ -59,7 +59,8 @@ def _result(status, *, options=(), public_error_code=None):
 
     return StoryEngineBatchResult(
         id="batch-1", project_id="p1", source_type="manual" if options else "provider",
-        seed_id="seed-1", seed_revision_id="revision-1", seed_hash="a" * 64,
+        seed_id="seed-1", selection_revision=7,
+        seed_revision_id="revision-1", seed_hash="a" * 64,
         binding_revision_id=None if options else "binding-1",
         binding_hash=None if options else "b" * 64,
         provider_id=None if options else "provider-1",

@@ -441,6 +441,8 @@ class AssetReadService:
     def _recommendation_inputs(selected: Mapping, engine: Mapping):
         if engine.get("batch_status") != "succeeded":
             raise AssetRecommendationConflict()
+        if engine.get("selection_revision") != selected.get("selection_revision"):
+            raise AssetRecommendationConflict()
         if any(
             engine.get(field) != selected.get(field)
             for field in ("seed_id", "seed_revision_id", "seed_hash")

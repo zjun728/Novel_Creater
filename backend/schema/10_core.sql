@@ -43,8 +43,9 @@ CREATE TABLE creative_seed_revisions (
   UNIQUE KEY uq_seed_revision_id (seed_id, id),
   UNIQUE KEY uq_seed_revision_project_id (project_id, id),
   UNIQUE KEY uq_seed_revision_project_seed_id (project_id, seed_id, id),
+  UNIQUE KEY uq_seed_revision_project_fact (project_id, seed_id, id, content_hash),
   UNIQUE KEY uq_seed_revision_fact (seed_id, id, revision, content_hash),
-  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE RESTRICT,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -56,8 +57,24 @@ CREATE TABLE creative_seed_heads (
   content_hash CHAR(64) NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_seed_head_revision (seed_id, revision_id),
-  FOREIGN KEY (seed_id, revision_id, revision, content_hash) REFERENCES creative_seed_revisions(seed_id, id, revision, content_hash) ON DELETE CASCADE,
+  FOREIGN KEY (seed_id, revision_id, revision, content_hash) REFERENCES creative_seed_revisions(seed_id, id, revision, content_hash) ON DELETE RESTRICT,
   CHECK (revision > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE project_seed_selection_revisions (
+  project_id CHAR(36) NOT NULL,
+  selection_revision INT NOT NULL,
+  seed_id CHAR(36) NOT NULL,
+  seed_revision_id CHAR(36) NOT NULL,
+  seed_hash CHAR(64) NOT NULL,
+  selected_at BIGINT NOT NULL,
+  PRIMARY KEY (project_id, selection_revision),
+  UNIQUE KEY uq_seed_selection_fact (project_id, selection_revision, seed_id, seed_revision_id, seed_hash),
+  UNIQUE KEY uq_seed_selection_revision_fact (project_id, selection_revision, seed_revision_id, seed_hash),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, seed_id, seed_revision_id, seed_hash) REFERENCES creative_seed_revisions(project_id, seed_id, id, content_hash) ON DELETE RESTRICT,
+  CHECK (selection_revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -69,8 +86,7 @@ CREATE TABLE project_selected_seeds (
   selection_revision INT NOT NULL,
   selected_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
-  FOREIGN KEY (project_id, seed_id) REFERENCES creative_seeds(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, seed_id, seed_revision_id) REFERENCES creative_seed_revisions(project_id, seed_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, selection_revision, seed_id, seed_revision_id, seed_hash) REFERENCES project_seed_selection_revisions(project_id, selection_revision, seed_id, seed_revision_id, seed_hash) ON DELETE RESTRICT,
   CHECK (selection_revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -94,6 +110,7 @@ CREATE TABLE provider_profiles (
   notes TEXT NOT NULL,
   thinking JSON NULL,
   lifecycle_status VARCHAR(16) NOT NULL,
+  revision INT NOT NULL DEFAULT 0,
   deleted_at BIGINT NULL,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
@@ -104,14 +121,45 @@ CREATE TABLE provider_profiles (
   CHECK (supports_streaming IN (0,1)),
   CHECK (max_context_tokens > 0),
   CHECK (max_output_tokens > 0),
-  CHECK (lifecycle_status IN ('active','deleted')),
+  CHECK (revision >= 0),
+  CHECK (lifecycle_status IN ('active','unconfigured','deleted')),
   CHECK (
     (lifecycle_status = 'active' AND deleted_at IS NULL AND provider_type IS NOT NULL
       AND model_name IS NOT NULL AND base_url IS NOT NULL AND base_url <> ''
       AND api_key IS NOT NULL AND api_key <> '')
+    OR (lifecycle_status = 'unconfigured' AND deleted_at IS NULL AND enabled = 0
+      AND (api_key IS NULL OR api_key = ''))
     OR (lifecycle_status = 'deleted' AND deleted_at IS NOT NULL AND enabled = 0
-      AND api_key IS NOT NULL AND api_key = ''
-      AND base_url IS NOT NULL AND base_url = '')
+      AND (api_key IS NULL OR api_key = '')
+      AND (base_url IS NULL OR base_url = ''))
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE provider_profile_mutation_requests (
+  id CHAR(36) PRIMARY KEY,
+  provider_id CHAR(36) NOT NULL,
+  idempotency_key CHAR(64) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  mutation_kind VARCHAR(24) NOT NULL,
+  expected_revision INT NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  result_revision INT NULL,
+  public_error_code VARCHAR(64) NULL,
+  created_at BIGINT NOT NULL,
+  completed_at BIGINT NULL,
+  UNIQUE KEY uq_provider_mutation_idempotency (provider_id, idempotency_key),
+  FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT,
+  CHECK (expected_revision >= 0),
+  CHECK (mutation_kind IN ('create','update','clear_key','delete')),
+  CHECK (status IN ('reserved','succeeded','failed')),
+  CHECK (
+    (status = 'reserved' AND result_revision IS NULL
+      AND public_error_code IS NULL AND completed_at IS NULL)
+    OR (status = 'succeeded' AND result_revision > expected_revision
+      AND public_error_code IS NULL AND completed_at IS NOT NULL)
+    OR (status = 'failed' AND result_revision IS NULL
+      AND public_error_code IS NOT NULL AND completed_at IS NOT NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

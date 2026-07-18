@@ -403,7 +403,7 @@ def assert_no_mutating_ddl(proxy: RecordingProxy) -> None:
 
 
 @pytest.mark.asyncio
-async def test_frozen_v11_rebuilds_to_v12_then_v12_execute_is_noop(
+async def test_frozen_v11_rebuilds_to_v13_then_v13_execute_is_noop(
     empty_disposable_mysql,
 ):
     await create_frozen_v11_product_state(empty_disposable_mysql)
@@ -429,7 +429,7 @@ async def test_frozen_v11_rebuilds_to_v12_then_v12_execute_is_noop(
         "manifestHash": V11_MANIFEST_HASH,
         "tables": list(V11_TABLE_NAMES),
     }
-    assert dry_receipt["target"]["kind"] == "v1.2-target"
+    assert dry_receipt["target"]["kind"] == "v1.3-target"
     assert dry_receipt["target"]["schemaVersion"] == EXPECTED_SCHEMA_VERSION
     assert dry_receipt["target"]["tables"] == list(created_table_names())
     assert dry_receipt["target"]["verified"] is False
@@ -485,7 +485,7 @@ async def test_frozen_v11_rebuilds_to_v12_then_v12_execute_is_noop(
     assert noop.executed is False
     assert noop.mode == "no-op"
     noop_receipt = json.loads(noop_output[0])
-    assert noop_receipt["source"]["kind"] == "v1.2-target"
+    assert noop_receipt["source"]["kind"] == "v1.3-target"
     assert noop_receipt["target"]["verified"] is True
     assert_no_mutating_ddl(noop_proxy)
 
@@ -501,7 +501,7 @@ async def test_reset_classification_fails_closed_before_ddl(
     )
     proxy = RecordingProxy(empty_disposable_mysql.admin_session)
 
-    with pytest.raises(ResetValidationError, match="v1.1 source or v1.2 target"):
+    with pytest.raises(ResetValidationError, match="v1.1 source or v1.3 target"):
         await reset_writer_core_data(
             proxy,
             database_name=empty_disposable_mysql.database_name,
@@ -515,7 +515,7 @@ async def test_reset_classification_fails_closed_before_ddl(
 
 
 @pytest.mark.asyncio
-async def test_v12_noop_rejects_archived_foundation_before_ddl(
+async def test_v13_noop_rejects_archived_foundation_before_ddl(
     empty_disposable_mysql,
 ):
     await create_frozen_v11_product_state(empty_disposable_mysql)

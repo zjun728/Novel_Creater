@@ -1231,6 +1231,7 @@ class ReadAssetRepository:
         seed = _seed()
         self.selected = {
             "seed_id": "seed-1",
+            "selection_revision": 7,
             "seed_revision_id": "seed-revision-1",
             "seed_revision": 1,
             "seed_hash": canonical_hash(seed),
@@ -1242,6 +1243,7 @@ class ReadAssetRepository:
             "id": "engine-1",
             "project_id": "project-1",
             "batch_status": "succeeded",
+            "selection_revision": self.selected["selection_revision"],
             "seed_id": self.selected["seed_id"],
             "seed_revision_id": self.selected["seed_revision_id"],
             "seed_hash": self.selected["seed_hash"],

@@ -58,6 +58,7 @@ class MemoryContractRepository:
         }
         self.selected_seeds = {
             "p1": {
+                "selection_revision": 7,
                 "seed_id": "seed-1",
                 "seed_revision_id": "seed-revision-1",
                 "seed_hash": seed_hash,
@@ -73,6 +74,7 @@ class MemoryContractRepository:
                 "project_id": "p1",
                 "batch_id": "batch-1",
                 "status": "succeeded",
+                "selection_revision": 7,
                 "seed_revision_id": "seed-revision-1",
                 "seed_hash": seed_hash,
                 "payload_json": canonical_json(engine_payload),
@@ -127,13 +129,14 @@ class MemoryContractRepository:
         self.sources = {
             "source-1": {
                 "id": "source-1",
+                "revision_id": "source-revision-5",
                 "source_key": "authorized-work",
                 "revision": 5,
                 "source_hash": "e" * 64,
                 "status": "analyzed",
                 "title": "授权作品",
                 "author": "作者",
-                "head_id": "source-1",
+                "head_id": "source-revision-5",
                 "head_revision": 5,
                 "head_hash": "e" * 64,
             }
@@ -269,6 +272,7 @@ class MemoryContractRepository:
         self.confirmed[row["project_id"]] = {
             "project_id": row["project_id"],
             "revision": row["result_revision"],
+            "selection_revision": creation["selection_revision"],
             "seed_id": creation["seed_id"],
             "seed_revision_id": creation["seed_revision_id"],
             "seed_hash": creation["seed_hash"],
