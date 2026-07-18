@@ -63,6 +63,315 @@ export const DEFAULT_RUNNER_DEADLINES = Object.freeze({
   settleMs: 15_000,
 })
 
+const WINDOWS_JOB_SUPERVISOR_SOURCE = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$supervisorStage = 'compile'
+try {
+  $source = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class NovelCreatorOwnedJob
+{
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint CREATE_NO_WINDOW = 0x08000000;
+    private const uint STARTF_USESTDHANDLES = 0x00000100;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private const uint HANDLE_FLAG_INHERIT = 0x00000001;
+    private const uint INFINITE = 0xffffffff;
+    private const int STD_INPUT_HANDLE = -10;
+    private const int STD_OUTPUT_HANDLE = -11;
+    private const int STD_ERROR_HANDLE = -12;
+    private const int JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public uint dwProcessId;
+        public uint dwThreadId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+    {
+        public long PerProcessUserTimeLimit;
+        public long PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize;
+        public UIntPtr MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass;
+        public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS
+    {
+        public ulong ReadOperationCount;
+        public ulong WriteOperationCount;
+        public ulong OtherOperationCount;
+        public ulong ReadTransferCount;
+        public ulong WriteTransferCount;
+        public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    {
+        public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+        public IO_COUNTERS IoInfo;
+        public UIntPtr ProcessMemoryLimit;
+        public UIntPtr JobMemoryLimit;
+        public UIntPtr PeakProcessMemoryUsed;
+        public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(
+        IntPtr lpJobAttributes,
+        string lpName
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(
+        IntPtr hJob,
+        int JobObjectInfoClass,
+        ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION lpJobObjectInfo,
+        uint cbJobObjectInfoLength
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessW(
+        string lpApplicationName,
+        StringBuilder lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(
+        IntPtr hJob,
+        IntPtr hProcess
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr hThread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(
+        IntPtr hHandle,
+        uint dwMilliseconds
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(
+        IntPtr hProcess,
+        out uint lpExitCode
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(
+        IntPtr hProcess,
+        uint uExitCode
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(
+        IntPtr hObject,
+        uint dwMask,
+        uint dwFlags
+    );
+
+    private static string Quote(string value)
+    {
+        if (value.Length > 0 && value.IndexOfAny(new[] { ' ', '\t', '"' }) < 0)
+            return value;
+        var result = new StringBuilder("\"");
+        var slashes = 0;
+        foreach (var character in value)
+        {
+            if (character == '\\')
+            {
+                slashes += 1;
+                continue;
+            }
+            if (character == '"')
+            {
+                result.Append('\\', slashes * 2 + 1);
+                result.Append('"');
+                slashes = 0;
+                continue;
+            }
+            result.Append('\\', slashes);
+            slashes = 0;
+            result.Append(character);
+        }
+        result.Append('\\', slashes * 2);
+        result.Append('"');
+        return result.ToString();
+    }
+
+    private static StringBuilder CommandLine(
+        string application,
+        string[] arguments
+    )
+    {
+        var values = new List<string> { Quote(application) };
+        foreach (var argument in arguments) values.Add(Quote(argument));
+        return new StringBuilder(string.Join(" ", values));
+    }
+
+    private static IntPtr InheritableStandardHandle(int identifier)
+    {
+        var handle = GetStdHandle(identifier);
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+            throw new InvalidOperationException("standard handle unavailable");
+        if (!SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
+            throw new InvalidOperationException("standard handle inheritance failed");
+        return handle;
+    }
+
+    public static int Run(
+        string application,
+        string[] arguments,
+        string workingDirectory
+    )
+    {
+        var job = IntPtr.Zero;
+        var process = new PROCESS_INFORMATION();
+        var processCreated = false;
+        var assigned = false;
+        try
+        {
+            job = CreateJobObject(IntPtr.Zero, null);
+            if (job == IntPtr.Zero)
+                throw new InvalidOperationException("job creation failed");
+            var limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+            limits.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if (!SetInformationJobObject(
+                job,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                ref limits,
+                (uint)Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))
+            ))
+                throw new InvalidOperationException("job configuration failed");
+
+            var startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            startup.dwFlags = (int)STARTF_USESTDHANDLES;
+            startup.hStdInput = InheritableStandardHandle(STD_INPUT_HANDLE);
+            startup.hStdOutput = InheritableStandardHandle(STD_OUTPUT_HANDLE);
+            startup.hStdError = InheritableStandardHandle(STD_ERROR_HANDLE);
+            if (!CreateProcessW(
+                null,
+                CommandLine(application, arguments),
+                IntPtr.Zero,
+                IntPtr.Zero,
+                true,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                IntPtr.Zero,
+                workingDirectory,
+                ref startup,
+                out process
+            ))
+                throw new InvalidOperationException("owned process creation failed");
+            processCreated = true;
+            if (!AssignProcessToJobObject(job, process.hProcess))
+                throw new InvalidOperationException("job assignment failed");
+            assigned = true;
+            if (ResumeThread(process.hThread) == 0xffffffff)
+                throw new InvalidOperationException("owned process resume failed");
+            if (WaitForSingleObject(process.hProcess, INFINITE) != 0)
+                throw new InvalidOperationException("owned process wait failed");
+            uint exitCode;
+            if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                throw new InvalidOperationException("owned process exit unavailable");
+            return unchecked((int)exitCode);
+        }
+        finally
+        {
+            if (processCreated && !assigned)
+                TerminateProcess(process.hProcess, 125);
+            if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+            if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            if (job != IntPtr.Zero) CloseHandle(job);
+        }
+    }
+}
+'@
+  Add-Type -TypeDefinition $source
+  $supervisorStage = 'configuration read'
+  $configurationJson = [Console]::In.ReadToEnd()
+  $supervisorStage = 'configuration parse'
+  $configuration = $configurationJson | ConvertFrom-Json
+  $supervisorStage = 'configuration arguments'
+  $arguments = @($configuration.arguments | ForEach-Object { [string]$_ })
+  $supervisorStage = 'process'
+  $status = [NovelCreatorOwnedJob]::Run(
+    [string]$configuration.command,
+    [string[]]$arguments,
+    [string]$configuration.cwd
+  )
+  exit $status
+} catch {
+  $safeStage = if ($_.Exception.InnerException) {
+    [string]$_.Exception.InnerException.Message
+  } else {
+    [string]$_.Exception.Message
+  }
+  if ($safeStage -notmatch '^(job|standard handle|owned process) ') {
+    $safeStage = $supervisorStage + ' failed'
+  }
+  [Console]::Error.WriteLine('owned Windows job supervisor failed: ' + $safeStage)
+  exit 125
+}
+`
+const WINDOWS_JOB_SUPERVISOR_ENCODED = Buffer
+  .from(WINDOWS_JOB_SUPERVISOR_SOURCE, 'utf16le')
+  .toString('base64')
+
 
 export function validateSpecs(specs) {
   if (
@@ -94,6 +403,52 @@ export function ownedChildOptions(options, platform = process.platform) {
     windowsHide: true,
     detached: platform !== 'win32',
   }
+}
+
+
+export function spawnOwnedChild(command, args, options, {
+  platform = process.platform,
+  spawnImpl = spawn,
+} = {}) {
+  if (typeof command !== 'string' || command.length === 0) {
+    throw new TypeError('runner-owned command must be a non-empty string')
+  }
+  if (!Array.isArray(args) || args.some(argument => typeof argument !== 'string')) {
+    throw new TypeError('runner-owned arguments must be strings')
+  }
+  if (platform !== 'win32') {
+    return spawnImpl(command, args, ownedChildOptions(options, platform))
+  }
+
+  const configuration = JSON.stringify({
+    command,
+    arguments: args,
+    cwd: options?.cwd || process.cwd(),
+  })
+  const configuredStdio = Array.isArray(options?.stdio)
+    ? options.stdio
+    : ['ignore', 'pipe', 'pipe']
+  const supervisor = spawnImpl(
+    'powershell.exe',
+    [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      WINDOWS_JOB_SUPERVISOR_ENCODED,
+    ],
+    ownedChildOptions({
+      ...options,
+      stdio: ['pipe', configuredStdio[1], configuredStdio[2]],
+    }, 'win32'),
+  )
+  supervisor.stdin?.on?.('error', () => {
+    // Child lifecycle listeners own the corresponding supervisor failure.
+  })
+  supervisor.stdin?.end?.(configuration)
+  return supervisor
 }
 
 
@@ -438,7 +793,7 @@ async function runOwnedCommand(command, args, options, {
 } = {}) {
   let child
   try {
-    child = spawn(command, args, ownedChildOptions(options))
+    child = spawnOwnedChild(command, args, options)
   } catch {
     return {
       status: null,
@@ -498,7 +853,7 @@ async function runOwnedCommand(command, args, options, {
 const defaultProcessRunner = {
   run: runOwnedCommand,
   start(command, args, options, { label = 'owned' } = {}) {
-    const child = spawn(command, args, ownedChildOptions(options))
+    const child = spawnOwnedChild(command, args, options)
     trackOwnedChildLifecycle(child, label)
     return child
   },
@@ -640,8 +995,9 @@ async function runOneSpec({
 
   try {
     const backendReservation = await portReservationFactory()
+    reservations.push(backendReservation)
     const viteReservation = await portReservationFactory()
-    reservations.push(backendReservation, viteReservation)
+    reservations.push(viteReservation)
     for (const reservation of reservations) {
       if (
         !Number.isInteger(reservation?.port)

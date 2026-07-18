@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -195,6 +196,45 @@ async function settleWithin(promise, timeoutMs = 500) {
   }
 }
 
+function processExists(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    throw error
+  }
+}
+
+async function waitForProcessGone(pid, timeoutMs = 750) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) return true
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  return !processExists(pid)
+}
+
+async function terminateOwnedTestPid(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !processExists(pid)) return
+  await new Promise((resolve, reject) => {
+    const terminator = spawn(
+      'taskkill',
+      ['/PID', String(pid), '/T', '/F'],
+      {
+        shell: false,
+        windowsHide: true,
+        stdio: 'ignore',
+      },
+    )
+    terminator.once('error', reject)
+    terminator.once('close', status => {
+      if (status === 0 || !processExists(pid)) resolve()
+      else reject(new Error('owned test descendant cleanup failed'))
+    })
+  })
+}
+
 test('product-shell runner exports one exact frozen formal spec', async () => {
   const runner = await import(runnerModule)
 
@@ -270,6 +310,163 @@ test('generated database names are exact lowercase disposable names', async () =
       () => runner.assertProductShellDatabaseName(unsafe),
       /non-disposable/i,
     )
+  }
+})
+
+test('second port reservation failure releases the first before DB or process start', async () => {
+  const runner = await import(runnerModule)
+  let reservationCalls = 0
+  let releaseCalls = 0
+  let processCalls = 0
+
+  await assert.rejects(
+    runner.runProductShell({
+      specs: runner.FORMAL_SPECS,
+      environment: TEST_ENVIRONMENT,
+      databaseNameFactory: () => DATABASE_A,
+      portReservationFactory: async () => {
+        reservationCalls += 1
+        if (reservationCalls === 2) throw new Error('synthetic second reservation failure')
+        return {
+          port: 41001,
+          async release() { releaseCalls += 1 },
+        }
+      },
+      processRunner: {
+        run() { processCalls += 1 },
+        start() { processCalls += 1 },
+        stop() { processCalls += 1 },
+      },
+    }),
+    /second reservation failure/i,
+  )
+  assert.equal(reservationCalls, 2)
+  assert.equal(releaseCalls, 1)
+  assert.equal(processCalls, 0)
+})
+
+test('Windows ownership keeps child configuration out of the PowerShell command line', async () => {
+  const runner = await import(runnerModule)
+  const secretValue = 'owned-child-stdin-secret'
+  const command = 'C:\\owned-tools\\child.exe'
+  const commandArgument = '--owned-child-argument'
+  let invocation
+  let configuration = ''
+  const supervisor = fakeChild('windows job supervisor', 5400)
+  supervisor.stdin = new EventEmitter()
+  supervisor.stdin.end = value => { configuration += String(value) }
+
+  const result = runner.spawnOwnedChild(
+    command,
+    [commandArgument],
+    {
+      cwd: repositoryRoot,
+      env: {
+        Path: 'C:\\Windows\\System32',
+        SystemRoot: 'C:\\Windows',
+        MYSQL_PASSWORD: secretValue,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+    {
+      platform: 'win32',
+      spawnImpl(spawnCommand, args, options) {
+        invocation = { spawnCommand, args, options }
+        return supervisor
+      },
+    },
+  )
+
+  assert.equal(result, supervisor)
+  assert.equal(invocation.spawnCommand, 'powershell.exe')
+  assert.equal(invocation.options.shell, false)
+  assert.equal(invocation.options.windowsHide, true)
+  assert.equal(invocation.options.detached, false)
+  assert.equal(invocation.args.includes('-EncodedCommand'), true)
+  const commandLine = JSON.stringify({
+    command: invocation.spawnCommand,
+    arguments: invocation.args,
+  })
+  assert.doesNotMatch(commandLine, new RegExp(secretValue, 'u'))
+  assert.doesNotMatch(commandLine, new RegExp(command.replaceAll('\\', '\\\\'), 'u'))
+  assert.doesNotMatch(commandLine, new RegExp(commandArgument, 'u'))
+  assert.deepEqual(invocation.options.env, {
+    Path: 'C:\\Windows\\System32',
+    SystemRoot: 'C:\\Windows',
+    MYSQL_PASSWORD: secretValue,
+  })
+
+  const parsedConfiguration = JSON.parse(configuration)
+  assert.equal(parsedConfiguration.command, command)
+  assert.deepEqual(parsedConfiguration.arguments, [commandArgument])
+  assert.equal(Object.hasOwn(parsedConfiguration, 'environment'), false)
+})
+
+test('real Windows ownership kills a long-lived descendant after its parent exits', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const runner = await import(runnerModule)
+  const descendantSource = [
+    "const net = require('node:net')",
+    'const server = net.createServer()',
+    "server.listen(0, '127.0.0.1', () => process.stdout.write('READY\\n'))",
+    'setInterval(() => {}, 1000)',
+  ].join('\n')
+  const parentSource = [
+    "const { spawn } = require('node:child_process')",
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], {`,
+    "  detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore']",
+    '})',
+    'child.unref()',
+    "child.stdout.once('data', () => {",
+    "  require('node:fs').writeSync(2, 'OWNED_STDERR_READY\\n')",
+    '  process.stdout.write(String(child.pid))',
+    '  process.exit(23)',
+    '})',
+  ].join('\n')
+  const options = {
+    cwd: repositoryRoot,
+    env: {
+      PATH: process.env.PATH || process.env.Path,
+      Path: process.env.Path,
+      SystemRoot: process.env.SystemRoot,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+    },
+    shell: false,
+    windowsHide: true,
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }
+  const startOwned = runner.spawnOwnedChild || ((
+    command,
+    args,
+    childOptions,
+  ) => spawn(command, args, runner.ownedChildOptions(childOptions, 'win32')))
+  let descendantPid = 0
+  try {
+    const parent = startOwned(process.execPath, ['-e', parentSource], options, {
+      platform: 'win32',
+    })
+    let output = ''
+    let errorOutput = ''
+    parent.stdout.on('data', chunk => { output += chunk.toString('utf8') })
+    parent.stderr.on('data', chunk => { errorOutput += chunk.toString('utf8') })
+    const parentStatus = await new Promise((resolve, reject) => {
+      parent.once('error', reject)
+      parent.once('close', resolve)
+    })
+    descendantPid = Number.parseInt(output.trim(), 10)
+    assert.equal(parentStatus, 23)
+    assert.match(errorOutput, /OWNED_STDERR_READY/u)
+    assert.equal(Number.isSafeInteger(descendantPid) && descendantPid > 0, true)
+    assert.equal(
+      await waitForProcessGone(descendantPid),
+      true,
+      'runner-owned descendant survived its parent',
+    )
+  } finally {
+    await terminateOwnedTestPid(descendantPid)
   }
 })
 
