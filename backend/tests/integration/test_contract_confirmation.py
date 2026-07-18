@@ -209,6 +209,39 @@ async def test_real_same_seed_reselection_supersedes_readiness_and_clone_generat
     assert generations == [{"selection_revision": 1, "contract_count": 1}]
 
 
+@pytest.mark.asyncio
+async def test_real_same_seed_reselection_keeps_old_engine_draft_fail_closed(
+    disposable_mysql,
+):
+    contract_service = _service(disposable_mysql)
+    seed_service = _seed_service(disposable_mysql)
+    _, initial = await _saved(disposable_mysql, contract_service)
+    selection_two = await seed_service.select(
+        SelectSeed(
+            project_id=PROJECT,
+            seed_id=SEED,
+            expected_seed_revision=1,
+            expected_selection_revision=1,
+        )
+    )
+
+    preview = await contract_service.preview(PROJECT)
+
+    assert selection_two.selection_revision == 2
+    assert preview.contract_ready is False
+    assert preview.reasons == ("seed_drift",)
+    with pytest.raises(ContractConflict):
+        await contract_service.confirm(
+            _confirm(initial, key="old-engine-selection")
+        )
+    assert await disposable_mysql.session.fetchone(
+        "SELECT revision FROM project_contract_heads WHERE project_id=%s",
+        (PROJECT,),
+    ) == {"revision": 0}
+    assert await _count(disposable_mysql.session, "creation_contracts") == 0
+    assert await _count(disposable_mysql.session, "contract_confirmation_requests") == 0
+
+
 @pytest.mark.parametrize("drift", ("item_content", "item_hash", "aggregate_hash"))
 @pytest.mark.asyncio
 async def test_real_confirmation_rejects_any_binding_snapshot_drift(

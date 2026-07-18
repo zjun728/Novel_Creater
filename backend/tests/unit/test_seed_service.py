@@ -8,6 +8,7 @@ import pytest
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.seeds import SeedPayload
 from backend.http_errors import SeedConflict, SeedLocked, SeedNotFound
+from backend.repositories.seeds import SeedRepository
 from backend.services.seeds import (
     CreateSeed,
     DeleteSeed,
@@ -173,6 +174,29 @@ class Harness:
     @asynccontextmanager
     async def connection(self):
         yield object()
+
+
+@pytest.mark.asyncio
+async def test_dependency_count_includes_immutable_selection_history():
+    class RecordingSession:
+        sql = ""
+        args = ()
+
+        async def fetchone(self, sql, args):
+            self.sql = sql
+            self.args = args
+            return {"count": 1}
+
+    session = RecordingSession()
+
+    assert await SeedRepository().dependency_count(session, "p1", "seed-a") == 1
+    assert "FROM project_seed_selection_revisions" in session.sql
+    assert session.args == (
+        "p1", "seed-a",
+        "p1", "seed-a",
+        "p1", "seed-a",
+        "p1", "seed-a",
+    )
 
 
 @pytest.mark.asyncio

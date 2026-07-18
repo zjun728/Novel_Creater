@@ -526,6 +526,28 @@ async def test_resave_refreshes_server_frozen_seed_and_exposes_old_engine_drift(
 
 
 @pytest.mark.asyncio
+async def test_same_seed_reselection_marks_old_engine_generation_not_ready():
+    harness = ContractHarness()
+    initial = await harness.service.save_draft(command(harness))
+    harness.repository.selected_seeds["p1"]["selection_revision"] = 8
+
+    refreshed = await harness.service.save_draft(
+        command(harness, expected=initial.draft_version)
+    )
+    preview = await harness.service.preview("p1")
+
+    assert refreshed.selection_revision == 8
+    assert preview.contract_ready is False
+    assert preview.reasons == ("engine_seed_drift",)
+    with pytest.raises(ContractConflict):
+        await harness.service.confirm(
+            confirmation(refreshed, key="old-engine-selection")
+        )
+    assert harness.repository.confirmation_requests == {}
+    assert harness.repository.creation_contracts == {}
+
+
+@pytest.mark.asyncio
 async def test_preview_reports_asset_head_drift_but_keeps_frozen_revision_and_hash():
     harness = ContractHarness()
     await harness.service.save_draft(command(harness))

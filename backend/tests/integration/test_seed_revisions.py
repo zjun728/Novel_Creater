@@ -229,6 +229,89 @@ async def test_selected_edit_reports_contract_drift_and_delete_preserves_depende
 
 
 @pytest.mark.asyncio
+async def test_delete_archives_historically_selected_seed_and_preserves_selection_ledger(
+    disposable_mysql,
+):
+    await insert_project(disposable_mysql.session, "p1")
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    seed_a = await service.create(
+        CreateSeed(project_id="p1", payload=payload("历史选种"))
+    )
+    seed_b = await service.create(
+        CreateSeed(project_id="p1", payload=payload("当前选种"))
+    )
+    selection_a = await service.select(
+        SelectSeed(
+            project_id="p1",
+            seed_id=seed_a.id,
+            expected_seed_revision=1,
+            expected_selection_revision=0,
+        )
+    )
+    selection_b = await service.select(
+        SelectSeed(
+            project_id="p1",
+            seed_id=seed_b.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selection_a.selection_revision,
+        )
+    )
+
+    await service.delete(
+        DeleteSeed(
+            project_id="p1",
+            seed_id=seed_a.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selection_b.selection_revision,
+        )
+    )
+
+    archived = await disposable_mysql.session.fetchone(
+        "SELECT status FROM creative_seeds WHERE id=%s",
+        (seed_a.id,),
+    )
+    current = await disposable_mysql.session.fetchone(
+        """SELECT seed_id,seed_revision_id,selection_revision
+             FROM project_selected_seeds WHERE project_id='p1'"""
+    )
+    history = await disposable_mysql.session.fetchall(
+        """SELECT selection_revision,seed_id,seed_revision_id
+             FROM project_seed_selection_revisions
+            WHERE project_id='p1' ORDER BY selection_revision"""
+    )
+    assert archived == {"status": "archived"}
+    assert await disposable_mysql.session.fetchone(
+        "SELECT revision_id,revision FROM creative_seed_heads WHERE seed_id=%s",
+        (seed_a.id,),
+    ) == {"revision_id": seed_a.revision_id, "revision": 1}
+    assert current == {
+        "seed_id": seed_b.id,
+        "seed_revision_id": seed_b.revision_id,
+        "selection_revision": 2,
+    }
+    assert history == [
+        {
+            "selection_revision": 1,
+            "seed_id": seed_a.id,
+            "seed_revision_id": seed_a.revision_id,
+        },
+        {
+            "selection_revision": 2,
+            "seed_id": seed_b.id,
+            "seed_revision_id": seed_b.revision_id,
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_edit_failure_rolls_back_revision_append(disposable_mysql):
     await insert_project(disposable_mysql.session, "p1")
     factory = transaction_factory_for(disposable_mysql.connection_config)

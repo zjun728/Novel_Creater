@@ -183,8 +183,14 @@ class SeedRepository:
                    WHERE d.project_id=%s AND r.seed_id=%s)
                  +
                  (SELECT COUNT(*) FROM creation_contracts
+                   WHERE project_id=%s AND seed_id=%s)
+                 +
+                 (SELECT COUNT(*) FROM project_seed_selection_revisions
                    WHERE project_id=%s AND seed_id=%s) AS count""",
-            (project_id, seed_id, project_id, seed_id, project_id, seed_id),
+            (
+                project_id, seed_id, project_id, seed_id,
+                project_id, seed_id, project_id, seed_id,
+            ),
         )
         return int((row or {}).get("count") or 0)
 

@@ -721,7 +721,9 @@ class ContractService:
             if engine.get("status") != "succeeded":
                 reasons.append("engine_not_succeeded")
             if (
-                engine.get("seed_revision_id") != draft.seedRevisionId
+                int(engine.get("selection_revision") or 0)
+                != saved.selection_revision
+                or engine.get("seed_revision_id") != draft.seedRevisionId
                 or engine.get("seed_hash") != draft.seedHash
             ):
                 reasons.append("engine_seed_drift")
