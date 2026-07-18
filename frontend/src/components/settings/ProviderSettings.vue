@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { NAlert, NButton, NCard, NEmpty, NModal, NSpace, NTag, useDialog } from 'naive-ui'
 import { useAppMessage } from '@/composables/useAppMessage'
+import { useDangerousConfirmation } from '@/composables/useDangerousConfirmation'
 import { useProviderStore } from '@/stores/providerStore'
 import ProviderForm from './ProviderForm.vue'
 import TaskModelBinding from './TaskModelBinding.vue'
@@ -10,11 +11,15 @@ import TaskModelBinding from './TaskModelBinding.vue'
 const providerStore = useProviderStore()
 const message = useAppMessage()
 const dialog = useDialog()
+const confirmation = useDangerousConfirmation()
 const showForm = ref(false)
 const editingProvider = ref(null)
 const loadError = ref('')
 const saving = ref(false)
 const deletingId = ref('')
+const clearingId = ref('')
+const testingId = ref('')
+const connectionFeedback = ref({})
 const formEpoch = ref(0)
 const bindingRefreshKey = ref(0)
 const bindingOperationBusy = ref(false)
@@ -22,6 +27,8 @@ const bindingDirty = ref(false)
 const operationInFlight = computed(() => (
   saving.value
   || Boolean(deletingId.value)
+  || Boolean(clearingId.value)
+  || Boolean(testingId.value)
   || providerStore.bindingSaving
   || bindingOperationBusy.value
 ))
@@ -60,6 +67,9 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   if (typeof window !== 'undefined') window.removeEventListener('beforeunload', handleBeforeUnload)
+  editingProvider.value = null
+  showForm.value = false
+  connectionFeedback.value = {}
 })
 
 function openNew() {
@@ -91,7 +101,10 @@ async function handleSave(formData) {
   let saved = false
   try {
     if (editingProvider.value?.id) {
-      await providerStore.updateProvider({ ...editingProvider.value, ...formData })
+      await providerStore.updateProvider(editingProvider.value.id, {
+        ...formData,
+        expectedRevision: editingProvider.value.revision,
+      })
       message.success('Provider 配置已更新')
     } else {
       await providerStore.addProvider(formData)
@@ -102,9 +115,78 @@ async function handleSave(formData) {
   } catch (error) {
     message.error(`保存失败：${error.message}`)
   } finally {
+    clearSubmittedSecrets(formData)
     saving.value = false
   }
   if (saved) setFormVisibility(false)
+}
+
+function clearSubmittedSecrets(formData) {
+  if (!formData || typeof formData !== 'object') return
+  formData.apiKey = ''
+  formData.baseURL = ''
+}
+
+async function handleTestConnection(provider) {
+  if (providerActionBusy.value) return
+  testingId.value = provider.id
+  try {
+    const result = await providerStore.testConnection(provider.id)
+    connectionFeedback.value = {
+      ...connectionFeedback.value,
+      [provider.id]: {
+        ok: result.ok,
+        code: result.code,
+        publicMessage: result.publicMessage,
+        latencyMs: result.latencyMs,
+      },
+    }
+    if (result.ok) message.success(result.publicMessage)
+    else message.warning(result.publicMessage)
+  } catch {
+    connectionFeedback.value = {
+      ...connectionFeedback.value,
+      [provider.id]: {
+        ok: false,
+        code: 'provider_failed',
+        publicMessage: '连接测试失败',
+        latencyMs: 0,
+      },
+    }
+    message.error('连接测试失败')
+  } finally {
+    testingId.value = ''
+  }
+}
+
+async function handleClearApiKey(provider) {
+  if (providerActionBusy.value || !provider.hasKey) return
+  await confirmation.confirm({
+    title: '清除 API Key',
+    content: '清除后 Provider 会立即停用；已保存的 Base URL 会继续保留。',
+    positiveText: '清除密钥',
+    onConfirm: async () => {
+      clearingId.value = provider.id
+      try {
+        await providerStore.clearApiKey(provider.id, provider.revision)
+        connectionFeedback.value = {
+          ...connectionFeedback.value,
+          [provider.id]: {
+            ok: false,
+            code: 'provider_unconfigured',
+            publicMessage: 'Provider 未配置',
+            latencyMs: 0,
+          },
+        }
+        message.success('API Key 已清除，Provider 已停用')
+      } catch {
+        message.error('API Key 清除失败，请刷新后重试')
+        throw new Error('provider clear failed')
+      } finally {
+        clearingId.value = ''
+      }
+    },
+  })
 }
 
 function handleDelete(provider) {
@@ -118,7 +200,7 @@ function handleDelete(provider) {
       if (deletingId.value) return false
       deletingId.value = provider.id
       try {
-        await providerStore.deleteProvider(provider.id)
+        await providerStore.deleteProvider(provider.id, provider.revision)
         bindingRefreshKey.value += 1
         message.success('Provider 已停用，私密配置已由服务端清除')
       } catch (error) {
@@ -168,9 +250,36 @@ function handleDelete(provider) {
           <div><span>API Key</span><strong>{{ provider.hasKey ? '已配置' : '未配置' }}</strong></div>
           <div><span>Base URL</span><strong>{{ provider.hasBaseURL ? '已配置' : '未配置' }}</strong></div>
         </div>
+        <n-alert
+          v-if="connectionFeedback[provider.id]"
+          :type="connectionFeedback[provider.id].ok ? 'success' : 'warning'"
+          :bordered="false"
+          class="connection-feedback"
+          aria-live="polite"
+        >
+          {{ connectionFeedback[provider.id].publicMessage }}
+          <span v-if="connectionFeedback[provider.id].ok">
+            （{{ connectionFeedback[provider.id].latencyMs }} ms）
+          </span>
+        </n-alert>
         <template #footer>
           <n-space justify="end">
             <n-button size="tiny" :disabled="providerActionBusy" @click="openEdit(provider)">编辑</n-button>
+            <n-button
+              size="tiny"
+              :loading="testingId === provider.id"
+              :disabled="providerActionBusy || !provider.hasKey || !provider.hasBaseURL"
+              @click="handleTestConnection(provider)"
+            >测试连接</n-button>
+            <n-button
+              v-if="provider.hasKey"
+              size="tiny"
+              type="error"
+              quaternary
+              :loading="clearingId === provider.id"
+              :disabled="providerActionBusy"
+              @click="handleClearApiKey(provider)"
+            >清除 API Key</n-button>
             <n-button
               size="tiny"
               type="error"
@@ -225,6 +334,7 @@ function handleDelete(provider) {
 .provider-meta div { display: flex; flex-direction: column; gap: 2px; }
 .provider-meta span { color: #81786b; font-size: 12px; }
 .provider-meta strong { color: #38332c; font-size: 13px; font-weight: 600; }
+.connection-feedback { margin-top: 12px; }
 .binding-card { margin-top: 20px; border-color: #dfd6c4; background: #faf7ef; }
 .empty-state { padding: 30px 0; }
 </style>

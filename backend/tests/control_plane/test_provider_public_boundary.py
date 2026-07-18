@@ -8,13 +8,21 @@ from backend.serializers.provider import provider_public
 ROOT = Path(__file__).resolve().parents[3]
 SECRET = "STORED_SECRET_MUST_NOT_LEAVE"
 PRIVATE_URL = "https://private-provider.example/v1"
-NESTED_SECRET = "UNRELATED_NESTED_SECRET_MUST_NOT_LEAVE"
+FORBIDDEN_KEYS = {
+    "apiKey",
+    "api_key",
+    "baseURL",
+    "base_url",
+    "authorization",
+    "token",
+    "password",
+}
 
 
 def provider_row():
     return {
         "id": "provider-1",
-        "name": "Provider",
+        "name": f"Provider {SECRET}",
         "provider_type": "openai-compatible",
         "model_name": "model-1",
         "enabled": 1,
@@ -30,31 +38,46 @@ def provider_row():
         "thinking": json.dumps(
             {
                 "mode": "enabled",
-                "credentials": {"API_KEY": NESTED_SECRET, "region": "local"},
-                "transport": {"base-url": NESTED_SECRET, "mode": "safe"},
+                "authorization": SECRET,
+                "token": SECRET,
+                "password": SECRET,
+                "api_key": SECRET,
+                "base_url": PRIVATE_URL,
             }
         ),
         "api_key": SECRET,
         "base_url": PRIVATE_URL,
+        "lifecycle_status": "active",
+        "revision": 7,
+        "deleted_at": None,
         "created_at": 1,
         "updated_at": 2,
     }
 
 
+def assert_no_forbidden_keys(value):
+    if isinstance(value, dict):
+        assert not (set(value) & FORBIDDEN_KEYS), value
+        for item in value.values():
+            assert_no_forbidden_keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            assert_no_forbidden_keys(item)
+
+
 class ProviderPublicBoundaryTest(unittest.TestCase):
-    def test_public_projection_recursively_removes_secret_fields_and_values(self):
+    def test_public_projection_is_whitelisted_and_recursively_secret_free(self):
         result = provider_public(provider_row())
         encoded = json.dumps(result, ensure_ascii=False)
 
+        assert_no_forbidden_keys(result)
         self.assertNotIn(SECRET, encoded)
         self.assertNotIn(PRIVATE_URL, encoded)
-        self.assertNotIn(NESTED_SECRET, encoded)
-        self.assertNotIn("API_KEY", encoded)
-        self.assertNotIn("base-url", encoded)
         self.assertTrue(result["hasKey"])
         self.assertTrue(result["hasBaseURL"])
-        self.assertEqual(result["thinking"]["credentials"], {"region": "local"})
-        self.assertEqual(result["thinking"]["transport"], {"mode": "safe"})
+        self.assertEqual(result["lifecycleStatus"], "active")
+        self.assertEqual(result["revision"], 7)
+        self.assertEqual(result["thinking"], {"mode": "enabled"})
 
     def test_retired_full_export_and_import_routes_remain_absent(self):
         self.assertFalse((ROOT / "backend" / "routers" / "export.py").exists())

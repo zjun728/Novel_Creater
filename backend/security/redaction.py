@@ -50,9 +50,27 @@ def redact_secrets(value):
 
 
 def _redact_validation_errors(errors):
-    sanitized = redact_secrets(errors)
-    for error in sanitized:
-        location = error.get("loc", ())
+    def drop_secret_keys(value):
+        if isinstance(value, Mapping):
+            return {
+                key: drop_secret_keys(item)
+                for key, item in value.items()
+                if str(key).casefold() not in _SECRET_KEYS
+            }
+        if isinstance(value, tuple):
+            return tuple(drop_secret_keys(item) for item in value)
+        if isinstance(value, list):
+            return [drop_secret_keys(item) for item in value]
+        if (
+            isinstance(value, str)
+            and value.casefold() in _SECRET_KEYS
+        ):
+            return REDACTED
+        return value
+
+    sanitized = drop_secret_keys(redact_secrets(errors))
+    for original, error in zip(errors, sanitized):
+        location = original.get("loc", ())
         if any(str(part).casefold() in _SECRET_KEYS for part in location):
             error["input"] = REDACTED
     return sanitized

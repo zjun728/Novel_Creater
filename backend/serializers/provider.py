@@ -7,6 +7,15 @@ from collections.abc import Mapping
 
 
 REDACTED = "[REDACTED]"
+_FORBIDDEN_PUBLIC_KEYS = frozenset(
+    {
+        "apikey",
+        "baseurl",
+        "authorization",
+        "token",
+        "password",
+    }
+)
 
 
 def _thinking(value):
@@ -28,7 +37,10 @@ def _secret_values(row: Mapping) -> tuple[str, ...]:
             value = value.decode("utf-8")
         if isinstance(value, str) and value:
             values.append(value)
-    return tuple(values)
+    for value in row.get("_redaction_values", ()):
+        if isinstance(value, str) and value:
+            values.append(value)
+    return tuple(dict.fromkeys(values))
 
 
 def _sanitize(value, secrets: tuple[str, ...]):
@@ -38,8 +50,8 @@ def _sanitize(value, secrets: tuple[str, ...]):
             for key, item in value.items()
             if not (
                 isinstance(key, str)
-                and key.lower().replace("_", "").replace("-", "")
-                in {"apikey", "baseurl"}
+                and key.casefold().replace("_", "").replace("-", "")
+                in _FORBIDDEN_PUBLIC_KEYS
             )
         }
     if isinstance(value, list):
@@ -73,6 +85,14 @@ def provider_public(row: Mapping | None) -> dict | None:
         "thinking": _thinking(row.get("thinking")),
         "hasKey": bool(row.get("api_key")),
         "hasBaseURL": bool(row.get("base_url")),
+        "lifecycleStatus": row["lifecycle_status"],
+        "revision": int(row["revision"]),
+        "ready": (
+            row["lifecycle_status"] == "active"
+            and bool(row["enabled"])
+            and bool(row.get("api_key"))
+            and bool(row.get("base_url"))
+        ),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }

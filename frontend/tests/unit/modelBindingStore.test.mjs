@@ -239,7 +239,7 @@ test('repeating the same binding save while it is pending issues only one CAS wr
   assert.equal(store.bindingSaving, false)
 })
 
-test('settings source exposes an editable eight-row binding ledger without secret-clear transport', async () => {
+test('settings exposes bindings and only the dedicated clear-key command', async () => {
   const [settings, form, bindings] = await Promise.all([
     readFile(new URL('../../src/components/settings/ProviderSettings.vue', import.meta.url), 'utf8'),
     readFile(new URL('../../src/components/settings/ProviderForm.vue', import.meta.url), 'utf8'),
@@ -247,7 +247,9 @@ test('settings source exposes an editable eight-row binding ledger without secre
   ])
 
   assert.match(settings, /停用并清除私密配置/)
-  assert.doesNotMatch(`${settings}\n${form}`, /clearApiKey|clearBaseURL|清除当前 API Key|清除当前 Base URL/)
+  assert.match(settings, /handleClearApiKey/)
+  assert.match(settings, /providerStore\.clearApiKey/)
+  assert.doesNotMatch(form, /clearApiKey|clearBaseURL|清除当前 API Key|清除当前 Base URL/)
   assert.match(bindings, /一次保存八项绑定/)
   assert.match(bindings, /replaceBindings/)
   assert.match(bindings, /bindingComplete/)

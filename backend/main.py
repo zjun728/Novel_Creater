@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Novel Creator API", version="1.0", lifespan=lifespan)
+app.state.provider_profile_service = providers.build_provider_profile_service()
 install_error_handlers(app)
 
 app.add_middleware(

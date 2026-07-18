@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   NAlert, NButton, NForm, NFormItem, NInput, NInputNumber,
   NSelect, NSwitch,
@@ -32,6 +32,11 @@ const form = ref({ ...defaults })
 const validationError = ref('')
 const editing = computed(() => Boolean(props.initial?.id))
 
+function clearSensitiveFields() {
+  form.value.apiKey = ''
+  form.value.baseURL = ''
+}
+
 watch(() => props.initial, value => {
   validationError.value = ''
   form.value = value
@@ -55,8 +60,24 @@ function handleSubmit() {
     validationError.value = '新增 Provider 必须填写 API Key 与 Base URL。'
     return
   }
-  emit('save', { ...form.value, name: form.value.name.trim(), model: form.value.model.trim() })
+  const submitted = {
+    ...form.value,
+    name: form.value.name.trim(),
+    model: form.value.model.trim(),
+  }
+  try {
+    emit('save', submitted)
+  } finally {
+    clearSensitiveFields()
+  }
 }
+
+function handleCancel() {
+  clearSensitiveFields()
+  emit('cancel')
+}
+
+onBeforeUnmount(clearSensitiveFields)
 </script>
 
 <template>
@@ -119,7 +140,7 @@ function handleSubmit() {
     </div>
   </n-form>
   <div class="form-actions">
-    <n-button :disabled="saving" @click="emit('cancel')">取消</n-button>
+    <n-button :disabled="saving" @click="handleCancel">取消</n-button>
     <n-button type="primary" :loading="saving" @click="handleSubmit">保存</n-button>
   </div>
 </template>

@@ -64,9 +64,12 @@ function pickDefined(value = {}, fields = []) {
 const PROVIDER_CREATE_FIELDS = [
   'name', 'providerType', 'model', 'baseURL', 'apiKey', 'enabled', 'sortOrder',
   'stream', 'maxContextTokens', 'maxOutputTokens', 'temperature', 'topP',
-  'supportsJSON', 'supportsStreaming', 'notes', 'thinking',
+  'supportsJSON', 'supportsStreaming', 'notes', 'thinking', 'idempotencyKey',
 ]
-const PROVIDER_UPDATE_FIELDS = PROVIDER_CREATE_FIELDS.filter(field => field !== 'providerType')
+const PROVIDER_UPDATE_FIELDS = [
+  ...PROVIDER_CREATE_FIELDS.filter(field => !['providerType', 'idempotencyKey'].includes(field)),
+  'expectedRevision', 'idempotencyKey',
+]
 const SEED_FIELDS = [
   'title', 'genre', 'logline', 'protagonist', 'desire', 'coreConflict',
   'worldPressure', 'openingHook', 'differentiation',
@@ -221,7 +224,17 @@ export const api = {
       `/providers/${segment(providerId)}`,
       pickDefined(data, PROVIDER_UPDATE_FIELDS),
     ),
-    delete: providerId => del(`/providers/${segment(providerId)}`),
+    delete: (providerId, data) => del(
+      `/providers/${segment(providerId)}`,
+      pickDefined(data, ['expectedRevision', 'idempotencyKey']),
+    ),
+    clearApiKey: (providerId, data) => post(
+      `/providers/${segment(providerId)}/clear-api-key`,
+      pickDefined(data, ['expectedRevision', 'idempotencyKey']),
+    ),
+    testConnection: providerId => post(
+      `/providers/${segment(providerId)}/test-connection`,
+    ),
   },
 
   bindings: {

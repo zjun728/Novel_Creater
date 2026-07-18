@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { v4 as uuidv4 } from 'uuid'
 import { api } from '../api/db/client.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
@@ -12,7 +13,7 @@ const PUBLIC_PROVIDER_FIELDS = [
   'id', 'name', 'providerType', 'model', 'enabled', 'sortOrder', 'stream',
   'maxContextTokens', 'maxOutputTokens', 'temperature', 'topP',
   'supportsJSON', 'supportsStreaming', 'notes', 'thinking', 'hasKey',
-  'hasBaseURL', 'createdAt', 'updatedAt',
+  'hasBaseURL', 'lifecycleStatus', 'revision', 'ready', 'createdAt', 'updatedAt',
 ]
 
 const EDITABLE_PROVIDER_FIELDS = [
@@ -21,7 +22,9 @@ const EDITABLE_PROVIDER_FIELDS = [
   'supportsJSON', 'supportsStreaming', 'notes', 'thinking',
 ]
 
-const SENSITIVE_RESPONSE_KEYS = new Set(['apikey', 'baseurl'])
+const SENSITIVE_RESPONSE_KEYS = new Set([
+  'apikey', 'baseurl', 'authorization', 'token', 'password',
+])
 
 function isSensitiveResponseKey(key) {
   return typeof key === 'string'
@@ -112,6 +115,38 @@ export function buildProviderCreatePayload(value = {}) {
   return payload
 }
 
+function clearRequestSecrets(payload) {
+  if (!payload || typeof payload !== 'object') return
+  if (Object.hasOwn(payload, 'apiKey')) payload.apiKey = ''
+  if (Object.hasOwn(payload, 'baseURL')) payload.baseURL = ''
+}
+
+function idempotencyKey() {
+  return uuidv4()
+}
+
+function normalizeConnectionResult(value = {}) {
+  const code = typeof value.code === 'string' ? value.code : 'provider_failed'
+  const messages = {
+    connected: '连接成功',
+    provider_timeout: '连接超时',
+    provider_unreachable: '无法连接 Provider',
+    provider_rejected: 'Provider 拒绝连接',
+    provider_unconfigured: 'Provider 未配置',
+    provider_failed: '连接测试失败',
+  }
+  const publicCode = Object.hasOwn(messages, code) ? code : 'provider_failed'
+  const latency = Number(value.latencyMs)
+  return {
+    ok: value.ok === true && publicCode === 'connected',
+    code: publicCode,
+    latencyMs: Number.isFinite(latency)
+      ? Math.min(30000, Math.max(0, Math.trunc(latency)))
+      : 0,
+    publicMessage: messages[publicCode],
+  }
+}
+
 export const useProviderStore = defineStore('provider', () => {
   const providers = ref([])
   const loading = ref(false)
@@ -170,29 +205,70 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function addProvider(config) {
     const payload = buildProviderCreatePayload(config)
-    const created = normalizePublicProvider(await api.providers.create(payload))
-    providerMutationEpoch += 1
-    providers.value.push(created)
-    loaded.value = true
-    return created
+    payload.idempotencyKey = idempotencyKey()
+    try {
+      const created = normalizePublicProvider(await api.providers.create(payload))
+      providerMutationEpoch += 1
+      providers.value.push(created)
+      loaded.value = true
+      return created
+    } finally {
+      clearRequestSecrets(payload)
+    }
   }
 
-  async function updateProvider(provider) {
+  async function updateProvider(providerOrId, maybeChanges) {
+    const providerId = typeof providerOrId === 'string' ? providerOrId : providerOrId?.id
+    const changes = maybeChanges || providerOrId || {}
+    const current = providers.value.find(provider => provider.id === providerId)
+    const payload = buildProviderUpdatePayload(changes)
+    payload.expectedRevision = changes.expectedRevision ?? changes.revision ?? current?.revision ?? 0
+    payload.idempotencyKey = idempotencyKey()
+    try {
+      const updated = normalizePublicProvider(
+        await api.providers.update(providerId, payload),
+      )
+      providerMutationEpoch += 1
+      const index = providers.value.findIndex(item => item.id === updated.id)
+      if (index !== -1) providers.value[index] = updated
+      invalidateBindingStatuses()
+      return updated
+    } finally {
+      clearRequestSecrets(payload)
+    }
+  }
+
+  async function deleteProvider(providerOrId, expectedRevision) {
+    const providerId = typeof providerOrId === 'string' ? providerOrId : providerOrId?.id
+    const current = providers.value.find(provider => provider.id === providerId)
+    const revision = expectedRevision ?? providerOrId?.revision ?? current?.revision ?? 0
+    await api.providers.delete(providerId, {
+      expectedRevision: revision,
+      idempotencyKey: idempotencyKey(),
+    })
+    providerMutationEpoch += 1
+    providers.value = providers.value.filter(provider => provider.id !== providerId)
+    invalidateBindingStatuses()
+  }
+
+  async function clearApiKey(providerId, expectedRevision) {
     const updated = normalizePublicProvider(
-      await api.providers.update(provider.id, buildProviderUpdatePayload(provider)),
+      await api.providers.clearApiKey(providerId, {
+        expectedRevision,
+        idempotencyKey: idempotencyKey(),
+      }),
     )
     providerMutationEpoch += 1
-    const index = providers.value.findIndex(item => item.id === updated.id)
+    const index = providers.value.findIndex(provider => provider.id === updated.id)
     if (index !== -1) providers.value[index] = updated
     invalidateBindingStatuses()
     return updated
   }
 
-  async function deleteProvider(providerId) {
-    await api.providers.delete(providerId)
-    providerMutationEpoch += 1
-    providers.value = providers.value.filter(provider => provider.id !== providerId)
-    invalidateBindingStatuses()
+  async function testConnection(providerId) {
+    return normalizeConnectionResult(
+      await api.providers.testConnection(providerId),
+    )
   }
 
   async function getBindings(projectId, { force = false } = {}) {
@@ -353,6 +429,8 @@ export const useProviderStore = defineStore('provider', () => {
     addProvider,
     updateProvider,
     deleteProvider,
+    clearApiKey,
+    testConnection,
     getBindings,
     getBindingStatus,
     replaceBindings,

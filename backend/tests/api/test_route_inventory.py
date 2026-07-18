@@ -29,6 +29,8 @@ APPROVED_FORMAL_ROUTES = {
     ("POST", "/api/providers"),
     ("PUT", "/api/providers/{provider_id}"),
     ("DELETE", "/api/providers/{provider_id}"),
+    ("POST", "/api/providers/{provider_id}/test-connection"),
+    ("POST", "/api/providers/{provider_id}/clear-api-key"),
     ("GET", "/api/projects/{pid}/bindings"),
     ("GET", "/api/projects/{pid}/bindings/status"),
     ("PUT", "/api/projects/{pid}/bindings"),

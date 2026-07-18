@@ -66,12 +66,15 @@ def test_request_validation_error_sanitizes_pydantic_input(caplog):
 def test_unexpected_error_returns_only_generic_message_and_correlation_id(
     monkeypatch, caplog
 ):
-    async def fail(*args, **kwargs):
-        raise RuntimeError(f"upstream failed {SECRET} {PRIVATE_URL}")
+    class FailingProviderService:
+        async def list_profiles(self):
+            raise RuntimeError(f"upstream failed {SECRET} {PRIVATE_URL}")
 
-    monkeypatch.setattr(providers, "fetchall", fail)
     app = FastAPI()
     app.include_router(providers.router, prefix="/api")
+    app.dependency_overrides[
+        providers.get_provider_profile_service
+    ] = FailingProviderService
     install_error_handlers(app)
     client = TestClient(app, raise_server_exceptions=False)
 
