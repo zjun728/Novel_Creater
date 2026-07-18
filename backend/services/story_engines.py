@@ -6,11 +6,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
-import re
 import time
 from types import MappingProxyType
 from typing import Literal
-from urllib.parse import quote, quote_plus
 from uuid import uuid4
 
 import httpx
@@ -32,6 +30,11 @@ from backend.http_errors import (
     StoryEnginePreconditionFailed,
 )
 from backend.prompts.story_engine import build_story_engine_messages
+from backend.security.provider_secrets import (
+    normalize_provider_secrets,
+    provider_response_text_contains_secret,
+    provider_response_value_contains_secret,
+)
 
 
 RESERVED_TIMEOUT_MS = 300_000
@@ -40,9 +43,6 @@ _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "outcome_unknown"})
 _SAFE_FAILURE_CODES = frozenset(
     {"provider_failed", "provider_timeout", "invalid_response"}
 )
-_MIN_SCANNABLE_SECRET_LENGTH = 8
-_MAX_PROVIDER_RESPONSE_SCAN_DEPTH = 32
-_MAX_PROVIDER_RESPONSE_SCAN_NODES = 10_000
 DEFAULT_CHANNEL_PROFILE = MappingProxyType(
     {
         "schemaVersion": "writer-channel-profile-v1",
@@ -482,32 +482,10 @@ class StoryEngineService:
         return normalized
 
     @staticmethod
-    def _connection_secret_variants(provider: dict) -> frozenset[str]:
-        variants: set[str] = set()
-        for field in ("api_key", "base_url"):
-            value = provider.get(field)
-            if not isinstance(value, str):
-                continue
-            secret = value.strip()
-            if len(secret) < _MIN_SCANNABLE_SECRET_LENGTH:
-                continue
-            secret_variants = {
-                secret,
-                quote(secret, safe=""),
-                quote_plus(secret, safe=""),
-                secret.replace("/", r"\/"),
-            }
-            encoded_case_variants = {
-                re.sub(
-                    r"%[0-9A-F]{2}",
-                    lambda match: match.group(0).lower(),
-                    variant,
-                )
-                for variant in secret_variants
-                if "%" in variant
-            }
-            variants.update(secret_variants | encoded_case_variants)
-        return frozenset(variants)
+    def _connection_secrets(provider: dict) -> tuple[str, ...]:
+        return normalize_provider_secrets(
+            (provider.get("api_key"), provider.get("base_url"))
+        )
 
     @classmethod
     def _response_contains_connection_secret(
@@ -515,9 +493,9 @@ class StoryEngineService:
         raw_response_text: str,
         provider: dict,
     ) -> bool:
-        return any(
-            variant in raw_response_text
-            for variant in cls._connection_secret_variants(provider)
+        return provider_response_text_contains_secret(
+            raw_response_text,
+            cls._connection_secrets(provider),
         )
 
     @classmethod
@@ -526,27 +504,10 @@ class StoryEngineService:
         payload: object,
         provider: dict,
     ) -> bool:
-        secret_variants = cls._connection_secret_variants(provider)
-        stack: list[tuple[object, int]] = [(payload, 0)]
-        scanned_nodes = 0
-        while stack:
-            value, depth = stack.pop()
-            scanned_nodes += 1
-            if (
-                scanned_nodes > _MAX_PROVIDER_RESPONSE_SCAN_NODES
-                or depth > _MAX_PROVIDER_RESPONSE_SCAN_DEPTH
-            ):
-                raise ValueError("response structure exceeds scan limits")
-            if isinstance(value, str):
-                if any(variant in value for variant in secret_variants):
-                    return True
-                continue
-            if isinstance(value, dict):
-                stack.extend((item, depth + 1) for item in value.keys())
-                stack.extend((item, depth + 1) for item in value.values())
-            elif isinstance(value, (list, tuple)):
-                stack.extend((item, depth + 1) for item in value)
-        return False
+        return provider_response_value_contains_secret(
+            payload,
+            cls._connection_secrets(provider),
+        )
 
     @classmethod
     def _parse_provider_options(cls, raw_response_text: str, provider: dict):
@@ -575,7 +536,13 @@ class StoryEngineService:
                 for key, value in raw_option.items()
             }
             options.append(StoryEngineOption.model_validate(normalized))
-        return validate_three_options(tuple(options))
+        validated = validate_three_options(tuple(options))
+        if provider_response_value_contains_secret(
+            tuple(item.model_dump(mode="json") for item in validated),
+            cls._connection_secrets(provider),
+        ):
+            raise ValueError("provider response rejected")
+        return validated
 
     async def mark_outcome_unknown(
         self, project_id: str, batch_id: str, attempt_id: str

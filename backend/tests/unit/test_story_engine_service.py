@@ -404,6 +404,7 @@ async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transa
         "stripped",
         "percent",
         "percent-lower",
+        "percent-mixed",
         "json-slash",
         "unicode-full",
         "unicode-mixed",
@@ -426,6 +427,9 @@ async def test_provider_response_containing_connection_secret_fails_before_optio
             lambda match: match.group(0).lower(),
             quote(normalized, safe=""),
         ),
+        "percent-mixed": quote(normalized, safe="")
+        .replace("%3A", "%3a")
+        .replace("%2F", "%2f", 1),
         "json-slash": normalized,
         "unicode-full": normalized,
         "unicode-mixed": normalized,
@@ -466,6 +470,75 @@ async def test_provider_response_containing_connection_secret_fails_before_optio
     assert stored["raw_response_hash"] == result.raw_response_hash
     assert normalized not in str(result)
     assert normalized not in canonical_json(stored)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "short_secret"),
+    (
+        ("value", "方案 1"),
+        ("key", "purpose"),
+    ),
+)
+async def test_short_connection_secret_exact_value_or_mapping_key_is_never_persisted(
+    mode, short_secret
+):
+    harness = StoryEngineHarness()
+    provider = harness.repository.providers["provider-seed"]
+    provider["api_key"] = short_secret
+    payload = json.loads(_provider_response())
+    raw = json.dumps(payload, ensure_ascii=False)
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"short-exact-{mode}")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "invalid_response"
+    assert result.options == ()
+    assert harness.repository.options[result.id] == []
+    assert result.raw_response_hash == sha256(raw.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_short_connection_secret_subsequence_in_ordinary_prose_is_allowed():
+    harness = StoryEngineHarness()
+    harness.repository.providers["provider-seed"]["api_key"] = "x"
+    payload = json.loads(_provider_response())
+    payload["options"][0]["name"] = "ordinary x prose"
+    raw = json.dumps(payload, ensure_ascii=False)
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "short-subsequence")
+    )
+
+    assert result.status == "succeeded"
+    assert result.options[0].payload.name == "ordinary x prose"
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_short_secret_created_by_option_normalization_is_never_persisted():
+    harness = StoryEngineHarness()
+    harness.repository.providers["provider-seed"]["api_key"] = "short"
+    payload = json.loads(_provider_response())
+    payload["options"][0]["name"] = "  short  "
+    raw = json.dumps(payload, ensure_ascii=False)
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "normalized-short-secret")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "invalid_response"
+    assert result.options == ()
+    assert harness.repository.options[result.id] == []
 
 
 def test_decoded_response_secret_scan_rejects_excessive_depth_or_nodes():

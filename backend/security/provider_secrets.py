@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+import re
+from urllib.parse import quote, quote_plus
 
 
 REDACTED = "[REDACTED]"
 MIN_SUBSTRING_SECRET_LENGTH = 8
+_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 PUBLIC_SECRET_COLLISION_MESSAGE = (
     "Provider public fields cannot contain private configuration"
 )
@@ -76,6 +79,65 @@ def provider_public_fields_contain_secret(
         provider_public_value_contains_secret(value, normalized)
         for value in fields.values()
     )
+
+
+def provider_response_text_contains_secret(
+    value: str,
+    secrets: Iterable[object],
+) -> bool:
+    """Scan raw response text for encoded variants of long secrets."""
+
+    normalized_value = _PERCENT_ESCAPE.sub(
+        lambda match: match.group(0).upper(),
+        value,
+    )
+    variants: set[str] = set()
+    for secret in normalize_provider_secrets(secrets):
+        if len(secret) < MIN_SUBSTRING_SECRET_LENGTH:
+            continue
+        secret_variants = {
+            secret,
+            quote(secret, safe=""),
+            quote_plus(secret, safe=""),
+            secret.replace("/", r"\/"),
+        }
+        variants.update(
+            _PERCENT_ESCAPE.sub(
+                lambda match: match.group(0).upper(),
+                variant,
+            )
+            for variant in secret_variants
+        )
+    return any(variant in normalized_value for variant in variants)
+
+
+def provider_response_value_contains_secret(
+    value: object,
+    secrets: Iterable[object],
+    *,
+    max_depth: int = 32,
+    max_nodes: int = 10_000,
+) -> bool:
+    """Scan decoded response values with bounded, short-exact matching."""
+
+    normalized = normalize_provider_secrets(secrets)
+    stack: list[tuple[object, int]] = [(value, 0)]
+    scanned_nodes = 0
+    while stack:
+        item, depth = stack.pop()
+        scanned_nodes += 1
+        if scanned_nodes > max_nodes or depth > max_depth:
+            raise ValueError("response structure exceeds scan limits")
+        if isinstance(item, str):
+            if any(_matches_secret(item, secret) for secret in normalized):
+                return True
+            continue
+        if isinstance(item, Mapping):
+            stack.extend((key, depth + 1) for key in item.keys())
+            stack.extend((nested, depth + 1) for nested in item.values())
+        elif isinstance(item, (list, tuple, set)):
+            stack.extend((nested, depth + 1) for nested in item)
+    return False
 
 
 def _fail_closed_text(

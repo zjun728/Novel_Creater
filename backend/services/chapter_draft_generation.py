@@ -11,6 +11,10 @@ from backend.gateways.chapter_draft_provider import (
 )
 from backend.http_errors import ProjectNotFound
 from backend.prompts.chapter_draft import build_chapter_draft_messages
+from backend.security.provider_secrets import (
+    provider_response_text_contains_secret,
+    provider_response_value_contains_secret,
+)
 from backend.services.chapter_sessions import (
     ChapterSessionConflict,
     ChapterSessionNotFound,
@@ -94,6 +98,14 @@ class ChapterDraftGenerationService:
             except ChapterDraftProviderError as exc:
                 raise ChapterDraftGenerationFailed("chapter draft generation failed") from exc
             content = str(generated or "").strip()
+            secrets = (provider.get("api_key"), provider.get("base_url"))
+            if (
+                provider_response_text_contains_secret(content, secrets)
+                or provider_response_value_contains_secret(content, secrets)
+            ):
+                raise ChapterDraftGenerationFailed(
+                    "chapter draft generation failed"
+                )
             if not content:
                 raise ChapterDraftGenerationFailed("chapter draft generation returned empty content")
             row = {

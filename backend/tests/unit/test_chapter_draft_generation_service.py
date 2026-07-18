@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import pytest
 
 from backend import http_errors
@@ -181,6 +183,86 @@ async def test_generation_provider_failure_does_not_mutate_draft():
 
     repo = FakeChapterRepository()
     gateway = FakeGateway(ChapterDraftProviderError("provider failed safely"))
+    service = ChapterDraftGenerationService(
+        repo, provider_gateway=gateway, transaction_factory=tx_factory,
+    )
+
+    with pytest.raises(ChapterDraftGenerationFailed):
+        await service.generate_working_draft(GenerateWorkingDraft(
+            project_id="p1",
+            chapter_session_id="session-1",
+            expected_working_draft_revision=1,
+        ))
+
+    assert len(gateway.calls) == 1
+    assert repo.upsert_calls == []
+    assert repo.working_draft["revision"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api_key", "output", "rejected"),
+    (
+        ("short", "short", True),
+        ("a", "ordinary a chapter prose", False),
+        ("secret-key", "prefix secret-key suffix", True),
+    ),
+)
+async def test_generation_scans_provider_secrets_without_short_substring_false_positives(
+    api_key, output, rejected
+):
+    from backend.services.chapter_draft_generation import (
+        ChapterDraftGenerationFailed,
+        ChapterDraftGenerationService,
+        GenerateWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    repo.provider["api_key"] = api_key
+    gateway = FakeGateway(output)
+    service = ChapterDraftGenerationService(
+        repo, provider_gateway=gateway, transaction_factory=tx_factory,
+    )
+    command = GenerateWorkingDraft(
+        project_id="p1",
+        chapter_session_id="session-1",
+        expected_working_draft_revision=1,
+    )
+
+    if rejected:
+        with pytest.raises(ChapterDraftGenerationFailed):
+            await service.generate_working_draft(command)
+        assert repo.upsert_calls == []
+        assert repo.working_draft["revision"] == 1
+    else:
+        result = await service.generate_working_draft(command)
+        assert result.working_draft.content == output
+        assert len(repo.upsert_calls) == 1
+
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    ("normalized-short", "encoded-long", "encoded-long-mixed"),
+)
+async def test_generation_rejects_secrets_after_content_normalization(mode):
+    from backend.services.chapter_draft_generation import (
+        ChapterDraftGenerationFailed,
+        ChapterDraftGenerationService,
+        GenerateWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    if mode == "normalized-short":
+        repo.provider["api_key"] = "short"
+        output = "  short  "
+    else:
+        output = quote(repo.provider["base_url"], safe="")
+        if mode == "encoded-long-mixed":
+            output = output.replace("%3A", "%3a").replace("%2F", "%2f", 1)
+    gateway = FakeGateway(output)
     service = ChapterDraftGenerationService(
         repo, provider_gateway=gateway, transaction_factory=tx_factory,
     )
