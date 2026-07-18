@@ -19,6 +19,7 @@ const suiteNames = [
   'browser',
   'm1-regression',
   'browser-m2',
+  'browser-product-shell',
   'milestone2',
 ]
 const integrationEnvironmentNames = [
@@ -27,7 +28,13 @@ const integrationEnvironmentNames = [
   'TEST_MYSQL_USER',
   'TEST_MYSQL_PASSWORD',
 ]
-const mysqlSuites = new Set(['integration', 'browser', 'browser-m2', 'milestone2'])
+const mysqlSuites = new Set([
+  'integration',
+  'browser',
+  'browser-m2',
+  'browser-product-shell',
+  'milestone2',
+])
 export const pytestTempStages = Object.freeze({
   m1Regression: path.join('.codex-test-artifacts', 'pytest', 'm1-regression'),
   unitApi: path.join('.codex-test-artifacts', 'pytest', 'unit-api'),
@@ -69,6 +76,9 @@ const milestone2BrowserFiles = [
   'frontend/e2e/m2-wizard-recovery.spec.ts',
   'frontend/e2e/m2-settings-assets-corpus.spec.ts',
 ]
+const productShellBrowserFiles = [
+  'frontend/e2e/product-shell-lifecycle.spec.ts',
+]
 
 export function discoverTestFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })
@@ -89,6 +99,7 @@ function createSuites(rootDirectory, environment) {
   const m1PythonTests = absolute(m1RegressionPythonFiles)
   const m1NodeTests = absolute(m1RegressionNodeFiles)
   const m2BrowserTests = absolute(milestone2BrowserFiles)
+  const productShellBrowserTests = absolute(productShellBrowserFiles)
   const retainedM1 = [
     [
       python,
@@ -131,6 +142,7 @@ function createSuites(rootDirectory, environment) {
     ],
   ]
   const browserM2 = [[node, ['frontend/e2e/run-milestone2.mjs']]]
+  const browserProductShell = [[node, ['frontend/e2e/run-product-shell.mjs']]]
 
   return {
     commands: {
@@ -140,6 +152,7 @@ function createSuites(rootDirectory, environment) {
       browser: [[node, ['frontend/e2e/run-milestone1.mjs']]],
       'm1-regression': retainedM1,
       'browser-m2': browserM2,
+      'browser-product-shell': browserProductShell,
       milestone2: [
         ...retainedM1,
         ...unit,
@@ -158,6 +171,9 @@ function createSuites(rootDirectory, environment) {
         ['M1 v1.1 frontend regression', m1NodeTests],
       ],
       'browser-m2': [['M2 Playwright specs', m2BrowserTests]],
+      'browser-product-shell': [
+        ['Product-shell Playwright spec', productShellBrowserTests],
+      ],
       milestone2: [
         [scriptTestDirectory, scriptTests],
         [frontendTestDirectory, frontendTests],

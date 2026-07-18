@@ -10,6 +10,7 @@
     "test:unit": "node ../scripts/run-tests.mjs frontend-unit",
     "test:e2e:m1": "node e2e/run-milestone1.mjs",
     "test:e2e:m2": "node e2e/run-milestone2.mjs",
+    "test:e2e:product-shell": "node e2e/run-product-shell.mjs",
     "test:e2e": "node e2e/run-milestone2.mjs"
   },
   "dependencies": {
