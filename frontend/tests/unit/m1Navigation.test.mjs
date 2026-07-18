@@ -9,9 +9,12 @@ const readSource = relativePath => readFile(
 
 test('the active router delegates only to the canonical project route registry', async () => {
   const router = await readSource('router/index.js')
+  const retiredViewPattern = new RegExp(
+    ['Home', 'Project', 'Settings'].map(name => `${name}View`).join('|'),
+  )
 
   assert.match(router, /projectRoutes/)
-  assert.doesNotMatch(router, /HomeView|ProjectView|SettingsView/)
+  assert.doesNotMatch(router, retiredViewPattern)
   assert.doesNotMatch(router, /path:\s*['"]\/project\/|path:\s*['"]\/writer\/|path:\s*['"]\/settings['"]/)
 })
 

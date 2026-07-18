@@ -41,6 +41,7 @@ import { buildWritingContext } from '@/utils/contextBuilder'
 import { assertContextPackHealthy } from '@/utils/contextPackV2'
 import { auditIssueTypeLabel, auditSeverityLabel } from '@/utils/auditLabels'
 import { api } from '@/api/db/client'
+import { projectLibraryPath, projectOverviewPath } from '@/router/projectRoutes'
 import { downloadFile, exportTxt, exportMarkdown } from '@/utils/export'
 import { formatChapterDisplayTitle, getChapterTitleQuality, isDefaultChapterTitle } from '@/prompts/chapter'
 import AIActionPanel from '@/components/writer/AIActionPanel.vue'
@@ -3207,7 +3208,7 @@ function handleContextNavigate(item) {
   showContextPreview.value = false
   if (!item?.targetTab) return
   router.push({
-    path: `/project/${projectId.value}`,
+    path: projectOverviewPath(projectId.value),
     query: { tab: item.targetTab }
   })
 }
@@ -3245,7 +3246,7 @@ function handleContextNavigate(item) {
         </div>
       </div>
       <n-space>
-        <n-button size="small" @click="router.push(`/project/${projectId}`)">项目详情</n-button>
+        <n-button size="small" @click="router.push(projectOverviewPath(projectId))">项目详情</n-button>
         <n-button
           size="small"
           secondary
@@ -3812,7 +3813,7 @@ function handleContextNavigate(item) {
   <div v-else class="p-6">
     <n-empty description="请先选择一个项目">
       <template #action>
-        <n-button @click="router.push('/')">返回项目库</n-button>
+        <n-button @click="router.push(projectLibraryPath())">返回项目库</n-button>
       </template>
     </n-empty>
   </div>

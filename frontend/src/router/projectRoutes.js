@@ -7,6 +7,18 @@ const NotFoundView = () => import('../views/NotFoundView.vue')
 
 const segment = value => encodeURIComponent(String(value))
 
+export function projectLibraryPath() {
+  return '/projects'
+}
+
+export function archivedProjectsPath() {
+  return '/projects/archived'
+}
+
+export function providerSettingsPath() {
+  return '/settings/providers'
+}
+
 function positiveChapterNumber(value) {
   const chapterNumber = Number(value)
   if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {

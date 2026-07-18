@@ -1,9 +1,10 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { projectOverviewPath } from '@/router/projectRoutes'
 
 const route = useRoute()
-const projectPath = computed(() => `/project/${encodeURIComponent(String(route.params.projectId || ''))}`)
+const projectPath = computed(() => projectOverviewPath(route.params.projectId || ''))
 </script>
 
 <template>

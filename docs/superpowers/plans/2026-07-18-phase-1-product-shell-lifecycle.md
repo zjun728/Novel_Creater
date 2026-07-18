@@ -930,10 +930,19 @@ git commit -m "feat: build project library and application feedback"
 
 - Rewrite: `frontend/src/components/layout/Sidebar.vue`
 - Rewrite: `frontend/src/components/layout/TopBar.vue`
+- Create: `frontend/src/components/layout/productShell.js`
+- Modify: `frontend/src/composables/useRouteProject.js`
 - Modify: `frontend/src/App.vue`
+- Modify: `frontend/src/router/projectRoutes.js`
 - Modify: `frontend/src/style.css`
+- Modify: `frontend/src/views/WriterView.vue`
+- Modify: `frontend/src/views/WriterUnavailableView.vue`
 - Delete: `frontend/src/views/HomeView.vue`
 - Delete: `frontend/src/views/ProjectView.vue`
+- Delete: `frontend/src/views/SettingsView.vue`
+- Modify: `frontend/tests/unit/m1Navigation.test.mjs`
+- Delete: `frontend/tests/unit/m2SettingsNavigation.test.mjs`
+- Modify: `frontend/tests/unit/projectRoutes.test.mjs`
 - Create: `frontend/tests/unit/productShell.test.mjs`
 
 - [ ] **Step 1: Write shell behavior tests**
@@ -984,6 +993,13 @@ rg "HomeView|ProjectView|/project/|router.push\\('/'\\)" frontend/src frontend/t
 
 Expected: no product references to old routes or old views.
 
+Also delete the unreachable old three-tab `SettingsView.vue` and its frozen M2
+navigation test. Phase 1 exposes only `/settings/providers`; Creative Assets
+and corpus navigation return in their approved Phase 2 modules. Keep the
+unreachable writer views off the router, but replace their retired project
+links with canonical path builders so a future refactor cannot accidentally
+restore broken navigation.
+
 - [ ] **Step 5: Run frontend unit and build checks**
 
 Run:
@@ -998,7 +1014,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add frontend/src frontend/tests/unit
+git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src frontend/tests/unit
 git commit -m "feat: complete phase one product shell"
 ```
 

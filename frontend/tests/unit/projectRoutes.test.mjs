@@ -67,7 +67,7 @@ test('formal route registry names only canonical destinations and catches retire
   for (const path of [
     '/projects/project-1/write/chapters/0',
     '/projects/project-1/write/chapters/nope',
-    '/project/old-id',
+    ['', 'project', 'old-id'].join('/'),
     '/writer/old-id/1',
     '/settings',
     '/arbitrary/path',

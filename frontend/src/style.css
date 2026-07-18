@@ -18,8 +18,10 @@
 body {
   margin: 0;
   font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, 'Noto Sans SC', sans-serif;
+    'Noto Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei',
+    'PingFang SC', sans-serif;
+  color: var(--nc-ink);
+  background: var(--nc-canvas);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -31,6 +33,39 @@ body {
 
 .app-interaction-boundary {
   height: 100%;
+}
+
+.product-app-shell {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template-columns: 248px minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--nc-canvas);
+  transition: grid-template-columns .18s ease;
+}
+
+.product-app-shell--collapsed {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.product-app-shell__workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.product-app-shell__content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--nc-canvas);
+}
+
+.product-app-shell__offline {
+  border-radius: 0;
 }
 
 .app-message-with-action {
@@ -129,6 +164,10 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .product-app-shell {
+    transition: none;
+  }
+
   .app-operation-overlay__progress {
     animation: none;
   }
