@@ -812,7 +812,10 @@ git commit -m "feat: add project lifecycle routes and state"
 - Rewrite: `frontend/src/composables/useAppMessage.js`
 - Create: `frontend/src/composables/useDangerousConfirmation.js`
 - Create: `frontend/src/stores/operationStore.js`
+- Create: `frontend/src/components/common/AppInteractionBoundary.vue`
 - Create: `frontend/src/components/common/AppOperationOverlay.vue`
+- Create: `frontend/src/router/operationNavigationGuard.js`
+- Modify: `frontend/src/router/index.js`
 - Modify: `frontend/src/App.vue`
 - Modify: `frontend/src/style.css`
 - Create: `frontend/tests/unit/projectCard.test.mjs`
@@ -917,7 +920,7 @@ npm --prefix frontend run build
 - [ ] **Step 7: Commit the atomic interaction slice**
 
 ```powershell
-git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/components/projects frontend/src/composables/projectLibraryControllers.js frontend/src/composables/useAppMessage.js frontend/src/composables/useDangerousConfirmation.js frontend/src/stores/operationStore.js frontend/src/components/common/AppOperationOverlay.vue frontend/src/App.vue frontend/src/style.css frontend/tests/unit/m1Navigation.test.mjs frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs frontend/tests/unit/projectLibraryViews.test.mjs frontend/tests/unit/appFeedback.test.mjs
+git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/components/projects frontend/src/composables/projectLibraryControllers.js frontend/src/composables/useAppMessage.js frontend/src/composables/useDangerousConfirmation.js frontend/src/stores/operationStore.js frontend/src/components/common/AppInteractionBoundary.vue frontend/src/components/common/AppOperationOverlay.vue frontend/src/router/operationNavigationGuard.js frontend/src/router/index.js frontend/src/App.vue frontend/src/style.css frontend/tests/unit/m1Navigation.test.mjs frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs frontend/tests/unit/projectLibraryViews.test.mjs frontend/tests/unit/appFeedback.test.mjs
 git commit -m "feat: build project library and application feedback"
 ```
 
