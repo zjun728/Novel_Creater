@@ -1014,7 +1014,24 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src frontend/tests/unit
+git add -- `
+  docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md `
+  frontend/src/App.vue `
+  frontend/src/components/layout/Sidebar.vue `
+  frontend/src/components/layout/TopBar.vue `
+  frontend/src/components/layout/productShell.js `
+  frontend/src/composables/useRouteProject.js `
+  frontend/src/router/projectRoutes.js `
+  frontend/src/style.css `
+  frontend/src/views/HomeView.vue `
+  frontend/src/views/ProjectView.vue `
+  frontend/src/views/SettingsView.vue `
+  frontend/src/views/WriterUnavailableView.vue `
+  frontend/src/views/WriterView.vue `
+  frontend/tests/unit/m1Navigation.test.mjs `
+  frontend/tests/unit/m2SettingsNavigation.test.mjs `
+  frontend/tests/unit/productShell.test.mjs `
+  frontend/tests/unit/projectRoutes.test.mjs
 git commit -m "feat: complete phase one product shell"
 ```
 
