@@ -253,12 +253,22 @@ _FORBIDDEN_PROFILE_KEYS = frozenset(
 
 def _sanitize_public_value(value, secrets: tuple[str, ...]):
     if isinstance(value, Mapping):
-        return {
-            key: _sanitize_public_value(item, secrets)
-            for key, item in value.items()
-            if str(key).casefold().replace("_", "").replace("-", "")
-            not in _FORBIDDEN_PROFILE_KEYS
-        }
+        sanitized = {}
+        for key, item in value.items():
+            if (
+                str(key).casefold().replace("_", "").replace("-", "")
+                in _FORBIDDEN_PROFILE_KEYS
+            ):
+                continue
+            safe_key = (
+                _sanitize_public_value(key, secrets)
+                if isinstance(key, str)
+                else key
+            )
+            if safe_key in sanitized:
+                return {}
+            sanitized[safe_key] = _sanitize_public_value(item, secrets)
+        return sanitized
     if isinstance(value, list):
         return [_sanitize_public_value(item, secrets) for item in value]
     if isinstance(value, tuple):

@@ -5,6 +5,7 @@ from dataclasses import is_dataclass
 
 import pytest
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 from backend.http_errors import PublicDomainError
@@ -409,3 +410,62 @@ def test_validation_error_redacts_secret_values_used_as_mapping_keys(
     assert response.status_code == 422
     assert_public_boundary(response.json())
     assert secret not in response.text
+
+
+@pytest.mark.parametrize(
+    ("secret_field", "secret"),
+    [
+        ("apiKey", "sk-" + ("nested-mapping-key-" * 8)),
+        (
+            "baseURL",
+            "https://private.example/" + ("nested-url-key-" * 8),
+        ),
+    ],
+)
+def test_validation_error_collects_secrets_from_sensitive_mapping_keys(
+    secret_field, secret
+):
+    body = {
+        secret_field: {"nested": {secret: True}},
+        "ordinary": {"ordinary-key": "ordinary-value"},
+    }
+    app = FastAPI()
+
+    @app.post("/validation")
+    async def fail_validation(payload: dict):
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("body", f"loc:{secret}"),
+                    "msg": f"msg:ordinary-key:{secret}",
+                    "input": {
+                        f"input-key:{secret}": f"input-value:{secret}",
+                    },
+                    "ctx": {
+                        f"ctx-key:{secret}": f"ctx-value:{secret}",
+                        "token": secret,
+                    },
+                }
+            ],
+            body=payload,
+        )
+
+    install_error_handlers(app)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/validation", json=body)
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert_public_boundary(payload)
+    assert secret not in response.text
+    error = payload["detail"][0]
+    assert error["loc"] == ["body", "loc:[REDACTED]"]
+    assert error["msg"] == "msg:ordinary-key:[REDACTED]"
+    assert error["input"] == {
+        "input-key:[REDACTED]": "input-value:[REDACTED]",
+    }
+    assert error["ctx"] == {
+        "ctx-key:[REDACTED]": "ctx-value:[REDACTED]",
+    }

@@ -54,6 +54,12 @@ def _validation_secret_values(body) -> tuple[str, ...]:
 
     def collect(value, *, inside_secret: bool = False):
         if isinstance(value, Mapping):
+            if inside_secret:
+                values.extend(
+                    key
+                    for key in value
+                    if isinstance(key, str) and key
+                )
             for key, item in value.items():
                 collect(
                     item,

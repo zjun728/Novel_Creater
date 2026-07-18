@@ -300,6 +300,79 @@ async def test_clear_key_is_atomic_idempotent_and_preserves_private_base_url():
     assert request["result_revision"] == 5
 
 
+async def destructive_mutation_twice(harness, kind):
+    if kind == "clear":
+        command = ClearProviderApiKeyCommand(
+            provider_id="provider-1",
+            expected_revision=4,
+            idempotency_key="clear-secret-key-request-0001",
+        )
+        mutate = harness.service.clear_api_key
+    else:
+        command = DeleteProviderCommand(
+            provider_id="provider-1",
+            expected_revision=4,
+            idempotency_key="delete-secret-key-request-0001",
+        )
+        mutate = harness.service.delete
+    return await mutate(command), await mutate(command)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["clear", "delete"])
+async def test_destructive_mutations_sanitize_secret_mapping_keys_before_replay(
+    kind,
+):
+    thinking = {
+        "apiKeyContainer": {SECRET: f"api value {SECRET}"},
+        "baseURLContainer": {
+            PRIVATE_URL: f"url value {PRIVATE_URL}",
+        },
+        "safe": {"ordinary": "visible"},
+    }
+    harness = Harness(rows=[provider_row(thinking=thinking)])
+
+    first, replay = await destructive_mutation_twice(harness, kind)
+
+    expected = {
+        "apiKeyContainer": {"[REDACTED]": "api value [REDACTED]"},
+        "baseURLContainer": {
+            "[REDACTED]": "url value [REDACTED]",
+        },
+        "safe": {"ordinary": "visible"},
+    }
+    for profile in (first, replay):
+        assert_public_profile(profile)
+        assert profile.thinking == expected
+    assert harness.repository.profiles["provider-1"]["thinking"] == expected
+    assert harness.repository.events.count("compare_and_swap_profile") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["clear", "delete"])
+async def test_destructive_mutations_fail_closed_on_secret_key_collision(kind):
+    thinking = {
+        "collision": {
+            SECRET: "api entry",
+            PRIVATE_URL: "url entry",
+        },
+        "safe": {"ordinary": "visible"},
+    }
+    harness = Harness(rows=[provider_row(thinking=thinking)])
+
+    first, replay = await destructive_mutation_twice(harness, kind)
+
+    expected = {
+        "collision": {},
+        "safe": {"ordinary": "visible"},
+    }
+    for profile in (first, replay):
+        assert_public_profile(profile)
+        assert profile.thinking == expected
+    assert harness.repository.profiles["provider-1"]["thinking"] == expected
+    assert harness.repository.events.count("compare_and_swap_profile") == 1
+
+
 @pytest.mark.asyncio
 async def test_soft_delete_is_the_only_command_that_wipes_key_and_base_url():
     harness = Harness()
