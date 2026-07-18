@@ -201,6 +201,63 @@ async def test_generation_provider_failure_does_not_mutate_draft():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "output",
+    ("\ud800", "\udfff", {"content": "mapping"}, ["list"]),
+    ids=("high-surrogate", "low-surrogate", "mapping", "list"),
+)
+async def test_generation_rejects_malformed_provider_text_without_raw_exception(output):
+    from backend.services.chapter_draft_generation import (
+        ChapterDraftGenerationFailed,
+        ChapterDraftGenerationService,
+        GenerateWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    gateway = FakeGateway(output)
+    service = ChapterDraftGenerationService(
+        repo, provider_gateway=gateway, transaction_factory=tx_factory,
+    )
+
+    with pytest.raises(ChapterDraftGenerationFailed) as exc_info:
+        await service.generate_working_draft(GenerateWorkingDraft(
+            project_id="p1",
+            chapter_session_id="session-1",
+            expected_working_draft_revision=1,
+        ))
+
+    assert str(exc_info.value) == "chapter draft generation failed"
+    assert exc_info.value.__cause__ is None
+    assert len(gateway.calls) == 1
+    assert repo.upsert_calls == []
+    assert repo.working_draft["revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_generation_accepts_valid_astral_and_chinese_provider_text():
+    from backend.services.chapter_draft_generation import (
+        ChapterDraftGenerationService,
+        GenerateWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    output = "星河😀中文"
+    gateway = FakeGateway(output)
+    service = ChapterDraftGenerationService(
+        repo, provider_gateway=gateway, transaction_factory=tx_factory,
+    )
+
+    result = await service.generate_working_draft(GenerateWorkingDraft(
+        project_id="p1",
+        chapter_session_id="session-1",
+        expected_working_draft_revision=1,
+    ))
+
+    assert result.working_draft.content == output
+    assert len(repo.upsert_calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("api_key", "output", "rejected"),
     (
         ("short", "short", True),

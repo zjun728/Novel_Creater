@@ -14,6 +14,7 @@ from backend.prompts.chapter_draft import build_chapter_draft_messages
 from backend.security.provider_secrets import (
     provider_response_text_contains_secret,
     provider_response_value_contains_secret,
+    validate_provider_response_text,
 )
 from backend.services.chapter_sessions import (
     ChapterSessionConflict,
@@ -97,17 +98,21 @@ class ChapterDraftGenerationService:
                 )
             except ChapterDraftProviderError as exc:
                 raise ChapterDraftGenerationFailed("chapter draft generation failed") from exc
-            content = str(generated or "").strip()
-            secrets = (provider.get("api_key"), provider.get("base_url"))
-            if (
-                provider_response_text_contains_secret(content, secrets)
-                or provider_response_value_contains_secret(content, secrets)
-            ):
+            try:
+                content = validate_provider_response_text(
+                    generated,
+                    strip=True,
+                )
+                secrets = (provider.get("api_key"), provider.get("base_url"))
+                if (
+                    provider_response_text_contains_secret(content, secrets)
+                    or provider_response_value_contains_secret(content, secrets)
+                ):
+                    raise ValueError("provider response rejected")
+            except (TypeError, ValueError, RecursionError):
                 raise ChapterDraftGenerationFailed(
                     "chapter draft generation failed"
-                )
-            if not content:
-                raise ChapterDraftGenerationFailed("chapter draft generation returned empty content")
+                ) from None
             row = {
                 "id": draft["id"],
                 "project_id": command.project_id,

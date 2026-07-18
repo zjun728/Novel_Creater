@@ -34,6 +34,7 @@ from backend.security.provider_secrets import (
     normalize_provider_secrets,
     provider_response_text_contains_secret,
     provider_response_value_contains_secret,
+    validate_provider_response_text,
 )
 
 
@@ -647,24 +648,28 @@ class StoryEngineService:
                 command.project_id, batch.id, attempt_id
             )
 
-        raw_response_hash = sha256(raw_response_text.encode("utf-8")).hexdigest()
-        if self._response_contains_connection_secret(raw_response_text, provider):
-            return await self.fail_attempt(
-                command.project_id,
-                batch.id,
-                attempt_id,
-                "invalid_response",
-                raw_response_hash=raw_response_hash,
-            )
-
+        raw_response_hash = None
         try:
+            raw_response_text = validate_provider_response_text(raw_response_text)
+            raw_response_hash = sha256(
+                raw_response_text.encode("utf-8")
+            ).hexdigest()
+            if self._response_contains_connection_secret(
+                raw_response_text,
+                provider,
+            ):
+                raise ValueError("provider response rejected")
             options = self._parse_provider_options(raw_response_text, provider)
         except (TypeError, ValueError, RecursionError):
             return await self.fail_attempt(
                 command.project_id,
                 batch.id,
                 attempt_id,
-                "invalid_response",
+                (
+                    "invalid_response"
+                    if raw_response_hash is not None
+                    else "provider_failed"
+                ),
                 raw_response_hash=raw_response_hash,
             )
         return await self.succeed_attempt(

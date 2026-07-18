@@ -577,6 +577,103 @@ async def test_malformed_provider_content_keeps_only_exact_utf8_hash():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "surrogate"),
+    (("high", "\ud800"), ("low", "\udfff")),
+)
+async def test_surrogate_provider_response_fails_safely_before_hashing_or_persistence(
+    label, surrogate
+):
+    harness = StoryEngineHarness()
+    payload = json.loads(_provider_response())
+    payload["options"][0]["name"] = surrogate
+    raw = json.dumps(payload, ensure_ascii=False)
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"surrogate-{label}")
+    )
+
+    stored = harness.repository.batches[result.id]
+    assert result.status == "failed"
+    assert result.public_error_code == "provider_failed"
+    assert result.options == ()
+    assert harness.repository.options[result.id] == []
+    assert result.raw_response_text is None
+    assert result.raw_response_hash is None
+    assert stored["raw_response_text"] is None
+    assert stored["raw_response_hash"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "surrogate"),
+    (("high", "\ud800"), ("low", "\udfff")),
+)
+async def test_json_escaped_surrogate_fails_safely_with_exact_raw_hash(
+    label, surrogate
+):
+    harness = StoryEngineHarness()
+    payload = json.loads(_provider_response())
+    payload["options"][0]["name"] = surrogate
+    raw = json.dumps(payload, ensure_ascii=True)
+    assert surrogate not in raw
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"escaped-surrogate-{label}")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "invalid_response"
+    assert result.options == ()
+    assert result.raw_response_hash == sha256(raw.encode("utf-8")).hexdigest()
+    assert harness.repository.options[result.id] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    ({"options": []}, []),
+    ids=("mapping", "list"),
+)
+async def test_non_string_provider_response_fails_safely(outcome):
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness, outcome)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"non-string-{type(outcome).__name__}")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "provider_failed"
+    assert result.options == ()
+    assert result.raw_response_hash is None
+    assert harness.repository.options[result.id] == []
+
+
+@pytest.mark.asyncio
+async def test_valid_astral_and_chinese_provider_response_still_succeeds():
+    harness = StoryEngineHarness()
+    payload = json.loads(_provider_response())
+    payload["options"][0]["name"] = "星河😀中文"
+    raw = json.dumps(payload, ensure_ascii=False)
+    gateway = ScriptedGateway(harness, raw)
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "valid-astral")
+    )
+
+    assert result.status == "succeeded"
+    assert result.options[0].payload.name == "星河😀中文"
+    assert result.raw_response_hash == sha256(raw.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.asyncio
 async def test_safe_gateway_response_error_hash_is_persisted_without_raw_body():
     harness = StoryEngineHarness()
     response_hash = "f" * 64

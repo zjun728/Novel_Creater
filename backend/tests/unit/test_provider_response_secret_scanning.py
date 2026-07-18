@@ -14,6 +14,34 @@ def _scanner(name):
     return scanner
 
 
+def test_provider_response_text_validation_requires_str_nonblank_strict_utf8():
+    validate = _scanner("validate_provider_response_text")
+    valid = "  星河😀中文  "
+
+    assert validate(valid) == valid
+    assert validate(valid, strip=True) == "星河😀中文"
+    for invalid in ({}, [], "", " \r\n", "\ud800", "\udfff"):
+        with pytest.raises(ValueError, match="provider response text is invalid"):
+            validate(invalid)
+
+
+@pytest.mark.parametrize(
+    ("value", "secrets"),
+    (
+        ("\ud800", ("long-secret",)),
+        ("ordinary response", ("\udfff-long-secret",)),
+    ),
+)
+def test_raw_response_scanner_never_leaks_unicode_errors(value, secrets):
+    scanner = _scanner("provider_response_text_contains_secret")
+
+    with pytest.raises(ValueError) as exc_info:
+        scanner(value, secrets)
+
+    assert type(exc_info.value) is ValueError
+    assert str(exc_info.value) == "provider response text is invalid"
+
+
 def test_decoded_response_scanner_matches_short_secrets_only_as_exact_scalars_or_keys():
     scanner = _scanner("provider_response_value_contains_secret")
 
@@ -31,6 +59,16 @@ def test_decoded_response_scanner_matches_long_secrets_as_substrings():
         {"tagline": "prefix long-secret-value suffix"},
         ("long-secret-value",),
     ) is True
+
+
+def test_decoded_response_scanner_rejects_surrogate_scalars_without_codec_error():
+    scanner = _scanner("provider_response_value_contains_secret")
+
+    with pytest.raises(ValueError) as exc_info:
+        scanner({"name": "\ud800"}, ("long-secret",))
+
+    assert type(exc_info.value) is ValueError
+    assert str(exc_info.value) == "provider response text is invalid"
 
 
 def test_raw_response_scanner_preserves_encoded_long_secret_detection_only():

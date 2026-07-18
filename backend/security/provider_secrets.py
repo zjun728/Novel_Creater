@@ -16,6 +16,7 @@ PUBLIC_SECRET_COLLISION_MESSAGE = (
 FORBIDDEN_PROVIDER_PUBLIC_KEYS = frozenset(
     {"apikey", "baseurl", "authorization", "token", "password"}
 )
+_INVALID_PROVIDER_RESPONSE_TEXT = "provider response text is invalid"
 
 
 def normalize_provider_secrets(values: Iterable[object]) -> tuple[str, ...]:
@@ -31,6 +32,37 @@ def normalize_provider_secrets(values: Iterable[object]) -> tuple[str, ...]:
     return tuple(
         sorted(dict.fromkeys(normalized), key=len, reverse=True)
     )
+
+
+def validate_provider_response_text(
+    value: object,
+    *,
+    strip: bool = False,
+) -> str:
+    """Return nonblank strict UTF-8 Provider text or fail closed."""
+
+    if not isinstance(value, str):
+        raise ValueError(_INVALID_PROVIDER_RESPONSE_TEXT)
+    normalized = value.strip() if strip else value
+    if not normalized.strip():
+        raise ValueError(_INVALID_PROVIDER_RESPONSE_TEXT)
+    try:
+        normalized.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(_INVALID_PROVIDER_RESPONSE_TEXT) from None
+    return normalized
+
+
+def _validated_provider_response_secrets(
+    secrets: Iterable[object],
+) -> tuple[str, ...]:
+    try:
+        normalized = normalize_provider_secrets(secrets)
+    except UnicodeError:
+        raise ValueError(_INVALID_PROVIDER_RESPONSE_TEXT) from None
+    for secret in normalized:
+        validate_provider_response_text(secret)
+    return normalized
 
 
 def _normalized_public_key(value: object) -> str:
@@ -82,17 +114,18 @@ def provider_public_fields_contain_secret(
 
 
 def provider_response_text_contains_secret(
-    value: str,
+    value: object,
     secrets: Iterable[object],
 ) -> bool:
     """Scan raw response text for encoded variants of long secrets."""
 
+    value = validate_provider_response_text(value)
     normalized_value = _PERCENT_ESCAPE.sub(
         lambda match: match.group(0).upper(),
         value,
     )
     variants: set[str] = set()
-    for secret in normalize_provider_secrets(secrets):
+    for secret in _validated_provider_response_secrets(secrets):
         if len(secret) < MIN_SUBSTRING_SECRET_LENGTH:
             continue
         secret_variants = {
@@ -120,7 +153,7 @@ def provider_response_value_contains_secret(
 ) -> bool:
     """Scan decoded response values with bounded, short-exact matching."""
 
-    normalized = normalize_provider_secrets(secrets)
+    normalized = _validated_provider_response_secrets(secrets)
     stack: list[tuple[object, int]] = [(value, 0)]
     scanned_nodes = 0
     while stack:
@@ -129,6 +162,10 @@ def provider_response_value_contains_secret(
         if scanned_nodes > max_nodes or depth > max_depth:
             raise ValueError("response structure exceeds scan limits")
         if isinstance(item, str):
+            try:
+                item.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(_INVALID_PROVIDER_RESPONSE_TEXT) from None
             if any(_matches_secret(item, secret) for secret in normalized):
                 return True
             continue
