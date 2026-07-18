@@ -1,0 +1,202 @@
+.project-library-page,
+.archived-projects-page {
+  min-height: 100%;
+  padding: clamp(24px, 4vw, 58px);
+  color: var(--nc-ink, #302a23);
+  background: var(--nc-canvas, #f4efe4);
+}
+
+.project-library-page {
+  background:
+    linear-gradient(rgba(255, 255, 255, .16), rgba(255, 255, 255, .16)),
+    var(--nc-canvas, #f4efe4);
+}
+
+.project-library-heading,
+.project-library-sheet,
+.archived-projects-heading,
+.archived-projects-sheet {
+  width: min(1120px, 100%);
+  margin-inline: auto;
+}
+
+.project-library-heading,
+.archived-projects-heading {
+  display: flex;
+  gap: 24px;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-bottom: 25px;
+  border-bottom: 1px solid #d4c7b2;
+}
+
+.project-library-kicker,
+.archived-projects-heading p {
+  margin: 0;
+  color: var(--nc-vermilion, #8f3d32);
+  font: 700 10px Georgia, 'Times New Roman', serif;
+  letter-spacing: .17em;
+}
+
+.project-library-heading h1,
+.archived-projects-heading h1 {
+  margin: 8px 0 0;
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+  font-size: clamp(38px, 5vw, 58px);
+  font-weight: 600;
+  letter-spacing: -.03em;
+}
+
+.project-library-heading span,
+.archived-projects-heading span {
+  display: block;
+  margin-top: 9px;
+  color: var(--nc-muted, #766c60);
+}
+
+.project-library-heading__actions {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  flex: none;
+}
+
+.library-link,
+.library-primary-button,
+.archived-projects-heading a,
+.project-library-error button,
+.project-library-inline-error button,
+.archived-projects-error button,
+.archived-projects-inline-error button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-weight: 650;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.library-link,
+.archived-projects-heading a {
+  display: inline-flex;
+  align-items: center;
+  color: var(--nc-ink, #302a23);
+  background: #e9e1d5;
+}
+
+.library-primary-button {
+  color: #fffaf0;
+  background: var(--nc-vermilion, #8f3d32);
+}
+
+.project-library-sheet,
+.archived-projects-sheet {
+  min-height: 350px;
+  margin-top: 26px;
+}
+
+.project-library-summary,
+.archived-projects-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 13px;
+  color: var(--nc-muted, #766c60);
+  font-size: 12px;
+}
+
+.project-library-summary p,
+.archived-projects-summary p {
+  margin: 0;
+  color: var(--nc-ink, #302a23);
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.project-library-grid,
+.project-library-skeleton,
+.archived-projects-grid,
+.archived-projects-skeleton {
+  display: grid;
+  gap: 14px;
+}
+
+.project-library-skeleton span,
+.archived-projects-skeleton span {
+  height: 158px;
+  border: 1px solid #ded3c2;
+  border-radius: 12px;
+  background: linear-gradient(95deg, #ece5d9 20%, #f8f4ec 46%, #ece5d9 72%);
+  background-size: 240% 100%;
+  animation: project-library-shimmer 1.3s ease infinite;
+}
+
+.project-library-error,
+.project-library-inline-error,
+.archived-projects-error,
+.archived-projects-inline-error {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #dfb8ad;
+  border-radius: 10px;
+  color: #822e29;
+  background: #fff4ef;
+}
+
+.project-library-error,
+.archived-projects-error {
+  min-height: 170px;
+  padding: 28px;
+}
+
+.project-library-error p,
+.archived-projects-error p {
+  margin: 6px 0 0;
+  color: #805c55;
+}
+
+.project-library-error button,
+.project-library-inline-error button,
+.archived-projects-error button,
+.archived-projects-inline-error button {
+  color: #7f2d29;
+  background: #f1d9d2;
+}
+
+.project-library-inline-error,
+.archived-projects-inline-error {
+  margin-bottom: 13px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.project-library-inline-error button,
+.archived-projects-inline-error button {
+  min-height: 30px;
+  padding-inline: 10px;
+}
+
+.project-library-page button:focus-visible,
+.project-library-page a:focus-visible,
+.archived-projects-page button:focus-visible,
+.archived-projects-page a:focus-visible {
+  outline: 3px solid rgba(143, 61, 50, .25);
+  outline-offset: 3px;
+}
+
+@keyframes project-library-shimmer {
+  to { background-position: -140% 0; }
+}
+
+@media (max-width: 720px) {
+  .project-library-heading,
+  .archived-projects-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

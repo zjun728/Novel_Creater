@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+:root {
+  --nc-canvas: #f4efe4;
+  --nc-paper: #fffdf8;
+  --nc-ink: #302a23;
+  --nc-muted: #766c60;
+  --nc-border: #d8cbb7;
+  --nc-vermilion: #8f3d32;
+}
+
 *,
 *::before,
 *::after {
@@ -20,9 +29,97 @@ body {
   height: 100vh;
 }
 
-.app-message-dialog-content {
-  max-width: min(560px, calc(100vw - 64px));
+.app-message-with-action {
+  display: inline-flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.app-message-with-action__text {
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.7;
+}
+
+.app-message-with-action__button {
+  padding: 3px 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  color: var(--nc-vermilion);
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.app-message-with-action__button:focus-visible {
+  outline: 3px solid rgba(143, 61, 50, .24);
+  outline-offset: 3px;
+}
+
+.app-operation-overlay {
+  position: fixed;
+  z-index: 2400;
+}
+
+.app-operation-overlay--blocking {
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(47, 40, 33, .18);
+  backdrop-filter: blur(2px);
+  pointer-events: auto;
+}
+
+.app-operation-overlay--notice {
+  top: 76px;
+  right: 24px;
+  pointer-events: none;
+}
+
+.app-operation-overlay__panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  min-width: min(390px, calc(100vw - 48px));
+  padding: 16px 18px;
+  border: 1px solid var(--nc-border);
+  border-radius: 10px;
+  color: var(--nc-ink);
+  background: var(--nc-paper);
+  box-shadow: 0 20px 58px rgba(42, 31, 21, .18);
+}
+
+.app-operation-overlay__seal {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid rgba(143, 61, 50, .28);
+  border-radius: 50%;
+  color: var(--nc-vermilion);
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+}
+
+.app-operation-overlay__panel strong {
+  font-family: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+}
+
+.app-operation-overlay__panel p {
+  margin: 3px 0 0;
+  color: var(--nc-muted);
+  font-size: 12px;
+}
+
+.app-operation-overlay__progress {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #d8cbb7;
+  border-top-color: var(--nc-vermilion);
+  border-radius: 50%;
+  animation: nc-operation-spin .8s linear infinite;
+}
+
+@keyframes nc-operation-spin {
+  to { transform: rotate(360deg); }
 }

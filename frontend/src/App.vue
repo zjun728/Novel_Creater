@@ -4,6 +4,7 @@ import { darkTheme } from 'naive-ui'
 import { ref, onMounted, onUnmounted, onErrorCaptured } from 'vue'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import TopBar from '@/components/layout/TopBar.vue'
+import AppOperationOverlay from '@/components/common/AppOperationOverlay.vue'
 import { useHealthCheck } from '@/composables/useHealthCheck'
 
 const darkMode = ref(false)
@@ -55,6 +56,7 @@ onErrorCaptured((err, instance, info) => {
             </n-layout-content>
           </n-layout>
         </n-layout>
+        <AppOperationOverlay />
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>

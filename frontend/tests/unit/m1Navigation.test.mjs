@@ -75,14 +75,15 @@ test('the chapter workspace returns through the canonical project overview build
   assert.doesNotMatch(workspace, /router\.push\(`\/project\//)
 })
 
-test('project library route shells stay minimal until Task 7 interactions land', async () => {
+test('project library routes mount the completed lifecycle interaction slice', async () => {
   const [library, archived] = await Promise.all([
     readSource('views/ProjectLibraryView.vue'),
     readSource('views/ArchivedProjectsView.vue'),
   ])
 
-  assert.match(library, /loadActiveProjects/)
-  assert.match(archived, /loadArchivedProjects/)
-  assert.doesNotMatch(library, /ProjectCard|ProjectNameDialog|archiveProject|renameProject/)
-  assert.doesNotMatch(archived, /ProjectCard|permanentlyDeleteProject|restoreProject/)
+  assert.match(library, /ProjectCard/)
+  assert.match(library, /ProjectNameDialog/)
+  assert.match(library, /createProjectLibraryController/)
+  assert.match(archived, /ProjectCard/)
+  assert.match(archived, /createArchivedProjectsController/)
 })

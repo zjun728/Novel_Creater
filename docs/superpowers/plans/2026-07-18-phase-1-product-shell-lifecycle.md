@@ -798,7 +798,7 @@ git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md fro
 git commit -m "feat: add project lifecycle routes and state"
 ```
 
-### Task 7: Build project library and archived-project interactions
+### Task 7: Build project library interactions and application feedback
 
 **Files:**
 
@@ -807,8 +807,18 @@ git commit -m "feat: add project lifecycle routes and state"
 - Create: `frontend/src/components/projects/ProjectCard.vue`
 - Create: `frontend/src/components/projects/ProjectNameDialog.vue`
 - Create: `frontend/src/components/projects/ProjectEmptyState.vue`
+- Create: `frontend/src/components/projects/projectLibrary.css`
+- Create: `frontend/src/composables/projectLibraryControllers.js`
+- Rewrite: `frontend/src/composables/useAppMessage.js`
+- Create: `frontend/src/composables/useDangerousConfirmation.js`
+- Create: `frontend/src/stores/operationStore.js`
+- Create: `frontend/src/components/common/AppOperationOverlay.vue`
+- Modify: `frontend/src/App.vue`
+- Modify: `frontend/src/style.css`
 - Create: `frontend/tests/unit/projectCard.test.mjs`
 - Create: `frontend/tests/unit/projectNameDialog.test.mjs`
+- Create: `frontend/tests/unit/projectLibraryViews.test.mjs`
+- Create: `frontend/tests/unit/appFeedback.test.mjs`
 
 - [ ] **Step 1: Write component behavior tests**
 
@@ -822,17 +832,36 @@ Mount with deterministic props and test:
 - archived card renders `恢复` and `永久删除`;
 - the name dialog has one input, trims surrounding whitespace, validates empty
   input inline, submits on Enter, and disables repeated submit while pending.
+- active-project page actions create, rename, archive, undo, and navigate only
+  through their explicit action controls;
+- archived-project page actions restore immediately and permanently delete only
+  after the dangerous confirmation resolves positively;
+- failed mutations preserve the server-backed list state, keep recoverable
+  feedback local to the page, and allow retry.
+
+Write feedback behavior tests proving:
+
+- success/info/warning/error use `useMessage`, never `useDialog`;
+- archive success creates a toast with action `撤销`;
+- clicking Undo calls restore exactly once;
+- dangerous confirmation defaults to red `永久删除` and neutral `取消`;
+- cancel/escape does not run the destructive callback;
+- repeated positive clicks run it once;
+- operation overlay blocks app-level navigation only when
+  `operationStore.blocking` is true.
 
 - [ ] **Step 2: Run tests and verify failure**
 
 Run:
 
 ```powershell
-node --test frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs
+node --test frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs frontend/tests/unit/projectLibraryViews.test.mjs
+node --test frontend/tests/unit/appFeedback.test.mjs
 ```
 
 Expected: FAIL because the route shells do not yet have cards, dialogs, or
-lifecycle interactions and the components do not exist.
+lifecycle interactions, ordinary messages still create non-closable dialogs,
+and the new components and feedback primitives do not exist.
 
 - [ ] **Step 3: Implement the components**
 
@@ -850,61 +879,13 @@ emit('submit', { title: normalizedTitle })
 routes only from explicit action buttons. `ArchivedProjectsView` loads archived
 projects and exposes restore/permanent-delete actions. Both pages show
 skeleton/loading, empty, success, and recoverable-error states without a full
-page modal.
+page modal. Archive executes without confirmation. After the server succeeds,
+show `项目已归档` with a `撤销` action that restores exactly once using the
+returned lifecycle revision; an Undo failure shows an error toast and retains
+the store's server-backed state. Permanent delete exists only on the archived
+page and runs only after the dangerous confirmation resolves positively.
 
-- [ ] **Step 5: Run component tests**
-
-Run:
-
-```powershell
-node --test frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```powershell
-git add frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/components/projects frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs
-git commit -m "feat: build project library interactions"
-```
-
-### Task 8: Unify toast, danger confirmation, and long-operation feedback
-
-**Files:**
-
-- Rewrite: `frontend/src/composables/useAppMessage.js`
-- Create: `frontend/src/composables/useDangerousConfirmation.js`
-- Create: `frontend/src/stores/operationStore.js`
-- Create: `frontend/src/components/common/AppOperationOverlay.vue`
-- Modify: `frontend/src/App.vue`
-- Modify: `frontend/src/style.css`
-- Create: `frontend/tests/unit/appFeedback.test.mjs`
-
-- [ ] **Step 1: Write feedback tests**
-
-Test:
-
-- success/info/warning/error use `useMessage`, never `useDialog`;
-- archive success creates a toast with action `撤销`;
-- clicking Undo calls restore exactly once;
-- dangerous confirmation defaults to red `永久删除` and neutral `取消`;
-- cancel/escape does not run the destructive callback;
-- repeated positive clicks run it once;
-- operation overlay blocks app-level navigation only when
-  `operationStore.blocking` is true.
-
-- [ ] **Step 2: Run tests and verify failure**
-
-Run:
-
-```powershell
-node --test frontend/tests/unit/appFeedback.test.mjs
-```
-
-Expected: FAIL because ordinary messages currently create non-closable dialogs.
-
-- [ ] **Step 3: Implement toast and confirmation composables**
+- [ ] **Step 5: Implement unified feedback and operation host**
 
 `useAppMessage` keeps the current `success/error/warning/info` call surface but
 delegates to `useMessage`. Support:
@@ -918,31 +899,25 @@ message.success('项目已归档', {
 ```
 
 `useDangerousConfirmation().confirm(options)` returns a Promise and calls the
-provided action only after one positive confirmation. It is used for permanent
-project deletion. Do not migrate unrelated Phase 2 settings screens into the
-active route tree.
+provided action only after one positive confirmation. It defaults to red
+`永久删除` and neutral `取消`. Mount `AppOperationOverlay` once inside Naive UI
+providers. Phase 1 lifecycle requests stay page-local and do not activate it;
+the host blocks app-level navigation only when `operationStore.blocking` is
+true.
 
-- [ ] **Step 4: Add the operation overlay host**
-
-Mount `AppOperationOverlay` once inside Naive UI providers. Phase 1 lifecycle
-requests stay page-local and do not activate it; the component establishes the
-single global host needed by later import/export/finalization operations.
-
-- [ ] **Step 5: Run feedback tests**
-
-Run:
+- [ ] **Step 6: Run component, page, feedback, frontend, and build checks**
 
 ```powershell
-node --test frontend/tests/unit/appFeedback.test.mjs
+node --test frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs frontend/tests/unit/projectLibraryViews.test.mjs frontend/tests/unit/appFeedback.test.mjs
+npm --prefix frontend run test:unit
+npm --prefix frontend run build
 ```
 
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit the atomic interaction slice**
 
 ```powershell
-git add frontend/src/composables/useAppMessage.js frontend/src/composables/useDangerousConfirmation.js frontend/src/stores/operationStore.js frontend/src/components/common/AppOperationOverlay.vue frontend/src/App.vue frontend/src/style.css frontend/tests/unit/appFeedback.test.mjs
-git commit -m "feat: unify application feedback"
+git add docs/superpowers/plans/2026-07-18-phase-1-product-shell-lifecycle.md frontend/src/views/ProjectLibraryView.vue frontend/src/views/ArchivedProjectsView.vue frontend/src/components/projects frontend/src/composables/projectLibraryControllers.js frontend/src/composables/useAppMessage.js frontend/src/composables/useDangerousConfirmation.js frontend/src/stores/operationStore.js frontend/src/components/common/AppOperationOverlay.vue frontend/src/App.vue frontend/src/style.css frontend/tests/unit/m1Navigation.test.mjs frontend/tests/unit/projectCard.test.mjs frontend/tests/unit/projectNameDialog.test.mjs frontend/tests/unit/projectLibraryViews.test.mjs frontend/tests/unit/appFeedback.test.mjs
+git commit -m "feat: build project library and application feedback"
 ```
 
 ### Task 9: Complete the product shell layout

@@ -1,12 +1,5 @@
 import { h } from 'vue'
-import { useDialog } from 'naive-ui'
-
-const TITLE_MAP = {
-  success: '操作完成',
-  error: '操作失败',
-  warning: '需要注意',
-  info: '提示'
-}
+import { useMessage } from 'naive-ui'
 
 function normalizeContent(content) {
   if (content == null) return ''
@@ -14,20 +7,44 @@ function normalizeContent(content) {
   return String(content)
 }
 
-export function useAppMessage() {
-  const dialog = useDialog()
+function actionOnce(action) {
+  let actionPromise
+  return () => {
+    if (actionPromise) return actionPromise
+    actionPromise = Promise.resolve().then(action)
+    return actionPromise
+  }
+}
 
+export function createAppMessage(message) {
   function open(type, content, options = {}) {
-    const createDialog = dialog[type] || dialog.info
-    return createDialog({
-      title: options.title || TITLE_MAP[type] || TITLE_MAP.info,
-      content: () => h('div', { class: 'app-message-dialog-content' }, normalizeContent(content)),
-      positiveText: options.positiveText || '关闭',
-      maskClosable: false,
-      closeOnEsc: false,
-      closable: false,
-      ...options
-    })
+    const show = message[type] || message.info
+    const normalizedContent = normalizeContent(content)
+    let renderedContent = normalizedContent
+    if (options.actionLabel && typeof options.onAction === 'function') {
+      const runAction = actionOnce(options.onAction)
+      renderedContent = () => h('span', { class: 'app-message-with-action' }, [
+        h('span', { class: 'app-message-with-action__text' }, normalizedContent),
+        h('button', {
+          type: 'button',
+          class: 'app-message-with-action__button',
+          onClick: runAction,
+        }, normalizeContent(options.actionLabel)),
+      ])
+    }
+    const messageOptions = {}
+    for (const key of [
+      'duration',
+      'closable',
+      'keepAliveOnHover',
+      'showIcon',
+      'icon',
+      'onClose',
+      'onLeave',
+    ]) {
+      if (options[key] !== undefined) messageOptions[key] = options[key]
+    }
+    return show(renderedContent, messageOptions)
   }
 
   return {
@@ -36,4 +53,8 @@ export function useAppMessage() {
     warning: (content, options) => open('warning', content, options),
     info: (content, options) => open('info', content, options)
   }
+}
+
+export function useAppMessage() {
+  return createAppMessage(useMessage())
 }

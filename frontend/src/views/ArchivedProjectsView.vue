@@ -1,98 +1,87 @@
-<script setup>
-import { onMounted, ref } from 'vue'
-import { NAlert, NEmpty, NSkeleton } from 'naive-ui'
+<script>
+import { defineComponent, onMounted } from 'vue'
 
+import ProjectCard from '../components/projects/ProjectCard.vue'
+import ProjectEmptyState from '../components/projects/ProjectEmptyState.vue'
+import { useAppMessage } from '../composables/useAppMessage.js'
+import { useDangerousConfirmation } from '../composables/useDangerousConfirmation.js'
+import { createArchivedProjectsController } from '../composables/projectLibraryControllers.js'
 import { useProjectStore } from '../stores/projectStore.js'
 
-const projectStore = useProjectStore()
-const loading = ref(true)
-const loadError = ref('')
+export { createArchivedProjectsController }
 
-async function loadArchivedProjects() {
-  loading.value = true
-  loadError.value = ''
-  try {
-    await projectStore.loadArchivedProjects()
-  } catch (error) {
-    loadError.value = error.message || '已归档项目加载失败'
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(loadArchivedProjects)
+export default defineComponent({
+  name: 'ArchivedProjectsView',
+  components: { ProjectCard, ProjectEmptyState },
+  setup() {
+    const store = useProjectStore()
+    const controller = createArchivedProjectsController({
+      store,
+      message: useAppMessage(),
+      confirmation: useDangerousConfirmation(),
+    })
+    onMounted(controller.load)
+    return { projectStore: store, ...controller }
+  },
+})
 </script>
 
 <template>
-  <main class="archive-page">
-    <header class="archive-heading">
-      <p>ARCHIVED WORKS</p>
-      <h1>已归档项目</h1>
+  <main class="archived-projects-page">
+    <header class="archived-projects-heading">
+      <div>
+        <p>ARCHIVED WORKS</p>
+        <h1>已归档项目</h1>
+        <span>归档只隐藏项目；恢复后可继续原来的工作稿。</span>
+      </div>
       <router-link to="/projects">返回项目库</router-link>
     </header>
-    <section class="archive-sheet" aria-live="polite">
-      <template v-if="loading">
-        <n-skeleton text width="24%" />
-        <n-skeleton text :repeat="3" />
-      </template>
-      <n-alert v-else-if="loadError" type="error" :bordered="false">{{ loadError }}</n-alert>
-      <n-empty
+
+    <section
+      class="archived-projects-sheet"
+      :aria-busy="String(loading)"
+      aria-live="polite"
+    >
+      <div v-if="loading" class="archived-projects-skeleton" aria-label="正在加载已归档项目">
+        <span v-for="index in 2" :key="index"></span>
+      </div>
+
+      <div v-else-if="loadError" class="archived-projects-error" role="alert">
+        <div>
+          <strong>暂时无法读取归档</strong>
+          <p>{{ loadError }}</p>
+        </div>
+        <button type="button" @click="load">重试</button>
+      </div>
+
+      <ProjectEmptyState
         v-else-if="!projectStore.archivedProjects.length"
-        description="目前没有已归档项目。"
+        archived
       />
-      <p v-else class="project-count">共有 {{ projectStore.archivedProjects.length }} 个已归档项目</p>
+
+      <template v-else>
+        <div class="archived-projects-summary">
+          <p>归档项目</p>
+          <span>{{ projectStore.archivedProjects.length }} 部</span>
+        </div>
+        <div v-if="actionError" class="archived-projects-inline-error" role="alert">
+          <span>{{ actionError }}</span>
+          <button type="button" @click="dismissActionError">关闭</button>
+        </div>
+        <div class="archived-projects-grid">
+          <ProjectCard
+            v-for="project in projectStore.archivedProjects"
+            :key="project.id"
+            :project="project"
+            :pending="isProjectPending(project.id)"
+            archived
+            @restore="restore"
+            @delete="permanentlyDelete"
+          />
+        </div>
+      </template>
     </section>
   </main>
 </template>
 
-<style scoped>
-.archive-page {
-  min-height: 100%;
-  padding: clamp(24px, 5vw, 64px);
-  color: #302a23;
-  background: #f4efe4;
-}
-.archive-heading,
-.archive-sheet {
-  width: min(1040px, 100%);
-  margin-inline: auto;
-}
-.archive-heading {
-  position: relative;
-  padding-bottom: 24px;
-  border-bottom: 1px solid #d4c7b2;
-}
-.archive-heading p {
-  margin: 0;
-  color: #9a3f32;
-  font: 700 10px Georgia, serif;
-  letter-spacing: .17em;
-}
-.archive-heading h1 {
-  margin: 8px 0 0;
-  font-family: Georgia, 'Noto Serif SC', serif;
-  font-size: clamp(36px, 6vw, 58px);
-  font-weight: 600;
-}
-.archive-heading a {
-  display: inline-flex;
-  margin-top: 12px;
-  color: #8f3d32;
-  font-weight: 650;
-  text-underline-offset: 4px;
-}
-.archive-sheet {
-  min-height: 220px;
-  margin-top: 24px;
-  padding: clamp(24px, 4vw, 42px);
-  border: 1px solid #d8cbb7;
-  border-radius: 14px;
-  background: #fffdf8;
-  box-shadow: 0 20px 56px rgba(58, 43, 27, .07);
-}
-.project-count {
-  margin: 0;
-  color: #62584c;
-  font-family: 'Noto Serif SC', serif;
-}
-</style>
+<style src="../components/projects/projectLibrary.css"></style>
