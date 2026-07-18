@@ -94,6 +94,47 @@ async def test_import_is_idempotent_dedupes_analysis_identity_and_stores_relativ
     assert str(root) not in repr(stored)
 
 
+async def test_identical_bytes_in_two_logical_sources_share_blob_not_revision(
+    disposable_mysql, tmp_path,
+):
+    raw = "第一章\n同一份内容可以属于两个独立逻辑来源。".encode("utf-8")
+    (tmp_path / "source-a.txt").write_bytes(raw)
+    (tmp_path / "source-b.txt").write_bytes(raw)
+    service = _service(disposable_mysql, tmp_path)
+
+    first = await service.import_source("source-a.txt", "a" * 32)
+    second = await service.import_source("source-b.txt", "b" * 32)
+
+    assert first["corpus_source_id"] != second["corpus_source_id"]
+    counts = {}
+    for table_name in (
+        "corpus_blobs",
+        "corpus_sources",
+        "corpus_source_revisions",
+        "corpus_source_heads",
+    ):
+        row = await disposable_mysql.session.fetchone(
+            f"SELECT COUNT(*) AS count FROM {table_name}"
+        )
+        counts[table_name] = row["count"]
+    assert counts == {
+        "corpus_blobs": 1,
+        "corpus_sources": 2,
+        "corpus_source_revisions": 2,
+        "corpus_source_heads": 2,
+    }
+    rows = await disposable_mysql.session.fetchall(
+        """SELECT revision.source_id,revision.content_hash,head.revision_id
+             FROM corpus_source_revisions revision
+             JOIN corpus_source_heads head
+               ON head.source_id=revision.source_id
+              AND head.revision_id=revision.id
+            ORDER BY revision.source_id"""
+    )
+    assert len(rows) == 2
+    assert {row["content_hash"] for row in rows} == {sha256(raw).hexdigest()}
+
+
 async def test_same_idempotency_key_with_different_request_conflicts(
     disposable_mysql, tmp_path
 ):

@@ -115,6 +115,7 @@ class CorpusRepository:
         self,
         session,
         *,
+        source_key: str,
         source_hash: str,
         parser_version: str,
         normalizer_version: str,
@@ -132,12 +133,13 @@ class CorpusRepository:
                       revision.status
                FROM corpus_source_revisions revision
                JOIN corpus_sources source ON source.id=revision.source_id
-               WHERE revision.content_hash=%s AND revision.parser_version=%s
+               WHERE source.source_key=%s
+                 AND revision.content_hash=%s AND revision.parser_version=%s
                  AND revision.normalizer_version=%s
                  AND revision.fragmenter_version=%s
                  AND revision.index_version=%s FOR UPDATE""",
             (
-                source_hash, parser_version, normalizer_version,
+                source_key, source_hash, parser_version, normalizer_version,
                 fragmenter_version, index_version,
             ),
         )

@@ -62,13 +62,19 @@ async def _insert_project(session, project_id=PROJECT_ID):
     )
 
 
-async def _insert_foundation_project(session):
-    await _insert_project(session)
+async def _insert_foundation_project(
+    session,
+    *,
+    project_id=PROJECT_ID,
+    binding_id=BINDING_ID,
+    binding_hash=HASH_A,
+):
+    await _insert_project(session, project_id)
     await session.execute(
         """INSERT INTO project_model_binding_revisions
            (id,project_id,revision,content_hash,source_project_id,created_at)
            VALUES (%s,%s,1,%s,NULL,%s)""",
-        (BINDING_ID, PROJECT_ID, HASH_A, NOW),
+        (binding_id, project_id, binding_hash, NOW),
     )
     for task_key in TASK_KEYS:
         await session.execute(
@@ -76,27 +82,76 @@ async def _insert_foundation_project(session):
                (binding_revision_id,task_key,resolution_status,provider_id,
                 provider_name_snapshot,model_name_snapshot,item_hash)
                VALUES (%s,%s,'unbound',NULL,NULL,NULL,%s)""",
-            (BINDING_ID, task_key, HASH_A),
+            (binding_id, task_key, binding_hash),
         )
     await session.execute(
         """INSERT INTO project_model_binding_heads
            (project_id,revision,binding_revision_id,content_hash,updated_at)
            VALUES (%s,1,%s,%s,%s)""",
-        (PROJECT_ID, BINDING_ID, HASH_A, NOW),
+        (project_id, binding_id, binding_hash, NOW),
     )
     await session.execute(
         """INSERT INTO project_contract_heads
            (project_id,revision,creation_contract_id,style_contract_id,
             creation_hash,style_hash,updated_at)
            VALUES (%s,0,NULL,NULL,NULL,NULL,%s)""",
-        (PROJECT_ID, NOW),
+        (project_id, NOW),
     )
     await session.execute(
         """INSERT INTO project_bible_heads
            (project_id,revision,bible_revision_id,content_hash,updated_at)
            VALUES (%s,0,NULL,NULL,%s)""",
-        (PROJECT_ID, NOW),
+        (project_id, NOW),
     )
+
+
+async def _insert_market_context(
+    session,
+    *,
+    project_id=PROJECT_ID,
+    binding_id=BINDING_ID,
+    binding_hash=HASH_A,
+):
+    source_id = "00000000-0000-0000-0000-000000000110"
+    snapshot_id = "00000000-0000-0000-0000-000000000111"
+    analysis_id = "00000000-0000-0000-0000-000000000112"
+    snapshot_hash = HASH_B
+    analysis_hash = HASH_C
+    await session.execute(
+        """INSERT INTO market_sources
+           (id,stable_key,adapter_key,display_name,public_config_json,status,
+            created_at,updated_at)
+           VALUES (%s,'review-source','manual','Review Source','{}','active',%s,%s)""",
+        (source_id, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO market_snapshots
+           (id,source_id,captured_at,platform,ranking_name,category,source_url,
+            content_hash,entry_count,created_at)
+           VALUES (%s,%s,%s,'review','ranking','fiction',
+                   'https://market.test/ranking',%s,1,%s)""",
+        (snapshot_id, source_id, NOW, snapshot_hash, NOW),
+    )
+    await session.execute(
+        """INSERT INTO market_analyses
+           (id,project_id,binding_revision_id,binding_hash,input_manifest_json,
+            input_manifest_hash,policy_version,idempotency_key,request_hash,
+            status,analysis_json,result_hash,public_error_code,created_at,
+            completed_at)
+           VALUES (%s,%s,%s,%s,'{}',%s,'review-v1',%s,%s,'succeeded','{}',
+                   %s,NULL,%s,%s)""",
+        (
+            analysis_id, project_id, binding_id, binding_hash, HASH_A,
+            "m" * 64, HASH_B, analysis_hash, NOW, NOW,
+        ),
+    )
+    return {
+        "source_id": source_id,
+        "snapshot_id": snapshot_id,
+        "snapshot_hash": snapshot_hash,
+        "analysis_id": analysis_id,
+        "analysis_hash": analysis_hash,
+    }
 
 
 async def _insert_active_provider(session, provider_id, name):
@@ -594,6 +649,353 @@ async def test_fresh_bootstrap_has_exact_mysql8_schema_and_no_business_rows(disp
     for table_name in EXPECTED_TABLES - {"schema_metadata", "application_settings"}:
         row = await disposable_mysql.session.fetchone(f"SELECT COUNT(*) AS count FROM `{table_name}`")
         assert row["count"] == 0, table_name
+
+
+@pytest.mark.mysql
+async def test_seed_inspiration_attempt_can_pin_market_before_seed_selection(
+    disposable_mysql,
+):
+    session = disposable_mysql.session
+    await _insert_foundation_project(session)
+    market = await _insert_market_context(session)
+    attempt_id = "00000000-0000-0000-0000-000000000113"
+
+    await session.execute(
+        """INSERT INTO seed_inspiration_attempts
+           (id,project_id,selection_revision,market_source_id,
+            market_snapshot_id,market_snapshot_hash,market_analysis_id,
+            market_analysis_hash,binding_revision_id,binding_hash,
+            input_manifest_json,input_manifest_hash,status,result_json,
+            result_hash,public_error_code,created_at,completed_at)
+           VALUES (%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,'{}',%s,'reserved',
+                   NULL,NULL,NULL,%s,NULL)""",
+        (
+            attempt_id, PROJECT_ID, market["source_id"], market["snapshot_id"],
+            market["snapshot_hash"], market["analysis_id"],
+            market["analysis_hash"], BINDING_ID, HASH_A, HASH_B, NOW,
+        ),
+    )
+
+    row = await session.fetchone(
+        """SELECT selection_revision,market_source_id,market_snapshot_id,
+                  market_snapshot_hash,market_analysis_id,market_analysis_hash,
+                  binding_revision_id,binding_hash,input_manifest_hash
+             FROM seed_inspiration_attempts WHERE id=%s""",
+        (attempt_id,),
+    )
+    assert row == {
+        "selection_revision": None,
+        "market_source_id": market["source_id"],
+        "market_snapshot_id": market["snapshot_id"],
+        "market_snapshot_hash": market["snapshot_hash"],
+        "market_analysis_id": market["analysis_id"],
+        "market_analysis_hash": market["analysis_hash"],
+        "binding_revision_id": BINDING_ID,
+        "binding_hash": HASH_A,
+        "input_manifest_hash": HASH_B,
+    }
+    assert await session.fetchone(
+        "SELECT 1 AS present FROM project_seed_selection_revisions "
+        "WHERE project_id=%s",
+        (PROJECT_ID,),
+    ) is None
+
+
+@pytest.mark.mysql
+@pytest.mark.parametrize(
+    ("attempt_table", "request_table"),
+    (
+        ("seed_inspiration_attempts", "seed_inspiration_requests"),
+        ("asset_recommendation_attempts", "asset_recommendation_requests"),
+        ("style_trial_attempts", "style_trial_requests"),
+    ),
+)
+async def test_generation_request_ledgers_reject_cross_project_and_hash_splices(
+    disposable_mysql, attempt_table, request_table,
+):
+    session = disposable_mysql.session
+    other_project = "00000000-0000-0000-0000-000000000120"
+    other_binding = "00000000-0000-0000-0000-000000000121"
+    await _insert_foundation_project(session)
+    await _insert_foundation_project(
+        session,
+        project_id=other_project,
+        binding_id=other_binding,
+        binding_hash=HASH_B,
+    )
+    attempt_id = "00000000-0000-0000-0000-000000000122"
+    if attempt_table == "seed_inspiration_attempts":
+        market = await _insert_market_context(session)
+        await session.execute(
+            """INSERT INTO seed_inspiration_attempts
+               (id,project_id,selection_revision,market_source_id,
+                market_snapshot_id,market_snapshot_hash,market_analysis_id,
+                market_analysis_hash,binding_revision_id,binding_hash,
+                input_manifest_json,input_manifest_hash,status,result_json,
+                result_hash,public_error_code,created_at,completed_at)
+               VALUES (%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,'{}',%s,'succeeded',
+                       '{}',%s,NULL,%s,%s)""",
+            (
+                attempt_id, PROJECT_ID, market["source_id"],
+                market["snapshot_id"], market["snapshot_hash"],
+                market["analysis_id"], market["analysis_hash"], BINDING_ID,
+                HASH_A, HASH_B, HASH_C, NOW, NOW,
+            ),
+        )
+    else:
+        seed_id, seed_revision_id = await _insert_seed_revision(session)
+        await _insert_selection_revision(
+            session, seed_id=seed_id, seed_revision_id=seed_revision_id,
+        )
+        await session.execute(
+            f"""INSERT INTO {attempt_table}
+                (id,project_id,selection_revision,binding_revision_id,
+                 binding_hash,input_manifest_json,input_manifest_hash,status,
+                 result_json,result_hash,public_error_code,created_at,completed_at)
+                VALUES (%s,%s,1,%s,%s,'{{}}',%s,'succeeded','{{}}',%s,NULL,%s,%s)""",
+            (
+                attempt_id, PROJECT_ID, BINDING_ID, HASH_A, HASH_B,
+                HASH_C, NOW, NOW,
+            ),
+        )
+
+    insert_request = f"""INSERT INTO {request_table}
+        (id,project_id,idempotency_key,request_hash,status,attempt_id,
+         result_hash,public_error_code,created_at,completed_at)
+        VALUES (%s,%s,%s,%s,'succeeded',%s,%s,NULL,%s,%s)"""
+    with pytest.raises(Exception):
+        await session.execute(
+            insert_request,
+            (
+                "00000000-0000-0000-0000-000000000123",
+                other_project, "x" * 64, HASH_A, attempt_id, HASH_C, NOW, NOW,
+            ),
+        )
+    with pytest.raises(Exception):
+        await session.execute(
+            insert_request,
+            (
+                "00000000-0000-0000-0000-000000000124",
+                PROJECT_ID, "y" * 64, HASH_A, attempt_id, HASH_B, NOW, NOW,
+            ),
+        )
+    await session.execute(
+        insert_request,
+        (
+            "00000000-0000-0000-0000-000000000125",
+            PROJECT_ID, "z" * 64, HASH_A, attempt_id, HASH_C, NOW, NOW,
+        ),
+    )
+
+
+@pytest.mark.mysql
+async def test_generation_roots_reject_splices_and_allow_same_numbers_after_switch(
+    disposable_mysql,
+):
+    session = disposable_mysql.session
+    creation_one, _ = await _insert_revision_one_contracts(session)
+    seed_id = "00000000-0000-0000-0000-000000000040"
+    seed_revision_id = "00000000-0000-0000-0000-000000000041"
+    creation_two = "00000000-0000-0000-0000-000000000130"
+    bible_one = "00000000-0000-0000-0000-000000000131"
+    bible_two = "00000000-0000-0000-0000-000000000132"
+    contract_two_hash = "d" * 64
+    bible_one_hash = "e" * 64
+    bible_two_hash = "f" * 64
+    await _insert_selection_revision(
+        session,
+        seed_id=seed_id,
+        seed_revision_id=seed_revision_id,
+        selection_revision=2,
+    )
+    await session.execute(
+        """INSERT INTO creation_contracts
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,binding_revision_id,binding_hash,channel_profile_key,
+            genre_profile_key,quality_charter_version,total_word_min,
+            total_word_max,chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           SELECT %s,project_id,2,2,seed_id,seed_revision_id,seed_hash,
+                  binding_revision_id,binding_hash,channel_profile_key,
+                  genre_profile_key,quality_charter_version,total_word_min,
+                  total_word_max,chapter_capacity_policy,reference_manifest_json,
+                  reference_manifest_hash,content_json,%s,confirmed_at
+             FROM creation_contracts WHERE id=%s""",
+        (creation_two, contract_two_hash, creation_one),
+    )
+
+    with pytest.raises(Exception):
+        await session.execute(
+            """INSERT INTO creation_bible_revisions
+               (id,project_id,revision,selection_revision,seed_id,
+                seed_revision_id,seed_hash,contract_revision,contract_hash,
+                binding_revision_id,binding_hash,policy_version,content_json,
+                content_hash,confirmed_at)
+               VALUES ('00000000-0000-0000-0000-000000000133',%s,1,2,%s,%s,
+                       %s,1,%s,%s,%s,'review-v1','{}',%s,%s)""",
+            (
+                PROJECT_ID, seed_id, seed_revision_id, HASH_A, HASH_B,
+                BINDING_ID, HASH_A, "9" * 64, NOW,
+            ),
+        )
+    await session.execute(
+        """INSERT INTO creation_bible_revisions
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,contract_revision,contract_hash,binding_revision_id,
+            binding_hash,policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,'review-v1','{}',%s,%s)""",
+        (
+            bible_one, PROJECT_ID, seed_id, seed_revision_id, HASH_A, HASH_B,
+            BINDING_ID, HASH_A, bible_one_hash, NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO creation_bible_revisions
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,contract_revision,contract_hash,binding_revision_id,
+            binding_hash,policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,'review-v1','{}',%s,%s)""",
+        (
+            bible_two, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
+            contract_two_hash, BINDING_ID, HASH_A, bible_two_hash, NOW,
+        ),
+    )
+
+    bible_draft_two = "00000000-0000-0000-0000-000000000142"
+    bible_draft_two_hash = "4" * 64
+    await session.execute(
+        """INSERT INTO project_bible_drafts
+           (project_id,id,base_head_revision,selection_revision,seed_id,
+            seed_revision_id,seed_hash,contract_revision,contract_hash,
+            binding_revision_id,binding_hash,policy_version,draft_json,
+            content_hash,draft_version,created_at,updated_at)
+           VALUES (%s,%s,1,2,%s,%s,%s,2,%s,%s,%s,'review-v1','{}',%s,1,%s,%s)""",
+        (
+            PROJECT_ID, bible_draft_two, seed_id, seed_revision_id, HASH_A,
+            contract_two_hash, BINDING_ID, HASH_A, bible_draft_two_hash, NOW, NOW,
+        ),
+    )
+    with pytest.raises(Exception):
+        await session.execute(
+            """INSERT INTO bible_confirmation_requests
+               (id,project_id,selection_revision,contract_revision,contract_hash,
+                draft_id,draft_version,draft_hash,idempotency_key,request_hash,
+                status,bible_revision_id,result_revision,result_hash,created_at,
+                completed_at)
+               VALUES ('00000000-0000-0000-0000-000000000143',%s,2,2,%s,%s,1,
+                       %s,%s,%s,'succeeded',%s,1,%s,%s,%s)""",
+            (
+                PROJECT_ID, contract_two_hash, bible_draft_two,
+                bible_draft_two_hash, "5" * 64, "6" * 64, bible_one,
+                bible_one_hash, NOW, NOW,
+            ),
+        )
+    await session.execute(
+        """INSERT INTO bible_confirmation_requests
+           (id,project_id,selection_revision,contract_revision,contract_hash,
+            draft_id,draft_version,draft_hash,idempotency_key,request_hash,
+            status,bible_revision_id,result_revision,result_hash,created_at,
+            completed_at)
+           VALUES ('00000000-0000-0000-0000-000000000144',%s,2,2,%s,%s,1,
+                   %s,%s,%s,'succeeded',%s,2,%s,%s,%s)""",
+        (
+            PROJECT_ID, contract_two_hash, bible_draft_two, bible_draft_two_hash,
+            "7" * 64, "8" * 64, bible_two, bible_two_hash, NOW, NOW,
+        ),
+    )
+
+    with pytest.raises(Exception):
+        await session.execute(
+            """INSERT INTO volume_plans
+               (id,project_id,selection_revision,contract_revision,
+                contract_hash,bible_revision,bible_hash,manifest_hash,
+                volume_num,title,direction_json,revision,status,created_at,
+                updated_at)
+               VALUES ('00000000-0000-0000-0000-000000000134',%s,2,1,%s,1,
+                       %s,%s,1,'splice','{}',1,'active',%s,%s)""",
+            (PROJECT_ID, HASH_B, bible_one_hash, "1" * 64, NOW, NOW),
+        )
+
+    volume_one = "00000000-0000-0000-0000-000000000135"
+    volume_two = "00000000-0000-0000-0000-000000000136"
+    block_one = "00000000-0000-0000-0000-000000000137"
+    block_two = "00000000-0000-0000-0000-000000000138"
+    manifest_one = "2" * 64
+    manifest_two = "3" * 64
+    await session.execute(
+        """INSERT INTO volume_plans
+           (id,project_id,selection_revision,contract_revision,contract_hash,
+            bible_revision,bible_hash,manifest_hash,volume_num,title,
+            direction_json,revision,status,created_at,updated_at)
+           VALUES (%s,%s,1,1,%s,1,%s,%s,1,'generation one','{}',1,'active',
+                   %s,%s)""",
+        (volume_one, PROJECT_ID, HASH_B, bible_one_hash, manifest_one, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO volume_plans
+           (id,project_id,selection_revision,contract_revision,contract_hash,
+            bible_revision,bible_hash,manifest_hash,volume_num,title,
+            direction_json,revision,status,created_at,updated_at)
+           VALUES (%s,%s,2,2,%s,2,%s,%s,1,'generation two','{}',1,'active',
+                   %s,%s)""",
+        (
+            volume_two, PROJECT_ID, contract_two_hash, bible_two_hash,
+            manifest_two, NOW, NOW,
+        ),
+    )
+    for block_id, volume_id in (
+        (block_one, volume_one),
+        (block_two, volume_two),
+    ):
+        await session.execute(
+            """INSERT INTO story_blocks
+               (id,project_id,volume_plan_id,block_num,title,goal_json,revision,
+                status,created_at,updated_at)
+               VALUES (%s,%s,%s,1,'block','{}',1,'active',%s,%s)""",
+            (block_id, PROJECT_ID, volume_id, NOW, NOW),
+        )
+
+    session_columns = (
+        "id,project_id,selection_revision,contract_revision,contract_hash,"
+        "bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,"
+        "story_block_id,chapter_num,expected_canon_revision,"
+        "expected_story_block_revision,planning_snapshot_json,status,"
+        "created_at,finalized_at"
+    )
+    placeholders = ",".join(("%s",) * 17)
+    await session.execute(
+        f"INSERT INTO chapter_sessions ({session_columns}) VALUES ({placeholders})",
+        (
+            "00000000-0000-0000-0000-000000000139", PROJECT_ID, 1, 1,
+            HASH_B, 1, bible_one_hash, volume_one, manifest_one, block_one, 1,
+            0, 1, "{}", "drafting", NOW, None,
+        ),
+    )
+    with pytest.raises(Exception):
+        await session.execute(
+            f"INSERT INTO chapter_sessions ({session_columns}) VALUES ({placeholders})",
+            (
+                "00000000-0000-0000-0000-000000000140", PROJECT_ID, 2, 2,
+                contract_two_hash, 2, bible_two_hash, volume_one, manifest_one,
+                block_one, 1, 0, 1, "{}", "drafting", NOW, None,
+            ),
+        )
+    await session.execute(
+        f"INSERT INTO chapter_sessions ({session_columns}) VALUES ({placeholders})",
+        (
+            "00000000-0000-0000-0000-000000000141", PROJECT_ID, 2, 2,
+            contract_two_hash, 2, bible_two_hash, volume_two, manifest_two,
+            block_two, 1, 0, 1, "{}", "drafting", NOW, None,
+        ),
+    )
+
+    counts = await session.fetchone(
+        """SELECT
+             (SELECT COUNT(*) FROM volume_plans WHERE volume_num=1) AS volumes,
+             (SELECT COUNT(*) FROM story_blocks WHERE block_num=1) AS blocks,
+             (SELECT COUNT(*) FROM chapter_sessions WHERE chapter_num=1) AS sessions"""
+    )
+    assert counts == {"volumes": 2, "blocks": 2, "sessions": 2}
 
 
 @pytest.mark.mysql

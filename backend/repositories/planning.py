@@ -60,10 +60,24 @@ class PlanningRepository:
                  ON contract_head.project_id=volume.project_id
                 AND contract_head.revision=volume.contract_revision
                 AND contract_head.creation_hash=volume.contract_hash
+               JOIN creation_contracts current_contract
+                 ON current_contract.project_id=contract_head.project_id
+                AND current_contract.id=contract_head.creation_contract_id
+                AND current_contract.selection_revision=volume.selection_revision
+                AND current_contract.revision=volume.contract_revision
+                AND current_contract.content_hash=volume.contract_hash
                JOIN project_bible_heads bible_head
                  ON bible_head.project_id=volume.project_id
                 AND bible_head.revision=volume.bible_revision
                 AND bible_head.content_hash=volume.bible_hash
+               JOIN creation_bible_revisions current_bible
+                 ON current_bible.project_id=bible_head.project_id
+                AND current_bible.id=bible_head.bible_revision_id
+                AND current_bible.selection_revision=volume.selection_revision
+                AND current_bible.contract_revision=volume.contract_revision
+                AND current_bible.contract_hash=volume.contract_hash
+                AND current_bible.revision=volume.bible_revision
+                AND current_bible.content_hash=volume.bible_hash
                WHERE volume.project_id=%s AND volume.status='active'
                ORDER BY volume.volume_num LIMIT 1""",
             (project_id,),

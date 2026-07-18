@@ -184,7 +184,7 @@ CREATE TABLE market_analyses (
   UNIQUE KEY uq_market_analysis_idempotency (project_id, idempotency_key),
   UNIQUE KEY uq_market_analysis_identity (project_id, id, result_hash),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, binding_revision_id, binding_hash) REFERENCES project_model_binding_revisions(project_id, id, content_hash) ON DELETE RESTRICT,
   CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
   CHECK (
     (status IN ('reserved','running') AND analysis_json IS NULL
@@ -203,7 +203,12 @@ CREATE TABLE market_analyses (
 CREATE TABLE seed_inspiration_attempts (
   id CHAR(36) PRIMARY KEY,
   project_id CHAR(36) NOT NULL,
-  selection_revision INT NOT NULL,
+  selection_revision INT NULL,
+  market_source_id CHAR(36) NOT NULL,
+  market_snapshot_id CHAR(36) NOT NULL,
+  market_snapshot_hash CHAR(64) NOT NULL,
+  market_analysis_id CHAR(36) NOT NULL,
+  market_analysis_hash CHAR(64) NOT NULL,
   binding_revision_id CHAR(36) NOT NULL,
   binding_hash CHAR(64) NOT NULL,
   input_manifest_json JSON NOT NULL,
@@ -214,10 +219,25 @@ CREATE TABLE seed_inspiration_attempts (
   public_error_code VARCHAR(64) NULL,
   created_at BIGINT NOT NULL,
   completed_at BIGINT NULL,
+  UNIQUE KEY uq_seed_inspiration_attempt_owner (project_id, id),
   UNIQUE KEY uq_seed_inspiration_attempt_identity (project_id, id, result_hash),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, selection_revision) REFERENCES project_seed_selection_revisions(project_id, selection_revision) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown'))
+  FOREIGN KEY (market_source_id, market_snapshot_id, market_snapshot_hash) REFERENCES market_snapshots(source_id, id, content_hash) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, market_analysis_id, market_analysis_hash) REFERENCES market_analyses(project_id, id, result_hash) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, binding_revision_id, binding_hash) REFERENCES project_model_binding_revisions(project_id, id, content_hash) ON DELETE RESTRICT,
+  CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
+  CHECK (
+    (status IN ('reserved','running') AND result_json IS NULL
+      AND result_hash IS NULL AND public_error_code IS NULL
+      AND completed_at IS NULL)
+    OR (status = 'succeeded' AND result_json IS NOT NULL
+      AND result_hash IS NOT NULL AND public_error_code IS NULL
+      AND completed_at IS NOT NULL)
+    OR (status IN ('failed','outcome_unknown') AND result_json IS NULL
+      AND result_hash IS NULL AND public_error_code IS NOT NULL
+      AND completed_at IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -234,8 +254,21 @@ CREATE TABLE seed_inspiration_requests (
   completed_at BIGINT NULL,
   UNIQUE KEY uq_seed_inspiration_idempotency (project_id, idempotency_key),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (attempt_id) REFERENCES seed_inspiration_attempts(id) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','succeeded','failed','outcome_unknown'))
+  FOREIGN KEY (project_id, attempt_id) REFERENCES seed_inspiration_attempts(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, attempt_id, result_hash) REFERENCES seed_inspiration_attempts(project_id, id, result_hash) ON DELETE RESTRICT,
+  CHECK (status IN ('reserved','succeeded','failed','outcome_unknown')),
+  CHECK (
+    (status = 'reserved' AND attempt_id IS NULL AND result_hash IS NULL
+      AND public_error_code IS NULL AND completed_at IS NULL)
+    OR (status = 'succeeded' AND attempt_id IS NOT NULL
+      AND result_hash IS NOT NULL AND public_error_code IS NULL
+      AND completed_at IS NOT NULL)
+    OR (status = 'failed' AND result_hash IS NULL
+      AND public_error_code IS NOT NULL AND completed_at IS NOT NULL)
+    OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
+      AND result_hash IS NULL AND public_error_code IS NOT NULL
+      AND completed_at IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -253,10 +286,22 @@ CREATE TABLE asset_recommendation_attempts (
   public_error_code VARCHAR(64) NULL,
   created_at BIGINT NOT NULL,
   completed_at BIGINT NULL,
+  UNIQUE KEY uq_asset_recommendation_attempt_owner (project_id, id),
   UNIQUE KEY uq_asset_recommendation_attempt_identity (project_id, id, result_hash),
   FOREIGN KEY (project_id, selection_revision) REFERENCES project_seed_selection_revisions(project_id, selection_revision) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown'))
+  FOREIGN KEY (project_id, binding_revision_id, binding_hash) REFERENCES project_model_binding_revisions(project_id, id, content_hash) ON DELETE RESTRICT,
+  CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
+  CHECK (
+    (status IN ('reserved','running') AND result_json IS NULL
+      AND result_hash IS NULL AND public_error_code IS NULL
+      AND completed_at IS NULL)
+    OR (status = 'succeeded' AND result_json IS NOT NULL
+      AND result_hash IS NOT NULL AND public_error_code IS NULL
+      AND completed_at IS NOT NULL)
+    OR (status IN ('failed','outcome_unknown') AND result_json IS NULL
+      AND result_hash IS NULL AND public_error_code IS NOT NULL
+      AND completed_at IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -273,8 +318,21 @@ CREATE TABLE asset_recommendation_requests (
   completed_at BIGINT NULL,
   UNIQUE KEY uq_asset_recommendation_idempotency (project_id, idempotency_key),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (attempt_id) REFERENCES asset_recommendation_attempts(id) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','succeeded','failed','outcome_unknown'))
+  FOREIGN KEY (project_id, attempt_id) REFERENCES asset_recommendation_attempts(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, attempt_id, result_hash) REFERENCES asset_recommendation_attempts(project_id, id, result_hash) ON DELETE RESTRICT,
+  CHECK (status IN ('reserved','succeeded','failed','outcome_unknown')),
+  CHECK (
+    (status = 'reserved' AND attempt_id IS NULL AND result_hash IS NULL
+      AND public_error_code IS NULL AND completed_at IS NULL)
+    OR (status = 'succeeded' AND attempt_id IS NOT NULL
+      AND result_hash IS NOT NULL AND public_error_code IS NULL
+      AND completed_at IS NOT NULL)
+    OR (status = 'failed' AND result_hash IS NULL
+      AND public_error_code IS NOT NULL AND completed_at IS NOT NULL)
+    OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
+      AND result_hash IS NULL AND public_error_code IS NOT NULL
+      AND completed_at IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -292,10 +350,22 @@ CREATE TABLE style_trial_attempts (
   public_error_code VARCHAR(64) NULL,
   created_at BIGINT NOT NULL,
   completed_at BIGINT NULL,
+  UNIQUE KEY uq_style_trial_attempt_owner (project_id, id),
   UNIQUE KEY uq_style_trial_attempt_identity (project_id, id, result_hash),
   FOREIGN KEY (project_id, selection_revision) REFERENCES project_seed_selection_revisions(project_id, selection_revision) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown'))
+  FOREIGN KEY (project_id, binding_revision_id, binding_hash) REFERENCES project_model_binding_revisions(project_id, id, content_hash) ON DELETE RESTRICT,
+  CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
+  CHECK (
+    (status IN ('reserved','running') AND result_json IS NULL
+      AND result_hash IS NULL AND public_error_code IS NULL
+      AND completed_at IS NULL)
+    OR (status = 'succeeded' AND result_json IS NOT NULL
+      AND result_hash IS NOT NULL AND public_error_code IS NULL
+      AND completed_at IS NOT NULL)
+    OR (status IN ('failed','outcome_unknown') AND result_json IS NULL
+      AND result_hash IS NULL AND public_error_code IS NOT NULL
+      AND completed_at IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -312,7 +382,20 @@ CREATE TABLE style_trial_requests (
   completed_at BIGINT NULL,
   UNIQUE KEY uq_style_trial_idempotency (project_id, idempotency_key),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (attempt_id) REFERENCES style_trial_attempts(id) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','succeeded','failed','outcome_unknown'))
+  FOREIGN KEY (project_id, attempt_id) REFERENCES style_trial_attempts(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, attempt_id, result_hash) REFERENCES style_trial_attempts(project_id, id, result_hash) ON DELETE RESTRICT,
+  CHECK (status IN ('reserved','succeeded','failed','outcome_unknown')),
+  CHECK (
+    (status = 'reserved' AND attempt_id IS NULL AND result_hash IS NULL
+      AND public_error_code IS NULL AND completed_at IS NULL)
+    OR (status = 'succeeded' AND attempt_id IS NOT NULL
+      AND result_hash IS NOT NULL AND public_error_code IS NULL
+      AND completed_at IS NOT NULL)
+    OR (status = 'failed' AND result_hash IS NULL
+      AND public_error_code IS NOT NULL AND completed_at IS NOT NULL)
+    OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
+      AND result_hash IS NULL AND public_error_code IS NOT NULL
+      AND completed_at IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

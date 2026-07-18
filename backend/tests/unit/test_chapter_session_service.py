@@ -34,8 +34,10 @@ class FakeChapterRepository:
             }],
         }
         self.session = None
+        self.sessions = []
         self.generation_current = True
         self.working_draft = None
+        self.working_drafts = {}
         self.candidates = []
 
     async def lock_project(self, session, project_id):
@@ -49,29 +51,65 @@ class FakeChapterRepository:
     async def read_projection_head(self, session, project_id):
         return self.canon
 
-    async def read_chapter_session(self, session, project_id, chapter_num):
-        if self.session and self.session["chapter_num"] == chapter_num:
-            return self.session
+    def _effective_status(self, row):
+        current = (
+            self.generation_current
+            and row["selection_revision"] == self.plan["selection_revision"]
+            and row["contract_revision"] == self.plan["contract_revision"]
+            and row["contract_hash"] == self.plan["contract_hash"]
+            and row["bible_revision"] == self.plan["bible_revision"]
+            and row["bible_hash"] == self.plan["bible_hash"]
+            and row["volume_plan_id"] == self.plan["volume"]["id"]
+            and row["planning_manifest_hash"] == self.plan["manifest_hash"]
+        )
+        return row["status"] if current else "superseded"
+
+    async def read_chapter_session(
+        self, session, project_id, chapter_num, generation=None,
+    ):
+        for row in reversed(self.sessions):
+            if row["chapter_num"] != chapter_num:
+                continue
+            if generation is not None and any(
+                row[key] != generation[key]
+                for key in (
+                    "selection_revision", "contract_revision", "contract_hash",
+                    "bible_revision", "bible_hash", "volume_plan_id",
+                    "planning_manifest_hash",
+                )
+            ):
+                continue
+            return row | {"effective_status": self._effective_status(row)}
         return None
 
     async def read_latest_chapter_session(self, session, project_id):
         if self.session is None:
             return None
-        return self.session | {
-            "effective_status": (
-                self.session["status"] if self.generation_current else "superseded"
-            )
-        }
+        return self.session | {"effective_status": self._effective_status(self.session)}
+
+    async def read_session_by_id(self, session, project_id, chapter_session_id):
+        for row in self.sessions:
+            if row["id"] == chapter_session_id:
+                return row | {"effective_status": self._effective_status(row)}
+        return None
 
     async def insert_chapter_session(self, session, row):
         self.session = row
+        self.sessions.append(row)
         return True
 
     async def read_working_draft(self, session, chapter_session_id):
-        return self.working_draft if self.working_draft and self.working_draft["chapter_session_id"] == chapter_session_id else None
+        row = self.working_drafts.get(chapter_session_id)
+        if row is None:
+            return None
+        chapter_session = next(
+            item for item in self.sessions if item["id"] == chapter_session_id
+        )
+        return row | {"effective_status": self._effective_status(chapter_session)}
 
     async def upsert_working_draft(self, session, row):
         self.working_draft = row
+        self.working_drafts[row["chapter_session_id"]] = row
         return True
 
     async def insert_candidate(self, session, row):
@@ -81,7 +119,15 @@ class FakeChapterRepository:
         return True
 
     async def list_candidates(self, session, chapter_session_id):
-        return [item for item in self.candidates if item["chapter_session_id"] == chapter_session_id]
+        chapter_session = next(
+            item for item in self.sessions if item["id"] == chapter_session_id
+        )
+        effective_status = self._effective_status(chapter_session)
+        return [
+            item | {"effective_status": effective_status}
+            for item in self.candidates
+            if item["chapter_session_id"] == chapter_session_id
+        ]
 
 
 class FakeTx:
@@ -177,6 +223,7 @@ async def test_generation_drift_returns_superseded_workspace_and_rejects_writes(
         ChapterSessionConflict,
         ChapterSessionService,
         CreateChapterSession,
+        SaveDraftCandidate,
         SaveWorkingDraft,
     )
 
@@ -193,10 +240,27 @@ async def test_generation_drift_returns_superseded_workspace_and_rejects_writes(
             expected_canon_revision=0,
         )
     )
+    await service.save_working_draft(
+        SaveWorkingDraft(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_revision=1,
+            content="旧代际正文",
+        )
+    )
+    await service.save_candidate(
+        SaveDraftCandidate(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_working_draft_revision=2,
+        )
+    )
     repo.generation_current = False
 
     current = await service.get_current("p1")
     assert current.session.status == "superseded"
+    assert current.working_draft.status == "superseded"
+    assert current.candidates[0].status == "superseded"
 
     with pytest.raises(ChapterSessionConflict, match="superseded"):
         await service.save_working_draft(
@@ -207,6 +271,51 @@ async def test_generation_drift_returns_superseded_workspace_and_rejects_writes(
                 content="不得复活旧代际",
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_seed_switch_creates_same_number_session_in_new_generation():
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        CreateChapterSession,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    first = await service.create_session(
+        CreateChapterSession(
+            project_id="p1",
+            expected_story_block_revision=1,
+            expected_canon_revision=0,
+        )
+    )
+    repo.plan = {
+        **repo.plan,
+        "selection_revision": 4,
+        "manifest_hash": "d" * 64,
+        "volume": {"id": "volume-2"},
+        "block": {
+            **repo.plan["block"],
+            "id": "block-2",
+        },
+    }
+
+    second = await service.create_session(
+        CreateChapterSession(
+            project_id="p1",
+            expected_story_block_revision=1,
+            expected_canon_revision=0,
+        )
+    )
+
+    assert second.session.id != first.session.id
+    assert second.session.chapter_num == first.session.chapter_num == 1
+    assert second.session.selection_revision == 4
+    old = await repo.read_session_by_id(object(), "p1", first.session.id)
+    assert old["effective_status"] == "superseded"
+    assert (await repo.read_working_draft(object(), first.session.id))[
+        "effective_status"
+    ] == "superseded"
 
 
 @pytest.mark.asyncio

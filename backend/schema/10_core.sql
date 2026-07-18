@@ -174,6 +174,8 @@ CREATE TABLE project_model_binding_revisions (
   UNIQUE KEY uq_binding_revision (project_id, revision),
   UNIQUE KEY uq_binding_revision_id (project_id, id),
   UNIQUE KEY uq_binding_revision_identity (project_id, id, revision),
+  UNIQUE KEY uq_binding_revision_hash_identity (project_id, id, content_hash),
+  UNIQUE KEY uq_binding_revision_full_identity (project_id, id, revision, content_hash),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (source_project_id) REFERENCES projects(id) ON DELETE SET NULL,
   CHECK (revision > 0)
@@ -208,8 +210,7 @@ CREATE TABLE project_model_binding_heads (
   binding_revision_id CHAR(36) NOT NULL,
   content_hash CHAR(64) NOT NULL,
   updated_at BIGINT NOT NULL,
-  FOREIGN KEY (project_id, binding_revision_id) REFERENCES project_model_binding_revisions(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, binding_revision_id, revision) REFERENCES project_model_binding_revisions(project_id, id, revision) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, binding_revision_id, revision, content_hash) REFERENCES project_model_binding_revisions(project_id, id, revision, content_hash) ON DELETE CASCADE,
   CHECK (revision > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

@@ -31,6 +31,15 @@ CORPUS_FRAGMENT_ID = "60000000-0000-0000-0000-000000000005"
 CORPUS_IMPORT_ID = "60000000-0000-0000-0000-000000000006"
 CORPUS_REVISION_ID = "60000000-0000-0000-0000-000000000007"
 BIBLE_REVISION_ID = "60000000-0000-0000-0000-000000000008"
+MARKET_SOURCE_ID = "60000000-0000-0000-0000-000000000009"
+MARKET_SNAPSHOT_ID = "60000000-0000-0000-0000-000000000010"
+MARKET_ANALYSIS_ID = "60000000-0000-0000-0000-000000000011"
+SEED_ATTEMPT_ID = "60000000-0000-0000-0000-000000000012"
+SEED_REQUEST_ID = "60000000-0000-0000-0000-000000000013"
+ASSET_ATTEMPT_ID = "60000000-0000-0000-0000-000000000014"
+ASSET_REQUEST_ID = "60000000-0000-0000-0000-000000000015"
+STYLE_ATTEMPT_ID = "60000000-0000-0000-0000-000000000016"
+STYLE_REQUEST_ID = "60000000-0000-0000-0000-000000000017"
 VOLUME_ID = "70000000-0000-0000-0000-000000000001"
 BLOCK_ID = "70000000-0000-0000-0000-000000000002"
 SESSION_ID = "70000000-0000-0000-0000-000000000003"
@@ -53,6 +62,13 @@ PRIVATE_TABLES_WITHOUT_CLONE_ROWS = (
     "project_selected_seeds",
     "project_model_binding_items",
     "project_model_binding_heads",
+    "market_analyses",
+    "seed_inspiration_attempts",
+    "seed_inspiration_requests",
+    "asset_recommendation_attempts",
+    "asset_recommendation_requests",
+    "style_trial_attempts",
+    "style_trial_requests",
     "story_engine_batches",
     "story_engine_options",
     "project_contract_drafts",
@@ -212,6 +228,22 @@ async def _insert_shared_rows(session) -> None:
             NOW,
             NOW,
         ),
+    )
+    await session.execute(
+        """INSERT INTO market_sources
+           (id,stable_key,adapter_key,display_name,public_config_json,status,
+            created_at,updated_at)
+           VALUES (%s,'shared-market','manual','Shared Market','{}','active',
+                   %s,%s)""",
+        (MARKET_SOURCE_ID, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO market_snapshots
+           (id,source_id,captured_at,platform,ranking_name,category,source_url,
+            content_hash,entry_count,created_at)
+           VALUES (%s,%s,%s,'test','ranking','fiction',
+                   'https://market.test/shared',%s,1,%s)""",
+        (MARKET_SNAPSHOT_ID, MARKET_SOURCE_ID, NOW, "9" * 64, NOW),
     )
 
 
@@ -432,6 +464,75 @@ async def _insert_seed_engine_and_contracts(session) -> None:
     )
 
 
+async def _insert_generation_ledgers(session) -> None:
+    await session.execute(
+        """INSERT INTO market_analyses
+           (id,project_id,binding_revision_id,binding_hash,input_manifest_json,
+            input_manifest_hash,policy_version,idempotency_key,request_hash,
+            status,analysis_json,result_hash,public_error_code,created_at,
+            completed_at)
+           VALUES (%s,%s,%s,%s,'{}',%s,'ownership-v1',%s,%s,'succeeded','{}',
+                   %s,NULL,%s,%s)""",
+        (
+            MARKET_ANALYSIS_ID, PROJECT_ID, BINDING_ID, "f" * 64,
+            "a" * 64, "b" * 64, "c" * 64, "d" * 64, NOW, NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO seed_inspiration_attempts
+           (id,project_id,selection_revision,market_source_id,
+            market_snapshot_id,market_snapshot_hash,market_analysis_id,
+            market_analysis_hash,binding_revision_id,binding_hash,
+            input_manifest_json,input_manifest_hash,status,result_json,
+            result_hash,public_error_code,created_at,completed_at)
+           VALUES (%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,'{}',%s,'succeeded','{}',
+                   %s,NULL,%s,%s)""",
+        (
+            SEED_ATTEMPT_ID, PROJECT_ID, MARKET_SOURCE_ID, MARKET_SNAPSHOT_ID,
+            "9" * 64, MARKET_ANALYSIS_ID, "d" * 64, BINDING_ID, "f" * 64,
+            "e" * 64, "1" * 64, NOW, NOW,
+        ),
+    )
+    for attempt_table, request_table, attempt_id, request_id, result_hash in (
+        (
+            "seed_inspiration_attempts", "seed_inspiration_requests",
+            SEED_ATTEMPT_ID, SEED_REQUEST_ID, "1" * 64,
+        ),
+        (
+            "asset_recommendation_attempts", "asset_recommendation_requests",
+            ASSET_ATTEMPT_ID, ASSET_REQUEST_ID, "2" * 64,
+        ),
+        (
+            "style_trial_attempts", "style_trial_requests",
+            STYLE_ATTEMPT_ID, STYLE_REQUEST_ID, "3" * 64,
+        ),
+    ):
+        if attempt_table != "seed_inspiration_attempts":
+            await session.execute(
+                f"""INSERT INTO {attempt_table}
+                    (id,project_id,selection_revision,binding_revision_id,
+                     binding_hash,input_manifest_json,input_manifest_hash,
+                     status,result_json,result_hash,public_error_code,created_at,
+                     completed_at)
+                    VALUES (%s,%s,1,%s,%s,'{{}}',%s,'succeeded','{{}}',%s,
+                            NULL,%s,%s)""",
+                (
+                    attempt_id, PROJECT_ID, BINDING_ID, "f" * 64,
+                    "4" * 64, result_hash, NOW, NOW,
+                ),
+            )
+        await session.execute(
+            f"""INSERT INTO {request_table}
+                (id,project_id,idempotency_key,request_hash,status,attempt_id,
+                 result_hash,public_error_code,created_at,completed_at)
+                VALUES (%s,%s,%s,%s,'succeeded',%s,%s,NULL,%s,%s)""",
+            (
+                request_id, PROJECT_ID, request_id.replace("-", ""),
+                "5" * 64, attempt_id, result_hash, NOW, NOW,
+            ),
+        )
+
+
 async def _insert_planning_draft_canon_and_projections(session) -> None:
     await session.execute(
         """INSERT INTO volume_plans
@@ -642,6 +743,7 @@ async def test_permanent_delete_removes_owned_graph_and_detaches_clone_provenanc
     await _insert_project(session, CLONE_ID, "Clone")
     await _insert_shared_rows(session)
     await _insert_seed_engine_and_contracts(session)
+    await _insert_generation_ledgers(session)
     await _insert_planning_draft_canon_and_projections(session)
 
     assert await session.execute(
@@ -680,6 +782,8 @@ async def test_permanent_delete_removes_owned_graph_and_detaches_clone_provenanc
         ("corpus_fragments", CORPUS_FRAGMENT_ID),
         ("corpus_import_runs", CORPUS_IMPORT_ID),
         ("corpus_source_revisions", CORPUS_REVISION_ID),
+        ("market_sources", MARKET_SOURCE_ID),
+        ("market_snapshots", MARKET_SNAPSHOT_ID),
     ):
         assert await session.fetchone(
             f"SELECT id FROM {table} WHERE id=%s", (row_id,)
@@ -712,6 +816,7 @@ async def test_permanent_delete_failure_rolls_back_the_entire_owned_graph(
     await _insert_project(session, CLONE_ID, "Clone")
     await _insert_shared_rows(session)
     await _insert_seed_engine_and_contracts(session)
+    await _insert_generation_ledgers(session)
     await _insert_planning_draft_canon_and_projections(session)
     await session.execute(
         """UPDATE projects SET archived_at=%s,lifecycle_revision=1
@@ -741,6 +846,13 @@ async def test_permanent_delete_failure_rolls_back_the_entire_owned_graph(
         "volume_plans",
         "chapter_sessions",
         "final_chapters",
+        "market_analyses",
+        "seed_inspiration_attempts",
+        "seed_inspiration_requests",
+        "asset_recommendation_attempts",
+        "asset_recommendation_requests",
+        "style_trial_attempts",
+        "style_trial_requests",
     ):
         assert await session.fetchone(
             f"SELECT COUNT(*) AS count FROM {table} WHERE project_id=%s",
@@ -764,6 +876,7 @@ async def test_cross_project_private_parent_references_are_rejected_by_family(
     await _insert_project(session, CLONE_ID, "Clone")
     await _insert_shared_rows(session)
     await _insert_seed_engine_and_contracts(session)
+    await _insert_generation_ledgers(session)
     await _insert_planning_draft_canon_and_projections(session)
 
     cases = (

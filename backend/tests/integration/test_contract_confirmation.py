@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from pymysql.err import IntegrityError
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
@@ -171,16 +172,13 @@ async def test_real_confirmation_rejects_any_binding_snapshot_drift(
             ("f" * 64, BINDING),
         )
     else:
-        await disposable_mysql.session.execute(
-            """UPDATE project_model_binding_revisions SET content_hash=%s
-               WHERE id=%s""",
-            ("f" * 64, BINDING),
-        )
-        await disposable_mysql.session.execute(
-            """UPDATE project_model_binding_heads SET content_hash=%s
-               WHERE binding_revision_id=%s""",
-            ("f" * 64, BINDING),
-        )
+        with pytest.raises(IntegrityError):
+            await disposable_mysql.session.execute(
+                """UPDATE project_model_binding_revisions SET content_hash=%s
+                   WHERE id=%s""",
+                ("f" * 64, BINDING),
+            )
+        return
 
     with pytest.raises(ContractConflict):
         await service.confirm(_confirm(saved, key=f"binding-{drift}"))

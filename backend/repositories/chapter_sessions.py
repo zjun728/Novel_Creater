@@ -12,16 +12,30 @@ LEFT JOIN project_selected_seeds selected
   ON selected.project_id=session.project_id
 LEFT JOIN project_contract_heads contract_head
   ON contract_head.project_id=session.project_id
+LEFT JOIN creation_contracts current_contract
+  ON current_contract.project_id=contract_head.project_id
+ AND current_contract.id=contract_head.creation_contract_id
+ AND current_contract.revision=contract_head.revision
+ AND current_contract.content_hash=contract_head.creation_hash
 LEFT JOIN project_bible_heads bible_head
   ON bible_head.project_id=session.project_id
+LEFT JOIN creation_bible_revisions current_bible
+  ON current_bible.project_id=bible_head.project_id
+ AND current_bible.id=bible_head.bible_revision_id
+ AND current_bible.revision=bible_head.revision
+ AND current_bible.content_hash=bible_head.content_hash
 LEFT JOIN volume_plans planning_root
   ON planning_root.project_id=session.project_id
  AND planning_root.id=session.volume_plan_id
 """
 _EFFECTIVE_STATUS = """
 CASE WHEN selected.selection_revision=session.selection_revision
+  AND current_contract.selection_revision=session.selection_revision
   AND contract_head.revision=session.contract_revision
   AND contract_head.creation_hash=session.contract_hash
+  AND current_bible.selection_revision=session.selection_revision
+  AND current_bible.contract_revision=session.contract_revision
+  AND current_bible.contract_hash=session.contract_hash
   AND bible_head.revision=session.bible_revision
   AND bible_head.content_hash=session.bible_hash
   AND planning_root.manifest_hash=session.planning_manifest_hash
@@ -30,6 +44,7 @@ CASE WHEN selected.selection_revision=session.selection_revision
   AND planning_root.contract_hash=session.contract_hash
   AND planning_root.bible_revision=session.bible_revision
   AND planning_root.bible_hash=session.bible_hash
+  AND planning_root.status='active'
 THEN session.status ELSE 'superseded' END
 """
 _SESSION_SELECT = f"""
@@ -55,11 +70,33 @@ class ChapterSessionRepository:
             (project_id,),
         )
 
-    async def read_chapter_session(self, session, project_id: str, chapter_num: int):
+    async def read_chapter_session(
+        self,
+        session,
+        project_id: str,
+        chapter_num: int,
+        generation: dict,
+    ):
         row = await session.fetchone(
             f"""{_SESSION_SELECT}
-                 WHERE session.project_id=%s AND session.chapter_num=%s""",
-            (project_id, chapter_num),
+                 WHERE session.project_id=%s AND session.chapter_num=%s
+                   AND session.selection_revision=%s
+                   AND session.contract_revision=%s
+                   AND session.contract_hash=%s
+                   AND session.bible_revision=%s
+                   AND session.bible_hash=%s
+                   AND session.volume_plan_id=%s
+                   AND session.planning_manifest_hash=%s""",
+            (
+                project_id, chapter_num,
+                generation["selection_revision"],
+                generation["contract_revision"],
+                generation["contract_hash"],
+                generation["bible_revision"],
+                generation["bible_hash"],
+                generation["volume_plan_id"],
+                generation["planning_manifest_hash"],
+            ),
         )
         return self._session(row) if row else None
 
@@ -75,7 +112,7 @@ class ChapterSessionRepository:
         row = await session.fetchone(
             f"""{_SESSION_SELECT}
                  WHERE session.project_id=%s
-                 ORDER BY session.chapter_num DESC LIMIT 1""",
+                 ORDER BY session.created_at DESC,session.id DESC LIMIT 1""",
             (project_id,),
         )
         return self._session(row) if row else None
@@ -222,6 +259,7 @@ class ChapterSessionRepository:
             "content_hash": row["content_hash"],
             "source_payload": self._json(row["source_payload_json"]),
             "updated_at": row["updated_at"],
+            "effective_status": row.get("effective_status", "drafting"),
         }
 
     def _candidate(self, row):
@@ -232,4 +270,5 @@ class ChapterSessionRepository:
             "content": row["content"], "content_hash": row["content_hash"],
             "provenance": self._json(row["provenance_json"]),
             "created_at": row["created_at"],
+            "effective_status": row.get("effective_status", "drafting"),
         }

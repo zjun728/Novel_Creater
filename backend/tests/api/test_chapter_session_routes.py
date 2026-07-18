@@ -28,6 +28,7 @@ class FakeChapterSessionService:
             id="draft-1", project_id="p1", chapter_session_id="session-1",
             revision=1, content="", content_hash="e3b0c442" + "0" * 56,
             source_payload={"source": "manual-empty"},
+            status="drafting",
         )
 
     def workspace(self):
@@ -49,6 +50,7 @@ class FakeChapterSessionService:
             revision=command.expected_revision + 1,
             content=command.content, content_hash="a" * 64,
             source_payload={"source": "manual-empty"},
+            status="drafting",
         )
         return self.workspace()
 
@@ -58,6 +60,7 @@ class FakeChapterSessionService:
             working_draft_revision=command.expected_working_draft_revision,
             content=self.draft.content, content_hash=self.draft.content_hash,
             provenance={"source": "explicit-save-candidate"},
+            status="drafting",
         )
         self.candidates = (candidate,)
         return self.workspace()
@@ -79,6 +82,7 @@ class FakeChapterDraftGenerationService:
                 "source": "ai-generation",
                 "authorInstruction": command.author_instruction,
             },
+            status="drafting",
         )
         return self.chapter_service.workspace()
 

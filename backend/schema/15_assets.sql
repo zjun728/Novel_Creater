@@ -106,7 +106,7 @@ CREATE TABLE corpus_source_revisions (
   UNIQUE KEY uq_corpus_source_revision_hash (source_id, revision, content_hash),
   UNIQUE KEY uq_corpus_source_revision_id (source_id, id),
   UNIQUE KEY uq_corpus_source_revision_identity (source_id, id, revision, content_hash),
-  UNIQUE KEY uq_corpus_source_import (content_hash, parser_version, normalizer_version, fragmenter_version, index_version),
+  UNIQUE KEY uq_corpus_source_import (source_id, content_hash, parser_version, normalizer_version, fragmenter_version, index_version),
   FOREIGN KEY (source_id) REFERENCES corpus_sources(id) ON DELETE RESTRICT,
   FOREIGN KEY (content_hash) REFERENCES corpus_blobs(content_hash) ON DELETE RESTRICT,
   CHECK (revision > 0),

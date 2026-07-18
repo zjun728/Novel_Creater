@@ -90,8 +90,17 @@ class ChapterSessionService:
             if canon_revision != command.expected_canon_revision:
                 raise ChapterSessionConflict("canon revision drift")
             chapter_num = int(project.get("current_chapter") or 0) + 1
+            generation = {
+                "selection_revision": int(plan["selection_revision"]),
+                "contract_revision": int(plan["contract_revision"]),
+                "contract_hash": plan["contract_hash"],
+                "bible_revision": int(plan["bible_revision"]),
+                "bible_hash": plan["bible_hash"],
+                "volume_plan_id": plan["volume"]["id"],
+                "planning_manifest_hash": plan["manifest_hash"],
+            }
             existing = await self.repository.read_chapter_session(
-                session, command.project_id, chapter_num,
+                session, command.project_id, chapter_num, generation,
             )
             if existing is not None:
                 return await self._workspace(session, existing)
@@ -270,6 +279,7 @@ class ChapterSessionService:
             revision=int(row["revision"]), content=row["content"],
             content_hash=row["content_hash"],
             source_payload=row.get("source_payload") or {},
+            status=row.get("effective_status", "drafting"),
         )
 
     def _candidate_view(self, row) -> DraftCandidateView:
@@ -279,4 +289,5 @@ class ChapterSessionService:
             working_draft_revision=int(row["working_draft_revision"]),
             content=row["content"], content_hash=row["content_hash"],
             provenance=row.get("provenance") or {},
+            status=row.get("effective_status", "drafting"),
         )

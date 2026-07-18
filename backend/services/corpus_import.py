@@ -392,6 +392,7 @@ class CorpusImportService:
                 return completed
             dedupe = await self.repository.find_analysis_source(
                 session,
+                source_key=source_key,
                 source_hash=decoded.source_hash,
                 parser_version=self.parser_version,
                 normalizer_version=self.normalizer_version,

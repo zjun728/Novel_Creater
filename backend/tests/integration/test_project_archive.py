@@ -971,6 +971,193 @@ async def _prepare_generation_race(disposable_mysql):
     return transaction, workspace
 
 
+@pytest.mark.asyncio
+async def test_seed_switch_keeps_old_generation_superseded_and_creates_same_numbers(
+    disposable_mysql,
+):
+    transaction, old_workspace = await _prepare_generation_race(disposable_mysql)
+    session = disposable_mysql.session
+
+    @asynccontextmanager
+    async def read_connection():
+        yield session
+
+    chapter_repository = ChapterSessionRepository()
+    chapter_service = ChapterSessionService(
+        chapter_repository,
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+    )
+    old_workspace = await chapter_service.save_candidate(
+        SaveDraftCandidate(
+            WRITE_FENCE_PROJECT,
+            old_workspace.session.id,
+            old_workspace.working_draft.revision,
+        )
+    )
+    seed_id = "8e000000-0000-0000-0003-000000000001"
+    seed_revision_id = "8e000000-0000-0000-0003-000000000002"
+    creation_id = "8e000000-0000-0000-0003-000000000003"
+    style_id = "8e000000-0000-0000-0003-000000000004"
+    bible_id = "8e000000-0000-0000-0003-000000000005"
+    seed_hash = "4" * 64
+    creation_hash = "5" * 64
+    style_hash = "6" * 64
+    bible_content = {
+        "schemaVersion": "creation-bible-v1",
+        "selectionRevision": 2,
+        "contractRevision": 2,
+    }
+    bible_hash = canonical_hash(bible_content)
+    await session.execute(
+        """INSERT INTO creative_seeds
+           (id,project_id,status,created_at,updated_at)
+           VALUES (%s,%s,'candidate',%s,%s)""",
+        (seed_id, WRITE_FENCE_PROJECT, 1_900_000_000_060, 1_900_000_000_060),
+    )
+    await session.execute(
+        """INSERT INTO creative_seed_revisions
+           (id,project_id,seed_id,revision,payload_json,content_hash,created_at)
+           VALUES (%s,%s,%s,1,'{}',%s,%s)""",
+        (
+            seed_revision_id, WRITE_FENCE_PROJECT, seed_id, seed_hash,
+            1_900_000_000_060,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO creative_seed_heads
+           (seed_id,revision_id,revision,content_hash,updated_at)
+           VALUES (%s,%s,1,%s,%s)""",
+        (seed_id, seed_revision_id, seed_hash, 1_900_000_000_060),
+    )
+    await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,
+            selected_at)
+           VALUES (%s,2,%s,%s,%s,%s)""",
+        (
+            WRITE_FENCE_PROJECT, seed_id, seed_revision_id, seed_hash,
+            1_900_000_000_060,
+        ),
+    )
+    await session.execute(
+        """UPDATE project_selected_seeds
+              SET seed_id=%s,seed_revision_id=%s,seed_hash=%s,
+                  selection_revision=2,selected_at=%s,updated_at=%s
+            WHERE project_id=%s AND selection_revision=1""",
+        (
+            seed_id, seed_revision_id, seed_hash, 1_900_000_000_060,
+            1_900_000_000_060, WRITE_FENCE_PROJECT,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO creation_contracts
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,binding_revision_id,binding_hash,channel_profile_key,
+            genre_profile_key,quality_charter_version,total_word_min,
+            total_word_max,chapter_capacity_policy,reference_manifest_json,
+            reference_manifest_hash,content_json,content_hash,confirmed_at)
+           SELECT %s,project_id,2,2,%s,%s,%s,binding_revision_id,binding_hash,
+                  channel_profile_key,genre_profile_key,quality_charter_version,
+                  total_word_min,total_word_max,chapter_capacity_policy,
+                  reference_manifest_json,reference_manifest_hash,content_json,
+                  %s,%s
+             FROM creation_contracts WHERE project_id=%s AND revision=1""",
+        (
+            creation_id, seed_id, seed_revision_id, seed_hash, creation_hash,
+            1_900_000_000_060, WRITE_FENCE_PROJECT,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO style_contracts
+           (id,project_id,creation_contract_id,revision,merged_style_json,
+            likes_json,dislikes_json,content_hash,confirmed_at)
+           SELECT %s,project_id,%s,2,merged_style_json,likes_json,dislikes_json,
+                  %s,%s
+             FROM style_contracts WHERE project_id=%s AND revision=1""",
+        (
+            style_id, creation_id, style_hash, 1_900_000_000_060,
+            WRITE_FENCE_PROJECT,
+        ),
+    )
+    await session.execute(
+        """UPDATE project_contract_heads
+              SET revision=2,creation_contract_id=%s,style_contract_id=%s,
+                  creation_hash=%s,style_hash=%s,updated_at=%s
+            WHERE project_id=%s AND revision=1""",
+        (
+            creation_id, style_id, creation_hash, style_hash,
+            1_900_000_000_060, WRITE_FENCE_PROJECT,
+        ),
+    )
+    binding = await session.fetchone(
+        """SELECT id,content_hash FROM project_model_binding_revisions
+            WHERE project_id=%s AND revision=1""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    await session.execute(
+        """INSERT INTO creation_bible_revisions
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,contract_revision,contract_hash,binding_revision_id,
+            binding_hash,policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,'test-bible-v1',%s,%s,%s)""",
+        (
+            bible_id, WRITE_FENCE_PROJECT, seed_id, seed_revision_id, seed_hash,
+            creation_hash, binding["id"], binding["content_hash"],
+            canonical_json(bible_content), bible_hash, 1_900_000_000_060,
+        ),
+    )
+    await session.execute(
+        """UPDATE project_bible_heads
+              SET revision=2,bible_revision_id=%s,content_hash=%s,updated_at=%s
+            WHERE project_id=%s AND revision=1""",
+        (
+            bible_id, bible_hash, 1_900_000_000_060, WRITE_FENCE_PROJECT,
+        ),
+    )
+
+    planning_service = PlanningService(
+        PlanningRepository(),
+        transaction_factory=transaction,
+        connection_factory=read_connection,
+    )
+    new_plan = await planning_service.create_initial_plan(
+        CreateInitialPlan(
+            WRITE_FENCE_PROJECT,
+            2,
+            "generation-switch-plan",
+        )
+    )
+    new_workspace = await chapter_service.create_session(
+        CreateChapterSession(
+            WRITE_FENCE_PROJECT,
+            new_plan.active_block.revision,
+            0,
+        )
+    )
+
+    assert new_plan.active_volume.volume_num == 1
+    assert new_plan.active_block.block_num == 1
+    assert new_workspace.session.chapter_num == old_workspace.session.chapter_num == 1
+    assert new_workspace.session.id != old_workspace.session.id
+    assert new_workspace.session.selection_revision == 2
+    old_session = await chapter_repository.read_session_by_id(
+        session, WRITE_FENCE_PROJECT, old_workspace.session.id,
+    )
+    old_draft = await chapter_repository.read_working_draft(
+        session, old_workspace.session.id,
+    )
+    old_candidates = await chapter_repository.list_candidates(
+        session, old_workspace.session.id,
+    )
+    assert old_session["status"] == "superseded"
+    assert old_draft["effective_status"] == "superseded"
+    assert old_candidates[0]["effective_status"] == "superseded"
+    assert (await chapter_service.get_current(WRITE_FENCE_PROJECT)).session.status == (
+        "drafting"
+    )
+
+
 class _BlockingGenerationGateway:
     def __init__(self, *, outcome):
         self.outcome = outcome

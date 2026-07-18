@@ -94,6 +94,29 @@ def tx_factory():
 
 
 @pytest.mark.asyncio
+async def test_current_plan_query_compares_full_contract_and_bible_generation():
+    from backend.repositories.planning import PlanningRepository
+
+    class EmptyPlanSession:
+        def __init__(self):
+            self.sql = ""
+
+        async def fetchone(self, sql, _args):
+            self.sql = sql
+            return None
+
+    session = EmptyPlanSession()
+    assert await PlanningRepository().read_current_plan(session, "p1") is None
+    compact = " ".join(session.sql.split())
+    assert "JOIN creation_contracts current_contract" in compact
+    assert "current_contract.selection_revision=volume.selection_revision" in compact
+    assert "JOIN creation_bible_revisions current_bible" in compact
+    assert "current_bible.selection_revision=volume.selection_revision" in compact
+    assert "current_bible.contract_revision=volume.contract_revision" in compact
+    assert "current_bible.contract_hash=volume.contract_hash" in compact
+
+
+@pytest.mark.asyncio
 async def test_initial_planning_requires_confirmed_contract_head():
     from backend.services.planning import CreateInitialPlan, PlanningPreconditionFailed, PlanningService
 

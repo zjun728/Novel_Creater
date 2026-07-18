@@ -32,6 +32,7 @@ class WorkingDraftView:
     content: str
     content_hash: str
     source_payload: Mapping[str, Any]
+    status: str
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class DraftCandidateView:
     content: str
     content_hash: str
     provenance: Mapping[str, Any]
+    status: str
 
 
 @dataclass(frozen=True)

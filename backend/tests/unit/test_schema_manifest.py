@@ -321,7 +321,11 @@ def test_provider_and_binding_revisions_encode_closed_state_spaces():
     assert "check (resolution_status in ('bound','unbound'))" in items
     assert "foreign key (provider_id) references provider_profiles(id) on delete restrict" in items
     heads = _table_statement("project_model_binding_heads")
-    assert "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete cascade" in heads
+    assert (
+        "foreign key (project_id, binding_revision_id, revision, content_hash) "
+        "references project_model_binding_revisions(project_id, id, revision, "
+        "content_hash) on delete cascade"
+    ) in heads
 
 
 def test_global_assets_have_revision_heads_and_no_project_ownership():
@@ -403,6 +407,168 @@ def test_market_and_generation_ledgers_freeze_safe_identities():
         assert "status varchar(24) not null" in request
 
 
+def test_generation_numbering_is_scoped_to_the_immutable_planning_root():
+    volumes = _table_statement("volume_plans")
+    assert (
+        "unique key uq_volume_num "
+        "(project_id, selection_revision, contract_revision, contract_hash, "
+        "bible_revision, bible_hash, volume_num)"
+    ) in volumes
+    assert "unique key uq_volume_num (project_id, volume_num)" not in volumes
+
+    blocks = _table_statement("story_blocks")
+    assert (
+        "unique key uq_block_num (project_id, volume_plan_id, block_num)"
+    ) in blocks
+    assert "unique key uq_block_num (project_id, block_num)" not in blocks
+
+    sessions = _table_statement("chapter_sessions")
+    assert (
+        "unique key uq_chapter_session_num "
+        "(project_id, selection_revision, contract_revision, contract_hash, "
+        "bible_revision, bible_hash, volume_plan_id, planning_manifest_hash, "
+        "chapter_num)"
+    ) in sessions
+    assert (
+        "unique key uq_chapter_session_num (project_id, chapter_num)"
+    ) not in sessions
+
+    final_chapters = _table_statement("final_chapters")
+    assert (
+        "unique key uq_final_chapter_num "
+        "(project_id, chapter_session_id, chapter_num)"
+    ) in final_chapters
+
+
+def test_contract_bible_planning_and_session_use_one_composite_generation_chain():
+    bindings = _table_statement("project_model_binding_revisions")
+    assert (
+        "unique key uq_binding_revision_hash_identity "
+        "(project_id, id, content_hash)"
+    ) in bindings
+
+    contracts = _table_statement("creation_contracts")
+    assert (
+        "unique key uq_creation_contract_generation "
+        "(project_id, selection_revision, revision, content_hash)"
+    ) in contracts
+    assert (
+        "foreign key (project_id, binding_revision_id, binding_hash) "
+        "references project_model_binding_revisions(project_id, id, content_hash) "
+        "on delete restrict"
+    ) in contracts
+
+    bibles = _table_statement("creation_bible_revisions")
+    assert (
+        "unique key uq_bible_revision_generation "
+        "(project_id, selection_revision, contract_revision, contract_hash, "
+        "revision, content_hash)"
+    ) in bibles
+    assert (
+        "unique key uq_bible_revision_full_generation "
+        "(project_id, id, selection_revision, contract_revision, contract_hash, "
+        "revision, content_hash)"
+    ) in bibles
+    assert (
+        "foreign key (project_id, selection_revision, contract_revision, "
+        "contract_hash) references creation_contracts(project_id, "
+        "selection_revision, revision, content_hash) on delete restrict"
+    ) in bibles
+
+    volumes = _table_statement("volume_plans")
+    assert (
+        "unique key uq_volume_generation_identity "
+        "(project_id, id, selection_revision, contract_revision, contract_hash, "
+        "bible_revision, bible_hash, manifest_hash)"
+    ) in volumes
+    assert (
+        "foreign key (project_id, selection_revision, contract_revision, "
+        "contract_hash, bible_revision, bible_hash) references "
+        "creation_bible_revisions(project_id, selection_revision, "
+        "contract_revision, contract_hash, revision, content_hash) "
+        "on delete restrict"
+    ) in volumes
+
+    sessions = _table_statement("chapter_sessions")
+    assert (
+        "foreign key (project_id, volume_plan_id, selection_revision, "
+        "contract_revision, contract_hash, bible_revision, bible_hash, "
+        "planning_manifest_hash) references volume_plans(project_id, id, "
+        "selection_revision, contract_revision, contract_hash, bible_revision, "
+        "bible_hash, manifest_hash) on delete restrict"
+    ) in sessions
+
+    confirmations = _table_statement("bible_confirmation_requests")
+    assert (
+        "foreign key (project_id, bible_revision_id, selection_revision, "
+        "contract_revision, contract_hash, result_revision, result_hash) "
+        "references creation_bible_revisions(project_id, id, "
+        "selection_revision, contract_revision, contract_hash, revision, "
+        "content_hash) on delete restrict"
+    ) in confirmations
+
+
+def test_corpus_analysis_identity_is_local_to_one_logical_source():
+    revisions = _table_statement("corpus_source_revisions")
+    assert (
+        "unique key uq_corpus_source_import "
+        "(source_id, content_hash, parser_version, normalizer_version, "
+        "fragmenter_version, index_version)"
+    ) in revisions
+    assert (
+        "unique key uq_corpus_source_import "
+        "(content_hash, parser_version, normalizer_version, "
+        "fragmenter_version, index_version)"
+    ) not in revisions
+
+
+def test_seed_inspiration_can_precede_selection_and_pins_market_inputs():
+    attempt = _table_statement("seed_inspiration_attempts")
+    assert "selection_revision int null" in attempt
+    assert "market_source_id char(36) not null" in attempt
+    assert "market_snapshot_id char(36) not null" in attempt
+    assert "market_snapshot_hash char(64) not null" in attempt
+    assert "market_analysis_id char(36) not null" in attempt
+    assert "market_analysis_hash char(64) not null" in attempt
+    assert (
+        "foreign key (market_source_id, market_snapshot_id, "
+        "market_snapshot_hash) references market_snapshots(source_id, id, "
+        "content_hash) on delete restrict"
+    ) in attempt
+    assert (
+        "foreign key (project_id, market_analysis_id, market_analysis_hash) "
+        "references market_analyses(project_id, id, result_hash) "
+        "on delete restrict"
+    ) in attempt
+
+
+def test_generation_request_ledgers_bind_owner_attempt_and_success_hash():
+    pairs = (
+        ("seed_inspiration_attempts", "seed_inspiration_requests"),
+        ("asset_recommendation_attempts", "asset_recommendation_requests"),
+        ("style_trial_attempts", "style_trial_requests"),
+    )
+    for attempt_name, request_name in pairs:
+        attempt = _table_statement(attempt_name)
+        request = _table_statement(request_name)
+        assert (
+            f"unique key uq_{attempt_name.removesuffix('_attempts')}_attempt_owner "
+            "(project_id, id)"
+        ) in attempt
+        assert (
+            f"foreign key (project_id, attempt_id) references {attempt_name}"
+            "(project_id, id) on delete restrict"
+        ) in request
+        assert (
+            f"foreign key (project_id, attempt_id, result_hash) references "
+            f"{attempt_name}(project_id, id, result_hash) on delete restrict"
+        ) in request
+        assert (
+            "status = 'succeeded' and attempt_id is not null "
+            "and result_hash is not null"
+        ) in request
+
+
 def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     batches = _table_statement("story_engine_batches")
     assert "selection_revision int not null" in batches
@@ -474,11 +640,19 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
     assert "foreign key (engine_option_id)" not in drafts
     heads = _table_statement("project_contract_heads")
     assert "check ((revision = 0" in heads
-    assert "foreign key (project_id, creation_contract_id) references creation_contracts(project_id, id) on delete restrict" in heads
+    assert (
+        "foreign key (project_id, creation_contract_id, revision, creation_hash) "
+        "references creation_contracts(project_id, id, revision, content_hash) "
+        "on delete restrict"
+    ) in heads
     requests = _table_statement("contract_confirmation_requests")
     assert "selection_revision int not null" in requests
     assert "unique key uq_contract_confirmation_idempotency (project_id, idempotency_key)" in requests
-    assert "foreign key (project_id, creation_contract_id, result_revision) references creation_contracts(project_id, id, revision) on delete restrict" in requests
+    assert (
+        "foreign key (project_id, selection_revision, creation_contract_id, "
+        "result_revision) references creation_contracts(project_id, "
+        "selection_revision, id, revision) on delete restrict"
+    ) in requests
     assert "foreign key (project_id, style_contract_id, result_revision) references style_contracts(project_id, id, revision) on delete restrict" in requests
 
 
@@ -488,7 +662,7 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
         "unique key uq_creation_contract_revision (project_id, revision)",
         "unique key uq_creation_contract_id (project_id, id)",
         "foreign key (project_id, selection_revision, seed_id, seed_revision_id, seed_hash) references project_seed_selection_revisions(project_id, selection_revision, seed_id, seed_revision_id, seed_hash) on delete restrict",
-        "foreign key (project_id, binding_revision_id) references project_model_binding_revisions(project_id, id) on delete restrict",
+        "foreign key (project_id, binding_revision_id, binding_hash) references project_model_binding_revisions(project_id, id, content_hash) on delete restrict",
         "check (total_word_min > 0 and total_word_max >= total_word_min)",
     ):
         assert contract in creation
@@ -537,8 +711,11 @@ def test_bible_history_is_contract_and_selection_bound():
         assert "selection_revision int not null" in statement
         assert "contract_revision int not null" in statement
         assert "contract_hash char(64) not null" in statement
-        assert "foreign key (project_id, selection_revision) references project_seed_selection_revisions(project_id, selection_revision) on delete restrict" in statement
-        assert "foreign key (project_id, contract_revision, contract_hash) references creation_contracts(project_id, revision, content_hash) on delete restrict" in statement
+        assert (
+            "foreign key (project_id, selection_revision, contract_revision, "
+            "contract_hash) references creation_contracts(project_id, "
+            "selection_revision, revision, content_hash) on delete restrict"
+        ) in statement
     revisions = _table_statement("creation_bible_revisions")
     assert "unique key uq_bible_revision_identity (project_id, id, revision, content_hash)" in revisions
     heads = _table_statement("project_bible_heads")
@@ -555,9 +732,8 @@ def test_planning_roots_and_sessions_freeze_aggregate_generation():
         "bible_revision int not null",
         "bible_hash char(64) not null",
         "manifest_hash char(64) not null",
-        "foreign key (project_id, selection_revision) references project_seed_selection_revisions(project_id, selection_revision) on delete restrict",
-        "foreign key (project_id, contract_revision, contract_hash) references creation_contracts(project_id, revision, content_hash) on delete restrict",
-        "foreign key (project_id, bible_revision, bible_hash) references creation_bible_revisions(project_id, revision, content_hash) on delete restrict",
+        "foreign key (project_id, selection_revision, contract_revision, contract_hash) references creation_contracts(project_id, selection_revision, revision, content_hash) on delete restrict",
+        "foreign key (project_id, selection_revision, contract_revision, contract_hash, bible_revision, bible_hash) references creation_bible_revisions(project_id, selection_revision, contract_revision, contract_hash, revision, content_hash) on delete restrict",
     ):
         assert contract in roots
 
