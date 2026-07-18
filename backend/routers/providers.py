@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from backend.database import connection, transaction
 from backend.gateways.provider_connection import ProviderConnectionGateway
-from backend.serializers.provider import provider_public, providers_public
 from backend.services.provider_profiles import (
     ClearProviderApiKeyCommand,
     DeleteProviderCommand,
@@ -116,7 +115,10 @@ class ProviderMutation(_StrictBody):
 async def list_providers(
     service: ProviderProfileService = Depends(get_provider_profile_service),
 ):
-    return providers_public(await service.list_profiles())
+    return [
+        profile.to_dict()
+        for profile in await service.list_profiles()
+    ]
 
 
 @router.post("/providers")
@@ -145,7 +147,7 @@ async def create_provider(
             idempotency_key=data.idempotencyKey,
         )
     )
-    return provider_public(row)
+    return row.to_dict()
 
 
 @router.put("/providers/{provider_id}")
@@ -169,7 +171,7 @@ async def update_provider(
             changes=changes,
         )
     )
-    return provider_public(row)
+    return row.to_dict()
 
 
 @router.delete("/providers/{provider_id}")
@@ -185,7 +187,7 @@ async def delete_provider(
             idempotency_key=data.idempotencyKey,
         )
     )
-    return provider_public(row)
+    return row.to_dict()
 
 
 @router.post("/providers/{provider_id}/clear-api-key")
@@ -201,7 +203,7 @@ async def clear_provider_api_key(
             idempotency_key=data.idempotencyKey,
         )
     )
-    return provider_public(row)
+    return row.to_dict()
 
 
 @router.post("/providers/{provider_id}/test-connection")
@@ -209,4 +211,4 @@ async def test_provider_connection(
     provider_id: str,
     service: ProviderProfileService = Depends(get_provider_profile_service),
 ):
-    return await service.test_connection(provider_id)
+    return (await service.test_connection(provider_id)).to_dict()

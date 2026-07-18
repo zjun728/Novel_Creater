@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import is_dataclass
 
 import pytest
 from fastapi import FastAPI
@@ -9,6 +10,10 @@ from fastapi.testclient import TestClient
 from backend.http_errors import PublicDomainError
 from backend.routers import providers
 from backend.security.redaction import install_error_handlers
+from backend.serializers.provider import (
+    ProviderConnectionPublicResult,
+    provider_public_profile,
+)
 
 
 SECRET = "sk-plain-secret-must-never-leave-backend"
@@ -91,6 +96,12 @@ class FakeProviderProfileService:
     def __init__(self):
         self.calls = []
         self.error_method = None
+        self.returned_public_values = []
+
+    def _public(self, row):
+        value = provider_public_profile(row)
+        self.returned_public_values.append(value)
+        return value
 
     def _fail_if_requested(self, method):
         if self.error_method == method:
@@ -99,61 +110,71 @@ class FakeProviderProfileService:
     async def list_profiles(self):
         self._fail_if_requested("list")
         self.calls.append(("list",))
-        return [provider_row()]
+        return [self._public(provider_row())]
 
     async def create(self, command):
         self._fail_if_requested("create")
         self.calls.append(("create", command))
-        return provider_row(
-            id="provider-created",
-            name=command.name,
-            model_name=command.model,
-            base_url=command.base_url,
-            api_key=command.api_key,
-            revision=1,
+        return self._public(
+            provider_row(
+                id="provider-created",
+                name=command.name,
+                model_name=command.model,
+                base_url=command.base_url,
+                api_key=command.api_key,
+                revision=1,
+            )
         )
 
     async def update(self, command):
         self._fail_if_requested("update")
         self.calls.append(("update", command))
-        return provider_row(
-            model_name=command.changes.get("model", "model-one"),
-            revision=command.expected_revision + 1,
+        return self._public(
+            provider_row(
+                model_name=command.changes.get("model", "model-one"),
+                revision=command.expected_revision + 1,
+            )
         )
 
     async def delete(self, command):
         self._fail_if_requested("delete")
         self.calls.append(("delete", command))
-        return provider_row(
-            api_key="",
-            base_url="",
-            enabled=0,
-            lifecycle_status="deleted",
-            deleted_at=30,
-            revision=command.expected_revision + 1,
-            _redaction_values=(SECRET, PRIVATE_URL),
+        return self._public(
+            provider_row(
+                api_key="",
+                base_url="",
+                enabled=0,
+                lifecycle_status="deleted",
+                deleted_at=30,
+                revision=command.expected_revision + 1,
+                _redaction_values=(SECRET, PRIVATE_URL),
+            )
         )
 
     async def clear_api_key(self, command):
         self._fail_if_requested("clear")
         self.calls.append(("clear", command))
-        return provider_row(
-            api_key="",
-            enabled=0,
-            lifecycle_status="unconfigured",
-            revision=command.expected_revision + 1,
-            _redaction_values=(SECRET, PRIVATE_URL),
+        return self._public(
+            provider_row(
+                api_key="",
+                enabled=0,
+                lifecycle_status="unconfigured",
+                revision=command.expected_revision + 1,
+                _redaction_values=(SECRET, PRIVATE_URL),
+            )
         )
 
     async def test_connection(self, provider_id):
         self._fail_if_requested("test")
         self.calls.append(("test", provider_id))
-        return {
-            "ok": True,
-            "code": "connected",
-            "latencyMs": 12,
-            "publicMessage": "连接成功",
-        }
+        result = ProviderConnectionPublicResult(
+            ok=True,
+            code="connected",
+            latency_ms=12,
+            public_message="连接成功",
+        )
+        self.returned_public_values.append(result)
+        return result
 
 
 @pytest.fixture
@@ -242,6 +263,10 @@ def test_list_create_update_delete_clear_and_test_successes_are_public_only(
         "lifecycleStatus": "unconfigured",
         "revision": 5,
     }
+    assert service.returned_public_values
+    assert all(is_dataclass(value) for value in service.returned_public_values)
+    for value in service.returned_public_values:
+        assert_public_boundary(value.to_dict())
 
     update = next(call[1] for call in service.calls if call[0] == "update")
     assert update.expected_revision == 4
@@ -310,3 +335,77 @@ def test_provider_validation_error_drops_forbidden_keys_recursively(provider_api
 
     assert response.status_code == 422
     assert_public_boundary(response.json())
+
+
+@pytest.mark.parametrize(
+    ("secret_field", "secret_value"),
+    [
+        ("apiKey", "sk-" + ("cross-field-secret-" * 9)),
+        (
+            "baseURL",
+            "https://private-provider.example/" + ("cross-field-url-" * 9),
+        ),
+        (
+            "apiKey",
+            {"nested": ["sk-" + ("nested-list-secret-" * 8)]},
+        ),
+        (
+            "baseURL",
+            ["https://private-provider.example/" + ("nested-list-url-" * 8)],
+        ),
+        (
+            "thinking",
+            {
+                "nested": [
+                    {"authorization": "Bearer " + ("nested-token-" * 10)}
+                ]
+            },
+        ),
+    ],
+)
+def test_validation_error_redacts_secret_values_from_unrelated_fields(
+    provider_api, secret_field, secret_value
+):
+    client, _ = provider_api
+
+    def first_string(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            for item in value.values():
+                found = first_string(item)
+                if found:
+                    return found
+        if isinstance(value, list):
+            for item in value:
+                found = first_string(item)
+                if found:
+                    return found
+        return ""
+
+    secret = first_string(secret_value)
+    body = create_body()
+    body[secret_field] = secret_value
+    body["name"] = secret
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 422
+    assert_public_boundary(response.json())
+    assert secret not in response.text
+
+
+def test_validation_error_redacts_secret_values_used_as_mapping_keys(
+    provider_api,
+):
+    client, _ = provider_api
+    secret = "sk-" + ("cross-field-mapping-key-" * 8)
+    body = create_body()
+    body["apiKey"] = secret
+    body["name"] = {secret: True}
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 422
+    assert_public_boundary(response.json())
+    assert secret not in response.text

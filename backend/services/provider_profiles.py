@@ -11,6 +11,11 @@ from typing import Any
 from uuid import uuid4
 
 from backend.http_errors import PublicDomainError
+from backend.serializers.provider import (
+    ProviderConnectionPublicResult,
+    ProviderPublicProfile,
+    provider_public_profile,
+)
 
 
 class ProviderProfileNotFound(PublicDomainError):
@@ -314,9 +319,10 @@ class ProviderProfileService:
         self.id_factory = id_factory or (lambda: str(uuid4()))
         self.clock = clock or (lambda: int(time.time() * 1000))
 
-    async def list_profiles(self):
+    async def list_profiles(self) -> list[ProviderPublicProfile]:
         async with self.connection_factory() as session:
-            return await self.repository.list_profiles(session)
+            rows = await self.repository.list_profiles(session)
+        return [provider_public_profile(row) for row in rows]
 
     async def _recover(
         self,
@@ -373,7 +379,9 @@ class ProviderProfileService:
             },
         )
 
-    async def create(self, command: ProviderCreateCommand):
+    async def create(
+        self, command: ProviderCreateCommand
+    ) -> ProviderPublicProfile:
         fingerprint_values = asdict(command)
         fingerprint_values.pop("idempotency_key")
         request_hash = _fingerprint("create", fingerprint_values)
@@ -385,13 +393,14 @@ class ProviderProfileService:
                 session, command.idempotency_key
             )
             if previous is not None:
-                return await self._recover(
+                row = await self._recover(
                     session,
                     previous,
                     kind="create",
                     request_hash=request_hash,
                     expected_revision=0,
                 )
+                return provider_public_profile(row)
             now = self.clock()
             provider_id = self.id_factory()
             secrets = (command.api_key.strip(), command.base_url.strip())
@@ -434,9 +443,11 @@ class ProviderProfileService:
                 result_revision=1,
                 now=now,
             )
-            return row
+            return provider_public_profile(row)
 
-    async def update(self, command: ProviderUpdateCommand):
+    async def update(
+        self, command: ProviderUpdateCommand
+    ) -> ProviderPublicProfile:
         changes = dict(command.changes)
         for secret_field in ("apiKey", "baseURL"):
             value = changes.get(secret_field)
@@ -450,7 +461,7 @@ class ProviderProfileService:
                 "changes": changes,
             },
         )
-        return await self._mutate(
+        row = await self._mutate(
             provider_id=command.provider_id,
             expected_revision=command.expected_revision,
             idempotency_key=command.idempotency_key,
@@ -460,6 +471,7 @@ class ProviderProfileService:
                 current, changes, now
             ),
         )
+        return provider_public_profile(row)
 
     def _update_changes(self, current, incoming, now):
         changes = {}
@@ -509,7 +521,9 @@ class ProviderProfileService:
         changes["updated_at"] = now
         return changes
 
-    async def clear_api_key(self, command: ClearProviderApiKeyCommand):
+    async def clear_api_key(
+        self, command: ClearProviderApiKeyCommand
+    ) -> ProviderPublicProfile:
         request_hash = _fingerprint(
             "clear_key",
             {
@@ -517,7 +531,7 @@ class ProviderProfileService:
                 "expected_revision": command.expected_revision,
             },
         )
-        return await self._mutate(
+        row = await self._mutate(
             provider_id=command.provider_id,
             expected_revision=command.expected_revision,
             idempotency_key=command.idempotency_key,
@@ -532,8 +546,11 @@ class ProviderProfileService:
                 "updated_at": now,
             },
         )
+        return provider_public_profile(row)
 
-    async def delete(self, command: DeleteProviderCommand):
+    async def delete(
+        self, command: DeleteProviderCommand
+    ) -> ProviderPublicProfile:
         request_hash = _fingerprint(
             "delete",
             {
@@ -541,7 +558,7 @@ class ProviderProfileService:
                 "expected_revision": command.expected_revision,
             },
         )
-        return await self._mutate(
+        row = await self._mutate(
             provider_id=command.provider_id,
             expected_revision=command.expected_revision,
             idempotency_key=command.idempotency_key,
@@ -557,6 +574,7 @@ class ProviderProfileService:
                 "updated_at": now,
             },
         )
+        return provider_public_profile(row)
 
     async def _mutate(
         self,
@@ -619,7 +637,9 @@ class ProviderProfileService:
             )
             return {**current, **changes}
 
-    async def test_connection(self, provider_id: str) -> dict:
+    async def test_connection(
+        self, provider_id: str
+    ) -> ProviderConnectionPublicResult:
         async with self.connection_factory() as session:
             row = await self.repository.read_connection_profile(
                 session, provider_id
@@ -659,14 +679,16 @@ class ProviderProfileService:
             latency_ms=result.get("latencyMs"),
         )
 
-    def _connection_result(self, *, ok: bool, code: str, latency_ms) -> dict:
+    def _connection_result(
+        self, *, ok: bool, code: str, latency_ms
+    ) -> ProviderConnectionPublicResult:
         try:
             bounded_latency = min(30_000, max(0, int(latency_ms)))
         except (TypeError, ValueError, OverflowError):
             bounded_latency = 0
-        return {
-            "ok": ok,
-            "code": code,
-            "latencyMs": bounded_latency,
-            "publicMessage": self._CONNECTION_MESSAGES[code],
-        }
+        return ProviderConnectionPublicResult(
+            ok=ok,
+            code=code,
+            latency_ms=bounded_latency,
+            public_message=self._CONNECTION_MESSAGES[code],
+        )

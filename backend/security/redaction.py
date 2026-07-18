@@ -49,7 +49,34 @@ def redact_secrets(value):
     return value
 
 
-def _redact_validation_errors(errors):
+def _validation_secret_values(body) -> tuple[str, ...]:
+    values = []
+
+    def collect(value, *, inside_secret: bool = False):
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                collect(
+                    item,
+                    inside_secret=(
+                        inside_secret
+                        or str(key).casefold() in _SECRET_KEYS
+                    ),
+                )
+            return
+        if isinstance(value, (tuple, list, set)):
+            for item in value:
+                collect(item, inside_secret=inside_secret)
+            return
+        if inside_secret and isinstance(value, str) and value:
+            values.append(value)
+
+    collect(body)
+    return tuple(
+        sorted(dict.fromkeys(values), key=len, reverse=True)
+    )
+
+
+def _redact_validation_errors(errors, body=None):
     def drop_secret_keys(value):
         if isinstance(value, Mapping):
             return {
@@ -68,7 +95,30 @@ def _redact_validation_errors(errors):
             return REDACTED
         return value
 
-    sanitized = drop_secret_keys(redact_secrets(errors))
+    secrets = _validation_secret_values(body)
+
+    def replace_secret_values(value):
+        if isinstance(value, Mapping):
+            return {
+                (
+                    replace_secret_values(key)
+                    if isinstance(key, str)
+                    else key
+                ): replace_secret_values(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, tuple):
+            return tuple(replace_secret_values(item) for item in value)
+        if isinstance(value, list):
+            return [replace_secret_values(item) for item in value]
+        if isinstance(value, str):
+            for secret in secrets:
+                value = value.replace(secret, REDACTED)
+        return value
+
+    sanitized = replace_secret_values(
+        drop_secret_keys(redact_secrets(errors))
+    )
     for original, error in zip(errors, sanitized):
         location = original.get("loc", ())
         if any(str(part).casefold() in _SECRET_KEYS for part in location):
@@ -131,7 +181,7 @@ def install_error_handlers(app, *, logger=None) -> None:
             status_code=422,
             content={
                 "detail": jsonable_encoder(
-                    _redact_validation_errors(exc.errors())
+                    _redact_validation_errors(exc.errors(), exc.body)
                 ),
                 "correlationId": correlation_id,
             },

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import is_dataclass
+import json
 
 import pytest
 
@@ -17,6 +19,36 @@ from backend.services.provider_profiles import (
 
 SECRET = "saved-provider-secret"
 PRIVATE_URL = "https://saved-provider.example/v1"
+FORBIDDEN_KEYS = {
+    "apikey",
+    "baseurl",
+    "authorization",
+    "token",
+    "password",
+}
+
+
+def assert_public_profile(value):
+    assert is_dataclass(value)
+    assert not hasattr(value, "api_key")
+    assert not hasattr(value, "base_url")
+    payload = value.to_dict()
+
+    def visit(item):
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                normalized = str(key).casefold().replace("_", "").replace("-", "")
+                assert normalized not in FORBIDDEN_KEYS
+                visit(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item:
+                visit(nested)
+
+    visit(payload)
+    rendered = json.dumps(payload, ensure_ascii=False)
+    assert SECRET not in rendered
+    assert PRIVATE_URL not in rendered
+    return payload
 
 
 def provider_row(**overrides):
@@ -199,8 +231,9 @@ async def test_create_is_revisioned_and_idempotent_in_one_transaction():
     replay = await harness.service.create(create_command())
 
     assert created == replay
-    assert created["revision"] == 1
-    assert created["lifecycle_status"] == "active"
+    assert_public_profile(created)
+    assert created.revision == 1
+    assert created.lifecycle_status == "active"
     assert len(harness.repository.profiles) == 1
     request = next(iter(harness.repository.requests.values()))
     assert request["mutation_kind"] == "create"
@@ -228,11 +261,13 @@ async def test_update_blank_secrets_preserves_them_and_increments_revision():
         )
     )
 
-    assert result["api_key"] == SECRET
-    assert result["base_url"] == PRIVATE_URL
-    assert result["model_name"] == "model-two"
-    assert result["revision"] == 5
-    assert result["lifecycle_status"] == "active"
+    assert_public_profile(result)
+    stored = harness.repository.profiles["provider-1"]
+    assert stored["api_key"] == SECRET
+    assert stored["base_url"] == PRIVATE_URL
+    assert stored["model_name"] == "model-two"
+    assert result.revision == 5
+    assert result.lifecycle_status == "active"
 
 
 @pytest.mark.asyncio
@@ -248,11 +283,15 @@ async def test_clear_key_is_atomic_idempotent_and_preserves_private_base_url():
     replay = await harness.service.clear_api_key(command)
 
     assert cleared == replay
-    assert cleared["api_key"] == ""
-    assert cleared["base_url"] == PRIVATE_URL
-    assert cleared["enabled"] == 0
-    assert cleared["lifecycle_status"] == "unconfigured"
-    assert cleared["revision"] == 5
+    assert_public_profile(cleared)
+    stored = harness.repository.profiles["provider-1"]
+    assert stored["api_key"] == ""
+    assert stored["base_url"] == PRIVATE_URL
+    assert cleared.enabled is False
+    assert cleared.has_key is False
+    assert cleared.has_base_url is True
+    assert cleared.lifecycle_status == "unconfigured"
+    assert cleared.revision == 5
     assert harness.repository.events.count("compare_and_swap_profile") == 1
     request = harness.repository.requests[
         ("provider-1", "clear-request-key-0001")
@@ -273,12 +312,14 @@ async def test_soft_delete_is_the_only_command_that_wipes_key_and_base_url():
         )
     )
 
-    assert deleted["api_key"] == ""
-    assert deleted["base_url"] == ""
-    assert deleted["enabled"] == 0
-    assert deleted["lifecycle_status"] == "deleted"
-    assert deleted["deleted_at"] is not None
-    assert deleted["revision"] == 5
+    assert_public_profile(deleted)
+    stored = harness.repository.profiles["provider-1"]
+    assert stored["api_key"] == ""
+    assert stored["base_url"] == ""
+    assert stored["deleted_at"] is not None
+    assert deleted.enabled is False
+    assert deleted.lifecycle_status == "deleted"
+    assert deleted.revision == 5
 
 
 @pytest.mark.asyncio
@@ -316,7 +357,8 @@ async def test_connection_uses_saved_private_projection_after_read_scope_closes(
 
     result = await harness.service.test_connection("provider-1")
 
-    assert result == {
+    assert is_dataclass(result)
+    assert result.to_dict() == {
         "ok": True,
         "code": "connected",
         "latencyMs": 12,
@@ -331,3 +373,55 @@ async def test_connection_uses_saved_private_projection_after_read_scope_closes(
             "api_key": SECRET,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_all_profile_reads_and_mutations_return_typed_public_projections():
+    contaminated = provider_row(
+        name=f"Provider {SECRET}",
+        notes=f"Notes {PRIVATE_URL}",
+        thinking={"authorization": SECRET, "safe": "visible"},
+    )
+
+    listed_harness = Harness(rows=[contaminated])
+    listed = await listed_harness.service.list_profiles()
+
+    create_harness = Harness(rows=[])
+    created = await create_harness.service.create(
+        create_command(
+            name=f"Created {SECRET}",
+            notes=f"Notes {PRIVATE_URL}",
+            thinking={"password": SECRET, "safe": "visible"},
+        )
+    )
+
+    update_harness = Harness(rows=[contaminated])
+    updated = await update_harness.service.update(
+        ProviderUpdateCommand(
+            provider_id="provider-1",
+            expected_revision=4,
+            idempotency_key="update-public-request-0001",
+            changes={"notes": f"Updated {SECRET} {PRIVATE_URL}"},
+        )
+    )
+
+    clear_harness = Harness(rows=[contaminated])
+    clear_command = ClearProviderApiKeyCommand(
+        provider_id="provider-1",
+        expected_revision=4,
+        idempotency_key="clear-public-request-0001",
+    )
+    cleared = await clear_harness.service.clear_api_key(clear_command)
+    replayed = await clear_harness.service.clear_api_key(clear_command)
+
+    delete_harness = Harness(rows=[contaminated])
+    deleted = await delete_harness.service.delete(
+        DeleteProviderCommand(
+            provider_id="provider-1",
+            expected_revision=4,
+            idempotency_key="delete-public-request-0001",
+        )
+    )
+
+    for profile in [*listed, created, updated, cleared, replayed, deleted]:
+        assert_public_profile(profile)
