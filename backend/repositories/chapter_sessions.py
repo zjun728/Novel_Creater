@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from backend.domain.json_contracts import canonical_json
+from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.planning import PlanningRepository
 from backend.repositories.project_lifecycle import lock_active_project
 
@@ -199,7 +200,7 @@ class ChapterSessionRepository:
 
     async def resolve_writing_provider(self, session, project_id: str):
         row = await session.fetchone(
-            """SELECT p.id,p.name,p.provider_type,p.model_name,p.base_url,p.api_key,
+            f"""SELECT p.id,p.name,p.provider_type,p.model_name,p.base_url,p.api_key,
                       p.temperature,p.max_output_tokens
                FROM project_model_binding_heads h
                JOIN project_model_binding_revisions r
@@ -212,7 +213,7 @@ class ChapterSessionRepository:
                  AND i.resolution_status='bound'
                  AND p.lifecycle_status='active'
                  AND p.enabled=1
-                 AND LOWER(TRIM(p.provider_type))='openai-compatible'
+                 AND LOWER(TRIM(p.provider_type))='{GENERATION_PROVIDER_TYPE}'
                  AND p.model_name IS NOT NULL AND TRIM(p.model_name)<>''
                  AND p.base_url IS NOT NULL AND TRIM(p.base_url)<>''
                  AND p.api_key IS NOT NULL AND TRIM(p.api_key)<>''

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from backend.gateways.provider_connection import SUPPORTED_PROVIDER_TYPES
+from backend.domain.provider_policy import provider_is_generation_ready
 from backend.security.provider_secrets import (
     REDACTED,
     normalize_provider_secrets,
@@ -132,14 +132,7 @@ def provider_public_profile(
         "hasBaseURL": bool(row.get("base_url")),
         "lifecycleStatus": row["lifecycle_status"],
         "revision": int(row["revision"]),
-        "ready": (
-            row["lifecycle_status"] == "active"
-            and bool(row["enabled"])
-            and bool(row.get("api_key"))
-            and bool(row.get("base_url"))
-            and str(row.get("provider_type") or "").strip().casefold()
-            in SUPPORTED_PROVIDER_TYPES
-        ),
+        "ready": provider_is_generation_ready(row),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }

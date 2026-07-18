@@ -5,15 +5,16 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
+from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.project_lifecycle import (
     lock_active_project,
     read_active_project,
 )
 
 
-AVAILABLE_PROVIDER_PREDICATE = """lifecycle_status='active'
+AVAILABLE_PROVIDER_PREDICATE = f"""lifecycle_status='active'
   AND enabled=1
-  AND LOWER(TRIM(provider_type))='openai-compatible'
+  AND LOWER(TRIM(provider_type))='{GENERATION_PROVIDER_TYPE}'
   AND model_name IS NOT NULL AND TRIM(model_name)<>''
   AND base_url IS NOT NULL AND TRIM(base_url)<>''
   AND api_key IS NOT NULL AND TRIM(api_key)<>''"""

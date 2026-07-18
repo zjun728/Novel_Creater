@@ -12,7 +12,10 @@ from uuid import uuid4
 
 import aiomysql
 
-from backend.gateways.provider_connection import SUPPORTED_PROVIDER_TYPES
+from backend.domain.provider_policy import (
+    GENERATION_PROVIDER_TYPE,
+    provider_type_is_supported,
+)
 from backend.http_errors import PublicDomainError
 from backend.security.provider_secrets import (
     PUBLIC_SECRET_COLLISION_MESSAGE,
@@ -423,9 +426,9 @@ class ProviderProfileService:
     async def create(
         self, command: ProviderCreateCommand
     ) -> ProviderPublicProfile:
-        provider_type = command.provider_type.strip()
-        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+        if not provider_type_is_supported(command.provider_type):
             raise ProviderTypeUnsupported()
+        provider_type = GENERATION_PROVIDER_TYPE
         secrets = normalize_provider_secrets(
             (command.api_key, command.base_url)
         )
@@ -546,10 +549,7 @@ class ProviderProfileService:
         return provider_public_profile(row)
 
     def _update_changes(self, current, incoming, now):
-        provider_type = (
-            str(current.get("provider_type") or "").strip().casefold()
-        )
-        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+        if not provider_type_is_supported(current.get("provider_type")):
             raise ProviderTypeUnsupported()
         changes = {}
         for public_name, value in incoming.items():
@@ -738,10 +738,7 @@ class ProviderProfileService:
             )
         if row is None or row["lifecycle_status"] == "deleted":
             raise ProviderProfileNotFound()
-        provider_type = (
-            str(row.get("provider_type") or "").strip().casefold()
-        )
-        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+        if not provider_type_is_supported(row.get("provider_type")):
             return self._connection_result(
                 ok=False, code="provider_unsupported", latency_ms=0
             )
@@ -756,7 +753,7 @@ class ProviderProfileService:
                 ok=False, code="provider_unconfigured", latency_ms=0
             )
         private_projection = {
-            "provider_type": provider_type,
+            "provider_type": GENERATION_PROVIDER_TYPE,
             "model_name": row["model_name"],
             "base_url": row["base_url"],
             "api_key": row["api_key"],

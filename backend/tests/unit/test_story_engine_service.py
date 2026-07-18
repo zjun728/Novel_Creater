@@ -591,6 +591,45 @@ async def test_concurrent_same_key_has_one_outbound_call():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("api_key", "short"),
+        ("base_url", "x"),
+    ),
+)
+async def test_nonblank_short_connection_fields_remain_callable(field, value):
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    harness.service.provider_gateway = gateway
+    harness.repository.providers["provider-seed"][field] = value
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", f"short-{field}")
+    )
+
+    assert result.status == "succeeded"
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_openai_type_fails_before_gateway():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    harness.service.provider_gateway = gateway
+    harness.repository.providers["provider-seed"]["provider_type"] = "openai"
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "legacy-openai")
+    )
+
+    assert result.status == "failed"
+    assert result.public_error_code == "provider_configuration"
+    assert result.attempt_id is None
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "configuration",
     (
         "unbound",
@@ -598,9 +637,7 @@ async def test_concurrent_same_key_has_one_outbound_call():
         "deleted",
         "disabled",
         "empty-key",
-        "short-key",
         "empty-base",
-        "short-base",
         "empty-model",
         "model-mismatch",
         "unsupported-type",
@@ -628,12 +665,8 @@ async def test_unavailable_configuration_fails_before_attempt_with_zero_transpor
         provider["enabled"] = 0
     elif configuration == "empty-key":
         provider["api_key"] = " "
-    elif configuration == "short-key":
-        provider["api_key"] = "short"
     elif configuration == "empty-base":
         provider["base_url"] = " "
-    elif configuration == "short-base":
-        provider["base_url"] = "http://"
     elif configuration == "empty-model":
         provider["model_name"] = " "
     elif configuration == "model-mismatch":

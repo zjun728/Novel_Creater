@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
-from backend.gateways.provider_connection import SUPPORTED_PROVIDER_TYPES
+from backend.domain.provider_policy import provider_is_generation_ready
 from backend.http_errors import (
     BindingConflict,
     BindingNotFound,
@@ -26,20 +26,7 @@ def _redact_display(value: str, secrets: tuple[str, ...]) -> str:
 def provider_is_available(row: Mapping, *, prefix: str = "") -> bool:
     """Single readiness predicate shared by initialize, replace, and status."""
 
-    def value(name):
-        return row.get(f"{prefix}{name}")
-
-    return (
-        value("lifecycle_status") == "active"
-        and int(value("enabled") or 0) == 1
-        and isinstance(value("provider_type"), str)
-        and value("provider_type").strip().casefold()
-        in SUPPORTED_PROVIDER_TYPES
-        and all(
-            isinstance(value(field), str) and bool(value(field).strip())
-            for field in ("model_name", "base_url", "api_key")
-        )
-    )
+    return provider_is_generation_ready(row, prefix=prefix)
 
 
 @dataclass(frozen=True)

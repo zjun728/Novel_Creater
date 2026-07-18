@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.project_lifecycle import lock_active_project, read_active_project
 
 
-_PROVIDER_READY = """provider.lifecycle_status='active' AND provider.enabled=1
-  AND LOWER(TRIM(provider.provider_type))='openai-compatible'
+_PROVIDER_READY = f"""provider.lifecycle_status='active' AND provider.enabled=1
+  AND LOWER(TRIM(provider.provider_type))='{GENERATION_PROVIDER_TYPE}'
   AND provider.model_name IS NOT NULL AND TRIM(provider.model_name)<>''
   AND provider.base_url IS NOT NULL AND TRIM(provider.base_url)<>''
   AND provider.api_key IS NOT NULL AND TRIM(provider.api_key)<>''"""

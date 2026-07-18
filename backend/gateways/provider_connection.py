@@ -8,10 +8,11 @@ from collections.abc import Mapping
 
 import httpx
 
+from backend.domain.provider_policy import provider_type_is_supported
+
 
 PROVIDER_CONNECTION_TIMEOUT_SECONDS = 10
 MAX_PUBLIC_LATENCY_MS = 30_000
-SUPPORTED_PROVIDER_TYPES = frozenset({"openai-compatible"})
 
 
 class ProviderConnectionGateway:
@@ -64,8 +65,7 @@ class ProviderConnectionGateway:
 
     async def test_connection(self, provider: Mapping[str, object]) -> dict:
         started_at = self._monotonic()
-        provider_type = str(provider.get("provider_type") or "").strip().casefold()
-        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+        if not provider_type_is_supported(provider.get("provider_type")):
             return self._result(
                 ok=False,
                 code="provider_unsupported",

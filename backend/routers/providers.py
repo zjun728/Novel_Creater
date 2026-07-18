@@ -8,10 +8,8 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.database import connection, transaction
-from backend.gateways.provider_connection import (
-    SUPPORTED_PROVIDER_TYPES,
-    ProviderConnectionGateway,
-)
+from backend.domain.provider_policy import provider_type_is_supported
+from backend.gateways.provider_connection import ProviderConnectionGateway
 from backend.security.provider_secrets import (
     PUBLIC_SECRET_COLLISION_MESSAGE,
     normalize_provider_secrets,
@@ -82,7 +80,7 @@ class ProviderCreate(_StrictBody):
     @field_validator("providerType")
     @classmethod
     def provider_type_is_supported(cls, value: str) -> str:
-        if value not in SUPPORTED_PROVIDER_TYPES:
+        if not provider_type_is_supported(value):
             raise ValueError("Unsupported Provider type")
         return value
 

@@ -17,6 +17,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.provider_policy import provider_is_generation_ready
 from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption, validate_three_options
 from backend.gateways.story_engine_provider import (
@@ -467,23 +468,8 @@ class StoryEngineService:
         ):
             return False
         return (
-            provider.get("lifecycle_status") == "active"
-            and int(provider.get("enabled") or 0) == 1
-            and all(
-                isinstance(provider.get(field), str)
-                and bool(provider[field].strip())
-                for field in (
-                    "provider_type",
-                    "model_name",
-                    "base_url",
-                    "api_key",
-                )
-            )
-            and provider["provider_type"].strip().casefold()
-            in {"openai", "openai-compatible"}
+            provider_is_generation_ready(provider)
             and provider["model_name"] == model_name_snapshot
-            and len(provider["api_key"].strip()) >= _MIN_SCANNABLE_SECRET_LENGTH
-            and len(provider["base_url"].strip()) >= _MIN_SCANNABLE_SECRET_LENGTH
         )
 
     @staticmethod

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.contracts import ContractRepository
+from backend.repositories.model_bindings import AVAILABLE_PROVIDER_PREDICATE
 
 
 class RecordingSession:
@@ -27,8 +29,13 @@ async def test_contract_readiness_accepts_only_generation_capable_type():
 
     sql, _ = session.calls[0]
     assert (
-        "LOWER(TRIM(provider.provider_type))='openai-compatible'" in sql
+        f"LOWER(TRIM(provider.provider_type))='{GENERATION_PROVIDER_TYPE}'"
+        in sql
     )
+    assert "provider.lifecycle_status='active'" in sql
+    assert "provider.enabled=1" in sql
+    for field in ("model_name", "base_url", "api_key"):
+        assert f"TRIM(provider.{field})<>''" in sql
     assert "provider.provider_type IS NOT NULL" not in sql
 
 
@@ -42,6 +49,22 @@ async def test_chapter_provider_resolution_accepts_only_generation_capable_type(
 
     assert result is None
     sql, args = session.calls[0]
-    assert "LOWER(TRIM(p.provider_type))='openai-compatible'" in sql
+    assert (
+        f"LOWER(TRIM(p.provider_type))='{GENERATION_PROVIDER_TYPE}'" in sql
+    )
+    assert "p.lifecycle_status='active'" in sql
+    assert "p.enabled=1" in sql
+    for field in ("model_name", "base_url", "api_key"):
+        assert f"TRIM(p.{field})<>''" in sql
     assert "p.provider_type IS NOT NULL" not in sql
     assert args == ("project-1",)
+
+
+def test_model_binding_sql_uses_the_canonical_generation_policy():
+    sql = " ".join(AVAILABLE_PROVIDER_PREDICATE.split())
+
+    assert f"LOWER(TRIM(provider_type))='{GENERATION_PROVIDER_TYPE}'" in sql
+    assert "lifecycle_status='active'" in sql
+    assert "enabled=1" in sql
+    for field in ("model_name", "base_url", "api_key"):
+        assert f"TRIM({field})<>''" in sql
