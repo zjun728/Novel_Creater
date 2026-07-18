@@ -526,6 +526,76 @@ def test_provider_validation_error_drops_forbidden_keys_recursively(provider_api
 
 
 @pytest.mark.parametrize(
+    "alias",
+    ("api-key", "base-url", "Api_Key", "Base-URL"),
+)
+def test_provider_validation_error_redacts_secret_aliases_at_any_depth(
+    provider_api, alias
+):
+    client, _ = provider_api
+    root_secret = f"root-alias-secret-{alias}-must-not-escape"
+    nested_secret = f"nested-alias-secret-{alias}-must-not-escape"
+    body = create_body()
+    body[alias] = root_secret
+    body["extraContainer"] = {alias: nested_secret}
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 422
+    rendered = json.dumps(response.json(), ensure_ascii=False)
+    assert alias not in rendered
+    assert root_secret not in rendered
+    assert nested_secret not in rendered
+
+
+def test_provider_validation_error_preserves_ordinary_near_match_fields(
+    provider_api,
+):
+    client, _ = provider_api
+    body = create_body()
+    ordinary = {
+        "api-key-hint": "ordinary-api-hint-visible",
+        "base-url-status": "ordinary-base-status-visible",
+    }
+    body.update(ordinary)
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 422
+    rendered = json.dumps(response.json(), ensure_ascii=False)
+    for key, value in ordinary.items():
+        assert key in rendered
+        assert value in rendered
+
+
+def test_provider_secret_key_predicate_canonicalizes_only_exact_aliases():
+    from backend.security.provider_secrets import is_provider_secret_key
+
+    for alias in (
+        "apiKey",
+        "api_key",
+        "api-key",
+        "Api_Key",
+        "baseURL",
+        "base_url",
+        "base-url",
+        "Base-URL",
+        "Authorization",
+        "token",
+        "password",
+    ):
+        assert is_provider_secret_key(alias) is True
+    for ordinary in (
+        "api-key-hint",
+        "base-url-status",
+        "authorizationMode",
+        "tokenCount",
+        "passwordPolicy",
+    ):
+        assert is_provider_secret_key(ordinary) is False
+
+
+@pytest.mark.parametrize(
     "structural_secret", ["type", "loc", "msg", "input", "ctx"]
 )
 def test_validation_redaction_preserves_trusted_error_schema_keys(

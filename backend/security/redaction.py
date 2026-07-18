@@ -12,21 +12,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.http_errors import PublicDomainError
-from backend.security.provider_secrets import sanitize_provider_secret_text
+from backend.security.provider_secrets import (
+    is_provider_secret_key,
+    sanitize_provider_secret_text,
+)
 
 
 REDACTED = "[REDACTED]"
-_SECRET_KEYS = frozenset(
-    {
-        "apikey",
-        "api_key",
-        "authorization",
-        "baseurl",
-        "base_url",
-        "password",
-        "token",
-    }
-)
 
 
 def redact_secrets(value):
@@ -36,7 +28,7 @@ def redact_secrets(value):
         return {
             key: (
                 REDACTED
-                if str(key).casefold() in _SECRET_KEYS
+                if is_provider_secret_key(key)
                 else redact_secrets(item)
             )
             for key, item in value.items()
@@ -66,7 +58,7 @@ def _validation_secret_values(body) -> tuple[str, ...]:
                     item,
                     inside_secret=(
                         inside_secret
-                        or str(key).casefold() in _SECRET_KEYS
+                        or is_provider_secret_key(key)
                     ),
                 )
             return
@@ -89,7 +81,7 @@ def _redact_validation_errors(errors, body=None):
             return {
                 key: drop_secret_keys(item)
                 for key, item in value.items()
-                if str(key).casefold() not in _SECRET_KEYS
+                if not is_provider_secret_key(key)
             }
         if isinstance(value, tuple):
             return tuple(drop_secret_keys(item) for item in value)
@@ -97,7 +89,7 @@ def _redact_validation_errors(errors, body=None):
             return [drop_secret_keys(item) for item in value]
         if (
             isinstance(value, str)
-            and value.casefold() in _SECRET_KEYS
+            and is_provider_secret_key(value)
         ):
             return REDACTED
         return value
@@ -129,7 +121,7 @@ def _redact_validation_errors(errors, body=None):
     ]
     for original, error in zip(errors, sanitized):
         location = original.get("loc", ())
-        if any(str(part).casefold() in _SECRET_KEYS for part in location):
+        if any(is_provider_secret_key(part) for part in location):
             error["input"] = REDACTED
     return sanitized
 

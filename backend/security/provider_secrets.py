@@ -65,8 +65,9 @@ def _validated_provider_response_secrets(
     return normalized
 
 
-def _normalized_public_key(value: object) -> str:
-    return str(value).casefold().replace("_", "").replace("-", "")
+def is_provider_secret_key(value: object) -> bool:
+    normalized = str(value).casefold().replace("_", "").replace("-", "")
+    return normalized in FORBIDDEN_PROVIDER_PUBLIC_KEYS
 
 
 def _matches_secret(value: str, secret: str) -> bool:
@@ -251,7 +252,7 @@ def sanitize_provider_public_value(
         if isinstance(item, Mapping):
             sanitized = {}
             for key, nested in item.items():
-                if _normalized_public_key(key) in FORBIDDEN_PROVIDER_PUBLIC_KEYS:
+                if is_provider_secret_key(key):
                     continue
                 safe_key = (
                     sanitize_provider_secret_text(key, normalized)
