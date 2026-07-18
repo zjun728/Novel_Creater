@@ -7,17 +7,20 @@ from dataclasses import dataclass
 
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
+from backend.gateways.provider_connection import SUPPORTED_PROVIDER_TYPES
 from backend.http_errors import (
     BindingConflict,
     BindingNotFound,
     BindingProviderUnavailable,
 )
+from backend.security.provider_secrets import (
+    normalize_provider_secrets,
+    sanitize_provider_secret_text,
+)
 
 
 def _redact_display(value: str, secrets: tuple[str, ...]) -> str:
-    for secret in secrets:
-        value = value.replace(secret, "[REDACTED]")
-    return value
+    return sanitize_provider_secret_text(value, secrets)
 
 
 def provider_is_available(row: Mapping, *, prefix: str = "") -> bool:
@@ -29,9 +32,12 @@ def provider_is_available(row: Mapping, *, prefix: str = "") -> bool:
     return (
         value("lifecycle_status") == "active"
         and int(value("enabled") or 0) == 1
+        and isinstance(value("provider_type"), str)
+        and value("provider_type").strip().casefold()
+        in SUPPORTED_PROVIDER_TYPES
         and all(
             isinstance(value(field), str) and bool(value(field).strip())
-            for field in ("provider_type", "model_name", "base_url", "api_key")
+            for field in ("model_name", "base_url", "api_key")
         )
     )
 
@@ -60,10 +66,8 @@ class ModelBindingService:
 
     @staticmethod
     def _bound_item(task_key: str, provider: Mapping) -> BindingItem:
-        secrets = tuple(
-            value
-            for value in (provider.get("api_key"), provider.get("base_url"))
-            if isinstance(value, str) and value
+        secrets = normalize_provider_secrets(
+            (provider.get("api_key"), provider.get("base_url"))
         )
 
         return BindingItem(
@@ -206,12 +210,11 @@ class ModelBindingService:
             if not provider_is_available(row, prefix="current_"):
                 reasons.append(f"provider_unavailable:{item.task_key}")
             else:
-                current_secrets = tuple(
-                    value
-                    for value in (
-                        row.get("current_api_key"), row.get("current_base_url")
+                current_secrets = normalize_provider_secrets(
+                    (
+                        row.get("current_api_key"),
+                        row.get("current_base_url"),
                     )
-                    if isinstance(value, str) and value
                 )
                 current_model = _redact_display(
                     row.get("current_model_name") or "", current_secrets
@@ -220,14 +223,11 @@ class ModelBindingService:
                     reasons.append(f"model_snapshot_mismatch:{item.task_key}")
         ready = complete and not reasons
         first = rows[0]
-        redaction_values = tuple(
-            dict.fromkeys(
-                value
-                for row in rows
-                for value in (
-                    row.get("current_api_key"), row.get("current_base_url")
-                )
-                if isinstance(value, str) and value
+        redaction_values = normalize_provider_secrets(
+            value
+            for row in rows
+            for value in (
+                row.get("current_api_key"), row.get("current_base_url")
             )
         )
         return BindingResult(

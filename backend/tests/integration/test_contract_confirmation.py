@@ -365,7 +365,8 @@ async def test_real_reverse_cross_project_provider_and_asset_locks_finish_withou
             stream,max_context_tokens,max_output_tokens,temperature,top_p,
             supports_json,supports_streaming,notes,thinking,lifecycle_status,
             deleted_at,created_at,updated_at)
-           VALUES (%s,'Provider Two','test','model-two','https://test.invalid',
+           VALUES (%s,'Provider Two','openai-compatible','model-two',
+                   'https://test.invalid',
                    'test-only-key',1,2,1,100000,4096,0.7,0.9,1,1,'',NULL,
                    'active',NULL,%s,%s)""",
         (provider2, now, now),

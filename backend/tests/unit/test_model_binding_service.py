@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from backend.domain.model_bindings import TASK_KEYS
-from backend.services.model_bindings import ModelBindingService
+from backend.services.model_bindings import (
+    ModelBindingService,
+    provider_is_available,
+)
 
 
 def provider(provider_id, *, status="active", enabled=1, sort_order=0):
@@ -19,6 +22,34 @@ def provider(provider_id, *, status="active", enabled=1, sort_order=0):
         "sort_order": sort_order,
         "created_at": sort_order,
     }
+
+
+def test_only_generation_capable_provider_types_are_available():
+    openai_compatible = provider("deepseek")
+    anthropic = {
+        **provider("anthropic"),
+        "provider_type": "anthropic",
+    }
+
+    assert provider_is_available(openai_compatible) is True
+    assert provider_is_available(anthropic) is False
+
+
+def test_binding_snapshots_use_longest_first_shared_secret_sanitizer():
+    private_url = "https://secret.internal.example/v1"
+    row = {
+        **provider("overlap"),
+        "name": f"private endpoint {private_url}",
+        "model_name": private_url,
+        "api_key": "https",
+        "base_url": private_url,
+    }
+
+    item = ModelBindingService._bound_item("seed", row)
+
+    assert item.provider_name_snapshot == "private endpoint [REDACTED]"
+    assert item.model_name_snapshot == "[REDACTED]"
+    assert "secret.internal.example" not in str(item)
 
 
 class InitializeRepository:

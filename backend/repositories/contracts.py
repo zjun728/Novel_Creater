@@ -6,7 +6,7 @@ from backend.repositories.project_lifecycle import lock_active_project, read_act
 
 
 _PROVIDER_READY = """provider.lifecycle_status='active' AND provider.enabled=1
-  AND provider.provider_type IS NOT NULL AND TRIM(provider.provider_type)<>''
+  AND LOWER(TRIM(provider.provider_type))='openai-compatible'
   AND provider.model_name IS NOT NULL AND TRIM(provider.model_name)<>''
   AND provider.base_url IS NOT NULL AND TRIM(provider.base_url)<>''
   AND provider.api_key IS NOT NULL AND TRIM(provider.api_key)<>''"""

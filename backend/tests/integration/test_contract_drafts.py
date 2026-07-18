@@ -95,7 +95,8 @@ async def _bootstrap(session):
             stream,max_context_tokens,max_output_tokens,temperature,top_p,
             supports_json,supports_streaming,notes,thinking,lifecycle_status,
             deleted_at,created_at,updated_at)
-           VALUES (%s,'Contract Provider','test','test-model','https://test.invalid',
+           VALUES (%s,'Contract Provider','openai-compatible','test-model',
+                   'https://test.invalid',
                    'test-only-key',1,1,1,100000,4096,0.7,0.9,1,1,'',NULL,
                    'active',NULL,%s,%s)""",
         (PROVIDER, now, now),

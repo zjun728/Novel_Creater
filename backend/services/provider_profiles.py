@@ -10,7 +10,16 @@ import time
 from typing import Any
 from uuid import uuid4
 
+import aiomysql
+
+from backend.gateways.provider_connection import SUPPORTED_PROVIDER_TYPES
 from backend.http_errors import PublicDomainError
+from backend.security.provider_secrets import (
+    PUBLIC_SECRET_COLLISION_MESSAGE,
+    normalize_provider_secrets,
+    provider_public_fields_contain_secret,
+    sanitize_provider_public_value,
+)
 from backend.serializers.provider import (
     ProviderConnectionPublicResult,
     ProviderPublicProfile,
@@ -40,6 +49,25 @@ class ProviderMutationResultUnavailable(PublicDomainError):
     status_code = 409
     code = "provider_result_superseded"
     message = "Provider 操作结果已被后续修改取代，请刷新"
+
+
+class ProviderPublicSecretCollision(PublicDomainError):
+    status_code = 422
+    code = "provider_public_secret_collision"
+    message = PUBLIC_SECRET_COLLISION_MESSAGE
+
+
+class ProviderTypeUnsupported(PublicDomainError):
+    status_code = 422
+    code = "provider_type_unsupported"
+    message = "Unsupported Provider type"
+
+
+class ProviderMutationRetryableConflict(PublicDomainError):
+    status_code = 409
+    code = "provider_mutation_retryable_conflict"
+    message = "Provider mutation conflicted; retry the request"
+    retryable = True
 
 
 @dataclass(frozen=True)
@@ -246,37 +274,37 @@ def _fingerprint(kind: str, value: Mapping[str, Any]) -> str:
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
-_FORBIDDEN_PROFILE_KEYS = frozenset(
-    {"apikey", "baseurl", "authorization", "token", "password"}
+def _mysql_error_number(error: BaseException) -> int | None:
+    args = getattr(error, "args", ())
+    return args[0] if args and isinstance(args[0], int) else None
+
+
+_PUBLIC_PROFILE_COLUMNS = (
+    "name",
+    "provider_type",
+    "model_name",
+    "notes",
+    "thinking",
 )
+_PUBLIC_PROFILE_LIMITS = {
+    "name": {"max_chars": 120},
+    "provider_type": {"max_chars": 64},
+    "model_name": {"max_chars": 160},
+    "notes": {"max_utf8_bytes": 65_535},
+}
 
 
-def _sanitize_public_value(value, secrets: tuple[str, ...]):
-    if isinstance(value, Mapping):
-        sanitized = {}
-        for key, item in value.items():
-            if (
-                str(key).casefold().replace("_", "").replace("-", "")
-                in _FORBIDDEN_PROFILE_KEYS
-            ):
-                continue
-            safe_key = (
-                _sanitize_public_value(key, secrets)
-                if isinstance(key, str)
-                else key
-            )
-            if safe_key in sanitized:
-                return {}
-            sanitized[safe_key] = _sanitize_public_value(item, secrets)
-        return sanitized
-    if isinstance(value, list):
-        return [_sanitize_public_value(item, secrets) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_sanitize_public_value(item, secrets) for item in value)
-    if isinstance(value, str):
-        for secret in secrets:
-            value = value.replace(secret, "[REDACTED]")
-    return value
+def _sanitize_profile_public_column(column, value, secrets):
+    return sanitize_provider_public_value(
+        value,
+        secrets,
+        **_PUBLIC_PROFILE_LIMITS.get(column, {}),
+    )
+
+
+def _raise_on_public_secret_collision(value, secrets) -> None:
+    if provider_public_fields_contain_secret(value, secrets):
+        raise ProviderPublicSecretCollision()
 
 
 class ProviderProfileService:
@@ -309,6 +337,7 @@ class ProviderProfileService:
         "provider_unreachable": "无法连接 Provider",
         "provider_rejected": "Provider 拒绝连接",
         "provider_unconfigured": "Provider 未配置",
+        "provider_unsupported": "不支持的 Provider 类型",
         "provider_failed": "连接测试失败",
     }
 
@@ -342,6 +371,7 @@ class ProviderProfileService:
         kind: str,
         request_hash: str,
         expected_revision: int,
+        row: Mapping[str, Any] | None = None,
     ):
         if (
             request["mutation_kind"] != kind
@@ -350,9 +380,10 @@ class ProviderProfileService:
             or request["status"] != "succeeded"
         ):
             raise ProviderIdempotencyConflict()
-        row = await self.repository.read_profile(
-            session, request["provider_id"]
-        )
+        if row is None:
+            row = await self.repository.read_profile(
+                session, request["provider_id"]
+            )
         if (
             row is None
             or int(row["revision"]) != int(request["result_revision"])
@@ -392,68 +423,88 @@ class ProviderProfileService:
     async def create(
         self, command: ProviderCreateCommand
     ) -> ProviderPublicProfile:
+        provider_type = command.provider_type.strip()
+        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+            raise ProviderTypeUnsupported()
+        secrets = normalize_provider_secrets(
+            (command.api_key, command.base_url)
+        )
+        _raise_on_public_secret_collision(
+            {
+                "name": command.name.strip(),
+                "provider_type": provider_type,
+                "model_name": command.model.strip(),
+                "notes": command.notes,
+                "thinking": command.thinking,
+            },
+            secrets,
+        )
         fingerprint_values = asdict(command)
         fingerprint_values.pop("idempotency_key")
         request_hash = _fingerprint("create", fingerprint_values)
-        async with self.transaction_factory() as session:
-            lock_guard = getattr(self.repository, "lock_create_guard", None)
-            if lock_guard is not None:
-                await lock_guard(session)
-            previous = await self.repository.lock_create_request(
-                session, command.idempotency_key
-            )
-            if previous is not None:
-                row = await self._recover(
+        try:
+            async with self.transaction_factory() as session:
+                lock_guard = getattr(
+                    self.repository, "lock_create_guard", None
+                )
+                if lock_guard is not None:
+                    await lock_guard(session)
+                previous = await self.repository.lock_create_request(
+                    session, command.idempotency_key
+                )
+                if previous is not None:
+                    row = await self._recover(
+                        session,
+                        previous,
+                        kind="create",
+                        request_hash=request_hash,
+                        expected_revision=0,
+                    )
+                    return provider_public_profile(row)
+                now = self.clock()
+                provider_id = self.id_factory()
+                api_key = command.api_key.strip()
+                base_url = command.base_url.strip()
+                row = {
+                    "id": provider_id,
+                    "name": command.name.strip(),
+                    "provider_type": provider_type,
+                    "model_name": command.model.strip(),
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "enabled": int(command.enabled),
+                    "sort_order": command.sort_order,
+                    "stream": int(command.stream),
+                    "max_context_tokens": command.max_context_tokens,
+                    "max_output_tokens": command.max_output_tokens,
+                    "temperature": command.temperature,
+                    "top_p": command.top_p,
+                    "supports_json": int(command.supports_json),
+                    "supports_streaming": int(command.supports_streaming),
+                    "notes": command.notes,
+                    "thinking": command.thinking,
+                    "lifecycle_status": "active",
+                    "revision": 1,
+                    "deleted_at": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await self.repository.insert_profile(session, row)
+                await self._record_success(
                     session,
-                    previous,
-                    kind="create",
+                    provider_id=provider_id,
+                    idempotency_key=command.idempotency_key,
                     request_hash=request_hash,
+                    kind="create",
                     expected_revision=0,
+                    result_revision=1,
+                    now=now,
                 )
                 return provider_public_profile(row)
-            now = self.clock()
-            provider_id = self.id_factory()
-            secrets = (command.api_key.strip(), command.base_url.strip())
-            row = {
-                "id": provider_id,
-                "name": _sanitize_public_value(command.name.strip(), secrets),
-                "provider_type": _sanitize_public_value(
-                    command.provider_type.strip(), secrets
-                ),
-                "model_name": _sanitize_public_value(
-                    command.model.strip(), secrets
-                ),
-                "base_url": secrets[1],
-                "api_key": secrets[0],
-                "enabled": int(command.enabled),
-                "sort_order": command.sort_order,
-                "stream": int(command.stream),
-                "max_context_tokens": command.max_context_tokens,
-                "max_output_tokens": command.max_output_tokens,
-                "temperature": command.temperature,
-                "top_p": command.top_p,
-                "supports_json": int(command.supports_json),
-                "supports_streaming": int(command.supports_streaming),
-                "notes": _sanitize_public_value(command.notes, secrets),
-                "thinking": _sanitize_public_value(command.thinking, secrets),
-                "lifecycle_status": "active",
-                "revision": 1,
-                "deleted_at": None,
-                "created_at": now,
-                "updated_at": now,
-            }
-            await self.repository.insert_profile(session, row)
-            await self._record_success(
-                session,
-                provider_id=provider_id,
-                idempotency_key=command.idempotency_key,
-                request_hash=request_hash,
-                kind="create",
-                expected_revision=0,
-                result_revision=1,
-                now=now,
-            )
-            return provider_public_profile(row)
+        except aiomysql.OperationalError as error:
+            if _mysql_error_number(error) in {1205, 1213}:
+                raise ProviderMutationRetryableConflict() from None
+            raise
 
     async def update(
         self, command: ProviderUpdateCommand
@@ -463,6 +514,17 @@ class ProviderProfileService:
             value = changes.get(secret_field)
             if not isinstance(value, str) or not value.strip():
                 changes.pop(secret_field, None)
+        submitted_secrets = normalize_provider_secrets(
+            (changes.get("apiKey"), changes.get("baseURL"))
+        )
+        _raise_on_public_secret_collision(
+            {
+                key: value
+                for key, value in changes.items()
+                if key in {"name", "model", "notes", "thinking"}
+            },
+            submitted_secrets,
+        )
         request_hash = _fingerprint(
             "update",
             {
@@ -484,6 +546,11 @@ class ProviderProfileService:
         return provider_public_profile(row)
 
     def _update_changes(self, current, incoming, now):
+        provider_type = (
+            str(current.get("provider_type") or "").strip().casefold()
+        )
+        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+            raise ProviderTypeUnsupported()
         changes = {}
         for public_name, value in incoming.items():
             column = self._UPDATE_COLUMNS[public_name]
@@ -494,27 +561,38 @@ class ProviderProfileService:
             changes[column] = value
         next_key = changes.get("api_key", current.get("api_key"))
         next_url = changes.get("base_url", current.get("base_url"))
-        secrets = tuple(
-            dict.fromkeys(
-                value
-                for value in (
-                    current.get("api_key"),
-                    current.get("base_url"),
-                    next_key,
-                    next_url,
-                )
-                if isinstance(value, str) and value
+        submitted_secrets = normalize_provider_secrets(
+            (changes.get("api_key"), changes.get("base_url"))
+        )
+        secrets = normalize_provider_secrets(
+            (
+                current.get("api_key"),
+                current.get("base_url"),
+                next_key,
+                next_url,
             )
         )
-        for column in (
-            "name",
-            "provider_type",
-            "model_name",
-            "notes",
-            "thinking",
-        ):
+        _raise_on_public_secret_collision(
+            {
+                column: changes[column]
+                for column in _PUBLIC_PROFILE_COLUMNS
+                if column in changes
+            },
+            secrets,
+        )
+        _raise_on_public_secret_collision(
+            {
+                column: current.get(column)
+                for column in _PUBLIC_PROFILE_COLUMNS
+                if column not in changes
+            },
+            submitted_secrets,
+        )
+        for column in _PUBLIC_PROFILE_COLUMNS:
             value = changes.get(column, current.get(column))
-            sanitized = _sanitize_public_value(value, secrets)
+            sanitized = _sanitize_profile_public_column(
+                column, value, secrets
+            )
             if sanitized != value or column in changes:
                 changes[column] = sanitized
         configured = bool(
@@ -596,56 +674,60 @@ class ProviderProfileService:
         request_hash: str,
         change_builder,
     ):
-        async with self.transaction_factory() as session:
-            previous = await self.repository.lock_mutation_request(
-                session, provider_id, idempotency_key
-            )
-            if previous is not None:
-                return await self._recover(
-                    session,
-                    previous,
-                    kind=kind,
-                    request_hash=request_hash,
-                    expected_revision=expected_revision,
+        try:
+            async with self.transaction_factory() as session:
+                current = await self.repository.lock_profile(
+                    session, provider_id
                 )
-            current = await self.repository.lock_profile(session, provider_id)
-            if current is None or current["lifecycle_status"] == "deleted":
-                raise ProviderProfileNotFound()
-            if int(current["revision"]) != expected_revision:
-                raise ProviderProfileConflict()
-            now = self.clock()
-            changes = change_builder(current, now)
-            redaction_values = tuple(
-                value
-                for value in (current.get("api_key"), current.get("base_url"))
-                if isinstance(value, str) and value
-            )
-            for column in (
-                "name",
-                "provider_type",
-                "model_name",
-                "notes",
-                "thinking",
-            ):
-                value = changes.get(column, current.get(column))
-                sanitized = _sanitize_public_value(value, redaction_values)
-                if sanitized != value:
-                    changes[column] = sanitized
-            if not await self.repository.compare_and_swap_profile(
-                session, provider_id, expected_revision, changes
-            ):
-                raise ProviderProfileConflict()
-            await self._record_success(
-                session,
-                provider_id=provider_id,
-                idempotency_key=idempotency_key,
-                request_hash=request_hash,
-                kind=kind,
-                expected_revision=expected_revision,
-                result_revision=changes["revision"],
-                now=now,
-            )
-            return {**current, **changes}
+                if current is None:
+                    raise ProviderProfileNotFound()
+                previous = await self.repository.lock_mutation_request(
+                    session, provider_id, idempotency_key
+                )
+                if previous is not None:
+                    return await self._recover(
+                        session,
+                        previous,
+                        kind=kind,
+                        request_hash=request_hash,
+                        expected_revision=expected_revision,
+                        row=current,
+                    )
+                if current["lifecycle_status"] == "deleted":
+                    raise ProviderProfileNotFound()
+                if int(current["revision"]) != expected_revision:
+                    raise ProviderProfileConflict()
+                now = self.clock()
+                changes = change_builder(current, now)
+                redaction_values = normalize_provider_secrets(
+                    (current.get("api_key"), current.get("base_url"))
+                )
+                for column in _PUBLIC_PROFILE_COLUMNS:
+                    value = changes.get(column, current.get(column))
+                    sanitized = _sanitize_profile_public_column(
+                        column, value, redaction_values
+                    )
+                    if sanitized != value:
+                        changes[column] = sanitized
+                if not await self.repository.compare_and_swap_profile(
+                    session, provider_id, expected_revision, changes
+                ):
+                    raise ProviderProfileConflict()
+                await self._record_success(
+                    session,
+                    provider_id=provider_id,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    kind=kind,
+                    expected_revision=expected_revision,
+                    result_revision=changes["revision"],
+                    now=now,
+                )
+                return {**current, **changes}
+        except aiomysql.OperationalError as error:
+            if _mysql_error_number(error) in {1205, 1213}:
+                raise ProviderMutationRetryableConflict() from None
+            raise
 
     async def test_connection(
         self, provider_id: str
@@ -656,6 +738,13 @@ class ProviderProfileService:
             )
         if row is None or row["lifecycle_status"] == "deleted":
             raise ProviderProfileNotFound()
+        provider_type = (
+            str(row.get("provider_type") or "").strip().casefold()
+        )
+        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+            return self._connection_result(
+                ok=False, code="provider_unsupported", latency_ms=0
+            )
         if (
             row["lifecycle_status"] != "active"
             or not isinstance(row.get("api_key"), str)
@@ -667,7 +756,7 @@ class ProviderProfileService:
                 ok=False, code="provider_unconfigured", latency_ms=0
             )
         private_projection = {
-            "provider_type": row["provider_type"],
+            "provider_type": provider_type,
             "model_name": row["model_name"],
             "base_url": row["base_url"],
             "api_key": row["api_key"],

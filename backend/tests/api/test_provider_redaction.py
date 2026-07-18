@@ -93,6 +93,13 @@ class ProviderRouteError(PublicDomainError):
     message = "Provider 配置已变化，请刷新后重试"
 
 
+class RetryableProviderRouteError(PublicDomainError):
+    status_code = 409
+    code = "provider_mutation_retryable_conflict"
+    message = "Provider mutation conflicted; retry the request"
+    retryable = True
+
+
 class FakeProviderProfileService:
     def __init__(self):
         self.calls = []
@@ -120,9 +127,12 @@ class FakeProviderProfileService:
             provider_row(
                 id="provider-created",
                 name=command.name,
+                provider_type=command.provider_type,
                 model_name=command.model,
                 base_url=command.base_url,
                 api_key=command.api_key,
+                notes=command.notes,
+                thinking=command.thinking,
                 revision=1,
             )
         )
@@ -199,12 +209,8 @@ def create_body():
         "baseURL": PRIVATE_URL,
         "enabled": True,
         "sortOrder": 2,
-        "notes": f"nested {SECRET} {PRIVATE_URL}",
-        "thinking": {
-            "authorization": SECRET,
-            "token": SECRET,
-            "password": SECRET,
-        },
+        "notes": "public notes",
+        "thinking": {"mode": "safe"},
         "idempotencyKey": "create-provider-request-0001",
     }
 
@@ -277,6 +283,164 @@ def test_list_create_update_delete_clear_and_test_successes_are_public_only(
 
 
 @pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "apiKey": "a",
+            "name": "a",
+        },
+        {
+            "apiKey": "a",
+            "name": " a ",
+        },
+        {
+            "apiKey": "a",
+            "thinking": {"a": "ordinary"},
+        },
+        {
+            "apiKey": "safe-short-key",
+            "baseURL": "https://secret.internal.example/v1",
+            "notes": "public https://secret.internal.example/v1 collision",
+        },
+    ],
+)
+def test_create_rejects_public_secret_collisions_with_fixed_safe_422(
+    provider_api, overrides
+):
+    client, service = provider_api
+    body = create_body()
+    body["notes"] = "public notes"
+    body["thinking"] = {"mode": "safe"}
+    body.update(overrides)
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 422
+    assert not any(call[0] == "create" for call in service.calls)
+    assert "Provider public fields cannot contain private configuration" in (
+        response.text
+    )
+    assert '"a"' not in response.text
+    assert "secret.internal.example" not in response.text
+    assert_public_boundary(response.json())
+
+
+def test_short_key_substrings_remain_legal_and_uncorrupted(provider_api):
+    client, service = provider_api
+    body = create_body()
+    body.update(
+        {
+            "name": "a" * 120,
+            "providerType": "openai-compatible",
+            "model": "claude",
+            "baseURL": "https://provider.example/v1",
+            "apiKey": "a",
+            "notes": "aaaa remains ordinary public text",
+            "thinking": {"a-key": "a value"},
+        }
+    )
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == body["name"]
+    assert response.json()["providerType"] == body["providerType"]
+    assert response.json()["model"] == body["model"]
+    assert response.json()["notes"] == body["notes"]
+    assert response.json()["thinking"] == body["thinking"]
+    command = next(call[1] for call in service.calls if call[0] == "create")
+    assert command.api_key == "a"
+
+
+@pytest.mark.parametrize("secret_field", ["apiKey", "baseURL"])
+@pytest.mark.parametrize(
+    "structural_secret", ["enabled", "revision", "provider"]
+)
+def test_create_structural_secret_values_never_rewrite_public_schema(
+    provider_api, secret_field, structural_secret
+):
+    client, _ = provider_api
+    body = create_body()
+    body[secret_field] = structural_secret
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert set(payload) == {
+        "id",
+        "name",
+        "providerType",
+        "model",
+        "enabled",
+        "sortOrder",
+        "stream",
+        "maxContextTokens",
+        "maxOutputTokens",
+        "temperature",
+        "topP",
+        "supportsJSON",
+        "supportsStreaming",
+        "notes",
+        "thinking",
+        "hasKey",
+        "hasBaseURL",
+        "lifecycleStatus",
+        "revision",
+        "ready",
+        "createdAt",
+        "updatedAt",
+    }
+    rendered_values = json.dumps(list(payload.values()), ensure_ascii=False)
+    assert structural_secret not in rendered_values
+
+
+@pytest.mark.parametrize(
+    "unsupported_type", ["anthropic", "unsupported-native"]
+)
+def test_create_rejects_unsupported_provider_type_before_service(
+    provider_api, unsupported_type
+):
+    client, service = provider_api
+    body = create_body()
+    body.update(
+        {
+            "providerType": unsupported_type,
+            "notes": "public notes",
+            "thinking": {"mode": "safe"},
+        }
+    )
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 422
+    assert not any(call[0] == "create" for call in service.calls)
+    assert "Unsupported Provider type" in response.text
+    assert_public_boundary(response.json())
+
+
+def test_update_rejects_submitted_public_secret_collision(provider_api):
+    client, service = provider_api
+
+    response = client.put(
+        "/api/providers/provider-1",
+        json={
+            **mutation_body(),
+            "apiKey": "a",
+            "notes": "a",
+        },
+    )
+
+    assert response.status_code == 422
+    assert not any(call[0] == "update" for call in service.calls)
+    assert "Provider public fields cannot contain private configuration" in (
+        response.text
+    )
+    assert '"a"' not in response.text
+    assert_public_boundary(response.json())
+
+
+@pytest.mark.parametrize(
     ("method", "request_call"),
     [
         ("list", lambda client: client.get("/api/providers")),
@@ -322,6 +486,29 @@ def test_every_handled_provider_error_is_recursively_public_only(
     assert_public_boundary(response.json())
 
 
+def test_retryable_provider_conflict_has_fixed_public_http_contract(
+    provider_api,
+):
+    client, service = provider_api
+
+    async def fail_clear(command):
+        raise RetryableProviderRouteError()
+
+    service.clear_api_key = fail_clear
+    response = client.post(
+        "/api/providers/provider-1/clear-api-key",
+        json=mutation_body(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "provider_mutation_retryable_conflict"
+    assert response.json()["message"] == (
+        "Provider mutation conflicted; retry the request"
+    )
+    assert response.json()["retryable"] is True
+    assert_public_boundary(response.json())
+
+
 def test_provider_validation_error_drops_forbidden_keys_recursively(provider_api):
     client, _ = provider_api
     body = create_body()
@@ -335,6 +522,26 @@ def test_provider_validation_error_drops_forbidden_keys_recursively(provider_api
     response = client.post("/api/providers", json=body)
 
     assert response.status_code == 422
+    assert_public_boundary(response.json())
+
+
+@pytest.mark.parametrize(
+    "structural_secret", ["type", "loc", "msg", "input", "ctx"]
+)
+def test_validation_redaction_preserves_trusted_error_schema_keys(
+    provider_api, structural_secret
+):
+    client, _ = provider_api
+    body = create_body()
+    body["apiKey"] = structural_secret
+    body["name"] = " "
+
+    response = client.post("/api/providers", json=body)
+
+    assert response.status_code == 422
+    error = response.json()["detail"][0]
+    assert set(error) == {"type", "loc", "msg", "input", "ctx"}
+    assert "" not in error
     assert_public_boundary(response.json())
 
 

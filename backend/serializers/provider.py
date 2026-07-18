@@ -7,16 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-
-REDACTED = "[REDACTED]"
-_FORBIDDEN_PUBLIC_KEYS = frozenset(
-    {
-        "apikey",
-        "baseurl",
-        "authorization",
-        "token",
-        "password",
-    }
+from backend.gateways.provider_connection import SUPPORTED_PROVIDER_TYPES
+from backend.security.provider_secrets import (
+    REDACTED,
+    normalize_provider_secrets,
+    sanitize_provider_public_value,
 )
 
 
@@ -108,30 +103,8 @@ def _secret_values(row: Mapping) -> tuple[str, ...]:
         if isinstance(value, str) and value:
             values.append(value)
     for value in row.get("_redaction_values", ()):
-        if isinstance(value, str) and value:
-            values.append(value)
-    return tuple(dict.fromkeys(values))
-
-
-def _sanitize(value, secrets: tuple[str, ...]):
-    if isinstance(value, Mapping):
-        return {
-            _sanitize(key, secrets): _sanitize(item, secrets)
-            for key, item in value.items()
-            if not (
-                isinstance(key, str)
-                and key.casefold().replace("_", "").replace("-", "")
-                in _FORBIDDEN_PUBLIC_KEYS
-            )
-        }
-    if isinstance(value, list):
-        return [_sanitize(item, secrets) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_sanitize(item, secrets) for item in value)
-    if isinstance(value, str):
-        for secret in secrets:
-            value = value.replace(secret, REDACTED)
-    return value
+        values.append(value)
+    return normalize_provider_secrets(values)
 
 
 def provider_public_profile(
@@ -164,11 +137,17 @@ def provider_public_profile(
             and bool(row["enabled"])
             and bool(row.get("api_key"))
             and bool(row.get("base_url"))
+            and str(row.get("provider_type") or "").strip().casefold()
+            in SUPPORTED_PROVIDER_TYPES
         ),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
-    safe = _sanitize(public, _secret_values(row))
+    secrets = _secret_values(row)
+    safe = {
+        key: sanitize_provider_public_value(value, secrets)
+        for key, value in public.items()
+    }
     return ProviderPublicProfile(
         id=safe["id"],
         name=safe["name"],

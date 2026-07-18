@@ -1,10 +1,8 @@
 export const providerTypeOptions = [
-  { label: 'Anthropic Claude（原生）', value: 'anthropic' },
   { label: 'OpenAI-compatible（通用）', value: 'openai-compatible' }
 ]
 
 export const defaultBaseUrls = {
-  anthropic: 'https://api.anthropic.com',
   'openai-compatible': 'https://api.openai.com/v1'
 }
 
@@ -15,13 +13,6 @@ export const providerPresets = [
     baseURL: 'https://api.openai.com/v1',
     model: 'gpt-4o',
     maxContextTokens: 128000
-  },
-  {
-    name: 'Anthropic Claude',
-    providerType: 'anthropic',
-    baseURL: 'https://api.anthropic.com',
-    model: 'claude-sonnet-4-20250514',
-    maxContextTokens: 200000
   },
   {
     name: '联通云-DeepSeek-V4-Flash',

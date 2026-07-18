@@ -13,7 +13,7 @@ from backend.repositories.project_lifecycle import (
 
 AVAILABLE_PROVIDER_PREDICATE = """lifecycle_status='active'
   AND enabled=1
-  AND provider_type IS NOT NULL AND TRIM(provider_type)<>''
+  AND LOWER(TRIM(provider_type))='openai-compatible'
   AND model_name IS NOT NULL AND TRIM(model_name)<>''
   AND base_url IS NOT NULL AND TRIM(base_url)<>''
   AND api_key IS NOT NULL AND TRIM(api_key)<>''"""

@@ -14,6 +14,7 @@ from backend.security.redaction import install_error_handlers
 
 SECRET = "sk-binding-secret-never-public"
 PRIVATE_URL = "https://binding-private.example/v1"
+OVERLAPPING_URL = "https://secret.internal.example/v1"
 
 
 def binding_result(*, revision=1, ready=True):
@@ -101,6 +102,28 @@ def test_get_bindings_and_status_expose_only_snapshot_metadata():
     assert len(status.json()["reasons"]) == 8
     assert_secret_free(current.json())
     assert_secret_free(status.json())
+
+
+def test_binding_route_uses_longest_first_shared_secret_sanitizer():
+    class OverlappingService(FakeService):
+        async def get_current(self, project_id):
+            result = binding_result()
+            first = result.items[0]
+            first.provider_id = OVERLAPPING_URL
+            first.provider_name_snapshot = OVERLAPPING_URL
+            first.model_name_snapshot = f"model {OVERLAPPING_URL}"
+            result.redaction_values = ("https", OVERLAPPING_URL)
+            return result
+
+    response = client_for(OverlappingService()).get(
+        "/api/projects/p1/bindings"
+    )
+
+    assert response.status_code == 200
+    rendered = response.text
+    assert OVERLAPPING_URL not in rendered
+    assert "secret.internal.example" not in rendered
+    assert "[REDACTED]://secret" not in rendered
 
 
 def test_put_requires_exact_unique_task_map_and_delegates_nullable_provider_ids():

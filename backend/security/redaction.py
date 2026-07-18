@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.http_errors import PublicDomainError
+from backend.security.provider_secrets import sanitize_provider_secret_text
 
 
 REDACTED = "[REDACTED]"
@@ -103,13 +104,13 @@ def _redact_validation_errors(errors, body=None):
 
     secrets = _validation_secret_values(body)
 
-    def replace_secret_values(value):
+    def replace_secret_values(value, *, preserve_mapping_keys=False):
         if isinstance(value, Mapping):
             return {
                 (
-                    replace_secret_values(key)
-                    if isinstance(key, str)
-                    else key
+                    key
+                    if preserve_mapping_keys or not isinstance(key, str)
+                    else replace_secret_values(key)
                 ): replace_secret_values(item)
                 for key, item in value.items()
             }
@@ -118,13 +119,14 @@ def _redact_validation_errors(errors, body=None):
         if isinstance(value, list):
             return [replace_secret_values(item) for item in value]
         if isinstance(value, str):
-            for secret in secrets:
-                value = value.replace(secret, REDACTED)
+            return sanitize_provider_secret_text(value, secrets)
         return value
 
-    sanitized = replace_secret_values(
-        drop_secret_keys(redact_secrets(errors))
-    )
+    dropped = drop_secret_keys(redact_secrets(errors))
+    sanitized = [
+        replace_secret_values(error, preserve_mapping_keys=True)
+        for error in dropped
+    ]
     for original, error in zip(errors, sanitized):
         location = original.get("loc", ())
         if any(str(part).casefold() in _SECRET_KEYS for part in location):
@@ -164,14 +166,14 @@ def install_error_handlers(app, *, logger=None) -> None:
             type(exc).__name__,
             correlation_id,
         )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={
-                "code": exc.code,
-                "message": exc.message,
-                "correlationId": correlation_id,
-            },
-        )
+        content = {
+            "code": exc.code,
+            "message": exc.message,
+            "correlationId": correlation_id,
+        }
+        if getattr(exc, "retryable", False) is True:
+            content["retryable"] = True
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(

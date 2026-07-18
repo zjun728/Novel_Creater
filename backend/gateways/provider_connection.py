@@ -11,10 +11,11 @@ import httpx
 
 PROVIDER_CONNECTION_TIMEOUT_SECONDS = 10
 MAX_PUBLIC_LATENCY_MS = 30_000
+SUPPORTED_PROVIDER_TYPES = frozenset({"openai-compatible"})
 
 
 class ProviderConnectionGateway:
-    """Call an OpenAI-compatible public capability endpoint exactly once."""
+    """Call the configured Provider capability endpoint exactly once."""
 
     def __init__(
         self,
@@ -33,8 +34,14 @@ class ProviderConnectionGateway:
     @staticmethod
     def _endpoint(base_url: str) -> str:
         parsed = httpx.URL(base_url)
-        path = f"{parsed.path.rstrip('/')}/models"
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/models"):
+            path = f"{path}/models"
         return str(parsed.copy_with(path=path))
+
+    @staticmethod
+    def _headers(api_key: object) -> dict[str, str]:
+        return {"Authorization": f"Bearer {api_key}"}
 
     def _latency_ms(self, started_at: float) -> int:
         elapsed = round((self._monotonic() - started_at) * 1000)
@@ -57,14 +64,23 @@ class ProviderConnectionGateway:
 
     async def test_connection(self, provider: Mapping[str, object]) -> dict:
         started_at = self._monotonic()
+        provider_type = str(provider.get("provider_type") or "").strip().casefold()
+        if provider_type not in SUPPORTED_PROVIDER_TYPES:
+            return self._result(
+                ok=False,
+                code="provider_unsupported",
+                latency_ms=self._latency_ms(started_at),
+                public_message="不支持的 Provider 类型",
+            )
         timeout = httpx.Timeout(self._timeout_seconds)
         try:
             endpoint = self._endpoint(str(provider["base_url"]))
-            headers = {"Authorization": f"Bearer {provider['api_key']}"}
+            headers = self._headers(provider["api_key"])
             async with asyncio.timeout(self._timeout_seconds):
                 async with httpx.AsyncClient(
                     transport=self._transport,
                     timeout=timeout,
+                    follow_redirects=False,
                 ) as client:
                     response = await client.get(endpoint, headers=headers)
         except (httpx.TimeoutException, TimeoutError):
@@ -83,7 +99,7 @@ class ProviderConnectionGateway:
             )
 
         latency_ms = self._latency_ms(started_at)
-        if response.is_error:
+        if not 200 <= response.status_code < 300:
             return self._result(
                 ok=False,
                 code="provider_rejected",

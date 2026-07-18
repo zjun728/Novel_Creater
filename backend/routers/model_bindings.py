@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from backend.database import connection, transaction
 from backend.domain.model_bindings import TASK_KEYS, TaskKey
 from backend.repositories.model_bindings import ModelBindingRepository
+from backend.security.provider_secrets import (
+    normalize_provider_secrets,
+    sanitize_provider_secret_text,
+)
 from backend.services.model_bindings import ModelBindingService
 
 
@@ -62,14 +66,17 @@ def _public_binding(result) -> dict:
         "sourceProjectId": result.source_project_id,
         "items": [_public_item(item) for item in result.items],
     }
-    for secret in getattr(result, "redaction_values", ()):
-        if secret:
-            for item in public["items"]:
-                for field in (
-                    "providerId", "providerNameSnapshot", "modelNameSnapshot"
-                ):
-                    if isinstance(item[field], str):
-                        item[field] = item[field].replace(secret, "[REDACTED]")
+    secrets = normalize_provider_secrets(
+        getattr(result, "redaction_values", ())
+    )
+    for item in public["items"]:
+        for field in (
+            "providerId", "providerNameSnapshot", "modelNameSnapshot"
+        ):
+            if isinstance(item[field], str):
+                item[field] = sanitize_provider_secret_text(
+                    item[field], secrets
+                )
     return public
 
 

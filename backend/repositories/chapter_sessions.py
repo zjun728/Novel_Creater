@@ -212,7 +212,7 @@ class ChapterSessionRepository:
                  AND i.resolution_status='bound'
                  AND p.lifecycle_status='active'
                  AND p.enabled=1
-                 AND p.provider_type IS NOT NULL AND TRIM(p.provider_type)<>''
+                 AND LOWER(TRIM(p.provider_type))='openai-compatible'
                  AND p.model_name IS NOT NULL AND TRIM(p.model_name)<>''
                  AND p.base_url IS NOT NULL AND TRIM(p.base_url)<>''
                  AND p.api_key IS NOT NULL AND TRIM(p.api_key)<>''

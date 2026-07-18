@@ -133,6 +133,7 @@ function normalizeConnectionResult(value = {}) {
     provider_unreachable: '无法连接 Provider',
     provider_rejected: 'Provider 拒绝连接',
     provider_unconfigured: 'Provider 未配置',
+    provider_unsupported: '不支持的 Provider 类型',
     provider_failed: '连接测试失败',
   }
   const publicCode = Object.hasOwn(messages, code) ? code : 'provider_failed'
@@ -406,7 +407,10 @@ export const useProviderStore = defineStore('provider', () => {
     return result
   })
   const availableProviders = computed(() => providers.value.filter(provider => (
-    provider.enabled === true && provider.hasKey === true && provider.hasBaseURL === true
+    provider.ready === true
+    && provider.enabled === true
+    && provider.hasKey === true
+    && provider.hasBaseURL === true
   )))
 
   return {

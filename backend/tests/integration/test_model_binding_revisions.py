@@ -9,7 +9,11 @@ from backend.domain.model_bindings import TASK_KEYS
 from backend.http_errors import BindingConflict
 from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
-from backend.routers import providers
+from backend.services.provider_profiles import (
+    DeleteProviderCommand,
+    ProviderProfileService,
+    SqlProviderProfileRepository,
+)
 from backend.services.model_bindings import ModelBindingService
 from backend.services.project_lifecycle import CreateProject, ProjectLifecycleService
 from backend.tests.support.disposable_mysql import transaction_factory_for
@@ -28,9 +32,9 @@ async def insert_provider(session, provider_id, name, model, sort_order):
            (id,name,provider_type,model_name,base_url,api_key,enabled,
             sort_order,stream,max_context_tokens,max_output_tokens,temperature,
             top_p,supports_json,supports_streaming,notes,thinking,
-            lifecycle_status,deleted_at,created_at,updated_at)
+            lifecycle_status,revision,deleted_at,created_at,updated_at)
            VALUES (%s,%s,'openai-compatible',%s,%s,%s,1,%s,1,200000,4096,
-                   0.8,0.9,1,1,'',NULL,'active',NULL,%s,%s)""",
+                   0.8,0.9,1,1,'',NULL,'active',1,NULL,%s,%s)""",
         (
             provider_id, name, model,
             f"https://{name.casefold()}.test/v1", f"test-key-{name}",
@@ -52,7 +56,7 @@ def project(project_id, title):
 
 @pytest.mark.asyncio
 async def test_revision_inheritance_cas_soft_delete_and_history_immutability(
-    disposable_mysql, monkeypatch
+    disposable_mysql
 ):
     tx = transaction_factory_for(disposable_mysql.connection_config)
 
@@ -143,8 +147,19 @@ async def test_revision_inheritance_cas_soft_delete_and_history_immutability(
     assert p2_current.items[-1].task_key == "market"
     assert p2_current.items[-1].resolution_status == "unbound"
 
-    monkeypatch.setattr(providers, "transaction", tx)
-    await providers.delete_provider(PROVIDER_B)
+    provider_profiles = ProviderProfileService(
+        SqlProviderProfileRepository(),
+        transaction_factory=tx,
+        connection_factory=None,
+        connection_gateway=None,
+    )
+    await provider_profiles.delete(
+        DeleteProviderCommand(
+            provider_id=PROVIDER_B,
+            expected_revision=1,
+            idempotency_key="delete-beta-0001",
+        )
+    )
     deleted = await disposable_mysql.session.fetchone(
         "SELECT * FROM provider_profiles WHERE id=%s", (PROVIDER_B,)
     )
@@ -221,7 +236,7 @@ async def test_no_provider_is_complete_unbound_and_binding_failure_rolls_back(
 
 @pytest.mark.asyncio
 async def test_provider_delete_waits_until_initialize_writes_and_commits(
-    disposable_mysql, monkeypatch
+    disposable_mysql
 ):
     tx = transaction_factory_for(disposable_mysql.connection_config)
     providers_locked = asyncio.Event()
@@ -253,8 +268,21 @@ async def test_provider_delete_waits_until_initialize_writes_and_commits(
             delete_transaction_entered.set()
             yield session
 
-    monkeypatch.setattr(providers, "transaction", observed_delete_transaction)
-    delete_task = asyncio.create_task(providers.delete_provider(PROVIDER_A))
+    provider_profiles = ProviderProfileService(
+        SqlProviderProfileRepository(),
+        transaction_factory=observed_delete_transaction,
+        connection_factory=None,
+        connection_gateway=None,
+    )
+    delete_task = asyncio.create_task(
+        provider_profiles.delete(
+            DeleteProviderCommand(
+                provider_id=PROVIDER_A,
+                expected_revision=1,
+                idempotency_key="delete-alpha-0001",
+            )
+        )
+    )
     await delete_transaction_entered.wait()
     assert delete_task.done() is False
 

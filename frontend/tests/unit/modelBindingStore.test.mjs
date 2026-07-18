@@ -104,7 +104,11 @@ test('binding options expose only enabled public provider summaries that are ful
   await withBrowserGuards(async () => jsonResponse([
     {
       id: 'ready', name: '联通云', providerType: 'openai-compatible', model: 'deepseek-v4-flash',
-      enabled: true, hasKey: true, hasBaseURL: true, apiKey: 'must-not-survive',
+      enabled: true, hasKey: true, hasBaseURL: true, ready: true, apiKey: 'must-not-survive',
+    },
+    {
+      id: 'legacy-anthropic', name: '旧 Anthropic', providerType: 'anthropic', model: 'claude',
+      enabled: true, hasKey: true, hasBaseURL: true, ready: false,
     },
     {
       id: 'disabled', name: '已停用', providerType: 'openai-compatible', model: 'old',

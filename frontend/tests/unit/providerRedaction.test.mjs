@@ -6,6 +6,11 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import { api } from '../../src/api/db/client.js'
 import {
+  defaultBaseUrls,
+  providerPresets,
+  providerTypeOptions,
+} from '../../src/api/ai/providerPresets.js'
+import {
   buildProviderCreatePayload,
   buildProviderUpdatePayload,
   normalizePublicProvider,
@@ -43,6 +48,23 @@ function publicProvider(overrides = {}) {
     ...overrides,
   }
 }
+
+test('selectable provider presets expose only generation-capable types', () => {
+  assert.deepEqual(
+    providerTypeOptions.map(option => option.value),
+    ['openai-compatible'],
+  )
+  assert.equal(Object.hasOwn(defaultBaseUrls, 'anthropic'), false)
+  assert.equal(
+    providerPresets.some(preset => preset.providerType === 'anthropic'),
+    false,
+  )
+  assert.equal(
+    providerPresets.find(preset => preset.name === '联通云-DeepSeek-V4-Flash')
+      .providerType,
+    'openai-compatible',
+  )
+})
 
 test('public provider state recursively strips every forbidden response key', () => {
   const provider = normalizePublicProvider({
@@ -167,6 +189,13 @@ test('clear updates only the public projection and connection feedback is never 
   }
 
   const testResult = await store.testConnection('provider-1')
+  api.providers.testConnection = async () => ({
+    ok: false,
+    code: 'provider_unsupported',
+    latencyMs: 0,
+    publicMessage: 'unsafe upstream detail',
+  })
+  const unsupportedResult = await store.testConnection('provider-1')
   await store.clearApiKey('provider-1', 4)
 
   assert.deepEqual(testResult, {
@@ -174,6 +203,12 @@ test('clear updates only the public projection and connection feedback is never 
     code: 'connected',
     latencyMs: 12,
     publicMessage: '连接成功',
+  })
+  assert.deepEqual(unsupportedResult, {
+    ok: false,
+    code: 'provider_unsupported',
+    latencyMs: 0,
+    publicMessage: '不支持的 Provider 类型',
   })
   assert.equal(store.providers[0].hasKey, false)
   assert.equal(store.providers[0].hasBaseURL, true)

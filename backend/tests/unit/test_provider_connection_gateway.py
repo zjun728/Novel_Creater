@@ -24,12 +24,13 @@ def private_provider():
 
 
 @pytest.mark.asyncio
-async def test_connection_success_is_exact_bounded_public_shape_and_one_attempt():
+@pytest.mark.parametrize("status_code", [200, 204, 299])
+async def test_every_2xx_is_exact_bounded_success_and_one_attempt(status_code):
     requests = []
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(200, json={"private": "ignored"}, request=request)
+        return httpx.Response(status_code, request=request)
 
     gateway = ProviderConnectionGateway(
         transport=httpx.MockTransport(respond),
@@ -55,6 +56,67 @@ async def test_connection_success_is_exact_bounded_public_shape_and_one_attempt(
 
 
 @pytest.mark.asyncio
+async def test_anthropic_is_fixed_unsupported_without_request():
+    attempts = 0
+
+    def respond(request):
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200, request=request)
+
+    gateway = ProviderConnectionGateway(
+        transport=httpx.MockTransport(respond),
+        monotonic=iter((10.0, 10.001)).__next__,
+    )
+    provider = {
+        **private_provider(),
+        "provider_type": "anthropic",
+        "base_url": "https://api.anthropic.com",
+    }
+
+    result = await gateway.test_connection(provider)
+
+    assert result == {
+        "ok": False,
+        "code": "provider_unsupported",
+        "latencyMs": 1,
+        "publicMessage": "不支持的 Provider 类型",
+    }
+    assert attempts == 0
+    assert SECRET not in str(result)
+    assert PRIVATE_URL not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_unsupported_provider_type_is_fixed_failure_without_request():
+    attempts = 0
+
+    def respond(request):
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200, request=request)
+
+    gateway = ProviderConnectionGateway(
+        transport=httpx.MockTransport(respond),
+        monotonic=iter((10.0, 10.001)).__next__,
+    )
+
+    result = await gateway.test_connection(
+        {**private_provider(), "provider_type": "unsupported-native"}
+    )
+
+    assert result == {
+        "ok": False,
+        "code": "provider_unsupported",
+        "latencyMs": 1,
+        "publicMessage": "不支持的 Provider 类型",
+    }
+    assert attempts == 0
+    assert SECRET not in str(result)
+    assert PRIVATE_URL not in str(result)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("response", "code", "message"),
     [
@@ -63,6 +125,25 @@ async def test_connection_success_is_exact_bounded_public_shape_and_one_attempt(
                 401,
                 text=f"raw body {SECRET} {PRIVATE_URL}",
                 headers={"authorization": SECRET},
+                request=request,
+            ),
+            "provider_rejected",
+            "Provider 拒绝连接",
+        ),
+        (
+            lambda request: httpx.Response(
+                302,
+                text=f"redirect {SECRET} {PRIVATE_URL}",
+                headers={"location": f"{PRIVATE_URL}/redirect?token={SECRET}"},
+                request=request,
+            ),
+            "provider_rejected",
+            "Provider 拒绝连接",
+        ),
+        (
+            lambda request: httpx.Response(
+                500,
+                text=f"server {SECRET} {PRIVATE_URL}",
                 request=request,
             ),
             "provider_rejected",

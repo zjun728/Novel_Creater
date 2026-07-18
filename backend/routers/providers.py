@@ -8,7 +8,15 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.database import connection, transaction
-from backend.gateways.provider_connection import ProviderConnectionGateway
+from backend.gateways.provider_connection import (
+    SUPPORTED_PROVIDER_TYPES,
+    ProviderConnectionGateway,
+)
+from backend.security.provider_secrets import (
+    PUBLIC_SECRET_COLLISION_MESSAGE,
+    normalize_provider_secrets,
+    provider_public_fields_contain_secret,
+)
 from backend.services.provider_profiles import (
     ClearProviderApiKeyCommand,
     DeleteProviderCommand,
@@ -71,6 +79,29 @@ class ProviderCreate(_StrictBody):
             raise ValueError("field must not be blank")
         return value
 
+    @field_validator("providerType")
+    @classmethod
+    def provider_type_is_supported(cls, value: str) -> str:
+        if value not in SUPPORTED_PROVIDER_TYPES:
+            raise ValueError("Unsupported Provider type")
+        return value
+
+    @model_validator(mode="after")
+    def public_fields_cannot_contain_private_configuration(self):
+        secrets = normalize_provider_secrets((self.apiKey, self.baseURL))
+        if provider_public_fields_contain_secret(
+            {
+                "name": self.name.strip(),
+                "providerType": self.providerType.strip(),
+                "model": self.model.strip(),
+                "notes": self.notes,
+                "thinking": self.thinking,
+            },
+            secrets,
+        ):
+            raise ValueError(PUBLIC_SECRET_COLLISION_MESSAGE)
+        return self
+
 
 class ProviderUpdate(_StrictBody):
     expectedRevision: int = Field(ge=0)
@@ -103,6 +134,16 @@ class ProviderUpdate(_StrictBody):
         for field in ("name", "model", "notes"):
             if field in self.model_fields_set and getattr(self, field) is None:
                 raise ValueError("provider public fields cannot be cleared")
+        secrets = normalize_provider_secrets((self.apiKey, self.baseURL))
+        if provider_public_fields_contain_secret(
+            {
+                field: getattr(self, field)
+                for field in ("name", "model", "notes", "thinking")
+                if field in self.model_fields_set
+            },
+            secrets,
+        ):
+            raise ValueError(PUBLIC_SECRET_COLLISION_MESSAGE)
         return self
 
 
