@@ -122,10 +122,10 @@ class MarketSnapshot(_MarketModel):
         return _public_http_url(value)
 
     @model_validator(mode="after")
-    def reject_duplicate_ranks(self) -> Self:
+    def require_canonical_rank_order(self) -> Self:
         ranks = tuple(entry.rank for entry in self.entries)
-        if len(ranks) != len(set(ranks)):
-            raise ValueError("snapshot ranks must be unique")
+        if ranks != tuple(range(1, len(self.entries) + 1)):
+            raise ValueError("snapshot ranks must be exact and increasing")
         return self
 
 

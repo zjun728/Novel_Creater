@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import re
 
@@ -331,6 +332,118 @@ async def test_public_adapter_rejects_redirect_size_interstitial_and_unknown_htm
     assert "CAPTCHA" not in str(captured.value)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content_type",
+    (
+        "application/octet-stream",
+        "text/html; charset=gbk",
+        "text/html; charset = gbk",
+        "",
+    ),
+)
+async def test_public_adapter_requires_approved_utf8_html_content_type(
+    content_type,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.qidian_public_rank import (
+        QidianPublicRankAdapter,
+    )
+
+    policy = _policy(platform="qidian")
+    headers = (
+        {"x-synthetic-header": "present"}
+        if not content_type
+        else {"content-type": content_type}
+    )
+    transport = RecordingTransport(
+        _response(
+            (FIXTURES / "qidian_newsign.html").read_bytes(),
+            url="https://www.qidian.com/rank/newsign/",
+            headers=headers,
+        )
+    )
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await QidianPublicRankAdapter(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert rejected.value.code == "MARKET_CONTENT_TYPE_REJECTED"
+
+
+@pytest.mark.asyncio
+async def test_public_adapter_accepts_xhtml_with_utf8_charset():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.qidian_public_rank import (
+        QidianPublicRankAdapter,
+    )
+
+    policy = _policy(platform="qidian")
+    transport = RecordingTransport(
+        _response(
+            (FIXTURES / "qidian_newsign.html").read_bytes(),
+            url="https://www.qidian.com/rank/newsign/",
+            headers={
+                "content-type": "application/xhtml+xml; charset=\"UTF-8\""
+            },
+        )
+    )
+
+    snapshot = await QidianPublicRankAdapter(transport).fetch(
+        policy=policy,
+        policy_hash=canonical_hash(policy),
+        captured_at=NOW,
+    )
+
+    assert len(snapshot.entries) == 2
+
+
+@pytest.mark.asyncio
+async def test_public_adapter_enforces_overall_wall_clock_on_slow_transport(
+    monkeypatch,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources import base
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.qidian_public_rank import (
+        QidianPublicRankAdapter,
+    )
+
+    class SlowDripTransport:
+        def __init__(self):
+            self.calls = 0
+            self.cancelled = asyncio.Event()
+
+        async def __call__(self, request):
+            self.calls += 1
+            try:
+                while True:
+                    await asyncio.sleep(0.01)
+            finally:
+                self.cancelled.set()
+
+    monkeypatch.setattr(base, "TRANSPORT_TIMEOUT_SECONDS", 0.03)
+    transport = SlowDripTransport()
+    policy = _policy(platform="qidian")
+    started = asyncio.get_running_loop().time()
+
+    with pytest.raises(MarketSourceFailure) as timed_out:
+        await QidianPublicRankAdapter(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert asyncio.get_running_loop().time() - started < 0.3
+    assert timed_out.value.code == "MARKET_TRANSPORT_TIMEOUT"
+    assert transport.calls == 1
+    assert transport.cancelled.is_set()
+
+
 def test_snapshot_contract_rejects_duplicates_blanks_bad_urls_and_unbounded_entries():
     from backend.domain.market import MarketEntry, MarketSnapshot
 
@@ -421,6 +534,87 @@ def test_manual_adapter_accepts_only_strict_normalized_json():
     with pytest.raises(MarketSourceFailure) as captured:
         adapter.parse({**payload, "rawHTML": "<secret>"})
     assert captured.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "work_url",
+    (
+        "https://user@www.qidian.com/book/900000001/",
+        "https://www.qidian.com:443/book/900000001/",
+        "https://ｗｗｗ.qidian.com/book/900000001/",
+        "https://www.qidian.com/book/９０００００００１/",
+        "https://www.qidian.com/book/%2e%2e/900000001/",
+        "https://www.qidian.com/rank/newsign/",
+    ),
+)
+def test_manual_adapter_rejects_noncanonical_or_out_of_boundary_work_urls(
+    work_url,
+):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.manual_snapshot import (
+        ManualSnapshotAdapter,
+    )
+
+    payload = {
+        "platform": "qidian",
+        "rankingName": "newsign",
+        "category": "male",
+        "capturedAt": NOW,
+        "sourceURL": "https://www.qidian.com/rank/newsign/",
+        "entries": [
+            {
+                "rank": 1,
+                "title": "雾港天文钟",
+                "author": "合成作者甲",
+                "category": "奇幻",
+                "workURL": work_url,
+                "publicMetrics": {},
+            }
+        ],
+    }
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        ManualSnapshotAdapter().parse(
+            payload,
+            adapter_key="qidian_public_rank",
+        )
+
+    assert rejected.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
+
+
+@pytest.mark.parametrize("ranks", ((2, 1), (1, 3)))
+def test_manual_adapter_requires_exact_increasing_rank_order(ranks):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.manual_snapshot import (
+        ManualSnapshotAdapter,
+    )
+
+    payload = {
+        "platform": "qidian",
+        "rankingName": "newsign",
+        "category": "male",
+        "capturedAt": NOW,
+        "sourceURL": "https://www.qidian.com/rank/newsign/",
+        "entries": [
+            {
+                "rank": rank,
+                "title": f"合成书{index}",
+                "author": "合成作者",
+                "category": "奇幻",
+                "workURL": f"https://www.qidian.com/book/90000000{index}/",
+                "publicMetrics": {},
+            }
+            for index, rank in enumerate(ranks, start=1)
+        ],
+    }
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        ManualSnapshotAdapter().parse(
+            payload,
+            adapter_key="qidian_public_rank",
+        )
+
+    assert rejected.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
 
 
 def test_non_verified_policy_cannot_claim_an_enabled_schedule():

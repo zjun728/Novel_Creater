@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, Path, Request
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.database import connection, transaction
 from backend.domain.market_sources import MarketSourceFailure
 from backend.gateways.market_sources.base import HttpxMarketTransport
-from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+from backend.gateways.market_sources.manual_snapshot import (
+    MAX_MANUAL_SNAPSHOT_BYTES,
+    ManualSnapshotAdapter,
+)
 from backend.gateways.market_sources.qidian_public_rank import (
     QidianPublicRankAdapter,
 )
@@ -60,7 +63,45 @@ class ManualImportRequest(RefreshRequest):
         populate_by_name=True,
         hide_input_in_errors=True,
     )
-    snapshot: object
+    snapshot: dict[str, object]
+
+
+async def _read_manual_body(request: Request) -> bytes:
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None:
+        try:
+            length = int(declared_length)
+        except ValueError:
+            raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID") from None
+        if length < 0:
+            raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID")
+        if length > MAX_MANUAL_SNAPSHOT_BYTES:
+            raise MarketSourceFailure("MARKET_MANUAL_BODY_TOO_LARGE")
+
+    body = bytearray()
+    try:
+        async for chunk in request.stream():
+            remaining = MAX_MANUAL_SNAPSHOT_BYTES + 1 - len(body)
+            if remaining > 0:
+                body.extend(chunk[:remaining])
+            if len(body) > MAX_MANUAL_SNAPSHOT_BYTES or len(chunk) > remaining:
+                raise MarketSourceFailure("MARKET_MANUAL_BODY_TOO_LARGE")
+    except MarketSourceFailure:
+        raise
+    except Exception:
+        raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID") from None
+    return bytes(body)
+
+
+async def _parse_manual_import(request: Request) -> ManualImportRequest:
+    raw = await _read_manual_body(request)
+    try:
+        data = ManualImportRequest.model_validate_json(raw, strict=True)
+    except (ValidationError, ValueError, RecursionError):
+        raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID") from None
+    if data.__pydantic_extra__:
+        raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID")
+    return data
 
 
 def _source_view(row: dict) -> dict:
@@ -180,11 +221,10 @@ async def get_market_snapshot(
 @router.post("/market-sources/{source_id}/manual-import")
 async def import_manual_market_snapshot(
     source_id: BoundedId,
-    data: ManualImportRequest,
+    request: Request,
     service: MarketSourceService = Depends(get_market_source_service),
 ):
-    if data.__pydantic_extra__:
-        raise MarketSourceFailure("MARKET_MANUAL_SNAPSHOT_INVALID")
+    data = await _parse_manual_import(request)
     snapshot = ManualSnapshotAdapter().parse(data.snapshot)
     result = await service.import_manual(
         source_id,

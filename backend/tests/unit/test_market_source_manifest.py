@@ -46,6 +46,30 @@ def test_built_in_manifest_is_hash_bound_and_manual_only():
     assert raw_manifest["sources_file"]["sha256"] == sha256(child).hexdigest()
 
 
+def test_source_public_config_is_deeply_frozen_and_hash_stable():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.domain.market_sources import MarketSourceDefinition
+
+    values = json.loads(
+        (PACKAGE_ROOT / "sources.json").read_text(encoding="utf-8")
+    )[0]
+    original_config = values["publicConfig"]
+    source = MarketSourceDefinition.model_validate(values)
+    expected_hash = canonical_hash(source)
+
+    original_config["platform"] = "mutated"
+
+    assert source.public_config["platform"] == "qidian"
+    with pytest.raises(TypeError):
+        source.public_config["platform"] = "mutated"
+    assert canonical_hash(source) == expected_hash
+    assert source.model_dump(mode="json", by_alias=True)["publicConfig"] == {
+        "platform": "qidian",
+        "rankingName": "newsign",
+        "category": "male",
+    }
+
+
 def test_registry_contains_no_credentials_headers_or_executable_urls():
     _, load_market_source_package = _imports()
 

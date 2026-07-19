@@ -6,13 +6,15 @@ from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, Mapping
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     ValidationError,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -41,17 +43,51 @@ _FAILURE_MESSAGES = {
     "MARKET_BODY_TOO_LARGE": "Market source response exceeds the maximum size",
     "MARKET_HTTP_FAILED": "Market source request failed",
     "MARKET_TRANSPORT_FAILED": "Market source transport failed",
+    "MARKET_TRANSPORT_TIMEOUT": "Market source transport timed out",
+    "MARKET_CONTENT_TYPE_REJECTED": "Market source response type is not approved",
     "MARKET_INTERSTITIAL_REJECTED": "Market source requires interactive access",
     "MARKET_HTML_UNKNOWN": "Market source format is not recognized",
     "MARKET_PAGE_INCOMPLETE": "Market source page is incomplete",
     "MARKET_SNAPSHOT_INVALID": "Market source returned an invalid snapshot",
     "MARKET_SNAPSHOT_IDENTITY_MISMATCH": "Market snapshot identity does not match its source",
     "MARKET_MANUAL_SNAPSHOT_INVALID": "Manual market snapshot is invalid",
+    "MARKET_MANUAL_BODY_TOO_LARGE": "Manual market request exceeds the maximum size",
     "MARKET_REFRESH_COMMAND_INVALID": "Market refresh command is invalid",
     "MARKET_REFRESH_COOLDOWN": "Market source refresh is in cooldown",
+    "MARKET_REFRESH_CANCELLED": "Market source refresh was cancelled",
     "MARKET_REFRESH_IN_PROGRESS": "Market source refresh is already in progress",
     "MARKET_REFRESH_LEASE_EXPIRED": "Market source refresh lease expired",
     "MARKET_REFRESH_FAILED": "Market source refresh could not be completed",
+}
+
+_FAILURE_STATUS_CODES = {
+    "MARKET_POLICY_MISSING": 422,
+    "MARKET_POLICY_NOT_VERIFIED": 422,
+    "MARKET_POLICY_EXPIRED": 422,
+    "MARKET_POLICY_HASH_INVALID": 422,
+    "MARKET_SOURCE_NOT_FOUND": 404,
+    "MARKET_SOURCE_CONFLICT": 409,
+    "MARKET_SOURCE_ADAPTER_UNAVAILABLE": 503,
+    "MARKET_REDIRECT_REJECTED": 502,
+    "MARKET_URL_NOT_ALLOWED": 422,
+    "MARKET_BODY_TOO_LARGE": 502,
+    "MARKET_HTTP_FAILED": 502,
+    "MARKET_TRANSPORT_FAILED": 503,
+    "MARKET_TRANSPORT_TIMEOUT": 503,
+    "MARKET_CONTENT_TYPE_REJECTED": 502,
+    "MARKET_INTERSTITIAL_REJECTED": 502,
+    "MARKET_HTML_UNKNOWN": 502,
+    "MARKET_PAGE_INCOMPLETE": 502,
+    "MARKET_SNAPSHOT_INVALID": 502,
+    "MARKET_SNAPSHOT_IDENTITY_MISMATCH": 422,
+    "MARKET_MANUAL_SNAPSHOT_INVALID": 422,
+    "MARKET_MANUAL_BODY_TOO_LARGE": 422,
+    "MARKET_REFRESH_COMMAND_INVALID": 422,
+    "MARKET_REFRESH_COOLDOWN": 429,
+    "MARKET_REFRESH_CANCELLED": 503,
+    "MARKET_REFRESH_IN_PROGRESS": 409,
+    "MARKET_REFRESH_LEASE_EXPIRED": 409,
+    "MARKET_REFRESH_FAILED": 503,
 }
 
 
@@ -65,6 +101,7 @@ class MarketSourceFailure(PublicDomainError):
             raise TypeError("MarketSourceFailure requires a fixed public code")
         self.code = code
         self.message = _FAILURE_MESSAGES[code]
+        self.status_code = _FAILURE_STATUS_CODES[code]
         super().__init__()
 
 
@@ -181,13 +218,13 @@ class MarketSourceDefinition(_FrozenModel):
         alias="adapterKey"
     )
     display_name: str = Field(alias="displayName", min_length=1, max_length=200)
-    public_config: dict[str, str] = Field(alias="publicConfig")
+    public_config: Mapping[str, str] = Field(alias="publicConfig")
     policy: SourcePolicy
     policy_hash: str = Field(alias="policyHash", pattern=_SHA256.pattern)
 
     @field_validator("public_config")
     @classmethod
-    def validate_public_config(cls, value: dict[str, str]) -> dict[str, str]:
+    def validate_public_config(cls, value: Mapping[str, str]) -> Mapping[str, str]:
         if set(value) != _PUBLIC_CONFIG_KEYS:
             raise ValueError("public source configuration has unsupported fields")
         if any(
@@ -195,7 +232,16 @@ class MarketSourceDefinition(_FrozenModel):
             for item in value.values()
         ):
             raise ValueError("public source configuration is invalid")
-        return {key: item.strip() for key, item in value.items()}
+        return MappingProxyType(
+            {key: item.strip() for key, item in value.items()}
+        )
+
+    @field_serializer("public_config")
+    def serialize_public_config(
+        self,
+        value: Mapping[str, str],
+    ) -> dict[str, str]:
+        return dict(value)
 
     def policy_content_hash(self) -> str:
         return canonical_hash(self.policy)

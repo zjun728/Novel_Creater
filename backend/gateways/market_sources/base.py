@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from html.parser import HTMLParser
 import re
@@ -298,7 +299,10 @@ class PublicRankAdapter:
         )
         request = TransportRequest(url=self.source_url)
         try:
-            response = await self.transport(request)
+            async with asyncio.timeout(TRANSPORT_TIMEOUT_SECONDS):
+                response = await self.transport(request)
+        except TimeoutError:
+            raise MarketSourceFailure("MARKET_TRANSPORT_TIMEOUT") from None
         except MarketSourceFailure:
             raise
         except Exception:
@@ -318,6 +322,26 @@ class PublicRankAdapter:
             raise MarketSourceFailure("MARKET_URL_NOT_ALLOWED")
         if len(response.body) > request.max_body_bytes:
             raise MarketSourceFailure("MARKET_BODY_TOO_LARGE")
+        headers = {
+            str(key).casefold(): str(value)
+            for key, value in response.headers.items()
+        }
+        content_type = headers.get("content-type", "")
+        parts = tuple(part.strip() for part in content_type.split(";"))
+        media_type = parts[0].casefold() if parts else ""
+        if media_type not in {"text/html", "application/xhtml+xml"}:
+            raise MarketSourceFailure("MARKET_CONTENT_TYPE_REJECTED")
+        charsets = tuple(
+            value.strip().strip("\"'").casefold()
+            for part in parts[1:]
+            if "=" in part
+            for key, value in (part.split("=", 1),)
+            if key.strip().casefold() == "charset"
+        )
+        if len(charsets) > 1 or (
+            charsets and charsets[0] not in {"utf-8", "utf8"}
+        ):
+            raise MarketSourceFailure("MARKET_CONTENT_TYPE_REJECTED")
         try:
             text = response.body.decode("utf-8")
         except UnicodeDecodeError:

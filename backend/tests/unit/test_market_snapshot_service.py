@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 
@@ -33,12 +34,31 @@ def _snapshot():
 
 
 class FakeRepository:
-    def __init__(self, source):
+    def __init__(
+        self,
+        source,
+        *,
+        publish_started=None,
+        publish_wait=None,
+        abandon_failure=None,
+        abandon_wait=None,
+        abandon_cancelled=None,
+    ):
         self.source = source
         self.events = []
         self.published = []
         self.failed = []
+        self.abandoned = []
         self.last_success = "previous-snapshot"
+        self.publish_started = publish_started
+        self.publish_wait = publish_wait
+        self.abandon_failure = abandon_failure
+        self.abandon_wait = abandon_wait
+        self.abandon_cancelled = abandon_cancelled
+
+    async def get_source(self, session, source_id):
+        self.events.append(("get_source", source_id))
+        return deepcopy(self.source) if source_id == SOURCE_ID else None
 
     async def reserve_refresh(
         self,
@@ -61,6 +81,10 @@ class FakeRepository:
         }
 
     async def publish_snapshot(self, session, **values):
+        if self.publish_started is not None:
+            self.publish_started.set()
+        if self.publish_wait is not None:
+            await self.publish_wait.wait()
         self.events.append(("publish", values["snapshot_hash"]))
         self.published.append(values)
         self.last_success = values["snapshot_id"]
@@ -74,6 +98,18 @@ class FakeRepository:
     async def fail_refresh(self, session, **values):
         self.events.append(("fail", values["public_error_code"]))
         self.failed.append(values)
+
+    async def abandon_refresh(self, session, **values):
+        self.events.append(("abandon", values["public_error_code"]))
+        if self.abandon_wait is not None:
+            try:
+                await self.abandon_wait.wait()
+            finally:
+                if self.abandon_cancelled is not None:
+                    self.abandon_cancelled.set()
+        if self.abandon_failure is not None:
+            raise self.abandon_failure
+        self.abandoned.append(values)
 
 
 def _contexts(repository):
@@ -91,6 +127,18 @@ def _contexts(repository):
             in_transaction["value"] = False
 
     return transaction, in_transaction
+
+
+def _connection(repository):
+    @asynccontextmanager
+    async def connection():
+        repository.events.append(("connection-enter",))
+        try:
+            yield object()
+        finally:
+            repository.events.append(("connection-exit",))
+
+    return connection
 
 
 class FakeAdapter:
@@ -209,6 +257,147 @@ async def test_failed_fetch_retains_last_success_and_persists_only_fixed_public_
 
 
 @pytest.mark.asyncio
+async def test_transport_timeout_records_fixed_terminal_failure_and_preserves_head():
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    repository = FakeRepository(_source())
+    transaction, state = _contexts(repository)
+    adapter = FakeAdapter(
+        None,
+        state,
+        failure=MarketSourceFailure("MARKET_TRANSPORT_TIMEOUT"),
+    )
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": adapter},
+        id_factory=lambda: "unused",
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(MarketSourceFailure) as timed_out:
+        await service.refresh(SOURCE_ID, idempotency_key="t" * 64)
+
+    assert timed_out.value.code == "MARKET_TRANSPORT_TIMEOUT"
+    assert repository.last_success == "previous-snapshot"
+    assert repository.failed[0]["public_error_code"] == (
+        "MARKET_TRANSPORT_TIMEOUT"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ("fetch", "publish"))
+async def test_cancellation_after_reservation_runs_owner_safe_terminal_cleanup(
+    phase,
+):
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+    repository = FakeRepository(
+        _source(),
+        publish_started=started if phase == "publish" else None,
+        publish_wait=blocked if phase == "publish" else None,
+    )
+    transaction, state = _contexts(repository)
+
+    class BlockingAdapter(FakeAdapter):
+        async def fetch(self, **kwargs):
+            if phase == "fetch":
+                started.set()
+                await blocked.wait()
+            return await super().fetch(**kwargs)
+
+    adapter = BlockingAdapter(_snapshot(), state)
+    ids = iter(("snapshot-1", "entry-1", "manifest-1"))
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": adapter},
+        id_factory=lambda: next(ids),
+        clock=lambda: NOW,
+    )
+
+    refresh = asyncio.create_task(
+        service.refresh(SOURCE_ID, idempotency_key="c" * 64)
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    refresh.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
+
+    assert repository.abandoned == [
+        {
+            "request_id": "request-1",
+            "source_id": SOURCE_ID,
+            "public_error_code": "MARKET_REFRESH_CANCELLED",
+            "completed_at": NOW,
+        }
+    ]
+    assert repository.failed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_mode", ("failure", "timeout"))
+async def test_cancellation_cleanup_failure_is_aggregated_and_bounded(
+    cleanup_mode,
+    monkeypatch,
+):
+    from backend.services import market_snapshots
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    wait = asyncio.Event() if cleanup_mode == "timeout" else None
+    cleanup_cancelled = asyncio.Event()
+    repository = FakeRepository(
+        _source(),
+        abandon_failure=(
+            RuntimeError("synthetic cleanup failure")
+            if cleanup_mode == "failure"
+            else None
+        ),
+        abandon_wait=wait,
+        abandon_cancelled=cleanup_cancelled,
+    )
+    transaction, state = _contexts(repository)
+    adapter = FakeAdapter(
+        None,
+        state,
+        failure=asyncio.CancelledError(),
+    )
+    monkeypatch.setattr(
+        market_snapshots,
+        "CANCELLATION_CLEANUP_TIMEOUT_SECONDS",
+        0.2 if cleanup_mode == "failure" else 0.01,
+    )
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": adapter},
+        id_factory=lambda: "unused",
+        clock=lambda: NOW,
+    )
+    started = asyncio.get_running_loop().time()
+
+    with pytest.raises(BaseExceptionGroup) as aggregated:
+        await service.refresh(SOURCE_ID, idempotency_key="g" * 64)
+
+    elapsed = asyncio.get_running_loop().time() - started
+    assert elapsed < 0.5
+    assert any(
+        isinstance(error, asyncio.CancelledError)
+        for error in aggregated.value.exceptions
+    )
+    expected_cleanup_error = RuntimeError if cleanup_mode == "failure" else TimeoutError
+    assert any(
+        isinstance(error, expected_cleanup_error)
+        for error in aggregated.value.exceptions
+    )
+    if cleanup_mode == "timeout":
+        assert cleanup_cancelled.is_set()
+
+
+@pytest.mark.asyncio
 async def test_manual_import_uses_strict_adapter_and_same_publication_boundary():
     from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
     from backend.services.market_snapshots import MarketSnapshotService
@@ -241,7 +430,48 @@ async def test_manual_import_uses_strict_adapter_and_same_publication_boundary()
 
 
 @pytest.mark.asyncio
-async def test_invalid_manual_payload_is_reserved_then_records_only_fixed_failure():
+async def test_manual_work_url_is_rejected_from_fixed_source_before_reservation():
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    repository = FakeRepository(_source())
+    transaction, _ = _contexts(repository)
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        connection_factory=_connection(repository),
+        adapters={},
+        manual_adapter=ManualSnapshotAdapter(),
+        id_factory=lambda: "unused",
+        clock=lambda: NOW,
+    )
+    payload = {
+        **_snapshot().model_dump(mode="json", by_alias=True),
+        "entries": [
+            {
+                **_snapshot().entries[0].model_dump(mode="json", by_alias=True),
+                "workURL": "https://www.qidian.com:443/book/900000001/",
+            }
+        ],
+    }
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        await service.import_manual(
+            SOURCE_ID,
+            payload,
+            idempotency_key="w" * 64,
+        )
+
+    assert rejected.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
+    assert not {
+        event[0]
+        for event in repository.events
+    }.intersection({"reserve", "publish", "fail"})
+
+
+@pytest.mark.asyncio
+async def test_invalid_manual_payload_is_rejected_before_reservation():
     from backend.gateways.market_sources.base import MarketSourceFailure
     from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
     from backend.services.market_snapshots import MarketSnapshotService
@@ -270,9 +500,8 @@ async def test_invalid_manual_payload_is_reserved_then_records_only_fixed_failur
 
     assert captured.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
     assert repository.published == []
-    assert repository.failed[0]["public_error_code"] == (
-        "MARKET_MANUAL_SNAPSHOT_INVALID"
-    )
+    assert repository.failed == []
+    assert not any(event[0] == "reserve" for event in repository.events)
     assert "private response" not in repr(repository.failed)
 
 

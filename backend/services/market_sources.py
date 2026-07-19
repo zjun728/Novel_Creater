@@ -53,7 +53,8 @@ def _same_existing(existing: dict, source, expected_policy: dict) -> bool:
         existing.get("stable_key") == source.stable_key,
         existing.get("adapter_key") == source.adapter_key,
         existing.get("display_name") == source.display_name,
-        existing.get("public_config_json") == canonical_json(source.public_config),
+        existing.get("public_config_json")
+        == canonical_json(dict(source.public_config)),
         existing.get("status") == "active",
     )
     policy = existing.get("policy")
@@ -131,7 +132,9 @@ class MarketSourceSeedService:
                     "stable_key": source.stable_key,
                     "adapter_key": source.adapter_key,
                     "display_name": source.display_name,
-                    "public_config_json": canonical_json(source.public_config),
+                    "public_config_json": canonical_json(
+                        dict(source.public_config)
+                    ),
                     "status": "active",
                     "created_at": now_ms,
                     "updated_at": now_ms,

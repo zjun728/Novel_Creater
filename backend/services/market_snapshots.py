@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ _FIXED_SOURCE_URLS = {
     "qidian_public_rank": "https://www.qidian.com/rank/newsign/",
     "qq_reading_public_rank": "https://book.qq.com/book-rank",
 }
+CANCELLATION_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 
 class MarketSnapshotService:
@@ -94,6 +96,65 @@ class MarketSnapshotService:
                 completed_at=self._clock(),
             )
 
+    async def _cleanup_cancellation(
+        self,
+        reservation: dict,
+    ) -> BaseException | None:
+        async def abandon() -> None:
+            async with self._transaction() as session:
+                await self.repository.abandon_refresh(
+                    session,
+                    request_id=reservation["request_id"],
+                    source_id=reservation["source"]["id"],
+                    public_error_code="MARKET_REFRESH_CANCELLED",
+                    completed_at=self._clock(),
+                )
+
+        cleanup = asyncio.create_task(abandon())
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(cleanup),
+                timeout=CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as error:
+            cleanup.cancel()
+            done, _ = await asyncio.wait(
+                (cleanup,),
+                timeout=CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
+            )
+            if cleanup in done and not cleanup.cancelled():
+                cleanup.exception()
+            elif cleanup not in done:
+                cleanup.add_done_callback(
+                    lambda task: None
+                    if task.cancelled()
+                    else task.exception()
+                )
+            return error
+        except BaseException as error:
+            return error
+        return None
+
+    async def _raise_after_cancellation(
+        self,
+        reservation: dict,
+        cancellation: asyncio.CancelledError,
+    ) -> None:
+        cleanup_error = await self._cleanup_cancellation(reservation)
+        if cleanup_error is not None:
+            raise BaseExceptionGroup(
+                "market refresh cancellation cleanup failed",
+                [cancellation, cleanup_error],
+            ) from None
+
+    async def _source_for_manual_validation(self, source_id: str) -> dict:
+        connection_factory = self._connection or self._transaction
+        async with connection_factory() as session:
+            source = await self.repository.get_source(session, source_id)
+        if source is None:
+            raise MarketSourceNotFound()
+        return source
+
     async def _publish(
         self,
         reservation: dict,
@@ -166,6 +227,9 @@ class MarketSnapshotService:
                 captured_at=self._clock(),
             )
             self._validate_identity(snapshot, source)
+        except asyncio.CancelledError as cancellation:
+            await self._raise_after_cancellation(reservation, cancellation)
+            raise
         except MarketSourceFailure as failure:
             await self._record_failure(reservation, failure)
             raise
@@ -179,6 +243,9 @@ class MarketSnapshotService:
                 snapshot,
                 adapter_version=adapter.adapter_version,
             )
+        except asyncio.CancelledError as cancellation:
+            await self._raise_after_cancellation(reservation, cancellation)
+            raise
         except MarketSourceFailure:
             raise
         except Exception:
@@ -193,11 +260,18 @@ class MarketSnapshotService:
         *,
         idempotency_key: str,
     ):
+        source = await self._source_for_manual_validation(source_id)
+        snapshot = self.manual_adapter.parse(
+            payload,
+            adapter_key=source["adapter_key"],
+        )
+        self._validate_identity(snapshot, source)
+        normalized_payload = snapshot.model_dump(mode="json", by_alias=True)
         request_hash = canonical_hash(
             {
                 "sourceId": source_id,
                 "mode": "manual",
-                "snapshot": payload,
+                "snapshot": normalized_payload,
             }
         )
         reservation = await self._reserve(
@@ -209,8 +283,12 @@ class MarketSnapshotService:
         if reservation["kind"] == "succeeded":
             return reservation["snapshot"]
         try:
-            snapshot = self.manual_adapter.parse(payload)
-            self._validate_identity(snapshot, reservation["source"])
+            reserved_source = reservation["source"]
+            snapshot = self.manual_adapter.parse(
+                normalized_payload,
+                adapter_key=reserved_source["adapter_key"],
+            )
+            self._validate_identity(snapshot, reserved_source)
         except MarketSourceFailure as failure:
             await self._record_failure(reservation, failure)
             raise
@@ -224,6 +302,9 @@ class MarketSnapshotService:
                 snapshot,
                 adapter_version=self.manual_adapter.adapter_version,
             )
+        except asyncio.CancelledError as cancellation:
+            await self._raise_after_cancellation(reservation, cancellation)
+            raise
         except MarketSourceFailure:
             raise
         except Exception:

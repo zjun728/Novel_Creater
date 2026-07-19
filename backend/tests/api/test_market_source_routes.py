@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from inspect import signature
+import json
 import logging
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
+from starlette.requests import Request
 
 
 SOURCE_ID = "00000000-0000-0000-0000-000000000101"
@@ -245,6 +248,142 @@ def test_manual_import_nested_raw_content_fails_with_no_echo_before_service():
     assert service.calls == []
 
 
+def test_manual_import_rejects_oversized_malformed_and_deep_raw_json_stably():
+    from backend.gateways.market_sources.manual_snapshot import (
+        MAX_MANUAL_SNAPSHOT_BYTES,
+    )
+
+    client, service, _ = _client()
+    sentinel = "PRIVATE_MANUAL_BODY_SENTINEL"
+    oversized = (
+        b'{"idempotencyKey":"'
+        + b"m" * 64
+        + b'","snapshot":{"padding":"'
+        + b"x" * MAX_MANUAL_SNAPSHOT_BYTES
+        + b'"}}'
+    )
+    malformed = (
+        '{"idempotencyKey":"'
+        + "m" * 64
+        + '","snapshot":{"private":"'
+        + sentinel
+    ).encode()
+    deep = (
+        '{"idempotencyKey":"'
+        + "m" * 64
+        + '","snapshot":'
+        + "[" * 300
+        + "0"
+        + "]" * 300
+        + "}"
+    ).encode()
+
+    responses = (
+        client.post(
+            f"/api/market-sources/{SOURCE_ID}/manual-import",
+            content=oversized,
+            headers={
+                "content-type": "application/json",
+                "content-length": str(len(oversized)),
+            },
+        ),
+        client.post(
+            f"/api/market-sources/{SOURCE_ID}/manual-import",
+            content=malformed,
+            headers={"content-type": "application/json"},
+        ),
+        client.post(
+            f"/api/market-sources/{SOURCE_ID}/manual-import",
+            content=deep,
+            headers={"content-type": "application/json"},
+        ),
+    )
+
+    assert [response.status_code for response in responses] == [422, 422, 422]
+    assert [response.json()["code"] for response in responses] == [
+        "MARKET_MANUAL_BODY_TOO_LARGE",
+        "MARKET_MANUAL_SNAPSHOT_INVALID",
+        "MARKET_MANUAL_SNAPSHOT_INVALID",
+    ]
+    assert sentinel not in json.dumps(
+        [response.json() for response in responses]
+    )
+    assert service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_manual_body_reader_checks_length_before_receive_and_stops_at_limit():
+    from backend.gateways.market_sources.manual_snapshot import (
+        MAX_MANUAL_SNAPSHOT_BYTES,
+    )
+    from backend.routers.market_sources import _read_manual_body
+    from backend.domain.market_sources import MarketSourceFailure
+
+    calls = {"count": 0}
+
+    async def forbidden_receive():
+        calls["count"] += 1
+        raise AssertionError("declared oversized body must not be read")
+
+    declared = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [
+                (
+                    b"content-length",
+                    str(MAX_MANUAL_SNAPSHOT_BYTES + 1).encode(),
+                )
+            ],
+        },
+        forbidden_receive,
+    )
+    with pytest.raises(MarketSourceFailure) as oversized:
+        await _read_manual_body(declared)
+    assert oversized.value.code == "MARKET_MANUAL_BODY_TOO_LARGE"
+    assert calls["count"] == 0
+
+    messages = iter(
+        (
+            {
+                "type": "http.request",
+                "body": b"x" * MAX_MANUAL_SNAPSHOT_BYTES,
+                "more_body": True,
+            },
+            {
+                "type": "http.request",
+                "body": b"yz",
+                "more_body": True,
+            },
+            {
+                "type": "http.request",
+                "body": b"PRIVATE_UNREAD_SENTINEL",
+                "more_body": False,
+            },
+        )
+    )
+    stream_calls = {"count": 0}
+
+    async def receive():
+        stream_calls["count"] += 1
+        return next(messages)
+
+    streamed = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [],
+        },
+        receive,
+    )
+    with pytest.raises(MarketSourceFailure) as streamed_oversized:
+        await _read_manual_body(streamed)
+    assert streamed_oversized.value.code == "MARKET_MANUAL_BODY_TOO_LARGE"
+    assert stream_calls["count"] == 2
+
+
 def test_refresh_rejects_raw_url_and_policy_overrides_without_echo(
     caplog,
 ):
@@ -284,9 +423,46 @@ def test_command_response_never_masks_missing_persisted_entries_as_empty_detail(
         json={"idempotencyKey": "r" * 64},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 503
     assert response.json()["code"] == "MARKET_REFRESH_FAILED"
     assert "entries" not in response.json()
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    (
+        ("MARKET_MANUAL_SNAPSHOT_INVALID", 422),
+        ("MARKET_SOURCE_NOT_FOUND", 404),
+        ("MARKET_SOURCE_CONFLICT", 409),
+        ("MARKET_REFRESH_IN_PROGRESS", 409),
+        ("MARKET_REFRESH_COOLDOWN", 429),
+        ("MARKET_HTML_UNKNOWN", 502),
+        ("MARKET_TRANSPORT_FAILED", 503),
+        ("MARKET_TRANSPORT_TIMEOUT", 503),
+    ),
+)
+def test_market_failures_have_stable_semantic_http_status_without_exception_text(
+    code,
+    status,
+):
+    from backend.domain.market_sources import MarketSourceFailure
+    from backend.security.redaction import install_error_handlers
+
+    failure = MarketSourceFailure(code)
+    app = FastAPI()
+
+    @app.get("/failure")
+    async def fail():
+        raise failure
+
+    install_error_handlers(app)
+    response = TestClient(app, raise_server_exceptions=False).get("/failure")
+
+    assert response.status_code == status
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert response.json()["code"] == code
+    assert response.json()["message"] == failure.message
+    assert repr(failure) not in json.dumps(response.json())
 
 
 def test_main_registers_new_routes_and_has_no_old_market_scrape_route():
