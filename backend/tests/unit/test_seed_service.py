@@ -7,12 +7,14 @@ import pytest
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.seeds import SeedPayload
-from backend.http_errors import SeedConflict, SeedLocked, SeedNotFound
+from backend.http_errors import ProjectBusy, SeedConflict, SeedLocked, SeedNotFound
 from backend.repositories.seeds import SeedRepository
 from backend.services.seeds import (
+    ArchiveSeed,
     CreateSeed,
     DeleteSeed,
     EditSeed,
+    RestoreSeed,
     SeedService,
     SelectSeed,
 )
@@ -43,9 +45,12 @@ class MemorySeedRepository:
         self.dependencies: set[str] = set()
         self.contracts: dict[str, dict] = {}
         self.events: list[str] = []
+        self.project_lock_error: BaseException | None = None
 
     async def lock_project(self, session, project_id):
         self.events.append("project")
+        if self.project_lock_error is not None:
+            raise self.project_lock_error
         return {"id": project_id} if project_id in self.projects else None
 
     async def count_final_chapters(self, session, project_id):
@@ -107,11 +112,19 @@ class MemorySeedRepository:
 
     async def dependency_count(self, session, project_id, seed_id):
         self.events.append("dependencies")
-        return int(seed_id in self.dependencies)
+        selected_before = any(
+            row["seed_id"] == seed_id
+            for row in self.selection_revisions.get(project_id, ())
+        )
+        return int(seed_id in self.dependencies or selected_before)
 
     async def archive(self, session, project_id, seed_id, updated_at):
         self.events.append("archive")
         self.seeds[seed_id]["status"] = "archived"
+
+    async def restore(self, session, project_id, seed_id, updated_at):
+        self.events.append("restore")
+        self.seeds[seed_id]["status"] = "candidate"
 
     async def physical_delete(self, session, project_id, seed_id):
         self.events.append("physical-delete")
@@ -242,63 +255,197 @@ async def test_create_reports_current_project_selection_revision_for_unselected_
 
 
 @pytest.mark.asyncio
-async def test_create_missing_project_and_locked_project_leave_zero_writes():
+async def test_create_missing_project_leaves_zero_writes():
     harness = Harness()
     before = deepcopy(harness.repo.__dict__)
     with pytest.raises(SeedNotFound):
         await harness.service.create(CreateSeed(project_id="missing", payload=payload()))
     assert harness.repo.seeds == before["seeds"]
 
-    harness.repo.final_projects.add("p1")
-    before = deepcopy(harness.repo.__dict__)
-    with pytest.raises(SeedLocked):
-        await harness.service.create(CreateSeed(project_id="p1", payload=payload()))
-    assert harness.repo.seeds == before["seeds"]
-
-
-@pytest.mark.parametrize("operation", ("create", "edit", "select", "delete"))
 @pytest.mark.asyncio
-async def test_every_mutation_is_locked_after_final_chapter_with_zero_writes(
-    operation,
-):
+async def test_final_chapter_locks_referenced_seed_but_keeps_unreferenced_candidates_mutable():
     harness = Harness()
-    created = None
-    if operation != "create":
-        created = await harness.service.create(
-            CreateSeed(project_id="p1", payload=payload("已存在"))
+    referenced = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("已选"))
+    )
+    selection = await harness.service.select(
+        SelectSeed(
+            project_id="p1", seed_id=referenced.id,
+            expected_seed_revision=1, expected_selection_revision=0,
         )
+    )
+    free = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("未引用"))
+    )
     harness.repo.final_projects.add("p1")
-    before = deepcopy(harness.repo.__dict__)
 
-    if operation == "create":
-        mutation = harness.service.create(
-            CreateSeed(project_id="p1", payload=payload("新建"))
+    created_after_final = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("定稿后候选"))
+    )
+    edited_free = await harness.service.edit(
+        EditSeed(
+            project_id="p1", seed_id=free.id, payload=payload("未引用改写"),
+            expected_seed_revision=1,
+            expected_selection_revision=selection.selection_revision,
         )
-    elif operation == "edit":
-        mutation = harness.service.edit(
+    )
+    await harness.service.delete(
+        DeleteSeed(
+            project_id="p1", seed_id=created_after_final.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selection.selection_revision,
+        )
+    )
+
+    assert edited_free.revision == 2
+    assert created_after_final.id not in harness.repo.seeds
+
+    before = deepcopy(harness.repo.__dict__)
+    with pytest.raises(SeedLocked):
+        await harness.service.edit(
             EditSeed(
-                project_id="p1", seed_id=created.id, payload=payload("改写"),
-                expected_seed_revision=1, expected_selection_revision=0,
+                project_id="p1", seed_id=referenced.id,
+                payload=payload("历史不得改写"), expected_seed_revision=1,
+                expected_selection_revision=selection.selection_revision,
             )
         )
-    elif operation == "select":
-        mutation = harness.service.select(
+    with pytest.raises(SeedLocked):
+        await harness.service.select(
             SelectSeed(
-                project_id="p1", seed_id=created.id,
-                expected_seed_revision=1, expected_selection_revision=0,
+                project_id="p1", seed_id=free.id,
+                expected_seed_revision=edited_free.revision,
+                expected_selection_revision=selection.selection_revision,
             )
         )
-    else:
-        mutation = harness.service.delete(
+    with pytest.raises(SeedLocked):
+        await harness.service.delete(
             DeleteSeed(
-                project_id="p1", seed_id=created.id,
-                expected_seed_revision=1, expected_selection_revision=0,
+                project_id="p1", seed_id=referenced.id,
+                expected_seed_revision=1,
+                expected_selection_revision=selection.selection_revision,
             )
         )
+    assert harness.repo.seeds == before["seeds"]
+    assert harness.repo.revisions == before["revisions"]
+    assert harness.repo.selections == before["selections"]
+
+
+@pytest.mark.asyncio
+async def test_project_mutation_lock_contention_maps_to_stable_project_busy():
+    harness = Harness()
+    harness.repo.project_lock_error = RuntimeError(
+        3572, "Statement aborted because lock(s) could not be acquired immediately"
+    )
+
+    before = deepcopy(harness.repo.__dict__)
+    with pytest.raises(ProjectBusy):
+        await harness.service.create(
+            CreateSeed(project_id="p1", payload=payload("不得等待"))
+        )
+    assert harness.repo.seeds == before["seeds"]
+    assert harness.repo.revisions == before["revisions"]
+
+
+@pytest.mark.asyncio
+async def test_archive_restore_and_permanent_delete_are_distinct_eligibility_commands():
+    harness = Harness()
+    historical = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("历史候选"))
+    )
+    current = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("当前候选"))
+    )
+    selected_historical = await harness.service.select(
+        SelectSeed(
+            project_id="p1", seed_id=historical.id,
+            expected_seed_revision=1, expected_selection_revision=0,
+        )
+    )
+    selected_current = await harness.service.select(
+        SelectSeed(
+            project_id="p1", seed_id=current.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selected_historical.selection_revision,
+        )
+    )
+    await harness.service.archive(
+        ArchiveSeed(
+            project_id="p1", seed_id=historical.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selected_current.selection_revision,
+        )
+    )
+    archived = next(item for item in await harness.service.list("p1") if item.id == historical.id)
+    assert archived.status == "archived"
+    assert archived.capabilities.canRestore is True
+    assert archived.capabilities.canPermanentlyDelete is False
+
+    await harness.service.restore(
+        RestoreSeed(
+            project_id="p1", seed_id=historical.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selected_current.selection_revision,
+        )
+    )
+    restored = next(item for item in await harness.service.list("p1") if item.id == historical.id)
+    assert restored.status == "candidate"
 
     with pytest.raises(SeedLocked):
-        await mutation
-    assert harness.repo.__dict__ == before
+        await harness.service.delete(
+            DeleteSeed(
+                project_id="p1", seed_id=historical.id,
+                expected_seed_revision=1,
+                expected_selection_revision=selected_current.selection_revision,
+            )
+        )
+    assert historical.id in harness.repo.seeds
+
+
+@pytest.mark.asyncio
+async def test_a_to_b_to_a_returns_independent_active_selection_generation():
+    harness = Harness()
+    seed_a = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("A"))
+    )
+    seed_b = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("B"))
+    )
+    first_a = await harness.service.select(
+        SelectSeed(
+            project_id="p1", seed_id=seed_a.id,
+            expected_seed_revision=1, expected_selection_revision=0,
+        )
+    )
+    selected_b = await harness.service.select(
+        SelectSeed(
+            project_id="p1", seed_id=seed_b.id,
+            expected_seed_revision=1,
+            expected_selection_revision=first_a.selection_revision,
+        )
+    )
+    active_a = await harness.service.select(
+        SelectSeed(
+            project_id="p1", seed_id=seed_a.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selected_b.selection_revision,
+        )
+    )
+    harness.repo.contracts["p1"] = {
+        "revision": 1,
+        "selection_revision": first_a.selection_revision,
+        "seed_id": seed_a.id,
+        "seed_revision_id": seed_a.revision_id,
+        "seed_hash": seed_a.content_hash,
+    }
+
+    selected = await harness.service.get_selected("p1")
+
+    assert active_a.selection_revision == 3
+    assert selected.active_selection.selection_revision == 3
+    assert selected.active_selection.seed_id == seed_a.id
+    assert selected.active_selection.seed_revision_id == seed_a.revision_id
+    assert selected.contract_ready is False
+    assert selected.reasons == ("selected_seed_drift",)
 
 
 @pytest.mark.asyncio
@@ -332,8 +479,9 @@ async def test_edit_appends_revision_preserves_history_and_moves_selected_fact()
     assert harness.repo.selections["p1"]["selection_revision"] == 2
     assert [row["selection_revision"] for row in harness.repo.selection_revisions["p1"]] == [1, 2]
     assert harness.repo.selection_revisions["p1"][0]["seed_revision_id"] == created.revision_id
-    assert harness.repo.events[-7:] == [
-        "project", "seed", "selection", "revision", "update-head",
+    assert harness.repo.events[-8:] == [
+        "project", "seed", "selection", "dependencies",
+        "revision", "update-head",
         "selection-revision", "advance-selected-revision",
     ]
 
@@ -401,7 +549,7 @@ async def test_select_is_project_scoped_and_cas_advances_one_revision():
 
 
 @pytest.mark.asyncio
-async def test_delete_physically_removes_free_seed_and_archives_selected_or_referenced_seed():
+async def test_delete_physically_removes_only_unreferenced_seed():
     harness = Harness()
     free = await harness.service.create(CreateSeed(project_id="p1", payload=payload("自由")))
     await harness.service.delete(
@@ -414,13 +562,14 @@ async def test_delete_physically_removes_free_seed_and_archives_selected_or_refe
 
     referenced = await harness.service.create(CreateSeed(project_id="p1", payload=payload("引用")))
     harness.repo.dependencies.add(referenced.id)
-    await harness.service.delete(
-        DeleteSeed(
-            project_id="p1", seed_id=referenced.id,
-            expected_seed_revision=1, expected_selection_revision=0,
+    with pytest.raises(SeedLocked):
+        await harness.service.delete(
+            DeleteSeed(
+                project_id="p1", seed_id=referenced.id,
+                expected_seed_revision=1, expected_selection_revision=0,
+            )
         )
-    )
-    assert harness.repo.seeds[referenced.id]["status"] == "archived"
+    assert harness.repo.seeds[referenced.id]["status"] == "candidate"
 
 
 @pytest.mark.asyncio

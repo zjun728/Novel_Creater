@@ -1194,6 +1194,24 @@ class ContractService:
             raise ContractPreconditionFailed() from None
         return result
 
+    @staticmethod
+    def _with_selection_readiness(result, selected):
+        current = selected is not None and (
+            int(selected.get("selection_revision") or 0)
+                == result.selection_revision
+            and selected.get("seed_id") == result.seed_ref.id
+            and selected.get("seed_revision_id")
+                == result.seed_ref.revision_id
+            and selected.get("seed_hash") == result.seed_ref.content_hash
+        )
+        if current:
+            return result
+        return replace(
+            result,
+            contract_ready=False,
+            reasons=("superseded",),
+        )
+
     async def get_head(self, project_id: str):
         async with self.connection_factory() as session:
             if await self.repository.read_project(session, project_id) is None:
@@ -1255,14 +1273,21 @@ class ContractService:
             revisions = await self.repository.list_contract_revisions(
                 session, project_id, limit
             )
+            selected = await self.repository.read_selected_seed(
+                session, project_id
+            )
             results = []
             for row in revisions:
                 snapshot = await self.repository.read_confirmed_snapshot(
                     session, project_id, int(row["revision"])
                 )
-                results.append(replace(
-                    self._result_from_snapshot(snapshot), project_id=project_id
-                ))
+                result = replace(
+                    self._result_from_snapshot(snapshot),
+                    project_id=project_id,
+                )
+                results.append(
+                    self._with_selection_readiness(result, selected)
+                )
             return tuple(results)
 
     async def confirm(self, command: ConfirmContracts) -> ConfirmedContractResult:
@@ -1305,7 +1330,10 @@ class ContractService:
                 )
                 if existing.get("request_hash") != replay_hash:
                     raise ContractConflict()
-                return replay
+                selected = await self.repository.lock_selected_seed(
+                    session, command.project_id
+                )
+                return self._with_selection_readiness(replay, selected)
             saved = self._draft_result(draft_row)
             if not saved.draft.is_complete:
                 raise ContractDraftIncomplete()
@@ -1348,7 +1376,7 @@ class ContractService:
                 )
                 if existing.get("request_hash") != replay_hash:
                     raise ContractConflict()
-                return replay
+                return self._with_selection_readiness(replay, selected)
             if int(head["revision"]) != saved.base_head_revision:
                 raise ContractConflict()
             preview = self._assemble_confirmation(

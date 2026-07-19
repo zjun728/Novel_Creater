@@ -9,9 +9,11 @@ from backend.database import connection, transaction
 from backend.domain.seeds import SeedPayload
 from backend.repositories.seeds import SeedRepository
 from backend.services.seeds import (
+    ArchiveSeed,
     CreateSeed,
     DeleteSeed,
     EditSeed,
+    RestoreSeed,
     SeedResult,
     SeedService,
     SelectSeed,
@@ -66,12 +68,26 @@ def _public_seed(result: SeedResult) -> dict:
         "payload": result.payload.model_dump(mode="json"),
         "isSelected": result.is_selected,
         "selectionRevision": result.selection_revision,
+        "capabilities": result.capabilities.model_dump(mode="json"),
     }
 
 
 def _public_selected(result: SelectedSeedResult) -> dict:
     return {
-        "selected": _public_seed(result.selected) if result.selected else None,
+        "activeSelection": (
+            {
+                "projectId": result.active_selection.project_id,
+                "selectionRevision": result.active_selection.selection_revision,
+                "seedId": result.active_selection.seed_id,
+                "seedRevisionId": result.active_selection.seed_revision_id,
+                "seedHash": result.active_selection.seed_hash,
+                "selectedAt": result.active_selection.selected_at,
+                "updatedAt": result.active_selection.updated_at,
+                "seed": _public_seed(result.active_selection.seed),
+            }
+            if result.active_selection
+            else None
+        ),
         "seedReady": result.seed_ready,
         "contractReady": result.contract_ready,
         "reasons": list(result.reasons),
@@ -121,6 +137,38 @@ async def delete_seed(
         )
     )
     return {"ok": True}
+
+
+@router.post("/projects/{pid}/seeds/{seed_id}/archive")
+async def archive_seed(
+    pid: str, seed_id: str, body: DeleteSeedBody,
+    service=Depends(get_seed_service),
+):
+    return _public_seed(
+        await service.archive(
+            ArchiveSeed(
+                project_id=pid, seed_id=seed_id,
+                expected_seed_revision=body.expectedSeedRevision,
+                expected_selection_revision=body.expectedSelectionRevision,
+            )
+        )
+    )
+
+
+@router.post("/projects/{pid}/seeds/{seed_id}/restore")
+async def restore_seed(
+    pid: str, seed_id: str, body: DeleteSeedBody,
+    service=Depends(get_seed_service),
+):
+    return _public_seed(
+        await service.restore(
+            RestoreSeed(
+                project_id=pid, seed_id=seed_id,
+                expected_seed_revision=body.expectedSeedRevision,
+                expected_selection_revision=body.expectedSelectionRevision,
+            )
+        )
+    )
 
 
 @router.get("/projects/{pid}/selected-seed")

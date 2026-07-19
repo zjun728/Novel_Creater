@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from backend import main
 from backend.http_errors import ProjectArchived
 from backend.routers import assets, contracts, corpus, projects, seeds, story_engines
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
 from backend.security.redaction import install_error_handlers
 from backend.services.project_lifecycle import CreateProject, ProjectResult
 from backend.services.seeds import SeedResult
@@ -116,6 +116,11 @@ def test_seed_list_uses_service_dependency_and_revision_payload_contract():
                         openingHook="Hook", differentiation="Different",
                     ),
                     is_selected=True, selection_revision=1,
+                    capabilities=SeedMutationCapabilities(
+                        referenced=True, hasFinalChapters=False,
+                        canEdit=True, canSelect=True, canArchive=False,
+                        canRestore=False, canPermanentlyDelete=False,
+                    ),
                 ),
             )
 

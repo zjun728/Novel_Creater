@@ -3,11 +3,15 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
 from backend.http_errors import SeedNotFound
 from backend.routers import seeds
 from backend.security.redaction import install_error_handlers
-from backend.services.seeds import SeedResult, SelectedSeedResult
+from backend.services.seeds import (
+    ActiveSeedSelection,
+    SeedResult,
+    SelectedSeedResult,
+)
 
 
 PAYLOAD = {
@@ -30,6 +34,15 @@ def seed_result(revision=1, selection_revision=0):
         content_hash=str(revision) * 64, payload=SeedPayload(**PAYLOAD),
         is_selected=selection_revision > 0,
         selection_revision=selection_revision,
+        capabilities=SeedMutationCapabilities(
+            referenced=selection_revision > 0,
+            hasFinalChapters=False,
+            canEdit=True,
+            canSelect=True,
+            canArchive=selection_revision == 0,
+            canRestore=False,
+            canPermanentlyDelete=selection_revision == 0,
+        ),
     )
 
 
@@ -52,12 +65,27 @@ class FakeSeedService:
     async def delete(self, command):
         self.calls.append(("delete", command))
 
+    async def archive(self, command):
+        self.calls.append(("archive", command))
+        return seed_result()
+
+    async def restore(self, command):
+        self.calls.append(("restore", command))
+        return seed_result()
+
     async def get_selected(self, project_id):
         self.calls.append(("get-selected", project_id))
         if project_id == "missing":
             raise SeedNotFound()
+        selected = seed_result(1, 1)
         return SelectedSeedResult(
-            selected=seed_result(1, 1), seed_ready=True,
+            active_selection=ActiveSeedSelection(
+                project_id="p1", selection_revision=1,
+                seed_id=selected.id, seed_revision_id=selected.revision_id,
+                seed_hash=selected.content_hash, selected_at=1,
+                updated_at=1, seed=selected,
+            ),
+            seed_ready=True,
             contract_ready=False, reasons=("binding_not_verified",),
         )
 
@@ -105,13 +133,37 @@ def test_seed_routes_use_service_dependency_and_return_camel_case_public_dto():
         "id": "seed-1", "projectId": "p1", "status": "candidate",
         "revision": 1, "revisionId": "revision-1", "contentHash": "1" * 64,
         "payload": PAYLOAD, "isSelected": False, "selectionRevision": 0,
+        "capabilities": {
+            "referenced": False, "hasFinalChapters": False,
+            "canEdit": True, "canSelect": True, "canArchive": True,
+            "canRestore": False, "canPermanentlyDelete": True,
+        },
     }
+    assert selected.json()["activeSelection"]["selectionRevision"] == 1
+    assert selected.json()["activeSelection"]["seed"]["id"] == "seed-1"
     assert selected.json()["contractReady"] is False
     assert selected.json()["seedReady"] is True
     assert selected.json()["reasons"] == ["binding_not_verified"]
     assert service.calls[1][1].project_id == "p1"
     assert service.calls[2][1].expected_seed_revision == 1
     assert service.calls[3][1].expected_selection_revision == 2
+
+
+def test_seed_archive_restore_routes_are_explicit_and_delete_never_archives():
+    client, service = make_client()
+    archived = client.post(
+        "/api/projects/p1/seeds/seed-1/archive",
+        json={"expectedSeedRevision": 1, "expectedSelectionRevision": 2},
+    )
+    restored = client.post(
+        "/api/projects/p1/seeds/seed-1/restore",
+        json={"expectedSeedRevision": 1, "expectedSelectionRevision": 2},
+    )
+
+    assert archived.status_code == restored.status_code == 200
+    assert [call[0] for call in service.calls] == ["archive", "restore"]
+    assert service.calls[0][1].seed_id == "seed-1"
+    assert service.calls[1][1].expected_selection_revision == 2
 
 
 def test_seed_write_requests_forbid_legacy_or_extra_fields():

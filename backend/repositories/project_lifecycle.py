@@ -12,9 +12,12 @@ async def read_active_project(session, project_id: str):
     )
 
 
-async def lock_active_project(session, project_id: str):
+async def lock_active_project(
+    session, project_id: str, *, nowait: bool = False
+):
+    lock_clause = " FOR UPDATE NOWAIT" if nowait else " FOR UPDATE"
     row = await session.fetchone(
-        "SELECT * FROM projects WHERE id=%s FOR UPDATE",
+        f"SELECT * FROM projects WHERE id=%s{lock_clause}",
         (project_id,),
     )
     if row is not None and row["archived_at"] is not None:

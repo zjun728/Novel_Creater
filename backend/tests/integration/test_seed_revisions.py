@@ -8,12 +8,14 @@ import aiomysql
 import pytest
 
 from backend.domain.seeds import SeedPayload
-from backend.http_errors import SeedConflict, SeedNotFound
+from backend.http_errors import ProjectBusy, SeedConflict, SeedLocked, SeedNotFound
 from backend.repositories.seeds import SeedRepository
 from backend.services.seeds import (
+    ArchiveSeed,
     CreateSeed,
     DeleteSeed,
     EditSeed,
+    RestoreSeed,
     SeedService,
     SelectSeed,
 )
@@ -104,6 +106,111 @@ async def install_matching_contract(session, project_id: str, seed):
     )
 
 
+async def install_first_final_chapter(session, project_id: str, seed) -> None:
+    bible_id = str(uuid4())
+    volume_id = str(uuid4())
+    block_id = str(uuid4())
+    chapter_session_id = str(uuid4())
+    candidate_id = str(uuid4())
+    change_set_id = str(uuid4())
+    finalization_id = str(uuid4())
+    final_chapter_id = str(uuid4())
+    bible_hash = "1" * 64
+    planning_hash = "2" * 64
+    candidate_hash = "3" * 64
+    change_set_hash = "4" * 64
+    await session.execute(
+        """INSERT INTO creation_bible_revisions
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,contract_revision,contract_hash,binding_revision_id,
+            binding_hash,policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,1,%s,NULL,NULL,'test-v1','{}',%s,4)""",
+        (
+            bible_id, project_id, seed.selection_revision, seed.id,
+            seed.revision_id, seed.content_hash, "c" * 64, bible_hash,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO project_bible_heads
+           (project_id,revision,bible_revision_id,content_hash,updated_at)
+           VALUES (%s,1,%s,%s,4)""",
+        (project_id, bible_id, bible_hash),
+    )
+    await session.execute(
+        """INSERT INTO volume_plans
+           (id,project_id,selection_revision,contract_revision,contract_hash,
+            bible_revision,bible_hash,manifest_hash,volume_num,title,
+            direction_json,revision,status,created_at,updated_at)
+           VALUES (%s,%s,%s,1,%s,1,%s,%s,1,'Volume','{}',1,'active',5,5)""",
+        (
+            volume_id, project_id, seed.selection_revision, "c" * 64,
+            bible_hash, planning_hash,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO story_blocks
+           (id,project_id,volume_plan_id,block_num,title,goal_json,revision,
+            status,created_at,updated_at)
+           VALUES (%s,%s,%s,1,'Block','{}',1,'active',5,5)""",
+        (block_id, project_id, volume_id),
+    )
+    await session.execute(
+        """INSERT INTO chapter_sessions
+           (id,project_id,selection_revision,contract_revision,contract_hash,
+            bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,
+            story_block_id,chapter_num,expected_canon_revision,
+            expected_story_block_revision,planning_snapshot_json,status,
+            created_at,finalized_at)
+           VALUES (%s,%s,%s,1,%s,1,%s,%s,%s,%s,1,0,1,'{}','final',6,7)""",
+        (
+            chapter_session_id, project_id, seed.selection_revision,
+            "c" * 64, bible_hash, volume_id, planning_hash, block_id,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO draft_candidates
+           (id,project_id,chapter_session_id,working_draft_revision,content,
+            content_hash,provenance_json,created_at)
+           VALUES (%s,%s,%s,1,'draft',%s,'{}',6)""",
+        (candidate_id, project_id, chapter_session_id, candidate_hash),
+    )
+    await session.execute(
+        """INSERT INTO finalization_change_sets
+           (id,project_id,draft_candidate_id,extraction_id,candidate_hash,
+            expected_canon_revision,expected_story_block_revision,payload_json,
+            content_hash,created_at,confirmed_at)
+           VALUES (%s,%s,%s,'test-extraction',%s,0,1,'{}',%s,6,7)""",
+        (
+            change_set_id, project_id, candidate_id, candidate_hash,
+            change_set_hash,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO finalization_records
+           (id,project_id,chapter_session_id,draft_candidate_id,change_set_id,
+            idempotency_key,candidate_hash,change_set_hash,
+            expected_canon_revision,committed_canon_revision,
+            result_payload_json,finalized_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,1,'{}',7)""",
+        (
+            finalization_id, project_id, chapter_session_id, candidate_id,
+            change_set_id, "5" * 64, candidate_hash, change_set_hash,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO final_chapters
+           (id,project_id,chapter_session_id,draft_candidate_id,
+            finalization_record_id,chapter_num,title,content,content_hash,
+            canon_revision,story_block_revision,planning_snapshot_json,
+            finalized_at)
+           VALUES (%s,%s,%s,%s,%s,1,'Final','final',%s,1,1,'{}',7)""",
+        (
+            final_chapter_id, project_id, chapter_session_id, candidate_id,
+            finalization_id, "6" * 64,
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_concurrent_stale_writer_preserves_old_revision_and_cross_project_scope(
     disposable_mysql,
@@ -142,7 +249,9 @@ async def test_concurrent_stale_writer_preserves_old_revision_and_cross_project_
         return_exceptions=True,
     )
     assert sum(not isinstance(item, BaseException) for item in outcomes) == 1
-    assert sum(isinstance(item, SeedConflict) for item in outcomes) == 1
+    assert sum(
+        isinstance(item, (ProjectBusy, SeedConflict)) for item in outcomes
+    ) == 1
     assert await disposable_mysql.session.fetchone(
         "SELECT COUNT(*) AS count FROM creative_seed_revisions WHERE seed_id=%s",
         (created.id,),
@@ -163,6 +272,44 @@ async def test_concurrent_stale_writer_preserves_old_revision_and_cross_project_
     assert await disposable_mysql.session.fetchone(
         "SELECT project_id FROM project_selected_seeds WHERE project_id='p1'"
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_project_lock_owner_causes_bounded_seed_busy(disposable_mysql):
+    await insert_project(disposable_mysql.session, "p1")
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    created = await service.create(
+        CreateSeed(project_id="p1", payload=payload("锁竞争"))
+    )
+    raw = await aiomysql.connect(
+        **{**disposable_mysql.connection_config, "autocommit": False}
+    )
+    owner = _TestDatabaseSession(raw)
+    try:
+        await raw.begin()
+        await owner.fetchone(
+            "SELECT id FROM projects WHERE id='p1' FOR UPDATE"
+        )
+        with pytest.raises(ProjectBusy):
+            await asyncio.wait_for(
+                service.edit(
+                    EditSeed(
+                        project_id="p1", seed_id=created.id,
+                        payload=payload("不得等待"),
+                        expected_seed_revision=1,
+                        expected_selection_revision=0,
+                    )
+                ),
+                timeout=2,
+            )
+    finally:
+        await raw.rollback()
+        raw.close()
 
 
 @pytest.mark.asyncio
@@ -204,16 +351,17 @@ async def test_selected_edit_reports_contract_drift_and_delete_preserves_depende
     assert drift.seed_ready is False
     assert drift.reasons == ("selected_seed_drift",)
 
-    await service.delete(
-        DeleteSeed(
-            project_id="p1", seed_id=selected_seed.id,
-            expected_seed_revision=edited.revision,
-            expected_selection_revision=edited.selection_revision,
+    with pytest.raises(SeedLocked):
+        await service.delete(
+            DeleteSeed(
+                project_id="p1", seed_id=selected_seed.id,
+                expected_seed_revision=edited.revision,
+                expected_selection_revision=edited.selection_revision,
+            )
         )
-    )
     assert (await disposable_mysql.session.fetchone(
         "SELECT status FROM creative_seeds WHERE id=%s", (selected_seed.id,)
-    ))["status"] == "archived"
+    ))["status"] == "candidate"
 
     free = await service.create(CreateSeed(project_id="p1", payload=payload("自由")))
     await service.delete(
@@ -229,7 +377,7 @@ async def test_selected_edit_reports_contract_drift_and_delete_preserves_depende
 
 
 @pytest.mark.asyncio
-async def test_delete_archives_historically_selected_seed_and_preserves_selection_ledger(
+async def test_archive_restore_preserves_historically_selected_seed_and_selection_ledger(
     disposable_mysql,
 ):
     await insert_project(disposable_mysql.session, "p1")
@@ -265,8 +413,8 @@ async def test_delete_archives_historically_selected_seed_and_preserves_selectio
         )
     )
 
-    await service.delete(
-        DeleteSeed(
+    await service.archive(
+        ArchiveSeed(
             project_id="p1",
             seed_id=seed_a.id,
             expected_seed_revision=1,
@@ -309,6 +457,209 @@ async def test_delete_archives_historically_selected_seed_and_preserves_selectio
             "seed_revision_id": seed_b.revision_id,
         },
     ]
+
+    restored = await service.restore(
+        RestoreSeed(
+            project_id="p1",
+            seed_id=seed_a.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selection_b.selection_revision,
+        )
+    )
+    assert restored.status == "candidate"
+    assert restored.capabilities.canPermanentlyDelete is False
+    with pytest.raises(SeedLocked):
+        await service.delete(
+            DeleteSeed(
+                project_id="p1", seed_id=seed_a.id,
+                expected_seed_revision=1,
+                expected_selection_revision=selection_b.selection_revision,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_to_b_to_a_never_revives_old_contract_generation(disposable_mysql):
+    await insert_project(disposable_mysql.session, "p1")
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    seed_a = await service.create(CreateSeed(project_id="p1", payload=payload("A")))
+    seed_b = await service.create(CreateSeed(project_id="p1", payload=payload("B")))
+    first_a = await service.select(
+        SelectSeed(
+            project_id="p1", seed_id=seed_a.id,
+            expected_seed_revision=1, expected_selection_revision=0,
+        )
+    )
+    await install_matching_contract(disposable_mysql.session, "p1", first_a)
+    selected_b = await service.select(
+        SelectSeed(
+            project_id="p1", seed_id=seed_b.id,
+            expected_seed_revision=1,
+            expected_selection_revision=first_a.selection_revision,
+        )
+    )
+    third_generation = await service.select(
+        SelectSeed(
+            project_id="p1", seed_id=seed_a.id,
+            expected_seed_revision=1,
+            expected_selection_revision=selected_b.selection_revision,
+        )
+    )
+
+    active = await service.get_selected("p1")
+    old_contract = await disposable_mysql.session.fetchone(
+        """SELECT selection_revision,seed_id,seed_revision_id,seed_hash
+             FROM creation_contracts WHERE project_id='p1'"""
+    )
+
+    assert third_generation.selection_revision == 3
+    assert active.active_selection.selection_revision == 3
+    assert active.active_selection.seed_id == seed_a.id
+    assert active.seed_ready is False
+    assert active.contract_ready is False
+    assert active.reasons == ("selected_seed_drift",)
+    assert old_contract == {
+        "selection_revision": 1,
+        "seed_id": seed_a.id,
+        "seed_revision_id": seed_a.revision_id,
+        "seed_hash": seed_a.content_hash,
+    }
+
+
+@pytest.mark.asyncio
+async def test_first_final_chapter_locks_only_selection_history(disposable_mysql):
+    await insert_project(disposable_mysql.session, "p1")
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    historical = await service.create(
+        CreateSeed(project_id="p1", payload=payload("历史"))
+    )
+    selected = await service.create(
+        CreateSeed(project_id="p1", payload=payload("当前"))
+    )
+    free = await service.create(
+        CreateSeed(project_id="p1", payload=payload("未引用"))
+    )
+    historical_selection = await service.select(
+        SelectSeed(
+            project_id="p1", seed_id=historical.id,
+            expected_seed_revision=1, expected_selection_revision=0,
+        )
+    )
+    active = await service.select(
+        SelectSeed(
+            project_id="p1", seed_id=selected.id,
+            expected_seed_revision=1,
+            expected_selection_revision=historical_selection.selection_revision,
+        )
+    )
+    await install_matching_contract(disposable_mysql.session, "p1", active)
+    await install_first_final_chapter(disposable_mysql.session, "p1", active)
+
+    created_after_final = await service.create(
+        CreateSeed(project_id="p1", payload=payload("定稿后候选"))
+    )
+    edited_free = await service.edit(
+        EditSeed(
+            project_id="p1", seed_id=free.id, payload=payload("未引用改"),
+            expected_seed_revision=1,
+            expected_selection_revision=active.selection_revision,
+        )
+    )
+    await service.delete(
+        DeleteSeed(
+            project_id="p1", seed_id=created_after_final.id,
+            expected_seed_revision=1,
+            expected_selection_revision=active.selection_revision,
+        )
+    )
+    archived = await service.archive(
+        ArchiveSeed(
+            project_id="p1", seed_id=historical.id,
+            expected_seed_revision=1,
+            expected_selection_revision=active.selection_revision,
+        )
+    )
+    restored = await service.restore(
+        RestoreSeed(
+            project_id="p1", seed_id=historical.id,
+            expected_seed_revision=1,
+            expected_selection_revision=active.selection_revision,
+        )
+    )
+
+    assert edited_free.revision == 2
+    assert archived.status == "archived"
+    assert restored.status == "candidate"
+    assert await disposable_mysql.session.fetchone(
+        "SELECT id FROM creative_seeds WHERE id=%s",
+        (created_after_final.id,),
+    ) is None
+    listed = {item.id: item for item in await service.list("p1")}
+    historical_facts = listed[historical.id].capabilities
+    selected_facts = listed[selected.id].capabilities
+    free_facts = listed[free.id].capabilities
+    assert (
+        historical_facts.referenced,
+        historical_facts.hasFinalChapters,
+        historical_facts.canEdit,
+        historical_facts.canArchive,
+        historical_facts.canPermanentlyDelete,
+    ) == (True, True, False, True, False)
+    assert (
+        selected_facts.referenced,
+        selected_facts.canEdit,
+        selected_facts.canSelect,
+        selected_facts.canArchive,
+        selected_facts.canPermanentlyDelete,
+    ) == (True, False, False, False, False)
+    assert (
+        free_facts.referenced,
+        free_facts.canEdit,
+        free_facts.canSelect,
+        free_facts.canArchive,
+        free_facts.canPermanentlyDelete,
+    ) == (False, True, False, True, True)
+
+    with pytest.raises(SeedLocked):
+        await service.edit(
+            EditSeed(
+                project_id="p1", seed_id=selected.id,
+                payload=payload("不得改"), expected_seed_revision=1,
+                expected_selection_revision=active.selection_revision,
+            )
+        )
+    with pytest.raises(SeedLocked):
+        await service.select(
+            SelectSeed(
+                project_id="p1", seed_id=free.id,
+                expected_seed_revision=edited_free.revision,
+                expected_selection_revision=active.selection_revision,
+            )
+        )
+    with pytest.raises(SeedLocked):
+        await service.delete(
+            DeleteSeed(
+                project_id="p1", seed_id=historical.id,
+                expected_seed_revision=1,
+                expected_selection_revision=active.selection_revision,
+            )
+        )
 
 
 @pytest.mark.asyncio

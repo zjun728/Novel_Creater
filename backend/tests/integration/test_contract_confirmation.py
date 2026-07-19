@@ -9,6 +9,7 @@ from pymysql.err import IntegrityError
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
+from backend.domain.seeds import SeedPayload
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.seeds import SeedRepository
 from backend.services.contracts import (
@@ -19,8 +20,8 @@ from backend.services.contracts import (
     ContractService,
     SaveContractDraft,
 )
-from backend.services.seeds import SeedService, SelectSeed
-from backend.tests.support.contract_fakes import style_asset
+from backend.services.seeds import CreateSeed, SeedService, SelectSeed
+from backend.tests.support.contract_fakes import SEED_PAYLOAD, style_asset
 from backend.tests.integration.test_contract_drafts import (
     BINDING,
     CARD,
@@ -207,6 +208,60 @@ async def test_real_same_seed_reselection_supersedes_readiness_and_clone_generat
         (PROJECT,),
     )
     assert generations == [{"selection_revision": 1, "contract_count": 1}]
+
+
+@pytest.mark.asyncio
+async def test_real_a_b_a_marks_old_contract_history_and_replay_superseded(
+    disposable_mysql,
+):
+    contract_service = _service(disposable_mysql)
+    seed_service = _seed_service(disposable_mysql)
+    _, saved = await _saved(disposable_mysql, contract_service)
+    first = await contract_service.confirm(_confirm(saved))
+    seed_b = await seed_service.create(
+        CreateSeed(
+            project_id=PROJECT,
+            payload=SeedPayload.model_validate({
+                **SEED_PAYLOAD,
+                "title": "B generation",
+            }),
+        )
+    )
+    selected_b = await seed_service.select(
+        SelectSeed(
+            project_id=PROJECT,
+            seed_id=seed_b.id,
+            expected_seed_revision=1,
+            expected_selection_revision=1,
+        )
+    )
+    selected_a = await seed_service.select(
+        SelectSeed(
+            project_id=PROJECT,
+            seed_id=SEED,
+            expected_seed_revision=1,
+            expected_selection_revision=selected_b.selection_revision,
+        )
+    )
+
+    historical = await contract_service.history(PROJECT)
+    replay = await contract_service.confirm(_confirm(saved))
+
+    assert first.contract_ready is True
+    assert selected_a.selection_revision == 3
+    assert historical[0].contract_ready is False
+    assert historical[0].reasons == ("superseded",)
+    assert replay.contract_ready is False
+    assert replay.reasons == ("superseded",)
+    assert await disposable_mysql.session.fetchone(
+        """SELECT revision,creation_contract_id
+             FROM project_contract_heads WHERE project_id=%s""",
+        (PROJECT,),
+    ) == {
+        "revision": 1,
+        "creation_contract_id": first.creation_contract_id,
+    }
+    assert await _count(disposable_mysql.session, "creation_contracts") == 1
 
 
 @pytest.mark.asyncio

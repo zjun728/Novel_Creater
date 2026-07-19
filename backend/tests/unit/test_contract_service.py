@@ -937,6 +937,25 @@ async def test_confirm_replay_ignores_an_unrelated_newer_clone_draft():
     assert harness.repository.drafts["p1"]["content_hash"] != saved.content_hash
 
 
+@pytest.mark.asyncio
+async def test_history_and_replay_mark_superseded_selection_generation_read_only():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    first = await harness.service.confirm(confirmation(saved))
+    harness.repository.selected_seeds["p1"]["selection_revision"] += 2
+
+    historical = await harness.service.history("p1")
+    replay = await harness.service.confirm(confirmation(saved))
+
+    assert first.contract_ready is True
+    assert historical[0].contract_ready is False
+    assert historical[0].reasons == ("superseded",)
+    assert replay.contract_ready is False
+    assert replay.reasons == ("superseded",)
+    assert harness.repository.heads["p1"]["revision"] == 1
+    assert len(harness.repository.creation_contracts) == 1
+
+
 @pytest.mark.parametrize("stage", (
     "after_confirmation_reserve", "after_creation_insert", "after_style_insert",
     "after_engine_refs", "after_style_refs", "after_card_refs",

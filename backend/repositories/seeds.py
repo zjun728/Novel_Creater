@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from backend.repositories.project_lifecycle import (
-    lock_active_project,
+    lock_active_project as _lock_active_project,
     read_active_project,
 )
+
+
+async def lock_active_project(session, project_id: str):
+    """Use the shared active-project boundary without waiting behind a writer."""
+
+    return await _lock_active_project(session, project_id, nowait=True)
 
 
 class SeedRepository:
@@ -203,6 +209,15 @@ class SeedRepository:
             (updated_at, project_id, seed_id),
         )
 
+    async def restore(
+        self, session, project_id: str, seed_id: str, updated_at: int
+    ) -> None:
+        await session.execute(
+            """UPDATE creative_seeds SET status='candidate', updated_at=%s
+               WHERE project_id=%s AND id=%s""",
+            (updated_at, project_id, seed_id),
+        )
+
     async def physical_delete(
         self, session, project_id: str, seed_id: str
     ) -> None:
@@ -224,6 +239,9 @@ class SeedRepository:
             """SELECT s.id, s.project_id, s.status, s.created_at, s.updated_at,
                       r.id AS revision_id, r.revision, r.payload_json,
                       r.content_hash, selected.selection_revision,
+                      selected.seed_id, selected.seed_revision_id,
+                      selected.seed_hash, selected.selected_at,
+                      selected.updated_at AS selection_updated_at,
                       1 AS is_selected
                FROM project_selected_seeds selected
                JOIN creative_seeds s

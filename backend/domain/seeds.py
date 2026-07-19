@@ -25,3 +25,17 @@ class SeedPayload(BaseModel):
     worldPressure: str = Field(min_length=1, max_length=SEED_FIELD_MAX_LENGTH)
     openingHook: str = Field(min_length=1, max_length=SEED_FIELD_MAX_LENGTH)
     differentiation: str = Field(min_length=1, max_length=SEED_FIELD_MAX_LENGTH)
+
+
+class SeedMutationCapabilities(BaseModel):
+    """Server-owned seed lifecycle facts; clients never infer these."""
+
+    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+
+    referenced: bool
+    hasFinalChapters: bool
+    canEdit: bool
+    canSelect: bool
+    canArchive: bool
+    canRestore: bool
+    canPermanentlyDelete: bool

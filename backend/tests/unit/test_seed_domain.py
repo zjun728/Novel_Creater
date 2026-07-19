@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from backend.domain import seeds as seed_domain
 from backend.domain.seeds import SEED_FIELD_MAX_LENGTH, SeedPayload
 
 
@@ -82,3 +83,27 @@ def test_seed_payload_strips_outer_whitespace_and_is_frozen():
     assert payload.title == "典镇山河"
     with pytest.raises(ValidationError):
         payload.title = "新标题"
+
+
+def test_seed_mutation_capabilities_are_strict_frozen_server_facts():
+    facts = seed_domain.SeedMutationCapabilities(
+        referenced=True,
+        hasFinalChapters=True,
+        canEdit=False,
+        canSelect=False,
+        canArchive=True,
+        canRestore=False,
+        canPermanentlyDelete=False,
+    )
+
+    assert facts.model_dump() == {
+        "referenced": True,
+        "hasFinalChapters": True,
+        "canEdit": False,
+        "canSelect": False,
+        "canArchive": True,
+        "canRestore": False,
+        "canPermanentlyDelete": False,
+    }
+    with pytest.raises(ValidationError):
+        facts.canEdit = True
