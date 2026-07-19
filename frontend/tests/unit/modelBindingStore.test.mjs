@@ -4,9 +4,12 @@ import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 
 import {
-  TASK_KEYS,
   useProviderStore,
 } from '../../src/stores/providerStore.js'
+import {
+  TASK_KEYS,
+  useModelBindingStore,
+} from '../../src/stores/modelBindingStore.js'
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -186,7 +189,7 @@ test('an older provider list cannot overwrite later provider updates or addition
 
 test('all eight model bindings are replaced by one atomic CAS write', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const requests = []
   const entries = [...TASK_KEYS].reverse().map(taskKey => ({ taskKey, providerId: 'provider-1' }))
 
@@ -216,7 +219,7 @@ test('all eight model bindings are replaced by one atomic CAS write', async () =
 
 test('repeating the same binding save while it is pending issues only one CAS write', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const writes = []
   const entries = TASK_KEYS.map(taskKey => ({ taskKey, providerId: 'provider-1' }))
 
@@ -243,29 +246,34 @@ test('repeating the same binding save while it is pending issues only one CAS wr
   assert.equal(store.bindingSaving, false)
 })
 
-test('settings exposes bindings and only the dedicated clear-key command', async () => {
-  const [settings, form, bindings] = await Promise.all([
+test('provider settings owns only global profiles and project settings owns bindings', async () => {
+  const [settings, form, bindings, projectView] = await Promise.all([
     readFile(new URL('../../src/components/settings/ProviderSettings.vue', import.meta.url), 'utf8'),
     readFile(new URL('../../src/components/settings/ProviderForm.vue', import.meta.url), 'utf8'),
-    readFile(new URL('../../src/components/settings/TaskModelBinding.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/components/project/settings/TaskModelBinding.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/views/ProjectModelSettingsView.vue', import.meta.url), 'utf8'),
   ])
 
   assert.match(settings, /停用并清除私密配置/)
   assert.match(settings, /handleClearApiKey/)
   assert.match(settings, /providerStore\.clearApiKey/)
+  assert.doesNotMatch(settings, /TaskModelBinding|bindingDirty|bindingSaving/)
   assert.doesNotMatch(form, /clearApiKey|clearBaseURL|清除当前 API Key|清除当前 Base URL/)
-  assert.match(bindings, /一次保存八项绑定/)
+  assert.match(projectView, /TaskModelBinding/)
+  assert.match(bindings, /应用到全部八项|全部任务/)
+  assert.match(bindings, /高级|Advanced/)
   assert.match(bindings, /replaceBindings/)
   assert.match(bindings, /bindingComplete/)
   assert.match(bindings, /bindingReady/)
   assert.match(bindings, /bindingReasons/)
-  assert.match(bindings, /window\.confirm/)
-  assert.match(bindings, /beforeunload/)
+  assert.match(bindings, /sourceProjectId/)
+  assert.doesNotMatch(bindings, /modelBindingStore\.getBindings/)
+  assert.match(bindings, /binding\.value\s*=\s*nextStatus/)
+  assert.match(projectView, /archived|已归档/)
   assert.match(settings, /:mask-closable="!saving"/)
   assert.match(settings, /:close-on-esc="!saving"/)
   assert.match(settings, /onBeforeRouteLeave/)
   assert.match(settings, /beforeunload/)
-  assert.match(settings, /showForm\.value\s*\|\|\s*bindingDirty\.value/)
   assert.match(form, /:disabled="saving\s*\|\|\s*editing"/)
   assert.match(form, /Provider 类型创建后不可更改/)
   assert.doesNotMatch(bindings, /M1 只读|只读映射/)
@@ -274,7 +282,7 @@ test('settings exposes bindings and only the dedicated clear-key command', async
 
 test('binding complete and ready stay distinct and use only the latest backend status', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const pending = new Map()
 
   await withBrowserGuards((url) => {
@@ -305,7 +313,7 @@ test('binding complete and ready stay distinct and use only the latest backend s
 
 test('selecting a cached binding status invalidates an older in-flight refresh', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const oldPending = deferred()
   let cachedReads = 0
 
@@ -339,7 +347,7 @@ test('selecting a cached binding status invalidates an older in-flight refresh',
 
 test('a successful binding replacement invalidates an older in-flight status read', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const pendingStatus = deferred()
 
   await withBrowserGuards((url, options) => {
@@ -368,7 +376,7 @@ test('a successful binding replacement invalidates an older in-flight status rea
 
 test('a successful binding replacement invalidates an older in-flight binding read', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const pendingBinding = deferred()
 
   await withBrowserGuards((url, options) => {
@@ -395,7 +403,7 @@ test('a successful binding replacement invalidates an older in-flight binding re
 
 test('binding loading remains true until concurrent binding and status reads both settle', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const bindingPending = deferred()
   const statusPending = deferred()
 
@@ -426,7 +434,7 @@ test('binding loading remains true until concurrent binding and status reads bot
 
 test('cross-project binding and status reads can never form a mixed active snapshot', async () => {
   setActivePinia(createPinia())
-  let store = useProviderStore()
+  let store = useModelBindingStore()
   let bindingPending = deferred()
   let statusPending = deferred()
 
@@ -453,7 +461,7 @@ test('cross-project binding and status reads can never form a mixed active snaps
   })
 
   setActivePinia(createPinia())
-  store = useProviderStore()
+  store = useModelBindingStore()
   bindingPending = deferred()
   statusPending = deferred()
 
@@ -482,7 +490,7 @@ test('cross-project binding and status reads can never form a mixed active snaps
 
 test('a late binding write response cannot switch the active project back', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   const pendingWrite = deferred()
 
   await withBrowserGuards((url, options) => {
@@ -517,7 +525,7 @@ test('a late binding write response cannot switch the active project back', asyn
 
 test('binding replacement rejects missing or duplicate task keys before fetch', async () => {
   setActivePinia(createPinia())
-  const store = useProviderStore()
+  const store = useModelBindingStore()
   let requests = 0
 
   await withBrowserGuards(async () => {
@@ -573,4 +581,20 @@ test('binding project fallback ignores an archived current project', async () =>
     chooseActiveProjectId(activeProjects, 'active-1', activeProjects[1]),
     'active-1',
   )
+})
+
+test('provider store exposes global profiles only', () => {
+  setActivePinia(createPinia())
+  const store = useProviderStore()
+
+  for (const projectBindingMember of [
+    'binding',
+    'bindingStatus',
+    'getBindings',
+    'getBindingStatus',
+    'replaceBindings',
+    'invalidateBindings',
+  ]) {
+    assert.equal(projectBindingMember in store, false)
+  }
 })

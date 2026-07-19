@@ -72,6 +72,24 @@ class BindingProviderUnavailable(PublicDomainError):
     message = "A selected provider is unavailable"
 
 
+class ApplicationSettingsUnavailable(PublicDomainError):
+    status_code = 503
+    code = "ApplicationSettingsUnavailable"
+    message = "Application settings are unavailable"
+
+
+class ApplicationSettingsConflict(PublicDomainError):
+    status_code = 409
+    code = "ApplicationSettingsConflict"
+    message = "Application settings changed; refresh and retry"
+
+
+class ApplicationFallbackUnavailable(PublicDomainError):
+    status_code = 422
+    code = "ApplicationFallbackUnavailable"
+    message = "The selected fallback provider is unavailable"
+
+
 class StoryEngineBatchNotFound(PublicDomainError):
     status_code = 404
     code = "StoryEngineBatchNotFound"

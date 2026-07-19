@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.database import close_pool, connection
 from backend.routers import (
+    application_settings,
     assets,
     canon,
     chapter_sessions,
@@ -53,6 +54,7 @@ app.add_middleware(
 
 app.include_router(projects.router, prefix="/api")
 app.include_router(providers.router, prefix="/api")
+app.include_router(application_settings.router, prefix="/api")
 app.include_router(model_bindings.router, prefix="/api")
 app.include_router(seeds.router, prefix="/api")
 app.include_router(story_engines.router, prefix="/api")

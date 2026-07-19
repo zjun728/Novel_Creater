@@ -237,6 +237,15 @@ export const api = {
     ),
   },
 
+  applicationSettings: {
+    get: () => get('/settings/application'),
+    updateDefaultModel: data => put('/settings/application/default-model', {
+      expectedRevision: data.expectedRevision,
+      fallbackProviderId: data.fallbackProviderId ?? null,
+    }),
+    diagnostics: () => get('/settings/application/diagnostics'),
+  },
+
   bindings: {
     get: projectId => get(`/projects/${segment(projectId)}/bindings`),
     status: projectId => get(`/projects/${segment(projectId)}/bindings/status`),

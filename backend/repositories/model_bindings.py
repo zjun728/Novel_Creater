@@ -8,7 +8,7 @@ from uuid import uuid4
 from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.project_lifecycle import (
     lock_active_project,
-    read_active_project,
+    read_project,
 )
 
 
@@ -35,13 +35,40 @@ class ModelBindingRepository:
         if row is None:
             raise RuntimeError("project creation guard is unavailable")
 
-    async def lock_previous_project(self, session, project_id: str):
-        return await session.fetchone(
-            """SELECT id FROM projects
-               WHERE id<>%s AND archived_at IS NULL
-               ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE""",
+    async def lock_inheritance_candidates(self, session, project_id: str):
+        return await session.fetchall(
+            """SELECT p.id AS source_project_id,
+                      p.created_at AS source_project_created_at,
+                      h.revision AS source_revision,
+                      i.task_key,i.resolution_status,i.provider_id,
+                      i.provider_name_snapshot,i.model_name_snapshot
+               FROM projects p
+               JOIN project_model_binding_heads h ON h.project_id=p.id
+               JOIN project_model_binding_revisions r
+                 ON r.project_id=h.project_id
+                AND r.id=h.binding_revision_id
+               JOIN project_model_binding_items i
+                 ON i.binding_revision_id=r.id
+               WHERE p.id<>%s AND p.archived_at IS NULL
+               ORDER BY p.created_at DESC, p.id DESC,
+                 CASE i.task_key
+                   WHEN 'seed' THEN 1 WHEN 'planning' THEN 2
+                   WHEN 'writing' THEN 3 WHEN 'audit' THEN 4
+                   WHEN 'summary' THEN 5 WHEN 'extraction' THEN 6
+                   WHEN 'polish' THEN 7 WHEN 'market' THEN 8 ELSE 9 END
+               FOR UPDATE""",
             (project_id,),
         )
+
+    async def lock_application_settings(self, session):
+        row = await session.fetchone(
+            """SELECT singleton_id,fallback_provider_id,revision
+               FROM application_settings
+               WHERE singleton_id=1 FOR UPDATE"""
+        )
+        if row is None:
+            raise RuntimeError("application settings singleton is unavailable")
+        return row
 
     async def list_available_providers(self, session):
         return await session.fetchall(
@@ -53,7 +80,7 @@ class ModelBindingRepository:
         )
 
     async def read_project(self, session, project_id: str):
-        return await read_active_project(session, project_id)
+        return await read_project(session, project_id)
 
     async def lock_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)

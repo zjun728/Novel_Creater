@@ -6,7 +6,6 @@ import { useAppMessage } from '@/composables/useAppMessage'
 import { useDangerousConfirmation } from '@/composables/useDangerousConfirmation'
 import { useProviderStore } from '@/stores/providerStore'
 import ProviderForm from './ProviderForm.vue'
-import TaskModelBinding from './TaskModelBinding.vue'
 
 const providerStore = useProviderStore()
 const message = useAppMessage()
@@ -21,19 +20,14 @@ const clearingId = ref('')
 const testingId = ref('')
 const connectionFeedback = ref({})
 const formEpoch = ref(0)
-const bindingRefreshKey = ref(0)
-const bindingOperationBusy = ref(false)
-const bindingDirty = ref(false)
 const operationInFlight = computed(() => (
   saving.value
   || Boolean(deletingId.value)
   || Boolean(clearingId.value)
   || Boolean(testingId.value)
-  || providerStore.bindingSaving
-  || bindingOperationBusy.value
 ))
-const hasPendingChanges = computed(() => showForm.value || bindingDirty.value)
-const providerActionBusy = computed(() => operationInFlight.value || bindingDirty.value)
+const hasPendingChanges = computed(() => showForm.value)
+const providerActionBusy = computed(() => operationInFlight.value)
 
 async function loadProviders() {
   loadError.value = ''
@@ -57,7 +51,7 @@ function confirmRouteLeave() {
   }
   if (!hasPendingChanges.value) return true
   if (typeof window === 'undefined') return false
-  return window.confirm('当前有未保存的 Provider 表单或八项模型绑定。放弃这些修改并离开吗？')
+  return window.confirm('当前有未保存的 Provider 表单。放弃这些修改并离开吗？')
 }
 
 onBeforeRouteLeave(() => confirmRouteLeave())
@@ -110,7 +104,6 @@ async function handleSave(formData) {
       await providerStore.addProvider(formData)
       message.success('Provider 配置已添加')
     }
-    bindingRefreshKey.value += 1
     saved = true
   } catch (error) {
     message.error(`保存失败：${error.message}`)
@@ -201,7 +194,6 @@ function handleDelete(provider) {
       deletingId.value = provider.id
       try {
         await providerStore.deleteProvider(provider.id, provider.revision)
-        bindingRefreshKey.value += 1
         message.success('Provider 已停用，私密配置已由服务端清除')
       } catch (error) {
         message.error(`停用失败：${error.message}`)
@@ -293,14 +285,6 @@ function handleDelete(provider) {
       </n-card>
     </div>
 
-    <n-card title="项目任务模型绑定" size="small" class="binding-card">
-      <TaskModelBinding
-        :key="bindingRefreshKey"
-        @busy-change="bindingOperationBusy = $event"
-        @dirty-change="bindingDirty = $event"
-      />
-    </n-card>
-
     <n-modal
       :show="showForm"
       preset="card"
@@ -335,6 +319,5 @@ function handleDelete(provider) {
 .provider-meta span { color: #81786b; font-size: 12px; }
 .provider-meta strong { color: #38332c; font-size: 13px; font-weight: 600; }
 .connection-feedback { margin-top: 12px; }
-.binding-card { margin-top: 20px; border-color: #dfd6c4; background: #faf7ef; }
 .empty-state { padding: 30px 0; }
 </style>

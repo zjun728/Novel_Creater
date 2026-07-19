@@ -858,8 +858,15 @@ async def test_archived_project_blocks_seed_and_binding_resources_and_inheritanc
         for result in seed_results[4:]
     )
     assert all(
-        isinstance(result, http_errors.BindingNotFound)
+        result.project_id == PROJECT_ID
         for result in binding_results[:2]
+    )
+    assert (
+        binding_results[0].revision,
+        binding_results[0].content_hash,
+    ) == (
+        binding_results[1].revision,
+        binding_results[1].content_hash,
     )
     assert isinstance(binding_results[2], http_errors.ProjectArchived)
     assert await _seed_snapshot(disposable_mysql.session) == seeds_before

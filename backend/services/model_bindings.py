@@ -127,44 +127,118 @@ class ModelBindingService:
         return domain_revision
 
     async def initialize_project(self, session, project_id: str) -> None:
-        previous_project = await self.repository.lock_previous_project(
+        candidate_rows = await self.repository.lock_inheritance_candidates(
             session, project_id
         )
-        source_project_id = previous_project["id"] if previous_project else None
-        previous_rows = (
-            await self.repository.lock_current_rows(session, source_project_id)
-            if source_project_id else []
-        )
-        previous_by_task = {
-            row["task_key"]: row.get("provider_id") for row in previous_rows
-        }
+        settings = await self.repository.lock_application_settings(session)
         candidates = await self.repository.list_available_providers(session)
+        provider_ids = {
+            row["provider_id"]
+            for row in candidate_rows
+            if row.get("provider_id")
+        }
+        provider_ids.update(row["id"] for row in candidates)
+        if settings.get("fallback_provider_id"):
+            provider_ids.add(settings["fallback_provider_id"])
         locked_providers = await self.repository.lock_providers(
-            session, {row["id"] for row in candidates}
+            session, provider_ids
         )
+        ready_by_id = {
+            row["id"]: row
+            for row in locked_providers
+            if provider_is_available(row)
+        }
+        candidate_provider_ids = {row["id"] for row in candidates}
         available = sorted(
-            (row for row in locked_providers if provider_is_available(row)),
+            (
+                row
+                for row in locked_providers
+                if row["id"] in candidate_provider_ids
+                and provider_is_available(row)
+            ),
             key=lambda row: (
                 int(row["sort_order"]), int(row["created_at"]), row["id"]
             ),
         )
-        available_by_id = {row["id"]: row for row in available}
-        fallback = available[0] if available else None
-        items = []
-        for task_key in TASK_KEYS:
-            provider = available_by_id.get(previous_by_task.get(task_key)) or fallback
-            items.append(
-                self._bound_item(task_key, provider)
-                if provider else self._unbound_item(task_key)
+        source_project_id = None
+        items = None
+        for source_id, rows in self._candidate_snapshots(candidate_rows):
+            inherited = self._ready_snapshot(rows, ready_by_id)
+            if inherited is not None:
+                source_project_id = source_id
+                items = inherited
+                break
+        if items is None:
+            fallback_id = settings.get("fallback_provider_id")
+            fallback = ready_by_id.get(fallback_id)
+            if fallback is None:
+                fallback = available[0] if available else None
+            items = tuple(
+                self._bound_item(task_key, fallback)
+                if fallback
+                else self._unbound_item(task_key)
+                for task_key in TASK_KEYS
             )
         await self._write_revision(
             session,
             project_id=project_id,
             revision=1,
-            items=tuple(items),
+            items=items,
             source_project_id=source_project_id,
             insert_head=True,
         )
+
+    @staticmethod
+    def _candidate_snapshots(rows):
+        groups = []
+        current_identity = None
+        current_rows = []
+        for row in rows:
+            identity = (
+                row.get("source_project_id"),
+                int(row.get("source_revision") or 0),
+            )
+            if current_identity is not None and identity != current_identity:
+                groups.append((current_identity[0], tuple(current_rows)))
+                current_rows = []
+            current_identity = identity
+            current_rows.append(row)
+        if current_identity is not None:
+            groups.append((current_identity[0], tuple(current_rows)))
+        return tuple(groups)
+
+    @staticmethod
+    def _ready_snapshot(rows, ready_by_id):
+        if len(rows) != len(TASK_KEYS):
+            return None
+        if tuple(row.get("task_key") for row in rows) != TASK_KEYS:
+            return None
+        items = []
+        for row in rows:
+            if row.get("resolution_status") != "bound":
+                return None
+            provider = ready_by_id.get(row.get("provider_id"))
+            if provider is None:
+                return None
+            secrets = normalize_provider_secrets(
+                (provider.get("api_key"), provider.get("base_url"))
+            )
+            current_model = _redact_display(
+                provider.get("model_name") or "", secrets
+            )
+            if current_model != row.get("model_name_snapshot"):
+                return None
+            items.append(
+                BindingItem(
+                    task_key=row["task_key"],
+                    resolution_status="bound",
+                    provider_id=row["provider_id"],
+                    provider_name_snapshot=row["provider_name_snapshot"],
+                    model_name_snapshot=row["model_name_snapshot"],
+                )
+            )
+        return tuple(items)
+
 
     def _connection(self):
         if self.connection_factory is None:

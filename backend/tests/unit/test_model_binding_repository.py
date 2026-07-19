@@ -19,14 +19,19 @@ class RecordingSession:
 
 
 @pytest.mark.asyncio
-async def test_lock_previous_project_uses_stable_latest_row_lock():
+async def test_lock_inheritance_candidates_uses_stable_latest_project_order():
     session = RecordingSession()
 
-    await ModelBindingRepository().lock_previous_project(session, "project-1")
+    await ModelBindingRepository().lock_inheritance_candidates(
+        session, "project-1"
+    )
 
     sql, args = session.calls[0]
-    assert "id<>%s" in sql
-    assert "ORDER BY created_at DESC, id DESC LIMIT 1" in sql
+    assert "p.id<>%s" in sql
+    assert "p.archived_at IS NULL" in sql
+    assert "ORDER BY p.created_at DESC, p.id DESC" in sql
+    assert "project_model_binding_heads" in sql
+    assert "project_model_binding_items" in sql
     assert sql.endswith("FOR UPDATE")
     assert args == ("project-1",)
 

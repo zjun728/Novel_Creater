@@ -9,6 +9,7 @@ import {
 
 import {
   projectLibraryPath,
+  projectModelSettingsPath,
   projectOverviewPath,
   providerSettingsPath,
 } from '../../router/projectRoutes.js'
@@ -53,8 +54,12 @@ function routeTitle(route, project) {
   if (name === 'ProjectLibrary') return '项目库'
   if (name === 'ArchivedProjects') return '已归档项目'
   if (name === 'ProviderSettings') return 'Provider 与模型'
+  if (name === 'ApplicationSettings') return '应用默认与诊断'
   if (name === 'ProjectOverview') {
     return isArchived(project) ? '已归档项目' : '项目概览'
+  }
+  if (name === 'ProjectModelSettings') {
+    return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
   if (name === 'ChapterWriter') {
     const chapterNumber = Number(route?.params?.chapterNumber)
@@ -68,7 +73,9 @@ function routeTitle(route, project) {
 
 function globalSelected(item, route) {
   const name = routeName(route)
-  if (item.key === 'settings') return name === 'ProviderSettings'
+  if (item.key === 'settings') {
+    return name === 'ProviderSettings' || name === 'ApplicationSettings'
+  }
   return name === 'ProjectLibrary' || name === 'ArchivedProjects'
 }
 
@@ -95,13 +102,22 @@ export function createProductShellModel({
         statusLabel: archived ? '已归档' : '',
         modules: archived
           ? []
-          : [{
-              key: 'overview',
-              label: '项目概览',
-              path: overviewPath,
-              mark: '概',
-              selected: routeName(route) === 'ProjectOverview',
-            }],
+          : [
+              {
+                key: 'overview',
+                label: '项目概览',
+                path: overviewPath,
+                mark: '概',
+                selected: routeName(route) === 'ProjectOverview',
+              },
+              {
+                key: 'models',
+                label: '模型绑定',
+                path: projectModelSettingsPath(project.id),
+                mark: '模',
+                selected: routeName(route) === 'ProjectModelSettings',
+              },
+            ],
       }
     : null
 

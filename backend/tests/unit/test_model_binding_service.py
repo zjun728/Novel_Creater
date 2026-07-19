@@ -56,24 +56,34 @@ class InitializeRepository:
     def __init__(self):
         self.events = []
         self.item_rows = None
+        self.revision_row = None
         self.id_factory = lambda: "revision-1"
         self.clock = lambda: 100
+        self.fallback_provider_id = None
+        self.candidate_rows = [
+            {
+                "source_project_id": "previous-project",
+                "source_revision": 3,
+                "task_key": key,
+                "resolution_status": "bound",
+                "provider_id": "provider-b",
+                "provider_name_snapshot": "Provider provider-b",
+                "model_name_snapshot": "model-provider-b",
+            }
+            for key in TASK_KEYS
+        ]
 
-    async def lock_previous_project(self, session, project_id):
-        self.events.append("previous_lock")
-        return {"id": "previous-project"}
+    async def lock_inheritance_candidates(self, session, project_id):
+        self.events.append("candidate_snapshots")
+        return self.candidate_rows
 
-    async def find_previous_project(self, session, project_id):
-        self.events.append("previous_unlocked")
-        return {"id": "previous-project"}
-
-    async def lock_current_rows(self, session, project_id):
-        self.events.append("binding_lock")
-        return [{"task_key": key, "provider_id": "provider-b"} for key in TASK_KEYS]
-
-    async def read_current_rows(self, session, project_id):
-        self.events.append("binding_unlocked")
-        return [{"task_key": key, "provider_id": "provider-b"} for key in TASK_KEYS]
+    async def lock_application_settings(self, session):
+        self.events.append("application_settings")
+        return {
+            "singleton_id": 1,
+            "fallback_provider_id": self.fallback_provider_id,
+            "revision": 0,
+        }
 
     async def list_available_providers(self, session):
         self.events.append("candidate_ids")
@@ -91,6 +101,7 @@ class InitializeRepository:
 
     async def insert_revision(self, session, row):
         self.events.append("revision")
+        self.revision_row = row
 
     async def insert_items(self, session, revision_id, rows):
         self.events.append("items")
@@ -123,8 +134,8 @@ async def test_initialize_locks_and_revalidates_before_writing_revision():
     await service.initialize_project(session, "new-project")
 
     assert repository.events == [
-        "previous_lock",
-        "binding_lock",
+        "candidate_snapshots",
+        "application_settings",
         "candidate_ids",
         ("provider_locks", ("provider-a", "provider-b")),
         "revision",
@@ -133,3 +144,98 @@ async def test_initialize_locks_and_revalidates_before_writing_revision():
     ]
     assert len(repository.item_rows) == len(TASK_KEYS)
     assert all(row["provider_id"] == "provider-a" for row in repository.item_rows)
+
+
+def snapshot(project_id, provider_id, *, task_keys=TASK_KEYS, model=None):
+    return [
+        {
+            "source_project_id": project_id,
+            "source_revision": 4,
+            "task_key": task_key,
+            "resolution_status": "bound",
+            "provider_id": provider_id,
+            "provider_name_snapshot": f"Provider {provider_id}",
+            "model_name_snapshot": model or f"model-{provider_id}",
+        }
+        for task_key in task_keys
+    ]
+
+
+@pytest.mark.asyncio
+async def test_inheritance_skips_partial_latest_and_copies_older_ready_snapshot_whole():
+    repository = InitializeRepository()
+    repository.candidate_rows = [
+        *snapshot("latest-partial", "provider-b", task_keys=TASK_KEYS[:-1]),
+        *snapshot("older-ready", "provider-a"),
+    ]
+    service = ModelBindingService(repository, transaction_factory=None)
+
+    await service.initialize_project(object(), "new-project")
+
+    assert all(row["provider_id"] == "provider-a" for row in repository.item_rows)
+    assert repository.revision_row["source_project_id"] == "older-ready"
+
+
+@pytest.mark.asyncio
+async def test_inheritance_skips_stale_latest_without_task_by_task_repair():
+    repository = InitializeRepository()
+    repository.candidate_rows = [
+        *snapshot("latest-stale", "provider-b"),
+        *snapshot("older-ready", "provider-a"),
+    ]
+    service = ModelBindingService(repository, transaction_factory=None)
+
+    await service.initialize_project(object(), "new-project")
+
+    assert all(row["provider_id"] == "provider-a" for row in repository.item_rows)
+    assert repository.revision_row["source_project_id"] == "older-ready"
+
+
+@pytest.mark.asyncio
+async def test_ready_explicit_fallback_applies_to_all_tasks_when_no_snapshot_ready():
+    repository = InitializeRepository()
+    repository.fallback_provider_id = "provider-a"
+    repository.candidate_rows = snapshot(
+        "latest-stale",
+        "provider-b",
+        model="stale-model",
+    )
+    service = ModelBindingService(repository, transaction_factory=None)
+
+    await service.initialize_project(object(), "new-project")
+
+    assert len(repository.item_rows) == len(TASK_KEYS)
+    assert all(row["provider_id"] == "provider-a" for row in repository.item_rows)
+    assert repository.revision_row["source_project_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_first_ready_provider_applies_to_all_tasks_without_ready_fallback():
+    repository = InitializeRepository()
+    repository.fallback_provider_id = "provider-b"
+    repository.candidate_rows = []
+    service = ModelBindingService(repository, transaction_factory=None)
+
+    await service.initialize_project(object(), "new-project")
+
+    assert all(row["provider_id"] == "provider-a" for row in repository.item_rows)
+
+
+@pytest.mark.asyncio
+async def test_no_ready_source_creates_all_eight_unbound_without_failing_creation():
+    repository = InitializeRepository()
+    repository.candidate_rows = []
+    repository.fallback_provider_id = None
+
+    async def no_candidates(session):
+        repository.events.append("candidate_ids")
+        return []
+
+    repository.list_available_providers = no_candidates
+    service = ModelBindingService(repository, transaction_factory=None)
+
+    await service.initialize_project(object(), "new-project")
+
+    assert len(repository.item_rows) == len(TASK_KEYS)
+    assert all(row["resolution_status"] == "unbound" for row in repository.item_rows)
+    assert all(row["provider_id"] is None for row in repository.item_rows)

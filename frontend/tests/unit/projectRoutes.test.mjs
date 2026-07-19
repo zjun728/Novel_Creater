@@ -37,9 +37,19 @@ async function settle() {
 }
 
 test('canonical path builders encode project IDs and require positive chapter numbers', async () => {
-  const { chapterWriterPath, projectOverviewPath } = await loadRouteModule()
+  const {
+    applicationSettingsPath,
+    chapterWriterPath,
+    projectModelSettingsPath,
+    projectOverviewPath,
+  } = await loadRouteModule()
 
   assert.equal(projectOverviewPath('a/b'), '/projects/a%2Fb/overview')
+  assert.equal(
+    projectModelSettingsPath('a/b'),
+    '/projects/a%2Fb/settings/models',
+  )
+  assert.equal(applicationSettingsPath(), '/settings/application')
   assert.equal(chapterWriterPath('p 1', 3), '/projects/p%201/write/chapters/3')
   for (const invalid of [0, -1, 1.5, '3.5', '', null]) {
     assert.throws(() => chapterWriterPath('project-1', invalid), /positive chapter number/i)
@@ -58,7 +68,12 @@ test('formal route registry names only canonical destinations and catches retire
   assert.equal(router.resolve('/projects').name, 'ProjectLibrary')
   assert.equal(router.resolve('/projects/archived').name, 'ArchivedProjects')
   assert.equal(router.resolve('/settings/providers').name, 'ProviderSettings')
+  assert.equal(router.resolve('/settings/application').name, 'ApplicationSettings')
   assert.equal(router.resolve('/projects/project-1/overview').name, 'ProjectOverview')
+  assert.equal(
+    router.resolve('/projects/project-1/settings/models').name,
+    'ProjectModelSettings',
+  )
   assert.equal(
     router.resolve('/projects/project-1/write/chapters/9').name,
     'ChapterWriter',

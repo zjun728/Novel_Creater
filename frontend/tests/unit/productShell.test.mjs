@@ -111,7 +111,10 @@ test('active and archived project contexts have different module surfaces', asyn
   assert.equal(active.projectContext.archived, false)
   assert.deepEqual(
     active.projectContext.modules.map(item => [item.label, item.path, item.selected]),
-    [['项目概览', '/projects/project%201/overview', true]],
+    [
+      ['项目概览', '/projects/project%201/overview', true],
+      ['模型绑定', '/projects/project%201/settings/models', false],
+    ],
   )
   assert.deepEqual(
     active.breadcrumbs.map(item => [item.label, item.path]),
@@ -201,8 +204,18 @@ const shellRoutes = [
     component: Page,
   },
   {
+    path: '/projects/:projectId/settings/models',
+    name: 'ProjectModelSettings',
+    component: Page,
+  },
+  {
     path: '/settings/providers',
     name: 'ProviderSettings',
+    component: Page,
+  },
+  {
+    path: '/settings/application',
+    name: 'ApplicationSettings',
     component: Page,
   },
 ]
@@ -264,6 +277,20 @@ test('real memory router renders global project and settings shell states', asyn
   assert.deepEqual(settings.requests, [])
 })
 
+test('application settings is selected under Settings and has a safe title', async () => {
+  const { createProductShellModel } = await loadShellModule()
+  const shell = createProductShellModel({
+    route: route('ApplicationSettings', '/settings/application'),
+    viewportWidth: 1440,
+  })
+
+  assert.equal(
+    shell.globalNavigation.find(item => item.key === 'settings').selected,
+    true,
+  )
+  assert.equal(shell.routeTitle, '应用默认与诊断')
+})
+
 test('refresh hydration renders the active project title and canonical overview', async () => {
   const { html, requests } = await renderApp(
     '/projects/project-1/overview',
@@ -313,6 +340,11 @@ test('the real project overview consumes shell hydration without a duplicate rea
           name: 'ProjectOverview',
           component: ActualProjectOverview,
         },
+        {
+          path: '/projects/:projectId/settings/models',
+          name: 'ProjectModelSettings',
+          component: Page,
+        },
       ],
     })
     await router.push('/projects/project-1/overview')
@@ -355,6 +387,11 @@ test('shared shell hydration preserves the explicit missing-project route state'
           path: '/projects/:projectId/overview',
           name: 'ProjectOverview',
           component: ActualProjectOverview,
+        },
+        {
+          path: '/projects/:projectId/settings/models',
+          name: 'ProjectModelSettings',
+          component: Page,
         },
       ],
     })

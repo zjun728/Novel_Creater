@@ -6,7 +6,15 @@ from contextlib import asynccontextmanager
 import pytest
 
 from backend.domain.model_bindings import TASK_KEYS
-from backend.http_errors import BindingConflict
+from backend.domain.application_settings import UpdateDefaultModel
+from backend.http_errors import (
+    ApplicationSettingsConflict,
+    BindingConflict,
+    ProjectArchived,
+)
+from backend.repositories.application_settings import (
+    ApplicationSettingsRepository,
+)
 from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
 from backend.services.provider_profiles import (
@@ -15,6 +23,7 @@ from backend.services.provider_profiles import (
     SqlProviderProfileRepository,
 )
 from backend.services.model_bindings import ModelBindingService
+from backend.services.application_settings import ApplicationSettingsService
 from backend.services.project_lifecycle import CreateProject, ProjectLifecycleService
 from backend.tests.support.disposable_mysql import transaction_factory_for
 
@@ -105,23 +114,23 @@ async def test_revision_inheritance_cas_soft_delete_and_history_immutability(
     assert all(item.model_name_snapshot == "a-model [REDACTED]" for item in first.items)
     assert first.binding_complete is True and first.binding_ready is True
 
+    p2 = "40000000-0000-0000-0000-000000000002"
+    await projects_service.create(project(p2, "two"))
+    inherited = await bindings.get_current(p2)
+    assert inherited.source_project_id == p1
+
     mapping = {key: PROVIDER_A for key in TASK_KEYS}
     mapping["writing"] = PROVIDER_B
-    replaced = await bindings.replace_all(p1, 1, mapping)
+    replaced = await bindings.replace_all(p2, 1, mapping)
     original_revision = await disposable_mysql.session.fetchone(
         "SELECT * FROM project_model_binding_revisions WHERE project_id=%s AND revision=2",
-        (p1,),
+        (p2,),
     )
     original_items = await disposable_mysql.session.fetchall(
         "SELECT * FROM project_model_binding_items WHERE binding_revision_id=%s ORDER BY task_key",
         (original_revision["id"],),
     )
-
-    p2 = "40000000-0000-0000-0000-000000000002"
-    await projects_service.create(project(p2, "two"))
-    inherited = await bindings.get_current(p2)
-    assert inherited.source_project_id == p1
-    assert {item.task_key: item.provider_id for item in inherited.items}["writing"] == PROVIDER_B
+    assert {item.task_key: item.provider_id for item in replaced.items}["writing"] == PROVIDER_B
 
     await disposable_mysql.session.execute(
         "UPDATE provider_profiles SET enabled=0 WHERE id=%s", (PROVIDER_B,)
@@ -129,23 +138,23 @@ async def test_revision_inheritance_cas_soft_delete_and_history_immutability(
     p3 = "40000000-0000-0000-0000-000000000003"
     await projects_service.create(project(p3, "three"))
     fallback = await bindings.get_current(p3)
-    assert fallback.source_project_id == p2
+    assert fallback.source_project_id == p1
     assert all(item.provider_id == PROVIDER_A for item in fallback.items)
 
     contender_mapping = {key: PROVIDER_A for key in TASK_KEYS}
     contender_mapping["market"] = None
     contenders = await asyncio.gather(
         *(
-            bindings.replace_all(p2, 1, contender_mapping)
+            bindings.replace_all(p1, 1, contender_mapping)
             for _ in range(2)
         ),
         return_exceptions=True,
     )
     assert sum(getattr(item, "revision", None) == 2 for item in contenders) == 1
     assert sum(isinstance(item, BindingConflict) for item in contenders) == 1
-    p2_current = await bindings.get_current(p2)
-    assert p2_current.items[-1].task_key == "market"
-    assert p2_current.items[-1].resolution_status == "unbound"
+    p1_current = await bindings.get_current(p1)
+    assert p1_current.items[-1].task_key == "market"
+    assert p1_current.items[-1].resolution_status == "unbound"
 
     provider_profiles = ProviderProfileService(
         SqlProviderProfileRepository(),
@@ -170,7 +179,7 @@ async def test_revision_inheritance_cas_soft_delete_and_history_immutability(
 
     historical_revision = await disposable_mysql.session.fetchone(
         "SELECT * FROM project_model_binding_revisions WHERE project_id=%s AND revision=2",
-        (p1,),
+        (p2,),
     )
     historical_items = await disposable_mysql.session.fetchall(
         "SELECT * FROM project_model_binding_items WHERE binding_revision_id=%s ORDER BY task_key",
@@ -179,10 +188,175 @@ async def test_revision_inheritance_cas_soft_delete_and_history_immutability(
     assert historical_revision["content_hash"] == original_revision["content_hash"]
     assert historical_items == original_items
     assert replaced.content_hash != first.content_hash
-    status = await bindings.get_status(p1)
+    status = await bindings.get_status(p2)
     assert status.binding_complete is True
     assert status.binding_ready is False
     assert "provider_unavailable:writing" in status.reasons
+
+
+@pytest.mark.asyncio
+async def test_application_fallback_cas_first_ready_and_unbound_matrix(
+    disposable_mysql,
+):
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    await insert_provider(
+        disposable_mysql.session, PROVIDER_A, "Alpha", "a-model", 1
+    )
+    await insert_provider(
+        disposable_mysql.session, PROVIDER_B, "Beta", "b-model", 2
+    )
+    application = ApplicationSettingsService(
+        ApplicationSettingsRepository(),
+        transaction_factory=tx,
+        connection_factory=read_connection,
+        clock=iter(range(10, 100)).__next__,
+        corpus_store_ready=lambda: True,
+        scheduler_enabled=False,
+        scheduler_state="disabled",
+        application_version="1.0.0",
+    )
+    configured = await application.update_default_model(
+        UpdateDefaultModel(
+            expected_revision=0,
+            fallback_provider_id=PROVIDER_B,
+        )
+    )
+    assert configured.revision == 1
+    assert configured.fallback_provider.id == PROVIDER_B
+
+    contenders = await asyncio.gather(
+        application.update_default_model(
+            UpdateDefaultModel(
+                expected_revision=1,
+                fallback_provider_id=PROVIDER_B,
+            )
+        ),
+        application.update_default_model(
+            UpdateDefaultModel(
+                expected_revision=1,
+                fallback_provider_id=PROVIDER_A,
+            )
+        ),
+        return_exceptions=True,
+    )
+    assert sum(getattr(item, "revision", None) == 2 for item in contenders) == 1
+    assert sum(
+        isinstance(item, ApplicationSettingsConflict) for item in contenders
+    ) == 1
+    current_settings = await application.get()
+    selected_fallback = current_settings.fallback_provider.id
+
+    bindings = ModelBindingService(
+        ModelBindingRepository(),
+        transaction_factory=tx,
+        connection_factory=read_connection,
+    )
+    projects = ProjectLifecycleService(
+        ProjectRepository(),
+        tx,
+        read_connection,
+        model_binding_service=bindings,
+    )
+    first_id = "41000000-0000-0000-0000-000000000001"
+    await projects.create(project(first_id, "explicit fallback"))
+    first = await bindings.get_current(first_id)
+    assert all(
+        item.provider_id == selected_fallback for item in first.items
+    )
+
+    await disposable_mysql.session.execute(
+        "UPDATE provider_profiles SET enabled=0 WHERE id=%s",
+        (selected_fallback,),
+    )
+    other_provider = (
+        PROVIDER_A if selected_fallback == PROVIDER_B else PROVIDER_B
+    )
+    second_id = "41000000-0000-0000-0000-000000000002"
+    await projects.create(project(second_id, "first ready"))
+    second = await bindings.get_current(second_id)
+    assert second.source_project_id is None
+    assert all(item.provider_id == other_provider for item in second.items)
+
+    await disposable_mysql.session.execute(
+        "UPDATE provider_profiles SET enabled=0 WHERE id=%s",
+        (other_provider,),
+    )
+    third_id = "41000000-0000-0000-0000-000000000003"
+    await projects.create(project(third_id, "unbound allowed"))
+    third = await bindings.get_current(third_id)
+    assert third.binding_complete is True
+    assert third.binding_ready is False
+    assert len(third.items) == len(TASK_KEYS)
+    assert all(item.resolution_status == "unbound" for item in third.items)
+
+
+@pytest.mark.asyncio
+async def test_same_created_time_uses_id_order_and_archived_projects_are_skipped(
+    disposable_mysql,
+):
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    await insert_provider(
+        disposable_mysql.session, PROVIDER_A, "Alpha", "a-model", 1
+    )
+    await insert_provider(
+        disposable_mysql.session, PROVIDER_B, "Beta", "b-model", 2
+    )
+    bindings = ModelBindingService(
+        ModelBindingRepository(),
+        transaction_factory=tx,
+        connection_factory=read_connection,
+    )
+    projects = ProjectLifecycleService(
+        ProjectRepository(),
+        tx,
+        read_connection,
+        model_binding_service=bindings,
+    )
+    low_id = "42000000-0000-0000-0000-000000000001"
+    high_id = "42000000-0000-0000-0000-000000000002"
+    await projects.create(project(low_id, "low"))
+    await projects.create(project(high_id, "high"))
+    await bindings.replace_all(
+        high_id,
+        1,
+        {task_key: PROVIDER_B for task_key in TASK_KEYS},
+    )
+    await disposable_mysql.session.execute(
+        "UPDATE projects SET created_at=777 WHERE id IN (%s,%s)",
+        (low_id, high_id),
+    )
+
+    tied_id = "42000000-0000-0000-0000-000000000003"
+    await projects.create(project(tied_id, "tie result"))
+    tied = await bindings.get_current(tied_id)
+    assert tied.source_project_id == high_id
+    assert all(item.provider_id == PROVIDER_B for item in tied.items)
+
+    await projects.archive(high_id, 0)
+    await projects.archive(tied_id, 0)
+    archived_read = await bindings.get_current(high_id)
+    assert archived_read.project_id == high_id
+    with pytest.raises(ProjectArchived):
+        await bindings.replace_all(
+            high_id,
+            archived_read.revision,
+            {task_key: PROVIDER_A for task_key in TASK_KEYS},
+        )
+    after_archive_id = "42000000-0000-0000-0000-000000000004"
+    await projects.create(project(after_archive_id, "archive skip"))
+    after_archive = await bindings.get_current(after_archive_id)
+    assert after_archive.source_project_id == low_id
+    assert all(item.provider_id == PROVIDER_A for item in after_archive.items)
 
 
 @pytest.mark.asyncio

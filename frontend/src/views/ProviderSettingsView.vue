@@ -8,6 +8,10 @@ import ProviderSettings from '../components/settings/ProviderSettings.vue'
       <p>LOCAL MODEL SETTINGS</p>
       <h1>Provider 与模型</h1>
       <span>私密配置只写入本机后端，页面仅显示是否已配置的安全摘要。</span>
+      <nav aria-label="设置页面">
+        <router-link to="/settings/providers" aria-current="page">Provider 档案</router-link>
+        <router-link to="/settings/application">应用默认与诊断</router-link>
+      </nav>
     </header>
     <section class="settings-sheet">
       <provider-settings />
@@ -49,6 +53,9 @@ import ProviderSettings from '../components/settings/ProviderSettings.vue'
   color: #766c60;
   line-height: 1.7;
 }
+.route-heading nav { display: flex; gap: 8px; margin-top: 18px; }
+.route-heading nav a { padding: 7px 12px; border: 1px solid #d5c7b1; border-radius: 999px; color: #6f6153; font-size: 12px; text-decoration: none; }
+.route-heading nav a[aria-current='page'] { border-color: #8f3d32; color: #7d3128; background: #efe2d3; }
 .settings-sheet {
   margin-top: 24px;
   padding: clamp(18px, 3vw, 32px);

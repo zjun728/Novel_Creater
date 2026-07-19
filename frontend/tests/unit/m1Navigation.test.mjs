@@ -59,16 +59,16 @@ test('project lifecycle state has no retired list delete or unmount invalidation
   assert.doesNotMatch(store, /invalidateOpenProject|function loadProjects|function openProject|function deleteProject/)
 })
 
-test('provider settings remains reachable without the retired project list API', async () => {
+test('provider and project model settings have separate reachable surfaces', async () => {
   const [view, binding] = await Promise.all([
     readSource('views/ProviderSettingsView.vue'),
-    readSource('components/settings/TaskModelBinding.vue'),
+    readSource('components/project/settings/TaskModelBinding.vue'),
   ])
 
   assert.match(view, /ProviderSettings/)
-  assert.match(binding, /activeProjects/)
-  assert.match(binding, /loadActiveProjects/)
-  assert.doesNotMatch(binding, /projectStore\.projects|projectStore\.loadProjects/)
+  assert.match(binding, /projectId/)
+  assert.match(binding, /useModelBindingStore/)
+  assert.doesNotMatch(binding, /activeProjects|loadActiveProjects/)
 })
 
 test('the chapter workspace returns through the canonical project overview builder', async () => {

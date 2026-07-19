@@ -3,6 +3,8 @@ const ArchivedProjectsView = () => import('../views/ArchivedProjectsView.vue')
 const ProjectOverviewView = () => import('../views/ProjectOverviewView.vue')
 const ChapterWriterView = () => import('../views/ChapterWriterView.vue')
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
+const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
+const ProjectModelSettingsView = () => import('../views/ProjectModelSettingsView.vue')
 const NotFoundView = () => import('../views/NotFoundView.vue')
 
 const segment = value => encodeURIComponent(String(value))
@@ -19,6 +21,10 @@ export function providerSettingsPath() {
   return '/settings/providers'
 }
 
+export function applicationSettingsPath() {
+  return '/settings/application'
+}
+
 function positiveChapterNumber(value) {
   const chapterNumber = Number(value)
   if (!Number.isInteger(chapterNumber) || chapterNumber < 1) {
@@ -29,6 +35,10 @@ function positiveChapterNumber(value) {
 
 export function projectOverviewPath(projectId) {
   return `/projects/${segment(projectId)}/overview`
+}
+
+export function projectModelSettingsPath(projectId) {
+  return `/projects/${segment(projectId)}/settings/models`
 }
 
 export function chapterWriterPath(projectId, chapterNumber) {
@@ -57,6 +67,12 @@ export const projectRoutes = Object.freeze([
     props: true,
   },
   {
+    path: '/projects/:projectId/settings/models',
+    name: 'ProjectModelSettings',
+    component: ProjectModelSettingsView,
+    props: true,
+  },
+  {
     path: '/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)',
     name: 'ChapterWriter',
     component: ChapterWriterView,
@@ -66,6 +82,11 @@ export const projectRoutes = Object.freeze([
     path: '/settings/providers',
     name: 'ProviderSettings',
     component: ProviderSettingsView,
+  },
+  {
+    path: '/settings/application',
+    name: 'ApplicationSettings',
+    component: ApplicationSettingsView,
   },
   {
     path: '/not-found',

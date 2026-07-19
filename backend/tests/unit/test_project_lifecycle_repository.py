@@ -83,7 +83,7 @@ async def test_shared_project_lifecycle_exposes_active_and_any_status_reads_and_
             model_bindings,
             model_bindings.ModelBindingRepository(),
             "read_project",
-            "read_active_project",
+            "read_project",
         ),
         (
             model_bindings,
@@ -110,21 +110,18 @@ async def test_ordinary_project_mutations_keep_using_active_boundary(
 
 
 @pytest.mark.asyncio
-async def test_previous_binding_source_excludes_archived_projects():
+async def test_binding_inheritance_candidates_exclude_archived_projects():
     session = RecordingSession()
 
-    await model_bindings.ModelBindingRepository().lock_previous_project(
+    await model_bindings.ModelBindingRepository().lock_inheritance_candidates(
         session, "p1"
     )
 
-    assert session.calls == [
-        (
-            "fetchone",
-            "SELECT id FROM projects WHERE id<>%s AND archived_at IS NULL "
-            "ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE",
-            ("p1",),
-        )
-    ]
+    call = session.calls[0]
+    assert call[0] == "fetchall"
+    assert "p.id<>%s AND p.archived_at IS NULL" in call[1]
+    assert "ORDER BY p.created_at DESC, p.id DESC" in call[1]
+    assert call[2] == ("p1",)
 
 
 @pytest.mark.asyncio
