@@ -46,6 +46,7 @@ class FakeRepository:
         fail_started=None,
         fail_wait=None,
         fail_cancelled=None,
+        fail_ignores_cancellation=False,
     ):
         self.source = source
         self.events = []
@@ -61,6 +62,7 @@ class FakeRepository:
         self.fail_started = fail_started
         self.fail_wait = fail_wait
         self.fail_cancelled = fail_cancelled
+        self.fail_ignores_cancellation = fail_ignores_cancellation
 
     async def get_source(self, session, source_id):
         self.events.append(("get_source", source_id))
@@ -110,7 +112,10 @@ class FakeRepository:
             except asyncio.CancelledError:
                 if self.fail_cancelled is not None:
                     self.fail_cancelled.set()
-                raise
+                if not self.fail_ignores_cancellation:
+                    raise
+                asyncio.current_task().uncancel()
+                await self.fail_wait.wait()
         self.events.append(("fail", values["public_error_code"]))
         self.failed.append(values)
 
@@ -428,6 +433,66 @@ async def test_bounded_cleanup_aggregates_child_failure_after_external_cancel():
         for error in result.exceptions
     )
     assert child.done()
+
+
+@pytest.mark.asyncio
+async def test_stalled_database_cleanup_remains_under_runtime_ownership(
+    monkeypatch,
+):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.services import market_snapshots
+    from backend.services.market_cleanup import MarketCleanupLedger
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    failure_started = asyncio.Event()
+    release_failure = asyncio.Event()
+    failure_cancelled = asyncio.Event()
+    cleanup_ledger = MarketCleanupLedger()
+    repository = FakeRepository(
+        _source(),
+        fail_started=failure_started,
+        fail_wait=release_failure,
+        fail_cancelled=failure_cancelled,
+        fail_ignores_cancellation=True,
+    )
+    transaction, state = _contexts(repository)
+    adapter = FakeAdapter(
+        None,
+        state,
+        failure=MarketSourceFailure("MARKET_HTML_UNKNOWN"),
+    )
+    monkeypatch.setattr(
+        market_snapshots,
+        "CANCELLATION_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": adapter},
+        cleanup_ledger=cleanup_ledger,
+        clock=lambda: NOW,
+    )
+    refresh = asyncio.create_task(
+        service.refresh(SOURCE_ID, idempotency_key="x" * 64)
+    )
+    await asyncio.wait_for(failure_started.wait(), timeout=1)
+
+    refresh.cancel()
+    with pytest.raises(BaseExceptionGroup):
+        await asyncio.wait_for(refresh, timeout=1)
+
+    owned = cleanup_ledger.pending_tasks()
+    assert len(owned) == 1
+    assert not owned[0].done()
+    assert failure_cancelled.is_set()
+    release_failure.set()
+    await asyncio.wait_for(asyncio.gather(*owned), timeout=1)
+    await asyncio.sleep(0)
+
+    assert cleanup_ledger.take_errors() == ()
+    assert not cleanup_ledger.has_work()
+    assert repository.failed[0]["public_error_code"] == "MARKET_HTML_UNKNOWN"
 
 
 @pytest.mark.asyncio

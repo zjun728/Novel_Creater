@@ -134,6 +134,10 @@ def _source_view(row: dict) -> dict:
         "lastSucceededAt": row["last_succeeded_at"],
         "lastSnapshotId": row["last_snapshot_id"],
         "publicErrorCode": row["public_error_code"],
+        "scheduleRevision": row["schedule_revision"],
+        "scheduleEnabled": row["schedule_enabled"],
+        "scheduleIntervalMinutes": row["schedule_interval_minutes"],
+        "scheduleNextRunAt": row["schedule_next_run_at"],
     }
 
 

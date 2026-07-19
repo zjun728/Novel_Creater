@@ -35,6 +35,8 @@ from backend.security.redaction import install_error_handlers
 async def lifespan(app: FastAPI):
     scheduler_runtime = None
     application_error = None
+    pool_close_transferred = False
+    app.state.market_scheduler_shutdown_transfer = None
     try:
         async with connection() as session:
             await verify_schema_version(session)
@@ -50,11 +52,22 @@ async def lifespan(app: FastAPI):
             try:
                 await scheduler_runtime.stop()
             except BaseException as error:
+                cleanup_transfer = getattr(
+                    error,
+                    "cleanup_transfer",
+                    None,
+                )
+                if cleanup_transfer is not None:
+                    app.state.market_scheduler_shutdown_transfer = (
+                        cleanup_transfer.start_pool_close(close_pool)
+                    )
+                    pool_close_transferred = True
                 cleanup_errors.append(error)
-        try:
-            await close_pool()
-        except BaseException as error:
-            cleanup_errors.append(error)
+        if not pool_close_transferred:
+            try:
+                await close_pool()
+            except BaseException as error:
+                cleanup_errors.append(error)
         all_errors = (
             ([application_error] if application_error is not None else [])
             + cleanup_errors

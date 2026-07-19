@@ -64,6 +64,14 @@ class FakeService:
                 "last_succeeded_at": None,
                 "last_snapshot_id": None,
                 "public_error_code": None,
+                "schedule_revision": 3,
+                "schedule_enabled": False,
+                "schedule_interval_minutes": 360,
+                "schedule_next_run_at": None,
+                "public_config": {"private": "CONFIG_SENTINEL"},
+                "source_url": "https://private.example/URL_SENTINEL",
+                "error_detail": "ERROR_SENTINEL",
+                "raw": "RAW_SENTINEL",
             },
         )
 
@@ -195,7 +203,27 @@ def test_market_source_routes_expose_only_inventory_status_history_detail_and_co
         "lastSucceededAt",
         "lastSnapshotId",
         "publicErrorCode",
+        "scheduleRevision",
+        "scheduleEnabled",
+        "scheduleIntervalMinutes",
+        "scheduleNextRunAt",
     }
+    assert source["scheduleRevision"] == 3
+    assert source["scheduleEnabled"] is False
+    assert source["scheduleIntervalMinutes"] == 360
+    assert source["scheduleNextRunAt"] is None
+    assert responses[1].json() == source
+    rendered_sources = json.dumps(
+        [responses[0].json(), responses[1].json()],
+        ensure_ascii=False,
+    )
+    for sentinel in (
+        "CONFIG_SENTINEL",
+        "URL_SENTINEL",
+        "ERROR_SENTINEL",
+        "RAW_SENTINEL",
+    ):
+        assert sentinel not in rendered_sources
     detail = responses[3].json()
     assert set(detail) == {
         "id",

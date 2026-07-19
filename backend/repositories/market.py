@@ -196,6 +196,7 @@ class MarketRepository:
                       p.content_hash AS policy_hash,
                       rs.last_snapshot_id,rs.refresh_status,
                       rs.last_attempted_at,rs.last_succeeded_at,
+                      rs.next_run_at AS schedule_next_run_at,
                       rs.public_error_code
                FROM market_sources s
                LEFT JOIN market_source_policy_heads h ON h.source_id=s.id
@@ -219,6 +220,7 @@ class MarketRepository:
                       p.content_hash AS policy_hash,
                       rs.last_snapshot_id,rs.refresh_status,
                       rs.last_attempted_at,rs.last_succeeded_at,
+                      rs.next_run_at AS schedule_next_run_at,
                       rs.public_error_code
                FROM market_sources s
                LEFT JOIN market_source_policy_heads h ON h.source_id=s.id

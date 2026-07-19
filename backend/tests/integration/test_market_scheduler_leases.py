@@ -196,6 +196,19 @@ async def test_schedule_update_is_revision_cas_idempotent_and_rejects_manual_bef
         clock=lambda: NOW,
     )
 
+    initial = await service.get_source(SOURCE_ID)
+    assert {
+        "revision": initial["schedule_revision"],
+        "enabled": initial["schedule_enabled"],
+        "interval_minutes": initial["schedule_interval_minutes"],
+        "next_run_at": initial["schedule_next_run_at"],
+    } == {
+        "revision": 1,
+        "enabled": False,
+        "interval_minutes": 2,
+        "next_run_at": None,
+    }
+
     first = await service.update_schedule(
         SOURCE_ID,
         expected_revision=1,
@@ -240,6 +253,18 @@ async def test_schedule_update_is_revision_cas_idempotent_and_rejects_manual_bef
             interval_minutes=5,
             idempotency_key="t" * 64,
         )
+    reloaded = await service.get_source(SOURCE_ID)
+    assert {
+        "revision": reloaded["schedule_revision"],
+        "enabled": reloaded["schedule_enabled"],
+        "interval_minutes": reloaded["schedule_interval_minutes"],
+        "next_run_at": reloaded["schedule_next_run_at"],
+    } == {
+        "revision": 2,
+        "enabled": True,
+        "interval_minutes": 5,
+        "next_run_at": NOW,
+    }
 
     for rejected_source_id, key in (
         (manual_source_id, "m" * 64),

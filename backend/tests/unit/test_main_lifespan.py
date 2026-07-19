@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from backend import main
@@ -177,6 +179,156 @@ async def test_lifespan_preserves_application_error_with_all_cleanup_failures(
         scheduler_error,
         pool_error,
     )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_transfers_stalled_cleanup_before_pool_close(
+    monkeypatch,
+):
+    from backend.runtime.market_scheduler import MarketSchedulerRuntime
+
+    events = install_lifespan_fakes(monkeypatch)
+
+    class UnresponsiveScheduler:
+        enabled = True
+        next_run_at = None
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cleaned = asyncio.Event()
+
+        async def run_once(self):
+            self.started.set()
+            try:
+                while not self.release.is_set():
+                    try:
+                        await self.release.wait()
+                    except asyncio.CancelledError:
+                        asyncio.current_task().uncancel()
+            finally:
+                events.append("scheduler-cleaned")
+                self.cleaned.set()
+
+    scheduler = UnresponsiveScheduler()
+    runtime = MarketSchedulerRuntime(
+        scheduler,
+        poll_interval_seconds=60,
+        shutdown_timeout_seconds=0.02,
+    )
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        lambda: runtime,
+    )
+
+    async def ordered_close_pool():
+        events.append("close-after-cleaned" if scheduler.cleaned.is_set() else "close-early")
+
+    monkeypatch.setattr(main, "close_pool", ordered_close_pool)
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    await asyncio.wait_for(scheduler.started.wait(), timeout=1)
+    started = asyncio.get_running_loop().time()
+
+    with pytest.raises(TimeoutError):
+        await context.__aexit__(None, None, None)
+
+    elapsed = asyncio.get_running_loop().time() - started
+    before_release = tuple(events)
+    transfer = getattr(
+        main.app.state,
+        "market_scheduler_shutdown_transfer",
+        None,
+    )
+    scheduler.release.set()
+    if transfer is None:
+        await asyncio.wait_for(scheduler.cleaned.wait(), timeout=1)
+    else:
+        await asyncio.wait_for(transfer, timeout=1)
+
+    assert elapsed < 0.5
+    assert "close-early" not in before_release
+    assert "close-after-cleaned" not in before_release
+    assert transfer is not None
+    assert events[-2:] == ["scheduler-cleaned", "close-after-cleaned"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_cancellation_during_stop_defers_pool_close(
+    monkeypatch,
+):
+    from backend.runtime.market_scheduler import MarketSchedulerRuntime
+
+    events = install_lifespan_fakes(monkeypatch)
+
+    class UnresponsiveScheduler:
+        enabled = True
+        next_run_at = None
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cleaned = asyncio.Event()
+
+        async def run_once(self):
+            self.started.set()
+            try:
+                while not self.release.is_set():
+                    try:
+                        await self.release.wait()
+                    except asyncio.CancelledError:
+                        self.cancel_seen.set()
+                        asyncio.current_task().uncancel()
+            finally:
+                events.append("scheduler-cleaned")
+                self.cleaned.set()
+
+    scheduler = UnresponsiveScheduler()
+    runtime = MarketSchedulerRuntime(
+        scheduler,
+        poll_interval_seconds=60,
+        shutdown_timeout_seconds=1,
+    )
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        lambda: runtime,
+    )
+
+    async def ordered_close_pool():
+        events.append("close-after-cleaned" if scheduler.cleaned.is_set() else "close-early")
+
+    monkeypatch.setattr(main, "close_pool", ordered_close_pool)
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    await asyncio.wait_for(scheduler.started.wait(), timeout=1)
+    shutdown = asyncio.create_task(
+        context.__aexit__(None, None, None)
+    )
+    await asyncio.wait_for(scheduler.cancel_seen.wait(), timeout=1)
+
+    shutdown.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await shutdown
+
+    before_release = tuple(events)
+    transfer = getattr(
+        main.app.state,
+        "market_scheduler_shutdown_transfer",
+        None,
+    )
+    scheduler.release.set()
+    if transfer is None:
+        await asyncio.wait_for(scheduler.cleaned.wait(), timeout=1)
+    else:
+        await asyncio.wait_for(transfer, timeout=1)
+
+    assert "close-early" not in before_release
+    assert "close-after-cleaned" not in before_release
+    assert transfer is not None
+    assert events[-2:] == ["scheduler-cleaned", "close-after-cleaned"]
 
 
 @pytest.mark.asyncio

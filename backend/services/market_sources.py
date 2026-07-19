@@ -227,6 +227,18 @@ class MarketSourceService:
             "last_succeeded_at": row.get("last_succeeded_at"),
             "last_snapshot_id": row.get("last_snapshot_id"),
             "public_error_code": row.get("public_error_code"),
+            "schedule_revision": (
+                None if policy is None else int(row["policy_revision"])
+            ),
+            "schedule_enabled": (
+                None if policy is None else policy.enabled
+            ),
+            "schedule_interval_minutes": (
+                None
+                if policy is None
+                else policy.request_interval_seconds // 60
+            ),
+            "schedule_next_run_at": row.get("schedule_next_run_at"),
         }
 
     async def list_sources(self):

@@ -13,6 +13,7 @@ from backend.domain.market_sources import (
     MarketSourceNotFound,
 )
 from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+from backend.services.market_cleanup import MarketCleanupLedger
 from backend.services.market_scheduler import scheduled_failure_backoff_ms
 
 
@@ -34,6 +35,7 @@ class MarketSnapshotService:
         manual_adapter=None,
         id_factory=None,
         clock=None,
+        cleanup_ledger: MarketCleanupLedger | None = None,
     ) -> None:
         self.repository = repository
         self._transaction = transaction_factory
@@ -42,6 +44,33 @@ class MarketSnapshotService:
         self.manual_adapter = manual_adapter or ManualSnapshotAdapter()
         self._id = id_factory or (lambda: str(uuid4()))
         self._clock = clock or (lambda: int(time.time() * 1000))
+        self._cleanup_ledger = cleanup_ledger
+        self._cleanup_sequence = 0
+
+    def _create_cleanup_task(self, coroutine) -> asyncio.Task:
+        self._cleanup_sequence += 1
+        task = asyncio.create_task(
+            coroutine,
+            name=f"market-database-cleanup-{self._cleanup_sequence}",
+        )
+        if self._cleanup_ledger is not None:
+            self._cleanup_ledger.track(task)
+        return task
+
+    def _release_cleanup_task(self, task: asyncio.Task) -> None:
+        if self._cleanup_ledger is not None:
+            self._cleanup_ledger.release(task)
+
+    @staticmethod
+    def _contains_timeout(error: BaseException | None) -> bool:
+        if isinstance(error, TimeoutError):
+            return True
+        if isinstance(error, BaseExceptionGroup):
+            return any(
+                MarketSnapshotService._contains_timeout(child)
+                for child in error.exceptions
+            )
+        return False
 
     async def _reserve(
         self,
@@ -117,17 +146,24 @@ class MarketSnapshotService:
                     **values,
                 )
 
-        persistence = asyncio.create_task(persist())
+        persistence = self._create_cleanup_task(persist())
         try:
             await asyncio.shield(persistence)
         except asyncio.CancelledError as cancellation:
             cleanup_error = await self._await_bounded_task(persistence)
+            if not self._contains_timeout(cleanup_error):
+                self._release_cleanup_task(persistence)
             if cleanup_error is not None:
                 raise BaseExceptionGroup(
                     "market refresh failure persistence cleanup failed",
                     [cancellation, cleanup_error],
                 ) from None
             raise
+        except BaseException:
+            self._release_cleanup_task(persistence)
+            raise
+        else:
+            self._release_cleanup_task(persistence)
 
     @staticmethod
     async def _await_bounded_task(
@@ -222,7 +258,11 @@ class MarketSnapshotService:
                     **values,
                 )
 
-        return await self._await_bounded_task(asyncio.create_task(abandon()))
+        cleanup = self._create_cleanup_task(abandon())
+        cleanup_error = await self._await_bounded_task(cleanup)
+        if not self._contains_timeout(cleanup_error):
+            self._release_cleanup_task(cleanup)
+        return cleanup_error
 
     async def _raise_after_cancellation(
         self,
