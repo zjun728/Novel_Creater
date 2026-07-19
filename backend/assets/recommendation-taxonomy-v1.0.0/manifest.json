@@ -1,0 +1,8 @@
+{
+  "package_version": "recommendation-taxonomy-v1.0.0",
+  "asset_package_version": "writer-core-v1.1.0",
+  "eligibility_file": {
+    "path": "eligibility.json",
+    "sha256": "62e23d68422d35446bb8d60a817786ee44c8f745d6355df23fd96e1673a2284d"
+  }
+}

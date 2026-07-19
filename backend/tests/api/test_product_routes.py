@@ -52,7 +52,7 @@ def test_joined_m2_routes_expose_public_behavior_through_dependencies():
             }
 
     class FakeAssetService:
-        async def list_styles(self):
+        async def list_styles(self, **_filters):
             return ()
 
     class FakeCorpusService:

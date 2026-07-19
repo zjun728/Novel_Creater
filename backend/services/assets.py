@@ -393,18 +393,25 @@ class AssetReadService:
             raise AssetCatalogNotReady() from None
 
     async def list_styles(self) -> tuple[AssetRecord, ...]:
-        async with self._transaction() as session:
-            styles, _, _ = await self._catalog(session)
+        styles, _ = await self.catalog()
         return styles
 
     async def list_cards(self, category=None) -> tuple[AssetRecord, ...]:
-        async with self._transaction() as session:
-            _, cards, _ = await self._catalog(session)
+        _, cards = await self.catalog()
         if category is not None:
             cards = tuple(
                 record for record in cards if record.asset.category == category
             )
         return cards
+
+    async def catalog(
+        self,
+    ) -> tuple[tuple[AssetRecord, ...], tuple[AssetRecord, ...]]:
+        """Return one validated seeded-head snapshot for composition services."""
+
+        async with self._transaction() as session:
+            styles, cards, _ = await self._catalog(session)
+        return styles, cards
 
     async def _detail(self, asset_type: AssetType, revision_id: str) -> AssetRecord:
         async with self._transaction() as session:

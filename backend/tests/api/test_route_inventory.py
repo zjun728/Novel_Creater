@@ -66,6 +66,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/assets/style-templates/{revision_id}"),
     ("GET", "/api/assets/experience-cards"),
     ("GET", "/api/assets/experience-cards/{revision_id}"),
+    ("GET", "/api/assets/inventory"),
     ("GET", "/api/projects/{pid}/asset-recommendations"),
     ("GET", "/api/corpus/discovery"),
     ("POST", "/api/corpus/imports"),

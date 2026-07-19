@@ -55,7 +55,7 @@ function route(name, path, params = {}) {
   return { name, path, params }
 }
 
-test('shell model exposes only the two frozen global destinations', async () => {
+test('shell model exposes the three frozen global destinations', async () => {
   const {
     createProductShellModel,
     GLOBAL_SHELL_DESTINATIONS,
@@ -68,11 +68,19 @@ test('shell model exposes only the two frozen global destinations', async () => 
 
   assert.deepEqual(
     GLOBAL_SHELL_DESTINATIONS.map(item => [item.label, item.path]),
-    [['项目库', '/projects'], ['设置', '/settings/providers']],
+    [
+      ['项目库', '/projects'],
+      ['创作资产', '/assets/styles'],
+      ['设置', '/settings/providers'],
+    ],
   )
   assert.deepEqual(
     shell.globalNavigation.map(item => [item.label, item.path, item.selected]),
-    [['项目库', '/projects', true], ['设置', '/settings/providers', false]],
+    [
+      ['项目库', '/projects', true],
+      ['创作资产', '/assets/styles', false],
+      ['设置', '/settings/providers', false],
+    ],
   )
   assert.equal(shell.projectContext, null)
   assert.equal(shell.routeTitle, '项目库')
@@ -198,6 +206,8 @@ const Page = defineComponent({
 const shellRoutes = [
   { path: '/projects', name: 'ProjectLibrary', component: Page },
   { path: '/projects/archived', name: 'ArchivedProjects', component: Page },
+  { path: '/assets/styles', name: 'StyleLibrary', component: Page },
+  { path: '/assets/experience', name: 'ExperienceLibrary', component: Page },
   {
     path: '/projects/:projectId/overview',
     name: 'ProjectOverview',
@@ -258,6 +268,7 @@ async function renderApp(path, projectResponse = null) {
 
 test('real memory router renders global project and settings shell states', async () => {
   const projects = await renderApp('/projects')
+  const assets = await renderApp('/assets/styles')
   const settings = await renderApp('/settings/providers')
 
   assert.match(
@@ -265,8 +276,15 @@ test('real memory router renders global project and settings shell states', asyn
     /<a(?=[^>]*href="\/projects")(?=[^>]*aria-current="page")[^>]*>/,
   )
   assert.match(projects.html, /href="\/settings\/providers"/)
+  assert.match(projects.html, /href="\/assets\/styles"/)
   assert.match(projects.html, /class="product-topbar__title"[^>]*>项目库</)
   assert.doesNotMatch(projects.html, /返回项目库|切换项目|v0\.1 本地地基版/)
+
+  assert.match(
+    assets.html,
+    /<a(?=[^>]*href="\/assets\/styles")(?=[^>]*aria-current="page")[^>]*>/,
+  )
+  assert.match(assets.html, /class="product-topbar__title"[^>]*>风格模板库</)
 
   assert.match(
     settings.html,
@@ -274,7 +292,39 @@ test('real memory router renders global project and settings shell states', asyn
   )
   assert.match(settings.html, /class="product-topbar__title"[^>]*>Provider 与模型</)
   assert.deepEqual(projects.requests, [])
+  assert.deepEqual(assets.requests, [])
   assert.deepEqual(settings.requests, [])
+})
+
+test('creative asset pages share global selection and route-aware breadcrumbs', async () => {
+  const { createProductShellModel } = await loadShellModule()
+  const styles = createProductShellModel({
+    route: route('StyleLibrary', '/assets/styles'),
+    viewportWidth: 1440,
+  })
+  const experience = createProductShellModel({
+    route: route('ExperienceLibrary', '/assets/experience'),
+    viewportWidth: 1440,
+  })
+
+  assert.equal(
+    styles.globalNavigation.find(item => item.key === 'assets').selected,
+    true,
+  )
+  assert.equal(
+    experience.globalNavigation.find(item => item.key === 'assets').selected,
+    true,
+  )
+  assert.equal(styles.routeTitle, '风格模板库')
+  assert.equal(experience.routeTitle, '经验卡库')
+  assert.deepEqual(styles.breadcrumbs, [
+    { label: '创作资产', path: '/assets/styles' },
+    { label: '风格模板', path: '/assets/styles' },
+  ])
+  assert.deepEqual(experience.breadcrumbs, [
+    { label: '创作资产', path: '/assets/styles' },
+    { label: '经验卡', path: '/assets/experience' },
+  ])
 })
 
 test('application settings is selected under Settings and has a safe title', async () => {
@@ -334,6 +384,8 @@ test('the real project overview consumes shell hydration without a duplicate rea
       history: createMemoryHistory(),
       routes: [
         { path: '/projects', name: 'ProjectLibrary', component: Page },
+        { path: '/assets/styles', name: 'StyleLibrary', component: Page },
+        { path: '/assets/experience', name: 'ExperienceLibrary', component: Page },
         { path: '/settings/providers', name: 'ProviderSettings', component: Page },
         {
           path: '/projects/:projectId/overview',
@@ -382,6 +434,8 @@ test('shared shell hydration preserves the explicit missing-project route state'
       history: createMemoryHistory(),
       routes: [
         { path: '/projects', name: 'ProjectLibrary', component: Page },
+        { path: '/assets/styles', name: 'StyleLibrary', component: Page },
+        { path: '/assets/experience', name: 'ExperienceLibrary', component: Page },
         { path: '/settings/providers', name: 'ProviderSettings', component: Page },
         {
           path: '/projects/:projectId/overview',
@@ -456,6 +510,7 @@ test('collapsed shell SFC keeps route title in the top bar', async () => {
   assert.match(html, /data-collapsed="true"/)
   assert.match(html, /class="product-topbar__title"[^>]*>项目概览</)
   assert.match(html, /aria-label="项目库"/)
+  assert.match(html, /aria-label="创作资产"/)
   assert.match(html, /aria-label="设置"/)
 })
 

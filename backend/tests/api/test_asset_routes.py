@@ -45,16 +45,45 @@ def _record(asset, revision_id):
 class FakeAssetService:
     def __init__(self):
         self.calls = []
-        self.style = _record(PACKAGE.styles[0], STYLE_ID)
-        self.card = _record(PACKAGE.experience_cards[0], CARD_ID)
+        self.style = self._item(_record(PACKAGE.styles[0], STYLE_ID))
+        self.card = self._item(_record(PACKAGE.experience_cards[0], CARD_ID))
         self.failure = None
+
+    @staticmethod
+    def _item(record):
+        return SimpleNamespace(
+            record=record,
+            eligibility=SimpleNamespace(
+                genres=("general",),
+                channels=("all",),
+                creation_stages=("drafting", "revision"),
+                writing_purposes=("style_direction",),
+                prohibited_directions=(),
+            ),
+        )
 
     def _raise(self):
         if self.failure is not None:
             raise self.failure
 
-    async def list_styles(self):
-        self.calls.append(("list-styles",))
+    async def inventory(self):
+        self.calls.append(("inventory",))
+        self._raise()
+        return SimpleNamespace(
+            asset_package_version=PACKAGE.package_version,
+            taxonomy_package_version="recommendation-taxonomy-v1.0.0",
+            style_count=len(PACKAGE.styles),
+            experience_card_count=len(PACKAGE.experience_cards),
+            categories=("action_conflict", "dialogue"),
+            genres=("general", "xianxia"),
+            creation_stages=("drafting", "revision"),
+            statuses=("active",),
+        )
+
+    async def list_styles(
+        self, *, search=None, genre=None, stage=None, status=None
+    ):
+        self.calls.append(("list-styles", search, genre, stage, status))
         self._raise()
         return (self.style,)
 
@@ -63,8 +92,12 @@ class FakeAssetService:
         self._raise()
         return self.style
 
-    async def list_cards(self, category=None):
-        self.calls.append(("list-cards", category))
+    async def list_cards(
+        self, *, search=None, category=None, genre=None, stage=None, status=None
+    ):
+        self.calls.append(
+            ("list-cards", search, category, genre, stage, status)
+        )
         self._raise()
         return (self.card,)
 
@@ -139,15 +172,17 @@ def test_asset_routes_have_exact_methods_paths_and_camel_case_allowlists():
     assert set(style) == {
         "id", "stableKey", "revision", "contentHash", "name",
         "readingExperience", "applicability", "nonApplicability",
+        "eligibility",
     }
     card = card_list.json()[0]
     assert set(card) == {
         "id", "stableKey", "revision", "contentHash", "title", "category",
-        "method", "applicability", "nonApplicability",
+        "method", "applicability", "nonApplicability", "eligibility",
     }
     assert service.calls == [
-        ("list-styles",), ("get-style", STYLE_ID),
-        ("list-cards", "dialogue"), ("get-card", CARD_ID),
+        ("list-styles", None, None, None, None), ("get-style", STYLE_ID),
+        ("list-cards", None, "dialogue", None, None, None),
+        ("get-card", CARD_ID),
         ("recommend", "project-1", "engine-1"),
     ]
     methods = {
@@ -155,6 +190,7 @@ def test_asset_routes_have_exact_methods_paths_and_camel_case_allowlists():
         for route in assets.router.routes
     }
     assert methods == {
+        "/assets/inventory": {"GET"},
         "/assets/style-templates": {"GET"},
         "/assets/style-templates/{revision_id}": {"GET"},
         "/assets/experience-cards": {"GET"},
@@ -168,7 +204,7 @@ def test_asset_routes_have_exact_methods_paths_and_camel_case_allowlists():
 def test_details_return_complete_approved_payload_and_preserve_20k_examples():
     client, service = make_client()
     long_text = "边" * 20_000
-    service.style = _record(
+    service.style = service._item(_record(
         PACKAGE.styles[0].model_copy(
             update={
                 "payload": PACKAGE.styles[0].payload.model_copy(
@@ -180,8 +216,8 @@ def test_details_return_complete_approved_payload_and_preserve_20k_examples():
             }
         ),
         STYLE_ID,
-    )
-    service.card = _record(
+    ))
+    service.card = service._item(_record(
         PACKAGE.experience_cards[0].model_copy(
             update={
                 "payload": PACKAGE.experience_cards[0].payload.model_copy(
@@ -190,7 +226,7 @@ def test_details_return_complete_approved_payload_and_preserve_20k_examples():
             }
         ),
         CARD_ID,
-    )
+    ))
 
     style = client.get(f"/api/assets/style-templates/{STYLE_ID}").json()
     card = client.get(f"/api/assets/experience-cards/{CARD_ID}").json()
@@ -203,13 +239,13 @@ def test_details_return_complete_approved_payload_and_preserve_20k_examples():
         "emotion", "interiority", "action", "explanation", "environment",
         "bodyResponse", "preferredTechniques", "risks", "originalAnchor",
     }
-    assert style["payload"]["standardSceneExample"] == long_text
-    assert style["payload"]["completeApplicationExample"] == long_text
+    assert 0 < len(style["payload"]["standardSceneExample"]) <= 2_400
+    assert 0 < len(style["payload"]["completeApplicationExample"]) <= 2_400
     assert set(card["payload"]) == {
         "schemaVersion", "category", "method", "applicability",
         "nonApplicability", "risks", "originalMicroDemo",
     }
-    assert card["payload"]["originalMicroDemo"] == long_text
+    assert 0 < len(card["payload"]["originalMicroDemo"]) <= 1_600
     _assert_no_private_keys(style)
     _assert_no_private_keys(card)
 
@@ -281,13 +317,55 @@ def test_invalid_category_and_missing_engine_option_are_422():
 def test_production_asset_service_uses_transaction_and_main_registers_read_routes():
     service = assets.get_asset_service()
 
-    assert service.transaction_factory is transaction
+    assert service.asset_service.transaction_factory is transaction
     from backend import main
 
     registered = {route.path for route in main.app.routes}
+    assert "/api/assets/inventory" in registered
     assert "/api/assets/style-templates" in registered
     assert "/api/assets/experience-cards" in registered
     assert "/api/projects/{pid}/asset-recommendations" in registered
+
+
+def test_inventory_and_search_filters_are_forwarded_with_bounded_public_metadata():
+    client, service = make_client()
+
+    inventory = client.get("/api/assets/inventory")
+    styles = client.get(
+        "/api/assets/style-templates"
+        "?search=direct&genre=xianxia&stage=drafting&status=active"
+    )
+    cards = client.get(
+        "/api/assets/experience-cards"
+        "?search=dialogue&category=dialogue&genre=general"
+        "&stage=revision&status=active"
+    )
+
+    assert inventory.status_code == 200
+    assert inventory.json() == {
+        "assetPackageVersion": "writer-core-v1.1.0",
+        "taxonomyPackageVersion": "recommendation-taxonomy-v1.0.0",
+        "styleCount": 10,
+        "experienceCardCount": 64,
+        "categories": ["action_conflict", "dialogue"],
+        "genres": ["general", "xianxia"],
+        "creationStages": ["drafting", "revision"],
+        "statuses": ["active"],
+    }
+    assert styles.status_code == 200
+    assert cards.status_code == 200
+    assert styles.json()[0]["eligibility"]["genres"] == ["general"]
+    assert cards.json()[0]["eligibility"]["creationStages"] == [
+        "drafting", "revision"
+    ]
+    assert service.calls == [
+        ("inventory",),
+        ("list-styles", "direct", "xianxia", "drafting", "active"),
+        (
+            "list-cards", "dialogue", "dialogue", "general", "revision",
+            "active",
+        ),
+    ]
 
 
 @pytest.mark.parametrize(

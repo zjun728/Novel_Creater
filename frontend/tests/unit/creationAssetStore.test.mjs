@@ -139,19 +139,83 @@ test('asset recommendations are latest-request guarded backend facts', async () 
   })
 })
 
-test('creation asset settings expose a bounded read-only inventory without full hashes', async () => {
-  const source = await readFile(
-    path.join(frontendRoot, 'src/components/settings/CreationAssetSettings.vue'),
-    'utf8',
-  )
+test('global inventory and canonical filters are backend facts with independent errors', async () => {
+  setActivePinia(createPinia())
+  const store = useCreationAssetStore()
+  const requests = []
 
-  assert.match(source, /writer-core-v1\.1\.0/)
-  assert.match(source, /10\s*套风格/)
-  assert.match(source, /64\s*张经验卡/)
-  assert.match(source, /getStyleTemplate\(/)
-  assert.match(source, /getExperienceCard\(/)
-  assert.match(source, /shortHash/)
-  assert.match(source, /boundedText/)
-  assert.doesNotMatch(source, /\bfetch\s*\(|localStorage|marketplace|上架|审核|编辑资产/)
-  assert.doesNotMatch(source, /\{\{[^}]*contentHash[^}]*\}\}/)
+  await withBrowserGuards(async url => {
+    const parsed = new URL(String(url))
+    requests.push(`${parsed.pathname}${parsed.search}`)
+    if (parsed.pathname.endsWith('/assets/inventory')) {
+      return jsonResponse({
+        assetPackageVersion: 'writer-core-v1.1.0',
+        taxonomyPackageVersion: 'recommendation-taxonomy-v1.0.0',
+        styleCount: 10,
+        experienceCardCount: 64,
+        categories: ['dialogue'],
+        genres: ['general'],
+        creationStages: ['drafting'],
+        statuses: ['active'],
+      })
+    }
+    if (parsed.pathname.endsWith('/assets/style-templates')) {
+      return jsonResponse([{ id: 'style-1', stableKey: 'direct-propulsive' }])
+    }
+    if (parsed.pathname.endsWith('/assets/experience-cards')) {
+      return jsonResponse([{ id: 'card-1', stableKey: 'dialogue-bargain-real-need' }])
+    }
+    throw new Error(`unexpected request ${url}`)
+  }, async () => {
+    await store.loadInventory()
+    await store.loadStyleTemplates({
+      search: 'direct',
+      genre: 'general',
+      stage: 'drafting',
+      status: 'active',
+    })
+    await store.loadExperienceCards({
+      search: 'bargain',
+      category: 'dialogue',
+      genre: 'general',
+      stage: 'drafting',
+      status: 'active',
+    })
+  })
+
+  assert.equal(store.inventory.styleCount, 10)
+  assert.equal(store.inventory.experienceCardCount, 64)
+  assert.equal(store.inventory.assetPackageVersion, 'writer-core-v1.1.0')
+  assert.equal(store.inventoryError, '')
+  assert.equal(store.styleError, '')
+  assert.equal(store.cardError, '')
+  assert.deepEqual(requests, [
+    '/api/assets/inventory',
+    '/api/assets/style-templates?search=direct&genre=general&stage=drafting&status=active',
+    '/api/assets/experience-cards?search=bargain&category=dialogue&genre=general&stage=drafting&status=active',
+  ])
+})
+
+test('canonical asset runtime has no retired localStorage truth imports', async () => {
+  const [storeSource, styleView, experienceView, styleStep, assetStep] = await Promise.all([
+    readFile(path.join(frontendRoot, 'src/stores/creationAssetStore.js'), 'utf8'),
+    readFile(path.join(frontendRoot, 'src/views/assets/StyleLibraryView.vue'), 'utf8'),
+    readFile(path.join(frontendRoot, 'src/views/assets/ExperienceLibraryView.vue'), 'utf8'),
+    readFile(path.join(frontendRoot, 'src/components/project/contract/StyleSelectionStep.vue'), 'utf8'),
+    readFile(path.join(frontendRoot, 'src/components/project/contract/AssetScopeStep.vue'), 'utf8'),
+  ])
+  const canonical = [storeSource, styleView, experienceView, styleStep, assetStep].join('\n')
+
+  assert.doesNotMatch(
+    canonical,
+    /localStorage|experienceCardProduct|realCorpusExperienceCards\.v3|writingStyleStandards/,
+  )
+  for (const retired of [
+    'src/components/settings/CreationAssetSettings.vue',
+    'src/views/ExperienceCardsView.vue',
+    'src/data/experienceCardProduct.js',
+    'src/data/realCorpusExperienceCards.v3.json',
+  ]) {
+    await assert.rejects(readFile(path.join(frontendRoot, retired), 'utf8'), /ENOENT/)
+  }
 })

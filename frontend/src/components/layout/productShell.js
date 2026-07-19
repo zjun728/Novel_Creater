@@ -8,10 +8,12 @@ import {
 } from 'vue'
 
 import {
+  experienceLibraryPath,
   projectLibraryPath,
   projectModelSettingsPath,
   projectOverviewPath,
   providerSettingsPath,
+  styleLibraryPath,
 } from '../../router/projectRoutes.js'
 
 export const DESKTOP_SIDEBAR_BREAKPOINT = 1120
@@ -23,6 +25,12 @@ export const GLOBAL_SHELL_DESTINATIONS = Object.freeze([
     label: '项目库',
     path: projectLibraryPath(),
     mark: '库',
+  }),
+  Object.freeze({
+    key: 'assets',
+    label: '创作资产',
+    path: styleLibraryPath(),
+    mark: '创',
   }),
   Object.freeze({
     key: 'settings',
@@ -55,6 +63,8 @@ function routeTitle(route, project) {
   if (name === 'ArchivedProjects') return '已归档项目'
   if (name === 'ProviderSettings') return 'Provider 与模型'
   if (name === 'ApplicationSettings') return '应用默认与诊断'
+  if (name === 'StyleLibrary') return '风格模板库'
+  if (name === 'ExperienceLibrary') return '经验卡库'
   if (name === 'ProjectOverview') {
     return isArchived(project) ? '已归档项目' : '项目概览'
   }
@@ -73,6 +83,9 @@ function routeTitle(route, project) {
 
 function globalSelected(item, route) {
   const name = routeName(route)
+  if (item.key === 'assets') {
+    return name === 'StyleLibrary' || name === 'ExperienceLibrary'
+  }
   if (item.key === 'settings') {
     return name === 'ProviderSettings' || name === 'ApplicationSettings'
   }
@@ -121,18 +134,43 @@ export function createProductShellModel({
       }
     : null
 
+  const assetBreadcrumbs = routeName(route) === 'StyleLibrary'
+    ? [
+        { label: '创作资产', path: styleLibraryPath() },
+        { label: '风格模板', path: styleLibraryPath() },
+      ]
+    : routeName(route) === 'ExperienceLibrary'
+      ? [
+          { label: '创作资产', path: styleLibraryPath() },
+          { label: '经验卡', path: experienceLibraryPath() },
+        ]
+      : []
   const breadcrumbs = projectContext
     ? [
         { label: '项目库', path: projectLibraryPath() },
         { label: projectContext.title, path: overviewPath },
       ]
-    : []
+    : assetBreadcrumbs
 
   return {
     globalNavigation: GLOBAL_SHELL_DESTINATIONS.map(item => ({
       ...item,
       selected: globalSelected(item, route),
     })),
+    assetNavigation: [
+      {
+        key: 'styles',
+        label: '风格模板',
+        path: styleLibraryPath(),
+        selected: routeName(route) === 'StyleLibrary',
+      },
+      {
+        key: 'experience',
+        label: '经验卡',
+        path: experienceLibraryPath(),
+        selected: routeName(route) === 'ExperienceLibrary',
+      },
+    ],
     projectContext,
     breadcrumbs,
     routeTitle: routeTitle(route, hasMatchingProject ? project : null),

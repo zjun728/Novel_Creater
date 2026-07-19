@@ -39,6 +39,21 @@ defineProps({
         <span class="product-sidebar__nav-mark" aria-hidden="true">{{ item.mark }}</span>
         <span class="product-sidebar__nav-label">{{ item.label }}</span>
       </router-link>
+      <div
+        v-if="shell.globalNavigation.find(item => item.key === 'assets')?.selected"
+        class="product-sidebar__asset-subnav"
+        aria-label="创作资产分类"
+      >
+        <router-link
+          v-for="item in shell.assetNavigation"
+          :key="item.key"
+          :to="item.path"
+          :class="{ 'product-sidebar__asset-link--selected': item.selected }"
+          :aria-current="item.selected ? 'page' : undefined"
+        >
+          {{ item.label }}
+        </router-link>
+      </div>
     </nav>
 
     <section
@@ -164,6 +179,28 @@ defineProps({
 .product-sidebar__global {
   padding: 15px 12px;
   border-bottom: 1px solid rgba(216, 203, 183, .72);
+}
+
+.product-sidebar__asset-subnav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 3px 4px 4px 41px;
+}
+
+.product-sidebar__asset-subnav a {
+  padding: 5px 3px;
+  border-bottom: 1px solid transparent;
+  color: #85786a;
+  font-size: 10px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.product-sidebar__asset-subnav a:hover,
+.product-sidebar__asset-link--selected {
+  border-bottom-color: #8f3d32;
+  color: #7d3128;
 }
 
 .product-sidebar__nav-link,
@@ -320,6 +357,20 @@ defineProps({
 .product-sidebar--collapsed .product-sidebar__global,
 .product-sidebar--collapsed .product-sidebar__project {
   padding-inline: 10px;
+}
+
+.product-sidebar--collapsed .product-sidebar__asset-subnav {
+  grid-template-columns: 1fr;
+  padding: 2px 0 5px;
+}
+
+.product-sidebar--collapsed .product-sidebar__asset-subnav a {
+  overflow: hidden;
+  font-size: 0;
+}
+
+.product-sidebar--collapsed .product-sidebar__asset-subnav a::first-letter {
+  font-size: 10px;
 }
 
 .product-sidebar--collapsed .product-sidebar__nav-link,

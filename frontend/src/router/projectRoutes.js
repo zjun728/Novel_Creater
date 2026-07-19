@@ -1,6 +1,8 @@
 const ProjectLibraryView = () => import('../views/ProjectLibraryView.vue')
 const ArchivedProjectsView = () => import('../views/ArchivedProjectsView.vue')
 const ProjectOverviewView = () => import('../views/ProjectOverviewView.vue')
+const StyleLibraryView = () => import('../views/assets/StyleLibraryView.vue')
+const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryView.vue')
 const ChapterWriterView = () => import('../views/ChapterWriterView.vue')
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
 const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
@@ -23,6 +25,14 @@ export function providerSettingsPath() {
 
 export function applicationSettingsPath() {
   return '/settings/application'
+}
+
+export function styleLibraryPath() {
+  return '/assets/styles'
+}
+
+export function experienceLibraryPath() {
+  return '/assets/experience'
 }
 
 function positiveChapterNumber(value) {
@@ -59,6 +69,16 @@ export const projectRoutes = Object.freeze([
     path: '/projects/archived',
     name: 'ArchivedProjects',
     component: ArchivedProjectsView,
+  },
+  {
+    path: '/assets/styles',
+    name: 'StyleLibrary',
+    component: StyleLibraryView,
+  },
+  {
+    path: '/assets/experience',
+    name: 'ExperienceLibrary',
+    component: ExperienceLibraryView,
   },
   {
     path: '/projects/:projectId/overview',

@@ -279,12 +279,24 @@ export const api = {
   },
 
   assets: {
+    inventory: () => get('/assets/inventory'),
     styleTemplates: {
-      list: () => get('/assets/style-templates'),
+      list: (params = {}) => get(`/assets/style-templates${queryString({
+        search: params.search,
+        genre: params.genre,
+        stage: params.stage,
+        status: params.status,
+      })}`),
       get: revisionId => get(`/assets/style-templates/${segment(revisionId)}`),
     },
     experienceCards: {
-      list: (params = {}) => get(`/assets/experience-cards${queryString({ category: params.category })}`),
+      list: (params = {}) => get(`/assets/experience-cards${queryString({
+        search: params.search,
+        category: params.category,
+        genre: params.genre,
+        stage: params.stage,
+        status: params.status,
+      })}`),
       get: revisionId => get(`/assets/experience-cards/${segment(revisionId)}`),
     },
     recommendations: (projectId, engineOptionId) => get(

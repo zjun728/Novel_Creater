@@ -25,6 +25,7 @@ from backend.http_errors import (
 from backend.routers import corpus
 from backend.security.redaction import install_error_handlers
 from backend.services.corpus_import import CorpusImportService
+from backend.services.creative_assets import CreativeAssetService
 
 
 SOURCE_ID = "11111111-1111-1111-1111-111111111111"
@@ -405,5 +406,7 @@ def test_corpus_public_errors_are_stable_and_safe(failure, status, code, path):
 
 def test_production_service_uses_explicit_transactions():
     service = corpus.get_corpus_service()
-    assert service.transaction_factory is transaction
-    assert service.connection_factory is transaction
+    assert isinstance(service, CreativeAssetService)
+    assert service.asset_service.transaction_factory is transaction
+    assert service.corpus_service.transaction_factory is transaction
+    assert service.corpus_service.connection_factory is transaction

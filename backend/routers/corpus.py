@@ -5,8 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.config import CORPUS_ROOT
-from backend.database import transaction
 from backend.domain.corpus import (
     FRAGMENT_PAGE_DEFAULT,
     FRAGMENT_PAGE_MAX,
@@ -14,10 +12,10 @@ from backend.domain.corpus import (
     PREVIEW_DEFAULT_CHARS,
     PREVIEW_MAX_CHARS,
 )
-from backend.repositories.corpus import CorpusRepository
-from backend.services.corpus_import import (
-    CorpusImportService,
-    IDEMPOTENCY_KEY_PATTERN,
+from backend.services.corpus_import import IDEMPOTENCY_KEY_PATTERN
+from backend.services.creative_assets import (
+    CreativeAssetService,
+    build_creative_asset_service,
 )
 
 
@@ -38,13 +36,8 @@ class CorpusImportRequest(BaseModel):
     relativePath: str = Field(min_length=1, max_length=2048)
 
 
-def get_corpus_service() -> CorpusImportService:
-    return CorpusImportService(
-        CorpusRepository(),
-        corpus_root=CORPUS_ROOT,
-        transaction_factory=transaction,
-        connection_factory=transaction,
-    )
+def get_corpus_service() -> CreativeAssetService:
+    return build_creative_asset_service()
 
 
 def _value(row, *keys, default=None):

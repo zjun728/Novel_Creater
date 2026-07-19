@@ -27,6 +27,10 @@ defineProps({
     </div>
 
     <div class="product-topbar__session" aria-label="当前运行模式">
+      <strong
+        v-if="shell.globalNavigation.find(item => item.key === 'assets')?.selected"
+        class="product-topbar__asset-scope"
+      >CREATIVE ASSETS</strong>
       <span aria-hidden="true"></span>
       本机单用户
     </div>
@@ -114,6 +118,13 @@ defineProps({
   height: 6px;
   border-radius: 50%;
   background: #70815d;
+}
+
+.product-topbar__asset-scope {
+  margin-right: 4px;
+  color: #8f6d4c;
+  font: 700 9px Georgia, serif;
+  letter-spacing: .13em;
 }
 
 @media (max-width: 620px) {

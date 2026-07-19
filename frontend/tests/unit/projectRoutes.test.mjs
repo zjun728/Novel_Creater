@@ -39,11 +39,15 @@ async function settle() {
 test('canonical path builders encode project IDs and require positive chapter numbers', async () => {
   const {
     applicationSettingsPath,
+    experienceLibraryPath,
     chapterWriterPath,
     projectModelSettingsPath,
     projectOverviewPath,
+    styleLibraryPath,
   } = await loadRouteModule()
 
+  assert.equal(styleLibraryPath(), '/assets/styles')
+  assert.equal(experienceLibraryPath(), '/assets/experience')
   assert.equal(projectOverviewPath('a/b'), '/projects/a%2Fb/overview')
   assert.equal(
     projectModelSettingsPath('a/b'),
@@ -69,6 +73,8 @@ test('formal route registry names only canonical destinations and catches retire
   assert.equal(router.resolve('/projects/archived').name, 'ArchivedProjects')
   assert.equal(router.resolve('/settings/providers').name, 'ProviderSettings')
   assert.equal(router.resolve('/settings/application').name, 'ApplicationSettings')
+  assert.equal(router.resolve('/assets/styles').name, 'StyleLibrary')
+  assert.equal(router.resolve('/assets/experience').name, 'ExperienceLibrary')
   assert.equal(router.resolve('/projects/project-1/overview').name, 'ProjectOverview')
   assert.equal(
     router.resolve('/projects/project-1/settings/models').name,
@@ -90,6 +96,33 @@ test('formal route registry names only canonical destinations and catches retire
     const resolved = router.resolve(path)
     assert.equal(resolved.meta.notFound, true, `${path} must select NotFound`)
   }
+})
+
+test('creative asset routes survive direct navigation and browser back/forward', async () => {
+  const { projectRoutes } = await loadRouteModule()
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: projectRoutes.map(route => (
+      ['StyleLibrary', 'ExperienceLibrary'].includes(route.name)
+        ? { ...route, component: { render: () => null } }
+        : route
+    )),
+  })
+
+  await router.push('/assets/styles')
+  await router.isReady()
+  assert.equal(router.currentRoute.value.name, 'StyleLibrary')
+
+  await router.push('/assets/experience')
+  assert.equal(router.currentRoute.value.name, 'ExperienceLibrary')
+
+  router.back()
+  await settle()
+  assert.equal(router.currentRoute.value.name, 'StyleLibrary')
+
+  router.forward()
+  await settle()
+  assert.equal(router.currentRoute.value.name, 'ExperienceLibrary')
 })
 
 test('route context hydrates on refresh and classifies active archived missing and error states', async () => {
