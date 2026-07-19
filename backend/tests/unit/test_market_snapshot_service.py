@@ -43,6 +43,9 @@ class FakeRepository:
         abandon_failure=None,
         abandon_wait=None,
         abandon_cancelled=None,
+        fail_started=None,
+        fail_wait=None,
+        fail_cancelled=None,
     ):
         self.source = source
         self.events = []
@@ -55,6 +58,9 @@ class FakeRepository:
         self.abandon_failure = abandon_failure
         self.abandon_wait = abandon_wait
         self.abandon_cancelled = abandon_cancelled
+        self.fail_started = fail_started
+        self.fail_wait = fail_wait
+        self.fail_cancelled = fail_cancelled
 
     async def get_source(self, session, source_id):
         self.events.append(("get_source", source_id))
@@ -96,6 +102,15 @@ class FakeRepository:
         }
 
     async def fail_refresh(self, session, **values):
+        if self.fail_started is not None:
+            self.fail_started.set()
+        if self.fail_wait is not None:
+            try:
+                await self.fail_wait.wait()
+            except asyncio.CancelledError:
+                if self.fail_cancelled is not None:
+                    self.fail_cancelled.set()
+                raise
         self.events.append(("fail", values["public_error_code"]))
         self.failed.append(values)
 
@@ -284,6 +299,135 @@ async def test_transport_timeout_records_fixed_terminal_failure_and_preserves_he
     assert repository.failed[0]["public_error_code"] == (
         "MARKET_TRANSPORT_TIMEOUT"
     )
+
+
+@pytest.mark.asyncio
+async def test_cancellation_while_recording_failure_awaits_bounded_terminal_cleanup():
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    failure_started = asyncio.Event()
+    release_failure = asyncio.Event()
+    failure_cancelled = asyncio.Event()
+    repository = FakeRepository(
+        _source(),
+        fail_started=failure_started,
+        fail_wait=release_failure,
+        fail_cancelled=failure_cancelled,
+    )
+    transaction, state = _contexts(repository)
+    adapter = FakeAdapter(
+        None,
+        state,
+        failure=MarketSourceFailure("MARKET_HTML_UNKNOWN"),
+    )
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": adapter},
+        clock=lambda: NOW,
+    )
+    refresh = asyncio.create_task(
+        service.refresh(SOURCE_ID, idempotency_key="z" * 64)
+    )
+    await asyncio.wait_for(failure_started.wait(), timeout=1)
+
+    refresh.cancel()
+    await asyncio.sleep(0)
+    assert not refresh.done()
+    release_failure.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(refresh, timeout=1)
+
+    assert repository.failed == [
+        {
+            "request_id": "request-1",
+            "source_id": SOURCE_ID,
+            "public_error_code": "MARKET_HTML_UNKNOWN",
+            "completed_at": NOW,
+        }
+    ]
+    assert not failure_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_second_cancellation_cancels_and_consumes_failure_persistence():
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    failure_started = asyncio.Event()
+    release_failure = asyncio.Event()
+    failure_cancelled = asyncio.Event()
+    repository = FakeRepository(
+        _source(),
+        fail_started=failure_started,
+        fail_wait=release_failure,
+        fail_cancelled=failure_cancelled,
+    )
+    transaction, state = _contexts(repository)
+    adapter = FakeAdapter(
+        None,
+        state,
+        failure=MarketSourceFailure("MARKET_HTML_UNKNOWN"),
+    )
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": adapter},
+        clock=lambda: NOW,
+    )
+    refresh = asyncio.create_task(
+        service.refresh(SOURCE_ID, idempotency_key="y" * 64)
+    )
+    await asyncio.wait_for(failure_started.wait(), timeout=1)
+
+    refresh.cancel()
+    await asyncio.sleep(0)
+    refresh.cancel()
+    with pytest.raises(BaseExceptionGroup) as aggregated:
+        await asyncio.wait_for(refresh, timeout=1)
+
+    assert sum(
+        isinstance(error, asyncio.CancelledError)
+        for error in aggregated.value.exceptions
+    ) == 2
+    assert failure_cancelled.is_set()
+    assert repository.failed == []
+
+
+@pytest.mark.asyncio
+async def test_bounded_cleanup_aggregates_child_failure_after_external_cancel():
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def persistence() -> None:
+        started.set()
+        try:
+            await blocked.wait()
+        except asyncio.CancelledError:
+            raise RuntimeError("synthetic cancellation failure") from None
+
+    child = asyncio.create_task(persistence())
+    cleanup = asyncio.create_task(
+        MarketSnapshotService._await_bounded_task(child)
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    cleanup.cancel()
+    result = await asyncio.wait_for(cleanup, timeout=1)
+
+    assert isinstance(result, BaseExceptionGroup)
+    assert any(
+        isinstance(error, asyncio.CancelledError)
+        for error in result.exceptions
+    )
+    assert any(
+        isinstance(error, RuntimeError)
+        for error in result.exceptions
+    )
+    assert child.done()
 
 
 @pytest.mark.asyncio

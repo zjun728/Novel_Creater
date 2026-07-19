@@ -55,6 +55,7 @@ class FakeService:
             managed_corpus_store_ready=False,
             scheduler_enabled=False,
             scheduler_state="disabled",
+            scheduler_next_run_at=None,
             application_version="1.0.0",
         )
 
@@ -125,6 +126,7 @@ def test_diagnostics_response_has_exact_safe_allowlist():
         "managedCorpusStoreReady": False,
         "schedulerEnabled": False,
         "schedulerState": "disabled",
+        "schedulerNextRunAt": None,
         "applicationVersion": "1.0.0",
     }
     assert_safe(response.json())

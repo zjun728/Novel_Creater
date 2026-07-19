@@ -62,3 +62,17 @@ class ApplicationSettingsRepository:
             """SELECT schema_version,manifest_hash
                FROM schema_metadata WHERE singleton_id=1"""
         )
+
+    async def read_scheduler_next_run(self, session):
+        row = await session.fetchone(
+            """SELECT MIN(rs.next_run_at) AS next_run_at
+               FROM market_sources s
+               JOIN market_source_policy_heads h ON h.source_id=s.id
+               JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               JOIN market_source_refresh_states rs ON rs.source_id=s.id
+               WHERE s.status='active' AND p.policy_status='verified_public'
+                 AND p.enabled=1 AND rs.next_run_at IS NOT NULL"""
+        )
+        return None if row is None else row["next_run_at"]

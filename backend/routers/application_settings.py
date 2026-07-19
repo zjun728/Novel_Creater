@@ -13,6 +13,7 @@ from backend.domain.application_settings import UpdateDefaultModel
 from backend.repositories.application_settings import (
     ApplicationSettingsRepository,
 )
+from backend.runtime.market_scheduler import get_scheduler_status
 from backend.security.provider_secrets import (
     normalize_provider_secrets,
     sanitize_provider_secret_text,
@@ -39,6 +40,7 @@ _service = ApplicationSettingsService(
     corpus_store_ready=_corpus_store_ready,
     scheduler_enabled=False,
     scheduler_state="disabled",
+    scheduler_status=get_scheduler_status,
     application_version=APPLICATION_VERSION,
 )
 
@@ -115,5 +117,6 @@ async def get_application_diagnostics(
         "managedCorpusStoreReady": result.managed_corpus_store_ready,
         "schedulerEnabled": result.scheduler_enabled,
         "schedulerState": result.scheduler_state,
+        "schedulerNextRunAt": result.scheduler_next_run_at,
         "applicationVersion": result.application_version,
     }

@@ -59,6 +59,7 @@ class MemoryApplicationSettingsRepository:
             "schema_version": EXPECTED_SCHEMA_VERSION,
             "manifest_hash": manifest_hash(),
         }
+        self.scheduler_next_run_at = None
 
     def _joined(self):
         row = dict(self.settings)
@@ -110,6 +111,10 @@ class MemoryApplicationSettingsRepository:
         self.events.append(("metadata", session))
         return dict(self.metadata)
 
+    async def read_scheduler_next_run(self, session):
+        self.events.append(("scheduler-next", session))
+        return self.scheduler_next_run_at
+
 
 def factories():
     sessions = []
@@ -129,7 +134,12 @@ def factories():
     return transaction, connection, sessions
 
 
-def build_service(repository, *, corpus_ready=lambda: True):
+def build_service(
+    repository,
+    *,
+    corpus_ready=lambda: True,
+    scheduler_status=None,
+):
     _, service_module = _application_settings_symbols()
     transaction, connection, sessions = factories()
     service = service_module.ApplicationSettingsService(
@@ -140,6 +150,7 @@ def build_service(repository, *, corpus_ready=lambda: True):
         corpus_store_ready=corpus_ready,
         scheduler_enabled=False,
         scheduler_state="disabled",
+        scheduler_status=scheduler_status,
         application_version="1.0.0",
     )
     return service, service_module, sessions
@@ -269,6 +280,7 @@ async def test_diagnostics_is_an_exact_safe_allowlist_and_swallows_probe_details
         "managed_corpus_store_ready": False,
         "scheduler_enabled": False,
         "scheduler_state": "disabled",
+        "scheduler_next_run_at": None,
         "application_version": "1.0.0",
     }
     assert sentinel not in str(payload)
@@ -284,3 +296,25 @@ async def test_diagnostics_is_an_exact_safe_allowlist_and_swallows_probe_details
         "exception",
     }
     assert forbidden.isdisjoint(payload)
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_reads_only_bounded_public_scheduler_status():
+    repository = MemoryApplicationSettingsRepository()
+    repository.scheduler_next_run_at = 1_721_000_000_000
+    service, _, _ = build_service(
+        repository,
+        scheduler_status=lambda: {
+            "enabled": True,
+            "state": "idle",
+            "next_run_at": 1_722_000_000_000,
+            "private_url": "https://must-not-escape.example",
+        },
+    )
+
+    payload = (await service.get_diagnostics()).model_dump()
+
+    assert payload["scheduler_enabled"] is True
+    assert payload["scheduler_state"] == "idle"
+    assert payload["scheduler_next_run_at"] == 1_721_000_000_000
+    assert "private" not in str(payload).casefold()

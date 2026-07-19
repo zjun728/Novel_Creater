@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.market import MAX_MARKET_SOURCES
@@ -180,11 +180,13 @@ class MarketSourceService:
         snapshot_service,
         *,
         connection_factory,
+        transaction_factory=None,
         clock=None,
     ) -> None:
         self.repository = repository
         self.snapshot_service = snapshot_service
         self._connection = connection_factory
+        self._transaction = transaction_factory
         self._clock = clock or (lambda: int(time.time() * 1000))
 
     def _public_source(self, row: dict) -> dict:
@@ -260,3 +262,31 @@ class MarketSourceService:
             source_id,
             idempotency_key=idempotency_key,
         )
+
+    async def update_schedule(
+        self,
+        source_id: str,
+        *,
+        expected_revision: int,
+        enabled: bool,
+        interval_minutes: int,
+        idempotency_key: str,
+    ):
+        if self._transaction is None:
+            raise RuntimeError("market schedule updates require a transaction")
+        revision_id = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"market-schedule:{source_id}:{idempotency_key}",
+            )
+        )
+        async with self._transaction() as session:
+            return await self.repository.update_schedule(
+                session,
+                source_id=source_id,
+                revision_id=revision_id,
+                expected_revision=expected_revision,
+                enabled=enabled,
+                interval_minutes=interval_minutes,
+                now_ms=self._clock(),
+            )

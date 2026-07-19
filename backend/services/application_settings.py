@@ -36,6 +36,7 @@ class ApplicationSettingsService:
         scheduler_enabled: bool,
         scheduler_state: str,
         application_version: str,
+        scheduler_status=None,
     ):
         self.repository = repository
         self.transaction_factory = transaction_factory
@@ -44,6 +45,7 @@ class ApplicationSettingsService:
         self.corpus_store_ready = corpus_store_ready
         self.scheduler_enabled = scheduler_enabled
         self.scheduler_state = scheduler_state
+        self.scheduler_status = scheduler_status
         self.application_version = application_version
 
     @staticmethod
@@ -115,12 +117,23 @@ class ApplicationSettingsService:
     async def get_diagnostics(self) -> ApplicationDiagnostics:
         reachable = False
         metadata = None
+        persisted_scheduler_next = None
         try:
             async with self.connection_factory() as session:
                 metadata = await self.repository.read_schema_metadata(session)
+                read_scheduler_next = getattr(
+                    self.repository,
+                    "read_scheduler_next_run",
+                    None,
+                )
+                if read_scheduler_next is not None:
+                    persisted_scheduler_next = await read_scheduler_next(
+                        session
+                    )
                 reachable = True
         except Exception:
             metadata = None
+            persisted_scheduler_next = None
         try:
             corpus_ready = self.corpus_store_ready() is True
         except Exception:
@@ -130,12 +143,44 @@ class ApplicationSettingsService:
             and metadata.get("schema_version") == EXPECTED_SCHEMA_VERSION
             and metadata.get("manifest_hash") == manifest_hash()
         )
+        scheduler_enabled = self.scheduler_enabled
+        scheduler_state = self.scheduler_state
+        scheduler_next_run_at = (
+            persisted_scheduler_next
+            if type(persisted_scheduler_next) is int
+            and persisted_scheduler_next >= 0
+            else None
+        )
+        if self.scheduler_status is not None:
+            try:
+                status = self.scheduler_status()
+            except Exception:
+                status = {}
+            if isinstance(status, dict):
+                scheduler_enabled = status.get("enabled") is True
+                candidate_state = status.get("state")
+                if candidate_state in {
+                    "disabled",
+                    "idle",
+                    "running",
+                    "failed",
+                    "stopped",
+                }:
+                    scheduler_state = candidate_state
+                candidate_next = status.get("next_run_at")
+                if (
+                    scheduler_next_run_at is None
+                    and type(candidate_next) is int
+                    and candidate_next >= 0
+                ):
+                    scheduler_next_run_at = candidate_next
         return ApplicationDiagnostics(
             schema_version=EXPECTED_SCHEMA_VERSION,
             schema_manifest_match=exact_manifest,
             database_reachable=reachable,
             managed_corpus_store_ready=corpus_ready,
-            scheduler_enabled=self.scheduler_enabled,
-            scheduler_state=self.scheduler_state,
+            scheduler_enabled=scheduler_enabled,
+            scheduler_state=scheduler_state,
+            scheduler_next_run_at=scheduler_next_run_at,
             application_version=self.application_version,
         )

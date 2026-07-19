@@ -237,6 +237,185 @@ class MarketRepository:
         value["policy"] = self._policy_from_row(value)
         return value
 
+    async def update_schedule(
+        self,
+        session,
+        *,
+        source_id: str,
+        revision_id: str,
+        expected_revision: int,
+        enabled: bool,
+        interval_minutes: int,
+        now_ms: int,
+    ):
+        current = await session.fetchone(
+            """SELECT s.id,s.status,p.id AS policy_revision_id,
+                      p.revision AS policy_revision,p.policy_status,
+                      p.policy_version,p.checked_at,p.evidence_url,
+                      p.evidence_hash,p.allowed_origins_json,
+                      p.path_prefixes_json,p.enabled,p.interval_minutes,
+                      p.next_run_at,p.content_hash AS policy_hash,
+                      rs.public_error_code
+               FROM market_sources s
+               LEFT JOIN market_source_policy_heads h ON h.source_id=s.id
+               LEFT JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               LEFT JOIN market_source_refresh_states rs ON rs.source_id=s.id
+               WHERE s.id=%s FOR UPDATE""",
+            (source_id,),
+        )
+        if current is None or current["status"] != "active":
+            raise MarketSourceNotFound()
+        if current["policy_revision_id"] is None:
+            raise MarketSourceFailure("MARKET_POLICY_MISSING")
+
+        replay = await session.fetchone(
+            """SELECT revision,policy_status,enabled,interval_minutes,
+                      next_run_at
+               FROM market_source_policy_revisions
+               WHERE source_id=%s AND id=%s""",
+            (source_id, revision_id),
+        )
+        if replay is not None:
+            if (
+                int(replay["revision"]) != expected_revision + 1
+                or bool(replay["enabled"]) is not enabled
+                or int(replay["interval_minutes"]) != interval_minutes
+            ):
+                raise MarketSourceConflict()
+            return {
+                "source_id": source_id,
+                "revision": int(replay["revision"]),
+                "enabled": bool(replay["enabled"]),
+                "interval_minutes": int(replay["interval_minutes"]),
+                "next_run_at": replay["next_run_at"],
+                "policy_status": replay["policy_status"],
+                "recovery_reason": None,
+            }
+
+        if enabled and current["policy_status"] != "verified_public":
+            raise MarketSourceFailure("MARKET_POLICY_NOT_VERIFIED")
+        if int(current["policy_revision"]) != expected_revision:
+            raise MarketSourceConflict()
+
+        current_policy = self._policy_from_row(current)
+        if current_policy is None:
+            raise MarketSourceFailure("MARKET_POLICY_MISSING")
+        if enabled:
+            if canonical_hash(current_policy) != current["policy_hash"]:
+                raise MarketSourceFailure("MARKET_POLICY_HASH_INVALID")
+            policy_age = now_ms - current_policy.checked_at
+            if not -5 * 60 * 1000 <= policy_age <= 30 * 24 * 60 * 60 * 1000:
+                raise MarketSourceFailure("MARKET_POLICY_EXPIRED")
+        updated_policy = SourcePolicy(
+            status=current_policy.status,
+            checkedAt=current_policy.checked_at,
+            evidenceURL=current_policy.evidence_url,
+            evidenceHash=current_policy.evidence_hash,
+            allowedOrigins=current_policy.allowed_origins,
+            pathPrefixes=current_policy.path_prefixes,
+            requestIntervalSeconds=interval_minutes * 60,
+            policyVersion=current_policy.policy_version,
+            enabled=enabled,
+        )
+        revision = expected_revision + 1
+        next_run_at = now_ms if enabled else None
+        content_hash = canonical_hash(updated_policy)
+        await session.execute(
+            """INSERT INTO market_source_policy_revisions
+               (id,source_id,revision,policy_status,policy_version,checked_at,
+                evidence_url,evidence_hash,allowed_origins_json,
+                path_prefixes_json,enabled,interval_minutes,next_run_at,
+                content_hash,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                revision_id,
+                source_id,
+                revision,
+                updated_policy.status,
+                updated_policy.policy_version,
+                updated_policy.checked_at,
+                updated_policy.evidence_url,
+                updated_policy.evidence_hash,
+                canonical_json(list(updated_policy.allowed_origins)),
+                canonical_json(list(updated_policy.path_prefixes)),
+                int(updated_policy.enabled),
+                interval_minutes,
+                next_run_at,
+                content_hash,
+                now_ms,
+            ),
+        )
+        changed = await session.execute(
+            """UPDATE market_source_policy_heads
+               SET revision_id=%s,revision=%s,content_hash=%s,updated_at=%s
+               WHERE source_id=%s AND revision=%s""",
+            (
+                revision_id,
+                revision,
+                content_hash,
+                now_ms,
+                source_id,
+                expected_revision,
+            ),
+        )
+        if changed != 1:
+            raise MarketSourceConflict()
+        changed = await session.execute(
+            """UPDATE market_source_refresh_states
+               SET next_run_at=%s,updated_at=%s WHERE source_id=%s""",
+            (next_run_at, now_ms, source_id),
+        )
+        if changed != 1:
+            raise MarketSourceConflict()
+        return {
+            "source_id": source_id,
+            "revision": revision,
+            "enabled": enabled,
+            "interval_minutes": interval_minutes,
+            "next_run_at": next_run_at,
+            "policy_status": updated_policy.status,
+            "recovery_reason": None,
+        }
+
+    async def list_due_schedules(
+        self,
+        session,
+        *,
+        now_ms: int,
+        limit: int,
+    ):
+        rows = await session.fetchall(
+            """SELECT s.id AS source_id,rs.next_run_at
+               FROM market_sources s
+               JOIN market_source_policy_heads h ON h.source_id=s.id
+               JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               JOIN market_source_refresh_states rs ON rs.source_id=s.id
+               WHERE s.status='active' AND p.policy_status='verified_public'
+                 AND p.enabled=1 AND rs.next_run_at IS NOT NULL
+                 AND rs.next_run_at<=%s
+               ORDER BY rs.next_run_at,s.id LIMIT %s""",
+            (now_ms, limit),
+        )
+        return tuple(dict(row) for row in rows)
+
+    async def next_scheduled_run(self, session):
+        row = await session.fetchone(
+            """SELECT MIN(rs.next_run_at) AS next_run_at
+               FROM market_sources s
+               JOIN market_source_policy_heads h ON h.source_id=s.id
+               JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               JOIN market_source_refresh_states rs ON rs.source_id=s.id
+               WHERE s.status='active' AND p.policy_status='verified_public'
+                 AND p.enabled=1 AND rs.next_run_at IS NOT NULL"""
+        )
+        return None if row is None else row["next_run_at"]
+
     async def reserve_refresh(
         self,
         session,
@@ -247,6 +426,7 @@ class MarketRepository:
         input_manifest_hash: str,
         now_ms: int,
         enforce_cooldown: bool,
+        scheduled: bool = False,
     ):
         source = await session.fetchone(
             """SELECT s.id,s.stable_key,s.adapter_key,s.display_name,
@@ -300,13 +480,22 @@ class MarketRepository:
 
         state = await session.fetchone(
             """SELECT refresh_status,lease_owner,lease_expires_at,
-                      last_attempted_at,last_succeeded_at,last_snapshot_id
+                      last_attempted_at,last_succeeded_at,last_snapshot_id,
+                      next_run_at
                FROM market_source_refresh_states
                WHERE source_id=%s FOR UPDATE""",
             (source_id,),
         )
         if state is None:
             raise RuntimeError("market source refresh state is unavailable")
+
+        if scheduled and (
+            source["policy_status"] != "verified_public"
+            or not bool(source["enabled"])
+            or state["next_run_at"] is None
+            or state["next_run_at"] > now_ms
+        ):
+            return {"kind": "skipped", "status": "not-due"}
 
         lease_is_live = bool(
             state["refresh_status"] == "leased"
@@ -315,6 +504,8 @@ class MarketRepository:
             and state["lease_expires_at"] > now_ms
         )
         if lease_is_live:
+            if scheduled:
+                return {"kind": "skipped", "status": "lease-live"}
             raise MarketSourceFailure("MARKET_REFRESH_IN_PROGRESS")
 
         recovered_expired_lease = False
@@ -373,6 +564,7 @@ class MarketRepository:
         cooldown_ms = int(source["interval_minutes"]) * 60 * 1000
         if (
             enforce_cooldown
+            and not scheduled
             and state["last_attempted_at"] is not None
             and now_ms < state["last_attempted_at"] + cooldown_ms
         ):
@@ -434,6 +626,9 @@ class MarketRepository:
             "kind": "reserved",
             "request_id": request_id,
             "source": decoded,
+            "scheduled_interval_minutes": (
+                int(source["interval_minutes"]) if scheduled else None
+            ),
         }
 
     async def _snapshot_summary(self, session, source_id: str, snapshot_id: str):
@@ -463,6 +658,7 @@ class MarketRepository:
         policy_revision: int,
         policy_hash: str,
         completed_at: int,
+        next_run_at: int | None = None,
     ):
         source = await session.fetchone(
             """SELECT id,status FROM market_sources
@@ -667,12 +863,14 @@ class MarketRepository:
             """UPDATE market_source_refresh_states
                SET last_snapshot_id=%s,refresh_status='idle',lease_owner=NULL,
                    lease_expires_at=NULL,last_succeeded_at=%s,
+                   next_run_at=COALESCE(%s,next_run_at),
                    public_error_code=NULL,updated_at=%s
                WHERE source_id=%s AND refresh_status='leased'
                      AND lease_owner=%s""",
             (
                 published_id,
                 completed_at,
+                next_run_at,
                 completed_at,
                 source_id,
                 request_id,
@@ -690,6 +888,7 @@ class MarketRepository:
         source_id: str,
         public_error_code: str,
         completed_at: int,
+        next_run_at: int | None = None,
     ) -> None:
         source = await session.fetchone(
             "SELECT id FROM market_sources WHERE id=%s FOR UPDATE",
@@ -698,7 +897,7 @@ class MarketRepository:
         if source is None:
             raise MarketSourceConflict()
         state = await session.fetchone(
-            """SELECT refresh_status,lease_owner
+            """SELECT refresh_status,lease_owner,lease_expires_at
                FROM market_source_refresh_states
                WHERE source_id=%s FOR UPDATE""",
             (source_id,),
@@ -707,6 +906,8 @@ class MarketRepository:
             state is None
             or state["refresh_status"] != "leased"
             or state["lease_owner"] != request_id
+            or state["lease_expires_at"] is None
+            or state["lease_expires_at"] <= completed_at
         ):
             raise MarketSourceConflict()
         changed = await session.execute(
@@ -720,10 +921,13 @@ class MarketRepository:
         changed = await session.execute(
             """UPDATE market_source_refresh_states
                SET refresh_status='idle',lease_owner=NULL,
-                   lease_expires_at=NULL,public_error_code=%s,updated_at=%s
+                   lease_expires_at=NULL,
+                   next_run_at=COALESCE(%s,next_run_at),
+                   public_error_code=%s,updated_at=%s
                WHERE source_id=%s AND refresh_status='leased'
                      AND lease_owner=%s""",
             (
+                next_run_at,
                 public_error_code,
                 completed_at,
                 source_id,
@@ -741,6 +945,7 @@ class MarketRepository:
         source_id: str,
         public_error_code: str,
         completed_at: int,
+        next_run_at: int | None = None,
     ) -> None:
         source = await session.fetchone(
             "SELECT id FROM market_sources WHERE id=%s FOR UPDATE",
@@ -754,47 +959,53 @@ class MarketRepository:
             (request_id, source_id),
         )
         state = await session.fetchone(
-            """SELECT refresh_status,lease_owner
+            """SELECT refresh_status,lease_owner,lease_expires_at
                FROM market_source_refresh_states
                WHERE source_id=%s FOR UPDATE""",
             (source_id,),
         )
-        if request is None or state is None:
-            raise MarketSourceConflict()
-        if request["status"] == "running":
-            changed = await session.execute(
-                """UPDATE market_refresh_requests
-                   SET status='outcome_unknown',snapshot_id=NULL,
-                       result_hash=NULL,public_error_code=%s,completed_at=%s
-                   WHERE id=%s AND source_id=%s AND status='running'""",
-                (
-                    public_error_code,
-                    completed_at,
-                    request_id,
-                    source_id,
-                ),
-            )
-            if changed != 1:
-                raise MarketSourceConflict()
         if (
-            state["refresh_status"] == "leased"
-            and state["lease_owner"] == request_id
+            request is None
+            or request["status"] != "running"
+            or state is None
+            or state["refresh_status"] != "leased"
+            or state["lease_owner"] != request_id
+            or state["lease_expires_at"] is None
+            or state["lease_expires_at"] <= completed_at
         ):
-            changed = await session.execute(
-                """UPDATE market_source_refresh_states
-                   SET refresh_status='idle',lease_owner=NULL,
-                       lease_expires_at=NULL,public_error_code=%s,updated_at=%s
-                   WHERE source_id=%s AND refresh_status='leased'
-                         AND lease_owner=%s""",
-                (
-                    public_error_code,
-                    completed_at,
-                    source_id,
-                    request_id,
-                ),
-            )
-            if changed != 1:
-                raise MarketSourceConflict()
+            raise MarketSourceConflict()
+        changed = await session.execute(
+            """UPDATE market_refresh_requests
+               SET status='outcome_unknown',snapshot_id=NULL,
+                   result_hash=NULL,public_error_code=%s,completed_at=%s
+               WHERE id=%s AND source_id=%s AND status='running'""",
+            (
+                public_error_code,
+                completed_at,
+                request_id,
+                source_id,
+            ),
+        )
+        if changed != 1:
+            raise MarketSourceConflict()
+        changed = await session.execute(
+            """UPDATE market_source_refresh_states
+               SET refresh_status='idle',lease_owner=NULL,
+                   lease_expires_at=NULL,
+                   next_run_at=COALESCE(%s,next_run_at),
+                   public_error_code=%s,updated_at=%s
+               WHERE source_id=%s AND refresh_status='leased'
+                     AND lease_owner=%s""",
+            (
+                next_run_at,
+                public_error_code,
+                completed_at,
+                source_id,
+                request_id,
+            ),
+        )
+        if changed != 1:
+            raise MarketSourceConflict()
 
     async def list_snapshots(self, session, source_id: str):
         return tuple(

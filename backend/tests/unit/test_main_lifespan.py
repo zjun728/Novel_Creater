@@ -19,9 +19,25 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
     async def fake_close_pool():
         events.append("close")
 
+    class FakeRuntime:
+        def start(self):
+            events.append("scheduler-start")
+
+        async def stop(self):
+            events.append("scheduler-stop")
+
+    def fake_build_runtime():
+        events.append("scheduler-build")
+        return FakeRuntime()
+
     monkeypatch.setattr(main, "connection", lambda: context)
     monkeypatch.setattr(main, "verify_schema_version", fake_verify)
     monkeypatch.setattr(main, "close_pool", fake_close_pool)
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        fake_build_runtime,
+    )
     return events
 
 
@@ -33,14 +49,24 @@ async def test_lifespan_verifies_once_before_yield_and_closes_after_success(monk
     await context.__aenter__()
     events.append("app-yielded")
 
-    assert events == ["connection-enter", "verify", "connection-exit", "app-yielded"]
+    assert events == [
+        "connection-enter",
+        "verify",
+        "connection-exit",
+        "scheduler-build",
+        "scheduler-start",
+        "app-yielded",
+    ]
 
     await context.__aexit__(None, None, None)
     assert events == [
         "connection-enter",
         "verify",
         "connection-exit",
+        "scheduler-build",
+        "scheduler-start",
         "app-yielded",
+        "scheduler-stop",
         "close",
     ]
 
@@ -70,7 +96,87 @@ async def test_lifespan_closes_pool_when_yielded_application_fails(monkeypatch):
     )
 
     assert suppressed is False
-    assert events == ["connection-enter", "verify", "connection-exit", "close"]
+    assert events == [
+        "connection-enter",
+        "verify",
+        "connection-exit",
+        "scheduler-build",
+        "scheduler-start",
+        "scheduler-stop",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_aggregates_scheduler_and_pool_cleanup_failures(monkeypatch):
+    events = install_lifespan_fakes(monkeypatch)
+    scheduler_error = RuntimeError("synthetic scheduler cleanup")
+    pool_error = RuntimeError("synthetic pool cleanup")
+
+    class FailingRuntime:
+        def start(self):
+            events.append("scheduler-start")
+
+        async def stop(self):
+            events.append("scheduler-stop")
+            raise scheduler_error
+
+    monkeypatch.setattr(main, "build_market_scheduler_runtime", FailingRuntime)
+
+    async def failing_close_pool():
+        events.append("close")
+        raise pool_error
+
+    monkeypatch.setattr(main, "close_pool", failing_close_pool)
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(BaseExceptionGroup) as aggregated:
+        await context.__aexit__(None, None, None)
+
+    assert aggregated.value.exceptions == (scheduler_error, pool_error)
+    assert events[-2:] == ["scheduler-stop", "close"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_preserves_application_error_with_all_cleanup_failures(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    application_error = RuntimeError("synthetic application failure")
+    scheduler_error = RuntimeError("synthetic scheduler cleanup")
+    pool_error = RuntimeError("synthetic pool cleanup")
+
+    class FailingRuntime:
+        def start(self):
+            events.append("scheduler-start")
+
+        async def stop(self):
+            events.append("scheduler-stop")
+            raise scheduler_error
+
+    monkeypatch.setattr(main, "build_market_scheduler_runtime", FailingRuntime)
+
+    async def failing_close_pool():
+        events.append("close")
+        raise pool_error
+
+    monkeypatch.setattr(main, "close_pool", failing_close_pool)
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(BaseExceptionGroup) as aggregated:
+        await context.__aexit__(
+            RuntimeError,
+            application_error,
+            application_error.__traceback__,
+        )
+
+    assert aggregated.value.exceptions == (
+        application_error,
+        scheduler_error,
+        pool_error,
+    )
 
 
 @pytest.mark.asyncio

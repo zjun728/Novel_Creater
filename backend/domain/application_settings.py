@@ -37,4 +37,5 @@ class ApplicationDiagnostics(_FrozenModel):
     managed_corpus_store_ready: bool
     scheduler_enabled: bool
     scheduler_state: str = Field(min_length=1)
+    scheduler_next_run_at: int | None = Field(default=None, ge=0)
     application_version: str = Field(min_length=1)

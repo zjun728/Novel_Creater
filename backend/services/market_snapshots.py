@@ -13,6 +13,7 @@ from backend.domain.market_sources import (
     MarketSourceNotFound,
 )
 from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+from backend.services.market_scheduler import scheduled_failure_backoff_ms
 
 
 _FIXED_SOURCE_URLS = {
@@ -49,21 +50,27 @@ class MarketSnapshotService:
         request_hash: str,
         *,
         enforce_cooldown: bool,
+        scheduled: bool = False,
     ):
+        values = {
+            "source_id": source_id,
+            "idempotency_key": idempotency_key,
+            "request_hash": request_hash,
+            "input_manifest_hash": canonical_hash(
+                {
+                    "sourceId": source_id,
+                    "requestHash": request_hash,
+                }
+            ),
+            "now_ms": self._clock(),
+            "enforce_cooldown": enforce_cooldown,
+        }
+        if scheduled:
+            values["scheduled"] = True
         async with self._transaction() as session:
             reservation = await self.repository.reserve_refresh(
                 session,
-                source_id=source_id,
-                idempotency_key=idempotency_key,
-                request_hash=request_hash,
-                input_manifest_hash=canonical_hash(
-                    {
-                        "sourceId": source_id,
-                        "requestHash": request_hash,
-                    }
-                ),
-                now_ms=self._clock(),
-                enforce_cooldown=enforce_cooldown,
+                **values,
             )
         if reservation["kind"] == "rejected":
             raise MarketSourceFailure(reservation["code"])
@@ -87,53 +94,135 @@ class MarketSnapshotService:
         reservation: dict,
         failure: MarketSourceFailure,
     ) -> None:
-        async with self._transaction() as session:
-            await self.repository.fail_refresh(
-                session,
-                request_id=reservation["request_id"],
-                source_id=reservation["source"]["id"],
-                public_error_code=failure.code,
-                completed_at=self._clock(),
+        completed_at = self._clock()
+        interval = reservation.get("scheduled_interval_minutes")
+        next_run_at = (
+            completed_at + scheduled_failure_backoff_ms(interval)
+            if interval is not None
+            else None
+        )
+        values = {
+            "request_id": reservation["request_id"],
+            "source_id": reservation["source"]["id"],
+            "public_error_code": failure.code,
+            "completed_at": completed_at,
+        }
+        if next_run_at is not None:
+            values["next_run_at"] = next_run_at
+
+        async def persist() -> None:
+            async with self._transaction() as session:
+                await self.repository.fail_refresh(
+                    session,
+                    **values,
+                )
+
+        persistence = asyncio.create_task(persist())
+        try:
+            await asyncio.shield(persistence)
+        except asyncio.CancelledError as cancellation:
+            cleanup_error = await self._await_bounded_task(persistence)
+            if cleanup_error is not None:
+                raise BaseExceptionGroup(
+                    "market refresh failure persistence cleanup failed",
+                    [cancellation, cleanup_error],
+                ) from None
+            raise
+
+    @staticmethod
+    async def _await_bounded_task(
+        cleanup: asyncio.Task,
+    ) -> BaseException | None:
+        def aggregate(errors: list[BaseException]) -> BaseException | None:
+            if not errors:
+                return None
+            if len(errors) == 1:
+                return errors[0]
+            return BaseExceptionGroup(
+                "market refresh cleanup was interrupted",
+                errors,
             )
+
+        def consume(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except BaseException:
+                pass
+
+        async def cancel_at_deadline(
+            error: TimeoutError,
+        ) -> BaseException | None:
+            cleanup.cancel()
+            cleanup.add_done_callback(consume)
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError as interruption:
+                interruptions.append(interruption)
+            return aggregate([*interruptions, error])
+
+        loop = asyncio.get_running_loop()
+        deadline = (
+            loop.time() + CANCELLATION_CLEANUP_TIMEOUT_SECONDS
+        )
+        interruptions: list[BaseException] = []
+        while not cleanup.done():
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                error = TimeoutError(
+                    "market refresh cancellation cleanup timed out"
+                )
+                return await cancel_at_deadline(error)
+            try:
+                done, _ = await asyncio.wait(
+                    (cleanup,),
+                    timeout=remaining,
+                )
+            except asyncio.CancelledError as error:
+                interruptions.append(error)
+                cleanup.cancel()
+                continue
+            if not done:
+                error = TimeoutError(
+                    "market refresh cancellation cleanup timed out"
+                )
+                return await cancel_at_deadline(error)
+
+        try:
+            cleanup.result()
+        except asyncio.CancelledError as error:
+            if not interruptions:
+                interruptions.append(error)
+        except BaseException as error:
+            interruptions.append(error)
+        return aggregate(interruptions)
 
     async def _cleanup_cancellation(
         self,
         reservation: dict,
     ) -> BaseException | None:
         async def abandon() -> None:
+            completed_at = self._clock()
+            interval = reservation.get("scheduled_interval_minutes")
+            next_run_at = (
+                completed_at + scheduled_failure_backoff_ms(interval)
+                if interval is not None
+                else None
+            )
+            values = {
+                "request_id": reservation["request_id"],
+                "source_id": reservation["source"]["id"],
+                "public_error_code": "MARKET_REFRESH_CANCELLED",
+                "completed_at": completed_at,
+            }
+            if next_run_at is not None:
+                values["next_run_at"] = next_run_at
             async with self._transaction() as session:
                 await self.repository.abandon_refresh(
                     session,
-                    request_id=reservation["request_id"],
-                    source_id=reservation["source"]["id"],
-                    public_error_code="MARKET_REFRESH_CANCELLED",
-                    completed_at=self._clock(),
+                    **values,
                 )
 
-        cleanup = asyncio.create_task(abandon())
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(cleanup),
-                timeout=CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
-            )
-        except TimeoutError as error:
-            cleanup.cancel()
-            done, _ = await asyncio.wait(
-                (cleanup,),
-                timeout=CANCELLATION_CLEANUP_TIMEOUT_SECONDS,
-            )
-            if cleanup in done and not cleanup.cancelled():
-                cleanup.exception()
-            elif cleanup not in done:
-                cleanup.add_done_callback(
-                    lambda task: None
-                    if task.cancelled()
-                    else task.exception()
-                )
-            return error
-        except BaseException as error:
-            return error
-        return None
+        return await self._await_bounded_task(asyncio.create_task(abandon()))
 
     async def _raise_after_cancellation(
         self,
@@ -181,39 +270,63 @@ class MarketSnapshotService:
             for entry in snapshot.entries
         )
         manifest_id = self._id()
+        completed_at = self._clock()
+        interval = reservation.get("scheduled_interval_minutes")
+        next_run_at = (
+            completed_at + int(interval) * 60_000
+            if interval is not None
+            else None
+        )
+        values = {
+            "request_id": reservation["request_id"],
+            "source_id": source["id"],
+            "snapshot": snapshot,
+            "snapshot_id": snapshot_id,
+            "snapshot_hash": snapshot_hash,
+            "entry_ids": entry_ids,
+            "entry_hashes": entry_hashes,
+            "manifest_id": manifest_id,
+            "manifest": manifest,
+            "manifest_hash": canonical_hash(manifest),
+            "adapter_version": adapter_version,
+            "policy_revision_id": source["policy_revision_id"],
+            "policy_revision": source["policy_revision"],
+            "policy_hash": source["policy_hash"],
+            "completed_at": completed_at,
+        }
+        if next_run_at is not None:
+            values["next_run_at"] = next_run_at
         async with self._transaction() as session:
             result = await self.repository.publish_snapshot(
                 session,
-                request_id=reservation["request_id"],
-                source_id=source["id"],
-                snapshot=snapshot,
-                snapshot_id=snapshot_id,
-                snapshot_hash=snapshot_hash,
-                entry_ids=entry_ids,
-                entry_hashes=entry_hashes,
-                manifest_id=manifest_id,
-                manifest=manifest,
-                manifest_hash=canonical_hash(manifest),
-                adapter_version=adapter_version,
-                policy_revision_id=source["policy_revision_id"],
-                policy_revision=source["policy_revision"],
-                policy_hash=source["policy_hash"],
-                completed_at=self._clock(),
+                **values,
             )
         if result.get("kind") == "rejected":
             raise MarketSourceFailure(result["code"])
         return result
 
-    async def refresh(self, source_id: str, *, idempotency_key: str):
+    async def _refresh(
+        self,
+        source_id: str,
+        *,
+        idempotency_key: str,
+        scheduled: bool,
+    ):
         request_hash = canonical_hash(
-            {"sourceId": source_id, "mode": "automatic"}
+            {
+                "sourceId": source_id,
+                "mode": "scheduled" if scheduled else "automatic",
+            }
         )
         reservation = await self._reserve(
             source_id,
             idempotency_key,
             request_hash,
             enforce_cooldown=True,
+            scheduled=scheduled,
         )
+        if reservation["kind"] == "skipped":
+            return reservation
         if reservation["kind"] == "succeeded":
             return reservation["snapshot"]
         source = reservation["source"]
@@ -237,6 +350,7 @@ class MarketSnapshotService:
             failure = MarketSourceFailure("MARKET_REFRESH_FAILED")
             await self._record_failure(reservation, failure)
             raise failure from None
+
         try:
             return await self._publish(
                 reservation,
@@ -252,6 +366,25 @@ class MarketSnapshotService:
             failure = MarketSourceFailure("MARKET_REFRESH_FAILED")
             await self._record_failure(reservation, failure)
             raise failure from None
+
+    async def refresh(self, source_id: str, *, idempotency_key: str):
+        return await self._refresh(
+            source_id,
+            idempotency_key=idempotency_key,
+            scheduled=False,
+        )
+
+    async def refresh_scheduled(
+        self,
+        source_id: str,
+        *,
+        idempotency_key: str,
+    ):
+        return await self._refresh(
+            source_id,
+            idempotency_key=idempotency_key,
+            scheduled=True,
+        )
 
     async def import_manual(
         self,

@@ -66,6 +66,17 @@ class ManualImportRequest(RefreshRequest):
     snapshot: dict[str, object]
 
 
+class ScheduleRequest(_Request):
+    expectedRevision: int = Field(ge=1)
+    enabled: bool
+    intervalMinutes: int = Field(ge=1, le=525_600)
+    idempotencyKey: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]{64}$",
+    )
+
+
 async def _read_manual_body(request: Request) -> bytes:
     declared_length = request.headers.get("content-length")
     if declared_length is not None:
@@ -160,6 +171,15 @@ def _snapshot_view(row: dict, *, detail: bool) -> dict:
     return value
 
 
+def _recovery_reason(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return MarketSourceFailure(value).code
+    except TypeError:
+        return None
+
+
 def get_market_source_service() -> MarketSourceService:
     repository = MarketRepository()
     transport = HttpxMarketTransport()
@@ -177,6 +197,7 @@ def get_market_source_service() -> MarketSourceService:
         repository,
         snapshot_service,
         connection_factory=connection,
+        transaction_factory=transaction,
     )
 
 
@@ -244,3 +265,27 @@ async def refresh_market_source(
         raise MarketSourceFailure("MARKET_REFRESH_COMMAND_INVALID")
     result = await service.refresh(source_id, data.idempotency_key)
     return _snapshot_view(result, detail=True)
+
+
+@router.put("/market-sources/{source_id}/schedule")
+async def update_market_source_schedule(
+    source_id: BoundedId,
+    data: ScheduleRequest,
+    service: MarketSourceService = Depends(get_market_source_service),
+):
+    result = await service.update_schedule(
+        source_id,
+        expected_revision=data.expectedRevision,
+        enabled=data.enabled,
+        interval_minutes=data.intervalMinutes,
+        idempotency_key=data.idempotencyKey,
+    )
+    return {
+        "sourceId": result["source_id"],
+        "revision": result["revision"],
+        "enabled": result["enabled"],
+        "intervalMinutes": result["interval_minutes"],
+        "nextRunAt": result["next_run_at"],
+        "policyStatus": result["policy_status"],
+        "recoveryReason": _recovery_reason(result["recovery_reason"]),
+    }

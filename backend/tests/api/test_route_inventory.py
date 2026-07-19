@@ -86,6 +86,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/market-sources/{source_id}/snapshots/{snapshot_id}"),
     ("POST", "/api/market-sources/{source_id}/manual-import"),
     ("POST", "/api/market-sources/{source_id}/refresh"),
+    ("PUT", "/api/market-sources/{source_id}/schedule"),
     ("GET", "/api/projects/{project_id}/writer-core/state"),
     ("GET", "/api/projects/{project_id}/canon/head"),
     ("GET", "/api/projects/{project_id}/canon/revisions"),

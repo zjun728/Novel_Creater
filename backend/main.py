@@ -26,18 +26,46 @@ from backend.routers import (
     story_engines,
 )
 from backend.schema_version import verify_schema_version
+from backend.runtime.market_scheduler import build_market_scheduler_runtime
 from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    scheduler_runtime = None
+    application_error = None
     try:
         async with connection() as session:
             await verify_schema_version(session)
+        scheduler_runtime = build_market_scheduler_runtime()
+        app.state.market_scheduler_runtime = scheduler_runtime
+        scheduler_runtime.start()
         yield
+    except BaseException as error:
+        application_error = error
     finally:
-        await close_pool()
+        cleanup_errors = []
+        if scheduler_runtime is not None:
+            try:
+                await scheduler_runtime.stop()
+            except BaseException as error:
+                cleanup_errors.append(error)
+        try:
+            await close_pool()
+        except BaseException as error:
+            cleanup_errors.append(error)
+        all_errors = (
+            ([application_error] if application_error is not None else [])
+            + cleanup_errors
+        )
+        if len(all_errors) == 1:
+            raise all_errors[0]
+        if all_errors:
+            raise BaseExceptionGroup(
+                "application shutdown cleanup failed",
+                all_errors,
+            )
 
 
 app = FastAPI(title="Novel Creator API", version="1.0", lifespan=lifespan)

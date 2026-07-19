@@ -46,6 +46,29 @@ class LocalCorpusConfigError(RuntimeError):
     """The explicitly configured local corpus root is absent or unsafe."""
 
 
+class LocalSchedulerConfigError(RuntimeError):
+    """The optional local market scheduler flag is invalid."""
+
+
+def load_market_scheduler_enabled(
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> bool:
+    """Enable the local scheduler only through one explicit boolean flag."""
+
+    source = os.environ if environment is None else environment
+    value = source.get("MARKET_SCHEDULER_ENABLED")
+    if value is None:
+        return False
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise LocalSchedulerConfigError(
+        "MARKET_SCHEDULER_ENABLED must be exactly 'true' or 'false'"
+    )
+
+
 def _checked_port(value: object, *, environment_value: bool) -> int:
     if environment_value:
         if type(value) is not str:
@@ -242,3 +265,4 @@ def require_managed_corpus_root(root: Path | None | object = _UNSET) -> Path:
 MYSQL_CONFIG = load_mysql_config()
 CORPUS_ROOT = load_corpus_root()
 MANAGED_CORPUS_ROOT = load_managed_corpus_root()
+MARKET_SCHEDULER_ENABLED = load_market_scheduler_enabled()
