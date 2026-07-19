@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 from pydantic import ValidationError
@@ -53,6 +54,39 @@ def _response(body: bytes, *, url: str, status=200, headers=None):
         headers=headers or {"content-type": "text/html; charset=utf-8"},
         body=body,
     )
+
+
+def test_market_entry_public_metrics_are_deeply_immutable():
+    from backend.domain.json_contracts import canonical_hash
+    from backend.domain.market import MarketEntry
+
+    metrics = {"weeklyRecommendations": 321}
+    entry = MarketEntry(
+        rank=1,
+        title="雾港天文钟",
+        author="合成作者甲",
+        category="奇幻",
+        workURL="https://www.qidian.com/book/900000001/",
+        publicMetrics=metrics,
+    )
+    expected_hash = canonical_hash(entry)
+
+    metrics["weeklyRecommendations"] = 999
+
+    assert entry.public_metrics["weeklyRecommendations"] == 321
+    with pytest.raises(TypeError):
+        entry.public_metrics["weeklyRecommendations"] = 2
+    assert canonical_hash(entry) == expected_hash
+
+    entry_without_metrics = MarketEntry(
+        rank=2,
+        title="盐原回声",
+        author="合成作者乙",
+        category="科幻",
+        workURL="https://www.qidian.com/book/900000002/",
+    )
+    with pytest.raises(TypeError):
+        entry_without_metrics.public_metrics["heat"] = 1
 
 
 @pytest.mark.asyncio
@@ -110,6 +144,70 @@ async def test_public_adapters_parse_only_normalized_fixture_facts(
     assert request.follow_redirects is False
     assert 0 < request.timeout_seconds <= 10
     assert 0 < request.max_body_bytes <= 512 * 1024
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adapter_name", "fixture", "url", "platform"),
+    (
+        (
+            "QidianPublicRankAdapter",
+            "qidian_newsign.html",
+            "https://www.qidian.com/rank/newsign/",
+            "qidian",
+        ),
+        (
+            "QQReadingPublicRankAdapter",
+            "qq_male_popular.html",
+            "https://book.qq.com/book-rank",
+            "qq_reading",
+        ),
+    ),
+)
+@pytest.mark.parametrize("damage", ("first-entry-only", "unclosed-container"))
+async def test_public_adapters_reject_well_formed_partial_and_truncated_pages(
+    adapter_name,
+    fixture,
+    url,
+    platform,
+    damage,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.qidian_public_rank import (
+        QidianPublicRankAdapter,
+    )
+    from backend.gateways.market_sources.qq_reading_public_rank import (
+        QQReadingPublicRankAdapter,
+    )
+
+    adapter_class = {
+        "QidianPublicRankAdapter": QidianPublicRankAdapter,
+        "QQReadingPublicRankAdapter": QQReadingPublicRankAdapter,
+    }[adapter_name]
+    text = (FIXTURES / fixture).read_text(encoding="utf-8")
+    if damage == "first-entry-only":
+        text = re.sub(
+            r"\s*<article data-rank-entry data-rank=\"2\">.*?</article>",
+            "",
+            text,
+            count=1,
+            flags=re.DOTALL,
+        )
+    else:
+        text = text.replace("</main>", "", 1)
+    transport = RecordingTransport(_response(text.encode("utf-8"), url=url))
+    policy = _policy(platform=platform)
+
+    with pytest.raises(MarketSourceFailure) as captured:
+        await adapter_class(transport).fetch(
+            policy=policy,
+            policy_hash=canonical_hash(policy),
+            captured_at=NOW,
+        )
+
+    assert captured.value.code == "MARKET_PAGE_INCOMPLETE"
+    assert len(transport.requests) == 1
 
 
 @pytest.mark.asyncio

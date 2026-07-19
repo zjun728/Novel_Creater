@@ -43,10 +43,14 @@ _FAILURE_MESSAGES = {
     "MARKET_TRANSPORT_FAILED": "Market source transport failed",
     "MARKET_INTERSTITIAL_REJECTED": "Market source requires interactive access",
     "MARKET_HTML_UNKNOWN": "Market source format is not recognized",
+    "MARKET_PAGE_INCOMPLETE": "Market source page is incomplete",
     "MARKET_SNAPSHOT_INVALID": "Market source returned an invalid snapshot",
     "MARKET_SNAPSHOT_IDENTITY_MISMATCH": "Market snapshot identity does not match its source",
     "MARKET_MANUAL_SNAPSHOT_INVALID": "Manual market snapshot is invalid",
+    "MARKET_REFRESH_COMMAND_INVALID": "Market refresh command is invalid",
+    "MARKET_REFRESH_COOLDOWN": "Market source refresh is in cooldown",
     "MARKET_REFRESH_IN_PROGRESS": "Market source refresh is already in progress",
+    "MARKET_REFRESH_LEASE_EXPIRED": "Market source refresh lease expired",
     "MARKET_REFRESH_FAILED": "Market source refresh could not be completed",
 }
 

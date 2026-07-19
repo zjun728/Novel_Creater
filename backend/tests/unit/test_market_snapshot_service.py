@@ -41,9 +41,19 @@ class FakeRepository:
         self.last_success = "previous-snapshot"
 
     async def reserve_refresh(
-        self, session, *, source_id, idempotency_key, request_hash, input_manifest_hash, now_ms
+        self,
+        session,
+        *,
+        source_id,
+        idempotency_key,
+        request_hash,
+        input_manifest_hash,
+        now_ms,
+        enforce_cooldown,
     ):
-        self.events.append(("reserve", source_id, idempotency_key))
+        self.events.append(
+            ("reserve", source_id, idempotency_key, enforce_cooldown)
+        )
         return {
             "kind": "reserved",
             "request_id": "request-1",
@@ -343,3 +353,40 @@ async def test_public_inventory_does_not_advertise_expired_verified_policy():
 
     assert source["policy_status"] == "verified_public"
     assert source["automatic_refresh_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_public_inventory_is_stably_bounded_to_one_hundred_sources():
+    from backend.services.market_sources import MarketSourceService
+
+    rows = tuple(
+        {
+            **_source(),
+            "id": f"source-{index:03d}",
+            "stable_key": f"source.{index:03d}",
+            "display_name": f"Source {index:03d}",
+            "refresh_status": "idle",
+        }
+        for index in range(105)
+    )
+
+    class ReadRepository:
+        async def list_sources(self, session):
+            return rows
+
+    @asynccontextmanager
+    async def connection():
+        yield object()
+
+    service = MarketSourceService(
+        ReadRepository(),
+        snapshot_service=None,
+        connection_factory=connection,
+        clock=lambda: NOW,
+    )
+
+    inventory = await service.list_sources()
+
+    assert len(inventory) == 100
+    assert inventory[0]["stable_key"] == "source.000"
+    assert inventory[-1]["stable_key"] == "source.099"

@@ -13,6 +13,7 @@ DELETED_ROUTERS = (
     "project_state.py",
     "provenance_support.py",
     "export.py",
+    "market.py",
 )
 
 APPROVED_FORMAL_ROUTES = {
@@ -117,6 +118,10 @@ FORBIDDEN_LEGACY_PREFIXES = (
     "/api/project-state",
 )
 
+FORBIDDEN_LEGACY_PATHS = {
+    "/api/market",
+}
+
 
 def _api_methods_and_paths():
     return {
@@ -133,6 +138,7 @@ def test_main_registers_exact_formal_route_inventory():
 
 def test_forbidden_legacy_route_prefixes_remain_absent():
     paths = {path for _, path in _api_methods_and_paths()}
+    assert paths.isdisjoint(FORBIDDEN_LEGACY_PATHS)
     assert not {
         path
         for path in paths

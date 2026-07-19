@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -91,6 +92,8 @@ async def test_manual_snapshot_publication_is_immutable_idempotent_and_updates_h
     reused = await service.import_manual(source_id, payload, idempotency_key="b" * 64)
 
     assert first == replay == reused
+    assert first["entry_count"] == len(first["entries"]) == 2
+    assert [entry["rank"] for entry in first["entries"]] == [1, 2]
     counts = {}
     for table in (
         "market_snapshots",
@@ -144,3 +147,234 @@ async def test_manual_snapshot_publication_is_immutable_idempotent_and_updates_h
     detail = await service.get_snapshot(source_id, first["id"])
     assert [entry["rank"] for entry in detail["entries"]] == [1, 2]
     assert "raw" not in repr(detail).casefold()
+
+
+async def test_refresh_lease_blocks_other_key_and_cooldown_opens_no_transport(
+    disposable_mysql,
+):
+    from backend.domain.json_contracts import canonical_hash, canonical_json
+    from backend.domain.market import MarketEntry, MarketSnapshot
+    from backend.domain.market_sources import (
+        MarketSourceFailure,
+        SourcePolicy,
+        load_market_source_package,
+    )
+    from backend.repositories.market import MarketRepository
+    from backend.services.market_sources import MarketSourceSeedService
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    ids = iter(f"50000000-0000-0000-0000-{index:012d}" for index in range(1, 100))
+    id_factory = lambda: next(ids)
+    repository = MarketRepository()
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+    package = load_market_source_package(MANIFEST)
+    await MarketSourceSeedService(
+        repository,
+        transaction_factory=transaction,
+        id_factory=id_factory,
+        clock=lambda: NOW,
+    ).seed(package)
+    source = await disposable_mysql.session.fetchone(
+        "SELECT id FROM market_sources WHERE stable_key='qidian.newsign'"
+    )
+    source_id = source["id"]
+    policy = SourcePolicy(
+        status="verified_public",
+        checkedAt=NOW,
+        evidenceURL="https://evidence.example/qidian-public-rank",
+        evidenceHash="e" * 64,
+        allowedOrigins=("https://www.qidian.com",),
+        pathPrefixes=("/rank/newsign/",),
+        requestIntervalSeconds=60,
+        policyVersion="integration-public-policy-v1",
+        enabled=False,
+    )
+    policy_id = "50000000-0000-0000-0000-000000000901"
+    policy_hash = canonical_hash(policy)
+    await disposable_mysql.session.execute(
+        """INSERT INTO market_source_policy_revisions
+           (id,source_id,revision,policy_status,policy_version,checked_at,
+            evidence_url,evidence_hash,allowed_origins_json,
+            path_prefixes_json,enabled,interval_minutes,next_run_at,
+            content_hash,created_at)
+           VALUES (%s,%s,2,%s,%s,%s,%s,%s,%s,%s,0,1,NULL,%s,%s)""",
+        (
+            policy_id,
+            source_id,
+            policy.status,
+            policy.policy_version,
+            policy.checked_at,
+            policy.evidence_url,
+            policy.evidence_hash,
+            canonical_json(list(policy.allowed_origins)),
+            canonical_json(list(policy.path_prefixes)),
+            policy_hash,
+            NOW,
+        ),
+    )
+    await disposable_mysql.session.execute(
+        """UPDATE market_source_policy_heads
+           SET revision_id=%s,revision=2,content_hash=%s,updated_at=%s
+           WHERE source_id=%s""",
+        (policy_id, policy_hash, NOW, source_id),
+    )
+
+    class BlockingAdapter:
+        adapter_version = "blocking-public-adapter-v1"
+
+        def __init__(self):
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def fetch(self, **kwargs):
+            self.calls += 1
+            if self.calls > 1:
+                raise AssertionError("transport reopened while lease/cooldown active")
+            self.started.set()
+            await self.release.wait()
+            return MarketSnapshot(
+                platform="qidian",
+                ranking_name="newsign",
+                category="male",
+                captured_at=NOW,
+                source_url="https://www.qidian.com/rank/newsign/",
+                entries=(
+                    MarketEntry(
+                        rank=1,
+                        title="并发租约合成书",
+                        author="合成作者",
+                        category="奇幻",
+                        work_url="https://www.qidian.com/book/900000099/",
+                        public_metrics={},
+                    ),
+                ),
+            )
+
+    adapter = BlockingAdapter()
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        connection_factory=_connection(disposable_mysql),
+        adapters={"qidian_public_rank": adapter},
+        id_factory=id_factory,
+        clock=lambda: NOW,
+    )
+
+    first_task = asyncio.create_task(
+        service.refresh(source_id, idempotency_key="l" * 64)
+    )
+    await asyncio.wait_for(adapter.started.wait(), timeout=5)
+    try:
+        with pytest.raises(MarketSourceFailure) as busy:
+            await service.refresh(source_id, idempotency_key="o" * 64)
+        assert busy.value.code == "MARKET_REFRESH_IN_PROGRESS"
+        assert adapter.calls == 1
+    finally:
+        adapter.release.set()
+        first = await asyncio.wait_for(first_task, timeout=5)
+    replay = await service.refresh(source_id, idempotency_key="l" * 64)
+    assert replay == first
+    assert replay["entry_count"] == len(replay["entries"]) == 1
+    assert adapter.calls == 1
+
+    with pytest.raises(MarketSourceFailure) as cooldown:
+        await service.refresh(source_id, idempotency_key="c" * 64)
+    assert cooldown.value.code == "MARKET_REFRESH_COOLDOWN"
+    assert adapter.calls == 1
+    state = await disposable_mysql.session.fetchone(
+        """SELECT refresh_status,lease_owner,lease_expires_at,last_attempted_at,
+                  last_snapshot_id,last_succeeded_at,public_error_code
+           FROM market_source_refresh_states WHERE source_id=%s""",
+        (source_id,),
+    )
+    assert state == {
+        "refresh_status": "idle",
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "last_attempted_at": NOW,
+        "last_snapshot_id": first["id"],
+        "last_succeeded_at": NOW,
+        "public_error_code": None,
+    }
+
+
+async def test_expired_refresh_lease_is_persistently_recovered_during_cooldown(
+    disposable_mysql,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.domain.market_sources import (
+        MarketSourceFailure,
+        load_market_source_package,
+    )
+    from backend.repositories.market import MarketRepository
+    from backend.services.market_sources import MarketSourceSeedService
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    ids = iter(f"60000000-0000-0000-0000-{index:012d}" for index in range(1, 100))
+    repository = MarketRepository()
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+    await MarketSourceSeedService(
+        repository,
+        transaction_factory=transaction,
+        id_factory=lambda: next(ids),
+        clock=lambda: NOW,
+    ).seed(load_market_source_package(MANIFEST))
+    source = await disposable_mysql.session.fetchone(
+        "SELECT id FROM market_sources WHERE stable_key='qidian.newsign'"
+    )
+    source_id = source["id"]
+    request_hash = canonical_hash(
+        {"sourceId": source_id, "mode": "automatic"}
+    )
+    async with transaction() as session:
+        reservation = await repository.reserve_refresh(
+            session,
+            source_id=source_id,
+            idempotency_key="x" * 64,
+            request_hash=request_hash,
+            input_manifest_hash=canonical_hash({}),
+            now_ms=NOW,
+            enforce_cooldown=True,
+        )
+    assert reservation["kind"] == "reserved"
+
+    class NoTransportAdapter:
+        adapter_version = "no-transport-v1"
+
+        async def fetch(self, **kwargs):
+            raise AssertionError("expired lease recovery must not open transport")
+
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": NoTransportAdapter()},
+        clock=lambda: NOW + 30_001,
+    )
+    with pytest.raises(MarketSourceFailure) as cooldown:
+        await service.refresh(source_id, idempotency_key="y" * 64)
+
+    assert cooldown.value.code == "MARKET_REFRESH_COOLDOWN"
+    state = await disposable_mysql.session.fetchone(
+        """SELECT refresh_status,lease_owner,lease_expires_at,
+                  last_attempted_at,public_error_code
+           FROM market_source_refresh_states WHERE source_id=%s""",
+        (source_id,),
+    )
+    assert state == {
+        "refresh_status": "idle",
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "last_attempted_at": NOW,
+        "public_error_code": "MARKET_REFRESH_LEASE_EXPIRED",
+    }
+    expired = await disposable_mysql.session.fetchone(
+        """SELECT status,public_error_code,completed_at
+           FROM market_refresh_requests WHERE id=%s""",
+        (reservation["request_id"],),
+    )
+    assert expired == {
+        "status": "outcome_unknown",
+        "public_error_code": "MARKET_REFRESH_LEASE_EXPIRED",
+        "completed_at": NOW + 30_001,
+    }

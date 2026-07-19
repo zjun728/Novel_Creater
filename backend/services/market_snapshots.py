@@ -45,9 +45,11 @@ class MarketSnapshotService:
         source_id: str,
         idempotency_key: str,
         request_hash: str,
+        *,
+        enforce_cooldown: bool,
     ):
         async with self._transaction() as session:
-            return await self.repository.reserve_refresh(
+            reservation = await self.repository.reserve_refresh(
                 session,
                 source_id=source_id,
                 idempotency_key=idempotency_key,
@@ -59,7 +61,11 @@ class MarketSnapshotService:
                     }
                 ),
                 now_ms=self._clock(),
+                enforce_cooldown=enforce_cooldown,
             )
+        if reservation["kind"] == "rejected":
+            raise MarketSourceFailure(reservation["code"])
+        return reservation
 
     @staticmethod
     def _validate_identity(snapshot: MarketSnapshot, source: dict) -> None:
@@ -142,6 +148,7 @@ class MarketSnapshotService:
             source_id,
             idempotency_key,
             request_hash,
+            enforce_cooldown=True,
         )
         if reservation["kind"] == "succeeded":
             return reservation["snapshot"]
@@ -186,6 +193,7 @@ class MarketSnapshotService:
             source_id,
             idempotency_key,
             request_hash,
+            enforce_cooldown=False,
         )
         if reservation["kind"] == "succeeded":
             return reservation["snapshot"]

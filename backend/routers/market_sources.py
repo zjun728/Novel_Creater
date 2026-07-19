@@ -36,6 +36,12 @@ class _Request(BaseModel):
 
 
 class RefreshRequest(_Request):
+    model_config = ConfigDict(
+        strict=True,
+        extra="allow",
+        populate_by_name=True,
+        hide_input_in_errors=True,
+    )
     idempotencyKey: str = Field(
         min_length=64,
         max_length=64,
@@ -103,7 +109,13 @@ def _snapshot_view(row: dict, *, detail: bool) -> dict:
         "entryCount": row["entry_count"],
     }
     if detail:
-        value["entries"] = [_entry_view(entry) for entry in row.get("entries", ())]
+        entries = row.get("entries")
+        if (
+            not isinstance(entries, (tuple, list))
+            or len(entries) != row["entry_count"]
+        ):
+            raise MarketSourceFailure("MARKET_REFRESH_FAILED")
+        value["entries"] = [_entry_view(entry) for entry in entries]
     return value
 
 
@@ -188,5 +200,7 @@ async def refresh_market_source(
     data: RefreshRequest,
     service: MarketSourceService = Depends(get_market_source_service),
 ):
+    if data.__pydantic_extra__:
+        raise MarketSourceFailure("MARKET_REFRESH_COMMAND_INVALID")
     result = await service.refresh(source_id, data.idempotency_key)
     return _snapshot_view(result, detail=True)

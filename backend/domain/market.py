@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Self
+from types import MappingProxyType
+from typing import Mapping, Self
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 
 MAX_MARKET_ENTRIES = 100
+MAX_MARKET_SOURCES = 100
 _METRIC_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 
@@ -50,8 +59,8 @@ class MarketEntry(_MarketModel):
     author: str = Field(min_length=1, max_length=200)
     category: str = Field(min_length=1, max_length=160)
     work_url: str = Field(alias="workURL", min_length=1, max_length=2_048)
-    public_metrics: dict[str, str | int | float | bool] = Field(
-        default_factory=dict,
+    public_metrics: Mapping[str, str | int | float | bool] = Field(
+        default_factory=lambda: MappingProxyType({}),
         alias="publicMetrics",
     )
 
@@ -64,8 +73,8 @@ class MarketEntry(_MarketModel):
     @classmethod
     def validate_public_metrics(
         cls,
-        value: dict[str, str | int | float | bool],
-    ) -> dict[str, str | int | float | bool]:
+        value: Mapping[str, str | int | float | bool],
+    ) -> Mapping[str, str | int | float | bool]:
         if len(value) > 32:
             raise ValueError("public metrics are unbounded")
         normalized: dict[str, str | int | float | bool] = {}
@@ -79,7 +88,14 @@ class MarketEntry(_MarketModel):
             elif isinstance(item, float) and not math.isfinite(item):
                 raise ValueError("public metric number is invalid")
             normalized[key] = item
-        return normalized
+        return MappingProxyType(normalized)
+
+    @field_serializer("public_metrics")
+    def serialize_public_metrics(
+        self,
+        value: Mapping[str, str | int | float | bool],
+    ) -> dict[str, str | int | float | bool]:
+        return dict(value)
 
 
 class MarketSnapshot(_MarketModel):

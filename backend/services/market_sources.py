@@ -7,6 +7,7 @@ import time
 from uuid import uuid4
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.market import MAX_MARKET_SOURCES
 from backend.domain.market_sources import (
     MarketSourceNotFound,
     MarketSourcePackage,
@@ -226,7 +227,9 @@ class MarketSourceService:
     async def list_sources(self):
         async with self._connection() as session:
             rows = await self.repository.list_sources(session)
-        return tuple(self._public_source(row) for row in rows)
+        return tuple(
+            self._public_source(row) for row in rows[:MAX_MARKET_SOURCES]
+        )
 
     async def get_source(self, source_id: str):
         async with self._connection() as session:

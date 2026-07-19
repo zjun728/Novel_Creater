@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from inspect import signature
+import logging
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -242,6 +243,50 @@ def test_manual_import_nested_raw_content_fails_with_no_echo_before_service():
     assert response.json()["code"] == "MARKET_MANUAL_SNAPSHOT_INVALID"
     assert raw_sentinel not in str(response.json())
     assert service.calls == []
+
+
+def test_refresh_rejects_raw_url_and_policy_overrides_without_echo(
+    caplog,
+):
+    client, service, _ = _client()
+    raw_sentinel = "PRIVATE_REFRESH_RAW_HTML_SENTINEL"
+    caplog.set_level(logging.WARNING, logger="backend")
+
+    response = client.post(
+        f"/api/market-sources/{SOURCE_ID}/refresh",
+        json={
+            "idempotencyKey": "r" * 64,
+            "rawHTML": raw_sentinel,
+            "url": "https://evil.example/rank",
+            "policy": {"status": "verified_public"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "MARKET_REFRESH_COMMAND_INVALID"
+    assert raw_sentinel not in str(response.json())
+    assert raw_sentinel not in caplog.text
+    assert service.calls == []
+
+
+def test_command_response_never_masks_missing_persisted_entries_as_empty_detail():
+    client, service, _ = _client()
+
+    async def summary_only(source_id, idempotency_key):
+        value = _snapshot()
+        value.pop("entries")
+        return value
+
+    service.refresh = summary_only
+
+    response = client.post(
+        f"/api/market-sources/{SOURCE_ID}/refresh",
+        json={"idempotencyKey": "r" * 64},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "MARKET_REFRESH_FAILED"
+    assert "entries" not in response.json()
 
 
 def test_main_registers_new_routes_and_has_no_old_market_scrape_route():

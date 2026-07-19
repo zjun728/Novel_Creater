@@ -130,6 +130,9 @@ class NormalizedRankHTMLParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.marker = marker
         self.saw_marker = False
+        self.expected_count: int | None = None
+        self.container_stack: list[str] = []
+        self.container_closed = False
         self.entries: list[_EntryBuilder] = []
         self.current: _EntryBuilder | None = None
         self.capture: str | None = None
@@ -138,7 +141,24 @@ class NormalizedRankHTMLParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs_list):
         attrs = dict(attrs_list)
         if attrs.get("data-market-ranking") == self.marker:
+            if self.saw_marker or self.container_stack or self.container_closed:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
             self.saw_marker = True
+            try:
+                self.expected_count = int(attrs.get("data-rank-count", ""))
+            except ValueError:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE") from None
+            if (
+                attrs.get("data-rank-complete") != "true"
+                or self.expected_count < 1
+                or self.expected_count > MAX_MARKET_ENTRIES
+            ):
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+            self.container_stack.append(tag)
+        elif self.container_stack:
+            self.container_stack.append(tag)
+        if not self.container_stack:
+            return
         if "data-rank-entry" in attrs:
             if self.current is not None:
                 raise MarketSourceFailure("MARKET_HTML_UNKNOWN")
@@ -179,6 +199,12 @@ class NormalizedRankHTMLParser(HTMLParser):
             self.current = None
             self.capture = None
             self.capture_depth = 0
+        if self.container_stack:
+            if self.container_stack[-1] != tag:
+                raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
+            self.container_stack.pop()
+            if not self.container_stack:
+                self.container_closed = True
 
     def handle_data(self, data: str):
         if self.current is None or self.capture is None:
@@ -202,8 +228,21 @@ def parse_marked_entries(
         raise
     except Exception:
         raise MarketSourceFailure("MARKET_HTML_UNKNOWN") from None
-    if not parser.saw_marker or not parser.entries or parser.current is not None:
+    expected_ranks = (
+        ()
+        if parser.expected_count is None
+        else tuple(range(1, parser.expected_count + 1))
+    )
+    actual_ranks = tuple(entry.rank for entry in parser.entries)
+    if not parser.saw_marker:
         raise MarketSourceFailure("MARKET_HTML_UNKNOWN")
+    if (
+        not parser.container_closed
+        or parser.container_stack
+        or parser.current is not None
+        or actual_ranks != expected_ranks
+    ):
+        raise MarketSourceFailure("MARKET_PAGE_INCOMPLETE")
     if len(parser.entries) > MAX_MARKET_ENTRIES:
         raise MarketSourceFailure("MARKET_SNAPSHOT_INVALID")
 

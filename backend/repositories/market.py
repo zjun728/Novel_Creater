@@ -12,6 +12,8 @@ from backend.domain.market_sources import (
     SourcePolicy,
 )
 
+_REFRESH_LEASE_MS = 30_000
+
 
 def _json_value(value):
     if isinstance(value, str):
@@ -201,7 +203,8 @@ class MarketRepository:
                  ON p.source_id=h.source_id AND p.id=h.revision_id
                 AND p.revision=h.revision AND p.content_hash=h.content_hash
                LEFT JOIN market_source_refresh_states rs ON rs.source_id=s.id
-               WHERE s.status='active' ORDER BY s.stable_key"""
+               WHERE s.status='active'
+               ORDER BY s.stable_key LIMIT 100"""
         )
         return tuple(self._decode_source_row(row) for row in rows)
 
@@ -243,6 +246,7 @@ class MarketRepository:
         request_hash: str,
         input_manifest_hash: str,
         now_ms: int,
+        enforce_cooldown: bool,
     ):
         source = await session.fetchone(
             """SELECT s.id,s.stable_key,s.adapter_key,s.display_name,
@@ -285,7 +289,7 @@ class MarketRepository:
             if existing["request_hash"] != request_hash:
                 raise MarketSourceConflict()
             if existing["status"] == "succeeded":
-                snapshot = await self._snapshot_summary(
+                snapshot = await self.get_snapshot(
                     session,
                     source_id,
                     existing["snapshot_id"],
@@ -293,7 +297,91 @@ class MarketRepository:
                 return {"kind": "succeeded", "snapshot": snapshot}
             if existing["status"] in {"failed", "outcome_unknown"}:
                 raise MarketSourceFailure(existing["public_error_code"])
+
+        state = await session.fetchone(
+            """SELECT refresh_status,lease_owner,lease_expires_at,
+                      last_attempted_at,last_succeeded_at,last_snapshot_id
+               FROM market_source_refresh_states
+               WHERE source_id=%s FOR UPDATE""",
+            (source_id,),
+        )
+        if state is None:
+            raise RuntimeError("market source refresh state is unavailable")
+
+        lease_is_live = bool(
+            state["refresh_status"] == "leased"
+            and state["lease_owner"] is not None
+            and state["lease_expires_at"] is not None
+            and state["lease_expires_at"] > now_ms
+        )
+        if lease_is_live:
             raise MarketSourceFailure("MARKET_REFRESH_IN_PROGRESS")
+
+        recovered_expired_lease = False
+        if state["refresh_status"] == "leased":
+            recovered_expired_lease = True
+            expired_owner = state["lease_owner"]
+            if expired_owner is not None:
+                await session.execute(
+                    """UPDATE market_refresh_requests
+                       SET status='outcome_unknown',
+                           public_error_code='MARKET_REFRESH_LEASE_EXPIRED',
+                           completed_at=%s
+                       WHERE id=%s AND source_id=%s AND status='running'""",
+                    (now_ms, expired_owner, source_id),
+                )
+            await session.execute(
+                """UPDATE market_source_refresh_states
+                   SET refresh_status='idle',lease_owner=NULL,
+                       lease_expires_at=NULL,
+                       public_error_code='MARKET_REFRESH_LEASE_EXPIRED',
+                       updated_at=%s
+                   WHERE source_id=%s""",
+                (now_ms, source_id),
+            )
+            if (
+                existing is not None
+                and existing["status"] == "running"
+                and existing["id"] == expired_owner
+            ):
+                return {
+                    "kind": "rejected",
+                    "code": "MARKET_REFRESH_LEASE_EXPIRED",
+                }
+
+        if existing is not None:
+            await session.execute(
+                """UPDATE market_refresh_requests
+                   SET status='outcome_unknown',
+                       public_error_code='MARKET_REFRESH_LEASE_EXPIRED',
+                       completed_at=%s
+                   WHERE id=%s AND source_id=%s AND status='running'""",
+                (now_ms, existing["id"], source_id),
+            )
+            await session.execute(
+                """UPDATE market_source_refresh_states
+                   SET public_error_code='MARKET_REFRESH_LEASE_EXPIRED',
+                       updated_at=%s
+                   WHERE source_id=%s""",
+                (now_ms, source_id),
+            )
+            return {
+                "kind": "rejected",
+                "code": "MARKET_REFRESH_LEASE_EXPIRED",
+            }
+
+        cooldown_ms = int(source["interval_minutes"]) * 60 * 1000
+        if (
+            enforce_cooldown
+            and state["last_attempted_at"] is not None
+            and now_ms < state["last_attempted_at"] + cooldown_ms
+        ):
+            if recovered_expired_lease:
+                return {
+                    "kind": "rejected",
+                    "code": "MARKET_REFRESH_COOLDOWN",
+                }
+            raise MarketSourceFailure("MARKET_REFRESH_COOLDOWN")
 
         request_id = canonical_hash(
             {
@@ -322,6 +410,25 @@ class MarketRepository:
                 now_ms,
             ),
         )
+        last_attempted_at = (
+            now_ms if enforce_cooldown else state["last_attempted_at"]
+        )
+        changed = await session.execute(
+            """UPDATE market_source_refresh_states
+               SET refresh_status='leased',lease_owner=%s,lease_expires_at=%s,
+                   last_attempted_at=%s,updated_at=%s
+               WHERE source_id=%s AND refresh_status='idle'
+                     AND lease_owner IS NULL""",
+            (
+                request_id,
+                now_ms + _REFRESH_LEASE_MS,
+                last_attempted_at,
+                now_ms,
+                source_id,
+            ),
+        )
+        if changed != 1:
+            raise MarketSourceConflict()
         decoded = self._decode_source_row(source)
         return {
             "kind": "reserved",
@@ -357,12 +464,30 @@ class MarketRepository:
         policy_hash: str,
         completed_at: int,
     ):
+        source = await session.fetchone(
+            "SELECT id FROM market_sources WHERE id=%s FOR UPDATE",
+            (source_id,),
+        )
+        if source is None:
+            raise MarketSourceConflict()
         request = await session.fetchone(
             """SELECT status FROM market_refresh_requests
                WHERE id=%s AND source_id=%s FOR UPDATE""",
             (request_id, source_id),
         )
         if request is None or request["status"] != "running":
+            raise MarketSourceConflict()
+        state = await session.fetchone(
+            """SELECT refresh_status,lease_owner
+               FROM market_source_refresh_states
+               WHERE source_id=%s FOR UPDATE""",
+            (source_id,),
+        )
+        if (
+            state is None
+            or state["refresh_status"] != "leased"
+            or state["lease_owner"] != request_id
+        ):
             raise MarketSourceConflict()
         existing = await session.fetchone(
             """SELECT id FROM market_snapshots
@@ -410,7 +535,7 @@ class MarketRepository:
                         entry.author,
                         entry.category,
                         entry.work_url,
-                        canonical_json(entry.public_metrics),
+                        canonical_json(dict(entry.public_metrics)),
                         entry_hash,
                         completed_at,
                     ),
@@ -438,7 +563,7 @@ class MarketRepository:
         else:
             published_id = existing["id"]
 
-        await session.execute(
+        changed = await session.execute(
             """UPDATE market_refresh_requests
                SET status='succeeded',snapshot_id=%s,result_hash=%s,
                    public_error_code=NULL,completed_at=%s
@@ -451,21 +576,26 @@ class MarketRepository:
                 source_id,
             ),
         )
-        await session.execute(
+        if changed != 1:
+            raise MarketSourceConflict()
+        changed = await session.execute(
             """UPDATE market_source_refresh_states
                SET last_snapshot_id=%s,refresh_status='idle',lease_owner=NULL,
-                   lease_expires_at=NULL,last_attempted_at=%s,
-                   last_succeeded_at=%s,public_error_code=NULL,updated_at=%s
-               WHERE source_id=%s""",
+                   lease_expires_at=NULL,last_succeeded_at=%s,
+                   public_error_code=NULL,updated_at=%s
+               WHERE source_id=%s AND refresh_status='leased'
+                     AND lease_owner=%s""",
             (
                 published_id,
                 completed_at,
                 completed_at,
-                completed_at,
                 source_id,
+                request_id,
             ),
         )
-        return await self._snapshot_summary(session, source_id, published_id)
+        if changed != 1:
+            raise MarketSourceConflict()
+        return await self.get_snapshot(session, source_id, published_id)
 
     async def fail_refresh(
         self,
@@ -476,25 +606,47 @@ class MarketRepository:
         public_error_code: str,
         completed_at: int,
     ) -> None:
-        await session.execute(
+        source = await session.fetchone(
+            "SELECT id FROM market_sources WHERE id=%s FOR UPDATE",
+            (source_id,),
+        )
+        if source is None:
+            raise MarketSourceConflict()
+        state = await session.fetchone(
+            """SELECT refresh_status,lease_owner
+               FROM market_source_refresh_states
+               WHERE source_id=%s FOR UPDATE""",
+            (source_id,),
+        )
+        if (
+            state is None
+            or state["refresh_status"] != "leased"
+            or state["lease_owner"] != request_id
+        ):
+            raise MarketSourceConflict()
+        changed = await session.execute(
             """UPDATE market_refresh_requests
                SET status='failed',public_error_code=%s,completed_at=%s
                WHERE id=%s AND source_id=%s AND status='running'""",
             (public_error_code, completed_at, request_id, source_id),
         )
-        await session.execute(
+        if changed != 1:
+            raise MarketSourceConflict()
+        changed = await session.execute(
             """UPDATE market_source_refresh_states
                SET refresh_status='idle',lease_owner=NULL,
-                   lease_expires_at=NULL,last_attempted_at=%s,
-                   public_error_code=%s,updated_at=%s
-               WHERE source_id=%s""",
+                   lease_expires_at=NULL,public_error_code=%s,updated_at=%s
+               WHERE source_id=%s AND refresh_status='leased'
+                     AND lease_owner=%s""",
             (
-                completed_at,
                 public_error_code,
                 completed_at,
                 source_id,
+                request_id,
             ),
         )
+        if changed != 1:
+            raise MarketSourceConflict()
 
     async def list_snapshots(self, session, source_id: str):
         return tuple(
