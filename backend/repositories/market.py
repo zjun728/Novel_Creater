@@ -1045,3 +1045,262 @@ class MarketRepository:
             for row in rows
         )
         return value
+
+    async def lock_analysis_by_key(
+        self,
+        session,
+        project_id: str,
+        idempotency_key: str,
+    ):
+        return await session.fetchone(
+            """SELECT * FROM market_analyses
+               WHERE project_id=%s AND idempotency_key=%s FOR UPDATE""",
+            (project_id, idempotency_key),
+        )
+
+    async def lock_analysis_project(self, session, project_id: str):
+        return await session.fetchone(
+            """SELECT id,archived_at FROM projects
+               WHERE id=%s FOR UPDATE""",
+            (project_id,),
+        )
+
+    async def lock_analysis_inputs(
+        self,
+        session,
+        project_id: str,
+        snapshot_ids: tuple[str, ...],
+    ):
+        binding = await session.fetchone(
+            """SELECT head.binding_revision_id,
+                      head.content_hash AS binding_hash,
+                      item.resolution_status,item.provider_id,
+                      item.model_name_snapshot,
+                      provider.id AS current_provider_id,
+                      provider.provider_type,provider.model_name,
+                      provider.base_url,provider.api_key,provider.enabled,
+                      provider.lifecycle_status,provider.supports_json,
+                      provider.temperature,provider.max_output_tokens
+               FROM project_model_binding_heads head
+               JOIN project_model_binding_items item
+                 ON item.binding_revision_id=head.binding_revision_id
+                AND item.task_key='market'
+               LEFT JOIN provider_profiles provider
+                 ON provider.id=item.provider_id
+               WHERE head.project_id=%s
+               FOR UPDATE""",
+            (project_id,),
+        )
+        if binding is None:
+            return {"project_id": project_id, "binding": None, "snapshots": ()}
+        placeholders = ",".join("%s" for _ in snapshot_ids)
+        rows = await session.fetchall(
+            f"""SELECT snapshot.id,snapshot.source_id,snapshot.captured_at,
+                       snapshot.platform,snapshot.ranking_name,
+                       snapshot.category,snapshot.source_url,
+                       snapshot.content_hash,snapshot.entry_count,
+                       manifest.manifest_hash
+                FROM market_snapshots snapshot
+                JOIN market_snapshot_manifests manifest
+                  ON manifest.snapshot_id=snapshot.id
+                 AND manifest.source_id=snapshot.source_id
+                 AND manifest.snapshot_hash=snapshot.content_hash
+                WHERE snapshot.id IN ({placeholders})
+                FOR UPDATE""",
+            snapshot_ids,
+        )
+        by_id = {row["id"]: dict(row) for row in rows}
+        if len(by_id) != len(snapshot_ids):
+            snapshots = ()
+        else:
+            snapshots = tuple(by_id[snapshot_id] for snapshot_id in snapshot_ids)
+            entry_rows = await session.fetchall(
+                f"""SELECT source_id,snapshot_id,rank_number,title,author,
+                           category,work_url,public_metrics_json
+                    FROM market_snapshot_entries
+                    WHERE snapshot_id IN ({placeholders})
+                    ORDER BY snapshot_id,rank_number""",
+                snapshot_ids,
+            )
+            entries_by_id = {snapshot_id: [] for snapshot_id in snapshot_ids}
+            for row in entry_rows:
+                entries_by_id.get(row["snapshot_id"], []).append(
+                    {
+                        "rank": int(row["rank_number"]),
+                        "title": row["title"],
+                        "author": row["author"],
+                        "category": row["category"],
+                        "work_url": row["work_url"],
+                        "public_metrics": _json_value(
+                            row["public_metrics_json"]
+                        ),
+                    }
+                )
+            complete = []
+            for snapshot in snapshots:
+                entries = tuple(entries_by_id[snapshot["id"]])
+                if len(entries) != int(snapshot["entry_count"]):
+                    complete = []
+                    break
+                snapshot["entries"] = entries
+                complete.append(snapshot)
+            snapshots = tuple(complete)
+        provider = {
+            "id": binding.get("current_provider_id"),
+            "provider_type": binding.get("provider_type"),
+            "model_name": binding.get("model_name"),
+            "base_url": binding.get("base_url"),
+            "api_key": binding.get("api_key"),
+            "enabled": binding.get("enabled"),
+            "lifecycle_status": binding.get("lifecycle_status"),
+            "supports_json": binding.get("supports_json"),
+            "temperature": binding.get("temperature"),
+            "max_output_tokens": binding.get("max_output_tokens"),
+        }
+        return {
+            "project_id": project_id,
+            "binding_revision_id": binding["binding_revision_id"],
+            "binding_hash": binding["binding_hash"],
+            "resolution_status": binding["resolution_status"],
+            "provider_id": binding["provider_id"],
+            "model_name_snapshot": binding["model_name_snapshot"],
+            "provider": provider,
+            "snapshots": snapshots,
+        }
+
+    async def insert_analysis(self, session, row: dict) -> None:
+        await session.execute(
+            """INSERT INTO market_analyses
+               (id,project_id,binding_revision_id,binding_hash,
+                input_manifest_json,input_manifest_hash,policy_version,
+                idempotency_key,request_hash,status,analysis_json,result_hash,
+                public_error_code,created_at,completed_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'running',
+                       NULL,NULL,NULL,%s,NULL)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["binding_revision_id"],
+                row["binding_hash"],
+                row["input_manifest_json"],
+                row["input_manifest_hash"],
+                row["policy_version"],
+                row["idempotency_key"],
+                row["request_hash"],
+                row["created_at"],
+            ),
+        )
+
+    async def read_analysis(
+        self,
+        session,
+        project_id: str,
+        analysis_id: str,
+    ):
+        return await session.fetchone(
+            """SELECT * FROM market_analyses
+               WHERE project_id=%s AND id=%s""",
+            (project_id, analysis_id),
+        )
+
+    async def publish_analysis(
+        self,
+        session,
+        *,
+        project_id: str,
+        analysis_id: str,
+        binding_revision_id: str,
+        binding_hash: str,
+        snapshots: tuple[dict, ...],
+        analysis_json: str,
+        result_hash: str,
+        completed_at: int,
+    ) -> bool:
+        attempt = await session.fetchone(
+            """SELECT status FROM market_analyses
+               WHERE project_id=%s AND id=%s FOR UPDATE""",
+            (project_id, analysis_id),
+        )
+        if attempt is None or attempt["status"] != "running":
+            return False
+        binding = await session.fetchone(
+            """SELECT binding_revision_id,content_hash
+               FROM project_model_binding_heads
+               WHERE project_id=%s FOR UPDATE""",
+            (project_id,),
+        )
+        snapshot_ids = tuple(item["id"] for item in snapshots)
+        placeholders = ",".join("%s" for _ in snapshot_ids)
+        manifest_rows = await session.fetchall(
+            f"""SELECT snapshot.id,snapshot.content_hash,manifest.manifest_hash
+                FROM market_snapshots snapshot
+                JOIN market_snapshot_manifests manifest
+                  ON manifest.snapshot_id=snapshot.id
+                 AND manifest.source_id=snapshot.source_id
+                 AND manifest.snapshot_hash=snapshot.content_hash
+                WHERE snapshot.id IN ({placeholders})
+                FOR UPDATE""",
+            snapshot_ids,
+        )
+        manifests = {
+            row["id"]: (row["content_hash"], row["manifest_hash"])
+            for row in manifest_rows
+        }
+        inputs_match = bool(
+            binding is not None
+            and binding["binding_revision_id"] == binding_revision_id
+            and binding["content_hash"] == binding_hash
+            and len(manifests) == len(snapshots)
+            and all(
+                manifests.get(item["id"])
+                == (item["content_hash"], item["manifest_hash"])
+                for item in snapshots
+            )
+        )
+        if not inputs_match:
+            changed = await session.execute(
+                """UPDATE market_analyses
+                   SET status='failed',analysis_json=NULL,result_hash=NULL,
+                       public_error_code='MARKET_ANALYSIS_INPUT_CHANGED',
+                       completed_at=%s
+                   WHERE project_id=%s AND id=%s AND status='running'""",
+                (completed_at, project_id, analysis_id),
+            )
+            return changed == 1 and False
+        changed = await session.execute(
+            """UPDATE market_analyses
+               SET status='succeeded',analysis_json=%s,result_hash=%s,
+                   public_error_code=NULL,completed_at=%s
+               WHERE project_id=%s AND id=%s AND status='running'""",
+            (
+                analysis_json,
+                result_hash,
+                completed_at,
+                project_id,
+                analysis_id,
+            ),
+        )
+        return changed == 1
+
+    async def fail_analysis(
+        self,
+        session,
+        *,
+        project_id: str,
+        analysis_id: str,
+        public_error_code: str,
+        completed_at: int,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE market_analyses
+               SET status='failed',analysis_json=NULL,result_hash=NULL,
+                   public_error_code=%s,completed_at=%s
+               WHERE project_id=%s AND id=%s AND status='running'""",
+            (
+                public_error_code,
+                completed_at,
+                project_id,
+                analysis_id,
+            ),
+        )
+        return changed == 1
