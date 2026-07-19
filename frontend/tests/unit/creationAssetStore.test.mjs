@@ -112,7 +112,21 @@ test('asset detail cache refuses an id or content-hash mismatch', async () => {
 test('asset recommendations are latest-request guarded backend facts', async () => {
   setActivePinia(createPinia())
   const store = useCreationAssetStore()
+  store.inventory = {
+    genres: ['general'],
+    channels: ['all'],
+    creationStages: ['drafting'],
+    writingPurposes: ['style_direction', 'dialogue'],
+    prohibitedDirections: [],
+    statuses: ['active'],
+  }
   const pending = new Map()
+  const trustedDraft = {
+    draftStage: 'engine',
+    genreProfileKey: 'historical',
+    channelProfileKey: 'qidian-qq',
+    dislikes: null,
+  }
 
   await withBrowserGuards((url) => {
     const parsed = new URL(String(url))
@@ -121,8 +135,8 @@ test('asset recommendations are latest-request guarded backend facts', async () 
     pending.set(projectId, response)
     return response.promise
   }, async () => {
-    const oldLoad = store.loadRecommendations('old-project', 'engine-old')
-    const newLoad = store.loadRecommendations('new-project', 'engine-new')
+    const oldLoad = store.loadRecommendations('old-project', 'engine-old', trustedDraft)
+    const newLoad = store.loadRecommendations('new-project', 'engine-new', trustedDraft)
     pending.get('new-project').resolve(jsonResponse({
       recommendationHash: 'n'.repeat(64), seedRevisionId: 'seed-new', seedHash: 's'.repeat(64),
       engineOptionId: 'engine-new', engineHash: 'e'.repeat(64), styles: [], experienceCards: [],
@@ -137,6 +151,49 @@ test('asset recommendations are latest-request guarded backend facts', async () 
     assert.equal(store.recommendations.engineOptionId, 'engine-new')
     assert.equal(store.recommendations.seedRevisionId, 'seed-new')
   })
+})
+
+test('recommendations derive a narrow typed scope from the persisted contract draft', async () => {
+  setActivePinia(createPinia())
+  const store = useCreationAssetStore()
+  const requests = []
+
+  await withBrowserGuards(async url => {
+    const parsed = new URL(String(url))
+    requests.push(parsed)
+    if (parsed.pathname.endsWith('/asset-recommendations')) {
+      return jsonResponse({
+        recommendationHash: 'r'.repeat(64),
+        seedRevisionId: 'seed-1',
+        seedHash: 's'.repeat(64),
+        engineOptionId: 'engine-1',
+        engineHash: 'e'.repeat(64),
+        styles: [],
+        experienceCards: [],
+      })
+    }
+    throw new Error(`unexpected request ${url}`)
+  }, async () => {
+    await store.loadRecommendations('project-1', 'engine-1', {
+      draftStage: 'style',
+      genreProfileKey: 'historical',
+      channelProfileKey: 'qidian-qq',
+      dislikes: ['slow_burn', '这条自由文本不是 typed prohibition'],
+    })
+  })
+
+  assert.equal(requests.length, 1)
+  const query = requests[0].searchParams
+  assert.equal(query.get('engineOptionId'), 'engine-1')
+  assert.deepEqual(query.getAll('genres'), ['historical'])
+  assert.deepEqual(query.getAll('channels'), ['male_frequency'])
+  assert.deepEqual(query.getAll('creationStages'), ['drafting'])
+  assert.deepEqual(
+    query.getAll('writingPurposes'),
+    ['style_direction', 'plot_organization', 'character_arcs', 'long_arc_continuity'],
+  )
+  assert.deepEqual(query.getAll('prohibitedDirections'), ['slow_burn'])
+  assert.equal(query.get('status'), 'active')
 })
 
 test('global inventory and canonical filters are backend facts with independent errors', async () => {
@@ -155,8 +212,11 @@ test('global inventory and canonical filters are backend facts with independent 
         experienceCardCount: 64,
         categories: ['dialogue'],
         genres: ['general'],
+        channels: ['all'],
         creationStages: ['drafting'],
-        statuses: ['active'],
+        writingPurposes: ['dialogue', 'style_direction'],
+        prohibitedDirections: ['slow_burn'],
+        statuses: ['active', 'archived'],
       })
     }
     if (parsed.pathname.endsWith('/assets/style-templates')) {

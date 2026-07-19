@@ -11,6 +11,12 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from backend.domain.asset_eligibility import (
+    AssetEligibilityEntry,
+    AssetEligibilityScope,
+    canonical_recommendation_scope,
+    eligible_asset_identities,
+)
 from backend.domain.asset_recommendations import (
     RecommendationInputError,
     recommend_assets,
@@ -24,13 +30,14 @@ from backend.domain.assets import (
     StyleTemplateRevision,
     validate_asset_package,
 )
-from backend.domain.json_contracts import canonical_hash
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.seeds import SeedPayload
 from backend.http_errors import (
     AssetCatalogNotReady,
     AssetNotFound,
     AssetRecommendationConflict,
 )
+from backend.services.contracts import ContractDraftPayload
 
 
 AssetType = Literal["style", "card"]
@@ -345,6 +352,8 @@ class AssetReadService:
 
     @staticmethod
     def _record(asset_type: AssetType, row: Mapping) -> AssetRecord:
+        if row.get("status") not in ("active", "archived"):
+            raise ValueError("asset revision status is invalid")
         values = {
             "stable_key": row["stable_key"],
             "revision": int(row["revision"]),
@@ -362,23 +371,18 @@ class AssetReadService:
             raise ValueError("asset payload hash mismatch")
         return AssetRecord(id=row["id"], status=row["status"], asset=asset)
 
-    async def _catalog(self, session):
+    @classmethod
+    def _validated_catalog(cls, style_rows, card_rows):
         try:
-            style_rows = await self.repository.list_active_revisions(
-                session, "style"
-            )
-            card_rows = await self.repository.list_active_revisions(
-                session, "card"
-            )
             styles = tuple(
                 sorted(
-                    (self._record("style", row) for row in style_rows),
+                    (cls._record("style", row) for row in style_rows),
                     key=lambda record: record.asset.stable_key,
                 )
             )
             cards = tuple(
                 sorted(
-                    (self._record("card", row) for row in card_rows),
+                    (cls._record("card", row) for row in card_rows),
                     key=lambda record: record.asset.stable_key,
                 )
             )
@@ -391,6 +395,24 @@ class AssetReadService:
             return styles, cards, inventory
         except (AssetPackageError, ValidationError, ValueError, TypeError, KeyError):
             raise AssetCatalogNotReady() from None
+
+    async def _catalog(self, session):
+        style_rows = await self.repository.list_active_revisions(
+            session, "style"
+        )
+        card_rows = await self.repository.list_active_revisions(
+            session, "card"
+        )
+        return self._validated_catalog(style_rows, card_rows)
+
+    async def _current_head_catalog(self, session):
+        style_rows = await self.repository.list_current_revisions(
+            session, "style"
+        )
+        card_rows = await self.repository.list_current_revisions(
+            session, "card"
+        )
+        return self._validated_catalog(style_rows, card_rows)
 
     async def list_styles(self) -> tuple[AssetRecord, ...]:
         styles, _ = await self.catalog()
@@ -411,6 +433,15 @@ class AssetReadService:
 
         async with self._transaction() as session:
             styles, cards, _ = await self._catalog(session)
+        return styles, cards
+
+    async def current_head_catalog(
+        self,
+    ) -> tuple[tuple[AssetRecord, ...], tuple[AssetRecord, ...]]:
+        """Return the current head of every approved stable key."""
+
+        async with self._transaction() as session:
+            styles, cards, _ = await self._current_head_catalog(session)
         return styles, cards
 
     async def _detail(self, asset_type: AssetType, revision_id: str) -> AssetRecord:
@@ -471,11 +502,65 @@ class AssetReadService:
             raise AssetRecommendationConflict() from None
         return seed, engine_payload
 
+    @staticmethod
+    def _trusted_eligibility_scope(
+        requested_scope: AssetEligibilityScope | object,
+        *,
+        selected: Mapping,
+        engine: Mapping,
+        draft_row: Mapping,
+    ) -> AssetEligibilityScope:
+        try:
+            if isinstance(requested_scope, AssetEligibilityScope):
+                requested = requested_scope
+            else:
+                requested = AssetEligibilityScope.model_validate(
+                    vars(requested_scope)
+                )
+            raw_draft = _json_mapping(draft_row["draft_json"])
+            draft = ContractDraftPayload.model_validate_json(
+                canonical_json(raw_draft)
+            )
+            if (
+                draft_row["engine_option_id"] != engine["id"]
+                or int(draft_row["selection_revision"])
+                != int(selected["selection_revision"])
+                or draft_row["seed_hash"] != selected["seed_hash"]
+                or canonical_hash(raw_draft) != draft_row["content_hash"]
+                or draft.engineOptionId != engine["id"]
+                or draft.engineHash != engine["content_hash"]
+                or draft.seedRevisionId != selected["seed_revision_id"]
+                or draft.seedHash != selected["seed_hash"]
+            ):
+                raise ValueError("contract recommendation context drift")
+            trusted = canonical_recommendation_scope(
+                genre_profile_key=draft.genreProfileKey,
+                channel_profile_key=draft.channelProfileKey,
+                dislikes=draft.dislikes or (),
+            )
+            if requested != trusted:
+                raise ValueError("recommendation scope differs from trusted facts")
+            return trusted
+        except (
+            ValidationError,
+            ValueError,
+            TypeError,
+            KeyError,
+            UnicodeError,
+            json.JSONDecodeError,
+        ):
+            raise AssetRecommendationConflict() from None
+
     async def recommend(
         self,
         project_id: str,
         engine_option_id: str,
+        *,
+        eligibility_scope: AssetEligibilityScope | object | None = None,
+        eligibility_entries: tuple[AssetEligibilityEntry, ...] | None = None,
     ) -> AssetRecommendationView:
+        if (eligibility_scope is None) != (eligibility_entries is None):
+            raise AssetRecommendationConflict()
         async with self._transaction() as session:
             if await self.repository.read_project(session, project_id) is None:
                 raise AssetNotFound()
@@ -488,6 +573,30 @@ class AssetReadService:
             if engine is None:
                 raise AssetNotFound()
             seed, engine_payload = self._recommendation_inputs(selected, engine)
+            allowed_style_identities = None
+            allowed_card_identities = None
+            if eligibility_scope is not None and eligibility_entries is not None:
+                draft = await self.repository.read_contract_draft(
+                    session, project_id, engine_option_id
+                )
+                if draft is None:
+                    raise AssetRecommendationConflict()
+                trusted_scope = self._trusted_eligibility_scope(
+                    eligibility_scope,
+                    selected=selected,
+                    engine=engine,
+                    draft_row=draft,
+                )
+                allowed_style_identities = eligible_asset_identities(
+                    eligibility_entries,
+                    trusted_scope,
+                    asset_type="style",
+                )
+                allowed_card_identities = eligible_asset_identities(
+                    eligibility_entries,
+                    trusted_scope,
+                    asset_type="experience_card",
+                )
             styles, cards, inventory = await self._catalog(session)
 
         try:
@@ -497,6 +606,8 @@ class AssetReadService:
                 inventory,
                 seed_hash=selected["seed_hash"],
                 engine_hash=engine["content_hash"],
+                allowed_style_identities=allowed_style_identities,
+                allowed_card_identities=allowed_card_identities,
             )
         except (RecommendationInputError, AssetPackageError, ValidationError):
             raise AssetRecommendationConflict() from None

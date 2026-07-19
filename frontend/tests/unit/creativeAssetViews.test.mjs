@@ -109,8 +109,11 @@ const inventory = {
   experienceCardCount: 64,
   categories: ['dialogue'],
   genres: ['general'],
+  channels: ['all'],
   creationStages: ['drafting'],
-  statuses: ['active'],
+  writingPurposes: ['dialogue', 'style_direction'],
+  prohibitedDirections: ['slow_burn'],
+  statuses: ['active', 'archived'],
 }
 
 test('style library renders backend inventory, filters, and a read-only result', async () => {

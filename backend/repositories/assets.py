@@ -80,6 +80,20 @@ class AssetRepository:
             (project_id, engine_option_id),
         )
 
+    async def read_contract_draft(
+        self,
+        session,
+        project_id: str,
+        engine_option_id: str,
+    ):
+        return await session.fetchone(
+            """SELECT engine_option_id,selection_revision,seed_hash,
+                      draft_json,content_hash
+               FROM project_contract_drafts
+               WHERE project_id=%s AND engine_option_id=%s""",
+            (project_id, engine_option_id),
+        )
+
     async def list_active_revisions(self, session, asset_type: AssetType):
         tables = _tables(asset_type)
         category = "NULL AS category" if asset_type == "style" else "r.category"
@@ -93,6 +107,22 @@ class AssetRepository:
             "WHERE r.status='active' ORDER BY r.stable_key ASC"
         )
 
+    async def list_current_revisions(self, session, asset_type: AssetType):
+        """Read only current heads, including an explicitly archived head."""
+
+        tables = _tables(asset_type)
+        category = "NULL AS category" if asset_type == "style" else "r.category"
+        return await session.fetchall(
+            f"SELECT r.id,r.stable_key,r.revision,"
+            f"r.{tables['label_column']} AS label,{category},"
+            "r.payload_json,r.provenance_json,r.content_hash,r.status "
+            f"FROM {tables['head']} h JOIN {tables['revision']} r "
+            f"ON r.stable_key=h.stable_key AND r.id=h.{tables['id_column']} "
+            "AND r.revision=h.revision AND r.content_hash=h.content_hash "
+            "WHERE r.status IN ('active','archived') "
+            "ORDER BY r.stable_key ASC"
+        )
+
     async def fetch_revision_by_id(
         self,
         session,
@@ -100,12 +130,15 @@ class AssetRepository:
         revision_id: str,
     ):
         tables = _tables(asset_type)
-        category = "NULL AS category" if asset_type == "style" else "category"
+        category = "NULL AS category" if asset_type == "style" else "r.category"
         return await session.fetchone(
-            f"SELECT id,stable_key,revision,"
-            f"{tables['label_column']} AS label,{category},payload_json,"
-            f"provenance_json,content_hash,status FROM {tables['revision']} "
-            "WHERE id=%s AND status IN ('active','archived')",
+            f"SELECT r.id,r.stable_key,r.revision,"
+            f"r.{tables['label_column']} AS label,{category},r.payload_json,"
+            "r.provenance_json,r.content_hash,r.status "
+            f"FROM {tables['head']} h JOIN {tables['revision']} r "
+            f"ON r.stable_key=h.stable_key AND r.id=h.{tables['id_column']} "
+            "AND r.revision=h.revision AND r.content_hash=h.content_hash "
+            "WHERE r.id=%s AND r.status IN ('active','archived')",
             (revision_id,),
         )
 

@@ -379,13 +379,7 @@ def _style_ref(
 
 
 def _card_text(card: ExperienceCardRevision) -> str:
-    return " ".join(
-        (
-            card.title,
-            card.payload.method,
-            *card.payload.applicability,
-        )
-    )
+    return " ".join((card.title, card.payload.method))
 
 
 def _card_ref(
@@ -416,6 +410,8 @@ def recommend_assets(
     *,
     seed_hash: str,
     engine_hash: str,
+    allowed_style_identities: frozenset[tuple[str, str]] | None = None,
+    allowed_card_identities: frozenset[tuple[str, str]] | None = None,
 ) -> AssetRecommendationResult:
     """Return a small stable recommendation without external state or providers."""
 
@@ -432,6 +428,28 @@ def recommend_assets(
             experience_cards=package.experience_cards,
         )
     inventory = validate_recommendation_inventory(inventory)
+    eligible_styles = tuple(
+        style
+        for style in inventory.styles
+        if (
+            allowed_style_identities is None
+            or (style.stable_key, style.content_hash)
+            in allowed_style_identities
+        )
+    )
+    eligible_cards = tuple(
+        card
+        for card in inventory.experience_cards
+        if (
+            allowed_card_identities is None
+            or (card.stable_key, card.content_hash)
+            in allowed_card_identities
+        )
+    )
+    if len(eligible_styles) < 3 or len(eligible_cards) < 2:
+        raise RecommendationInputError(
+            "typed asset eligibility leaves too few approved assets"
+        )
     engine_fields = _engine_text_fields(engine_payload)
     seed_fields = {
         field: getattr(seed, field)
@@ -439,7 +457,7 @@ def recommend_assets(
     }
 
     style_ranks = {key: rank for rank, key in enumerate(_STYLE_DEFAULT_ORDER)}
-    styles_by_key = {style.stable_key: style for style in inventory.styles}
+    styles_by_key = {style.stable_key: style for style in eligible_styles}
     style_scores: dict[str, tuple[int, int]] = {}
     for key, profile in _STYLE_PROFILES.items():
         style_scores[key] = (
@@ -488,14 +506,16 @@ def recommend_assets(
         ),
     )
     context_tokens = _text_tokens(" ".join((*seed_fields.values(), *engine_fields.values())))
-    selected_cards: list[tuple[ExperienceCardRevision, int]] = []
+    ranked_by_category: dict[
+        str, list[tuple[ExperienceCardRevision, int]]
+    ] = {}
     for category in category_order:
         cards = [
             card
-            for card in inventory.experience_cards
+            for card in eligible_cards
             if card.category == category
         ]
-        ranked_cards = sorted(
+        ranked_by_category[category] = sorted(
             (
                 (
                     card,
@@ -509,9 +529,35 @@ def recommend_assets(
             ),
             key=lambda item: (-item[1], item[0].stable_key),
         )
+    selected_cards: list[tuple[ExperienceCardRevision, int]] = []
+    for category in category_order:
+        ranked_cards = ranked_by_category[category]
+        if not ranked_cards:
+            continue
         selected_cards.append(ranked_cards[0])
         if len(selected_cards) == card_target:
             break
+    if len(selected_cards) < card_target:
+        selected_keys = {
+            card.stable_key for card, _ in selected_cards
+        }
+        remaining = sorted(
+            (
+                (card, overlap)
+                for category in category_order
+                for card, overlap in ranked_by_category[category]
+                if card.stable_key not in selected_keys
+            ),
+            key=lambda item: (
+                -category_scores[item[0].category],
+                category_ranks[item[0].category],
+                -item[1],
+                item[0].stable_key,
+            ),
+        )
+        selected_cards.extend(
+            remaining[: card_target - len(selected_cards)]
+        )
     card_refs = tuple(
         _card_ref(
             card,

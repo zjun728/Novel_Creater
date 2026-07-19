@@ -29,6 +29,21 @@ PACKAGE = load_asset_package(
 )
 STYLE_ID = "11111111-1111-1111-1111-111111111111"
 CARD_ID = "22222222-2222-2222-2222-222222222222"
+RECOMMENDATION_SCOPE_QUERY = (
+    "&genres=fantasy"
+    "&channels=male_frequency"
+    "&creationStages=drafting"
+    "&writingPurposes=style_direction"
+    "&writingPurposes=progression_economy"
+    "&status=active"
+)
+
+
+def _recommendation_path(project_id="project-1", engine_id="engine-1"):
+    return (
+        f"/api/projects/{project_id}/asset-recommendations"
+        f"?engineOptionId={engine_id}{RECOMMENDATION_SCOPE_QUERY}"
+    )
 
 
 def _record(asset, revision_id):
@@ -45,6 +60,7 @@ def _record(asset, revision_id):
 class FakeAssetService:
     def __init__(self):
         self.calls = []
+        self.recommendation_scope = None
         self.style = self._item(_record(PACKAGE.styles[0], STYLE_ID))
         self.card = self._item(_record(PACKAGE.experience_cards[0], CARD_ID))
         self.failure = None
@@ -76,7 +92,10 @@ class FakeAssetService:
             experience_card_count=len(PACKAGE.experience_cards),
             categories=("action_conflict", "dialogue"),
             genres=("general", "xianxia"),
+            channels=("all", "male_frequency"),
             creation_stages=("drafting", "revision"),
+            writing_purposes=("dialogue", "style_direction"),
+            prohibited_directions=("slow_burn",),
             statuses=("active",),
         )
 
@@ -106,8 +125,14 @@ class FakeAssetService:
         self._raise()
         return self.card
 
-    async def recommend(self, project_id, engine_option_id):
+    async def recommend(
+        self,
+        project_id,
+        engine_option_id,
+        recommendation_scope=None,
+    ):
         self.calls.append(("recommend", project_id, engine_option_id))
+        self.recommendation_scope = recommendation_scope
         self._raise()
         return SimpleNamespace(
             recommendation_version="asset-recommendation-v1",
@@ -162,7 +187,7 @@ def test_asset_routes_have_exact_methods_paths_and_camel_case_allowlists():
     card_list = client.get("/api/assets/experience-cards?category=dialogue")
     card_detail = client.get(f"/api/assets/experience-cards/{CARD_ID}")
     recommendation = client.get(
-        "/api/projects/project-1/asset-recommendations?engineOptionId=engine-1"
+        _recommendation_path()
     )
 
     assert [response.status_code for response in (
@@ -254,7 +279,7 @@ def test_recommendation_returns_three_styles_two_to_four_cards_and_never_invento
     client, _ = make_client()
 
     response = client.get(
-        "/api/projects/project-1/asset-recommendations?engineOptionId=engine-1"
+        _recommendation_path()
     )
 
     assert response.status_code == 200
@@ -284,7 +309,12 @@ def test_recommendation_returns_three_styles_two_to_four_cards_and_never_invento
     ("error", "status", "code", "path"),
     (
         (AssetNotFound(), 404, "AssetNotFound", f"/api/assets/style-templates/{STYLE_ID}"),
-        (AssetRecommendationConflict(), 409, "AssetRecommendationConflict", "/api/projects/p/asset-recommendations?engineOptionId=e"),
+        (
+            AssetRecommendationConflict(),
+            409,
+            "AssetRecommendationConflict",
+            _recommendation_path("p", "e"),
+        ),
         (AssetCatalogNotReady(), 503, "AssetCatalogNotReady", "/api/assets/style-templates"),
     ),
 )
@@ -349,7 +379,10 @@ def test_inventory_and_search_filters_are_forwarded_with_bounded_public_metadata
         "experienceCardCount": 64,
         "categories": ["action_conflict", "dialogue"],
         "genres": ["general", "xianxia"],
+        "channels": ["all", "male_frequency"],
         "creationStages": ["drafting", "revision"],
+        "writingPurposes": ["dialogue", "style_direction"],
+        "prohibitedDirections": ["slow_burn"],
         "statuses": ["active"],
     }
     assert styles.status_code == 200
@@ -366,6 +399,36 @@ def test_inventory_and_search_filters_are_forwarded_with_bounded_public_metadata
             "active",
         ),
     ]
+
+
+def test_recommendation_requires_and_forwards_explicit_typed_eligibility_scope():
+    client, service = make_client()
+
+    response = client.get(
+        "/api/projects/project-1/asset-recommendations",
+        params=[
+            ("engineOptionId", "engine-1"),
+            ("genres", "fantasy"),
+            ("channels", "male_frequency"),
+            ("creationStages", "drafting"),
+            ("writingPurposes", "style_direction"),
+            ("writingPurposes", "progression_economy"),
+            ("prohibitedDirections", "slow_burn"),
+            ("status", "active"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert service.recommendation_scope is not None
+    assert service.recommendation_scope.genres == ("fantasy",)
+    assert service.recommendation_scope.channels == ("male_frequency",)
+    assert service.recommendation_scope.creation_stages == ("drafting",)
+    assert service.recommendation_scope.writing_purposes == (
+        "style_direction",
+        "progression_economy",
+    )
+    assert service.recommendation_scope.prohibited_directions == ("slow_burn",)
+    assert service.recommendation_scope.status == "active"
 
 
 @pytest.mark.parametrize(
@@ -393,7 +456,7 @@ def test_catalog_not_ready_is_503_for_both_lists_and_recommendation():
         client.get("/api/assets/style-templates"),
         client.get("/api/assets/experience-cards"),
         client.get(
-            "/api/projects/project-1/asset-recommendations?engineOptionId=engine-1"
+            _recommendation_path()
         ),
     )
 

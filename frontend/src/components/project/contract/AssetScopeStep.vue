@@ -201,7 +201,7 @@ async function initialize(projectId, { reloadContract = false } = {}) {
     }
     await Promise.all([
       assetStore.loadExperienceCards(),
-      assetStore.loadRecommendations(projectId, draft.engineOptionId),
+      assetStore.loadRecommendations(projectId, draft.engineOptionId, draft),
       corpusStore.loadSources(),
     ])
     if (epoch !== loadEpoch) return

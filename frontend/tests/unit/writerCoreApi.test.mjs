@@ -191,7 +191,14 @@ test('asset catalog and recommendations are read-only and query encoded', async 
     await api.assets.styleTemplates.get('style/revision')
     await api.assets.experienceCards.list({ category: 'dialogue craft' })
     await api.assets.experienceCards.get('card/revision')
-    await api.assets.recommendations('project-1', 'engine option')
+    await api.assets.recommendations('project-1', 'engine option', {
+      genres: ['fantasy', 'xianxia'],
+      channels: ['male_frequency'],
+      creationStages: ['drafting'],
+      writingPurposes: ['style_direction', 'progression_economy'],
+      prohibitedDirections: ['slow_burn'],
+      status: 'active',
+    })
   })
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
@@ -202,7 +209,17 @@ test('asset catalog and recommendations are read-only and query encoded', async 
     ['GET', '/api/projects/project-1/asset-recommendations'],
   ])
   assert.equal(new URL(calls[2].url).searchParams.get('category'), 'dialogue craft')
-  assert.equal(new URL(calls[4].url).searchParams.get('engineOptionId'), 'engine option')
+  const recommendationQuery = new URL(calls[4].url).searchParams
+  assert.equal(recommendationQuery.get('engineOptionId'), 'engine option')
+  assert.deepEqual(recommendationQuery.getAll('genres'), ['fantasy', 'xianxia'])
+  assert.deepEqual(recommendationQuery.getAll('channels'), ['male_frequency'])
+  assert.deepEqual(recommendationQuery.getAll('creationStages'), ['drafting'])
+  assert.deepEqual(
+    recommendationQuery.getAll('writingPurposes'),
+    ['style_direction', 'progression_economy'],
+  )
+  assert.deepEqual(recommendationQuery.getAll('prohibitedDirections'), ['slow_burn'])
+  assert.equal(recommendationQuery.get('status'), 'active')
   assert.equal(calls.every(call => !('body' in call.options)), true)
 })
 

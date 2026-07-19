@@ -15,6 +15,77 @@ function assertImmutableDetail(kind, detail, id, contentHash) {
   return detail
 }
 
+const GENRE_PROFILE_SIGNALS = Object.freeze([
+  ['science_fiction', ['science_fiction', 'science fiction', 'sci-fi', '科幻']],
+  ['xianxia', ['xianxia', 'cultivation', '仙侠', '修仙', '仙道']],
+  ['wuxia', ['wuxia', '武侠']],
+  ['fantasy', ['xuanhuan', 'fantasy', '玄幻', '奇幻', '魔法']],
+  ['historical', ['historical', 'history', '历史', '古代', '穿越']],
+  ['urban', ['urban', '都市', '现代']],
+  ['romance', ['romance', '言情', '爱情', '恋爱']],
+  ['mystery', ['mystery', '悬疑', '推理']],
+  ['horror', ['horror', '恐怖', '惊悚']],
+])
+const PROHIBITED_DIRECTIONS = Object.freeze([
+  'comedic',
+  'romance_centric',
+  'graphic_violence',
+  'rapid_power_fantasy',
+  'grim_tragedy',
+  'slow_burn',
+  'dense_exposition',
+])
+const PURPOSES_BY_GENRE = Object.freeze({
+  fantasy: ['progression_economy'],
+  xianxia: ['progression_economy'],
+  wuxia: ['progression_economy'],
+  historical: ['long_arc_continuity'],
+  science_fiction: ['long_arc_continuity'],
+  urban: ['dialogue'],
+  romance: ['emotion', 'dialogue'],
+  mystery: ['suspense'],
+  horror: ['suspense'],
+  general: [],
+})
+
+function normalizedProfileText(...values) {
+  return values.map(value => String(value || '').normalize('NFKC').toLowerCase()).join(' ')
+}
+
+function recommendationScope(draft) {
+  if (!draft?.genreProfileKey || !draft?.channelProfileKey) {
+    throw new Error('创作契约推荐上下文不完整')
+  }
+  const genreText = normalizedProfileText(draft.genreProfileKey)
+  const genre = GENRE_PROFILE_SIGNALS.find(([, signals]) => (
+    signals.some(signal => genreText.includes(signal))
+  ))?.[0] || 'general'
+  const channelText = normalizedProfileText(draft.channelProfileKey)
+  const channel = ['female', '女频', '晋江', '潇湘'].some(
+    signal => channelText.includes(signal),
+  )
+    ? 'female_frequency'
+    : ['male', '男频', '起点', 'qidian', 'qq'].some(
+      signal => channelText.includes(signal),
+    )
+      ? 'male_frequency'
+      : 'all'
+  const dislikes = new Set(Array.isArray(draft.dislikes) ? draft.dislikes : [])
+  return {
+    genres: [genre],
+    channels: [channel],
+    creationStages: ['drafting'],
+    writingPurposes: [
+      'style_direction',
+      'plot_organization',
+      'character_arcs',
+      ...PURPOSES_BY_GENRE[genre],
+    ],
+    prohibitedDirections: PROHIBITED_DIRECTIONS.filter(value => dislikes.has(value)),
+    status: 'active',
+  }
+}
+
 export const useCreationAssetStore = defineStore('creation-assets', () => {
   const styleTemplates = ref([])
   const experienceCards = ref([])
@@ -90,11 +161,15 @@ export const useCreationAssetStore = defineStore('creation-assets', () => {
     }
   }
 
-  async function loadRecommendations(projectId, engineOptionId) {
+  async function loadRecommendations(projectId, engineOptionId, contractDraft) {
     const generation = recommendationGuard.begin()
     loadingRecommendations.value = true
     try {
-      const result = await api.assets.recommendations(projectId, engineOptionId)
+      const result = await api.assets.recommendations(
+        projectId,
+        engineOptionId,
+        recommendationScope(contractDraft),
+      )
       if (recommendationGuard.isCurrent(generation)) recommendations.value = result
       return result
     } finally {

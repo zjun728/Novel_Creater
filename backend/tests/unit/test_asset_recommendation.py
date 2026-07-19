@@ -4,11 +4,16 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from backend.domain.asset_eligibility import (
+    eligible_asset_identities,
+    load_asset_eligibility_package,
+)
 from backend.domain.assets import AssetInventory, AssetProvenance, load_asset_package
-from backend.domain.json_contracts import canonical_hash
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.repositories.assets import AssetRepository
 from backend.scripts.seed_writer_assets import AssetSeedCommandError, run_cli
 from backend.http_errors import (
@@ -17,12 +22,19 @@ from backend.http_errors import (
     AssetRecommendationConflict,
 )
 from backend.services.assets import AssetReadService, AssetSeedConflict, AssetSeedService
+from backend.services.creative_assets import CreativeAssetService
 
 
 MANIFEST = (
     Path(__file__).resolve().parents[2]
     / "assets"
     / "writer-core-v1.1.0"
+    / "manifest.json"
+)
+TAXONOMY_MANIFEST = (
+    Path(__file__).resolve().parents[2]
+    / "assets"
+    / "recommendation-taxonomy-v1.0.0"
     / "manifest.json"
 )
 
@@ -862,8 +874,8 @@ def test_recommender_returns_fixed_three_styles_and_two_to_four_unique_cards(pac
     assert tuple(item.stable_key for item in result.experience_cards) == (
         "ensemble-help-has-condition",
         "arc-aftermath-new-normal",
-        "plot-small-answer-new-pressure",
-        "progression-new-tier-new-problem",
+        "plot-cause-effect-relay",
+        "progression-breakthrough-earned-options",
     )
     assert tuple(item.reason_codes for item in result.styles) == (
         ("semantic-profile", "seed-context", "engine-context"),
@@ -1210,6 +1222,317 @@ def test_public_models_are_strict_frozen_and_api_has_no_limit_or_full_inventory_
     assert len(result.experience_cards) < len(package.experience_cards)
 
 
+def _recommendation_scope(
+    *,
+    genres=("fantasy",),
+    channels=("male_frequency",),
+    creation_stages=("drafting",),
+    writing_purposes=("style_direction", "progression_economy"),
+    prohibited_directions=(),
+    status="active",
+):
+    return SimpleNamespace(
+        genres=genres,
+        channels=channels,
+        creation_stages=creation_stages,
+        writing_purposes=writing_purposes,
+        prohibited_directions=prohibited_directions,
+        status=status,
+    )
+
+
+class CapturingRecommendationReadService:
+    def __init__(self):
+        self.calls = []
+
+    async def recommend(
+        self,
+        project_id,
+        engine_option_id,
+        *,
+        eligibility_scope,
+        eligibility_entries,
+    ):
+        self.calls.append(
+            (
+                project_id,
+                engine_option_id,
+                eligibility_scope,
+                eligibility_entries,
+            )
+        )
+        return "recommendation"
+
+
+@pytest.mark.asyncio
+async def test_creative_recommendation_filters_only_exact_typed_taxonomy_identities(
+    package,
+):
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+    reader = CapturingRecommendationReadService()
+    service = CreativeAssetService(reader, taxonomy=taxonomy)
+
+    result = await service.recommend(
+        "project-1",
+        "engine-1",
+        _recommendation_scope(),
+    )
+
+    assert result == "recommendation"
+    _, _, scope, entries = reader.calls[-1]
+    style_identities = eligible_asset_identities(
+        entries,
+        scope,
+        asset_type="style",
+    )
+    card_identities = eligible_asset_identities(
+        entries,
+        scope,
+        asset_type="experience_card",
+    )
+    assert entries == taxonomy.entries
+    expected_style = next(
+        entry
+        for entry in taxonomy.entries
+        if entry.stable_key == "epic-civilization-building"
+    )
+    expected_card = next(
+        entry
+        for entry in taxonomy.entries
+        if entry.stable_key == "progression-resource-loop-cost"
+    )
+    assert (
+        expected_style.stable_key,
+        expected_style.asset_content_hash,
+    ) in style_identities
+    assert (
+        expected_card.stable_key,
+        expected_card.asset_content_hash,
+    ) in card_identities
+    assert all(
+        len(stable_key) > 0 and len(content_hash) == 64
+        for stable_key, content_hash in (*style_identities, *card_identities)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("genres", ("urban",)),
+        ("channels", ("female_frequency",)),
+        ("creation_stages", ("quality_audit",)),
+        ("writing_purposes", ("dialogue",)),
+    ),
+)
+async def test_creative_recommendation_excludes_each_typed_mismatch(
+    package,
+    field,
+    value,
+):
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+    reader = CapturingRecommendationReadService()
+    service = CreativeAssetService(reader, taxonomy=taxonomy)
+    values = _recommendation_scope().__dict__.copy()
+    values[field] = value
+
+    await service.recommend(
+        "project-1",
+        "engine-1",
+        SimpleNamespace(**values),
+    )
+
+    _, _, scope, entries = reader.calls[-1]
+    target = next(
+        entry
+        for entry in taxonomy.entries
+        if entry.stable_key == "progression-resource-loop-cost"
+    )
+    assert (
+        target.stable_key,
+        target.asset_content_hash,
+    ) not in eligible_asset_identities(
+        entries,
+        scope,
+        asset_type="experience_card",
+    )
+
+
+@pytest.mark.asyncio
+async def test_creative_recommendation_excludes_typed_prohibited_direction(
+    package,
+):
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+    reader = CapturingRecommendationReadService()
+    service = CreativeAssetService(reader, taxonomy=taxonomy)
+
+    await service.recommend(
+        "project-1",
+        "engine-1",
+        _recommendation_scope(
+            genres=("general",),
+            channels=("all",),
+            writing_purposes=("style_direction",),
+        ),
+    )
+    _, _, baseline_scope, entries = reader.calls[-1]
+    baseline_styles = eligible_asset_identities(
+        entries,
+        baseline_scope,
+        asset_type="style",
+    )
+    await service.recommend(
+        "project-1",
+        "engine-1",
+        _recommendation_scope(
+            genres=("general",),
+            channels=("all",),
+            writing_purposes=("style_direction",),
+            prohibited_directions=("slow_burn",),
+        ),
+    )
+    _, _, prohibited_scope, entries = reader.calls[-1]
+    prohibited_styles = eligible_asset_identities(
+        entries,
+        prohibited_scope,
+        asset_type="style",
+    )
+
+    direct = next(
+        entry
+        for entry in taxonomy.entries
+        if entry.stable_key == "direct-propulsive"
+    )
+    identity = (direct.stable_key, direct.asset_content_hash)
+    assert identity in baseline_styles
+    assert identity not in prohibited_styles
+
+
+def test_recommendation_ranking_ignores_free_text_applicability(package):
+    baseline = _recommend(package)
+    target_key = "plot-goal-private-cost"
+    target = next(
+        card for card in package.experience_cards
+        if card.stable_key == target_key
+    )
+    changed_payload = target.payload.model_copy(
+        update={
+            "applicability": (
+                " ".join(
+                    (
+                        *(_seed().model_dump(mode="python").values()),
+                        *(
+                            str(value)
+                            for value in _engine().values()
+                        ),
+                    )
+                ),
+            )
+        }
+    )
+    changed = target.model_copy(
+        update={
+            "payload": changed_payload,
+            "content_hash": canonical_hash(changed_payload),
+        }
+    )
+    changed_cards = tuple(
+        changed if card.stable_key == target_key else card
+        for card in package.experience_cards
+    )
+    mutated = recommend_assets(
+        _seed(),
+        _engine(),
+        AssetInventory(
+            styles=package.styles,
+            experience_cards=changed_cards,
+        ),
+        seed_hash=canonical_hash(_seed()),
+        engine_hash=canonical_hash(_engine()),
+    )
+
+    assert [item.stable_key for item in mutated.experience_cards] == [
+        item.stable_key for item in baseline.experience_cards
+    ]
+
+
+def test_recommendation_ranks_deterministically_only_inside_exact_allowed_identities(
+    package,
+):
+    style_keys = {
+        "light-humorous",
+        "immersive-ensemble",
+        "epic-civilization-building",
+        "cautious-survival-accumulation",
+        "austere-tragic-defiance",
+    }
+    card_keys = {
+        "progression-breakthrough-earned-options",
+        "progression-resource-loop-cost",
+        "progression-rank-changes-permission-risk",
+        "progression-new-tier-new-problem",
+    }
+    allowed_styles = frozenset(
+        (asset.stable_key, asset.content_hash)
+        for asset in package.styles
+        if asset.stable_key in style_keys
+    )
+    allowed_cards = frozenset(
+        (asset.stable_key, asset.content_hash)
+        for asset in package.experience_cards
+        if asset.stable_key in card_keys
+    )
+
+    result = recommend_assets(
+        _seed(),
+        _engine(),
+        package,
+        seed_hash=canonical_hash(_seed()),
+        engine_hash=canonical_hash(_engine()),
+        allowed_style_identities=allowed_styles,
+        allowed_card_identities=allowed_cards,
+    )
+    reversed_result = recommend_assets(
+        _seed(),
+        _engine(),
+        package.model_copy(
+            update={
+                "styles": tuple(reversed(package.styles)),
+                "experience_cards": tuple(
+                    reversed(package.experience_cards)
+                ),
+            }
+        ),
+        seed_hash=canonical_hash(_seed()),
+        engine_hash=canonical_hash(_engine()),
+        allowed_style_identities=allowed_styles,
+        allowed_card_identities=allowed_cards,
+    )
+
+    assert result == reversed_result
+    assert {
+        (item.stable_key, item.content_hash) for item in result.styles
+    } <= allowed_styles
+    assert {
+        (item.stable_key, item.content_hash)
+        for item in result.experience_cards
+    } <= allowed_cards
+    assert len(result.styles) == 3
+    assert 2 <= len(result.experience_cards) <= 4
+
+
 # Read-only database/API application boundary (M2C Task 3C).
 def _read_row(asset, revision_id, *, status="active"):
     return {
@@ -1250,6 +1573,37 @@ class ReadAssetRepository:
             "payload_json": engine,
             "content_hash": canonical_hash(engine),
         }
+        draft = {
+            "schemaVersion": "contract-draft-v2",
+            "draftStage": "engine",
+            "engineOptionId": self.engine["id"],
+            "engineHash": self.engine["content_hash"],
+            "channelProfileKey": "qidian-qq",
+            "genreProfileKey": "historical",
+            "qualityCharterVersion": "quality-v1",
+            "totalWordRange": (800_000, 1_200_000),
+            "chapterCapacityPolicy": "long-form",
+            "primaryStyleRef": None,
+            "secondaryStyleRef": None,
+            "experienceCardRefs": None,
+            "corpusSourceRefs": None,
+            "likes": None,
+            "dislikes": None,
+            "seedRevisionId": self.selected["seed_revision_id"],
+            "seedHash": self.selected["seed_hash"],
+            "modelBindingRef": {
+                "id": "binding-1",
+                "revision": 1,
+                "contentHash": "a" * 64,
+            },
+        }
+        self.contract_draft = {
+            "engine_option_id": self.engine["id"],
+            "selection_revision": self.selected["selection_revision"],
+            "seed_hash": self.selected["seed_hash"],
+            "draft_json": canonical_json(draft),
+            "content_hash": canonical_hash(draft),
+        }
         self.styles = [
             _read_row(asset, f"style-{index}")
             for index, asset in enumerate(package.styles, 1)
@@ -1278,8 +1632,22 @@ class ReadAssetRepository:
             return None
         return deepcopy(self.engine)
 
+    async def read_contract_draft(self, session, project_id, option_id):
+        self.calls.append(("contract-draft", project_id, option_id))
+        if (
+            self.contract_draft is None
+            or self.contract_draft["engine_option_id"] != option_id
+        ):
+            return None
+        return deepcopy(self.contract_draft)
+
     async def list_active_revisions(self, session, asset_type):
         self.calls.append(("catalog", asset_type))
+        rows = self.styles if asset_type == "style" else self.cards
+        return deepcopy(rows)
+
+    async def list_current_revisions(self, session, asset_type):
+        self.calls.append(("current-catalog", asset_type))
         rows = self.styles if asset_type == "style" else self.cards
         return deepcopy(rows)
 
@@ -1319,6 +1687,145 @@ async def test_read_service_requires_exact_approved_catalog_and_filters_category
     }
     with pytest.raises(AssetCatalogNotReady):
         await read_service(repository).list_cards()
+
+
+@pytest.mark.asyncio
+async def test_read_service_current_head_catalog_includes_active_and_archived(
+    package,
+):
+    repository = ReadAssetRepository(package)
+    repository.styles[0]["status"] = "archived"
+    service = read_service(repository)
+
+    styles, cards = await service.current_head_catalog()
+
+    assert len(styles) == 10
+    assert len(cards) == 64
+    assert {record.status for record in styles} == {"active", "archived"}
+    assert repository.calls == [
+        ("current-catalog", "style"),
+        ("current-catalog", "card"),
+    ]
+
+
+class SplitCurrentHeadReadService:
+    def __init__(self, package, *, unmatched_archived=False):
+        styles = [
+            AssetReadService._record(
+                "style",
+                _read_row(
+                    asset,
+                    f"style-{index}",
+                    status="archived" if index == 1 else "active",
+                ),
+            )
+            for index, asset in enumerate(package.styles, 1)
+        ]
+        if unmatched_archived:
+            original = styles[0]
+            changed_asset = original.asset.model_copy(
+                update={"stable_key": "archived-unmatched-style"}
+            )
+            styles[0] = type(original)(
+                id=original.id,
+                status=original.status,
+                asset=changed_asset,
+            )
+        self.all_styles = tuple(styles)
+        self.active_styles = tuple(
+            record for record in styles if record.status == "active"
+        )
+        self.cards = tuple(
+            AssetReadService._record(
+                "card",
+                _read_row(asset, f"card-{index}"),
+            )
+            for index, asset in enumerate(package.experience_cards, 1)
+        )
+
+    async def catalog(self):
+        return self.active_styles, self.cards
+
+    async def current_head_catalog(self):
+        return self.all_styles, self.cards
+
+
+@pytest.mark.asyncio
+async def test_creative_inventory_and_status_filter_use_all_current_heads(
+    package,
+):
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+    service = CreativeAssetService(
+        SplitCurrentHeadReadService(package),
+        taxonomy=taxonomy,
+    )
+
+    inventory = await service.inventory()
+    active = await service.list_styles(status="active")
+    archived = await service.list_styles(status="archived")
+
+    assert inventory.style_count == 10
+    assert inventory.statuses == ("active", "archived")
+    assert len(active) == 9
+    assert len(archived) == 1
+    assert archived[0].record.status == "archived"
+
+
+@pytest.mark.asyncio
+async def test_unmatched_archived_current_head_is_basic_listable_not_eligible(
+    package,
+):
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+    service = CreativeAssetService(
+        SplitCurrentHeadReadService(package, unmatched_archived=True),
+        taxonomy=taxonomy,
+    )
+
+    archived = await service.list_styles(status="archived")
+    typed = await service.list_styles(
+        status="archived",
+        genre="general",
+    )
+
+    assert len(archived) == 1
+    assert archived[0].record.asset.stable_key == "archived-unmatched-style"
+    assert archived[0].eligibility is None
+    assert typed == ()
+
+
+@pytest.mark.asyncio
+async def test_unmatched_active_current_head_fails_catalog_closed(package):
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+    reader = SplitCurrentHeadReadService(package)
+    original = reader.all_styles[1]
+    changed = type(original)(
+        id=original.id,
+        status="active",
+        asset=original.asset.model_copy(
+            update={"stable_key": "active-unmatched-style"}
+        ),
+    )
+    reader.all_styles = (
+        reader.all_styles[0],
+        changed,
+        *reader.all_styles[2:],
+    )
+    service = CreativeAssetService(reader, taxonomy=taxonomy)
+
+    with pytest.raises(AssetCatalogNotReady):
+        await service.inventory()
 
 
 @pytest.mark.asyncio
@@ -1545,6 +2052,73 @@ async def test_recommendation_conflicts_on_unready_or_drifted_db_facts(package, 
         await read_service(repository).recommend("project-1", "engine-1")
 
 
+@pytest.mark.asyncio
+async def test_recommendation_rejects_scope_broader_than_trusted_contract_facts(
+    package,
+):
+    repository = ReadAssetRepository(package)
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+
+    with pytest.raises(AssetRecommendationConflict):
+        await read_service(repository).recommend(
+            "project-1",
+            "engine-1",
+            eligibility_scope=_recommendation_scope(
+                genres=("general", "historical", "fantasy"),
+                channels=("all", "male_frequency"),
+                writing_purposes=(
+                    "style_direction",
+                    "plot_organization",
+                    "character_arcs",
+                    "progression_economy",
+                ),
+            ),
+            eligibility_entries=taxonomy.entries,
+        )
+
+
+@pytest.mark.asyncio
+async def test_recommendation_filters_inside_scope_recomputed_from_contract_facts(
+    package,
+):
+    repository = ReadAssetRepository(package)
+    taxonomy = load_asset_eligibility_package(
+        TAXONOMY_MANIFEST,
+        asset_package=package,
+        mode="release",
+    )
+
+    result = await read_service(repository).recommend(
+        "project-1",
+        "engine-1",
+        eligibility_scope=_recommendation_scope(
+            genres=("historical",),
+            channels=("male_frequency",),
+            writing_purposes=(
+                "style_direction",
+                "plot_organization",
+                "character_arcs",
+                "long_arc_continuity",
+            ),
+        ),
+        eligibility_entries=taxonomy.entries,
+    )
+
+    assert all(
+        item.record.asset.stable_key
+        not in {
+            "high-energy-growth",
+            "cautious-survival-accumulation",
+            "progression-resource-loop-cost",
+        }
+        for item in (*result.styles, *result.experience_cards)
+    )
+
+
 class RecordingReadSession:
     def __init__(self):
         self.events = []
@@ -1569,14 +2143,56 @@ async def test_read_repository_uses_fixed_bound_selects_and_zero_write_sql():
     await repository.read_project(session, "project-1")
     await repository.read_selected_seed(session, "project-1")
     await repository.read_engine_option(session, "project-1", "engine-1")
+    await repository.read_contract_draft(session, "project-1", "engine-1")
     await repository.list_active_revisions(session, "style")
     await repository.list_active_revisions(session, "card")
     await repository.fetch_revision_by_id(session, "style", "style-id")
     await repository.fetch_revision_by_id(session, "card", "card-id")
 
-    assert len(session.events) == 7
+    assert len(session.events) == 8
     rendered_sql = " ".join(sql.casefold() for _, sql, _ in session.events)
     assert not any(word in rendered_sql for word in (" insert ", " update ", " delete ", " for update"))
     assert session.events[1][2] == ("project-1",)
     assert session.events[2][2] == ("project-1", "engine-1")
+    assert session.events[3][2] == ("project-1", "engine-1")
     assert session.events[-1][2] == ("card-id",)
+
+
+@pytest.mark.asyncio
+async def test_read_repository_lists_only_current_heads_with_both_statuses():
+    session = RecordingReadSession()
+    repository = AssetRepository()
+
+    await repository.list_current_revisions(session, "style")
+    await repository.list_current_revisions(session, "card")
+
+    assert len(session.events) == 2
+    for _, sql, params in session.events:
+        normalized = " ".join(sql.casefold().split())
+        assert " join " in normalized
+        assert "_heads h" in normalized
+        assert "r.status in ('active','archived')" in normalized
+        assert "order by r.stable_key asc" in normalized
+        assert params is None
+        assert not any(
+            token in f" {normalized} "
+            for token in (" insert ", " update ", " delete ", " for update ")
+        )
+
+
+@pytest.mark.asyncio
+async def test_read_repository_details_cannot_read_arbitrary_historical_revisions():
+    session = RecordingReadSession()
+    repository = AssetRepository()
+
+    await repository.fetch_revision_by_id(session, "style", "style-id")
+    await repository.fetch_revision_by_id(session, "card", "card-id")
+
+    assert len(session.events) == 2
+    for _, sql, params in session.events:
+        normalized = " ".join(sql.casefold().split())
+        assert " join " in normalized
+        assert "_heads h" in normalized
+        assert "r.id=%s" in normalized
+        assert "r.status in ('active','archived')" in normalized
+        assert params is not None

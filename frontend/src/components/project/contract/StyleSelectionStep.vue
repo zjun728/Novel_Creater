@@ -171,7 +171,7 @@ async function initialize(projectId, { reloadContract = false } = {}) {
     }
     await Promise.all([
       assetStore.loadStyleTemplates(),
-      assetStore.loadRecommendations(projectId, draft.engineOptionId),
+      assetStore.loadRecommendations(projectId, draft.engineOptionId, draft),
     ])
     if (epoch !== loadEpoch) return
     hydrateFromDraft(draft)

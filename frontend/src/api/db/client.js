@@ -153,7 +153,15 @@ function boundedCursor(value) {
 function queryString(params = {}) {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== '') query.set(key, value)
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item !== undefined && item !== null && item !== '') {
+          query.append(key, item)
+        }
+      }
+    } else if (value !== undefined && value !== null && value !== '') {
+      query.set(key, value)
+    }
   }
   const result = query.toString()
   return result ? `?${result}` : ''
@@ -299,8 +307,16 @@ export const api = {
       })}`),
       get: revisionId => get(`/assets/experience-cards/${segment(revisionId)}`),
     },
-    recommendations: (projectId, engineOptionId) => get(
-      `/projects/${segment(projectId)}/asset-recommendations${queryString({ engineOptionId })}`,
+    recommendations: (projectId, engineOptionId, scope = {}) => get(
+      `/projects/${segment(projectId)}/asset-recommendations${queryString({
+        engineOptionId,
+        genres: scope.genres,
+        channels: scope.channels,
+        creationStages: scope.creationStages,
+        writingPurposes: scope.writingPurposes,
+        prohibitedDirections: scope.prohibitedDirections,
+        status: scope.status,
+      })}`,
     ),
   },
 

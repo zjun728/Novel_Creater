@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from enum import Enum
 from hashlib import sha256
+from itertools import product
 import json
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 from typing import Annotated, Literal, get_args
+import unicodedata
 
 from pydantic import (
     BaseModel,
@@ -276,6 +278,164 @@ class AssetEligibilityQuery(_FrozenModel):
         return values
 
 
+class AssetEligibilityScope(_FrozenModel):
+    """Bounded typed dimensions explicitly supplied for recommendation."""
+
+    genres: tuple[Genre, ...] = Field(min_length=1, max_length=len(GENRES))
+    channels: tuple[Channel, ...] = Field(
+        min_length=1,
+        max_length=len(CHANNELS),
+    )
+    creation_stages: tuple[CreationStage, ...] = Field(
+        alias="creationStages",
+        min_length=1,
+        max_length=len(CREATION_STAGES),
+    )
+    writing_purposes: tuple[WritingPurpose, ...] = Field(
+        alias="writingPurposes",
+        min_length=1,
+        max_length=len(WRITING_PURPOSES),
+    )
+    prohibited_directions: tuple[ProhibitedDirection, ...] = Field(
+        alias="prohibitedDirections",
+        max_length=len(PROHIBITED_DIRECTIONS),
+    )
+    status: AssetStatus
+
+    @field_validator(
+        "genres",
+        "channels",
+        "creation_stages",
+        "writing_purposes",
+        "prohibited_directions",
+        mode="before",
+    )
+    @classmethod
+    def freeze_unique_dimensions(cls, value: object) -> object:
+        values = tuple(value) if isinstance(value, list) else value
+        if (
+            isinstance(values, tuple)
+            and all(isinstance(item, str) for item in values)
+            and len(values) != len(set(values))
+        ):
+            raise ValueError("typed eligibility dimensions must be unique")
+        return values
+
+
+_GENRE_PROFILE_SIGNALS: tuple[tuple[Genre, tuple[str, ...]], ...] = (
+    ("science_fiction", ("science_fiction", "science fiction", "sci-fi", "科幻")),
+    ("xianxia", ("xianxia", "cultivation", "仙侠", "修仙", "仙道")),
+    ("wuxia", ("wuxia", "武侠")),
+    ("fantasy", ("xuanhuan", "fantasy", "玄幻", "奇幻", "魔法")),
+    ("historical", ("historical", "history", "历史", "古代", "穿越")),
+    ("urban", ("urban", "都市", "现代")),
+    ("romance", ("romance", "言情", "爱情", "恋爱")),
+    ("mystery", ("mystery", "悬疑", "推理")),
+    ("horror", ("horror", "恐怖", "惊悚")),
+)
+_FEMALE_CHANNEL_SIGNALS = ("female", "女频", "晋江", "潇湘")
+_MALE_CHANNEL_SIGNALS = ("male", "男频", "起点", "qidian", "qq")
+_BASE_RECOMMENDATION_PURPOSES: tuple[WritingPurpose, ...] = (
+    "style_direction",
+    "plot_organization",
+    "character_arcs",
+)
+_GENRE_RECOMMENDATION_PURPOSES: dict[Genre, tuple[WritingPurpose, ...]] = {
+    "fantasy": ("progression_economy",),
+    "xianxia": ("progression_economy",),
+    "wuxia": ("progression_economy",),
+    "historical": ("long_arc_continuity",),
+    "science_fiction": ("long_arc_continuity",),
+    "urban": ("dialogue",),
+    "romance": ("emotion", "dialogue"),
+    "mystery": ("suspense",),
+    "horror": ("suspense",),
+    "general": (),
+}
+
+
+def _normalized_profile_text(*values: object) -> str:
+    return " ".join(
+        unicodedata.normalize("NFKC", str(value or "")).casefold()
+        for value in values
+    )
+
+
+def canonical_recommendation_scope(
+    *,
+    genre_profile_key: str,
+    channel_profile_key: str,
+    dislikes: tuple[str, ...] = (),
+) -> AssetEligibilityScope:
+    """Derive the one trusted scope from persisted seed/contract facts."""
+
+    genre_text = _normalized_profile_text(genre_profile_key)
+    genre: Genre = "general"
+    for candidate, signals in _GENRE_PROFILE_SIGNALS:
+        if any(signal in genre_text for signal in signals):
+            genre = candidate
+            break
+
+    channel_text = _normalized_profile_text(channel_profile_key)
+    channel: Channel = "all"
+    if any(signal in channel_text for signal in _FEMALE_CHANNEL_SIGNALS):
+        channel = "female_frequency"
+    elif any(signal in channel_text for signal in _MALE_CHANNEL_SIGNALS):
+        channel = "male_frequency"
+
+    purposes = (
+        *_BASE_RECOMMENDATION_PURPOSES,
+        *_GENRE_RECOMMENDATION_PURPOSES[genre],
+    )
+    prohibited = tuple(
+        value
+        for value in PROHIBITED_DIRECTIONS
+        if value in set(dislikes)
+    )
+    return AssetEligibilityScope(
+        genres=(genre,),
+        channels=(channel,),
+        creation_stages=("drafting",),
+        writing_purposes=purposes,
+        prohibited_directions=prohibited,
+        status="active",
+    )
+
+
+def eligible_asset_identities(
+    entries: tuple[AssetEligibilityEntry, ...],
+    scope: AssetEligibilityScope,
+    *,
+    asset_type: AssetEligibilityType,
+) -> frozenset[tuple[str, str]]:
+    """Select exact taxonomy identities inside an already trusted scope."""
+
+    return frozenset(
+        (entry.stable_key, entry.asset_content_hash)
+        for entry in entries
+        if entry.asset_type == asset_type
+        and any(
+            is_asset_eligible(
+                entry,
+                AssetEligibilityQuery(
+                    genre=genre,
+                    channel=channel,
+                    creation_stage=stage,
+                    writing_purpose=purpose,
+                    prohibited_directions=scope.prohibited_directions,
+                ),
+                status=scope.status,
+            )
+            for genre, channel, stage, purpose in product(
+                scope.genres,
+                scope.channels,
+                scope.creation_stages,
+                scope.writing_purposes,
+            )
+        )
+    )
+
+
 def _read_bounded(path: Path, *, limit: int, io_error, size_error) -> bytes:
     try:
         if path.stat().st_size > limit:
@@ -420,9 +580,15 @@ __all__ = (
     "AssetEligibilityPackage",
     "AssetEligibilityPackageError",
     "AssetEligibilityQuery",
+    "AssetEligibilityScope",
+    "CHANNELS",
     "CREATION_STAGES",
     "GENRES",
+    "PROHIBITED_DIRECTIONS",
     "TAXONOMY_PACKAGE_VERSION",
+    "WRITING_PURPOSES",
+    "canonical_recommendation_scope",
+    "eligible_asset_identities",
     "is_asset_eligible",
     "load_asset_eligibility_package",
 )

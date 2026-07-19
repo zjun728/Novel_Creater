@@ -12,6 +12,7 @@ from backend.database import transaction
 from backend.domain.asset_eligibility import (
     AssetEligibilityEntry,
     AssetEligibilityPackage,
+    AssetEligibilityScope,
     CreationStage,
     Genre,
     load_asset_eligibility_package,
@@ -34,7 +35,7 @@ _TAXONOMY_MANIFEST = (
 @dataclass(frozen=True)
 class CreativeAssetItem:
     record: AssetRecord
-    eligibility: AssetEligibilityEntry
+    eligibility: AssetEligibilityEntry | None
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,10 @@ class CreativeAssetInventory:
     experience_card_count: int
     categories: tuple[str, ...]
     genres: tuple[str, ...]
+    channels: tuple[str, ...]
     creation_stages: tuple[str, ...]
+    writing_purposes: tuple[str, ...]
+    prohibited_directions: tuple[str, ...]
     statuses: tuple[str, ...]
 
 
@@ -101,10 +105,9 @@ class CreativeAssetService:
             record.asset.stable_key,
             record.asset.content_hash,
         )
-        try:
-            eligibility = self._eligibility[identity]
-        except KeyError:
-            raise AssetCatalogNotReady() from None
+        eligibility = self._eligibility.get(identity)
+        if eligibility is None and record.status != "archived":
+            raise AssetCatalogNotReady()
         return CreativeAssetItem(record=record, eligibility=eligibility)
 
     @staticmethod
@@ -121,13 +124,19 @@ class CreativeAssetService:
         if status is not None and record.status != status:
             return False
         if genre is not None and (
-            genre not in item.eligibility.genres
-            and "general" not in item.eligibility.genres
+            item.eligibility is None
+            or (
+                genre not in item.eligibility.genres
+                and "general" not in item.eligibility.genres
+            )
         ):
             return False
         if (
             stage is not None
-            and stage not in item.eligibility.creation_stages
+            and (
+                item.eligibility is None
+                or stage not in item.eligibility.creation_stages
+            )
         ):
             return False
         needle = _normalized_search(search)
@@ -143,7 +152,7 @@ class CreativeAssetService:
     async def _catalog(
         self,
     ) -> tuple[tuple[CreativeAssetItem, ...], tuple[CreativeAssetItem, ...]]:
-        styles, cards = await self.asset_service.catalog()
+        styles, cards = await self.asset_service.current_head_catalog()
         return (
             tuple(self._item(record) for record in styles),
             tuple(self._item(record) for record in cards),
@@ -163,12 +172,32 @@ class CreativeAssetService:
             genres=tuple(sorted({
                 genre
                 for item in all_items
+                if item.eligibility is not None
                 for genre in item.eligibility.genres
+            })),
+            channels=tuple(sorted({
+                channel
+                for item in all_items
+                if item.eligibility is not None
+                for channel in item.eligibility.channels
             })),
             creation_stages=tuple(sorted({
                 stage
                 for item in all_items
+                if item.eligibility is not None
                 for stage in item.eligibility.creation_stages
+            })),
+            writing_purposes=tuple(sorted({
+                purpose
+                for item in all_items
+                if item.eligibility is not None
+                for purpose in item.eligibility.writing_purposes
+            })),
+            prohibited_directions=tuple(sorted({
+                direction
+                for item in all_items
+                if item.eligibility is not None
+                for direction in item.eligibility.prohibited_directions
             })),
             statuses=tuple(sorted({
                 item.record.status for item in all_items
@@ -227,8 +256,29 @@ class CreativeAssetService:
     async def get_card(self, revision_id: str) -> CreativeAssetItem:
         return self._item(await self.asset_service.get_card(revision_id))
 
-    async def recommend(self, project_id: str, engine_option_id: str):
-        return await self.asset_service.recommend(project_id, engine_option_id)
+    @staticmethod
+    def _scope(value: AssetEligibilityScope | object) -> AssetEligibilityScope:
+        if isinstance(value, AssetEligibilityScope):
+            return value
+        try:
+            raw = vars(value)
+        except TypeError:
+            raw = value
+        return AssetEligibilityScope.model_validate(raw)
+
+    async def recommend(
+        self,
+        project_id: str,
+        engine_option_id: str,
+        recommendation_scope: AssetEligibilityScope | object,
+    ):
+        scope = self._scope(recommendation_scope)
+        return await self.asset_service.recommend(
+            project_id,
+            engine_option_id,
+            eligibility_scope=scope,
+            eligibility_entries=self.taxonomy.entries,
+        )
 
     def _corpus(self) -> CorpusImportService:
         if self.corpus_service is None:

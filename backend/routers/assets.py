@@ -6,7 +6,19 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Path, Query
 
-from backend.domain.asset_eligibility import CreationStage, Genre
+from backend.domain.asset_eligibility import (
+    CHANNELS,
+    CREATION_STAGES,
+    GENRES,
+    PROHIBITED_DIRECTIONS,
+    WRITING_PURPOSES,
+    AssetEligibilityScope,
+    Channel,
+    CreationStage,
+    Genre,
+    ProhibitedDirection,
+    WritingPurpose,
+)
 from backend.domain.assets import AssetCategory
 from backend.services.creative_assets import (
     CreativeAssetService,
@@ -141,7 +153,10 @@ async def get_asset_inventory(service=Depends(get_asset_service)):
         "experienceCardCount": inventory.experience_card_count,
         "categories": list(inventory.categories),
         "genres": list(inventory.genres),
+        "channels": list(inventory.channels),
         "creationStages": list(inventory.creation_stages),
+        "writingPurposes": list(inventory.writing_purposes),
+        "prohibitedDirections": list(inventory.prohibited_directions),
         "statuses": list(inventory.statuses),
     }
 
@@ -208,9 +223,38 @@ async def get_experience_card(
 async def get_asset_recommendations(
     pid: str = Path(min_length=1, max_length=36),
     engineOptionId: str = Query(min_length=1, max_length=36),
+    genres: list[Genre] = Query(
+        min_length=1,
+        max_length=len(GENRES),
+    ),
+    channels: list[Channel] = Query(
+        min_length=1,
+        max_length=len(CHANNELS),
+    ),
+    creationStages: list[CreationStage] = Query(
+        min_length=1,
+        max_length=len(CREATION_STAGES),
+    ),
+    writingPurposes: list[WritingPurpose] = Query(
+        min_length=1,
+        max_length=len(WRITING_PURPOSES),
+    ),
+    status: Literal["active", "archived"] = Query(),
+    prohibitedDirections: list[ProhibitedDirection] = Query(
+        default=[],
+        max_length=len(PROHIBITED_DIRECTIONS),
+    ),
     service=Depends(get_asset_service),
 ):
-    recommendation = await service.recommend(pid, engineOptionId)
+    scope = AssetEligibilityScope(
+        genres=tuple(genres),
+        channels=tuple(channels),
+        creation_stages=tuple(creationStages),
+        writing_purposes=tuple(writingPurposes),
+        prohibited_directions=tuple(prohibitedDirections),
+        status=status,
+    )
+    recommendation = await service.recommend(pid, engineOptionId, scope)
     styles = [
         {
             **_style_summary(item.record),
