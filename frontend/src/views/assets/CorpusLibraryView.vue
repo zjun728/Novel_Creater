@@ -124,7 +124,7 @@ async function loadMoreVersions() {
 }
 
 async function runLifecycle(command) {
-  if (!selected.value) return
+  if (!selected.value) return false
   lifecycleBusy.value = true
   detailError.value = ''
   try {
@@ -134,7 +134,7 @@ async function runLifecycle(command) {
       detailOpen.value = false
       selected.value = null
       await loadSources()
-      return
+      return true
     }
     const result = command === 'archive'
       ? await store.archiveSource(current.id, current.revision)
@@ -147,8 +147,10 @@ async function runLifecycle(command) {
     versions.value = versionPage.items
     versionCursor.value = versionPage.nextCursor
     await loadSources()
+    return true
   } catch (failure) {
     detailError.value = failure?.message || '生命周期操作失败，请刷新后重试'
+    return false
   } finally {
     lifecycleBusy.value = false
   }
@@ -274,9 +276,9 @@ onBeforeUnmount(() => {
             <CorpusLifecycleMenu
               :source="detail"
               :busy="lifecycleBusy"
+              :delete-action="() => runLifecycle('delete')"
               @archive="runLifecycle('archive')"
               @restore="runLifecycle('restore')"
-              @delete="runLifecycle('delete')"
             />
 
             <section class="detail-section">

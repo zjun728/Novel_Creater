@@ -46,9 +46,10 @@ async function captureRequest(request, { url, method }) {
   return { url, method, headers, headersReadError, body, bodyReadError }
 }
 
-function renderedPath(url) {
+function renderedTarget(url) {
   try {
-    return new URL(url).pathname
+    const parsed = new URL(url)
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`
   } catch {
     return url
   }
@@ -112,7 +113,7 @@ export function assertExactWrites(evidence, allowlist) {
 
   for (const write of writes) {
     const method = String(write.method).toUpperCase()
-    const path = renderedPath(write.url)
+    const path = renderedTarget(write.url)
     const matchIndexes = allowlist.flatMap((entry, index) => (
       entry.method === method && matchesPath(entry.path, path) ? [index] : []
     ))
@@ -138,12 +139,38 @@ export function assertExactWrites(evidence, allowlist) {
   return { writeCount: writes.length }
 }
 
-function countMatches(value, sensitiveValues) {
-  const rendered = typeof value === 'string' ? value : JSON.stringify(value)
-  if (!rendered) return 0
-  return sensitiveValues.reduce((count, sensitive) => (
-    count + rendered.split(sensitive).length - 1
-  ), 0)
+function expandSensitiveValues(values) {
+  const expanded = new Set()
+  for (const value of values || []) {
+    if (typeof value !== 'string' || value.length === 0) continue
+    const slashVariants = new Set([
+      value,
+      value.replaceAll('\\', '/'),
+      value.replaceAll('/', '\\'),
+    ])
+    for (const variant of slashVariants) {
+      if (!variant) continue
+      expanded.add(variant)
+      expanded.add(JSON.stringify(variant).slice(1, -1))
+      expanded.add(encodeURIComponent(variant))
+    }
+  }
+  return [...expanded].filter(value => value.length > 0)
+}
+
+function countMatches(value, sensitiveValues, seen = new WeakSet()) {
+  if (typeof value === 'string') {
+    return sensitiveValues.reduce((count, sensitive) => (
+      count + value.split(sensitive).length - 1
+    ), 0)
+  }
+  if (!value || typeof value !== 'object') return 0
+  if (seen.has(value)) return 0
+  seen.add(value)
+  return Object.values(value).reduce(
+    (count, nested) => count + countMatches(nested, sensitiveValues, seen),
+    0,
+  )
 }
 
 export function runtimeSensitiveValues(environment = process.env) {
@@ -177,19 +204,19 @@ export function runtimeSensitiveValues(environment = process.env) {
       `mysql+aiomysql://${encodedAuthority}`,
     )
   }
-  return [...new Set(values)]
+  return expandSensitiveValues(values)
 }
 
 export function scanRuntimeEvidence(
   evidence,
   sensitiveValues = runtimeSensitiveValues(),
 ) {
-  const values = [...new Set((sensitiveValues || []).filter(value => (
-    typeof value === 'string' && value.length > 0
-  )))]
+  const values = expandSensitiveValues(sensitiveValues)
   const surfaces = [
     ...(evidence.requests || []),
+    ...(evidence.responses || []),
     ...(evidence.apiResponses || []),
+    ...(evidence.checkpointSurfaces || []),
     evidence.pageContent || '',
     ...(evidence.consoleMessages || []),
     ...(evidence.consoleErrors || []),
@@ -208,6 +235,7 @@ export function scanRuntimeEvidence(
 export function observeRuntime(page) {
   const pendingApiBodies = new Set()
   const pendingRequests = new Set()
+  const responses = []
   const consoleMessages = []
   const consoleErrors = []
   const pageErrors = []
@@ -218,6 +246,7 @@ export function observeRuntime(page) {
     const method = response.request().method()
     const status = response.status()
     const url = response.url()
+    responses.push({ url, method, status })
     if ((status < 200 || status >= 300) && status !== 304) {
       responseFailures.push(`${status} ${method} ${url}`)
     }
@@ -286,6 +315,7 @@ export function observeRuntime(page) {
 
     return {
       requests,
+      responses,
       apiResponses,
       consoleMessages,
       consoleErrors,

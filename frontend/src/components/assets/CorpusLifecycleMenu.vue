@@ -11,9 +11,12 @@ import { computed, ref } from 'vue'
 const props = defineProps({
   source: { type: Object, required: true },
   busy: { type: Boolean, default: false },
+  deleteAction: { type: Function, required: true },
 })
-const emit = defineEmits(['archive', 'restore', 'delete'])
+const emit = defineEmits(['archive', 'restore'])
 const confirmOpen = ref(false)
+const deletePending = ref(false)
+const actionBusy = computed(() => props.busy || deletePending.value)
 
 const deleteReasonText = computed(() => ({
   source_not_archived: '永久删除前必须先归档。',
@@ -21,12 +24,25 @@ const deleteReasonText = computed(() => ({
 }[props.source.deleteReason] || '此来源当前不可永久删除。'))
 
 function requestDelete() {
-  if (props.source.deleteEligible) confirmOpen.value = true
+  if (props.source.deleteEligible && !actionBusy.value) confirmOpen.value = true
 }
 
-function confirmDelete() {
-  confirmOpen.value = false
-  emit('delete')
+function updateConfirmOpen(next) {
+  if (!deletePending.value) confirmOpen.value = next
+}
+
+async function confirmDelete() {
+  if (deletePending.value) return
+  deletePending.value = true
+  let succeeded = false
+  try {
+    succeeded = await props.deleteAction() === true
+  } catch {
+    succeeded = false
+  } finally {
+    deletePending.value = false
+  }
+  if (succeeded) confirmOpen.value = false
 }
 </script>
 
@@ -41,12 +57,18 @@ function confirmDelete() {
       >
         归档来源
       </n-button>
-      <n-button v-else secondary :loading="busy" @click="emit('restore')">
+      <n-button
+        v-else
+        secondary
+        :disabled="actionBusy"
+        :loading="busy"
+        @click="emit('restore')"
+      >
         恢复来源
       </n-button>
       <n-button
         v-if="source.state === 'archived'"
-        :disabled="!source.deleteEligible || busy"
+        :disabled="!source.deleteEligible || actionBusy"
         @click="requestDelete"
       >
         永久删除
@@ -56,7 +78,12 @@ function confirmDelete() {
       {{ deleteReasonText }}
     </p>
 
-    <n-modal v-model:show="confirmOpen">
+    <n-modal
+      :show="confirmOpen"
+      :mask-closable="!deletePending"
+      :close-on-esc="!deletePending"
+      @update:show="updateConfirmOpen"
+    >
       <n-card class="danger-card" :bordered="false" role="alertdialog" aria-modal="true">
         <h3>永久删除这份语料？</h3>
         <n-alert type="warning">
@@ -64,8 +91,15 @@ function confirmDelete() {
         </n-alert>
         <p>受管内容仅在引用计数为零时允许删除；系统会在服务端再次校验。</p>
         <div>
-          <n-button @click="confirmOpen = false">保留</n-button>
-          <n-button type="error" @click="confirmDelete">确认永久删除</n-button>
+          <n-button :disabled="actionBusy" @click="updateConfirmOpen(false)">保留</n-button>
+          <n-button
+            type="error"
+            :disabled="actionBusy"
+            :loading="deletePending"
+            @click="confirmDelete"
+          >
+            确认永久删除
+          </n-button>
         </div>
       </n-card>
     </n-modal>

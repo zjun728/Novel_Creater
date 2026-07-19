@@ -20,6 +20,7 @@ const suiteNames = [
   'm1-regression',
   'browser-m2',
   'browser-product-shell',
+  'browser-phase2a',
   'milestone2',
 ]
 const integrationEnvironmentNames = [
@@ -33,6 +34,7 @@ const mysqlSuites = new Set([
   'browser',
   'browser-m2',
   'browser-product-shell',
+  'browser-phase2a',
   'milestone2',
 ])
 export const pytestTempStages = Object.freeze({
@@ -79,6 +81,9 @@ const milestone2BrowserFiles = [
 const productShellBrowserFiles = [
   'frontend/e2e/product-shell-lifecycle.spec.ts',
 ]
+const phase2aBrowserFiles = [
+  'frontend/e2e/phase2a-assets-settings.spec.ts',
+]
 
 export function discoverTestFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })
@@ -100,6 +105,7 @@ function createSuites(rootDirectory, environment) {
   const m1NodeTests = absolute(m1RegressionNodeFiles)
   const m2BrowserTests = absolute(milestone2BrowserFiles)
   const productShellBrowserTests = absolute(productShellBrowserFiles)
+  const phase2aBrowserTests = absolute(phase2aBrowserFiles)
   const retainedM1 = [
     [
       python,
@@ -143,6 +149,7 @@ function createSuites(rootDirectory, environment) {
   ]
   const browserM2 = [[node, ['frontend/e2e/run-milestone2.mjs']]]
   const browserProductShell = [[node, ['frontend/e2e/run-product-shell.mjs']]]
+  const browserPhase2A = [[node, ['frontend/e2e/run-phase2a.mjs']]]
 
   return {
     commands: {
@@ -153,6 +160,7 @@ function createSuites(rootDirectory, environment) {
       'm1-regression': retainedM1,
       'browser-m2': browserM2,
       'browser-product-shell': browserProductShell,
+      'browser-phase2a': browserPhase2A,
       milestone2: [
         ...retainedM1,
         ...unit,
@@ -173,6 +181,9 @@ function createSuites(rootDirectory, environment) {
       'browser-m2': [['M2 Playwright specs', m2BrowserTests]],
       'browser-product-shell': [
         ['Product-shell Playwright spec', productShellBrowserTests],
+      ],
+      'browser-phase2a': [
+        ['Phase 2A Playwright spec', phase2aBrowserTests],
       ],
       milestone2: [
         [scriptTestDirectory, scriptTests],

@@ -53,6 +53,7 @@ const naiveStubPlugin = {
       export const NForm = stub('NForm', 'form')
       export const NFormItem = stub('NFormItem', 'label')
       export const NInput = stub('NInput', 'input')
+      export const NSpace = stub('NSpace')
       export const NModal = defineComponent({
         name: 'NModal',
         inheritAttrs: false,
@@ -165,6 +166,16 @@ async function flush() {
   await nextTick()
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, reject, resolve }
+}
+
 async function trigger(node, name, value) {
   const handlers = Array.isArray(node.props[name])
     ? node.props[name]
@@ -192,6 +203,7 @@ async function compileClientRender(path) {
 
 let vite
 let CorpusImportDialog
+let CorpusLifecycleMenu
 
 test.before(async () => {
   vite = await createServer({
@@ -215,10 +227,147 @@ test.before(async () => {
   CorpusImportDialog.render = await compileClientRender(
     'src/components/assets/CorpusImportDialog.vue',
   )
+  CorpusLifecycleMenu = (
+    await vite.ssrLoadModule('/src/components/assets/CorpusLifecycleMenu.vue')
+  ).default
+  CorpusLifecycleMenu.render = await compileClientRender(
+    'src/components/assets/CorpusLifecycleMenu.vue',
+  )
 })
 
 test.after(async () => {
   await vite?.close()
+})
+
+test('permanent delete confirmation stays pending until its real action settles', async () => {
+  let calls = 0
+  const pending = deferred()
+  const Root = defineComponent({
+    setup() {
+      return () => h(CorpusLifecycleMenu, {
+        source: {
+          id: 'source-1',
+          state: 'archived',
+          deleteEligible: true,
+          deleteReason: null,
+        },
+        deleteAction: async () => {
+          calls += 1
+          return pending.promise
+        },
+      })
+    },
+  })
+  const root = hostNode('root')
+  const app = renderer.createApp(Root)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(root)
+
+  try {
+    const open = walk(root).find(node => (
+      node.type === 'button' && textContent(node).trim() === '永久删除'
+    ))
+    await trigger(open, 'onClick')
+    let confirm = walk(root).find(node => (
+      node.type === 'button' && textContent(node).trim() === '确认永久删除'
+    ))
+    const confirming = trigger(confirm, 'onClick')
+    await flush()
+
+    assert.equal(calls, 1)
+    const cancel = walk(root).find(node => (
+      node.type === 'button' && textContent(node).trim() === '保留'
+    ))
+    confirm = walk(root).find(node => (
+      node.type === 'button' && textContent(node).trim() === '确认永久删除'
+    ))
+    const restore = walk(root).find(node => (
+      node.type === 'button' && textContent(node).trim() === '恢复来源'
+    ))
+    assert.equal(cancel.props.disabled, true)
+    assert.equal(confirm.props.disabled, true)
+    assert.equal(confirm.props.loading, true)
+    assert.equal(restore.props.disabled, true)
+    await trigger(confirm, 'onClick')
+    assert.equal(calls, 1, 'pending confirmation must not emit a duplicate delete')
+
+    pending.resolve(true)
+    await confirming
+    await flush()
+    assert.equal(
+      walk(root).some(node => textContent(node).trim() === '确认永久删除'),
+      false,
+      'successful action closes the confirmation only after it settles',
+    )
+  } finally {
+    pending.resolve(false)
+    app.unmount()
+  }
+})
+
+test('failed permanent delete unlocks the same dialog for one explicit retry', async () => {
+  const attempts = [deferred(), deferred()]
+  let calls = 0
+  const Root = defineComponent({
+    setup() {
+      return () => h(CorpusLifecycleMenu, {
+        source: {
+          id: 'source-1',
+          state: 'archived',
+          deleteEligible: true,
+          deleteReason: null,
+        },
+        deleteAction: async () => {
+          const attempt = attempts[calls]
+          calls += 1
+          return attempt.promise
+        },
+      })
+    },
+  })
+  const root = hostNode('root')
+  const app = renderer.createApp(Root)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(root)
+
+  try {
+    await trigger(
+      walk(root).find(node => (
+        node.type === 'button' && textContent(node).trim() === '永久删除'
+      )),
+      'onClick',
+    )
+    let confirm = walk(root).find(node => (
+      node.type === 'button' && textContent(node).trim() === '确认永久删除'
+    ))
+    const first = trigger(confirm, 'onClick')
+    await flush()
+    attempts[0].resolve(false)
+    await first
+    await flush()
+
+    confirm = walk(root).find(node => (
+      node.type === 'button' && textContent(node).trim() === '确认永久删除'
+    ))
+    assert.ok(confirm, 'failed action keeps the dialog visible')
+    assert.notEqual(confirm.props.disabled, true)
+    assert.notEqual(confirm.props.loading, true)
+    assert.equal(calls, 1)
+
+    const second = trigger(confirm, 'onClick')
+    await flush()
+    assert.equal(calls, 2)
+    attempts[1].resolve(true)
+    await second
+    await flush()
+    assert.equal(
+      walk(root).some(node => textContent(node).trim() === '确认永久删除'),
+      false,
+    )
+  } finally {
+    for (const attempt of attempts) attempt.resolve(false)
+    app.unmount()
+  }
 })
 
 test('eligible discovery item is selectable and submits through the real Pinia store', async () => {

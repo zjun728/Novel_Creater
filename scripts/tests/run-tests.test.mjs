@@ -20,7 +20,7 @@ const scriptsDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url
 const repositoryRoot = path.dirname(scriptsDirectory)
 const runnerPath = path.join(scriptsDirectory, 'run-tests.mjs')
 
-test('package scripts expose only the frozen M1 and M2 entrypoints', () => {
+test('package scripts retain frozen M1/M2 and expose the isolated Phase 2A gate', () => {
   const rootPackage = JSON.parse(readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'))
   const frontendPackage = JSON.parse(
     readFileSync(path.join(repositoryRoot, 'frontend', 'package.json'), 'utf8'),
@@ -30,8 +30,14 @@ test('package scripts expose only the frozen M1 and M2 entrypoints', () => {
   assert.equal(rootPackage.scripts['test:browser:m2'], 'node scripts/run-tests.mjs browser-m2')
   assert.equal(rootPackage.scripts['test:milestone1'], 'node scripts/run-tests.mjs m1-regression')
   assert.equal(rootPackage.scripts['test:milestone2'], 'node scripts/run-tests.mjs milestone2')
+  assert.equal(
+    rootPackage.scripts['test:browser:phase2a'],
+    'node scripts/run-tests.mjs browser-phase2a',
+  )
+  assert.equal(rootPackage.scripts.build, 'npm --prefix frontend run build')
   assert.equal(frontendPackage.scripts['test:e2e:m1'], 'node e2e/run-milestone1.mjs')
   assert.equal(frontendPackage.scripts['test:e2e:m2'], 'node e2e/run-milestone2.mjs')
+  assert.equal(frontendPackage.scripts['test:e2e:phase2a'], 'node e2e/run-phase2a.mjs')
   assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-milestone2.mjs')
 })
 

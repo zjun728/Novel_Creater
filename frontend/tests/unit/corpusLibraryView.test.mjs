@@ -63,6 +63,11 @@ test('corpus lifecycle view owns explicit import, bounded preview, version histo
   assert.match(importDialog, /createDistinctSource/)
   assert.match(lifecycle, /deleteEligible/)
   assert.match(lifecycle, /deleteReason/)
+  assert.match(lifecycle, /deletePending/)
+  assert.match(lifecycle, /await props\.deleteAction\(\)/)
+  assert.match(lifecycle, /:loading="deletePending"/)
+  assert.match(view, /:delete-action="[^"]*runLifecycle\('delete'\)[^"]*"/)
+  assert.doesNotMatch(view, /@delete=/)
   assert.equal((lifecycle.match(/type=["']error["']/g) || []).length, 1)
   assert.doesNotMatch(
     `${view}\n${importDialog}\n${lifecycle}`,

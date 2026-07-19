@@ -197,6 +197,30 @@ test('observer enforces exact write method path status and count allowlists', as
   )
 })
 
+test('exact write allowlists reject query and hash variants of an allowed route', async () => {
+  const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const rule = {
+    method: 'PUT',
+    path: /^\/api\/providers\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    count: 1,
+    statuses: [200],
+  }
+  const providerPath = '/api/providers/11111111-1111-4111-8111-111111111111'
+
+  for (const suffix of ['?unexpected=1', '#unexpected']) {
+    assert.throws(
+      () => assertExactWrites({
+        apiResponses: [{
+          method: 'PUT',
+          status: 200,
+          url: `http://127.0.0.1:8000${providerPath}${suffix}`,
+        }],
+      }, [rule]),
+      /unmatched/i,
+    )
+  }
+})
+
 test('write allowlist rejects invalid rules even when no writes occur', async () => {
   const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
   const evidence = { apiResponses: [] }
@@ -235,6 +259,29 @@ test('runtime secret scan returns only a match count and covers all evidence sur
   assert.equal(result.matchCount, 10)
   assert.deepEqual(Object.keys(result), ['matchCount'])
   assert.equal(JSON.stringify(result).includes(secret), false)
+})
+
+test('runtime secret scan recursively covers Windows JSON, slash, and URL variants', async () => {
+  const { scanRuntimeEvidence } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const windowsValue = String.raw`C:\Users\phase2a\private corpus`
+  const jsonEscaped = JSON.stringify(windowsValue).slice(1, -1)
+  const forwardSlash = windowsValue.replaceAll('\\', '/')
+  const urlEncoded = encodeURIComponent(windowsValue)
+  const result = scanRuntimeEvidence({
+    requests: [{
+      body: JSON.stringify({ corpusRoot: windowsValue }),
+      nested: {
+        values: [jsonEscaped, { forwardSlash }, urlEncoded],
+      },
+    }],
+  }, [windowsValue])
+
+  assert.ok(result.matchCount >= 4)
+  assert.deepEqual(Object.keys(result), ['matchCount'])
+  const renderedResult = JSON.stringify(result)
+  for (const sensitive of [windowsValue, jsonEscaped, forwardSlash, urlEncoded]) {
+    assert.equal(renderedResult.includes(sensitive), false)
+  }
 })
 
 test('runtime scan values include sentinels plus raw and encoded database credentials', async () => {
