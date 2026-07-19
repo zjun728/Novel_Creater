@@ -582,6 +582,71 @@ def test_manual_adapter_rejects_noncanonical_or_out_of_boundary_work_urls(
     assert rejected.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
 
 
+@pytest.mark.parametrize("field", ("sourceURL", "workURL"))
+@pytest.mark.parametrize(
+    "control",
+    tuple(chr(value) for value in range(32)) + ("\x7f",),
+)
+def test_manual_adapter_rejects_all_ascii_url_controls_without_echo(
+    field,
+    control,
+):
+    from backend.gateways.market_sources.base import MarketSourceFailure
+    from backend.gateways.market_sources.manual_snapshot import (
+        ManualSnapshotAdapter,
+    )
+
+    source_url = "https://www.qidian.com/rank/newsign/"
+    work_url = "https://www.qidian.com/book/900000001/"
+    if field == "sourceURL":
+        source_url = f"https://www.qi{control}dian.com/rank/newsign/"
+    else:
+        work_url = f"https://www.qidian.com/book/900{control}000001/"
+    payload = {
+        "platform": "qidian",
+        "rankingName": "newsign",
+        "category": "male",
+        "capturedAt": NOW,
+        "sourceURL": source_url,
+        "entries": [
+            {
+                "rank": 1,
+                "title": "雾港天文钟",
+                "author": "合成作者甲",
+                "category": "奇幻",
+                "workURL": work_url,
+                "publicMetrics": {},
+            }
+        ],
+    }
+
+    with pytest.raises(MarketSourceFailure) as rejected:
+        ManualSnapshotAdapter().parse(
+            payload,
+            adapter_key="qidian_public_rank",
+        )
+
+    assert rejected.value.code == "MARKET_MANUAL_SNAPSHOT_INVALID"
+    assert source_url not in str(rejected.value)
+    assert work_url not in str(rejected.value)
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        " https://www.qidian.com/book/900000001/",
+        "https://www.qidian.com/book/900000001/ ",
+        "https://www.qidian.com/book/900000001/?",
+        "https://www.qidian.com/book/900000001/#",
+    ),
+)
+def test_shared_public_url_validator_rejects_normalization_changes(url):
+    from backend.domain.market import _public_http_url
+
+    with pytest.raises(ValueError):
+        _public_http_url(url)
+
+
 @pytest.mark.parametrize("ranks", ((2, 1), (1, 3)))
 def test_manual_adapter_requires_exact_increasing_rank_order(ranks):
     from backend.gateways.market_sources.base import MarketSourceFailure

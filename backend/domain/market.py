@@ -6,7 +6,7 @@ import math
 import re
 from types import MappingProxyType
 from typing import Mapping, Self
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import (
     BaseModel,
@@ -23,18 +23,26 @@ MAX_MARKET_SOURCES = 100
 _METRIC_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 
-def _public_http_url(value: str) -> str:
+def _public_http_url(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("URL must be a string")
-    value = value.strip()
     if not value or len(value) > 2_048:
         raise ValueError("URL is blank or too long")
-    parsed = urlsplit(value)
+    if value != value.strip() or any(
+        ord(character) < 32 or ord(character) == 127
+        for character in value
+    ):
+        raise ValueError("URL must not contain whitespace controls")
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        raise ValueError("URL must be a public HTTP(S) URL") from None
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
         or parsed.username is not None
         or parsed.password is not None
+        or urlunsplit(parsed) != value
     ):
         raise ValueError("URL must be a public HTTP(S) URL")
     return value
@@ -64,9 +72,9 @@ class MarketEntry(_MarketModel):
         alias="publicMetrics",
     )
 
-    @field_validator("work_url")
+    @field_validator("work_url", mode="before")
     @classmethod
-    def validate_work_url(cls, value: str) -> str:
+    def validate_work_url(cls, value: object) -> str:
         return _public_http_url(value)
 
     @field_validator("public_metrics")
@@ -116,9 +124,9 @@ class MarketSnapshot(_MarketModel):
     def freeze_entries(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
 
-    @field_validator("source_url")
+    @field_validator("source_url", mode="before")
     @classmethod
-    def validate_source_url(cls, value: str) -> str:
+    def validate_source_url(cls, value: object) -> str:
         return _public_http_url(value)
 
     @model_validator(mode="after")

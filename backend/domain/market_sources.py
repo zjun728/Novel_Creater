@@ -198,9 +198,9 @@ class SourcePolicy(_FrozenModel):
             raise ValueError("request interval must use whole minutes")
         return value
 
-    @field_validator("evidence_url")
+    @field_validator("evidence_url", mode="before")
     @classmethod
-    def validate_evidence_url(cls, value: str) -> str:
+    def validate_evidence_url(cls, value: object) -> str:
         from backend.domain.market import _public_http_url
 
         return _public_http_url(value)

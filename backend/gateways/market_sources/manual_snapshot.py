@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
-from backend.domain.market import MarketSnapshot
+from backend.domain.market import MarketSnapshot, _public_http_url
 from backend.domain.market_sources import MarketSourceFailure
 
 
@@ -33,6 +33,7 @@ def _work_url_is_canonical(url: str, adapter_key: str) -> bool:
         return False
     scheme, netloc, path_pattern = rule
     try:
+        url = _public_http_url(url)
         parsed = urlsplit(url)
     except ValueError:
         return False
