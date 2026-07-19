@@ -1,0 +1,534 @@
+"""Fixed SQL persistence for market sources and immutable snapshots."""
+
+from __future__ import annotations
+
+import json
+
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.market_sources import (
+    MarketSourceConflict,
+    MarketSourceFailure,
+    MarketSourceNotFound,
+    SourcePolicy,
+)
+
+
+def _json_value(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+class MarketRepository:
+    async def lock_schema_guard(self, session) -> None:
+        row = await session.fetchone(
+            "SELECT singleton_id FROM schema_metadata "
+            "WHERE singleton_id=1 FOR UPDATE"
+        )
+        if row is None:
+            raise RuntimeError("market source seed schema guard is unavailable")
+
+    async def list_seed_inventory(self, session):
+        rows = await session.fetchall(
+            """SELECT s.id,s.stable_key,s.adapter_key,s.display_name,
+                      s.public_config_json,s.status,s.created_at,s.updated_at,
+                      p.id AS policy_id,p.source_id,p.revision,
+                      p.policy_status,p.policy_version,p.checked_at,
+                      p.evidence_url,p.evidence_hash,p.allowed_origins_json,
+                      p.path_prefixes_json,p.enabled,p.interval_minutes,
+                      p.next_run_at,p.content_hash AS policy_content_hash,
+                      p.created_at AS policy_created_at,
+                      h.revision_id AS head_revision_id,
+                      h.revision AS head_revision,
+                      h.content_hash AS head_content_hash
+               FROM market_sources s
+               LEFT JOIN market_source_policy_heads h ON h.source_id=s.id
+               LEFT JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               ORDER BY s.stable_key"""
+        )
+        inventory = []
+        for row in rows:
+            policy = None
+            head = None
+            if row["policy_id"] is not None:
+                policy = {
+                    "id": row["policy_id"],
+                    "source_id": row["source_id"],
+                    "revision": row["revision"],
+                    "policy_status": row["policy_status"],
+                    "policy_version": row["policy_version"],
+                    "checked_at": row["checked_at"],
+                    "evidence_url": row["evidence_url"],
+                    "evidence_hash": row["evidence_hash"],
+                    "allowed_origins_json": canonical_json(
+                        _json_value(row["allowed_origins_json"])
+                    ),
+                    "path_prefixes_json": canonical_json(
+                        _json_value(row["path_prefixes_json"])
+                    ),
+                    "enabled": row["enabled"],
+                    "interval_minutes": row["interval_minutes"],
+                    "next_run_at": row["next_run_at"],
+                    "content_hash": row["policy_content_hash"],
+                    "created_at": row["policy_created_at"],
+                }
+                head = {
+                    "source_id": row["id"],
+                    "revision_id": row["head_revision_id"],
+                    "revision": row["head_revision"],
+                    "content_hash": row["head_content_hash"],
+                }
+            inventory.append(
+                {
+                    "id": row["id"],
+                    "stable_key": row["stable_key"],
+                    "adapter_key": row["adapter_key"],
+                    "display_name": row["display_name"],
+                    "public_config_json": canonical_json(
+                        _json_value(row["public_config_json"])
+                    ),
+                    "status": row["status"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "policy": policy,
+                    "head": head,
+                }
+            )
+        return tuple(inventory)
+
+    async def insert_source(self, session, row: dict) -> None:
+        await session.execute(
+            """INSERT INTO market_sources
+               (id,stable_key,adapter_key,display_name,public_config_json,
+                status,created_at,updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                row["id"],
+                row["stable_key"],
+                row["adapter_key"],
+                row["display_name"],
+                row["public_config_json"],
+                row["status"],
+                row["created_at"],
+                row["updated_at"],
+            ),
+        )
+
+    async def insert_policy_revision(self, session, row: dict) -> None:
+        await session.execute(
+            """INSERT INTO market_source_policy_revisions
+               (id,source_id,revision,policy_status,policy_version,checked_at,
+                evidence_url,evidence_hash,allowed_origins_json,
+                path_prefixes_json,enabled,interval_minutes,next_run_at,
+                content_hash,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                row["id"],
+                row["source_id"],
+                row["revision"],
+                row["policy_status"],
+                row["policy_version"],
+                row["checked_at"],
+                row["evidence_url"],
+                row["evidence_hash"],
+                row["allowed_origins_json"],
+                row["path_prefixes_json"],
+                row["enabled"],
+                row["interval_minutes"],
+                row["next_run_at"],
+                row["content_hash"],
+                row["created_at"],
+            ),
+        )
+
+    async def insert_policy_head(self, session, row: dict) -> None:
+        await session.execute(
+            """INSERT INTO market_source_policy_heads
+               (source_id,revision_id,revision,content_hash,updated_at)
+               VALUES (%s,%s,%s,%s,%s)""",
+            (
+                row["source_id"],
+                row["revision_id"],
+                row["revision"],
+                row["content_hash"],
+                row["updated_at"],
+            ),
+        )
+
+    async def insert_refresh_state(self, session, row: dict) -> None:
+        await session.execute(
+            """INSERT INTO market_source_refresh_states
+               (source_id,last_snapshot_id,refresh_status,lease_owner,
+                lease_expires_at,last_attempted_at,last_succeeded_at,
+                next_run_at,public_error_code,updated_at)
+               VALUES (%s,NULL,'idle',NULL,NULL,NULL,NULL,NULL,NULL,%s)""",
+            (row["source_id"], row["updated_at"]),
+        )
+
+    @staticmethod
+    def _policy_from_row(row) -> SourcePolicy | None:
+        if row.get("policy_revision_id") is None:
+            return None
+        return SourcePolicy(
+            status=row["policy_status"],
+            checkedAt=row["checked_at"],
+            evidenceURL=row["evidence_url"],
+            evidenceHash=row["evidence_hash"],
+            allowedOrigins=tuple(_json_value(row["allowed_origins_json"])),
+            pathPrefixes=tuple(_json_value(row["path_prefixes_json"])),
+            requestIntervalSeconds=int(row["interval_minutes"]) * 60,
+            policyVersion=row["policy_version"],
+            enabled=bool(row["enabled"]),
+        )
+
+    async def list_sources(self, session):
+        rows = await session.fetchall(
+            """SELECT s.id,s.stable_key,s.adapter_key,s.display_name,
+                      s.public_config_json,s.status,
+                      p.id AS policy_revision_id,p.revision AS policy_revision,
+                      p.policy_status,p.policy_version,p.checked_at,
+                      p.evidence_url,p.evidence_hash,p.allowed_origins_json,
+                      p.path_prefixes_json,p.enabled,p.interval_minutes,
+                      p.content_hash AS policy_hash,
+                      rs.last_snapshot_id,rs.refresh_status,
+                      rs.last_attempted_at,rs.last_succeeded_at,
+                      rs.public_error_code
+               FROM market_sources s
+               LEFT JOIN market_source_policy_heads h ON h.source_id=s.id
+               LEFT JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               LEFT JOIN market_source_refresh_states rs ON rs.source_id=s.id
+               WHERE s.status='active' ORDER BY s.stable_key"""
+        )
+        return tuple(self._decode_source_row(row) for row in rows)
+
+    async def get_source(self, session, source_id: str):
+        row = await session.fetchone(
+            """SELECT s.id,s.stable_key,s.adapter_key,s.display_name,
+                      s.public_config_json,s.status,
+                      p.id AS policy_revision_id,p.revision AS policy_revision,
+                      p.policy_status,p.policy_version,p.checked_at,
+                      p.evidence_url,p.evidence_hash,p.allowed_origins_json,
+                      p.path_prefixes_json,p.enabled,p.interval_minutes,
+                      p.content_hash AS policy_hash,
+                      rs.last_snapshot_id,rs.refresh_status,
+                      rs.last_attempted_at,rs.last_succeeded_at,
+                      rs.public_error_code
+               FROM market_sources s
+               LEFT JOIN market_source_policy_heads h ON h.source_id=s.id
+               LEFT JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               LEFT JOIN market_source_refresh_states rs ON rs.source_id=s.id
+               WHERE s.id=%s AND s.status='active'""",
+            (source_id,),
+        )
+        return None if row is None else self._decode_source_row(row)
+
+    def _decode_source_row(self, row):
+        value = dict(row)
+        value["public_config"] = _json_value(value.pop("public_config_json"))
+        value["policy"] = self._policy_from_row(value)
+        return value
+
+    async def reserve_refresh(
+        self,
+        session,
+        *,
+        source_id: str,
+        idempotency_key: str,
+        request_hash: str,
+        input_manifest_hash: str,
+        now_ms: int,
+    ):
+        source = await session.fetchone(
+            """SELECT s.id,s.stable_key,s.adapter_key,s.display_name,
+                      s.public_config_json,s.status,
+                      p.id AS policy_revision_id,p.revision AS policy_revision,
+                      p.policy_status,p.policy_version,p.checked_at,
+                      p.evidence_url,p.evidence_hash,p.allowed_origins_json,
+                      p.path_prefixes_json,p.enabled,p.interval_minutes,
+                      p.content_hash AS policy_hash
+               FROM market_sources s
+               LEFT JOIN market_source_policy_heads h ON h.source_id=s.id
+               LEFT JOIN market_source_policy_revisions p
+                 ON p.source_id=h.source_id AND p.id=h.revision_id
+                AND p.revision=h.revision AND p.content_hash=h.content_hash
+               WHERE s.id=%s AND s.status='active' FOR UPDATE""",
+            (source_id,),
+        )
+        if source is None:
+            raise MarketSourceNotFound()
+        if source["policy_revision_id"] is None:
+            raise MarketSourceFailure("MARKET_POLICY_MISSING")
+        input_manifest_hash = canonical_hash(
+            {
+                "sourceId": source_id,
+                "adapterKey": source["adapter_key"],
+                "publicConfig": _json_value(source["public_config_json"]),
+                "policyRevision": source["policy_revision"],
+                "policyHash": source["policy_hash"],
+                "requestHash": request_hash,
+            }
+        )
+
+        existing = await session.fetchone(
+            """SELECT id,request_hash,status,snapshot_id,public_error_code
+               FROM market_refresh_requests
+               WHERE source_id=%s AND idempotency_key=%s FOR UPDATE""",
+            (source_id, idempotency_key),
+        )
+        if existing is not None:
+            if existing["request_hash"] != request_hash:
+                raise MarketSourceConflict()
+            if existing["status"] == "succeeded":
+                snapshot = await self._snapshot_summary(
+                    session,
+                    source_id,
+                    existing["snapshot_id"],
+                )
+                return {"kind": "succeeded", "snapshot": snapshot}
+            if existing["status"] in {"failed", "outcome_unknown"}:
+                raise MarketSourceFailure(existing["public_error_code"])
+            raise MarketSourceFailure("MARKET_REFRESH_IN_PROGRESS")
+
+        request_id = canonical_hash(
+            {
+                "sourceId": source_id,
+                "idempotencyKey": idempotency_key,
+                "requestHash": request_hash,
+            }
+        )[:32]
+        request_id = (
+            f"{request_id[:8]}-{request_id[8:12]}-{request_id[12:16]}-"
+            f"{request_id[16:20]}-{request_id[20:32]}"
+        )
+        await session.execute(
+            """INSERT INTO market_refresh_requests
+               (id,source_id,idempotency_key,request_hash,policy_revision,
+                input_manifest_hash,status,snapshot_id,result_hash,
+                public_error_code,created_at,completed_at)
+               VALUES (%s,%s,%s,%s,%s,%s,'running',NULL,NULL,NULL,%s,NULL)""",
+            (
+                request_id,
+                source_id,
+                idempotency_key,
+                request_hash,
+                source["policy_revision"],
+                input_manifest_hash,
+                now_ms,
+            ),
+        )
+        decoded = self._decode_source_row(source)
+        return {
+            "kind": "reserved",
+            "request_id": request_id,
+            "source": decoded,
+        }
+
+    async def _snapshot_summary(self, session, source_id: str, snapshot_id: str):
+        return await session.fetchone(
+            """SELECT id,source_id,captured_at,platform,ranking_name,category,
+                      source_url,content_hash,entry_count
+               FROM market_snapshots WHERE source_id=%s AND id=%s""",
+            (source_id, snapshot_id),
+        )
+
+    async def publish_snapshot(
+        self,
+        session,
+        *,
+        request_id: str,
+        source_id: str,
+        snapshot,
+        snapshot_id: str,
+        snapshot_hash: str,
+        entry_ids: tuple[str, ...],
+        entry_hashes: tuple[str, ...],
+        manifest_id: str,
+        manifest: dict,
+        manifest_hash: str,
+        adapter_version: str,
+        policy_revision_id: str,
+        policy_revision: int,
+        policy_hash: str,
+        completed_at: int,
+    ):
+        request = await session.fetchone(
+            """SELECT status FROM market_refresh_requests
+               WHERE id=%s AND source_id=%s FOR UPDATE""",
+            (request_id, source_id),
+        )
+        if request is None or request["status"] != "running":
+            raise MarketSourceConflict()
+        existing = await session.fetchone(
+            """SELECT id FROM market_snapshots
+               WHERE source_id=%s AND content_hash=%s""",
+            (source_id, snapshot_hash),
+        )
+        published_id = snapshot_id
+        if existing is None:
+            await session.execute(
+                """INSERT INTO market_snapshots
+                   (id,source_id,captured_at,platform,ranking_name,category,
+                    source_url,content_hash,entry_count,created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    snapshot_id,
+                    source_id,
+                    snapshot.captured_at,
+                    snapshot.platform,
+                    snapshot.ranking_name,
+                    snapshot.category,
+                    snapshot.source_url,
+                    snapshot_hash,
+                    len(snapshot.entries),
+                    completed_at,
+                ),
+            )
+            for entry, entry_id, entry_hash in zip(
+                snapshot.entries,
+                entry_ids,
+                entry_hashes,
+                strict=True,
+            ):
+                await session.execute(
+                    """INSERT INTO market_snapshot_entries
+                       (id,source_id,snapshot_id,rank_number,title,author,
+                        category,work_url,public_metrics_json,content_hash,
+                        created_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (
+                        entry_id,
+                        source_id,
+                        snapshot_id,
+                        entry.rank,
+                        entry.title,
+                        entry.author,
+                        entry.category,
+                        entry.work_url,
+                        canonical_json(entry.public_metrics),
+                        entry_hash,
+                        completed_at,
+                    ),
+                )
+            await session.execute(
+                """INSERT INTO market_snapshot_manifests
+                   (id,source_id,snapshot_id,snapshot_hash,policy_revision_id,
+                    policy_revision,policy_hash,adapter_version,manifest_json,
+                    manifest_hash,created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    manifest_id,
+                    source_id,
+                    snapshot_id,
+                    snapshot_hash,
+                    policy_revision_id,
+                    policy_revision,
+                    policy_hash,
+                    adapter_version,
+                    canonical_json(manifest),
+                    manifest_hash,
+                    completed_at,
+                ),
+            )
+        else:
+            published_id = existing["id"]
+
+        await session.execute(
+            """UPDATE market_refresh_requests
+               SET status='succeeded',snapshot_id=%s,result_hash=%s,
+                   public_error_code=NULL,completed_at=%s
+               WHERE id=%s AND source_id=%s AND status='running'""",
+            (
+                published_id,
+                snapshot_hash,
+                completed_at,
+                request_id,
+                source_id,
+            ),
+        )
+        await session.execute(
+            """UPDATE market_source_refresh_states
+               SET last_snapshot_id=%s,refresh_status='idle',lease_owner=NULL,
+                   lease_expires_at=NULL,last_attempted_at=%s,
+                   last_succeeded_at=%s,public_error_code=NULL,updated_at=%s
+               WHERE source_id=%s""",
+            (
+                published_id,
+                completed_at,
+                completed_at,
+                completed_at,
+                source_id,
+            ),
+        )
+        return await self._snapshot_summary(session, source_id, published_id)
+
+    async def fail_refresh(
+        self,
+        session,
+        *,
+        request_id: str,
+        source_id: str,
+        public_error_code: str,
+        completed_at: int,
+    ) -> None:
+        await session.execute(
+            """UPDATE market_refresh_requests
+               SET status='failed',public_error_code=%s,completed_at=%s
+               WHERE id=%s AND source_id=%s AND status='running'""",
+            (public_error_code, completed_at, request_id, source_id),
+        )
+        await session.execute(
+            """UPDATE market_source_refresh_states
+               SET refresh_status='idle',lease_owner=NULL,
+                   lease_expires_at=NULL,last_attempted_at=%s,
+                   public_error_code=%s,updated_at=%s
+               WHERE source_id=%s""",
+            (
+                completed_at,
+                public_error_code,
+                completed_at,
+                source_id,
+            ),
+        )
+
+    async def list_snapshots(self, session, source_id: str):
+        return tuple(
+            await session.fetchall(
+                """SELECT id,source_id,captured_at,platform,ranking_name,
+                          category,source_url,content_hash,entry_count
+                   FROM market_snapshots WHERE source_id=%s
+                   ORDER BY captured_at DESC,id DESC LIMIT 100""",
+                (source_id,),
+            )
+        )
+
+    async def get_snapshot(self, session, source_id: str, snapshot_id: str):
+        snapshot = await self._snapshot_summary(session, source_id, snapshot_id)
+        if snapshot is None:
+            return None
+        rows = await session.fetchall(
+            """SELECT rank_number,title,author,category,work_url,
+                      public_metrics_json
+               FROM market_snapshot_entries
+               WHERE source_id=%s AND snapshot_id=%s
+               ORDER BY rank_number ASC LIMIT 100""",
+            (source_id, snapshot_id),
+        )
+        value = dict(snapshot)
+        value["entries"] = tuple(
+            {
+                "rank": row["rank_number"],
+                "title": row["title"],
+                "author": row["author"],
+                "category": row["category"],
+                "work_url": row["work_url"],
+                "public_metrics": _json_value(row["public_metrics_json"]),
+            }
+            for row in rows
+        )
+        return value

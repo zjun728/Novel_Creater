@@ -1,0 +1,54 @@
+[
+  {
+    "stableKey": "qidian.newsign",
+    "adapterKey": "qidian_public_rank",
+    "displayName": "起点新签榜",
+    "publicConfig": {
+      "platform": "qidian",
+      "rankingName": "newsign",
+      "category": "male"
+    },
+    "policy": {
+      "status": "manual_only",
+      "checkedAt": 1721000000000,
+      "evidenceURL": "https://www.qidian.com/rank/newsign/",
+      "evidenceHash": "2810f7761abcd5abd53e0f05adb155ab7c4d496353e0c51a183329af8e053a49",
+      "allowedOrigins": [
+        "https://www.qidian.com"
+      ],
+      "pathPrefixes": [
+        "/rank/newsign/"
+      ],
+      "requestIntervalSeconds": 3600,
+      "policyVersion": "public-rank-policy-v1",
+      "enabled": false
+    },
+    "policyHash": "cf38303effb82097846d3b7af441886ec832561e3127bbea7463dbc7682a5a39"
+  },
+  {
+    "stableKey": "qq-reading.male-popular",
+    "adapterKey": "qq_reading_public_rank",
+    "displayName": "QQ 阅读男生人气榜",
+    "publicConfig": {
+      "platform": "qq_reading",
+      "rankingName": "male_popular",
+      "category": "male"
+    },
+    "policy": {
+      "status": "manual_only",
+      "checkedAt": 1721000000000,
+      "evidenceURL": "https://book.qq.com/book-rank",
+      "evidenceHash": "23aea8706afe95b8ca13fcaa54ab36f13c5dfded7b3a8718e9bb9f4921d5e4ff",
+      "allowedOrigins": [
+        "https://book.qq.com"
+      ],
+      "pathPrefixes": [
+        "/book-rank"
+      ],
+      "requestIntervalSeconds": 3600,
+      "policyVersion": "public-rank-policy-v1",
+      "enabled": false
+    },
+    "policyHash": "5e442987b2332e2fa9cb81a0bbbd3d53dbd8ca72fcba840832076657ac0e26f9"
+  }
+]

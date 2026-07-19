@@ -79,6 +79,12 @@ APPROVED_FORMAL_ROUTES = {
     ("POST", "/api/corpus/sources/{source_id}/restore"),
     ("GET", "/api/corpus/sources/{source_id}/chapters"),
     ("GET", "/api/corpus/chapters/{chapter_id}/fragments"),
+    ("GET", "/api/market-sources"),
+    ("GET", "/api/market-sources/{source_id}"),
+    ("GET", "/api/market-sources/{source_id}/snapshots"),
+    ("GET", "/api/market-sources/{source_id}/snapshots/{snapshot_id}"),
+    ("POST", "/api/market-sources/{source_id}/manual-import"),
+    ("POST", "/api/market-sources/{source_id}/refresh"),
     ("GET", "/api/projects/{project_id}/writer-core/state"),
     ("GET", "/api/projects/{project_id}/canon/head"),
     ("GET", "/api/projects/{project_id}/canon/revisions"),
@@ -95,7 +101,7 @@ APPROVED_FORMAL_ROUTES = {
 
 FORBIDDEN_LEGACY_PREFIXES = (
     "/api/ai/",
-    "/api/market",
+    "/api/market/",
     "/api/experience-cards",
     "/api/planning",
     "/api/drafts",

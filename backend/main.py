@@ -17,6 +17,7 @@ from backend.routers import (
     chapter_sessions,
     contracts,
     corpus,
+    market_sources,
     model_bindings,
     planning,
     projects,
@@ -64,6 +65,7 @@ app.include_router(chapter_sessions.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(corpus.router, prefix="/api")
 app.include_router(canon.router, prefix="/api")
+app.include_router(market_sources.router, prefix="/api")
 
 
 @app.get("/api/health")
