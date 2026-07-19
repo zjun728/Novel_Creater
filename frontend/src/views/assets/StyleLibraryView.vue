@@ -109,6 +109,7 @@ onBeforeUnmount(() => {
       <nav class="library-tabs" aria-label="创作资产分类">
         <router-link to="/assets/styles" aria-current="page">风格模板</router-link>
         <router-link to="/assets/experience">经验卡</router-link>
+        <router-link to="/assets/corpus">语料档案室</router-link>
       </nav>
     </header>
 

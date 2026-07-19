@@ -25,11 +25,19 @@ from backend.domain.corpus import (
 from backend.http_errors import (
     CorpusImportConflict,
     CorpusImportFailed,
+    CorpusLifecycleConflict,
     CorpusRequestInvalid,
     CorpusResourceNotFound,
 )
-from backend.security.paths import UnsafeLocalPath, resolve_under_root
-from backend.config import require_corpus_root
+from backend.security.paths import (
+    UnsafeLocalPath,
+    ensure_managed_corpus_blob_parent,
+    managed_corpus_blob_path,
+    managed_corpus_storage_key,
+    resolve_under_root,
+)
+from backend.config import require_corpus_root, require_managed_corpus_root
+from backend.services.corpus_library import normalize_corpus_metadata
 
 
 DISCOVERY_DEFAULT_LIMIT = 50
@@ -221,6 +229,7 @@ class CorpusImportService:
         repository,
         *,
         corpus_root: Path | None,
+        managed_root: Path | None = None,
         transaction_factory,
         connection_factory,
         parser_version: str = PARSER_VERSION,
@@ -228,11 +237,13 @@ class CorpusImportService:
         fragmenter_version: str = FRAGMENTER_VERSION,
         index_version: str = INDEX_VERSION,
         file_reader=None,
+        stage_writer=None,
         id_factory=None,
         clock=None,
     ) -> None:
         self.repository = repository
         self.corpus_root = corpus_root
+        self.managed_root = managed_root
         self.transaction_factory = transaction_factory
         self.connection_factory = connection_factory
         self.parser_version = _checked_version(parser_version, "parser_version")
@@ -244,6 +255,7 @@ class CorpusImportService:
         )
         self.index_version = _checked_version(index_version, "index_version")
         self.file_reader = file_reader or (lambda path: path.read_bytes())
+        self.stage_writer = stage_writer or self._write_stage
         self.id_factory = id_factory or (lambda: str(uuid4()))
         self.clock = clock or (lambda: int(time.time() * 1000))
 
@@ -281,41 +293,6 @@ class CorpusImportService:
             raise CorpusRequestInvalid() from None
         return normalized_relative, raw, sha256(raw).hexdigest()
 
-    async def _reserve(
-        self,
-        *,
-        idempotency_key: str,
-        relative_path: str,
-        source_hash: str,
-        request_hash: str,
-        byte_length: int,
-    ) -> tuple[dict, bool]:
-        async with self.transaction_factory() as session:
-            await self.repository.lock_schema_guard(session)
-            existing = await self.repository.find_import_by_key(
-                session, idempotency_key, for_update=True
-            )
-            if existing is not None:
-                if existing["request_hash"] != request_hash:
-                    raise CorpusImportConflict()
-                return existing, False
-            row = {
-                "id": self.id_factory(),
-                "idempotency_key": idempotency_key,
-                "request_hash": request_hash,
-                "relative_path": relative_path,
-                "source_hash": source_hash,
-                "byte_length": byte_length,
-                "status": "reserved",
-                "versions": self.versions,
-                "created_at": self.clock(),
-                "corpus_source_id": None,
-                "public_error_code": None,
-                "completed_at": None,
-            }
-            await self.repository.insert_import(session, row)
-            return row, True
-
     @staticmethod
     def _completed_run(row: dict) -> dict | None:
         status = row.get("status")
@@ -329,35 +306,6 @@ class CorpusImportService:
             return None
         raise CorpusImportFailed()
 
-    async def _settle_failure(
-        self, run: dict, error_code: str
-    ) -> dict:
-        async with self.transaction_factory() as session:
-            await self.repository.lock_schema_guard(session)
-            current = await self.repository.find_import_by_key(
-                session, run["idempotency_key"], for_update=True
-            )
-            if (
-                current is None
-                or current.get("id") != run.get("id")
-                or current.get("request_hash") != run.get("request_hash")
-            ):
-                raise CorpusImportFailed()
-            completed = self._completed_run(current)
-            if completed is not None:
-                return completed
-            completed_at = self.clock()
-            await self.repository.mark_import_failed(
-                session, run["id"], error_code, completed_at
-            )
-            return {
-                **current,
-                "status": "failed",
-                "corpus_source_id": None,
-                "public_error_code": error_code,
-                "completed_at": completed_at,
-            }
-
     def _parse(self, raw: bytes):
         decoded = decode_source(raw)
         chapters = parse_chapters(decoded)
@@ -370,69 +318,261 @@ class CorpusImportService:
             prepared.append((chapter_id, chapter, fragments))
         return decoded, tuple(prepared)
 
+    @staticmethod
+    def _write_stage(path: Path, raw: bytes) -> None:
+        with path.open("xb") as target:
+            target.write(raw)
+            target.flush()
+            os.fsync(target.fileno())
+
+    def _stage(self, raw: bytes, source_hash: str) -> tuple[Path, Path]:
+        try:
+            managed_root = require_managed_corpus_root(self.managed_root)
+            staging_root = managed_root / ".staging"
+            staging_root.mkdir(exist_ok=True)
+            staging_root = staging_root.resolve(strict=True)
+            if (
+                staging_root.parent != managed_root.resolve(strict=True)
+                or _is_reparse(staging_root)
+            ):
+                raise UnsafeLocalPath("managed staging root is unsafe")
+            stage = staging_root / f"{uuid4().hex}.part"
+            self.stage_writer(stage, raw)
+            if stage.stat().st_size != len(raw):
+                raise OSError("managed corpus stage length mismatch")
+            final = managed_corpus_blob_path(managed_root, source_hash)
+            return stage, final
+        except (OSError, RuntimeError, TypeError, ValueError, UnsafeLocalPath):
+            try:
+                if "stage" in locals() and stage.exists():
+                    stage.unlink()
+            except OSError:
+                pass
+            raise CorpusImportFailed() from None
+
+    def _finalize_stage(
+        self,
+        stage: Path,
+        final: Path,
+        *,
+        source_hash: str,
+        byte_length: int,
+    ) -> None:
+        try:
+            managed_root = require_managed_corpus_root(self.managed_root)
+            checked_final = ensure_managed_corpus_blob_parent(
+                managed_root, source_hash
+            )
+            if checked_final != final:
+                raise OSError("managed corpus target changed")
+            if final.exists():
+                if (
+                    not final.is_file()
+                    or final.stat().st_size != byte_length
+                    or sha256(final.read_bytes()).hexdigest() != source_hash
+                ):
+                    raise OSError("managed corpus blob verification failed")
+                return
+            checked_final = managed_corpus_blob_path(
+                managed_root, source_hash
+            )
+            if checked_final != final:
+                raise OSError("managed corpus target changed")
+            os.replace(stage, final)
+            if managed_corpus_blob_path(managed_root, source_hash) != final:
+                raise OSError("managed corpus target changed")
+            if (
+                final.stat().st_size != byte_length
+                or sha256(final.read_bytes()).hexdigest() != source_hash
+            ):
+                raise OSError("managed corpus blob finalization failed")
+        except OSError:
+            raise CorpusImportFailed() from None
+
+    @staticmethod
+    def _same_revision(
+        row: dict,
+        *,
+        source_hash: str,
+        versions: dict[str, str],
+        metadata,
+    ) -> bool:
+        raw_tags = row.get("reference_tags_json", ())
+        if isinstance(raw_tags, str):
+            try:
+                raw_tags = json.loads(raw_tags)
+            except json.JSONDecodeError:
+                raw_tags = ()
+        return (
+            row.get("source_hash") == source_hash
+            and row.get("parser_version") == versions["parserVersion"]
+            and row.get("normalizer_version") == versions["normalizerVersion"]
+            and row.get("fragmenter_version") == versions["fragmenterVersion"]
+            and row.get("index_version") == versions["indexVersion"]
+            and row.get("title") == metadata.display_name
+            and tuple(raw_tags) == metadata.reference_tags
+            and row.get("notes", "") == metadata.notes
+        )
+
     async def _publish(
         self,
         *,
-        run: dict,
+        idempotency_key: str,
+        request_hash: str,
         relative_path: str,
-        raw: bytes,
         decoded,
         prepared,
+        metadata,
+        metadata_explicit: bool,
+        source_id: str | None,
+        create_distinct_source: bool,
+        stage: Path,
+        final: Path,
     ) -> dict:
-        source_key = sha256(relative_path.casefold().encode("utf-8")).hexdigest()
         async with self.transaction_factory() as session:
             await self.repository.lock_schema_guard(session)
-            existing_run = await self.repository.find_import_by_key(
-                session, run["idempotency_key"], for_update=True
-            )
-            if existing_run is None or existing_run["id"] != run["id"]:
-                raise RuntimeError("corpus import reservation disappeared")
-            completed = self._completed_run(existing_run)
-            if completed is not None:
-                return completed
-            dedupe = await self.repository.find_analysis_source(
-                session,
-                source_key=source_key,
+            self._finalize_stage(
+                stage,
+                final,
                 source_hash=decoded.source_hash,
-                parser_version=self.parser_version,
-                normalizer_version=self.normalizer_version,
-                fragmenter_version=self.fragmenter_version,
-                index_version=self.index_version,
+                byte_length=len(decoded.raw_bytes),
             )
+            existing_run = await self.repository.find_import_by_key(
+                session, idempotency_key, for_update=True
+            )
+            if existing_run is not None:
+                if existing_run["request_hash"] != request_hash:
+                    raise CorpusImportConflict()
+                completed = self._completed_run(existing_run)
+                if completed is not None:
+                    return completed
+
             completed_at = self.clock()
+            storage_key = managed_corpus_storage_key(decoded.source_hash)
+            await self.repository.insert_or_validate_blob(
+                session,
+                content_hash=decoded.source_hash,
+                byte_length=len(decoded.raw_bytes),
+                storage_key=storage_key,
+                created_at=completed_at,
+            )
+            if existing_run is None:
+                existing_run = {
+                    "id": self.id_factory(),
+                    "idempotency_key": idempotency_key,
+                    "request_hash": request_hash,
+                    "relative_path": relative_path,
+                    "source_hash": decoded.source_hash,
+                    "byte_length": len(decoded.raw_bytes),
+                    "status": "reserved",
+                    "versions": self.versions,
+                    "created_at": completed_at,
+                    "corpus_source_id": None,
+                    "source_revision_id": None,
+                    "source_revision": None,
+                    "public_error_code": None,
+                    "completed_at": None,
+                }
+                await self.repository.insert_import(session, existing_run)
+
+            dedupe = None
+            history = ()
+            if source_id is not None:
+                history = tuple(
+                    await self.repository.lock_source_revisions(session, source_id)
+                )
+                if not history:
+                    raise CorpusResourceNotFound()
+                if history[0].get("archived_at") is not None:
+                    raise CorpusLifecycleConflict()
+                current = history[-1]
+                dedupe = (
+                    current
+                    if self._same_revision(
+                        current,
+                        source_hash=decoded.source_hash,
+                        versions=self.versions,
+                        metadata=metadata,
+                    )
+                    else None
+                )
+            elif not create_distinct_source:
+                dedupe = await self.repository.find_global_analysis_source(
+                    session,
+                    source_hash=decoded.source_hash,
+                    parser_version=self.parser_version,
+                    normalizer_version=self.normalizer_version,
+                    fragmenter_version=self.fragmenter_version,
+                    index_version=self.index_version,
+                )
+                if (
+                    dedupe is not None
+                    and metadata_explicit
+                    and not self._same_revision(
+                        dedupe,
+                        source_hash=decoded.source_hash,
+                        versions=self.versions,
+                        metadata=metadata,
+                    )
+                ):
+                    source_id = dedupe.get("source_id") or dedupe["id"]
+                    history = tuple(
+                        await self.repository.lock_source_revisions(
+                            session, source_id
+                        )
+                    )
+                    dedupe = None
+                elif dedupe is None:
+                    content_source = (
+                        await self.repository.find_global_content_source(
+                            session, decoded.source_hash
+                        )
+                    )
+                    if content_source is not None:
+                        source_id = content_source["source_id"]
+                        history = tuple(
+                            await self.repository.lock_source_revisions(
+                                session, source_id
+                            )
+                        )
+
             if dedupe is not None:
                 await self.repository.mark_import_succeeded(
-                    session, run["id"], dedupe["id"],
+                    session, existing_run["id"],
+                    dedupe.get("source_id") or dedupe["id"],
                     dedupe["revision_id"], int(dedupe["revision"]), completed_at,
                 )
                 return {
                     **existing_run,
                     "status": "succeeded",
-                    "corpus_source_id": dedupe["id"],
+                    "corpus_source_id": dedupe.get("source_id") or dedupe["id"],
+                    "source_revision_id": dedupe["revision_id"],
+                    "source_revision": int(dedupe["revision"]),
                     "public_error_code": None,
                     "completed_at": completed_at,
                 }
 
-            history = await self.repository.list_source_revisions_for_update(
-                session, source_key
-            )
             revisions = [int(row["revision"]) for row in history]
             if revisions and revisions != list(range(1, revisions[-1] + 1)):
                 raise RuntimeError("corpus source revision history is invalid")
-            source_id = (
-                history[0]["source_id"] if history else self.id_factory()
-            )
+            source_id = history[0]["source_id"] if history else self.id_factory()
             revision_id = self.id_factory()
             source_row = {
                 "id": source_id,
                 "revision_id": revision_id,
-                "source_key": source_key,
+                "source_key": history[0]["source_key"] if history else source_id,
                 "revision": revisions[-1] + 1 if revisions else 1,
                 "relative_path": relative_path,
-                "title": Path(relative_path).stem[:300],
+                "title": metadata.display_name,
                 "author": "unknown",
+                "reference_tags": metadata.reference_tags,
+                "notes": metadata.notes,
+                "provenance": {
+                    "sourceLabel": relative_path,
+                    "importedBy": "author",
+                },
                 "source_hash": decoded.source_hash,
-                "file_size": len(raw),
+                "file_size": len(decoded.raw_bytes),
                 "encoding": decoded.encoding,
                 "parser_version": self.parser_version,
                 "normalizer_version": self.normalizer_version,
@@ -480,61 +620,97 @@ class CorpusImportService:
                         "created_at": completed_at,
                     })
             await self.repository.mark_import_succeeded(
-                session, run["id"], source_id, revision_id,
+                session, existing_run["id"], source_id, revision_id,
                 int(source_row["revision"]), completed_at,
             )
             return {
                 **existing_run,
                 "status": "succeeded",
                 "corpus_source_id": source_id,
+                "source_revision_id": revision_id,
+                "source_revision": int(source_row["revision"]),
                 "public_error_code": None,
                 "completed_at": completed_at,
             }
 
     async def import_source(
-        self, relative_path: str, idempotency_key: str
+        self,
+        relative_path: str,
+        idempotency_key: str,
+        *,
+        source_id: str | None = None,
+        create_distinct_source: bool = False,
+        display_name: str | None = None,
+        reference_tags=(),
+        notes: str = "",
     ) -> dict[str, object]:
         idempotency_key = _checked_idempotency_key(idempotency_key)
         relative_path, raw, source_hash = self._phase_a(relative_path)
+        try:
+            metadata = normalize_corpus_metadata(
+                display_name=display_name,
+                reference_tags=reference_tags,
+                notes=notes,
+                fallback_display_name=Path(relative_path).stem,
+            )
+        except (TypeError, ValueError):
+            raise CorpusRequestInvalid() from None
+        if source_id is not None and (
+            type(source_id) is not str or not source_id or len(source_id) > 36
+        ):
+            raise CorpusRequestInvalid()
+        if type(create_distinct_source) is not bool:
+            raise CorpusRequestInvalid()
+        if source_id is not None and create_distinct_source:
+            raise CorpusRequestInvalid()
+        metadata_explicit = (
+            display_name is not None
+            or bool(reference_tags)
+            or bool(notes)
+        )
         request_hash = _hash_document({
             "relativePath": relative_path,
             "sourceHash": source_hash,
             "versions": self.versions,
+            "sourceId": source_id,
+            "createDistinctSource": create_distinct_source,
+            "displayName": metadata.display_name,
+            "referenceTags": metadata.reference_tags,
+            "notes": metadata.notes,
+            "metadataExplicit": metadata_explicit,
         })
-        run, created = await self._reserve(
-            idempotency_key=idempotency_key,
-            relative_path=relative_path,
-            source_hash=source_hash,
-            request_hash=request_hash,
-            byte_length=len(raw),
-        )
-        if not created:
-            completed = self._completed_run(run)
-            if completed is not None:
-                return completed
+        stage = None
         try:
+            stage, final = self._stage(raw, source_hash)
             decoded, prepared = self._parse(raw)
-        except Exception:
-            settled = await self._settle_failure(run, "CORPUS_PARSE_FAILED")
-            completed = self._completed_run(settled)
-            if completed is not None:
-                return completed
-            raise CorpusImportFailed() from None
-        try:
             return await self._publish(
-                run=run, relative_path=relative_path, raw=raw,
-                decoded=decoded, prepared=prepared,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                relative_path=relative_path,
+                decoded=decoded,
+                prepared=prepared,
+                metadata=metadata,
+                metadata_explicit=metadata_explicit,
+                source_id=source_id,
+                create_distinct_source=create_distinct_source,
+                stage=stage,
+                final=final,
             )
-        except CorpusImportFailed:
+        except (
+            CorpusImportConflict,
+            CorpusLifecycleConflict,
+            CorpusRequestInvalid,
+            CorpusResourceNotFound,
+        ):
             raise
         except Exception:
-            settled = await self._settle_failure(
-                run, "CORPUS_PUBLICATION_FAILED"
-            )
-            completed = self._completed_run(settled)
-            if completed is not None:
-                return completed
             raise CorpusImportFailed() from None
+        finally:
+            if stage is not None:
+                try:
+                    stage.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     async def get_import(self, import_id: str):
         async with self.connection_factory() as session:

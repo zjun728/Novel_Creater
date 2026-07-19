@@ -8,6 +8,7 @@ import {
 } from 'vue'
 
 import {
+  corpusLibraryPath,
   experienceLibraryPath,
   projectLibraryPath,
   projectModelSettingsPath,
@@ -65,6 +66,7 @@ function routeTitle(route, project) {
   if (name === 'ApplicationSettings') return '应用默认与诊断'
   if (name === 'StyleLibrary') return '风格模板库'
   if (name === 'ExperienceLibrary') return '经验卡库'
+  if (name === 'CorpusLibrary') return '语料档案室'
   if (name === 'ProjectOverview') {
     return isArchived(project) ? '已归档项目' : '项目概览'
   }
@@ -84,7 +86,7 @@ function routeTitle(route, project) {
 function globalSelected(item, route) {
   const name = routeName(route)
   if (item.key === 'assets') {
-    return name === 'StyleLibrary' || name === 'ExperienceLibrary'
+    return ['StyleLibrary', 'ExperienceLibrary', 'CorpusLibrary'].includes(name)
   }
   if (item.key === 'settings') {
     return name === 'ProviderSettings' || name === 'ApplicationSettings'
@@ -144,6 +146,11 @@ export function createProductShellModel({
           { label: '创作资产', path: styleLibraryPath() },
           { label: '经验卡', path: experienceLibraryPath() },
         ]
+      : routeName(route) === 'CorpusLibrary'
+        ? [
+            { label: '创作资产', path: styleLibraryPath() },
+            { label: '语料档案室', path: corpusLibraryPath() },
+          ]
       : []
   const breadcrumbs = projectContext
     ? [
@@ -169,6 +176,12 @@ export function createProductShellModel({
         label: '经验卡',
         path: experienceLibraryPath(),
         selected: routeName(route) === 'ExperienceLibrary',
+      },
+      {
+        key: 'corpus',
+        label: '语料档案室',
+        path: corpusLibraryPath(),
+        selected: routeName(route) === 'CorpusLibrary',
       },
     ],
     projectContext,

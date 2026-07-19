@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 import unicodedata
 
-from backend.config import CORPUS_ROOT
+from backend.config import CORPUS_ROOT, MANAGED_CORPUS_ROOT
 from backend.database import transaction
 from backend.domain.asset_eligibility import (
     AssetEligibilityEntry,
@@ -24,6 +24,7 @@ from backend.repositories.assets import AssetRepository
 from backend.repositories.corpus import CorpusRepository
 from backend.services.assets import AssetReadService, AssetRecord
 from backend.services.corpus_import import CorpusImportService
+from backend.services.corpus_library import CorpusLibraryService
 
 
 _ASSET_ROOT = Path(__file__).resolve().parents[1] / "assets"
@@ -81,10 +82,12 @@ class CreativeAssetService:
         *,
         taxonomy: AssetEligibilityPackage,
         corpus_service: CorpusImportService | None = None,
+        corpus_library_service: CorpusLibraryService | None = None,
     ) -> None:
         self.asset_service = asset_service
         self.taxonomy = taxonomy
         self.corpus_service = corpus_service
+        self.corpus_library_service = corpus_library_service
         self._eligibility = {
             (
                 entry.asset_type,
@@ -289,17 +292,57 @@ class CreativeAssetService:
     async def discovery(self, *, cursor=None, limit=50):
         return await self._corpus().discovery(cursor=cursor, limit=limit)
 
-    async def import_source(self, relative_path: str, idempotency_key: str):
-        return await self._corpus().import_source(relative_path, idempotency_key)
+    async def import_source(
+        self, relative_path: str, idempotency_key: str, **metadata
+    ):
+        return await self._corpus().import_source(
+            relative_path, idempotency_key, **metadata
+        )
 
     async def get_import(self, import_id: str):
         return await self._corpus().get_import(import_id)
 
-    async def list_sources(self):
-        return await self._corpus().list_sources()
+    def _corpus_library(self) -> CorpusLibraryService:
+        if self.corpus_library_service is None:
+            raise RuntimeError("corpus library service is not configured")
+        return self.corpus_library_service
+
+    async def list_sources(self, search=None, state=None):
+        return await self._corpus_library().list_sources(
+            search=search, state=state
+        )
 
     async def get_source(self, source_id: str, preview_chars: int):
-        return await self._corpus().get_source(source_id, preview_chars)
+        return await self._corpus_library().get_source(
+            source_id, preview_chars
+        )
+
+    async def list_versions(self, source_id: str, cursor=None, limit=50):
+        return await self._corpus_library().list_versions(
+            source_id, cursor=cursor, limit=limit
+        )
+
+    async def archive_source(self, source_id: str, expected_revision: int):
+        return await self._corpus_library().archive(
+            source_id, expected_revision
+        )
+
+    async def restore_source(self, source_id: str, expected_revision: int):
+        return await self._corpus_library().restore(
+            source_id, expected_revision
+        )
+
+    async def permanently_delete_source(
+        self,
+        source_id: str,
+        expected_revision: int,
+        confirm_permanent_delete: bool,
+    ):
+        return await self._corpus_library().permanently_delete(
+            source_id,
+            expected_revision,
+            confirm_permanent_delete,
+        )
 
     async def list_chapters(self, source_id: str):
         return await self._corpus().list_chapters(source_id)
@@ -316,6 +359,13 @@ def build_creative_asset_service() -> CreativeAssetService:
             corpus_service=CorpusImportService(
                 CorpusRepository(),
                 corpus_root=CORPUS_ROOT,
+                managed_root=MANAGED_CORPUS_ROOT,
+                transaction_factory=transaction,
+                connection_factory=transaction,
+            ),
+            corpus_library_service=CorpusLibraryService(
+                CorpusRepository(),
+                managed_root=MANAGED_CORPUS_ROOT,
                 transaction_factory=transaction,
                 connection_factory=transaction,
             ),

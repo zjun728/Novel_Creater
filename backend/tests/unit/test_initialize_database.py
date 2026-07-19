@@ -297,7 +297,7 @@ async def test_fresh_database_executes_manifest_in_order_and_writes_metadata():
     assert result.database_name == DATABASE_NAME
     assert result.schema_version == EXPECTED_SCHEMA_VERSION
     assert result.manifest_hash == manifest_hash()
-    assert result.table_count == len(created_table_names()) == 76
+    assert result.table_count == len(created_table_names()) == 77
 
 
 @pytest.mark.asyncio

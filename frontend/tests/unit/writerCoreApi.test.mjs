@@ -229,12 +229,21 @@ test('corpus client stays relative-path-only and enforces preview bounds', async
     await api.corpus.imports.create({
       idempotencyKey: 'corpus-import-key-0001',
       relativePath: '玄幻/样本.txt',
+      sourceId: 'source-1',
+      createDistinctSource: false,
+      displayName: '北境卷',
+      referenceTags: ['玄幻', '战争'],
+      notes: '受控短注',
       root: 'C:/private',
       rawText: 'full novel must not send',
     })
     await api.corpus.imports.get('import-1')
-    await api.corpus.sources.list()
+    await api.corpus.sources.list({ search: '北境', state: 'archived' })
     await api.corpus.sources.get('source-1', { previewChars: 99999 })
+    await api.corpus.sources.versions('source-1', { cursor: 7, limit: 999 })
+    await api.corpus.sources.archive('source-1', 3)
+    await api.corpus.sources.restore('source-1', 3)
+    await api.corpus.sources.permanentlyDelete('source-1', 3, true)
     await api.corpus.sources.chapters('source-1')
     await api.corpus.chapters.fragments('chapter-1', { cursor: 5, limit: 999 })
     assert.throws(
@@ -252,6 +261,10 @@ test('corpus client stays relative-path-only and enforces preview bounds', async
     ['GET', '/api/corpus/imports/import-1'],
     ['GET', '/api/corpus/sources'],
     ['GET', '/api/corpus/sources/source-1'],
+    ['GET', '/api/corpus/sources/source-1/versions'],
+    ['POST', '/api/corpus/sources/source-1/archive'],
+    ['POST', '/api/corpus/sources/source-1/restore'],
+    ['DELETE', '/api/corpus/sources/source-1'],
     ['GET', '/api/corpus/sources/source-1/chapters'],
     ['GET', '/api/corpus/chapters/chapter-1/fragments'],
   ])
@@ -260,10 +273,25 @@ test('corpus client stays relative-path-only and enforces preview bounds', async
   assert.deepEqual(bodyOf(calls[1]), {
     idempotencyKey: 'corpus-import-key-0001',
     relativePath: '玄幻/样本.txt',
+    sourceId: 'source-1',
+    createDistinctSource: false,
+    displayName: '北境卷',
+    referenceTags: ['玄幻', '战争'],
+    notes: '受控短注',
   })
+  assert.equal(new URL(calls[3].url).searchParams.get('search'), '北境')
+  assert.equal(new URL(calls[3].url).searchParams.get('state'), 'archived')
   assert.equal(new URL(calls[4].url).searchParams.get('previewChars'), '1200')
-  assert.equal(new URL(calls[6].url).searchParams.get('cursor'), '5')
-  assert.equal(new URL(calls[6].url).searchParams.get('limit'), '20')
+  assert.equal(new URL(calls[5].url).searchParams.get('cursor'), '7')
+  assert.equal(new URL(calls[5].url).searchParams.get('limit'), '100')
+  assert.deepEqual(bodyOf(calls[6]), { expectedRevision: 3 })
+  assert.deepEqual(bodyOf(calls[7]), { expectedRevision: 3 })
+  assert.deepEqual(bodyOf(calls[8]), {
+    expectedRevision: 3,
+    confirmPermanentDelete: true,
+  })
+  assert.equal(new URL(calls[10].url).searchParams.get('cursor'), '5')
+  assert.equal(new URL(calls[10].url).searchParams.get('limit'), '20')
 
 })
 

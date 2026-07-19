@@ -247,3 +247,61 @@ def test_require_corpus_root_fails_closed_when_unconfigured():
 def test_require_corpus_root_revalidates_an_explicit_path(workspace_tmp_path):
     with pytest.raises(config.LocalCorpusConfigError):
         config.require_corpus_root(workspace_tmp_path / "missing-corpus")
+
+
+def test_managed_corpus_root_never_falls_back_to_discovery_root(
+    workspace_tmp_path,
+):
+    source_root = workspace_tmp_path / "source-corpus"
+    source_root.mkdir()
+
+    managed = config.load_managed_corpus_root(
+        environment={"CORPUS_ROOT": str(source_root)},
+        config_path=missing_config(workspace_tmp_path),
+    )
+
+    assert managed is None
+
+
+def test_require_managed_corpus_root_fails_closed_when_unconfigured():
+    with pytest.raises(
+        config.LocalCorpusConfigError, match="MANAGED_CORPUS_ROOT"
+    ):
+        config.require_managed_corpus_root(None)
+
+
+def test_managed_corpus_root_can_be_explicitly_separated_from_source_discovery(
+    workspace_tmp_path,
+):
+    source_root = workspace_tmp_path / "source-corpus"
+    managed_root = workspace_tmp_path / "managed-corpus"
+    source_root.mkdir()
+    managed_root.mkdir()
+
+    managed = config.load_managed_corpus_root(
+        environment={
+            "CORPUS_ROOT": str(source_root),
+            "MANAGED_CORPUS_ROOT": str(managed_root),
+        },
+        config_path=missing_config(workspace_tmp_path),
+    )
+
+    assert managed == managed_root.resolve(strict=True)
+
+
+def test_managed_corpus_root_rejects_a_filesystem_link(
+    workspace_tmp_path,
+):
+    actual = workspace_tmp_path / "actual-managed"
+    linked = workspace_tmp_path / "linked-managed"
+    actual.mkdir()
+    try:
+        linked.symlink_to(actual, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(config.LocalCorpusConfigError):
+        config.load_managed_corpus_root(
+            environment={"MANAGED_CORPUS_ROOT": str(linked)},
+            config_path=missing_config(workspace_tmp_path),
+        )

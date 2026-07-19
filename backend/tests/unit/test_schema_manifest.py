@@ -53,6 +53,7 @@ EXPECTED_TABLES = {
     "corpus_chapters",
     "corpus_fragments",
     "corpus_import_runs",
+    "corpus_source_deletions",
     "market_sources",
     "market_source_refresh_states",
     "market_source_policy_revisions",
@@ -508,18 +509,12 @@ def test_contract_bible_planning_and_session_use_one_composite_generation_chain(
     ) in confirmations
 
 
-def test_corpus_analysis_identity_is_local_to_one_logical_source():
+def test_corpus_revision_identity_allows_metadata_only_revisions_on_one_blob():
     revisions = _table_statement("corpus_source_revisions")
+    assert "unique key uq_corpus_source_import" not in revisions
     assert (
-        "unique key uq_corpus_source_import "
-        "(source_id, content_hash, parser_version, normalizer_version, "
-        "fragmenter_version, index_version)"
+        "unique key uq_corpus_source_revision (source_id, revision)"
     ) in revisions
-    assert (
-        "unique key uq_corpus_source_import "
-        "(content_hash, parser_version, normalizer_version, "
-        "fragmenter_version, index_version)"
-    ) not in revisions
 
 
 def test_seed_inspiration_can_precede_selection_and_pins_market_inputs():
@@ -567,6 +562,18 @@ def test_generation_request_ledgers_bind_owner_attempt_and_success_hash():
             "status = 'succeeded' and attempt_id is not null "
             "and result_hash is not null"
         ) in request
+
+
+def test_corpus_deletion_commands_are_persistent_and_not_source_fk_cascades():
+    statement = _table_statement("corpus_source_deletions")
+
+    assert "source_id char(36) primary key" in statement
+    assert "expected_revision int not null" in statement
+    assert "tombstones_json json not null" in statement
+    assert "restore_pending" in statement
+    assert "cleanup_pending" in statement
+    assert "succeeded" in statement
+    assert "foreign key" not in statement
 
 
 def test_story_engine_drafts_and_contract_heads_are_revision_bound():

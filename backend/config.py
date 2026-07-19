@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import stat
 from typing import Mapping
 
 
@@ -17,7 +18,10 @@ _MYSQL_FILE_KEYS = frozenset({
     "MYSQL_PASSWORD",
     "MYSQL_DB",
 })
-_ALLOWED_FILE_KEYS = _MYSQL_FILE_KEYS | {"CORPUS_ROOT"}
+_ALLOWED_FILE_KEYS = _MYSQL_FILE_KEYS | {
+    "CORPUS_ROOT",
+    "MANAGED_CORPUS_ROOT",
+}
 _OUTPUT_KEYS = {
     "MYSQL_HOST": "host",
     "MYSQL_PORT": "port",
@@ -142,18 +146,35 @@ def require_mysql_config(
     return dict(selected)
 
 
-def _checked_corpus_root(value: object) -> Path:
+def _checked_corpus_root(
+    value: object, name: str = "CORPUS_ROOT"
+) -> Path:
     if type(value) is not str or not value.strip():
-        raise LocalCorpusConfigError("CORPUS_ROOT must be non-empty absolute text")
+        raise LocalCorpusConfigError(
+            f"{name} must be non-empty absolute text"
+        )
     candidate = Path(value)
     if not candidate.is_absolute():
-        raise LocalCorpusConfigError("CORPUS_ROOT must be an absolute path")
+        raise LocalCorpusConfigError(f"{name} must be an absolute path")
     try:
+        metadata = candidate.lstat()
+        if name == "MANAGED_CORPUS_ROOT" and (
+            stat.S_ISLNK(metadata.st_mode)
+            or bool(
+                getattr(metadata, "st_file_attributes", 0)
+                & 0x400
+            )
+        ):
+            raise LocalCorpusConfigError(
+                "MANAGED_CORPUS_ROOT cannot be a filesystem link"
+            )
         resolved = candidate.resolve(strict=True)
+    except LocalCorpusConfigError:
+        raise
     except (OSError, RuntimeError, ValueError) as exc:
-        raise LocalCorpusConfigError("CORPUS_ROOT does not exist safely") from exc
+        raise LocalCorpusConfigError(f"{name} does not exist safely") from exc
     if not resolved.is_dir():
-        raise LocalCorpusConfigError("CORPUS_ROOT must identify a directory")
+        raise LocalCorpusConfigError(f"{name} must identify a directory")
     return resolved
 
 
@@ -177,6 +198,27 @@ def load_corpus_root(
     return _checked_corpus_root(selected)
 
 
+def load_managed_corpus_root(
+    *,
+    environment: Mapping[str, str] | None = None,
+    config_path: Path = LOCAL_CONFIG_PATH,
+) -> Path | None:
+    """Load only an explicitly configured managed corpus directory."""
+
+    source = os.environ if environment is None else environment
+    file_values = _read_local_document(
+        Path(config_path),
+        error_type=LocalCorpusConfigError,
+        subject="corpus",
+    )
+    selected = file_values.get("MANAGED_CORPUS_ROOT")
+    if "MANAGED_CORPUS_ROOT" in source:
+        selected = source["MANAGED_CORPUS_ROOT"]
+    if selected is None:
+        return None
+    return _checked_corpus_root(selected, "MANAGED_CORPUS_ROOT")
+
+
 _UNSET = object()
 
 
@@ -188,5 +230,15 @@ def require_corpus_root(root: Path | None | object = _UNSET) -> Path:
     return _checked_corpus_root(str(selected))
 
 
+def require_managed_corpus_root(root: Path | None | object = _UNSET) -> Path:
+    """Return the configured managed root or fail before any blob write."""
+
+    selected = MANAGED_CORPUS_ROOT if root is _UNSET else root
+    if not isinstance(selected, Path):
+        raise LocalCorpusConfigError("MANAGED_CORPUS_ROOT is not configured")
+    return _checked_corpus_root(str(selected), "MANAGED_CORPUS_ROOT")
+
+
 MYSQL_CONFIG = load_mysql_config()
 CORPUS_ROOT = load_corpus_root()
+MANAGED_CORPUS_ROOT = load_managed_corpus_root()

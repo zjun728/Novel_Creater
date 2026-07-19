@@ -6,6 +6,9 @@ import subprocess
 import pytest
 
 
+SHA256_A = "a" * 64
+
+
 def paths_module():
     return importlib.import_module("backend.security.paths")
 
@@ -189,3 +192,95 @@ def test_resolve_under_root_honors_windows_case_insensitive_root_semantics(
     )
 
     assert os.path.normcase(str(resolved)) == os.path.normcase(str(chapter.resolve()))
+
+
+def test_managed_blob_path_is_derived_only_from_lowercase_sha256(
+    workspace_tmp_path,
+):
+    root = workspace_tmp_path / "managed-corpus"
+    root.mkdir()
+
+    path = paths_module().managed_corpus_blob_path(root, SHA256_A)
+
+    assert path == root.resolve() / "sha256" / "aa" / SHA256_A
+    assert path.is_relative_to(root.resolve())
+    assert str(path.relative_to(root.resolve())).replace("\\", "/") == (
+        f"sha256/aa/{SHA256_A}"
+    )
+
+
+@pytest.mark.parametrize(
+    "content_hash",
+    (
+        "../outside",
+        "A" * 64,
+        "a" * 63,
+        "a" * 65,
+        "g" * 64,
+        "aa/../../outside",
+        r"C:\private\book.txt",
+        "%2e%2e%2foutside",
+        None,
+    ),
+)
+def test_managed_blob_path_never_accepts_user_paths_or_noncanonical_hashes(
+    workspace_tmp_path, content_hash
+):
+    root = workspace_tmp_path / "managed-corpus"
+    root.mkdir()
+
+    module = paths_module()
+    with pytest.raises(module.UnsafeLocalPath):
+        module.managed_corpus_blob_path(root, content_hash)
+
+
+@pytest.mark.parametrize("linked_component", ("sha256", "prefix"))
+def test_managed_blob_path_rejects_intermediate_directory_links(
+    workspace_tmp_path, linked_component
+):
+    root = workspace_tmp_path / "managed-corpus"
+    outside = workspace_tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    if linked_component == "sha256":
+        create_directory_link(root / "sha256", outside)
+    else:
+        (root / "sha256").mkdir()
+        create_directory_link(root / "sha256" / "aa", outside)
+
+    module = paths_module()
+    with pytest.raises(module.UnsafeLocalPath):
+        module.managed_corpus_blob_path(root, SHA256_A)
+
+
+def test_managed_blob_path_rejects_an_existing_final_link(
+    workspace_tmp_path,
+):
+    root = workspace_tmp_path / "managed-corpus"
+    outside = workspace_tmp_path / "outside"
+    target = outside / "blob"
+    final = root / "sha256" / "aa" / SHA256_A
+    final.parent.mkdir(parents=True)
+    outside.mkdir()
+    target.write_bytes(b"synthetic")
+    try:
+        final.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    module = paths_module()
+    with pytest.raises(module.UnsafeLocalPath):
+        module.managed_corpus_blob_path(root, SHA256_A)
+
+
+def test_managed_blob_path_rejects_a_linked_managed_root(
+    workspace_tmp_path,
+):
+    actual = workspace_tmp_path / "actual-managed"
+    linked = workspace_tmp_path / "linked-managed"
+    actual.mkdir()
+    create_directory_link(linked, actual)
+
+    module = paths_module()
+    with pytest.raises(module.UnsafeLocalPath):
+        module.managed_corpus_blob_path(linked, SHA256_A)

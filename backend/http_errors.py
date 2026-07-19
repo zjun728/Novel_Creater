@@ -148,3 +148,15 @@ class CorpusRequestInvalid(PublicDomainError):
     status_code = 422
     code = "CorpusRequestInvalid"
     message = "Corpus request is invalid"
+
+
+class CorpusLifecycleConflict(PublicDomainError):
+    status_code = 409
+    code = "CorpusLifecycleConflict"
+    message = "Corpus source changed; refresh and retry"
+
+
+class CorpusPermanentDeleteForbidden(PublicDomainError):
+    status_code = 409
+    code = "CorpusPermanentDeleteForbidden"
+    message = "Corpus source is not eligible for permanent deletion"

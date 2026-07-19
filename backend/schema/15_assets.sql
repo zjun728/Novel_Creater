@@ -106,7 +106,6 @@ CREATE TABLE corpus_source_revisions (
   UNIQUE KEY uq_corpus_source_revision_hash (source_id, revision, content_hash),
   UNIQUE KEY uq_corpus_source_revision_id (source_id, id),
   UNIQUE KEY uq_corpus_source_revision_identity (source_id, id, revision, content_hash),
-  UNIQUE KEY uq_corpus_source_import (source_id, content_hash, parser_version, normalizer_version, fragmenter_version, index_version),
   FOREIGN KEY (source_id) REFERENCES corpus_sources(id) ON DELETE RESTRICT,
   FOREIGN KEY (content_hash) REFERENCES corpus_blobs(content_hash) ON DELETE RESTRICT,
   CHECK (revision > 0),
@@ -208,5 +207,17 @@ CREATE TABLE corpus_import_runs (
       AND source_revision_id IS NULL AND source_revision IS NULL
       AND public_error_code IS NOT NULL AND completed_at IS NOT NULL)
   )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE corpus_source_deletions (
+  source_id CHAR(36) PRIMARY KEY,
+  expected_revision INT NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  tombstones_json JSON NOT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  CHECK (expected_revision > 0),
+  CHECK (status IN ('restore_pending','cleanup_pending','succeeded'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

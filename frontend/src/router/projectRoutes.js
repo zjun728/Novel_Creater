@@ -3,6 +3,7 @@ const ArchivedProjectsView = () => import('../views/ArchivedProjectsView.vue')
 const ProjectOverviewView = () => import('../views/ProjectOverviewView.vue')
 const StyleLibraryView = () => import('../views/assets/StyleLibraryView.vue')
 const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryView.vue')
+const CorpusLibraryView = () => import('../views/assets/CorpusLibraryView.vue')
 const ChapterWriterView = () => import('../views/ChapterWriterView.vue')
 const ProviderSettingsView = () => import('../views/ProviderSettingsView.vue')
 const ApplicationSettingsView = () => import('../views/ApplicationSettingsView.vue')
@@ -33,6 +34,10 @@ export function styleLibraryPath() {
 
 export function experienceLibraryPath() {
   return '/assets/experience'
+}
+
+export function corpusLibraryPath() {
+  return '/assets/corpus'
 }
 
 function positiveChapterNumber(value) {
@@ -79,6 +84,11 @@ export const projectRoutes = Object.freeze([
     path: '/assets/experience',
     name: 'ExperienceLibrary',
     component: ExperienceLibraryView,
+  },
+  {
+    path: '/assets/corpus',
+    name: 'CorpusLibrary',
+    component: CorpusLibraryView,
   },
   {
     path: '/projects/:projectId/overview',

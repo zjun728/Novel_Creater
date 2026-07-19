@@ -27,6 +27,7 @@ export const useCorpusStore = defineStore('corpus', () => {
   const fragmentPage = ref(null)
   const importRuns = ref({})
   const sourceDetails = ref({})
+  const sourceVersions = ref({})
   const chapterLists = ref({})
   const loadingDiscovery = ref(false)
   const loadingSources = ref(false)
@@ -67,11 +68,11 @@ export const useCorpusStore = defineStore('corpus', () => {
     }
   }
 
-  async function loadSources() {
+  async function loadSources(params = {}) {
     const generation = sourceListGuard.begin()
     loadingSources.value = true
     try {
-      const result = await api.corpus.sources.list()
+      const result = await api.corpus.sources.list(params)
       const rows = result?.items || []
       if (sourceListGuard.isCurrent(generation)) sources.value = rows
       return rows
@@ -105,6 +106,75 @@ export const useCorpusStore = defineStore('corpus', () => {
     )
     sourceDetails.value[key] = source
     return source
+  }
+
+  async function loadVersions(
+    sourceId,
+    { cursor = null, limit = 50, force = false } = {},
+  ) {
+    if (!cursor && !force && sourceVersions.value[sourceId]) {
+      return sourceVersions.value[sourceId]
+    }
+    const result = await api.corpus.sources.versions(sourceId, {
+      cursor: cursor || undefined,
+      limit,
+    })
+    const previous = cursor ? sourceVersions.value[sourceId]?.items || [] : []
+    const seen = new Set(previous.map(item => `${item.id}:${item.revision}`))
+    const items = [
+      ...previous,
+      ...(result?.items || []).filter(item => {
+        const key = `${item.id}:${item.revision}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      }),
+    ]
+    const page = { items, nextCursor: result?.nextCursor ?? null }
+    sourceVersions.value[sourceId] = page
+    return page
+  }
+
+  function invalidateMutableSource(sourceId) {
+    delete sourceVersions.value[sourceId]
+    for (const key of Object.keys(sourceDetails.value)) {
+      if (key.startsWith(`${sourceId}\u0000`)) delete sourceDetails.value[key]
+    }
+  }
+
+  function commitLifecycleSource(result) {
+    if (!result?.id) return result
+    sources.value = sources.value.map(source => (
+      source.id === result.id ? result : source
+    ))
+    invalidateMutableSource(result.id)
+    return result
+  }
+
+  async function archiveSource(sourceId, expectedRevision) {
+    return commitLifecycleSource(
+      await api.corpus.sources.archive(sourceId, expectedRevision),
+    )
+  }
+
+  async function restoreSource(sourceId, expectedRevision) {
+    return commitLifecycleSource(
+      await api.corpus.sources.restore(sourceId, expectedRevision),
+    )
+  }
+
+  async function permanentlyDeleteSource(
+    sourceId,
+    expectedRevision,
+    confirmPermanentDelete,
+  ) {
+    await api.corpus.sources.permanentlyDelete(
+      sourceId,
+      expectedRevision,
+      confirmPermanentDelete,
+    )
+    sources.value = sources.value.filter(source => source.id !== sourceId)
+    invalidateMutableSource(sourceId)
   }
 
   async function loadChapters(sourceId, revision, contentHash) {
@@ -163,6 +233,7 @@ export const useCorpusStore = defineStore('corpus', () => {
     fragmentPage,
     importRuns,
     sourceDetails,
+    sourceVersions,
     chapterLists,
     loadingDiscovery,
     loadingSources,
@@ -172,6 +243,10 @@ export const useCorpusStore = defineStore('corpus', () => {
     importSource,
     getImport,
     getSource,
+    loadVersions,
+    archiveSource,
+    restoreSource,
+    permanentlyDeleteSource,
     loadChapters,
     loadFragments,
     clearFragments,

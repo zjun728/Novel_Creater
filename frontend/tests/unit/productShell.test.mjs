@@ -208,6 +208,7 @@ const shellRoutes = [
   { path: '/projects/archived', name: 'ArchivedProjects', component: Page },
   { path: '/assets/styles', name: 'StyleLibrary', component: Page },
   { path: '/assets/experience', name: 'ExperienceLibrary', component: Page },
+  { path: '/assets/corpus', name: 'CorpusLibrary', component: Page },
   {
     path: '/projects/:projectId/overview',
     name: 'ProjectOverview',
@@ -306,6 +307,10 @@ test('creative asset pages share global selection and route-aware breadcrumbs', 
     route: route('ExperienceLibrary', '/assets/experience'),
     viewportWidth: 1440,
   })
+  const corpus = createProductShellModel({
+    route: route('CorpusLibrary', '/assets/corpus'),
+    viewportWidth: 1440,
+  })
 
   assert.equal(
     styles.globalNavigation.find(item => item.key === 'assets').selected,
@@ -315,8 +320,13 @@ test('creative asset pages share global selection and route-aware breadcrumbs', 
     experience.globalNavigation.find(item => item.key === 'assets').selected,
     true,
   )
+  assert.equal(
+    corpus.globalNavigation.find(item => item.key === 'assets').selected,
+    true,
+  )
   assert.equal(styles.routeTitle, '风格模板库')
   assert.equal(experience.routeTitle, '经验卡库')
+  assert.equal(corpus.routeTitle, '语料档案室')
   assert.deepEqual(styles.breadcrumbs, [
     { label: '创作资产', path: '/assets/styles' },
     { label: '风格模板', path: '/assets/styles' },
@@ -325,6 +335,18 @@ test('creative asset pages share global selection and route-aware breadcrumbs', 
     { label: '创作资产', path: '/assets/styles' },
     { label: '经验卡', path: '/assets/experience' },
   ])
+  assert.deepEqual(corpus.breadcrumbs, [
+    { label: '创作资产', path: '/assets/styles' },
+    { label: '语料档案室', path: '/assets/corpus' },
+  ])
+  assert.deepEqual(
+    corpus.assetNavigation.map(item => [item.path, item.selected]),
+    [
+      ['/assets/styles', false],
+      ['/assets/experience', false],
+      ['/assets/corpus', true],
+    ],
+  )
 })
 
 test('application settings is selected under Settings and has a safe title', async () => {

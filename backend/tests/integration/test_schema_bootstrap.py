@@ -16,6 +16,7 @@ EXPECTED_TABLES = {
     "experience_cards", "experience_card_heads", "corpus_blobs",
     "corpus_sources", "corpus_source_revisions", "corpus_source_heads",
     "corpus_chapters", "corpus_fragments", "corpus_import_runs",
+    "corpus_source_deletions",
     "market_sources", "market_source_refresh_states",
     "market_source_policy_revisions", "market_source_policy_heads",
     "market_refresh_requests", "market_snapshots", "market_snapshot_entries",

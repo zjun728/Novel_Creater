@@ -59,13 +59,15 @@ class FakeCorpusService:
             "root": "C:/private/ROOT_SENTINEL",
         }
 
-    async def import_source(self, relative_path, idempotency_key):
-        self.calls.append(("import", relative_path, idempotency_key))
+    async def import_source(self, relative_path, idempotency_key, **metadata):
+        self.calls.append(("import", relative_path, idempotency_key, metadata))
         self._raise()
         return {
             "id": IMPORT_ID, "status": "succeeded", "source_id": SOURCE_ID,
+            "source_revision_id": "revision-2", "source_revision": 2,
             "relative_path": relative_path, "source_hash": "a" * 64,
             "public_error_code": None, "absolute_path": "C:/private/SECRET",
+            "managed_root": "C:/private/MANAGED_ROOT",
         }
 
     async def get_import(self, import_id):
@@ -73,17 +75,22 @@ class FakeCorpusService:
         self._raise()
         return {
             "id": import_id, "status": "succeeded", "source_id": SOURCE_ID,
+            "source_revision_id": "revision-2", "source_revision": 2,
             "relative_path": "safe/book.txt", "source_hash": "a" * 64,
             "public_error_code": None,
         }
 
-    async def list_sources(self):
-        self.calls.append(("list-sources",))
+    async def list_sources(self, search=None, state=None):
+        self.calls.append(("list-sources", search, state))
         self._raise()
         return ({
             "id": SOURCE_ID, "title": "book", "relative_path": "safe/book.txt",
             "revision": 2, "source_hash": "a" * 64,
+            "reference_tags": ("玄幻",), "notes": "短注",
             "encoding": "utf-8", "status": "analyzed",
+            "archived_at": None, "reference_count": 1,
+            "historical_reference_count": 2,
+            "delete_eligible": False, "delete_reason": "source_not_archived",
             "chapter_count": 2, "fragment_count": 4,
             "normalized_text": "FULL_BOOK_SENTINEL",
         },)
@@ -94,11 +101,51 @@ class FakeCorpusService:
         return {
             "id": source_id, "title": "book", "relative_path": "safe/book.txt",
             "revision": 2, "source_hash": "a" * 64,
+            "reference_tags": ("玄幻",), "notes": "短注",
             "encoding": "utf-8", "status": "analyzed",
+            "archived_at": None, "reference_count": 1,
+            "historical_reference_count": 2,
+            "delete_eligible": False, "delete_reason": "source_not_archived",
             "chapter_count": 2, "fragment_count": 4,
             "preview": "预" * preview_chars,
             "normalized_text": "FULL_BOOK_SENTINEL",
         }
+
+    async def list_versions(self, source_id, cursor=None, limit=50):
+        self.calls.append(("versions", source_id, cursor, limit))
+        self._raise()
+        return {
+            "items": ({
+                "id": "revision-2", "source_id": source_id, "revision": 2,
+                "source_hash": "a" * 64, "title": "book",
+                "relative_path": "safe/book.txt", "reference_tags": ("玄幻",),
+                "notes": "短注", "encoding": "utf-8", "status": "analyzed",
+                "archived_at": None, "reference_count": 1,
+                "is_current": True, "imported_at": 123,
+                "storage_key": "sha256/aa/PRIVATE_STORAGE_SENTINEL",
+            },),
+            "nextCursor": 2,
+        }
+
+    async def archive_source(self, source_id, expected_revision):
+        self.calls.append(("archive", source_id, expected_revision))
+        self._raise()
+        row = await self.get_source(source_id, 1)
+        return {**row, "archived_at": 123, "delete_eligible": False,
+                "delete_reason": "source_referenced"}
+
+    async def restore_source(self, source_id, expected_revision):
+        self.calls.append(("restore", source_id, expected_revision))
+        self._raise()
+        return await self.get_source(source_id, 1)
+
+    async def permanently_delete_source(
+        self, source_id, expected_revision, confirm_permanent_delete
+    ):
+        self.calls.append((
+            "delete", source_id, expected_revision, confirm_permanent_delete,
+        ))
+        self._raise()
 
     async def list_chapters(self, source_id):
         self.calls.append(("chapters", source_id))
@@ -137,7 +184,9 @@ def _assert_safe(body):
     rendered = json.dumps(body, ensure_ascii=False)
     for sentinel in (
         "C:/private", "FULL_BOOK_SENTINEL", "CHAPTER_SENTINEL",
-        "SECRET_INDEX_SENTINEL", "password", "baseUrl", "dsn",
+        "SECRET_INDEX_SENTINEL", "PRIVATE_STORAGE_SENTINEL",
+        "managed_root", "storage_key", "absolute_path", "raw_bytes",
+        "password", "baseUrl", "dsn",
     ):
         assert sentinel not in rendered
 
@@ -152,46 +201,104 @@ def test_corpus_routes_are_exact_and_all_dtos_are_allowlisted():
         client.get(f"/api/corpus/imports/{IMPORT_ID}"),
         client.get("/api/corpus/sources"),
         client.get(f"/api/corpus/sources/{SOURCE_ID}"),
+        client.get(
+            f"/api/corpus/sources/{SOURCE_ID}/versions?cursor=3&limit=1"
+        ),
         client.get(f"/api/corpus/sources/{SOURCE_ID}/chapters"),
         client.get(f"/api/corpus/chapters/{CHAPTER_ID}/fragments"),
+        client.post(f"/api/corpus/sources/{SOURCE_ID}/archive", json={
+            "expectedRevision": 2,
+        }),
+        client.post(f"/api/corpus/sources/{SOURCE_ID}/restore", json={
+            "expectedRevision": 2,
+        }),
+        client.request("DELETE", f"/api/corpus/sources/{SOURCE_ID}", json={
+            "expectedRevision": 2, "confirmPermanentDelete": True,
+        }),
     )
-    assert [response.status_code for response in responses] == [200] * 7
-    bodies = [response.json() for response in responses]
+    assert [response.status_code for response in responses] == [200] * 10 + [204]
+    bodies = [response.json() for response in responses[:-1]]
     assert set(bodies[0]) == {"items", "nextCursor", "reasonCounts", "scanStrategy"}
     assert set(bodies[1]) == {
-        "importId", "status", "sourceId", "relativePath", "shortHash", "errorCode"
+        "importId", "status", "sourceId", "sourceRevision", "sourceRevisionId",
+        "sourceLabel", "shortHash", "errorCode",
     }
     assert set(bodies[3]) == {"items"}
     assert set(bodies[4]) == {
-        "id", "revision", "contentHash", "name", "relativePath", "shortHash",
-        "encoding", "state",
-        "chapterCount", "fragmentCount", "preview",
+        "id", "revision", "contentHash", "name", "sourceLabel", "shortHash",
+        "encoding", "state", "referenceTags", "notes", "archivedAt",
+        "chapterCount", "fragmentCount", "referenceCount",
+        "historicalReferenceCount", "deleteEligible", "deleteReason", "preview",
     }
     assert set(bodies[3]["items"][0]) == {
-        "id", "revision", "contentHash", "name", "relativePath", "shortHash",
-        "encoding", "state", "chapterCount", "fragmentCount",
+        "id", "revision", "contentHash", "name", "sourceLabel", "shortHash",
+        "encoding", "state", "referenceTags", "archivedAt",
+        "chapterCount", "fragmentCount", "referenceCount",
+        "historicalReferenceCount", "deleteEligible", "deleteReason",
     }
     assert bodies[3]["items"][0]["revision"] == 2
     assert bodies[3]["items"][0]["contentHash"] == "a" * 64
     assert set(bodies[5]["items"][0]) == {
+        "id", "revision", "contentHash", "shortHash", "name", "sourceLabel",
+        "encoding", "state", "referenceTags", "notes", "archivedAt",
+        "referenceCount", "isCurrent", "importedAt",
+    }
+    assert set(bodies[5]) == {"items", "nextCursor"}
+    assert bodies[5]["nextCursor"] == 2
+    assert set(bodies[6]["items"][0]) == {
         "id", "order", "title", "byteStart", "byteEnd", "charStart",
         "charEnd", "shortHash",
     }
     assert all(set(item) == {
         "id", "order", "charStart", "charEnd", "shortHash", "preview",
-    } for item in bodies[6]["items"])
+    } for item in bodies[7]["items"])
     for body in bodies:
         _assert_safe(body)
-    methods = {route.path: route.methods for route in corpus.router.routes}
+    methods = {}
+    for route in corpus.router.routes:
+        methods.setdefault(route.path, set()).update(route.methods)
     assert methods == {
         "/corpus/discovery": {"GET"},
         "/corpus/imports": {"POST"},
         "/corpus/imports/{import_id}": {"GET"},
         "/corpus/sources": {"GET"},
-        "/corpus/sources/{source_id}": {"GET"},
+        "/corpus/sources/{source_id}/versions": {"GET"},
+        "/corpus/sources/{source_id}/archive": {"POST"},
+        "/corpus/sources/{source_id}/restore": {"POST"},
+        "/corpus/sources/{source_id}": {"GET", "DELETE"},
         "/corpus/sources/{source_id}/chapters": {"GET"},
         "/corpus/chapters/{chapter_id}/fragments": {"GET"},
     }
+
+
+def test_library_list_search_filter_and_import_metadata_are_explicitly_bounded():
+    client, service = make_client()
+
+    listed = client.get("/api/corpus/sources?search=%E7%8E%84%E5%B9%BB&state=archived")
+    imported = client.post("/api/corpus/imports", json={
+        "idempotencyKey": "i" * 32,
+        "relativePath": "safe/book.txt",
+        "sourceId": SOURCE_ID,
+        "createDistinctSource": False,
+        "displayName": "北境卷",
+        "referenceTags": ["玄幻", "战争"],
+        "notes": "短注",
+    })
+
+    assert listed.status_code == imported.status_code == 200
+    assert ("list-sources", "玄幻", "archived") in service.calls
+    assert (
+        "import",
+        "safe/book.txt",
+        "i" * 32,
+        {
+            "source_id": SOURCE_ID,
+            "create_distinct_source": False,
+            "display_name": "北境卷",
+            "reference_tags": ("玄幻", "战争"),
+            "notes": "短注",
+        },
+    ) in service.calls
 
 
 def test_preview_and_fragment_limits_are_server_bounded():
@@ -283,6 +390,31 @@ async def test_service_rejects_noncanonical_key_before_database_access(tmp_path)
         await service.import_source("book.txt", "A" * 32)
 
 
+@pytest.mark.asyncio
+async def test_service_never_writes_into_discovery_root_when_managed_root_is_missing(
+    tmp_path,
+):
+    (tmp_path / "book.txt").write_text(
+        "第一章\n只用于缺失配置测试。", encoding="utf-8"
+    )
+
+    def forbidden_boundary():
+        raise AssertionError("database boundary must not be reached")
+
+    service = CorpusImportService(
+        object(),
+        corpus_root=tmp_path,
+        managed_root=None,
+        transaction_factory=forbidden_boundary,
+        connection_factory=forbidden_boundary,
+    )
+
+    with pytest.raises(CorpusImportFailed):
+        await service.import_source("book.txt", "m" * 32)
+    assert not (tmp_path / ".staging").exists()
+    assert not (tmp_path / "sha256").exists()
+
+
 def test_succeeded_import_replay_returns_the_same_success_response():
     client, service = make_client()
     request = {"idempotencyKey": "s" * 32, "relativePath": "safe/book.txt"}
@@ -292,9 +424,16 @@ def test_succeeded_import_replay_returns_the_same_success_response():
 
     assert first.status_code == replay.status_code == 200
     assert first.json() == replay.json()
+    defaults = {
+        "source_id": None,
+        "create_distinct_source": False,
+        "display_name": None,
+        "reference_tags": (),
+        "notes": "",
+    }
     assert service.calls == [
-        ("import", "safe/book.txt", "s" * 32),
-        ("import", "safe/book.txt", "s" * 32),
+        ("import", "safe/book.txt", "s" * 32, defaults),
+        ("import", "safe/book.txt", "s" * 32, defaults),
     ]
 
 
@@ -327,21 +466,16 @@ def test_actual_service_failed_replay_has_same_safe_http_failure(tmp_path):
         async def insert_import(self, session, row):
             self.run = dict(row)
 
-        async def mark_import_failed(self, session, import_id, code, completed_at):
-            assert self.run["id"] == import_id
-            self.run.update({
-                "status": "failed", "corpus_source_id": None,
-                "public_error_code": code, "completed_at": completed_at,
-            })
-
     @asynccontextmanager
     async def boundary():
         yield object()
 
     (tmp_path / "invalid.txt").write_bytes(b"\x00synthetic binary")
+    managed_root = tmp_path / "managed"
+    managed_root.mkdir()
     repository = FailedRunRepository()
     service = CorpusImportService(
-        repository, corpus_root=tmp_path,
+        repository, corpus_root=tmp_path, managed_root=managed_root,
         transaction_factory=boundary, connection_factory=boundary,
     )
     app = FastAPI()
@@ -358,10 +492,7 @@ def test_actual_service_failed_replay_has_same_safe_http_failure(tmp_path):
     assert [first.json()["code"], replay.json()["code"]] == [
         "CorpusImportFailed", "CorpusImportFailed"
     ]
-    repository.run["status"] = "unknown-state"
-    unknown = client.post("/api/corpus/imports", json=request)
-    assert unknown.status_code == 422
-    assert unknown.json()["code"] == "CorpusImportFailed"
+    assert repository.run is None
 
 
 def test_main_registers_corpus_metadata_routes_without_full_book_or_download():
@@ -410,3 +541,5 @@ def test_production_service_uses_explicit_transactions():
     assert service.asset_service.transaction_factory is transaction
     assert service.corpus_service.transaction_factory is transaction
     assert service.corpus_service.connection_factory is transaction
+    assert service.corpus_library_service.transaction_factory is transaction
+    assert service.corpus_library_service.connection_factory is transaction

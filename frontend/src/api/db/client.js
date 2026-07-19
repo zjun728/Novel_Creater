@@ -325,22 +325,51 @@ export const api = {
       cursor: boundedCursor(params.cursor),
       limit: boundedInteger(params.limit, { min: 1, max: 200 }),
     })}`),
-    imports: {
-      create: data => post('/corpus/imports', {
-        idempotencyKey: data.idempotencyKey,
-        relativePath: relativeCorpusPath(data.relativePath),
-      }),
-      get: importId => get(`/corpus/imports/${segment(importId)}`),
-    },
-    sources: {
-      list: () => get('/corpus/sources'),
-      get: (sourceId, params = {}) => get(
-        `/corpus/sources/${segment(sourceId)}${queryString({
-          previewChars: boundedInteger(params.previewChars, { min: 1, max: 1200 }),
-        })}`,
-      ),
-      chapters: sourceId => get(`/corpus/sources/${segment(sourceId)}/chapters`),
-    },
+      imports: {
+        create: data => post('/corpus/imports', pickDefined({
+          idempotencyKey: data.idempotencyKey,
+          relativePath: relativeCorpusPath(data.relativePath),
+          sourceId: data.sourceId,
+          createDistinctSource: data.createDistinctSource,
+          displayName: data.displayName,
+          referenceTags: data.referenceTags,
+          notes: data.notes,
+        }, [
+          'idempotencyKey', 'relativePath', 'sourceId', 'createDistinctSource',
+          'displayName', 'referenceTags', 'notes',
+        ])),
+        get: importId => get(`/corpus/imports/${segment(importId)}`),
+      },
+      sources: {
+        list: (params = {}) => get(`/corpus/sources${queryString({
+          search: params.search,
+          state: params.state,
+        })}`),
+        get: (sourceId, params = {}) => get(
+          `/corpus/sources/${segment(sourceId)}${queryString({
+            previewChars: boundedInteger(params.previewChars, { min: 1, max: 1200 }),
+          })}`,
+        ),
+        versions: (sourceId, params = {}) => get(
+          `/corpus/sources/${segment(sourceId)}/versions${queryString({
+            cursor: boundedInteger(params.cursor, { min: 1, max: Number.MAX_SAFE_INTEGER }),
+            limit: boundedInteger(params.limit, { min: 1, max: 100 }),
+          })}`,
+        ),
+        archive: (sourceId, expectedRevision) => post(
+          `/corpus/sources/${segment(sourceId)}/archive`,
+          { expectedRevision },
+        ),
+        restore: (sourceId, expectedRevision) => post(
+          `/corpus/sources/${segment(sourceId)}/restore`,
+          { expectedRevision },
+        ),
+        permanentlyDelete: (sourceId, expectedRevision, confirmPermanentDelete) => del(
+          `/corpus/sources/${segment(sourceId)}`,
+          { expectedRevision, confirmPermanentDelete },
+        ),
+        chapters: sourceId => get(`/corpus/sources/${segment(sourceId)}/chapters`),
+      },
     chapters: {
       fragments: (chapterId, params = {}) => get(
         `/corpus/chapters/${segment(chapterId)}/fragments${queryString({

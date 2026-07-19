@@ -231,21 +231,119 @@ test('clearing fragments prevents a late chapter response from crossing into ano
   assert.equal(store.loadingFragments, false)
 })
 
-test('corpus settings keep discovery relative and render previews inside the 240/4800 budget', async () => {
-  const source = await readFile(
-    path.join(frontendRoot, 'src/components/settings/CorpusSettings.vue'),
-    'utf8',
-  )
+test('library commands search/filter, load versions, CAS archive/restore, and danger-delete once', async () => {
+  setActivePinia(createPinia())
+  const store = useCorpusStore()
+  const requests = []
+  const source = {
+    id: 'source-1',
+    revision: 3,
+    contentHash: 'a'.repeat(64),
+    archivedAt: null,
+    deleteEligible: false,
+    deleteReason: 'source_not_archived',
+  }
 
-  assert.match(source, /relativePath/)
-  assert.match(source, /getSource\(/)
-  assert.match(source, /loadFragments\([^)]*\{[^}]*limit:\s*20/s)
-  assert.match(source, /PREVIEW_ITEM_LIMIT\s*=\s*240/)
-  assert.match(source, /PREVIEW_PAGE_BUDGET\s*=\s*4_800/)
-  assert.match(source, /priorRun\?\.status\s*===\s*['"]failed['"][\s\S]*importKeys\.delete\(relativePath\)/)
-  assert.match(source, /error\?\.code\s*===\s*['"]CorpusImportFailed['"][\s\S]*importKeys\.delete\(relativePath\)/)
-  assert.match(source, /chapterEpoch/)
-  assert.match(source, /epoch\s*===\s*chapterEpoch/)
-  assert.doesNotMatch(source, /\bfetch\s*\(|localStorage|type=["']file["']/)
-  assert.doesNotMatch(source, /\{\{[^}]*contentHash[^}]*\}\}/)
+  await withBrowserGuards(async (url, options) => {
+    const parsed = new URL(String(url))
+    const body = options.body ? JSON.parse(options.body) : undefined
+    requests.push({ method: options.method, parsed, body })
+    if (options.method === 'GET' && parsed.pathname.endsWith('/corpus/sources')) {
+      return jsonResponse({ items: [source] })
+    }
+    if (options.method === 'GET' && parsed.pathname.endsWith('/versions')) {
+      assert.equal(parsed.searchParams.get('limit'), '1')
+      if (parsed.searchParams.get('cursor') === '3') {
+        return jsonResponse({
+          items: [{ ...source, revision: 2, isCurrent: false, referenceCount: 0 }],
+          nextCursor: null,
+        })
+      }
+      return jsonResponse({
+        items: [{ ...source, isCurrent: true, referenceCount: 0 }],
+        nextCursor: 3,
+      })
+    }
+    if (options.method === 'POST' && parsed.pathname.endsWith('/archive')) {
+      return jsonResponse({ ...source, archivedAt: 123, deleteEligible: true, deleteReason: null })
+    }
+    if (options.method === 'POST' && parsed.pathname.endsWith('/restore')) {
+      return jsonResponse(source)
+    }
+    if (options.method === 'DELETE' && parsed.pathname.endsWith('/corpus/sources/source-1')) {
+      return new Response(null, { status: 204 })
+    }
+    throw new Error(`unexpected request ${options.method} ${url}`)
+  }, async () => {
+    await store.loadSources({ search: '玄幻', state: 'archived' })
+    const firstPage = await store.loadVersions('source-1', { limit: 1 })
+    assert.equal(firstPage.items[0].isCurrent, true)
+    assert.equal(firstPage.nextCursor, 3)
+    const fullHistory = await store.loadVersions(
+      'source-1', { cursor: firstPage.nextCursor, limit: 1 },
+    )
+    assert.deepEqual(fullHistory.items.map(item => item.revision), [3, 2])
+    await store.archiveSource('source-1', 3)
+    await store.restoreSource('source-1', 3)
+    await store.permanentlyDeleteSource('source-1', 3, true)
+  })
+
+  assert.equal(requests[0].parsed.searchParams.get('search'), '玄幻')
+  assert.equal(requests[0].parsed.searchParams.get('state'), 'archived')
+  assert.deepEqual(requests.slice(3).map(request => [request.method, request.body]), [
+    ['POST', { expectedRevision: 3 }],
+    ['POST', { expectedRevision: 3 }],
+    ['DELETE', { expectedRevision: 3, confirmPermanentDelete: true }],
+  ])
+  assert.deepEqual(store.sources, [])
+  assert.equal(store.sourceVersions['source-1'], undefined)
+})
+
+test('import sends bounded revisioned metadata without managed paths or raw bytes', async () => {
+  setActivePinia(createPinia())
+  const store = useCorpusStore()
+  let request
+
+  await withBrowserGuards(async (url, options) => {
+    request = { url: String(url), body: JSON.parse(options.body) }
+    return jsonResponse({
+      importId: 'import-3',
+      status: 'succeeded',
+      sourceId: 'source-1',
+      sourceRevision: 2,
+      sourceRevisionId: 'revision-2',
+      sourceLabel: 'safe/book.txt',
+      shortHash: 'abc123def456',
+      errorCode: null,
+    })
+  }, async () => {
+    await store.importSource({
+      idempotencyKey: 'z'.repeat(32),
+      relativePath: 'safe/book.txt',
+      sourceId: 'source-1',
+      createDistinctSource: false,
+      displayName: '北境卷',
+      referenceTags: ['玄幻', '战争'],
+      notes: '短注',
+      managedRoot: 'C:/private/must-not-send',
+      rawBytes: 'must-not-send',
+    })
+  })
+
+  assert.deepEqual(request.body, {
+    idempotencyKey: 'z'.repeat(32),
+    relativePath: 'safe/book.txt',
+    sourceId: 'source-1',
+    createDistinctSource: false,
+    displayName: '北境卷',
+    referenceTags: ['玄幻', '战争'],
+    notes: '短注',
+  })
+})
+
+test('legacy settings corpus component is removed after canonical asset page replacement', async () => {
+  await assert.rejects(
+    readFile(path.join(frontendRoot, 'src/components/settings/CorpusSettings.vue'), 'utf8'),
+    /ENOENT/,
+  )
 })
