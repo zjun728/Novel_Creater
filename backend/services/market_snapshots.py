@@ -121,7 +121,7 @@ class MarketSnapshotService:
         )
         manifest_id = self._id()
         async with self._transaction() as session:
-            return await self.repository.publish_snapshot(
+            result = await self.repository.publish_snapshot(
                 session,
                 request_id=reservation["request_id"],
                 source_id=source["id"],
@@ -139,6 +139,9 @@ class MarketSnapshotService:
                 policy_hash=source["policy_hash"],
                 completed_at=self._clock(),
             )
+        if result.get("kind") == "rejected":
+            raise MarketSourceFailure(result["code"])
+        return result
 
     async def refresh(self, source_id: str, *, idempotency_key: str):
         request_hash = canonical_hash(
@@ -162,13 +165,21 @@ class MarketSnapshotService:
                 policy_hash=source.get("policy_hash"),
                 captured_at=self._clock(),
             )
+            self._validate_identity(snapshot, source)
+        except MarketSourceFailure as failure:
+            await self._record_failure(reservation, failure)
+            raise
+        except Exception:
+            failure = MarketSourceFailure("MARKET_REFRESH_FAILED")
+            await self._record_failure(reservation, failure)
+            raise failure from None
+        try:
             return await self._publish(
                 reservation,
                 snapshot,
                 adapter_version=adapter.adapter_version,
             )
-        except MarketSourceFailure as failure:
-            await self._record_failure(reservation, failure)
+        except MarketSourceFailure:
             raise
         except Exception:
             failure = MarketSourceFailure("MARKET_REFRESH_FAILED")
@@ -199,13 +210,21 @@ class MarketSnapshotService:
             return reservation["snapshot"]
         try:
             snapshot = self.manual_adapter.parse(payload)
+            self._validate_identity(snapshot, reservation["source"])
+        except MarketSourceFailure as failure:
+            await self._record_failure(reservation, failure)
+            raise
+        except Exception:
+            failure = MarketSourceFailure("MARKET_REFRESH_FAILED")
+            await self._record_failure(reservation, failure)
+            raise failure from None
+        try:
             return await self._publish(
                 reservation,
                 snapshot,
                 adapter_version=self.manual_adapter.adapter_version,
             )
-        except MarketSourceFailure as failure:
-            await self._record_failure(reservation, failure)
+        except MarketSourceFailure:
             raise
         except Exception:
             failure = MarketSourceFailure("MARKET_REFRESH_FAILED")

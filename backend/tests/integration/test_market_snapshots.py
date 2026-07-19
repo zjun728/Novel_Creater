@@ -378,3 +378,181 @@ async def test_expired_refresh_lease_is_persistently_recovered_during_cooldown(
         "public_error_code": "MARKET_REFRESH_LEASE_EXPIRED",
         "completed_at": NOW + 30_001,
     }
+
+
+@pytest.mark.parametrize("preexisting_snapshot", (False, True))
+@pytest.mark.parametrize("competitor_recovers", (False, True))
+async def test_expired_holder_cannot_publish_or_reuse_snapshot(
+    disposable_mysql,
+    preexisting_snapshot,
+    competitor_recovers,
+):
+    from backend.domain.json_contracts import canonical_hash
+    from backend.domain.market import MarketEntry, MarketSnapshot
+    from backend.domain.market_sources import (
+        MarketSourceFailure,
+        load_market_source_package,
+    )
+    from backend.gateways.market_sources.manual_snapshot import ManualSnapshotAdapter
+    from backend.repositories.market import MarketRepository
+    from backend.services.market_sources import MarketSourceSeedService
+    from backend.services.market_snapshots import MarketSnapshotService
+
+    ids = iter(f"70000000-0000-0000-0000-{index:012d}" for index in range(1, 200))
+    id_factory = lambda: next(ids)
+    repository = MarketRepository()
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+    await MarketSourceSeedService(
+        repository,
+        transaction_factory=transaction,
+        id_factory=id_factory,
+        clock=lambda: NOW - 60_000,
+    ).seed(load_market_source_package(MANIFEST))
+    source = await disposable_mysql.session.fetchone(
+        "SELECT id FROM market_sources WHERE stable_key='qidian.newsign'"
+    )
+    source_id = source["id"]
+    snapshot = MarketSnapshot(
+        platform="qidian",
+        rankingName="newsign",
+        category="male",
+        capturedAt=NOW,
+        sourceURL="https://www.qidian.com/rank/newsign/",
+        entries=(
+            MarketEntry(
+                rank=1,
+                title="过期租约合成书",
+                author="合成作者",
+                category="奇幻",
+                workURL="https://www.qidian.com/book/900000199/",
+                publicMetrics={},
+            ),
+        ),
+    )
+    if preexisting_snapshot:
+        seed_service = MarketSnapshotService(
+            repository,
+            transaction_factory=transaction,
+            adapters={},
+            manual_adapter=ManualSnapshotAdapter(),
+            id_factory=id_factory,
+            clock=lambda: NOW - 60_000,
+        )
+        await seed_service.import_manual(
+            source_id,
+            snapshot.model_dump(mode="json", by_alias=True),
+            idempotency_key="p" * 64,
+        )
+        await disposable_mysql.session.execute(
+            """UPDATE market_source_refresh_states
+               SET last_snapshot_id=NULL,last_succeeded_at=NULL,
+                   public_error_code=NULL,updated_at=%s
+               WHERE source_id=%s""",
+            (NOW, source_id),
+        )
+
+    now = {"value": NOW}
+    competitor = {"reservation": None}
+
+    class ExpiringAdapter:
+        adapter_version = "expiring-public-adapter-v1"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def fetch(self, **kwargs):
+            self.calls += 1
+            now["value"] = NOW + 30_001
+            if competitor_recovers:
+                competitor_hash = canonical_hash(
+                    {"sourceId": source_id, "mode": "manual-competitor"}
+                )
+                async with transaction() as session:
+                    competitor["reservation"] = await repository.reserve_refresh(
+                        session,
+                        source_id=source_id,
+                        idempotency_key="z" * 64,
+                        request_hash=competitor_hash,
+                        input_manifest_hash=canonical_hash({}),
+                        now_ms=now["value"],
+                        enforce_cooldown=False,
+                    )
+            return snapshot
+
+    adapter = ExpiringAdapter()
+    service = MarketSnapshotService(
+        repository,
+        transaction_factory=transaction,
+        adapters={"qidian_public_rank": adapter},
+        id_factory=id_factory,
+        clock=lambda: now["value"],
+    )
+
+    with pytest.raises(MarketSourceFailure) as expired:
+        await service.refresh(source_id, idempotency_key="h" * 64)
+
+    assert expired.value.code == "MARKET_REFRESH_LEASE_EXPIRED"
+    assert adapter.calls == 1
+    counts = await disposable_mysql.session.fetchone(
+        """SELECT
+             (SELECT COUNT(*) FROM market_snapshots) AS snapshots,
+             (SELECT COUNT(*) FROM market_snapshot_entries) AS entries,
+             (SELECT COUNT(*) FROM market_snapshot_manifests) AS manifests"""
+    )
+    expected_count = int(preexisting_snapshot)
+    assert counts == {
+        "snapshots": expected_count,
+        "entries": expected_count,
+        "manifests": expected_count,
+    }
+    holder = await disposable_mysql.session.fetchone(
+        """SELECT status,snapshot_id,result_hash,public_error_code,completed_at
+           FROM market_refresh_requests
+           WHERE source_id=%s AND idempotency_key=%s""",
+        (source_id, "h" * 64),
+    )
+    assert holder == {
+        "status": "outcome_unknown",
+        "snapshot_id": None,
+        "result_hash": None,
+        "public_error_code": "MARKET_REFRESH_LEASE_EXPIRED",
+        "completed_at": NOW + 30_001,
+    }
+    state = await disposable_mysql.session.fetchone(
+        """SELECT last_snapshot_id,refresh_status,lease_owner,lease_expires_at,
+                  last_attempted_at,last_succeeded_at,public_error_code
+           FROM market_source_refresh_states WHERE source_id=%s""",
+        (source_id,),
+    )
+    if competitor_recovers:
+        takeover = competitor["reservation"]
+        assert takeover is not None and takeover["kind"] == "reserved"
+        assert state == {
+            "last_snapshot_id": None,
+            "refresh_status": "leased",
+            "lease_owner": takeover["request_id"],
+            "lease_expires_at": NOW + 60_001,
+            "last_attempted_at": NOW,
+            "last_succeeded_at": None,
+            "public_error_code": "MARKET_REFRESH_LEASE_EXPIRED",
+        }
+        competitor_request = await disposable_mysql.session.fetchone(
+            """SELECT status,snapshot_id,public_error_code
+               FROM market_refresh_requests WHERE id=%s""",
+            (takeover["request_id"],),
+        )
+        assert competitor_request == {
+            "status": "running",
+            "snapshot_id": None,
+            "public_error_code": None,
+        }
+    else:
+        assert state == {
+            "last_snapshot_id": None,
+            "refresh_status": "idle",
+            "lease_owner": None,
+            "lease_expires_at": None,
+            "last_attempted_at": NOW,
+            "last_succeeded_at": None,
+            "public_error_code": "MARKET_REFRESH_LEASE_EXPIRED",
+        }
