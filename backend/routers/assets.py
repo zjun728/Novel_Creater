@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Path, Query
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.domain.asset_eligibility import (
     CHANNELS,
@@ -27,6 +28,46 @@ from backend.services.creative_assets import (
 
 
 router = APIRouter(tags=["assets"])
+
+
+class _AssetRecommendationQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    engineOptionId: str = Field(min_length=1, max_length=36)
+    genres: tuple[Genre, ...] = Field(
+        min_length=1,
+        max_length=len(GENRES),
+    )
+    channels: tuple[Channel, ...] = Field(
+        min_length=1,
+        max_length=len(CHANNELS),
+    )
+    creationStages: tuple[CreationStage, ...] = Field(
+        min_length=1,
+        max_length=len(CREATION_STAGES),
+    )
+    writingPurposes: tuple[WritingPurpose, ...] = Field(
+        min_length=1,
+        max_length=len(WRITING_PURPOSES),
+    )
+    status: Literal["active", "archived"]
+    prohibitedDirections: tuple[ProhibitedDirection, ...] = Field(
+        default=(),
+        max_length=len(PROHIBITED_DIRECTIONS),
+    )
+
+    @field_validator(
+        "genres",
+        "channels",
+        "creationStages",
+        "writingPurposes",
+        "prohibitedDirections",
+    )
+    @classmethod
+    def unique_dimensions(cls, values):
+        if len(values) != len(set(values)):
+            raise ValueError("query dimension values must be unique")
+        return values
 
 
 def get_asset_service() -> CreativeAssetService:
@@ -221,40 +262,23 @@ async def get_experience_card(
 
 @router.get("/projects/{pid}/asset-recommendations")
 async def get_asset_recommendations(
+    query: Annotated[_AssetRecommendationQuery, Query()],
     pid: str = Path(min_length=1, max_length=36),
-    engineOptionId: str = Query(min_length=1, max_length=36),
-    genres: list[Genre] = Query(
-        min_length=1,
-        max_length=len(GENRES),
-    ),
-    channels: list[Channel] = Query(
-        min_length=1,
-        max_length=len(CHANNELS),
-    ),
-    creationStages: list[CreationStage] = Query(
-        min_length=1,
-        max_length=len(CREATION_STAGES),
-    ),
-    writingPurposes: list[WritingPurpose] = Query(
-        min_length=1,
-        max_length=len(WRITING_PURPOSES),
-    ),
-    status: Literal["active", "archived"] = Query(),
-    prohibitedDirections: list[ProhibitedDirection] = Query(
-        default=[],
-        max_length=len(PROHIBITED_DIRECTIONS),
-    ),
     service=Depends(get_asset_service),
 ):
     scope = AssetEligibilityScope(
-        genres=tuple(genres),
-        channels=tuple(channels),
-        creation_stages=tuple(creationStages),
-        writing_purposes=tuple(writingPurposes),
-        prohibited_directions=tuple(prohibitedDirections),
-        status=status,
+        genres=query.genres,
+        channels=query.channels,
+        creation_stages=query.creationStages,
+        writing_purposes=query.writingPurposes,
+        prohibited_directions=query.prohibitedDirections,
+        status=query.status,
     )
-    recommendation = await service.recommend(pid, engineOptionId, scope)
+    recommendation = await service.recommend(
+        pid,
+        query.engineOptionId,
+        scope,
+    )
     styles = [
         {
             **_style_summary(item.record),

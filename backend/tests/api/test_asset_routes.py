@@ -9,15 +9,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from backend.domain.assets import load_asset_package
+from backend.domain.asset_eligibility import (
+    AssetEligibilityPackageError,
+    load_asset_eligibility_package,
+)
+from backend.domain.assets import AssetPackageError, load_asset_package
 from backend.database import transaction
 from backend.http_errors import (
     AssetCatalogNotReady,
     AssetNotFound,
     AssetRecommendationConflict,
 )
-from backend.routers import assets
+from backend.routers import assets, corpus
 from backend.security.redaction import install_error_handlers
+from backend.services import creative_assets as creative_asset_services
 
 
 PACKAGE = load_asset_package(
@@ -159,6 +164,14 @@ def make_client():
     app.dependency_overrides[assets.get_asset_service] = lambda: service
     install_error_handlers(app)
     return TestClient(app, raise_server_exceptions=False), service
+
+
+def make_production_dependency_client():
+    app = FastAPI()
+    app.include_router(assets.router, prefix="/api")
+    app.include_router(corpus.router, prefix="/api")
+    install_error_handlers(app)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def _assert_no_private_keys(value):
@@ -330,6 +343,62 @@ def test_asset_public_errors_use_safe_handler(error, status, code, path):
     assert response.json()["message"] == error.message
 
 
+@pytest.mark.parametrize(
+    "loader_name",
+    ("load_asset_package", "load_asset_eligibility_package"),
+)
+def test_production_composition_package_failures_are_safe_503_on_asset_and_corpus_routes(
+    monkeypatch,
+    tmp_path,
+    loader_name,
+):
+    if loader_name == "load_asset_package":
+        with pytest.raises(AssetPackageError) as captured:
+            load_asset_package(
+                tmp_path / "private-approved-assets" / "manifest.json",
+                mode="release",
+            )
+    else:
+        with pytest.raises(AssetEligibilityPackageError) as captured:
+            load_asset_eligibility_package(
+                tmp_path / "private-taxonomy" / "manifest.json",
+                asset_package=PACKAGE,
+                mode="release",
+            )
+    loader_error = captured.value
+
+    def fail_loader(*_args, **_kwargs):
+        raise loader_error
+
+    creative_asset_services.load_release_taxonomy.cache_clear()
+    monkeypatch.setattr(
+        creative_asset_services,
+        loader_name,
+        fail_loader,
+    )
+    client = make_production_dependency_client()
+    try:
+        responses = tuple(client.get(path) for path in (
+            "/api/assets/inventory",
+            "/api/assets/style-templates",
+            f"/api/assets/style-templates/{STYLE_ID}",
+            "/api/corpus/discovery",
+        ))
+    finally:
+        creative_asset_services.load_release_taxonomy.cache_clear()
+
+    assert [response.status_code for response in responses] == [503] * 4
+    for response in responses:
+        body = response.json()
+        assert set(body) == {"code", "message", "correlationId"}
+        assert body["code"] == "AssetCatalogNotReady"
+        assert body["message"] == AssetCatalogNotReady.message
+        rendered = json.dumps(body, ensure_ascii=False)
+        assert str(loader_error) not in rendered
+        assert str(tmp_path) not in rendered
+        _assert_no_private_keys(body)
+
+
 def test_invalid_category_and_missing_engine_option_are_422():
     client, _ = make_client()
 
@@ -429,6 +498,51 @@ def test_recommendation_requires_and_forwards_explicit_typed_eligibility_scope()
     )
     assert service.recommendation_scope.prohibited_directions == ("slow_burn",)
     assert service.recommendation_scope.status == "active"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("genres", "fantasy"),
+        ("channels", "male_frequency"),
+        ("creationStages", "drafting"),
+        ("writingPurposes", "style_direction"),
+        ("prohibitedDirections", "slow_burn"),
+    ),
+)
+def test_recommendation_duplicate_typed_dimensions_are_safe_422_before_service(
+    field,
+    value,
+):
+    client, service = make_client()
+    params = [
+        ("engineOptionId", "engine-1"),
+        ("genres", "fantasy"),
+        ("channels", "male_frequency"),
+        ("creationStages", "drafting"),
+        ("writingPurposes", "style_direction"),
+        ("status", "active"),
+    ]
+    if field == "prohibitedDirections":
+        params.extend(((field, value), (field, value)))
+    else:
+        params.append((field, value))
+
+    response = client.get(
+        "/api/projects/project-1/asset-recommendations",
+        params=params,
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"detail", "correlationId"}
+    assert len(body["detail"]) == 1
+    error = body["detail"][0]
+    assert error["type"] == "value_error"
+    assert error["loc"] == ["query", field]
+    assert error["msg"] == "Value error, query dimension values must be unique"
+    assert service.calls == []
+    _assert_no_private_keys(body)
 
 
 @pytest.mark.parametrize(

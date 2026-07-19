@@ -12,12 +12,13 @@ from backend.database import transaction
 from backend.domain.asset_eligibility import (
     AssetEligibilityEntry,
     AssetEligibilityPackage,
+    AssetEligibilityPackageError,
     AssetEligibilityScope,
     CreationStage,
     Genre,
     load_asset_eligibility_package,
 )
-from backend.domain.assets import AssetCategory, load_asset_package
+from backend.domain.assets import AssetCategory, AssetPackageError, load_asset_package
 from backend.http_errors import AssetCatalogNotReady
 from backend.repositories.assets import AssetRepository
 from backend.repositories.corpus import CorpusRepository
@@ -308,16 +309,19 @@ class CreativeAssetService:
 
 
 def build_creative_asset_service() -> CreativeAssetService:
-    return CreativeAssetService(
-        AssetReadService(AssetRepository(), transaction_factory=transaction),
-        taxonomy=load_release_taxonomy(),
-        corpus_service=CorpusImportService(
-            CorpusRepository(),
-            corpus_root=CORPUS_ROOT,
-            transaction_factory=transaction,
-            connection_factory=transaction,
-        ),
-    )
+    try:
+        return CreativeAssetService(
+            AssetReadService(AssetRepository(), transaction_factory=transaction),
+            taxonomy=load_release_taxonomy(),
+            corpus_service=CorpusImportService(
+                CorpusRepository(),
+                corpus_root=CORPUS_ROOT,
+                transaction_factory=transaction,
+                connection_factory=transaction,
+            ),
+        )
+    except (AssetEligibilityPackageError, AssetPackageError):
+        raise AssetCatalogNotReady() from None
 
 
 __all__ = (
