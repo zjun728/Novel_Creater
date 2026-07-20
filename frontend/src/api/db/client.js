@@ -88,6 +88,9 @@ const CONTRACT_DRAFT_FIELDS = [
 ]
 
 const seedPayload = value => pickDefined(value, SEED_FIELDS)
+const seedProvenance = value => pickDefined(value, [
+  'kind', 'snapshotIds', 'analysisId', 'inspirationAttemptId', 'publicNotes',
+])
 const bindingEntry = value => pickDefined(value, ['taskKey', 'providerId'])
 const assetRef = value => pickDefined(value, ['id', 'revision', 'contentHash'])
 const corpusRef = value => pickDefined(value, [
@@ -195,9 +198,15 @@ export const api = {
 
   seeds: {
     list: projectId => get(`/projects/${segment(projectId)}/seeds`),
-    create: (projectId, payload) => post(
+    create: (projectId, payload, options = {}) => post(
       `/projects/${segment(projectId)}/seeds`,
-      { payload: seedPayload(payload) },
+      pickDefined({
+        payload: seedPayload(payload),
+        provenance: options.provenance
+          ? seedProvenance(options.provenance)
+          : undefined,
+        idempotencyKey: options.idempotencyKey,
+      }, ['payload', 'provenance', 'idempotencyKey']),
     ),
     update: (projectId, seedId, data) => put(
       `/projects/${segment(projectId)}/seeds/${segment(seedId)}`,
@@ -214,6 +223,14 @@ export const api = {
         expectedSelectionRevision: data.expectedSelectionRevision,
       },
     ),
+    archive: (projectId, seedId, data) => post(
+      `/projects/${segment(projectId)}/seeds/${segment(seedId)}/archive`,
+      pickDefined(data, ['expectedSeedRevision', 'expectedSelectionRevision']),
+    ),
+    restore: (projectId, seedId, data) => post(
+      `/projects/${segment(projectId)}/seeds/${segment(seedId)}/restore`,
+      pickDefined(data, ['expectedSeedRevision', 'expectedSelectionRevision']),
+    ),
     selected: projectId => get(`/projects/${segment(projectId)}/selected-seed`),
     select: (projectId, data) => put(
       `/projects/${segment(projectId)}/selected-seed`,
@@ -222,6 +239,62 @@ export const api = {
         expectedSeedRevision: data.expectedSeedRevision,
         expectedSelectionRevision: data.expectedSelectionRevision,
       },
+    ),
+    inspiration: (projectId, data) => post(
+      `/projects/${segment(projectId)}/seed-inspiration`,
+      {
+        transcript: Array.isArray(data.transcript)
+          ? data.transcript.map(turn => pickDefined(turn, ['role', 'content']))
+          : data.transcript,
+        snapshotIds: Array.isArray(data.snapshotIds)
+          ? [...data.snapshotIds]
+          : data.snapshotIds,
+        analysisId: data.analysisId,
+        idempotencyKey: data.idempotencyKey,
+      },
+    ),
+  },
+
+  marketSources: {
+    list: () => get('/market-sources'),
+    get: sourceId => get(`/market-sources/${segment(sourceId)}`),
+    snapshots: (sourceId) => get(
+      `/market-sources/${segment(sourceId)}/snapshots`,
+    ),
+    snapshot: (sourceId, snapshotId) => get(
+      `/market-sources/${segment(sourceId)}/snapshots/${segment(snapshotId)}`,
+    ),
+    manualImport: (sourceId, data) => post(
+      `/market-sources/${segment(sourceId)}/manual-import`,
+      {
+        idempotencyKey: data.idempotencyKey,
+        snapshot: data.snapshot,
+      },
+    ),
+    refresh: (sourceId, idempotencyKey) => post(
+      `/market-sources/${segment(sourceId)}/refresh`,
+      { idempotencyKey },
+    ),
+    schedule: (sourceId, data) => put(
+      `/market-sources/${segment(sourceId)}/schedule`,
+      pickDefined(data, [
+        'expectedRevision', 'enabled', 'intervalMinutes', 'idempotencyKey',
+      ]),
+    ),
+  },
+
+  marketAnalyses: {
+    create: (projectId, data) => post(
+      `/projects/${segment(projectId)}/market-analyses`,
+      {
+        snapshotIds: Array.isArray(data.snapshotIds)
+          ? [...data.snapshotIds]
+          : data.snapshotIds,
+        idempotencyKey: data.idempotencyKey,
+      },
+    ),
+    get: (projectId, analysisId) => get(
+      `/projects/${segment(projectId)}/market-analyses/${segment(analysisId)}`,
     ),
   },
 

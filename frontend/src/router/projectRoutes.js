@@ -1,6 +1,7 @@
 const ProjectLibraryView = () => import('../views/ProjectLibraryView.vue')
 const ArchivedProjectsView = () => import('../views/ArchivedProjectsView.vue')
 const ProjectOverviewView = () => import('../views/ProjectOverviewView.vue')
+const ProjectSeedsView = () => import('../views/ProjectSeedsView.vue')
 const StyleLibraryView = () => import('../views/assets/StyleLibraryView.vue')
 const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryView.vue')
 const CorpusLibraryView = () => import('../views/assets/CorpusLibraryView.vue')
@@ -52,6 +53,10 @@ export function projectOverviewPath(projectId) {
   return `/projects/${segment(projectId)}/overview`
 }
 
+export function projectSeedsPath(projectId) {
+  return `/projects/${segment(projectId)}/seeds`
+}
+
 export function projectModelSettingsPath(projectId) {
   return `/projects/${segment(projectId)}/settings/models`
 }
@@ -100,6 +105,12 @@ export const projectRoutes = Object.freeze([
     path: '/projects/:projectId/settings/models',
     name: 'ProjectModelSettings',
     component: ProjectModelSettingsView,
+    props: true,
+  },
+  {
+    path: '/projects/:projectId/seeds',
+    name: 'ProjectSeeds',
+    component: ProjectSeedsView,
     props: true,
   },
   {

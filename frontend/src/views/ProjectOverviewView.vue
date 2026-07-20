@@ -4,6 +4,7 @@ import { NButton, NResult, NSkeleton } from 'naive-ui'
 import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
+import { projectSeedsPath } from '../router/projectRoutes.js'
 
 const routeProject = useRouteProject()
 </script>
@@ -45,6 +46,14 @@ const routeProject = useRouteProject()
       <p class="eyebrow">PROJECT OVERVIEW</p>
       <h1 id="project-overview-title">{{ routeProject.project.value.title }}</h1>
       <p>项目上下文已从当前网址恢复。创作准备和写作模块将在后续纵向闭环中逐步接入。</p>
+      <router-link
+        class="overview-next-action"
+        :to="projectSeedsPath(routeProject.project.value.id)"
+      >
+        <span>下一步 · 确定本书方向</span>
+        <strong>进入创作种子工作区</strong>
+        <small>查看市场证据、讨论灵感，并从多个候选中选定唯一种子。</small>
+      </router-link>
     </section>
   </main>
 </template>
@@ -83,5 +92,39 @@ h1 {
   margin: 18px 0 0;
   color: #766c60;
   line-height: 1.8;
+}
+.overview-next-action {
+  display: grid;
+  width: min(560px, 100%);
+  gap: 6px;
+  margin-top: 30px;
+  padding: 20px 22px;
+  border: 1px solid #cdbda5;
+  border-radius: 9px;
+  color: #302a23;
+  background: linear-gradient(110deg, #fffaf0, #f4ead9);
+  text-decoration: none;
+  transition: border-color .15s ease, transform .15s ease;
+}
+.overview-next-action:hover {
+  border-color: #9a3f32;
+  transform: translateY(-2px);
+}
+.overview-next-action span {
+  color: #9a3f32;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .15em;
+}
+.overview-next-action strong {
+  font-family: Georgia, 'Noto Serif SC', serif;
+  font-size: 20px;
+}
+.overview-next-action small {
+  color: #766c60;
+  line-height: 1.7;
+}
+@media (prefers-reduced-motion: reduce) {
+  .overview-next-action { transition: none; }
 }
 </style>

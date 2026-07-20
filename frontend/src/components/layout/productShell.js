@@ -13,6 +13,7 @@ import {
   projectLibraryPath,
   projectModelSettingsPath,
   projectOverviewPath,
+  projectSeedsPath,
   providerSettingsPath,
   styleLibraryPath,
 } from '../../router/projectRoutes.js'
@@ -70,6 +71,9 @@ function routeTitle(route, project) {
   if (name === 'ProjectOverview') {
     return isArchived(project) ? '已归档项目' : '项目概览'
   }
+  if (name === 'ProjectSeeds') {
+    return isArchived(project) ? '已归档种子档案' : '创作种子'
+  }
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
@@ -124,6 +128,13 @@ export function createProductShellModel({
                 path: overviewPath,
                 mark: '概',
                 selected: routeName(route) === 'ProjectOverview',
+              },
+              {
+                key: 'seeds',
+                label: '创作种子',
+                path: projectSeedsPath(project.id),
+                mark: '种',
+                selected: routeName(route) === 'ProjectSeeds',
               },
               {
                 key: 'models',

@@ -121,8 +121,26 @@ test('active and archived project contexts have different module surfaces', asyn
     active.projectContext.modules.map(item => [item.label, item.path, item.selected]),
     [
       ['项目概览', '/projects/project%201/overview', true],
+      ['创作种子', '/projects/project%201/seeds', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
     ],
+  )
+  const seeds = createProductShellModel({
+    route: route(
+      'ProjectSeeds',
+      '/projects/project%201/seeds',
+      { projectId: 'project 1' },
+    ),
+    project: {
+      id: 'project 1',
+      title: '典镇山河',
+      archivedAt: null,
+    },
+  })
+  assert.equal(seeds.routeTitle, '创作种子')
+  assert.equal(
+    seeds.projectContext.modules.find(item => item.key === 'seeds').selected,
+    true,
   )
   assert.deepEqual(
     active.breadcrumbs.map(item => [item.label, item.path]),
@@ -212,6 +230,11 @@ const shellRoutes = [
   {
     path: '/projects/:projectId/overview',
     name: 'ProjectOverview',
+    component: Page,
+  },
+  {
+    path: '/projects/:projectId/seeds',
+    name: 'ProjectSeeds',
     component: Page,
   },
   {
@@ -415,6 +438,11 @@ test('the real project overview consumes shell hydration without a duplicate rea
           component: ActualProjectOverview,
         },
         {
+          path: '/projects/:projectId/seeds',
+          name: 'ProjectSeeds',
+          component: Page,
+        },
+        {
           path: '/projects/:projectId/settings/models',
           name: 'ProjectModelSettings',
           component: Page,
@@ -463,6 +491,11 @@ test('shared shell hydration preserves the explicit missing-project route state'
           path: '/projects/:projectId/overview',
           name: 'ProjectOverview',
           component: ActualProjectOverview,
+        },
+        {
+          path: '/projects/:projectId/seeds',
+          name: 'ProjectSeeds',
+          component: Page,
         },
         {
           path: '/projects/:projectId/settings/models',
