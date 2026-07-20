@@ -40,8 +40,11 @@ APPROVED_FORMAL_ROUTES = {
     ("PUT", "/api/projects/{pid}/bindings"),
     ("GET", "/api/projects/{pid}/seeds"),
     ("POST", "/api/projects/{pid}/seeds"),
+    ("POST", "/api/projects/{pid}/seed-inspiration"),
     ("PUT", "/api/projects/{pid}/seeds/{seed_id}"),
     ("DELETE", "/api/projects/{pid}/seeds/{seed_id}"),
+    ("POST", "/api/projects/{pid}/seeds/{seed_id}/archive"),
+    ("POST", "/api/projects/{pid}/seeds/{seed_id}/restore"),
     ("GET", "/api/projects/{pid}/selected-seed"),
     ("PUT", "/api/projects/{pid}/selected-seed"),
     ("POST", "/api/projects/{pid}/story-engine-batches"),
@@ -87,6 +90,8 @@ APPROVED_FORMAL_ROUTES = {
     ("POST", "/api/market-sources/{source_id}/manual-import"),
     ("POST", "/api/market-sources/{source_id}/refresh"),
     ("PUT", "/api/market-sources/{source_id}/schedule"),
+    ("POST", "/api/projects/{project_id}/market-analyses"),
+    ("GET", "/api/projects/{project_id}/market-analyses/{analysis_id}"),
     ("GET", "/api/projects/{project_id}/writer-core/state"),
     ("GET", "/api/projects/{project_id}/canon/head"),
     ("GET", "/api/projects/{project_id}/canon/revisions"),
@@ -159,6 +164,8 @@ def test_only_approved_seed_paths_write_and_canon_remains_read_only():
     assert seed_methods == {
         "/api/projects/{pid}/seeds": {"GET", "POST"},
         "/api/projects/{pid}/seeds/{seed_id}": {"PUT", "DELETE"},
+        "/api/projects/{pid}/seeds/{seed_id}/archive": {"POST"},
+        "/api/projects/{pid}/seeds/{seed_id}/restore": {"POST"},
         "/api/projects/{pid}/selected-seed": {"GET", "PUT"},
     }
 

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 from uuid import uuid4
 
 import aiomysql
 import pytest
 
-from backend.domain.seeds import SeedPayload
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.seeds import (
+    SeedInspirationFailure,
+    SeedPayload,
+    SeedProvenanceSelection,
+)
 from backend.http_errors import ProjectBusy, SeedConflict, SeedLocked, SeedNotFound
 from backend.repositories.seeds import SeedRepository
 from backend.services.seeds import (
@@ -18,6 +24,10 @@ from backend.services.seeds import (
     RestoreSeed,
     SeedService,
     SelectSeed,
+)
+from backend.services.seed_generation import (
+    GenerateSeedInspiration,
+    SeedGenerationService,
 )
 from backend.tests.support.disposable_mysql import (
     _TestDatabaseSession,
@@ -765,3 +775,638 @@ async def test_explicit_selection_refreshes_selected_at_while_edit_preserves_it(
         "selected_at": 200,
         "updated_at": 300,
     }
+
+
+@pytest.mark.asyncio
+async def test_explicit_ai_chat_save_freezes_provenance_and_replays_exactly_once(
+    disposable_mysql,
+):
+    project_id = "p1"
+    source_id = str(uuid4())
+    policy_id = str(uuid4())
+    snapshot_id = str(uuid4())
+    manifest_id = str(uuid4())
+    binding_id = str(uuid4())
+    analysis_id = str(uuid4())
+    attempt_id = str(uuid4())
+    await insert_project(disposable_mysql.session, project_id)
+    await disposable_mysql.session.execute(
+        """INSERT INTO market_sources
+           (id,stable_key,adapter_key,display_name,public_config_json,status,
+            created_at,updated_at)
+           VALUES (%s,'test-source','manual_snapshot','Test','{}','active',1,1)""",
+        (source_id,),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO market_source_policy_revisions
+           (id,source_id,revision,policy_status,policy_version,checked_at,
+            evidence_url,evidence_hash,allowed_origins_json,path_prefixes_json,
+            enabled,interval_minutes,next_run_at,content_hash,created_at)
+           VALUES (%s,%s,1,'manual_only','test-v1',1,
+                   'https://www.qidian.com/rank/newsign/',%s,'[]','[]',
+                   0,360,NULL,%s,1)""",
+        (policy_id, source_id, "1" * 64, "2" * 64),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO market_snapshots
+           (id,source_id,captured_at,platform,ranking_name,category,source_url,
+            content_hash,entry_count,created_at)
+           VALUES (%s,%s,10,'qidian','newsign','male',
+                   'https://www.qidian.com/rank/newsign/',%s,1,10)""",
+        (snapshot_id, source_id, "3" * 64),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO market_snapshot_manifests
+           (id,source_id,snapshot_id,snapshot_hash,policy_revision_id,
+            policy_revision,policy_hash,adapter_version,manifest_json,
+            manifest_hash,created_at)
+           VALUES (%s,%s,%s,%s,%s,1,%s,'manual-v1','{}',%s,10)""",
+        (
+            manifest_id,
+            source_id,
+            snapshot_id,
+            "3" * 64,
+            policy_id,
+            "2" * 64,
+            "4" * 64,
+        ),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_model_binding_revisions
+           (id,project_id,revision,content_hash,source_project_id,created_at)
+           VALUES (%s,%s,1,%s,NULL,2)""",
+        (binding_id, project_id, "5" * 64),
+    )
+    analysis_manifest = (
+        '{"binding":{"hash":"' + "5" * 64 + '","revisionId":"' + binding_id
+        + '"},"promptPolicyVersion":"market-analysis-policy-v1",'
+        + '"snapshots":[{"hash":"' + "3" * 64 + '","id":"' + snapshot_id
+        + '","manifestHash":"' + "4" * 64 + '","sourceId":"' + source_id
+        + '"}]}'
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO market_analyses
+           (id,project_id,binding_revision_id,binding_hash,input_manifest_json,
+            input_manifest_hash,policy_version,idempotency_key,request_hash,
+            status,analysis_json,result_hash,public_error_code,created_at,
+            completed_at)
+           VALUES (%s,%s,%s,%s,%s,%s,'market-analysis-policy-v1',%s,%s,
+                   'succeeded','{}',%s,NULL,20,21)""",
+        (
+            analysis_id,
+            project_id,
+            binding_id,
+            "5" * 64,
+            analysis_manifest,
+            "6" * 64,
+            "a" * 64,
+            "b" * 64,
+            "7" * 64,
+        ),
+    )
+    inspiration_manifest = (
+        '{"analysis":{"hash":"' + "7" * 64 + '","id":"' + analysis_id
+        + '"},"binding":{"hash":"' + "5" * 64 + '","revisionId":"' + binding_id
+        + '"},"snapshot":{"hash":"' + "3" * 64 + '","id":"' + snapshot_id
+        + '","manifestHash":"' + "4" * 64 + '"},"transcriptHash":"' + "8" * 64
+        + '"}'
+    )
+    assistant = (
+        '{"content":"以永乐大典为冲突发动机。","role":"assistant"}'
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO seed_inspiration_attempts
+           (id,project_id,selection_revision,market_source_id,
+            market_snapshot_id,market_snapshot_hash,market_analysis_id,
+            market_analysis_hash,binding_revision_id,binding_hash,
+            input_manifest_json,input_manifest_hash,status,result_json,
+            result_hash,public_error_code,created_at,completed_at)
+           VALUES (%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s,'succeeded',
+                   %s,%s,NULL,30,31)""",
+        (
+            attempt_id,
+            project_id,
+            source_id,
+            snapshot_id,
+            "3" * 64,
+            analysis_id,
+            "7" * 64,
+            binding_id,
+            "5" * 64,
+            inspiration_manifest,
+            "8" * 64,
+            assistant,
+            "9" * 64,
+        ),
+    )
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    command = CreateSeed(
+        project_id=project_id,
+        payload=payload("显式保存"),
+        provenance=SeedProvenanceSelection(
+            kind="ai_chat",
+            snapshotIds=(snapshot_id,),
+            analysisId=analysis_id,
+            inspirationAttemptId=attempt_id,
+            publicNotes=("作者已编辑最终九字段。",),
+        ),
+        idempotency_key="s" * 64,
+    )
+
+    first = await service.create(command)
+    replay = await service.create(command)
+
+    assert replay == first
+    assert first.content_hash == canonical_hash(payload("显式保存"))
+    assert first.content_hash != first.provenance.provenance_hash
+    assert first.provenance.kind == "ai_chat"
+    assert first.provenance.snapshots[0].hash == "3" * 64
+    assert first.provenance.analysis.hash == "7" * 64
+    assert first.provenance.inspiration_attempt.result_hash == "9" * 64
+    assert await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM creative_seed_revisions WHERE project_id=%s",
+        (project_id,),
+    ) == {"count": 1}
+
+
+@pytest.mark.asyncio
+async def test_plural_inspiration_attempt_is_transient_and_real_repository_replays_once(
+    disposable_mysql,
+):
+    project_id = "p1"
+    provider_id = str(uuid4())
+    binding_id = str(uuid4())
+    await insert_project(disposable_mysql.session, project_id)
+    await disposable_mysql.session.execute(
+        """INSERT INTO provider_profiles
+           (id,name,provider_type,model_name,base_url,api_key,enabled,sort_order,
+            stream,max_context_tokens,max_output_tokens,temperature,top_p,
+            supports_json,supports_streaming,notes,thinking,lifecycle_status,
+            revision,deleted_at,created_at,updated_at)
+           VALUES (%s,'Seed Test','openai-compatible','deepseek-v4-flash',
+                   'https://provider.invalid/v1','PRIVATE_TEST_KEY',1,0,0,
+                   64000,1600,0.700,0.950,1,1,'','{}','active',1,NULL,1,1)""",
+        (provider_id,),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_model_binding_revisions
+           (id,project_id,revision,content_hash,source_project_id,created_at)
+           VALUES (%s,%s,1,%s,NULL,2)""",
+        (binding_id, project_id, "5" * 64),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_model_binding_items
+           (binding_revision_id,task_key,resolution_status,provider_id,
+            provider_name_snapshot,model_name_snapshot,item_hash)
+           VALUES (%s,'seed','bound',%s,'Seed Test','deepseek-v4-flash',%s)""",
+        (binding_id, provider_id, "6" * 64),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_model_binding_heads
+           (project_id,revision,binding_revision_id,content_hash,updated_at)
+           VALUES (%s,1,%s,%s,2)""",
+        (project_id, binding_id, "5" * 64),
+    )
+    snapshot_rows = []
+    for index, (platform, source_url) in enumerate(
+        (
+            ("qidian", "https://www.qidian.com/rank/newsign/"),
+            ("qq_reading", "https://book.qq.com/book-rank"),
+        ),
+        1,
+    ):
+        source_id = str(uuid4())
+        policy_id = str(uuid4())
+        snapshot_id = str(uuid4())
+        snapshot_hash = str(index) * 64
+        manifest_hash = chr(96 + index) * 64
+        await disposable_mysql.session.execute(
+            """INSERT INTO market_sources
+               (id,stable_key,adapter_key,display_name,public_config_json,status,
+                created_at,updated_at)
+               VALUES (%s,%s,'manual_snapshot',%s,'{}','active',1,1)""",
+            (source_id, f"integration-{index}", f"Source {index}"),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO market_source_policy_revisions
+               (id,source_id,revision,policy_status,policy_version,checked_at,
+                evidence_url,evidence_hash,allowed_origins_json,
+                path_prefixes_json,enabled,interval_minutes,next_run_at,
+                content_hash,created_at)
+               VALUES (%s,%s,1,'manual_only','test-v1',1,%s,%s,'[]','[]',
+                       0,360,NULL,%s,1)""",
+            (policy_id, source_id, source_url, "7" * 64, "8" * 64),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO market_snapshots
+               (id,source_id,captured_at,platform,ranking_name,category,
+                source_url,content_hash,entry_count,created_at)
+               VALUES (%s,%s,%s,%s,'rank','male',%s,%s,1,%s)""",
+            (
+                snapshot_id,
+                source_id,
+                10 + index,
+                platform,
+                source_url,
+                snapshot_hash,
+                10 + index,
+            ),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO market_snapshot_manifests
+               (id,source_id,snapshot_id,snapshot_hash,policy_revision_id,
+                policy_revision,policy_hash,adapter_version,manifest_json,
+                manifest_hash,created_at)
+               VALUES (%s,%s,%s,%s,%s,1,%s,'manual-v1','{}',%s,%s)""",
+            (
+                str(uuid4()),
+                source_id,
+                snapshot_id,
+                snapshot_hash,
+                policy_id,
+                "8" * 64,
+                manifest_hash,
+                10 + index,
+            ),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO market_snapshot_entries
+               (id,source_id,snapshot_id,rank_number,title,author,category,
+                work_url,public_metrics_json,content_hash,created_at)
+               VALUES (%s,%s,%s,1,%s,%s,'玄幻',%s,'{}',%s,%s)""",
+            (
+                str(uuid4()),
+                source_id,
+                snapshot_id,
+                f"公开作品{index}",
+                f"公开作者{index}",
+                f"https://example.com/book/{index}",
+                "9" * 64,
+                10 + index,
+            ),
+        )
+        snapshot_rows.append(
+            {
+                "id": snapshot_id,
+                "sourceId": source_id,
+                "hash": snapshot_hash,
+                "manifestHash": manifest_hash,
+            }
+        )
+    analysis_id = str(uuid4())
+    analysis_manifest = {
+        "snapshots": snapshot_rows,
+        "binding": {"revisionId": binding_id, "hash": "5" * 64},
+        "promptPolicyVersion": "market-analysis-policy-v1",
+    }
+    snapshot_ids = tuple(item["id"] for item in snapshot_rows)
+    analysis_json = {
+        "currentHeat": [
+            {
+                "text": "两份公开榜单均出现穿越升级题材。",
+                "snapshotIds": list(snapshot_ids),
+                "inference": False,
+            }
+        ],
+        "growthDirections": [],
+        "crowding": [],
+        "opportunities": [],
+        "uncertainties": [],
+        "sourceCoverage": {
+            "snapshotIds": list(snapshot_ids),
+            "summary": "两份冻结公开榜单。",
+        },
+    }
+    await disposable_mysql.session.execute(
+        """INSERT INTO market_analyses
+           (id,project_id,binding_revision_id,binding_hash,input_manifest_json,
+            input_manifest_hash,policy_version,idempotency_key,request_hash,
+            status,analysis_json,result_hash,public_error_code,created_at,
+            completed_at)
+           VALUES (%s,%s,%s,%s,%s,%s,'market-analysis-policy-v1',%s,%s,
+                   'succeeded',%s,%s,NULL,20,21)""",
+        (
+            analysis_id,
+            project_id,
+            binding_id,
+            "5" * 64,
+            canonical_json(analysis_manifest),
+            canonical_hash(analysis_manifest),
+            "a" * 64,
+            "b" * 64,
+            canonical_json(analysis_json),
+            "c" * 64,
+        ),
+    )
+
+    class FakeGateway:
+        calls = 0
+
+        async def generate(self, **_values):
+            self.calls += 1
+            return "把知识优势拆成三次递进兑现，并让群像角色争夺解释权。"
+
+    gateway = FakeGateway()
+    ids = iter((str(uuid4()), str(uuid4())))
+    service = SeedGenerationService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+        provider_gateway=gateway,
+        id_factory=lambda: next(ids),
+        clock=lambda: 100,
+    )
+    command = GenerateSeedInspiration(
+        project_id=project_id,
+        transcript=({"role": "user", "content": "写一个明代穿越群像故事。"},),
+        snapshot_ids=snapshot_ids,
+        analysis_id=analysis_id,
+        idempotency_key="i" * 64,
+    )
+
+    first = await service.generate(command)
+    replay = await service.generate(command)
+
+    assert first == replay
+    assert first.status == "succeeded"
+    assert gateway.calls == 1
+    assert await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM creative_seeds WHERE project_id=%s",
+        (project_id,),
+    ) == {"count": 0}
+    stored = await disposable_mysql.session.fetchone(
+        """SELECT input_manifest_json,result_json
+             FROM seed_inspiration_attempts WHERE project_id=%s""",
+        (project_id,),
+    )
+    manifest = stored["input_manifest_json"]
+    if isinstance(manifest, str):
+        manifest = json.loads(manifest)
+    assert [item["id"] for item in manifest["snapshots"]] == list(snapshot_ids)
+    assert "写一个明代穿越群像故事" not in canonical_json(manifest)
+    result_json = stored["result_json"]
+    if isinstance(result_json, str):
+        result_json = json.loads(result_json)
+    assert result_json == {
+        "content": "把知识优势拆成三次递进兑现，并让群像角色争夺解释权。",
+        "role": "assistant",
+    }
+
+    class BlockingReservationRepository(SeedRepository):
+        def __init__(self):
+            self.reservation_started = asyncio.Event()
+            self.release_reservation = asyncio.Event()
+            self.follower_lock_started = asyncio.Event()
+            self.lock_calls = 0
+
+        async def lock_inspiration_project(self, session, requested_project_id):
+            self.lock_calls += 1
+            if self.lock_calls == 2:
+                self.follower_lock_started.set()
+            return await super().lock_inspiration_project(
+                session,
+                requested_project_id,
+            )
+
+        async def insert_inspiration_request(self, session, row):
+            await super().insert_inspiration_request(session, row)
+            self.reservation_started.set()
+            await self.release_reservation.wait()
+
+    class BlockingGateway:
+        def __init__(self):
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def generate(self, **_values):
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            return "把知识优势拆成三次递进兑现，并让群像角色争夺解释权。"
+
+    repository = BlockingReservationRepository()
+    concurrent_gateway = BlockingGateway()
+    concurrent_ids = iter((str(uuid4()), str(uuid4())))
+    concurrent_service = SeedGenerationService(
+        repository,
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+        provider_gateway=concurrent_gateway,
+        id_factory=lambda: next(concurrent_ids),
+        clock=lambda: 200,
+    )
+    concurrent_command = command.model_copy(
+        update={"idempotency_key": "j" * 64}
+    )
+    owner = asyncio.create_task(concurrent_service.generate(concurrent_command))
+    follower = None
+    try:
+        await asyncio.wait_for(repository.reservation_started.wait(), timeout=2)
+        follower = asyncio.create_task(
+            concurrent_service.generate(concurrent_command)
+        )
+        await asyncio.wait_for(
+            repository.follower_lock_started.wait(),
+            timeout=2,
+        )
+        with pytest.raises(SeedInspirationFailure) as in_progress:
+            await asyncio.wait_for(follower, timeout=2)
+        assert in_progress.value.code == "SEED_INSPIRATION_IN_PROGRESS"
+
+        repository.release_reservation.set()
+        await asyncio.wait_for(concurrent_gateway.started.wait(), timeout=2)
+        concurrent_gateway.release.set()
+        concurrent_result = await asyncio.wait_for(owner, timeout=2)
+        concurrent_replay = await asyncio.wait_for(
+            concurrent_service.generate(concurrent_command),
+            timeout=2,
+        )
+    finally:
+        repository.release_reservation.set()
+        concurrent_gateway.release.set()
+        pending = tuple(
+            task
+            for task in (owner, follower)
+            if task is not None and not task.done()
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    assert concurrent_result.status == "succeeded"
+    assert concurrent_replay == concurrent_result
+    assert concurrent_gateway.calls == 1
+
+    publication_attempt_locked = asyncio.Event()
+    release_publication = asyncio.Event()
+    create_snapshot_locked = asyncio.Event()
+    publication_attempt_id = str(uuid4())
+    publication_request_id = str(uuid4())
+    base_publication_transaction = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    publication_transaction_count = 0
+
+    class PublicationBarrierSession:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def fetchone(self, sql, args=None):
+            row = await self._inner.fetchone(sql, args)
+            normalized = " ".join(sql.split())
+            if normalized.startswith(
+                "SELECT status FROM seed_inspiration_attempts"
+            ):
+                publication_attempt_locked.set()
+                await release_publication.wait()
+            return row
+
+    @asynccontextmanager
+    async def publication_transaction():
+        nonlocal publication_transaction_count
+        publication_transaction_count += 1
+        call = publication_transaction_count
+        async with base_publication_transaction() as session:
+            yield (
+                PublicationBarrierSession(session)
+                if call == 2
+                else session
+            )
+
+    base_create_transaction = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+
+    class CreateBarrierSession:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def fetchall(self, sql, args=None):
+            rows = await self._inner.fetchall(sql, args)
+            if (
+                "FROM market_snapshots snapshot" in sql
+                and "snapshot.source_url" in sql
+            ):
+                create_snapshot_locked.set()
+            return rows
+
+    @asynccontextmanager
+    async def create_transaction():
+        async with base_create_transaction() as session:
+            yield CreateBarrierSession(session)
+
+    publication_gateway = FakeGateway()
+    publication_service = SeedGenerationService(
+        SeedRepository(),
+        transaction_factory=publication_transaction,
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+        provider_gateway=publication_gateway,
+        id_factory=iter(
+            (publication_request_id, publication_attempt_id)
+        ).__next__,
+        clock=lambda: 300,
+    )
+    publication_command = command.model_copy(
+        update={"idempotency_key": "k" * 64}
+    )
+    seed_service = SeedService(
+        SeedRepository(),
+        transaction_factory=create_transaction,
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+        clock=lambda: 301,
+    )
+    create_command = CreateSeed(
+        project_id=project_id,
+        payload=payload("并发显式保存"),
+        provenance=SeedProvenanceSelection(
+            kind="ai_chat",
+            snapshotIds=snapshot_ids,
+            analysisId=analysis_id,
+            inspirationAttemptId=publication_attempt_id,
+            publicNotes=("作者已编辑最终九字段。",),
+        ),
+        idempotency_key="t" * 64,
+    )
+    publication_task = asyncio.create_task(
+        publication_service.generate(publication_command)
+    )
+    create_task = None
+    snapshot_locked_before_release = False
+    try:
+        await asyncio.wait_for(publication_attempt_locked.wait(), timeout=2)
+        create_task = asyncio.create_task(seed_service.create(create_command))
+        try:
+            await asyncio.wait_for(
+                create_snapshot_locked.wait(),
+                timeout=0.25,
+            )
+            snapshot_locked_before_release = True
+        except TimeoutError:
+            pass
+        release_publication.set()
+        publication_result, created_seed = await asyncio.wait_for(
+            asyncio.gather(publication_task, create_task),
+            timeout=4,
+        )
+    finally:
+        release_publication.set()
+        pending = tuple(
+            item
+            for item in (publication_task, create_task)
+            if item is not None and not item.done()
+        )
+        for item in pending:
+            item.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    assert snapshot_locked_before_release is False
+    assert publication_result.status == "succeeded"
+    assert created_seed.provenance.inspiration_attempt.id == (
+        publication_attempt_id
+    )
+    publication_replay = await publication_service.generate(
+        publication_command
+    )
+    assert publication_replay == publication_result
+    assert publication_gateway.calls == 1
+    assert await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count
+             FROM seed_inspiration_requests
+            WHERE project_id=%s AND status='reserved'""",
+        (project_id,),
+    ) == {"count": 0}
+    assert await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count
+             FROM seed_inspiration_attempts
+            WHERE project_id=%s AND status='running'""",
+        (project_id,),
+    ) == {"count": 0}

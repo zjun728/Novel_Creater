@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from copy import deepcopy
+import importlib
+import json
 
 import pytest
 
@@ -46,6 +48,47 @@ class MemorySeedRepository:
         self.contracts: dict[str, dict] = {}
         self.events: list[str] = []
         self.project_lock_error: BaseException | None = None
+        self.provenance_inputs = {
+            "snapshots": (
+                {
+                    "id": "snapshot-1",
+                    "source_id": "source-1",
+                    "content_hash": "a" * 64,
+                    "manifest_hash": "b" * 64,
+                    "source_url": "https://www.qidian.com/rank/newsign/",
+                    "captured_at": 1_721_000_000_000,
+                },
+            ),
+            "analysis": {
+                "id": "analysis-1",
+                "result_hash": "c" * 64,
+                "status": "succeeded",
+                "input_manifest_json": {
+                    "snapshots": [
+                        {
+                            "id": "snapshot-1",
+                            "hash": "a" * 64,
+                            "manifestHash": "b" * 64,
+                            "sourceId": "source-1",
+                        }
+                    ]
+                },
+            },
+            "attempt": {
+                "id": "attempt-1",
+                "result_hash": "d" * 64,
+                "status": "succeeded",
+                "market_snapshot_id": "snapshot-1",
+                "market_snapshot_hash": "a" * 64,
+                "market_analysis_id": "analysis-1",
+                "market_analysis_hash": "c" * 64,
+                "input_manifest_json": {
+                    "snapshots": [
+                        {"id": "snapshot-1", "hash": "a" * 64}
+                    ]
+                },
+            },
+        }
 
     async def lock_project(self, session, project_id):
         self.events.append("project")
@@ -161,6 +204,10 @@ class MemorySeedRepository:
     async def read_contract_facts(self, session, project_id):
         return self.contracts.get(project_id)
 
+    async def lock_seed_provenance_inputs(self, session, project_id, selection):
+        self.events.append("provenance")
+        return deepcopy(self.provenance_inputs)
+
 
 class Harness:
     def __init__(self):
@@ -187,6 +234,97 @@ class Harness:
     @asynccontextmanager
     async def connection(self):
         yield object()
+
+
+@pytest.mark.asyncio
+async def test_ai_chat_provenance_uses_attempt_first_global_lock_order():
+    domain = importlib.import_module("backend.domain.seeds")
+
+    class RecordingSession:
+        events = []
+
+        async def fetchone(self, sql, _args):
+            if "seed_inspiration_attempts" in sql:
+                self.events.append("attempt")
+                return {
+                    "id": "attempt-1",
+                    "status": "succeeded",
+                    "result_hash": "d" * 64,
+                    "market_snapshot_id": "snapshot-1",
+                    "market_snapshot_hash": "a" * 64,
+                    "market_analysis_id": "analysis-1",
+                    "market_analysis_hash": "c" * 64,
+                    "input_manifest_json": {
+                        "snapshots": [
+                            {"id": "snapshot-1", "hash": "a" * 64}
+                        ]
+                    },
+                }
+            self.events.append("analysis")
+            return {
+                "id": "analysis-1",
+                "status": "succeeded",
+                "result_hash": "c" * 64,
+                "input_manifest_json": {
+                    "snapshots": [
+                        {
+                            "id": "snapshot-1",
+                            "hash": "a" * 64,
+                            "manifestHash": "b" * 64,
+                            "sourceId": "source-1",
+                        }
+                    ]
+                },
+            }
+
+        async def fetchall(self, _sql, _args):
+            self.events.append("snapshots")
+            return [
+                {
+                    "id": "snapshot-1",
+                    "source_id": "source-1",
+                    "source_url": "https://example.com/rank",
+                    "captured_at": 1,
+                    "content_hash": "a" * 64,
+                    "manifest_hash": "b" * 64,
+                }
+            ]
+
+    session = RecordingSession()
+    await SeedRepository().lock_seed_provenance_inputs(
+        session,
+        "p1",
+        domain.SeedProvenanceSelection(
+            kind="ai_chat",
+            snapshotIds=("snapshot-1",),
+            analysisId="analysis-1",
+            inspirationAttemptId="attempt-1",
+        ),
+    )
+
+    assert session.events == ["attempt", "snapshots", "analysis"]
+
+
+@pytest.mark.asyncio
+async def test_create_maps_retryable_provenance_deadlock_to_project_busy():
+    domain = importlib.import_module("backend.domain.seeds")
+    harness = Harness()
+
+    async def deadlocked_provenance(_session, _project_id, _selection):
+        raise RuntimeError(1213, "PRIVATE_DATABASE_DETAIL")
+
+    harness.repo.lock_seed_provenance_inputs = deadlocked_provenance
+    with pytest.raises(ProjectBusy):
+        await harness.service.create(
+            CreateSeed(
+                project_id="p1",
+                payload=payload(),
+                provenance=domain.SeedProvenanceSelection(
+                    kind="market_snapshot",
+                    snapshotIds=("snapshot-1",),
+                ),
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -225,6 +363,106 @@ async def test_create_persists_identity_revision_one_and_head_with_canonical_fac
     assert harness.repo.events == [
         "project", "selection", "identity", "revision", "head",
     ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_save_is_idempotent_and_freezes_safe_provenance_without_changing_seed_hash():
+    domain = importlib.import_module("backend.domain.seeds")
+    harness = Harness()
+    selection = domain.SeedProvenanceSelection(
+        kind="ai_chat",
+        snapshotIds=("snapshot-1",),
+        analysisId="analysis-1",
+        inspirationAttemptId="attempt-1",
+        publicNotes=("作者采用了对话方案，但重新编辑了九字段。",),
+    )
+    command = CreateSeed(
+        project_id="p1",
+        payload=payload("作者最终编辑"),
+        provenance=selection,
+        idempotency_key="s" * 64,
+    )
+
+    first = await harness.service.create(command)
+    replay = await harness.service.create(command)
+
+    assert replay == first
+    assert len(harness.repo.seeds) == 1
+    assert len(harness.repo.revisions[first.id]) == 1
+    stored = json.loads(harness.repo.revisions[first.id][0]["payload_json"])
+    assert {key for key in stored if key != "_provenance"} == set(
+        SeedPayload.model_fields
+    )
+    assert stored["_provenance"]["kind"] == "ai_chat"
+    assert stored["_provenance"]["snapshots"] == [
+        {
+            "id": "snapshot-1",
+            "hash": "a" * 64,
+            "sourceId": "source-1",
+            "sourceURL": "https://www.qidian.com/rank/newsign/",
+            "capturedAt": 1_721_000_000_000,
+        }
+    ]
+    assert stored["_provenance"]["analysis"] == {
+        "id": "analysis-1",
+        "hash": "c" * 64,
+    }
+    assert stored["_provenance"]["inspirationAttempt"] == {
+        "id": "attempt-1",
+        "resultHash": "d" * 64,
+    }
+    assert len(stored["_provenance"]["provenanceHash"]) == 64
+    assert first.payload == payload("作者最终编辑")
+    assert first.content_hash == canonical_hash(payload("作者最终编辑"))
+    assert first.provenance == replay.provenance
+
+    with pytest.raises(SeedConflict):
+        await harness.service.create(
+            command.model_copy(update={"payload": payload("同键异请求")})
+        )
+    assert len(harness.repo.seeds) == 1
+
+    edited = await harness.service.edit(
+        EditSeed(
+            project_id="p1",
+            seed_id=first.id,
+            payload=payload("后续人工编辑"),
+            expected_seed_revision=1,
+            expected_selection_revision=0,
+        )
+    )
+    assert edited.provenance == first.provenance
+    assert (
+        json.loads(harness.repo.revisions[first.id][1]["payload_json"])[
+            "_provenance"
+        ]
+        == stored["_provenance"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_save_rejects_analysis_or_attempt_outside_frozen_snapshot_manifest():
+    domain = importlib.import_module("backend.domain.seeds")
+    harness = Harness()
+    harness.repo.provenance_inputs["analysis"]["input_manifest_json"][
+        "snapshots"
+    ][0]["hash"] = "f" * 64
+    command = CreateSeed(
+        project_id="p1",
+        payload=payload("不得保存"),
+        provenance=domain.SeedProvenanceSelection(
+            kind="ai_chat",
+            snapshotIds=("snapshot-1",),
+            analysisId="analysis-1",
+            inspirationAttemptId="attempt-1",
+        ),
+        idempotency_key="m" * 64,
+    )
+
+    with pytest.raises(SeedConflict):
+        await harness.service.create(command)
+
+    assert harness.repo.seeds == {}
 
 
 @pytest.mark.asyncio

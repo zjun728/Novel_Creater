@@ -31,7 +31,7 @@ from backend.domain.assets import (
     validate_asset_package,
 )
 from backend.domain.json_contracts import canonical_hash, canonical_json
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import SeedPayload, decode_seed_revision
 from backend.http_errors import (
     AssetCatalogNotReady,
     AssetNotFound,
@@ -487,9 +487,7 @@ class AssetReadService:
         ):
             raise AssetRecommendationConflict()
         try:
-            seed = SeedPayload.model_validate(
-                _json_mapping(selected["payload_json"])
-            )
+            seed = decode_seed_revision(selected["payload_json"])[0]
             engine_payload = _json_mapping(engine["payload_json"])
             if canonical_hash(seed) != selected["seed_hash"]:
                 raise ValueError("selected seed hash mismatch")

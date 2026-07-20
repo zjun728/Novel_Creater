@@ -8,6 +8,11 @@ from pydantic import ValidationError
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import BindingItem, BindingRevision
+from backend.domain.seeds import (
+    SeedPayload,
+    build_seed_provenance,
+    seed_revision_document,
+)
 from backend.services.contracts import (
     ConfirmContracts,
     ContractConflict,
@@ -30,6 +35,23 @@ def command(harness, expected=0, **overrides):
         expected_draft_version=expected,
         draft=ContractDraftInput(**draft_values(harness.repository, **overrides)),
     )
+
+
+def add_seed_provenance(harness):
+    provenance = build_seed_provenance(
+        kind="manual",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=("作者手动保存。",),
+    )
+    payload_json = canonical_json(
+        seed_revision_document(SeedPayload(**SEED_PAYLOAD), provenance)
+    )
+    harness.repository.selected_seeds["p1"]["payload_json"] = payload_json
+    harness.repository.seed_revisions["seed-revision-1"][
+        "payload_json"
+    ] = payload_json
 
 
 def test_seed_reference_is_server_managed_and_client_input_forbids_forgery():
@@ -433,6 +455,19 @@ async def test_preview_accepts_m2c_4000_char_prompts_and_composed_style_fields()
     assert len(preview.style_contract.characterVoices[0]) == 4_000
     assert len(preview.style_contract.dialogueAndSubtext) > 8_000
     assert len(preview.style_contract.actionExplanationEnvironment) > 16_000
+
+
+@pytest.mark.asyncio
+async def test_preview_accepts_a_frozen_seed_revision_with_provenance():
+    harness = ContractHarness()
+    add_seed_provenance(harness)
+    await harness.service.save_draft(command(harness))
+
+    preview = await harness.service.preview("p1")
+
+    assert preview.contract_ready is True
+    assert preview.reasons == ()
+    assert preview.seed_ref.content_hash == canonical_hash(SEED_PAYLOAD)
 
 
 @pytest.mark.asyncio
@@ -866,6 +901,21 @@ async def test_confirm_atomically_consumes_draft_and_freezes_all_relations():
             ref.model_dump(mode="json") for ref in result.corpus_source_refs
         ],
     })
+
+
+@pytest.mark.asyncio
+async def test_confirm_accepts_a_frozen_seed_revision_with_provenance():
+    harness = ContractHarness()
+    add_seed_provenance(harness)
+    saved = await harness.service.save_draft(command(harness))
+
+    result = await harness.service.confirm(
+        confirmation(saved, key="confirm-provenance-seed")
+    )
+
+    assert result.revision == 1
+    assert result.seed_ref.content_hash == canonical_hash(SEED_PAYLOAD)
+    assert "p1" not in harness.repository.drafts
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ from pydantic import (
 from backend.domain.contracts import CreationContractPayload, StyleContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import decode_seed_revision
 from backend.domain.story_engines import StoryEngineOption
 from backend.http_errors import PublicDomainError
 
@@ -680,7 +680,7 @@ class ContractService:
             reasons.append("seed_missing")
         else:
             try:
-                seed_payload = SeedPayload(**_json_object(frozen_seed["payload_json"]))
+                seed_payload, _ = decode_seed_revision(frozen_seed["payload_json"])
             except (KeyError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
                 reasons.append("seed_invalid")
             if selected is None:
@@ -887,7 +887,7 @@ class ContractService:
     ) -> ContractPreviewResult:
         draft = saved.draft
         try:
-            seed_payload = SeedPayload(**_json_object(frozen_seed["payload_json"]))
+            seed_payload, _ = decode_seed_revision(frozen_seed["payload_json"])
             engine_payload = _strict_engine(engine["payload_json"])
             binding_items = self._binding_items(binding)
             style_payload = _strict_style_from_primary(primary, secondary)

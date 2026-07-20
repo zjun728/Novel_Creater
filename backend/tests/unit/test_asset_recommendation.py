@@ -14,6 +14,7 @@ from backend.domain.asset_eligibility import (
 )
 from backend.domain.assets import AssetInventory, AssetProvenance, load_asset_package
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.seeds import build_seed_provenance, seed_revision_document
 from backend.repositories.assets import AssetRepository
 from backend.scripts.seed_writer_assets import AssetSeedCommandError, run_cli
 from backend.http_errors import (
@@ -1546,6 +1547,43 @@ def _read_row(asset, revision_id, *, status="active"):
         "content_hash": asset.content_hash,
         "status": status,
     }
+
+
+def test_asset_recommendation_decodes_seed_payload_with_reserved_provenance():
+    seed = _seed()
+    provenance = build_seed_provenance(
+        kind="manual",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=("作者显式保存。",),
+    )
+    selected = {
+        "selection_revision": 7,
+        "seed_id": "seed-1",
+        "seed_revision_id": "revision-1",
+        "seed_hash": canonical_hash(seed),
+        "revision_hash": canonical_hash(seed),
+        "payload_json": seed_revision_document(seed, provenance),
+    }
+    option = _engine()
+    engine = {
+        "batch_status": "succeeded",
+        "selection_revision": 7,
+        "seed_id": "seed-1",
+        "seed_revision_id": "revision-1",
+        "seed_hash": canonical_hash(seed),
+        "payload_json": option,
+        "content_hash": canonical_hash(option),
+    }
+
+    decoded, decoded_option = AssetReadService._recommendation_inputs(
+        selected,
+        engine,
+    )
+
+    assert decoded == seed
+    assert decoded_option == option
 
 
 class ReadAssetRepository:

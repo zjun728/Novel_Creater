@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.provider_policy import provider_is_generation_ready
-from backend.domain.seeds import SeedPayload
+from backend.domain.seeds import SeedPayload, decode_seed_revision
 from backend.domain.story_engines import StoryEngineOption, validate_three_options
 from backend.gateways.story_engine_provider import (
     PROVIDER_TIMEOUT_SECONDS,
@@ -379,12 +379,7 @@ class StoryEngineService:
 
     @staticmethod
     def _seed_payload(seed: dict) -> SeedPayload:
-        payload = seed["payload_json"]
-        if isinstance(payload, (bytes, bytearray)):
-            payload = payload.decode("utf-8")
-        if isinstance(payload, str):
-            return SeedPayload.model_validate_json(payload)
-        return SeedPayload.model_validate(payload)
+        return decode_seed_revision(seed["payload_json"])[0]
 
     async def _reserve_provider(self, command: ReserveStoryEngineBatch):
         async with self.transaction_factory() as session:

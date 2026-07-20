@@ -6,6 +6,7 @@ from backend.repositories.project_lifecycle import (
     lock_active_project as _lock_active_project,
     read_active_project,
 )
+import json
 
 
 async def lock_active_project(session, project_id: str):
@@ -264,3 +265,399 @@ class SeedRepository:
                WHERE h.project_id=%s""",
             (project_id,),
         )
+
+    async def lock_seed_provenance_inputs(
+        self,
+        session,
+        project_id: str,
+        selection,
+    ) -> dict:
+        attempt = None
+        if selection.inspiration_attempt_id is not None:
+            attempt = await session.fetchone(
+                """SELECT id,status,result_hash,market_snapshot_id,
+                          market_snapshot_hash,market_analysis_id,
+                          market_analysis_hash,input_manifest_json
+                     FROM seed_inspiration_attempts
+                    WHERE project_id=%s AND id=%s
+                    FOR UPDATE""",
+                (project_id, selection.inspiration_attempt_id),
+            )
+        snapshot_ids = tuple(selection.snapshot_ids)
+        placeholders = ",".join("%s" for _ in snapshot_ids)
+        rows = await session.fetchall(
+            f"""SELECT snapshot.id,snapshot.source_id,snapshot.source_url,
+                       snapshot.captured_at,snapshot.content_hash,
+                       manifest.manifest_hash
+                  FROM market_snapshots snapshot
+                  JOIN market_snapshot_manifests manifest
+                    ON manifest.source_id=snapshot.source_id
+                   AND manifest.snapshot_id=snapshot.id
+                   AND manifest.snapshot_hash=snapshot.content_hash
+                 WHERE snapshot.id IN ({placeholders})
+                 FOR UPDATE""",
+            snapshot_ids,
+        )
+        by_id = {row["id"]: dict(row) for row in rows}
+        snapshots = tuple(
+            by_id[item] for item in snapshot_ids if item in by_id
+        )
+        analysis = None
+        if selection.analysis_id is not None:
+            analysis = await session.fetchone(
+                """SELECT id,status,result_hash,input_manifest_json
+                     FROM market_analyses
+                    WHERE project_id=%s AND id=%s
+                    FOR UPDATE""",
+                (project_id, selection.analysis_id),
+            )
+        return {
+            "snapshots": snapshots,
+            "analysis": analysis,
+            "attempt": attempt,
+        }
+
+    async def lock_inspiration_project(self, session, project_id: str):
+        return await _lock_active_project(session, project_id, nowait=True)
+
+    async def lock_inspiration_request(
+        self,
+        session,
+        project_id: str,
+        idempotency_key: str,
+    ):
+        return await session.fetchone(
+            """SELECT request.*,attempt.status AS attempt_status,
+                      attempt.result_json,attempt.created_at AS attempt_created_at,
+                      attempt.completed_at AS attempt_completed_at
+                 FROM seed_inspiration_requests request
+                 LEFT JOIN seed_inspiration_attempts attempt
+                   ON attempt.project_id=request.project_id
+                  AND attempt.id=request.attempt_id
+                WHERE request.project_id=%s AND request.idempotency_key=%s
+                FOR UPDATE""",
+            (project_id, idempotency_key),
+        )
+
+    async def lock_inspiration_inputs(
+        self,
+        session,
+        project_id: str,
+        snapshot_ids: tuple[str, ...],
+        analysis_id: str,
+    ) -> dict:
+        binding = await session.fetchone(
+            """SELECT head.binding_revision_id,
+                      head.content_hash AS binding_hash,
+                      item.resolution_status,item.provider_id,
+                      item.model_name_snapshot,
+                      provider.id AS current_provider_id,
+                      provider.provider_type,provider.model_name,
+                      provider.base_url,provider.api_key,provider.enabled,
+                      provider.lifecycle_status,provider.temperature,
+                      provider.max_output_tokens
+                 FROM project_model_binding_heads head
+                 JOIN project_model_binding_items item
+                   ON item.binding_revision_id=head.binding_revision_id
+                  AND item.task_key='seed'
+                 LEFT JOIN provider_profiles provider
+                   ON provider.id=item.provider_id
+                WHERE head.project_id=%s
+                FOR UPDATE""",
+            (project_id,),
+        )
+        if binding is None:
+            return {"snapshots": (), "analysis": None, "provider": None}
+        selection = await session.fetchone(
+            """SELECT selection_revision
+                 FROM project_selected_seeds
+                WHERE project_id=%s
+                FOR UPDATE""",
+            (project_id,),
+        )
+        placeholders = ",".join("%s" for _ in snapshot_ids)
+        rows = await session.fetchall(
+            f"""SELECT snapshot.id,snapshot.source_id,snapshot.captured_at,
+                       snapshot.platform,snapshot.ranking_name,
+                       snapshot.category,snapshot.source_url,
+                       snapshot.content_hash,snapshot.entry_count,
+                       manifest.manifest_hash
+                  FROM market_snapshots snapshot
+                  JOIN market_snapshot_manifests manifest
+                    ON manifest.source_id=snapshot.source_id
+                   AND manifest.snapshot_id=snapshot.id
+                   AND manifest.snapshot_hash=snapshot.content_hash
+                 WHERE snapshot.id IN ({placeholders})
+                 FOR UPDATE""",
+            snapshot_ids,
+        )
+        by_id = {row["id"]: dict(row) for row in rows}
+        snapshots = tuple(
+            by_id[item] for item in snapshot_ids if item in by_id
+        )
+        if len(snapshots) == len(snapshot_ids):
+            entries = await session.fetchall(
+                f"""SELECT snapshot_id,rank_number,title,author,category,
+                           public_metrics_json
+                      FROM market_snapshot_entries
+                     WHERE snapshot_id IN ({placeholders})
+                     ORDER BY snapshot_id,rank_number""",
+                snapshot_ids,
+            )
+            grouped = {item: [] for item in snapshot_ids}
+            for row in entries:
+                metrics = row["public_metrics_json"]
+                if isinstance(metrics, str):
+                    metrics = json.loads(metrics)
+                grouped[row["snapshot_id"]].append(
+                    {
+                        "rank": int(row["rank_number"]),
+                        "title": row["title"],
+                        "author": row["author"],
+                        "category": row["category"],
+                        "public_metrics": metrics,
+                    }
+                )
+            complete = []
+            for snapshot in snapshots:
+                snapshot_entries = tuple(grouped[snapshot["id"]])
+                if len(snapshot_entries) != int(snapshot["entry_count"]):
+                    complete = []
+                    break
+                snapshot["entries"] = snapshot_entries
+                complete.append(snapshot)
+            snapshots = tuple(complete)
+        analysis = await session.fetchone(
+            """SELECT id,status,result_hash,input_manifest_json,
+                      input_manifest_hash,analysis_json
+                 FROM market_analyses
+                WHERE project_id=%s AND id=%s
+                FOR UPDATE""",
+            (project_id, analysis_id),
+        )
+        provider = {
+            "id": binding.get("current_provider_id"),
+            "provider_type": binding.get("provider_type"),
+            "model_name": binding.get("model_name"),
+            "base_url": binding.get("base_url"),
+            "api_key": binding.get("api_key"),
+            "enabled": binding.get("enabled"),
+            "lifecycle_status": binding.get("lifecycle_status"),
+            "temperature": binding.get("temperature"),
+            "max_output_tokens": binding.get("max_output_tokens"),
+        }
+        return {
+            "selection_revision": (
+                int(selection["selection_revision"])
+                if selection is not None
+                else None
+            ),
+            "binding_revision_id": binding["binding_revision_id"],
+            "binding_hash": binding["binding_hash"],
+            "resolution_status": binding["resolution_status"],
+            "provider_id": binding["provider_id"],
+            "model_name_snapshot": binding["model_name_snapshot"],
+            "provider": provider,
+            "snapshots": snapshots,
+            "analysis": analysis,
+        }
+
+    async def insert_inspiration_request(self, session, row: dict) -> None:
+        await session.execute(
+            """INSERT INTO seed_inspiration_requests
+               (id,project_id,idempotency_key,request_hash,status,attempt_id,
+                result_hash,public_error_code,created_at,completed_at)
+               VALUES (%s,%s,%s,%s,'reserved',NULL,NULL,NULL,%s,NULL)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["idempotency_key"],
+                row["request_hash"],
+                row["created_at"],
+            ),
+        )
+
+    async def insert_inspiration_attempt(self, session, row: dict) -> None:
+        await session.execute(
+            """INSERT INTO seed_inspiration_attempts
+               (id,project_id,selection_revision,market_source_id,
+                market_snapshot_id,market_snapshot_hash,market_analysis_id,
+                market_analysis_hash,binding_revision_id,binding_hash,
+                input_manifest_json,input_manifest_hash,status,result_json,
+                result_hash,public_error_code,created_at,completed_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'running',
+                       NULL,NULL,NULL,%s,NULL)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["selection_revision"],
+                row["market_source_id"],
+                row["market_snapshot_id"],
+                row["market_snapshot_hash"],
+                row["market_analysis_id"],
+                row["market_analysis_hash"],
+                row["binding_revision_id"],
+                row["binding_hash"],
+                row["input_manifest_json"],
+                row["input_manifest_hash"],
+                row["created_at"],
+            ),
+        )
+
+    async def read_inspiration_attempt(
+        self,
+        session,
+        project_id: str,
+        attempt_id: str,
+    ):
+        return await session.fetchone(
+            """SELECT * FROM seed_inspiration_attempts
+                WHERE project_id=%s AND id=%s""",
+            (project_id, attempt_id),
+        )
+
+    async def publish_inspiration(self, session, **values) -> bool:
+        attempt = await session.fetchone(
+            """SELECT status FROM seed_inspiration_attempts
+                WHERE project_id=%s AND id=%s FOR UPDATE""",
+            (values["project_id"], values["attempt_id"]),
+        )
+        binding = await session.fetchone(
+            """SELECT binding_revision_id,content_hash
+                 FROM project_model_binding_heads
+                WHERE project_id=%s FOR UPDATE""",
+            (values["project_id"],),
+        )
+        snapshots = tuple(values["snapshots"])
+        snapshot_ids = tuple(item["id"] for item in snapshots)
+        placeholders = ",".join("%s" for _ in snapshot_ids)
+        rows = await session.fetchall(
+            f"""SELECT snapshot.id,snapshot.content_hash,
+                       manifest.manifest_hash
+                  FROM market_snapshots snapshot
+                  JOIN market_snapshot_manifests manifest
+                    ON manifest.source_id=snapshot.source_id
+                   AND manifest.snapshot_id=snapshot.id
+                   AND manifest.snapshot_hash=snapshot.content_hash
+                 WHERE snapshot.id IN ({placeholders})
+                 FOR UPDATE""",
+            snapshot_ids,
+        )
+        facts = {
+            row["id"]: (row["content_hash"], row["manifest_hash"])
+            for row in rows
+        }
+        analysis = await session.fetchone(
+            """SELECT status,result_hash,input_manifest_hash
+                 FROM market_analyses
+                WHERE project_id=%s AND id=%s FOR UPDATE""",
+            (values["project_id"], values["analysis_id"]),
+        )
+        matches = bool(
+            attempt is not None
+            and attempt["status"] == "running"
+            and binding is not None
+            and binding["binding_revision_id"] == values["binding_revision_id"]
+            and binding["content_hash"] == values["binding_hash"]
+            and len(facts) == len(snapshots)
+            and all(
+                facts.get(item["id"])
+                == (item["content_hash"], item["manifest_hash"])
+                for item in snapshots
+            )
+            and analysis is not None
+            and analysis["status"] == "succeeded"
+            and analysis["result_hash"] == values["analysis_hash"]
+            and analysis["input_manifest_hash"]
+            == values["analysis_manifest_hash"]
+        )
+        if not matches:
+            await self._terminalize_inspiration(
+                session,
+                project_id=values["project_id"],
+                idempotency_key=values["idempotency_key"],
+                attempt_id=values["attempt_id"],
+                attempt_status="failed",
+                request_status="failed",
+                public_error_code="SEED_INSPIRATION_INPUT_CHANGED",
+                completed_at=values["completed_at"],
+            )
+            return False
+        changed = await session.execute(
+            """UPDATE seed_inspiration_attempts
+                  SET status='succeeded',result_json=%s,result_hash=%s,
+                      public_error_code=NULL,completed_at=%s
+                WHERE project_id=%s AND id=%s AND status='running'""",
+            (
+                values["result_json"],
+                values["result_hash"],
+                values["completed_at"],
+                values["project_id"],
+                values["attempt_id"],
+            ),
+        )
+        if changed != 1:
+            return False
+        changed = await session.execute(
+            """UPDATE seed_inspiration_requests
+                  SET status='succeeded',attempt_id=%s,result_hash=%s,
+                      public_error_code=NULL,completed_at=%s
+                WHERE project_id=%s AND idempotency_key=%s
+                  AND status='reserved' AND request_hash=%s""",
+            (
+                values["attempt_id"],
+                values["result_hash"],
+                values["completed_at"],
+                values["project_id"],
+                values["idempotency_key"],
+                values["request_hash"],
+            ),
+        )
+        if changed != 1:
+            raise RuntimeError(
+                "seed inspiration publication must remain atomic"
+            )
+        return True
+
+    async def _terminalize_inspiration(self, session, **values) -> bool:
+        attempt_changed = await session.execute(
+            """UPDATE seed_inspiration_attempts
+                  SET status=%s,result_json=NULL,result_hash=NULL,
+                      public_error_code=%s,completed_at=%s
+                WHERE project_id=%s AND id=%s AND status='running'""",
+            (
+                values["attempt_status"],
+                values["public_error_code"],
+                values["completed_at"],
+                values["project_id"],
+                values["attempt_id"],
+            ),
+        )
+        request_attempt = (
+            values["attempt_id"]
+            if values["request_status"] == "outcome_unknown"
+            else None
+        )
+        request_changed = await session.execute(
+            """UPDATE seed_inspiration_requests
+                  SET status=%s,attempt_id=%s,result_hash=NULL,
+                      public_error_code=%s,completed_at=%s
+                WHERE project_id=%s AND idempotency_key=%s
+                  AND status='reserved'""",
+            (
+                values["request_status"],
+                request_attempt,
+                values["public_error_code"],
+                values["completed_at"],
+                values["project_id"],
+                values["idempotency_key"],
+            ),
+        )
+        if attempt_changed != 1 or request_changed != 1:
+            raise RuntimeError(
+                "seed inspiration terminal write must remain atomic"
+            )
+        return True
+
+    async def fail_inspiration(self, session, **values) -> bool:
+        return await self._terminalize_inspiration(session, **values)

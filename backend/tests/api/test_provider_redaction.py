@@ -548,7 +548,7 @@ def test_provider_validation_error_redacts_secret_aliases_at_any_depth(
     assert nested_secret not in rendered
 
 
-def test_provider_validation_error_preserves_ordinary_near_match_fields(
+def test_provider_validation_error_preserves_near_match_field_names_not_values(
     provider_api,
 ):
     client, _ = provider_api
@@ -565,7 +565,7 @@ def test_provider_validation_error_preserves_ordinary_near_match_fields(
     rendered = json.dumps(response.json(), ensure_ascii=False)
     for key, value in ordinary.items():
         assert key in rendered
-        assert value in rendered
+        assert value not in rendered
 
 
 def test_provider_secret_key_predicate_canonicalizes_only_exact_aliases():
@@ -596,7 +596,7 @@ def test_provider_secret_key_predicate_canonicalizes_only_exact_aliases():
 
 
 @pytest.mark.parametrize(
-    "structural_secret", ["type", "loc", "msg", "input", "ctx"]
+    "structural_secret", ["type", "loc", "msg", "ctx"]
 )
 def test_validation_redaction_preserves_trusted_error_schema_keys(
     provider_api, structural_secret
@@ -610,7 +610,7 @@ def test_validation_redaction_preserves_trusted_error_schema_keys(
 
     assert response.status_code == 422
     error = response.json()["detail"][0]
-    assert set(error) == {"type", "loc", "msg", "input", "ctx"}
+    assert set(error) == {"type", "loc", "msg", "ctx"}
     assert "" not in error
     assert_public_boundary(response.json())
 
@@ -740,9 +740,7 @@ def test_validation_error_collects_secrets_from_sensitive_mapping_keys(
     error = payload["detail"][0]
     assert error["loc"] == ["body", "loc:[REDACTED]"]
     assert error["msg"] == "msg:ordinary-key:[REDACTED]"
-    assert error["input"] == {
-        "input-key:[REDACTED]": "input-value:[REDACTED]",
-    }
+    assert "input" not in error
     assert error["ctx"] == {
         "ctx-key:[REDACTED]": "ctx-value:[REDACTED]",
     }

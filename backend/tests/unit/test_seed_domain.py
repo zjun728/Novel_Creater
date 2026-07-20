@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.domain import seeds as seed_domain
+from backend.domain.json_contracts import canonical_hash
 from backend.domain.seeds import SEED_FIELD_MAX_LENGTH, SeedPayload
 
 
@@ -83,6 +84,53 @@ def test_seed_payload_strips_outer_whitespace_and_is_frozen():
     assert payload.title == "典镇山河"
     with pytest.raises(ValidationError):
         payload.title = "新标题"
+
+
+def test_hash_valid_stored_provenance_rejects_secret_shaped_public_notes():
+    facts = {
+        "kind": "manual",
+        "snapshots": [],
+        "analysis": None,
+        "inspirationAttempt": None,
+        "publicNotes": ["apiKey=LEAK"],
+    }
+    document = {
+        **SEED_VALUES,
+        "_provenance": {
+            **facts,
+            "provenanceHash": canonical_hash(facts),
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        seed_domain.decode_seed_revision(document)
+
+
+def test_hash_valid_stored_provenance_rejects_duplicate_snapshot_ids():
+    snapshot = {
+        "id": "snapshot-1",
+        "hash": "a" * 64,
+        "sourceId": "source-1",
+        "sourceURL": "https://example.com/rank",
+        "capturedAt": 1,
+    }
+    facts = {
+        "kind": "market_snapshot",
+        "snapshots": [snapshot, snapshot],
+        "analysis": None,
+        "inspirationAttempt": None,
+        "publicNotes": [],
+    }
+    document = {
+        **SEED_VALUES,
+        "_provenance": {
+            **facts,
+            "provenanceHash": canonical_hash(facts),
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        seed_domain.decode_seed_revision(document)
 
 
 def test_seed_mutation_capabilities_are_strict_frozen_server_facts():

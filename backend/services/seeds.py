@@ -5,12 +5,23 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
-from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
+from backend.domain.seeds import (
+    SeedAnalysisProvenance,
+    SeedInspirationProvenance,
+    SeedMutationCapabilities,
+    SeedPayload,
+    SeedProvenance,
+    SeedProvenanceSelection,
+    SeedSnapshotProvenance,
+    build_seed_provenance,
+    decode_seed_revision,
+    seed_revision_document,
+)
 from backend.http_errors import (
     ProjectBusy,
     SeedConflict,
@@ -26,6 +37,13 @@ class CreateSeed(BaseModel):
     model_config = _STRICT
     project_id: str = Field(min_length=1)
     payload: SeedPayload
+    provenance: SeedProvenanceSelection | None = None
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]{64}$",
+    )
 
 
 class EditSeed(BaseModel):
@@ -70,6 +88,7 @@ class SeedResult(BaseModel):
     revision_id: str
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     payload: SeedPayload
+    provenance: SeedProvenance | None = None
     is_selected: bool
     selection_revision: int = Field(ge=0)
     capabilities: SeedMutationCapabilities
@@ -96,9 +115,7 @@ class SelectedSeedResult(BaseModel):
 
 
 def _decode_payload(value: object) -> SeedPayload:
-    if isinstance(value, str):
-        value = json.loads(value)
-    return SeedPayload.model_validate(value)
+    return decode_seed_revision(value)[0]
 
 
 def _selection_revision(selection: Mapping | None) -> int:
@@ -181,6 +198,7 @@ class SeedService:
             bool(row.get("is_selected"))
             if is_selected is None else is_selected
         )
+        payload, provenance = decode_seed_revision(row["payload_json"])
         return SeedResult(
             id=row["id"],
             project_id=row["project_id"],
@@ -188,7 +206,8 @@ class SeedService:
             revision=int(row["revision"]),
             revision_id=row.get("revision_id", row.get("id")),
             content_hash=row["content_hash"],
-            payload=_decode_payload(row["payload_json"]),
+            payload=payload,
+            provenance=provenance,
             is_selected=selected,
             selection_revision=(
                 int(row.get("selection_revision") or 0)
@@ -202,7 +221,156 @@ class SeedService:
             ),
         )
 
-    async def create(self, command: CreateSeed) -> SeedResult:
+    @staticmethod
+    def _idempotent_seed_id(project_id: str, key: str) -> str:
+        return str(uuid5(NAMESPACE_URL, f"novel-creator/seed/{project_id}/{key}"))
+
+    async def _resolve_provenance(
+        self,
+        session,
+        project_id: str,
+        selection: SeedProvenanceSelection | None,
+    ) -> SeedProvenance | None:
+        if selection is None:
+            return None
+        if selection.kind == "manual":
+            return build_seed_provenance(
+                kind=selection.kind,
+                snapshots=(),
+                analysis=None,
+                inspiration_attempt=None,
+                public_notes=selection.public_notes,
+            )
+        inputs = await self.repository.lock_seed_provenance_inputs(
+            session,
+            project_id,
+            selection,
+        )
+        rows = tuple(inputs.get("snapshots") or ())
+        if tuple(item.get("id") for item in rows) != selection.snapshot_ids:
+            raise SeedConflict()
+        try:
+            snapshots = tuple(
+                SeedSnapshotProvenance(
+                    id=item["id"],
+                    hash=item["content_hash"],
+                    sourceId=item["source_id"],
+                    sourceURL=item["source_url"],
+                    capturedAt=int(item["captured_at"]),
+                )
+                for item in rows
+            )
+        except (KeyError, TypeError, ValueError):
+            raise SeedConflict() from None
+        analysis = None
+        if selection.analysis_id is not None:
+            row = inputs.get("analysis")
+            if (
+                not isinstance(row, Mapping)
+                or row.get("id") != selection.analysis_id
+                or row.get("status", "succeeded") != "succeeded"
+            ):
+                raise SeedConflict()
+            try:
+                analysis = SeedAnalysisProvenance(
+                    id=row["id"],
+                    hash=row["result_hash"],
+                )
+            except (KeyError, TypeError, ValueError):
+                raise SeedConflict() from None
+            analysis_manifest = row.get("input_manifest_json")
+            if isinstance(analysis_manifest, str):
+                try:
+                    analysis_manifest = json.loads(analysis_manifest)
+                except ValueError:
+                    raise SeedConflict() from None
+            frozen = (
+                analysis_manifest.get("snapshots")
+                if isinstance(analysis_manifest, Mapping)
+                else None
+            )
+            expected_analysis_facts = tuple(
+                (
+                    item["id"],
+                    item["content_hash"],
+                    item["manifest_hash"],
+                    item["source_id"],
+                )
+                for item in rows
+            )
+            actual_analysis_facts = (
+                tuple(
+                    (
+                        item.get("id"),
+                        item.get("hash"),
+                        item.get("manifestHash"),
+                        item.get("sourceId"),
+                    )
+                    for item in frozen
+                    if isinstance(item, Mapping)
+                )
+                if isinstance(frozen, list)
+                else ()
+            )
+            if actual_analysis_facts != expected_analysis_facts:
+                raise SeedConflict()
+        inspiration = None
+        if selection.inspiration_attempt_id is not None:
+            row = inputs.get("attempt")
+            if (
+                not isinstance(row, Mapping)
+                or row.get("id") != selection.inspiration_attempt_id
+                or row.get("status") != "succeeded"
+                or row.get("market_analysis_id") != selection.analysis_id
+                or row.get("market_analysis_hash") != analysis.hash
+                or row.get("market_snapshot_id") != snapshots[0].id
+                or row.get("market_snapshot_hash") != snapshots[0].hash
+            ):
+                raise SeedConflict()
+            manifest = row.get("input_manifest_json")
+            if isinstance(manifest, str):
+                try:
+                    manifest = json.loads(manifest)
+                except ValueError:
+                    raise SeedConflict() from None
+            manifest_snapshots = (
+                manifest.get("snapshots")
+                if isinstance(manifest, Mapping)
+                else None
+            )
+            if manifest_snapshots is None and isinstance(manifest, Mapping):
+                primary = manifest.get("snapshot")
+                manifest_snapshots = [primary] if primary is not None else None
+            expected = tuple(
+                (item.id, item.hash) for item in snapshots
+            )
+            actual = (
+                tuple(
+                    (item.get("id"), item.get("hash"))
+                    for item in manifest_snapshots
+                    if isinstance(item, Mapping)
+                )
+                if isinstance(manifest_snapshots, list)
+                else ()
+            )
+            if actual != expected:
+                raise SeedConflict()
+            try:
+                inspiration = SeedInspirationProvenance(
+                    id=row["id"],
+                    resultHash=row["result_hash"],
+                )
+            except (KeyError, TypeError, ValueError):
+                raise SeedConflict() from None
+        return build_seed_provenance(
+            kind=selection.kind,
+            snapshots=snapshots,
+            analysis=analysis,
+            inspiration_attempt=inspiration,
+            public_notes=selection.public_notes,
+        )
+
+    async def _create_once(self, command: CreateSeed) -> SeedResult:
         async with self.transaction_factory() as session:
             has_final_chapters = await self._lock_project_for_mutation(
                 session, command.project_id
@@ -211,10 +379,55 @@ class SeedService:
                 session, command.project_id
             )
             selection_revision = _selection_revision(selection)
-            seed_id = self.id_factory()
+            provenance = await self._resolve_provenance(
+                session,
+                command.project_id,
+                command.provenance,
+            )
+            seed_id = (
+                self._idempotent_seed_id(
+                    command.project_id,
+                    command.idempotency_key,
+                )
+                if command.idempotency_key is not None
+                else self.id_factory()
+            )
+            if command.idempotency_key is not None:
+                existing = await self.repository.lock_seed_head(
+                    session,
+                    command.project_id,
+                    seed_id,
+                )
+                if existing is not None:
+                    existing_payload, existing_provenance = decode_seed_revision(
+                        existing["payload_json"]
+                    )
+                    if (
+                        existing_payload != command.payload
+                        or existing_provenance != provenance
+                    ):
+                        raise SeedConflict()
+                    referenced = bool(
+                        await self.repository.dependency_count(
+                            session,
+                            command.project_id,
+                            seed_id,
+                        )
+                    )
+                    return self._result(
+                        existing,
+                        is_selected=bool(
+                            selection and selection["seed_id"] == seed_id
+                        ),
+                        selection_revision=selection_revision,
+                        referenced=referenced,
+                        has_final_chapters=has_final_chapters,
+                    )
             revision_id = self.id_factory()
             now = self.clock()
-            payload_json = canonical_json(command.payload)
+            payload_json = canonical_json(
+                seed_revision_document(command.payload, provenance)
+            )
             content_hash = canonical_hash(command.payload)
             identity = {
                 "id": seed_id, "project_id": command.project_id,
@@ -238,6 +451,7 @@ class SeedService:
             id=seed_id, project_id=command.project_id, status="candidate",
             revision=1, revision_id=revision_id, content_hash=content_hash,
             payload=command.payload, is_selected=False,
+            provenance=provenance,
             selection_revision=selection_revision,
             capabilities=self._capabilities(
                 status="candidate",
@@ -246,6 +460,14 @@ class SeedService:
                 has_final_chapters=has_final_chapters,
             ),
         )
+
+    async def create(self, command: CreateSeed) -> SeedResult:
+        try:
+            return await self._create_once(command)
+        except Exception as error:
+            if self._mysql_error_number(error) in {1205, 1213, 3572}:
+                raise ProjectBusy() from None
+            raise
 
     async def edit(self, command: EditSeed) -> SeedResult:
         async with self.transaction_factory() as session:
@@ -284,7 +506,10 @@ class SeedService:
             revision_number = int(head["revision"]) + 1
             revision_id = self.id_factory()
             now = self.clock()
-            payload_json = canonical_json(command.payload)
+            _, provenance = decode_seed_revision(head["payload_json"])
+            payload_json = canonical_json(
+                seed_revision_document(command.payload, provenance)
+            )
             content_hash = canonical_hash(command.payload)
             revision = {
                 "id": revision_id, "project_id": command.project_id,
@@ -327,6 +552,7 @@ class SeedService:
             status=head["status"], revision=revision_number,
             revision_id=revision_id, content_hash=content_hash,
             payload=command.payload, is_selected=is_selected,
+            provenance=provenance,
             selection_revision=selection_revision,
             capabilities=self._capabilities(
                 status=head["status"],

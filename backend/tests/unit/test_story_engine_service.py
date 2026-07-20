@@ -15,6 +15,10 @@ from backend.gateways.story_engine_provider import (
 )
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.seeds import (
+    build_seed_provenance,
+    seed_revision_document,
+)
 from backend.http_errors import (
     ProjectArchived,
     StoryEngineBatchConflict,
@@ -30,6 +34,28 @@ from backend.services.story_engines import (
     ReserveStoryEngineBatch,
 )
 from backend.tests.support.story_engine_fakes import StoryEngineHarness, three_options
+
+
+def test_provider_seed_decoder_ignores_verified_reserved_provenance_document():
+    harness = StoryEngineHarness()
+    seed = harness.repository.seed["payload_json"]
+    if isinstance(seed, str):
+        seed = json.loads(seed)
+    from backend.domain.seeds import SeedPayload
+
+    payload = SeedPayload.model_validate(seed)
+    provenance = build_seed_provenance(
+        kind="manual",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=("作者显式保存。",),
+    )
+    document = seed_revision_document(payload, provenance)
+
+    assert harness.service._seed_payload(
+        {"payload_json": canonical_json(document)}
+    ) == payload
 
 
 @pytest.mark.asyncio

@@ -119,10 +119,8 @@ def _redact_validation_errors(errors, body=None):
         replace_secret_values(error, preserve_mapping_keys=True)
         for error in dropped
     ]
-    for original, error in zip(errors, sanitized):
-        location = original.get("loc", ())
-        if any(is_provider_secret_key(part) for part in location):
-            error["input"] = REDACTED
+    for error in sanitized:
+        error.pop("input", None)
     return sanitized
 
 

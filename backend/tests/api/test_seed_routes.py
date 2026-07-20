@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -94,17 +95,45 @@ class FakeSeedService:
         return seed_result(1, 1)
 
 
+class FakeInspirationService:
+    def __init__(self):
+        self.calls = []
+
+    async def generate(self, command):
+        self.calls.append(command)
+        return {
+            "attempt_id": "attempt-1",
+            "status": "succeeded",
+            "assistant_turn": {
+                "role": "assistant",
+                "content": "把知识优势拆成三次递进兑现。",
+            },
+            "result_hash": "a" * 64,
+            "public_error_code": None,
+            "created_at": 1,
+            "completed_at": 2,
+        }
+
+
 def make_client():
     service = FakeSeedService()
+    inspiration = FakeInspirationService()
     app = FastAPI()
     app.include_router(seeds.router, prefix="/api")
     app.dependency_overrides[seeds.get_seed_service] = lambda: service
+    dependency = getattr(seeds, "get_seed_generation_service", None)
+    if dependency is not None:
+        app.dependency_overrides[dependency] = lambda: inspiration
     install_error_handlers(app)
-    return TestClient(app, raise_server_exceptions=False), service
+    return (
+        TestClient(app, raise_server_exceptions=False),
+        service,
+        inspiration,
+    )
 
 
 def test_seed_routes_use_service_dependency_and_return_camel_case_public_dto():
-    client, service = make_client()
+    client, service, _ = make_client()
     listed = client.get("/api/projects/p1/seeds")
     created = client.post("/api/projects/p1/seeds", json={"payload": PAYLOAD})
     edited = client.put(
@@ -150,7 +179,7 @@ def test_seed_routes_use_service_dependency_and_return_camel_case_public_dto():
 
 
 def test_seed_archive_restore_routes_are_explicit_and_delete_never_archives():
-    client, service = make_client()
+    client, service, _ = make_client()
     archived = client.post(
         "/api/projects/p1/seeds/seed-1/archive",
         json={"expectedSeedRevision": 1, "expectedSelectionRevision": 2},
@@ -167,7 +196,7 @@ def test_seed_archive_restore_routes_are_explicit_and_delete_never_archives():
 
 
 def test_seed_write_requests_forbid_legacy_or_extra_fields():
-    client, _ = make_client()
+    client, _, _ = make_client()
     response = client.post(
         "/api/projects/p1/seeds",
         json={"payload": {**PAYLOAD, "premise_json": "legacy"}},
@@ -184,7 +213,7 @@ def test_seed_write_requests_forbid_legacy_or_extra_fields():
 
 
 def test_selected_seed_unknown_project_returns_exact_public_404():
-    client, _ = make_client()
+    client, _, _ = make_client()
 
     response = client.get("/api/projects/missing/selected-seed")
 
@@ -194,3 +223,177 @@ def test_selected_seed_unknown_project_returns_exact_public_404():
     assert body["code"] == "SeedNotFound"
     assert body["message"] == SeedNotFound.message
     assert body["correlationId"]
+
+
+def test_seed_inspiration_accepts_only_bounded_server_resolved_contract_and_never_creates_seed():
+    client, seed_service, inspiration = make_client()
+
+    response = client.post(
+        "/api/projects/p1/seed-inspiration",
+        json={
+            "transcript": [
+                {"role": "user", "content": "我想写明代穿越群像。"}
+            ],
+            "snapshotIds": ["snapshot-1", "snapshot-2"],
+            "analysisId": "analysis-1",
+            "idempotencyKey": "i" * 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "attemptId": "attempt-1",
+        "status": "succeeded",
+        "assistantTurn": {
+            "role": "assistant",
+            "content": "把知识优势拆成三次递进兑现。",
+        },
+        "resultHash": "a" * 64,
+        "publicErrorCode": None,
+        "createdAt": 1,
+        "completedAt": 2,
+    }
+    assert len(inspiration.calls) == 1
+    assert inspiration.calls[0].project_id == "p1"
+    assert inspiration.calls[0].snapshot_ids == ("snapshot-1", "snapshot-2")
+    assert not [
+        call for call in seed_service.calls if call[0] == "create"
+    ]
+
+    forged = client.post(
+        "/api/projects/p1/seed-inspiration",
+        json={
+            "transcript": [{"role": "user", "content": "测试"}],
+            "snapshotIds": ["snapshot-1"],
+            "analysisId": "analysis-1",
+            "idempotencyKey": "x" * 64,
+            "providerId": "forged-provider",
+            "model": "forged-model",
+        },
+    )
+    assert forged.status_code == 422
+    rendered = forged.text
+    assert "forged-provider" not in rendered
+    assert "forged-model" not in rendered
+    assert '"input"' not in rendered
+
+
+@pytest.mark.parametrize(
+    "snapshot_ids",
+    (
+        [],
+        ["same", "same"],
+        [""],
+        ["x" * 37],
+    ),
+)
+def test_seed_inspiration_rejects_invalid_snapshot_ids_at_the_http_boundary(
+    snapshot_ids,
+):
+    client, _, inspiration = make_client()
+
+    response = client.post(
+        "/api/projects/p1/seed-inspiration",
+        json={
+            "transcript": [{"role": "user", "content": "测试"}],
+            "snapshotIds": snapshot_ids,
+            "analysisId": "analysis-1",
+            "idempotencyKey": "i" * 64,
+        },
+    )
+
+    assert response.status_code == 422
+    assert inspiration.calls == []
+
+
+def test_seed_inspiration_rejects_invalid_project_id_at_the_http_boundary():
+    client, _, inspiration = make_client()
+
+    response = client.post(
+        f"/api/projects/{'p' * 37}/seed-inspiration",
+        json={
+            "transcript": [{"role": "user", "content": "测试"}],
+            "snapshotIds": ["snapshot-1"],
+            "analysisId": "analysis-1",
+            "idempotencyKey": "i" * 64,
+        },
+    )
+
+    assert response.status_code == 422
+    assert inspiration.calls == []
+
+
+def test_explicit_save_as_seed_accepts_selection_not_frozen_hashes_or_urls():
+    client, service, _ = make_client()
+    response = client.post(
+        "/api/projects/p1/seeds",
+        json={
+            "payload": PAYLOAD,
+            "idempotencyKey": "s" * 64,
+            "provenance": {
+                "kind": "ai_chat",
+                "snapshotIds": ["snapshot-1"],
+                "analysisId": "analysis-1",
+                "inspirationAttemptId": "attempt-1",
+                "publicNotes": ["作者已编辑最终九字段。"],
+            },
+        },
+    )
+    assert response.status_code == 200
+    command = service.calls[-1][1]
+    assert command.idempotency_key == "s" * 64
+    assert command.provenance.kind == "ai_chat"
+
+    for forbidden in (
+        {"snapshotHash": "a" * 64},
+        {"sourceURL": "https://private.invalid"},
+        {"apiKey": "PRIVATE"},
+        {"baseURL": "https://private.invalid"},
+    ):
+        body = {
+            "payload": PAYLOAD,
+            "idempotencyKey": "z" * 64,
+            "provenance": {"kind": "manual", **forbidden},
+        }
+        rejected = client.post("/api/projects/p1/seeds", json=body)
+        assert rejected.status_code == 422
+        assert not any(
+            value in rejected.text
+            for value in (
+                "PRIVATE",
+                "https://private.invalid",
+                '"input"',
+            )
+        )
+
+
+def test_seed_validation_never_echoes_oversized_transcript_or_source_url():
+    client, _, _ = make_client()
+    oversized = "TRANSCRIPT_SENTINEL_" + "x" * 2_001
+    response = client.post(
+        "/api/projects/p1/seed-inspiration",
+        json={
+            "transcript": [{"role": "user", "content": oversized}],
+            "snapshotIds": ["snapshot-1"],
+            "analysisId": "analysis-1",
+            "idempotencyKey": "i" * 64,
+        },
+    )
+    assert response.status_code == 422
+    assert "TRANSCRIPT_SENTINEL_" not in response.text
+    assert '"input"' not in response.text
+
+    source_url = "https://source-url-sentinel.invalid/private"
+    response = client.post(
+        "/api/projects/p1/seeds",
+        json={
+            "payload": PAYLOAD,
+            "provenance": {
+                "kind": "manual",
+                "sourceURL": source_url,
+            },
+        },
+    )
+    assert response.status_code == 422
+    assert source_url not in response.text
+    assert '"input"' not in response.text
