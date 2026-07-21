@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from backend.domain.json_contracts import canonical_json
+from backend.domain.market_analysis import parse_market_analysis
 from backend.domain.seeds import (
     MAX_SEED_CHAT_TURNS,
     SeedChatTurn,
@@ -64,12 +65,13 @@ def _analysis(value: dict, snapshot_ids: tuple[str, ...]) -> dict:
         document = json.loads(document)
     if not isinstance(document, dict):
         raise ValueError("analysis is invalid")
-    coverage = document.get("sourceCoverage")
-    if (
-        not isinstance(coverage, dict)
-        or tuple(coverage.get("snapshotIds") or ()) != snapshot_ids
-    ):
-        raise ValueError("analysis does not match frozen snapshots")
+    try:
+        document = parse_market_analysis(
+            document,
+            snapshot_ids=snapshot_ids,
+        ).model_dump(mode="json", by_alias=True)
+    except ValueError:
+        raise ValueError("analysis does not match frozen snapshots") from None
     return {
         "id": value["id"],
         "resultHash": value["result_hash"],

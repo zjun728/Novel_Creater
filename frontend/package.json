@@ -12,6 +12,7 @@
     "test:e2e:m2": "node e2e/run-milestone2.mjs",
     "test:e2e:product-shell": "node e2e/run-product-shell.mjs",
     "test:e2e:phase2a": "node e2e/run-phase2a.mjs",
+    "test:e2e:phase2b": "node e2e/run-phase2b.mjs",
     "test:e2e": "node e2e/run-milestone2.mjs"
   },
   "dependencies": {

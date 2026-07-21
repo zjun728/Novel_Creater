@@ -42,6 +42,44 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     readWorkspaceFile('frontend/e2e/runtime-observer.mjs'),
   ])
   const combined = `${source}\n${observer}`
+  const settleContract = /async\s+function\s+settle\s*\(\s*\)\s*\{[^{}]*await\s+drainPendingRequests\s*\(\s*\)[^{}]*await\s+drainPendingApiBodies\s*\(\s*\)[^{}]*\}/
+  const finishContract = /async\s+function\s+finish\s*\(\s*\)\s*\{[^{}]*try\s*\{[^{}]*await\s+settle\s*\(\s*\)[^{}]*pageContent\s*=\s*await\s+page\.content\s*\(\s*\)[^{}]*await\s+settle\s*\(\s*\)[^{}]*\}\s*finally\s*\{[^{}]*page\.off\s*\(\s*['"]request['"]\s*,\s*onRequest\s*\)[^{}]*page\.off\s*\(\s*['"]response['"]\s*,\s*onResponse\s*\)[^{}]*page\.off\s*\(\s*['"]console['"]\s*,\s*onConsole\s*\)[^{}]*page\.off\s*\(\s*['"]pageerror['"]\s*,\s*onPageError\s*\)[^{}]*page\.off\s*\(\s*['"]requestfailed['"]\s*,\s*onRequestFailed\s*\)[^{}]*\}/
+  const crossFunctionDecoy = `
+    async function finish() {}
+    async function unrelated() {
+      try {
+        await settle()
+        pageContent = await page.content()
+        await settle()
+      } finally {
+        page.off('request', onRequest)
+        page.off('response', onResponse)
+        page.off('console', onConsole)
+        page.off('pageerror', onPageError)
+        page.off('requestfailed', onRequestFailed)
+      }
+    }
+  `
+  const equivalentFormatting = `
+    async  function settle ( ) {
+      await drainPendingRequests ( )
+      await drainPendingApiBodies ( )
+    }
+    async  function finish ( ) {
+      let pageContent = ''
+      try {
+        await settle ( )
+        pageContent = await page.content ( )
+        await settle ( )
+      } finally {
+        page.off ( "request", onRequest )
+        page.off ( "response", onResponse )
+        page.off ( "console", onConsole )
+        page.off ( "pageerror", onPageError )
+        page.off ( "requestfailed", onRequestFailed )
+      }
+    }
+  `
 
   for (const required of [
     "page.on('response'", "page.on('console'", "page.on('pageerror'",
@@ -59,8 +97,11 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   }
   assert.match(observer, /new Set\(\)/)
   assert.match(observer, /while\s*\(pendingApiBodies\.size\)/)
-  assert.match(observer, /await drainPendingApiBodies\(\)[^]*pageContent\s*=\s*await page\.content\(\)[^]*await drainPendingApiBodies\(\)[^]*finally\s*\{/)
-  assert.match(observer, /finally\s*\{[^]*page\.off\('response',\s*onResponse\)[^]*page\.off\('console',\s*onConsole\)[^]*page\.off\('pageerror',\s*onPageError\)[^]*page\.off\('requestfailed',\s*onRequestFailed\)/)
+  assert.match(equivalentFormatting, settleContract)
+  assert.match(equivalentFormatting, finishContract)
+  assert.match(observer, settleContract)
+  assert.doesNotMatch(crossFunctionDecoy, finishContract)
+  assert.match(observer, finishContract)
   assert.match(source, /READ_METHODS\.has\(response\.method\)/)
   assert.match(source, /expect\(apiWriteMethods[^]*?\.toEqual\(\[\]\)/)
   assert.match(source, /expect\(apiBodyReadFailures[^]*?\.toEqual\(\[\]\)/)

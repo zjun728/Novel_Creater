@@ -39,6 +39,7 @@ def payload(title: str = "雾城来信") -> SeedPayload:
 class MemorySeedRepository:
     def __init__(self):
         self.projects = {"p1", "p2"}
+        self.archived_projects: set[str] = set()
         self.final_projects: set[str] = set()
         self.seeds: dict[str, dict] = {}
         self.revisions: dict[str, list[dict]] = {}
@@ -101,7 +102,12 @@ class MemorySeedRepository:
 
     async def read_project(self, session, project_id):
         self.events.append("read-project")
-        return {"id": project_id} if project_id in self.projects else None
+        if project_id not in self.projects:
+            return None
+        return {
+            "id": project_id,
+            "archived_at": 2 if project_id in self.archived_projects else None,
+        }
 
     async def insert_identity(self, session, row):
         self.events.append("identity")
@@ -637,6 +643,47 @@ async def test_archive_restore_and_permanent_delete_are_distinct_eligibility_com
             )
         )
     assert historical.id in harness.repo.seeds
+
+
+@pytest.mark.asyncio
+async def test_archived_project_read_capabilities_disable_every_seed_mutation():
+    harness = Harness()
+    free = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("可编辑候选"))
+    )
+    selected_seed = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("已选择候选"))
+    )
+    await harness.service.select(
+        SelectSeed(
+            project_id="p1",
+            seed_id=selected_seed.id,
+            expected_seed_revision=1,
+            expected_selection_revision=0,
+        )
+    )
+    harness.repo.final_projects.add("p1")
+    harness.repo.archived_projects.add("p1")
+
+    listed = {item.id: item for item in await harness.service.list("p1")}
+    selected = await harness.service.get_selected("p1")
+
+    assert (
+        listed[free.id].capabilities.referenced,
+        listed[free.id].capabilities.hasFinalChapters,
+    ) == (False, True)
+    assert (
+        listed[selected_seed.id].capabilities.referenced,
+        listed[selected_seed.id].capabilities.hasFinalChapters,
+    ) == (True, True)
+    for item in (*listed.values(), selected.active_selection.seed):
+        assert (
+            item.capabilities.canEdit,
+            item.capabilities.canSelect,
+            item.capabilities.canArchive,
+            item.capabilities.canRestore,
+            item.capabilities.canPermanentlyDelete,
+        ) == (False, False, False, False, False)
 
 
 @pytest.mark.asyncio

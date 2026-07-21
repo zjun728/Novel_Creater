@@ -14,7 +14,13 @@ from backend.domain.seeds import (
     SeedPayload,
     SeedProvenanceSelection,
 )
-from backend.http_errors import ProjectBusy, SeedConflict, SeedLocked, SeedNotFound
+from backend.http_errors import (
+    ProjectArchived,
+    ProjectBusy,
+    SeedConflict,
+    SeedLocked,
+    SeedNotFound,
+)
 from backend.repositories.seeds import SeedRepository
 from backend.services.seeds import (
     ArchiveSeed,
@@ -74,6 +80,147 @@ async def insert_project(session, project_id: str):
            VALUES (%s,'Integration','悬疑','test',100000,100,'drafting',0,1,1)""",
         (project_id,),
     )
+
+
+@pytest.mark.asyncio
+async def test_archived_project_retains_readable_seed_state_but_rejects_mutations(
+    disposable_mysql,
+):
+    async def complete_seed_state():
+        session = disposable_mysql.session
+        return {
+            "identities": await session.fetchall(
+                """SELECT id,project_id,status,created_at,updated_at
+                     FROM creative_seeds WHERE project_id='p1' ORDER BY id"""
+            ),
+            "heads": await session.fetchall(
+                """SELECT h.seed_id,h.revision_id,h.revision,h.content_hash,
+                          h.updated_at
+                     FROM creative_seed_heads h
+                     JOIN creative_seeds s ON s.id=h.seed_id
+                    WHERE s.project_id='p1' ORDER BY h.seed_id"""
+            ),
+            "revisions": await session.fetchall(
+                """SELECT id,project_id,seed_id,revision,payload_json,
+                          content_hash,created_at
+                     FROM creative_seed_revisions
+                    WHERE project_id='p1' ORDER BY seed_id,revision"""
+            ),
+            "selection": await session.fetchall(
+                """SELECT project_id,seed_id,seed_revision_id,seed_hash,
+                          selection_revision,selected_at,updated_at
+                     FROM project_selected_seeds
+                    WHERE project_id='p1'"""
+            ),
+            "selection_ledger": await session.fetchall(
+                """SELECT project_id,selection_revision,seed_id,
+                          seed_revision_id,seed_hash,selected_at
+                     FROM project_seed_selection_revisions
+                    WHERE project_id='p1' ORDER BY selection_revision"""
+            ),
+        }
+
+    await insert_project(disposable_mysql.session, "p1")
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    seed = await service.create(CreateSeed(project_id="p1", payload=payload("保留")))
+    selection = await service.select(
+        SelectSeed(
+            project_id="p1",
+            seed_id=seed.id,
+            expected_seed_revision=seed.revision,
+            expected_selection_revision=0,
+        )
+    )
+    restorable = await service.create(
+        CreateSeed(project_id="p1", payload=payload("已归档候选"))
+    )
+    await service.archive(
+        ArchiveSeed(
+            project_id="p1",
+            seed_id=restorable.id,
+            expected_seed_revision=restorable.revision,
+            expected_selection_revision=selection.selection_revision,
+        )
+    )
+    await disposable_mysql.session.execute(
+        """UPDATE projects
+              SET archived_at=2,lifecycle_revision=lifecycle_revision+1
+            WHERE id='p1'"""
+    )
+    state_before = await complete_seed_state()
+
+    listed = await service.list("p1")
+    selected = await service.get_selected("p1")
+
+    assert {item.id: item.status for item in listed} == {
+        seed.id: "candidate",
+        restorable.id: "archived",
+    }
+    assert selected.active_selection is not None
+    assert selected.active_selection.seed_id == seed.id
+    assert selected.active_selection.selection_revision == 1
+
+    commands = (
+        lambda: service.create(
+            CreateSeed(project_id="p1", payload=payload("禁止创建"))
+        ),
+        lambda: service.edit(
+            EditSeed(
+                project_id="p1",
+                seed_id=seed.id,
+                payload=payload("禁止编辑"),
+                expected_seed_revision=seed.revision,
+                expected_selection_revision=selection.selection_revision,
+            )
+        ),
+        lambda: service.select(
+            SelectSeed(
+                project_id="p1",
+                seed_id=seed.id,
+                expected_seed_revision=seed.revision,
+                expected_selection_revision=selection.selection_revision,
+            )
+        ),
+        lambda: service.delete(
+            DeleteSeed(
+                project_id="p1",
+                seed_id=seed.id,
+                expected_seed_revision=seed.revision,
+                expected_selection_revision=selection.selection_revision,
+            )
+        ),
+        lambda: service.archive(
+            ArchiveSeed(
+                project_id="p1",
+                seed_id=seed.id,
+                expected_seed_revision=seed.revision,
+                expected_selection_revision=selection.selection_revision,
+            )
+        ),
+        lambda: service.restore(
+            RestoreSeed(
+                project_id="p1",
+                seed_id=restorable.id,
+                expected_seed_revision=restorable.revision,
+                expected_selection_revision=selection.selection_revision,
+            )
+        ),
+    )
+    for command in commands:
+        with pytest.raises(ProjectArchived):
+            await command()
+        assert await complete_seed_state() == state_before
+
+    state_after = await complete_seed_state()
+    assert state_after == state_before
 
 
 async def install_matching_contract(session, project_id: str, seed):

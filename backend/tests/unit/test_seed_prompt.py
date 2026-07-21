@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from backend.domain.json_contracts import canonical_hash
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.market_analysis import parse_market_analysis
 
 
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
@@ -99,6 +100,27 @@ def test_prompt_uses_bounded_current_transcript_and_normalized_frozen_evidence()
     assert "work_url" not in rendered
     assert "source_url" not in rendered
     assert len(rendered.encode("utf-8")) <= prompt.MAX_SEED_PROMPT_BYTES
+
+
+def test_prompt_normalizes_the_canonical_persisted_market_analysis_shape():
+    domain, prompt = _feature()
+    inputs = _inputs()
+    parsed = parse_market_analysis(
+        inputs["analysis"]["analysis_json"],
+        snapshot_ids=(SNAPSHOT_ID,),
+    )
+    inputs["analysis"]["analysis_json"] = canonical_json(parsed)
+
+    messages = prompt.build_seed_inspiration_messages(
+        transcript=(domain.SeedChatTurn(role="user", content="给我一个方向"),),
+        inputs=inputs,
+    )
+    evidence = json.loads(messages[1]["content"])
+
+    assert evidence["analysis"]["result"]["sourceCoverage"] == {
+        "snapshotIds": [SNAPSHOT_ID],
+        "summary": "一份冻结公开榜单快照。",
+    }
 
 
 def test_prompt_rejects_empty_unbounded_or_mismatched_inputs():

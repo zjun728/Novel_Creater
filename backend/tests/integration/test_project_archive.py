@@ -764,7 +764,7 @@ async def test_real_archive_lock_then_reservation_cannot_create_busy_operation(
 
 
 @pytest.mark.asyncio
-async def test_archived_project_blocks_seed_and_binding_resources_and_inheritance(
+async def test_archived_project_keeps_seed_reads_but_blocks_writes_and_inheritance(
     disposable_mysql,
 ):
     projects, bindings, transaction, read_connection = _services(disposable_mysql)
@@ -853,9 +853,13 @@ async def test_archived_project_blocks_seed_and_binding_resources_and_inheritanc
         isinstance(result, http_errors.ProjectArchived)
         for result in seed_results[:4]
     )
-    assert all(
-        isinstance(result, http_errors.SeedNotFound)
-        for result in seed_results[4:]
+    listed, selected_read = seed_results[4:]
+    assert [item.id for item in listed] == [seed.id]
+    assert selected_read.active_selection is not None
+    assert selected_read.active_selection.seed_id == seed.id
+    assert (
+        selected_read.active_selection.selection_revision
+        == selected.selection_revision
     )
     assert all(
         result.project_id == PROJECT_ID

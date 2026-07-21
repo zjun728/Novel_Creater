@@ -14,6 +14,7 @@
     "test:browser:m2": "node scripts/run-tests.mjs browser-m2",
     "test:browser:product-shell": "node scripts/run-tests.mjs browser-product-shell",
     "test:browser:phase2a": "node scripts/run-tests.mjs browser-phase2a",
+    "test:browser:phase2b": "node scripts/run-tests.mjs browser-phase2b",
     "test:milestone1": "node scripts/run-tests.mjs m1-regression",
     "test:milestone2": "node scripts/run-tests.mjs milestone2",
     "test:control-plane": "npm run test:control-plane:node && npm run test:control-plane:py",

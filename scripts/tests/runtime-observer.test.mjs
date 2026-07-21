@@ -96,6 +96,27 @@ test('observer keeps listeners through DOM capture, drains again, then detaches'
   }
 })
 
+test('observer can settle captured bodies before a navigation boundary', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  let resolveBody
+  const body = new Promise(resolve => { resolveBody = resolve })
+  const observer = observeRuntime(page)
+  page.emit('response', fakeResponse({
+    url: 'http://127.0.0.1:8000/api/projects/project-1',
+    text: async () => body,
+  }))
+
+  const settling = observer.settle()
+  resolveBody('{"id":"project-1"}')
+  await settling
+  const evidence = await observer.finish()
+
+  assert.equal(evidence.apiResponses.length, 1)
+  assert.equal(evidence.apiResponses[0].body, '{"id":"project-1"}')
+  assert.equal(evidence.apiResponses[0].bodyReadError, '')
+})
+
 test('observer records fail-closed header body response console page and request evidence', async () => {
   const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
   const page = new FakePage()

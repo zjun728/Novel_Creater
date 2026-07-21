@@ -9,7 +9,7 @@ import {
   rmdirSync,
 } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const suiteNames = [
@@ -21,6 +21,7 @@ const suiteNames = [
   'browser-m2',
   'browser-product-shell',
   'browser-phase2a',
+  'browser-phase2b',
   'milestone2',
 ]
 const integrationEnvironmentNames = [
@@ -35,6 +36,7 @@ const mysqlSuites = new Set([
   'browser-m2',
   'browser-product-shell',
   'browser-phase2a',
+  'browser-phase2b',
   'milestone2',
 ])
 export const pytestTempStages = Object.freeze({
@@ -84,6 +86,9 @@ const productShellBrowserFiles = [
 const phase2aBrowserFiles = [
   'frontend/e2e/phase2a-assets-settings.spec.ts',
 ]
+const phase2bBrowserFiles = [
+  'frontend/e2e/phase2b-market-seeds.spec.ts',
+]
 
 export function discoverTestFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })
@@ -106,6 +111,7 @@ function createSuites(rootDirectory, environment) {
   const m2BrowserTests = absolute(milestone2BrowserFiles)
   const productShellBrowserTests = absolute(productShellBrowserFiles)
   const phase2aBrowserTests = absolute(phase2aBrowserFiles)
+  const phase2bBrowserTests = absolute(phase2bBrowserFiles)
   const retainedM1 = [
     [
       python,
@@ -150,6 +156,7 @@ function createSuites(rootDirectory, environment) {
   const browserM2 = [[node, ['frontend/e2e/run-milestone2.mjs']]]
   const browserProductShell = [[node, ['frontend/e2e/run-product-shell.mjs']]]
   const browserPhase2A = [[node, ['frontend/e2e/run-phase2a.mjs']]]
+  const browserPhase2B = [[node, ['frontend/e2e/run-phase2b.mjs']]]
 
   return {
     commands: {
@@ -161,6 +168,7 @@ function createSuites(rootDirectory, environment) {
       'browser-m2': browserM2,
       'browser-product-shell': browserProductShell,
       'browser-phase2a': browserPhase2A,
+      'browser-phase2b': browserPhase2B,
       milestone2: [
         ...retainedM1,
         ...unit,
@@ -184,6 +192,9 @@ function createSuites(rootDirectory, environment) {
       ],
       'browser-phase2a': [
         ['Phase 2A Playwright spec', phase2aBrowserTests],
+      ],
+      'browser-phase2b': [
+        ['Phase 2B Playwright spec', phase2bBrowserTests],
       ],
       milestone2: [
         [scriptTestDirectory, scriptTests],
@@ -538,9 +549,24 @@ export function runSuites(requested, {
   return exitCode
 }
 
-const isCommandLineEntrypoint = process.argv[1]
-  && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url
+export function isCommandLineEntrypoint(argumentPath, modulePath) {
+  if (!argumentPath || !modulePath) return false
+  try {
+    const argumentIdentity = normalizedPathIdentity(realpathSync(argumentPath))
+    const moduleFile = modulePath.startsWith('file:')
+      ? fileURLToPath(modulePath)
+      : modulePath
+    return argumentIdentity === normalizedPathIdentity(realpathSync(moduleFile))
+  } catch {
+    return false
+  }
+}
 
-if (isCommandLineEntrypoint) {
+const isCommandLineEntrypointCall = isCommandLineEntrypoint(
+  process.argv[1],
+  import.meta.url,
+)
+
+if (isCommandLineEntrypointCall) {
   process.exitCode = runSuites(process.argv.slice(2))
 }

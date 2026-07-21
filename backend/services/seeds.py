@@ -171,11 +171,12 @@ class SeedService:
         selected: bool,
         referenced: bool,
         has_final_chapters: bool,
+        project_archived: bool = False,
     ) -> SeedMutationCapabilities:
         candidate = status == "candidate"
         archived = status == "archived"
         history_locked = has_final_chapters and referenced
-        return SeedMutationCapabilities(
+        capabilities = SeedMutationCapabilities(
             referenced=referenced,
             hasFinalChapters=has_final_chapters,
             canEdit=candidate and not history_locked,
@@ -183,6 +184,17 @@ class SeedService:
             canArchive=candidate and not selected,
             canRestore=archived and not selected,
             canPermanentlyDelete=not selected and not referenced,
+        )
+        if not project_archived:
+            return capabilities
+        return capabilities.model_copy(
+            update={
+                "canEdit": False,
+                "canSelect": False,
+                "canArchive": False,
+                "canRestore": False,
+                "canPermanentlyDelete": False,
+            }
         )
 
     @staticmethod
@@ -193,6 +205,7 @@ class SeedService:
         selection_revision: int | None = None,
         referenced: bool = False,
         has_final_chapters: bool = False,
+        project_archived: bool = False,
     ) -> SeedResult:
         selected = (
             bool(row.get("is_selected"))
@@ -218,6 +231,7 @@ class SeedService:
                 selected=selected,
                 referenced=referenced,
                 has_final_chapters=has_final_chapters,
+                project_archived=project_archived,
             ),
         )
 
@@ -734,8 +748,12 @@ class SeedService:
     async def list(self, project_id: str) -> tuple[SeedResult, ...]:
         async with self._connection() as session:
             if hasattr(self.repository, "read_project"):
-                if await self.repository.read_project(session, project_id) is None:
+                project = await self.repository.read_project(session, project_id)
+                if project is None:
                     raise SeedNotFound()
+                project_archived = project.get("archived_at") is not None
+            else:
+                project_archived = False
             rows = await self.repository.list_heads(session, project_id)
             has_final_chapters = bool(
                 await self.repository.count_final_chapters(session, project_id)
@@ -752,14 +770,17 @@ class SeedService:
                         row,
                         referenced=referenced,
                         has_final_chapters=has_final_chapters,
+                        project_archived=project_archived,
                     )
                 )
         return tuple(results)
 
     async def get_selected(self, project_id: str) -> SelectedSeedResult:
         async with self._connection() as session:
-            if await self.repository.read_project(session, project_id) is None:
+            project = await self.repository.read_project(session, project_id)
+            if project is None:
                 raise SeedNotFound()
+            project_archived = project.get("archived_at") is not None
             selected = await self.repository.read_selection(session, project_id)
             contract = await self.repository.read_contract_facts(
                 session, project_id
@@ -786,6 +807,7 @@ class SeedService:
             is_selected=True,
             referenced=referenced,
             has_final_chapters=has_final_chapters,
+            project_archived=project_archived,
         )
         selection_updated_at = selected.get("selection_updated_at")
         if selection_updated_at is None:

@@ -77,7 +77,6 @@ async def test_shared_project_lifecycle_exposes_active_and_any_status_reads_and_
             "lock_active_project",
             "lock_active_project",
         ),
-        (seeds, seeds.SeedRepository(), "read_project", "read_active_project"),
         (seeds, seeds.SeedRepository(), "lock_project", "lock_active_project"),
         (
             model_bindings,
@@ -106,6 +105,24 @@ async def test_ordinary_project_mutations_keep_using_active_boundary(
     session = object()
 
     assert await getattr(repository, method)(session, "p1") == {"id": "p1"}
+    assert calls == [(session, "p1")]
+
+
+@pytest.mark.asyncio
+async def test_seed_read_project_delegates_to_shared_any_status_read(
+    monkeypatch,
+):
+    calls = []
+
+    async def read(session, project_id):
+        calls.append((session, project_id))
+        return {"id": project_id, "archived_at": 123}
+
+    monkeypatch.setattr(seeds, "read_any_project", read)
+    repository = seeds.SeedRepository()
+    session = object()
+
+    assert (await repository.read_project(session, "p1"))["archived_at"] == 123
     assert calls == [(session, "p1")]
 
 

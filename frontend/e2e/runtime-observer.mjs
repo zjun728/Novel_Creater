@@ -241,6 +241,8 @@ export function observeRuntime(page) {
   const pageErrors = []
   const requestFailures = []
   const responseFailures = []
+  const apiResponses = []
+  const requests = []
 
   const onResponse = response => {
     const method = response.request().method()
@@ -278,33 +280,34 @@ export function observeRuntime(page) {
   page.on('pageerror', onPageError)
   page.on('requestfailed', onRequestFailed)
 
+  const drainPendingRequests = async () => {
+    while (pendingRequests.size) {
+      const batch = [...pendingRequests]
+      const resolved = await Promise.all(batch)
+      for (const promise of batch) pendingRequests.delete(promise)
+      requests.push(...resolved)
+    }
+  }
+  const drainPendingApiBodies = async () => {
+    while (pendingApiBodies.size) {
+      const batch = [...pendingApiBodies]
+      const resolved = await Promise.all(batch)
+      for (const promise of batch) pendingApiBodies.delete(promise)
+      apiResponses.push(...resolved)
+    }
+  }
+  async function settle() {
+    await drainPendingRequests()
+    await drainPendingApiBodies()
+  }
+
   async function finish() {
-    const apiResponses = []
-    const requests = []
-    const drainPendingRequests = async () => {
-      while (pendingRequests.size) {
-        const batch = [...pendingRequests]
-        const resolved = await Promise.all(batch)
-        for (const promise of batch) pendingRequests.delete(promise)
-        requests.push(...resolved)
-      }
-    }
-    const drainPendingApiBodies = async () => {
-      while (pendingApiBodies.size) {
-        const batch = [...pendingApiBodies]
-        const resolved = await Promise.all(batch)
-        for (const promise of batch) pendingApiBodies.delete(promise)
-        apiResponses.push(...resolved)
-      }
-    }
     let pageContent = ''
     try {
       await page.waitForLoadState('networkidle')
-      await drainPendingRequests()
-      await drainPendingApiBodies()
+      await settle()
       pageContent = await page.content()
-      await drainPendingRequests()
-      await drainPendingApiBodies()
+      await settle()
     } finally {
       page.off('request', onRequest)
       page.off('response', onResponse)
@@ -326,5 +329,5 @@ export function observeRuntime(page) {
     }
   }
 
-  return { finish }
+  return { finish, settle }
 }
