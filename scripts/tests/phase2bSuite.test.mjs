@@ -40,6 +40,26 @@ function readWorkspaceFile(relativePath) {
 }
 
 
+function extractInlinePython(source, name) {
+  return source.match(new RegExp(
+    `const ${name} = String\\.raw\`([\\s\\S]*?)\`\\r?\\n`,
+    'u',
+  ))
+}
+
+
+function extractArchivedSeedRegression(source) {
+  return source.match(
+    /async def test_archived_project_retains_readable_seed_state_but_rejects_mutations\([\s\S]*?\r?\n\r?\nasync def install_matching_contract/u,
+  )?.[0] || ''
+}
+
+
+function withLineEndings(source, lineEnding) {
+  return source.replace(/\r?\n/gu, '\n').replaceAll('\n', lineEnding)
+}
+
+
 test('Phase 2B exposes one closed browser entrypoint', () => {
   const rootPackage = JSON.parse(readWorkspaceFile('package.json'))
   const frontendPackage = JSON.parse(readWorkspaceFile('frontend/package.json'))
@@ -294,12 +314,21 @@ test('runner source explicitly seeds sources, injects fakes, and delegates lifec
 test('runner inline Python is ASCII-safe across the Windows owned-process boundary', () => {
   const source = readWorkspaceFile('frontend/e2e/run-phase2b.mjs')
   for (const name of ['FIXTURE_SOURCE', 'BACKEND_SOURCE', 'VERIFICATION_SOURCE']) {
-    const match = source.match(new RegExp(
-      `const ${name} = String\\.raw\`([\\s\\S]*?)\`\\n`,
-      'u',
-    ))
+    const match = extractInlinePython(source, name)
     assert.ok(match, `missing ${name}`)
     assert.doesNotMatch(match[1], /[^\u0000-\u007f]/u, name)
+  }
+})
+
+
+test('runner inline Python extraction accepts LF and CRLF checkouts', () => {
+  const source = readWorkspaceFile('frontend/e2e/run-phase2b.mjs')
+
+  for (const lineEnding of ['\n', '\r\n']) {
+    const normalizedSource = withLineEndings(source, lineEnding)
+    for (const name of ['FIXTURE_SOURCE', 'BACKEND_SOURCE', 'VERIFICATION_SOURCE']) {
+      assert.ok(extractInlinePython(normalizedSource, name), `missing ${name}`)
+    }
   }
 })
 
@@ -320,9 +349,7 @@ test('archived seed regression freezes full state and rejects every seed mutatio
   const source = readWorkspaceFile(
     'backend/tests/integration/test_seed_revisions.py',
   )
-  const regression = source.match(
-    /async def test_archived_project_retains_readable_seed_state_but_rejects_mutations\([\s\S]*?\n\nasync def install_matching_contract/u,
-  )?.[0] || ''
+  const regression = extractArchivedSeedRegression(source)
 
   for (const required of [
     '"identities"',
@@ -338,6 +365,20 @@ test('archived seed regression freezes full state and rejects every seed mutatio
     'service.restore(',
     'state_after == state_before',
   ]) assert.match(regression, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
+})
+
+
+test('archived seed regression extraction accepts LF and CRLF checkouts', () => {
+  const source = readWorkspaceFile(
+    'backend/tests/integration/test_seed_revisions.py',
+  )
+
+  for (const lineEnding of ['\n', '\r\n']) {
+    assert.notEqual(
+      extractArchivedSeedRegression(withLineEndings(source, lineEnding)),
+      '',
+    )
+  }
 })
 
 
