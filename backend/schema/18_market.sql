@@ -354,9 +354,9 @@ CREATE TABLE style_trial_attempts (
   UNIQUE KEY uq_style_trial_attempt_identity (project_id, id, result_hash),
   FOREIGN KEY (project_id, selection_revision) REFERENCES project_seed_selection_revisions(project_id, selection_revision) ON DELETE RESTRICT,
   FOREIGN KEY (project_id, binding_revision_id, binding_hash) REFERENCES project_model_binding_revisions(project_id, id, content_hash) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','running','succeeded','failed','outcome_unknown')),
+  CHECK (status IN ('running','succeeded','failed','outcome_unknown')),
   CHECK (
-    (status IN ('reserved','running') AND result_json IS NULL
+    (status = 'running' AND result_json IS NULL
       AND result_hash IS NULL AND public_error_code IS NULL
       AND completed_at IS NULL)
     OR (status = 'succeeded' AND result_json IS NOT NULL
@@ -375,7 +375,7 @@ CREATE TABLE style_trial_requests (
   idempotency_key CHAR(64) NOT NULL,
   request_hash CHAR(64) NOT NULL,
   status VARCHAR(24) NOT NULL,
-  attempt_id CHAR(36) NULL,
+  attempt_id CHAR(36) NOT NULL,
   result_hash CHAR(64) NULL,
   public_error_code VARCHAR(64) NULL,
   created_at BIGINT NOT NULL,
@@ -384,14 +384,14 @@ CREATE TABLE style_trial_requests (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, attempt_id) REFERENCES style_trial_attempts(project_id, id) ON DELETE RESTRICT,
   FOREIGN KEY (project_id, attempt_id, result_hash) REFERENCES style_trial_attempts(project_id, id, result_hash) ON DELETE RESTRICT,
-  CHECK (status IN ('reserved','succeeded','failed','outcome_unknown')),
+  CHECK (status IN ('running','succeeded','failed','outcome_unknown')),
   CHECK (
-    (status = 'reserved' AND attempt_id IS NULL AND result_hash IS NULL
+    (status = 'running' AND attempt_id IS NOT NULL AND result_hash IS NULL
       AND public_error_code IS NULL AND completed_at IS NULL)
     OR (status = 'succeeded' AND attempt_id IS NOT NULL
       AND result_hash IS NOT NULL AND public_error_code IS NULL
       AND completed_at IS NOT NULL)
-    OR (status = 'failed' AND result_hash IS NULL
+    OR (status = 'failed' AND attempt_id IS NOT NULL AND result_hash IS NULL
       AND public_error_code IS NOT NULL AND completed_at IS NOT NULL)
     OR (status = 'outcome_unknown' AND attempt_id IS NOT NULL
       AND result_hash IS NULL AND public_error_code IS NOT NULL

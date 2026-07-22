@@ -23,6 +23,7 @@ from backend.routers import (
     projects,
     providers,
     seeds,
+    style_trials,
     story_engines,
 )
 from backend.schema_version import verify_schema_version
@@ -100,6 +101,7 @@ app.include_router(application_settings.router, prefix="/api")
 app.include_router(model_bindings.router, prefix="/api")
 app.include_router(seeds.router, prefix="/api")
 app.include_router(story_engines.router, prefix="/api")
+app.include_router(style_trials.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
 app.include_router(planning.router, prefix="/api")
 app.include_router(chapter_sessions.router, prefix="/api")

@@ -52,6 +52,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/{pid}/story-engine-batches/recoverable"),
     ("GET", "/api/projects/{pid}/story-engine-batches/{batch_id}"),
     ("POST", "/api/projects/{pid}/story-engine-batches/{batch_id}/reconcile"),
+    ("POST", "/api/projects/{pid}/style-trials"),
     ("GET", "/api/projects/{pid}/contract-draft"),
     ("PUT", "/api/projects/{pid}/contract-draft"),
     ("POST", "/api/projects/{pid}/contracts/preview"),

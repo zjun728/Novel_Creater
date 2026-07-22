@@ -423,6 +423,21 @@ def test_market_and_generation_ledgers_freeze_safe_identities():
         recommendation_request
     )
 
+    style_trial_attempt = _table_statement("style_trial_attempts")
+    style_trial_request = _table_statement("style_trial_requests")
+    assert "status in ('running','succeeded','failed','outcome_unknown')" in (
+        style_trial_attempt
+    )
+    assert "status in ('running','succeeded','failed','outcome_unknown')" in (
+        style_trial_request
+    )
+    assert (
+        "status = 'running' and attempt_id is not null and result_hash is null"
+        in style_trial_request
+    )
+    assert "status = 'reserved'" not in style_trial_attempt
+    assert "status = 'reserved'" not in style_trial_request
+
 
 def test_generation_numbering_is_scoped_to_the_immutable_planning_root():
     volumes = _table_statement("volume_plans")
