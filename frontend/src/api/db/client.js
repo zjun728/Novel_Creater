@@ -93,6 +93,10 @@ const STYLE_TRIAL_FIELDS = [
   'secondaryStyleRevisionId', 'secondaryStyleHash',
   'authorScenario', 'idempotencyKey',
 ]
+const ASSET_RECOMMENDATION_FIELDS = [
+  'idempotencyKey', 'engineOptionId', 'taxonomyVersion', 'taxonomyHash',
+  'genre', 'creationStage', 'status', 'prohibitedDirections',
+]
 
 const seedPayload = value => pickDefined(value, SEED_FIELDS)
 const seedProvenance = value => pickDefined(value, [
@@ -415,16 +419,9 @@ export const api = {
       })}`),
       get: revisionId => get(`/assets/experience-cards/${segment(revisionId)}`),
     },
-    recommendations: (projectId, engineOptionId, scope = {}) => get(
-      `/projects/${segment(projectId)}/asset-recommendations${queryString({
-        engineOptionId,
-        genres: scope.genres,
-        channels: scope.channels,
-        creationStages: scope.creationStages,
-        writingPurposes: scope.writingPurposes,
-        prohibitedDirections: scope.prohibitedDirections,
-        status: scope.status,
-      })}`,
+    recommendations: (projectId, data) => post(
+      `/projects/${segment(projectId)}/asset-recommendations`,
+      pickDefined(data, ASSET_RECOMMENDATION_FIELDS),
     ),
   },
 

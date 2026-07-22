@@ -1260,6 +1260,9 @@ async def test_creative_inventory_and_status_filter_use_all_current_heads(
     archived = await service.list_styles(status="archived")
 
     assert inventory.style_count == 10
+    assert inventory.taxonomy_package_hash == (
+        taxonomy.manifest.eligibility_file.sha256
+    )
     assert inventory.statuses == ("active", "archived")
     assert len(active) == 9
     assert len(archived) == 1
@@ -1363,6 +1366,40 @@ class RecordingReadSession:
 
     async def execute(self, *args, **kwargs):
         raise AssertionError("read repository must not execute DML")
+
+
+@pytest.mark.asyncio
+async def test_recommendation_input_lock_avoids_reserved_story_engine_alias():
+    session = RecordingReadSession()
+    repository = AssetRepository()
+
+    await repository.lock_recommendation_inputs(
+        session, "project-1", "engine-1"
+    )
+    await repository._publication_inputs_match(
+        session,
+        {
+            "project_id": "project-1",
+            "input_manifest": {
+                "selection": {},
+                "engine": {"id": "engine-1"},
+                "binding": {},
+                "selectedStyles": [],
+                "assetCandidates": [],
+                "corpusCandidates": [],
+            },
+        },
+    )
+
+    engine_queries = [
+        " ".join(sql.casefold().split())
+        for operation, sql, _ in session.events
+        if operation == "fetchone" and "story_engine_options" in sql
+    ]
+    assert len(engine_queries) == 2
+    for query in engine_queries:
+        assert "story_engine_options engine_option" in query
+        assert "engine_option.id" in query
 
 
 @pytest.mark.asyncio

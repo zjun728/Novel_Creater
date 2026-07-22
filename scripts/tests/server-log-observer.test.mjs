@@ -61,7 +61,7 @@ test('server observer scans the full stream even after bounded capture truncates
 
 
 test('server observer detects password database or DSN leaks after truncation without echo', async () => {
-  const { browserSensitiveValues } = await import('../../frontend/e2e/run-milestone2.mjs')
+  const { runtimeSensitiveValues } = await import('../../frontend/e2e/runtime-observer.mjs')
   const { createServerLogObserver } = await import('../../frontend/e2e/server-log-observer.mjs')
   const environment = {
     TEST_MYSQL_HOST: '127.0.0.1',
@@ -70,8 +70,13 @@ test('server observer detects password database or DSN leaks after truncation wi
     TEST_MYSQL_PASSWORD: 'p@ss:/word',
   }
   const database = 'novel_creator_test_0123456789abcdef0123456789abcdef'
-  const root = 'C:\\Temp\\novel-creator-m2-corpus-sensitive'
-  const values = browserSensitiveValues(environment, database, root)
+  const values = runtimeSensitiveValues({
+    MYSQL_HOST: environment.TEST_MYSQL_HOST,
+    MYSQL_PORT: environment.TEST_MYSQL_PORT,
+    MYSQL_USER: environment.TEST_MYSQL_USER,
+    MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD,
+    MYSQL_DB: database,
+  })
   const rawDsn = `mysql://${environment.TEST_MYSQL_USER}:${environment.TEST_MYSQL_PASSWORD}`
     + `@${environment.TEST_MYSQL_HOST}:${environment.TEST_MYSQL_PORT}/${database}`
   const encodedDsn = `mysql://${encodeURIComponent(environment.TEST_MYSQL_USER)}`

@@ -42,9 +42,27 @@ const steps = Object.freeze([
 ])
 
 const selectedSeed = computed(() => seedStore.selectedSeed)
-const hasConfirmedContract = computed(() => (
-  contractStore.head?.hasContract === true && (!contractStore.draft || props.readOnly)
+const hasSignedHead = computed(() => contractStore.head?.hasContract === true)
+const hasCurrentContract = computed(() => (
+  hasSignedHead.value
+  && contractStore.contractReady
+  && !contractStore.draft
+  && !props.readOnly
 ))
+const hasArchivedSignedContract = computed(() => props.readOnly && hasSignedHead.value)
+const displayedSignedContract = computed(() => (
+  hasCurrentContract.value || hasArchivedSignedContract.value
+))
+const archivedInvalidReasons = computed(() => {
+  if (!hasArchivedSignedContract.value) return []
+  const detailed = Array.isArray(contractStore.head?.supersededReasons)
+    ? contractStore.head.supersededReasons
+    : []
+  const readiness = contractStore.readinessReasons.filter(reason => (
+    reason !== 'superseded' || detailed.length === 0
+  ))
+  return [...new Set([...detailed, ...readiness])]
+})
 const selectionDrift = computed(() => {
   const draft = contractStore.draft?.draft
   if (!draft || !selectedSeed.value) return false
@@ -75,6 +93,17 @@ const operationLabel = computed(() => {
   if (contractStore.previewing) return '正在核对冻结引用'
   return '正在保存创作契约草稿'
 })
+
+function readinessReasonLabel(reason) {
+  return {
+    contract_revision_replaced: '已被更新修订取代',
+    selection_revision_changed: '种子选择代次已改变',
+    selection_generation_superseded: '种子选择代次已改变',
+    seed_drift: '种子身份已改变',
+    binding_drift: '模型绑定已改变',
+    superseded: '已被后续状态取代',
+  }[reason] || reason
+}
 
 function canOpen(target) {
   return target >= 1 && target <= maxOpenStep.value
@@ -178,8 +207,9 @@ onBeforeUnmount(() => {
       </div>
       <div class="ledger-tools">
         <n-button v-if="contractStore.head?.hasContract" quaternary @click="historyOpen = true">历史修订</n-button>
-        <n-tag v-if="props.readOnly" type="warning" round :bordered="false">只读档案</n-tag>
-        <n-tag v-else-if="hasConfirmedContract" type="success" round :bordered="false">已签印</n-tag>
+        <n-tag v-if="hasArchivedSignedContract" type="warning" round :bordered="false">最后签印的历史契约</n-tag>
+        <n-tag v-else-if="props.readOnly" type="warning" round :bordered="false">只读档案</n-tag>
+        <n-tag v-else-if="hasCurrentContract" type="success" round :bordered="false">已签印</n-tag>
         <n-tag v-else round :bordered="false">草稿中</n-tag>
       </div>
     </header>
@@ -231,12 +261,21 @@ onBeforeUnmount(() => {
         </template>
       </n-result>
 
-      <article v-if="selectedSeed && hasConfirmedContract" class="confirmed-ledger">
+      <article v-if="displayedSignedContract" class="confirmed-ledger">
         <div class="confirmed-seal" aria-hidden="true">契</div>
         <div>
           <span>IMMUTABLE REVISION · R{{ contractStore.head.revision }}</span>
-          <h2>当前生效的创作契约</h2>
-          <p>这份修订已经签印，只读且不可覆盖。调整只会从历史修订建立一份面向未来的新草稿。</p>
+          <h2>{{ hasArchivedSignedContract ? '最后签印的历史契约' : '当前生效的创作契约' }}</h2>
+          <p v-if="hasArchivedSignedContract">这是项目归档前最后签印的不可变修订，仅用于历史核对，不代表当前输入仍然就绪。</p>
+          <p v-else>这份修订已经签印，只读且不可覆盖。调整只会从历史修订建立一份面向未来的新草稿。</p>
+          <n-alert
+            v-if="archivedInvalidReasons.length"
+            type="warning"
+            title="这份历史契约已不再就绪"
+            class="checkpoint-alert"
+          >
+            <span v-for="reason in archivedInvalidReasons" :key="reason">{{ readinessReasonLabel(reason) }}</span>
+          </n-alert>
           <div class="confirmed-facts">
             <span>种子 {{ contractStore.head.seedRef?.revisionId || '—' }}</span>
             <span>风格 {{ contractStore.head.styleRefs?.length || 0 }} 套</span>

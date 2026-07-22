@@ -18,6 +18,7 @@ const errorRegion = ref(null)
 const selectedExperienceIds = ref([])
 const explicitExperienceRefs = ref({})
 const selectedCorpusFragments = ref([])
+const recommendedReferenceUses = ref({})
 const corpusBrowserSource = ref(null)
 const corpusChapters = ref([])
 const selectedChapterId = ref(null)
@@ -26,7 +27,8 @@ let loadEpoch = 0
 let fragmentEpoch = 0
 
 const draftValues = computed(() => contractStore.draft?.draft || null)
-const recommendedCards = computed(() => assetStore.recommendations?.experienceCards || [])
+const recommendedCards = computed(() => assetStore.recommendedExperienceCards)
+const recommendedCorpusFragments = computed(() => assetStore.recommendedCorpusFragments)
 const experienceOptions = computed(() => assetStore.experienceCards.map(card => ({
   label: `${card.title} · ${card.category}`,
   value: card.id,
@@ -48,6 +50,12 @@ const previewBudgetUsed = computed(() => selectedCorpusFragments.value.reduce(
   0,
 ))
 const previewBudgetRemaining = computed(() => Math.max(0, 4000 - previewBudgetUsed.value))
+const REFERENCE_USE_OPTIONS = Object.freeze([
+  { label: '文风', value: 'style' },
+  { label: '结构', value: 'structure' },
+  { label: '灵感', value: 'inspiration' },
+  { label: '事实核对', value: 'fact_check' },
+])
 
 const REASON_LABELS = Object.freeze({
   'category-profile': '类别适配',
@@ -244,8 +252,66 @@ function removeFragment(selection) {
   markDirty()
 }
 
+function recommendationSelection(recommendation) {
+  return selectedFragment(
+    recommendation.source.id,
+    recommendation.chapterId,
+    recommendation.fragmentId,
+  )
+}
+
+function updateRecommendedReferenceUse(recommendation, value) {
+  if (contractStore.saving) return
+  const selected = recommendationSelection(recommendation)
+  if (selected) {
+    updateReferenceUse(selected, value)
+    return
+  }
+  recommendedReferenceUses.value = {
+    ...recommendedReferenceUses.value,
+    [recommendation.fragmentId]: value,
+  }
+}
+
+function toggleRecommendedCorpus(recommendation) {
+  if (contractStore.saving) return
+  const selected = recommendationSelection(recommendation)
+  if (selected) {
+    removeFragment(selected)
+    return
+  }
+  const referenceUse = recommendedReferenceUses.value[recommendation.fragmentId]
+  if (!referenceUse) return
+  const length = recommendation.rangeEnd - recommendation.rangeStart
+  if (length < 1 || length > 300 || previewBudgetUsed.value + length > 4000) {
+    void showError('推荐范围须为 1–300 字，全部片段合计不超过 4000 字。')
+    return
+  }
+  const source = recommendation.source
+  if (!source.revisionId) {
+    void showError('推荐语料版本身份不完整，请重新加载完整语料库。')
+    return
+  }
+  selectedCorpusFragments.value = [...selectedCorpusFragments.value, {
+    key: fragmentKey(source.id, recommendation.chapterId, recommendation.fragmentId),
+    source: { ...source },
+    chapterId: recommendation.chapterId,
+    fragmentId: recommendation.fragmentId,
+    fragmentHash: recommendation.fragmentHash,
+    chapterCharStart: recommendation.rangeStart,
+    chapterCharEnd: recommendation.rangeEnd,
+    fragmentMin: recommendation.rangeStart,
+    fragmentMax: recommendation.rangeEnd,
+    referenceUse,
+    preview: '',
+  }]
+  saveError.value = ''
+  markDirty()
+}
+
 function hydrateFromDraft(draft) {
   explicitExperienceRefs.value = {}
+  recommendedReferenceUses.value = {}
   if (draft?.draftStage === 'assets') {
     selectedExperienceIds.value = (draft.experienceCardRefs || []).map(item => item.id)
     selectedCorpusFragments.value = (draft.corpusSourceRefs || []).flatMap(source => (
@@ -279,7 +345,9 @@ async function initialize(projectId, { reloadContract = false } = {}) {
     if (!draft?.engineOptionId || !draft?.primaryStyleRef) throw new Error('请先完成并保存风格契约。')
     await Promise.all([
       assetStore.loadExperienceCards(),
-      assetStore.loadRecommendations(projectId, draft.engineOptionId, draft),
+      assetStore.loadRecommendations(projectId, draft.engineOptionId, draft, {
+        selectionRevision: contractStore.draft?.selectionRevision,
+      }),
       corpusStore.loadSources(),
     ])
     if (epoch !== loadEpoch) return
@@ -370,8 +438,36 @@ onBeforeUnmount(() => { loadEpoch += 1; fragmentEpoch += 1 })
       </section>
 
       <section class="asset-section corpus-section" aria-labelledby="corpus-heading">
-        <div class="section-title"><div><span>完整语料库</span><h3 id="corpus-heading">选择来源，再圈定片段与字数范围</h3></div><strong>{{ selectedCorpusFragments.length }} 个片段</strong></div>
+        <div class="section-title"><div><span>语料授权</span><h3 id="corpus-heading">推荐与完整语料库都须由作者明确选择</h3></div><strong>{{ selectedCorpusFragments.length }} 个片段</strong></div>
         <div class="budget-meter" role="status" aria-live="polite"><span>有界预览预算</span><strong>{{ previewBudgetUsed }} / 4000 字</strong><small>剩余 {{ previewBudgetRemaining }} 字；单个范围最多 300 字。</small></div>
+        <section class="corpus-recommendations" aria-labelledby="recommended-corpus-heading">
+          <div class="subsection-title"><span>正式候选</span><h4 id="recommended-corpus-heading">推荐语料片段</h4></div>
+          <n-empty v-if="!recommendedCorpusFragments.length" description="当前没有语料片段推荐；完整语料库仍可浏览" />
+          <div v-else class="corpus-recommendation-grid">
+            <article v-for="recommendation in recommendedCorpusFragments" :key="recommendation.fragmentId" :class="{ selected: recommendationSelection(recommendation) }">
+              <div><n-tag size="small" :bordered="false">{{ recommendation.source.name }}</n-tag><small>r{{ recommendation.source.revision }} · {{ recommendation.rangeStart }}–{{ recommendation.rangeEnd }}</small></div>
+              <strong>片段 {{ recommendation.fragmentId }}</strong>
+              <p>{{ recommendation.use }}</p>
+              <div><n-tag v-for="reason in recommendation.reasonCodes" :key="reason" size="small" :bordered="false">{{ reasonLabel(reason) }}</n-tag><span>{{ Math.round(recommendation.confidence * 100) }}%</span></div>
+              <n-select
+                :value="recommendationSelection(recommendation)?.referenceUse || recommendedReferenceUses[recommendation.fragmentId] || null"
+                :options="REFERENCE_USE_OPTIONS"
+                :aria-label="`推荐片段 ${recommendation.fragmentId} 的引用方式`"
+                placeholder="先选择引用方式"
+                @update:value="value => updateRecommendedReferenceUse(recommendation, value)"
+              />
+              <n-button
+                block
+                size="small"
+                :aria-pressed="Boolean(recommendationSelection(recommendation))"
+                :disabled="!recommendationSelection(recommendation) && !recommendedReferenceUses[recommendation.fragmentId]"
+                @click="toggleRecommendedCorpus(recommendation)"
+              >{{ recommendationSelection(recommendation) ? '移出推荐范围' : '明确纳入推荐范围' }}</n-button>
+            </article>
+          </div>
+        </section>
+
+        <div class="subsection-title full-corpus-title"><span>完整语料库</span><h4>选择来源，再圈定片段与字数范围</h4></div>
         <n-empty v-if="!visibleCorpusSources.length" description="完整语料库暂无可用来源；可以零选继续" />
         <div v-else class="source-list"><button v-for="source in visibleCorpusSources" :key="source.id" type="button" :class="{ active: corpusBrowserSource?.id === source.id }" @click="chooseCorpusSource(source)"><strong>{{ source.name }}</strong><span>r{{ source.revision }} · {{ source.fragmentCount || 0 }} 片段 · {{ source.shortHash }}</span></button></div>
 
@@ -386,7 +482,7 @@ onBeforeUnmount(() => { loadEpoch += 1; fragmentEpoch += 1 })
           </n-spin>
         </section>
 
-        <section v-if="selectedCorpusFragments.length" class="range-ledger" aria-labelledby="selected-fragments-heading"><h4 id="selected-fragments-heading">已选片段与范围</h4><article v-for="selection in selectedCorpusFragments" :key="selection.key"><div><strong>{{ selection.source.name }}</strong><small>{{ selection.preview }}</small></div><label><span>起</span><n-input-number :value="selection.chapterCharStart" :min="selection.fragmentMin" :max="selection.fragmentMax - 1" @update:value="value => updateFragment(selection, 'chapterCharStart', value)" /></label><label><span>止</span><n-input-number :value="selection.chapterCharEnd" :min="selection.fragmentMin + 1" :max="selection.fragmentMax" @update:value="value => updateFragment(selection, 'chapterCharEnd', value)" /></label><n-select :value="selection.referenceUse" :options="[{ label: '文风', value: 'style' }, { label: '结构', value: 'structure' }, { label: '灵感', value: 'inspiration' }, { label: '事实核对', value: 'fact_check' }]" @update:value="value => updateReferenceUse(selection, value)" /><n-button quaternary size="small" @click="removeFragment(selection)">移出</n-button></article></section>
+        <section v-if="selectedCorpusFragments.length" class="range-ledger" aria-labelledby="selected-fragments-heading"><h4 id="selected-fragments-heading">已选片段与范围</h4><article v-for="selection in selectedCorpusFragments" :key="selection.key"><div><strong>{{ selection.source.name }}</strong><small>{{ selection.preview || `片段 ${selection.fragmentId} · ${selection.fragmentMin}–${selection.fragmentMax}` }}</small></div><label><span>起</span><n-input-number :value="selection.chapterCharStart" :min="selection.fragmentMin" :max="selection.fragmentMax - 1" @update:value="value => updateFragment(selection, 'chapterCharStart', value)" /></label><label><span>止</span><n-input-number :value="selection.chapterCharEnd" :min="selection.fragmentMin + 1" :max="selection.fragmentMax" @update:value="value => updateFragment(selection, 'chapterCharEnd', value)" /></label><n-select :value="selection.referenceUse" :options="REFERENCE_USE_OPTIONS" @update:value="value => updateReferenceUse(selection, value)" /><n-button quaternary size="small" @click="removeFragment(selection)">移出</n-button></article></section>
         <p v-if="selectedCorpusSources.length" class="source-count">已授权 {{ selectedCorpusSources.length }} 个来源，只冻结上列片段，不把整书送入生成。</p>
       </section>
     </template>
@@ -423,6 +519,17 @@ onBeforeUnmount(() => { loadEpoch += 1; fragmentEpoch += 1 })
 .selection-ledger { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .selection-ledger span { padding: 4px 8px; border-radius: 999px; background: #eee7da; font-size: 10px; }
 .corpus-section { padding-top: 26px; border-top: 1px solid #dcd2c1; }
+.subsection-title { margin-bottom: 10px; }
+.subsection-title span { color: var(--cinnabar, #9c3d2f); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
+.subsection-title h4 { margin: 4px 0 0; font-family: 'Noto Serif SC', serif; font-size: 17px; }
+.corpus-recommendations { margin-bottom: 22px; padding: 16px; border: 1px solid var(--rule, #d3c5af); background: var(--paper, #f8f3e8); }
+.corpus-recommendation-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.corpus-recommendation-grid article { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--rule, #ddd2be); background: var(--paper, #fffdf8); }
+.corpus-recommendation-grid article.selected { border-color: var(--jade, #4f725b); box-shadow: inset 3px 0 0 var(--jade, #4f725b); }
+.corpus-recommendation-grid article > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; }
+.corpus-recommendation-grid p { margin: 0; color: var(--muted, #675f54); font-size: 11px; line-height: 1.7; }
+.corpus-recommendation-grid small, .corpus-recommendation-grid article > div > span { color: #867969; font-size: 9px; }
+.full-corpus-title { margin-top: 8px; }
 .budget-meter { display: grid; grid-template-columns: 1fr auto; gap: 3px 14px; margin-bottom: 13px; padding: 13px 15px; border-left: 4px solid var(--cinnabar, #9c3d2f); background: var(--paper, #f5eee1); }
 .budget-meter span { color: var(--cinnabar, #9c3d2f); font-size: 10px; font-weight: 800; }
 .budget-meter small { grid-column: 1 / -1; color: #776d60; font-size: 10px; }

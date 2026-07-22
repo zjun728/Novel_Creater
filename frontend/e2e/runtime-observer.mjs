@@ -71,6 +71,155 @@ function matchesPath(expected, actual) {
   return expected.test(actual)
 }
 
+function exactResponseFailureRules(allowlist) {
+  if (!Array.isArray(allowlist)) {
+    throw new TypeError('Runtime response failure allowlist is invalid')
+  }
+  const seen = new Set()
+  return allowlist.map(rule => {
+    if (
+      !Number.isInteger(rule?.status)
+      || rule.status < 100
+      || rule.status > 599
+      || typeof rule.method !== 'string'
+      || !/^[A-Z]+$/u.test(rule.method)
+      || typeof rule.pathname !== 'string'
+      || !rule.pathname.startsWith('/')
+      || !Number.isInteger(rule.count)
+      || rule.count < 1
+    ) throw new TypeError('Runtime response failure allowlist is invalid')
+    const key = `${String(rule.status)}\u0000${rule.method}\u0000${rule.pathname}`
+    if (seen.has(key)) {
+      throw new TypeError('Runtime response failure allowlist is invalid')
+    }
+    seen.add(key)
+    return { ...rule }
+  })
+}
+
+function parsedResponseFailure(value) {
+  const match = String(value || '').match(/^(\d{3}) ([A-Z]+) (\S+)$/u)
+  if (!match) return null
+  try {
+    return {
+      status: Number(match[1]),
+      method: match[2],
+      pathname: new URL(match[3]).pathname,
+    }
+  } catch {
+    return null
+  }
+}
+
+function consumeResponseFailures(failures, allowlist) {
+  const rules = exactResponseFailureRules(allowlist)
+  const matches = new Array(rules.length).fill(0)
+  for (const failure of failures) {
+    const parsed = parsedResponseFailure(failure)
+    if (!parsed) return null
+    const indexes = rules.flatMap((rule, index) => (
+      rule.status === parsed.status
+      && rule.method === parsed.method
+      && rule.pathname === parsed.pathname
+        ? [index]
+        : []
+    ))
+    if (indexes.length !== 1) return null
+    matches[indexes[0]] += 1
+  }
+  if (!rules.every((rule, index) => matches[index] === rule.count)) return null
+  return { rules, matches }
+}
+
+function consoleErrorsAreAllowed(errors, allowlist, consumedResponses) {
+  if (!Array.isArray(allowlist)) {
+    throw new TypeError('Runtime console error allowlist is invalid')
+  }
+  const seenMessages = new Set()
+  const rules = allowlist.map(rule => {
+    const link = rule?.linkedResponseFailure
+    if (
+      typeof rule?.message !== 'string'
+      || rule.message.length === 0
+      || !Number.isInteger(rule.count)
+      || rule.count < 1
+      || !Number.isInteger(link?.status)
+      || typeof link.method !== 'string'
+      || typeof link.pathname !== 'string'
+      || seenMessages.has(rule.message)
+    ) throw new TypeError('Runtime console error allowlist is invalid')
+    const linkedIndexes = consumedResponses.rules.flatMap((responseRule, index) => (
+      responseRule.status === link.status
+      && responseRule.method === link.method
+      && responseRule.pathname === link.pathname
+        ? [index]
+        : []
+    ))
+    if (linkedIndexes.length !== 1) {
+      throw new TypeError('Runtime console error allowlist is invalid')
+    }
+    const linkedIndex = linkedIndexes[0]
+    if (consumedResponses.matches[linkedIndex] !== consumedResponses.rules[linkedIndex].count) {
+      return null
+    }
+    seenMessages.add(rule.message)
+    return { message: rule.message, count: rule.count }
+  })
+  if (rules.includes(null)) return false
+  const counts = new Array(rules.length).fill(0)
+  for (const error of errors) {
+    const indexes = rules.flatMap((rule, index) => (
+      rule.message === error ? [index] : []
+    ))
+    if (indexes.length !== 1) return false
+    counts[indexes[0]] += 1
+  }
+  return rules.every((rule, index) => counts[index] === rule.count)
+}
+
+export function assertRuntimeEvidenceHealthy(evidence, {
+  responseFailureAllowlist = [],
+  consoleErrorAllowlist = [],
+} = {}) {
+  const responseFailures = Array.isArray(evidence?.responseFailures)
+    ? evidence.responseFailures
+    : []
+  const consumedResponses = consumeResponseFailures(
+    responseFailures,
+    responseFailureAllowlist,
+  )
+  if (!consumedResponses) {
+    throw new Error('Runtime evidence contains response failures')
+  }
+  const consoleErrors = Array.isArray(evidence?.consoleErrors)
+    ? evidence.consoleErrors
+    : []
+  if (!consoleErrorsAreAllowed(
+    consoleErrors,
+    consoleErrorAllowlist,
+    consumedResponses,
+  )) throw new Error('Runtime evidence contains console errors')
+  if (Array.isArray(evidence?.pageErrors) && evidence.pageErrors.length > 0) {
+    throw new Error('Runtime evidence contains page errors')
+  }
+  if (Array.isArray(evidence?.requestFailures) && evidence.requestFailures.length > 0) {
+    throw new Error('Runtime evidence contains request failures')
+  }
+  if ((evidence?.apiResponses || []).some(item => item?.headersReadError)) {
+    throw new Error('Runtime API response headers could not be read')
+  }
+  if ((evidence?.apiResponses || []).some(item => item?.bodyReadError)) {
+    throw new Error('Runtime API response bodies could not be read')
+  }
+  if ((evidence?.requests || []).some(item => item?.headersReadError)) {
+    throw new Error('Runtime request headers could not be read')
+  }
+  if ((evidence?.requests || []).some(item => item?.bodyReadError)) {
+    throw new Error('Runtime request bodies could not be read')
+  }
+  return { healthy: true }
+}
+
 export function assertExactWrites(evidence, allowlist) {
   if (!Array.isArray(allowlist)) throw new TypeError('write allowlist must be an array')
   const ruleKeys = new Set()

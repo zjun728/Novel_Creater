@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api } from '../api/db/client.js'
+import { useCorpusStore } from './corpusStore.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 function immutableKey(id, contentHash) {
@@ -35,58 +36,138 @@ const PROHIBITED_DIRECTIONS = Object.freeze([
   'slow_burn',
   'dense_exposition',
 ])
-const PURPOSES_BY_GENRE = Object.freeze({
-  fantasy: ['progression_economy'],
-  xianxia: ['progression_economy'],
-  wuxia: ['progression_economy'],
-  historical: ['long_arc_continuity'],
-  science_fiction: ['long_arc_continuity'],
-  urban: ['dialogue'],
-  romance: ['emotion', 'dialogue'],
-  mystery: ['suspense'],
-  horror: ['suspense'],
-  general: [],
-})
-
 function normalizedProfileText(...values) {
   return values.map(value => String(value || '').normalize('NFKC').toLowerCase()).join(' ')
 }
 
 function recommendationScope(draft) {
-  if (!draft?.genreProfileKey || !draft?.channelProfileKey) {
+  if (!draft?.genreProfileKey) {
     throw new Error('创作契约推荐上下文不完整')
   }
   const genreText = normalizedProfileText(draft.genreProfileKey)
   const genre = GENRE_PROFILE_SIGNALS.find(([, signals]) => (
     signals.some(signal => genreText.includes(signal))
   ))?.[0] || 'general'
-  const channelText = normalizedProfileText(draft.channelProfileKey)
-  const channel = ['female', '女频', '晋江', '潇湘'].some(
-    signal => channelText.includes(signal),
-  )
-    ? 'female_frequency'
-    : ['male', '男频', '起点', 'qidian', 'qq'].some(
-      signal => channelText.includes(signal),
-    )
-      ? 'male_frequency'
-      : 'all'
   const dislikes = new Set(Array.isArray(draft.dislikes) ? draft.dislikes : [])
   return {
-    genres: [genre],
-    channels: [channel],
-    creationStages: ['drafting'],
-    writingPurposes: [
-      'style_direction',
-      'plot_organization',
-      'character_arcs',
-      ...PURPOSES_BY_GENRE[genre],
-    ],
+    genre,
+    creationStage: 'drafting',
     prohibitedDirections: PROHIBITED_DIRECTIONS.filter(value => dislikes.has(value)),
     status: 'active',
   }
 }
 
+function frozenRefFingerprint(ref) {
+  if (!ref) return null
+  return [ref.id || null, ref.revision || null, ref.contentHash || null]
+}
+
+function recommendationFingerprint(projectId, engineOptionId, taxonomy, scope, draft, context) {
+  return JSON.stringify({
+    projectId: String(projectId || ''),
+    engineOptionId: String(engineOptionId || ''),
+    taxonomyVersion: taxonomy.taxonomyPackageVersion,
+    taxonomyHash: taxonomy.taxonomyPackageHash,
+    genre: scope.genre,
+    creationStage: scope.creationStage,
+    status: scope.status,
+    prohibitedDirections: scope.prohibitedDirections,
+    selectionRevision: context?.selectionRevision ?? draft?.selectionRevision ?? null,
+    seedHash: draft?.seedHash ?? null,
+    engineHash: draft?.engineHash ?? null,
+    primaryStyleRef: frozenRefFingerprint(draft?.primaryStyleRef),
+    secondaryStyleRef: frozenRefFingerprint(draft?.secondaryStyleRef),
+  })
+}
+
+function newRecommendationIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID !== 'function') {
+    throw new Error('当前环境无法生成创作资产推荐指令')
+  }
+  return `${globalThis.crypto.randomUUID()}${globalThis.crypto.randomUUID()}`
+    .replaceAll('-', '')
+}
+
+function recommendationViewModels(response, catalog, assetType) {
+  const recommendations = Array.isArray(response?.assetRecommendations)
+    ? response.assetRecommendations
+    : []
+  const assets = Array.isArray(catalog) ? catalog : []
+  const seen = new Set()
+  const result = []
+  for (const recommendation of recommendations) {
+    if (
+      recommendation?.assetType !== assetType
+      || typeof recommendation.assetRevisionId !== 'string'
+      || typeof recommendation.stableKey !== 'string'
+      || !Number.isInteger(recommendation.revision)
+      || typeof recommendation.contentHash !== 'string'
+      || typeof recommendation.reason !== 'string'
+      || !Number.isFinite(recommendation.confidence)
+      || seen.has(recommendation.assetRevisionId)
+    ) continue
+    const asset = assets.find(item => (
+      item?.id === recommendation.assetRevisionId
+      && item.stableKey === recommendation.stableKey
+      && item.revision === recommendation.revision
+      && item.contentHash === recommendation.contentHash
+    ))
+    if (!asset) continue
+    seen.add(recommendation.assetRevisionId)
+    result.push({
+      ...asset,
+      reasonCodes: [recommendation.reason],
+      confidence: recommendation.confidence,
+    })
+  }
+  return result
+}
+
+function corpusRecommendationViewModels(response, sources) {
+  const recommendations = Array.isArray(response?.corpusRecommendations)
+    ? response.corpusRecommendations
+    : []
+  const catalog = Array.isArray(sources) ? sources : []
+  const seen = new Set()
+  const result = []
+  for (const recommendation of recommendations) {
+    if (
+      typeof recommendation?.sourceId !== 'string'
+      || !Number.isInteger(recommendation.sourceRevision)
+      || typeof recommendation.sourceHash !== 'string'
+      || typeof recommendation.chapterId !== 'string'
+      || typeof recommendation.fragmentId !== 'string'
+      || typeof recommendation.fragmentHash !== 'string'
+      || !Number.isInteger(recommendation.rangeStart)
+      || !Number.isInteger(recommendation.rangeEnd)
+      || recommendation.rangeStart < 0
+      || recommendation.rangeEnd <= recommendation.rangeStart
+      || typeof recommendation.use !== 'string'
+      || typeof recommendation.reason !== 'string'
+      || !Number.isFinite(recommendation.confidence)
+      || seen.has(recommendation.fragmentId)
+    ) continue
+    const source = catalog.find(item => (
+      item?.id === recommendation.sourceId
+      && item.revision === recommendation.sourceRevision
+      && item.contentHash === recommendation.sourceHash
+      && typeof item.revisionId === 'string'
+      && item.revisionId.length > 0
+      && item.state !== 'archived'
+    ))
+    if (!source) continue
+    seen.add(recommendation.fragmentId)
+    result.push({
+      ...recommendation,
+      source: { ...source },
+      reasonCodes: [recommendation.reason],
+    })
+  }
+  return result
+}
+
 export const useCreationAssetStore = defineStore('creation-assets', () => {
+  const corpusStore = useCorpusStore()
   const styleTemplates = ref([])
   const experienceCards = ref([])
   const inventory = ref(null)
@@ -100,11 +181,26 @@ export const useCreationAssetStore = defineStore('creation-assets', () => {
   const cardError = ref('')
   const styleDetails = ref({})
   const experienceCardDetails = ref({})
+  const recommendedStyles = computed(() => recommendationViewModels(
+    recommendations.value,
+    styleTemplates.value,
+    'style',
+  ))
+  const recommendedExperienceCards = computed(() => recommendationViewModels(
+    recommendations.value,
+    experienceCards.value,
+    'experience_card',
+  ))
+  const recommendedCorpusFragments = computed(() => corpusRecommendationViewModels(
+    recommendations.value,
+    corpusStore.sources,
+  ))
 
   const inventoryGuard = createLatestRequestGuard()
   const styleListGuard = createLatestRequestGuard()
   const cardListGuard = createLatestRequestGuard()
   const recommendationGuard = createLatestRequestGuard()
+  const recommendationIdempotencyKeys = new Map()
 
   async function loadInventory() {
     const generation = inventoryGuard.begin()
@@ -161,15 +257,38 @@ export const useCreationAssetStore = defineStore('creation-assets', () => {
     }
   }
 
-  async function loadRecommendations(projectId, engineOptionId, contractDraft) {
+  async function loadRecommendations(projectId, engineOptionId, contractDraft, context = {}) {
     const generation = recommendationGuard.begin()
     loadingRecommendations.value = true
     try {
-      const result = await api.assets.recommendations(
+      const taxonomy = inventory.value || await loadInventory()
+      if (
+        typeof taxonomy?.taxonomyPackageVersion !== 'string'
+        || !/^[0-9a-f]{64}$/u.test(taxonomy?.taxonomyPackageHash || '')
+      ) {
+        throw new Error('创作资产分类版本信息不完整')
+      }
+      const scope = recommendationScope(contractDraft)
+      const fingerprint = recommendationFingerprint(
         projectId,
         engineOptionId,
-        recommendationScope(contractDraft),
+        taxonomy,
+        scope,
+        contractDraft,
+        context,
       )
+      let idempotencyKey = recommendationIdempotencyKeys.get(fingerprint)
+      if (!idempotencyKey) {
+        idempotencyKey = newRecommendationIdempotencyKey()
+        recommendationIdempotencyKeys.set(fingerprint, idempotencyKey)
+      }
+      const result = await api.assets.recommendations(projectId, {
+        idempotencyKey,
+        engineOptionId,
+        taxonomyVersion: taxonomy.taxonomyPackageVersion,
+        taxonomyHash: taxonomy.taxonomyPackageHash,
+        ...scope,
+      })
       if (recommendationGuard.isCurrent(generation)) recommendations.value = result
       return result
     } finally {
@@ -208,6 +327,7 @@ export const useCreationAssetStore = defineStore('creation-assets', () => {
     styleListGuard.invalidate()
     cardListGuard.invalidate()
     recommendationGuard.invalidate()
+    recommendationIdempotencyKeys.clear()
     inventory.value = null
     styleTemplates.value = []
     experienceCards.value = []
@@ -226,6 +346,9 @@ export const useCreationAssetStore = defineStore('creation-assets', () => {
     experienceCards,
     inventory,
     recommendations,
+    recommendedStyles,
+    recommendedExperienceCards,
+    recommendedCorpusFragments,
     loadingInventory,
     loadingStyles,
     loadingCards,

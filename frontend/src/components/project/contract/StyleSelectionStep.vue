@@ -45,7 +45,7 @@ const loadGuard = createLatestRequestGuard()
 const detailGuard = createLatestRequestGuard()
 
 const draftValues = computed(() => contractStore.draft?.draft || null)
-const recommendedStyles = computed(() => assetStore.recommendations?.styles || [])
+const recommendedStyles = computed(() => assetStore.recommendedStyles)
 const styleOptions = computed(() => {
   const options = assetStore.styleTemplates.map(style => ({
     label: `${style.name} · r${style.revision}`,
@@ -182,7 +182,9 @@ async function initialize(projectId, { reloadContract = false } = {}) {
     }
     await Promise.all([
       assetStore.loadStyleTemplates(),
-      assetStore.loadRecommendations(projectId, draft.engineOptionId, draft),
+      assetStore.loadRecommendations(projectId, draft.engineOptionId, draft, {
+        selectionRevision: contractStore.draft?.selectionRevision,
+      }),
     ])
     if (!loadGuard.isCurrent(generation)) return
     hydrateFromDraft(draft)

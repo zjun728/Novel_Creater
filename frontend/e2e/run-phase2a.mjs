@@ -14,17 +14,15 @@ import { fileURLToPath } from 'node:url'
 
 import {
   assertDatabaseName,
+  BASE_ENV_ALLOWLIST,
   createDatabaseName,
   reserveLocalPort,
+  runBoundedOwnedCommand,
+  startOwnedServer,
+  stopOwnedServer,
   validateTestEnvironment,
-  waitForOwnedUrl,
-} from './run-milestone2.mjs'
-import {
-  BASE_ENV_ALLOWLIST,
-  spawnOwnedChild,
-  terminateOwnedProcessTree,
-} from './run-product-shell.mjs'
-import { createServerLogObserver } from './server-log-observer.mjs'
+  waitForOwnedServer,
+} from './support/product-runner.mjs'
 import { runtimeSensitiveValues } from './runtime-observer.mjs'
 
 
@@ -419,79 +417,6 @@ function buildProcessEnvironments(
 }
 
 
-function waitForClose(child) {
-  return new Promise((resolve, reject) => {
-    child.once('error', () => reject(new Error('owned process failed to start')))
-    child.once('close', (status, signal) => resolve({ status, signal }))
-  })
-}
-
-
-async function runOwnedCommand(command, args, options, {
-  label,
-  sensitiveValues,
-  timeoutMs,
-}) {
-  const child = spawnOwnedChild(command, args, options)
-  const observer = createServerLogObserver(child, { sensitiveValues })
-  const diagnosticChunks = []
-  let diagnosticBytes = 0
-  const captureDiagnostic = chunk => {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8')
-    const remaining = 32 * 1024 - diagnosticBytes
-    if (remaining <= 0) return
-    diagnosticChunks.push(buffer.subarray(0, remaining))
-    diagnosticBytes += Math.min(buffer.length, remaining)
-  }
-  child.stdout?.on?.('data', captureDiagnostic)
-  child.stderr?.on?.('data', captureDiagnostic)
-  let timer
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${label} deadline exceeded`)),
-      timeoutMs,
-    )
-  })
-  let outcome
-  try {
-    outcome = await Promise.race([waitForClose(child), timeout])
-  } catch (error) {
-    try {
-      await terminateOwnedProcessTree(child, { timeoutMs: DEFAULT_DEADLINES.stopMs })
-    } catch (stopError) {
-      throw new AggregateError([error, stopError], `${label} and stop failed`)
-    }
-    throw error
-  } finally {
-    clearTimeout(timer)
-  }
-  const scan = observer.finish(sensitiveValues)
-  if (scan.matchCount !== 0) {
-    throw new Error(`${label} log contained runtime-sensitive values`)
-  }
-  if (outcome.status !== 0) {
-    const detail = Buffer.concat(diagnosticChunks)
-      .toString('utf8')
-      .replaceAll(/\u001b\[[0-9;]*m/gu, '')
-      .trim()
-      .slice(-4_000)
-    throw new Error(
-      `${label} exited with status ${String(outcome.status)}`
-      + (detail ? `\n${detail}` : ''),
-    )
-  }
-}
-
-
-function startOwnedServer(command, args, options, label, sensitiveValues) {
-  const child = spawnOwnedChild(command, args, options)
-  return {
-    child,
-    label,
-    observer: createServerLogObserver(child, { sensitiveValues }),
-  }
-}
-
 export function createDelete204AccessObserver(child) {
   const sourcePattern = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
   const exactPath = new RegExp(
@@ -599,54 +524,6 @@ export function createDelete204AccessObserver(child) {
 }
 
 
-async function waitForServer(server, url, nonce, timeoutMs) {
-  let onClose
-  const closed = new Promise((_, reject) => {
-    onClose = status => reject(
-      new Error(`${server.label} exited before health with status ${String(status)}`),
-    )
-    server.child.once('close', onClose)
-  })
-  try {
-    await Promise.race([
-      waitForOwnedUrl(url, { expectedNonce: nonce, timeoutMs }),
-      closed,
-    ])
-  } finally {
-    server.child.off('close', onClose)
-  }
-}
-
-
-async function stopOwnedServer(server, sensitiveValues, stopMs) {
-  const errors = []
-  try {
-    await terminateOwnedProcessTree(server.child, { timeoutMs: stopMs })
-  } catch (error) {
-    errors.push(error)
-  }
-  try {
-    const scan = server.observer.finish(sensitiveValues)
-    if (scan.matchCount !== 0) {
-      errors.push(new Error(`${server.label} log contained runtime-sensitive values`))
-    }
-  } catch (error) {
-    errors.push(error)
-  }
-  if (server.accessObserver) {
-    try {
-      server.accessObserver.finish()
-    } catch (error) {
-      errors.push(error)
-    }
-  }
-  if (errors.length === 1) throw errors[0]
-  if (errors.length > 1) {
-    throw new AggregateError(errors, `${server.label} stop and log audit failed`)
-  }
-}
-
-
 async function runOneSpec({
   spec,
   environment,
@@ -711,7 +588,7 @@ async function runOneSpec({
     const viteCli = path.join(frontendRoot, 'node_modules', 'vite', 'bin', 'vite.js')
 
     databaseStarted = true
-    await runOwnedCommand(
+    await runBoundedOwnedCommand(
       python,
       [
         '-m',
@@ -724,9 +601,10 @@ async function runOneSpec({
         label: 'database preparation',
         sensitiveValues,
         timeoutMs: deadlines.commandMs,
+        stopTimeoutMs: deadlines.stopMs,
       },
     )
-    await runOwnedCommand(
+    await runBoundedOwnedCommand(
       python,
       [
         '-m',
@@ -742,9 +620,10 @@ async function runOneSpec({
         label: 'approved asset seed',
         sensitiveValues,
         timeoutMs: deadlines.commandMs,
+        stopTimeoutMs: deadlines.stopMs,
       },
     )
-    await runOwnedCommand(
+    await runBoundedOwnedCommand(
       python,
       ['-c', FIXTURE_SOURCE],
       childOptions(repositoryRoot, environments.backend),
@@ -752,6 +631,7 @@ async function runOneSpec({
         label: 'synthetic fixture seed',
         sensitiveValues,
         timeoutMs: deadlines.commandMs,
+        stopTimeoutMs: deadlines.stopMs,
       },
     )
 
@@ -760,15 +640,13 @@ async function runOneSpec({
       python,
       ['-c', BACKEND_SOURCE, String(backendReservation.port)],
       childOptions(repositoryRoot, environments.backend),
-      'backend',
-      sensitiveValues,
+      { label: 'backend', sensitiveValues },
     )
     servers.push(backend)
-    await waitForServer(
+    await waitForOwnedServer(
       backend,
       `${backendUrl}/api/health`,
-      nonce,
-      deadlines.healthMs,
+      { expectedNonce: nonce, timeoutMs: deadlines.healthMs },
     )
 
     await release(viteReservation)
@@ -783,19 +661,17 @@ async function runOneSpec({
         '--strictPort',
       ],
       childOptions(frontendRoot, environments.vite),
-      'vite',
-      sensitiveValues,
+      { label: 'vite', sensitiveValues },
     )
     servers.push(vite)
-    await waitForServer(
+    await waitForOwnedServer(
       vite,
       `${viteUrl}/__m2-browser-owner`,
-      nonce,
-      deadlines.healthMs,
+      { expectedNonce: nonce, timeoutMs: deadlines.healthMs },
     )
 
     backend.accessObserver = createDelete204AccessObserver(backend.child)
-    await runOwnedCommand(
+    await runBoundedOwnedCommand(
       process.execPath,
       [
         playwrightCli,
@@ -809,6 +685,8 @@ async function runOneSpec({
         label: 'Phase 2A browser test',
         sensitiveValues,
         timeoutMs: deadlines.browserMs,
+        stopTimeoutMs: deadlines.stopMs,
+        states: servers,
       },
     )
   } catch (error) {
@@ -816,7 +694,10 @@ async function runOneSpec({
   } finally {
     for (const server of [...servers].reverse()) {
       try {
-        await stopOwnedServer(server, sensitiveValues, deadlines.stopMs)
+        await stopOwnedServer(server, {
+          sensitiveValues,
+          timeoutMs: deadlines.stopMs,
+        })
       } catch (error) {
         errors.push(error)
       }
@@ -830,7 +711,7 @@ async function runOneSpec({
     }
     if (databaseStarted) {
       try {
-        await runOwnedCommand(
+        await runBoundedOwnedCommand(
           environment.PYTHON || 'python',
           [
             '-m',
@@ -844,6 +725,7 @@ async function runOneSpec({
             label: 'database cleanup',
             sensitiveValues,
             timeoutMs: deadlines.commandMs,
+            stopTimeoutMs: deadlines.stopMs,
           },
         )
       } catch (error) {

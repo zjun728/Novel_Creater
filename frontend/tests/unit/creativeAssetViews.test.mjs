@@ -105,6 +105,7 @@ async function renderView(component, state) {
 const inventory = {
   assetPackageVersion: 'writer-core-test-v9',
   taxonomyPackageVersion: 'recommendation-taxonomy-test-v3',
+  taxonomyPackageHash: 'd'.repeat(64),
   styleCount: 10,
   experienceCardCount: 64,
   categories: ['dialogue'],

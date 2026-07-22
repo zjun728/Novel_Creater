@@ -18,11 +18,10 @@ const suiteNames = [
   'integration',
   'browser',
   'm1-regression',
-  'browser-m2',
   'browser-product-shell',
   'browser-phase2a',
   'browser-phase2b',
-  'milestone2',
+  'browser-phase2c',
 ]
 const integrationEnvironmentNames = [
   'TEST_MYSQL_HOST',
@@ -33,11 +32,10 @@ const integrationEnvironmentNames = [
 const mysqlSuites = new Set([
   'integration',
   'browser',
-  'browser-m2',
   'browser-product-shell',
   'browser-phase2a',
   'browser-phase2b',
-  'milestone2',
+  'browser-phase2c',
 ])
 export const pytestTempStages = Object.freeze({
   m1Regression: path.join('.codex-test-artifacts', 'pytest', 'm1-regression'),
@@ -74,12 +72,6 @@ const m1RegressionNodeFiles = [
   'frontend/tests/unit/testEntrypoint.test.mjs',
   'frontend/tests/unit/writerCoreApi.test.mjs',
 ]
-const milestone2BrowserFiles = [
-  'frontend/e2e/m2-foundation-regression.spec.ts',
-  'frontend/e2e/m2-wizard-manual.spec.ts',
-  'frontend/e2e/m2-wizard-recovery.spec.ts',
-  'frontend/e2e/m2-settings-assets-corpus.spec.ts',
-]
 const productShellBrowserFiles = [
   'frontend/e2e/product-shell-lifecycle.spec.ts',
 ]
@@ -88,6 +80,9 @@ const phase2aBrowserFiles = [
 ]
 const phase2bBrowserFiles = [
   'frontend/e2e/phase2b-market-seeds.spec.ts',
+]
+const phase2cBrowserFiles = [
+  'frontend/e2e/phase2c-contract.spec.ts',
 ]
 
 export function discoverTestFiles(directory) {
@@ -108,10 +103,10 @@ function createSuites(rootDirectory, environment) {
   const absolute = files => files.map(file => path.join(rootDirectory, file))
   const m1PythonTests = absolute(m1RegressionPythonFiles)
   const m1NodeTests = absolute(m1RegressionNodeFiles)
-  const m2BrowserTests = absolute(milestone2BrowserFiles)
   const productShellBrowserTests = absolute(productShellBrowserFiles)
   const phase2aBrowserTests = absolute(phase2aBrowserFiles)
   const phase2bBrowserTests = absolute(phase2bBrowserFiles)
+  const phase2cBrowserTests = absolute(phase2cBrowserFiles)
   const retainedM1 = [
     [
       python,
@@ -153,10 +148,10 @@ function createSuites(rootDirectory, environment) {
       pytestTempStages.integration,
     ],
   ]
-  const browserM2 = [[node, ['frontend/e2e/run-milestone2.mjs']]]
   const browserProductShell = [[node, ['frontend/e2e/run-product-shell.mjs']]]
   const browserPhase2A = [[node, ['frontend/e2e/run-phase2a.mjs']]]
   const browserPhase2B = [[node, ['frontend/e2e/run-phase2b.mjs']]]
+  const browserPhase2C = [[node, ['frontend/e2e/run-phase2c.mjs']]]
 
   return {
     commands: {
@@ -165,16 +160,10 @@ function createSuites(rootDirectory, environment) {
       integration,
       browser: [[node, ['frontend/e2e/run-milestone1.mjs']]],
       'm1-regression': retainedM1,
-      'browser-m2': browserM2,
       'browser-product-shell': browserProductShell,
       'browser-phase2a': browserPhase2A,
       'browser-phase2b': browserPhase2B,
-      milestone2: [
-        ...retainedM1,
-        ...unit,
-        ...integration,
-        ...browserM2,
-      ],
+      'browser-phase2c': browserPhase2C,
     },
     formalTests: {
       unit: [
@@ -186,7 +175,6 @@ function createSuites(rootDirectory, environment) {
         ['M1 v1.1 Python regression', m1PythonTests],
         ['M1 v1.1 frontend regression', m1NodeTests],
       ],
-      'browser-m2': [['M2 Playwright specs', m2BrowserTests]],
       'browser-product-shell': [
         ['Product-shell Playwright spec', productShellBrowserTests],
       ],
@@ -196,12 +184,8 @@ function createSuites(rootDirectory, environment) {
       'browser-phase2b': [
         ['Phase 2B Playwright spec', phase2bBrowserTests],
       ],
-      milestone2: [
-        [scriptTestDirectory, scriptTests],
-        [frontendTestDirectory, frontendTests],
-        ['M1 v1.1 Python regression', m1PythonTests],
-        ['M1 v1.1 frontend regression', m1NodeTests],
-        ['M2 Playwright specs', m2BrowserTests],
+      'browser-phase2c': [
+        ['Phase 2C Playwright spec', phase2cBrowserTests],
       ],
     },
   }

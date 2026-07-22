@@ -16,11 +16,46 @@ import { createServer } from 'vite'
 import { api } from '../../src/api/db/client.js'
 import { useCreationAssetStore } from '../../src/stores/creationAssetStore.js'
 import { useCreationContractStore } from '../../src/stores/creationContractStore.js'
+import { useCorpusStore } from '../../src/stores/corpusStore.js'
+import { useSeedStore } from '../../src/stores/seedStore.js'
 
 const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
 const behaviorNaiveStubId = '\0contract-workspace-naive-ui-stub'
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
+
+function formalAssetRecommendations(styles = [], cards = [], corpus = []) {
+  return {
+    attemptId: 'attempt-formal',
+    publicReason: null,
+    rankingUnavailable: false,
+    fullBrowseAvailable: true,
+    assetRecommendations: [
+      ...styles.map(style => ({
+        assetRevisionId: style.id,
+        assetType: 'style',
+        stableKey: style.stableKey,
+        revision: style.revision,
+        contentHash: style.contentHash,
+        reason: 'semantic-profile',
+        confidence: 0.93,
+      })),
+      ...cards.map(card => ({
+        assetRevisionId: card.id,
+        assetType: 'experience_card',
+        stableKey: card.stableKey,
+        revision: card.revision,
+        contentHash: card.contentHash,
+        reason: 'asset-text-overlap',
+        confidence: 0.89,
+      })),
+    ],
+    corpusRecommendations: corpus,
+    inputManifest: {},
+    inputManifestHash: HASH_A,
+    resultHash: HASH_B,
+  }
+}
 
 const behaviorNaiveStubPlugin = {
   name: 'contract-workspace-behavior-stubs',
@@ -73,6 +108,7 @@ const behaviorNaiveStubPlugin = {
           })
         },
       })
+      export const NInputNumber = stub('NInputNumber', 'input')
       export const NDrawer = defineComponent({
         name: 'NDrawer',
         inheritAttrs: false,
@@ -224,6 +260,8 @@ function deferred() {
 }
 
 let behaviorVite
+let AssetScopeStep
+let CreationContractWizard
 let StoryEngineStep
 let ContractHistoryDrawer
 let ContractPreviewStep
@@ -278,6 +316,18 @@ test.before(async () => {
   ).default
   StyleSelectionStep.render = await compileClientRender(
     'src/components/project/contract/StyleSelectionStep.vue',
+  )
+  AssetScopeStep = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/AssetScopeStep.vue')
+  ).default
+  AssetScopeStep.render = await compileClientRender(
+    'src/components/project/contract/AssetScopeStep.vue',
+  )
+  CreationContractWizard = (
+    await behaviorVite.ssrLoadModule('/src/components/project/CreationContractWizard.vue')
+  ).default
+  CreationContractWizard.render = await compileClientRender(
+    'src/components/project/CreationContractWizard.vue',
   )
   naiveBehaviorModule = await behaviorVite.ssrLoadModule('naive-ui')
 })
@@ -435,6 +485,19 @@ test('asset scope starts empty and saves explicit fragment ranges within a visib
   assert.match(assets, /loadMoreFragments/)
 })
 
+test('style and asset recommendations receive the server selection revision context', async () => {
+  const files = await Promise.all([
+    source('src/components/project/contract/StyleSelectionStep.vue'),
+    source('src/components/project/contract/AssetScopeStep.vue'),
+  ])
+  for (const component of files) {
+    assert.match(
+      component,
+      /loadRecommendations\([\s\S]*?selectionRevision:\s*contractStore\.draft\?\.selectionRevision[\s\S]*?\)/u,
+    )
+  }
+})
+
 test('capacity step captures all formal length and author-direction fields', async () => {
   const [capacity, preview] = await Promise.all([
     source('src/components/project/contract/CapacityStep.vue'),
@@ -541,6 +604,136 @@ function mountWithPinia(component, props, configureStore) {
   return { app, root, store }
 }
 
+test('wizard treats a superseded contract head as not current and starts the selected seed at engine', async () => {
+  const invalidHead = {
+    hasContract: true,
+    contractReady: false,
+    reasons: ['selection_revision_changed'],
+    revision: 1,
+    seedRef: { revisionId: 'seed-revision-a', contentHash: HASH_A },
+    styleRefs: [],
+    experienceCardRefs: [],
+    corpusSourceRefs: [],
+  }
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-1',
+    project: {},
+    readOnly: false,
+  }, store => {
+    store.draft = null
+    store.head = invalidHead
+    store.load = async () => {
+      store.draft = null
+      store.head = invalidHead
+      return { draft: null, head: invalidHead }
+    }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-1',
+      selectionRevision: 3,
+      seedId: 'seed-a',
+      seedRevisionId: 'seed-revision-a',
+      seedHash: HASH_A,
+      seed: {
+        id: 'seed-a',
+        revisionId: 'seed-revision-a',
+        contentHash: HASH_A,
+        title: '雾港错钟',
+        logline: '回到雾港的守钟人必须阻止一场被时间掩埋的灾难。',
+        revision: 1,
+        genre: '历史悬疑',
+      },
+    }
+    seedStore.refresh = async () => ({
+      seeds: [seedStore.selectedSeed],
+      activeSelection: seedStore.activeSelection,
+      readiness: { seedReady: true, contractReady: false, reasons: ['selection_revision_changed'] },
+    })
+  })
+
+  try {
+    await flush()
+    const rendered = textContent(mounted.root)
+    assert.doesNotMatch(rendered, /当前生效的创作契约/)
+    assert.ok(walk(mounted.root).find(node => (
+      node.type === 'nav' && node.props['aria-label'] === '创作契约五个步骤'
+    )))
+    assert.match(rendered, /故事发动机/)
+    assert.match(rendered, /雾港错钟/)
+    assert.ok(findByText(mounted.root, 'button', '历史修订'))
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('archived superseded head remains visible as the last signed historical contract', async () => {
+  const archivedHead = {
+    hasContract: true,
+    contractReady: false,
+    reasons: ['superseded'],
+    supersededReasons: ['selection_revision_changed', 'binding_drift'],
+    revision: 8,
+    seedRef: { revisionId: 'seed-revision-archived', contentHash: HASH_A },
+    styleRefs: [{ id: 'style-archived', revision: 3, contentHash: HASH_B }],
+    experienceCardRefs: [],
+    corpusSourceRefs: [],
+    creationContract: { targetWords: 320000 },
+    styleContract: { primaryStyleName: '归档风格' },
+    likes: [],
+    dislikes: [],
+  }
+  const mounted = mountWithPinia(CreationContractWizard, {
+    projectId: 'project-archived',
+    project: { status: 'archived' },
+    readOnly: true,
+  }, store => {
+    store.draft = null
+    store.head = archivedHead
+    store.load = async () => {
+      store.draft = null
+      store.head = archivedHead
+      return { draft: null, head: archivedHead }
+    }
+    const seedStore = useSeedStore()
+    seedStore.activeSelection = {
+      projectId: 'project-archived',
+      selectionRevision: 9,
+      seedId: 'seed-archived',
+      seedRevisionId: 'seed-revision-archived',
+      seedHash: HASH_A,
+      seed: {
+        id: 'seed-archived', revisionId: 'seed-revision-archived', contentHash: HASH_A,
+        title: '归档种子', logline: '已归档项目的最后签印仍应可核对。', revision: 2, genre: '悬疑',
+      },
+    }
+    seedStore.refresh = async () => ({
+      seeds: [seedStore.selectedSeed],
+      activeSelection: seedStore.activeSelection,
+      readiness: {
+        seedReady: true,
+        contractReady: false,
+        reasons: archivedHead.reasons,
+      },
+    })
+  })
+
+  try {
+    await flush()
+    const rendered = textContent(mounted.root)
+    assert.match(rendered, /最后签印的历史契约/)
+    assert.match(rendered, /IMMUTABLE REVISION · R8/)
+    assert.match(rendered, /种子选择代次已改变/)
+    assert.match(rendered, /模型绑定已改变/)
+    assert.doesNotMatch(rendered, /当前生效的创作契约|归档时尚未签印创作契约/)
+    assert.equal(walk(mounted.root).some(node => (
+      node.type === 'nav' && node.props['aria-label'] === '创作契约五个步骤'
+    )), false)
+    assert.ok(findByText(mounted.root, 'button', '历史修订'))
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
 test('story engine refuses missing author-visible profile identifiers without saving and focuses its error', async () => {
   let saveCalls = 0
   naiveBehaviorModule.focusEvents.length = 0
@@ -642,7 +835,8 @@ test('history drawer renders every pinned identity and fragment while generation
       selectionRevision: 7,
       seedRef: { id: 'old-seed', revisionId: 'old-revision', contentHash: HASH_A },
       engineRef: { id: 'old-engine', batchId: 'old-batch', contentHash: HASH_B },
-      styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [], supersededReasons: [],
+      styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [],
+      supersededReasons: ['selection_revision_changed'],
     }]
     store.loadHistory = async () => ({ items: store.history })
   })
@@ -659,6 +853,8 @@ test('history drawer renders every pinned identity and fragment while generation
     ]) assert.ok(rendered.includes(value), `missing pinned history identity: ${value}`)
     assert.match(rendered, /历史版本已钉住/)
     assert.match(rendered, /已被更新修订取代/)
+    assert.match(rendered, /种子选择代次已改变/)
+    assert.doesNotMatch(rendered, /selection_revision_changed/)
     const cloneButtons = walk(mounted.root).filter(node => (
       node.type === 'button' && textContent(node).trim() === '调整未来设计'
     ))
@@ -819,7 +1015,7 @@ test('style selection keeps rapid A to B navigation on B when A fails late', asy
   const projectId = VueRuntime.ref('project-a')
   let listCalls = 0
   const styleB = {
-    id: 'style-b', name: '项目 B 风格', revision: 2, contentHash: HASH_B,
+    id: 'style-b', stableKey: 'style-b-stable', name: '项目 B 风格', revision: 2, contentHash: HASH_B,
     readingExperience: 'B 的阅读体验', reasonCodes: [], applicability: [], nonApplicability: [],
   }
   const mounted = mountWithPinia(StyleSelectionStep, () => ({
@@ -848,7 +1044,7 @@ test('style selection keeps rapid A to B navigation on B when A fails late', asy
       return [styleB]
     }
     assetStore.loadRecommendations = async targetProjectId => {
-      const result = { styles: targetProjectId === 'project-b' ? [styleB] : [] }
+      const result = formalAssetRecommendations(targetProjectId === 'project-b' ? [styleB] : [])
       if (targetProjectId === 'project-b') assetStore.recommendations = result
       return result
     }
@@ -871,9 +1067,215 @@ test('style selection keeps rapid A to B navigation on B when A fails late', asy
   }
 })
 
+test('formal high-confidence style card and corpus recommendations remain explicitly selectable', async () => {
+  const style = {
+    id: 'style-formal', stableKey: 'style-formal-key', revision: 4,
+    contentHash: HASH_A, name: '正式高置信风格', readingExperience: '线索与关系同步推进',
+    applicability: [], nonApplicability: [],
+  }
+  const card = {
+    id: 'card-formal', stableKey: 'card-formal-key', revision: 5,
+    contentHash: HASH_B, title: '正式高置信经验卡', category: 'dialogue',
+    method: '让每轮对话改变双方筹码', applicability: [], nonApplicability: [],
+  }
+  const source = {
+    id: 'source-formal', revisionId: 'source-formal-revision', revision: 6,
+    contentHash: 'c'.repeat(64), name: '正式推荐语料来源', state: 'active',
+    fragmentCount: 3, shortHash: 'cccccccccccc',
+  }
+  const corpusRecommendation = {
+    sourceId: source.id, sourceRevision: source.revision, sourceHash: source.contentHash,
+    chapterId: 'chapter-formal', fragmentId: 'fragment-formal',
+    fragmentHash: 'd'.repeat(64), rangeStart: 20, rangeEnd: 80,
+    use: '作为制度压力的结构参照', reason: '与当前冲突直接相关', confidence: 0.92,
+  }
+  const response = formalAssetRecommendations([style], [card], [corpusRecommendation])
+  const saves = []
+  const configureAssets = contractStore => {
+    contractStore.projectId = 'project-1'
+    contractStore.draft = {
+      ...contractStore.draft,
+      selectionRevision: 3,
+      draft: {
+        ...contractStore.draft.draft,
+        engineOptionId: 'engine-1', engineHash: HASH_A,
+        channelProfileKey: 'manual-channel', genreProfileKey: 'historical',
+        primaryStyleRef: { id: style.id, revision: style.revision, contentHash: style.contentHash },
+      },
+    }
+    contractStore.saveDraft = async (projectId, payload) => {
+      const frozenPayload = JSON.parse(JSON.stringify(payload))
+      saves.push({ projectId, payload: frozenPayload })
+      const saved = {
+        ...contractStore.draft,
+        draftVersion: contractStore.draft.draftVersion + 1,
+        draft: frozenPayload,
+      }
+      contractStore.draft = saved
+      return saved
+    }
+    const assetStore = useCreationAssetStore()
+    assetStore.loadStyleTemplates = async () => {
+      assetStore.styleTemplates = [style]
+      return assetStore.styleTemplates
+    }
+    assetStore.loadExperienceCards = async () => {
+      assetStore.experienceCards = [card]
+      return assetStore.experienceCards
+    }
+    assetStore.loadRecommendations = async () => {
+      assetStore.recommendations = response
+      return response
+    }
+    const corpusStore = useCorpusStore()
+    corpusStore.loadSources = async () => {
+      corpusStore.sources = [source]
+      return corpusStore.sources
+    }
+  }
+
+  const styleMounted = mountWithPinia(StyleSelectionStep, {
+    projectId: 'project-1', selectionRevision: 3,
+  }, configureAssets)
+  try {
+    await flush()
+    assert.match(textContent(styleMounted.root), /正式高置信风格/)
+    assert.match(textContent(styleMounted.root), /整体气质匹配/)
+    await trigger(findByText(styleMounted.root, 'button', '设为主风格'), 'onClick')
+    assert.match(textContent(styleMounted.root), /主风格：正式高置信风格/)
+  } finally {
+    styleMounted.app.unmount()
+  }
+
+  const cardMounted = mountWithPinia(AssetScopeStep, { projectId: 'project-1' }, configureAssets)
+  try {
+    await flush()
+    assert.match(textContent(cardMounted.root), /正式高置信经验卡/)
+    assert.match(textContent(cardMounted.root), /推荐语料片段/)
+    assert.match(textContent(cardMounted.root), /正式推荐语料来源/)
+    assert.match(textContent(cardMounted.root), /作为制度压力的结构参照/)
+    assert.match(textContent(cardMounted.root), /与当前冲突直接相关/)
+    assert.match(textContent(cardMounted.root), /0 个片段/)
+    assert.equal(textContent(cardMounted.root).includes('已授权 1 个来源'), false)
+    const referenceUse = walk(cardMounted.root).find(node => (
+      node.props['data-component'] === 'NSelect'
+      && node.props['aria-label'] === '推荐片段 fragment-formal 的引用方式'
+    ))
+    assert.ok(referenceUse)
+    assert.equal(findByText(cardMounted.root, 'button', '明确纳入推荐范围').props.disabled, true)
+    await trigger(referenceUse, 'onUpdate:value', 'structure')
+    assert.equal(findByText(cardMounted.root, 'button', '明确纳入推荐范围').props.disabled, false)
+    await trigger(findByText(cardMounted.root, 'button', '明确纳入推荐范围'), 'onClick')
+    assert.match(textContent(cardMounted.root), /1 个片段/)
+    assert.match(textContent(cardMounted.root), /已授权 1 个来源/)
+    await trigger(findByText(cardMounted.root, 'button', '明确纳入'), 'onClick')
+    assert.match(textContent(cardMounted.root), /1 张已选/)
+    await trigger(findByText(cardMounted.root, 'button', '保存草稿并继续'), 'onClick')
+    assert.equal(saves.length, 1, textContent(cardMounted.root))
+    assert.deepEqual(saves[0], {
+      projectId: 'project-1',
+      payload: {
+        ...saves[0].payload,
+        experienceCardRefs: [{ id: card.id, revision: card.revision, contentHash: card.contentHash }],
+        corpusSourceRefs: [{
+          id: source.id,
+          revisionId: source.revisionId,
+          revision: source.revision,
+          contentHash: source.contentHash,
+          selectionMode: 'author',
+          pinnedHistoricalRevision: false,
+          fragments: [{
+            chapterId: corpusRecommendation.chapterId,
+            fragmentId: corpusRecommendation.fragmentId,
+            fragmentHash: corpusRecommendation.fragmentHash,
+            chapterCharStart: corpusRecommendation.rangeStart,
+            chapterCharEnd: corpusRecommendation.rangeEnd,
+            referenceUse: 'structure',
+          }],
+        }],
+      },
+    })
+  } finally {
+    cardMounted.app.unmount()
+  }
+})
+
+test('style selection updates both summaries and saves both frozen refs from selects', async () => {
+  const primary = styleSummary('style-a', '克制悬疑型', HASH_A)
+  const secondary = styleSummary('style-b', '沉浸群像型', HASH_B)
+  const saves = []
+  const mounted = mountWithPinia(StyleSelectionStep, {
+    projectId: 'project-1',
+    selectionRevision: 3,
+  }, contractStore => {
+    contractStore.projectId = 'project-1'
+    contractStore.draft = {
+      ...contractStore.draft,
+      selectionRevision: 3,
+      draft: {
+        ...contractStore.draft.draft,
+        channelProfileKey: 'manual-channel',
+        genreProfileKey: 'historical',
+        qualityCharterVersion: 'quality-v1',
+        prohibitedDirections: [],
+      },
+    }
+    contractStore.saveDraft = async (projectId, payload) => {
+      saves.push({ projectId, payload: structuredClone(payload) })
+      const saved = {
+        ...contractStore.draft,
+        draftVersion: contractStore.draft.draftVersion + 1,
+        draft: structuredClone(payload),
+      }
+      contractStore.draft = saved
+      return saved
+    }
+    const assetStore = useCreationAssetStore()
+    assetStore.loadStyleTemplates = async () => {
+      assetStore.styleTemplates = [primary, secondary]
+      return assetStore.styleTemplates
+    }
+    assetStore.loadRecommendations = async () => {
+      const result = formalAssetRecommendations([primary, secondary])
+      assetStore.recommendations = result
+      return result
+    }
+  })
+
+  try {
+    await flush()
+    const selects = walk(mounted.root).filter(node => (
+      node.props['data-component'] === 'NSelect'
+    ))
+    assert.equal(selects.length, 2)
+
+    await trigger(selects[0], 'onUpdate:value', primary.id)
+    assert.match(textContent(mounted.root), /主风格：克制悬疑型/)
+    await trigger(selects[1], 'onUpdate:value', secondary.id)
+    assert.match(textContent(mounted.root), /次风格：沉浸群像型/)
+
+    await trigger(findByText(mounted.root, 'button', '保存草稿并继续'), 'onClick')
+    assert.equal(saves.length, 1)
+    assert.equal(saves[0].projectId, 'project-1')
+    assert.deepEqual(saves[0].payload.primaryStyleRef, {
+      id: primary.id,
+      revision: primary.revision,
+      contentHash: primary.contentHash,
+    })
+    assert.deepEqual(saves[0].payload.secondaryStyleRef, {
+      id: secondary.id,
+      revision: secondary.revision,
+      contentHash: secondary.contentHash,
+    })
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
 function styleSummary(id, name, contentHash) {
   return {
     id,
+    stableKey: `${id}-stable`,
     name,
     revision: id === 'style-a' ? 1 : 2,
     contentHash,
@@ -926,7 +1328,7 @@ for (const lateOutcome of ['success', 'failure']) {
         return [styleA, styleB]
       }
       assetStore.loadRecommendations = async () => {
-        const result = { styles: [styleA, styleB] }
+        const result = formalAssetRecommendations([styleA, styleB])
         assetStore.recommendations = result
         return result
       }

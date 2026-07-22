@@ -185,19 +185,23 @@ test('bindings and story-engine methods send only explicit revision and idempote
   assert.equal(bodyOf(calls[7]), undefined)
 })
 
-test('asset catalog and recommendations are read-only and query encoded', async () => {
+test('asset catalog reads and recommendation writes use the formal narrow contract', async () => {
   const calls = await captureRequests(async api => {
     await api.assets.styleTemplates.list()
     await api.assets.styleTemplates.get('style/revision')
     await api.assets.experienceCards.list({ category: 'dialogue craft' })
     await api.assets.experienceCards.get('card/revision')
-    await api.assets.recommendations('project-1', 'engine option', {
-      genres: ['fantasy', 'xianxia'],
-      channels: ['male_frequency'],
-      creationStages: ['drafting'],
-      writingPurposes: ['style_direction', 'progression_economy'],
+    await api.assets.recommendations('project-1', {
+      idempotencyKey: 'i'.repeat(64),
+      engineOptionId: 'engine option',
+      taxonomyVersion: 'recommendation-taxonomy-v1.0.0',
+      taxonomyHash: 'a'.repeat(64),
+      genre: 'fantasy',
+      creationStage: 'drafting',
       prohibitedDirections: ['slow_burn'],
       status: 'active',
+      apiKey: 'must-not-send',
+      channels: ['must-not-send'],
     })
   })
 
@@ -206,21 +210,21 @@ test('asset catalog and recommendations are read-only and query encoded', async 
     ['GET', '/api/assets/style-templates/style%2Frevision'],
     ['GET', '/api/assets/experience-cards'],
     ['GET', '/api/assets/experience-cards/card%2Frevision'],
-    ['GET', '/api/projects/project-1/asset-recommendations'],
+    ['POST', '/api/projects/project-1/asset-recommendations'],
   ])
   assert.equal(new URL(calls[2].url).searchParams.get('category'), 'dialogue craft')
-  const recommendationQuery = new URL(calls[4].url).searchParams
-  assert.equal(recommendationQuery.get('engineOptionId'), 'engine option')
-  assert.deepEqual(recommendationQuery.getAll('genres'), ['fantasy', 'xianxia'])
-  assert.deepEqual(recommendationQuery.getAll('channels'), ['male_frequency'])
-  assert.deepEqual(recommendationQuery.getAll('creationStages'), ['drafting'])
-  assert.deepEqual(
-    recommendationQuery.getAll('writingPurposes'),
-    ['style_direction', 'progression_economy'],
-  )
-  assert.deepEqual(recommendationQuery.getAll('prohibitedDirections'), ['slow_burn'])
-  assert.equal(recommendationQuery.get('status'), 'active')
-  assert.equal(calls.every(call => !('body' in call.options)), true)
+  assert.equal(new URL(calls[4].url).search, '')
+  assert.deepEqual(bodyOf(calls[4]), {
+    idempotencyKey: 'i'.repeat(64),
+    engineOptionId: 'engine option',
+    taxonomyVersion: 'recommendation-taxonomy-v1.0.0',
+    taxonomyHash: 'a'.repeat(64),
+    genre: 'fantasy',
+    creationStage: 'drafting',
+    status: 'active',
+    prohibitedDirections: ['slow_burn'],
+  })
+  assert.equal(calls.slice(0, 4).every(call => !('body' in call.options)), true)
 })
 
 test('corpus client stays relative-path-only and enforces preview bounds', async () => {

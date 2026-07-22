@@ -51,6 +51,7 @@ class CreativeAssetItem:
 class CreativeAssetInventory:
     asset_package_version: str
     taxonomy_package_version: str
+    taxonomy_package_hash: str
     style_count: int
     experience_card_count: int
     categories: tuple[str, ...]
@@ -177,6 +178,9 @@ class CreativeAssetService:
         return CreativeAssetInventory(
             asset_package_version=self.taxonomy.asset_package_version,
             taxonomy_package_version=self.taxonomy.package_version,
+            taxonomy_package_hash=(
+                self.taxonomy.manifest.eligibility_file.sha256
+            ),
             style_count=len(styles),
             experience_card_count=len(cards),
             categories=tuple(sorted({

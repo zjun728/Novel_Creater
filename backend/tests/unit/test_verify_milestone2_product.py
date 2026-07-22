@@ -533,6 +533,18 @@ def l5_rows():
             "result_revision": 1,
         }],
         "l5_contract_payload": {
+            "channel_profile_key": creation_payload.channelProfileKey,
+            "genre_profile_key": creation_payload.genreProfileKey,
+            "quality_charter_version": creation_payload.qualityCharterVersion,
+            "total_word_min": creation_payload.targetTotalWords,
+            "total_word_max": creation_payload.targetTotalWords,
+            "chapter_capacity_policy": canonical_json({
+                "expectedVolumeCount": creation_payload.expectedVolumeCount,
+                "expectedChapterCount": creation_payload.expectedChapterCount,
+                "chapterWordRangePreference": list(
+                    creation_payload.chapterWordRangePreference
+                ),
+            }),
             "creation_json": canonical_json(creation_payload),
             "creation_content_hash": creation_hash,
             "style_json": canonical_json(style_payload),
@@ -918,6 +930,58 @@ def test_explicit_corpus_hash_verifies_an_immutable_revision_not_only_current_he
 
     assert "JOIN corpus_source_revisions r ON r.source_id=s.id" in _CORPUS_SQL
     assert "JOIN corpus_source_heads" not in _CORPUS_SQL
+
+
+def test_l5_payload_query_reads_every_canonical_relational_projection_column():
+    from backend.scripts.verify_milestone2_product import _L5_CONTRACT_PAYLOAD_SQL
+
+    for column in (
+        "channel_profile_key",
+        "genre_profile_key",
+        "quality_charter_version",
+        "total_word_min",
+        "total_word_max",
+        "chapter_capacity_policy",
+    ):
+        assert f"c.{column}" in _L5_CONTRACT_PAYLOAD_SQL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,drifted_value",
+    [
+        ("channel_profile_key", "drifted-channel"),
+        ("genre_profile_key", "drifted-genre"),
+        ("quality_charter_version", "drifted-charter"),
+        ("total_word_min", 999_999),
+        ("total_word_max", 999_999),
+        ("chapter_capacity_policy", canonical_json({
+            "expectedVolumeCount": 9,
+            "expectedChapterCount": 399,
+            "chapterWordRangePreference": [1_999, 2_999],
+        })),
+    ],
+)
+async def test_l5_fails_closed_on_each_relational_projection_drift(
+    field, drifted_value,
+):
+    from backend.scripts.verify_milestone2_product import verify_milestone2_product
+
+    rows = _valid_l5_rows()
+    await verify_milestone2_product(
+        ReceiptSession(rows),
+        expected_database=DATABASE,
+        require_l5=True,
+        expected_source_hash="c" * 64,
+    )
+    rows["l5_contract_payload"][field] = drifted_value
+    with pytest.raises(RuntimeError, match="snapshot/manifest mismatch"):
+        await verify_milestone2_product(
+            ReceiptSession(rows),
+            expected_database=DATABASE,
+            require_l5=True,
+            expected_source_hash="c" * 64,
+        )
 
 
 @pytest.mark.asyncio

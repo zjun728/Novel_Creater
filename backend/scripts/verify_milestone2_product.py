@@ -347,7 +347,9 @@ _L5_CONFIRMATIONS_SQL = """/* m2:l5_confirmations */
 SELECT id,selection_revision,status,creation_contract_id,style_contract_id,result_revision
 FROM contract_confirmation_requests WHERE project_id=%s ORDER BY created_at,id"""
 _L5_CONTRACT_PAYLOAD_SQL = """/* m2:l5_contract_payload */
-SELECT c.content_json AS creation_json,c.content_hash AS creation_content_hash,
+SELECT c.channel_profile_key,c.genre_profile_key,c.quality_charter_version,
+       c.total_word_min,c.total_word_max,c.chapter_capacity_policy,
+       c.content_json AS creation_json,c.content_hash AS creation_content_hash,
        s.merged_style_json AS style_json,s.likes_json,s.dislikes_json,
        s.content_hash AS style_content_hash,c.reference_manifest_json,
        c.reference_manifest_hash
@@ -903,6 +905,12 @@ async def _verify_l5(
         "seed_revision_id": foundation.get("selected_seed_revision_id"),
         "seed_hash": foundation.get("selected_seed_hash"),
         "actual_seed_hash": foundation.get("selected_revision_hash"),
+        "channel_profile_key": payload.get("channel_profile_key"),
+        "genre_profile_key": payload.get("genre_profile_key"),
+        "quality_charter_version": payload.get("quality_charter_version"),
+        "total_word_min": payload.get("total_word_min"),
+        "total_word_max": payload.get("total_word_max"),
+        "chapter_capacity_policy": payload.get("chapter_capacity_policy"),
         "creation_json": payload.get("creation_json"),
         "creation_hash": payload.get("creation_content_hash"),
         "style_json": payload.get("style_json"), "likes_json": payload.get("likes_json"),

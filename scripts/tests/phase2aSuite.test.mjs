@@ -57,11 +57,7 @@ test('Phase 2A exposes one explicit root build and browser command', () => {
     frontendPackage.scripts['test:e2e:phase2a'],
     'node e2e/run-phase2a.mjs',
   )
-  assert.equal(
-    frontendPackage.scripts['test:e2e:m2'],
-    'node e2e/run-milestone2.mjs',
-    'the quarantined M2 entrypoint stays unchanged and is not Phase 2A authority',
-  )
+  assert.equal(frontendPackage.scripts['test:e2e:m2'], undefined)
 })
 
 
@@ -73,11 +69,11 @@ test('Phase 2A runner owns one exact closed formal spec', async () => {
   assert.deepEqual(runner.resolveCommandLineSpecs([]), expected)
   assert.deepEqual(runner.validateSpecs(expected), expected)
   assert.throws(
-    () => runner.resolveCommandLineSpecs(['e2e/m2-settings-assets-corpus.spec.ts']),
+    () => runner.resolveCommandLineSpecs(['e2e/phase2c-contract.spec.ts']),
     /does not accept spec paths/i,
   )
   assert.throws(
-    () => runner.validateSpecs(['e2e/m2-settings-assets-corpus.spec.ts']),
+    () => runner.validateSpecs(['e2e/phase2c-contract.spec.ts']),
     /formal|spec/i,
   )
   assert.throws(
@@ -92,7 +88,6 @@ test('Phase 2A Playwright source is semantic UI only and has no shadow network w
   assertSafeBrowserGraph(entry, relativePath => readWorkspaceFile(relativePath))
 
   const source = readWorkspaceFile(entry)
-  assert.doesNotMatch(source, /m2-settings-assets-corpus/u)
   assert.doesNotMatch(source, /page\.(?:request|route)\b/u)
   assert.doesNotMatch(source, /\bfetch\s*\(/u)
   assert.doesNotMatch(source, /\baxios\b/u)
@@ -284,7 +279,6 @@ test('Phase 2A runner source owns synthetic roots, fake gateway, and no external
   assert.match(source, /access_log=True/u)
   assert.match(source, /use_colors.*False/u)
   assert.match(source, /%\(client_addr\)s.*%\(request_line\)s.*%\(status_code\)s/u)
-  assert.doesNotMatch(source, /m2-settings-assets-corpus\.spec/u)
   assert.doesNotMatch(source, /ProviderConnectionGateway\s*\(/u)
   assert.doesNotMatch(source, /httpx\.(?:AsyncClient|Client)/u)
 })
@@ -343,8 +337,7 @@ test('dispatcher validates the exact Phase 2A spec before starting only its runn
   assert.equal(calls[0].options.shell, false)
   assert.equal(
     existsSync(path.join(repositoryRoot, 'frontend/e2e/m2-settings-assets-corpus.spec.ts')),
-    true,
-    'old evidence remains present but quarantined',
+    false,
   )
 })
 

@@ -181,6 +181,7 @@ async def get_asset_inventory(service=Depends(get_asset_service)):
     return {
         "assetPackageVersion": inventory.asset_package_version,
         "taxonomyPackageVersion": inventory.taxonomy_package_version,
+        "taxonomyPackageHash": inventory.taxonomy_package_hash,
         "styleCount": inventory.style_count,
         "experienceCardCount": inventory.experience_card_count,
         "categories": list(inventory.categories),

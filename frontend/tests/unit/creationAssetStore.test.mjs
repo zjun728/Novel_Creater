@@ -5,6 +5,7 @@ import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useCreationAssetStore } from '../../src/stores/creationAssetStore.js'
+import { useCorpusStore } from '../../src/stores/corpusStore.js'
 
 const frontendRoot = path.resolve(import.meta.dirname, '../..')
 
@@ -23,6 +24,20 @@ function deferred() {
     reject = no
   })
   return { promise, resolve, reject }
+}
+
+function formalRecommendationResponse({ attemptId, engineOptionId }) {
+  return {
+    attemptId,
+    publicReason: null,
+    rankingUnavailable: false,
+    fullBrowseAvailable: true,
+    assetRecommendations: [],
+    corpusRecommendations: [],
+    inputManifest: { engineOptionId },
+    inputManifestHash: '1'.repeat(64),
+    resultHash: '2'.repeat(64),
+  }
 }
 
 async function withBrowserGuards(fetchImpl, action) {
@@ -113,6 +128,8 @@ test('asset recommendations are latest-request guarded backend facts', async () 
   setActivePinia(createPinia())
   const store = useCreationAssetStore()
   store.inventory = {
+    taxonomyPackageVersion: 'recommendation-taxonomy-v1.0.0',
+    taxonomyPackageHash: 'a'.repeat(64),
     genres: ['general'],
     channels: ['all'],
     creationStages: ['drafting'],
@@ -137,19 +154,17 @@ test('asset recommendations are latest-request guarded backend facts', async () 
   }, async () => {
     const oldLoad = store.loadRecommendations('old-project', 'engine-old', trustedDraft)
     const newLoad = store.loadRecommendations('new-project', 'engine-new', trustedDraft)
-    pending.get('new-project').resolve(jsonResponse({
-      recommendationHash: 'n'.repeat(64), seedRevisionId: 'seed-new', seedHash: 's'.repeat(64),
-      engineOptionId: 'engine-new', engineHash: 'e'.repeat(64), styles: [], experienceCards: [],
-    }))
+    pending.get('new-project').resolve(jsonResponse(formalRecommendationResponse({
+      attemptId: 'attempt-new', engineOptionId: 'engine-new',
+    })))
     await newLoad
-    pending.get('old-project').resolve(jsonResponse({
-      recommendationHash: 'o'.repeat(64), seedRevisionId: 'seed-old', seedHash: 't'.repeat(64),
-      engineOptionId: 'engine-old', engineHash: 'f'.repeat(64), styles: [], experienceCards: [],
-    }))
+    pending.get('old-project').resolve(jsonResponse(formalRecommendationResponse({
+      attemptId: 'attempt-old', engineOptionId: 'engine-old',
+    })))
     await oldLoad
 
-    assert.equal(store.recommendations.engineOptionId, 'engine-new')
-    assert.equal(store.recommendations.seedRevisionId, 'seed-new')
+    assert.equal(store.recommendations.attemptId, 'attempt-new')
+    assert.equal(store.recommendations.inputManifest.engineOptionId, 'engine-new')
   })
 })
 
@@ -158,42 +173,210 @@ test('recommendations derive a narrow typed scope from the persisted contract dr
   const store = useCreationAssetStore()
   const requests = []
 
-  await withBrowserGuards(async url => {
+  await withBrowserGuards(async (url, options) => {
     const parsed = new URL(String(url))
-    requests.push(parsed)
-    if (parsed.pathname.endsWith('/asset-recommendations')) {
+    requests.push({ parsed, options })
+    if (parsed.pathname.endsWith('/assets/inventory')) {
       return jsonResponse({
-        recommendationHash: 'r'.repeat(64),
-        seedRevisionId: 'seed-1',
-        seedHash: 's'.repeat(64),
-        engineOptionId: 'engine-1',
-        engineHash: 'e'.repeat(64),
-        styles: [],
-        experienceCards: [],
+        taxonomyPackageVersion: 'recommendation-taxonomy-v1.0.0',
+        taxonomyPackageHash: 'b'.repeat(64),
       })
+    }
+    if (parsed.pathname.endsWith('/asset-recommendations')) {
+      return jsonResponse(formalRecommendationResponse({
+        attemptId: 'attempt-1', engineOptionId: 'engine-1',
+      }))
     }
     throw new Error(`unexpected request ${url}`)
   }, async () => {
-    await store.loadRecommendations('project-1', 'engine-1', {
+    const draft = {
       draftStage: 'style',
+      seedHash: 's'.repeat(64),
+      engineHash: 'e'.repeat(64),
+      primaryStyleRef: { id: 'style-1', revision: 1, contentHash: 'p'.repeat(64) },
+      secondaryStyleRef: null,
       genreProfileKey: 'historical',
       channelProfileKey: 'qidian-qq',
-      dislikes: ['slow_burn', '这条自由文本不是 typed prohibition'],
+      dislikes: ['slow_burn', 'slow_burn', '这条自由文本不是 typed prohibition'],
+    }
+    await store.loadRecommendations('project-1', 'engine-1', draft, {
+      selectionRevision: 7,
+    })
+    await store.loadRecommendations('project-1', 'engine-1', draft, {
+      selectionRevision: 7,
+    })
+    await store.loadRecommendations('project-1', 'engine-1', draft, {
+      selectionRevision: 8,
     })
   })
 
-  assert.equal(requests.length, 1)
-  const query = requests[0].searchParams
-  assert.equal(query.get('engineOptionId'), 'engine-1')
-  assert.deepEqual(query.getAll('genres'), ['historical'])
-  assert.deepEqual(query.getAll('channels'), ['male_frequency'])
-  assert.deepEqual(query.getAll('creationStages'), ['drafting'])
   assert.deepEqual(
-    query.getAll('writingPurposes'),
-    ['style_direction', 'plot_organization', 'character_arcs', 'long_arc_continuity'],
+    requests.map(request => [request.options.method, request.parsed.pathname]),
+    [
+      ['GET', '/api/assets/inventory'],
+      ['POST', '/api/projects/project-1/asset-recommendations'],
+      ['POST', '/api/projects/project-1/asset-recommendations'],
+      ['POST', '/api/projects/project-1/asset-recommendations'],
+    ],
   )
-  assert.deepEqual(query.getAll('prohibitedDirections'), ['slow_burn'])
-  assert.equal(query.get('status'), 'active')
+  assert.equal(requests[1].parsed.search, '')
+  const bodies = requests.slice(1).map(request => JSON.parse(request.options.body))
+  assert.equal(bodies[0].idempotencyKey, bodies[1].idempotencyKey)
+  assert.notEqual(bodies[1].idempotencyKey, bodies[2].idempotencyKey)
+  const body = bodies[0]
+  assert.match(body.idempotencyKey, /^[A-Za-z0-9_-]{64}$/u)
+  delete body.idempotencyKey
+  assert.deepEqual(body, {
+    engineOptionId: 'engine-1',
+    taxonomyVersion: 'recommendation-taxonomy-v1.0.0',
+    taxonomyHash: 'b'.repeat(64),
+    genre: 'historical',
+    creationStage: 'drafting',
+    status: 'active',
+    prohibitedDirections: ['slow_burn'],
+  })
+})
+
+test('formal asset recommendations join exact immutable catalog identities into reactive view models', () => {
+  setActivePinia(createPinia())
+  const store = useCreationAssetStore()
+  const style = {
+    id: 'style-revision-1', stableKey: 'style-direct', revision: 3,
+    contentHash: 'a'.repeat(64), name: '直进悬疑型', readingExperience: '线索持续前推',
+  }
+  const card = {
+    id: 'card-revision-1', stableKey: 'card-dialogue-turn', revision: 2,
+    contentHash: 'b'.repeat(64), title: '对话转向', category: 'dialogue', method: '让关系发生位移',
+  }
+  const response = {
+    attemptId: 'attempt-1',
+    publicReason: null,
+    rankingUnavailable: false,
+    fullBrowseAvailable: true,
+    assetRecommendations: [{
+      assetRevisionId: style.id,
+      assetType: 'style',
+      stableKey: style.stableKey,
+      revision: style.revision,
+      contentHash: style.contentHash,
+      reason: 'semantic-profile',
+      confidence: 0.91,
+    }, {
+      assetRevisionId: card.id,
+      assetType: 'experience_card',
+      stableKey: card.stableKey,
+      revision: card.revision,
+      contentHash: card.contentHash,
+      reason: 'asset-text-overlap',
+      confidence: 0.87,
+    }, {
+      assetRevisionId: style.id,
+      assetType: 'style',
+      stableKey: style.stableKey,
+      revision: style.revision,
+      contentHash: style.contentHash,
+      reason: 'duplicate-must-not-render',
+      confidence: 0.99,
+    }],
+    corpusRecommendations: [],
+    inputManifest: {},
+    inputManifestHash: 'c'.repeat(64),
+    resultHash: 'd'.repeat(64),
+  }
+  store.recommendations = response
+
+  assert.deepEqual(store.recommendations, response, 'formal response must remain available verbatim')
+  assert.deepEqual(store.recommendedStyles, [], 'recommendations wait reactively for the catalog')
+  assert.deepEqual(store.recommendedExperienceCards, [])
+
+  store.styleTemplates = [style]
+  store.experienceCards = [card]
+  assert.deepEqual(store.recommendedStyles, [{
+    ...style,
+    reasonCodes: ['semantic-profile'],
+    confidence: 0.91,
+  }], 'backend order is preserved and a duplicate immutable revision is shown once')
+  assert.deepEqual(store.recommendedExperienceCards, [{
+    ...card,
+    reasonCodes: ['asset-text-overlap'],
+    confidence: 0.87,
+  }])
+
+  store.recommendations = {
+    ...response,
+    assetRecommendations: response.assetRecommendations.map(item => (
+      item.assetType === 'style' ? { ...item, contentHash: 'c'.repeat(64) } : item
+    )),
+  }
+  assert.deepEqual(store.recommendedStyles, [], 'drifted style identity must fail safe')
+  assert.equal(store.recommendedExperienceCards.length, 1)
+})
+
+test('formal corpus recommendations join exact managed source identities reactively', () => {
+  setActivePinia(createPinia())
+  const store = useCreationAssetStore()
+  const corpusStore = useCorpusStore()
+  const sourceA = {
+    id: 'source-a', revisionId: 'source-a-revision', revision: 3,
+    contentHash: 'a'.repeat(64), name: '来源 A', state: 'active',
+  }
+  const sourceB = {
+    id: 'source-b', revisionId: 'source-b-revision', revision: 5,
+    contentHash: 'b'.repeat(64), name: '来源 B', state: 'active',
+  }
+  const recommendation = (source, fragmentId, overrides = {}) => ({
+    sourceId: source.id,
+    sourceRevision: source.revision,
+    sourceHash: source.contentHash,
+    chapterId: `${source.id}-chapter`,
+    fragmentId,
+    fragmentHash: (fragmentId === 'fragment-b' ? 'd' : 'c').repeat(64),
+    rangeStart: 12,
+    rangeEnd: 42,
+    use: '作为结构节奏参照',
+    reason: '与当前冲突直接相关',
+    confidence: 0.9,
+    ...overrides,
+  })
+  const response = {
+    ...formalRecommendationResponse({ attemptId: 'attempt-corpus', engineOptionId: 'engine-1' }),
+    corpusRecommendations: [
+      recommendation(sourceB, 'fragment-b'),
+      recommendation(sourceA, 'fragment-a'),
+      recommendation(sourceB, 'fragment-b', { reason: '重复项不得再次显示' }),
+      recommendation(sourceA, 'fragment-mismatch', { sourceHash: 'e'.repeat(64) }),
+      recommendation(sourceA, 'fragment-revision-mismatch', { sourceRevision: 4 }),
+      recommendation(sourceA, 'fragment-source-mismatch', { sourceId: 'source-unknown' }),
+    ],
+  }
+  store.recommendations = response
+
+  assert.deepEqual(store.recommendations, response)
+  assert.deepEqual(store.recommendedCorpusFragments, [], 'recommendations wait for managed sources')
+  corpusStore.sources = [sourceA, sourceB]
+  assert.deepEqual(store.recommendedCorpusFragments.map(item => ({
+    sourceName: item.source.name,
+    sourceRevisionId: item.source.revisionId,
+    fragmentId: item.fragmentId,
+    reasonCodes: item.reasonCodes,
+  })), [{
+    sourceName: '来源 B',
+    sourceRevisionId: 'source-b-revision',
+    fragmentId: 'fragment-b',
+    reasonCodes: ['与当前冲突直接相关'],
+  }, {
+    sourceName: '来源 A',
+    sourceRevisionId: 'source-a-revision',
+    fragmentId: 'fragment-a',
+    reasonCodes: ['与当前冲突直接相关'],
+  }], 'backend order is preserved while duplicates and source drift stay hidden')
+
+  corpusStore.sources = [{ ...sourceA, contentHash: 'f'.repeat(64) }, sourceB]
+  assert.deepEqual(
+    store.recommendedCorpusFragments.map(item => item.fragmentId),
+    ['fragment-b'],
+    'a late managed-source identity drift fails safe reactively',
+  )
 })
 
 test('global inventory and canonical filters are backend facts with independent errors', async () => {
@@ -208,6 +391,7 @@ test('global inventory and canonical filters are backend facts with independent 
       return jsonResponse({
         assetPackageVersion: 'writer-core-v1.1.0',
         taxonomyPackageVersion: 'recommendation-taxonomy-v1.0.0',
+        taxonomyPackageHash: 'c'.repeat(64),
         styleCount: 10,
         experienceCardCount: 64,
         categories: ['dialogue'],

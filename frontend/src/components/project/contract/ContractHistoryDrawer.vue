@@ -34,6 +34,7 @@ function canClone(item) {
 function reasonLabel(reason) {
   return {
     contract_revision_replaced: '已被更新修订取代',
+    selection_revision_changed: '种子选择代次已改变',
     selection_generation_superseded: '种子选择代次已改变',
     seed_drift: '种子身份已改变',
     binding_drift: '模型绑定已改变',

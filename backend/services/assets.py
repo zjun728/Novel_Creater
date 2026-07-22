@@ -787,6 +787,18 @@ class AssetRecommendationService:
         inputs = prepared["inputs"]
         selected = inputs["selected"]
         engine = inputs["engine"]
+        provider = inputs.get("provider")
+        if isinstance(provider, dict):
+            provider = dict(provider)
+            temperature = provider.get("temperature")
+            if temperature is not None:
+                temperature = float(temperature)
+                if not math.isfinite(temperature):
+                    raise ValueError("provider temperature is invalid")
+                provider["temperature"] = temperature
+            for field in ("max_output_tokens", "revision", "enabled"):
+                if provider.get(field) is not None:
+                    provider[field] = int(provider[field])
         return canonical_hash({
             "selection": {
                 "revision": selected["selection_revision"],
@@ -813,7 +825,7 @@ class AssetRecommendationService:
                 "providerId": inputs["provider_id"],
                 "modelNameSnapshot": inputs["model_name_snapshot"],
             },
-            "provider": inputs.get("provider"),
+            "provider": provider,
             "selectedStyles": [
                 item.model_dump(mode="json")
                 for item in prepared["selected_styles"]

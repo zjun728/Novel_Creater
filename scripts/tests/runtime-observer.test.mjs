@@ -176,6 +176,188 @@ test('observer excludes Vite source paths containing api and accepts cache reval
   assert.deepEqual(evidence.responseFailures, [])
 })
 
+test('runtime health assertion rejects every captured failure category with safe fixed errors', async () => {
+  const { assertRuntimeEvidenceHealthy } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  const capturedSecret = 'private-runtime-evidence-must-not-be-echoed'
+  const cleanEvidence = () => ({
+    consoleErrors: [],
+    responseFailures: [],
+    pageErrors: [],
+    requestFailures: [],
+    apiResponses: [{ headersReadError: '', bodyReadError: '' }],
+    requests: [{ headersReadError: '', bodyReadError: '' }],
+  })
+  const cases = [
+    ['console errors', 'Runtime evidence contains console errors', evidence => {
+      evidence.consoleErrors.push(capturedSecret)
+    }],
+    ['response failures', 'Runtime evidence contains response failures', evidence => {
+      evidence.responseFailures.push(capturedSecret)
+    }],
+    ['page errors', 'Runtime evidence contains page errors', evidence => {
+      evidence.pageErrors.push(capturedSecret)
+    }],
+    ['request failures', 'Runtime evidence contains request failures', evidence => {
+      evidence.requestFailures.push(capturedSecret)
+    }],
+    ['API response header read errors', 'Runtime API response headers could not be read', evidence => {
+      evidence.apiResponses[0].headersReadError = capturedSecret
+    }],
+    ['API response body read errors', 'Runtime API response bodies could not be read', evidence => {
+      evidence.apiResponses[0].bodyReadError = capturedSecret
+    }],
+    ['request header read errors', 'Runtime request headers could not be read', evidence => {
+      evidence.requests[0].headersReadError = capturedSecret
+    }],
+    ['request body read errors', 'Runtime request bodies could not be read', evidence => {
+      evidence.requests[0].bodyReadError = capturedSecret
+    }],
+  ]
+
+  assert.deepEqual(assertRuntimeEvidenceHealthy(cleanEvidence()), { healthy: true })
+  for (const [label, expectedMessage, contaminate] of cases) {
+    const evidence = cleanEvidence()
+    contaminate(evidence)
+    let error = null
+    try {
+      assertRuntimeEvidenceHealthy(evidence)
+    } catch (failure) {
+      error = failure
+    }
+    assert.ok(error instanceof Error, label)
+    assert.equal(error.message, expectedMessage, label)
+    assert.equal(error.message.includes(capturedSecret), false, label)
+  }
+})
+
+test('runtime health assertion allows only exact structured response failure rules', async () => {
+  const { assertRuntimeEvidenceHealthy } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  const responseFailureAllowlist = [{
+    status: 404,
+    method: 'GET',
+    pathname: '/api/projects/project-1/contract-draft',
+    count: 1,
+  }]
+  const evidence = responseFailure => ({
+    consoleErrors: [],
+    responseFailures: [responseFailure],
+    pageErrors: [],
+    requestFailures: [],
+    apiResponses: [],
+    requests: [],
+  })
+  const assertSafeResponseFailure = responseFailure => {
+    let error = null
+    try {
+      assertRuntimeEvidenceHealthy(evidence(responseFailure), {
+        responseFailureAllowlist,
+      })
+    } catch (failure) {
+      error = failure
+    }
+    assert.ok(error instanceof Error)
+    assert.equal(error.message, 'Runtime evidence contains response failures')
+    assert.equal(error.message.includes(responseFailure), false)
+  }
+
+  assert.deepEqual(assertRuntimeEvidenceHealthy(evidence(
+    '404 GET http://127.0.0.1:8000/api/projects/project-1/contract-draft',
+  ), { responseFailureAllowlist }), { healthy: true })
+  for (const rejected of [
+    '404 GET http://127.0.0.1:8000/api/projects/project-2/contract-draft',
+    '404 POST http://127.0.0.1:8000/api/projects/project-1/contract-draft',
+    '500 GET http://127.0.0.1:8000/api/projects/project-1/contract-draft',
+    'not a structured response failure',
+  ]) assertSafeResponseFailure(rejected)
+
+  let countError = null
+  try {
+    assertRuntimeEvidenceHealthy(evidence(
+      '404 GET http://127.0.0.1:8000/api/projects/project-1/contract-draft',
+    ), {
+      responseFailureAllowlist: [{ ...responseFailureAllowlist[0], count: 2 }],
+    })
+  } catch (failure) {
+    countError = failure
+  }
+  assert.equal(countError?.message, 'Runtime evidence contains response failures')
+})
+
+test('runtime health assertion allows one fixed console error only with its consumed response rule', async () => {
+  const { assertRuntimeEvidenceHealthy } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  const responseRule = {
+    status: 404,
+    method: 'GET',
+    pathname: '/api/projects/project-1/contract-draft',
+    count: 1,
+  }
+  const browserConsoleError = 'error: Failed to load resource: the server responded with a status of 404 (Not Found)'
+  const options = {
+    responseFailureAllowlist: [responseRule],
+    consoleErrorAllowlist: [{
+      message: browserConsoleError,
+      count: 1,
+      linkedResponseFailure: {
+        status: responseRule.status,
+        method: responseRule.method,
+        pathname: responseRule.pathname,
+      },
+    }],
+  }
+  const evidence = ({ responseFailures, consoleErrors }) => ({
+    consoleErrors,
+    responseFailures,
+    pageErrors: [],
+    requestFailures: [],
+    apiResponses: [],
+    requests: [],
+  })
+  const responseFailure = '404 GET http://127.0.0.1:8000/api/projects/project-1/contract-draft'
+  assert.deepEqual(assertRuntimeEvidenceHealthy(evidence({
+    responseFailures: [responseFailure],
+    consoleErrors: [browserConsoleError],
+  }), options), { healthy: true })
+
+  const rejected = [{
+    label: 'missing linked response',
+    responseFailures: [],
+    consoleErrors: [browserConsoleError],
+    expected: 'Runtime evidence contains response failures',
+  }, {
+    label: 'different console text',
+    responseFailures: [responseFailure],
+    consoleErrors: ['error: different public browser failure'],
+    expected: 'Runtime evidence contains console errors',
+  }, {
+    label: 'extra console text',
+    responseFailures: [responseFailure],
+    consoleErrors: [browserConsoleError, 'error: unrelated failure'],
+    expected: 'Runtime evidence contains console errors',
+  }, {
+    label: 'console count mismatch',
+    responseFailures: [responseFailure],
+    consoleErrors: [browserConsoleError, browserConsoleError],
+    expected: 'Runtime evidence contains console errors',
+  }]
+  for (const item of rejected) {
+    let error = null
+    try {
+      assertRuntimeEvidenceHealthy(evidence(item), options)
+    } catch (failure) {
+      error = failure
+    }
+    assert.ok(error instanceof Error, item.label)
+    assert.equal(error.message, item.expected, item.label)
+    assert.equal(error.message.includes(item.consoleErrors.at(-1) || ''), false, item.label)
+  }
+})
+
 test('observer enforces exact write method path status and count allowlists', async () => {
   const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
   const evidence = {

@@ -93,6 +93,7 @@ class FakeAssetService:
         return SimpleNamespace(
             asset_package_version=PACKAGE.package_version,
             taxonomy_package_version="recommendation-taxonomy-v1.0.0",
+            taxonomy_package_hash="b" * 64,
             style_count=len(PACKAGE.styles),
             experience_card_count=len(PACKAGE.experience_cards),
             categories=("action_conflict", "dialogue"),
@@ -472,6 +473,7 @@ def test_inventory_and_search_filters_are_forwarded_with_bounded_public_metadata
     assert inventory.json() == {
         "assetPackageVersion": "writer-core-v1.1.0",
         "taxonomyPackageVersion": "recommendation-taxonomy-v1.0.0",
+        "taxonomyPackageHash": "b" * 64,
         "styleCount": 10,
         "experienceCardCount": 64,
         "categories": ["action_conflict", "dialogue"],

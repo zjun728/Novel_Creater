@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from decimal import Decimal
 import json
 from pathlib import Path
 
@@ -784,6 +785,34 @@ async def test_unready_seed_binding_returns_ranking_unavailable_without_provider
     assert gateway.calls == 0
     assert service._corpus.calls == 0
     assert repository.requests[("project-1", "i" * 64)]["status"] == "failed"
+    assert transactions.entries == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_mysql_provider_decimal_returns_without_gateway_call():
+    service, repository, gateway, transactions, taxonomy = _harness()
+    command = _command(taxonomy)
+    repository.inputs["provider"].update({
+        "enabled": 0,
+        "temperature": Decimal("0.700"),
+    })
+    decimal_prepared = service._prepared_inputs(command, repository.inputs)
+    float_inputs = deepcopy(repository.inputs)
+    float_inputs["provider"]["temperature"] = 0.7
+    float_prepared = service._prepared_inputs(command, float_inputs)
+
+    assert service._reservation_fingerprint(decimal_prepared) == (
+        service._reservation_fingerprint(float_prepared)
+    )
+
+    result = await service.recommend(command)
+
+    assert result.public_reason == "rankingUnavailable"
+    assert result.ranking_unavailable is True
+    assert gateway.calls == 0
+    assert service._corpus.calls == 0
+    assert repository.requests[("project-1", "i" * 64)]["status"] == "failed"
+    assert repository.attempts == {}
     assert transactions.entries == 1
 
 

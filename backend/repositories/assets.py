@@ -335,15 +335,17 @@ class AssetRepository:
             (project_id,),
         )
         engine = await session.fetchone(
-            """SELECT option.id,option.project_id,option.payload_json,
-                      option.content_hash,batch.status AS batch_status,
+            """SELECT engine_option.id,engine_option.project_id,
+                      engine_option.payload_json,engine_option.content_hash,
+                      batch.status AS batch_status,
                       batch.selection_revision,batch.seed_id,
                       batch.seed_revision_id,batch.seed_hash
-                 FROM story_engine_options option
+                 FROM story_engine_options engine_option
                  JOIN story_engine_batches batch
-                   ON batch.project_id=option.project_id
-                  AND batch.id=option.batch_id
-                WHERE option.project_id=%s AND option.id=%s FOR UPDATE""",
+                   ON batch.project_id=engine_option.project_id
+                  AND batch.id=engine_option.batch_id
+                WHERE engine_option.project_id=%s
+                  AND engine_option.id=%s FOR UPDATE""",
             (project_id, engine_option_id),
         )
         draft = await session.fetchone(
@@ -719,13 +721,15 @@ class AssetRepository:
         )
         engine_manifest = manifest["engine"]
         engine = await session.fetchone(
-            """SELECT option.id,option.content_hash,batch.selection_revision,
-                      batch.seed_revision_id,batch.seed_hash,batch.status
-                 FROM story_engine_options option
+            """SELECT engine_option.id,engine_option.content_hash,
+                      batch.selection_revision,batch.seed_revision_id,
+                      batch.seed_hash,batch.status
+                 FROM story_engine_options engine_option
                  JOIN story_engine_batches batch
-                   ON batch.project_id=option.project_id
-                  AND batch.id=option.batch_id
-                WHERE option.project_id=%s AND option.id=%s FOR UPDATE""",
+                   ON batch.project_id=engine_option.project_id
+                  AND batch.id=engine_option.batch_id
+                WHERE engine_option.project_id=%s
+                  AND engine_option.id=%s FOR UPDATE""",
             (values["project_id"], engine_manifest["id"]),
         )
         draft = await session.fetchone(

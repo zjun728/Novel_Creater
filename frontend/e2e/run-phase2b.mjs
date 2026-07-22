@@ -13,18 +13,16 @@ import { fileURLToPath } from 'node:url'
 
 import {
   assertDatabaseName,
+  BASE_ENV_ALLOWLIST,
   createDatabaseName,
   reserveLocalPort,
+  runBoundedOwnedCommand,
+  runPhase2BLifecycle,
+  startOwnedServer,
+  stopOwnedServer,
   validateTestEnvironment,
-  waitForOwnedUrl,
-} from './run-milestone2.mjs'
-import {
-  BASE_ENV_ALLOWLIST,
-  spawnOwnedChild,
-  terminateOwnedProcessTree,
-} from './run-product-shell.mjs'
-import { runPhase2BLifecycle } from './phase2b-run-lifecycle.mjs'
-import { createServerLogObserver } from './server-log-observer.mjs'
+  waitForOwnedServer,
+} from './support/product-runner.mjs'
 import { runtimeSensitiveValues } from './runtime-observer.mjs'
 
 
@@ -718,14 +716,6 @@ export function buildEnvironments(
 }
 
 
-function waitForClose(child) {
-  return new Promise((resolve, reject) => {
-    child.once('error', () => reject(new Error('owned process failed to start')))
-    child.once('close', (status, signal) => resolve({ status, signal }))
-  })
-}
-
-
 export function redactRuntimeDiagnostic(diagnostic, sensitiveValues) {
   let rendered = String(diagnostic || '')
   const ordered = [...new Set(
@@ -737,122 +727,6 @@ export function redactRuntimeDiagnostic(diagnostic, sensitiveValues) {
     rendered = rendered.replaceAll(sensitive, '[REDACTED]')
   }
   return rendered
-}
-
-
-async function runOwnedCommand(command, args, options, {
-  label,
-  sensitiveValues,
-  timeoutMs,
-}) {
-  const child = spawnOwnedChild(command, args, options)
-  const observer = createServerLogObserver(child, { sensitiveValues })
-  const chunks = []
-  let bytes = 0
-  const capture = chunk => {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
-    const remaining = 32 * 1024 - bytes
-    if (remaining <= 0) return
-    chunks.push(buffer.subarray(0, remaining))
-    bytes += Math.min(buffer.length, remaining)
-  }
-  child.stdout?.on?.('data', capture)
-  child.stderr?.on?.('data', capture)
-  let timer
-  try {
-    const outcome = await Promise.race([
-      waitForClose(child),
-      new Promise((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${label} deadline exceeded`)),
-          timeoutMs,
-        )
-      }),
-    ])
-    const scan = observer.finish(sensitiveValues)
-    const detail = redactRuntimeDiagnostic(
-      Buffer.concat(chunks).toString('utf8').trim().slice(-4_000),
-      sensitiveValues,
-    )
-    const failures = []
-    if (outcome.status !== 0) {
-      failures.push(new Error(
-        `${label} exited with status ${String(outcome.status)}`
-        + (detail ? `\n${detail}` : ''),
-      ))
-    }
-    if (scan.matchCount !== 0) {
-      failures.push(new Error(
-        `${label} log contained ${String(scan.matchCount)} runtime-sensitive matches`,
-      ))
-    }
-    if (failures.length === 1) throw failures[0]
-    if (failures.length > 1) {
-      throw new AggregateError(failures, `${label} failed and its log was sensitive`)
-    }
-  } catch (error) {
-    if (child.exitCode == null) {
-      try {
-        await terminateOwnedProcessTree(child, { timeoutMs: DEFAULT_DEADLINES.stopMs })
-      } catch (stopError) {
-        throw new AggregateError([error, stopError], `${label} and stop failed`)
-      }
-    }
-    throw error
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-
-function startOwnedServer(command, args, options, label, sensitiveValues) {
-  const child = spawnOwnedChild(command, args, options)
-  return {
-    child,
-    label,
-    observer: createServerLogObserver(child, { sensitiveValues }),
-  }
-}
-
-
-async function waitForServer(server, url, nonce, timeoutMs) {
-  let onClose
-  const closed = new Promise((_, reject) => {
-    onClose = status => reject(
-      new Error(`${server.label} exited before health with status ${String(status)}`),
-    )
-    server.child.once('close', onClose)
-  })
-  try {
-    await Promise.race([
-      waitForOwnedUrl(url, { expectedNonce: nonce, timeoutMs }),
-      closed,
-    ])
-  } finally {
-    server.child.off('close', onClose)
-  }
-}
-
-
-async function stopOwnedServer(server, sensitiveValues, stopMs) {
-  const errors = []
-  try {
-    await terminateOwnedProcessTree(server.child, { timeoutMs: stopMs })
-  } catch (error) {
-    errors.push(error)
-  }
-  try {
-    const scan = server.observer.finish(sensitiveValues)
-    if (scan.matchCount !== 0) {
-      errors.push(new Error(`${server.label} log contained runtime-sensitive values`))
-    }
-  } catch (error) {
-    errors.push(error)
-  }
-  if (errors.length === 1) throw errors[0]
-  if (errors.length > 1) {
-    throw new AggregateError(errors, `${server.label} stop and scan failed`)
-  }
 }
 
 
@@ -904,26 +778,35 @@ async function runOneSpec({
       const viteCli = path.join(frontendRoot, 'node_modules', 'vite', 'bin', 'vite.js')
 
       lifecycle.setDatabase(databaseName)
-      await runOwnedCommand(
+      await runBoundedOwnedCommand(
         python,
         ['-m', 'backend.scripts.prepare_product_shell_browser_db', '--database', databaseName],
         childOptions(repositoryRoot, environments.prepare),
-        { label: 'database preparation', sensitiveValues, timeoutMs: deadlines.commandMs },
+        {
+          label: 'database preparation', sensitiveValues,
+          timeoutMs: deadlines.commandMs, stopTimeoutMs: deadlines.stopMs,
+        },
       )
-      await runOwnedCommand(
+      await runBoundedOwnedCommand(
         python,
         [
           '-m', 'backend.scripts.seed_market_sources', '--execute',
           '--database', databaseName, '--confirm-seed', databaseName,
         ],
         childOptions(repositoryRoot, environments.backend),
-        { label: 'versioned market source seed', sensitiveValues, timeoutMs: deadlines.commandMs },
+        {
+          label: 'versioned market source seed', sensitiveValues,
+          timeoutMs: deadlines.commandMs, stopTimeoutMs: deadlines.stopMs,
+        },
       )
-      await runOwnedCommand(
+      await runBoundedOwnedCommand(
         python,
         ['-c', FIXTURE_SOURCE],
         childOptions(repositoryRoot, environments.backend),
-        { label: 'Phase 2B fixture preparation', sensitiveValues, timeoutMs: deadlines.commandMs },
+        {
+          label: 'Phase 2B fixture preparation', sensitiveValues,
+          timeoutMs: deadlines.commandMs, stopTimeoutMs: deadlines.stopMs,
+        },
       )
 
       await lifecycle.releaseReservation(backendReservation)
@@ -931,10 +814,12 @@ async function runOneSpec({
         python,
         ['-c', BACKEND_SOURCE, String(backendReservation.port)],
         childOptions(repositoryRoot, environments.backend),
-        'backend',
-        sensitiveValues,
+        { label: 'backend', sensitiveValues },
       ))
-      await waitForServer(backend, `${backendUrl}/api/health`, nonce, deadlines.healthMs)
+      await waitForOwnedServer(backend, `${backendUrl}/api/health`, {
+        expectedNonce: nonce,
+        timeoutMs: deadlines.healthMs,
+      })
 
       await lifecycle.releaseReservation(viteReservation)
       const vite = lifecycle.registerServer(startOwnedServer(
@@ -944,41 +829,53 @@ async function runOneSpec({
           String(viteReservation.port), '--strictPort',
         ],
         childOptions(frontendRoot, environments.vite),
-        'vite',
-        sensitiveValues,
+        { label: 'vite', sensitiveValues },
       ))
-      await waitForServer(vite, `${viteUrl}/__m2-browser-owner`, nonce, deadlines.healthMs)
+      await waitForOwnedServer(vite, `${viteUrl}/__m2-browser-owner`, {
+        expectedNonce: nonce,
+        timeoutMs: deadlines.healthMs,
+      })
 
-      await runOwnedCommand(
+      await runBoundedOwnedCommand(
         process.execPath,
         [
           playwrightCli, 'test', spec, '--config',
           'playwright.phase2b.config.ts',
         ],
         childOptions(frontendRoot, environments.browser),
-        { label: 'Phase 2B browser test', sensitiveValues, timeoutMs: deadlines.browserMs },
+        {
+          label: 'Phase 2B browser test', sensitiveValues,
+          timeoutMs: deadlines.browserMs, stopTimeoutMs: deadlines.stopMs,
+          states: [backend, vite],
+        },
       )
-      await runOwnedCommand(
+      await runBoundedOwnedCommand(
         python,
         ['-c', VERIFICATION_SOURCE],
         childOptions(repositoryRoot, environments.backend),
-        { label: 'Phase 2B database evidence', sensitiveValues, timeoutMs: deadlines.commandMs },
+        {
+          label: 'Phase 2B database evidence', sensitiveValues,
+          timeoutMs: deadlines.commandMs, stopTimeoutMs: deadlines.stopMs,
+          states: [backend, vite],
+        },
       )
     },
-    stopServer: server => stopOwnedServer(
-      server,
+    stopServer: server => stopOwnedServer(server, {
       sensitiveValues,
-      deadlines.stopMs,
-    ),
+      timeoutMs: deadlines.stopMs,
+    }),
     releaseReservation: reservation => reservation.release(),
-    dropDatabase: database => runOwnedCommand(
+    dropDatabase: database => runBoundedOwnedCommand(
       environment.PYTHON || 'python',
       [
         '-m', 'backend.scripts.prepare_product_shell_browser_db',
         '--database', database, '--drop',
       ],
       childOptions(repositoryRoot, environments.prepare),
-      { label: 'database cleanup', sensitiveValues, timeoutMs: deadlines.commandMs },
+      {
+        label: 'database cleanup', sensitiveValues,
+        timeoutMs: deadlines.commandMs, stopTimeoutMs: deadlines.stopMs,
+      },
     ),
     async removeRoot(root) {
       assertOwnedRoot(root)
