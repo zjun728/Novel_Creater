@@ -1,8 +1,9 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NInput, NSpin, NTag } from 'naive-ui'
 
 import { useCreationContractStore } from '@/stores/creationContractStore.js'
+import { createLatestRequestGuard } from '@/utils/latestRequest.js'
 
 const props = defineProps({
   projectId: { type: String, required: true },
@@ -17,6 +18,7 @@ const authorScenario = ref('')
 const requestKey = ref('')
 const errorMessage = ref('')
 const errorRegion = ref(null)
+const runGuard = createLatestRequestGuard()
 const result = computed(() => store.styleTrial)
 const canRun = computed(() => Boolean(
   props.selectionRevision > 0
@@ -33,33 +35,39 @@ function newRequestKey() {
   return uuid.repeat(4).replace(/[^A-Za-z0-9_-]/gu, '').padEnd(64, '0').slice(0, 64)
 }
 
-async function showError(message) {
+async function showError(message, generation) {
+  if (!runGuard.isCurrent(generation)) return
   errorMessage.value = String(message || '临时风格试写失败')
   await nextTick()
+  if (!runGuard.isCurrent(generation)) return
   errorRegion.value?.focus({ preventScroll: false })
 }
 
 async function runTrial() {
   if (!canRun.value || store.styleTrialLoading) return
+  const generation = runGuard.begin()
   errorMessage.value = ''
   if (!requestKey.value) requestKey.value = newRequestKey()
+  const targetProjectId = props.projectId
+  const command = {
+    selectionRevision: props.selectionRevision,
+    engineOptionId: props.engineOptionId,
+    engineHash: props.engineHash,
+    primaryStyleRevisionId: props.primaryStyleRef.id,
+    primaryStyleHash: props.primaryStyleRef.contentHash,
+    secondaryStyleRevisionId: props.secondaryStyleRef?.id || null,
+    secondaryStyleHash: props.secondaryStyleRef?.contentHash || null,
+    authorScenario: authorScenario.value.trim(),
+    idempotencyKey: requestKey.value,
+  }
   try {
-    const trial = await store.runStyleTrial(props.projectId, {
-      selectionRevision: props.selectionRevision,
-      engineOptionId: props.engineOptionId,
-      engineHash: props.engineHash,
-      primaryStyleRevisionId: props.primaryStyleRef.id,
-      primaryStyleHash: props.primaryStyleRef.contentHash,
-      secondaryStyleRevisionId: props.secondaryStyleRef?.id || null,
-      secondaryStyleHash: props.secondaryStyleRef?.contentHash || null,
-      authorScenario: authorScenario.value.trim(),
-      idempotencyKey: requestKey.value,
-    })
+    const trial = await store.runStyleTrial(targetProjectId, command)
+    if (!runGuard.isCurrent(generation)) return
     if (trial.status !== 'succeeded') {
-      await showError(`试写未完成（${trial.publicErrorCode || trial.status}）`)
+      await showError(`试写未完成（${trial.publicErrorCode || trial.status}）`, generation)
     }
   } catch (error) {
-    await showError(error?.message || '临时风格试写失败')
+    await showError(error?.message || '临时风格试写失败', generation)
   }
 }
 
@@ -75,11 +83,14 @@ watch(
     authorScenario.value,
   ],
   () => {
+    runGuard.invalidate()
     requestKey.value = ''
     errorMessage.value = ''
     store.clearStyleTrial()
   },
 )
+
+onBeforeUnmount(() => runGuard.invalidate())
 </script>
 
 <template>

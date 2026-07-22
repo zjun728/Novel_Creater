@@ -52,11 +52,24 @@ function wordRange(value) {
     </details>
 
     <details :open="!props.compact" class="decision-group">
+      <summary>创作种子</summary>
+      <dl class="decision-grid">
+        <div><dt>种子标题</dt><dd>{{ readable(props.creationContract?.selectedSeed?.title) }}</dd></div>
+        <div><dt>题材</dt><dd>{{ readable(props.creationContract?.selectedSeed?.genre) }}</dd></div>
+        <div class="decision-grid__wide"><dt>一句话梗概</dt><dd>{{ readable(props.creationContract?.selectedSeed?.logline) }}</dd></div>
+        <div><dt>主角</dt><dd>{{ readable(props.creationContract?.selectedSeed?.protagonist) }}</dd></div>
+        <div><dt>主角欲望</dt><dd>{{ readable(props.creationContract?.selectedSeed?.desire) }}</dd></div>
+        <div class="decision-grid__wide"><dt>核心冲突</dt><dd>{{ readable(props.creationContract?.selectedSeed?.coreConflict) }}</dd></div>
+        <div class="decision-grid__wide"><dt>世界压力</dt><dd>{{ readable(props.creationContract?.selectedSeed?.worldPressure) }}</dd></div>
+        <div class="decision-grid__wide"><dt>开局钩子</dt><dd>{{ readable(props.creationContract?.selectedSeed?.openingHook) }}</dd></div>
+        <div class="decision-grid__wide"><dt>差异化</dt><dd>{{ readable(props.creationContract?.selectedSeed?.differentiation) }}</dd></div>
+      </dl>
+    </details>
+
+    <details :open="!props.compact" class="decision-group">
       <summary>故事发动机</summary>
       <dl class="decision-grid">
         <div><dt>方案名称</dt><dd>{{ readable(props.creationContract?.selectedEngine?.name) }}</dd></div>
-        <div><dt>故事出发点</dt><dd>{{ readable(props.creationContract?.selectedSeed?.title) }}</dd></div>
-        <div class="decision-grid__wide"><dt>种子一句话</dt><dd>{{ readable(props.creationContract?.selectedSeed?.logline) }}</dd></div>
         <div class="decision-grid__wide"><dt>故事承诺</dt><dd>{{ readable(props.creationContract?.selectedEngine?.storyPromise) }}</dd></div>
         <div><dt>主角欲望</dt><dd>{{ readable(props.creationContract?.selectedEngine?.protagonistDesire) }}</dd></div>
         <div><dt>持续压力</dt><dd>{{ readable(props.creationContract?.selectedEngine?.sustainedPressure) }}</dd></div>

@@ -17,7 +17,7 @@ const store = useCreationContractStore()
 const errorMessage = ref('')
 const errorRegion = ref(null)
 const cloningRevision = ref(null)
-const requestGuard = createLatestRequestGuard()
+const historyRequestGuard = createLatestRequestGuard()
 
 const rows = computed(() => [...store.history].sort((a, b) => b.revision - a.revision))
 
@@ -41,7 +41,7 @@ function reasonLabel(reason) {
 }
 
 async function loadHistory({ append = false } = {}) {
-  const generation = requestGuard.begin()
+  const generation = historyRequestGuard.begin()
   const targetProjectId = props.projectId
   errorMessage.value = ''
   try {
@@ -54,10 +54,10 @@ async function loadHistory({ append = false } = {}) {
       : { limit: 20 }
     await store.loadHistory(targetProjectId, params)
   } catch (error) {
-    if (!requestGuard.isCurrent(generation)) return
+    if (!historyRequestGuard.isCurrent(generation)) return
     errorMessage.value = error?.message || '历史修订加载失败'
     await nextTick()
-    if (!requestGuard.isCurrent(generation)) return
+    if (!historyRequestGuard.isCurrent(generation)) return
     errorRegion.value?.focus({ preventScroll: false })
   }
 }
@@ -69,28 +69,29 @@ function loadMore() {
 
 async function cloneRevision(item) {
   if (!canClone(item) || store.cloning) return
-  const generation = requestGuard.begin()
   const targetProjectId = props.projectId
   errorMessage.value = ''
   cloningRevision.value = item.revision
   try {
     const result = await store.cloneRevision(targetProjectId, item.revision)
-    if (!requestGuard.isCurrent(generation)) return
     emit('update:show', false)
     emit('cloned', result)
   } catch (error) {
-    if (!requestGuard.isCurrent(generation)) return
     errorMessage.value = error?.message || '未来设计草稿创建失败'
     await nextTick()
-    if (!requestGuard.isCurrent(generation)) return
     errorRegion.value?.focus({ preventScroll: false })
   } finally {
-    if (requestGuard.isCurrent(generation)) cloningRevision.value = null
+    cloningRevision.value = null
   }
 }
 
+function handleShowUpdate(show) {
+  if (!show && store.cloning) return
+  emit('update:show', show)
+}
+
 function resetDrawerState() {
-  requestGuard.invalidate()
+  historyRequestGuard.invalidate()
   errorMessage.value = ''
   cloningRevision.value = null
   store.clearHistory()
@@ -118,9 +119,11 @@ onBeforeUnmount(() => resetDrawerState())
     :show="props.show"
     width="min(620px, 100vw)"
     placement="right"
-    @update:show="emit('update:show', $event)"
+    :mask-closable="!store.cloning"
+    :close-on-esc="!store.cloning"
+    @update:show="handleShowUpdate"
   >
-    <n-drawer-content title="创作契约历史" closable>
+    <n-drawer-content title="创作契约历史" :closable="!store.cloning">
       <p class="drawer-intro">签印修订不可覆盖。只有与当前种子选择代次完全一致的历史修订，才可克隆为面向未来的新草稿。</p>
 
       <n-alert

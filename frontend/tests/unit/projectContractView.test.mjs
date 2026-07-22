@@ -76,11 +76,21 @@ const behaviorNaiveStubPlugin = {
       export const NDrawer = defineComponent({
         name: 'NDrawer',
         inheritAttrs: false,
-        props: { show: Boolean },
+        props: {
+          show: Boolean,
+          maskClosable: { type: Boolean, default: true },
+          closeOnEsc: { type: Boolean, default: true },
+        },
         emits: ['update:show'],
-        setup(props, { attrs, slots }) {
+        setup(props, { attrs, emit, slots }) {
           return () => props.show
-            ? h('aside', { ...attrs, 'data-component': 'NDrawer' }, children(slots))
+            ? h('aside', {
+                ...attrs,
+                'data-component': 'NDrawer',
+                maskClosable: props.maskClosable,
+                closeOnEsc: props.closeOnEsc,
+                onRequestClose: () => emit('update:show', false),
+              }, children(slots))
             : null
         },
       })
@@ -168,6 +178,12 @@ async function trigger(node, name, value) {
   await flush()
 }
 
+function invoke(node, name, value) {
+  const handlers = Array.isArray(node?.props?.[name]) ? node.props[name] : [node?.props?.[name]]
+  assert.equal(typeof handlers[0], 'function', `missing ${name}`)
+  return Promise.all(handlers.map(handler => handler(value)))
+}
+
 async function compileClientRender(path) {
   const contents = await source(path)
   const filename = path.split('/').at(-1)
@@ -212,6 +228,7 @@ let StoryEngineStep
 let ContractHistoryDrawer
 let ContractPreviewStep
 let StyleSelectionStep
+let StyleTrialPanel
 let naiveBehaviorModule
 
 test.before(async () => {
@@ -250,10 +267,10 @@ test.before(async () => {
   ContractPreviewStep.render = await compileClientRender(
     'src/components/project/contract/ContractPreviewStep.vue',
   )
-  const styleTrialPanel = (
+  StyleTrialPanel = (
     await behaviorVite.ssrLoadModule('/src/components/project/contract/StyleTrialPanel.vue')
   ).default
-  styleTrialPanel.render = await compileClientRender(
+  StyleTrialPanel.render = await compileClientRender(
     'src/components/project/contract/StyleTrialPanel.vue',
   )
   StyleSelectionStep = (
@@ -659,7 +676,17 @@ function completeDecisionPayload() {
       channelProfileKey: '女性成长频道',
       genreProfileKey: '架空悬疑',
       qualityCharterVersion: '质量章程-2026',
-      selectedSeed: { title: '雾港拾灯人', logline: '她必须在黎明前找回失踪档案。' },
+      selectedSeed: {
+        title: '雾港拾灯人',
+        genre: '潮汐奇谭',
+        logline: '她必须在黎明前找回失踪档案。',
+        protagonist: '拾灯人林缈',
+        desire: '让被抹去的人重获姓名',
+        coreConflict: '公布真相会让港城提前沉没',
+        worldPressure: '每次涨潮都会抹去一段公共记忆',
+        openingHook: '一盏本该熄灭的灯叫出了她的名字',
+        differentiation: '用潮汐线与档案缺页双重记录遗忘',
+      },
       selectedEngine: {
         name: '钟摆发动机',
         storyPromise: '每次破案都会失去一段记忆。',
@@ -722,12 +749,17 @@ test('reusable decision summary renders every formal author decision without dro
       '目标总字数', '预计卷数', '预计章数', '单章字数', '禁止方向', '作者备注',
       '阅读体验', '叙事距离', '句段节奏', '用词密度', '对话与潜台词', '人物声音',
       '情绪与内心', '动作·解释·环境', '主规则', '次要风味', '风险', '喜欢', '避开',
+      '种子标题', '一句话梗概', '主角', '核心冲突', '世界压力', '开局钩子', '差异化',
     ]) assert.ok(rendered.includes(label), `missing decision label: ${label}`)
     for (const value of [
       '女性成长频道', '架空悬疑', '质量章程-2026', '钟摆发动机',
       '保住妹妹的真实姓名', '追查—交换—反噬—重新结盟', '1,260,000', '2,800', '3,400',
       '人物选择必须优先于设定解释。', '限知近距离', '动作六成，解释二成，环境二成',
       '每场戏必须有不可逆变化', '留白过多导致信息不足', '对话中的关系位移', '用脸色发白代替情绪',
+      '雾港拾灯人', '潮汐奇谭', '她必须在黎明前找回失踪档案。', '拾灯人林缈',
+      '让被抹去的人重获姓名', '公布真相会让港城提前沉没',
+      '每次涨潮都会抹去一段公共记忆', '一盏本该熄灭的灯叫出了她的名字',
+      '用潮汐线与档案缺页双重记录遗忘',
     ]) assert.ok(rendered.includes(value), `missing decision value: ${value}`)
   } finally {
     mounted.app.unmount()
@@ -839,6 +871,179 @@ test('style selection keeps rapid A to B navigation on B when A fails late', asy
   }
 })
 
+function styleSummary(id, name, contentHash) {
+  return {
+    id,
+    name,
+    revision: id === 'style-a' ? 1 : 2,
+    contentHash,
+    readingExperience: `${name}的阅读体验`,
+    reasonCodes: [],
+    applicability: [],
+    nonApplicability: [],
+  }
+}
+
+function styleDetail(id, name, contentHash) {
+  return {
+    id,
+    stableKey: `${id}-stable`,
+    name,
+    revision: id === 'style-a' ? 1 : 2,
+    contentHash,
+    payload: {
+      readingExperience: `${name}阅读体验`,
+      narrativeDistance: '限知',
+      rhythm: '快慢相间',
+      dictionDensity: '中等',
+      dialogue: '克制',
+      subtext: '清晰',
+      characterVoices: '可区分',
+      emotion: '外化',
+      interiority: '选择驱动',
+      standardSceneExample: `${name}标准场景`,
+      completeApplicationExample: `${name}完整示例`,
+      risks: [`${name}风险`],
+    },
+  }
+}
+
+for (const lateOutcome of ['success', 'failure']) {
+  test(`style detail keeps B after A resolves late with ${lateOutcome}`, async () => {
+    const pendingA = deferred()
+    const pendingB = deferred()
+    const styleA = styleSummary('style-a', '风格 A', HASH_A)
+    const styleB = styleSummary('style-b', '风格 B', HASH_B)
+    naiveBehaviorModule.focusEvents.length = 0
+    const mounted = mountWithPinia(StyleSelectionStep, {
+      projectId: 'project-1',
+      selectionRevision: 2,
+    }, contractStore => {
+      contractStore.projectId = 'project-1'
+      const assetStore = useCreationAssetStore()
+      assetStore.loadStyleTemplates = async () => {
+        assetStore.styleTemplates = [styleA, styleB]
+        return [styleA, styleB]
+      }
+      assetStore.loadRecommendations = async () => {
+        const result = { styles: [styleA, styleB] }
+        assetStore.recommendations = result
+        return result
+      }
+      assetStore.getStyleTemplate = async id => (
+        id === 'style-a' ? pendingA.promise : pendingB.promise
+      )
+    })
+
+    try {
+      await flush()
+      const detailButtons = walk(mounted.root).filter(node => (
+        node.type === 'button' && textContent(node).trim() === '阅读全文示例'
+      ))
+      assert.equal(detailButtons.length, 2)
+      const openA = invoke(detailButtons[0], 'onClick')
+      await flush()
+      const openB = invoke(detailButtons[1], 'onClick')
+      pendingB.resolve(styleDetail('style-b', 'B 详情名称', HASH_B))
+      await openB
+      await flush()
+
+      assert.match(textContent(mounted.root), /B 详情名称/)
+      const modal = walk(mounted.root).find(node => node.props['data-component'] === 'NModal')
+      const detailSpin = walk(modal).find(node => node.props['data-component'] === 'NSpin')
+      assert.equal(detailSpin.props.show, false)
+
+      if (lateOutcome === 'success') {
+        pendingA.resolve(styleDetail('style-a', 'A 迟到详情', HASH_A))
+      } else {
+        pendingA.reject(new Error('A 迟到详情错误'))
+      }
+      await openA
+      await flush()
+
+      const rendered = textContent(mounted.root)
+      assert.match(rendered, /B 详情名称/)
+      assert.doesNotMatch(rendered, /A 迟到详情|A 迟到详情错误/)
+      assert.equal(detailSpin.props.show, false)
+      assert.deepEqual(naiveBehaviorModule.focusEvents, [])
+    } finally {
+      mounted.app.unmount()
+    }
+  })
+}
+
+for (const lateOutcome of ['rejection', 'failed-result']) {
+  test(`style trial keeps B after obsolete A ${lateOutcome}`, async () => {
+    const pendingA = deferred()
+    const pendingB = deferred()
+    const originalGenerate = api.styleTrials.generate
+    const primaryStyleRef = VueRuntime.ref({ id: 'style-a', revision: 1, contentHash: HASH_A })
+    const commands = []
+    naiveBehaviorModule.focusEvents.length = 0
+    api.styleTrials.generate = async (_projectId, command) => {
+      commands.push(structuredClone(command))
+      return command.authorScenario === '场景 A' ? pendingA.promise : pendingB.promise
+    }
+    const mounted = mountWithPinia(StyleTrialPanel, () => ({
+      projectId: 'project-1',
+      selectionRevision: 2,
+      engineOptionId: 'engine-1',
+      engineHash: HASH_A,
+      primaryStyleRef: primaryStyleRef.value,
+      secondaryStyleRef: null,
+    }))
+
+    try {
+      const scenario = inputForLabel(mounted.root, '作者场景')
+      await trigger(scenario, 'onInput', { target: { value: '场景 A' } })
+      const runA = invoke(findByText(mounted.root, 'button', '运行临时试写'), 'onClick')
+      await flush()
+
+      primaryStyleRef.value = { id: 'style-b', revision: 2, contentHash: HASH_B }
+      await trigger(scenario, 'onInput', { target: { value: '场景 B' } })
+      const runB = invoke(findByText(mounted.root, 'button', '运行临时试写'), 'onClick')
+      pendingB.resolve({
+        attemptId: 'trial-b',
+        status: 'succeeded',
+        sample: 'B 当前试写正文',
+        provider: { providerType: 'safe-provider', modelName: 'model-b', profileRevision: 2 },
+      })
+      await runB
+      await flush()
+      assert.match(textContent(mounted.root), /B 当前试写正文/)
+
+      if (lateOutcome === 'rejection') {
+        pendingA.reject(new Error('A 迟到试写错误'))
+      } else {
+        pendingA.resolve({
+          attemptId: 'trial-a',
+          status: 'failed',
+          publicErrorCode: 'A_OBSOLETE_FAILED',
+        })
+      }
+      await runA
+      await flush()
+
+      assert.deepEqual(commands.map(command => ({
+        scenario: command.authorScenario,
+        styleId: command.primaryStyleRevisionId,
+        styleHash: command.primaryStyleHash,
+      })), [
+        { scenario: '场景 A', styleId: 'style-a', styleHash: HASH_A },
+        { scenario: '场景 B', styleId: 'style-b', styleHash: HASH_B },
+      ])
+      assert.equal(mounted.store.styleTrial?.attemptId, 'trial-b')
+      const rendered = textContent(mounted.root)
+      assert.match(rendered, /B 当前试写正文/)
+      assert.doesNotMatch(rendered, /A 迟到试写错误|A_OBSOLETE_FAILED/)
+      assert.deepEqual(naiveBehaviorModule.focusEvents, [])
+    } finally {
+      api.styleTrials.generate = originalGenerate
+      mounted.app.unmount()
+    }
+  })
+}
+
 function simpleHistoryRow(revision) {
   return {
     revision,
@@ -846,6 +1051,118 @@ function simpleHistoryRow(revision) {
     styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [], supersededReasons: [],
   }
 }
+
+test('history clone ignores close requests while pending then closes through the cloned step handoff', async () => {
+  const pendingClone = deferred()
+  const originalClone = api.contracts.clone
+  const show = VueRuntime.ref(true)
+  const events = []
+  const clonedDraft = {
+    id: 'draft-from-r4',
+    projectId: 'project-1',
+    baseHeadRevision: 4,
+    draftVersion: 1,
+    draftStage: 'assets',
+    draft: { draftStage: 'assets' },
+  }
+  api.contracts.clone = async () => pendingClone.promise
+  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
+    show: show.value,
+    projectId: 'project-1',
+    currentSelectionRevision: 8,
+    readOnly: false,
+    'onUpdate:show': value => {
+      events.push(['show', value])
+      show.value = value
+    },
+    onCloned: value => events.push(['cloned', value]),
+  }), store => {
+    store.projectId = 'project-1'
+    store.history = [simpleHistoryRow(4)]
+    store.loadHistory = async () => ({ items: store.history, nextBeforeRevision: null })
+  })
+
+  try {
+    await flush()
+    const clone = invoke(findByText(mounted.root, 'button', '调整未来设计'), 'onClick')
+    await flush()
+    assert.equal(mounted.store.cloning, true)
+    const drawer = walk(mounted.root).find(node => node.props['data-component'] === 'NDrawer')
+    const content = walk(drawer).find(node => node.props['data-component'] === 'NDrawerContent')
+    const pendingFlags = {
+      maskClosable: drawer.props.maskClosable,
+      closeOnEsc: drawer.props.closeOnEsc,
+      contentClosable: content.props.closable,
+    }
+    await trigger(drawer, 'onRequestClose')
+    const stayedOpen = show.value
+
+    pendingClone.resolve(clonedDraft)
+    await clone
+    await flush()
+
+    assert.equal(stayedOpen, true)
+    assert.deepEqual(pendingFlags, {
+      maskClosable: false,
+      closeOnEsc: false,
+      contentClosable: false,
+    })
+    assert.deepEqual(events, [
+      ['show', false],
+      ['cloned', clonedDraft],
+    ])
+    assert.equal(show.value, false)
+    const wizard = await source('src/components/project/CreationContractWizard.vue')
+    assert.match(wizard, /@cloned="advance\(4\)"/)
+  } finally {
+    api.contracts.clone = originalClone
+    mounted.app.unmount()
+  }
+})
+
+test('history clone failure keeps the drawer open and focuses its current error', async () => {
+  const pendingClone = deferred()
+  const originalClone = api.contracts.clone
+  const show = VueRuntime.ref(true)
+  const events = []
+  naiveBehaviorModule.focusEvents.length = 0
+  api.contracts.clone = async () => pendingClone.promise
+  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
+    show: show.value,
+    projectId: 'project-1',
+    currentSelectionRevision: 8,
+    readOnly: false,
+    'onUpdate:show': value => {
+      events.push(['show', value])
+      show.value = value
+    },
+    onCloned: value => events.push(['cloned', value]),
+  }), store => {
+    store.projectId = 'project-1'
+    store.history = [simpleHistoryRow(4)]
+    store.loadHistory = async () => ({ items: store.history, nextBeforeRevision: null })
+  })
+
+  try {
+    await flush()
+    const clone = invoke(findByText(mounted.root, 'button', '调整未来设计'), 'onClick')
+    await flush()
+    const drawer = walk(mounted.root).find(node => node.props['data-component'] === 'NDrawer')
+    await trigger(drawer, 'onRequestClose')
+    pendingClone.reject(new Error('当前克隆失败'))
+    await clone
+    await flush()
+
+    assert.equal(show.value, true)
+    assert.deepEqual(events, [])
+    assert.equal(mounted.store.cloning, false)
+    assert.match(textContent(mounted.root), /当前克隆失败/)
+    assert.ok(naiveBehaviorModule.focusEvents.includes('NAlert'))
+  } finally {
+    api.contracts.clone = originalClone
+    mounted.app.unmount()
+  }
+})
 
 test('history drawer reloads on project change and ignores the old project late failure', async () => {
   const pendingA = deferred()

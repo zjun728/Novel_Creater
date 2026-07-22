@@ -39,8 +39,10 @@ const dislikesText = ref('')
 const detailOpen = ref(false)
 const detailLoading = ref(false)
 const detailError = ref('')
+const detailErrorRegion = ref(null)
 const selectedDetail = ref(null)
 const loadGuard = createLatestRequestGuard()
+const detailGuard = createLatestRequestGuard()
 
 const draftValues = computed(() => contractStore.draft?.draft || null)
 const recommendedStyles = computed(() => assetStore.recommendations?.styles || [])
@@ -199,17 +201,42 @@ async function initialize(projectId, { reloadContract = false } = {}) {
 }
 
 async function openStyleDetail(style) {
+  const generation = detailGuard.begin()
+  const styleId = style.id
+  const contentHash = style.contentHash
   detailOpen.value = true
   detailLoading.value = true
   detailError.value = ''
   selectedDetail.value = null
   try {
-    selectedDetail.value = await assetStore.getStyleTemplate(style.id, style.contentHash)
+    const detail = await assetStore.getStyleTemplate(styleId, contentHash)
+    if (!detailGuard.isCurrent(generation)) return
+    selectedDetail.value = detail
   } catch (error) {
+    if (!detailGuard.isCurrent(generation)) return
     detailError.value = error?.message || '完整风格详情加载失败'
+    await nextTick()
+    if (!detailGuard.isCurrent(generation)) return
+    detailErrorRegion.value?.focus({ preventScroll: false })
   } finally {
-    detailLoading.value = false
+    if (detailGuard.isCurrent(generation)) detailLoading.value = false
   }
+}
+
+function closeStyleDetail() {
+  detailGuard.invalidate()
+  detailOpen.value = false
+  detailLoading.value = false
+  detailError.value = ''
+  selectedDetail.value = null
+}
+
+function handleDetailShowUpdate(show) {
+  if (show) {
+    detailOpen.value = true
+    return
+  }
+  closeStyleDetail()
 }
 
 async function saveAndContinue() {
@@ -271,10 +298,16 @@ async function saveAndContinue() {
   }
 }
 
+watch(
+  () => [props.projectId, props.selectionRevision],
+  () => closeStyleDetail(),
+)
+
 watch(() => props.projectId, projectId => initialize(String(projectId || '')), { immediate: true })
 
 onBeforeUnmount(() => {
   loadGuard.invalidate()
+  detailGuard.invalidate()
 })
 </script>
 
@@ -469,9 +502,9 @@ onBeforeUnmount(() => {
       </div>
     </footer>
 
-    <n-modal v-model:show="detailOpen" preset="card" class="style-detail-modal" style="width: min(920px, 94vw)" title="完整风格样例">
+    <n-modal :show="detailOpen" preset="card" class="style-detail-modal" style="width: min(920px, 94vw)" title="完整风格样例" @update:show="handleDetailShowUpdate">
       <n-spin :show="detailLoading">
-        <n-alert v-if="detailError" type="error">{{ detailError }}</n-alert>
+        <n-alert v-if="detailError" ref="detailErrorRegion" tabindex="-1" type="error" aria-live="assertive">{{ detailError }}</n-alert>
         <article v-else-if="selectedDetail" class="style-detail">
           <header>
             <p>{{ selectedDetail.stableKey }} · revision {{ selectedDetail.revision }}</p>
