@@ -397,6 +397,12 @@ class ConfirmedContractResult:
     superseded_reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ContractHistoryPage:
+    items: tuple[ConfirmedContractResult, ...]
+    next_before_revision: int | None
+
+
 def _json_object(value) -> dict:
     if isinstance(value, str):
         value = json.loads(value)
@@ -671,6 +677,7 @@ __all__ = (
     "AssetRevisionRef", "BindingContractRef", "ConfirmContracts",
     "ConfirmedContractResult", "ContractConflict", "ContractDraftIncomplete",
     "ContractDraftInput", "ContractDraftPayload", "ContractDraftResult",
+    "ContractHistoryPage",
     "ContractDraftService", "ContractNotFound", "ContractPreconditionFailed",
     "CorpusSourceRef", "EngineContractRef", "ModelBindingRef",
     "ResolvedAssetRef", "ResolvedCorpusFragment", "ResolvedCorpusRef",

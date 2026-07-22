@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import traceback
+from typing import get_type_hints
 
 import pytest
 from pydantic import ValidationError
@@ -20,8 +21,10 @@ from backend.services.contracts import (
     ContractConflict,
     ContractDraftIncomplete,
     ContractDraftInput,
+    ContractHistoryPage,
     ContractNotFound,
     ContractPreconditionFailed,
+    ContractService,
     SaveContractDraft,
 )
 from backend.tests.support.contract_fakes import (
@@ -665,9 +668,9 @@ async def test_archived_project_can_read_confirmed_head_and_history_but_not_clon
     harness.repository.projects["p1"]["status"] = "archived"
 
     assert await harness.service.get_head("p1") == confirmed
-    assert await harness.service.history("p1") == {
-        "items": (confirmed,), "nextBeforeRevision": None,
-    }
+    assert await harness.service.history("p1") == ContractHistoryPage(
+        items=(confirmed,), next_before_revision=None,
+    )
     with pytest.raises(ProjectArchived):
         await harness.service.clone_revision("p1", confirmed.revision)
 
@@ -1490,7 +1493,7 @@ async def test_history_and_replay_mark_superseded_selection_generation_read_only
     first = await harness.service.confirm(confirmation(saved))
     harness.repository.selected_seeds["p1"]["selection_revision"] += 2
 
-    historical = (await harness.service.history("p1"))["items"]
+    historical = (await harness.service.history("p1")).items
     replay = await harness.service.confirm(confirmation(saved))
 
     assert first.contract_ready is True
@@ -1514,7 +1517,7 @@ async def test_history_and_replay_mark_replaced_contract_revision_superseded():
         second_draft, key="confirm-revision-2"
     ))
 
-    history = (await harness.service.history("p1"))["items"]
+    history = (await harness.service.history("p1")).items
     replay = await harness.service.confirm(confirmation(
         first_draft, key="confirm-revision-1"
     ))
@@ -1544,15 +1547,15 @@ async def test_history_uses_exclusive_revision_cursor_without_duplicates_or_gaps
 
     first = await harness.service.history("p1", limit=2)
     second = await harness.service.history(
-        "p1", limit=2, before_revision=first["nextBeforeRevision"]
+        "p1", limit=2, before_revision=first.next_before_revision
     )
     empty = await harness.service.history("p1", limit=2, before_revision=1)
 
-    assert tuple(item.revision for item in first["items"]) == (3, 2)
-    assert first["nextBeforeRevision"] == 2
-    assert tuple(item.revision for item in second["items"]) == (1,)
-    assert second["nextBeforeRevision"] is None
-    assert empty == {"items": (), "nextBeforeRevision": None}
+    assert tuple(item.revision for item in first.items) == (3, 2)
+    assert first.next_before_revision == 2
+    assert tuple(item.revision for item in second.items) == (1,)
+    assert second.next_before_revision is None
+    assert empty == ContractHistoryPage(items=(), next_before_revision=None)
 
 
 @pytest.mark.parametrize("before_revision", (0, -1, True, 1.0, "1"))
@@ -1564,6 +1567,40 @@ async def test_history_rejects_non_positive_or_non_integer_revision_cursor(
 
     with pytest.raises(ContractPreconditionFailed):
         await harness.service.history("p1", before_revision=before_revision)
+
+
+@pytest.mark.parametrize("limit", (True, 1.0, "1", 0, 101))
+@pytest.mark.asyncio
+async def test_history_rejects_non_strict_or_out_of_bounds_limit(limit):
+    harness = ContractHarness()
+
+    with pytest.raises(ContractPreconditionFailed):
+        await harness.service.history("p1", limit=limit)
+
+    assert harness.repository.drafts == {}
+    assert harness.repository.write_count == 0
+
+
+@pytest.mark.asyncio
+async def test_revision_zero_history_is_a_frozen_typed_empty_page_without_writes():
+    harness = ContractHarness()
+
+    page = await harness.service.history("p1")
+
+    assert harness.repository.heads["p1"]["revision"] == 0
+    assert isinstance(page, ContractHistoryPage)
+    assert page.items == ()
+    assert page.next_before_revision is None
+    assert harness.repository.drafts == {}
+    assert harness.repository.write_count == 0
+    with pytest.raises(AttributeError):
+        page.next_before_revision = 1
+
+
+def test_history_service_declares_the_typed_page_return_contract():
+    hints = get_type_hints(ContractService.history)
+
+    assert hints["return"] is ContractHistoryPage
 
 
 @pytest.mark.parametrize("stage", (
@@ -1629,7 +1666,7 @@ async def test_head_readiness_does_not_depend_on_provider_callability():
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))
     await harness.service.confirm(confirmation(saved))
-    historical = (await harness.service.history("p1"))["items"]
+    historical = (await harness.service.history("p1")).items
     harness.repository.binding["items"][0]["provider_ready"] = 0
 
     head = await harness.service.get_head("p1")

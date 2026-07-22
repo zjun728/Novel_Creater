@@ -19,6 +19,7 @@ from backend.services.contracts import (
     ConfirmContracts,
     ContractConflict,
     ContractDraftInput,
+    ContractHistoryPage,
     ContractNotFound,
     ContractPreconditionFailed,
     ContractService,
@@ -170,8 +171,8 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     }
     assert (await service.get_head(PROJECT)).revision == 1
     history_page = await service.history(PROJECT)
-    assert tuple(item.revision for item in history_page["items"]) == (1,)
-    assert history_page["nextBeforeRevision"] is None
+    assert tuple(item.revision for item in history_page.items) == (1,)
+    assert history_page.next_before_revision is None
 
     with pytest.raises(ContractConflict):
         await service.confirm(_confirm(saved, content_hash="f" * 64))
@@ -183,7 +184,7 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
         PROJECT, cloned.draft_version, _draft(facts, likes=("第二版偏好",))
     ))
     second = await service.confirm(_confirm(revised, key="confirm-second"))
-    history = (await service.history(PROJECT))["items"]
+    history = (await service.history(PROJECT)).items
     old_replay = await service.confirm(_confirm(saved))
     assert second.revision == 2
     assert tuple(item.revision for item in history) == (2, 1)
@@ -222,15 +223,15 @@ async def test_real_history_pages_by_exclusive_revision_without_duplicates_or_ga
 
     first = await service.history(PROJECT, limit=2)
     second = await service.history(
-        PROJECT, limit=2, before_revision=first["nextBeforeRevision"]
+        PROJECT, limit=2, before_revision=first.next_before_revision
     )
     empty = await service.history(PROJECT, limit=2, before_revision=1)
 
-    assert tuple(item.revision for item in first["items"]) == (3, 2)
-    assert first["nextBeforeRevision"] == 2
-    assert tuple(item.revision for item in second["items"]) == (1,)
-    assert second["nextBeforeRevision"] is None
-    assert empty == {"items": (), "nextBeforeRevision": None}
+    assert tuple(item.revision for item in first.items) == (3, 2)
+    assert first.next_before_revision == 2
+    assert tuple(item.revision for item in second.items) == (1,)
+    assert second.next_before_revision is None
+    assert empty == ContractHistoryPage(items=(), next_before_revision=None)
 
 
 @pytest.mark.asyncio
@@ -250,9 +251,9 @@ async def test_real_archived_project_reads_confirmed_head_and_history_but_reject
     }
 
     assert await service.get_head(PROJECT) == confirmed
-    assert await service.history(PROJECT) == {
-        "items": (confirmed,), "nextBeforeRevision": None,
-    }
+    assert await service.history(PROJECT) == ContractHistoryPage(
+        items=(confirmed,), next_before_revision=None,
+    )
     with pytest.raises(ContractNotFound):
         await service.preview(PROJECT)
     with pytest.raises(ProjectArchived):
@@ -564,7 +565,7 @@ async def test_real_a_b_a_marks_old_contract_history_and_replay_superseded(
         )
     )
 
-    historical = (await contract_service.history(PROJECT))["items"]
+    historical = (await contract_service.history(PROJECT)).items
     replay = await contract_service.confirm(_confirm(saved))
 
     assert first.contract_ready is True

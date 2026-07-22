@@ -288,6 +288,6 @@ async def get_contract_history(
         pid, limit=limit, before_revision=before_revision
     )
     return {
-        "items": [_public_confirmed(item) for item in page["items"]],
-        "nextBeforeRevision": page["nextBeforeRevision"],
+        "items": [_public_confirmed(item) for item in page.items],
+        "nextBeforeRevision": page.next_before_revision,
     }

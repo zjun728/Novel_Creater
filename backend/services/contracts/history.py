@@ -15,6 +15,7 @@ from .drafts import (
     ContractConflict,
     ContractDraftPayload,
     ContractDraftResult,
+    ContractHistoryPage,
     ContractNotFound,
     ContractPreconditionFailed,
     ConfirmedContractResult,
@@ -411,7 +412,7 @@ class ContractHistoryService(ContractPreviewService):
         project_id: str,
         limit: int = 20,
         before_revision: int | None = None,
-    ):
+    ) -> ContractHistoryPage:
         if (
             isinstance(limit, bool)
             or type(limit) is not int
@@ -454,12 +455,12 @@ class ContractHistoryService(ContractPreviewService):
                         result, selected, head
                     )
                 )
-            return {
-                "items": tuple(results),
-                "nextBeforeRevision": (
+            return ContractHistoryPage(
+                items=tuple(results),
+                next_before_revision=(
                     int(page[-1]["revision"]) if len(revisions) > limit else None
                 ),
-            }
+            )
 
 
     async def clone_revision(
