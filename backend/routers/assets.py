@@ -2,71 +2,62 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.domain.asset_eligibility import (
-    CHANNELS,
-    CREATION_STAGES,
-    GENRES,
-    PROHIBITED_DIRECTIONS,
-    WRITING_PURPOSES,
-    AssetEligibilityScope,
-    Channel,
     CreationStage,
     Genre,
     ProhibitedDirection,
-    WritingPurpose,
 )
 from backend.domain.assets import AssetCategory
 from backend.services.creative_assets import (
     CreativeAssetService,
     build_creative_asset_service,
 )
+from backend.services.assets import GenerateAssetRecommendations
 
 
 router = APIRouter(tags=["assets"])
 
 
-class _AssetRecommendationQuery(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class _AssetRecommendationBody(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        hide_input_in_errors=True,
+    )
 
+    idempotencyKey: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]{64}$",
+    )
     engineOptionId: str = Field(min_length=1, max_length=36)
-    genres: tuple[Genre, ...] = Field(
-        min_length=1,
-        max_length=len(GENRES),
-    )
-    channels: tuple[Channel, ...] = Field(
-        min_length=1,
-        max_length=len(CHANNELS),
-    )
-    creationStages: tuple[CreationStage, ...] = Field(
-        min_length=1,
-        max_length=len(CREATION_STAGES),
-    )
-    writingPurposes: tuple[WritingPurpose, ...] = Field(
-        min_length=1,
-        max_length=len(WRITING_PURPOSES),
-    )
+    taxonomyVersion: str = Field(min_length=1, max_length=64)
+    taxonomyHash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    genre: Genre
+    creationStage: CreationStage
     status: Literal["active", "archived"]
     prohibitedDirections: tuple[ProhibitedDirection, ...] = Field(
         default=(),
-        max_length=len(PROHIBITED_DIRECTIONS),
+        max_length=7,
     )
 
-    @field_validator(
-        "genres",
-        "channels",
-        "creationStages",
-        "writingPurposes",
-        "prohibitedDirections",
-    )
+    @field_validator("prohibitedDirections", mode="before")
     @classmethod
-    def unique_dimensions(cls, values):
+    def freeze_prohibited_directions(cls, values):
+        return tuple(values) if isinstance(values, list) else values
+
+    @field_validator("prohibitedDirections")
+    @classmethod
+    def unique_prohibited_directions(cls, values):
         if len(values) != len(set(values)):
-            raise ValueError("query dimension values must be unique")
+            raise ValueError("prohibited directions must be unique")
         return values
 
 
@@ -260,46 +251,58 @@ async def get_experience_card(
     return {**_card_summary(item), "payload": _card_payload(item)}
 
 
-@router.get("/projects/{pid}/asset-recommendations")
-async def get_asset_recommendations(
-    query: Annotated[_AssetRecommendationQuery, Query()],
+@router.post("/projects/{pid}/asset-recommendations")
+async def create_asset_recommendations(
+    body: _AssetRecommendationBody,
     pid: str = Path(min_length=1, max_length=36),
     service=Depends(get_asset_service),
 ):
-    scope = AssetEligibilityScope(
-        genres=query.genres,
-        channels=query.channels,
-        creation_stages=query.creationStages,
-        writing_purposes=query.writingPurposes,
-        prohibited_directions=query.prohibitedDirections,
-        status=query.status,
-    )
     recommendation = await service.recommend(
-        pid,
-        query.engineOptionId,
-        scope,
+        GenerateAssetRecommendations(
+            project_id=pid,
+            engine_option_id=body.engineOptionId,
+            idempotency_key=body.idempotencyKey,
+            taxonomy_version=body.taxonomyVersion,
+            taxonomy_hash=body.taxonomyHash,
+            genre=body.genre,
+            creation_stage=body.creationStage,
+            status=body.status,
+            prohibited_directions=body.prohibitedDirections,
+        )
     )
-    styles = [
+    assets = [
         {
-            **_style_summary(item.record),
-            "reasonCodes": list(item.reason_codes),
+            "assetRevisionId": item.asset_revision_id,
+            "assetType": item.asset_type,
+            "stableKey": item.stable_key,
+            "revision": item.revision,
+            "contentHash": item.content_hash,
+            "reason": item.reason,
+            "confidence": item.confidence,
         }
-        for item in recommendation.styles
+        for item in recommendation.asset_recommendations
     ]
-    cards = [
-        {
-            **_card_summary(item.record),
-            "reasonCodes": list(item.reason_codes),
-        }
-        for item in recommendation.experience_cards
-    ]
+    corpus = [{
+        "sourceId": item.source_id,
+        "sourceRevision": item.source_revision,
+        "sourceHash": item.source_hash,
+        "chapterId": item.chapter_id,
+        "fragmentId": item.fragment_id,
+        "fragmentHash": item.fragment_hash,
+        "rangeStart": item.range_start,
+        "rangeEnd": item.range_end,
+        "use": item.use,
+        "reason": item.reason,
+        "confidence": item.confidence,
+    } for item in recommendation.corpus_recommendations]
     return {
-        "recommendationVersion": recommendation.recommendation_version,
-        "recommendationHash": recommendation.recommendation_hash,
-        "seedRevisionId": recommendation.seed_revision_id,
-        "seedHash": recommendation.seed_hash,
-        "engineOptionId": recommendation.engine_option_id,
-        "engineHash": recommendation.engine_hash,
-        "styles": styles,
-        "experienceCards": cards,
+        "attemptId": recommendation.attempt_id,
+        "publicReason": recommendation.public_reason,
+        "rankingUnavailable": recommendation.ranking_unavailable,
+        "fullBrowseAvailable": recommendation.full_browse_available,
+        "assetRecommendations": assets,
+        "corpusRecommendations": corpus,
+        "inputManifest": recommendation.input_manifest,
+        "inputManifestHash": recommendation.input_manifest_hash,
+        "resultHash": recommendation.result_hash,
     }

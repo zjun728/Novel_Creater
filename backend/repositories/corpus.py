@@ -738,5 +738,61 @@ class CorpusRepository:
             (chapter_id, after_order, limit + 1),
         )
 
+    async def list_recommendation_fragments(
+        self,
+        session,
+        *,
+        after: tuple[str, int, int, str] | None,
+        limit: int,
+    ):
+        """Return a bounded safe projection of active current corpus rows."""
+
+        cursor_clause = ""
+        params: tuple[object, ...] = (limit,)
+        if after is not None:
+            cursor_clause = """AND (
+                source.id,chapter.chapter_order,
+                fragment.fragment_order,fragment.id
+            ) > (%s,%s,%s,%s)"""
+            params = (*after, limit)
+        return await session.fetchall(
+            f"""SELECT source.id AS source_id,
+                      revision.id AS source_revision_id,
+                      revision.revision AS source_revision,
+                      revision.content_hash AS source_hash,
+                      revision.reference_tags_json,revision.display_name,
+                      chapter.id AS chapter_id,chapter.title AS chapter_title,
+                      chapter.chapter_order,
+                      fragment.id AS fragment_id,
+                      fragment.fragment_order,
+                      fragment.content_hash AS fragment_hash,
+                      fragment.chapter_char_start,fragment.chapter_char_end,
+                      fragment.normalized_text
+                 FROM corpus_sources source
+                 JOIN corpus_source_heads head
+                   ON head.source_id=source.id
+                 JOIN corpus_source_revisions revision
+                   ON revision.source_id=source.id
+                  AND head.revision_id=revision.id
+                  AND head.revision=revision.revision
+                  AND head.content_hash=revision.content_hash
+                 JOIN corpus_chapters chapter
+                   ON chapter.corpus_source_id=source.id
+                  AND chapter.source_revision_id=revision.id
+                  AND chapter.source_revision=revision.revision
+                  AND chapter.source_hash=revision.content_hash
+                 JOIN corpus_fragments fragment
+                   ON fragment.corpus_source_id=source.id
+                  AND fragment.corpus_chapter_id=chapter.id
+                WHERE source.archived_at IS NULL
+                  AND revision.status='analyzed'
+                  AND CHAR_LENGTH(fragment.normalized_text)>0
+                  {cursor_clause}
+                ORDER BY source.id,chapter.chapter_order,
+                         fragment.fragment_order,fragment.id
+                LIMIT %s""",
+            params,
+        )
+
 
 __all__ = ("CorpusRepository",)

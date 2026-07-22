@@ -2,25 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 import json
+import math
 import time
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from backend.domain.asset_eligibility import (
-    AssetEligibilityEntry,
-    AssetEligibilityScope,
-    canonical_recommendation_scope,
-    eligible_asset_identities,
+    CreationStage,
+    Genre,
+    ProhibitedDirection,
 )
 from backend.domain.asset_recommendations import (
+    AssetCandidateSummary,
+    AssetRecommendationScope,
+    ProviderRankingOutput,
     RecommendationInputError,
-    recommend_assets,
-    validate_recommendation_inventory,
+    SelectedStyleCandidate,
+    StyleRevisionRef,
+    filter_eligible_candidates,
 )
 from backend.domain.assets import (
     AssetInventory,
@@ -28,16 +33,24 @@ from backend.domain.assets import (
     AssetPackageError,
     ExperienceCardRevision,
     StyleTemplateRevision,
+    validate_asset_inventory,
     validate_asset_package,
 )
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.seeds import SeedPayload, decode_seed_revision
+from backend.domain.provider_policy import provider_is_generation_ready
+from backend.gateways.asset_recommendation_provider import (
+    AssetRecommendationProviderError,
+)
 from backend.http_errors import (
     AssetCatalogNotReady,
     AssetNotFound,
     AssetRecommendationConflict,
+    AssetRecommendationInProgress,
 )
-from backend.services.contracts import ContractDraftPayload
+from backend.prompts.asset_recommendation import (
+    build_asset_recommendation_messages,
+)
 
 
 AssetType = Literal["style", "card"]
@@ -310,24 +323,6 @@ class AssetRecord:
     asset: StyleTemplateRevision | ExperienceCardRevision
 
 
-@dataclass(frozen=True)
-class RecommendedAsset:
-    record: AssetRecord
-    reason_codes: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class AssetRecommendationView:
-    recommendation_version: str
-    recommendation_hash: str
-    seed_revision_id: str
-    seed_hash: str
-    engine_option_id: str
-    engine_hash: str
-    styles: tuple[RecommendedAsset, ...]
-    experience_cards: tuple[RecommendedAsset, ...]
-
-
 def _json_mapping(value: object) -> Mapping[str, object]:
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8")
@@ -386,11 +381,12 @@ class AssetReadService:
                     key=lambda record: record.asset.stable_key,
                 )
             )
-            inventory = validate_recommendation_inventory(
+            inventory = validate_asset_inventory(
                 AssetInventory(
                     styles=tuple(record.asset for record in styles),
                     experience_cards=tuple(record.asset for record in cards),
-                )
+                ),
+                mode="release",
             )
             return styles, cards, inventory
         except (AssetPackageError, ValidationError, ValueError, TypeError, KeyError):
@@ -500,148 +496,811 @@ class AssetReadService:
             raise AssetRecommendationConflict() from None
         return seed, engine_payload
 
-    @staticmethod
-    def _trusted_eligibility_scope(
-        requested_scope: AssetEligibilityScope | object,
+ASSET_RECOMMENDATION_POLICY_VERSION = "asset-recommendation-policy-v2"
+ASSET_RECOMMENDATION_CONFIDENCE_THRESHOLD = 0.70
+_NO_CANDIDATES = "ASSET_RECOMMENDATION_NO_CANDIDATES"
+_UNAVAILABLE = "ASSET_RECOMMENDATION_UNAVAILABLE"
+_RECOMMENDATION_STALE_AFTER_MS = 240_000
+
+
+class _StrictRecommendationModel(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        str_strip_whitespace=True,
+        hide_input_in_errors=True,
+    )
+
+
+class GenerateAssetRecommendations(_StrictRecommendationModel):
+    project_id: str = Field(min_length=1, max_length=36)
+    engine_option_id: str = Field(min_length=1, max_length=36)
+    idempotency_key: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]{64}$",
+    )
+    taxonomy_version: str = Field(min_length=1, max_length=64)
+    taxonomy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    genre: Genre
+    creation_stage: CreationStage
+    status: Literal["active", "archived"]
+    prohibited_directions: tuple[ProhibitedDirection, ...] = Field(
+        default=(),
+        max_length=7,
+    )
+
+    @field_validator("prohibited_directions", mode="before")
+    @classmethod
+    def freeze_prohibited_directions(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+    @field_validator("prohibited_directions")
+    @classmethod
+    def unique_prohibited_directions(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("prohibited directions must be unique")
+        return value
+
+
+class AcceptedAssetRecommendation(_StrictRecommendationModel):
+    asset_revision_id: str = Field(min_length=1, max_length=36)
+    asset_type: Literal["style", "experience_card"]
+    stable_key: str = Field(min_length=1, max_length=160)
+    revision: int = Field(gt=0)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1, max_length=160)
+    confidence: float = Field(ge=0, le=1)
+
+
+class AcceptedCorpusRecommendation(_StrictRecommendationModel):
+    source_id: str = Field(min_length=1, max_length=36)
+    source_revision: int = Field(gt=0)
+    source_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    chapter_id: str = Field(min_length=1, max_length=36)
+    fragment_id: str = Field(min_length=1, max_length=36)
+    fragment_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    range_start: int = Field(ge=0)
+    range_end: int = Field(gt=0)
+    use: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=160)
+    confidence: float = Field(ge=0, le=1)
+
+
+class AssetRecommendationAttemptResult(_StrictRecommendationModel):
+    attempt_id: str | None
+    public_reason: Literal[
+        "recommendationsAvailable",
+        "noEligibleCandidates",
+        "rankingUnavailable",
+    ]
+    ranking_unavailable: bool
+    full_browse_available: Literal[True] = True
+    asset_recommendations: tuple[AcceptedAssetRecommendation, ...]
+    corpus_recommendations: tuple[AcceptedCorpusRecommendation, ...]
+    input_manifest: dict | None
+    input_manifest_hash: str | None
+    result_hash: str | None
+
+
+def _empty_recommendation(
+    public_reason: Literal["noEligibleCandidates", "rankingUnavailable"],
+) -> AssetRecommendationAttemptResult:
+    return AssetRecommendationAttemptResult(
+        attempt_id=None,
+        public_reason=public_reason,
+        ranking_unavailable=public_reason == "rankingUnavailable",
+        full_browse_available=True,
+        asset_recommendations=(),
+        corpus_recommendations=(),
+        input_manifest=None,
+        input_manifest_hash=None,
+        result_hash=None,
+    )
+
+
+class AssetRecommendationService:
+    """Idempotently rank eligible assets with one provider call outside SQL."""
+
+    def __init__(
+        self,
+        repository,
         *,
-        selected: Mapping,
-        engine: Mapping,
-        draft_row: Mapping,
-    ) -> AssetEligibilityScope:
-        try:
-            if isinstance(requested_scope, AssetEligibilityScope):
-                requested = requested_scope
-            else:
-                requested = AssetEligibilityScope.model_validate(
-                    vars(requested_scope)
-                )
-            raw_draft = _json_mapping(draft_row["draft_json"])
-            draft = ContractDraftPayload.model_validate_json(
-                canonical_json(raw_draft)
-            )
+        transaction_factory,
+        connection_factory,
+        provider_gateway,
+        corpus_service,
+        taxonomy,
+        id_factory=None,
+        clock=None,
+    ) -> None:
+        self.repository = repository
+        self._transaction = transaction_factory
+        self._connection = connection_factory
+        self._gateway = provider_gateway
+        self._corpus = corpus_service
+        self.taxonomy = taxonomy
+        self._id = id_factory or (lambda: str(uuid4()))
+        self._clock = clock or (lambda: int(time.time() * 1000))
+
+    @staticmethod
+    def _request_hash(command: GenerateAssetRecommendations) -> str:
+        return canonical_hash({
+            "projectId": command.project_id,
+            "engineOptionId": command.engine_option_id,
+            "taxonomyVersion": command.taxonomy_version,
+            "taxonomyHash": command.taxonomy_hash,
+            "genre": command.genre,
+            "creationStage": command.creation_stage,
+            "status": command.status,
+            "prohibitedDirections": list(command.prohibited_directions),
+            "policyVersion": ASSET_RECOMMENDATION_POLICY_VERSION,
+        })
+
+    @staticmethod
+    def _provider_ready(inputs: dict) -> bool:
+        provider = inputs.get("provider")
+        return bool(
+            isinstance(provider, dict)
+            and inputs.get("resolution_status") == "bound"
+            and inputs.get("provider_id") == provider.get("id")
+            and inputs.get("model_name_snapshot") == provider.get("model_name")
+            and type(provider.get("revision")) is int
+            and provider["revision"] >= 0
+            and provider_is_generation_ready(provider)
+        )
+
+    @staticmethod
+    def _generation_config(provider: dict) -> dict:
+        temperature = float(provider["temperature"])
+        max_tokens = int(provider["max_output_tokens"])
+        if not math.isfinite(temperature) or temperature < 0 or max_tokens <= 0:
+            raise ValueError("provider generation configuration is invalid")
+        return {"temperature": temperature, "maxOutputTokens": max_tokens}
+
+    @staticmethod
+    def _candidate(record: AssetRecord) -> AssetCandidateSummary:
+        asset = record.asset
+        if isinstance(asset, StyleTemplateRevision):
+            facts = "；".join((
+                asset.payload.reading_experience,
+                *asset.payload.applicability,
+                *asset.payload.non_applicability,
+            ))[:600]
+            asset_type = "style"
+            label = asset.name
+            category = None
+        else:
+            facts = "；".join((
+                asset.payload.method,
+                *asset.payload.applicability,
+                *asset.payload.non_applicability,
+            ))[:600]
+            asset_type = "experience_card"
+            label = asset.title
+            category = asset.category
+        return AssetCandidateSummary(
+            asset_revision_id=record.id,
+            asset_type=asset_type,
+            stable_key=asset.stable_key,
+            revision=asset.revision,
+            content_hash=asset.content_hash,
+            status=record.status,
+            label=label,
+            category=category,
+            facts=facts,
+        )
+
+    @staticmethod
+    def _query_texts(seed: SeedPayload, engine: Mapping[str, object]) -> tuple[str, ...]:
+        values = [getattr(seed, field) for field in SeedPayload.model_fields]
+        pending = list(engine.values())
+        while pending and len(values) < 20:
+            value = pending.pop(0)
+            if isinstance(value, str):
+                values.append(value)
+            elif isinstance(value, Mapping):
+                pending.extend(value.values())
+            elif isinstance(value, (tuple, list)):
+                pending.extend(value)
+        return tuple(value[:2_000] for value in values if value)[:20]
+
+    @staticmethod
+    def _selected_styles(draft: object, candidates: tuple[AssetCandidateSummary, ...]):
+        document = _json_mapping(draft["draft_json"]) if draft else {
+            "primaryStyleRef": None,
+            "secondaryStyleRef": None,
+        }
+        by_id = {item.asset_revision_id: item for item in candidates}
+        selected = []
+        for role, field in (
+            ("primary", "primaryStyleRef"),
+            ("secondary", "secondaryStyleRef"),
+        ):
+            if field not in document:
+                raise ValueError("selected style facts are invalid")
+            raw_ref = document[field]
+            if raw_ref is None:
+                continue
+            ref = StyleRevisionRef.model_validate(raw_ref, strict=True)
+            candidate = by_id.get(ref.id)
             if (
-                draft_row["engine_option_id"] != engine["id"]
-                or int(draft_row["selection_revision"])
-                != int(selected["selection_revision"])
-                or draft_row["seed_hash"] != selected["seed_hash"]
-                or canonical_hash(raw_draft) != draft_row["content_hash"]
-                or draft.engineOptionId != engine["id"]
-                or draft.engineHash != engine["content_hash"]
-                or draft.seedRevisionId != selected["seed_revision_id"]
-                or draft.seedHash != selected["seed_hash"]
+                candidate is None
+                or candidate.asset_type != "style"
+                or candidate.revision != ref.revision
+                or candidate.content_hash != ref.content_hash
             ):
-                raise ValueError("contract recommendation context drift")
-            trusted = canonical_recommendation_scope(
-                genre_profile_key=draft.genreProfileKey,
-                channel_profile_key=draft.channelProfileKey,
-                dislikes=draft.dislikes or (),
+                raise ValueError("selected style facts are invalid")
+            selected.append(SelectedStyleCandidate(
+                **candidate.model_dump(mode="python"),
+                role=role,
+            ))
+        return tuple(selected)
+
+    def _prepared_inputs(self, command, inputs: dict) -> dict:
+        try:
+            seed, engine_payload = AssetReadService._recommendation_inputs(
+                inputs["selected"], inputs["engine"]
             )
-            if requested != trusted:
-                raise ValueError("recommendation scope differs from trusted facts")
-            return trusted
+            styles, cards, _ = AssetReadService._validated_catalog(
+                inputs["styles"], inputs["cards"]
+            )
+            all_candidates = tuple(
+                self._candidate(record) for record in (*styles, *cards)
+            )
+            scope = AssetRecommendationScope(
+                genre=command.genre,
+                creation_stage=command.creation_stage,
+                status=command.status,
+                prohibited_directions=command.prohibited_directions,
+            )
+            asset_candidates = filter_eligible_candidates(
+                all_candidates,
+                taxonomy_entries=self.taxonomy.entries,
+                taxonomy_version=self.taxonomy.package_version,
+                taxonomy_hash=self.taxonomy.manifest.eligibility_file.sha256,
+                expected_taxonomy_version=command.taxonomy_version,
+                expected_taxonomy_hash=command.taxonomy_hash,
+                scope=scope,
+            )
+            selected_styles = self._selected_styles(
+                inputs.get("draft"), all_candidates
+            )
         except (
-            ValidationError,
-            ValueError,
-            TypeError,
-            KeyError,
-            UnicodeError,
-            json.JSONDecodeError,
+            KeyError, TypeError, ValueError, ValidationError,
+            RecommendationInputError, AssetPackageError,
         ):
             raise AssetRecommendationConflict() from None
+        return {
+            "inputs": inputs,
+            "seed": seed,
+            "engine_payload": engine_payload,
+            "all_candidates": all_candidates,
+            "asset_candidates": asset_candidates,
+            "selected_styles": selected_styles,
+            "query_texts": self._query_texts(seed, engine_payload),
+        }
+
+    @staticmethod
+    def _reservation_fingerprint(prepared: dict) -> str:
+        inputs = prepared["inputs"]
+        selected = inputs["selected"]
+        engine = inputs["engine"]
+        return canonical_hash({
+            "selection": {
+                "revision": selected["selection_revision"],
+                "seedId": selected["seed_id"],
+                "seedRevisionId": selected["seed_revision_id"],
+                "seedHash": selected["seed_hash"],
+                "revisionHash": selected["revision_hash"],
+                "payload": prepared["seed"].model_dump(mode="json"),
+            },
+            "engine": {
+                "id": engine["id"],
+                "hash": engine["content_hash"],
+                "batchStatus": engine["batch_status"],
+                "selectionRevision": engine["selection_revision"],
+                "seedId": engine["seed_id"],
+                "seedRevisionId": engine["seed_revision_id"],
+                "seedHash": engine["seed_hash"],
+                "payload": prepared["engine_payload"],
+            },
+            "binding": {
+                "revisionId": inputs["binding_revision_id"],
+                "hash": inputs["binding_hash"],
+                "resolutionStatus": inputs["resolution_status"],
+                "providerId": inputs["provider_id"],
+                "modelNameSnapshot": inputs["model_name_snapshot"],
+            },
+            "provider": inputs.get("provider"),
+            "selectedStyles": [
+                item.model_dump(mode="json")
+                for item in prepared["selected_styles"]
+            ],
+            "assetFacts": [
+                item.model_dump(mode="json")
+                for item in prepared["all_candidates"]
+            ],
+            "eligibleAssetFacts": [
+                item.model_dump(mode="json")
+                for item in prepared["asset_candidates"]
+            ],
+        })
+
+    def _manifest(
+        self,
+        command,
+        inputs,
+        asset_candidates,
+        corpus_candidates,
+        selected_styles,
+    ) -> dict:
+        selected = inputs["selected"]
+        engine = inputs["engine"]
+        provider = inputs["provider"]
+        return {
+            "selection": {
+                "revision": int(selected["selection_revision"]),
+                "seedRevisionId": selected["seed_revision_id"],
+                "hash": selected["seed_hash"],
+            },
+            "engine": {"id": engine["id"], "hash": engine["content_hash"]},
+            "binding": {
+                "revisionId": inputs["binding_revision_id"],
+                "hash": inputs["binding_hash"],
+                "taskKey": "seed",
+            },
+            "provider": {
+                "providerId": provider["id"],
+                "modelName": provider["model_name"],
+                "providerProfileRevision": int(provider["revision"]),
+                "providerType": provider["provider_type"],
+            },
+            "taxonomy": {
+                "version": command.taxonomy_version,
+                "hash": command.taxonomy_hash,
+            },
+            "scope": {
+                "genre": command.genre,
+                "creationStage": command.creation_stage,
+                "status": command.status,
+                "prohibitedDirections": list(command.prohibited_directions),
+            },
+            "selectedStyles": [{
+                "role": item.role,
+                "id": item.asset_revision_id,
+                "revision": item.revision,
+                "hash": item.content_hash,
+            } for item in selected_styles],
+            "assetCandidates": [{
+                "id": item.asset_revision_id,
+                "type": item.asset_type,
+                "revision": item.revision,
+                "hash": item.content_hash,
+            } for item in asset_candidates],
+            "corpusCandidates": [{
+                "sourceId": item.source_id,
+                "sourceRevisionId": item.source_revision_id,
+                "sourceRevision": item.source_revision,
+                "sourceHash": item.source_hash,
+                "chapterId": item.chapter_id,
+                "fragmentId": item.fragment_id,
+                "fragmentHash": item.fragment_hash,
+                "windowStart": item.window_start,
+                "windowEnd": item.window_end,
+            } for item in corpus_candidates],
+            "policyVersion": ASSET_RECOMMENDATION_POLICY_VERSION,
+        }
+
+    @staticmethod
+    def _accepted(
+        output: ProviderRankingOutput,
+        asset_candidates,
+        corpus_candidates,
+    ):
+        choices = (
+            *output.asset_recommendations,
+            *output.corpus_recommendations,
+        )
+        if not choices or any(
+            item.confidence < ASSET_RECOMMENDATION_CONFIDENCE_THRESHOLD
+            for item in choices
+        ):
+            raise ValueError("asset ranking confidence is insufficient")
+        assets = {item.asset_revision_id: item for item in asset_candidates}
+        corpus = {item.fragment_id: item for item in corpus_candidates}
+        accepted_assets = []
+        for item in output.asset_recommendations:
+            candidate = assets.get(item.asset_revision_id)
+            if candidate is None:
+                raise ValueError("asset ranking references an unknown candidate")
+            accepted_assets.append(AcceptedAssetRecommendation(
+                asset_revision_id=candidate.asset_revision_id,
+                asset_type=candidate.asset_type,
+                stable_key=candidate.stable_key,
+                revision=candidate.revision,
+                content_hash=candidate.content_hash,
+                reason=item.reason,
+                confidence=item.confidence,
+            ))
+        accepted_corpus = []
+        for item in output.corpus_recommendations:
+            candidate = corpus.get(item.fragment_id)
+            if (
+                candidate is None
+                or not candidate.window_start <= item.range_start
+                or not item.range_start < item.range_end <= candidate.window_end
+            ):
+                raise ValueError("corpus ranking range is invalid")
+            accepted_corpus.append(AcceptedCorpusRecommendation(
+                source_id=candidate.source_id,
+                source_revision=candidate.source_revision,
+                source_hash=candidate.source_hash,
+                chapter_id=candidate.chapter_id,
+                fragment_id=candidate.fragment_id,
+                fragment_hash=candidate.fragment_hash,
+                range_start=item.range_start,
+                range_end=item.range_end,
+                use=item.use,
+                reason=item.reason,
+                confidence=item.confidence,
+            ))
+        return tuple(accepted_assets), tuple(accepted_corpus)
+
+    @staticmethod
+    def _stored_result(result: AssetRecommendationAttemptResult) -> dict:
+        return {
+            "assetRecommendations": [
+                item.model_dump(mode="json")
+                for item in result.asset_recommendations
+            ],
+            "corpusRecommendations": [
+                item.model_dump(mode="json")
+                for item in result.corpus_recommendations
+            ],
+        }
+
+    @classmethod
+    def _success_from_attempt(cls, attempt: Mapping) -> AssetRecommendationAttemptResult:
+        result = attempt["result_json"]
+        manifest = attempt["input_manifest_json"]
+        if isinstance(result, str):
+            result = json.loads(result)
+        if isinstance(manifest, str):
+            manifest = json.loads(manifest)
+        return AssetRecommendationAttemptResult(
+            attempt_id=attempt["id"],
+            public_reason="recommendationsAvailable",
+            ranking_unavailable=False,
+            full_browse_available=True,
+            asset_recommendations=tuple(
+                AcceptedAssetRecommendation.model_validate(item, strict=True)
+                for item in result["assetRecommendations"]
+            ),
+            corpus_recommendations=tuple(
+                AcceptedCorpusRecommendation.model_validate(item, strict=True)
+                for item in result["corpusRecommendations"]
+            ),
+            input_manifest=manifest,
+            input_manifest_hash=attempt["input_manifest_hash"],
+            result_hash=attempt["result_hash"],
+        )
+
+    async def _terminal_empty(self, command, context, code):
+        async with self._transaction() as session:
+            await self.repository.fail_recommendation(
+                session,
+                project_id=command.project_id,
+                idempotency_key=command.idempotency_key,
+                attempt_id=context["attempt"]["id"],
+                public_error_code=code,
+                completed_at=self._clock(),
+            )
+        return _empty_recommendation(
+            "noEligibleCandidates" if code == _NO_CANDIDATES
+            else "rankingUnavailable"
+        )
+
+    async def _cleanup_cancelled_reservation(
+        self,
+        command,
+        request_hash: str,
+    ) -> bool:
+        async with self._transaction() as session:
+            return await self.repository.cleanup_cancelled_recommendation(
+                session,
+                project_id=command.project_id,
+                idempotency_key=command.idempotency_key,
+                request_hash=request_hash,
+                public_error_code=_UNAVAILABLE,
+                completed_at=self._clock(),
+            )
+
+    @staticmethod
+    async def _wait_for_cleanup(task: asyncio.Task):
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if not task.done():
+                    continue
+        return task.result()
+
+    async def _finish_cancellation(
+        self,
+        command,
+        request_hash: str,
+        cancellation: asyncio.CancelledError,
+    ) -> None:
+        cleanup_task = asyncio.create_task(
+            self._cleanup_cancelled_reservation(command, request_hash)
+        )
+        try:
+            await self._wait_for_cleanup(cleanup_task)
+        except BaseException as cleanup_error:
+            raise BaseExceptionGroup(
+                "asset recommendation cancellation cleanup also failed",
+                [cancellation, cleanup_error],
+            ) from cancellation
+        raise cancellation
+
+    async def _replay(self, session, command, request_hash, existing):
+        if existing["request_hash"] != request_hash:
+            raise AssetRecommendationConflict()
+        status = existing["status"]
+        if status == "succeeded":
+            attempt = await self.repository.read_recommendation_attempt(
+                session, command.project_id, existing["attempt_id"]
+            )
+            return self._success_from_attempt(attempt)
+        if status in {"failed", "outcome_unknown"}:
+            code = existing.get("public_error_code")
+            return _empty_recommendation(
+                "noEligibleCandidates" if code == _NO_CANDIDATES
+                else "rankingUnavailable"
+            )
+        if status != "running" or not existing.get("attempt_id"):
+            raise RuntimeError("asset recommendation request state is invalid")
+        attempt = await self.repository.read_recommendation_attempt(
+            session, command.project_id, existing["attempt_id"]
+        )
+        if attempt is None or attempt["status"] != "running":
+            raise RuntimeError("asset recommendation attempt state is invalid")
+        if self._clock() - int(attempt["created_at"]) < _RECOMMENDATION_STALE_AFTER_MS:
+            raise AssetRecommendationInProgress()
+        await self.repository.mark_recommendation_outcome_unknown(
+            session,
+            project_id=command.project_id,
+            idempotency_key=command.idempotency_key,
+            attempt_id=attempt["id"],
+            public_error_code=_UNAVAILABLE,
+            completed_at=self._clock(),
+        )
+        return _empty_recommendation("rankingUnavailable")
+
+    async def _complete_reserved_recommendation(
+        self,
+        command,
+        request_hash: str,
+        context: dict,
+    ) -> AssetRecommendationAttemptResult:
+        try:
+            messages = build_asset_recommendation_messages(
+                selection={
+                    "selectionRevision": context["inputs"]["selected"][
+                        "selection_revision"
+                    ],
+                    "seedRevisionId": context["inputs"]["selected"][
+                        "seed_revision_id"
+                    ],
+                    "seedHash": context["inputs"]["selected"]["seed_hash"],
+                    "seed": context["seed"].model_dump(mode="json"),
+                },
+                engine={
+                    "id": context["inputs"]["engine"]["id"],
+                    "hash": context["inputs"]["engine"]["content_hash"],
+                    "payload": context["engine_payload"],
+                },
+                selected_styles=context["selected_styles"],
+                asset_candidates=context["asset_candidates"],
+                corpus_candidates=context["corpus_candidates"],
+            )
+            output = await self._gateway.rank(
+                provider=context["provider"],
+                messages=messages,
+                generation_config=self._generation_config(context["provider"]),
+            )
+            accepted_assets, accepted_corpus = self._accepted(
+                output,
+                context["asset_candidates"],
+                context["corpus_candidates"],
+            )
+        except (AssetRecommendationProviderError, ValueError, TypeError, KeyError):
+            return await self._terminal_empty(command, context, _UNAVAILABLE)
+
+        provisional = AssetRecommendationAttemptResult(
+            attempt_id=context["attempt"]["id"],
+            public_reason="recommendationsAvailable",
+            ranking_unavailable=False,
+            full_browse_available=True,
+            asset_recommendations=accepted_assets,
+            corpus_recommendations=accepted_corpus,
+            input_manifest=context["manifest"],
+            input_manifest_hash=context["attempt"]["input_manifest_hash"],
+            result_hash=None,
+        )
+        stored = self._stored_result(provisional)
+        result_hash = canonical_hash(stored)
+        completed_at = self._clock()
+        async with self._transaction() as session:
+            published = await self.repository.publish_recommendation(
+                session,
+                project_id=command.project_id,
+                idempotency_key=command.idempotency_key,
+                request_hash=request_hash,
+                attempt_id=context["attempt"]["id"],
+                selection_revision=context["attempt"]["selection_revision"],
+                binding_revision_id=context["attempt"]["binding_revision_id"],
+                binding_hash=context["attempt"]["binding_hash"],
+                input_manifest=context["manifest"],
+                result_json=canonical_json(stored),
+                result_hash=result_hash,
+                completed_at=completed_at,
+            )
+        if not published:
+            return _empty_recommendation("rankingUnavailable")
+        return provisional.model_copy(update={"result_hash": result_hash})
 
     async def recommend(
         self,
-        project_id: str,
-        engine_option_id: str,
-        *,
-        eligibility_scope: AssetEligibilityScope | object | None = None,
-        eligibility_entries: tuple[AssetEligibilityEntry, ...] | None = None,
-    ) -> AssetRecommendationView:
-        if (eligibility_scope is None) != (eligibility_entries is None):
-            raise AssetRecommendationConflict()
+        command: GenerateAssetRecommendations,
+    ) -> AssetRecommendationAttemptResult:
+        request_hash = self._request_hash(command)
+        context: dict = {}
         async with self._transaction() as session:
-            if await self.repository.read_project(session, project_id) is None:
+            project = await self.repository.lock_recommendation_project(
+                session, command.project_id
+            )
+            if project is None:
                 raise AssetNotFound()
-            selected = await self.repository.read_selected_seed(session, project_id)
-            if selected is None:
-                raise AssetRecommendationConflict()
-            engine = await self.repository.read_engine_option(
-                session, project_id, engine_option_id
+            existing = await self.repository.lock_recommendation_request(
+                session, command.project_id, command.idempotency_key
             )
-            if engine is None:
-                raise AssetNotFound()
-            seed, engine_payload = self._recommendation_inputs(selected, engine)
-            allowed_style_identities = None
-            allowed_card_identities = None
-            if eligibility_scope is not None and eligibility_entries is not None:
-                draft = await self.repository.read_contract_draft(
-                    session, project_id, engine_option_id
+            if existing is not None:
+                return await self._replay(
+                    session, command, request_hash, existing
                 )
-                if draft is None:
-                    raise AssetRecommendationConflict()
-                trusted_scope = self._trusted_eligibility_scope(
-                    eligibility_scope,
-                    selected=selected,
-                    engine=engine,
-                    draft_row=draft,
+            inputs = await self.repository.lock_recommendation_inputs(
+                session, command.project_id, command.engine_option_id
+            )
+            prepared = self._prepared_inputs(command, inputs)
+            fingerprint = self._reservation_fingerprint(prepared)
+            if not self._provider_ready(inputs):
+                completed_at = self._clock()
+                request = {
+                    "id": self._id(),
+                    "project_id": command.project_id,
+                    "idempotency_key": command.idempotency_key,
+                    "request_hash": request_hash,
+                    "status": "failed",
+                    "attempt_id": None,
+                    "result_hash": None,
+                    "public_error_code": _UNAVAILABLE,
+                    "created_at": completed_at,
+                    "completed_at": completed_at,
+                }
+                await self.repository.insert_failed_recommendation_request(
+                    session, request
                 )
-                allowed_style_identities = eligible_asset_identities(
-                    eligibility_entries,
-                    trusted_scope,
-                    asset_type="style",
-                )
-                allowed_card_identities = eligible_asset_identities(
-                    eligibility_entries,
-                    trusted_scope,
-                    asset_type="experience_card",
-                )
-            styles, cards, inventory = await self._catalog(session)
+                return _empty_recommendation("rankingUnavailable")
 
-        try:
-            result = recommend_assets(
-                seed,
-                engine_payload,
-                inventory,
-                seed_hash=selected["seed_hash"],
-                engine_hash=engine["content_hash"],
-                allowed_style_identities=allowed_style_identities,
-                allowed_card_identities=allowed_card_identities,
-            )
-        except (RecommendationInputError, AssetPackageError, ValidationError):
-            raise AssetRecommendationConflict() from None
-
-        style_index = {
-            (record.asset.stable_key, record.asset.revision, record.asset.content_hash): record
-            for record in styles
-        }
-        card_index = {
-            (record.asset.stable_key, record.asset.revision, record.asset.content_hash): record
-            for record in cards
-        }
-        try:
-            recommended_styles = tuple(
-                RecommendedAsset(
-                    record=style_index[(ref.stable_key, ref.revision, ref.content_hash)],
-                    reason_codes=tuple(ref.reason_codes),
-                )
-                for ref in result.styles
-            )
-            recommended_cards = tuple(
-                RecommendedAsset(
-                    record=card_index[(ref.stable_key, ref.revision, ref.content_hash)],
-                    reason_codes=tuple(ref.reason_codes),
-                )
-                for ref in result.experience_cards
-            )
-        except KeyError:
-            raise AssetCatalogNotReady() from None
-        return AssetRecommendationView(
-            recommendation_version=result.recommendation_version,
-            recommendation_hash=result.recommendation_hash,
-            seed_revision_id=selected["seed_revision_id"],
-            seed_hash=result.seed_hash,
-            engine_option_id=engine["id"],
-            engine_hash=result.engine_hash,
-            styles=recommended_styles,
-            experience_cards=recommended_cards,
+        corpus_candidates = await self._corpus.candidates(
+            prepared["query_texts"]
         )
+        async with self._transaction() as session:
+            project = await self.repository.lock_recommendation_project(
+                session, command.project_id
+            )
+            if project is None:
+                raise AssetNotFound()
+            existing = await self.repository.lock_recommendation_request(
+                session, command.project_id, command.idempotency_key
+            )
+            if existing is not None:
+                return await self._replay(
+                    session, command, request_hash, existing
+                )
+            locked_inputs = await self.repository.lock_recommendation_inputs(
+                session, command.project_id, command.engine_option_id
+            )
+            try:
+                locked_prepared = self._prepared_inputs(command, locked_inputs)
+            except AssetCatalogNotReady:
+                raise AssetRecommendationConflict() from None
+            if self._reservation_fingerprint(locked_prepared) != fingerprint:
+                raise AssetRecommendationConflict()
+            if not self._provider_ready(locked_inputs):
+                raise AssetRecommendationConflict()
+            prepared = locked_prepared
+            inputs = locked_inputs
+            asset_candidates = prepared["asset_candidates"]
+            selected_styles = prepared["selected_styles"]
+            seed = prepared["seed"]
+            engine_payload = prepared["engine_payload"]
+            created_at = self._clock()
+            request_id = self._id()
+            if not asset_candidates and not corpus_candidates:
+                request = {
+                    "id": request_id,
+                    "project_id": command.project_id,
+                    "idempotency_key": command.idempotency_key,
+                    "request_hash": request_hash,
+                    "status": "failed",
+                    "attempt_id": None,
+                    "result_hash": None,
+                    "public_error_code": _NO_CANDIDATES,
+                    "created_at": created_at,
+                    "completed_at": created_at,
+                }
+                await self.repository.insert_failed_recommendation_request(
+                    session, request
+                )
+                return _empty_recommendation("noEligibleCandidates")
+            manifest = self._manifest(
+                command, inputs, asset_candidates, corpus_candidates,
+                selected_styles,
+            )
+            attempt = {
+                "id": self._id(),
+                "project_id": command.project_id,
+                "selection_revision": int(
+                    inputs["selected"]["selection_revision"]
+                ),
+                "binding_revision_id": inputs["binding_revision_id"],
+                "binding_hash": inputs["binding_hash"],
+                "input_manifest_json": canonical_json(manifest),
+                "input_manifest_hash": canonical_hash(manifest),
+                "status": "running",
+                "result_json": None,
+                "result_hash": None,
+                "public_error_code": None,
+                "created_at": created_at,
+                "completed_at": None,
+            }
+            request = {
+                "id": request_id,
+                "project_id": command.project_id,
+                "idempotency_key": command.idempotency_key,
+                "request_hash": request_hash,
+                "status": "running",
+                "attempt_id": attempt["id"],
+                "result_hash": None,
+                "public_error_code": None,
+                "created_at": created_at,
+                "completed_at": None,
+            }
+            await self.repository.insert_recommendation_attempt(session, attempt)
+            await self.repository.insert_recommendation_request(session, request)
+            context = {
+                "request": request,
+                "attempt": attempt,
+                "inputs": inputs,
+                "seed": seed,
+                "engine_payload": engine_payload,
+                "asset_candidates": asset_candidates,
+                "corpus_candidates": corpus_candidates,
+                "selected_styles": selected_styles,
+                "manifest": manifest,
+                "provider": dict(inputs["provider"]),
+            }
+
+        try:
+            return await self._complete_reserved_recommendation(
+                command, request_hash, context
+            )
+        except asyncio.CancelledError as cancellation:
+            await self._finish_cancellation(
+                command, request_hash, cancellation
+            )
+            raise AssertionError("cancellation cleanup must re-raise")

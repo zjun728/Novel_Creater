@@ -8,12 +8,11 @@ from pathlib import Path
 import unicodedata
 
 from backend.config import CORPUS_ROOT, MANAGED_CORPUS_ROOT
-from backend.database import transaction
+from backend.database import connection, transaction
 from backend.domain.asset_eligibility import (
     AssetEligibilityEntry,
     AssetEligibilityPackage,
     AssetEligibilityPackageError,
-    AssetEligibilityScope,
     CreationStage,
     Genre,
     load_asset_eligibility_package,
@@ -22,7 +21,15 @@ from backend.domain.assets import AssetCategory, AssetPackageError, load_asset_p
 from backend.http_errors import AssetCatalogNotReady
 from backend.repositories.assets import AssetRepository
 from backend.repositories.corpus import CorpusRepository
-from backend.services.assets import AssetReadService, AssetRecord
+from backend.gateways.asset_recommendation_provider import (
+    AssetRecommendationProviderGateway,
+)
+from backend.services.assets import (
+    AssetReadService,
+    AssetRecommendationService,
+    AssetRecord,
+)
+from backend.services.corpus_recommendations import CorpusRecommendationService
 from backend.services.corpus_import import CorpusImportService
 from backend.services.corpus_library import CorpusLibraryService
 
@@ -81,11 +88,13 @@ class CreativeAssetService:
         asset_service: AssetReadService,
         *,
         taxonomy: AssetEligibilityPackage,
+        recommendation_service: AssetRecommendationService | None = None,
         corpus_service: CorpusImportService | None = None,
         corpus_library_service: CorpusLibraryService | None = None,
     ) -> None:
         self.asset_service = asset_service
         self.taxonomy = taxonomy
+        self.recommendation_service = recommendation_service
         self.corpus_service = corpus_service
         self.corpus_library_service = corpus_library_service
         self._eligibility = {
@@ -260,29 +269,10 @@ class CreativeAssetService:
     async def get_card(self, revision_id: str) -> CreativeAssetItem:
         return self._item(await self.asset_service.get_card(revision_id))
 
-    @staticmethod
-    def _scope(value: AssetEligibilityScope | object) -> AssetEligibilityScope:
-        if isinstance(value, AssetEligibilityScope):
-            return value
-        try:
-            raw = vars(value)
-        except TypeError:
-            raw = value
-        return AssetEligibilityScope.model_validate(raw)
-
-    async def recommend(
-        self,
-        project_id: str,
-        engine_option_id: str,
-        recommendation_scope: AssetEligibilityScope | object,
-    ):
-        scope = self._scope(recommendation_scope)
-        return await self.asset_service.recommend(
-            project_id,
-            engine_option_id,
-            eligibility_scope=scope,
-            eligibility_entries=self.taxonomy.entries,
-        )
+    async def recommend(self, command):
+        if self.recommendation_service is None:
+            raise AssetCatalogNotReady()
+        return await self.recommendation_service.recommend(command)
 
     def _corpus(self) -> CorpusImportService:
         if self.corpus_service is None:
@@ -353,18 +343,32 @@ class CreativeAssetService:
 
 def build_creative_asset_service() -> CreativeAssetService:
     try:
+        taxonomy = load_release_taxonomy()
+        asset_repository = AssetRepository()
+        corpus_repository = CorpusRepository()
         return CreativeAssetService(
-            AssetReadService(AssetRepository(), transaction_factory=transaction),
-            taxonomy=load_release_taxonomy(),
+            AssetReadService(asset_repository, transaction_factory=transaction),
+            taxonomy=taxonomy,
+            recommendation_service=AssetRecommendationService(
+                asset_repository,
+                transaction_factory=transaction,
+                connection_factory=connection,
+                provider_gateway=AssetRecommendationProviderGateway(),
+                corpus_service=CorpusRecommendationService(
+                    corpus_repository,
+                    connection_factory=connection,
+                ),
+                taxonomy=taxonomy,
+            ),
             corpus_service=CorpusImportService(
-                CorpusRepository(),
+                corpus_repository,
                 corpus_root=CORPUS_ROOT,
                 managed_root=MANAGED_CORPUS_ROOT,
                 transaction_factory=transaction,
                 connection_factory=transaction,
             ),
             corpus_library_service=CorpusLibraryService(
-                CorpusRepository(),
+                corpus_repository,
                 managed_root=MANAGED_CORPUS_ROOT,
                 transaction_factory=transaction,
                 connection_factory=transaction,

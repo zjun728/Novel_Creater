@@ -120,6 +120,12 @@ class AssetRecommendationConflict(PublicDomainError):
     message = "Asset recommendation inputs changed; refresh and retry"
 
 
+class AssetRecommendationInProgress(PublicDomainError):
+    status_code = 409
+    code = "AssetRecommendationInProgress"
+    message = "Asset recommendation is still in progress"
+
+
 class AssetCatalogNotReady(PublicDomainError):
     status_code = 503
     code = "AssetCatalogNotReady"

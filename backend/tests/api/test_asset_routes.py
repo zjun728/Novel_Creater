@@ -19,6 +19,7 @@ from backend.http_errors import (
     AssetCatalogNotReady,
     AssetNotFound,
     AssetRecommendationConflict,
+    AssetRecommendationInProgress,
 )
 from backend.routers import assets, corpus
 from backend.security.redaction import install_error_handlers
@@ -34,21 +35,20 @@ PACKAGE = load_asset_package(
 )
 STYLE_ID = "11111111-1111-1111-1111-111111111111"
 CARD_ID = "22222222-2222-2222-2222-222222222222"
-RECOMMENDATION_SCOPE_QUERY = (
-    "&genres=fantasy"
-    "&channels=male_frequency"
-    "&creationStages=drafting"
-    "&writingPurposes=style_direction"
-    "&writingPurposes=progression_economy"
-    "&status=active"
-)
+RECOMMENDATION_BODY = {
+    "idempotencyKey": "i" * 64,
+    "engineOptionId": "engine-1",
+    "taxonomyVersion": "recommendation-taxonomy-v1.0.0",
+    "taxonomyHash": "a" * 64,
+    "genre": "fantasy",
+    "creationStage": "drafting",
+    "status": "active",
+    "prohibitedDirections": [],
+}
 
 
-def _recommendation_path(project_id="project-1", engine_id="engine-1"):
-    return (
-        f"/api/projects/{project_id}/asset-recommendations"
-        f"?engineOptionId={engine_id}{RECOMMENDATION_SCOPE_QUERY}"
-    )
+def _recommendation_path(project_id="project-1"):
+    return f"/api/projects/{project_id}/asset-recommendations"
 
 
 def _record(asset, revision_id):
@@ -65,7 +65,7 @@ def _record(asset, revision_id):
 class FakeAssetService:
     def __init__(self):
         self.calls = []
-        self.recommendation_scope = None
+        self.recommendation_command = None
         self.style = self._item(_record(PACKAGE.styles[0], STYLE_ID))
         self.card = self._item(_record(PACKAGE.experience_cards[0], CARD_ID))
         self.failure = None
@@ -130,30 +130,43 @@ class FakeAssetService:
         self._raise()
         return self.card
 
-    async def recommend(
-        self,
-        project_id,
-        engine_option_id,
-        recommendation_scope=None,
-    ):
-        self.calls.append(("recommend", project_id, engine_option_id))
-        self.recommendation_scope = recommendation_scope
+    async def recommend(self, command):
+        self.calls.append(("recommend", command.project_id, command.engine_option_id))
+        self.recommendation_command = command
         self._raise()
         return SimpleNamespace(
-            recommendation_version="asset-recommendation-v1",
-            recommendation_hash="a" * 64,
-            seed_revision_id="seed-revision-1",
-            seed_hash="b" * 64,
-            engine_option_id=engine_option_id,
-            engine_hash="c" * 64,
-            styles=(
-                SimpleNamespace(record=_record(style, f"style-{index}"), reason_codes=("semantic-profile",))
-                for index, style in enumerate(PACKAGE.styles[:3], 1)
-            ),
-            experience_cards=(
-                SimpleNamespace(record=_record(card, f"card-{index}"), reason_codes=("category-profile",))
-                for index, card in enumerate(PACKAGE.experience_cards[:4], 1)
-            ),
+            attempt_id="attempt-1",
+            public_reason="recommendationsAvailable",
+            ranking_unavailable=False,
+            full_browse_available=True,
+            asset_recommendations=(SimpleNamespace(
+                asset_revision_id=STYLE_ID,
+                asset_type="style",
+                stable_key=PACKAGE.styles[0].stable_key,
+                revision=PACKAGE.styles[0].revision,
+                content_hash=PACKAGE.styles[0].content_hash,
+                reason="契合当前叙事距离",
+                confidence=0.91,
+            ),),
+            corpus_recommendations=(SimpleNamespace(
+                source_id="source-1",
+                source_revision=2,
+                source_hash="b" * 64,
+                chapter_id="chapter-1",
+                fragment_id="fragment-1",
+                fragment_hash="c" * 64,
+                range_start=100,
+                range_end=108,
+                use="作为制度试行参照",
+                reason="与当前冲突直接相关",
+                confidence=0.88,
+            ),),
+            input_manifest={
+                "selection": {"revision": 3, "hash": "d" * 64},
+                "binding": {"revisionId": "binding-1", "hash": "e" * 64},
+            },
+            input_manifest_hash="f" * 64,
+            result_hash="1" * 64,
         )
 
 
@@ -176,7 +189,7 @@ def make_production_dependency_client():
 
 def _assert_no_private_keys(value):
     banned = {
-        "provenance", "reviewer", "reviewtime", "source", "source_",
+        "provenance", "reviewer", "reviewtime", "storage", "path",
         "raw", "apikey", "api_key", "secret", "baseurl", "base_url",
     }
     if isinstance(value, dict):
@@ -199,8 +212,8 @@ def test_asset_routes_have_exact_methods_paths_and_camel_case_allowlists():
     style_detail = client.get(f"/api/assets/style-templates/{STYLE_ID}")
     card_list = client.get("/api/assets/experience-cards?category=dialogue")
     card_detail = client.get(f"/api/assets/experience-cards/{CARD_ID}")
-    recommendation = client.get(
-        _recommendation_path()
+    recommendation = client.post(
+        _recommendation_path(), json=RECOMMENDATION_BODY
     )
 
     assert [response.status_code for response in (
@@ -233,7 +246,7 @@ def test_asset_routes_have_exact_methods_paths_and_camel_case_allowlists():
         "/assets/style-templates/{revision_id}": {"GET"},
         "/assets/experience-cards": {"GET"},
         "/assets/experience-cards/{revision_id}": {"GET"},
-        "/projects/{pid}/asset-recommendations": {"GET"},
+        "/projects/{pid}/asset-recommendations": {"POST"},
     }
     assert "limit" not in signature(assets.list_experience_cards).parameters
     assert "limit" not in signature(assets.list_style_templates).parameters
@@ -288,34 +301,39 @@ def test_details_return_complete_approved_payload_and_preserve_20k_examples():
     _assert_no_private_keys(card)
 
 
-def test_recommendation_returns_three_styles_two_to_four_cards_and_never_inventory():
+def test_recommendation_returns_variable_refs_and_never_auto_selects_or_leaks_text():
     client, _ = make_client()
 
-    response = client.get(
-        _recommendation_path()
+    response = client.post(
+        _recommendation_path(), json=RECOMMENDATION_BODY
     )
 
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {
-        "recommendationVersion", "recommendationHash", "seedRevisionId",
-        "seedHash", "engineOptionId", "engineHash", "styles",
-        "experienceCards",
+        "attemptId", "publicReason", "rankingUnavailable",
+        "fullBrowseAvailable", "assetRecommendations",
+        "corpusRecommendations", "inputManifest", "inputManifestHash",
+        "resultHash",
     }
-    assert len(body["styles"]) == 3
-    assert 2 <= len(body["experienceCards"]) <= 4
-    assert all(set(item) == {
-        "id", "stableKey", "revision", "contentHash", "name",
-        "readingExperience", "applicability", "nonApplicability",
-        "reasonCodes",
-    } for item in body["styles"])
-    assert all(set(item) == {
-        "id", "stableKey", "revision", "contentHash", "title", "category",
-        "method", "applicability", "nonApplicability", "reasonCodes",
-    } for item in body["experienceCards"])
-    assert len(body["experienceCards"]) != 64
-    assert "score" not in json.dumps(body).casefold()
+    assert len(body["assetRecommendations"]) == 1
+    assert set(body["assetRecommendations"][0]) == {
+        "assetRevisionId", "assetType", "stableKey", "revision",
+        "contentHash", "reason", "confidence",
+    }
+    assert set(body["corpusRecommendations"][0]) == {
+        "sourceId", "sourceRevision", "sourceHash", "chapterId",
+        "fragmentId", "fragmentHash", "rangeStart", "rangeEnd",
+        "use", "reason", "confidence",
+    }
+    assert body["fullBrowseAvailable"] is True
+    rendered = json.dumps(body).casefold()
+    assert not any(token in rendered for token in (
+        "selected", "default-rank", "prompt", "normalized_text"
+    ))
     _assert_no_private_keys(body)
+
+    assert client.get(_recommendation_path()).status_code == 405
 
 
 @pytest.mark.parametrize(
@@ -326,7 +344,13 @@ def test_recommendation_returns_three_styles_two_to_four_cards_and_never_invento
             AssetRecommendationConflict(),
             409,
             "AssetRecommendationConflict",
-            _recommendation_path("p", "e"),
+            _recommendation_path("p"),
+        ),
+        (
+            AssetRecommendationInProgress(),
+            409,
+            "AssetRecommendationInProgress",
+            _recommendation_path("p"),
         ),
         (AssetCatalogNotReady(), 503, "AssetCatalogNotReady", "/api/assets/style-templates"),
     ),
@@ -335,7 +359,11 @@ def test_asset_public_errors_use_safe_handler(error, status, code, path):
     client, service = make_client()
     service.failure = error
 
-    response = client.get(path)
+    response = (
+        client.post(path, json=RECOMMENDATION_BODY)
+        if "asset-recommendations" in path
+        else client.get(path)
+    )
 
     assert response.status_code == status
     assert set(response.json()) == {"code", "message", "correlationId"}
@@ -399,14 +427,14 @@ def test_production_composition_package_failures_are_safe_503_on_asset_and_corpu
         _assert_no_private_keys(body)
 
 
-def test_invalid_category_and_missing_engine_option_are_422():
+def test_invalid_category_and_missing_recommendation_body_are_422():
     client, _ = make_client()
 
     invalid_category = client.get(
         "/api/assets/experience-cards?category=not-approved"
     )
-    missing_engine = client.get(
-        "/api/projects/project-1/asset-recommendations"
+    missing_engine = client.post(
+        "/api/projects/project-1/asset-recommendations", json={}
     )
 
     assert invalid_category.status_code == 422
@@ -470,67 +498,41 @@ def test_inventory_and_search_filters_are_forwarded_with_bounded_public_metadata
     ]
 
 
-def test_recommendation_requires_and_forwards_explicit_typed_eligibility_scope():
+def test_recommendation_requires_and_forwards_idempotency_and_four_typed_dimensions():
     client, service = make_client()
 
-    response = client.get(
+    body = {
+        **RECOMMENDATION_BODY,
+        "genre": "fantasy",
+        "creationStage": "drafting",
+        "prohibitedDirections": ["slow_burn"],
+    }
+    response = client.post(
         "/api/projects/project-1/asset-recommendations",
-        params=[
-            ("engineOptionId", "engine-1"),
-            ("genres", "fantasy"),
-            ("channels", "male_frequency"),
-            ("creationStages", "drafting"),
-            ("writingPurposes", "style_direction"),
-            ("writingPurposes", "progression_economy"),
-            ("prohibitedDirections", "slow_burn"),
-            ("status", "active"),
-        ],
+        json=body,
     )
 
     assert response.status_code == 200
-    assert service.recommendation_scope is not None
-    assert service.recommendation_scope.genres == ("fantasy",)
-    assert service.recommendation_scope.channels == ("male_frequency",)
-    assert service.recommendation_scope.creation_stages == ("drafting",)
-    assert service.recommendation_scope.writing_purposes == (
-        "style_direction",
-        "progression_economy",
-    )
-    assert service.recommendation_scope.prohibited_directions == ("slow_burn",)
-    assert service.recommendation_scope.status == "active"
+    command = service.recommendation_command
+    assert command is not None
+    assert command.idempotency_key == "i" * 64
+    assert command.engine_option_id == "engine-1"
+    assert command.taxonomy_version == "recommendation-taxonomy-v1.0.0"
+    assert command.taxonomy_hash == "a" * 64
+    assert command.genre == "fantasy"
+    assert command.creation_stage == "drafting"
+    assert command.prohibited_directions == ("slow_burn",)
+    assert command.status == "active"
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    (
-        ("genres", "fantasy"),
-        ("channels", "male_frequency"),
-        ("creationStages", "drafting"),
-        ("writingPurposes", "style_direction"),
-        ("prohibitedDirections", "slow_burn"),
-    ),
-)
-def test_recommendation_duplicate_typed_dimensions_are_safe_422_before_service(
-    field,
-    value,
-):
+def test_recommendation_duplicate_prohibited_directions_are_safe_422_before_service():
     client, service = make_client()
-    params = [
-        ("engineOptionId", "engine-1"),
-        ("genres", "fantasy"),
-        ("channels", "male_frequency"),
-        ("creationStages", "drafting"),
-        ("writingPurposes", "style_direction"),
-        ("status", "active"),
-    ]
-    if field == "prohibitedDirections":
-        params.extend(((field, value), (field, value)))
-    else:
-        params.append((field, value))
-
-    response = client.get(
+    response = client.post(
         "/api/projects/project-1/asset-recommendations",
-        params=params,
+        json={
+            **RECOMMENDATION_BODY,
+            "prohibitedDirections": ["slow_burn", "slow_burn"],
+        },
     )
 
     assert response.status_code == 422
@@ -539,8 +541,8 @@ def test_recommendation_duplicate_typed_dimensions_are_safe_422_before_service(
     assert len(body["detail"]) == 1
     error = body["detail"][0]
     assert error["type"] == "value_error"
-    assert error["loc"] == ["query", field]
-    assert error["msg"] == "Value error, query dimension values must be unique"
+    assert error["loc"] == ["body", "prohibitedDirections"]
+    assert error["msg"] == "Value error, prohibited directions must be unique"
     assert service.calls == []
     _assert_no_private_keys(body)
 
@@ -550,14 +552,17 @@ def test_recommendation_duplicate_typed_dimensions_are_safe_422_before_service(
     (
         "/api/assets/style-templates/" + "s" * 37,
         "/api/assets/experience-cards/" + "c" * 37,
-        "/api/projects/" + "p" * 37 + "/asset-recommendations?engineOptionId=e",
-        "/api/projects/p/asset-recommendations?engineOptionId=" + "e" * 37,
+        "/api/projects/" + "p" * 37 + "/asset-recommendations",
     ),
 )
 def test_asset_route_identifiers_are_bounded_to_36_characters(path):
     client, _ = make_client()
 
-    response = client.get(path)
+    response = (
+        client.post(path, json=RECOMMENDATION_BODY)
+        if "asset-recommendations" in path
+        else client.get(path)
+    )
 
     assert response.status_code == 422
 
@@ -569,9 +574,7 @@ def test_catalog_not_ready_is_503_for_both_lists_and_recommendation():
     responses = (
         client.get("/api/assets/style-templates"),
         client.get("/api/assets/experience-cards"),
-        client.get(
-            _recommendation_path()
-        ),
+        client.post(_recommendation_path(), json=RECOMMENDATION_BODY),
     )
 
     assert [response.status_code for response in responses] == [503, 503, 503]

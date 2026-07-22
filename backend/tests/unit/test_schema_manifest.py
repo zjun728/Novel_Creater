@@ -407,6 +407,22 @@ def test_market_and_generation_ledgers_freeze_safe_identities():
         assert "request_hash char(64) not null" in request
         assert "status varchar(24) not null" in request
 
+    recommendation_attempt = _table_statement("asset_recommendation_attempts")
+    recommendation_request = _table_statement("asset_recommendation_requests")
+    assert "status in ('running','succeeded','failed','outcome_unknown')" in (
+        recommendation_attempt
+    )
+    assert "status in ('running','succeeded','failed','outcome_unknown')" in (
+        recommendation_request
+    )
+    assert (
+        "status = 'running' and attempt_id is not null and result_hash is null"
+        in recommendation_request
+    )
+    assert "status = 'reserved' and attempt_id is null" not in (
+        recommendation_request
+    )
+
 
 def test_generation_numbering_is_scoped_to_the_immutable_planning_root():
     volumes = _table_statement("volume_plans")

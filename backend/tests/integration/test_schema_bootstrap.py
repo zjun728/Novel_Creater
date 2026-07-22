@@ -1,6 +1,7 @@
 import aiomysql
 import pytest
 
+from backend.repositories.assets import AssetRepository
 from backend.schema_manifest import manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION, SchemaMismatch, verify_schema_version
 from backend.scripts.initialize_database import InitializationError, initialize_database
@@ -787,6 +788,104 @@ async def test_generation_request_ledgers_reject_cross_project_and_hash_splices(
             PROJECT_ID, "z" * 64, HASH_A, attempt_id, HASH_C, NOW, NOW,
         ),
     )
+
+
+@pytest.mark.mysql
+async def test_asset_recommendation_running_request_requires_linked_running_attempt(
+    disposable_mysql,
+):
+    session = disposable_mysql.session
+    await _insert_foundation_project(session)
+    seed_id, seed_revision_id = await _insert_seed_revision(session)
+    await _insert_selection_revision(
+        session,
+        seed_id=seed_id,
+        seed_revision_id=seed_revision_id,
+    )
+    attempt_id = "00000000-0000-0000-0000-000000000150"
+    request_id = "00000000-0000-0000-0000-000000000151"
+    insert_request = """INSERT INTO asset_recommendation_requests
+        (id,project_id,idempotency_key,request_hash,status,attempt_id,
+         result_hash,public_error_code,created_at,completed_at)
+        VALUES (%s,%s,%s,%s,'running',%s,NULL,NULL,%s,NULL)"""
+
+    with pytest.raises(Exception):
+        await session.execute(
+            insert_request,
+            (request_id, PROJECT_ID, "r" * 64, HASH_A, None, NOW),
+        )
+    with pytest.raises(Exception):
+        await session.execute(
+            insert_request,
+            (
+                request_id,
+                PROJECT_ID,
+                "r" * 64,
+                HASH_A,
+                attempt_id,
+                NOW,
+            ),
+        )
+
+    await session.execute(
+        """INSERT INTO asset_recommendation_attempts
+           (id,project_id,selection_revision,binding_revision_id,binding_hash,
+            input_manifest_json,input_manifest_hash,status,result_json,
+            result_hash,public_error_code,created_at,completed_at)
+           VALUES (%s,%s,1,%s,%s,'{}',%s,'running',NULL,NULL,NULL,%s,NULL)""",
+        (attempt_id, PROJECT_ID, BINDING_ID, HASH_A, HASH_B, NOW),
+    )
+    await session.execute(
+        insert_request,
+        (request_id, PROJECT_ID, "r" * 64, HASH_A, attempt_id, NOW),
+    )
+    row = await session.fetchone(
+        """SELECT status,attempt_id,result_hash,public_error_code,completed_at
+             FROM asset_recommendation_requests WHERE id=%s""",
+        (request_id,),
+    )
+    assert row == {
+        "status": "running",
+        "attempt_id": attempt_id,
+        "result_hash": None,
+        "public_error_code": None,
+        "completed_at": None,
+    }
+    cleanup_values = {
+        "project_id": PROJECT_ID,
+        "idempotency_key": "r" * 64,
+        "request_hash": HASH_A,
+        "public_error_code": "ASSET_RECOMMENDATION_UNAVAILABLE",
+        "completed_at": NOW,
+    }
+    repository = AssetRepository()
+    assert await repository.cleanup_cancelled_recommendation(
+        session, **cleanup_values
+    ) is True
+    assert await repository.cleanup_cancelled_recommendation(
+        session, **cleanup_values
+    ) is False
+    request = await session.fetchone(
+        """SELECT status,attempt_id,public_error_code,completed_at
+             FROM asset_recommendation_requests WHERE id=%s""",
+        (request_id,),
+    )
+    attempt = await session.fetchone(
+        """SELECT status,public_error_code,completed_at
+             FROM asset_recommendation_attempts WHERE id=%s""",
+        (attempt_id,),
+    )
+    assert request == {
+        "status": "outcome_unknown",
+        "attempt_id": attempt_id,
+        "public_error_code": "ASSET_RECOMMENDATION_UNAVAILABLE",
+        "completed_at": NOW,
+    }
+    assert attempt == {
+        "status": "outcome_unknown",
+        "public_error_code": "ASSET_RECOMMENDATION_UNAVAILABLE",
+        "completed_at": NOW,
+    }
 
 
 @pytest.mark.mysql
