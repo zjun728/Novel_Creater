@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import traceback
 
@@ -1011,7 +1012,7 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
 
     snapshot["creation_hash"] = "0" * 64
     with pytest.raises(ContractPreconditionFailed):
-        await harness.service.clone_current("p1")
+        await harness.service.clone_revision("p1", 7)
     harness.repository.confirmed["p1"]["creation_hash"] = preview.creation_hash
 
     corruptions = ("binding", "seed", "engine", "style", "card", "corpus")
@@ -1032,7 +1033,7 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
         original = target[field]
         target[field] = "f" * 64
         with pytest.raises(ContractPreconditionFailed):
-            await harness.service.clone_current("p1")
+            await harness.service.clone_revision("p1", 7)
         # Rollback replaces fake repository containers; restore by semantic key.
         if kind == "seed":
             harness.repository.seed_revisions["seed-revision-1"][field] = original
@@ -1049,7 +1050,7 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
 
     harness.repository.styles["style-primary"]["head_revision"] = 99
     harness.repository.styles["style-primary"]["head_hash"] = "9" * 64
-    cloned = await harness.service.clone_current("p1")
+    cloned = await harness.service.clone_revision("p1", 7)
 
     assert cloned.draft_version == 1
     assert cloned.base_head_revision == 7
@@ -1063,7 +1064,52 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
     assert drifted_clone.contract_ready is False
     assert "style_drift:primary" in drifted_clone.reasons
     with pytest.raises(ContractConflict):
-        await harness.service.clone_current("p1")
+        await harness.service.clone_revision("p1", 7)
+
+
+@pytest.mark.asyncio
+async def test_clone_historical_revision_in_same_selection_uses_current_head_base():
+    harness = ContractHarness()
+    initial = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(initial))
+    historical = deepcopy(harness.repository.confirmed_revisions[("p1", 1)])
+    current = {
+        **deepcopy(historical),
+        "revision": 2,
+        "creation_contract_id": "creation-2",
+        "style_contract_id": "style-2",
+    }
+    harness.repository.confirmed_revisions[("p1", 2)] = current
+    harness.repository.confirmed["p1"] = current
+    harness.repository.heads["p1"] = {
+        "project_id": "p1",
+        "revision": 2,
+        "creation_contract_id": "creation-2",
+        "style_contract_id": "style-2",
+        "creation_hash": current["creation_hash"],
+        "style_hash": current["style_hash"],
+    }
+
+    cloned = await harness.service.clone_revision("p1", 1)
+
+    assert cloned.draft == initial.draft
+    assert cloned.selection_revision == historical["selection_revision"]
+    assert cloned.base_head_revision == 2
+    assert cloned.draft_version == 1
+    assert cloned.id != initial.id
+
+
+@pytest.mark.asyncio
+async def test_clone_historical_revision_rejects_a_b_a_selection_generation():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(saved))
+    harness.repository.selected_seeds["p1"]["selection_revision"] = 9
+
+    with pytest.raises(ContractConflict):
+        await harness.service.clone_revision("p1", 1)
+
+    assert harness.repository.drafts == {}
 
 
 @pytest.mark.asyncio
@@ -1077,16 +1123,16 @@ async def test_clone_rejects_confirmed_head_from_superseded_same_seed_selection(
     harness.repository.selected_seeds["p1"]["selection_revision"] = 8
 
     with pytest.raises(ContractConflict):
-        await harness.service.clone_current("p1")
+        await harness.service.clone_revision("p1", 1)
 
     assert harness.repository.drafts == {}
 
 
 @pytest.mark.asyncio
-async def test_clone_requires_confirmed_nonzero_head():
+async def test_clone_requires_existing_source_revision():
     harness = ContractHarness()
-    with pytest.raises(ContractConflict):
-        await harness.service.clone_current("p1")
+    with pytest.raises(ContractNotFound):
+        await harness.service.clone_revision("p1", 1)
 
 
 @pytest.mark.parametrize("corruption", ("primary", "card", "corpus", "manifest"))
@@ -1110,7 +1156,7 @@ async def test_clone_rejects_incomplete_or_tampered_reference_manifest(corruptio
         snapshot["reference_manifest_json"] = canonical_json(manifest)
 
     with pytest.raises(ContractPreconditionFailed):
-        await harness.service.clone_current("p1")
+        await harness.service.clone_revision("p1", 1)
 
     assert "p1" not in harness.repository.drafts
 
@@ -1325,7 +1371,7 @@ async def test_confirm_replay_ignores_an_unrelated_newer_clone_draft():
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))
     first = await harness.service.confirm(confirmation(saved))
-    cloned = await harness.service.clone_current("p1")
+    cloned = await harness.service.clone_revision("p1", 1)
     await harness.service.save_draft(command(
         harness, expected=cloned.draft_version, likes=("新修订",),
     ))
@@ -1362,7 +1408,7 @@ async def test_history_and_replay_mark_replaced_contract_revision_superseded():
     first = await harness.service.confirm(confirmation(
         first_draft, key="confirm-revision-1"
     ))
-    second_draft = await harness.service.clone_current("p1")
+    second_draft = await harness.service.clone_revision("p1", 1)
     second = await harness.service.confirm(confirmation(
         second_draft, key="confirm-revision-2"
     ))

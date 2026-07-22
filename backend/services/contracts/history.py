@@ -417,7 +417,15 @@ class ContractHistoryService(ContractPreviewService):
             return tuple(results)
 
 
-    async def clone_current(self, project_id: str) -> ContractDraftResult:
+    async def clone_revision(
+        self, project_id: str, source_revision: int
+    ) -> ContractDraftResult:
+        if (
+            isinstance(source_revision, bool)
+            or not isinstance(source_revision, int)
+            or source_revision <= 0
+        ):
+            raise ContractPreconditionFailed()
         async with self.transaction_factory() as session:
             if await self.repository.lock_project(session, project_id) is None:
                 raise ContractNotFound()
@@ -426,21 +434,31 @@ class ContractHistoryService(ContractPreviewService):
             selected = await self.repository.lock_selected_seed(session, project_id)
             if selected is None:
                 raise ContractConflict()
+            snapshot = await self.repository.read_confirmed_snapshot(
+                session, project_id, source_revision
+            )
+            if snapshot is None:
+                raise ContractNotFound()
             head = await self.repository.read_contract_head(session, project_id)
             if head is None or int(head["revision"]) == 0:
-                raise ContractConflict()
-            snapshot = await self.repository.read_confirmed_snapshot(session, project_id)
-            if snapshot is None or int(snapshot["revision"]) != int(head["revision"]):
                 raise ContractConflict()
             try:
                 verified = self._result_from_snapshot(snapshot)
                 if (
-                    verified.creation_contract_id != head["creation_contract_id"]
-                    or verified.style_contract_id != head["style_contract_id"]
-                    or verified.creation_hash != head["creation_hash"]
-                    or verified.style_hash != head["style_hash"]
+                    verified.revision != source_revision
+                    or (
+                        source_revision == int(head["revision"])
+                        and (
+                            verified.creation_contract_id
+                                != head["creation_contract_id"]
+                            or verified.style_contract_id
+                                != head["style_contract_id"]
+                            or verified.creation_hash != head["creation_hash"]
+                            or verified.style_hash != head["style_hash"]
+                        )
+                    )
                 ):
-                    raise ValueError("confirmed contract head mismatch")
+                    raise ValueError("confirmed contract source mismatch")
                 if (
                     int(selected.get("selection_revision") or 0)
                     != verified.selection_revision

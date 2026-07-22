@@ -514,7 +514,7 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
         (CREATION, STYLE_CONTRACT, preview.creation_hash, preview.style_hash, now, PROJECT),
     )
 
-    cloned = await service.clone_current(PROJECT)
+    cloned = await service.clone_revision(PROJECT, 1)
     assert cloned.base_head_revision == 1
     assert cloned.draft_version == 1
     assert cloned.draft.seedRevisionId == SEED_REV

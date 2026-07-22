@@ -85,7 +85,8 @@ class FakeCorpusService:
         self._raise()
         return ({
             "id": SOURCE_ID, "title": "book", "relative_path": "safe/book.txt",
-            "revision": 2, "source_hash": "a" * 64,
+            "revision_id": "revision-2", "revision": 2,
+            "source_hash": "a" * 64,
             "reference_tags": ("玄幻",), "notes": "短注",
             "encoding": "utf-8", "status": "analyzed",
             "archived_at": None, "reference_count": 1,
@@ -100,7 +101,8 @@ class FakeCorpusService:
         self._raise()
         return {
             "id": source_id, "title": "book", "relative_path": "safe/book.txt",
-            "revision": 2, "source_hash": "a" * 64,
+            "revision_id": "revision-2", "revision": 2,
+            "source_hash": "a" * 64,
             "reference_tags": ("玄幻",), "notes": "短注",
             "encoding": "utf-8", "status": "analyzed",
             "archived_at": None, "reference_count": 1,
@@ -116,7 +118,8 @@ class FakeCorpusService:
         self._raise()
         return {
             "items": ({
-                "id": "revision-2", "source_id": source_id, "revision": 2,
+                "id": "revision-2", "revision_id": "revision-2",
+                "source_id": source_id, "revision": 2,
                 "source_hash": "a" * 64, "title": "book",
                 "relative_path": "safe/book.txt", "reference_tags": ("玄幻",),
                 "notes": "短注", "encoding": "utf-8", "status": "analyzed",
@@ -224,25 +227,35 @@ def test_corpus_routes_are_exact_and_all_dtos_are_allowlisted():
         "sourceLabel", "shortHash", "errorCode",
     }
     assert set(bodies[3]) == {"items"}
+    assert [
+        bodies[3]["items"][0].get("revisionId"),
+        bodies[4].get("revisionId"),
+        bodies[5]["items"][0].get("revisionId"),
+    ] == ["revision-2"] * 3
     assert set(bodies[4]) == {
-        "id", "revision", "contentHash", "name", "sourceLabel", "shortHash",
+        "id", "revisionId", "revision", "contentHash", "name",
+        "sourceLabel", "shortHash",
         "encoding", "state", "referenceTags", "notes", "archivedAt",
         "chapterCount", "fragmentCount", "referenceCount",
         "historicalReferenceCount", "deleteEligible", "deleteReason", "preview",
     }
     assert set(bodies[3]["items"][0]) == {
-        "id", "revision", "contentHash", "name", "sourceLabel", "shortHash",
+        "id", "revisionId", "revision", "contentHash", "name",
+        "sourceLabel", "shortHash",
         "encoding", "state", "referenceTags", "archivedAt",
         "chapterCount", "fragmentCount", "referenceCount",
         "historicalReferenceCount", "deleteEligible", "deleteReason",
     }
     assert bodies[3]["items"][0]["revision"] == 2
+    assert bodies[3]["items"][0]["revisionId"] == "revision-2"
+    assert bodies[4]["revisionId"] == "revision-2"
     assert bodies[3]["items"][0]["contentHash"] == "a" * 64
     assert set(bodies[5]["items"][0]) == {
-        "id", "revision", "contentHash", "shortHash", "name", "sourceLabel",
-        "encoding", "state", "referenceTags", "notes", "archivedAt",
-        "referenceCount", "isCurrent", "importedAt",
+        "id", "revisionId", "revision", "contentHash", "shortHash", "name",
+        "sourceLabel", "encoding", "state", "referenceTags", "notes",
+        "archivedAt", "referenceCount", "isCurrent", "importedAt",
     }
+    assert bodies[5]["items"][0]["revisionId"] == "revision-2"
     assert set(bodies[5]) == {"items", "nextCursor"}
     assert bodies[5]["nextCursor"] == 2
     assert set(bodies[6]["items"][0]) == {
@@ -250,8 +263,10 @@ def test_corpus_routes_are_exact_and_all_dtos_are_allowlisted():
         "charEnd", "shortHash",
     }
     assert all(set(item) == {
-        "id", "order", "charStart", "charEnd", "shortHash", "preview",
+        "id", "order", "charStart", "charEnd", "contentHash", "shortHash",
+        "preview",
     } for item in bodies[7]["items"])
+    assert all(item["contentHash"] == "c" * 64 for item in bodies[7]["items"])
     for body in bodies:
         _assert_safe(body)
     methods = {}

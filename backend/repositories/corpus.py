@@ -559,7 +559,8 @@ class CorpusRepository:
             args.append(before_revision)
         args.append(limit + 1)
         return await session.fetchall(
-            f"""SELECT r.id,r.source_id,r.revision,r.content_hash AS source_hash,
+            f"""SELECT r.id,r.id AS revision_id,r.source_id,r.revision,
+                      r.content_hash AS source_hash,
                       r.display_name AS title,r.relative_path,
                       r.reference_tags_json,r.notes,r.encoding,r.status,
                       s.archived_at,r.imported_at,

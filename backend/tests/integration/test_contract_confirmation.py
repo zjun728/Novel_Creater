@@ -173,8 +173,11 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     with pytest.raises(ContractConflict):
         await service.confirm(_confirm(saved, key="different-key"))
 
-    cloned = await service.clone_current(PROJECT)
-    second = await service.confirm(_confirm(cloned, key="confirm-second"))
+    cloned = await service.clone_revision(PROJECT, 1)
+    revised = await service.save_draft(SaveContractDraft(
+        PROJECT, cloned.draft_version, _draft(facts, likes=("第二版偏好",))
+    ))
+    second = await service.confirm(_confirm(revised, key="confirm-second"))
     history = await service.history(PROJECT)
     old_replay = await service.confirm(_confirm(saved))
     assert second.revision == 2
@@ -191,6 +194,14 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     assert old_replay.superseded_reasons == ("contract_revision_replaced",)
     assert history[1].creation_contract == first.creation_contract
     assert history[1].style_contract == first.style_contract
+
+    historical_clone = await service.clone_revision(PROJECT, 1)
+    assert historical_clone.base_head_revision == 2
+    assert historical_clone.draft_version == 1
+    assert historical_clone.draft.likes == saved.draft.likes
+    assert historical_clone.draft.likes != revised.draft.likes
+    assert (await service.get_head(PROJECT)).revision == 2
+    assert await _count(disposable_mysql.session, "creation_contracts") == 2
 
 
 @pytest.mark.asyncio
@@ -345,7 +356,7 @@ async def test_real_same_seed_reselection_supersedes_readiness_and_clone_generat
     assert readiness.seed_ready is False
     assert readiness.reasons == ("selected_seed_drift",)
     with pytest.raises(ContractConflict):
-        await contract_service.clone_current(PROJECT)
+        await contract_service.clone_revision(PROJECT, 1)
     assert await disposable_mysql.session.fetchone(
         "SELECT id FROM project_contract_drafts WHERE project_id=%s",
         (PROJECT,),
@@ -507,7 +518,7 @@ async def test_real_reads_fail_closed_when_a_confirmed_ref_projection_is_deleted
     with pytest.raises(ContractPreconditionFailed):
         await service.history(PROJECT)
     with pytest.raises(ContractPreconditionFailed):
-        await service.clone_current(PROJECT)
+        await service.clone_revision(PROJECT, 1)
     assert await disposable_mysql.session.fetchone(
         "SELECT id FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
     ) is None
@@ -527,7 +538,7 @@ async def test_real_clone_rejects_tampered_reference_manifest_without_draft(
     )
 
     with pytest.raises(ContractPreconditionFailed):
-        await service.clone_current(PROJECT)
+        await service.clone_revision(PROJECT, 1)
     assert await disposable_mysql.session.fetchone(
         "SELECT id FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
     ) is None

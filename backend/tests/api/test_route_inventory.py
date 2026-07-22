@@ -56,7 +56,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/{pid}/contract-draft"),
     ("PUT", "/api/projects/{pid}/contract-draft"),
     ("POST", "/api/projects/{pid}/contracts/preview"),
-    ("POST", "/api/projects/{pid}/contracts/clone"),
+    ("POST", "/api/projects/{pid}/contracts/{source_revision}/clone"),
     ("POST", "/api/projects/{pid}/contracts/confirm"),
     ("GET", "/api/projects/{pid}/contracts/head"),
     ("GET", "/api/projects/{pid}/contracts/history"),

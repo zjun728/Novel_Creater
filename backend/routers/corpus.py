@@ -94,6 +94,7 @@ def _source_summary(row) -> dict:
     archived_at = row.get("archived_at")
     return {
         "id": row["id"],
+        "revisionId": row["revision_id"],
         "revision": int(row["revision"]),
         "contentHash": row["source_hash"],
         "name": row["title"],
@@ -125,6 +126,7 @@ def _version_dto(row) -> dict:
     archived_at = row.get("archived_at")
     return {
         "id": row["id"],
+        "revisionId": row["revision_id"],
         "revision": int(row["revision"]),
         "contentHash": row["source_hash"],
         "shortHash": _short_hash(row.get("source_hash")),
@@ -313,6 +315,7 @@ async def list_fragments(
             "order": int(row["fragment_order"]),
             "charStart": int(row["chapter_char_start"]),
             "charEnd": int(row["chapter_char_end"]),
+            "contentHash": row["content_hash"],
             "shortHash": _short_hash(row.get("content_hash")),
             "preview": str(row.get("normalized_text") or "")[
                 :FRAGMENT_PREVIEW_CHARS

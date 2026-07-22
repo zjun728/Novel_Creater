@@ -248,7 +248,7 @@ def test_preview_missing_dependencies_is_stable_200_with_null_contracts():
         assert "Internal server error" not in first.text
 
 
-@pytest.mark.parametrize("command", ("preview", "clone"))
+@pytest.mark.parametrize("command", ("preview", "1/clone"))
 def test_contract_commands_strictly_reject_and_redact_nonempty_bodies(command):
     client, harness = make_client()
     sentinel = "/private/contract-sentinel"
@@ -272,7 +272,7 @@ def test_preview_rejects_falsey_nonobject_bodies(raw_body):
     assert response.json()["code"] == "ContractRequestInvalid"
 
 
-def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():
+def test_clone_route_delegates_explicit_revision_and_never_overwrites():
     client, harness = make_client()
     saved_response = client.put(
         "/api/projects/p1/contract-draft", json=save_body(harness)
@@ -330,13 +330,42 @@ def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():
               for fragment in source.fragments),
         }
 
-    cloned = client.post("/api/projects/p1/contracts/clone")
-    second = client.post("/api/projects/p1/contracts/clone")
+    cloned = client.post("/api/projects/p1/contracts/6/clone")
+    second = client.post("/api/projects/p1/contracts/6/clone")
 
     assert cloned.status_code == 200
     assert cloned.json()["baseHeadRevision"] == 6
     assert cloned.json()["draftVersion"] == 1
     assert second.status_code == 409
+
+
+def test_clone_route_requires_explicit_positive_source_revision():
+    client, harness = make_client()
+    saved = client.put(
+        "/api/projects/p1/contract-draft", json=save_body(harness)
+    ).json()
+    confirmed = client.post("/api/projects/p1/contracts/confirm", json={
+        "idempotencyKey": "explicit-clone-source",
+        "expectedDraftVersion": saved["draftVersion"],
+        "expectedDraftHash": saved["contentHash"],
+    })
+    assert confirmed.status_code == 201
+
+    cloned = client.post("/api/projects/p1/contracts/1/clone")
+
+    assert cloned.status_code == 200
+    assert cloned.json()["baseHeadRevision"] == 1
+    assert client.post("/api/projects/p1/contracts/0/clone").status_code == 422
+    assert client.post("/api/projects/p1/contracts/not-a-revision/clone").status_code == 422
+
+
+def test_clone_route_returns_stable_404_for_missing_source_revision():
+    client, _ = make_client()
+
+    response = client.post("/api/projects/p1/contracts/999/clone")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "ContractNotFound"
 
 
 def test_confirm_route_is_strict_returns_201_and_head_history_are_safe():
@@ -386,7 +415,7 @@ def test_clone_manifest_failure_is_fixed_422_and_redacts_internal_snapshot():
         "internalPath": sentinel,
     })
 
-    response = client.post("/api/projects/p1/contracts/clone")
+    response = client.post("/api/projects/p1/contracts/1/clone")
 
     assert response.status_code == 422
     assert set(response.json()) == {"code", "message", "correlationId"}

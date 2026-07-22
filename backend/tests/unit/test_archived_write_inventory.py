@@ -265,10 +265,10 @@ WRITE_ENTRYPOINTS = (
         ),
     ),
     _WriteEntrypoint(
-        "contract.clone_current",
+        "contract.clone_revision",
         "lock_project",
         _contract_service,
-        lambda service: service.clone_current("p1"),
+        lambda service: service.clone_revision("p1", 1),
     ),
     _WriteEntrypoint(
         "planning.create_initial_plan",

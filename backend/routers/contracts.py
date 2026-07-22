@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Path, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from backend.database import connection, transaction
@@ -229,9 +229,10 @@ async def preview_contracts(
     return _public_preview(await service.preview(pid))
 
 
-@router.post("/projects/{pid}/contracts/clone")
+@router.post("/projects/{pid}/contracts/{source_revision}/clone")
 async def clone_contracts(
     pid: str,
+    source_revision: int = Path(gt=0),
     raw_body: object = Body(default=None),
     service=Depends(get_contract_service),
 ):
@@ -239,7 +240,7 @@ async def clone_contracts(
         EmptyBody.model_validate({} if raw_body is None else raw_body)
     except ValidationError:
         raise ContractRequestInvalid() from None
-    return _public_draft(await service.clone_current(pid))
+    return _public_draft(await service.clone_revision(pid, source_revision))
 
 
 @router.post("/projects/{pid}/contracts/confirm", status_code=201)
