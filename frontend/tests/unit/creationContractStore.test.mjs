@@ -916,6 +916,7 @@ test('history is explicit read-only state and exposes pinned assets and supersed
       }],
       supersededReasons: ['contract_revision_replaced'],
     }],
+    nextBeforeRevision: null,
   }
   let calls = 0
 
@@ -934,9 +935,63 @@ test('history is explicit read-only state and exposes pinned assets and supersed
     assert.equal(calls, 1)
     assert.equal(result, history)
     assert.deepEqual(store.history, history.items)
+    assert.equal(store.historyNextBeforeRevision, null)
     assert.equal(store.historyLoading, false)
     assert.equal(store.draft, null)
     assert.equal(store.hasUnsavedChanges, false)
+  })
+})
+
+test('history pagination reaches more than one hundred revisions with an exclusive cursor', async () => {
+  const revisions = Array.from({ length: 105 }, (_, index) => ({
+    revision: 105 - index,
+    selectionRevision: 8,
+  }))
+  const calls = []
+
+  await withApiMethods([
+    [api.contracts, 'history', async (projectId, params) => {
+      calls.push({ projectId, ...params })
+      const before = params.beforeRevision ?? Number.POSITIVE_INFINITY
+      const items = revisions
+        .filter(item => item.revision < before)
+        .slice(0, params.limit)
+      return {
+        items,
+        nextBeforeRevision: items.length === params.limit
+          ? items.at(-1).revision
+          : null,
+      }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+
+    await store.loadHistory('project-1', { limit: 20 })
+    assert.equal(store.historyNextBeforeRevision, 86)
+    for (let page = 1; store.historyNextBeforeRevision !== null && page < 10; page += 1) {
+      await store.loadHistory('project-1', {
+        limit: 20,
+        beforeRevision: store.historyNextBeforeRevision,
+        append: true,
+      })
+    }
+
+    assert.deepEqual(calls, [
+      { projectId: 'project-1', limit: 20 },
+      { projectId: 'project-1', limit: 20, beforeRevision: 86 },
+      { projectId: 'project-1', limit: 20, beforeRevision: 66 },
+      { projectId: 'project-1', limit: 20, beforeRevision: 46 },
+      { projectId: 'project-1', limit: 20, beforeRevision: 26 },
+      { projectId: 'project-1', limit: 20, beforeRevision: 6 },
+    ])
+    assert.deepEqual(store.history.map(item => item.revision), revisions.map(item => item.revision))
+    assert.equal(new Set(store.history.map(item => item.revision)).size, 105)
+
+    assert.equal(typeof store.clearHistory, 'function')
+    store.clearHistory()
+    assert.deepEqual(store.history, [])
+    assert.equal(store.historyNextBeforeRevision, null)
   })
 })
 

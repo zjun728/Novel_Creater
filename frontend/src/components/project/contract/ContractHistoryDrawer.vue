@@ -1,8 +1,10 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NDrawer, NDrawerContent, NEmpty, NSpin, NTag } from 'naive-ui'
 
 import { useCreationContractStore } from '@/stores/creationContractStore.js'
+import { createLatestRequestGuard } from '@/utils/latestRequest.js'
+import ContractDecisionSummary from './ContractDecisionSummary.vue'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -15,6 +17,7 @@ const store = useCreationContractStore()
 const errorMessage = ref('')
 const errorRegion = ref(null)
 const cloningRevision = ref(null)
+const requestGuard = createLatestRequestGuard()
 
 const rows = computed(() => [...store.history].sort((a, b) => b.revision - a.revision))
 
@@ -37,43 +40,83 @@ function reasonLabel(reason) {
   }[reason] || reason
 }
 
-async function loadHistory() {
+async function loadHistory({ append = false } = {}) {
+  const generation = requestGuard.begin()
+  const targetProjectId = props.projectId
   errorMessage.value = ''
   try {
-    await store.loadHistory(props.projectId, { limit: 100 })
+    const params = append
+      ? {
+          limit: 20,
+          beforeRevision: store.historyNextBeforeRevision,
+          append: true,
+        }
+      : { limit: 20 }
+    await store.loadHistory(targetProjectId, params)
   } catch (error) {
+    if (!requestGuard.isCurrent(generation)) return
     errorMessage.value = error?.message || '历史修订加载失败'
     await nextTick()
+    if (!requestGuard.isCurrent(generation)) return
     errorRegion.value?.focus({ preventScroll: false })
   }
+}
+
+function loadMore() {
+  if (store.historyLoading || store.historyNextBeforeRevision == null) return
+  void loadHistory({ append: true })
 }
 
 async function cloneRevision(item) {
   if (!canClone(item) || store.cloning) return
+  const generation = requestGuard.begin()
+  const targetProjectId = props.projectId
   errorMessage.value = ''
   cloningRevision.value = item.revision
   try {
-    const result = await store.cloneRevision(props.projectId, item.revision)
+    const result = await store.cloneRevision(targetProjectId, item.revision)
+    if (!requestGuard.isCurrent(generation)) return
     emit('update:show', false)
     emit('cloned', result)
   } catch (error) {
+    if (!requestGuard.isCurrent(generation)) return
     errorMessage.value = error?.message || '未来设计草稿创建失败'
     await nextTick()
+    if (!requestGuard.isCurrent(generation)) return
     errorRegion.value?.focus({ preventScroll: false })
   } finally {
-    cloningRevision.value = null
+    if (requestGuard.isCurrent(generation)) cloningRevision.value = null
   }
 }
 
-watch(() => props.show, show => {
-  if (show) void loadHistory()
-})
+function resetDrawerState() {
+  requestGuard.invalidate()
+  errorMessage.value = ''
+  cloningRevision.value = null
+  store.clearHistory()
+}
+
+watch(
+  () => [props.show, props.projectId],
+  ([show, projectId], previous = []) => {
+    const [wasShowing, previousProjectId] = previous
+    if (!show) {
+      if (wasShowing) resetDrawerState()
+      return
+    }
+    if (wasShowing && projectId !== previousProjectId) resetDrawerState()
+    void loadHistory()
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => resetDrawerState())
 </script>
 
 <template>
   <n-drawer
     :show="props.show"
-    :width="620"
+    width="min(620px, 100vw)"
     placement="right"
     @update:show="emit('update:show', $event)"
   >
@@ -113,6 +156,15 @@ watch(() => props.show, show => {
               <div><dt>创作摘要</dt><dd>{{ shortHash(item.creationHash) }}</dd></div>
               <div><dt>风格摘要</dt><dd>{{ shortHash(item.styleHash) }}</dd></div>
             </dl>
+
+            <ContractDecisionSummary
+              :creation-contract="item.creationContract"
+              :style-contract="item.styleContract"
+              :likes="item.likes"
+              :dislikes="item.dislikes"
+              :heading="`R${item.revision} 作者决策`"
+              compact
+            />
 
             <section class="pinned-identities">
               <h4>完整冻结身份</h4>
@@ -186,6 +238,14 @@ watch(() => props.show, show => {
               >调整未来设计</n-button>
             </footer>
           </article>
+          <n-button
+            v-if="store.historyNextBeforeRevision !== null"
+            class="history-load-more"
+            block
+            secondary
+            :loading="store.historyLoading"
+            @click="loadMore"
+          >加载更多</n-button>
         </div>
       </n-spin>
     </n-drawer-content>
@@ -193,37 +253,38 @@ watch(() => props.show, show => {
 </template>
 
 <style scoped>
-.drawer-intro { margin: 0 0 18px; color: #786e60; font-size: 12px; line-height: 1.8; }
+.drawer-intro { margin: 0 0 18px; color: var(--muted, #786e60); font-size: 12px; line-height: 1.8; }
 .history-list { display: grid; gap: 14px; }
-.history-card { padding: 18px; border: 1px solid #d9ccb7; border-radius: 10px; color: #302b24; background: #fffdf7; }
+.history-card { padding: 18px; border: 1px solid var(--rule, #d9ccb7); border-radius: 10px; color: var(--ink, #302b24); background: var(--paper, #fffdf7); }
 .history-card header, .history-card footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.history-card header span { color: #9c3d2f; font: 700 9px Georgia, serif; letter-spacing: .15em; }
-.history-card h3 { margin: 3px 0 0; font-family: Georgia, serif; font-size: 24px; }
+.history-card header span { color: var(--cinnabar, #9c3d2f); font: 700 11px Georgia, serif; letter-spacing: .15em; }
+.history-card h3 { margin: 3px 0 0; color: var(--ink, #302b24); font-family: Georgia, serif; font-size: 24px; }
 .superseded-reasons { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 12px; }
-.superseded-reasons span { padding: 4px 7px; border-radius: 999px; color: #8a4b3f; background: #f3e5dc; font-size: 10px; }
+.superseded-reasons span { padding: 4px 7px; border-radius: 999px; color: var(--cinnabar, #8a4b3f); background: color-mix(in srgb, var(--cinnabar, #8a4b3f) 10%, var(--paper, #fffdf7)); font-size: 11px; }
 .history-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
-.history-facts div { min-width: 0; padding: 10px; background: #f6f0e5; }
-.history-facts dt { color: #93836e; font-size: 9px; }
-.history-facts dd { overflow: hidden; margin: 3px 0 0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.pinned-identities { display: grid; gap: 8px; padding-top: 13px; border-top: 1px solid #e2d7c5; }
+.history-facts div { min-width: 0; padding: 10px; background: color-mix(in srgb, var(--paper, #fffdf7) 90%, var(--jade, #47675a)); }
+.history-facts dt { color: var(--muted, #93836e); font-size: 11px; }
+.history-facts dd { overflow: hidden; margin: 3px 0 0; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.pinned-identities { display: grid; gap: 8px; padding-top: 13px; border-top: 1px solid var(--rule, #e2d7c5); }
 .pinned-identities > h4 { margin: 0 0 2px; font-family: 'Noto Serif SC', serif; font-size: 13px; }
-.identity-card { padding: 11px; border: 1px solid #e3d8c7; border-radius: 7px; background: #faf6ed; }
-.identity-card > strong, .identity-card header strong { color: #574c3e; font-size: 11px; }
-.identity-card > p, .fragment-identities p { margin: 5px 0 0; color: #776c5e; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.identity-card { padding: 11px; border: 1px solid var(--rule, #e3d8c7); border-radius: 7px; background: var(--paper, #faf6ed); }
+.identity-card > strong, .identity-card header strong { color: var(--ink, #574c3e); font-size: 12px; }
+.identity-card > p, .fragment-identities p { margin: 5px 0 0; color: var(--muted, #776c5e); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .identity-card code, .identity-card dd { overflow-wrap: anywhere; word-break: break-all; }
-.identity-card code { display: block; margin-top: 5px; color: #765c43; font: 9px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.identity-card code { display: block; margin-top: 5px; color: var(--muted, #765c43); font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .identity-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 8px 0 0; }
 .identity-card dl div { min-width: 0; }
 .identity-card dl .identity-hash { grid-column: 1 / -1; }
-.identity-card dt { color: #93836e; font-size: 8px; }
-.identity-card dd { margin: 2px 0 0; font-size: 9px; }
+.identity-card dt { color: var(--muted, #93836e); font-size: 11px; }
+.identity-card dd { margin: 2px 0 0; font-size: 12px; }
 .corpus-identity > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.fragment-identities { margin-top: 10px; padding-top: 9px; border-top: 1px dashed #ded2bf; }
-.fragment-identities h5 { margin: 0 0 6px; color: #6d6255; font-size: 10px; }
-.fragment-identities article { display: grid; gap: 3px; padding: 7px 0; border-top: 1px solid #eadfce; }
+.fragment-identities { margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--rule, #ded2bf); }
+.fragment-identities h5 { margin: 0 0 6px; color: var(--ink, #6d6255); font-size: 12px; }
+.fragment-identities article { display: grid; gap: 3px; padding: 7px 0; border-top: 1px solid var(--rule, #eadfce); }
 .fragment-identities article:first-of-type { border-top: 0; }
-.fragment-identities small { color: #8b725c; font-size: 9px; }
+.fragment-identities small { color: var(--muted, #8b725c); font-size: 11px; }
 .history-card footer { align-items: flex-end; margin-top: 16px; }
-.history-card footer small { color: #927568; font-size: 10px; }
+.history-card footer small { color: var(--muted, #927568); font-size: 11px; }
+.history-load-more { margin-top: 2px; color: var(--jade, #47675a); }
 @media (max-width: 520px) { .history-facts { grid-template-columns: 1fr; } .history-card footer { align-items: stretch; flex-direction: column; } }
 </style>

@@ -14,6 +14,7 @@ import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
 
 import { api } from '../../src/api/db/client.js'
+import { useCreationAssetStore } from '../../src/stores/creationAssetStore.js'
 import { useCreationContractStore } from '../../src/stores/creationContractStore.js'
 
 const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
@@ -49,7 +50,13 @@ const behaviorNaiveStubPlugin = {
       export const NCollapse = stub('NCollapse')
       export const NCollapseItem = stub('NCollapseItem')
       export const NDrawerContent = stub('NDrawerContent', 'section')
+      export const NDescriptions = stub('NDescriptions')
+      export const NDescriptionsItem = stub('NDescriptionsItem')
       export const NEmpty = stub('NEmpty')
+      export const NModal = stub('NModal')
+      export const NResult = stub('NResult')
+      export const NSelect = stub('NSelect')
+      export const NSkeleton = stub('NSkeleton')
       export const NSpin = stub('NSpin')
       export const NTag = stub('NTag', 'span')
       export const NInput = defineComponent({
@@ -190,9 +197,21 @@ function inputForLabel(root, value) {
   return input
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
 let behaviorVite
 let StoryEngineStep
 let ContractHistoryDrawer
+let ContractPreviewStep
+let StyleSelectionStep
 let naiveBehaviorModule
 
 test.before(async () => {
@@ -213,11 +232,35 @@ test.before(async () => {
   StoryEngineStep.render = await compileClientRender(
     'src/components/project/contract/StoryEngineStep.vue',
   )
+  const decisionSummary = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/ContractDecisionSummary.vue')
+  ).default
+  decisionSummary.render = await compileClientRender(
+    'src/components/project/contract/ContractDecisionSummary.vue',
+  )
   ContractHistoryDrawer = (
     await behaviorVite.ssrLoadModule('/src/components/project/contract/ContractHistoryDrawer.vue')
   ).default
   ContractHistoryDrawer.render = await compileClientRender(
     'src/components/project/contract/ContractHistoryDrawer.vue',
+  )
+  ContractPreviewStep = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/ContractPreviewStep.vue')
+  ).default
+  ContractPreviewStep.render = await compileClientRender(
+    'src/components/project/contract/ContractPreviewStep.vue',
+  )
+  const styleTrialPanel = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/StyleTrialPanel.vue')
+  ).default
+  styleTrialPanel.render = await compileClientRender(
+    'src/components/project/contract/StyleTrialPanel.vue',
+  )
+  StyleSelectionStep = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/StyleSelectionStep.vue')
+  ).default
+  StyleSelectionStep.render = await compileClientRender(
+    'src/components/project/contract/StyleSelectionStep.vue',
   )
   naiveBehaviorModule = await behaviorVite.ssrLoadModule('naive-ui')
 })
@@ -470,7 +513,9 @@ function mountWithPinia(component, props, configureStore) {
   }
   store.engineBatch = { id: 'batch-1', status: 'succeeded', options: [engineOption()] }
   configureStore?.(store)
-  const Root = defineComponent({ setup: () => () => h(component, props) })
+  const Root = defineComponent({
+    setup: () => () => h(component, typeof props === 'function' ? props() : props),
+  })
   const root = hostNode('root')
   const app = renderer.createApp(Root)
   app.use(pinia)
@@ -606,4 +651,341 @@ test('history drawer renders every pinned identity and fragment while generation
   } finally {
     mounted.app.unmount()
   }
+})
+
+function completeDecisionPayload() {
+  return {
+    creationContract: {
+      channelProfileKey: '女性成长频道',
+      genreProfileKey: '架空悬疑',
+      qualityCharterVersion: '质量章程-2026',
+      selectedSeed: { title: '雾港拾灯人', logline: '她必须在黎明前找回失踪档案。' },
+      selectedEngine: {
+        name: '钟摆发动机',
+        storyPromise: '每次破案都会失去一段记忆。',
+        protagonistDesire: '保住妹妹的真实姓名',
+        sustainedPressure: '城市在七日后沉没',
+        growthDirection: '从独行转向学会托付',
+        conflictLoop: '追查—交换—反噬—重新结盟',
+        ensembleRoles: [{ role: '钟表匠', purpose: '提供错误时间线' }],
+        advantageAndCost: '能听见谎言，代价是忘记一个真相',
+        satisfactionSources: ['线索闭环', '关系反转'],
+        longFormVariation: '每卷更换一个时间规则',
+        endingAnchor: '她亲手写回所有人的名字',
+        risks: ['设定过密'],
+        differentiation: '以记忆作为侦探成本',
+      },
+      targetTotalWords: 1_260_000,
+      expectedVolumeCount: 7,
+      expectedChapterCount: 420,
+      chapterWordRangePreference: [2_800, 3_400],
+      prohibitedDirections: ['禁止无代价升级', '禁止工具人反派'],
+      authorNotes: '人物选择必须优先于设定解释。',
+    },
+    styleContract: {
+      readingExperience: '克制、清醒，但余韵绵长',
+      narrativeDistance: '限知近距离',
+      sentenceParagraphRhythm: '短句推进，长段收束',
+      dictionDensity: '中等意象密度',
+      dialogueAndSubtext: '对话留白，潜台词承担关系变化',
+      characterVoices: '主要人物各有句式指纹',
+      emotionAndInteriority: '情绪通过选择和动作外化',
+      actionExplanationEnvironment: '动作六成，解释二成，环境二成',
+      primaryRules: ['每场戏必须有不可逆变化'],
+      secondaryFlavor: ['雨夜霍光', '旧纸质感'],
+      risks: ['留白过多导致信息不足'],
+    },
+    likes: ['对话中的关系位移'],
+    dislikes: ['用脸色发白代替情绪'],
+  }
+}
+
+test('reusable decision summary renders every formal author decision without dropping API data', async () => {
+  let componentModule
+  try {
+    componentModule = await behaviorVite.ssrLoadModule(
+      '/src/components/project/contract/ContractDecisionSummary.vue',
+    )
+  } catch (error) {
+    assert.fail(`reusable decision summary is missing: ${error.message}`)
+  }
+  const component = componentModule.default
+  component.render = await compileClientRender(
+    'src/components/project/contract/ContractDecisionSummary.vue',
+  )
+  const mounted = mountWithPinia(component, completeDecisionPayload())
+
+  try {
+    const rendered = textContent(mounted.root)
+    for (const label of [
+      '渠道', '题材', '质量章程', '故事承诺', '主角欲望', '持续压力', '成长方向', '冲突循环',
+      '目标总字数', '预计卷数', '预计章数', '单章字数', '禁止方向', '作者备注',
+      '阅读体验', '叙事距离', '句段节奏', '用词密度', '对话与潜台词', '人物声音',
+      '情绪与内心', '动作·解释·环境', '主规则', '次要风味', '风险', '喜欢', '避开',
+    ]) assert.ok(rendered.includes(label), `missing decision label: ${label}`)
+    for (const value of [
+      '女性成长频道', '架空悬疑', '质量章程-2026', '钟摆发动机',
+      '保住妹妹的真实姓名', '追查—交换—反噬—重新结盟', '1,260,000', '2,800', '3,400',
+      '人物选择必须优先于设定解释。', '限知近距离', '动作六成，解释二成，环境二成',
+      '每场戏必须有不可逆变化', '留白过多导致信息不足', '对话中的关系位移', '用脸色发白代替情绪',
+    ]) assert.ok(rendered.includes(value), `missing decision value: ${value}`)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('confirmed head and every history revision consume the same decision-summary component', async () => {
+  const [wizard, history, preview] = await Promise.all([
+    source('src/components/project/CreationContractWizard.vue'),
+    source('src/components/project/contract/ContractHistoryDrawer.vue'),
+    source('src/components/project/contract/ContractPreviewStep.vue'),
+  ])
+  for (const component of [wizard, history, preview]) {
+    assert.match(component, /ContractDecisionSummary/)
+  }
+})
+
+test('contract preview ignores an old project failure after the new project preview succeeds', async () => {
+  const pendingA = deferred()
+  const projectId = VueRuntime.ref('project-a')
+  const calls = []
+  const mounted = mountWithPinia(ContractPreviewStep, () => ({ projectId: projectId.value }), store => {
+    store.preview = async targetProjectId => {
+      calls.push(targetProjectId)
+      if (targetProjectId === 'project-a') return pendingA.promise
+      const result = {
+        projectId: targetProjectId,
+        contractReady: true,
+        reasons: [],
+        seedRef: { revisionId: 'project-b-success', contentHash: HASH_A },
+        engineRef: { batchId: 'batch-b', contentHash: HASH_B },
+        bindingRef: { revision: 2, contentHash: HASH_A, items: [] },
+        styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [],
+      }
+      store.previewResult = result
+      return result
+    }
+  })
+
+  try {
+    await flush()
+    projectId.value = 'project-b'
+    await flush()
+    pendingA.reject(new Error('project-a-late-failure'))
+    await flush()
+
+    assert.deepEqual(calls, ['project-a', 'project-b'])
+    assert.match(textContent(mounted.root), /project-b-success/)
+    assert.doesNotMatch(textContent(mounted.root), /project-a-late-failure/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('style selection keeps rapid A to B navigation on B when A fails late', async () => {
+  const pendingA = deferred()
+  const projectId = VueRuntime.ref('project-a')
+  let listCalls = 0
+  const styleB = {
+    id: 'style-b', name: '项目 B 风格', revision: 2, contentHash: HASH_B,
+    readingExperience: 'B 的阅读体验', reasonCodes: [], applicability: [], nonApplicability: [],
+  }
+  const mounted = mountWithPinia(StyleSelectionStep, () => ({
+    projectId: projectId.value,
+    selectionRevision: 2,
+  }), contractStore => {
+    contractStore.load = async targetProjectId => {
+      contractStore.projectId = targetProjectId
+      contractStore.draft = {
+        ...contractStore.draft,
+        projectId: targetProjectId,
+        draft: {
+          ...contractStore.draft.draft,
+          engineOptionId: `engine-${targetProjectId}`,
+          engineHash: HASH_A,
+          channelProfileKey: 'channel',
+          genreProfileKey: 'genre',
+        },
+      }
+    }
+    const assetStore = useCreationAssetStore()
+    assetStore.loadStyleTemplates = async () => {
+      listCalls += 1
+      if (listCalls === 1) return pendingA.promise
+      assetStore.styleTemplates = [styleB]
+      return [styleB]
+    }
+    assetStore.loadRecommendations = async targetProjectId => {
+      const result = { styles: targetProjectId === 'project-b' ? [styleB] : [] }
+      if (targetProjectId === 'project-b') assetStore.recommendations = result
+      return result
+    }
+  })
+
+  try {
+    await flush()
+    projectId.value = 'project-b'
+    await flush()
+    pendingA.reject(new Error('project-a-style-late-failure'))
+    await flush()
+
+    assert.equal(listCalls, 2)
+    assert.match(textContent(mounted.root), /项目 B 风格/)
+    assert.doesNotMatch(textContent(mounted.root), /project-a-style-late-failure/)
+    const sourceText = await source('src/components/project/contract/StyleSelectionStep.vue')
+    assert.match(sourceText, /createLatestRequestGuard/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+function simpleHistoryRow(revision) {
+  return {
+    revision,
+    selectionRevision: 8,
+    styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [], supersededReasons: [],
+  }
+}
+
+test('history drawer reloads on project change and ignores the old project late failure', async () => {
+  const pendingA = deferred()
+  const projectId = VueRuntime.ref('project-a')
+  const show = VueRuntime.ref(false)
+  const calls = []
+  naiveBehaviorModule.focusEvents.length = 0
+  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
+    show: show.value,
+    projectId: projectId.value,
+    currentSelectionRevision: 8,
+    readOnly: false,
+  }), store => {
+    store.loadHistory = async targetProjectId => {
+      calls.push(targetProjectId)
+      if (targetProjectId === 'project-a') return pendingA.promise
+      store.history = [simpleHistoryRow(22)]
+      return { items: store.history, nextBeforeRevision: null }
+    }
+    store.clearHistory = () => { store.history = [] }
+  })
+
+  try {
+    show.value = true
+    await flush()
+    projectId.value = 'project-b'
+    await flush()
+    pendingA.reject(new Error('project-a-history-late-failure'))
+    await flush()
+
+    assert.deepEqual(calls, ['project-a', 'project-b'])
+    assert.match(textContent(mounted.root), /R22/)
+    assert.doesNotMatch(textContent(mounted.root), /project-a-history-late-failure/)
+    assert.deepEqual(naiveBehaviorModule.focusEvents, [])
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('closing history invalidates its pending request and leaves no stale error or focus on reopen', async () => {
+  const pending = deferred()
+  const show = VueRuntime.ref(false)
+  let loads = 0
+  naiveBehaviorModule.focusEvents.length = 0
+  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
+    show: show.value,
+    projectId: 'project-1',
+    currentSelectionRevision: 8,
+    readOnly: false,
+  }), store => {
+    store.loadHistory = async () => {
+      loads += 1
+      if (loads === 1) return pending.promise
+      store.history = [simpleHistoryRow(30)]
+      return { items: store.history, nextBeforeRevision: null }
+    }
+    store.clearHistory = () => { store.history = [] }
+  })
+
+  try {
+    show.value = true
+    await flush()
+    show.value = false
+    await flush()
+    pending.reject(new Error('closed-history-late-failure'))
+    await flush()
+    assert.deepEqual(naiveBehaviorModule.focusEvents, [])
+
+    show.value = true
+    await flush()
+    assert.equal(loads, 2)
+    assert.match(textContent(mounted.root), /R30/)
+    assert.doesNotMatch(textContent(mounted.root), /closed-history-late-failure/)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('history drawer pages forward, clamps width, and resets state when closed', async () => {
+  const show = VueRuntime.ref(false)
+  const loads = []
+  let clears = 0
+  const mounted = mountWithPinia(ContractHistoryDrawer, () => ({
+    show: show.value,
+    projectId: 'project-1',
+    currentSelectionRevision: 8,
+    readOnly: false,
+  }), store => {
+    store.loadHistory = async (_projectId, params) => {
+      loads.push({ ...params })
+      if (params.append) {
+        store.history = [...store.history, simpleHistoryRow(4)]
+        store.historyNextBeforeRevision = null
+      } else {
+        store.history = [simpleHistoryRow(5)]
+        store.historyNextBeforeRevision = 5
+      }
+      return { items: store.history, nextBeforeRevision: store.historyNextBeforeRevision }
+    }
+    store.clearHistory = () => {
+      clears += 1
+      store.history = []
+      store.historyNextBeforeRevision = null
+    }
+  })
+
+  try {
+    show.value = true
+    await flush()
+    const drawer = walk(mounted.root).find(node => node.props['data-component'] === 'NDrawer')
+    assert.equal(drawer.props.width, 'min(620px, 100vw)')
+    await trigger(findByText(mounted.root, 'button', '加载更多'), 'onClick')
+    assert.deepEqual(loads, [
+      { limit: 20 },
+      { limit: 20, beforeRevision: 5, append: true },
+    ])
+    assert.deepEqual(mounted.store.history.map(item => item.revision), [5, 4])
+
+    show.value = false
+    await flush()
+    assert.equal(clears, 1)
+    assert.deepEqual(mounted.store.history, [])
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('contract workspace components inherit the paper ink and seal design tokens', async () => {
+  const files = await Promise.all([
+    source('src/components/project/contract/StoryEngineStep.vue'),
+    source('src/components/project/contract/StyleSelectionStep.vue'),
+    source('src/components/project/contract/AssetScopeStep.vue'),
+    source('src/components/project/contract/CapacityStep.vue'),
+    source('src/components/project/contract/ContractPreviewStep.vue'),
+    source('src/components/project/contract/ContractHistoryDrawer.vue'),
+    source('src/components/project/contract/StyleTrialPanel.vue'),
+  ])
+  const combined = files.join('\n')
+  for (const token of ['--paper', '--ink', '--muted', '--rule', '--cinnabar', '--jade']) {
+    assert.match(combined, new RegExp(`var\\(${token},`))
+  }
+  assert.doesNotMatch(files[5], /font-size:\s*(?:8|9|10)px/)
 })

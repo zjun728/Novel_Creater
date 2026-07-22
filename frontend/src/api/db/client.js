@@ -506,6 +506,10 @@ export const api = {
     history: (projectId, params = {}) => get(
       `/projects/${segment(projectId)}/contracts/history${queryString({
         limit: boundedInteger(params.limit, { min: 1, max: 100 }),
+        beforeRevision: boundedInteger(params.beforeRevision, {
+          min: 1,
+          max: Number.MAX_SAFE_INTEGER,
+        }),
       })}`,
     ),
     clone: (projectId, sourceRevision) => post(

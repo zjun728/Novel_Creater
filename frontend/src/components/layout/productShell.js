@@ -123,38 +123,36 @@ export function createProductShellModel({
         title: String(project.title || '未命名项目'),
         archived,
         statusLabel: archived ? '已归档' : '',
-        modules: archived
-          ? []
-          : [
-              {
-                key: 'overview',
-                label: '项目概览',
-                path: overviewPath,
-                mark: '概',
-                selected: routeName(route) === 'ProjectOverview',
-              },
-              {
-                key: 'seeds',
-                label: '创作种子',
-                path: projectSeedsPath(project.id),
-                mark: '种',
-                selected: routeName(route) === 'ProjectSeeds',
-              },
-              {
-                key: 'contract',
-                label: '创作契约',
-                path: projectContractPath(project.id),
-                mark: '契',
-                selected: routeName(route) === 'ProjectContract',
-              },
-              {
-                key: 'models',
-                label: '模型绑定',
-                path: projectModelSettingsPath(project.id),
-                mark: '模',
-                selected: routeName(route) === 'ProjectModelSettings',
-              },
-            ],
+        modules: [
+          {
+            key: 'overview',
+            label: '项目概览',
+            path: overviewPath,
+            mark: '概',
+            selected: routeName(route) === 'ProjectOverview',
+          },
+          ...(!archived ? [{
+            key: 'seeds',
+            label: '创作种子',
+            path: projectSeedsPath(project.id),
+            mark: '种',
+            selected: routeName(route) === 'ProjectSeeds',
+          }] : []),
+          {
+            key: 'contract',
+            label: '创作契约',
+            path: projectContractPath(project.id),
+            mark: '契',
+            selected: routeName(route) === 'ProjectContract',
+          },
+          ...(!archived ? [{
+            key: 'models',
+            label: '模型绑定',
+            path: projectModelSettingsPath(project.id),
+            mark: '模',
+            selected: routeName(route) === 'ProjectModelSettings',
+          }] : []),
+        ],
       }
     : null
 

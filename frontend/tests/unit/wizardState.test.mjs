@@ -6,6 +6,7 @@ import {
   nextAllowedStep,
   providerRetryAction,
 } from '../../src/domain/creation-contract/wizard-state.js'
+import * as wizardState from '../../src/domain/creation-contract/wizard-state.js'
 
 test('wizard advances only when each saved backend decision is complete', () => {
   assert.equal(nextAllowedStep({ selectedSeed: null }), 1)
@@ -36,5 +37,39 @@ test('outcome-unknown provider batches require a new explicitly confirmed batch'
   assert.equal(
     providerRetryAction({ status: 'outcome_unknown' }),
     'create-new-batch-with-explicit-confirmation',
+  )
+})
+
+test('selection drift locks every downstream step even after an assets-stage save', () => {
+  assert.equal(typeof wizardState.contractStepAccess, 'function')
+
+  const drifted = wizardState.contractStepAccess({
+    selectionDrift: true,
+    lastSavedStage: 'assets',
+    draft: {
+      selectedSeed: { id: 'seed-1' },
+      selectedEngine: { id: 'engine-1' },
+      primaryStyle: { id: 'style-1' },
+    },
+  })
+  assert.deepEqual(drifted, { restoredStep: 1, maxOpenStep: 1 })
+
+  const resaved = wizardState.contractStepAccess({
+    selectionDrift: false,
+    lastSavedStage: 'engine',
+    draft: {
+      selectedSeed: { id: 'seed-1' },
+      selectedEngine: { id: 'engine-2' },
+      primaryStyle: null,
+    },
+  })
+  assert.deepEqual(resaved, { restoredStep: 2, maxOpenStep: 2 })
+  assert.deepEqual(
+    wizardState.contractStepAccess({
+      selectionDrift: false,
+      lastSavedStage: 'assets',
+      draft: {},
+    }),
+    { restoredStep: 4, maxOpenStep: 5 },
   )
 })

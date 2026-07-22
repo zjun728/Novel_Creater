@@ -168,8 +168,36 @@ test('active and archived project contexts have different module surfaces', asyn
   assert.equal(archived.projectContext.title, '旧稿')
   assert.equal(archived.projectContext.archived, true)
   assert.equal(archived.projectContext.statusLabel, '已归档')
-  assert.deepEqual(archived.projectContext.modules, [])
+  assert.deepEqual(
+    archived.projectContext.modules.map(item => [item.label, item.path, item.selected]),
+    [
+      ['项目概览', '/projects/archived-1/overview', true],
+      ['创作契约', '/projects/archived-1/contract', false],
+    ],
+  )
   assert.equal(archived.routeTitle, '已归档项目')
+
+  const archivedContract = createProductShellModel({
+    route: route(
+      'ProjectContract',
+      '/projects/archived-1/contract',
+      { projectId: 'archived-1' },
+    ),
+    project: {
+      id: 'archived-1',
+      title: '旧稿',
+      archivedAt: 1_752_800_000,
+    },
+  })
+  assert.equal(archivedContract.routeTitle, '已归档创作契约')
+  assert.equal(
+    archivedContract.projectContext.modules.find(item => item.key === 'contract').selected,
+    true,
+  )
+  assert.equal(
+    archivedContract.projectContext.modules.some(item => ['seeds', 'models'].includes(item.key)),
+    false,
+  )
 })
 
 test('desktop breakpoint collapses navigation without removing the route title', async () => {
@@ -552,7 +580,7 @@ test('shared shell hydration preserves the explicit missing-project route state'
   }
 })
 
-test('archived project shell is visibly read-only and has no module links', async () => {
+test('archived project shell exposes only overview and read-only contract navigation', async () => {
   const { html } = await renderApp(
     '/projects/archived-1/overview',
     {
@@ -565,7 +593,20 @@ test('archived project shell is visibly read-only and has no module links', asyn
 
   assert.match(html, /class="product-sidebar__archive-mark"[^>]*>\s*已归档\s*</)
   assert.match(html, /class="product-topbar__title"[^>]*>已归档项目</)
-  assert.doesNotMatch(html, /product-sidebar__module-link/)
+  assert.match(html, /href="\/projects\/archived-1\/overview"/)
+  assert.match(html, /href="\/projects\/archived-1\/contract"/)
+  assert.doesNotMatch(html, /href="\/projects\/archived-1\/(?:seeds|settings\/models)"/)
+})
+
+test('archived status view links directly to the read-only creation contract', async () => {
+  const source = await readFile(
+    new URL('../../src/views/ArchivedProjectStatusView.vue', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(source, /projectContractPath/)
+  assert.match(source, /查看只读创作契约/)
+  assert.doesNotMatch(source, /projectModelSettingsPath|模型绑定/)
 })
 
 test('collapsed shell SFC keeps route title in the top bar', async () => {

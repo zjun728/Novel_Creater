@@ -1,7 +1,9 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { NAlert, NButton, NDescriptions, NDescriptionsItem, NResult, NSpin, NTag } from 'naive-ui'
 import { useCreationContractStore } from '@/stores/creationContractStore'
+import { createLatestRequestGuard } from '@/utils/latestRequest.js'
+import ContractDecisionSummary from './ContractDecisionSummary.vue'
 
 const props = defineProps({ projectId: { type: String, required: true } })
 const emit = defineEmits(['back', 'confirmed', 'reload'])
@@ -9,6 +11,7 @@ const store = useCreationContractStore()
 const loadError = ref('')
 const confirmError = ref('')
 const errorRegion = ref(null)
+const previewLoadGuard = createLatestRequestGuard()
 
 function commandKey() {
   const suffix = globalThis.crypto?.randomUUID?.()
@@ -39,19 +42,17 @@ function explain(reason) {
   return reasonText[reason] || reason
 }
 
-function wordRange(value) {
-  if (!Array.isArray(value) || value.length !== 2) return '—'
-  return `${Number(value[0]).toLocaleString()} ～ ${Number(value[1]).toLocaleString()} 字`
-}
-
 async function loadPreview() {
+  const generation = previewLoadGuard.begin()
   loadError.value = ''
   confirmError.value = ''
   try {
     await store.preview(props.projectId)
   } catch (error) {
+    if (!previewLoadGuard.isCurrent(generation)) return
     loadError.value = error?.message || '契约预览生成失败'
     await nextTick()
+    if (!previewLoadGuard.isCurrent(generation)) return
     errorRegion.value?.focus({ preventScroll: false })
   }
 }
@@ -69,6 +70,7 @@ async function confirmContract() {
 }
 
 watch(() => props.projectId, () => loadPreview(), { immediate: true })
+onBeforeUnmount(() => previewLoadGuard.invalidate())
 </script>
 
 <template>
@@ -105,43 +107,14 @@ watch(() => props.projectId, () => loadPreview(), { immediate: true })
         </n-descriptions>
       </section>
 
-      <section v-if="preview.creationContract && preview.styleContract" class="decision-sheet" aria-labelledby="contract-decisions-heading">
-        <h4 id="contract-decisions-heading">作者即将确认的创作约定</h4>
-        <div class="decision-grid">
-          <article>
-            <span>故事出发点</span>
-            <h5>{{ preview.creationContract.selectedSeed?.title || '已选种子' }}</h5>
-            <p>{{ preview.creationContract.selectedSeed?.logline }}</p>
-          </article>
-          <article>
-            <span>长期故事承诺</span>
-            <h5>{{ preview.creationContract.selectedEngine?.name || '已选发动机' }}</h5>
-            <p>{{ preview.creationContract.selectedEngine?.storyPromise }}</p>
-          </article>
-          <article>
-            <span>持续压力与冲突循环</span>
-            <p>{{ preview.creationContract.selectedEngine?.sustainedPressure }}</p>
-            <p>{{ preview.creationContract.selectedEngine?.conflictLoop }}</p>
-          </article>
-          <article>
-            <span>整书阅读感受</span>
-            <p>{{ preview.styleContract.readingExperience }}</p>
-            <p>{{ preview.styleContract.dialogueAndSubtext }}</p>
-          </article>
-        </div>
-        <n-descriptions :column="2" bordered label-placement="left" size="small" class="policy-table">
-          <n-descriptions-item label="渠道 / 题材">{{ preview.creationContract.channelProfileKey }} / {{ preview.creationContract.genreProfileKey }}</n-descriptions-item>
-          <n-descriptions-item label="目标总字数">{{ Number(preview.creationContract.targetTotalWords).toLocaleString() }} 字</n-descriptions-item>
-          <n-descriptions-item label="预计卷 / 章">{{ preview.creationContract.expectedVolumeCount }} 卷 / {{ preview.creationContract.expectedChapterCount }} 章</n-descriptions-item>
-          <n-descriptions-item label="章节字数偏好">{{ wordRange(preview.creationContract.chapterWordRangePreference) }}</n-descriptions-item>
-          <n-descriptions-item label="质量章程">{{ preview.creationContract.qualityCharterVersion }}</n-descriptions-item>
-          <n-descriptions-item label="模型绑定修订">R{{ preview.creationContract.modelBindingRef?.revision ?? '—' }}</n-descriptions-item>
-          <n-descriptions-item label="禁止方向" :span="2">{{ preview.creationContract.prohibitedDirections?.join('；') || '未额外填写' }}</n-descriptions-item>
-          <n-descriptions-item label="作者备注" :span="2">{{ preview.creationContract.authorNotes || '未额外填写' }}</n-descriptions-item>
-          <n-descriptions-item label="喜欢的表现" :span="2">{{ preview.likes?.join('；') || '未额外填写' }}</n-descriptions-item>
-          <n-descriptions-item label="明确避开" :span="2">{{ preview.dislikes?.join('；') || '未额外填写' }}</n-descriptions-item>
-        </n-descriptions>
-      </section>
+      <ContractDecisionSummary
+        v-if="preview.creationContract || preview.styleContract"
+        :creation-contract="preview.creationContract"
+        :style-contract="preview.styleContract"
+        :likes="preview.likes"
+        :dislikes="preview.dislikes"
+        heading="作者即将确认的创作约定"
+      />
 
       <div class="reference-grid">
         <section>
@@ -194,28 +167,21 @@ watch(() => props.projectId, () => loadPreview(), { immediate: true })
 <style scoped>
 .preview-step { padding: 28px 30px 32px; }
 .step-heading, .step-actions, .binding-line { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-.step-heading span { color: #9c3d2f; font: 700 10px Georgia, serif; letter-spacing: .15em; }
+.step-heading span { color: var(--cinnabar, #9c3d2f); font: 700 10px Georgia, serif; letter-spacing: .15em; }
 .step-heading h3 { margin: 4px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 25px; }
-.loading { display: grid; place-items: center; gap: 12px; min-height: 260px; color: #7c7163; }
-.snapshot, .decision-sheet, .binding-sheet, .reference-grid { margin-top: 24px; }
-h4 { margin: 0 0 11px; color: #574c3e; font: 650 14px 'Noto Serif SC', serif; }
+.loading { display: grid; place-items: center; gap: 12px; min-height: 260px; color: var(--muted, #7c7163); }
+.snapshot, .binding-sheet, .reference-grid { margin-top: 24px; }
+h4 { margin: 0 0 11px; color: var(--ink, #574c3e); font: 650 14px 'Noto Serif SC', serif; }
 ul { margin: 7px 0 0; padding-left: 18px; }
-.decision-sheet { padding: 18px; border: 1px solid #d8c9b1; border-radius: 9px; background: #fffdf8; }
-.decision-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border: 1px solid #e3d8c6; background: #e3d8c6; }
-.decision-grid article { min-height: 126px; padding: 16px; background: #faf6ed; }
-.decision-grid span { color: #9c3d2f; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
-.decision-grid h5 { margin: 7px 0 0; font-family: 'Noto Serif SC', serif; font-size: 15px; }
-.decision-grid p { margin: 7px 0 0; color: #6f6456; font-size: 12px; line-height: 1.7; }
-.policy-table { margin-top: 12px; }
 .reference-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.reference-grid section { min-height: 108px; padding: 16px; border: 1px solid #e1d6c4; border-radius: 8px; background: #faf6ed; }
-.reference-grid p, .reference-grid small { display: block; margin: 5px 0 0; color: #74695b; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-.binding-sheet { border-top: 1px solid #ded2bf; }
+.reference-grid section { min-height: 108px; padding: 16px; border: 1px solid var(--rule, #e1d6c4); border-radius: 8px; background: var(--paper, #faf6ed); }
+.reference-grid p, .reference-grid small { display: block; margin: 5px 0 0; color: var(--muted, #74695b); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.binding-sheet { border-top: 1px solid var(--rule, #ded2bf); }
 .binding-sheet h4 { margin-top: 18px; }
-.binding-line { padding: 9px 3px; border-bottom: 1px dashed #ded2bf; font-size: 12px; }
-.binding-line span { flex: 1; color: #756a5d; }
-.step-actions { align-items: flex-end; margin-top: 28px; padding-top: 22px; border-top: 1px solid #d9ccb7; }
+.binding-line { padding: 9px 3px; border-bottom: 1px dashed var(--rule, #ded2bf); font-size: 12px; }
+.binding-line span { flex: 1; color: var(--muted, #756a5d); }
+.step-actions { align-items: flex-end; margin-top: 28px; padding-top: 22px; border-top: 1px solid var(--rule, #d9ccb7); }
 .seal-action { display: grid; justify-items: end; gap: 8px; }
-.seal-action span { color: #817668; font-size: 11px; }
-@media (max-width: 760px) { .decision-grid, .reference-grid { grid-template-columns: 1fr; } .step-actions { align-items: stretch; flex-direction: column; } .seal-action { justify-items: stretch; } }
+.seal-action span { color: var(--muted, #817668); font-size: 11px; }
+@media (max-width: 760px) { .reference-grid { grid-template-columns: 1fr; } .step-actions { align-items: stretch; flex-direction: column; } .seal-action { justify-items: stretch; } }
 </style>

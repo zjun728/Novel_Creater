@@ -312,7 +312,7 @@ test('contract draft, preview, confirm, history and clone use the formal endpoin
       debug: 'must-not-send',
     })
     await api.contracts.head('project-1')
-    await api.contracts.history('project-1', { limit: 500 })
+    await api.contracts.history('project-1', { limit: 20, beforeRevision: 81 })
     await api.contracts.clone('project-1', 4)
   })
 
@@ -332,7 +332,8 @@ test('contract draft, preview, confirm, history and clone use the formal endpoin
     expectedDraftVersion: 4,
     expectedDraftHash: 'a'.repeat(64),
   })
-  assert.equal(new URL(calls[5].url).searchParams.get('limit'), '100')
+  assert.equal(new URL(calls[5].url).searchParams.get('limit'), '20')
+  assert.equal(new URL(calls[5].url).searchParams.get('beforeRevision'), '81')
   assert.equal(bodyOf(calls[6]), undefined)
 })
 

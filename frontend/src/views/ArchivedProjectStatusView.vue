@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { NAlert, NButton } from 'naive-ui'
 
 import { useProjectStore } from '../stores/projectStore.js'
+import { projectContractPath } from '../router/projectRoutes.js'
 
 const props = defineProps({
   project: {
@@ -48,6 +49,9 @@ function returnToLibrary() {
       <p>项目内容仍完整保留，但当前为只读状态。恢复后可继续原来的工作稿。</p>
       <n-alert v-if="restoreError" type="error" :bordered="false">{{ restoreError }}</n-alert>
       <div class="actions">
+        <router-link class="readonly-contract-link" :to="projectContractPath(project.id)">
+          查看只读创作契约
+        </router-link>
         <n-button :loading="restoring" type="primary" @click="restoreProject">恢复项目</n-button>
         <n-button quaternary @click="returnToLibrary">返回项目库</n-button>
       </div>
@@ -102,5 +106,15 @@ h1 {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 24px;
+}
+.readonly-contract-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  border: 1px solid #9a3f32;
+  border-radius: 4px;
+  color: #8f382c;
+  font-weight: 650;
+  text-decoration: none;
 }
 </style>

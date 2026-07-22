@@ -169,14 +169,14 @@ watch(() => store.draft?.draft, draft => hydrate(draft), { immediate: true })
 </template>
 
 <style scoped>
-.capacity-step { color: #302b24; }
-.step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 30px; padding-bottom: 22px; border-bottom: 1px solid #d9cfbb; }
-.step-kicker { margin: 0; color: #9c3d2f; font: 800 10px Georgia, serif; letter-spacing: .17em; }
+.capacity-step { color: var(--ink, #302b24); }
+.step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 30px; padding-bottom: 22px; border-bottom: 1px solid var(--rule, #d9cfbb); }
+.step-kicker { margin: 0; color: var(--cinnabar, #9c3d2f); font: 800 10px Georgia, serif; letter-spacing: .17em; }
 .step-heading h2 { margin: 7px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(25px, 4vw, 36px); font-weight: 650; }
-.step-heading p:not(.step-kicker) { max-width: 720px; margin: 10px 0 0; color: #766c5e; font-size: 13px; line-height: 1.8; }
+.step-heading p:not(.step-kicker) { max-width: 720px; margin: 10px 0 0; color: var(--muted, #766c5e); font-size: 13px; line-height: 1.8; }
 .step-heading > span { color: #c9baa1; font-family: Georgia, serif; font-size: 50px; line-height: .9; }
 .capacity-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 26px; }
-.capacity-grid > label, .capacity-grid fieldset, .direction-grid > label { display: grid; gap: 7px; margin: 0; padding: 17px; border: 1px solid #ddd2be; border-radius: 9px; background: #fffdf8; }
+.capacity-grid > label, .capacity-grid fieldset, .direction-grid > label { display: grid; gap: 7px; margin: 0; padding: 17px; border: 1px solid var(--rule, #ddd2be); border-radius: 9px; background: var(--paper, #fffdf8); }
 .capacity-grid span, .direction-grid span, legend { font-family: 'Noto Serif SC', serif; font-size: 13px; font-weight: 700; }
 .capacity-grid small, .direction-grid small { color: #887d6d; font-size: 10px; }
 .capacity-grid fieldset { grid-column: 1 / -1; }
@@ -184,7 +184,7 @@ watch(() => store.draft?.draft, draft => hydrate(draft), { immediate: true })
 .capacity-grid fieldset label { display: grid; gap: 6px; }
 .direction-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .state-alert { margin-top: 16px; }
-.step-actions { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-top: 26px; padding-top: 20px; border-top: 1px solid #ded5c4; }
+.step-actions { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--rule, #ded5c4); }
 .step-actions > div { display: flex; align-items: center; gap: 14px; }
 .step-actions small { max-width: 340px; color: #8a8071; font-size: 10px; text-align: right; }
 @media (max-width: 760px) { .capacity-grid, .direction-grid { grid-template-columns: 1fr; } .capacity-grid fieldset { grid-column: 1; } .step-actions, .step-actions > div { align-items: stretch; flex-direction: column; } .step-actions small { text-align: left; } }

@@ -43,6 +43,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const engineBatch = shallowRef(null)
   const styleTrial = shallowRef(null)
   const history = shallowRef([])
+  const historyNextBeforeRevision = ref(null)
   const recoverableBatches = shallowRef([])
   const reconcilingBatchIds = ref([])
   const conflict = shallowRef(null)
@@ -111,6 +112,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     engineBatch.value = null
     styleTrial.value = null
     history.value = []
+    historyNextBeforeRevision.value = null
     recoverableBatches.value = []
     reconcilingBatchIds.value = []
     conflict.value = null
@@ -501,16 +503,34 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     styleTrialLoading.value = false
   }
 
-  async function loadHistory(nextProjectId, { limit = 50 } = {}) {
+  function clearHistory() {
+    historyGuard.invalidate()
+    history.value = []
+    historyNextBeforeRevision.value = null
+    historyLoading.value = false
+  }
+
+  async function loadHistory(
+    nextProjectId,
+    { limit = 20, beforeRevision, append = false } = {},
+  ) {
     const targetProjectId = enterProject(nextProjectId)
     const generation = historyGuard.begin()
     historyLoading.value = true
     try {
-      const result = await api.contracts.history(targetProjectId, { limit })
+      const params = beforeRevision == null ? { limit } : { limit, beforeRevision }
+      const result = await api.contracts.history(targetProjectId, params)
       if (current(historyGuard, generation, targetProjectId)) {
-        history.value = Array.isArray(result?.items)
+        const incoming = Array.isArray(result?.items)
           ? result.items.map(item => ({ ...item }))
           : []
+        const revisions = new Map(
+          (append ? [...history.value, ...incoming] : incoming)
+            .map(item => [Number(item.revision), item]),
+        )
+        history.value = [...revisions.values()]
+          .sort((left, right) => Number(right.revision) - Number(left.revision))
+        historyNextBeforeRevision.value = result?.nextBeforeRevision ?? null
         error.value = null
       }
       return result
@@ -533,6 +553,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     engineBatch,
     styleTrial,
     history,
+    historyNextBeforeRevision,
     recoverableBatches,
     reconcilingBatchIds,
     conflict,
@@ -569,6 +590,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     reconcileRecoverableBatch,
     runStyleTrial,
     clearStyleTrial,
+    clearHistory,
     loadHistory,
   }
 })

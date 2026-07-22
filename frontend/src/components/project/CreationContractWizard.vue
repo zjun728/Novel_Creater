@@ -4,12 +4,14 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { NAlert, NButton, NResult, NSkeleton, NTag } from 'naive-ui'
 
 import { projectSeedsPath } from '@/router/projectRoutes.js'
+import { contractStepAccess } from '@/domain/creation-contract/wizard-state.js'
 import { useCreationContractStore } from '@/stores/creationContractStore.js'
 import { useSeedStore } from '@/stores/seedStore.js'
 import { createLatestRequestGuard } from '@/utils/latestRequest.js'
 import AssetScopeStep from './contract/AssetScopeStep.vue'
 import CapacityStep from './contract/CapacityStep.vue'
 import ContractHistoryDrawer from './contract/ContractHistoryDrawer.vue'
+import ContractDecisionSummary from './contract/ContractDecisionSummary.vue'
 import ContractPreviewStep from './contract/ContractPreviewStep.vue'
 import StoryEngineStep from './contract/StoryEngineStep.vue'
 import StyleSelectionStep from './contract/StyleSelectionStep.vue'
@@ -49,17 +51,12 @@ const selectionDrift = computed(() => {
   return draft.seedRevisionId !== selectedSeed.value.revisionId
     || draft.seedHash !== selectedSeed.value.contentHash
 })
-const restoredStep = computed(() => {
-  if (selectionDrift.value) return 1
-  const stage = contractStore.lastSavedStage
-  if (stage === 'assets') return 4
-  if (stage === 'style') return 3
-  if (stage === 'engine') return 2
-  return 1
-})
-const maxOpenStep = computed(() => (
-  contractStore.lastSavedStage === 'assets' ? 5 : restoredStep.value
-))
+const stepAccess = computed(() => contractStepAccess({
+  selectionDrift: selectionDrift.value,
+  lastSavedStage: contractStore.lastSavedStage,
+}))
+const restoredStep = computed(() => stepAccess.value.restoredStep)
+const maxOpenStep = computed(() => stepAccess.value.maxOpenStep)
 const writeBusy = computed(() => Boolean(
   childWriteBusy.value
   || contractStore.saving
@@ -246,6 +243,13 @@ onBeforeUnmount(() => {
             <span>经验卡 {{ contractStore.head.experienceCardRefs?.length || 0 }} 张</span>
             <span>语料 {{ contractStore.head.corpusSourceRefs?.length || 0 }} 份</span>
           </div>
+          <ContractDecisionSummary
+            :creation-contract="contractStore.head.creationContract"
+            :style-contract="contractStore.head.styleContract"
+            :likes="contractStore.head.likes"
+            :dislikes="contractStore.head.dislikes"
+            compact
+          />
           <n-button v-if="!props.readOnly" type="primary" @click="historyOpen = true">从历史调整未来设计</n-button>
         </div>
       </article>
@@ -344,18 +348,18 @@ onBeforeUnmount(() => {
 <style scoped>
 .contract-ledger { --paper: #fffdf7; --ink: #302b24; --muted: #786e60; --rule: #d9ccb7; --cinnabar: #9c3d2f; --jade: #4f725b; position: relative; width: min(1180px, 100%); margin: 0 auto; border: 1px solid var(--rule); border-radius: 14px; color: var(--ink); background: var(--paper); box-shadow: 0 18px 50px rgba(67, 52, 34, .07); overflow: hidden; }
 .ledger-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 28px 30px 22px; border-bottom: 1px solid var(--rule); background: linear-gradient(90deg, rgba(156, 61, 47, .04), transparent 50%); }
-.section-index { margin: 0; color: #967548; font: 800 10px Georgia, serif; letter-spacing: .18em; }
+.section-index { margin: 0; color: var(--cinnabar); font: 800 10px Georgia, serif; letter-spacing: .18em; }
 .ledger-header h1 { margin: 6px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(27px, 4vw, 38px); font-weight: 600; }
 .ledger-header p:last-child { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
 .ledger-tools { display: flex; align-items: center; gap: 8px; }
 .ledger-loading, .ledger-error { padding: 34px 30px; }
 .ledger-loading { display: grid; gap: 16px; }
-.seed-slip { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 28px; margin: 22px 28px; padding: 18px 20px; border: 1px solid #d8c9b2; border-left: 4px solid var(--jade); background: #faf6ec; }
+.seed-slip { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 28px; margin: 22px 28px; padding: 18px 20px; border: 1px solid var(--rule); border-left: 4px solid var(--jade); background: var(--paper); }
 .seed-slip span { color: var(--jade); font-size: 10px; font-weight: 800; letter-spacing: .12em; }
 .seed-slip strong { display: block; margin-top: 5px; font-family: Georgia, 'Noto Serif SC', serif; font-size: 19px; }
 .seed-slip p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .seed-slip dl { display: grid; grid-template-columns: repeat(3, auto); gap: 20px; margin: 0; }
-.seed-slip dt { color: #9a8b75; font-size: 9px; }
+.seed-slip dt { color: var(--muted); font-size: 9px; }
 .seed-slip dd { margin: 4px 0 0; font-size: 12px; font-weight: 700; }
 .seed-required { padding: 44px 24px; }
 .seed-cta { display: inline-flex; padding: 9px 18px; border-radius: 7px; color: #fff; background: var(--cinnabar); text-decoration: none; }
@@ -366,23 +370,23 @@ onBeforeUnmount(() => {
 .confirmed-ledger h2 { margin: 7px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 27px; }
 .confirmed-ledger p { max-width: 68ch; color: var(--muted); line-height: 1.8; }
 .confirmed-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 20px 0; }
-.confirmed-facts span { color: #655c50; font-family: inherit; letter-spacing: 0; }
+.confirmed-facts span { color: var(--muted); font-family: inherit; letter-spacing: 0; }
 .step-ribbon { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
-.step-tab { display: grid; min-width: 0; padding: 17px 16px 15px; border: 0; border-right: 1px solid #e8decd; color: #827667; text-align: left; background: #f8f3e9; cursor: pointer; }
+.step-tab { display: grid; min-width: 0; padding: 17px 16px 15px; border: 0; border-right: 1px solid var(--rule); color: var(--muted); text-align: left; background: var(--paper); cursor: pointer; }
 .step-tab:last-child { border-right: 0; }
 .step-tab:disabled { cursor: not-allowed; opacity: .52; }
-.step-tab > span { color: #ae9b7d; font-family: Georgia, serif; font-size: 10px; }
+.step-tab > span { color: var(--muted); font-family: Georgia, serif; font-size: 10px; }
 .step-tab strong { margin-top: 4px; color: inherit; font-family: 'Noto Serif SC', serif; font-size: 14px; }
 .step-tab small { margin-top: 5px; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.step-tab--done { color: var(--jade); background: #f2f5ed; }
+.step-tab--done { color: var(--jade); background: color-mix(in srgb, var(--paper) 90%, var(--jade)); }
 .step-tab--active { color: var(--cinnabar); background: var(--paper); box-shadow: inset 0 3px 0 var(--cinnabar); }
 .step-sheet { padding: clamp(22px, 4vw, 34px); }
 .checkpoint-alert { margin: 20px 28px 0; }
 .workspace-live { min-height: 18px; margin: 10px 28px 0; color: var(--muted); font-size: 11px; }
 .contract-operation-overlay { position: absolute; z-index: 20; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(47, 39, 30, .25); backdrop-filter: blur(1px); }
-.contract-operation-overlay > div { display: grid; grid-template-columns: auto 1fr; min-width: min(420px, 92%); gap: 4px 13px; padding: 18px 20px; border: 1px solid #cab99c; border-radius: 10px; background: #fffdf7; box-shadow: 0 20px 54px rgba(42, 34, 25, .2); }
+.contract-operation-overlay > div { display: grid; grid-template-columns: auto 1fr; min-width: min(420px, 92%); gap: 4px 13px; padding: 18px 20px; border: 1px solid var(--rule); border-radius: 10px; background: var(--paper); box-shadow: 0 20px 54px rgba(42, 34, 25, .2); }
 .contract-operation-overlay span { grid-row: 1 / 3; display: grid; width: 36px; height: 36px; place-items: center; color: #fff; background: var(--cinnabar); font-family: 'Noto Serif SC', serif; }
 .contract-operation-overlay small { color: var(--muted); }
-@media (max-width: 850px) { .step-ribbon { grid-template-columns: 1fr; } .step-tab { border-right: 0; border-bottom: 1px solid #e8decd; } .step-tab small { white-space: normal; } .seed-slip { grid-template-columns: 1fr; } .seed-slip dl { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 850px) { .step-ribbon { grid-template-columns: 1fr; } .step-tab { border-right: 0; border-bottom: 1px solid var(--rule); } .step-tab small { white-space: normal; } .seed-slip { grid-template-columns: 1fr; } .seed-slip dl { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 560px) { .ledger-header { align-items: flex-start; flex-direction: column; padding: 22px 18px; } .ledger-tools { width: 100%; justify-content: space-between; } .seed-slip { margin-inline: 16px; } .seed-slip dl { grid-template-columns: 1fr; } .confirmed-ledger { grid-template-columns: 1fr; } .confirmed-seal { min-height: 54px; } }
 </style>
