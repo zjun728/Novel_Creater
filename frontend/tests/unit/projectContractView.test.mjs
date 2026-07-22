@@ -1,8 +1,230 @@
 import assert from 'node:assert/strict'
 import { access, readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
+
+import { compile } from '@vue/compiler-dom'
+import { compileScript, parse } from '@vue/compiler-sfc'
+import { createPinia, setActivePinia } from 'pinia'
+import * as VueRuntime from '@vue/runtime-core'
+import {
+  createRenderer, defineComponent, h, nextTick, ssrContextKey,
+} from '@vue/runtime-core'
+import vuePlugin from '@vitejs/plugin-vue'
+import { createServer } from 'vite'
 
 import { api } from '../../src/api/db/client.js'
+import { useCreationContractStore } from '../../src/stores/creationContractStore.js'
+
+const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
+const behaviorNaiveStubId = '\0contract-workspace-naive-ui-stub'
+const HASH_A = 'a'.repeat(64)
+const HASH_B = 'b'.repeat(64)
+
+const behaviorNaiveStubPlugin = {
+  name: 'contract-workspace-behavior-stubs',
+  enforce: 'pre',
+  resolveId(id) {
+    if (id === 'naive-ui') return behaviorNaiveStubId
+    return undefined
+  },
+  load(id) {
+    if (id !== behaviorNaiveStubId) return undefined
+    return `
+      import { defineComponent, h } from 'vue'
+      export const focusEvents = []
+      const children = slots => Object.values(slots)
+        .flatMap(slot => typeof slot === 'function' ? slot() : [])
+      const stub = (name, tag = 'div') => defineComponent({
+        name,
+        inheritAttrs: false,
+        setup(_, { attrs, expose, slots }) {
+          expose({ focus() { focusEvents.push(name) } })
+          return () => h(tag, { ...attrs, 'data-component': name }, children(slots))
+        },
+      })
+      export const NAlert = stub('NAlert', 'aside')
+      export const NButton = stub('NButton', 'button')
+      export const NCheckbox = stub('NCheckbox', 'input')
+      export const NCollapse = stub('NCollapse')
+      export const NCollapseItem = stub('NCollapseItem')
+      export const NDrawerContent = stub('NDrawerContent', 'section')
+      export const NEmpty = stub('NEmpty')
+      export const NSpin = stub('NSpin')
+      export const NTag = stub('NTag', 'span')
+      export const NInput = defineComponent({
+        name: 'NInput',
+        inheritAttrs: false,
+        props: { value: { default: '' } },
+        emits: ['update:value'],
+        setup(props, { attrs, emit }) {
+          return () => h('input', {
+            ...attrs,
+            value: props.value,
+            'data-component': 'NInput',
+            onInput: event => emit('update:value', event?.target?.value ?? event),
+          })
+        },
+      })
+      export const NDrawer = defineComponent({
+        name: 'NDrawer',
+        inheritAttrs: false,
+        props: { show: Boolean },
+        emits: ['update:show'],
+        setup(props, { attrs, slots }) {
+          return () => props.show
+            ? h('aside', { ...attrs, 'data-component': 'NDrawer' }, children(slots))
+            : null
+        },
+      })
+    `
+  },
+}
+
+function hostNode(type, text = '') {
+  return {
+    type,
+    text,
+    props: {},
+    children: [],
+    parent: null,
+    focus() { this.focused = true },
+  }
+}
+
+function detach(node) {
+  if (!node?.parent) return
+  const index = node.parent.children.indexOf(node)
+  if (index >= 0) node.parent.children.splice(index, 1)
+  node.parent = null
+}
+
+const renderer = createRenderer({
+  patchProp(element, key, _previous, next) {
+    if (next == null) delete element.props[key]
+    else element.props[key] = next
+  },
+  insert(child, parent, anchor = null) {
+    detach(child)
+    child.parent = parent
+    const index = anchor ? parent.children.indexOf(anchor) : -1
+    if (index >= 0) parent.children.splice(index, 0, child)
+    else parent.children.push(child)
+  },
+  remove: detach,
+  createElement: type => hostNode(type),
+  createText: text => hostNode('#text', String(text)),
+  createComment: text => hostNode('#comment', String(text || '')),
+  setText(node, text) { node.text = String(text) },
+  setElementText(node, text) {
+    node.text = String(text)
+    node.children = []
+  },
+  parentNode: node => node?.parent || null,
+  nextSibling(node) {
+    if (!node?.parent) return null
+    const index = node.parent.children.indexOf(node)
+    return node.parent.children[index + 1] || null
+  },
+  querySelector: () => null,
+  setScopeId(element, id) { element.props[id] = '' },
+  cloneNode(node) {
+    return { ...node, props: { ...node.props }, children: [...node.children], parent: null }
+  },
+  insertStaticContent(content, parent, anchor) {
+    const node = hostNode('#static', String(content))
+    renderer.insert(node, parent, anchor)
+    return [node, node]
+  },
+})
+
+function walk(node, values = []) {
+  if (!node) return values
+  values.push(node)
+  for (const child of node.children || []) walk(child, values)
+  return values
+}
+
+function textContent(node) {
+  return [node?.text || '', ...(node?.children || []).map(textContent)].join('')
+}
+
+async function flush() {
+  for (let index = 0; index < 5; index += 1) await Promise.resolve()
+  await nextTick()
+}
+
+async function trigger(node, name, value) {
+  const handlers = Array.isArray(node?.props?.[name]) ? node.props[name] : [node?.props?.[name]]
+  assert.equal(typeof handlers[0], 'function', `missing ${name}`)
+  for (const handler of handlers) await handler(value)
+  await flush()
+}
+
+async function compileClientRender(path) {
+  const contents = await source(path)
+  const filename = path.split('/').at(-1)
+  const { descriptor } = parse(contents, { filename })
+  const script = compileScript(descriptor, { id: `contract-${filename}` })
+  const compiled = compile(descriptor.template.content, {
+    mode: 'function',
+    prefixIdentifiers: true,
+    bindingMetadata: script.bindings,
+  })
+  return new Function('Vue', compiled.code)({
+    ...VueRuntime,
+    withKeys: handler => handler,
+    withModifiers: handler => handler,
+  })
+}
+
+function findByText(root, type, value) {
+  return walk(root).find(node => node.type === type && textContent(node).trim() === value)
+}
+
+function inputForLabel(root, value) {
+  const label = walk(root).find(node => node.type === 'label' && textContent(node).includes(value))
+  assert.ok(label, `missing visible field: ${value}`)
+  const input = walk(label).find(node => node.type === 'input')
+  assert.ok(input, `missing input for: ${value}`)
+  return input
+}
+
+let behaviorVite
+let StoryEngineStep
+let ContractHistoryDrawer
+let naiveBehaviorModule
+
+test.before(async () => {
+  behaviorVite = await createServer({
+    configFile: false,
+    root: frontendRoot,
+    resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } },
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: 'custom',
+    logLevel: 'error',
+    plugins: [behaviorNaiveStubPlugin, vuePlugin()],
+    ssr: { noExternal: ['naive-ui'] },
+    optimizeDeps: { noDiscovery: true },
+  })
+  StoryEngineStep = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/StoryEngineStep.vue')
+  ).default
+  StoryEngineStep.render = await compileClientRender(
+    'src/components/project/contract/StoryEngineStep.vue',
+  )
+  ContractHistoryDrawer = (
+    await behaviorVite.ssrLoadModule('/src/components/project/contract/ContractHistoryDrawer.vue')
+  ).default
+  ContractHistoryDrawer.render = await compileClientRender(
+    'src/components/project/contract/ContractHistoryDrawer.vue',
+  )
+  naiveBehaviorModule = await behaviorVite.ssrLoadModule('naive-ui')
+})
+
+test.after(async () => {
+  await behaviorVite?.close()
+})
 
 const file = relative => new URL(`../../${relative}`, import.meta.url)
 const source = relative => readFile(file(relative), 'utf8')
@@ -211,4 +433,177 @@ test('history shows immutable pinned revisions and enables clone only for compat
   assert.match(preview, /一次确认完整契约/)
   assert.match(preview, /不可覆盖|只读/)
   assert.doesNotMatch(`${history}\n${preview}`, /删除|重置/)
+})
+
+function engineOption() {
+  return {
+    id: 'engine-1',
+    contentHash: HASH_A,
+    payload: {
+      name: '作者自定义发动机',
+      storyPromise: '承诺',
+      sustainedPressure: '压力',
+      conflictLoop: '循环',
+      advantageAndCost: '优势与代价',
+      risks: [],
+      differentiation: '差异',
+    },
+  }
+}
+
+function mountWithPinia(component, props, configureStore) {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const store = useCreationContractStore()
+  store.draft = {
+    id: 'draft-1',
+    projectId: 'project-1',
+    draftVersion: 3,
+    draftStage: 'engine',
+    draft: {
+      schemaVersion: 'contract-draft-v2',
+      draftStage: 'engine',
+      engineOptionId: 'engine-1',
+      engineHash: HASH_A,
+      qualityCharterVersion: 'quality-v1',
+    },
+  }
+  store.engineBatch = { id: 'batch-1', status: 'succeeded', options: [engineOption()] }
+  configureStore?.(store)
+  const Root = defineComponent({ setup: () => () => h(component, props) })
+  const root = hostNode('root')
+  const app = renderer.createApp(Root)
+  app.use(pinia)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.mount(root)
+  return { app, root, store }
+}
+
+test('story engine refuses missing author-visible profile identifiers without saving and focuses its error', async () => {
+  let saveCalls = 0
+  naiveBehaviorModule.focusEvents.length = 0
+  const mounted = mountWithPinia(StoryEngineStep, {
+    projectId: 'project-1',
+    project: {},
+    selectedSeed: { title: '无题材种子' },
+  }, store => {
+    store.saveDraft = async () => {
+      saveCalls += 1
+      throw new Error('missing profiles must never reach saveDraft')
+    }
+  })
+
+  try {
+    assert.equal(inputForLabel(mounted.root, '渠道定位标识').props.value, '')
+    assert.equal(inputForLabel(mounted.root, '题材定位标识').props.value, '')
+    await trigger(findByText(mounted.root, 'button', '保存草稿并继续'), 'onClick')
+
+    assert.equal(saveCalls, 0)
+    assert.match(textContent(mounted.root), /渠道定位标识和题材定位标识均不能为空。/)
+    assert.ok(naiveBehaviorModule.focusEvents.includes('NAlert'))
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('story engine trims and saves custom profile identifiers without mapping or fabrication', async () => {
+  const calls = []
+  const mounted = mountWithPinia(StoryEngineStep, {
+    projectId: 'project-1',
+    project: { channelProfileKey: 'initial-channel' },
+    selectedSeed: { title: '种子', genre: 'initial-genre' },
+  }, store => {
+    store.saveDraft = async (projectId, payload) => {
+      calls.push({ projectId, payload: structuredClone(payload) })
+      const saved = {
+        ...store.draft,
+        draftVersion: store.draft.draftVersion + 1,
+        draft: structuredClone(payload),
+      }
+      store.draft = saved
+      return saved
+    }
+  })
+
+  try {
+    const channel = inputForLabel(mounted.root, '渠道定位标识')
+    const genre = inputForLabel(mounted.root, '题材定位标识')
+    assert.equal(channel.props.value, 'initial-channel')
+    assert.equal(genre.props.value, 'initial-genre')
+    await trigger(channel, 'onInput', { target: { value: '  custom-channel  ' } })
+    await trigger(genre, 'onInput', { target: { value: '  自定义题材标识  ' } })
+    await trigger(findByText(mounted.root, 'button', '保存草稿并继续'), 'onClick')
+
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].projectId, 'project-1')
+    assert.equal(calls[0].payload.channelProfileKey, 'custom-channel')
+    assert.equal(calls[0].payload.genreProfileKey, '自定义题材标识')
+    assert.equal(JSON.stringify(calls[0]).includes('unspecified'), false)
+  } finally {
+    mounted.app.unmount()
+  }
+})
+
+test('history drawer renders every pinned identity and fragment while generation gates clone', async () => {
+  const hashes = {
+    seed: '1'.repeat(64),
+    engine: '2'.repeat(64),
+    style: '3'.repeat(64),
+    card: '4'.repeat(64),
+    corpus: '5'.repeat(64),
+    fragment: '6'.repeat(64),
+  }
+  const mounted = mountWithPinia(ContractHistoryDrawer, {
+    show: true,
+    projectId: 'project-1',
+    currentSelectionRevision: 8,
+    readOnly: false,
+  }, store => {
+    store.history = [{
+      revision: 4,
+      selectionRevision: 8,
+      seedRef: { id: 'seed-1', revisionId: 'seed-revision-7', contentHash: hashes.seed },
+      engineRef: { id: 'engine-1', batchId: 'engine-batch-9', contentHash: hashes.engine },
+      styleRefs: [{ id: 'style-1', revision: 2, contentHash: hashes.style }],
+      experienceCardRefs: [{ id: 'card-1', revision: 3, contentHash: hashes.card }],
+      corpusSourceRefs: [{
+        id: 'corpus-1', revisionId: 'corpus-revision-5', revision: 5,
+        contentHash: hashes.corpus, pinnedHistoricalRevision: true,
+        fragments: [{
+          chapterId: 'chapter-2', fragmentId: 'fragment-8', fragmentHash: hashes.fragment,
+          chapterCharStart: 12, chapterCharEnd: 34, referenceUse: 'style',
+        }],
+      }],
+      supersededReasons: ['contract_revision_replaced'],
+    }, {
+      revision: 3,
+      selectionRevision: 7,
+      seedRef: { id: 'old-seed', revisionId: 'old-revision', contentHash: HASH_A },
+      engineRef: { id: 'old-engine', batchId: 'old-batch', contentHash: HASH_B },
+      styleRefs: [], experienceCardRefs: [], corpusSourceRefs: [], supersededReasons: [],
+    }]
+    store.loadHistory = async () => ({ items: store.history })
+  })
+
+  try {
+    await flush()
+    const rendered = textContent(mounted.root)
+    for (const value of [
+      'seed-1', 'seed-revision-7', hashes.seed,
+      'engine-1', 'engine-batch-9', hashes.engine,
+      'style-1', hashes.style, 'card-1', hashes.card,
+      'corpus-1', 'corpus-revision-5', hashes.corpus,
+      'chapter-2', 'fragment-8', hashes.fragment, '12–34', 'style',
+    ]) assert.ok(rendered.includes(value), `missing pinned history identity: ${value}`)
+    assert.match(rendered, /历史版本已钉住/)
+    assert.match(rendered, /已被更新修订取代/)
+    const cloneButtons = walk(mounted.root).filter(node => (
+      node.type === 'button' && textContent(node).trim() === '调整未来设计'
+    ))
+    assert.equal(cloneButtons.length, 2)
+    assert.notEqual(cloneButtons[0].props.disabled, true)
+    assert.equal(cloneButtons[1].props.disabled, true)
+  } finally {
+    mounted.app.unmount()
+  }
 })

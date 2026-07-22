@@ -940,6 +940,46 @@ test('history is explicit read-only state and exposes pinned assets and supersed
   })
 })
 
+test('archived read-only load fetches only contract head and never touches draft or recoverable engines', async () => {
+  const calls = { draft: 0, head: 0, recoverable: 0 }
+  const head = {
+    projectId: 'project-1',
+    revision: 4,
+    hasContract: true,
+    contractReady: true,
+    reasons: [],
+  }
+
+  await withApiMethods([
+    [api.contracts.draft, 'get', async () => {
+      calls.draft += 1
+      return publicDraft('assets', 9)
+    }],
+    [api.contracts, 'head', async projectId => {
+      calls.head += 1
+      assert.equal(projectId, 'project-1')
+      return head
+    }],
+    [api.storyEngines, 'recoverable', async () => {
+      calls.recoverable += 1
+      return { items: [{ id: 'must-not-load' }] }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    const result = await store.load('project-1', { readOnly: true })
+
+    assert.deepEqual(calls, { draft: 0, head: 1, recoverable: 0 })
+    assert.equal(result.head, head)
+    assert.equal(result.draft, null)
+    assert.deepEqual(result.recovery, { items: [] })
+    assert.equal(store.readOnly, true)
+    assert.equal(store.head, head)
+    assert.equal(store.draft, null)
+    assert.deepEqual(store.recoverableBatches, [])
+  })
+})
+
 test('archived read-only mode rejects every formal write before transport', async () => {
   assert.equal(typeof api.styleTrials?.generate, 'function')
   let writes = 0

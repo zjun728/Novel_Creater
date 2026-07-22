@@ -33,6 +33,18 @@ const batch = computed(() => store.engineBatch)
 const options = computed(() => Array.isArray(batch.value?.options) ? batch.value.options : [])
 const selectedOption = computed(() => options.value.find(option => option.id === selectedOptionId.value) || null)
 const currentDraft = computed(() => store.draft?.draft || null)
+const channelProfileKey = ref(String(
+  currentDraft.value?.channelProfileKey
+  || props.project?.channelProfileKey
+  || '',
+))
+const genreProfileKey = ref(String(
+  currentDraft.value?.genreProfileKey
+  || props.project?.genreProfileKey
+  || props.selectedSeed?.genre
+  || props.project?.genre
+  || '',
+))
 
 function idempotencyKey(prefix) {
   const random = globalThis.crypto?.randomUUID?.().replaceAll('-', '')
@@ -204,6 +216,12 @@ function provisionalCapacity() {
 async function saveAndContinue() {
   if (store.saving || store.engineLoading || store.requiresReload || !selectedOption.value) return
   errorMessage.value = ''
+  const channelProfile = channelProfileKey.value.trim()
+  const genreProfile = genreProfileKey.value.trim()
+  if (!channelProfile || !genreProfile) {
+    await showError('渠道定位标识和题材定位标识均不能为空。')
+    return
+  }
   try {
     const option = selectedOption.value
     const saved = await store.saveDraft(props.projectId, {
@@ -211,8 +229,8 @@ async function saveAndContinue() {
       draftStage: 'engine',
       engineOptionId: option.id,
       engineHash: option.contentHash,
-      channelProfileKey: String(currentDraft.value?.channelProfileKey || props.project?.channelProfileKey || 'unspecified'),
-      genreProfileKey: String(currentDraft.value?.genreProfileKey || props.selectedSeed?.genre || props.project?.genre || 'unspecified'),
+      channelProfileKey: channelProfile,
+      genreProfileKey: genreProfile,
       qualityCharterVersion: String(currentDraft.value?.qualityCharterVersion || 'story-first-quality-v1'),
       ...provisionalCapacity(),
       primaryStyleRef: null,
@@ -258,6 +276,24 @@ watch(options, rows => {
     </header>
 
     <n-alert v-if="errorMessage" ref="errorRegion" tabindex="-1" type="error" class="state-alert" aria-live="assertive">{{ errorMessage }}</n-alert>
+
+    <section class="profile-fields" aria-labelledby="story-profile-heading">
+      <header>
+        <span>AUTHOR POSITIONING</span>
+        <h3 id="story-profile-heading">明确渠道与题材定位</h3>
+        <p>系统只用项目与当前种子提供初值；最终标识由作者核对并可直接修改，不会自动补造。</p>
+      </header>
+      <label>
+        <span>渠道定位标识</span>
+        <small>例如你在项目中维护的真实渠道键；不能为空。</small>
+        <n-input v-model:value="channelProfileKey" maxlength="120" @update:value="markDirty" />
+      </label>
+      <label>
+        <span>题材定位标识</span>
+        <small>可沿用当前种子题材，也可以在签约前改成更准确的标识。</small>
+        <n-input v-model:value="genreProfileKey" maxlength="120" @update:value="markDirty" />
+      </label>
+    </section>
 
     <section v-if="store.recoverableBatches.length" class="recovery-ledger">
       <h3>待核对的故事发动机批次</h3>
@@ -323,6 +359,13 @@ watch(options, rows => {
 .step-heading p:not(.folio), .manual-sheet header p { margin: 9px 0 0; color: #756b5d; font-size: 12px; line-height: 1.8; }
 .generation-actions, .unknown-actions { display: flex; gap: 8px; }
 .state-alert, .recovery-ledger { margin-top: 16px; }
+.profile-fields { display: grid; grid-template-columns: minmax(210px, 1.15fr) repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; padding: 17px; border: 1px solid #d4c5aa; background: #faf6ec; }
+.profile-fields header span { color: #9c3f32; font: 800 9px Georgia, serif; letter-spacing: .15em; }
+.profile-fields header h3 { margin: 5px 0 0; font-family: 'Noto Serif SC', serif; font-size: 15px; }
+.profile-fields header p { margin: 6px 0 0; color: #756b5d; font-size: 10px; line-height: 1.65; }
+.profile-fields label { display: grid; align-content: start; gap: 6px; }
+.profile-fields label > span { color: #5f5548; font-size: 11px; font-weight: 750; }
+.profile-fields label > small { color: #8c7f6d; font-size: 9px; line-height: 1.5; }
 .recovery-ledger { padding: 17px; border: 1px solid #d4c5aa; background: #faf6ec; }
 .recovery-ledger h3 { margin: 0 0 10px; font-family: 'Noto Serif SC', serif; }
 .recovery-ledger article { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; border-top: 1px dashed #d9ccb7; color: #756b5d; font-size: 11px; }
@@ -351,5 +394,5 @@ watch(options, rows => {
 .empty-engine p { margin: 0; color: #756b5d; font-size: 11px; }
 .step-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 24px; padding-top: 20px; border-top: 1px solid #d9ccb7; color: #766c5e; font-size: 11px; }
 @media (max-width: 980px) { .engine-grid { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .step-heading, .step-actions { align-items: stretch; flex-direction: column; } .generation-actions, .unknown-actions { align-items: stretch; flex-direction: column; } .manual-option { grid-template-columns: 1fr; } .manual-option h4 { grid-column: 1; } }
+@media (max-width: 720px) { .step-heading, .step-actions { align-items: stretch; flex-direction: column; } .generation-actions, .unknown-actions { align-items: stretch; flex-direction: column; } .profile-fields, .manual-option { grid-template-columns: 1fr; } .manual-option h4 { grid-column: 1; } }
 </style>

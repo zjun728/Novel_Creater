@@ -199,17 +199,21 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     }
   }
 
-  async function load(nextProjectId) {
+  async function load(nextProjectId, { readOnly: requestedReadOnly = false } = {}) {
     const targetProjectId = enterProject(nextProjectId)
+    setReadOnly(requestedReadOnly)
     const generation = loadGuard.begin()
     const stateGeneration = ++contractStateGeneration
     loading.value = true
     try {
-      const [loadedDraft, loadedHead, recovery] = await Promise.all([
-        readDraft(targetProjectId),
-        api.contracts.head(targetProjectId),
-        api.storyEngines.recoverable(targetProjectId),
-      ])
+      const readOnlyLoad = requestedReadOnly === true
+      const [loadedDraft, loadedHead, recovery] = readOnlyLoad
+        ? [null, await api.contracts.head(targetProjectId), { items: [] }]
+        : await Promise.all([
+          readDraft(targetProjectId),
+          api.contracts.head(targetProjectId),
+          api.storyEngines.recoverable(targetProjectId),
+        ])
       if (currentContractState(loadGuard, generation, targetProjectId, stateGeneration)) {
         draft.value = loadedDraft
         head.value = loadedHead

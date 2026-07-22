@@ -110,25 +110,67 @@ watch(() => props.show, show => {
             </div>
 
             <dl class="history-facts">
-              <div><dt>种子修订</dt><dd>{{ item.seedRef?.revisionId || '—' }}</dd></div>
-              <div><dt>发动机</dt><dd>{{ item.engineRef?.id || '—' }}</dd></div>
               <div><dt>创作摘要</dt><dd>{{ shortHash(item.creationHash) }}</dd></div>
               <div><dt>风格摘要</dt><dd>{{ shortHash(item.styleHash) }}</dd></div>
             </dl>
 
-            <section class="pinned-assets">
-              <h4>冻结资产</h4>
-              <p v-for="style in item.styleRefs || []" :key="`style-${style.id}`">
-                风格 · {{ style.id }} · r{{ style.revision }} · {{ shortHash(style.contentHash) }}
-              </p>
-              <p v-for="card in item.experienceCardRefs || []" :key="`card-${card.id}`">
-                经验卡 · {{ card.id }} · r{{ card.revision }} · {{ shortHash(card.contentHash) }}
-              </p>
-              <p v-for="corpus in item.corpusSourceRefs || []" :key="`corpus-${corpus.id}`">
-                语料 · {{ corpus.id }} · r{{ corpus.revision }} ·
-                {{ corpus.pinnedHistoricalRevision ? '历史版本已钉住' : '确认时版本' }} ·
-                {{ corpus.fragments?.length || 0 }} 个片段
-              </p>
+            <section class="pinned-identities">
+              <h4>完整冻结身份</h4>
+
+              <article class="identity-card">
+                <strong>种子</strong>
+                <dl>
+                  <div><dt>ID</dt><dd>{{ item.seedRef?.id || '—' }}</dd></div>
+                  <div><dt>修订 ID</dt><dd>{{ item.seedRef?.revisionId || '—' }}</dd></div>
+                  <div class="identity-hash"><dt>内容摘要</dt><dd>{{ item.seedRef?.contentHash || '—' }}</dd></div>
+                </dl>
+              </article>
+
+              <article class="identity-card">
+                <strong>故事发动机</strong>
+                <dl>
+                  <div><dt>ID</dt><dd>{{ item.engineRef?.id || '—' }}</dd></div>
+                  <div><dt>批次 ID</dt><dd>{{ item.engineRef?.batchId || '—' }}</dd></div>
+                  <div class="identity-hash"><dt>内容摘要</dt><dd>{{ item.engineRef?.contentHash || '—' }}</dd></div>
+                </dl>
+              </article>
+
+              <article v-for="style in item.styleRefs || []" :key="`style-${style.id}-${style.revision}`" class="identity-card">
+                <strong>风格模板</strong>
+                <p>ID {{ style.id }} · 修订 R{{ style.revision }}</p>
+                <code>{{ style.contentHash }}</code>
+              </article>
+
+              <article v-for="card in item.experienceCardRefs || []" :key="`card-${card.id}-${card.revision}`" class="identity-card">
+                <strong>经验卡</strong>
+                <p>ID {{ card.id }} · 修订 R{{ card.revision }}</p>
+                <code>{{ card.contentHash }}</code>
+              </article>
+
+              <article v-for="corpus in item.corpusSourceRefs || []" :key="`corpus-${corpus.id}-${corpus.revisionId}`" class="identity-card corpus-identity">
+                <header>
+                  <strong>语料来源</strong>
+                  <n-tag size="small" :type="corpus.pinnedHistoricalRevision ? 'warning' : 'default'">
+                    {{ corpus.pinnedHistoricalRevision ? '历史版本已钉住' : '确认时版本' }}
+                  </n-tag>
+                </header>
+                <dl>
+                  <div><dt>ID</dt><dd>{{ corpus.id }}</dd></div>
+                  <div><dt>修订 ID</dt><dd>{{ corpus.revisionId }}</dd></div>
+                  <div><dt>修订序号</dt><dd>R{{ corpus.revision }}</dd></div>
+                  <div class="identity-hash"><dt>内容摘要</dt><dd>{{ corpus.contentHash }}</dd></div>
+                </dl>
+                <section class="fragment-identities">
+                  <h5>冻结片段 · {{ corpus.fragments?.length || 0 }}</h5>
+                  <article v-for="fragment in corpus.fragments || []" :key="`${fragment.chapterId}-${fragment.fragmentId}`">
+                    <p>章节 {{ fragment.chapterId }} · 片段 {{ fragment.fragmentId }}</p>
+                    <code>{{ fragment.fragmentHash }}</code>
+                    <small>范围 {{ fragment.chapterCharStart }}–{{ fragment.chapterCharEnd }} · 用途 {{ fragment.referenceUse }}</small>
+                  </article>
+                  <p v-if="!corpus.fragments?.length">该来源未冻结片段</p>
+                </section>
+              </article>
+
               <p v-if="!(item.styleRefs?.length || item.experienceCardRefs?.length || item.corpusSourceRefs?.length)">未冻结额外资产</p>
             </section>
 
@@ -163,9 +205,24 @@ watch(() => props.show, show => {
 .history-facts div { min-width: 0; padding: 10px; background: #f6f0e5; }
 .history-facts dt { color: #93836e; font-size: 9px; }
 .history-facts dd { overflow: hidden; margin: 3px 0 0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.pinned-assets { padding-top: 13px; border-top: 1px solid #e2d7c5; }
-.pinned-assets h4 { margin: 0 0 8px; font-family: 'Noto Serif SC', serif; font-size: 13px; }
-.pinned-assets p { margin: 4px 0 0; color: #776c5e; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.pinned-identities { display: grid; gap: 8px; padding-top: 13px; border-top: 1px solid #e2d7c5; }
+.pinned-identities > h4 { margin: 0 0 2px; font-family: 'Noto Serif SC', serif; font-size: 13px; }
+.identity-card { padding: 11px; border: 1px solid #e3d8c7; border-radius: 7px; background: #faf6ed; }
+.identity-card > strong, .identity-card header strong { color: #574c3e; font-size: 11px; }
+.identity-card > p, .fragment-identities p { margin: 5px 0 0; color: #776c5e; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.identity-card code, .identity-card dd { overflow-wrap: anywhere; word-break: break-all; }
+.identity-card code { display: block; margin-top: 5px; color: #765c43; font: 9px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.identity-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 8px 0 0; }
+.identity-card dl div { min-width: 0; }
+.identity-card dl .identity-hash { grid-column: 1 / -1; }
+.identity-card dt { color: #93836e; font-size: 8px; }
+.identity-card dd { margin: 2px 0 0; font-size: 9px; }
+.corpus-identity > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.fragment-identities { margin-top: 10px; padding-top: 9px; border-top: 1px dashed #ded2bf; }
+.fragment-identities h5 { margin: 0 0 6px; color: #6d6255; font-size: 10px; }
+.fragment-identities article { display: grid; gap: 3px; padding: 7px 0; border-top: 1px solid #eadfce; }
+.fragment-identities article:first-of-type { border-top: 0; }
+.fragment-identities small { color: #8b725c; font-size: 9px; }
 .history-card footer { align-items: flex-end; margin-top: 16px; }
 .history-card footer small { color: #927568; font-size: 10px; }
 @media (max-width: 520px) { .history-facts { grid-template-columns: 1fr; } .history-card footer { align-items: stretch; flex-direction: column; } }

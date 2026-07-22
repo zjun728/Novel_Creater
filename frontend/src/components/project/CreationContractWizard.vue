@@ -130,11 +130,10 @@ async function loadWizard(projectId) {
   loadError.value = ''
   childWriteBusy.value = false
   busyNotice.value = ''
-  contractStore.setReadOnly(props.readOnly)
   try {
     await Promise.all([
       seedStore.refresh(projectId),
-      contractStore.load(projectId),
+      contractStore.load(projectId, { readOnly: props.readOnly }),
     ])
     if (!loadGuard.isCurrent(generation)) return
     step.value = restoredStep.value
