@@ -31,6 +31,9 @@ ATTEMPT_ID = "00000000-0000-0000-0000-000000000033"
 STYLE_ASSET_ID = "00000000-0000-0000-0000-000000000061"
 CARD_ASSET_ID = "00000000-0000-0000-0000-000000000062"
 CORPUS_SOURCE_ID = "00000000-0000-0000-0000-000000000051"
+CORPUS_REVISION_ID = "00000000-0000-0000-0000-000000000052"
+CORPUS_CHAPTER_ID = "00000000-0000-0000-0000-000000000053"
+CORPUS_FRAGMENT_ID = "00000000-0000-0000-0000-000000000054"
 DATABASE = "m2_test_database"
 
 
@@ -343,7 +346,7 @@ def corpus_rows():
     return {
         "corpus": {
             "source_id": CORPUS_SOURCE_ID,
-            "source_revision_id": "00000000-0000-0000-0000-000000000051",
+            "source_revision_id": CORPUS_REVISION_ID,
             "relative_path": "approved/reference.txt",
             "source_hash": "c" * 64,
             "source_revision": 1,
@@ -398,13 +401,6 @@ def l5_rows():
     binding_hash = canonical_hash(BindingRevision(
         project_id=PROJECT_ID, revision=1, items=binding_items,
     ))
-    creation_payload = CreationContractPayload(
-        schemaVersion="creation-contract-v1", channelProfileKey="qidian-male",
-        genreProfileKey="historical-crossing", qualityCharterVersion="quality-v1",
-        selectionRevision=1, selectedSeed=seed_payload, selectedEngine=options[0],
-        totalWordRange=(800000, 1200000),
-        chapterCapacityPolicy="故事块按情节自然跨章", modelBindingRevision=1,
-    )
     style_payload = StyleContractPayload(
         schemaVersion="style-contract-v1", readingExperience="通俗丰满且引人继续阅读",
         narrativeDistance="贴近人物", sentenceParagraphRhythm="长短句自然变化",
@@ -425,9 +421,38 @@ def l5_rows():
         "contentHash": load_asset_package(MANIFEST_PATH, mode="release").experience_cards[0].content_hash,
     }
     corpus_ref = {
-        "id": CORPUS_SOURCE_ID, "revision": 1, "contentHash": "c" * 64,
+        "id": CORPUS_SOURCE_ID, "revisionId": CORPUS_REVISION_ID,
+        "revision": 1, "contentHash": "c" * 64,
         "selectionMode": "author",
+        "fragments": ({
+            "chapterId": CORPUS_CHAPTER_ID,
+            "fragmentId": CORPUS_FRAGMENT_ID,
+            "fragmentHash": "f" * 64,
+            "chapterCharStart": 10,
+            "chapterCharEnd": 110,
+            "referenceUse": "style",
+        },),
+        "pinnedHistoricalRevision": False,
     }
+    creation_payload = CreationContractPayload(
+        schemaVersion="creation-contract-v1", channelProfileKey="qidian-male",
+        genreProfileKey="historical-crossing", qualityCharterVersion="quality-v1",
+        selectionRevision=1, selectedSeed=seed_payload,
+        seedRevisionId=SEED_REVISION_ID, seedHash=canonical_hash(seed_payload),
+        selectedEngine=options[0], engineOptionId=OPTION_ID,
+        engineHash=canonical_hash(options[0]),
+        primaryStyleRef={key: style_ref[key] for key in (
+            "id", "revision", "contentHash"
+        )},
+        experienceCardRefs=(card_ref,), corpusSourceRefs=(corpus_ref,),
+        targetTotalWords=1_000_000, expectedVolumeCount=10,
+        expectedChapterCount=400, chapterWordRangePreference=(2_000, 3_000),
+        prohibitedDirections=("不要机械推进",), authorNotes="故事块可自然跨章。",
+        modelBindingRef={
+            "id": BINDING_REVISION_ID, "revision": 1,
+            "contentHash": binding_hash,
+        },
+    )
     reference_manifest = {
         "schemaVersion": "contract-reference-manifest-v1",
         "seedRef": {
@@ -529,8 +554,20 @@ def l5_rows():
         }],
         "l5_corpus_refs": [{
             "corpus_source_id": CORPUS_SOURCE_ID, "source_revision": 1,
+            "source_revision_id": CORPUS_REVISION_ID,
             "source_hash": "c" * 64, "actual_source_hash": "c" * 64,
             "selection_mode": "author", "sort_order": 1,
+        }],
+        "l5_corpus_fragment_refs": [{
+            "corpus_source_id": CORPUS_SOURCE_ID,
+            "corpus_chapter_id": CORPUS_CHAPTER_ID,
+            "corpus_fragment_id": CORPUS_FRAGMENT_ID,
+            "fragment_hash": "f" * 64,
+            "actual_fragment_hash": "f" * 64,
+            "chapter_char_start": 10,
+            "chapter_char_end": 110,
+            "reference_use": "style",
+            "sort_order": 1,
         }],
     }
 
@@ -643,6 +680,7 @@ async def test_l5_requires_one_provider_attempt_three_options_and_consistent_con
         "style_contract_template_refs": 1,
         "creation_contract_experience_refs": 1,
         "creation_contract_corpus_refs": 1,
+        "creation_contract_corpus_fragment_refs": 1,
     })
     rows = {**base, **asset_rows(), **corpus_rows(), **l5}
     receipt = await verify_milestone2_product(
@@ -690,6 +728,22 @@ async def test_l5_allows_multiple_experience_card_refs_with_canonical_order():
         "actual_asset_hash": second.content_hash,
         "sort_order": 2,
     })
+    creation = json.loads(rows["l5_contract_payload"]["creation_json"])
+    creation["experienceCardRefs"].append({
+        "id": "10000000-0000-0000-0000-000000000102",
+        "revision": 1,
+        "contentHash": second.content_hash,
+    })
+    creation_hash = canonical_hash(creation)
+    rows["l5_contract_payload"].update({
+        "creation_json": canonical_json(creation),
+        "creation_content_hash": creation_hash,
+    })
+    rows["l5"].update({
+        "creation_hash": creation_hash,
+        "head_creation_hash": creation_hash,
+    })
+    rows["foundation"]["creation_hash"] = creation_hash
     manifest = json.loads(rows["l5_contract_payload"]["reference_manifest_json"])
     manifest["experienceCardRefs"].append({
         "id": "10000000-0000-0000-0000-000000000102",
@@ -854,6 +908,7 @@ def _valid_l5_rows():
         "style_contract_template_refs": 1,
         "creation_contract_experience_refs": 1,
         "creation_contract_corpus_refs": 1,
+        "creation_contract_corpus_fragment_refs": 1,
     })
     return {**base, **asset_rows(), **corpus_rows(), **l5}
 

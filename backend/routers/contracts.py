@@ -48,11 +48,20 @@ class SaveDraftBody(_StrictBody):
             return value
         normalized = dict(value)
         for key in (
-            "totalWordRange", "experienceCardRefs", "corpusSourceRefs",
-            "likes", "dislikes",
+            "chapterWordRangePreference", "prohibitedDirections",
+            "experienceCardRefs", "corpusSourceRefs", "likes", "dislikes",
         ):
             if isinstance(normalized.get(key), list):
                 normalized[key] = tuple(normalized[key])
+        if isinstance(normalized.get("corpusSourceRefs"), tuple):
+            normalized["corpusSourceRefs"] = tuple(
+                {
+                    **source,
+                    "fragments": tuple(source.get("fragments") or ()),
+                }
+                if isinstance(source, dict) else source
+                for source in normalized["corpusSourceRefs"]
+            )
         return normalized
 
 
@@ -114,12 +123,12 @@ def _public_preview(result):
             "batchId": result.engine_ref.batch_id,
             "contentHash": result.engine_ref.content_hash,
         },
-        "bindingRef": {
+        "bindingRef": ({
             "id": result.binding_ref.id,
             "revision": result.binding_ref.revision,
             "contentHash": result.binding_ref.content_hash,
             "items": [_public_binding_item(item) for item in result.binding_ref.items],
-        },
+        } if result.binding_ref else None),
         "styleRefs": [ref.model_dump(mode="json") for ref in result.style_refs],
         "experienceCardRefs": [
             ref.model_dump(mode="json") for ref in result.experience_card_refs
@@ -152,6 +161,7 @@ def _public_confirmed(result):
         "styleContractId": result.style_contract_id,
         "contractReady": result.contract_ready,
         "reasons": list(result.reasons),
+        "supersededReasons": list(result.superseded_reasons),
         "seedRef": {
             "id": result.seed_ref.id,
             "revisionId": result.seed_ref.revision_id,
@@ -162,12 +172,12 @@ def _public_confirmed(result):
             "batchId": result.engine_ref.batch_id,
             "contentHash": result.engine_ref.content_hash,
         },
-        "bindingRef": {
+        "bindingRef": ({
             "id": result.binding_ref.id,
             "revision": result.binding_ref.revision,
             "contentHash": result.binding_ref.content_hash,
             "items": [_public_binding_item(item) for item in result.binding_ref.items],
-        },
+        } if result.binding_ref else None),
         "styleRefs": [ref.model_dump(mode="json") for ref in result.style_refs],
         "experienceCardRefs": [
             ref.model_dump(mode="json") for ref in result.experience_card_refs

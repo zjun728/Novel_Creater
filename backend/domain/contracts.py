@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.domain.seeds import SeedPayload
+from backend.domain.json_contracts import canonical_hash
 from backend.domain.story_engines import (
     CONTRACT_COLLECTION_MAX_ITEMS,
     StoryEngineOption,
@@ -15,7 +16,29 @@ from backend.domain.story_engines import (
 
 CONTRACT_TEXT_MAX_LENGTH = 2_000
 STYLE_CONTRACT_TEXT_MAX_LENGTH = 20_000
+MAX_TARGET_TOTAL_WORDS = 100_000_000
+MAX_EXPECTED_VOLUME_COUNT = 1_000
+MAX_EXPECTED_CHAPTER_COUNT = 100_000
+MAX_CHAPTER_WORD_RANGE_VALUE = 100_000
 PositiveInt = Annotated[int, Field(gt=0)]
+NonNegativeInt = Annotated[int, Field(ge=0)]
+TargetTotalWords = Annotated[
+    int, Field(strict=True, gt=0, le=MAX_TARGET_TOTAL_WORDS)
+]
+ExpectedVolumeCount = Annotated[
+    int, Field(strict=True, gt=0, le=MAX_EXPECTED_VOLUME_COUNT)
+]
+ExpectedChapterCount = Annotated[
+    int, Field(strict=True, gt=0, le=MAX_EXPECTED_CHAPTER_COUNT)
+]
+ChapterWordRangeValue = Annotated[
+    int, Field(strict=True, gt=0, le=MAX_CHAPTER_WORD_RANGE_VALUE)
+]
+Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+Identifier = Annotated[
+    str,
+    Field(min_length=1, max_length=36, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$"),
+]
 ContractText = Annotated[
     str,
     Field(min_length=1, max_length=CONTRACT_TEXT_MAX_LENGTH),
@@ -25,6 +48,67 @@ StyleContractText = Annotated[
     str,
     Field(min_length=1, max_length=STYLE_CONTRACT_TEXT_MAX_LENGTH),
 ]
+
+
+class _FrozenContractValue(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+
+class FrozenAssetRef(_FrozenContractValue):
+    id: Identifier
+    revision: PositiveInt
+    contentHash: Hash
+
+
+class FrozenBindingRef(FrozenAssetRef):
+    pass
+
+
+class FrozenCorpusFragment(_FrozenContractValue):
+    chapterId: Identifier
+    fragmentId: Identifier
+    fragmentHash: Hash
+    chapterCharStart: NonNegativeInt
+    chapterCharEnd: PositiveInt
+    referenceUse: Literal["inspiration", "structure", "style", "fact_check"]
+
+    @model_validator(mode="after")
+    def validate_range(self) -> Self:
+        if self.chapterCharEnd <= self.chapterCharStart:
+            raise ValueError("corpus fragment range must be positive")
+        return self
+
+
+class FrozenCorpusSourceRef(_FrozenContractValue):
+    id: Identifier
+    revisionId: Identifier
+    revision: PositiveInt
+    contentHash: Hash
+    selectionMode: Literal["author", "system"]
+    fragments: tuple[FrozenCorpusFragment, ...] = Field(
+        min_length=1,
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
+    pinnedHistoricalRevision: bool
+
+    @model_validator(mode="after")
+    def validate_fragments(self) -> Self:
+        orders = tuple(
+            (
+                fragment.fragmentId,
+                fragment.chapterCharStart,
+                fragment.chapterCharEnd,
+            )
+            for fragment in self.fragments
+        )
+        if len(set(orders)) != len(orders):
+            raise ValueError("corpus fragment ranges must be unique")
+        return self
 
 
 class CreationContractPayload(BaseModel):
@@ -43,15 +127,54 @@ class CreationContractPayload(BaseModel):
     qualityCharterVersion: ProfileOrVersionKey
     selectionRevision: PositiveInt
     selectedSeed: SeedPayload
+    seedRevisionId: Identifier
+    seedHash: Hash
     selectedEngine: StoryEngineOption
-    totalWordRange: tuple[PositiveInt, PositiveInt]
-    chapterCapacityPolicy: ContractText
-    modelBindingRevision: PositiveInt
+    engineOptionId: Identifier
+    engineHash: Hash
+    primaryStyleRef: FrozenAssetRef
+    secondaryStyleRef: FrozenAssetRef | None = None
+    experienceCardRefs: tuple[FrozenAssetRef, ...] = Field(
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
+    corpusSourceRefs: tuple[FrozenCorpusSourceRef, ...] = Field(
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
+    targetTotalWords: TargetTotalWords
+    expectedVolumeCount: ExpectedVolumeCount
+    expectedChapterCount: ExpectedChapterCount
+    chapterWordRangePreference: tuple[
+        ChapterWordRangeValue, ChapterWordRangeValue
+    ]
+    prohibitedDirections: tuple[ContractText, ...] = Field(
+        max_length=CONTRACT_COLLECTION_MAX_ITEMS,
+    )
+    authorNotes: ContractText | None = None
+    modelBindingRef: FrozenBindingRef | None = None
 
     @model_validator(mode="after")
-    def validate_total_word_range(self) -> Self:
-        if self.totalWordRange[0] > self.totalWordRange[1]:
-            raise ValueError("totalWordRange minimum must not exceed maximum")
+    def validate_complete_contract(self) -> Self:
+        if self.chapterWordRangePreference[0] > self.chapterWordRangePreference[1]:
+            raise ValueError(
+                "chapterWordRangePreference minimum must not exceed maximum"
+            )
+        if canonical_hash(self.selectedSeed) != self.seedHash:
+            raise ValueError("seedHash must match selectedSeed")
+        if canonical_hash(self.selectedEngine) != self.engineHash:
+            raise ValueError("engineHash must match selectedEngine")
+        if (
+            self.secondaryStyleRef is not None
+            and self.secondaryStyleRef.id == self.primaryStyleRef.id
+        ):
+            raise ValueError("primary and secondary styles must be different")
+        if len({ref.id for ref in self.experienceCardRefs}) != len(
+            self.experienceCardRefs
+        ):
+            raise ValueError("experienceCardRefs must not contain duplicates")
+        if len({ref.id for ref in self.corpusSourceRefs}) != len(
+            self.corpusSourceRefs
+        ):
+            raise ValueError("corpusSourceRefs must not contain duplicates")
         return self
 
 

@@ -132,8 +132,8 @@ CREATE TABLE creation_contracts (
   seed_id CHAR(36) NOT NULL,
   seed_revision_id CHAR(36) NOT NULL,
   seed_hash CHAR(64) NOT NULL,
-  binding_revision_id CHAR(36) NOT NULL,
-  binding_hash CHAR(64) NOT NULL,
+  binding_revision_id CHAR(36) NULL,
+  binding_hash CHAR(64) NULL,
   channel_profile_key VARCHAR(120) NOT NULL,
   genre_profile_key VARCHAR(120) NOT NULL,
   quality_charter_version VARCHAR(120) NOT NULL,
@@ -157,6 +157,8 @@ CREATE TABLE creation_contracts (
   FOREIGN KEY (project_id, seed_id, seed_revision_id, seed_hash) REFERENCES creative_seed_revisions(project_id, seed_id, id, content_hash) ON DELETE RESTRICT,
   FOREIGN KEY (project_id, binding_revision_id, binding_hash) REFERENCES project_model_binding_revisions(project_id, id, content_hash) ON DELETE RESTRICT,
   CHECK (revision > 0),
+  CHECK ((binding_revision_id IS NULL AND binding_hash IS NULL)
+    OR (binding_revision_id IS NOT NULL AND binding_hash IS NOT NULL)),
   CHECK (total_word_min > 0 AND total_word_max >= total_word_min),
   CHECK (CHAR_LENGTH(TRIM(quality_charter_version)) > 0),
   CHECK (CHAR_LENGTH(TRIM(chapter_capacity_policy)) > 0)

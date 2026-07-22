@@ -96,6 +96,39 @@ def test_contract_draft_v2_accepts_each_progressive_stage(stage, overrides, comp
 
 
 @pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("targetTotalWords", 100_000_001),
+        ("expectedVolumeCount", 1_001),
+        ("expectedChapterCount", 100_001),
+        ("chapterWordRangePreference", (100_001, 100_001)),
+        ("chapterWordRangePreference", (1, 100_001)),
+        ("targetTotalWords", 10**5_000),
+    ),
+    ids=(
+        "target-total", "volume-count", "chapter-count",
+        "chapter-range-low", "chapter-range-high", "extreme-target-total",
+    ),
+)
+def test_invalid_capacity_cannot_construct_direct_save_command_or_enter_transaction(
+    field_name, value,
+):
+    harness = ContractHarness()
+
+    with pytest.raises(ValidationError):
+        SaveContractDraft(
+            project_id="p1",
+            expected_draft_version=0,
+            draft=ContractDraftInput(**draft_values(
+                harness.repository, **{field_name: value}
+            )),
+        )
+
+    assert harness.transaction_enter_count == 0
+    assert harness.repository.write_count == 0
+
+
+@pytest.mark.parametrize(
     ("stage", "overrides"),
     (
         ("engine", {"primaryStyleRef": {"id": "style-primary", "revision": 2,
@@ -139,7 +172,8 @@ _UNSAFE_PATHS = (
         "channelProfileKey",
         "genreProfileKey",
         "qualityCharterVersion",
-        "chapterCapacityPolicy",
+        "authorNotes",
+        "prohibitedDirections",
         "likes",
         "dislikes",
     ),
@@ -149,7 +183,9 @@ def test_every_client_text_field_rejects_path_forms(field_name, unsafe_path):
     harness = ContractHarness()
     values = draft_values(harness.repository)
     values[field_name] = (
-        (unsafe_path,) if field_name in {"likes", "dislikes"} else unsafe_path
+        (unsafe_path,)
+        if field_name in {"likes", "dislikes", "prohibitedDirections"}
+        else unsafe_path
     )
 
     with pytest.raises(ValidationError):
@@ -184,12 +220,12 @@ def test_safe_text_validation_does_not_reject_normal_chinese_colons():
     harness = ContractHarness()
     values = draft_values(harness.repository)
     values["channelProfileKey"] = "渠道：中文连载"
-    values["chapterCapacityPolicy"] = "节奏：每章推进一个不可逆选择"
+    values["authorNotes"] = "节奏：每章推进一个不可逆选择"
 
     draft = ContractDraftInput(**values)
 
     assert draft.channelProfileKey == "渠道：中文连载"
-    assert draft.chapterCapacityPolicy.startswith("节奏：")
+    assert draft.authorNotes.startswith("节奏：")
 
 
 @pytest.mark.parametrize(
@@ -275,6 +311,260 @@ async def test_save_accepts_not_ready_binding_and_can_return_to_engine_stage():
     assert returned.draft.primaryStyleRef is None
     assert returned.draft.likes is None
     assert returned.draft.experienceCardRefs is None
+
+
+@pytest.mark.asyncio
+async def test_manual_contract_draft_does_not_require_a_binding_snapshot():
+    harness = ContractHarness()
+    harness.repository.binding_head = {
+        "head_revision": 0,
+        "head_binding_revision_id": None,
+        "head_hash": None,
+    }
+
+    saved = await harness.service.save_draft(command(harness))
+
+    assert saved.draft.modelBindingRef is None
+
+
+@pytest.mark.asyncio
+async def test_manual_confirmation_without_binding_is_atomic_and_replayable():
+    harness = ContractHarness()
+    harness.repository.binding_head = {
+        "head_revision": 0,
+        "head_binding_revision_id": None,
+        "head_hash": None,
+    }
+    saved = await harness.service.save_draft(command(harness))
+
+    first = await harness.service.confirm(confirmation(
+        saved, key="manual-without-binding"
+    ))
+    replay = await harness.service.confirm(confirmation(
+        saved, key="manual-without-binding"
+    ))
+
+    creation = next(iter(harness.repository.creation_contracts.values()))
+    assert first == replay
+    assert first.binding_ref is None
+    assert first.creation_contract.modelBindingRef is None
+    assert creation["binding_revision_id"] is None
+    assert creation["binding_hash"] is None
+    assert harness.repository.heads["p1"]["revision"] == 1
+    assert "p1" not in harness.repository.drafts
+
+
+def test_corpus_fragment_manifest_rejects_bad_ranges_duplicates_and_budget():
+    harness = ContractHarness()
+    values = draft_values(harness.repository)
+    source = values["corpusSourceRefs"][0]
+    fragment = source["fragments"][0]
+
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**{
+            **values,
+            "corpusSourceRefs": ({
+                **source,
+                "fragments": ({
+                    **fragment,
+                    "chapterCharEnd": fragment["chapterCharStart"],
+                },),
+            },),
+        })
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**{
+            **values,
+            "corpusSourceRefs": ({
+                **source, "fragments": (fragment, fragment),
+            },),
+        })
+    with pytest.raises(ValidationError):
+        ContractDraftInput(**{
+            **values,
+            "corpusSourceRefs": ({
+                **source,
+                "fragments": tuple(
+                    {
+                        **fragment,
+                        "fragmentId": f"fragment-{index}",
+                        "chapterCharStart": index * 300,
+                        "chapterCharEnd": index * 300 + 300,
+                    }
+                    for index in range(1, 15)
+                ),
+            },),
+        })
+
+
+@pytest.mark.asyncio
+async def test_same_corpus_fragment_can_freeze_two_distinct_ordered_ranges():
+    harness = ContractHarness()
+    values = draft_values(harness.repository)
+    source = values["corpusSourceRefs"][0]
+    first = source["fragments"][0]
+    second = {
+        **first,
+        "chapterCharStart": 110,
+        "chapterCharEnd": 200,
+        "referenceUse": "structure",
+    }
+    values["corpusSourceRefs"] = ({
+        **source,
+        "fragments": (first, second),
+    },)
+    saved = await harness.service.save_draft(SaveContractDraft(
+        project_id="p1",
+        expected_draft_version=0,
+        draft=ContractDraftInput(**values),
+    ))
+
+    preview = await harness.service.preview("p1")
+    confirmed = await harness.service.confirm(confirmation(
+        saved, key="same-fragment-two-ranges"
+    ))
+
+    assert preview.contract_ready is True
+    assert tuple(
+        (fragment.chapterCharStart, fragment.chapterCharEnd)
+        for fragment in confirmed.corpus_source_refs[0].fragments
+    ) == ((10, 110), (110, 200))
+    assert tuple(
+        (row["chapter_char_start"], row["chapter_char_end"])
+        for row in harness.repository.corpus_fragment_refs
+    ) == ((10, 110), (110, 200))
+    manifest = json.loads(next(iter(
+        harness.repository.creation_contracts.values()
+    ))["reference_manifest_json"])
+    assert [
+        (fragment["chapterCharStart"], fragment["chapterCharEnd"])
+        for fragment in manifest["corpusSourceRefs"][0]["fragments"]
+    ] == [(10, 110), (110, 200)]
+
+
+@pytest.mark.asyncio
+async def test_preview_treats_missing_zero_head_as_stable_initial_base():
+    harness = ContractHarness()
+    await harness.service.save_draft(command(harness))
+    del harness.repository.heads["p1"]
+
+    preview = await harness.service.preview("p1")
+
+    assert "contract_head_missing" not in preview.reasons
+    assert "draft_base_drift" not in preview.reasons
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_binding_created_after_unbound_draft_as_drift():
+    harness = ContractHarness()
+    original_head = dict(harness.repository.binding_head)
+    harness.repository.binding_head = {
+        "head_revision": 0,
+        "head_binding_revision_id": None,
+        "head_hash": None,
+    }
+    await harness.service.save_draft(command(harness))
+    harness.repository.binding_head = original_head
+
+    preview = await harness.service.preview("p1")
+
+    assert preview.binding_ref is None
+    assert "binding_drift" in preview.reasons
+
+
+@pytest.mark.asyncio
+async def test_preview_aggregates_every_upstream_drift_without_mutating_draft():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    draft_before = dict(harness.repository.drafts["p1"])
+    writes_before = harness.repository.write_count
+    harness.repository.selected_seeds["p1"].update({
+        "selection_revision": 8,
+        "seed_hash": "0" * 64,
+    })
+    harness.repository.engines["engine-1"].update({
+        "selection_revision": 8,
+        "content_hash": "1" * 64,
+    })
+    harness.repository.styles["style-primary"]["head_hash"] = "2" * 64
+    harness.repository.cards["card-1"]["head_hash"] = "3" * 64
+    harness.repository.sources["source-1"]["head_hash"] = "4" * 64
+    harness.repository.fragments["fragment-1"]["fragment_hash"] = "5" * 64
+    harness.repository.binding_head["head_hash"] = "6" * 64
+    harness.repository.heads["p1"] = {
+        "project_id": "p1",
+        "revision": 1,
+        "creation_contract_id": "missing-creation",
+        "style_contract_id": "missing-style",
+        "creation_hash": "7" * 64,
+        "style_hash": "8" * 64,
+    }
+
+    preview = await harness.service.preview("p1")
+
+    assert {
+        "selection_drift",
+        "seed_drift",
+        "engine_invalid",
+        "engine_seed_drift",
+        "style_drift:primary",
+        "experience_drift:card-1",
+        "corpus_drift:source-1",
+        "corpus_fragment_invalid:fragment-1",
+        "binding_drift",
+        "draft_base_drift",
+        "contract_head_drift",
+    }.issubset(set(preview.reasons))
+    assert harness.repository.drafts["p1"] == draft_before
+    assert harness.repository.write_count == writes_before
+    assert preview.draft_version == saved.draft_version
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_seed_missing_selection_and_identity_drift_independently():
+    harness = ContractHarness()
+    await harness.service.save_draft(command(harness))
+    harness.repository.seed_revisions.clear()
+    harness.repository.selected_seeds["p1"].update({
+        "selection_revision": 8,
+        "seed_id": "seed-2",
+        "seed_revision_id": "seed-revision-2",
+        "seed_hash": "0" * 64,
+    })
+
+    preview = await harness.service.preview("p1")
+
+    assert preview.contract_ready is False
+    assert preview.reasons == (
+        "seed_missing",
+        "selection_drift",
+        "seed_drift",
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_readable_historical_corpus_pin_survives_archive_and_new_head():
+    harness = ContractHarness()
+    source = harness.repository.sources["source-1"]
+    source["archived_at"] = 1_000_001
+    source["head_id"] = "source-revision-6"
+    source["head_revision"] = 6
+    source["head_hash"] = "6" * 64
+    values = draft_values(harness.repository)
+    values["corpusSourceRefs"] = ({
+        **values["corpusSourceRefs"][0],
+        "pinnedHistoricalRevision": True,
+    },)
+
+    saved = await harness.service.save_draft(SaveContractDraft(
+        project_id="p1",
+        expected_draft_version=0,
+        draft=ContractDraftInput(**values),
+    ))
+    preview = await harness.service.preview("p1")
+
+    assert saved.draft.corpusSourceRefs[0].pinnedHistoricalRevision is True
+    assert not any(reason.startswith("corpus_inactive") for reason in preview.reasons)
+    assert not any(reason.startswith("corpus_drift") for reason in preview.reasons)
 
 
 @pytest.mark.asyncio
@@ -399,7 +689,7 @@ async def test_preview_is_deterministic_read_only_and_freezes_exact_dependencies
     assert first.experience_card_refs[0].revision == 3
     assert first.corpus_source_refs[0].revision == 5
     assert first.creation_contract.qualityCharterVersion == "writer-core-quality-v1"
-    assert first.creation_contract.modelBindingRevision == 3
+    assert first.creation_contract.modelBindingRef.revision == 3
     assert "rubric" not in first.creation_contract.model_dump()
     assert "checklist" not in first.creation_contract.model_dump()
     assert first.style_contract.narrativeDistance == "近距离第三人称"
@@ -488,7 +778,7 @@ async def test_preview_reports_seed_and_binding_drift_without_substitution_or_wr
     assert "seed_drift" in preview.reasons
     assert "binding_drift" in preview.reasons
     assert preview.engine_ref.id == original_engine
-    assert preview.creation_contract.modelBindingRevision == 3
+    assert preview.creation_contract.modelBindingRef.revision == 3
     assert harness.repository.write_count == 1
 
 
@@ -526,7 +816,7 @@ async def test_resave_explicitly_refreshes_frozen_binding_and_restores_readiness
     assert saved.draft.modelBindingRef.id == "binding-revision-4"
     assert saved.draft.modelBindingRef.revision == 4
     assert refreshed.contract_ready is True
-    assert refreshed.creation_contract.modelBindingRevision == 4
+    assert refreshed.creation_contract.modelBindingRef.revision == 4
 
 
 @pytest.mark.asyncio
@@ -704,9 +994,14 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
         "experience_card_refs": tuple(
             ref.model_dump(mode="json") for ref in preview.experience_card_refs
         ),
-        "corpus_source_refs": tuple(
-            ref.model_dump(mode="json") for ref in preview.corpus_source_refs
-        ),
+            "corpus_source_refs": tuple(
+                ref.model_dump(mode="json") for ref in preview.corpus_source_refs
+            ),
+            "corpus_fragment_refs": tuple({
+                "sourceId": source.id,
+                **fragment.model_dump(mode="json"),
+            } for source in preview.corpus_source_refs
+              for fragment in source.fragments),
     }
     snapshot = harness.repository.confirmed["p1"]
     snapshot["creation_json"] = canonical_json(snapshot["creation_json"])
@@ -927,12 +1222,55 @@ async def test_confirm_locks_assets_by_stable_type_and_id_but_preserves_draft_or
         "head_id": "card-0",
     }
     harness.repository.cards["card-0"] = earlier
+    source = harness.repository.sources["source-1"]
+    earlier_source = {
+        **source,
+        "id": "source-0",
+        "revision_id": "source-revision-4",
+        "source_key": "earlier-authorized-work",
+        "revision": 4,
+        "source_hash": "d" * 64,
+        "head_id": "source-revision-4",
+        "head_revision": 4,
+        "head_hash": "d" * 64,
+    }
+    harness.repository.sources["source-0"] = earlier_source
+    harness.repository.fragments["fragment-0"] = {
+        **harness.repository.fragments["fragment-1"],
+        "source_id": "source-0",
+        "source_revision_id": "source-revision-4",
+        "source_revision": 4,
+        "source_hash": "d" * 64,
+        "source_head_revision_id": "source-revision-4",
+        "source_head_revision": 4,
+        "source_head_hash": "d" * 64,
+        "chapter_id": "chapter-0",
+        "fragment_id": "fragment-0",
+        "fragment_hash": "0" * 64,
+    }
     refs = tuple({
         "id": row["id"], "revision": row["revision"],
         "contentHash": row["content_hash"],
     } for row in (original, earlier))
+    corpus_refs = tuple({
+        "id": row["id"], "revisionId": row["revision_id"],
+        "revision": row["revision"], "contentHash": row["source_hash"],
+        "selectionMode": "author",
+        "fragments": ({
+            "chapterId": chapter_id,
+            "fragmentId": fragment_id,
+            "fragmentHash": fragment_hash,
+            "chapterCharStart": 10,
+            "chapterCharEnd": 110,
+            "referenceUse": "style",
+        },),
+        "pinnedHistoricalRevision": False,
+    } for row, chapter_id, fragment_id, fragment_hash in (
+        (source, "chapter-1", "fragment-1", "f" * 64),
+        (earlier_source, "chapter-0", "fragment-0", "0" * 64),
+    ))
     saved = await harness.service.save_draft(command(
-        harness, experienceCardRefs=refs,
+        harness, experienceCardRefs=refs, corpusSourceRefs=corpus_refs,
     ))
     harness.repository.events.clear()
 
@@ -941,16 +1279,27 @@ async def test_confirm_locks_assets_by_stable_type_and_id_but_preserves_draft_or
     assert tuple(ref.id for ref in result.experience_card_refs) == (
         "card-1", "card-0",
     )
+    assert tuple(ref.id for ref in result.corpus_source_refs) == (
+        "source-1", "source-0",
+    )
     asset_locks = tuple(
         event for event in harness.repository.events
         if event.startswith("lock-asset:")
     )
     assert asset_locks == (
+        "lock-asset:corpus:source-0",
         "lock-asset:corpus:source-1",
         "lock-asset:experience:card-0",
         "lock-asset:experience:card-1",
         "lock-asset:style:style-primary",
         "lock-asset:style:style-secondary",
+    )
+    assert tuple(
+        event for event in harness.repository.events
+        if event.startswith("lock-fragments:")
+    ) == (
+        "lock-fragments:source-0:source-revision-4",
+        "lock-fragments:source-1:source-revision-5",
     )
 
 
@@ -1006,10 +1355,40 @@ async def test_history_and_replay_mark_superseded_selection_generation_read_only
     assert len(harness.repository.creation_contracts) == 1
 
 
+@pytest.mark.asyncio
+async def test_history_and_replay_mark_replaced_contract_revision_superseded():
+    harness = ContractHarness()
+    first_draft = await harness.service.save_draft(command(harness))
+    first = await harness.service.confirm(confirmation(
+        first_draft, key="confirm-revision-1"
+    ))
+    second_draft = await harness.service.clone_current("p1")
+    second = await harness.service.confirm(confirmation(
+        second_draft, key="confirm-revision-2"
+    ))
+
+    history = await harness.service.history("p1")
+    replay = await harness.service.confirm(confirmation(
+        first_draft, key="confirm-revision-1"
+    ))
+
+    assert first.selection_revision == second.selection_revision
+    assert tuple(item.revision for item in history) == (2, 1)
+    assert history[0].contract_ready is True
+    assert history[0].superseded_reasons == ()
+    assert history[1].contract_ready is False
+    assert history[1].reasons == ("superseded",)
+    assert history[1].superseded_reasons == ("contract_revision_replaced",)
+    assert replay.contract_ready is False
+    assert replay.reasons == ("superseded",)
+    assert replay.superseded_reasons == ("contract_revision_replaced",)
+
+
 @pytest.mark.parametrize("stage", (
     "after_confirmation_reserve", "after_creation_insert", "after_style_insert",
     "after_engine_refs", "after_style_refs", "after_card_refs",
-    "after_corpus_refs", "after_head_cas", "after_draft_delete",
+    "after_corpus_refs", "after_corpus_fragment_refs", "after_head_cas",
+    "after_draft_delete",
     "before_request_success",
 ))
 @pytest.mark.asyncio
@@ -1028,10 +1407,11 @@ async def test_every_confirmation_failpoint_rolls_back_all_writes(stage):
     assert harness.repository.confirmation_requests == {}
     assert harness.repository.creation_contracts == {}
     assert harness.repository.style_contracts == {}
+    assert harness.repository.corpus_fragment_refs == []
 
 
 @pytest.mark.parametrize("drift", (
-    "seed", "engine", "binding", "style", "card", "corpus", "head",
+    "seed", "engine", "binding", "style", "card", "corpus", "fragment", "head",
 ))
 @pytest.mark.asyncio
 async def test_confirmation_rejects_every_frozen_fact_or_head_drift(drift):
@@ -1049,6 +1429,8 @@ async def test_confirmation_rejects_every_frozen_fact_or_head_drift(drift):
         harness.repository.cards["card-1"]["head_hash"] = "f" * 64
     elif drift == "corpus":
         harness.repository.sources["source-1"]["head_hash"] = "f" * 64
+    elif drift == "fragment":
+        harness.repository.fragments["fragment-1"]["fragment_hash"] = "0" * 64
     else:
         harness.repository.heads["p1"]["revision"] = 1
 
@@ -1061,7 +1443,7 @@ async def test_confirmation_rejects_every_frozen_fact_or_head_drift(drift):
 
 
 @pytest.mark.asyncio
-async def test_head_readiness_tracks_current_eight_binding_provider_readiness_only():
+async def test_head_readiness_does_not_depend_on_provider_callability():
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))
     await harness.service.confirm(confirmation(saved))
@@ -1070,7 +1452,7 @@ async def test_head_readiness_tracks_current_eight_binding_provider_readiness_on
 
     head = await harness.service.get_head("p1")
 
-    assert head.contract_ready is False
-    assert head.reasons == ("binding_not_ready",)
+    assert head.contract_ready is True
+    assert head.reasons == ()
     assert historical[0].contract_ready is True
     assert historical[0].reasons == ()

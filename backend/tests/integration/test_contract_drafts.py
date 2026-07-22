@@ -37,6 +37,9 @@ CARD = "81000000-0000-0000-0000-000000000009"
 SOURCE = "81000000-0000-0000-0000-000000000010"
 CREATION = "81000000-0000-0000-0000-000000000011"
 STYLE_CONTRACT = "81000000-0000-0000-0000-000000000012"
+SOURCE_REV = "81000000-0000-0000-0000-000000000013"
+CHAPTER = "81000000-0000-0000-0000-000000000014"
+FRAGMENT = "81000000-0000-0000-0000-000000000015"
 
 
 async def _bootstrap(session):
@@ -176,16 +179,33 @@ async def _bootstrap(session):
             reference_tags_json,notes,provenance_json,byte_length,encoding,
             parser_version,normalizer_version,fragmenter_version,index_version,
             status,public_error_code,imported_at,analyzed_at,created_at)
-           VALUES ('81000000-0000-0000-0000-000000000013',%s,1,%s,
+           VALUES (%s,%s,1,%s,
                    'authorized.txt','授权作品','作者','[]','','{}',10,'utf-8',
                    'p1','n1','f1','i1','analyzed',NULL,%s,%s,%s)""",
-        (SOURCE, source_hash, now, now, now),
+        (SOURCE_REV, SOURCE, source_hash, now, now, now),
     )
     await session.execute(
         """INSERT INTO corpus_source_heads
            (source_id,revision_id,revision,content_hash,updated_at)
-           VALUES (%s,'81000000-0000-0000-0000-000000000013',1,%s,%s)""",
-        (SOURCE, source_hash, now),
+           VALUES (%s,%s,1,%s,%s)""",
+        (SOURCE, SOURCE_REV, source_hash, now),
+    )
+    await session.execute(
+        """INSERT INTO corpus_chapters
+           (id,corpus_source_id,source_revision_id,source_revision,source_hash,
+            chapter_order,title,raw_byte_start,raw_byte_end,
+            normalized_char_start,normalized_char_end,normalized_text,
+            content_hash,created_at)
+           VALUES (%s,%s,%s,1,%s,1,'第一章',0,300,0,300,%s,%s,%s)""",
+        (CHAPTER, SOURCE, SOURCE_REV, source_hash, "A" * 300, "c" * 64, now),
+    )
+    await session.execute(
+        """INSERT INTO corpus_fragments
+           (id,corpus_source_id,corpus_chapter_id,fragment_order,
+            chapter_char_start,chapter_char_end,normalized_text,content_hash,
+            index_payload,analysis_version,created_at)
+           VALUES (%s,%s,%s,1,0,300,%s,%s,'{}','analysis-v1',%s)""",
+        (FRAGMENT, SOURCE, CHAPTER, "A" * 300, "f" * 64, now),
     )
     await session.execute(
         "INSERT INTO project_contract_heads VALUES (%s,0,NULL,NULL,NULL,NULL,%s)",
@@ -198,6 +218,7 @@ async def _bootstrap(session):
         "card_hash": card_hash,
         "source_hash": source_hash,
         "binding_hash": binding_hash,
+        "fragment_hash": "f" * 64,
     }
 
 
@@ -221,8 +242,12 @@ def _draft(
         "channelProfileKey": "web-fiction",
         "genreProfileKey": "fantasy",
         "qualityCharterVersion": "quality-v1",
-        "totalWordRange": (100_000, 200_000),
-        "chapterCapacityPolicy": "每章推进一个选择",
+        "targetTotalWords": 150_000,
+        "expectedVolumeCount": 3,
+        "expectedChapterCount": 60,
+        "chapterWordRangePreference": (2_000, 3_000),
+        "prohibitedDirections": ("不写无代价升级",),
+        "authorNotes": "人物选择优先。",
     }
     if stage == "engine":
         return ContractDraftInput(**common)
@@ -243,8 +268,18 @@ def _draft(
         ),)
     if corpus_source_refs is _DEFAULT_REFS:
         corpus_source_refs = (CorpusSourceRef(
-            id=SOURCE, revision=1, contentHash=facts["source_hash"],
+            id=SOURCE, revisionId=SOURCE_REV,
+            revision=1, contentHash=facts["source_hash"],
             selectionMode="author",
+            fragments=({
+                "chapterId": CHAPTER,
+                "fragmentId": FRAGMENT,
+                "fragmentHash": facts["fragment_hash"],
+                "chapterCharStart": 10,
+                "chapterCharEnd": 110,
+                "referenceUse": "style",
+            },),
+            pinnedHistoricalRevision=False,
         ),)
     return ContractDraftInput(
         **common,
@@ -425,7 +460,13 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
          facts["binding_hash"], preview.creation_contract.channelProfileKey,
          preview.creation_contract.genreProfileKey,
          preview.creation_contract.qualityCharterVersion,
-         preview.creation_contract.chapterCapacityPolicy,
+         canonical_json({
+             "expectedVolumeCount": preview.creation_contract.expectedVolumeCount,
+             "expectedChapterCount": preview.creation_contract.expectedChapterCount,
+             "chapterWordRangePreference": list(
+                 preview.creation_contract.chapterWordRangePreference
+             ),
+         }),
          canonical_json(reference_manifest), canonical_hash(reference_manifest),
          canonical_json(preview.creation_contract), preview.creation_hash, now),
     )
@@ -453,6 +494,15 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
     await disposable_mysql.session.execute(
         "INSERT INTO creation_contract_corpus_refs VALUES (%s,%s,1,%s,'author',1)",
         (CREATION, SOURCE, facts["source_hash"]),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO creation_contract_corpus_fragment_refs
+           (creation_contract_id,corpus_source_id,source_revision,source_hash,
+            corpus_chapter_id,corpus_fragment_id,fragment_hash,
+            chapter_char_start,chapter_char_end,reference_use,sort_order)
+           VALUES (%s,%s,1,%s,%s,%s,%s,10,110,'style',1)""",
+        (CREATION, SOURCE, facts["source_hash"], CHAPTER, FRAGMENT,
+         facts["fragment_hash"]),
     )
     await disposable_mysql.session.execute(
         "DELETE FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)

@@ -157,6 +157,28 @@ class ContractRepository:
                 return False
         return True
 
+    async def insert_corpus_fragment_refs(
+        self, session, rows: tuple[dict, ...]
+    ) -> bool:
+        for row in rows:
+            if await session.execute(
+                """INSERT INTO creation_contract_corpus_fragment_refs
+                   (creation_contract_id,corpus_source_id,source_revision,
+                    source_hash,corpus_chapter_id,corpus_fragment_id,
+                    fragment_hash,chapter_char_start,chapter_char_end,
+                    reference_use,sort_order)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                tuple(row[key] for key in (
+                    "creation_contract_id", "corpus_source_id",
+                    "source_revision", "source_hash", "corpus_chapter_id",
+                    "corpus_fragment_id", "fragment_hash",
+                    "chapter_char_start", "chapter_char_end",
+                    "reference_use", "sort_order",
+                )),
+            ) != 1:
+                return False
+        return True
+
     async def cas_contract_head(self, session, row: dict) -> bool:
         return await session.execute(
             """UPDATE project_contract_heads
@@ -397,9 +419,23 @@ class ContractRepository:
             (asset_id,),
         )
 
-    async def read_corpus_revision(self, session, asset_id: str, *, lock=False):
+    async def read_corpus_revision(
+        self,
+        session,
+        asset_id: str,
+        revision_id: str | None = None,
+        *,
+        lock=False,
+    ):
+        revision_predicate = (
+            "revision.id=%s" if revision_id is not None
+            else "revision.id=head.revision_id"
+        )
+        args = (
+            (asset_id, revision_id) if revision_id is not None else (asset_id,)
+        )
         return await session.fetchone(
-            f"""SELECT identity.id,identity.source_key,
+            f"""SELECT identity.id,identity.source_key,identity.archived_at,
                       revision.id AS revision_id,revision.revision,
                       revision.content_hash AS source_hash,revision.status,
                       revision.display_name AS title,revision.author,
@@ -407,13 +443,56 @@ class ContractRepository:
                       head.revision AS head_revision,
                       head.content_hash AS head_hash
                FROM corpus_sources identity
-               JOIN corpus_source_heads head ON head.source_id=identity.id
+               LEFT JOIN corpus_source_heads head ON head.source_id=identity.id
                JOIN corpus_source_revisions revision
                  ON revision.source_id=identity.id
-                AND revision.id=head.revision_id
-               WHERE identity.id=%s{_FOR_UPDATE if lock else ''}""",
-            (asset_id,),
+               WHERE identity.id=%s AND {revision_predicate}
+               {_FOR_UPDATE if lock else ''}""",
+            args,
         )
+
+    async def read_corpus_fragments(
+        self,
+        session,
+        source_id: str,
+        revision_id: str,
+        fragment_ids: tuple[str, ...],
+        *,
+        lock=False,
+    ):
+        if not fragment_ids:
+            return ()
+        return tuple(await session.fetchall(
+            f"""SELECT source.id AS source_id,
+                       revision.id AS source_revision_id,
+                       revision.revision AS source_revision,
+                       revision.content_hash AS source_hash,
+                       source.archived_at AS source_archived_at,
+                       head.revision_id AS source_head_revision_id,
+                       head.revision AS source_head_revision,
+                       head.content_hash AS source_head_hash,
+                       revision.status AS source_status,
+                       chapter.id AS chapter_id,
+                       fragment.id AS fragment_id,
+                       fragment.content_hash AS fragment_hash,
+                       fragment.chapter_char_start AS fragment_char_start,
+                       fragment.chapter_char_end AS fragment_char_end,
+                       fragment.normalized_text
+                FROM corpus_sources source
+                JOIN corpus_source_revisions revision
+                  ON revision.source_id=source.id AND revision.id=%s
+                LEFT JOIN corpus_source_heads head ON head.source_id=source.id
+                JOIN corpus_chapters chapter
+                  ON chapter.corpus_source_id=source.id
+                 AND chapter.source_revision_id=revision.id
+                JOIN corpus_fragments fragment
+                  ON fragment.corpus_source_id=source.id
+                 AND fragment.corpus_chapter_id=chapter.id
+                WHERE source.id=%s
+                  AND fragment.id IN ({','.join(['%s'] * len(fragment_ids))})
+                ORDER BY fragment.id{_FOR_UPDATE if lock else ''}""",
+            (revision_id, source_id, *fragment_ids),
+        ))
 
     async def read_confirmed_snapshot(
         self, session, project_id: str, revision: int | None = None
@@ -488,6 +567,7 @@ class ContractRepository:
         )
         sources = await session.fetchall(
             """SELECT ref.corpus_source_id AS id,
+                      asset.id AS revisionId,
                       ref.source_revision AS revision,ref.source_hash AS contentHash,
                       ref.selection_mode AS selectionMode,
                        asset.content_hash AS actualContentHash
@@ -498,12 +578,33 @@ class ContractRepository:
                WHERE ref.creation_contract_id=%s ORDER BY sort_order""",
             (current["creation_contract_id"],),
         )
-        binding = await self.read_binding_snapshot(
-            session, project_id, current["binding_revision_id"]
+        fragments = await session.fetchall(
+            """SELECT ref.corpus_source_id AS sourceId,
+                      ref.corpus_chapter_id AS chapterId,
+                      ref.corpus_fragment_id AS fragmentId,
+                      ref.fragment_hash AS fragmentHash,
+                      ref.chapter_char_start AS chapterCharStart,
+                      ref.chapter_char_end AS chapterCharEnd,
+                      ref.reference_use AS referenceUse,
+                      fragment.content_hash AS actualContentHash
+               FROM creation_contract_corpus_fragment_refs ref
+               LEFT JOIN corpus_fragments fragment
+                 ON fragment.corpus_source_id=ref.corpus_source_id
+                AND fragment.corpus_chapter_id=ref.corpus_chapter_id
+                AND fragment.id=ref.corpus_fragment_id
+               WHERE ref.creation_contract_id=%s ORDER BY sort_order""",
+            (current["creation_contract_id"],),
+        )
+        binding = (
+            await self.read_binding_snapshot(
+                session, project_id, current["binding_revision_id"]
+            )
+            if current["binding_revision_id"] is not None else None
         )
         return dict(current) | {
             "style_refs": tuple(style_refs),
             "experience_card_refs": tuple(cards),
             "corpus_source_refs": tuple(sources),
+            "corpus_fragment_refs": tuple(fragments),
             "binding_items": tuple((binding or {}).get("items") or ()),
         }

@@ -9,6 +9,7 @@ from backend.domain.contracts import (
     CreationContractPayload,
     StyleContractPayload,
 )
+from backend.domain.json_contracts import canonical_hash
 from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption
 
@@ -56,10 +57,39 @@ def creation_values(**overrides: object) -> dict[str, object]:
         "qualityCharterVersion": "writer-core-quality-v1",
         "selectionRevision": 1,
         "selectedSeed": seed(),
+        "seedRevisionId": "seed-revision-1",
+        "seedHash": canonical_hash(seed()),
         "selectedEngine": engine(),
-        "totalWordRange": (800_000, 1_200_000),
-        "chapterCapacityPolicy": "每章推进一个不可逆选择",
-        "modelBindingRevision": 1,
+        "engineOptionId": "engine-option-1",
+        "engineHash": canonical_hash(engine()),
+        "primaryStyleRef": {
+            "id": "style-primary", "revision": 2, "contentHash": "c" * 64,
+        },
+        "secondaryStyleRef": None,
+        "experienceCardRefs": ({
+            "id": "card-1", "revision": 3, "contentHash": "d" * 64,
+        },),
+        "corpusSourceRefs": ({
+            "id": "source-1", "revisionId": "source-revision-5",
+            "revision": 5, "contentHash": "e" * 64,
+            "selectionMode": "author",
+            "fragments": ({
+                "chapterId": "chapter-1", "fragmentId": "fragment-1",
+                "fragmentHash": "f" * 64, "chapterCharStart": 10,
+                "chapterCharEnd": 110, "referenceUse": "style",
+            },),
+            "pinnedHistoricalRevision": False,
+        },),
+        "targetTotalWords": 1_000_000,
+        "expectedVolumeCount": 8,
+        "expectedChapterCount": 400,
+        "chapterWordRangePreference": (2_500, 3_500),
+        "prohibitedDirections": ("不写无代价升级",),
+        "authorNotes": "人物选择优先于设定展示。",
+        "modelBindingRef": {
+            "id": "binding-revision-1", "revision": 1,
+            "contentHash": "1" * 64,
+        },
     }
     values.update(overrides)
     return values
@@ -94,10 +124,22 @@ def test_creation_contract_has_exact_approved_fields_and_quality_charter():
         "qualityCharterVersion",
         "selectionRevision",
         "selectedSeed",
+        "seedRevisionId",
+        "seedHash",
         "selectedEngine",
-        "totalWordRange",
-        "chapterCapacityPolicy",
-        "modelBindingRevision",
+        "engineOptionId",
+        "engineHash",
+        "primaryStyleRef",
+        "secondaryStyleRef",
+        "experienceCardRefs",
+        "corpusSourceRefs",
+        "targetTotalWords",
+        "expectedVolumeCount",
+        "expectedChapterCount",
+        "chapterWordRangePreference",
+        "prohibitedDirections",
+        "authorNotes",
+        "modelBindingRef",
     )
     assert payload.qualityCharterVersion == "writer-core-quality-v1"
     assert "rubric" not in payload.model_dump()
@@ -118,13 +160,38 @@ def test_creation_contract_rejects_unknown_fields_and_is_frozen():
         payload.qualityCharterVersion = "v2"
 
 
-def test_creation_contract_validates_word_range_and_binding_revision():
+def test_creation_contract_validates_capacity_ranges_and_optional_binding():
     with pytest.raises(ValidationError):
-        CreationContractPayload(**creation_values(totalWordRange=(1_200_000, 800_000)))
+        CreationContractPayload(**creation_values(chapterWordRangePreference=(3_500, 2_500)))
     with pytest.raises(ValidationError):
-        CreationContractPayload(**creation_values(totalWordRange=[800_000, 1_200_000]))
+        CreationContractPayload(**creation_values(chapterWordRangePreference=[2_500, 3_500]))
     with pytest.raises(ValidationError):
-        CreationContractPayload(**creation_values(modelBindingRevision=0))
+        CreationContractPayload(**creation_values(targetTotalWords=0))
+
+    payload = CreationContractPayload(**creation_values(modelBindingRef=None))
+    assert payload.modelBindingRef is None
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("targetTotalWords", 100_000_001),
+        ("expectedVolumeCount", 1_001),
+        ("expectedChapterCount", 100_001),
+        ("chapterWordRangePreference", (100_001, 100_001)),
+        ("chapterWordRangePreference", (1, 100_001)),
+    ),
+)
+def test_creation_contract_rejects_capacity_values_above_product_bounds(
+    field_name, value,
+):
+    with pytest.raises(ValidationError):
+        CreationContractPayload(**creation_values(**{field_name: value}))
+
+
+def test_creation_contract_rejects_extreme_integer_before_canonical_json():
+    with pytest.raises(ValidationError):
+        CreationContractPayload(**creation_values(targetTotalWords=10**5_000))
 
 
 @pytest.mark.parametrize(
@@ -251,5 +318,5 @@ def test_style_contract_text_supports_m2c_prompt_and_composed_field_lengths():
 def test_creation_contract_text_remains_bounded_at_2000():
     with pytest.raises(ValidationError):
         CreationContractPayload(**creation_values(
-            chapterCapacityPolicy="章" * (CONTRACT_TEXT_MAX_LENGTH + 1)
+            authorNotes="章" * (CONTRACT_TEXT_MAX_LENGTH + 1)
         ))

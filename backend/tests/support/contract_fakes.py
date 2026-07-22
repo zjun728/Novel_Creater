@@ -141,6 +141,27 @@ class MemoryContractRepository:
                 "head_hash": "e" * 64,
             }
         }
+        self.fragments = {
+            "fragment-1": {
+                "source_id": "source-1",
+                "source_revision_id": "source-revision-5",
+                "source_revision": 5,
+                "source_hash": "e" * 64,
+                "source_archived_at": None,
+                "source_head_revision_id": "source-revision-5",
+                "source_head_revision": 5,
+                "source_head_hash": "e" * 64,
+                "source_status": "analyzed",
+                "chapter_id": "chapter-1",
+                "fragment_id": "fragment-1",
+                "fragment_hash": "f" * 64,
+                "fragment_char_start": 0,
+                "fragment_char_end": 200,
+                "chapter_char_start": 10,
+                "chapter_char_end": 110,
+                "normalized_text": "县志在雨里翻开，墨迹正慢慢改写县令的死期。" * 4,
+            }
+        }
         self.heads = {
             "p1": {
                 "project_id": "p1",
@@ -153,6 +174,7 @@ class MemoryContractRepository:
         }
         self.drafts: dict[str, dict] = {}
         self.confirmed: dict[str, dict] = {}
+        self.confirmed_revisions: dict[tuple[str, int], dict] = {}
         self.confirmation_requests: dict[tuple[str, str], dict] = {}
         self.creation_contracts: dict[str, dict] = {}
         self.style_contracts: dict[str, dict] = {}
@@ -160,6 +182,7 @@ class MemoryContractRepository:
         self.style_refs: list[dict] = []
         self.experience_refs: list[dict] = []
         self.corpus_refs: list[dict] = []
+        self.corpus_fragment_refs: list[dict] = []
         self.write_count = 0
         self.events: list[str] = []
 
@@ -239,6 +262,10 @@ class MemoryContractRepository:
         self.corpus_refs.extend(deepcopy(rows))
         return True
 
+    async def insert_corpus_fragment_refs(self, session, rows):
+        self.corpus_fragment_refs.extend(deepcopy(rows))
+        return True
+
     async def cas_contract_head(self, session, row):
         current = self.heads.get(row["project_id"])
         if current is None or current["revision"] != row["base_revision"]:
@@ -269,7 +296,13 @@ class MemoryContractRepository:
         creation = self.creation_contracts[row["creation_contract_id"]]
         style = self.style_contracts[row["style_contract_id"]]
         engine = self.engine_refs[row["creation_contract_id"]]
-        self.confirmed[row["project_id"]] = {
+        creation_payload = json.loads(creation["content_json"])
+        binding_ref = creation_payload.get("modelBindingRef")
+        corpus_refs = tuple(
+            ref for ref in self.corpus_refs
+            if ref["creation_contract_id"] == creation["id"]
+        )
+        snapshot = {
             "project_id": row["project_id"],
             "revision": row["result_revision"],
             "selection_revision": creation["selection_revision"],
@@ -280,7 +313,9 @@ class MemoryContractRepository:
             "engine_hash": engine["engine_hash"],
             "engine_batch_id": self.engines[engine["engine_option_id"]]["batch_id"],
             "binding_revision_id": creation["binding_revision_id"],
-            "binding_revision": int(json.loads(creation["content_json"])["modelBindingRevision"]),
+            "binding_revision": (
+                int(binding_ref["revision"]) if binding_ref else None
+            ),
             "binding_hash": creation["binding_hash"],
             "creation_hash": creation["content_hash"],
             "style_hash": style["content_hash"],
@@ -301,10 +336,46 @@ class MemoryContractRepository:
                 "contentHash": ref["asset_hash"],
             } for ref in self.experience_refs if ref["creation_contract_id"] == creation["id"]),
             "corpus_source_refs": tuple({
-                "id": ref["corpus_source_id"], "revision": ref["source_revision"],
-                "contentHash": ref["source_hash"], "selectionMode": ref["selection_mode"],
-            } for ref in self.corpus_refs if ref["creation_contract_id"] == creation["id"]),
+                "id": ref["corpus_source_id"],
+                "revisionId": next(
+                    source_ref["revisionId"]
+                    for source_ref in creation_payload["corpusSourceRefs"]
+                    if source_ref["id"] == ref["corpus_source_id"]
+                ),
+                "revision": ref["source_revision"],
+                "contentHash": ref["source_hash"],
+                "selectionMode": ref["selection_mode"],
+                "pinnedHistoricalRevision": next(
+                    source_ref["pinnedHistoricalRevision"]
+                    for source_ref in creation_payload["corpusSourceRefs"]
+                    if source_ref["id"] == ref["corpus_source_id"]
+                ),
+                "fragments": tuple({
+                    "chapterId": fragment["corpus_chapter_id"],
+                    "fragmentId": fragment["corpus_fragment_id"],
+                    "fragmentHash": fragment["fragment_hash"],
+                    "chapterCharStart": fragment["chapter_char_start"],
+                    "chapterCharEnd": fragment["chapter_char_end"],
+                    "referenceUse": fragment["reference_use"],
+                } for fragment in self.corpus_fragment_refs
+                  if fragment["creation_contract_id"] == creation["id"]
+                  and fragment["corpus_source_id"] == ref["corpus_source_id"]),
+            } for ref in corpus_refs),
+            "corpus_fragment_refs": tuple({
+                "sourceId": ref["corpus_source_id"],
+                "chapterId": ref["corpus_chapter_id"],
+                "fragmentId": ref["corpus_fragment_id"],
+                "fragmentHash": ref["fragment_hash"],
+                "chapterCharStart": ref["chapter_char_start"],
+                "chapterCharEnd": ref["chapter_char_end"],
+                "referenceUse": ref["reference_use"],
+            } for ref in self.corpus_fragment_refs
+              if ref["creation_contract_id"] == creation["id"]),
         }
+        self.confirmed[row["project_id"]] = snapshot
+        self.confirmed_revisions[(
+            row["project_id"], row["result_revision"]
+        )] = snapshot
         return True
 
     async def list_contract_revisions(self, session, project_id, limit):
@@ -351,9 +422,11 @@ class MemoryContractRepository:
     ):
         if project_id != "p1":
             return None
-        revision_id = binding_revision_id or self.binding_head[
+        revision_id = binding_revision_id or self.binding_head.get(
             "head_binding_revision_id"
-        ]
+        )
+        if revision_id is None:
+            return None
         revision = self.binding_revisions.get(revision_id)
         return deepcopy(revision | self.binding_head) if revision else None
 
@@ -370,14 +443,40 @@ class MemoryContractRepository:
             self.events.append(f"lock-asset:experience:{asset_id}")
         return deepcopy(self.cards.get(asset_id))
 
-    async def read_corpus_revision(self, session, asset_id, *, lock=False):
+    async def read_corpus_revision(
+        self, session, asset_id, revision_id=None, *, lock=False
+    ):
         if lock:
             self.events.append(f"lock-asset:corpus:{asset_id}")
         return deepcopy(self.sources.get(asset_id))
 
+    async def read_corpus_fragments(
+        self, session, source_id, revision_id, fragment_ids, *, lock=False
+    ):
+        if lock:
+            self.events.append(f"lock-fragments:{source_id}:{revision_id}")
+        return tuple(
+            deepcopy(self.fragments[fragment_id])
+            for fragment_id in fragment_ids
+            if fragment_id in self.fragments
+            and self.fragments[fragment_id]["source_id"] == source_id
+            and self.fragments[fragment_id]["source_revision_id"] == revision_id
+        )
+
     async def read_confirmed_snapshot(self, session, project_id, revision=None):
-        stored = self.confirmed.get(project_id)
-        if stored is None or (revision is not None and stored["revision"] != revision):
+        stored = (
+            self.confirmed.get(project_id)
+            if revision is None
+            else self.confirmed_revisions.get((project_id, revision))
+        )
+        if stored is None and revision is not None:
+            current = self.confirmed.get(project_id)
+            stored = (
+                current
+                if current is not None and current["revision"] == revision
+                else None
+            )
+        if stored is None:
             return None
         snapshot = deepcopy(stored)
         binding = self.binding_revisions.get(snapshot["binding_revision_id"])
@@ -408,6 +507,16 @@ class MemoryContractRepository:
             ref["actualContentHash"] = (
                 asset["source_hash"]
                 if asset and asset["revision"] == ref["revision"] else None
+            )
+            for fragment_ref in ref["fragments"]:
+                fragment = self.fragments.get(fragment_ref["fragmentId"])
+                fragment_ref["actualContentHash"] = (
+                    fragment["fragment_hash"] if fragment else None
+                )
+        for ref in snapshot["corpus_fragment_refs"]:
+            fragment = self.fragments.get(ref["fragmentId"])
+            ref["actualContentHash"] = (
+                fragment["fragment_hash"] if fragment else None
             )
         return snapshot
 
@@ -462,8 +571,12 @@ def draft_values(repository: MemoryContractRepository, **overrides):
         "channelProfileKey": "web-fiction",
         "genreProfileKey": "eastern-fantasy",
         "qualityCharterVersion": "writer-core-quality-v1",
-        "totalWordRange": (800_000, 1_200_000),
-        "chapterCapacityPolicy": "每章推进一个不可逆选择",
+        "targetTotalWords": 1_000_000,
+        "expectedVolumeCount": 8,
+        "expectedChapterCount": 400,
+        "chapterWordRangePreference": (2_500, 3_500),
+        "prohibitedDirections": ("不写无代价升级",),
+        "authorNotes": "人物选择优先于设定展示。",
         "primaryStyleRef": {
             "id": primary["id"], "revision": primary["revision"],
             "contentHash": primary["content_hash"],
@@ -477,8 +590,18 @@ def draft_values(repository: MemoryContractRepository, **overrides):
             "contentHash": card["content_hash"],
         },),
         "corpusSourceRefs": ({
-            "id": source["id"], "revision": source["revision"],
+            "id": source["id"], "revisionId": source["revision_id"],
+            "revision": source["revision"],
             "contentHash": source["source_hash"], "selectionMode": "author",
+            "fragments": ({
+                "chapterId": "chapter-1",
+                "fragmentId": "fragment-1",
+                "fragmentHash": "f" * 64,
+                "chapterCharStart": 10,
+                "chapterCharEnd": 110,
+                "referenceUse": "style",
+            },),
+            "pinnedHistoricalRevision": False,
         },),
         "likes": ("选择有代价",),
         "dislikes": ("空泛升级",),

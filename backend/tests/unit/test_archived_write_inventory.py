@@ -103,8 +103,12 @@ def _contract_draft() -> ContractDraftInput:
         channelProfileKey="male-longform",
         genreProfileKey="fantasy",
         qualityCharterVersion="quality-v1",
-        totalWordRange=(100_000, 200_000),
-        chapterCapacityPolicy="每章推进一个明确变化",
+        targetTotalWords=150_000,
+        expectedVolumeCount=3,
+        expectedChapterCount=60,
+        chapterWordRangePreference=(2_000, 3_000),
+        prohibitedDirections=("不写无代价升级",),
+        authorNotes="每章推进一个明确变化。",
     )
 
 

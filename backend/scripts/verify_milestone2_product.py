@@ -364,11 +364,20 @@ FROM creation_contract_experience_refs r LEFT JOIN experience_cards a
  ON a.id=r.experience_card_id AND a.revision=r.asset_revision
 WHERE r.creation_contract_id=%s ORDER BY r.sort_order"""
 _L5_CORPUS_REFS_SQL = """/* m2:l5_corpus_refs */
-SELECT r.corpus_source_id,r.source_revision,r.source_hash,a.content_hash AS actual_source_hash,
-       r.selection_mode,r.sort_order
+SELECT r.corpus_source_id,a.id AS source_revision_id,r.source_revision,r.source_hash,
+       a.content_hash AS actual_source_hash,r.selection_mode,r.sort_order
 FROM creation_contract_corpus_refs r LEFT JOIN corpus_source_revisions a
  ON a.source_id=r.corpus_source_id AND a.revision=r.source_revision
  AND a.content_hash=r.source_hash
+WHERE r.creation_contract_id=%s ORDER BY r.sort_order"""
+_L5_CORPUS_FRAGMENT_REFS_SQL = """/* m2:l5_corpus_fragment_refs */
+SELECT r.corpus_source_id,r.corpus_chapter_id,r.corpus_fragment_id,
+       r.fragment_hash,f.content_hash AS actual_fragment_hash,
+       r.chapter_char_start,r.chapter_char_end,r.reference_use,r.sort_order
+FROM creation_contract_corpus_fragment_refs r LEFT JOIN corpus_fragments f
+ ON f.corpus_source_id=r.corpus_source_id
+ AND f.corpus_chapter_id=r.corpus_chapter_id
+ AND f.id=r.corpus_fragment_id
 WHERE r.creation_contract_id=%s ORDER BY r.sort_order"""
 
 
@@ -548,6 +557,7 @@ async def _verify_counts(session, *, require_l5: bool) -> None:
             "creation_contract_corpus_refs": 1,
         })
         ranged["creation_contract_experience_refs"] = (1, 4)
+        ranged["creation_contract_corpus_fragment_refs"] = (1, 20)
     for key in row:
         value = expected[key]
         actual = _integer(row, key)
@@ -780,7 +790,15 @@ async def _verify_l5(
         creation = CreationContractPayload.model_validate({
             **creation_json,
             "selectedEngine": _strict_engine(creation_json["selectedEngine"]),
-            "totalWordRange": tuple(creation_json.get("totalWordRange", ())),
+            "chapterWordRangePreference": tuple(
+                creation_json["chapterWordRangePreference"]
+            ),
+            "prohibitedDirections": tuple(creation_json["prohibitedDirections"]),
+            "experienceCardRefs": tuple(creation_json["experienceCardRefs"]),
+            "corpusSourceRefs": tuple({
+                **source,
+                "fragments": tuple(source["fragments"]),
+            } for source in creation_json["corpusSourceRefs"]),
         }, strict=True)
     except (KeyError, ValidationError, TypeError, ValueError):
         raise ProductVerificationError("M2 CreationContract payload is invalid") from None
@@ -811,6 +829,9 @@ async def _verify_l5(
     style_rows = await session.fetchall(_L5_STYLE_REFS_SQL, (row.get("style_contract_id"),))
     card_rows = await session.fetchall(_L5_EXPERIENCE_REFS_SQL, (row.get("creation_contract_id"),))
     corpus_rows = await session.fetchall(_L5_CORPUS_REFS_SQL, (row.get("creation_contract_id"),))
+    fragment_rows = await session.fetchall(
+        _L5_CORPUS_FRAGMENT_REFS_SQL, (row.get("creation_contract_id"),)
+    )
     _require(len(style_rows) == 1 and style_rows[0].get("role") == "primary"
              and style_rows[0].get("asset_hash")
              == style_rows[0].get("actual_asset_hash"),
@@ -837,6 +858,17 @@ async def _verify_l5(
     )
     _require(_integer(corpus_rows[0], "sort_order") == 1,
              "M2 L5 corpus ref sort order mismatch")
+    _require(len(fragment_rows) >= 1, "M2 L5 corpus fragment refs are missing")
+    for expected_sort_order, fragment_row in enumerate(fragment_rows, start=1):
+        _require(
+            fragment_row.get("fragment_hash")
+            == fragment_row.get("actual_fragment_hash"),
+            "M2 L5 corpus fragment ref mismatch",
+        )
+        _require(
+            _integer(fragment_row, "sort_order") == expected_sort_order,
+            "M2 L5 corpus fragment ref sort order mismatch",
+        )
     style_refs = tuple({
         "role": ref.get("role"), "id": ref.get("style_template_id"),
         "revision": ref.get("asset_revision"), "contentHash": ref.get("asset_hash"),
@@ -848,10 +880,22 @@ async def _verify_l5(
         "actualContentHash": ref.get("actual_asset_hash"),
     } for ref in card_rows)
     corpus_refs = tuple({
-        "id": ref.get("corpus_source_id"), "revision": ref.get("source_revision"),
+        "id": ref.get("corpus_source_id"),
+        "revisionId": ref.get("source_revision_id"),
+        "revision": ref.get("source_revision"),
         "contentHash": ref.get("source_hash"), "selectionMode": ref.get("selection_mode"),
         "actualContentHash": ref.get("actual_source_hash"),
     } for ref in corpus_rows)
+    fragment_refs = tuple({
+        "sourceId": ref.get("corpus_source_id"),
+        "chapterId": ref.get("corpus_chapter_id"),
+        "fragmentId": ref.get("corpus_fragment_id"),
+        "fragmentHash": ref.get("fragment_hash"),
+        "chapterCharStart": ref.get("chapter_char_start"),
+        "chapterCharEnd": ref.get("chapter_char_end"),
+        "referenceUse": ref.get("reference_use"),
+        "actualContentHash": ref.get("actual_fragment_hash"),
+    } for ref in fragment_rows)
     snapshot = {
         "project_id": foundation.get("project_id"), "revision": 1,
         "selection_revision": foundation.get("selection_revision"),
@@ -878,6 +922,7 @@ async def _verify_l5(
         "style_contract_id": row.get("style_contract_id"),
         "style_refs": style_refs, "experience_card_refs": card_refs,
         "corpus_source_refs": corpus_refs,
+        "corpus_fragment_refs": fragment_refs,
     }
     try:
         service = ContractService(None, transaction_factory=None, connection_factory=None)

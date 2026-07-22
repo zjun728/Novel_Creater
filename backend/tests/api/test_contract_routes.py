@@ -150,6 +150,31 @@ def test_route_validation_rejects_unknown_long_duplicate_and_same_style_inputs()
     ).status_code == 422
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("targetTotalWords", 100_000_001),
+        ("expectedVolumeCount", 1_001),
+        ("expectedChapterCount", 100_001),
+        ("chapterWordRangePreference", [100_001, 100_001]),
+        ("chapterWordRangePreference", [1, 100_001]),
+    ),
+)
+def test_save_route_returns_stable_422_for_capacity_values_above_product_bounds(
+    field_name, value,
+):
+    client, harness = make_client()
+    body = save_body(harness)
+    body["draft"][field_name] = value
+
+    response = client.put("/api/projects/p1/contract-draft", json=body)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "ContractRequestInvalid"
+    assert set(response.json()) == {"code", "message", "correlationId"}
+    assert harness.repository.write_count == 0
+
+
 def test_path_shaped_input_is_never_persisted_or_reloaded():
     client, harness = make_client()
     valid = save_body(harness)
@@ -295,10 +320,15 @@ def test_clone_route_delegates_and_returns_version_one_from_confirmed_head():
         "experience_card_refs": tuple(
             ref.model_dump(mode="json") for ref in result.experience_card_refs
         ),
-        "corpus_source_refs": tuple(
-            ref.model_dump(mode="json") for ref in result.corpus_source_refs
-        ),
-    }
+            "corpus_source_refs": tuple(
+                ref.model_dump(mode="json") for ref in result.corpus_source_refs
+            ),
+            "corpus_fragment_refs": tuple({
+                "sourceId": source.id,
+                **fragment.model_dump(mode="json"),
+            } for source in result.corpus_source_refs
+              for fragment in source.fragments),
+        }
 
     cloned = client.post("/api/projects/p1/contracts/clone")
     second = client.post("/api/projects/p1/contracts/clone")
@@ -328,6 +358,8 @@ def test_confirm_route_is_strict_returns_201_and_head_history_are_safe():
     assert head.status_code == history.status_code == 200
     assert confirmed.json()["revision"] == head.json()["revision"] == 1
     assert history.json()["items"] == [head.json()]
+    assert confirmed.json()["supersededReasons"] == []
+    assert head.json()["supersededReasons"] == []
     assert len(head.json()["bindingRef"]["items"]) == 8
     assert head.json()["contractReady"] is True
     forbidden = (

@@ -16,8 +16,10 @@ from backend.services.contracts import (
     AssetRevisionRef,
     ConfirmContracts,
     ContractConflict,
+    ContractDraftInput,
     ContractPreconditionFailed,
     ContractService,
+    CorpusSourceRef,
     SaveContractDraft,
 )
 from backend.services.seeds import CreateSeed, SeedService, SelectSeed
@@ -25,11 +27,14 @@ from backend.tests.support.contract_fakes import SEED_PAYLOAD, style_asset
 from backend.tests.integration.test_contract_drafts import (
     BINDING,
     CARD,
+    CHAPTER,
     ENGINE,
+    FRAGMENT,
     PROJECT,
     PROVIDER,
     SEED,
     SOURCE,
+    SOURCE_REV,
     STYLE,
     _bootstrap,
     _draft,
@@ -46,6 +51,7 @@ FORMAL_TABLES = (
     "style_contract_template_refs",
     "creation_contract_experience_refs",
     "creation_contract_corpus_refs",
+    "creation_contract_corpus_fragment_refs",
     "contract_confirmation_requests",
 )
 
@@ -135,6 +141,9 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     assert await _count(disposable_mysql.session, "style_contract_template_refs") == 1
     assert await _count(disposable_mysql.session, "creation_contract_experience_refs") == 1
     assert await _count(disposable_mysql.session, "creation_contract_corpus_refs") == 1
+    assert await _count(
+        disposable_mysql.session, "creation_contract_corpus_fragment_refs"
+    ) == 1
     request = await disposable_mysql.session.fetchone(
         "SELECT * FROM contract_confirmation_requests WHERE project_id=%s",
         (PROJECT,),
@@ -148,7 +157,13 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     )
     assert creation_row == {
         "quality_charter_version": saved.draft.qualityCharterVersion,
-        "chapter_capacity_policy": saved.draft.chapterCapacityPolicy,
+        "chapter_capacity_policy": canonical_json({
+            "expectedVolumeCount": saved.draft.expectedVolumeCount,
+            "expectedChapterCount": saved.draft.expectedChapterCount,
+            "chapterWordRangePreference": list(
+                saved.draft.chapterWordRangePreference
+            ),
+        }),
     }
     assert (await service.get_head(PROJECT)).revision == 1
     assert tuple(item.revision for item in await service.history(PROJECT)) == (1,)
@@ -164,9 +179,145 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     old_replay = await service.confirm(_confirm(saved))
     assert second.revision == 2
     assert tuple(item.revision for item in history) == (2, 1)
-    assert old_replay == first
+    assert history[0].contract_ready is True
+    assert history[0].superseded_reasons == ()
+    assert history[1].contract_ready is False
+    assert history[1].reasons == ("superseded",)
+    assert history[1].superseded_reasons == ("contract_revision_replaced",)
+    assert old_replay.creation_contract_id == first.creation_contract_id
+    assert old_replay.creation_hash == first.creation_hash
+    assert old_replay.contract_ready is False
+    assert old_replay.reasons == ("superseded",)
+    assert old_replay.superseded_reasons == ("contract_revision_replaced",)
     assert history[1].creation_contract == first.creation_contract
     assert history[1].style_contract == first.style_contract
+
+
+@pytest.mark.asyncio
+async def test_real_confirmation_accepts_maximum_legal_capacity_values(
+    disposable_mysql,
+):
+    service = _service(disposable_mysql)
+    facts = await _bootstrap(disposable_mysql.session)
+    values = _draft(facts).model_dump(mode="python")
+    values.update({
+        "targetTotalWords": 100_000_000,
+        "expectedVolumeCount": 1_000,
+        "expectedChapterCount": 100_000,
+        "chapterWordRangePreference": (100_000, 100_000),
+    })
+
+    saved = await service.save_draft(SaveContractDraft(
+        PROJECT, 0, ContractDraftInput(**values)
+    ))
+    preview = await service.preview(PROJECT)
+    confirmed = await service.confirm(_confirm(saved, key="confirm-max-capacity"))
+    creation_row = await disposable_mysql.session.fetchone(
+        """SELECT total_word_min,total_word_max,chapter_capacity_policy
+             FROM creation_contracts WHERE id=%s""",
+        (confirmed.creation_contract_id,),
+    )
+
+    assert preview.contract_ready is True
+    assert confirmed.contract_ready is True
+    assert creation_row == {
+        "total_word_min": 100_000_000,
+        "total_word_max": 100_000_000,
+        "chapter_capacity_policy": canonical_json({
+            "expectedVolumeCount": 1_000,
+            "expectedChapterCount": 100_000,
+            "chapterWordRangePreference": [100_000, 100_000],
+        }),
+    }
+
+
+@pytest.mark.asyncio
+async def test_real_manual_confirmation_without_binding_is_nullable_and_replayable(
+    disposable_mysql,
+):
+    service = _service(disposable_mysql)
+    facts = await _bootstrap(disposable_mysql.session)
+    await disposable_mysql.session.execute(
+        "DELETE FROM project_model_binding_heads WHERE project_id=%s", (PROJECT,)
+    )
+    saved = await service.save_draft(SaveContractDraft(PROJECT, 0, _draft(facts)))
+
+    first = await service.confirm(_confirm(saved, key="confirm-without-binding"))
+    replay = await service.confirm(_confirm(saved, key="confirm-without-binding"))
+    creation = await disposable_mysql.session.fetchone(
+        """SELECT binding_revision_id,binding_hash FROM creation_contracts
+           WHERE id=%s""",
+        (first.creation_contract_id,),
+    )
+
+    assert saved.draft.modelBindingRef is None
+    assert first == replay
+    assert first.binding_ref is None
+    assert first.creation_contract.modelBindingRef is None
+    assert first.contract_ready is True
+    assert creation == {"binding_revision_id": None, "binding_hash": None}
+    assert await _count(
+        disposable_mysql.session, "creation_contract_corpus_fragment_refs"
+    ) == 1
+    assert await disposable_mysql.session.fetchone(
+        "SELECT id FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
+    ) is None
+    assert (await service.get_head(PROJECT)).contract_ready is True
+
+
+@pytest.mark.parametrize(
+    ("drift", "expected_reason"),
+    (
+        ("unknown", "corpus_fragment_missing"),
+        ("hash", "corpus_fragment_invalid"),
+        ("range", "corpus_fragment_invalid"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_real_fragment_reference_rejects_unknown_hash_and_out_of_bounds(
+    disposable_mysql, drift, expected_reason,
+):
+    service = _service(disposable_mysql)
+    facts = await _bootstrap(disposable_mysql.session)
+    fragment_id = FRAGMENT
+    fragment_hash = facts["fragment_hash"]
+    char_start, char_end = 10, 110
+    if drift == "unknown":
+        fragment_id = "82000000-0000-0000-0000-000000000099"
+    elif drift == "hash":
+        fragment_hash = "e" * 64
+    else:
+        char_start, char_end = 250, 350
+    source_ref = CorpusSourceRef(
+        id=SOURCE,
+        revisionId=SOURCE_REV,
+        revision=1,
+        contentHash=facts["source_hash"],
+        selectionMode="author",
+        fragments=({
+            "chapterId": CHAPTER,
+            "fragmentId": fragment_id,
+            "fragmentHash": fragment_hash,
+            "chapterCharStart": char_start,
+            "chapterCharEnd": char_end,
+            "referenceUse": "style",
+        },),
+        pinnedHistoricalRevision=False,
+    )
+    saved = await service.save_draft(SaveContractDraft(
+        PROJECT, 0, _draft(facts, corpus_source_refs=(source_ref,))
+    ))
+
+    preview = await service.preview(PROJECT)
+
+    assert preview.contract_ready is False
+    assert any(reason.startswith(expected_reason) for reason in preview.reasons)
+    with pytest.raises(ContractConflict):
+        await service.confirm(_confirm(saved, key=f"invalid-fragment-{drift}"))
+    assert await _count(disposable_mysql.session, "creation_contracts") == 0
+    assert await _count(
+        disposable_mysql.session, "creation_contract_corpus_fragment_refs"
+    ) == 0
 
 
 @pytest.mark.asyncio
@@ -251,8 +402,10 @@ async def test_real_a_b_a_marks_old_contract_history_and_replay_superseded(
     assert selected_a.selection_revision == 3
     assert historical[0].contract_ready is False
     assert historical[0].reasons == ("superseded",)
+    assert historical[0].superseded_reasons == ("selection_revision_changed",)
     assert replay.contract_ready is False
     assert replay.reasons == ("superseded",)
+    assert replay.superseded_reasons == ("selection_revision_changed",)
     assert await disposable_mysql.session.fetchone(
         """SELECT revision,creation_contract_id
              FROM project_contract_heads WHERE project_id=%s""",
@@ -284,7 +437,7 @@ async def test_real_same_seed_reselection_keeps_old_engine_draft_fail_closed(
 
     assert selection_two.selection_revision == 2
     assert preview.contract_ready is False
-    assert preview.reasons == ("seed_drift",)
+    assert preview.reasons == ("selection_drift",)
     with pytest.raises(ContractConflict):
         await contract_service.confirm(
             _confirm(initial, key="old-engine-selection")
@@ -531,8 +684,9 @@ async def test_real_reverse_cross_project_provider_and_asset_locks_finish_withou
 
 @pytest.mark.parametrize("stage", (
     "after_confirmation_reserve", "after_creation_insert", "after_style_insert",
-    "after_engine_refs", "after_style_refs", "after_card_refs",
-    "after_corpus_refs", "after_head_cas", "after_draft_delete",
+        "after_engine_refs", "after_style_refs", "after_card_refs",
+        "after_corpus_refs", "after_corpus_fragment_refs", "after_head_cas",
+        "after_draft_delete",
     "before_request_success",
 ))
 @pytest.mark.asyncio

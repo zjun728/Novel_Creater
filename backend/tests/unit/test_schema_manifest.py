@@ -696,6 +696,9 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
     ):
         assert contract in creation
     assert "quality_charter_version varchar(120) not null" in creation
+    assert "binding_revision_id char(36) null" in creation
+    assert "binding_hash char(64) null" in creation
+    assert "check ((binding_revision_id is null and binding_hash is null) or (binding_revision_id is not null and binding_hash is not null))" in creation
     assert "chapter_capacity_policy text not null" in creation
     assert "reference_manifest_json json not null" in creation
     assert "reference_manifest_hash char(64) not null" in creation
