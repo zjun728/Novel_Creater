@@ -18,8 +18,12 @@ function draftValues(stage) {
     channelProfileKey: 'qidian',
     genreProfileKey: 'xuanhuan',
     qualityCharterVersion: 'writer-core-quality-v1',
-    totalWordRange: [1000000, 2000000],
-    chapterCapacityPolicy: 'manual-finalization',
+    targetTotalWords: 1_500_000,
+    expectedVolumeCount: 8,
+    expectedChapterCount: 500,
+    chapterWordRangePreference: [2_800, 3_400],
+    prohibitedDirections: ['不写无代价升级'],
+    authorNotes: '人物选择优先。',
   }
   if (stage === 'engine') {
     return {
@@ -246,7 +250,7 @@ test('successful load, save, confirm and clone checkpoints clear unsaved edit st
 
     loadVersion = 1
     store.markUnsavedChanges()
-    await store.cloneRevision('project-1')
+    await store.cloneRevision('project-1', 1)
     assert.equal(store.hasUnsavedChanges, false)
   })
 })
@@ -783,14 +787,15 @@ test('cloneRevision performs one formal API call and installs the returned backe
   let clones = 0
 
   await withApiMethods([
-    [api.contracts, 'clone', async projectId => {
+    [api.contracts, 'clone', async (projectId, sourceRevision) => {
       clones += 1
+      assert.equal(sourceRevision, 4)
       return { ...publicDraft('assets', 1), projectId, baseHeadRevision: 4 }
     }],
   ], async () => {
     setActivePinia(createPinia())
     const store = useCreationContractStore()
-    const result = await store.cloneRevision('project-1')
+    const result = await store.cloneRevision('project-1', 4)
 
     assert.equal(clones, 1)
     assert.equal(result.baseHeadRevision, 4)
@@ -821,7 +826,7 @@ test('clone clears prior confirmation replay so the same key confirms the new dr
     await store.load('project-1')
 
     await store.confirm('project-1', { idempotencyKey: 'reused-key' })
-    await store.cloneRevision('project-1')
+    await store.cloneRevision('project-1', 1)
     await store.confirm('project-1', { idempotencyKey: 'reused-key' })
 
     assert.deepEqual(confirmCalls, [
@@ -836,5 +841,139 @@ test('clone clears prior confirmation replay so the same key confirms the new dr
         expectedDraftHash: HASH_B,
       },
     ])
+  })
+})
+
+test('style trial uses the backend gateway and remains temporary contract-neutral state', async () => {
+  assert.equal(typeof api.styleTrials?.generate, 'function')
+  const restoreStorage = installThrowingLocalStorage()
+  const calls = []
+  const trial = {
+    attemptId: 'trial-1',
+    status: 'succeeded',
+    sample: '原创试写正文',
+    resultHash: HASH_A,
+    publicErrorCode: null,
+    provider: {
+      providerId: 'provider-1',
+      providerType: 'openai-compatible',
+      modelName: 'safe-model-name',
+      profileRevision: 7,
+    },
+  }
+  const command = {
+    selectionRevision: 3,
+    engineOptionId: 'engine-1',
+    engineHash: HASH_A,
+    primaryStyleRevisionId: 'style-1',
+    primaryStyleHash: HASH_B,
+    secondaryStyleRevisionId: null,
+    secondaryStyleHash: null,
+    authorScenario: '主角必须在救人和守住秘密之间做选择。',
+    idempotencyKey: 'i'.repeat(64),
+  }
+
+  try {
+    await withApiMethods([
+      [api.styleTrials, 'generate', async (projectId, payload) => {
+        calls.push({ projectId, payload: structuredClone(payload) })
+        return trial
+      }],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = useCreationContractStore()
+      const beforeDraft = store.draft
+      const result = await store.runStyleTrial('project-1', command)
+
+      assert.equal(result, trial)
+      assert.equal(store.styleTrial, trial)
+      assert.equal(store.styleTrialLoading, false)
+      assert.equal(store.draft, beforeDraft)
+      assert.equal(store.previewResult, null)
+      assert.equal(store.confirmed, null)
+      assert.equal(store.hasUnsavedChanges, false)
+      assert.deepEqual(calls, [{ projectId: 'project-1', payload: command }])
+      store.clearStyleTrial()
+      assert.equal(store.styleTrial, null)
+      assert.equal(calls.length, 1)
+    })
+  } finally {
+    restoreStorage()
+  }
+})
+
+test('history is explicit read-only state and exposes pinned assets and superseded reasons', async () => {
+  const history = {
+    items: [{
+      revision: 4,
+      selectionRevision: 8,
+      styleRefs: [{ id: 'style-1', revision: 2, contentHash: HASH_A }],
+      experienceCardRefs: [{ id: 'card-1', revision: 3, contentHash: HASH_B }],
+      corpusSourceRefs: [{
+        id: 'source-1', revisionId: 'source-revision-1', revision: 1,
+        contentHash: HASH_A, selectionMode: 'author', pinnedHistoricalRevision: true,
+        fragments: [],
+      }],
+      supersededReasons: ['contract_revision_replaced'],
+    }],
+  }
+  let calls = 0
+
+  await withApiMethods([
+    [api.contracts, 'history', async (projectId, params) => {
+      calls += 1
+      assert.equal(projectId, 'project-1')
+      assert.deepEqual(params, { limit: 50 })
+      return history
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    const result = await store.loadHistory('project-1', { limit: 50 })
+
+    assert.equal(calls, 1)
+    assert.equal(result, history)
+    assert.deepEqual(store.history, history.items)
+    assert.equal(store.historyLoading, false)
+    assert.equal(store.draft, null)
+    assert.equal(store.hasUnsavedChanges, false)
+  })
+})
+
+test('archived read-only mode rejects every formal write before transport', async () => {
+  assert.equal(typeof api.styleTrials?.generate, 'function')
+  let writes = 0
+  const unexpectedWrite = async () => {
+    writes += 1
+    throw new Error('archived projects must not write')
+  }
+
+  await withApiMethods([
+    [api.contracts.draft, 'save', unexpectedWrite],
+    [api.contracts, 'preview', unexpectedWrite],
+    [api.contracts, 'confirm', unexpectedWrite],
+    [api.contracts, 'clone', unexpectedWrite],
+    [api.storyEngines, 'generate', unexpectedWrite],
+    [api.storyEngines, 'manual', unexpectedWrite],
+    [api.styleTrials, 'generate', unexpectedWrite],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useCreationContractStore()
+    store.setReadOnly(true)
+
+    for (const operation of [
+      () => store.saveDraft('project-1', draftValues('engine')),
+      () => store.preview('project-1'),
+      () => store.confirm('project-1', { idempotencyKey: 'archived' }),
+      () => store.cloneRevision('project-1', 1),
+      () => store.generateEngineBatch('project-1', { idempotencyKey: 'archived' }),
+      () => store.createManualEngineBatch('project-1', { idempotencyKey: 'archived', options: [] }),
+      () => store.runStyleTrial('project-1', {}),
+    ]) {
+      await assert.rejects(operation, error => error?.code === 'contract_read_only')
+    }
+
+    assert.equal(writes, 0)
+    assert.equal(store.readOnly, true)
   })
 })

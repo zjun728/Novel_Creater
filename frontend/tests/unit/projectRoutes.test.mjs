@@ -41,6 +41,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     applicationSettingsPath,
     experienceLibraryPath,
     chapterWriterPath,
+    projectContractPath,
     projectModelSettingsPath,
     projectOverviewPath,
     projectSeedsPath,
@@ -51,6 +52,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
   assert.equal(experienceLibraryPath(), '/assets/experience')
   assert.equal(projectOverviewPath('a/b'), '/projects/a%2Fb/overview')
   assert.equal(projectSeedsPath('a/b'), '/projects/a%2Fb/seeds')
+  assert.equal(projectContractPath('a/b'), '/projects/a%2Fb/contract')
   assert.equal(
     projectModelSettingsPath('a/b'),
     '/projects/a%2Fb/settings/models',
@@ -79,6 +81,10 @@ test('formal route registry names only canonical destinations and catches retire
   assert.equal(router.resolve('/assets/experience').name, 'ExperienceLibrary')
   assert.equal(router.resolve('/projects/project-1/overview').name, 'ProjectOverview')
   assert.equal(router.resolve('/projects/project-1/seeds').name, 'ProjectSeeds')
+  assert.equal(
+    router.resolve('/projects/project-1/contract').name,
+    'ProjectContract',
+  )
   assert.equal(
     router.resolve('/projects/project-1/settings/models').name,
     'ProjectModelSettings',

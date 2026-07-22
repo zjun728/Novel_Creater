@@ -11,6 +11,7 @@ import {
   corpusLibraryPath,
   experienceLibraryPath,
   projectLibraryPath,
+  projectContractPath,
   projectModelSettingsPath,
   projectOverviewPath,
   projectSeedsPath,
@@ -74,6 +75,9 @@ function routeTitle(route, project) {
   if (name === 'ProjectSeeds') {
     return isArchived(project) ? '已归档种子档案' : '创作种子'
   }
+  if (name === 'ProjectContract') {
+    return isArchived(project) ? '已归档创作契约' : '创作契约'
+  }
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
@@ -135,6 +139,13 @@ export function createProductShellModel({
                 path: projectSeedsPath(project.id),
                 mark: '种',
                 selected: routeName(route) === 'ProjectSeeds',
+              },
+              {
+                key: 'contract',
+                label: '创作契约',
+                path: projectContractPath(project.id),
+                mark: '契',
+                selected: routeName(route) === 'ProjectContract',
               },
               {
                 key: 'models',

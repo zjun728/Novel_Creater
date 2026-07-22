@@ -28,6 +28,12 @@ function missingDraftError() {
   return error
 }
 
+function readOnlyError() {
+  const error = new Error('已归档项目仅供只读查看')
+  error.code = 'contract_read_only'
+  return error
+}
+
 export const useCreationContractStore = defineStore('creationContract', () => {
   const projectId = ref('')
   const draft = shallowRef(null)
@@ -35,12 +41,15 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const confirmed = shallowRef(null)
   const head = shallowRef(null)
   const engineBatch = shallowRef(null)
+  const styleTrial = shallowRef(null)
+  const history = shallowRef([])
   const recoverableBatches = shallowRef([])
   const reconcilingBatchIds = ref([])
   const conflict = shallowRef(null)
   const error = shallowRef(null)
   const requiresReload = ref(false)
   const hasUnsavedChanges = ref(false)
+  const readOnly = ref(false)
 
   const loading = ref(false)
   const saving = ref(false)
@@ -49,6 +58,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const cloning = ref(false)
   const engineLoading = ref(false)
   const reconciling = ref(false)
+  const styleTrialLoading = ref(false)
+  const historyLoading = ref(false)
 
   const loadGuard = createLatestRequestGuard()
   const saveGuard = createLatestRequestGuard()
@@ -56,9 +67,11 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const confirmGuard = createLatestRequestGuard()
   const cloneGuard = createLatestRequestGuard()
   const engineGuard = createLatestRequestGuard()
+  const styleTrialGuard = createLatestRequestGuard()
+  const historyGuard = createLatestRequestGuard()
   const guards = [
     loadGuard, saveGuard, previewGuard, confirmGuard, cloneGuard,
-    engineGuard,
+    engineGuard, styleTrialGuard, historyGuard,
   ]
   const confirmCommands = new Map()
   const recoverableCommands = new Map()
@@ -96,6 +109,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     confirmed.value = null
     head.value = null
     engineBatch.value = null
+    styleTrial.value = null
+    history.value = []
     recoverableBatches.value = []
     reconcilingBatchIds.value = []
     conflict.value = null
@@ -109,6 +124,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     cloning.value = false
     engineLoading.value = false
     reconciling.value = false
+    styleTrialLoading.value = false
+    historyLoading.value = false
     confirmCommands.clear()
     recoverableCommands.clear()
   }
@@ -130,11 +147,21 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   function markUnsavedChanges() {
+    if (readOnly.value) return
     // A local edit is a newer state boundary than any read already in flight.
     // Without this generation bump, a late load could clear the dirty flag and
     // silently replace the draft underneath the active form.
     contractStateGeneration += 1
     hasUnsavedChanges.value = true
+  }
+
+  function setReadOnly(value) {
+    readOnly.value = value === true
+    if (readOnly.value) hasUnsavedChanges.value = false
+  }
+
+  function assertWritable() {
+    if (readOnly.value) throw readOnlyError()
   }
 
   function discardUnsavedChanges() {
@@ -186,6 +213,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
       if (currentContractState(loadGuard, generation, targetProjectId, stateGeneration)) {
         draft.value = loadedDraft
         head.value = loadedHead
+        styleTrial.value = null
         recoverableBatches.value = Array.isArray(recovery?.items)
           ? recovery.items.map(item => ({ ...item }))
           : []
@@ -206,6 +234,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function saveDraft(nextProjectId, values) {
+    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
     const generation = saveGuard.begin()
     const stateGeneration = ++contractStateGeneration
@@ -220,6 +249,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
         draft.value = saved
         previewResult.value = null
         confirmed.value = null
+        styleTrial.value = null
         conflict.value = null
         error.value = null
         requiresReload.value = false
@@ -235,6 +265,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function preview(nextProjectId) {
+    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
     const generation = previewGuard.begin()
     const stateGeneration = contractStateGeneration
@@ -255,6 +286,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function confirm(nextProjectId, { idempotencyKey } = {}) {
+    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
     const commandKey = `${targetProjectId}:${String(idempotencyKey || '')}`
     let command = confirmCommands.get(commandKey)
@@ -292,13 +324,14 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     }
   }
 
-  async function cloneRevision(nextProjectId) {
+  async function cloneRevision(nextProjectId, sourceRevision) {
+    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
     const generation = cloneGuard.begin()
     const stateGeneration = ++contractStateGeneration
     cloning.value = true
     try {
-      const result = await api.contracts.clone(targetProjectId)
+      const result = await api.contracts.clone(targetProjectId, sourceRevision)
       if (currentContractState(cloneGuard, generation, targetProjectId, stateGeneration)) {
         draft.value = result
         previewResult.value = null
@@ -319,6 +352,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function runEngineRequest(nextProjectId, operation, { reconcile = false } = {}) {
+    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
     const generation = engineGuard.begin()
     engineLoading.value = true
@@ -371,6 +405,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function reconcileRecoverableBatch(nextProjectId, batchId) {
+    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
     const normalizedId = String(batchId || '')
     if (!normalizedId) throw new TypeError('batchId is required')
@@ -422,6 +457,69 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     }
   }
 
+  async function runStyleTrial(nextProjectId, command) {
+    assertWritable()
+    const targetProjectId = enterProject(nextProjectId)
+    const generation = styleTrialGuard.begin()
+    const stateGeneration = contractStateGeneration
+    styleTrialLoading.value = true
+    try {
+      const result = await api.styleTrials.generate(targetProjectId, command)
+      if (currentContractState(
+        styleTrialGuard,
+        generation,
+        targetProjectId,
+        stateGeneration,
+      )) {
+        styleTrial.value = result
+        error.value = null
+      }
+      return result
+    } catch (failure) {
+      recordFailure(
+        failure,
+        styleTrialGuard,
+        generation,
+        targetProjectId,
+        stateGeneration,
+      )
+      throw failure
+    } finally {
+      if (current(styleTrialGuard, generation, targetProjectId)) {
+        styleTrialLoading.value = false
+      }
+    }
+  }
+
+  function clearStyleTrial() {
+    styleTrialGuard.invalidate()
+    styleTrial.value = null
+    styleTrialLoading.value = false
+  }
+
+  async function loadHistory(nextProjectId, { limit = 50 } = {}) {
+    const targetProjectId = enterProject(nextProjectId)
+    const generation = historyGuard.begin()
+    historyLoading.value = true
+    try {
+      const result = await api.contracts.history(targetProjectId, { limit })
+      if (current(historyGuard, generation, targetProjectId)) {
+        history.value = Array.isArray(result?.items)
+          ? result.items.map(item => ({ ...item }))
+          : []
+        error.value = null
+      }
+      return result
+    } catch (failure) {
+      recordFailure(failure, historyGuard, generation, targetProjectId)
+      throw failure
+    } finally {
+      if (current(historyGuard, generation, targetProjectId)) {
+        historyLoading.value = false
+      }
+    }
+  }
+
   return {
     projectId,
     draft,
@@ -429,12 +527,15 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     confirmed,
     head,
     engineBatch,
+    styleTrial,
+    history,
     recoverableBatches,
     reconcilingBatchIds,
     conflict,
     error,
     requiresReload,
     hasUnsavedChanges,
+    readOnly,
     loading,
     saving,
     previewing,
@@ -442,6 +543,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     cloning,
     engineLoading,
     reconciling,
+    styleTrialLoading,
+    historyLoading,
     lastSavedStage,
     readiness,
     contractReady,
@@ -449,6 +552,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     providerOutcomeUnknown,
     markUnsavedChanges,
     discardUnsavedChanges,
+    setReadOnly,
     load,
     saveDraft,
     preview,
@@ -459,5 +563,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     loadEngineBatch,
     reconcileBatch,
     reconcileRecoverableBatch,
+    runStyleTrial,
+    clearStyleTrial,
+    loadHistory,
   }
 })

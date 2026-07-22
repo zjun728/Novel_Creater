@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
@@ -14,9 +14,11 @@ import {
 
 import { useCreationAssetStore } from '@/stores/creationAssetStore'
 import { useCreationContractStore } from '@/stores/creationContractStore'
+import StyleTrialPanel from './StyleTrialPanel.vue'
 
 const props = defineProps({
   projectId: { type: String, required: true },
+  selectionRevision: { type: Number, required: true },
 })
 
 const emit = defineEmits(['saved', 'dirty-change', 'back'])
@@ -26,6 +28,7 @@ const contractStore = useCreationContractStore()
 const loading = ref(false)
 const loadError = ref('')
 const saveError = ref('')
+const errorRegion = ref(null)
 const primaryStyleId = ref(null)
 const secondaryStyleId = ref(null)
 const primaryFrozenRef = ref(null)
@@ -97,12 +100,17 @@ function markDirty() {
   emit('dirty-change', true)
 }
 
+function setSaveError(message) {
+  saveError.value = String(message || '')
+  if (saveError.value) void nextTick(() => errorRegion.value?.focus({ preventScroll: false }))
+}
+
 function setPrimary(id) {
   if (contractStore.saving) return
   if (primaryStyleId.value === id) return
   const style = styleById(id)
   if (!style) {
-    saveError.value = '所选主风格已不在当前模板库，请重新加载。'
+    setSaveError('所选主风格已不在当前模板库，请重新加载。')
     return
   }
   primaryStyleId.value = id
@@ -119,13 +127,13 @@ function setSecondary(id) {
   if (contractStore.saving) return
   const next = id || null
   if (next === primaryStyleId.value) {
-    saveError.value = '主风格和次风格不能选择同一个模板。'
+    setSaveError('主风格和次风格不能选择同一个模板。')
     return
   }
   if (secondaryStyleId.value === next) return
   const style = next ? styleById(next) : null
   if (next && !style) {
-    saveError.value = '所选次风格已不在当前模板库，请重新加载。'
+    setSaveError('所选次风格已不在当前模板库，请重新加载。')
     return
   }
   secondaryStyleId.value = next
@@ -178,7 +186,11 @@ async function initialize(projectId, { reloadContract = false } = {}) {
     contractStore.discardUnsavedChanges()
     emit('dirty-change', false)
   } catch (error) {
-    if (epoch === loadEpoch) loadError.value = error?.message || '风格模板加载失败'
+    if (epoch === loadEpoch) {
+      loadError.value = error?.message || '风格模板加载失败'
+      await nextTick()
+      errorRegion.value?.focus({ preventScroll: false })
+    }
   } finally {
     if (epoch === loadEpoch) loading.value = false
   }
@@ -208,19 +220,19 @@ async function saveAndContinue() {
   const dislikes = splitPreferenceLines(dislikesText.value)
 
   if (!current?.engineOptionId || !current?.engineHash) {
-    saveError.value = '故事发动机草稿已失效，请返回上一步重新加载。'
+    setSaveError('故事发动机草稿已失效，请返回上一步重新加载。')
     return
   }
   if (!primary || !primaryStyleId.value) {
-    saveError.value = '请选择一个主风格。'
+    setSaveError('请选择一个主风格。')
     return
   }
   if (secondary?.id === primary.id) {
-    saveError.value = '主风格和次风格不能选择同一个模板。'
+    setSaveError('主风格和次风格不能选择同一个模板。')
     return
   }
   if (likes.length > 20 || dislikes.length > 20) {
-    saveError.value = '喜欢和避开的表现各自最多填写 20 条。'
+    setSaveError('喜欢和避开的表现各自最多填写 20 条。')
     return
   }
 
@@ -233,8 +245,12 @@ async function saveAndContinue() {
       channelProfileKey: current.channelProfileKey,
       genreProfileKey: current.genreProfileKey,
       qualityCharterVersion: current.qualityCharterVersion,
-      totalWordRange: current.totalWordRange,
-      chapterCapacityPolicy: current.chapterCapacityPolicy,
+      targetTotalWords: current.targetTotalWords,
+      expectedVolumeCount: current.expectedVolumeCount,
+      expectedChapterCount: current.expectedChapterCount,
+      chapterWordRangePreference: current.chapterWordRangePreference,
+      prohibitedDirections: current.prohibitedDirections,
+      authorNotes: current.authorNotes,
       primaryStyleRef: styleRef(primary),
       secondaryStyleRef: secondary ? styleRef(secondary) : null,
       likes,
@@ -243,13 +259,13 @@ async function saveAndContinue() {
       corpusSourceRefs: null,
     })
     if (contractStore.draft !== saved) {
-      saveError.value = '保存期间风格内容发生了变化，请核对后再次保存。'
+      setSaveError('保存期间风格内容发生了变化，请核对后再次保存。')
       return
     }
     emit('dirty-change', false)
     emit('saved')
   } catch (error) {
-    saveError.value = error?.message || '风格契约保存失败'
+    setSaveError(error?.message || '风格契约保存失败')
   }
 }
 
@@ -264,14 +280,14 @@ onBeforeUnmount(() => {
   <section class="contract-step" aria-labelledby="style-step-heading">
     <header class="step-heading">
       <div>
-        <p class="step-kicker">STEP 03 · STYLE CONTRACT</p>
+        <p class="step-kicker">STEP 02 · STYLE CONTRACT</p>
         <h3 id="style-step-heading">先定阅读感受，再谈写法</h3>
         <p>主风格决定整本书的语言底色；次风格只借少量局部技法，不与主风格平分控制权。</p>
       </div>
-      <span class="step-number" aria-hidden="true">03</span>
+      <span class="step-number" aria-hidden="true">02</span>
     </header>
 
-    <n-alert v-if="loadError" type="error" class="state-alert" title="风格模板未能加载">
+    <n-alert v-if="loadError" ref="errorRegion" tabindex="-1" type="error" class="state-alert" title="风格模板未能加载" aria-live="assertive">
       {{ loadError }}
       <template #action><n-button size="small" :disabled="contractStore.saving" @click="initialize(props.projectId, { reloadContract: true })">重新加载</n-button></template>
     </n-alert>
@@ -350,6 +366,15 @@ onBeforeUnmount(() => {
             </div>
           </article>
         </div>
+
+        <StyleTrialPanel
+          :project-id="props.projectId"
+          :selection-revision="props.selectionRevision"
+          :engine-option-id="draftValues.engineOptionId"
+          :engine-hash="draftValues.engineHash"
+          :primary-style-ref="primaryFrozenRef"
+          :secondary-style-ref="secondaryFrozenRef"
+        />
       </section>
 
       <section class="selection-panel" aria-labelledby="style-selection-heading">
@@ -421,7 +446,7 @@ onBeforeUnmount(() => {
       </section>
     </template>
 
-    <n-alert v-if="saveError" type="error" class="state-alert" aria-live="assertive">
+    <n-alert v-if="saveError" ref="errorRegion" tabindex="-1" type="error" class="state-alert" aria-live="assertive">
       {{ saveError }}
       <template v-if="contractStore.requiresReload" #action>
         <n-button size="small" :disabled="contractStore.saving" @click="initialize(props.projectId, { reloadContract: true })">重新加载项目状态</n-button>
@@ -438,7 +463,7 @@ onBeforeUnmount(() => {
           :loading="contractStore.saving"
           :disabled="loading || contractStore.saving || contractStore.requiresReload || Boolean(loadError) || !primaryStyleId"
           @click="saveAndContinue"
-        >保存并继续</n-button>
+        >保存草稿并继续</n-button>
       </div>
     </footer>
 

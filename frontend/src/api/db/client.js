@@ -82,9 +82,16 @@ const STORY_ENGINE_FIELDS = [
 ]
 const CONTRACT_DRAFT_FIELDS = [
   'schemaVersion', 'draftStage', 'engineOptionId', 'engineHash', 'channelProfileKey',
-  'genreProfileKey', 'qualityCharterVersion', 'totalWordRange',
-  'chapterCapacityPolicy', 'primaryStyleRef', 'secondaryStyleRef',
+  'genreProfileKey', 'qualityCharterVersion', 'targetTotalWords',
+  'expectedVolumeCount', 'expectedChapterCount', 'chapterWordRangePreference',
+  'prohibitedDirections', 'authorNotes', 'primaryStyleRef', 'secondaryStyleRef',
   'experienceCardRefs', 'corpusSourceRefs', 'likes', 'dislikes',
+]
+const STYLE_TRIAL_FIELDS = [
+  'selectionRevision', 'engineOptionId', 'engineHash',
+  'primaryStyleRevisionId', 'primaryStyleHash',
+  'secondaryStyleRevisionId', 'secondaryStyleHash',
+  'authorScenario', 'idempotencyKey',
 ]
 
 const seedPayload = value => pickDefined(value, SEED_FIELDS)
@@ -93,9 +100,20 @@ const seedProvenance = value => pickDefined(value, [
 ])
 const bindingEntry = value => pickDefined(value, ['taskKey', 'providerId'])
 const assetRef = value => pickDefined(value, ['id', 'revision', 'contentHash'])
-const corpusRef = value => pickDefined(value, [
-  'id', 'revision', 'contentHash', 'selectionMode',
+const corpusFragmentRef = value => pickDefined(value, [
+  'chapterId', 'fragmentId', 'fragmentHash', 'chapterCharStart',
+  'chapterCharEnd', 'referenceUse',
 ])
+const corpusRef = value => {
+  const ref = pickDefined(value, [
+    'id', 'revisionId', 'revision', 'contentHash', 'selectionMode',
+    'fragments', 'pinnedHistoricalRevision',
+  ])
+  if (Array.isArray(ref.fragments)) {
+    ref.fragments = ref.fragments.map(corpusFragmentRef)
+  }
+  return ref
+}
 
 function storyEngineOption(value = {}) {
   const option = pickDefined(value, STORY_ENGINE_FIELDS)
@@ -120,10 +138,20 @@ function contractDraft(value = {}) {
   if (Array.isArray(draft.corpusSourceRefs)) {
     draft.corpusSourceRefs = draft.corpusSourceRefs.map(corpusRef)
   }
-  for (const field of ['totalWordRange', 'likes', 'dislikes']) {
+  for (const field of [
+    'chapterWordRangePreference', 'prohibitedDirections', 'likes', 'dislikes',
+  ]) {
     if (Array.isArray(draft[field])) draft[field] = [...draft[field]]
   }
   return draft
+}
+
+function positiveRevision(value) {
+  const revision = Number(value)
+  if (!Number.isInteger(revision) || revision < 1) {
+    throw new TypeError('Expected a positive contract revision')
+  }
+  return revision
 }
 
 function boundedInteger(value, { min = 0, max }) {
@@ -359,6 +387,13 @@ export const api = {
     ),
   },
 
+  styleTrials: {
+    generate: (projectId, data) => post(
+      `/projects/${segment(projectId)}/style-trials`,
+      pickDefined(data, STYLE_TRIAL_FIELDS),
+    ),
+  },
+
   assets: {
     inventory: () => get('/assets/inventory'),
     styleTemplates: {
@@ -473,7 +508,9 @@ export const api = {
         limit: boundedInteger(params.limit, { min: 1, max: 100 }),
       })}`,
     ),
-    clone: projectId => post(`/projects/${segment(projectId)}/contracts/clone`),
+    clone: (projectId, sourceRevision) => post(
+      `/projects/${segment(projectId)}/contracts/${positiveRevision(sourceRevision)}/clone`,
+    ),
   },
 
   writerCore: {

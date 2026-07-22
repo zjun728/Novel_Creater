@@ -313,7 +313,7 @@ test('contract draft, preview, confirm, history and clone use the formal endpoin
     })
     await api.contracts.head('project-1')
     await api.contracts.history('project-1', { limit: 500 })
-    await api.contracts.clone('project-1')
+    await api.contracts.clone('project-1', 4)
   })
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
@@ -323,7 +323,7 @@ test('contract draft, preview, confirm, history and clone use the formal endpoin
     ['POST', '/api/projects/project-1/contracts/confirm'],
     ['GET', '/api/projects/project-1/contracts/head'],
     ['GET', '/api/projects/project-1/contracts/history'],
-    ['POST', '/api/projects/project-1/contracts/clone'],
+    ['POST', '/api/projects/project-1/contracts/4/clone'],
   ])
   assert.deepEqual(bodyOf(calls[1]), { expectedDraftVersion: 3, draft })
   assert.equal(bodyOf(calls[2]), undefined)
@@ -334,6 +334,42 @@ test('contract draft, preview, confirm, history and clone use the formal endpoin
   })
   assert.equal(new URL(calls[5].url).searchParams.get('limit'), '100')
   assert.equal(bodyOf(calls[6]), undefined)
+})
+
+test('style trials use only the strict backend gateway payload', async () => {
+  const command = {
+    selectionRevision: 3,
+    engineOptionId: 'engine-1',
+    engineHash: 'a'.repeat(64),
+    primaryStyleRevisionId: 'style-primary',
+    primaryStyleHash: 'b'.repeat(64),
+    secondaryStyleRevisionId: null,
+    secondaryStyleHash: null,
+    authorScenario: '主角必须在救人和守住秘密之间做选择。',
+    idempotencyKey: 'i'.repeat(64),
+    apiKey: 'must-not-send',
+    prompt: 'must-not-send',
+    baseURL: 'must-not-send',
+  }
+  const calls = await captureRequests(async api => {
+    await api.styleTrials.generate('project-1', command)
+  })
+
+  assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
+    ['POST', '/api/projects/project-1/style-trials'],
+  ])
+  assert.deepEqual(bodyOf(calls[0]), {
+    selectionRevision: 3,
+    engineOptionId: 'engine-1',
+    engineHash: 'a'.repeat(64),
+    primaryStyleRevisionId: 'style-primary',
+    primaryStyleHash: 'b'.repeat(64),
+    secondaryStyleRevisionId: null,
+    secondaryStyleHash: null,
+    authorScenario: '主角必须在救人和守住秘密之间做选择。',
+    idempotencyKey: 'i'.repeat(64),
+  })
+  assert.equal(JSON.stringify(calls).includes('must-not-send'), false)
 })
 
 test('planning client reads state and creates only explicit initial plan payload', async () => {
@@ -528,10 +564,24 @@ test('nested frozen DTOs discard secret and debug fields before transport', asyn
   const draft = {
     schemaVersion: 'contract-draft-v2', draftStage: 'assets', engineOptionId: 'engine-1',
     engineHash: 'b'.repeat(64), channelProfileKey: 'qidian', genreProfileKey: 'xuanhuan',
-    qualityCharterVersion: 'v1', totalWordRange: [1000000, 2000000],
-    chapterCapacityPolicy: 'Manual chapter finalization', primaryStyleRef: ref,
+    qualityCharterVersion: 'v1', targetTotalWords: 1_500_000,
+    expectedVolumeCount: 8, expectedChapterCount: 500,
+    chapterWordRangePreference: [2800, 3400],
+    prohibitedDirections: ['不写无代价升级'], authorNotes: '人物选择优先。',
+    primaryStyleRef: ref,
     secondaryStyleRef: null, experienceCardRefs: [ref],
-    corpusSourceRefs: [{ ...ref, selectionMode: 'author', rawText: 'must-not-send' }],
+    corpusSourceRefs: [{
+      ...ref,
+      revisionId: 'source-revision-1',
+      selectionMode: 'author',
+      pinnedHistoricalRevision: false,
+      fragments: [{
+        chapterId: 'chapter-1', fragmentId: 'fragment-1', fragmentHash: 'c'.repeat(64),
+        chapterCharStart: 10, chapterCharEnd: 210, referenceUse: 'style',
+        rawText: 'must-not-send',
+      }],
+      rawText: 'must-not-send',
+    }],
     likes: ['丰满'], dislikes: ['干巴'], apiKey: 'must-not-send',
   }
   const calls = await captureRequests(async api => {
@@ -559,6 +609,15 @@ test('nested frozen DTOs discard secret and debug fields before transport', asyn
   assert.deepEqual(bodyOf(calls[3]).draft.primaryStyleRef, {
     id: 'asset-1', revision: 1, contentHash: 'a'.repeat(64),
   })
+  assert.deepEqual(bodyOf(calls[3]).draft.corpusSourceRefs[0], {
+    id: 'asset-1', revisionId: 'source-revision-1', revision: 1,
+    contentHash: 'a'.repeat(64), selectionMode: 'author',
+    pinnedHistoricalRevision: false,
+    fragments: [{
+      chapterId: 'chapter-1', fragmentId: 'fragment-1', fragmentHash: 'c'.repeat(64),
+      chapterCharStart: 10, chapterCharEnd: 210, referenceUse: 'style',
+    }],
+  })
 })
 
 test('progressive contract drafts preserve explicit null downstream fields', async () => {
@@ -570,8 +629,12 @@ test('progressive contract drafts preserve explicit null downstream fields', asy
     channelProfileKey: 'qidian',
     genreProfileKey: 'xuanhuan',
     qualityCharterVersion: 'v1',
-    totalWordRange: [1000000, 2000000],
-    chapterCapacityPolicy: 'Manual chapter finalization',
+    targetTotalWords: 1_500_000,
+    expectedVolumeCount: 8,
+    expectedChapterCount: 500,
+    chapterWordRangePreference: [2800, 3400],
+    prohibitedDirections: [],
+    authorNotes: null,
     primaryStyleRef: null,
     secondaryStyleRef: null,
     experienceCardRefs: null,

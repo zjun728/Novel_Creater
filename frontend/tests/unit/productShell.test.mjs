@@ -122,6 +122,7 @@ test('active and archived project contexts have different module surfaces', asyn
     [
       ['项目概览', '/projects/project%201/overview', true],
       ['创作种子', '/projects/project%201/seeds', false],
+      ['创作契约', '/projects/project%201/contract', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
     ],
   )
@@ -140,6 +141,23 @@ test('active and archived project contexts have different module surfaces', asyn
   assert.equal(seeds.routeTitle, '创作种子')
   assert.equal(
     seeds.projectContext.modules.find(item => item.key === 'seeds').selected,
+    true,
+  )
+  const contract = createProductShellModel({
+    route: route(
+      'ProjectContract',
+      '/projects/project%201/contract',
+      { projectId: 'project 1' },
+    ),
+    project: {
+      id: 'project 1',
+      title: '典镇山河',
+      archivedAt: null,
+    },
+  })
+  assert.equal(contract.routeTitle, '创作契约')
+  assert.equal(
+    contract.projectContext.modules.find(item => item.key === 'contract').selected,
     true,
   )
   assert.deepEqual(
@@ -235,6 +253,11 @@ const shellRoutes = [
   {
     path: '/projects/:projectId/seeds',
     name: 'ProjectSeeds',
+    component: Page,
+  },
+  {
+    path: '/projects/:projectId/contract',
+    name: 'ProjectContract',
     component: Page,
   },
   {
@@ -443,6 +466,11 @@ test('the real project overview consumes shell hydration without a duplicate rea
           component: Page,
         },
         {
+          path: '/projects/:projectId/contract',
+          name: 'ProjectContract',
+          component: Page,
+        },
+        {
           path: '/projects/:projectId/settings/models',
           name: 'ProjectModelSettings',
           component: Page,
@@ -495,6 +523,11 @@ test('shared shell hydration preserves the explicit missing-project route state'
         {
           path: '/projects/:projectId/seeds',
           name: 'ProjectSeeds',
+          component: Page,
+        },
+        {
+          path: '/projects/:projectId/contract',
+          name: 'ProjectContract',
           component: Page,
         },
         {
@@ -579,6 +612,17 @@ test('provider settings route wraps only the safe Provider and model surface', a
   assert.match(providerView, /ProviderSettings/)
   assert.doesNotMatch(providerView, /CreationAssetSettings|CorpusSettings|n-tabs/)
   assert.equal(retiredSettings, '')
+})
+
+test('project overview has one clear entry into the formal contract workspace', async () => {
+  const overview = await readFile(
+    new URL('../../src/views/ProjectOverviewView.vue', import.meta.url),
+    'utf8',
+  )
+  assert.match(overview, /projectContractPath/)
+  assert.match(overview, /进入创作契约工作区/)
+  assert.equal((overview.match(/projectContractPath\(/g) || []).length, 1)
+  assert.doesNotMatch(overview, /WriterView|\/writer\//)
 })
 
 test('unreachable writer views cannot reintroduce retired project navigation', async () => {

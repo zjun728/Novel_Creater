@@ -1,74 +1,53 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import {
-  NAlert,
-  NButton,
-  NCheckbox,
-  NEmpty,
-  NSelect,
-  NSkeleton,
-  NTag,
-} from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { NAlert, NButton, NEmpty, NInputNumber, NSelect, NSkeleton, NSpin, NTag } from 'naive-ui'
 
-import { useCorpusStore } from '@/stores/corpusStore'
-import { useCreationAssetStore } from '@/stores/creationAssetStore'
-import { useCreationContractStore } from '@/stores/creationContractStore'
+import { useCorpusStore } from '@/stores/corpusStore.js'
+import { useCreationAssetStore } from '@/stores/creationAssetStore.js'
+import { useCreationContractStore } from '@/stores/creationContractStore.js'
 
-const props = defineProps({
-  projectId: { type: String, required: true },
-})
-
+const props = defineProps({ projectId: { type: String, required: true } })
 const emit = defineEmits(['saved', 'dirty-change', 'back'])
 const assetStore = useCreationAssetStore()
 const contractStore = useCreationContractStore()
 const corpusStore = useCorpusStore()
-
 const loading = ref(false)
 const loadError = ref('')
 const saveError = ref('')
+const errorRegion = ref(null)
 const selectedExperienceIds = ref([])
-const selectedCorpusIds = ref([])
 const explicitExperienceRefs = ref({})
-const explicitCorpusRefs = ref({})
+const selectedCorpusFragments = ref([])
+const corpusBrowserSource = ref(null)
+const corpusChapters = ref([])
+const selectedChapterId = ref(null)
+const fragmentPage = ref(null)
 let loadEpoch = 0
+let fragmentEpoch = 0
 
 const draftValues = computed(() => contractStore.draft?.draft || null)
 const recommendedCards = computed(() => assetStore.recommendations?.experienceCards || [])
-const experienceOptions = computed(() => {
-  const options = assetStore.experienceCards.map(card => ({
-    label: `${card.title} · ${card.category}`,
-    value: card.id,
-  }))
-  for (const frozen of draftValues.value?.experienceCardRefs || []) {
-    if (!options.some(option => option.value === frozen.id)) {
-      options.push({ label: `已冻结经验卡 · r${frozen.revision}`, value: frozen.id })
-    }
-  }
-  return options
+const experienceOptions = computed(() => assetStore.experienceCards.map(card => ({
+  label: `${card.title} · ${card.category}`,
+  value: card.id,
+})))
+const visibleCorpusSources = computed(() => corpusStore.sources.filter(source => source.state !== 'archived'))
+const chapterOptions = computed(() => corpusChapters.value.map(chapter => ({
+  label: `${String(chapter.order).padStart(2, '0')} · ${chapter.title}`,
+  value: chapter.id,
+})))
+const fragments = computed(() => fragmentPage.value?.items || [])
+const selectedExperienceCards = computed(() => selectedExperienceIds.value.map(cardById).filter(Boolean))
+const selectedCorpusSources = computed(() => {
+  const rows = new Map()
+  for (const selection of selectedCorpusFragments.value) rows.set(selection.source.id, selection.source)
+  return [...rows.values()]
 })
-const selectedExperienceCards = computed(() => selectedExperienceIds.value
-  .map(cardById)
-  .filter(Boolean))
-const selectedCorpusSources = computed(() => selectedCorpusIds.value
-  .map(sourceById)
-  .filter(Boolean))
-const visibleCorpusSources = computed(() => {
-  const rows = [...corpusStore.sources]
-  for (const frozen of draftValues.value?.corpusSourceRefs || []) {
-    if (!rows.some(source => source.id === frozen.id)) {
-      rows.push({
-        ...frozen,
-        name: '已冻结语料',
-        relativePath: '当前目录未列出',
-        shortHash: String(frozen.contentHash || '').slice(0, 12),
-        encoding: '—',
-        chapterCount: '—',
-        state: 'frozen',
-      })
-    }
-  }
-  return rows
-})
+const previewBudgetUsed = computed(() => selectedCorpusFragments.value.reduce(
+  (total, selection) => total + selection.chapterCharEnd - selection.chapterCharStart,
+  0,
+))
+const previewBudgetRemaining = computed(() => Math.max(0, 4000 - previewBudgetUsed.value))
 
 const REASON_LABELS = Object.freeze({
   'category-profile': '类别适配',
@@ -81,17 +60,9 @@ function reasonLabel(code) {
 }
 
 function cardById(id) {
-  if (!id) return null
   return assetStore.experienceCards.find(card => card.id === id)
     || recommendedCards.value.find(card => card.id === id)
     || draftValues.value?.experienceCardRefs?.find(card => card.id === id)
-    || null
-}
-
-function sourceById(id) {
-  if (!id) return null
-  return corpusStore.sources.find(source => source.id === id)
-    || draftValues.value?.corpusSourceRefs?.find(source => source.id === id)
     || null
 }
 
@@ -99,11 +70,7 @@ function assetRef(asset) {
   if (!asset?.id || !Number.isInteger(asset.revision) || !asset.contentHash) {
     throw new TypeError('经验卡版本信息不完整，请重新加载')
   }
-  return {
-    id: asset.id,
-    revision: asset.revision,
-    contentHash: asset.contentHash,
-  }
+  return { id: asset.id, revision: asset.revision, contentHash: asset.contentHash }
 }
 
 function exactExperienceRef(id) {
@@ -112,32 +79,22 @@ function exactExperienceRef(id) {
     || assetRef(cardById(id))
 }
 
-function exactCorpusRef(id) {
-  return explicitCorpusRefs.value[id]
-    || draftValues.value?.corpusSourceRefs?.find(item => item.id === id)
-    || corpusStore.toContractRef(sourceById(id), 'author')
-}
-
 function markDirty() {
   contractStore.markUnsavedChanges()
   emit('dirty-change', true)
 }
 
-function uniqueIds(values) {
-  return [...new Set((values || []).filter(Boolean))]
+async function showError(message) {
+  saveError.value = String(message || '素材范围操作失败')
+  await nextTick()
+  errorRegion.value?.focus({ preventScroll: false })
 }
 
 function updateExperienceSelection(values) {
   if (contractStore.saving) return
-  const next = uniqueIds(values)
-  const previous = new Set(selectedExperienceIds.value)
-  const overrides = { ...explicitExperienceRefs.value }
-  for (const id of next) {
-    if (!previous.has(id)) overrides[id] = assetRef(cardById(id))
-  }
-  for (const id of previous) {
-    if (!next.includes(id)) delete overrides[id]
-  }
+  const next = [...new Set((values || []).filter(Boolean))]
+  const overrides = {}
+  for (const id of next) overrides[id] = exactExperienceRef(id)
   explicitExperienceRefs.value = overrides
   selectedExperienceIds.value = next
   saveError.value = ''
@@ -145,49 +102,172 @@ function updateExperienceSelection(values) {
 }
 
 function toggleExperience(id) {
-  if (contractStore.saving) return
   const selected = new Set(selectedExperienceIds.value)
   if (selected.has(id)) selected.delete(id)
   else selected.add(id)
   updateExperienceSelection([...selected])
 }
 
-function toggleCorpus(id, checked) {
-  if (contractStore.saving) return
-  const selected = new Set(selectedCorpusIds.value)
-  const overrides = { ...explicitCorpusRefs.value }
-  if (checked) {
-    selected.add(id)
-    overrides[id] = corpusStore.toContractRef(sourceById(id), 'author')
-  } else {
-    selected.delete(id)
-    delete overrides[id]
-  }
-  explicitCorpusRefs.value = overrides
-  selectedCorpusIds.value = [...selected]
+function fragmentKey(sourceId, chapterId, fragmentId) {
+  return `${sourceId}:${chapterId}:${fragmentId}`
+}
+
+function selectedFragment(sourceId, chapterId, fragmentId) {
+  const key = fragmentKey(sourceId, chapterId, fragmentId)
+  return selectedCorpusFragments.value.find(item => item.key === key) || null
+}
+
+async function chooseCorpusSource(source) {
+  const epoch = ++fragmentEpoch
+  corpusBrowserSource.value = source
+  selectedChapterId.value = null
+  fragmentPage.value = null
   saveError.value = ''
+  try {
+    const rows = await corpusStore.loadChapters(source.id, source.revision, source.contentHash)
+    if (epoch !== fragmentEpoch || corpusBrowserSource.value?.id !== source.id) return
+    corpusChapters.value = rows
+    if (rows.length) await chooseChapter(rows[0].id)
+  } catch (error) {
+    if (epoch !== fragmentEpoch) return
+    await showError(error?.message || '语料章节加载失败')
+  }
+}
+
+async function chooseChapter(chapterId) {
+  const epoch = ++fragmentEpoch
+  selectedChapterId.value = chapterId
+  fragmentPage.value = null
+  try {
+    const page = await corpusStore.loadFragments(chapterId, { cursor: 0, limit: 20 })
+    if (epoch !== fragmentEpoch || selectedChapterId.value !== chapterId) return
+    fragmentPage.value = page
+  } catch (error) {
+    if (epoch !== fragmentEpoch) return
+    await showError(error?.message || '语料片段加载失败')
+  }
+}
+
+async function loadMoreFragments() {
+  const cursor = fragmentPage.value?.nextCursor
+  const chapterId = selectedChapterId.value
+  if (cursor == null || !chapterId || corpusStore.loadingFragments) return
+  const epoch = ++fragmentEpoch
+  const previous = fragmentPage.value?.items || []
+  try {
+    const page = await corpusStore.loadFragments(chapterId, { cursor, limit: 20 })
+    if (epoch !== fragmentEpoch || selectedChapterId.value !== chapterId) return
+    const seen = new Set(previous.map(fragment => fragment.id))
+    fragmentPage.value = {
+      items: [...previous, ...(page?.items || []).filter(fragment => !seen.has(fragment.id))],
+      nextCursor: page?.nextCursor ?? null,
+    }
+  } catch (error) {
+    if (epoch !== fragmentEpoch) return
+    await showError(error?.message || '更多语料片段加载失败')
+  }
+}
+
+function toggleFragment(fragment) {
+  const source = corpusBrowserSource.value
+  const chapterId = selectedChapterId.value
+  if (!source || !chapterId || contractStore.saving) return
+  const key = fragmentKey(source.id, chapterId, fragment.id)
+  const existing = selectedCorpusFragments.value.find(item => item.key === key)
+  if (existing) {
+    selectedCorpusFragments.value = selectedCorpusFragments.value.filter(item => item.key !== key)
+    markDirty()
+    return
+  }
+  const fragmentHash = fragment.contentHash || fragment.fragmentHash
+  if (!fragmentHash) {
+    void showError('该片段缺少完整内容摘要，请重新加载语料。')
+    return
+  }
+  const chapterCharStart = Number(fragment.charStart)
+  const chapterCharEnd = Math.min(Number(fragment.charEnd), chapterCharStart + 300)
+  const nextLength = chapterCharEnd - chapterCharStart
+  if (nextLength < 1 || previewBudgetUsed.value + nextLength > 4000) {
+    void showError('加入该片段会超过 4000 字预览预算。')
+    return
+  }
+  selectedCorpusFragments.value = [...selectedCorpusFragments.value, {
+    key,
+    source: { ...source },
+    chapterId,
+    fragmentId: fragment.id,
+    fragmentHash,
+    chapterCharStart,
+    chapterCharEnd,
+    fragmentMin: Number(fragment.charStart),
+    fragmentMax: Number(fragment.charEnd),
+    referenceUse: 'style',
+    preview: fragment.preview,
+  }]
+  markDirty()
+}
+
+function updateFragment(selection, field, value) {
+  const number = Number(value)
+  const next = selectedCorpusFragments.value.map(item => (
+    item.key === selection.key ? { ...item, [field]: number } : item
+  ))
+  const changed = next.find(item => item.key === selection.key)
+  const length = changed.chapterCharEnd - changed.chapterCharStart
+  const total = next.reduce((sum, item) => sum + item.chapterCharEnd - item.chapterCharStart, 0)
+  if (
+    changed.chapterCharStart < changed.fragmentMin
+    || changed.chapterCharEnd > changed.fragmentMax
+    || length < 1
+    || length > 300
+    || total > 4000
+  ) {
+    void showError('单个片段范围须为 1–300 字，全部片段合计不超过 4000 字。')
+    return
+  }
+  selectedCorpusFragments.value = next
+  saveError.value = ''
+  markDirty()
+}
+
+function updateReferenceUse(selection, value) {
+  selectedCorpusFragments.value = selectedCorpusFragments.value.map(item => (
+    item.key === selection.key ? { ...item, referenceUse: value } : item
+  ))
+  markDirty()
+}
+
+function removeFragment(selection) {
+  selectedCorpusFragments.value = selectedCorpusFragments.value.filter(
+    item => item.key !== selection.key,
+  )
   markDirty()
 }
 
 function hydrateFromDraft(draft) {
   explicitExperienceRefs.value = {}
-  explicitCorpusRefs.value = {}
   if (draft?.draftStage === 'assets') {
-    selectedExperienceIds.value = uniqueIds(
-      (draft.experienceCardRefs || []).map(item => item.id),
-    )
-    selectedCorpusIds.value = uniqueIds(
-      (draft.corpusSourceRefs || []).map(item => item.id),
-    )
+    selectedExperienceIds.value = (draft.experienceCardRefs || []).map(item => item.id)
+    selectedCorpusFragments.value = (draft.corpusSourceRefs || []).flatMap(source => (
+      (source.fragments || []).map(fragment => ({
+        key: fragmentKey(source.id, fragment.chapterId, fragment.fragmentId),
+        source: { ...source, fragments: undefined },
+        ...fragment,
+        fragmentMin: fragment.chapterCharStart,
+        fragmentMax: fragment.chapterCharEnd,
+        preview: '已冻结片段范围',
+      }))
+    ))
     return
   }
-  selectedExperienceIds.value = uniqueIds(recommendedCards.value.map(item => item.id))
-  selectedCorpusIds.value = []
+  selectedExperienceIds.value = []
+  selectedCorpusFragments.value = []
 }
 
 async function initialize(projectId, { reloadContract = false } = {}) {
   if (contractStore.saving) return
   const epoch = ++loadEpoch
+  fragmentEpoch += 1
   loading.value = true
   loadError.value = ''
   saveError.value = ''
@@ -196,9 +276,7 @@ async function initialize(projectId, { reloadContract = false } = {}) {
       await contractStore.load(projectId)
     }
     const draft = contractStore.draft?.draft
-    if (!draft?.engineOptionId || !draft?.primaryStyleRef) {
-      throw new Error('请先完成并保存风格契约。')
-    }
+    if (!draft?.engineOptionId || !draft?.primaryStyleRef) throw new Error('请先完成并保存风格契约。')
     await Promise.all([
       assetStore.loadExperienceCards(),
       assetStore.loadRecommendations(projectId, draft.engineOptionId, draft),
@@ -215,265 +293,163 @@ async function initialize(projectId, { reloadContract = false } = {}) {
   }
 }
 
+function corpusRefs() {
+  if (previewBudgetUsed.value > 4000) throw new Error('语料片段预览预算不能超过 4000 字。')
+  const groups = new Map()
+  for (const selection of selectedCorpusFragments.value) {
+    const source = selection.source
+    if (!source.revisionId) throw new Error('语料版本身份不完整，请重新加载完整语料库。')
+    if (!groups.has(source.id)) {
+      groups.set(source.id, {
+        id: source.id,
+        revisionId: source.revisionId,
+        revision: source.revision,
+        contentHash: source.contentHash,
+        selectionMode: 'author',
+        pinnedHistoricalRevision: false,
+        fragments: [],
+      })
+    }
+    groups.get(source.id).fragments.push({
+      chapterId: selection.chapterId,
+      fragmentId: selection.fragmentId,
+      fragmentHash: selection.fragmentHash,
+      chapterCharStart: selection.chapterCharStart,
+      chapterCharEnd: selection.chapterCharEnd,
+      referenceUse: selection.referenceUse,
+    })
+  }
+  return [...groups.values()]
+}
+
 async function saveAndContinue() {
   if (contractStore.saving || contractStore.requiresReload) return
-  saveError.value = ''
   const current = draftValues.value
-  if (!current?.engineOptionId || !current?.engineHash || !current?.primaryStyleRef) {
-    saveError.value = '风格草稿已失效，请返回上一步重新加载。'
+  if (!current?.engineOptionId || !current?.primaryStyleRef) {
+    await showError('风格草稿已失效，请返回上一步重新加载。')
     return
   }
-
   try {
-    const experienceCardRefs = selectedExperienceIds.value.map(exactExperienceRef)
-    const corpusSourceRefs = selectedCorpusIds.value.map(exactCorpusRef)
     const saved = await contractStore.saveDraft(props.projectId, {
-      schemaVersion: 'contract-draft-v2',
+      ...current,
       draftStage: 'assets',
-      engineOptionId: current.engineOptionId,
-      engineHash: current.engineHash,
-      channelProfileKey: current.channelProfileKey,
-      genreProfileKey: current.genreProfileKey,
-      qualityCharterVersion: current.qualityCharterVersion,
-      totalWordRange: current.totalWordRange,
-      chapterCapacityPolicy: current.chapterCapacityPolicy,
-      primaryStyleRef: current.primaryStyleRef,
-      secondaryStyleRef: current.secondaryStyleRef || null,
-      likes: Array.isArray(current.likes) ? [...current.likes] : [],
-      dislikes: Array.isArray(current.dislikes) ? [...current.dislikes] : [],
-      experienceCardRefs,
-      corpusSourceRefs,
+      experienceCardRefs: selectedExperienceIds.value.map(exactExperienceRef),
+      corpusSourceRefs: corpusRefs(),
     })
     if (contractStore.draft !== saved) {
-      saveError.value = '保存期间素材范围发生了变化，请核对后再次保存。'
+      await showError('保存期间素材范围发生变化，请重新加载并核对。')
       return
     }
     emit('dirty-change', false)
-    emit('saved')
+    emit('saved', saved)
   } catch (error) {
-    saveError.value = error?.message || '创作资产范围保存失败'
+    await showError(error?.message || '创作资产范围保存失败')
   }
 }
 
-watch(() => props.projectId, projectId => initialize(String(projectId || '')), { immediate: true })
-
-onBeforeUnmount(() => {
-  loadEpoch += 1
-})
+watch(() => props.projectId, projectId => void initialize(String(projectId || '')), { immediate: true })
+onBeforeUnmount(() => { loadEpoch += 1; fragmentEpoch += 1 })
 </script>
 
 <template>
-  <section class="contract-step" aria-labelledby="asset-step-heading">
-    <header class="step-heading">
-      <div>
-        <p class="step-kicker">STEP 04 · REFERENCE SCOPE</p>
-        <h3 id="asset-step-heading">只圈定可用范围，不把资料塞满提示词</h3>
-        <p>经验卡指导写作方法，语料提供作者允许参考的来源。这里可以零选或多选；实际检索会在后续按场景只取最相关内容。</p>
-      </div>
-      <span class="step-number" aria-hidden="true">04</span>
-    </header>
+  <section class="asset-step" aria-labelledby="asset-step-heading">
+    <header class="step-heading"><div><p>STEP 03 · REFERENCE SCOPE</p><h2 id="asset-step-heading">逐项授权，片段级冻结</h2><span>推荐只是候选，任何经验卡或语料片段都不会默认勾选；推荐为空时仍可浏览完整库。</span></div><b aria-hidden="true">03</b></header>
 
-    <n-alert v-if="loadError" type="error" class="state-alert" title="创作资产未能加载">
-      {{ loadError }}
-      <template #action><n-button size="small" :disabled="contractStore.saving" @click="initialize(props.projectId, { reloadContract: true })">重新加载</n-button></template>
-    </n-alert>
-
-    <template v-if="loading">
-      <div class="loading-grid" aria-busy="true" aria-label="正在加载经验卡和本机语料">
-        <section><n-skeleton text width="30%" /><n-skeleton text :repeat="5" /></section>
-        <section><n-skeleton text width="38%" /><n-skeleton text :repeat="5" /></section>
-      </div>
-    </template>
+    <n-alert v-if="loadError" type="error" class="state-alert" title="创作资产未能加载">{{ loadError }}<template #action><n-button size="small" @click="initialize(props.projectId, { reloadContract: true })">重新加载并核对</n-button></template></n-alert>
+    <div v-if="loading" class="loading-grid" aria-busy="true"><section><n-skeleton text :repeat="6" /></section><section><n-skeleton text :repeat="6" /></section></div>
 
     <template v-else-if="!loadError">
-      <section class="asset-section" aria-labelledby="experience-scope-heading">
-        <div class="section-title-row">
-          <div>
-            <span>经验卡范围</span>
-            <h4 id="experience-scope-heading">让方法服务故事，而不是变成规则清单</h4>
-          </div>
-          <strong>{{ selectedExperienceIds.length }} 张已选</strong>
-        </div>
-
-        <n-alert type="info" :bordered="false" class="scope-note">
-          下方是系统按种子和故事发动机给出的少量推荐。点击卡片可加入或移出范围；后续单次生成仍只会检索最相关的 2–4 张。
-        </n-alert>
-
-        <n-empty v-if="!recommendedCards.length" description="当前没有经验卡推荐；仍可从完整卡库手动选择" class="empty-state" />
+      <section class="asset-section" aria-labelledby="experience-heading">
+        <div class="section-title"><div><span>推荐经验卡</span><h3 id="experience-heading">方法候选</h3></div><strong>{{ selectedExperienceIds.length }} 张已选</strong></div>
+        <n-empty v-if="!recommendedCards.length" description="当前没有经验卡推荐；完整经验库仍可浏览" />
         <div v-else class="card-grid">
-          <article
-            v-for="card in recommendedCards"
-            :key="card.id"
-            class="experience-card"
-            :class="{ 'experience-card--selected': selectedExperienceIds.includes(card.id) }"
-          >
-            <div class="card-topline">
-              <n-tag size="small" :bordered="false">{{ card.category }}</n-tag>
-              <span>{{ selectedExperienceIds.includes(card.id) ? '已纳入' : '未纳入' }}</span>
-            </div>
-            <h5>{{ card.title }}</h5>
-            <p class="method">{{ card.method }}</p>
-            <div class="reason-list" aria-label="推荐原因">
-              <n-tag v-for="code in card.reasonCodes" :key="code" size="small" :bordered="false">
-                {{ reasonLabel(code) }}
-              </n-tag>
-            </div>
-            <dl>
-              <dt>适用场景</dt>
-              <dd>{{ card.applicability.join('；') }}</dd>
-            </dl>
-            <n-button
-              block
-              size="small"
-              :type="selectedExperienceIds.includes(card.id) ? 'success' : 'default'"
-              :aria-pressed="selectedExperienceIds.includes(card.id)"
-              :disabled="contractStore.saving"
-              @click="toggleExperience(card.id)"
-            >{{ selectedExperienceIds.includes(card.id) ? '移出项目范围' : '纳入项目范围' }}</n-button>
-          </article>
+          <article v-for="card in recommendedCards" :key="card.id" :class="{ selected: selectedExperienceIds.includes(card.id) }"><n-tag size="small" :bordered="false">{{ card.category }}</n-tag><h4>{{ card.title }}</h4><p>{{ card.method }}</p><div><n-tag v-for="reason in card.reasonCodes" :key="reason" size="small" :bordered="false">{{ reasonLabel(reason) }}</n-tag></div><n-button block size="small" :aria-pressed="selectedExperienceIds.includes(card.id)" @click="toggleExperience(card.id)">{{ selectedExperienceIds.includes(card.id) ? '移出范围' : '明确纳入' }}</n-button></article>
         </div>
-
-        <label class="library-selector">
-          <span>从完整经验库调整</span>
-          <small>可搜索标题或类别，清空即代表本项目暂不使用经验卡。</small>
-          <n-select
-            :value="selectedExperienceIds"
-            :options="experienceOptions"
-            multiple
-            filterable
-            clearable
-            :disabled="contractStore.saving"
-            max-tag-count="responsive"
-            placeholder="选择 0 到多张经验卡"
-            @update:value="updateExperienceSelection"
-          />
-        </label>
-
-        <div v-if="selectedExperienceCards.length" class="selection-ledger" aria-live="polite">
-          <span v-for="card in selectedExperienceCards" :key="card.id">{{ card.title || card.id }} · r{{ card.revision }}</span>
-        </div>
+        <label class="library-selector"><span>完整经验库</span><small>搜索并显式选择；清空表示不使用经验卡。</small><n-select :value="selectedExperienceIds" :options="experienceOptions" multiple filterable clearable max-tag-count="responsive" @update:value="updateExperienceSelection" /></label>
+        <div class="selection-ledger" aria-live="polite"><span v-for="card in selectedExperienceCards" :key="card.id">{{ card.title || card.id }} · r{{ card.revision }}</span></div>
       </section>
 
-      <section class="asset-section corpus-section" aria-labelledby="corpus-scope-heading">
-        <div class="section-title-row">
-          <div>
-            <span>本机语料范围</span>
-            <h4 id="corpus-scope-heading">作者明确允许参考的来源</h4>
-          </div>
-          <strong>{{ selectedCorpusIds.length }} 个来源已选</strong>
-        </div>
+      <section class="asset-section corpus-section" aria-labelledby="corpus-heading">
+        <div class="section-title"><div><span>完整语料库</span><h3 id="corpus-heading">选择来源，再圈定片段与字数范围</h3></div><strong>{{ selectedCorpusFragments.length }} 个片段</strong></div>
+        <div class="budget-meter" role="status" aria-live="polite"><span>有界预览预算</span><strong>{{ previewBudgetUsed }} / 4000 字</strong><small>剩余 {{ previewBudgetRemaining }} 字；单个范围最多 300 字。</small></div>
+        <n-empty v-if="!visibleCorpusSources.length" description="完整语料库暂无可用来源；可以零选继续" />
+        <div v-else class="source-list"><button v-for="source in visibleCorpusSources" :key="source.id" type="button" :class="{ active: corpusBrowserSource?.id === source.id }" @click="chooseCorpusSource(source)"><strong>{{ source.name }}</strong><span>r{{ source.revision }} · {{ source.fragmentCount || 0 }} 片段 · {{ source.shortHash }}</span></button></div>
 
-        <n-alert type="warning" :bordered="false" class="scope-note">
-          标题和版本只用于展示与追溯，不会直接进入故事发动机。这里不选语料也可以继续。
-        </n-alert>
+        <section v-if="corpusBrowserSource" class="fragment-browser">
+          <header><div><span>当前来源</span><h4>{{ corpusBrowserSource.name }}</h4></div><n-select :value="selectedChapterId" :options="chapterOptions" placeholder="选择章节" @update:value="chooseChapter" /></header>
+          <n-spin :show="corpusStore.loadingFragments">
+            <n-empty v-if="!corpusStore.loadingFragments && !fragments.length" description="当前章节没有可选片段" />
+            <article v-for="fragment in fragments" :key="fragment.id" :class="{ selected: selectedFragment(corpusBrowserSource.id, selectedChapterId, fragment.id) }">
+              <div><span>片段 {{ fragment.order }}</span><small>{{ fragment.charStart }}–{{ fragment.charEnd }}</small></div><p>{{ fragment.preview }}</p><n-button size="small" @click="toggleFragment(fragment)">{{ selectedFragment(corpusBrowserSource.id, selectedChapterId, fragment.id) ? '移出范围' : '选择片段' }}</n-button>
+            </article>
+            <n-button v-if="fragmentPage?.nextCursor != null" block secondary class="load-more" :loading="corpusStore.loadingFragments" @click="loadMoreFragments">加载更多片段</n-button>
+          </n-spin>
+        </section>
 
-        <n-empty v-if="!visibleCorpusSources.length" description="尚无可用本机语料；可先跳过，之后在设置中导入" class="empty-state" />
-        <div v-else class="corpus-list">
-          <label
-            v-for="source in visibleCorpusSources"
-            :key="source.id"
-            class="corpus-row"
-            :class="{ 'corpus-row--selected': selectedCorpusIds.includes(source.id) }"
-          >
-            <n-checkbox
-              :checked="selectedCorpusIds.includes(source.id)"
-              :aria-label="`允许参考 ${source.name}`"
-              :disabled="contractStore.saving"
-              @update:checked="checked => toggleCorpus(source.id, checked)"
-            />
-            <div class="corpus-main">
-              <strong>{{ source.name }}</strong>
-              <span class="relative-path">{{ source.relativePath }}</span>
-            </div>
-            <dl class="corpus-meta">
-              <div><dt>版本</dt><dd>r{{ source.revision }}</dd></div>
-              <div><dt>摘要</dt><dd>{{ source.shortHash }}</dd></div>
-              <div><dt>编码</dt><dd>{{ source.encoding || '未知' }}</dd></div>
-              <div><dt>章节</dt><dd>{{ source.chapterCount ?? 0 }}</dd></div>
-            </dl>
-            <n-tag size="small" :type="source.state === 'analyzed' ? 'success' : 'default'">
-              {{ source.state === 'analyzed' ? '可使用' : (source.state === 'frozen' ? '旧修订' : source.state) }}
-            </n-tag>
-          </label>
-        </div>
-
-        <div v-if="selectedCorpusSources.length" class="selection-ledger" aria-live="polite">
-          <span v-for="source in selectedCorpusSources" :key="source.id">{{ source.name || source.id }} · r{{ source.revision }}</span>
-        </div>
+        <section v-if="selectedCorpusFragments.length" class="range-ledger" aria-labelledby="selected-fragments-heading"><h4 id="selected-fragments-heading">已选片段与范围</h4><article v-for="selection in selectedCorpusFragments" :key="selection.key"><div><strong>{{ selection.source.name }}</strong><small>{{ selection.preview }}</small></div><label><span>起</span><n-input-number :value="selection.chapterCharStart" :min="selection.fragmentMin" :max="selection.fragmentMax - 1" @update:value="value => updateFragment(selection, 'chapterCharStart', value)" /></label><label><span>止</span><n-input-number :value="selection.chapterCharEnd" :min="selection.fragmentMin + 1" :max="selection.fragmentMax" @update:value="value => updateFragment(selection, 'chapterCharEnd', value)" /></label><n-select :value="selection.referenceUse" :options="[{ label: '文风', value: 'style' }, { label: '结构', value: 'structure' }, { label: '灵感', value: 'inspiration' }, { label: '事实核对', value: 'fact_check' }]" @update:value="value => updateReferenceUse(selection, value)" /><n-button quaternary size="small" @click="removeFragment(selection)">移出</n-button></article></section>
+        <p v-if="selectedCorpusSources.length" class="source-count">已授权 {{ selectedCorpusSources.length }} 个来源，只冻结上列片段，不把整书送入生成。</p>
       </section>
     </template>
 
-    <n-alert v-if="saveError" type="error" class="state-alert" aria-live="assertive">
-      {{ saveError }}
-      <template v-if="contractStore.requiresReload" #action>
-        <n-button size="small" :disabled="contractStore.saving" @click="initialize(props.projectId, { reloadContract: true })">重新加载项目状态</n-button>
-      </template>
-    </n-alert>
-
-    <footer class="step-actions">
-      <n-button secondary :disabled="contractStore.saving" @click="emit('back')">返回风格契约</n-button>
-      <div>
-        <small>零选择会明确保存为空范围；勾选时冻结资产 ID、版本和内容校验值。</small>
-        <n-button
-          type="primary"
-          size="large"
-          :loading="contractStore.saving"
-          :disabled="loading || contractStore.saving || contractStore.requiresReload || Boolean(loadError)"
-          @click="saveAndContinue"
-        >保存并继续</n-button>
-      </div>
-    </footer>
+    <n-alert v-if="saveError" ref="errorRegion" tabindex="-1" type="error" class="state-alert" aria-live="assertive">{{ saveError }}</n-alert>
+    <footer class="step-actions"><n-button secondary @click="emit('back')">返回风格契约</n-button><div><small>零选择会明确保存为空；推荐不会自动纳入。</small><n-button type="primary" size="large" :loading="contractStore.saving" :disabled="loading || contractStore.saving || contractStore.requiresReload || Boolean(loadError)" @click="saveAndContinue">保存草稿并继续</n-button></div></footer>
   </section>
 </template>
 
 <style scoped>
-.contract-step { color: #302b24; }
-.step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 32px; padding-bottom: 22px; border-bottom: 1px solid #d9cfbb; }
-.step-heading > div { max-width: 760px; }
-.step-kicker, .section-title-row span { margin: 0; color: #8b6b3f; font-size: 10px; font-weight: 800; letter-spacing: .17em; text-transform: uppercase; }
-.step-heading h3 { margin: 7px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(25px, 4vw, 36px); font-weight: 650; letter-spacing: -.02em; }
-.step-heading p:not(.step-kicker) { margin: 10px 0 0; color: #766c5e; font-size: 13px; line-height: 1.8; }
-.step-number { color: #c9baa1; font-family: Georgia, serif; font-size: 50px; line-height: .9; }
-.state-alert { margin-top: 18px; }
-.loading-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; margin-top: 26px; }
-.loading-grid section { display: grid; gap: 14px; padding: 24px; border: 1px solid #ddd2be; border-radius: 12px; background: #fffdf8; }
-.asset-section { margin-top: 30px; }
-.section-title-row { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
-.section-title-row h4 { margin: 4px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 21px; }
-.section-title-row > strong { color: #6d7e69; font-size: 12px; }
-.scope-note { margin-bottom: 14px; background: rgba(255, 253, 248, .68); }
-.card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
-.experience-card { display: flex; min-height: 340px; flex-direction: column; padding: 17px; border: 1px solid #ddd2be; border-radius: 11px; background: rgba(255, 253, 248, .86); transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
-.experience-card:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(63, 53, 39, .08); }
-.experience-card--selected { border-color: #5d7b63; box-shadow: inset 0 3px 0 #5d7b63; }
-.card-topline { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8c7d69; font-size: 10px; }
-.experience-card h5 { margin: 16px 0 7px; font-family: Georgia, 'Noto Serif SC', serif; font-size: 18px; }
-.method { margin: 0; color: #5e574d; font-size: 12px; line-height: 1.75; }
-.reason-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 11px; }
-.experience-card dl { margin: 14px 0 17px; }
-.experience-card dt { color: #96754b; font-size: 10px; font-weight: 750; }
-.experience-card dd { margin: 5px 0 0; color: #7a7062; font-size: 11px; line-height: 1.65; }
-.experience-card :deep(.n-button) { margin-top: auto; }
-.library-selector { display: grid; gap: 7px; margin-top: 16px; padding: 18px; border: 1px solid #d8cdb9; border-radius: 11px; background: #f8f4e9; }
-.library-selector > span { font-size: 13px; font-weight: 700; }
-.library-selector > small { color: #847969; font-size: 11px; }
-.selection-ledger { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
-.selection-ledger span { padding: 4px 8px; border-radius: 999px; color: #6c6256; background: #eee7da; font-size: 10px; }
-.corpus-section { padding-top: 28px; border-top: 1px solid #dcd2c1; }
-.corpus-list { display: grid; gap: 8px; }
-.corpus-row { display: grid; grid-template-columns: auto minmax(180px, 1.4fr) minmax(300px, 1fr) auto; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid #ddd4c4; border-radius: 10px; background: rgba(255, 253, 248, .78); cursor: pointer; }
-.corpus-row--selected { border-color: #637d67; background: #fbfdf8; box-shadow: inset 3px 0 0 #637d67; }
-.corpus-main { display: grid; min-width: 0; gap: 3px; }
-.corpus-main strong { overflow: hidden; font-family: Georgia, 'Noto Serif SC', serif; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-.relative-path { overflow: hidden; color: #877c6d; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.corpus-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0; }
-.corpus-meta div { min-width: 0; }
-.corpus-meta dt { color: #9a8c78; font-size: 9px; }
-.corpus-meta dd { overflow: hidden; margin: 2px 0 0; color: #5e574d; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.empty-state { padding: 32px 0; }
-.step-actions { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-top: 26px; padding-top: 20px; border-top: 1px solid #ded5c4; }
-.step-actions > div { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
-.step-actions small { max-width: 380px; color: #8a8071; font-size: 10px; line-height: 1.5; text-align: right; }
-@media (max-width: 920px) { .corpus-row { grid-template-columns: auto 1fr auto; } .corpus-meta { grid-column: 2 / -1; grid-row: 2; } }
-@media (max-width: 680px) { .step-heading { gap: 12px; } .step-number { font-size: 38px; } .loading-grid { grid-template-columns: 1fr; } .section-title-row { align-items: flex-start; flex-direction: column; } .corpus-row { grid-template-columns: auto 1fr; } .corpus-row > .n-tag { grid-column: 2; } .corpus-meta { grid-column: 1 / -1; grid-template-columns: repeat(2, 1fr); } .step-actions, .step-actions > div { align-items: stretch; flex-direction: column; } .step-actions small { text-align: left; } }
+.asset-step { color: #302b24; }
+.step-heading { display: flex; justify-content: space-between; gap: 24px; padding-bottom: 22px; border-bottom: 1px solid #d9cfbb; }
+.step-heading p, .section-title span { margin: 0; color: #9c3d2f; font: 800 10px Georgia, serif; letter-spacing: .16em; }
+.step-heading h2 { margin: 7px 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(25px, 4vw, 36px); }
+.step-heading div > span { color: #766c5e; font-size: 12px; line-height: 1.8; }
+.step-heading b { color: #c9baa1; font: 50px Georgia, serif; }
+.state-alert { margin-top: 17px; }
+.loading-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 24px; }
+.loading-grid section { padding: 22px; border: 1px solid #ddd2be; background: #fffdf8; }
+.asset-section { margin-top: 28px; }
+.section-title { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
+.section-title h3 { margin: 4px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 21px; }
+.section-title > strong { color: #4f725b; font-size: 11px; }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 11px; }
+.card-grid article { display: flex; min-height: 250px; flex-direction: column; padding: 16px; border: 1px solid #ddd2be; border-radius: 10px; background: #fffdf8; }
+.card-grid article.selected { border-color: #5d7b63; box-shadow: inset 0 3px 0 #5d7b63; }
+.card-grid h4 { margin: 14px 0 6px; font-family: 'Noto Serif SC', serif; }
+.card-grid p { color: #675f54; font-size: 11px; line-height: 1.7; }
+.card-grid article > div { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.card-grid :deep(.n-button) { margin-top: auto; }
+.library-selector { display: grid; gap: 6px; margin-top: 14px; padding: 16px; border: 1px solid #d8cdb9; background: #f8f4e9; }
+.library-selector > span { font-weight: 700; }
+.library-selector small { color: #877b6a; }
+.selection-ledger { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.selection-ledger span { padding: 4px 8px; border-radius: 999px; background: #eee7da; font-size: 10px; }
+.corpus-section { padding-top: 26px; border-top: 1px solid #dcd2c1; }
+.budget-meter { display: grid; grid-template-columns: 1fr auto; gap: 3px 14px; margin-bottom: 13px; padding: 13px 15px; border-left: 4px solid #9c3d2f; background: #f5eee1; }
+.budget-meter span { color: #9c3d2f; font-size: 10px; font-weight: 800; }
+.budget-meter small { grid-column: 1 / -1; color: #776d60; font-size: 10px; }
+.source-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+.source-list button { display: grid; gap: 5px; padding: 13px; border: 1px solid #ddd2be; border-radius: 8px; color: #302b24; text-align: left; background: #fffdf8; cursor: pointer; }
+.source-list button.active { border-color: #4f725b; box-shadow: inset 3px 0 0 #4f725b; }
+.source-list span { color: #867969; font-size: 9px; }
+.fragment-browser { margin-top: 14px; padding: 16px; border: 1px solid #d3c5af; background: #f8f3e8; }
+.fragment-browser > header { display: grid; grid-template-columns: 1fr minmax(220px, .7fr); align-items: end; gap: 14px; }
+.fragment-browser header span { color: #9c3d2f; font-size: 9px; font-weight: 800; }
+.fragment-browser h4 { margin: 4px 0 0; font-family: 'Noto Serif SC', serif; }
+.fragment-browser article { display: grid; grid-template-columns: 100px 1fr auto; align-items: center; gap: 12px; margin-top: 8px; padding: 12px; border: 1px solid #e0d5c3; background: #fffdf8; }
+.fragment-browser article.selected { border-color: #4f725b; }
+.fragment-browser article > div { display: grid; gap: 3px; color: #9c3d2f; font-size: 10px; }
+.fragment-browser article small { color: #897c6a; }
+.fragment-browser article p { margin: 0; color: #635b50; font-size: 11px; line-height: 1.65; }
+.range-ledger { margin-top: 15px; }
+.range-ledger > h4 { font-family: 'Noto Serif SC', serif; }
+.range-ledger article { display: grid; grid-template-columns: minmax(180px, 1fr) 110px 110px 130px auto; align-items: end; gap: 8px; padding: 11px 0; border-top: 1px dashed #d9ccb7; }
+.range-ledger article > div { display: grid; min-width: 0; gap: 4px; }
+.range-ledger article small { overflow: hidden; color: #827667; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.range-ledger label { display: grid; gap: 3px; }
+.range-ledger label span { color: #8c7e6b; font-size: 9px; }
+.source-count { color: #776d60; font-size: 10px; }
+.step-actions { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-top: 26px; padding-top: 20px; border-top: 1px solid #ded5c4; }
+.step-actions > div { display: flex; align-items: center; gap: 13px; }
+.step-actions small { color: #8a8071; font-size: 10px; }
+@media (max-width: 900px) { .range-ledger article { grid-template-columns: 1fr 1fr; } .range-ledger article > div { grid-column: 1 / -1; } }
+@media (max-width: 680px) { .loading-grid { grid-template-columns: 1fr; } .step-heading, .section-title, .step-actions, .step-actions > div { align-items: stretch; flex-direction: column; } .fragment-browser > header, .fragment-browser article { grid-template-columns: 1fr; } .range-ledger article { grid-template-columns: 1fr; } }
 </style>

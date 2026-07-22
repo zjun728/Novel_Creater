@@ -4,7 +4,7 @@ import { NButton, NResult, NSkeleton } from 'naive-ui'
 import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
-import { projectSeedsPath } from '../router/projectRoutes.js'
+import { projectContractPath } from '../router/projectRoutes.js'
 
 const routeProject = useRouteProject()
 </script>
@@ -45,14 +45,14 @@ const routeProject = useRouteProject()
     <section class="overview-sheet" aria-labelledby="project-overview-title">
       <p class="eyebrow">PROJECT OVERVIEW</p>
       <h1 id="project-overview-title">{{ routeProject.project.value.title }}</h1>
-      <p>项目上下文已从当前网址恢复。创作准备和写作模块将在后续纵向闭环中逐步接入。</p>
+      <p>创作契约把已选种子、故事发动机、风格、参考范围与篇幅容量收拢为一份可追溯的正式设计。</p>
       <router-link
         class="overview-next-action"
-        :to="projectSeedsPath(routeProject.project.value.id)"
+        :to="projectContractPath(routeProject.project.value.id)"
       >
-        <span>下一步 · 确定本书方向</span>
-        <strong>进入创作种子工作区</strong>
-        <small>查看市场证据、讨论灵感，并从多个候选中选定唯一种子。</small>
+        <span>FORMAL CREATION CONTRACT</span>
+        <strong>进入创作契约工作区</strong>
+        <small>核对唯一种子，完成五步设计，预览全部变化后一次签印。</small>
       </router-link>
     </section>
   </main>

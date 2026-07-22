@@ -1,13 +1,14 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { NAlert, NButton, NDescriptions, NDescriptionsItem, NResult, NSpin, NTag } from 'naive-ui'
 import { useCreationContractStore } from '@/stores/creationContractStore'
 
 const props = defineProps({ projectId: { type: String, required: true } })
-const emit = defineEmits(['back', 'confirmed'])
+const emit = defineEmits(['back', 'confirmed', 'reload'])
 const store = useCreationContractStore()
 const loadError = ref('')
 const confirmError = ref('')
+const errorRegion = ref(null)
 
 function commandKey() {
   const suffix = globalThis.crypto?.randomUUID?.()
@@ -50,6 +51,8 @@ async function loadPreview() {
     await store.preview(props.projectId)
   } catch (error) {
     loadError.value = error?.message || '契约预览生成失败'
+    await nextTick()
+    errorRegion.value?.focus({ preventScroll: false })
   }
 }
 
@@ -60,6 +63,8 @@ async function confirmContract() {
     emit('confirmed', result)
   } catch (error) {
     confirmError.value = error?.message || '契约确认结果未知'
+    await nextTick()
+    errorRegion.value?.focus({ preventScroll: false })
   }
 }
 
@@ -69,20 +74,21 @@ watch(() => props.projectId, () => loadPreview(), { immediate: true })
 <template>
   <article class="preview-step">
     <header class="step-heading">
-      <div><span>STEP 05</span><h3>冻结并确认</h3></div>
+      <div><span>STEP 05 · COMPLETE REVIEW</span><h3>预览全部变化，再一次确认</h3><p>本页只读汇总五步决定；签印后当前修订不可覆盖。</p></div>
       <n-tag :type="store.contractReady ? 'success' : 'warning'" round>
         {{ store.contractReady ? '可以签印' : '尚未就绪' }}
       </n-tag>
     </header>
 
     <div v-if="store.previewing" class="loading"><n-spin size="large" /><span>正在核对全部冻结引用…</span></div>
-    <n-result v-else-if="loadError" status="error" title="无法形成契约预览" :description="loadError">
-      <template #footer><n-button @click="loadPreview">重新核对</n-button></template>
+    <n-result v-else-if="loadError" ref="errorRegion" tabindex="-1" status="error" title="无法形成契约预览" :description="loadError" aria-live="assertive">
+      <template #footer><n-button @click="loadPreview">重新加载并核对</n-button></template>
     </n-result>
 
     <template v-else-if="preview">
       <n-alert v-if="store.readinessReasons.length" type="warning" title="签印前仍需处理">
         <ul><li v-for="reason in store.readinessReasons" :key="reason">{{ explain(reason) }}</li></ul>
+        <template #action><n-button size="small" @click="emit('reload')">重新加载并核对</n-button></template>
       </n-alert>
 
       <section class="snapshot" aria-labelledby="frozen-snapshot-heading">
@@ -125,10 +131,13 @@ watch(() => props.projectId, () => loadPreview(), { immediate: true })
         </div>
         <n-descriptions :column="2" bordered label-placement="left" size="small" class="policy-table">
           <n-descriptions-item label="渠道 / 题材">{{ preview.creationContract.channelProfileKey }} / {{ preview.creationContract.genreProfileKey }}</n-descriptions-item>
-          <n-descriptions-item label="目标篇幅">{{ wordRange(preview.creationContract.totalWordRange) }}</n-descriptions-item>
+          <n-descriptions-item label="目标总字数">{{ Number(preview.creationContract.targetTotalWords).toLocaleString() }} 字</n-descriptions-item>
+          <n-descriptions-item label="预计卷 / 章">{{ preview.creationContract.expectedVolumeCount }} 卷 / {{ preview.creationContract.expectedChapterCount }} 章</n-descriptions-item>
+          <n-descriptions-item label="章节字数偏好">{{ wordRange(preview.creationContract.chapterWordRangePreference) }}</n-descriptions-item>
           <n-descriptions-item label="质量章程">{{ preview.creationContract.qualityCharterVersion }}</n-descriptions-item>
-          <n-descriptions-item label="模型绑定修订">R{{ preview.creationContract.modelBindingRevision }}</n-descriptions-item>
-          <n-descriptions-item label="章节容量策略" :span="2">{{ preview.creationContract.chapterCapacityPolicy }}</n-descriptions-item>
+          <n-descriptions-item label="模型绑定修订">R{{ preview.creationContract.modelBindingRef?.revision ?? '—' }}</n-descriptions-item>
+          <n-descriptions-item label="禁止方向" :span="2">{{ preview.creationContract.prohibitedDirections?.join('；') || '未额外填写' }}</n-descriptions-item>
+          <n-descriptions-item label="作者备注" :span="2">{{ preview.creationContract.authorNotes || '未额外填写' }}</n-descriptions-item>
           <n-descriptions-item label="喜欢的表现" :span="2">{{ preview.likes?.join('；') || '未额外填写' }}</n-descriptions-item>
           <n-descriptions-item label="明确避开" :span="2">{{ preview.dislikes?.join('；') || '未额外填写' }}</n-descriptions-item>
         </n-descriptions>
@@ -161,19 +170,19 @@ watch(() => props.projectId, () => loadPreview(), { immediate: true })
         </div>
       </section>
 
-      <n-alert v-if="confirmError" type="error" title="确认没有得到明确结果">
+      <n-alert v-if="confirmError" ref="errorRegion" tabindex="-1" type="error" title="确认没有得到明确结果" aria-live="assertive">
         {{ confirmError }}。再次点击会使用同一幂等命令核对，不会创建重复修订。
       </n-alert>
 
       <footer class="step-actions">
-        <n-button :disabled="store.confirming" @click="emit('back')">返回素材范围</n-button>
+        <n-button :disabled="store.confirming" @click="emit('back')">返回容量约定</n-button>
         <div class="seal-action">
           <span>签印成功后进入“等待滚动规划”，写作台仍保持关闭。</span>
           <n-button
             type="primary"
             size="large"
             :loading="store.confirming"
-            :disabled="!store.contractReady"
+            :disabled="store.confirming || store.requiresReload || !store.contractReady"
             @click="confirmContract"
           >{{ confirmError ? '使用同一命令重试' : '一次确认完整契约' }}</n-button>
         </div>
