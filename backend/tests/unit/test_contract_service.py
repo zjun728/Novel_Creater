@@ -14,6 +14,7 @@ from backend.domain.seeds import (
     build_seed_provenance,
     seed_revision_document,
 )
+from backend.http_errors import ProjectArchived
 from backend.services.contracts import (
     ConfirmContracts,
     ContractConflict,
@@ -634,6 +635,44 @@ async def test_draft_create_and_update_reject_wrong_versions_and_archived_or_mis
         await harness.service.get_draft("archived")
 
 
+@pytest.mark.asyncio
+async def test_archived_project_can_read_existing_draft_but_cannot_preview_or_write():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    writes = harness.repository.write_count
+    harness.repository.projects["p1"]["status"] = "archived"
+
+    assert await harness.service.get_draft("p1") == saved
+    with pytest.raises(ContractNotFound):
+        await harness.service.preview("p1")
+    with pytest.raises(ProjectArchived):
+        await harness.service.save_draft(command(
+            harness, expected=saved.draft_version,
+        ))
+    with pytest.raises(ProjectArchived):
+        await harness.service.confirm(confirmation(saved, key="archived-confirm"))
+
+    assert harness.repository.write_count == writes
+    assert harness.repository.drafts["p1"]["draft_version"] == saved.draft_version
+
+
+@pytest.mark.asyncio
+async def test_archived_project_can_read_confirmed_head_and_history_but_not_clone():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    writes = harness.repository.write_count
+    harness.repository.projects["p1"]["status"] = "archived"
+
+    assert await harness.service.get_head("p1") == confirmed
+    assert await harness.service.history("p1") == (confirmed,)
+    with pytest.raises(ProjectArchived):
+        await harness.service.clone_revision("p1", confirmed.revision)
+
+    assert harness.repository.write_count == writes
+    assert "p1" not in harness.repository.drafts
+
+
 def test_draft_is_strict_bounded_and_rejects_duplicate_or_same_style_refs():
     harness = ContractHarness()
     values = draft_values(harness.repository)
@@ -970,6 +1009,18 @@ async def test_clone_confirmed_head_creates_version_one_and_never_overwrites():
         "project_id": "p1",
         "revision": 7,
         "selection_revision": initial.selection_revision,
+        "channel_profile_key": initial.draft.channelProfileKey,
+        "genre_profile_key": initial.draft.genreProfileKey,
+        "quality_charter_version": initial.draft.qualityCharterVersion,
+        "total_word_min": initial.draft.targetTotalWords,
+        "total_word_max": initial.draft.targetTotalWords,
+        "chapter_capacity_policy": canonical_json({
+            "expectedVolumeCount": initial.draft.expectedVolumeCount,
+            "expectedChapterCount": initial.draft.expectedChapterCount,
+            "chapterWordRangePreference": list(
+                initial.draft.chapterWordRangePreference
+            ),
+        }),
         "seed_id": preview.seed_ref.id,
         "seed_revision_id": initial.draft.seedRevisionId,
         "seed_hash": initial.draft.seedHash,
@@ -1097,6 +1148,54 @@ async def test_clone_historical_revision_in_same_selection_uses_current_head_bas
     assert cloned.base_head_revision == 2
     assert cloned.draft_version == 1
     assert cloned.id != initial.id
+
+
+@pytest.mark.parametrize(
+    ("case", "field", "tampered", "relation_updates", "capacity_updates"),
+    (
+        ("selection", "selectionRevision", 8, {}, {}),
+        ("channel", "channelProfileKey", "tampered-channel", {}, {}),
+        ("genre", "genreProfileKey", "tampered-genre", {}, {}),
+        ("charter", "qualityCharterVersion", "tampered-charter-v2", {}, {}),
+        ("word-min", "targetTotalWords", 1_000_001,
+         {"total_word_max": 1_000_001}, {}),
+        ("word-max", "targetTotalWords", 999_999,
+         {"total_word_min": 999_999}, {}),
+        ("volumes", "expectedVolumeCount", 9, {}, {}),
+        ("chapters", "expectedChapterCount", 401, {}, {}),
+        ("chapter-range", "chapterWordRangePreference", [2_600, 3_600], {}, {}),
+        ("capacity-extra", None, None, {}, {"unexpected": 1}),
+    ),
+)
+@pytest.mark.asyncio
+async def test_clone_non_head_revision_rejects_creation_payload_relational_drift(
+    case, field, tampered, relation_updates, capacity_updates,
+):
+    harness = ContractHarness()
+    first_draft = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(
+        first_draft, key=f"confirm-first-{case}",
+    ))
+    second_draft = await harness.service.clone_revision("p1", 1)
+    await harness.service.confirm(confirmation(
+        second_draft, key=f"confirm-second-{case}",
+    ))
+    historical = harness.repository.confirmed_revisions[("p1", 1)]
+    creation = json.loads(historical["creation_json"])
+    if field is not None:
+        creation[field] = tampered
+    historical["creation_json"] = canonical_json(creation)
+    historical["creation_hash"] = canonical_hash(creation)
+    historical.update(relation_updates)
+    if capacity_updates:
+        capacity = json.loads(historical["chapter_capacity_policy"])
+        capacity.update(capacity_updates)
+        historical["chapter_capacity_policy"] = canonical_json(capacity)
+
+    with pytest.raises(ContractPreconditionFailed):
+        await harness.service.clone_revision("p1", 1)
+
+    assert "p1" not in harness.repository.drafts
 
 
 @pytest.mark.asyncio

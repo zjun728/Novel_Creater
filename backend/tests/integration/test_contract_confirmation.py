@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from pymysql.err import IntegrityError
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
 from backend.domain.seeds import SeedPayload
+from backend.http_errors import ProjectArchived
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.seeds import SeedRepository
 from backend.services.contracts import (
@@ -17,6 +19,7 @@ from backend.services.contracts import (
     ConfirmContracts,
     ContractConflict,
     ContractDraftInput,
+    ContractNotFound,
     ContractPreconditionFailed,
     ContractService,
     CorpusSourceRef,
@@ -202,6 +205,99 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
     assert historical_clone.draft.likes != revised.draft.likes
     assert (await service.get_head(PROJECT)).revision == 2
     assert await _count(disposable_mysql.session, "creation_contracts") == 2
+
+
+@pytest.mark.asyncio
+async def test_real_archived_project_reads_confirmed_head_and_history_but_rejects_operations(
+    disposable_mysql,
+):
+    service = _service(disposable_mysql)
+    _, saved = await _saved(disposable_mysql, service)
+    confirmed = await service.confirm(_confirm(saved, key="confirmed-before-archive"))
+    await disposable_mysql.session.execute(
+        "UPDATE projects SET archived_at=%s,lifecycle_revision=1 WHERE id=%s",
+        (1_900_000_000_500, PROJECT),
+    )
+    counts = {
+        table: await _count(disposable_mysql.session, table)
+        for table in FORMAL_TABLES
+    }
+
+    assert await service.get_head(PROJECT) == confirmed
+    assert await service.history(PROJECT) == (confirmed,)
+    with pytest.raises(ContractNotFound):
+        await service.preview(PROJECT)
+    with pytest.raises(ProjectArchived):
+        await service.confirm(_confirm(saved, key="confirmed-before-archive"))
+    with pytest.raises(ProjectArchived):
+        await service.clone_revision(PROJECT, confirmed.revision)
+
+    assert {
+        table: await _count(disposable_mysql.session, table)
+        for table in FORMAL_TABLES
+    } == counts
+    assert await disposable_mysql.session.fetchone(
+        "SELECT * FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("case", "field", "tampered", "relation_updates", "capacity_updates"),
+    (
+        ("selection", "selectionRevision", 2, {}, {}),
+        ("channel", "channelProfileKey", "tampered-channel", {}, {}),
+        ("genre", "genreProfileKey", "tampered-genre", {}, {}),
+        ("charter", "qualityCharterVersion", "tampered-charter-v2", {}, {}),
+        ("word-min", "targetTotalWords", 150_001,
+         {"total_word_max": 150_001}, {}),
+        ("word-max", "targetTotalWords", 149_999,
+         {"total_word_min": 149_999}, {}),
+        ("volumes", "expectedVolumeCount", 9, {}, {}),
+        ("chapters", "expectedChapterCount", 401, {}, {}),
+        ("chapter-range", "chapterWordRangePreference", [2_600, 3_600], {}, {}),
+        ("capacity-extra", None, None, {}, {"unexpected": 1}),
+    ),
+)
+@pytest.mark.asyncio
+async def test_real_non_head_clone_rejects_creation_payload_relational_drift(
+    disposable_mysql, case, field, tampered, relation_updates, capacity_updates,
+):
+    service = _service(disposable_mysql)
+    _, first_draft = await _saved(disposable_mysql, service)
+    await service.confirm(_confirm(first_draft, key=f"first-{case}"))
+    second_draft = await service.clone_revision(PROJECT, 1)
+    await service.confirm(_confirm(second_draft, key=f"second-{case}"))
+    historical = await disposable_mysql.session.fetchone(
+        """SELECT id,content_json,chapter_capacity_policy
+             FROM creation_contracts WHERE project_id=%s AND revision=1""",
+        (PROJECT,),
+    )
+    creation = json.loads(historical["content_json"])
+    if field is not None:
+        creation[field] = tampered
+    await disposable_mysql.session.execute(
+        "UPDATE creation_contracts SET content_json=%s,content_hash=%s WHERE id=%s",
+        (canonical_json(creation), canonical_hash(creation), historical["id"]),
+    )
+    for column, value in relation_updates.items():
+        await disposable_mysql.session.execute(
+            f"UPDATE creation_contracts SET {column}=%s WHERE id=%s",
+            (value, historical["id"]),
+        )
+    if capacity_updates:
+        capacity = json.loads(historical["chapter_capacity_policy"])
+        capacity.update(capacity_updates)
+        await disposable_mysql.session.execute(
+            "UPDATE creation_contracts SET chapter_capacity_policy=%s WHERE id=%s",
+            (canonical_json(capacity), historical["id"]),
+        )
+
+    with pytest.raises(ContractPreconditionFailed):
+        await service.clone_revision(PROJECT, 1)
+
+    assert await disposable_mysql.session.fetchone(
+        "SELECT * FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
+    ) is None
 
 
 @pytest.mark.asyncio

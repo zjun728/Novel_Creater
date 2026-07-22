@@ -7,6 +7,7 @@ from copy import deepcopy
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
+from backend.http_errors import ProjectArchived
 from backend.tests.support.story_engine_fakes import option
 
 
@@ -204,10 +205,17 @@ class MemoryContractRepository:
 
     async def read_project(self, session, project_id):
         row = self.projects.get(project_id)
+        return dict(row) if row else None
+
+    async def read_active_project(self, session, project_id):
+        row = self.projects.get(project_id)
         return dict(row) if row and row["status"] != "archived" else None
 
     async def lock_project(self, session, project_id):
-        return await self.read_project(session, project_id)
+        row = self.projects.get(project_id)
+        if row and row["status"] == "archived":
+            raise ProjectArchived()
+        return dict(row) if row else None
 
     async def read_draft(self, session, project_id):
         row = self.drafts.get(project_id)
@@ -306,6 +314,12 @@ class MemoryContractRepository:
             "project_id": row["project_id"],
             "revision": row["result_revision"],
             "selection_revision": creation["selection_revision"],
+            "channel_profile_key": creation["channel_profile_key"],
+            "genre_profile_key": creation["genre_profile_key"],
+            "quality_charter_version": creation["quality_charter_version"],
+            "total_word_min": creation["total_word_min"],
+            "total_word_max": creation["total_word_max"],
+            "chapter_capacity_policy": creation["chapter_capacity_policy"],
             "seed_id": creation["seed_id"],
             "seed_revision_id": creation["seed_revision_id"],
             "seed_hash": creation["seed_hash"],

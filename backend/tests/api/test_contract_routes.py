@@ -217,6 +217,62 @@ def test_routes_return_stable_404_and_409_for_archived_and_stale_cas():
     assert set(conflict.json()) == {"code", "message", "correlationId"}
 
 
+def test_archived_project_reads_existing_draft_but_rejects_formal_operations():
+    client, harness = make_client()
+    saved = client.put(
+        "/api/projects/p1/contract-draft", json=save_body(harness)
+    )
+    writes = harness.repository.write_count
+    harness.repository.projects["p1"]["status"] = "archived"
+
+    loaded = client.get("/api/projects/p1/contract-draft")
+    preview = client.post("/api/projects/p1/contracts/preview")
+    saved_again = client.put(
+        "/api/projects/p1/contract-draft",
+        json=save_body(harness, expected=saved.json()["draftVersion"]),
+    )
+    confirmed = client.post("/api/projects/p1/contracts/confirm", json={
+        "idempotencyKey": "archived-confirm",
+        "expectedDraftVersion": saved.json()["draftVersion"],
+        "expectedDraftHash": saved.json()["contentHash"],
+    })
+
+    assert loaded.status_code == 200
+    assert loaded.json() == saved.json()
+    for response in (preview, saved_again, confirmed):
+        assert response.status_code in {404, 409}
+    assert preview.json()["code"] == "ContractNotFound"
+    assert saved_again.json()["code"] == "ProjectArchived"
+    assert confirmed.json()["code"] == "ProjectArchived"
+    assert harness.repository.write_count == writes
+
+
+def test_archived_project_reads_confirmed_head_and_history_but_cannot_clone():
+    client, harness = make_client()
+    saved = client.put(
+        "/api/projects/p1/contract-draft", json=save_body(harness)
+    ).json()
+    confirmed = client.post("/api/projects/p1/contracts/confirm", json={
+        "idempotencyKey": "confirm-before-archive",
+        "expectedDraftVersion": saved["draftVersion"],
+        "expectedDraftHash": saved["contentHash"],
+    })
+    writes = harness.repository.write_count
+    harness.repository.projects["p1"]["status"] = "archived"
+
+    head = client.get("/api/projects/p1/contracts/head")
+    history = client.get("/api/projects/p1/contracts/history")
+    cloned = client.post("/api/projects/p1/contracts/1/clone")
+
+    assert confirmed.status_code == 201
+    assert head.status_code == history.status_code == 200
+    assert head.json() == confirmed.json()
+    assert history.json()["items"] == [confirmed.json()]
+    assert cloned.status_code == 409
+    assert cloned.json()["code"] == "ProjectArchived"
+    assert harness.repository.write_count == writes
+
+
 def test_preview_missing_dependencies_is_stable_200_with_null_contracts():
     cases = (
         ("seed", "seed_missing", "creationContract"),
@@ -295,6 +351,18 @@ def test_clone_route_delegates_explicit_revision_and_never_overwrites():
         "project_id": "p1",
         "revision": 6,
         "selection_revision": result.selection_revision,
+        "channel_profile_key": result.creation_contract.channelProfileKey,
+        "genre_profile_key": result.creation_contract.genreProfileKey,
+        "quality_charter_version": result.creation_contract.qualityCharterVersion,
+        "total_word_min": result.creation_contract.targetTotalWords,
+        "total_word_max": result.creation_contract.targetTotalWords,
+        "chapter_capacity_policy": canonical_json({
+            "expectedVolumeCount": result.creation_contract.expectedVolumeCount,
+            "expectedChapterCount": result.creation_contract.expectedChapterCount,
+            "chapterWordRangePreference": list(
+                result.creation_contract.chapterWordRangePreference
+            ),
+        }),
         "seed_id": result.seed_ref.id,
         "seed_revision_id": saved["seed_revision_id"],
         "seed_hash": saved["seed_hash"],

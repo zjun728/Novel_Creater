@@ -66,6 +66,24 @@ class ContractHistoryService(ContractPreviewService):
             })
             likes = tuple(_json_array(snapshot["likes_json"]))
             dislikes = tuple(_json_array(snapshot["dislikes_json"]))
+            capacity = _json_object(snapshot["chapter_capacity_policy"])
+            expected_capacity = {
+                "expectedVolumeCount": creation.expectedVolumeCount,
+                "expectedChapterCount": creation.expectedChapterCount,
+                "chapterWordRangePreference": list(
+                    creation.chapterWordRangePreference
+                ),
+            }
+            relational_creation_valid = (
+                int(snapshot["selection_revision"]) == creation.selectionRevision
+                and snapshot["channel_profile_key"] == creation.channelProfileKey
+                and snapshot["genre_profile_key"] == creation.genreProfileKey
+                and snapshot["quality_charter_version"]
+                    == creation.qualityCharterVersion
+                and int(snapshot["total_word_min"]) == creation.targetTotalWords
+                and int(snapshot["total_word_max"]) == creation.targetTotalWords
+                and capacity == expected_capacity
+            )
             binding_items = (
                 self._binding_items({
                     "items": snapshot.get("binding_items") or (),
@@ -169,6 +187,7 @@ class ContractHistoryService(ContractPreviewService):
                 or creation.seedHash != snapshot["seed_hash"]
                 or creation.engineOptionId != snapshot["engine_option_id"]
                 or creation.engineHash != snapshot["engine_hash"]
+                or not relational_creation_valid
                 or not binding_valid
                 or snapshot["seed_hash"] != snapshot.get("actual_seed_hash")
                 or snapshot["engine_hash"] != snapshot.get("actual_engine_hash")

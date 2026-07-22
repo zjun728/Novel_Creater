@@ -7,6 +7,7 @@ import pytest
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
+from backend.http_errors import ProjectArchived
 from backend.repositories.contracts import ContractRepository
 from backend.services.contracts import (
     AssetRevisionRef,
@@ -14,6 +15,7 @@ from backend.services.contracts import (
     ContractConflict,
     ContractDraftIncomplete,
     ContractDraftInput,
+    ContractNotFound,
     ContractService,
     CorpusSourceRef,
     SaveContractDraft,
@@ -330,6 +332,38 @@ async def test_real_progressive_draft_saves_engine_style_assets_as_versions_1_2_
     assert await service.get_draft(PROJECT) == assets
 
 
+@pytest.mark.asyncio
+async def test_real_archived_project_reads_existing_draft_but_rejects_preview_and_save(
+    disposable_mysql,
+):
+    facts = await _bootstrap(disposable_mysql.session)
+    service = _service(disposable_mysql)
+    saved = await service.save_draft(SaveContractDraft(
+        PROJECT, 0, _draft(facts)
+    ))
+    before = await disposable_mysql.session.fetchone(
+        "SELECT draft_version,content_hash FROM project_contract_drafts WHERE project_id=%s",
+        (PROJECT,),
+    )
+    await disposable_mysql.session.execute(
+        "UPDATE projects SET archived_at=%s,lifecycle_revision=1 WHERE id=%s",
+        (1_900_000_000_500, PROJECT),
+    )
+
+    assert await service.get_draft(PROJECT) == saved
+    with pytest.raises(ContractNotFound):
+        await service.preview(PROJECT)
+    with pytest.raises(ProjectArchived):
+        await service.save_draft(SaveContractDraft(
+            PROJECT, saved.draft_version, _draft(facts)
+        ))
+
+    assert await disposable_mysql.session.fetchone(
+        "SELECT draft_version,content_hash FROM project_contract_drafts WHERE project_id=%s",
+        (PROJECT,),
+    ) == before
+
+
 @pytest.mark.parametrize("stage", ("engine", "style"))
 @pytest.mark.asyncio
 async def test_real_incomplete_draft_preview_and_confirm_are_422_without_writes(
@@ -454,12 +488,14 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
             genre_profile_key,quality_charter_version,total_word_min,total_word_max,
             chapter_capacity_policy,reference_manifest_json,
             reference_manifest_hash,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,1,%s,%s,%s,%s,%s,%s,%s,%s,100000,
-                   200000,%s,%s,%s,%s,%s,%s)""",
+           VALUES (%s,%s,1,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                   %s,%s,%s,%s,%s,%s,%s)""",
         (CREATION, PROJECT, SEED, SEED_REV, facts["seed_hash"], BINDING,
          facts["binding_hash"], preview.creation_contract.channelProfileKey,
          preview.creation_contract.genreProfileKey,
          preview.creation_contract.qualityCharterVersion,
+         preview.creation_contract.targetTotalWords,
+         preview.creation_contract.targetTotalWords,
          canonical_json({
              "expectedVolumeCount": preview.creation_contract.expectedVolumeCount,
              "expectedChapterCount": preview.creation_contract.expectedChapterCount,

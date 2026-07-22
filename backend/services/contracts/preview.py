@@ -107,7 +107,7 @@ class ContractPreviewService(ContractDraftService):
 
     async def preview(self, project_id: str) -> ContractPreviewResult:
         async with self.connection_factory() as session:
-            if await self.repository.read_project(session, project_id) is None:
+            if await self.repository.read_active_project(session, project_id) is None:
                 raise ContractNotFound()
             row = await self.repository.read_draft(session, project_id)
             if row is None:

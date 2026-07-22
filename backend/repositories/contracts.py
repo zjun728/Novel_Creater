@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
-from backend.repositories.project_lifecycle import lock_active_project, read_active_project
+from backend.repositories.project_lifecycle import (
+    lock_active_project,
+    read_active_project as _read_active_project,
+    read_project as read_any_project,
+)
 
 
 _PROVIDER_READY = f"""provider.lifecycle_status='active' AND provider.enabled=1
@@ -16,7 +20,10 @@ _FOR_UPDATE = " FOR UPDATE"
 
 class ContractRepository:
     async def read_project(self, session, project_id: str):
-        return await read_active_project(session, project_id)
+        return await read_any_project(session, project_id)
+
+    async def read_active_project(self, session, project_id: str):
+        return await _read_active_project(session, project_id)
 
     async def lock_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)
@@ -503,6 +510,11 @@ class ContractRepository:
             f"""SELECT creation.project_id,creation.revision,
                       creation.selection_revision,creation.seed_id,
                       creation.seed_revision_id,creation.seed_hash,
+                      creation.channel_profile_key,
+                      creation.genre_profile_key,
+                      creation.quality_charter_version,
+                      creation.total_word_min,creation.total_word_max,
+                      creation.chapter_capacity_policy,
                       creation.content_json AS creation_json,
                       creation.content_hash AS creation_hash,
                       creation.reference_manifest_json,
