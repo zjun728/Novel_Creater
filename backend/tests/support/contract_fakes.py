@@ -392,13 +392,21 @@ class MemoryContractRepository:
         )] = snapshot
         return True
 
-    async def list_contract_revisions(self, session, project_id, limit):
+    async def list_contract_revisions(
+        self, session, project_id, *, before_revision, limit
+    ):
         rows = [
             {"revision": row["revision"]}
             for row in self.creation_contracts.values()
             if row["project_id"] == project_id
+            and (
+                before_revision is None
+                or row["revision"] < before_revision
+            )
         ]
-        return sorted(rows, key=lambda row: row["revision"], reverse=True)[:limit]
+        return sorted(
+            rows, key=lambda row: row["revision"], reverse=True
+        )[:limit + 1]
 
     async def insert_draft(self, session, row):
         self.events.append("insert-draft")

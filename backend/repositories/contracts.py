@@ -218,11 +218,25 @@ class ContractRepository:
              row["idempotency_key"], row["request_hash"]),
         ) == 1
 
-    async def list_contract_revisions(self, session, project_id: str, limit: int):
+    async def list_contract_revisions(
+        self,
+        session,
+        project_id: str,
+        *,
+        before_revision: int | None,
+        limit: int,
+    ):
+        cursor_clause = ""
+        args: list[object] = [project_id]
+        if before_revision is not None:
+            cursor_clause = " AND revision<%s"
+            args.append(before_revision)
+        args.append(limit + 1)
         return await session.fetchall(
-            """SELECT revision FROM creation_contracts
-               WHERE project_id=%s ORDER BY revision DESC LIMIT %s""",
-            (project_id, limit),
+            f"""SELECT revision FROM creation_contracts
+                WHERE project_id=%s{cursor_clause}
+                ORDER BY revision DESC LIMIT %s""",
+            tuple(args),
         )
 
     async def insert_draft(self, session, row: dict) -> None:

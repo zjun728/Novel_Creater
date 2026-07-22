@@ -82,7 +82,7 @@ class ContractHistoryService(ContractPreviewService):
                     == creation.qualityCharterVersion
                 and int(snapshot["total_word_min"]) == creation.targetTotalWords
                 and int(snapshot["total_word_max"]) == creation.targetTotalWords
-                and capacity == expected_capacity
+                and canonical_json(capacity) == canonical_json(expected_capacity)
             )
             binding_items = (
                 self._binding_items({
@@ -406,21 +406,42 @@ class ContractHistoryService(ContractPreviewService):
                 contract_ready=not reasons, reasons=tuple(reasons),
             )
 
-    async def history(self, project_id: str, limit: int = 20):
-        if not 1 <= limit <= 100:
+    async def history(
+        self,
+        project_id: str,
+        limit: int = 20,
+        before_revision: int | None = None,
+    ):
+        if (
+            isinstance(limit, bool)
+            or type(limit) is not int
+            or not 1 <= limit <= 100
+            or (
+                before_revision is not None
+                and (
+                    isinstance(before_revision, bool)
+                    or type(before_revision) is not int
+                    or before_revision <= 0
+                )
+            )
+        ):
             raise ContractPreconditionFailed()
         async with self.connection_factory() as session:
             if await self.repository.read_project(session, project_id) is None:
                 raise ContractNotFound()
             revisions = await self.repository.list_contract_revisions(
-                session, project_id, limit
+                session,
+                project_id,
+                before_revision=before_revision,
+                limit=limit,
             )
             selected = await self.repository.read_selected_seed(
                 session, project_id
             )
             head = await self.repository.read_contract_head(session, project_id)
             results = []
-            for row in revisions:
+            page = revisions[:limit]
+            for row in page:
                 snapshot = await self.repository.read_confirmed_snapshot(
                     session, project_id, int(row["revision"])
                 )
@@ -433,7 +454,12 @@ class ContractHistoryService(ContractPreviewService):
                         result, selected, head
                     )
                 )
-            return tuple(results)
+            return {
+                "items": tuple(results),
+                "nextBeforeRevision": (
+                    int(page[-1]["revision"]) if len(revisions) > limit else None
+                ),
+            }
 
 
     async def clone_revision(

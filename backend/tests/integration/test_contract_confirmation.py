@@ -169,7 +169,9 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
         }),
     }
     assert (await service.get_head(PROJECT)).revision == 1
-    assert tuple(item.revision for item in await service.history(PROJECT)) == (1,)
+    history_page = await service.history(PROJECT)
+    assert tuple(item.revision for item in history_page["items"]) == (1,)
+    assert history_page["nextBeforeRevision"] is None
 
     with pytest.raises(ContractConflict):
         await service.confirm(_confirm(saved, content_hash="f" * 64))
@@ -181,7 +183,7 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
         PROJECT, cloned.draft_version, _draft(facts, likes=("第二版偏好",))
     ))
     second = await service.confirm(_confirm(revised, key="confirm-second"))
-    history = await service.history(PROJECT)
+    history = (await service.history(PROJECT))["items"]
     old_replay = await service.confirm(_confirm(saved))
     assert second.revision == 2
     assert tuple(item.revision for item in history) == (2, 1)
@@ -208,6 +210,30 @@ async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_
 
 
 @pytest.mark.asyncio
+async def test_real_history_pages_by_exclusive_revision_without_duplicates_or_gaps(
+    disposable_mysql,
+):
+    service = _service(disposable_mysql)
+    _, draft = await _saved(disposable_mysql, service)
+    for revision in (1, 2, 3):
+        await service.confirm(_confirm(draft, key=f"history-page-{revision}"))
+        if revision < 3:
+            draft = await service.clone_revision(PROJECT, revision)
+
+    first = await service.history(PROJECT, limit=2)
+    second = await service.history(
+        PROJECT, limit=2, before_revision=first["nextBeforeRevision"]
+    )
+    empty = await service.history(PROJECT, limit=2, before_revision=1)
+
+    assert tuple(item.revision for item in first["items"]) == (3, 2)
+    assert first["nextBeforeRevision"] == 2
+    assert tuple(item.revision for item in second["items"]) == (1,)
+    assert second["nextBeforeRevision"] is None
+    assert empty == {"items": (), "nextBeforeRevision": None}
+
+
+@pytest.mark.asyncio
 async def test_real_archived_project_reads_confirmed_head_and_history_but_rejects_operations(
     disposable_mysql,
 ):
@@ -224,7 +250,9 @@ async def test_real_archived_project_reads_confirmed_head_and_history_but_reject
     }
 
     assert await service.get_head(PROJECT) == confirmed
-    assert await service.history(PROJECT) == (confirmed,)
+    assert await service.history(PROJECT) == {
+        "items": (confirmed,), "nextBeforeRevision": None,
+    }
     with pytest.raises(ContractNotFound):
         await service.preview(PROJECT)
     with pytest.raises(ProjectArchived):
@@ -291,6 +319,40 @@ async def test_real_non_head_clone_rejects_creation_payload_relational_drift(
             "UPDATE creation_contracts SET chapter_capacity_policy=%s WHERE id=%s",
             (canonical_json(capacity), historical["id"]),
         )
+
+    with pytest.raises(ContractPreconditionFailed):
+        await service.clone_revision(PROJECT, 1)
+
+    assert await disposable_mysql.session.fetchone(
+        "SELECT * FROM project_contract_drafts WHERE project_id=%s", (PROJECT,)
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_real_non_head_clone_rejects_capacity_number_type_drift(
+    disposable_mysql,
+):
+    service = _service(disposable_mysql)
+    facts = await _bootstrap(disposable_mysql.session)
+    values = _draft(facts).model_dump(mode="python")
+    values["expectedVolumeCount"] = 8
+    first_draft = await service.save_draft(SaveContractDraft(
+        PROJECT, 0, ContractDraftInput(**values)
+    ))
+    await service.confirm(_confirm(first_draft, key="strict-number-first"))
+    second_draft = await service.clone_revision(PROJECT, 1)
+    await service.confirm(_confirm(second_draft, key="strict-number-second"))
+    historical = await disposable_mysql.session.fetchone(
+        """SELECT id,chapter_capacity_policy
+             FROM creation_contracts WHERE project_id=%s AND revision=1""",
+        (PROJECT,),
+    )
+    capacity = json.loads(historical["chapter_capacity_policy"])
+    capacity["expectedVolumeCount"] = 8.0
+    await disposable_mysql.session.execute(
+        "UPDATE creation_contracts SET chapter_capacity_policy=%s WHERE id=%s",
+        (canonical_json(capacity), historical["id"]),
+    )
 
     with pytest.raises(ContractPreconditionFailed):
         await service.clone_revision(PROJECT, 1)
@@ -502,7 +564,7 @@ async def test_real_a_b_a_marks_old_contract_history_and_replay_superseded(
         )
     )
 
-    historical = await contract_service.history(PROJECT)
+    historical = (await contract_service.history(PROJECT))["items"]
     replay = await contract_service.confirm(_confirm(saved))
 
     assert first.contract_ready is True

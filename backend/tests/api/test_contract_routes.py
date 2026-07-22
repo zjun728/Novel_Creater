@@ -520,3 +520,40 @@ def test_head_zero_and_history_limit_are_explicit_and_bounded():
     assert client.get(
         "/api/projects/p1/contracts/history?limit=101"
     ).status_code == 422
+
+
+def test_history_route_pages_by_exclusive_before_revision_and_rejects_bad_cursor():
+    client, harness = make_client()
+    saved = client.put(
+        "/api/projects/p1/contract-draft", json=save_body(harness)
+    ).json()
+    first = client.post("/api/projects/p1/contracts/confirm", json={
+        "idempotencyKey": "history-route-first",
+        "expectedDraftVersion": saved["draftVersion"],
+        "expectedDraftHash": saved["contentHash"],
+    })
+    cloned = client.post("/api/projects/p1/contracts/1/clone").json()
+    second = client.post("/api/projects/p1/contracts/confirm", json={
+        "idempotencyKey": "history-route-second",
+        "expectedDraftVersion": cloned["draftVersion"],
+        "expectedDraftHash": cloned["contentHash"],
+    })
+
+    first_page = client.get("/api/projects/p1/contracts/history?limit=1")
+    second_page = client.get(
+        "/api/projects/p1/contracts/history?limit=1&beforeRevision=2"
+    )
+    empty_page = client.get(
+        "/api/projects/p1/contracts/history?limit=1&beforeRevision=1"
+    )
+
+    assert first.status_code == second.status_code == 201
+    assert [item["revision"] for item in first_page.json()["items"]] == [2]
+    assert first_page.json()["nextBeforeRevision"] == 2
+    assert [item["revision"] for item in second_page.json()["items"]] == [1]
+    assert second_page.json()["nextBeforeRevision"] is None
+    assert empty_page.json() == {"items": [], "nextBeforeRevision": None}
+    for cursor in ("0", "-1", "1.5", "true"):
+        assert client.get(
+            f"/api/projects/p1/contracts/history?beforeRevision={cursor}"
+        ).status_code == 422

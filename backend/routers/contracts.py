@@ -279,8 +279,15 @@ async def get_contract_head(pid: str, service=Depends(get_contract_service)):
 async def get_contract_history(
     pid: str,
     limit: int = Query(default=20, ge=1, le=100),
+    before_revision: int | None = Query(
+        default=None, alias="beforeRevision", ge=1
+    ),
     service=Depends(get_contract_service),
 ):
-    return {"items": [
-        _public_confirmed(item) for item in await service.history(pid, limit)
-    ]}
+    page = await service.history(
+        pid, limit=limit, before_revision=before_revision
+    )
+    return {
+        "items": [_public_confirmed(item) for item in page["items"]],
+        "nextBeforeRevision": page["nextBeforeRevision"],
+    }
