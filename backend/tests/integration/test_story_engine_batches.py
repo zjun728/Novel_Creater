@@ -289,6 +289,118 @@ async def _bootstrap_secondary_recovery_project(session) -> None:
     )
 
 
+async def _reselect_same_seed_revision(session, *, selection_revision: int) -> None:
+    now = 1_700_000_000_000 + selection_revision
+    await session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES ('project-1',%s,'seed-1','seed-revision-1',%s,%s)""",
+        (selection_revision, "a" * 64, now),
+    )
+    await session.execute(
+        """UPDATE project_selected_seeds
+              SET selection_revision=%s,selected_at=%s,updated_at=%s
+            WHERE project_id='project-1'""",
+        (selection_revision, now, now),
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_seed_reselection_supersedes_old_manual_history(
+    disposable_mysql,
+):
+    await _bootstrap_facts(disposable_mysql.session)
+    service = _service(disposable_mysql)
+    old = await service.create_manual(
+        CreateManualStoryEngineBatch("project-1", "manual-generation-1", three_options())
+    )
+    await _reselect_same_seed_revision(
+        disposable_mysql.session, selection_revision=2
+    )
+
+    historical = await service.get("project-1", old.id)
+    current = await service.create_manual(
+        CreateManualStoryEngineBatch("project-1", "manual-generation-2", three_options())
+    )
+
+    assert historical.selection_revision == 1
+    assert historical.status == "superseded"
+    assert historical.public_error_code == "selection_superseded"
+    assert len(historical.options) == 3
+    assert current.selection_revision == 2
+    assert current.status == "succeeded"
+    assert current.request_hash != historical.request_hash
+
+
+@pytest.mark.asyncio
+async def test_provider_start_and_publication_are_fenced_by_selection_generation(
+    disposable_mysql,
+):
+    await _bootstrap_facts(disposable_mysql.session)
+    service = _service(disposable_mysql)
+    never_started = await service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "provider-generation-1")
+    )
+    running_batch = await service.reserve_provider(
+        ReserveStoryEngineBatch("project-1", "provider-publication-generation-1")
+    )
+    running = await service.start_attempt("project-1", running_batch.id)
+    await _reselect_same_seed_revision(
+        disposable_mysql.session, selection_revision=2
+    )
+
+    repository = StoryEngineRepository()
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+    async with transaction() as session:
+        assert not await repository.cas_start_attempt(
+            session,
+            "project-1",
+            never_started.id,
+            {
+                "attempt_id": "selection-drift-loser",
+                "attempt_started_at": 2,
+                "lease_expires_at": 3,
+            },
+        )
+        assert not await repository.cas_succeed_attempt(
+            session,
+            "project-1",
+            running.id,
+            running.attempt_id,
+            {"raw_response_hash": "f" * 64, "finished_at": 4},
+        )
+
+    fenced_start = await service.start_attempt("project-1", never_started.id)
+    raw_response = "provider result that must not be stored"
+    fenced_publication = await service.succeed_attempt(
+        "project-1",
+        running.id,
+        running.attempt_id,
+        raw_response,
+        three_options(),
+    )
+
+    assert fenced_start.status == "superseded"
+    assert fenced_start.public_error_code == "selection_superseded"
+    assert fenced_publication.status == "superseded"
+    assert fenced_publication.public_error_code == "selection_superseded"
+    assert fenced_publication.options == ()
+    rows = await disposable_mysql.session.fetchall(
+        """SELECT id,status,public_error_code,raw_response_text,raw_response_hash
+             FROM story_engine_batches
+            WHERE id IN (%s,%s) ORDER BY id""",
+        (never_started.id, running.id),
+    )
+    by_id = {row["id"]: row for row in rows}
+    assert by_id[never_started.id]["status"] == "reserved"
+    assert by_id[running.id]["status"] == "failed"
+    assert by_id[running.id]["public_error_code"] == "selection_superseded"
+    assert by_id[running.id]["raw_response_hash"] == sha256(
+        raw_response.encode("utf-8")
+    ).hexdigest()
+    assert all(row["raw_response_text"] is None for row in rows)
+
+
 @pytest.mark.asyncio
 async def test_recoverable_discovery_filters_current_facts_orders_and_limits(
     disposable_mysql,

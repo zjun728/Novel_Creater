@@ -145,7 +145,16 @@ class StoryEngineRepository:
 
     async def read_batch(self, session, project_id: str, batch_id: str):
         return await session.fetchone(
-            "SELECT * FROM story_engine_batches WHERE project_id=%s AND id=%s",
+            """SELECT batch.*,
+                      CASE WHEN selected.selection_revision=batch.selection_revision
+                              AND selected.seed_id=batch.seed_id
+                              AND selected.seed_revision_id=batch.seed_revision_id
+                              AND selected.seed_hash=batch.seed_hash
+                           THEN batch.status ELSE 'superseded' END AS effective_status
+                 FROM story_engine_batches batch
+                 LEFT JOIN project_selected_seeds selected
+                   ON selected.project_id=batch.project_id
+                WHERE batch.project_id=%s AND batch.id=%s""",
             (project_id, batch_id),
         )
 
@@ -169,7 +178,15 @@ class StoryEngineRepository:
                WHERE project_id=%s AND id=%s AND source_type='provider'
                  AND status='reserved' AND attempt_id IS NULL
                  AND provider_id IS NOT NULL
-                 AND model_name_snapshot IS NOT NULL""",
+                 AND model_name_snapshot IS NOT NULL
+                 AND EXISTS (
+                     SELECT 1 FROM project_selected_seeds selected
+                      WHERE selected.project_id=story_engine_batches.project_id
+                        AND selected.selection_revision=story_engine_batches.selection_revision
+                        AND selected.seed_id=story_engine_batches.seed_id
+                        AND selected.seed_revision_id=story_engine_batches.seed_revision_id
+                        AND selected.seed_hash=story_engine_batches.seed_hash
+                 )""",
             (
                 row["attempt_id"], row["attempt_started_at"],
                 row["lease_expires_at"], project_id, batch_id,
@@ -190,7 +207,15 @@ class StoryEngineRepository:
                SET status='succeeded',raw_response_text=NULL,
                    raw_response_hash=%s,finished_at=%s
                WHERE project_id=%s AND id=%s AND status='running'
-                 AND attempt_id=%s""",
+                 AND attempt_id=%s
+                 AND EXISTS (
+                     SELECT 1 FROM project_selected_seeds selected
+                      WHERE selected.project_id=story_engine_batches.project_id
+                        AND selected.selection_revision=story_engine_batches.selection_revision
+                        AND selected.seed_id=story_engine_batches.seed_id
+                        AND selected.seed_revision_id=story_engine_batches.seed_revision_id
+                        AND selected.seed_hash=story_engine_batches.seed_hash
+                 )""",
             (
                 row["raw_response_hash"], row["finished_at"],
                 project_id, batch_id, attempt_id,

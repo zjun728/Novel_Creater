@@ -69,6 +69,8 @@ CREATE TABLE story_engine_batches (
     OR (status = 'failed' AND attempt_id IS NOT NULL
       AND attempt_started_at IS NOT NULL AND lease_expires_at IS NOT NULL
       AND ((public_error_code = 'invalid_response' AND raw_response_hash IS NOT NULL)
+        OR (public_error_code = 'selection_superseded'
+          AND raw_response_hash IS NOT NULL)
         OR (public_error_code IN ('provider_failed','provider_timeout')
           AND raw_response_hash IS NULL))
       AND finished_at IS NOT NULL)

@@ -67,7 +67,12 @@ async def test_manual_create_is_atomic_canonical_and_has_exactly_three_null_prov
 
     stored = harness.repository.batches[result.id]
     assert result.status == "succeeded"
+    assert result.project_id == "p1"
     assert result.selection_revision == 7
+    assert result.seed_id == "seed-1"
+    assert result.seed_revision_id == "seed-revision-1"
+    assert result.seed_hash == "a" * 64
+    assert result.idempotency_key == "manual-key"
     assert stored["selection_revision"] == 7
     assert len(result.options) == 3
     assert [item.option_order for item in result.options] == [1, 2, 3]
@@ -79,6 +84,7 @@ async def test_manual_create_is_atomic_canonical_and_has_exactly_three_null_prov
     assert result.raw_response_text is None
     assert result.raw_response_hash is None
     assert stored["request_hash"] == canonical_hash(stored["request"])
+    assert result.request_hash == stored["request_hash"]
     for item, domain_option in zip(harness.repository.options[result.id], result.options):
         assert item["selection_revision"] == 7
         assert item["payload_json"] == canonical_json(domain_option.payload)
@@ -126,10 +132,17 @@ async def test_provider_create_only_reserves_frozen_metadata_and_never_calls_gat
 
     stored = harness.repository.batches[result.id]
     assert result.status == "reserved"
+    assert result.project_id == "p1"
+    assert result.selection_revision == 7
+    assert result.seed_id == "seed-1"
     assert stored["seed_revision_id"] == "seed-revision-1"
+    assert result.seed_hash == "a" * 64
     assert stored["binding_revision_id"] == "binding-revision-1"
+    assert result.binding_hash == "b" * 64
     assert stored["provider_id"] == "provider-seed"
     assert stored["model_name_snapshot"] == "seed-model"
+    assert result.idempotency_key == "provider-key"
+    assert result.request_hash == canonical_hash(stored["request"])
     assert harness.gateway.calls == 0
 
 
@@ -352,12 +365,15 @@ class ScriptedGateway:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
         self.block = False
+        self.on_generate = None
 
     async def generate(self, *, provider, messages, generation_config):
         assert self.harness.transaction_active == 0
         self.calls.append(
             (dict(provider), tuple(messages), dict(generation_config))
         )
+        if self.on_generate is not None:
+            self.on_generate()
         self.entered.set()
         if self.block:
             await self.release.wait()
@@ -419,6 +435,84 @@ async def test_generate_provider_freezes_prompt_and_calls_gateway_outside_transa
     rendered = harness.repository.batches[result.id]["request_json"]
     assert "KEY_SENTINEL" not in rendered
     assert "https://provider.example" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_generation_drift_before_attempt_returns_superseded_without_provider_call():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    harness.service.provider_gateway = gateway
+    original_reserve = harness.service._reserve_provider
+
+    async def reserve_then_reselect(command):
+        result = await original_reserve(command)
+        harness.repository.seed["selection_revision"] += 1
+        return result
+
+    harness.service._reserve_provider = reserve_then_reselect
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "drift-before-attempt")
+    )
+
+    assert result.status == "superseded"
+    assert result.public_error_code == "selection_superseded"
+    assert result.options == ()
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_generation_drift_during_provider_call_cannot_publish_options():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    gateway.on_generate = lambda: harness.repository.seed.update(
+        selection_revision=8
+    )
+    harness.service.provider_gateway = gateway
+
+    result = await harness.service.generate_provider(
+        ReserveStoryEngineBatch("p1", "drift-during-provider")
+    )
+
+    stored = harness.repository.batches[result.id]
+    assert result.status == "superseded"
+    assert result.public_error_code == "selection_superseded"
+    assert result.options == ()
+    assert harness.repository.options[result.id] == []
+    assert stored["status"] == "failed"
+    assert stored["public_error_code"] == "selection_superseded"
+    assert stored["raw_response_text"] is None
+    assert stored["raw_response_hash"] == sha256(
+        gateway.outcome.encode("utf-8")
+    ).hexdigest()
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_generation_drift_publication_cas_loss_raises_conflict():
+    harness = StoryEngineHarness()
+    gateway = ScriptedGateway(harness)
+    gateway.on_generate = lambda: harness.repository.seed.update(
+        selection_revision=8
+    )
+    harness.service.provider_gateway = gateway
+
+    async def lose_publication_cas(*args, **kwargs):
+        return False
+
+    harness.repository.cas_fail_attempt = lose_publication_cas
+
+    with pytest.raises(StoryEngineBatchConflict):
+        await harness.service.generate_provider(
+            ReserveStoryEngineBatch("p1", "drift-publication-cas-loss")
+        )
+
+    stored = next(iter(harness.repository.batches.values()))
+    assert len(gateway.calls) == 1
+    assert all(not rows for rows in harness.repository.options.values())
+    assert stored["status"] == "running"
+    assert stored["public_error_code"] is None
+    assert stored["raw_response_hash"] is None
 
 
 @pytest.mark.asyncio

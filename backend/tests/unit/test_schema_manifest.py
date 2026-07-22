@@ -602,6 +602,10 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
         "public_error_code = 'invalid_response' and raw_response_hash is not null"
     ) in batches
     assert (
+        "public_error_code = 'selection_superseded' "
+        "and raw_response_hash is not null"
+    ) in batches
+    assert (
         "public_error_code in ('provider_failed','provider_timeout') "
         "and raw_response_hash is null"
     ) in batches
@@ -617,6 +621,8 @@ def test_story_engine_drafts_and_contract_heads_are_revision_bound():
         "status = 'failed' and attempt_id is not null "
         "and attempt_started_at is not null and lease_expires_at is not null "
         "and ((public_error_code = 'invalid_response' and raw_response_hash is not null) "
+        "or (public_error_code = 'selection_superseded' "
+        "and raw_response_hash is not null) "
         "or (public_error_code in ('provider_failed','provider_timeout') "
         "and raw_response_hash is null)) "
         "and finished_at is not null"

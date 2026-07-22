@@ -17,7 +17,12 @@ from pydantic import BaseModel, ConfigDict
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.provider_policy import provider_is_generation_ready
 from backend.domain.seeds import SeedPayload, decode_seed_revision
-from backend.domain.story_engines import StoryEngineOption, validate_three_options
+from backend.domain.story_engines import (
+    SELECTION_SUPERSEDED_CODE,
+    StoryEngineOption,
+    selection_generation_matches,
+    validate_three_options,
+)
 from backend.gateways.story_engine_provider import (
     PROVIDER_TIMEOUT_SECONDS,
     StoryEngineProviderHTTPError,
@@ -44,6 +49,7 @@ _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "outcome_unknown"})
 _SAFE_FAILURE_CODES = frozenset(
     {"provider_failed", "provider_timeout", "invalid_response"}
 )
+_SELECTION_UNCHECKED = object()
 DEFAULT_CHANNEL_PROFILE = MappingProxyType(
     {
         "schemaVersion": "writer-channel-profile-v1",
@@ -97,7 +103,8 @@ class StoryEngineBatchResult(BaseModel):
     idempotency_key: str
     request_hash: str
     status: Literal[
-        "reserved", "running", "succeeded", "failed", "outcome_unknown"
+        "reserved", "running", "succeeded", "failed", "outcome_unknown",
+        "superseded",
     ]
     attempt_id: str | None
     attempt_started_at: int | None
@@ -207,10 +214,23 @@ class StoryEngineService:
             ]
         return request
 
-    async def _load_result(self, session, project_id: str, batch_id: str):
+    async def _load_result(
+        self,
+        session,
+        project_id: str,
+        batch_id: str,
+        *,
+        current_selection=_SELECTION_UNCHECKED,
+    ):
         batch = await self.repository.read_batch(session, project_id, batch_id)
         if batch is None:
             raise StoryEngineBatchNotFound()
+        if current_selection is _SELECTION_UNCHECKED:
+            superseded = batch.get("effective_status") == "superseded"
+        else:
+            superseded = not selection_generation_matches(
+                batch, current_selection
+            )
         option_rows = await self.repository.list_options(
             session, project_id, batch_id
         )
@@ -244,20 +264,30 @@ class StoryEngineService:
             model_name_snapshot=batch.get("model_name_snapshot"),
             idempotency_key=batch["idempotency_key"],
             request_hash=batch["request_hash"],
-            status=batch["status"],
+            status="superseded" if superseded else batch["status"],
             attempt_id=batch.get("attempt_id"),
             attempt_started_at=batch.get("attempt_started_at"),
             lease_expires_at=batch.get("lease_expires_at"),
             raw_response_text=batch.get("raw_response_text"),
             raw_response_hash=batch.get("raw_response_hash"),
-            public_error_code=batch.get("public_error_code"),
+            public_error_code=(
+                SELECTION_SUPERSEDED_CODE
+                if superseded
+                else batch.get("public_error_code")
+            ),
             created_at=int(batch["created_at"]),
             finished_at=batch.get("finished_at"),
             options=tuple(options),
         )
 
     async def _replay_or_conflict(
-        self, session, project_id: str, idempotency_key: str, request_hash: str
+        self,
+        session,
+        project_id: str,
+        idempotency_key: str,
+        request_hash: str,
+        *,
+        current_selection,
     ):
         existing = await self.repository.lock_batch_by_key(
             session, project_id, idempotency_key
@@ -266,7 +296,12 @@ class StoryEngineService:
             return None
         if existing["request_hash"] != request_hash:
             raise StoryEngineBatchConflict()
-        return await self._load_result(session, project_id, existing["id"])
+        return await self._load_result(
+            session,
+            project_id,
+            existing["id"],
+            current_selection=current_selection,
+        )
 
     def _batch_row(
         self,
@@ -343,7 +378,11 @@ class StoryEngineService:
             request = self._request("manual", seed, options=options)
             request_hash = canonical_hash(request)
             replay = await self._replay_or_conflict(
-                session, command.project_id, command.idempotency_key, request_hash
+                session,
+                command.project_id,
+                command.idempotency_key,
+                request_hash,
+                current_selection=seed,
             )
             if replay is not None:
                 return replay
@@ -369,7 +408,12 @@ class StoryEngineService:
                     now,
                 ),
             )
-            return await self._load_result(session, command.project_id, row["id"])
+            return await self._load_result(
+                session,
+                command.project_id,
+                row["id"],
+                current_selection=seed,
+            )
 
     async def reserve_provider(
         self, command: ReserveStoryEngineBatch
@@ -409,7 +453,11 @@ class StoryEngineService:
             )
             request_hash = canonical_hash(request)
             replay = await self._replay_or_conflict(
-                session, command.project_id, command.idempotency_key, request_hash
+                session,
+                command.project_id,
+                command.idempotency_key,
+                request_hash,
+                current_selection=seed,
             )
             if replay is not None:
                 return replay, False, None
@@ -425,7 +473,12 @@ class StoryEngineService:
                 now=now,
             )
             await self.repository.insert_batch(session, row)
-            result = await self._load_result(session, command.project_id, row["id"])
+            result = await self._load_result(
+                session,
+                command.project_id,
+                row["id"],
+                current_selection=seed,
+            )
             return result, True, request
 
     @staticmethod
@@ -546,6 +599,9 @@ class StoryEngineService:
         async with self.transaction_factory() as session:
             if await self.repository.lock_project(session, project_id) is None:
                 raise ProjectNotFound()
+            current_seed = await self.repository.lock_selected_seed(
+                session, project_id
+            )
             changed = await self.repository.cas_unknown_attempt(
                 session,
                 project_id,
@@ -555,7 +611,12 @@ class StoryEngineService:
             )
             if not changed:
                 raise StoryEngineBatchConflict()
-            return await self._load_result(session, project_id, batch_id)
+            return await self._load_result(
+                session,
+                project_id,
+                batch_id,
+                current_selection=current_seed,
+            )
 
     async def generate_provider(
         self, command: ReserveStoryEngineBatch
@@ -572,6 +633,16 @@ class StoryEngineService:
             )
             if stored is None:
                 raise StoryEngineBatchNotFound()
+            current_seed = await self.repository.lock_selected_seed(
+                session, command.project_id
+            )
+            if not selection_generation_matches(stored, current_seed):
+                return await self._load_result(
+                    session,
+                    command.project_id,
+                    batch.id,
+                    current_selection=current_seed,
+                )
             provider = None
             if stored.get("provider_id") is not None:
                 provider = await self.repository.lock_provider_connection(
@@ -687,8 +758,19 @@ class StoryEngineService:
         async with self.transaction_factory() as session:
             if await self.repository.lock_project(session, project_id) is None:
                 raise StoryEngineBatchNotFound()
-            if await self.repository.read_batch(session, project_id, batch_id) is None:
+            batch = await self.repository.read_batch(session, project_id, batch_id)
+            if batch is None:
                 raise StoryEngineBatchNotFound()
+            current_seed = await self.repository.lock_selected_seed(
+                session, project_id
+            )
+            if not selection_generation_matches(batch, current_seed):
+                return await self._load_result(
+                    session,
+                    project_id,
+                    batch_id,
+                    current_selection=current_seed,
+                )
             now = self.clock()
             changed = await self.repository.cas_start_attempt(
                 session,
@@ -702,7 +784,12 @@ class StoryEngineService:
             )
             if not changed:
                 raise StoryEngineBatchConflict()
-            return await self._load_result(session, project_id, batch_id)
+            return await self._load_result(
+                session,
+                project_id,
+                batch_id,
+                current_selection=current_seed,
+            )
 
     async def succeed_attempt(
         self,
@@ -720,6 +807,31 @@ class StoryEngineService:
             if batch is None:
                 raise StoryEngineBatchNotFound()
             now = self.clock()
+            current_seed = await self.repository.lock_selected_seed(
+                session, project_id
+            )
+            if not selection_generation_matches(batch, current_seed):
+                changed = await self.repository.cas_fail_attempt(
+                    session,
+                    project_id,
+                    batch_id,
+                    attempt_id,
+                    {
+                        "raw_response_hash": sha256(
+                            raw_response_text.encode("utf-8")
+                        ).hexdigest(),
+                        "public_error_code": SELECTION_SUPERSEDED_CODE,
+                        "finished_at": now,
+                    },
+                )
+                if not changed:
+                    raise StoryEngineBatchConflict()
+                return await self._load_result(
+                    session,
+                    project_id,
+                    batch_id,
+                    current_selection=current_seed,
+                )
             changed = await self.repository.cas_succeed_attempt(
                 session,
                 project_id,
@@ -745,7 +857,12 @@ class StoryEngineService:
                     now,
                 ),
             )
-            return await self._load_result(session, project_id, batch_id)
+            return await self._load_result(
+                session,
+                project_id,
+                batch_id,
+                current_selection=current_seed,
+            )
 
     async def fail_attempt(
         self,
@@ -774,6 +891,9 @@ class StoryEngineService:
                 raise StoryEngineBatchNotFound()
             if await self.repository.read_batch(session, project_id, batch_id) is None:
                 raise StoryEngineBatchNotFound()
+            current_seed = await self.repository.lock_selected_seed(
+                session, project_id
+            )
             changed = await self.repository.cas_fail_attempt(
                 session,
                 project_id,
@@ -788,7 +908,12 @@ class StoryEngineService:
             )
             if not changed:
                 raise StoryEngineBatchConflict()
-            return await self._load_result(session, project_id, batch_id)
+            return await self._load_result(
+                session,
+                project_id,
+                batch_id,
+                current_selection=current_seed,
+            )
 
     async def reconcile(
         self, project_id: str, batch_id: str
@@ -799,8 +924,23 @@ class StoryEngineService:
             batch = await self.repository.read_batch(session, project_id, batch_id)
             if batch is None:
                 raise StoryEngineBatchNotFound()
+            current_seed = await self.repository.lock_selected_seed(
+                session, project_id
+            )
+            if not selection_generation_matches(batch, current_seed):
+                return await self._load_result(
+                    session,
+                    project_id,
+                    batch_id,
+                    current_selection=current_seed,
+                )
             if batch["status"] in _TERMINAL_STATUSES or batch["source_type"] == "manual":
-                return await self._load_result(session, project_id, batch_id)
+                return await self._load_result(
+                    session,
+                    project_id,
+                    batch_id,
+                    current_selection=current_seed,
+                )
             now = self.clock()
             if batch["status"] == "reserved":
                 await self.repository.cas_reconcile_reserved(
@@ -818,4 +958,9 @@ class StoryEngineService:
                     {"attempt_id": batch["attempt_id"], "finished_at": now},
                     now,
                 )
-            return await self._load_result(session, project_id, batch_id)
+            return await self._load_result(
+                session,
+                project_id,
+                batch_id,
+                current_selection=current_seed,
+            )

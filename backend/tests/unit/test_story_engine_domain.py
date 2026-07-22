@@ -9,6 +9,7 @@ from backend.domain.story_engines import (
     StoryEngineOption,
     validate_three_options,
 )
+from backend.domain import story_engines as story_engine_domain
 
 
 EXPECTED_COLLECTION_MAX_ITEMS = 20
@@ -200,3 +201,93 @@ def test_validate_three_options_rejects_mutable_or_non_option_inputs():
 
     with pytest.raises(TypeError, match="StoryEngineOption"):
         validate_three_options((make_engine(), make_engine(), object()))
+
+
+def test_selection_generation_identity_includes_revision_even_for_same_seed_fact():
+    frozen = {
+        "selection_revision": 7,
+        "seed_id": "seed-1",
+        "seed_revision_id": "seed-revision-1",
+        "seed_hash": "a" * 64,
+    }
+
+    assert story_engine_domain.selection_generation_matches(frozen, dict(frozen))
+    assert not story_engine_domain.selection_generation_matches(
+        frozen,
+        {**frozen, "selection_revision": 8},
+    )
+    assert not story_engine_domain.selection_generation_matches(frozen, None)
+
+
+@pytest.mark.parametrize("side", ("frozen", "current", "both"))
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    (
+        ("selection_revision", True),
+        ("selection_revision", "7"),
+        ("selection_revision", 0),
+        ("selection_revision", -1),
+        ("selection_revision", 1.0),
+        ("selection_revision", None),
+        ("seed_id", None),
+        ("seed_id", ""),
+        ("seed_id", 7),
+        ("seed_revision_id", None),
+        ("seed_revision_id", ""),
+        ("seed_revision_id", 7),
+        ("seed_hash", None),
+        ("seed_hash", ""),
+        ("seed_hash", 7),
+    ),
+)
+def test_selection_generation_matcher_fails_closed_for_malformed_fields(
+    side,
+    field,
+    invalid_value,
+):
+    valid = {
+        "selection_revision": 7,
+        "seed_id": "seed-1",
+        "seed_revision_id": "seed-revision-1",
+        "seed_hash": "a" * 64,
+    }
+    frozen = dict(valid)
+    current = dict(valid)
+    if side in {"frozen", "both"}:
+        frozen[field] = invalid_value
+    if side in {"current", "both"}:
+        current[field] = invalid_value
+
+    assert not story_engine_domain.selection_generation_matches(frozen, current)
+
+
+@pytest.mark.parametrize("side", ("frozen", "current"))
+@pytest.mark.parametrize(
+    "field",
+    ("selection_revision", "seed_id", "seed_revision_id", "seed_hash"),
+)
+def test_selection_generation_matcher_fails_closed_for_missing_fields(side, field):
+    frozen = {
+        "selection_revision": 7,
+        "seed_id": "seed-1",
+        "seed_revision_id": "seed-revision-1",
+        "seed_hash": "a" * 64,
+    }
+    current = dict(frozen)
+    del (frozen if side == "frozen" else current)[field]
+
+    assert not story_engine_domain.selection_generation_matches(frozen, current)
+
+
+def test_selection_generation_matcher_rejects_matching_all_none_values():
+    malformed = {
+        "selection_revision": None,
+        "seed_id": None,
+        "seed_revision_id": None,
+        "seed_hash": None,
+    }
+
+    assert not story_engine_domain.selection_generation_matches(
+        malformed,
+        dict(malformed),
+    )

@@ -33,6 +33,10 @@ class FakeService:
         self.calls.append(("get", project_id, batch_id))
         if batch_id == "missing":
             raise StoryEngineBatchNotFound()
+        if batch_id == "superseded":
+            return _result(
+                "superseded", public_error_code="selection_superseded"
+            )
         return _result("reserved")
 
     async def reconcile(self, project_id, batch_id):
@@ -109,6 +113,16 @@ def test_fixed_routes_delegate_and_return_camel_case_dto():
     assert reconcile.json()["publicErrorCode"] == "not_started"
     assert service.calls[0][0] == "generate"
     assert service.calls[0][1].project_id == "p1"
+
+
+def test_historical_batch_exposes_superseded_status_and_safe_reason():
+    client, _ = make_client()
+
+    response = client.get("/api/projects/p1/story-engine-batches/superseded")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "superseded"
+    assert response.json()["publicErrorCode"] == "selection_superseded"
 
 
 def test_recoverable_route_is_static_and_returns_only_the_five_public_fields():
