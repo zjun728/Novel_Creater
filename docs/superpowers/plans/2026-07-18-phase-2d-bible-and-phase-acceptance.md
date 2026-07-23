@@ -468,20 +468,20 @@ git commit -m "feat: expose phase two preparation state"
 - Create: `frontend/tests/unit/phase2RuntimeInventory.test.mjs`
 - Modify: formal unit tests that currently assert the existence of dead files
 
-- [ ] **Step 1: Write behavior/import inventory RED tests**
+- [x] **Step 1: Write behavior/import inventory RED tests**
 
 Import the production router/app and assert canonical routes. Walk production
 imports from active route entries and prove none reaches the legacy Stores,
 components, prompts, browser AI client, or old Bible modules. Source regex may
 support diagnostics but cannot be the only proof.
 
-- [ ] **Step 2: Delete the closed dead cluster**
+- [x] **Step 2: Delete the closed dead cluster**
 
 Delete only modules whose complete caller set belongs to the same unreachable
 cluster. Preserve `providerPresets.js` and all current canonical Stores. Do not
 create compatibility exports or empty forwarding files.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 ```powershell
 python -m pytest backend/tests/api/test_route_inventory.py -q
