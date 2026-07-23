@@ -56,6 +56,13 @@ class BibleConfirmationFailed(PublicDomainError):
     message = "Creation Bible confirmation previously failed"
 
 
+class BibleConfirmationRetryable(PublicDomainError):
+    status_code = 503
+    code = "BibleConfirmationRetryable"
+    message = "Creation Bible confirmation was not recorded; retry safely"
+    retryable = True
+
+
 @dataclass(frozen=True)
 class BibleBasis:
     selection_revision: int
@@ -245,9 +252,15 @@ class BibleService:
     async def _basis_for_read(
         self,
         project_id: str,
+        *,
+        session,
     ) -> tuple[BibleBasis | None, tuple[str, ...]]:
         try:
-            result = await self.contract_service.get_head(project_id)
+            result = await self.contract_service.get_head(
+                project_id,
+                session=session,
+                for_update=False,
+            )
         except PublicDomainError:
             return None, ("contract_unavailable",)
         return self._contract_basis(result)
@@ -278,7 +291,11 @@ class BibleService:
         required: bool,
     ) -> tuple[BibleBasis | None, tuple[str, ...]]:
         try:
-            result = await self.contract_service.get_head(project_id)
+            result = await self.contract_service.get_head(
+                project_id,
+                session=session,
+                for_update=True,
+            )
         except PublicDomainError:
             if required:
                 raise BiblePreconditionFailed() from None
@@ -578,15 +595,18 @@ class BibleService:
         )
 
     async def get_draft(self, project_id: str) -> BibleDraftResult:
-        async with self.connection_factory() as session:
+        async with self.transaction_factory() as session:
             project = await self.repository.read_project(session, project_id)
             if project is None:
                 raise BibleNotFound()
             row = await self.repository.read_active_draft(session, project_id)
             head = await self.repository.read_bible_head(session, project_id)
-        if head is None:
-            raise BiblePreconditionFailed()
-        basis, basis_reasons = await self._basis_for_read(project_id)
+            if head is None:
+                raise BiblePreconditionFailed()
+            basis, basis_reasons = await self._basis_for_read(
+                project_id,
+                session=session,
+            )
         return self._draft_view(
             project=project,
             row=row,
@@ -1147,12 +1167,16 @@ class BibleService:
                         )
                     )
                     if not inserted:
-                        raise BibleConflict()
+                        raise BibleConfirmationRetryable()
             raise BibleConfirmationFailed()
-        except (BibleConflict, BibleConfirmationFailed):
+        except (
+            BibleConflict,
+            BibleConfirmationFailed,
+            BibleConfirmationRetryable,
+        ):
             raise
         except Exception:
-            raise BibleConfirmationFailed() from None
+            raise BibleConfirmationRetryable() from None
 
     async def confirm(
         self,
@@ -1167,10 +1191,10 @@ class BibleService:
         except Exception:
             if reserved:
                 return await self._settle_confirmation_failure(reserved[0])
-            raise BibleConfirmationFailed() from None
+            raise BibleConfirmationRetryable() from None
 
     async def get_head(self, project_id: str) -> BibleHeadResult:
-        async with self.connection_factory() as session:
+        async with self.transaction_factory() as session:
             project = await self.repository.read_project(session, project_id)
             if project is None:
                 raise BibleNotFound()
@@ -1187,7 +1211,10 @@ class BibleService:
                 if int(head["revision"]) > 0
                 else None
             )
-        basis, basis_reasons = await self._basis_for_read(project_id)
+            basis, basis_reasons = await self._basis_for_read(
+                project_id,
+                session=session,
+            )
         lifecycle = self._lifecycle(project)
         if int(head["revision"]) == 0:
             reasons = _unique_reasons(
@@ -1260,7 +1287,7 @@ class BibleService:
         before_revision: int | None = None,
     ) -> BibleHistoryPage:
         self._validate_history_args(limit, before_revision)
-        async with self.connection_factory() as session:
+        async with self.transaction_factory() as session:
             project = await self.repository.read_project(session, project_id)
             if project is None:
                 raise BibleNotFound()
@@ -1287,7 +1314,10 @@ class BibleService:
                 if row is None:
                     raise BiblePreconditionFailed()
                 rows.append(row)
-        basis, basis_reasons = await self._basis_for_read(project_id)
+            basis, basis_reasons = await self._basis_for_read(
+                project_id,
+                session=session,
+            )
         return BibleHistoryPage(
             items=tuple(
                 self._revision_view(
@@ -1314,7 +1344,7 @@ class BibleService:
     ) -> BibleRevisionResult:
         if type(revision) is not int or revision <= 0:
             raise BiblePreconditionFailed()
-        async with self.connection_factory() as session:
+        async with self.transaction_factory() as session:
             project = await self.repository.read_project(session, project_id)
             if project is None:
                 raise BibleNotFound()
@@ -1325,11 +1355,14 @@ class BibleService:
             row = await self.repository.read_revision(
                 session, project_id, revision
             )
-        if head is None:
-            raise BiblePreconditionFailed()
-        if row is None:
-            raise BibleNotFound()
-        basis, basis_reasons = await self._basis_for_read(project_id)
+            if head is None:
+                raise BiblePreconditionFailed()
+            if row is None:
+                raise BibleNotFound()
+            basis, basis_reasons = await self._basis_for_read(
+                project_id,
+                session=session,
+            )
         return self._revision_view(
             project=project,
             row=row,
@@ -1344,6 +1377,7 @@ __all__ = (
     "BIBLE_POLICY_VERSION",
     "BibleBasis",
     "BibleConfirmationFailed",
+    "BibleConfirmationRetryable",
     "BibleConflict",
     "BibleDraftResult",
     "BibleHeadResult",

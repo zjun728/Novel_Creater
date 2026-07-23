@@ -1288,6 +1288,37 @@ def confirmation(saved, *, key="confirm-once", content_hash=None):
 
 
 @pytest.mark.asyncio
+async def test_get_head_reuses_caller_session_and_locks_every_readiness_dependency():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    caller_session = object()
+    connection_count = harness.connection_enter_count
+    harness.repository.events.clear()
+
+    head = await harness.service.get_head(
+        "p1",
+        session=caller_session,
+        for_update=True,
+    )
+
+    assert head == confirmed
+    assert harness.connection_enter_count == connection_count
+    assert harness.repository.events == [
+        "lock-selected-seed",
+        "lock-seed-revision:seed-revision-1",
+        "lock-engine:engine-1",
+        "lock-binding",
+        "lock-asset:style:style-primary",
+        "lock-asset:style:style-secondary",
+        "lock-asset:experience:card-1",
+        "lock-asset:corpus:source-1",
+        "lock-fragments:source-1:source-revision-5",
+        "lock-contract-head",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_confirm_atomically_consumes_draft_and_freezes_all_relations():
     harness = ContractHarness()
     saved = await harness.service.save_draft(command(harness))

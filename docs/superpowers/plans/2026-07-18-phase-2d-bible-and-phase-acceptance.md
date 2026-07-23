@@ -216,11 +216,23 @@ creates the immutable revision, advances the head, completes the confirmation
 request, and clears the active slot in one transaction. No DELETE/reset method,
 route, or repository operation exists.
 
+Every Bible read assembles its draft/head/history row and canonical contract
+readiness from one explicit database transaction, passing that transaction's
+session to `ContractService.get_head()`. A confirmation passes the same session
+with `for_update=True`; the canonical Contract service locks every persisted
+readiness dependency in its established order through the Bible commit. The
+Bible service does not duplicate or shadow the contract-integrity SQL.
+
 If an unexpected `Exception` occurs only after that transaction successfully
 reserved the request, the main transaction rolls back the reservation, revision,
 head, and active-slot writes together. A separate narrow transaction may then
 record only a terminal failed receipt after re-locking and verifying the exact
-draft, basis, and head; it never advances the head or changes the draft slot.
+draft, basis, and head; it never advances the head or changes the draft slot. A
+committed failed receipt replays as the stable terminal
+`BibleConfirmationFailed`. If that narrow transaction or failed-receipt insert
+cannot commit, the API returns the stable retryable `503
+BibleConfirmationRetryable` without exposing the original exception, and the
+same idempotency key may later succeed.
 
 - [ ] **Step 5: Run GREEN and commit**
 

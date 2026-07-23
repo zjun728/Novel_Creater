@@ -432,10 +432,14 @@ class MemoryContractRepository:
         return await self.read_selected_seed(session, project_id)
 
     async def read_seed_revision(self, session, project_id, revision_id, *, lock=False):
+        if lock:
+            self.events.append(f"lock-seed-revision:{revision_id}")
         row = self.seed_revisions.get(revision_id)
         return deepcopy(row) if project_id == "p1" and row else None
 
     async def read_engine_option(self, session, project_id, option_id, *, lock=False):
+        if lock:
+            self.events.append(f"lock-engine:{option_id}")
         row = self.engines.get(option_id)
         return deepcopy(row) if row and row["project_id"] == project_id else None
 
@@ -453,6 +457,7 @@ class MemoryContractRepository:
         return deepcopy(revision | self.binding_head) if revision else None
 
     async def lock_binding_snapshot(self, session, project_id):
+        self.events.append("lock-binding")
         return await self.read_binding_snapshot(session, project_id)
 
     async def read_style_revision(self, session, asset_id, *, lock=False):

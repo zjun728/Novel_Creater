@@ -9,7 +9,7 @@ import pytest
 
 from backend.domain.bibles import BiblePayload, canonical_bible_hash
 from backend.domain.json_contracts import canonical_hash
-from backend.http_errors import ProjectArchived
+from backend.http_errors import ProjectArchived, PublicDomainError
 from backend.services.bibles import (
     BibleConfirmationFailed,
     BibleConflict,
@@ -96,9 +96,11 @@ class FakeContractService:
     def __init__(self):
         self.heads = {"p1": contract_head(), "archived": contract_head()}
         self.calls = []
+        self.call_options = []
 
-    async def get_head(self, project_id):
+    async def get_head(self, project_id, *, session=None, for_update=False):
         self.calls.append(project_id)
+        self.call_options.append((session, for_update))
         value = self.heads.get(project_id)
         if value is None:
             raise BibleNotFound()
@@ -133,6 +135,8 @@ class MemoryBibleRepository:
         }
         self.revisions = {}
         self.requests = {}
+        self.fail_failed_request_insert = False
+        self.reject_failed_request_insert = False
         self.write_count = 0
         self.events = []
 
@@ -268,6 +272,10 @@ class MemoryBibleRepository:
         return True
 
     async def insert_failed_confirmation_request(self, _session, row):
+        if self.fail_failed_request_insert:
+            raise RuntimeError("private settlement insert failure")
+        if self.reject_failed_request_insert:
+            return False
         key = (row["project_id"], row["idempotency_key"])
         if key in self.requests:
             return False
@@ -412,6 +420,12 @@ async def test_missing_and_current_draft_use_only_the_canonical_contract_head_ba
     assert saved.basis.binding_revision_id is None
     assert saved.basis.binding_hash is None
     assert harness.contract_service.calls == ["p1", "p1"]
+    assert all(
+        session is not None
+        for session, _for_update in harness.contract_service.call_options
+    )
+    assert harness.contract_service.call_options[0][1] is False
+    assert harness.contract_service.call_options[1][1] is True
 
 
 @pytest.mark.asyncio
@@ -720,6 +734,120 @@ async def test_confirmation_failpoint_rolls_back_main_writes_and_settles_failure
             ConfirmBible("p1", "rollback-1", saved.draft_version, 1)
         )
     assert harness.repository.write_count == writes
+
+
+@pytest.mark.asyncio
+async def test_failed_receipt_insert_error_is_retryable_and_same_key_can_succeed():
+    state = {"fail_main": True}
+
+    def fail_once(stage):
+        if state["fail_main"] and stage == "after_request_reserve":
+            state["fail_main"] = False
+            raise RuntimeError("private main failure")
+
+    harness = BibleHarness(failpoint=fail_once)
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
+    command = ConfirmBible("p1", "retryable-insert", saved.draft_version, 0)
+    harness.repository.fail_failed_request_insert = True
+
+    with pytest.raises(PublicDomainError) as captured:
+        await harness.service.confirm(command)
+
+    assert captured.value.code == "BibleConfirmationRetryable"
+    assert captured.value.status_code == 503
+    assert captured.value.retryable is True
+    assert "private" not in str(captured.value).lower()
+    assert harness.repository.requests == {}
+    assert harness.repository.revisions == {}
+    assert harness.repository.heads["p1"]["revision"] == 0
+    assert harness.repository.drafts[("p1", saved.draft_id)]["active_slot"] == 1
+
+    harness.repository.fail_failed_request_insert = False
+    succeeded = await harness.service.confirm(command)
+    assert succeeded.revision == 1
+    assert harness.repository.requests[("p1", command.idempotency_key)][
+        "status"
+    ] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_rejected_failed_receipt_insert_is_retryable_and_key_is_reusable():
+    state = {"fail_main": True}
+
+    def fail_once(stage):
+        if state["fail_main"] and stage == "after_request_reserve":
+            state["fail_main"] = False
+            raise RuntimeError("private main failure")
+
+    harness = BibleHarness(failpoint=fail_once)
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
+    command = ConfirmBible("p1", "retryable-rejected", saved.draft_version, 0)
+    harness.repository.reject_failed_request_insert = True
+
+    with pytest.raises(PublicDomainError) as captured:
+        await harness.service.confirm(command)
+
+    assert captured.value.code == "BibleConfirmationRetryable"
+    assert captured.value.status_code == 503
+    assert captured.value.retryable is True
+    assert harness.repository.requests == {}
+    assert harness.repository.heads["p1"]["revision"] == 0
+    assert harness.repository.drafts[("p1", saved.draft_id)]["active_slot"] == 1
+
+    harness.repository.reject_failed_request_insert = False
+    succeeded = await harness.service.confirm(command)
+    assert succeeded.revision == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_receipt_transaction_error_is_retryable_and_key_is_reusable():
+    state = {"fail_main": True}
+
+    def fail_once(stage):
+        if state["fail_main"] and stage == "after_request_reserve":
+            state["fail_main"] = False
+            raise RuntimeError("private main failure")
+
+    harness = BibleHarness(failpoint=fail_once)
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
+    command = ConfirmBible("p1", "retryable-transaction", saved.draft_version, 0)
+    original_transaction = harness.service.transaction_factory
+    calls = 0
+
+    @asynccontextmanager
+    async def fail_settlement_transaction():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("private settlement transaction failure")
+        async with original_transaction() as session:
+            yield session
+
+    harness.service.transaction_factory = fail_settlement_transaction
+
+    with pytest.raises(PublicDomainError) as captured:
+        await harness.service.confirm(command)
+
+    assert captured.value.code == "BibleConfirmationRetryable"
+    assert captured.value.status_code == 503
+    assert captured.value.retryable is True
+    assert "private" not in str(captured.value).lower()
+    assert harness.repository.requests == {}
+    assert harness.repository.revisions == {}
+    assert harness.repository.heads["p1"]["revision"] == 0
+    assert harness.repository.drafts[("p1", saved.draft_id)]["active_slot"] == 1
+
+    succeeded = await harness.service.confirm(command)
+    assert succeeded.revision == 1
+    assert harness.repository.requests[("p1", command.idempotency_key)][
+        "status"
+    ] == "succeeded"
 
 
 @pytest.mark.asyncio

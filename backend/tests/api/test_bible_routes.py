@@ -278,6 +278,45 @@ def test_confirm_is_strict_idempotent_and_same_key_different_request_conflicts()
     assert set(conflict.json()) == {"code", "message", "correlationId"}
 
 
+def test_unrecorded_confirmation_failure_is_retryable_without_leaking_details():
+    client, harness = make_client()
+    saved = client.put(
+        "/api/projects/p1/bible/draft",
+        json=save_body(),
+    ).json()
+    state = {"fail_main": True}
+
+    def fail_once(stage):
+        if state["fail_main"] and stage == "after_request_reserve":
+            state["fail_main"] = False
+            raise RuntimeError("private main failure")
+
+    harness.service.failpoint = fail_once
+    harness.repository.fail_failed_request_insert = True
+    body = {
+        "idempotencyKey": "route-retryable-confirm",
+        "expectedDraftVersion": saved["draftVersion"],
+        "expectedHeadRevision": 0,
+    }
+
+    retryable = client.post("/api/projects/p1/bible/confirm", json=body)
+    harness.repository.fail_failed_request_insert = False
+    succeeded = client.post("/api/projects/p1/bible/confirm", json=body)
+
+    assert retryable.status_code == 503
+    assert retryable.json()["code"] == "BibleConfirmationRetryable"
+    assert retryable.json()["retryable"] is True
+    assert set(retryable.json()) == {
+        "code",
+        "message",
+        "correlationId",
+        "retryable",
+    }
+    assert "private" not in str(retryable.json()).lower()
+    assert succeeded.status_code == 201
+    assert succeeded.json()["revision"] == 1
+
+
 def test_archived_reads_remain_available_but_capabilities_and_mutations_are_closed():
     client, harness = make_client()
     saved = client.put(

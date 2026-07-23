@@ -6,10 +6,12 @@ from contextlib import asynccontextmanager
 import pytest
 
 from backend.domain.json_contracts import canonical_hash
+from backend.http_errors import PublicDomainError
 from backend.repositories.bibles import BibleRepository
 from backend.services.bibles import (
     BibleConfirmationFailed,
     BibleConflict,
+    BiblePreconditionFailed,
     BibleService,
     CloneBibleDraft,
     ConfirmBible,
@@ -20,6 +22,7 @@ from backend.tests.integration.test_contract_confirmation import (
     _saved as saved_contract,
     _service as contract_service,
 )
+from backend.tests.integration.test_contract_drafts import SOURCE
 from backend.tests.support.disposable_mysql import transaction_factory_for
 from backend.tests.unit.test_bible_service import bible_payload
 
@@ -33,6 +36,7 @@ def bible_service(
     *,
     failpoint=lambda _stage: None,
     service_class=BibleService,
+    repository=None,
 ):
     tx = transaction_factory_for(disposable_mysql.connection_config)
 
@@ -45,7 +49,7 @@ def bible_service(
         for number in range(1, 100)
     )
     return service_class(
-        BibleRepository(),
+        repository or BibleRepository(),
         contract_service=contracts,
         transaction_factory=tx,
         connection_factory=read_connection,
@@ -53,6 +57,43 @@ def bible_service(
         clock=lambda: 1_900_000_000_700,
         failpoint=failpoint,
     )
+
+
+class PausingReadBibleRepository(BibleRepository):
+    def __init__(self):
+        self.pause_method = None
+        self.observed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def arm(self, method):
+        self.pause_method = method
+
+    async def _pause(self, method):
+        if self.pause_method != method:
+            return
+        self.pause_method = None
+        self.observed.set()
+        await self.release.wait()
+
+    async def read_bible_head(self, session, project_id):
+        row = await super().read_bible_head(session, project_id)
+        await self._pause("head")
+        return row
+
+    async def read_active_draft(self, session, project_id):
+        row = await super().read_active_draft(session, project_id)
+        await self._pause("active-draft")
+        return row
+
+
+class FailingSettlementBibleRepository(BibleRepository):
+    def __init__(self):
+        self.fail_failed_request_insert = True
+
+    async def insert_failed_confirmation_request(self, session, row):
+        if self.fail_failed_request_insert:
+            raise RuntimeError("private real settlement insert failure")
+        return await super().insert_failed_confirmation_request(session, row)
 
 
 async def confirmed_contract_basis(disposable_mysql):
@@ -154,6 +195,257 @@ async def test_real_bible_confirmation_freezes_revision_advances_head_and_replay
 
 
 @pytest.mark.asyncio
+async def test_get_draft_uses_one_snapshot_across_active_draft_and_head(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    writer = bible_service(disposable_mysql, contracts)
+    saved = await writer.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    repository = PausingReadBibleRepository()
+    reader = bible_service(
+        disposable_mysql,
+        contracts,
+        repository=repository,
+    )
+    repository.arm("active-draft")
+
+    read_task = asyncio.create_task(reader.get_draft(contract.project_id))
+    await asyncio.wait_for(repository.observed.wait(), timeout=1)
+    try:
+        await writer.confirm(
+            ConfirmBible(
+                contract.project_id,
+                "snapshot-draft-confirm",
+                saved.draft_version,
+                0,
+            )
+        )
+    finally:
+        repository.release.set()
+    result = await read_task
+
+    assert result.status == "current"
+    assert result.can_edit is result.can_confirm is True
+    assert result.base_head_revision == 0
+
+
+@pytest.mark.asyncio
+async def test_get_head_uses_one_snapshot_when_a_new_active_draft_is_inserted(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    writer = bible_service(disposable_mysql, contracts)
+    saved = await writer.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    confirmed = await writer.confirm(
+        ConfirmBible(
+            contract.project_id,
+            "snapshot-head-confirm",
+            saved.draft_version,
+            0,
+        )
+    )
+    repository = PausingReadBibleRepository()
+    reader = bible_service(
+        disposable_mysql,
+        contracts,
+        repository=repository,
+    )
+    repository.arm("head")
+
+    read_task = asyncio.create_task(reader.get_head(contract.project_id))
+    await asyncio.wait_for(repository.observed.wait(), timeout=1)
+    try:
+        await writer.clone_draft(
+            CloneBibleDraft(
+                contract.project_id,
+                source_revision=confirmed.revision,
+            )
+        )
+    finally:
+        repository.release.set()
+    result = await read_task
+
+    assert result.revision == 1
+    assert result.can_clone is True
+
+
+@pytest.mark.asyncio
+async def test_history_uses_one_snapshot_for_head_and_revision_page(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    writer = bible_service(disposable_mysql, contracts)
+    saved = await writer.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    first = await writer.confirm(
+        ConfirmBible(
+            contract.project_id,
+            "snapshot-history-first",
+            saved.draft_version,
+            0,
+        )
+    )
+    repository = PausingReadBibleRepository()
+    reader = bible_service(
+        disposable_mysql,
+        contracts,
+        repository=repository,
+    )
+    repository.arm("head")
+
+    read_task = asyncio.create_task(reader.history(contract.project_id))
+    await asyncio.wait_for(repository.observed.wait(), timeout=1)
+    try:
+        cloned = await writer.clone_draft(
+            CloneBibleDraft(
+                contract.project_id,
+                source_revision=first.revision,
+            )
+        )
+        await writer.confirm(
+            ConfirmBible(
+                contract.project_id,
+                "snapshot-history-second",
+                cloned.draft_version,
+                first.revision,
+            )
+        )
+    finally:
+        repository.release.set()
+    result = await read_task
+
+    assert tuple(item.revision for item in result.items) == (1,)
+    assert result.items[0].status == "current"
+
+
+@pytest.mark.asyncio
+async def test_history_detail_uses_one_snapshot_when_clone_occupies_draft_slot(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    writer = bible_service(disposable_mysql, contracts)
+    saved = await writer.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    confirmed = await writer.confirm(
+        ConfirmBible(
+            contract.project_id,
+            "snapshot-detail-confirm",
+            saved.draft_version,
+            0,
+        )
+    )
+    repository = PausingReadBibleRepository()
+    reader = bible_service(
+        disposable_mysql,
+        contracts,
+        repository=repository,
+    )
+    repository.arm("head")
+
+    read_task = asyncio.create_task(
+        reader.get_history_revision(contract.project_id, confirmed.revision)
+    )
+    await asyncio.wait_for(repository.observed.wait(), timeout=1)
+    try:
+        await writer.clone_draft(
+            CloneBibleDraft(
+                contract.project_id,
+                source_revision=confirmed.revision,
+            )
+        )
+    finally:
+        repository.release.set()
+    result = await read_task
+
+    assert result.revision == confirmed.revision
+    assert result.can_clone is True
+
+
+@pytest.mark.asyncio
+async def test_bible_write_holds_canonical_corpus_readiness_lock_until_commit(
+    disposable_mysql,
+):
+    checked = asyncio.Event()
+    release = asyncio.Event()
+
+    class PausingContractService:
+        def __init__(self, delegate):
+            self.delegate = delegate
+
+        async def get_head(
+            self,
+            project_id,
+            *,
+            session=None,
+            for_update=False,
+        ):
+            result = (
+                await self.delegate.get_head(project_id)
+                if session is None and not for_update
+                else await self.delegate.get_head(
+                    project_id,
+                    session=session,
+                    for_update=for_update,
+                )
+            )
+            checked.set()
+            await release.wait()
+            return result
+
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    writer = bible_service(disposable_mysql, contracts)
+    saved = await writer.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    service = bible_service(
+        disposable_mysql,
+        PausingContractService(contracts),
+    )
+    command = ConfirmBible(
+        contract.project_id,
+        "canonical-readiness-lock",
+        saved.draft_version,
+        0,
+    )
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+
+    async def archive_corpus():
+        async with tx() as session:
+            changed = await session.execute(
+                """UPDATE corpus_sources
+                      SET archived_at=%s,updated_at=%s
+                    WHERE id=%s AND archived_at IS NULL""",
+                (1_900_000_000_900, 1_900_000_000_900, SOURCE),
+            )
+            assert changed == 1
+
+    confirm_task = asyncio.create_task(service.confirm(command))
+    await asyncio.wait_for(checked.wait(), timeout=1)
+    drift_task = asyncio.create_task(archive_corpus())
+    completed, _ = await asyncio.wait({drift_task}, timeout=0.25)
+    drift_was_blocked = not completed
+    release.set()
+    confirmed = await confirm_task
+    await drift_task
+
+    assert drift_was_blocked is True
+    assert confirmed.revision == 1
+    with pytest.raises(BiblePreconditionFailed):
+        await writer.clone_draft(
+            CloneBibleDraft(
+                contract.project_id,
+                source_revision=confirmed.revision,
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_real_adjustment_creates_new_draft_and_keeps_both_immutable_revisions(
     disposable_mysql,
 ):
@@ -217,17 +509,28 @@ async def test_real_adjustment_creates_new_draft_and_keeps_both_immutable_revisi
     ]
 
 
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "after_request_reserve",
+        "after_revision_insert",
+        "after_head_advance",
+        "after_draft_clear",
+        "before_request_success",
+    ),
+)
 @pytest.mark.asyncio
 async def test_real_confirmation_failure_rolls_back_main_writes_and_is_replayable(
     disposable_mysql,
+    stage,
 ):
     contracts, contract = await confirmed_contract_basis(disposable_mysql)
     service = bible_service(
         disposable_mysql,
         contracts,
-        failpoint=lambda stage: (
+        failpoint=lambda current_stage: (
             (_ for _ in ()).throw(RuntimeError("real rollback sentinel"))
-            if stage == "after_request_reserve"
+            if current_stage == stage
             else None
         ),
     )
@@ -237,7 +540,7 @@ async def test_real_confirmation_failure_rolls_back_main_writes_and_is_replayabl
 
     command = ConfirmBible(
         contract.project_id,
-        "real-bible-rollback",
+        f"real-bible-rollback-{stage}",
         saved.draft_version,
         0,
     )
@@ -295,6 +598,66 @@ async def test_real_confirmation_failure_rolls_back_main_writes_and_is_replayabl
         "result_revision": None,
         "result_hash": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_real_unrecorded_settlement_failure_is_retryable_then_succeeds(
+    disposable_mysql,
+):
+    state = {"fail_main": True}
+
+    def fail_once(stage):
+        if state["fail_main"] and stage == "after_request_reserve":
+            state["fail_main"] = False
+            raise RuntimeError("private real main failure")
+
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    repository = FailingSettlementBibleRepository()
+    service = bible_service(
+        disposable_mysql,
+        contracts,
+        failpoint=fail_once,
+        repository=repository,
+    )
+    saved = await service.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    command = ConfirmBible(
+        contract.project_id,
+        "real-bible-retryable-settlement",
+        saved.draft_version,
+        0,
+    )
+
+    with pytest.raises(PublicDomainError) as captured:
+        await service.confirm(command)
+
+    head = await disposable_mysql.session.fetchone(
+        "SELECT revision FROM project_bible_heads WHERE project_id=%s",
+        (contract.project_id,),
+    )
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT active_slot,draft_version
+             FROM project_bible_drafts WHERE id=%s""",
+        (saved.draft_id,),
+    )
+    assert captured.value.code == "BibleConfirmationRetryable"
+    assert captured.value.status_code == 503
+    assert captured.value.retryable is True
+    assert "private" not in str(captured.value).lower()
+    assert head == {"revision": 0}
+    assert draft == {
+        "active_slot": 1,
+        "draft_version": saved.draft_version,
+    }
+    assert await count(disposable_mysql.session, "creation_bible_revisions") == 0
+    assert await count(disposable_mysql.session, "bible_confirmation_requests") == 0
+
+    repository.fail_failed_request_insert = False
+    succeeded = await service.confirm(command)
+    assert succeeded.revision == 1
+    assert await count(disposable_mysql.session, "creation_bible_revisions") == 1
+    assert await count(disposable_mysql.session, "bible_confirmation_requests") == 1
 
 
 @pytest.mark.asyncio

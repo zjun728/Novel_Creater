@@ -307,104 +307,180 @@ class ContractHistoryService(ContractPreviewService):
             superseded_reasons=tuple(superseded),
         )
 
-    async def get_head(self, project_id: str):
-        async with self.connection_factory() as session:
-            if await self.repository.read_project(session, project_id) is None:
-                raise ContractNotFound()
-            head = await self.repository.read_contract_head(session, project_id)
-            if head is None:
-                raise ContractPreconditionFailed()
-            if int(head["revision"]) == 0:
-                return {
-                    "project_id": project_id, "revision": 0,
-                    "has_contract": False, "contract_ready": False,
-                    "reasons": ("contract_missing",),
-                }
-            snapshot = await self.repository.read_confirmed_snapshot(
-                session, project_id, int(head["revision"])
-            )
-            result = self._result_from_snapshot(snapshot)
-            reasons = []
+    async def _get_head_in_session(
+        self,
+        session,
+        project_id: str,
+        *,
+        for_update: bool,
+    ):
+        project = (
+            await self.repository.lock_project(session, project_id)
+            if for_update
+            else await self.repository.read_project(session, project_id)
+        )
+        if project is None:
+            raise ContractNotFound()
+        initial_head = await self.repository.read_contract_head(
+            session, project_id
+        )
+        if initial_head is None:
+            raise ContractPreconditionFailed()
+        if int(initial_head["revision"]) == 0:
+            return {
+                "project_id": project_id, "revision": 0,
+                "has_contract": False, "contract_ready": False,
+                "reasons": ("contract_missing",),
+            }
+        snapshot = await self.repository.read_confirmed_snapshot(
+            session, project_id, int(initial_head["revision"])
+        )
+        result = self._result_from_snapshot(snapshot)
+        reasons = []
+
+        selected = (
+            await self.repository.lock_selected_seed(session, project_id)
+            if for_update
+            else await self.repository.read_selected_seed(session, project_id)
+        )
+        if selected is None:
+            reasons.append("seed_drift")
+        else:
+            if int(selected.get("selection_revision") or 0) != result.selection_revision:
+                reasons.append("selection_drift")
             if (
-                result.creation_contract_id != head.get("creation_contract_id")
-                or result.style_contract_id != head.get("style_contract_id")
-                or result.creation_hash != head.get("creation_hash")
-                or result.style_hash != head.get("style_hash")
+                selected.get("seed_id") != result.seed_ref.id
+                or selected.get("seed_revision_id") != result.seed_ref.revision_id
+                or selected.get("seed_hash") != result.seed_ref.content_hash
             ):
-                reasons.append("contract_head_drift")
-            selected = await self.repository.read_selected_seed(session, project_id)
-            if selected is None:
                 reasons.append("seed_drift")
-            else:
-                if int(selected.get("selection_revision") or 0) != result.selection_revision:
-                    reasons.append("selection_drift")
-                if (
-                    selected.get("seed_id") != result.seed_ref.id
-                    or selected.get("seed_revision_id") != result.seed_ref.revision_id
-                    or selected.get("seed_hash") != result.seed_ref.content_hash
-                ):
-                    reasons.append("seed_drift")
-            engine = await self.repository.read_engine_option(
-                session, project_id, result.engine_ref.id
+        if for_update:
+            seed_revision = await self.repository.read_seed_revision(
+                session,
+                project_id,
+                result.seed_ref.revision_id,
+                lock=True,
             )
             if (
-                engine is None
-                or engine.get("content_hash") != result.engine_ref.content_hash
-                or int(engine.get("selection_revision") or 0)
-                    != result.selection_revision
-                or engine.get("seed_revision_id") != result.seed_ref.revision_id
-                or engine.get("seed_hash") != result.seed_ref.content_hash
+                seed_revision is None
+                or seed_revision.get("seed_id") != result.seed_ref.id
+                or seed_revision.get("seed_hash") != result.seed_ref.content_hash
             ):
-                reasons.append("engine_drift")
-            for ref in result.style_refs:
-                row = await self.repository.read_style_revision(session, ref.id)
-                reasons.extend(self._asset_reasons(
-                    ref, row, kind="style", role=ref.role
-                ))
-            for ref in result.experience_card_refs:
-                row = await self.repository.read_experience_revision(
-                    session, ref.id
-                )
-                reasons.extend(self._asset_reasons(
-                    ref, row, kind="experience"
-                ))
-            for ref in result.corpus_source_refs:
-                row = await self.repository.read_corpus_revision(
-                    session, ref.id, ref.revisionId
-                )
-                fragment_rows = await self.repository.read_corpus_fragments(
-                    session,
-                    ref.id,
-                    ref.revisionId,
-                    tuple(fragment.fragmentId for fragment in ref.fragments),
-                )
-                reasons.extend(self._asset_reasons(
-                    ref, row, kind="corpus"
-                ))
-                reasons.extend(self._fragment_reasons(ref, fragment_rows))
-            binding = await self.repository.read_binding_snapshot(
+                reasons.append("seed_drift")
+
+        engine = await self.repository.read_engine_option(
+            session,
+            project_id,
+            result.engine_ref.id,
+            lock=for_update,
+        )
+        if (
+            engine is None
+            or engine.get("content_hash") != result.engine_ref.content_hash
+            or int(engine.get("selection_revision") or 0)
+                != result.selection_revision
+            or engine.get("seed_revision_id") != result.seed_ref.revision_id
+            or engine.get("seed_hash") != result.seed_ref.content_hash
+        ):
+            reasons.append("engine_drift")
+
+        binding = (
+            await self.repository.lock_binding_snapshot(session, project_id)
+            if for_update
+            else await self.repository.read_binding_snapshot(
                 session, project_id
             )
-            if result.binding_ref is None:
-                if binding is not None:
-                    reasons.append("binding_drift")
-            elif binding is None or (
-                binding.get("binding_revision_id") != result.binding_ref.id
-                or int(binding.get("revision") or 0) != result.binding_ref.revision
-                or binding.get("content_hash") != result.binding_ref.content_hash
-            ):
+        )
+        if result.binding_ref is None:
+            if binding is not None:
                 reasons.append("binding_drift")
-            else:
-                try:
-                    current_items = self._binding_items(binding)
-                    if not self._binding_integrity(current_items, binding):
-                        reasons.append("binding_drift")
-                except ContractPreconditionFailed:
+        elif binding is None or (
+            binding.get("binding_revision_id") != result.binding_ref.id
+            or int(binding.get("revision") or 0) != result.binding_ref.revision
+            or binding.get("content_hash") != result.binding_ref.content_hash
+        ):
+            reasons.append("binding_drift")
+        else:
+            try:
+                current_items = self._binding_items(binding)
+                if not self._binding_integrity(current_items, binding):
                     reasons.append("binding_drift")
-            reasons = list(dict.fromkeys(reasons))
-            return replace(
-                result, project_id=project_id,
-                contract_ready=not reasons, reasons=tuple(reasons),
+            except ContractPreconditionFailed:
+                reasons.append("binding_drift")
+
+        for ref in result.style_refs:
+            row = await self.repository.read_style_revision(
+                session, ref.id, lock=for_update
+            )
+            reasons.extend(self._asset_reasons(
+                ref, row, kind="style", role=ref.role
+            ))
+        for ref in result.experience_card_refs:
+            row = await self.repository.read_experience_revision(
+                session, ref.id, lock=for_update
+            )
+            reasons.extend(self._asset_reasons(
+                ref, row, kind="experience"
+            ))
+        for ref in result.corpus_source_refs:
+            row = await self.repository.read_corpus_revision(
+                session,
+                ref.id,
+                ref.revisionId,
+                lock=for_update,
+            )
+            fragment_rows = await self.repository.read_corpus_fragments(
+                session,
+                ref.id,
+                ref.revisionId,
+                tuple(fragment.fragmentId for fragment in ref.fragments),
+                lock=for_update,
+            )
+            reasons.extend(self._asset_reasons(
+                ref, row, kind="corpus"
+            ))
+            reasons.extend(self._fragment_reasons(ref, fragment_rows))
+
+        head = (
+            await self.repository.lock_contract_head(session, project_id)
+            if for_update
+            else initial_head
+        )
+        if (
+            head is None
+            or int(head.get("revision") or 0) != result.revision
+            or result.creation_contract_id != head.get("creation_contract_id")
+            or result.style_contract_id != head.get("style_contract_id")
+            or result.creation_hash != head.get("creation_hash")
+            or result.style_hash != head.get("style_hash")
+        ):
+            reasons.append("contract_head_drift")
+        reasons = list(dict.fromkeys(reasons))
+        return replace(
+            result, project_id=project_id,
+            contract_ready=not reasons, reasons=tuple(reasons),
+        )
+
+    async def get_head(
+        self,
+        project_id: str,
+        *,
+        session=None,
+        for_update: bool = False,
+    ):
+        if session is not None:
+            return await self._get_head_in_session(
+                session,
+                project_id,
+                for_update=for_update,
+            )
+        if for_update:
+            raise ContractPreconditionFailed()
+        async with self.connection_factory() as owned_session:
+            return await self._get_head_in_session(
+                owned_session,
+                project_id,
+                for_update=False,
             )
 
     async def history(
