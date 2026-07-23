@@ -561,7 +561,7 @@ Critical/Important/Minor = 0/0/0, run a separate quality/security-boundary
 review. Fix findings through the same implementer and repeat the relevant
 review before rerunning all five gates.
 
-- [ ] **Step 5: Record honest acceptance evidence and commit**
+- [x] **Step 5: Record honest acceptance evidence and commit**
 
 The report records exact fresh commands/counts, commit, schema and asset hashes,
 browser scenarios, cleanup counts, and secret scans. It must include:
