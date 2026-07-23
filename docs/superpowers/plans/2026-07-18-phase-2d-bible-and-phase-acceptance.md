@@ -114,8 +114,12 @@ basis.
 
 - [ ] **Step 4: Implement the schema**
 
-Keep all draft rows. Confirmation requests reference `(project_id, draft_id)`
-and retain their own immutable draft version/hash snapshot. Keep the existing
+Keep all draft rows. Confirmation requests reference the draft's complete
+generation identity `(project_id, draft_id, selection_revision,
+contract_revision, creation_hash, style_hash)` so a request from one basis
+cannot be spliced onto another basis's draft. They also retain their own
+immutable draft version/hash snapshot; those mutable-version snapshot fields
+are not part of the foreign key. Keep the existing
 `volume_plans.contract_hash` and `chapter_sessions.contract_hash` meaning: each
 stores the creation-contract content hash. Change only the volume-to-Bible
 foreign-key target from the removed Bible `contract_hash` to
