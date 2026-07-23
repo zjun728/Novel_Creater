@@ -3,9 +3,13 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+import { compile } from '@vue/compiler-dom'
+import { compileScript, parse } from '@vue/compiler-sfc'
+import * as VueRuntime from '@vue/runtime-core'
+import { createRenderer, nextTick, ssrContextKey } from '@vue/runtime-core'
 import { createPinia, setActivePinia } from 'pinia'
-import { createSSRApp, ref, shallowRef } from 'vue'
-import { createMemoryHistory, createRouter } from 'vue-router'
+import { createSSRApp, h, ref, shallowRef } from 'vue'
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { renderToString } from '@vue/server-renderer'
 import vuePlugin from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
@@ -74,6 +78,85 @@ function preparation({
   }
 }
 
+function node(type, text = '') {
+  return { type, text, props: {}, children: [], parent: null }
+}
+
+function detach(child) {
+  if (!child?.parent) return
+  child.parent.children.splice(child.parent.children.indexOf(child), 1)
+  child.parent = null
+}
+
+const renderer = createRenderer({
+  patchProp(element, key, _oldValue, value) {
+    if (value == null) delete element.props[key]
+    else element.props[key] = value
+  },
+  insert(child, parent, anchor = null) {
+    detach(child)
+    child.parent = parent
+    const index = anchor ? parent.children.indexOf(anchor) : -1
+    if (index < 0) parent.children.push(child)
+    else parent.children.splice(index, 0, child)
+  },
+  remove: detach,
+  createElement: type => node(type),
+  createText: text => node('#text', String(text)),
+  createComment: text => node('#comment', String(text || '')),
+  setText(target, text) { target.text = String(text) },
+  setElementText(target, text) {
+    target.text = String(text)
+    target.children = []
+  },
+  parentNode: target => target?.parent || null,
+  nextSibling: target => (
+    target?.parent?.children[target.parent.children.indexOf(target) + 1] || null
+  ),
+  querySelector: () => null,
+  setScopeId(element, id) { element.props[id] = '' },
+  cloneNode: target => ({
+    ...target,
+    props: { ...target.props },
+    children: [...target.children],
+    parent: null,
+  }),
+  insertStaticContent(content, parent, anchor) {
+    const target = node('#static', content)
+    renderer.insert(target, parent, anchor)
+    return [target, target]
+  },
+})
+
+async function clientRender(path) {
+  const contents = await readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8')
+  const filename = path.split('/').at(-1)
+  const { descriptor } = parse(contents, { filename })
+  const script = compileScript(descriptor, {
+    id: `preparation-${filename}`,
+  })
+  const result = compile(descriptor.template.content, {
+    mode: 'function',
+    prefixIdentifiers: true,
+    bindingMetadata: script.bindings,
+  })
+  return new Function('Vue', result.code)(VueRuntime)
+}
+
+async function flush() {
+  for (let index = 0; index < 4; index += 1) await Promise.resolve()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await nextTick()
+}
+
+async function waitFor(predicate) {
+  for (let index = 0; index < 20; index += 1) {
+    if (predicate()) return
+    await flush()
+  }
+  assert.fail('condition did not become true')
+}
+
 let vite
 let Overview
 let ShellProjectContext
@@ -90,6 +173,7 @@ test.before(async () => {
     optimizeDeps: { noDiscovery: true },
   })
   Overview = (await vite.ssrLoadModule('/src/views/ProjectOverviewView.vue')).default
+  Overview.render = await clientRender('views/ProjectOverviewView.vue')
   ShellProjectContext = (
     await vite.ssrLoadModule('/src/components/layout/productShell.js')
   ).SHELL_PROJECT_CONTEXT
@@ -216,4 +300,87 @@ test('overview renders the safe retry action when preparation loading fails', as
   assert.match(html, /重新读取/)
   assert.doesNotMatch(html, /internal provider identity/)
   assert.doesNotMatch(html, /preparation-loading/)
+})
+
+test('returning to the same project overview refreshes its server preparation authority', async () => {
+  const originalFetch = global.fetch
+  const responses = [
+    preparation({
+      nextAction: 'continue_contract',
+      targetPath: '/projects/project%20%2F%20%E4%B8%80/contract',
+      contract: 'draft',
+      bible: 'missing',
+    }),
+    preparation({
+      nextAction: 'continue_bible',
+      targetPath: '/projects/project%20%2F%20%E4%B8%80/bible',
+      contract: 'current',
+      bible: 'draft',
+    }),
+  ]
+  let preparationReads = 0
+  global.fetch = async url => {
+    assert.match(String(url), /\/api\/projects\/project%20%2F%20%E4%B8%80\/preparation$/)
+    const response = responses[Math.min(preparationReads, responses.length - 1)]
+    preparationReads += 1
+    return new Response(JSON.stringify(response), {
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      {
+        path: '/projects/:projectId/overview',
+        component: Overview,
+      },
+      {
+        path: '/projects/:projectId/contract',
+        component: { render: () => h('div', 'contract') },
+      },
+      {
+        path: '/projects/:projectId/bible',
+        component: { render: () => h('div', 'bible') },
+      },
+    ],
+  })
+  const app = renderer.createApp({ render: () => h(RouterView) })
+  app.use(pinia)
+  app.use(router)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.provide(ShellProjectContext, {
+    state: ref('active'),
+    project: shallowRef({
+      id: 'project / 一',
+      title: '典镇山河',
+      archivedAt: null,
+    }),
+    error: shallowRef(null),
+    reload: async () => null,
+  })
+
+  try {
+    await router.push('/projects/project%20%2F%20%E4%B8%80/overview')
+    await router.isReady()
+    app.mount(node('root'))
+    await waitFor(() => (
+      preparationReads === 1
+      && useProjectStore(pinia).currentPreparation?.nextAction === 'continue_contract'
+    ))
+    assert.equal(useProjectStore(pinia).currentPreparation.nextAction, 'continue_contract')
+
+    await router.push('/projects/project%20%2F%20%E4%B8%80/contract')
+    await flush()
+    await router.push('/projects/project%20%2F%20%E4%B8%80/overview')
+    await flush()
+
+    assert.equal(preparationReads, 2)
+    assert.equal(useProjectStore(pinia).currentPreparation.nextAction, 'continue_bible')
+  } finally {
+    app.unmount()
+    global.fetch = originalFetch
+  }
 })

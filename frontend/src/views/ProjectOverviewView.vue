@@ -75,9 +75,7 @@ async function refreshPreparation() {
 
 onMounted(() => {
   mounted = true
-  if (projectStore.preparationProjectId !== String(routeProject.project.value?.id || '')) {
-    void refreshPreparation()
-  }
+  void refreshPreparation()
 })
 
 watch(
