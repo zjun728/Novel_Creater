@@ -18,15 +18,6 @@ const BASIS_FIELDS = [
   'bindingRevisionId', 'bindingHash', 'policyVersion',
 ]
 
-function emptyBible() {
-  return {
-    premiseAndPromise: '', powerOrProgressionSystem: '', protagonist: '',
-    toneAndNarrativeBoundaries: '', worldRules: [], coreCast: [], factions: [],
-    longTermConflicts: [], relationshipDynamics: [], continuityGuardrails: [],
-    openDesignQuestions: [],
-  }
-}
-
 function publicError(error) {
   return {
     status: Number(error?.status || 0),
@@ -65,7 +56,8 @@ function publicDraft(value) {
     draftVersion: value.draftVersion,
     baseHeadRevision: value.baseHeadRevision,
     contentHash: value.contentHash,
-    draft: value.draft == null && value.canEdit === true ? emptyBible() : publicBible(value.draft),
+    // A missing server draft is meaningful state. The UI controller may create a local first draft.
+    draft: publicBible(value.draft),
     basis: publicBasis(value.basis),
     canEdit: value.canEdit === true,
     canConfirm: value.canConfirm === true,
@@ -197,7 +189,7 @@ export const useBibleStore = defineStore('bible', () => {
     saving.value = true; error.value = null
     try {
       const saved = publicDraft(await api.bible.draft.save(targetProject, {
-        expectedDraftVersion: draft.value.draftVersion,
+        expectedDraftVersion: Number(draft.value.draftVersion ?? 0),
         draft: draft.value.draft,
       }))
       if (current(writeGuard, requestGeneration, targetProject, targetStateGeneration) && editGeneration === savedEditGeneration) {
@@ -239,7 +231,9 @@ export const useBibleStore = defineStore('bible', () => {
         return confirmed
       } catch (failure) {
         if (projectId.value === targetProject && stateGeneration === targetStateGeneration) error.value = publicError(failure)
-        if (Number(failure?.status) >= 400 && Number(failure?.status) < 500) confirmCommands.delete(commandKey)
+        // A rejected request is never safe to replay as the old promise. The controller retains
+        // the idempotency key for outcome-unknown retries, so the next call performs a real POST.
+        confirmCommands.delete(commandKey)
         throw failure
       } finally {
         if (projectId.value === targetProject && stateGeneration === targetStateGeneration) confirming.value = false
@@ -293,9 +287,17 @@ export const useBibleStore = defineStore('bible', () => {
   async function loadHistoryDetail(nextProjectId, revision) {
     const targetProject = enterProject(nextProjectId)
     const requestGeneration = historyGuard.begin(); const targetStateGeneration = stateGeneration
-    const result = publicRevision(await api.bible.historyDetail(targetProject, revision))
-    if (current(historyGuard, requestGeneration, targetProject, targetStateGeneration)) historyDetail.value = result
-    return result
+    historyLoading.value = true
+    try {
+      const result = publicRevision(await api.bible.historyDetail(targetProject, revision))
+      if (current(historyGuard, requestGeneration, targetProject, targetStateGeneration)) historyDetail.value = result
+      return result
+    } catch (failure) {
+      if (current(historyGuard, requestGeneration, targetProject, targetStateGeneration)) error.value = publicError(failure)
+      throw failure
+    } finally {
+      if (current(historyGuard, requestGeneration, targetProject, targetStateGeneration)) historyLoading.value = false
+    }
   }
 
   function setReadOnly(value) { readOnly.value = value === true }

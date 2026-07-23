@@ -14,7 +14,6 @@ const arrayFields = [
   ['continuityGuardrails', '连续性护栏'], ['openDesignQuestions', '开放设计问题'],
 ]
 const value = computed(() => props.modelValue || {})
-let nextItemId = 0
 function update(field, next) { emit('update:modelValue', { ...value.value, [field]: next }) }
 function updateItem(field, index, text) {
   const rows = [...(value.value[field] || [])]
@@ -23,8 +22,10 @@ function updateItem(field, index, text) {
 }
 function addItem(field) {
   const rows = [...(value.value[field] || [])]
-  nextItemId += 1
-  update(field, [...rows, { id: `design-${nextItemId}`, text: '' }])
+  const used = new Set(rows.map(row => row?.id))
+  let number = 1
+  while (used.has(`design-${field}-${number}`)) number += 1
+  update(field, [...rows, { id: `design-${field}-${number}`, text: '' }])
 }
 function removeItem(field, index) { update(field, (value.value[field] || []).filter((_, row) => row !== index)) }
 </script>

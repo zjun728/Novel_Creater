@@ -41,6 +41,11 @@ async function clientRender(path) {
   const result = compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: script.bindings })
   return new Function('Vue', result.code)({ ...VueRuntime, withModifiers: handler => handler, withKeys: handler => handler })
 }
+async function compiledTemplate(path) {
+  const contents = await readFile(source(path), 'utf8'); const filename = path.split('/').at(-1)
+  const { descriptor } = parse(contents, { filename }); const script = compileScript(descriptor, { id: `bible-template-${filename}` })
+  return compile(descriptor.template.content, { mode: 'function', prefixIdentifiers: true, bindingMetadata: script.bindings }).code
+}
 async function allSourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
   const nested = await Promise.all(entries.map(entry => entry.isDirectory() ? allSourceFiles(`${directory}/${entry.name}`) : [`${directory}/${entry.name}`]))
@@ -68,8 +73,9 @@ test('Vite compiles the page through its controller and SSR renders the 11-field
     assert.equal(typeof Page.default.setup, 'function')
     const preview = await renderToString(createSSRApp({ render: () => h(Editor.default, { modelValue: bible(), disabled: true }) }))
     assert.match(preview, /作品承诺/); assert.match(preview, /开放设计问题/); assert.match(preview, /disabled/)
-    const drawer = await renderToString(createSSRApp({ render: () => h(Drawer.default, { open: true, history: [{ revision: 3, canClone: true }], historyDetail: { revision: 3, bible: bible(), reasons: [], basis: {} } }) }))
+    const drawer = await renderToString(createSSRApp({ render: () => h(Drawer.default, { open: true, busy: true, history: [{ revision: 3, canClone: true }], historyDetail: { revision: 3, bible: bible(), reasons: ['selection_missing'], basis: { seedId: 'seed-1', policyVersion: 'v1' } } }) }))
     assert.match(drawer, /Revision 3/); assert.match(drawer, /查看详情/); assert.match(drawer, /开放设计问题/)
+    assert.match(drawer, /<dl/); assert.doesNotMatch(drawer, /\[object Object\]/)
   } finally { await vite.close() }
 })
 
@@ -78,18 +84,24 @@ test('the Vite-loaded BibleEditor emits scalar/list edits and renders disabled c
   try {
     const Editor = (await vite.ssrLoadModule('/src/components/bible/BibleEditor.vue')).default
     Editor.render = await clientRender('components/bible/BibleEditor.vue')
-    const emitted = []; const root = node('root')
-    const app = renderer.createApp(Editor, { modelValue: bible(), disabled: false, 'onUpdate:modelValue': value => emitted.push(value) })
+    const emitted = []; const root = node('root'); const existing = bible(); existing.worldRules = [{ id: 'design-worldRules-1', text: 'existing' }]
+    const app = renderer.createApp(Editor, { modelValue: existing, disabled: false, 'onUpdate:modelValue': value => emitted.push(value) })
     app.provide(ssrContextKey, { modules: new Set() }); app.mount(root)
     const scalar = walk(root).find(item => item.type === 'textarea' && item.props.value === 'promise')
     scalar.props.onInput({ target: { value: 'changed promise' } }); await nextTick()
     assert.equal(emitted.at(-1).premiseAndPromise, 'changed promise')
     byText(root, '新增世界规则').props.onClick(); await nextTick()
     assert.equal(emitted.at(-1).worldRules.length, 2)
+    assert.equal(emitted.at(-1).worldRules[1].id, 'design-worldRules-2')
     byText(root, '删除').props.onClick(); await nextTick()
     assert.equal(emitted.at(-1).worldRules.length, 0)
     const disabledRoot = node('root'); const disabledApp = renderer.createApp(Editor, { modelValue: bible(), disabled: true })
     disabledApp.provide(ssrContextKey, { modules: new Set() }); disabledApp.mount(disabledRoot)
     assert.ok(walk(disabledRoot).filter(item => item.type === 'textarea' || item.type === 'button').every(item => item.props.disabled === true))
   } finally { await vite.close() }
+})
+
+test('compiled workspace template exposes an inert busy region and a sibling live status overlay', async () => {
+  const page = await compiledTemplate('views/ProjectBibleView.vue')
+  assert.match(page, /aria-busy/); assert.match(page, /inert/); assert.match(page, /role: "status"/); assert.match(page, /AI 辅助：Not Ready/)
 })

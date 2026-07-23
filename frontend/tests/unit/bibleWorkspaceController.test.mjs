@@ -42,13 +42,34 @@ function controller(store, options = {}) {
   })
 }
 
-test('hydrates an editable missing draft to the full 11-field shape without writing', async () => {
-  const store = makeStore({ draft: { draftVersion: 2, draft: null, canEdit: true, canConfirm: false, reasons: [] } })
+test('state machine creates an empty first Bible only without a head, and never writes on hydrate', async () => {
+  const store = makeStore({ draft: { draftVersion: null, draft: null, draftId: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: { revision: 0, bible: null, canClone: false } })
   const workspace = controller(store)
   await workspace.hydrate()
   assert.deepEqual(workspace.working.value, emptyBible())
   assert.equal(store.calls.edit.length, 0)
   assert.equal(store.calls.save.length, 0)
+})
+
+test('state machine displays a head-only Bible read-only, clones its revision, and keeps archived heads unclonable', async () => {
+  const headOnly = makeStore({ draft: { draftVersion: null, draft: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: revision(7) })
+  const workspace = controller(headOnly); await workspace.hydrate()
+  assert.deepEqual(workspace.working.value, bible()); assert.equal(workspace.editable.value, false); assert.equal(workspace.canSave.value, false)
+  await workspace.clone(headOnly.head); assert.deepEqual(headOnly.calls.clone[0], ['project-1', { sourceRevision: 7 }])
+  const archived = makeStore({ draft: null, head: { ...revision(8), lifecycle: 'archived', canClone: false }, canClone: false })
+  const archivedWorkspace = controller(archived, { isArchived: () => true }); await archivedWorkspace.hydrate()
+  assert.equal(await archivedWorkspace.clone(archived.head), undefined)
+})
+
+test('superseded drafts are read-only and clone with sourceDraftId while confirmed output remains visible and focuses status', async () => {
+  const store = makeStore({ draft: { draftVersion: 2, draftId: 'draft-2', draft: bible(), status: 'superseded', canEdit: false, canConfirm: false, canClone: true, reasons: [] } }); const events = []
+  store.confirm = async () => { const result = { ...revision(8), bible: { ...bible(), protagonist: 'confirmed' } }; store.draft = null; store.head = result; return result }
+  const workspace = controller(store, { focusStatus: () => events.push('status') }); await workspace.hydrate()
+  assert.equal(workspace.editable.value, false); await workspace.clone(store.draft)
+  assert.deepEqual(store.calls.clone[0], ['project-1', { sourceDraftId: 'draft-2' }])
+  store.draft = { draftVersion: 3, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] }; store.canConfirm = true
+  await workspace.hydrate(); await workspace.confirm(); await Promise.resolve()
+  assert.equal(workspace.working.value.protagonist, 'confirmed'); assert.deepEqual(events, ['status'])
 })
 
 test('editing stays local until one explicit save and dirty disables confirmation', async () => {
@@ -99,8 +120,8 @@ test('history opens, loads a detail, appends a page, and can clone active or arc
   assert.deepEqual(store.calls.clone, [['project-1', { sourceRevision: 7 }], ['project-1', { sourceRevision: 6 }]])
 })
 
-test('busy state blocks duplicate actions, errors focus the summary, and reason labels are human readable', async () => {
-  const store = makeStore({ saving: true, reasons: ['planning_not_ready', 'unknown_reason'] }); const focused = []
+test('busy state blocks duplicate actions, every async action focuses errors, and reason labels are safe categories', async () => {
+  const store = makeStore({ saving: true, reasons: ['selection_missing', 'contract_not_ready', 'bible_head_changed', 'project_archived', 'unknown_reason'] }); const focused = []
   const workspace = controller(store, { focusError: () => focused.push('error') })
   await workspace.hydrate()
   assert.equal(workspace.busy.value, true)
@@ -109,11 +130,11 @@ test('busy state blocks duplicate actions, errors focus the summary, and reason 
   await assert.rejects(workspace.save())
   await Promise.resolve()
   assert.equal(focused[0], 'error')
-  assert.deepEqual(workspace.reasonLabels.value, ['规划尚未就绪，暂不能确认。', 'unknown_reason'])
+  assert.deepEqual(workspace.reasonLabels.value, ['请选择种子后继续。', '请完成或重新签署创作契约。', '内容已过期，请调整未来设计。', '项目已归档，只能查阅。', '状态需重新核对（unknown_reason）'])
 })
 
-test('planning not ready does not override manual save/confirm permissions and leave protection handles beforeunload', async () => {
-  const store = makeStore({ reasons: ['planning_not_ready'], canEdit: true, canConfirm: true }); const workspace = controller(store, { confirmLeave: () => false })
+test('AI Not Ready does not override manual permissions and leave protection handles beforeunload', async () => {
+  const store = makeStore({ canEdit: true, canConfirm: true }); const workspace = controller(store, { confirmLeave: () => false })
   await workspace.hydrate()
   assert.equal(workspace.canSave.value, false)
   assert.equal(workspace.canConfirm.value, true)

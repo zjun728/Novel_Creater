@@ -53,12 +53,19 @@ test('history paginates and ignores a late old-project page', async () => {
   })
 })
 
-test('an editable empty server draft installs a complete local Bible model', async () => {
-  await withFetch(async url => response(new URL(String(url)).pathname.endsWith('/head') ? head('project-1') : draft('project-1', 0, { draft: null })), async () => {
+test('a real missing draft remains null until the controller creates it, then first save uses draft version zero', async () => {
+  const bodies = []
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (options.method === 'PUT') { bodies.push(JSON.parse(options.body)); return response(draft('project-1', 1, { draft: bible() })) }
+    return response(path.endsWith('/head') ? head('project-1') : draft('project-1', null, { draftId: null, draftVersion: null, status: 'missing', draft: null }))
+  }, async () => {
     setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
-    assert.equal(store.draft.draft.premiseAndPromise, '')
-    assert.deepEqual(store.draft.draft.openDesignQuestions, [])
+    assert.equal(store.draft.draft, null)
     assert.equal(store.draft.canEdit, true)
+    await store.save('project-1', { ...bible(), premiseAndPromise: 'first' })
+    assert.equal(bodies.length, 1)
+    assert.equal(bodies[0].expectedDraftVersion, 0)
   })
 })
 
@@ -73,5 +80,34 @@ test('confirm identity includes draft and head revisions and releases terminal f
     await assert.rejects(store.confirm('project-1', { idempotencyKey: 'same' }))
     await assert.rejects(store.confirm('project-1', { idempotencyKey: 'same' }))
     assert.equal(calls.length, 2)
+  })
+})
+
+test('confirmation deduplicates only pending work, retries 503 with the same key, and releases every rejection', async () => {
+  const bodies = []; let attempt = 0
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/confirm')) { bodies.push(JSON.parse(options.body)); attempt += 1; return attempt === 1 ? response({ code: 'temporary' }, 503) : response(head('project-1', 1)) }
+    return response(path.endsWith('/head') ? head('project-1') : draft('project-1', 1))
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
+    await assert.rejects(store.confirm('project-1', { idempotencyKey: 'retry-key' }))
+    await store.confirm('project-1', { idempotencyKey: 'retry-key' })
+    assert.equal(bodies.length, 2)
+    assert.equal(bodies[0].idempotencyKey, bodies[1].idempotencyKey)
+  })
+})
+
+test('history detail participates in busy state and publishes its error only for the current request', async () => {
+  const detail = deferred()
+  await withFetch(async url => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/history/1')) return detail.promise
+    return response(path.endsWith('/head') ? head('project-1', 1) : draft('project-1'))
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
+    const pending = store.loadHistoryDetail('project-1', 1); assert.equal(store.historyLoading, true)
+    detail.resolve(response({ code: 'missing' }, 404)); await assert.rejects(pending)
+    assert.equal(store.historyLoading, false); assert.equal(store.error.status, 404)
   })
 })
