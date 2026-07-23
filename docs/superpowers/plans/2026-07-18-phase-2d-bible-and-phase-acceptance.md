@@ -336,7 +336,7 @@ git commit -m "feat: add creation bible workspace"
 - Modify: `frontend/tests/unit/bibleStore.test.mjs`
 - Modify: `frontend/tests/unit/projectBibleView.test.mjs`
 
-- [ ] **Step 1: Write attempt RED tests**
+- [x] **Step 1: Write attempt RED tests**
 
 The service resolves current selection, confirmed contract, frozen assets and
 corpus fragments, and the current `planning` binding server-side. Test one
@@ -349,14 +349,14 @@ Attempt ownership uses `owner_token`, `lease_expires_at`, and
 `outcome_unknown`; it is never silently retried. A new explicit Generate action
 uses a new idempotency key.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_prompt.py backend/tests/unit/test_bible_gateway.py backend/tests/unit/test_bible_generation_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
 node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs
 ```
 
-- [ ] **Step 3: Implement one backend-only generation route**
+- [x] **Step 3: Implement one backend-only generation route**
 
 ```text
 POST /api/projects/:id/bible/generate
@@ -369,7 +369,7 @@ request/response diagnostics. The page disables Generate when `planning` is Not
 Ready, blocks Generate over dirty local edits, and uses a Bible-module overlay.
 Manual editing remains available.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_prompt.py backend/tests/unit/test_bible_gateway.py backend/tests/unit/test_bible_generation_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
