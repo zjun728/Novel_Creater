@@ -618,6 +618,82 @@ test('a late archived response for the previous project cannot reload the new sh
   }
 })
 
+test('an active force result never spins and only explicit resync starts another attempt', async () => {
+  const originalFetch = global.fetch
+  global.fetch = async url => {
+    assert.match(String(url), /\/api\/projects\/project%20%2F%20%E4%B8%80\/preparation$/)
+    return new Response(JSON.stringify(archivedPreparation()), {
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const state = ref('active')
+  const project = shallowRef({
+    id: 'project / 一',
+    title: '典镇山河',
+    archivedAt: null,
+  })
+  let shellReloads = 0
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      {
+        path: '/projects/:projectId/overview',
+        component: Overview,
+      },
+    ],
+  })
+  const root = node('root')
+  const app = renderer.createApp({ render: () => h(RouterView) })
+  app.use(pinia)
+  app.use(router)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.provide(ShellProjectContext, {
+    state,
+    project,
+    error: shallowRef(null),
+    reload: async options => {
+      shellReloads += 1
+      assert.equal(options?.force, true)
+      if (shellReloads <= 4) {
+        state.value = 'loading'
+        await Promise.resolve()
+        state.value = 'active'
+      }
+      return project.value
+    },
+  })
+
+  try {
+    await router.push('/projects/project%20%2F%20%E4%B8%80/overview')
+    await router.isReady()
+    app.mount(root)
+    await waitFor(() => shellReloads >= 1)
+    for (let index = 0; index < 8; index += 1) await flush()
+
+    assert.equal(shellReloads, 1)
+    assert.match(renderedText(root), /正在同步项目权威状态/)
+    const resync = findRenderedNode(
+      root,
+      target => (
+        target.type === 'button'
+        && /重新同步/.test(renderedText(target))
+      ),
+    )
+    assert.ok(resync)
+    await resync.props.onClick()
+    for (let index = 0; index < 8; index += 1) await flush()
+
+    assert.equal(shellReloads, 2)
+    assert.equal(state.value, 'active')
+    assert.match(renderedText(root), /正在同步项目权威状态/)
+  } finally {
+    app.unmount()
+    global.fetch = originalFetch
+  }
+})
+
 test('archived reconciliation exposes a failed shell reload and explicit retry reaches the archived view', async () => {
   const originalFetch = global.fetch
   const archived = archivedPreparation()

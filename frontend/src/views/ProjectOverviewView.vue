@@ -78,18 +78,9 @@ async function refreshPreparation() {
     if (authority.lifecycle === 'archived') {
       if (reconciledArchivedProjectId !== String(projectId)) {
         reconciledArchivedProjectId = String(projectId)
-        try {
-          await routeProject.reload({ force: true })
-        } finally {
-          if (
-            routeProject.state.value !== 'archived'
-            || String(routeProject.project.value?.id || '') !== String(projectId)
-          ) {
-            reconciledArchivedProjectId = ''
-          }
-        }
+        await routeProject.reload({ force: true })
       }
-    } else if (reconciledArchivedProjectId === String(projectId)) {
+    } else if (authority.lifecycle === 'active') {
       reconciledArchivedProjectId = ''
     }
   } catch {
@@ -98,7 +89,12 @@ async function refreshPreparation() {
 }
 
 async function retryRouteProject() {
-  reconciledArchivedProjectId = ''
+  const projectId = String(
+    projectStore.preparationProjectId
+    || routeProject.project.value?.id
+    || '',
+  )
+  reconciledArchivedProjectId = projectId
   await routeProject.reload({ force: true })
 }
 
