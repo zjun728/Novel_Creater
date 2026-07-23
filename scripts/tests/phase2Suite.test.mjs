@@ -127,12 +127,72 @@ test('Phase 2 Playwright source is UI-only and uses the runtime observer', () =>
 
   assert.match(source, /\bobserveRuntime\b/u)
   assert.match(source, /\bassertRuntimeEvidenceHealthy\b/u)
+  assert.match(
+    source,
+    /const contractDraftPath = `\/api\/projects\/\$\{projectId\}\/contract-draft`/u,
+  )
+  assert.match(
+    source,
+    /assertRuntimeEvidenceHealthy\(evidence,\s*\{[\s\S]*?responseFailureAllowlist:\s*\[\{[\s\S]*?status:\s*404,[\s\S]*?method:\s*'GET',[\s\S]*?pathname:\s*contractDraftPath,[\s\S]*?count:\s*1,[\s\S]*?\}\],[\s\S]*?consoleErrorAllowlist:\s*\[\{[\s\S]*?message:\s*'error: Failed to load resource: the server responded with a status of 404 \(Not Found\)',[\s\S]*?count:\s*1,[\s\S]*?linkedResponseFailure:\s*\{[\s\S]*?status:\s*404,[\s\S]*?method:\s*'GET',[\s\S]*?pathname:\s*contractDraftPath,[\s\S]*?\}[\s\S]*?\}\],[\s\S]*?\}\)/u,
+  )
+  assert.doesNotMatch(source, /responseFailures:\s*\[\]/u)
+  assert.doesNotMatch(source, /consoleErrors:\s*\[\]/u)
+  assert.match(source, /\bassertExactWrites\b/u)
   assert.match(source, /\bscanRuntimeEvidence\b/u)
   assert.match(source, /BROWSER_VITE_ORIGIN/u)
   assert.match(source, /BROWSER_BACKEND_ORIGIN/u)
   assert.match(source, /runnerOrigins\.has\(new URL\(entry\.url\)\.origin\)/u)
   assert.match(source, /new URL\(entry\.url\)\.origin === BACKEND_ORIGIN/u)
   assert.match(source, /BROWSER_TRANSCRIPT_SENTINEL/u)
+  assert.match(source, /BROWSER_QIDIAN_SNAPSHOT_PATH/u)
+  assert.match(source, /BROWSER_QQ_SNAPSHOT_PATH/u)
+  assert.match(source, /BROWSER_CORPUS_FILE/u)
+  assert.match(source, /BROWSER_RUNTIME_AUDIT_DIAGNOSTIC/u)
+  assert.match(source, /\bwriteRuntimeAuditDiagnostic\b/u)
+  assert.match(source, /\bpathnameCategory\b/u)
+  assert.match(source, /\bhealthErrors\b/u)
+  assert.match(source, /\brequestFailureDetails\b/u)
+  assert.match(source, /\bapiResponseBodyReadErrorDetails\b/u)
+  assert.match(
+    source,
+    /const evidence = await runtime\.finish\(\)\s+writeRuntimeAuditDiagnostic\(evidence, projectId\)\s+await auditRuntime\(evidence, checkpoints, projectId\)/u,
+  )
+  assert.match(source, /selectSeed\(page, projectId, '雾港错钟', 3\)/u)
+  assert.match(source, /生成创作圣经/u)
+  assert.match(source, /FAIL_SAFE/u)
+  assert.match(source, /调整未来设计/u)
+  assert.match(source, /修订历史/u)
+  assert.match(source, /phase_boundary_planning/u)
+  assert.match(source, /page\.reload\(/u)
+  assert.match(source, /page\.goBack\(/u)
+  assert.match(source, /page\.goForward\(/u)
+  assert.match(source, /page\.setViewportSize\(/u)
+  assert.match(
+    source,
+    /async function settleNavigationBoundary\(page, runtime\) \{\s+await page\.waitForLoadState\('networkidle'\)\s+await runtime\.settle\(\)\s+\}/u,
+  )
+  assert.match(
+    source,
+    /async function verifyNavigationAndPreparation\(page, projectId: string, runtime\)/u,
+  )
+  assert.match(
+    source,
+    /async function archiveAndVerifyReadOnly\(page, projectId: string, runtime\)/u,
+  )
+  assert.equal(
+    source.match(/await settleNavigationBoundary\(page, runtime\)/gu)?.length,
+    12,
+  )
+  assert.match(
+    source,
+    /await verifyNavigationAndPreparation\(page, projectId, runtime\)/u,
+  )
+  assert.match(
+    source,
+    /await archiveAndVerifyReadOnly\(page, projectId, runtime\)/u,
+  )
+  assert.match(source, /归档/u)
+  assert.match(source, /此入口已升级或不存在/u)
   assert.doesNotMatch(
     source,
     /page\.request|page\.route|page\.evaluate|\bfetch\s*\(|\baxios\b/u,
@@ -158,15 +218,15 @@ test('Phase 2 browser progress ledger is closed and contains no diagnostics', as
 
   assert.deepEqual(
     runner.verifyBrowserStepLedger(
-      'library-navigation-start\nlibrary-navigation-finished\n',
+      'library-visible\nproject-created\n',
     ),
     [
-      'library-navigation-start',
-      'library-navigation-finished',
+      'library-visible',
+      'project-created',
     ],
   )
   assert.throws(
-    () => runner.verifyBrowserStepLedger('library-navigation-start\nsecret=value\n'),
+    () => runner.verifyBrowserStepLedger('library-visible\nsecret=value\n'),
     /progress ledger/iu,
   )
   const fullLedger = runner.ALLOWED_BROWSER_STEPS
@@ -178,10 +238,128 @@ test('Phase 2 browser progress ledger is closed and contains no diagnostics', as
   )
   assert.throws(
     () => runner.verifyBrowserStepLedger(
-      'library-navigation-start\nlibrary-navigation-finished\n',
+      'library-visible\nproject-created\n',
       { requireComplete: true },
     ),
     /progress ledger/iu,
+  )
+  assert.equal(
+    runner.renderPhase2CliFailure(
+      new Error('Phase 2 browser stopped after corpus-imported'),
+    ),
+    'Phase 2 browser acceptance failed after corpus-imported.\n',
+  )
+  assert.equal(
+    runner.renderPhase2CliFailure(
+      new Error('Phase 2 browser stopped after secret=value'),
+    ),
+    'Phase 2 browser acceptance failed.\n',
+  )
+})
+
+
+test('Phase 2 runtime audit diagnostics expose only fixed safe categories', async () => {
+  const runner = await import('../../frontend/e2e/run-phase2.mjs')
+  const diagnostic = JSON.stringify({
+    responseFailures: [
+      {
+        status: 404,
+        method: 'GET',
+        pathnameCategory: 'contract-draft',
+        count: 2,
+      },
+    ],
+    consoleErrors: [
+      { category: 'resource-404', count: 1 },
+      { category: 'ui-error-boundary', count: 1 },
+    ],
+    healthErrors: [
+      { category: 'page-error', count: 1 },
+      { category: 'request-failure', count: 2 },
+    ],
+    requestFailureDetails: [
+      {
+        method: 'GET',
+        pathCategory: 'assets',
+        errorCategory: 'cancelled',
+        count: 2,
+      },
+    ],
+    apiResponseBodyReadErrorDetails: [
+      {
+        method: 'GET',
+        status: 200,
+        pathCategory: 'project',
+        errorCategory: 'protocol-no-resource',
+        count: 1,
+      },
+    ],
+  })
+
+  assert.equal(
+    runner.verifyRuntimeAuditDiagnostic(diagnostic),
+    'response[404:GET:contract-draft=2];'
+      + 'console[resource-404=1,ui-error-boundary=1];'
+      + 'health[page-error=1,request-failure=2];'
+      + 'requestFailures[GET:assets:cancelled=2];'
+      + 'apiBodyReadErrors[GET:200:project:protocol-no-resource=1]',
+  )
+  assert.throws(
+    () => runner.verifyRuntimeAuditDiagnostic(JSON.stringify({
+      responseFailures: [{
+        status: 404,
+        method: 'GET',
+        pathnameCategory: '/api/projects/private/contract-draft',
+        count: 1,
+      }],
+      consoleErrors: [],
+      healthErrors: [],
+      requestFailureDetails: [],
+      apiResponseBodyReadErrorDetails: [],
+    })),
+    /audit diagnostic/iu,
+  )
+  assert.throws(
+    () => runner.verifyRuntimeAuditDiagnostic(JSON.stringify({
+      responseFailures: [],
+      consoleErrors: [{
+        category: 'resource-404',
+        count: 1,
+        message: 'raw console text',
+      }],
+      healthErrors: [],
+      requestFailureDetails: [],
+      apiResponseBodyReadErrorDetails: [],
+    })),
+    /audit diagnostic/iu,
+  )
+
+  const error = new Error('Phase 2 browser stopped after not-found-visible')
+  error.phase2AuditDiagnostic = diagnostic
+  assert.equal(
+    runner.renderPhase2CliFailure(error),
+    'Phase 2 browser acceptance failed after not-found-visible; '
+      + 'response[404:GET:contract-draft=2];'
+      + 'console[resource-404=1,ui-error-boundary=1];'
+      + 'health[page-error=1,request-failure=2];'
+      + 'requestFailures[GET:assets:cancelled=2];'
+      + 'apiBodyReadErrors[GET:200:project:protocol-no-resource=1].\n',
+  )
+  assert.throws(
+    () => runner.verifyRuntimeAuditDiagnostic(JSON.stringify({
+      responseFailures: [],
+      consoleErrors: [],
+      healthErrors: [],
+      requestFailureDetails: [{
+        method: 'GET',
+        pathCategory: 'assets',
+        errorCategory: 'cancelled',
+        count: 1,
+        errorText: 'raw browser error',
+      }],
+      apiResponseBodyReadErrorDetails: [],
+    })),
+    /audit diagnostic/iu,
   )
 })
 
@@ -199,4 +377,43 @@ test('Phase 2 runner scans private gateway and transcript sentinels', () => {
     source,
     /environments\.sensitiveController\.BROWSER_TRANSCRIPT_SENTINEL/u,
   )
+})
+
+
+test('Phase 2 runner owns snapshots and validates the exact fake gateway calls', async () => {
+  const runner = await import('../../frontend/e2e/run-phase2.mjs')
+  const source = readWorkspaceFile('frontend/e2e/run-phase2.mjs')
+
+  assert.match(source, /qidian-public-snapshot\.json/u)
+  assert.match(source, /qq-public-snapshot\.json/u)
+  assert.match(source, /BROWSER_QIDIAN_SNAPSHOT_PATH/u)
+  assert.match(source, /BROWSER_QQ_SNAPSHOT_PATH/u)
+  assert.match(source, /BROWSER_FAKE_COUNTER_PATH/u)
+  assert.match(source, /Generate one complete creation Bible/u)
+  assert.match(source, /Rank only the supplied eligible asset and corpus candidates/u)
+  assert.match(source, /bible-success/u)
+  assert.match(source, /bible-failure/u)
+  assert.doesNotMatch(source, /appendFileSync\([^\n]*(?:messages|body|content)/u)
+
+  assert.deepEqual(
+    runner.verifyGatewayCounterLedger(
+      'asset-ranking\nasset-ranking\nbible-success\nbible-failure\n',
+    ),
+    {
+      'asset-ranking': 2,
+      'bible-success': 1,
+      'bible-failure': 1,
+    },
+  )
+  for (const invalid of [
+    '',
+    'asset-ranking\nbible-success\nbible-failure\n',
+    'asset-ranking\nasset-ranking\nbible-success\n',
+    'asset-ranking\nasset-ranking\nbible-success\nbible-failure\nunknown\n',
+  ]) {
+    assert.throws(
+      () => runner.verifyGatewayCounterLedger(invalid),
+      /gateway call ledger/iu,
+    )
+  }
 })

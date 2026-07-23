@@ -43,12 +43,73 @@ const DEFAULT_DEADLINES = Object.freeze({
   browserMs: 300_000,
   stopMs: 8_000,
 })
+const AUDIT_DIAGNOSTIC_METHODS = new Set([
+  'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'UNKNOWN',
+])
+const AUDIT_DIAGNOSTIC_PATHNAMES = new Set([
+  'project',
+  'overview-preparation',
+  'contract-head',
+  'contract-draft',
+  'bible-head',
+  'bible-draft',
+  'bible-history',
+  'market',
+  'assets',
+  'other-api',
+  'non-api',
+  'unparsed',
+])
+const AUDIT_DIAGNOSTIC_ERRORS = new Set([
+  'cancelled', 'target-closed', 'protocol-no-resource', 'other',
+])
+const AUDIT_DIAGNOSTIC_CONSOLES = new Set([
+  'resource-404', 'resource-4xx', 'resource-5xx', 'ui-error-boundary',
+  'other-error',
+])
+const AUDIT_DIAGNOSTIC_HEALTH = new Set([
+  'page-error',
+  'request-failure',
+  'api-response-header-read-error',
+  'api-response-body-read-error',
+  'request-header-read-error',
+  'request-body-read-error',
+])
 export const ALLOWED_BROWSER_STEPS = Object.freeze([
-  'library-navigation-start',
-  'library-navigation-finished',
-  'library-heading-visible',
-  'library-button-visible',
   'library-visible',
+  'project-created',
+  'assets-visible',
+  'corpus-imported',
+  'market-snapshots-imported',
+  'seed-a-selected',
+  'seed-b-selected',
+  'seed-a-reselected',
+  'contract-confirmed',
+  'bible-workspace-visible',
+  'bible-generation-returned',
+  'bible-generation-http-ok',
+  'bible-generation-notice-visible',
+  'bible-generation-succeeded',
+  'bible-first-saved',
+  'bible-first-confirmed',
+  'bible-adjustment-created',
+  'bible-failure-returned',
+  'bible-failure-preserved',
+  'bible-second-saved',
+  'bible-second-confirmed',
+  'navigation-boundaries-verified',
+  'preparation-boundary-visible',
+  'archive-project-card-visible',
+  'archive-returned',
+  'archive-status-visible',
+  'archive-bible-visible',
+  'project-archived-read-only',
+  'not-found-visible',
+  'audit-known-failures-verified',
+  'audit-runtime-health-verified',
+  'audit-writes-verified',
+  'audit-origins-verified',
+  'audit-secret-scan-verified',
   'runtime-clean',
 ])
 
@@ -125,11 +186,13 @@ uvicorn.run(
 
 const FAKE_GATEWAY_SOURCE = String.raw`
 import http from 'node:http'
+import { appendFileSync } from 'node:fs'
 
 const port = Number(process.env.BROWSER_FAKE_GATEWAY_PORT)
 const nonce = process.env.M2_BROWSER_RUN_NONCE
 const apiKey = process.env.BROWSER_SECRET_SENTINEL
-if (!Number.isInteger(port) || port <= 0 || !nonce || !apiKey) {
+const counterPath = process.env.BROWSER_FAKE_COUNTER_PATH
+if (!Number.isInteger(port) || port <= 0 || !nonce || !apiKey || !counterPath) {
   throw new Error('fake gateway ownership configuration is invalid')
 }
 
@@ -141,11 +204,82 @@ function sendJson(response, status, value) {
   response.end(JSON.stringify(value))
 }
 
-async function discardBody(request) {
+async function readJson(request) {
+  const chunks = []
   let size = 0
   for await (const chunk of request) {
     size += chunk.length
     if (size > 256 * 1024) throw new Error('request too large')
+    chunks.push(chunk)
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
+function classify(messages) {
+  if (!Array.isArray(messages) || messages.length !== 2) return null
+  const [system, user] = messages
+  if (system?.role !== 'system' || user?.role !== 'user') return null
+  let instruction
+  let evidence
+  try {
+    instruction = JSON.parse(system.content)
+    evidence = JSON.parse(user.content)
+  } catch {
+    return null
+  }
+  if (
+    instruction?.task
+      === 'Rank only the supplied eligible asset and corpus candidates.'
+  ) return { kind: 'asset-ranking', evidence }
+  if (instruction?.task === 'Generate one complete creation Bible') {
+    return { kind: 'bible', evidence }
+  }
+  return null
+}
+
+function assetRankingResponse(evidence) {
+  const candidate = evidence?.assetCandidates?.[0]
+  if (!candidate?.assetRevisionId) return null
+  return {
+    assetRecommendations: [{
+      assetRevisionId: candidate.assetRevisionId,
+      reason: 'The fixture evidence is too weak for an automatic suggestion.',
+      confidence: 0.2,
+    }],
+    corpusRecommendations: [],
+  }
+}
+
+function bibleResponse() {
+  return {
+    premiseAndPromise: '一名穿越者借散落典籍解决现实危机，也在每次取舍中重建人与知识的关系。',
+    worldRules: [
+      { id: 'world-record-cost', text: '知识只能通过可验证的记录兑现，每次公开都会改变既有利益关系。' },
+    ],
+    powerOrProgressionSystem: '主角从辨认残卷、交叉验证到组织协作，成长来自证据能力与承担后果的范围扩大。',
+    protagonist: '沈砚谨慎、重证据，却无法坐视具体的人被制度当成代价。',
+    coreCast: [
+      { id: 'cast-copyist', text: '抄书匠阿绫敏锐直接，负责把抽象知识转成普通人能使用的方法。' },
+      { id: 'cast-guard', text: '守门校尉顾峤讲秩序也护百姓，经常逼主角说明证据之外的责任。' },
+    ],
+    factions: [
+      { id: 'faction-archive', text: '秘阁希望垄断典籍解释权，并以秩序之名封存危险记录。' },
+      { id: 'faction-folk', text: '民间抄书网络保存残卷，但成员的利益和立场并不一致。' },
+    ],
+    longTermConflicts: [
+      { id: 'conflict-control', text: '公开知识能救眼前的人，也会加速各方争夺散落卷册。' },
+    ],
+    relationshipDynamics: [
+      { id: 'relation-trust', text: '沈砚与同伴的信任由共同承担代价建立，而非靠单向说服。' },
+    ],
+    toneAndNarrativeBoundaries: '以清晰大白话讲丰满故事，人物先行动再解释；避免文献式概述和机械总结。',
+    continuityGuardrails: [
+      { id: 'guard-no-free-win', text: '知识优势不能无代价解决政治、人情与资源冲突。' },
+      { id: 'guard-distinct-voices', text: '主要人物的欲望、语气和判断方式必须保持区别。' },
+    ],
+    openDesignQuestions: [
+      { id: 'question-catalogue', text: '永乐大典的散佚是意外、权力斗争，还是更长远计划的一部分？' },
+    ],
   }
 }
 
@@ -159,13 +293,45 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 404, { error: { code: 'not_found' } })
       return
     }
+    let body
     try {
-      await discardBody(request)
+      body = await readJson(request)
     } catch {
       sendJson(response, 400, { error: { code: 'invalid_request' } })
       return
     }
-    sendJson(response, 422, { error: { code: 'unsupported_fixture_request' } })
+    const classified = classify(body.messages)
+    if (!classified) {
+      sendJson(response, 422, { error: { code: 'unsupported_fixture_request' } })
+      return
+    }
+    if (
+      classified.kind === 'bible'
+      && String(classified.evidence?.authorInstructions || '').includes('FAIL_SAFE')
+    ) {
+      appendFileSync(counterPath, 'bible-failure\n', { encoding: 'utf8' })
+      sendJson(response, 503, { error: { code: 'fixture_provider_unavailable' } })
+      return
+    }
+    const content = classified.kind === 'asset-ranking'
+      ? assetRankingResponse(classified.evidence)
+      : bibleResponse()
+    if (!content) {
+      sendJson(response, 422, { error: { code: 'unsupported_fixture_request' } })
+      return
+    }
+    const token = classified.kind === 'bible'
+      ? 'bible-success'
+      : 'asset-ranking'
+    appendFileSync(counterPath, token + '\n', { encoding: 'utf8' })
+    sendJson(response, 200, {
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: JSON.stringify(content),
+        },
+      }],
+    })
     return
   }
   sendJson(response, 404, { error: { code: 'not_found' } })
@@ -226,6 +392,33 @@ function childOptions(cwd, env) {
 }
 
 
+function snapshotDocument({
+  platform,
+  rankingName,
+  sourceURL,
+  title,
+  author,
+  workURL,
+  capturedAt,
+}) {
+  return {
+    platform,
+    rankingName,
+    category: 'male',
+    capturedAt,
+    sourceURL,
+    entries: [{
+      rank: 1,
+      title,
+      author,
+      category: '历史穿越',
+      workURL,
+      publicMetrics: { heat: 100 },
+    }],
+  }
+}
+
+
 function prepareOwnedFiles(ownedRoot) {
   const root = assertOwnedRoot(ownedRoot, OWNED_ROOT_PREFIX)
   const filesRoot = path.join(root, 'files')
@@ -238,18 +431,46 @@ function prepareOwnedFiles(ownedRoot) {
   const outboundLedgerPath = path.join(filesRoot, 'forbidden-outbound.log')
   const corpusPath = path.join(corpusRoot, 'phase2-synthetic-corpus.txt')
   const stepLedgerPath = path.join(filesRoot, 'browser-steps.log')
+  const runtimeAuditDiagnosticPath = path.join(
+    filesRoot,
+    'runtime-audit-diagnostic.json',
+  )
+  const counterPath = path.join(filesRoot, 'gateway-counters.log')
+  const qidianPath = path.join(filesRoot, 'qidian-public-snapshot.json')
+  const qqPath = path.join(filesRoot, 'qq-public-snapshot.json')
+  const capturedAt = Date.now()
   writeFileSync(fakeGatewayPath, FAKE_GATEWAY_SOURCE, {
     encoding: 'utf8',
     flag: 'wx',
   })
   writeFileSync(outboundLedgerPath, '', { encoding: 'utf8', flag: 'wx' })
   writeFileSync(stepLedgerPath, '', { encoding: 'utf8', flag: 'wx' })
+  writeFileSync(runtimeAuditDiagnosticPath, '', { encoding: 'utf8', flag: 'wx' })
+  writeFileSync(counterPath, '', { encoding: 'utf8', flag: 'wx' })
+  writeFileSync(qidianPath, JSON.stringify(snapshotDocument({
+    platform: 'qidian',
+    rankingName: 'newsign',
+    sourceURL: 'https://www.qidian.com/rank/newsign/',
+    title: '山河典籍录',
+    author: '合成作者甲',
+    workURL: 'https://www.qidian.com/book/900000001/',
+    capturedAt,
+  })), { encoding: 'utf8', flag: 'wx' })
+  writeFileSync(qqPath, JSON.stringify(snapshotDocument({
+    platform: 'qq_reading',
+    rankingName: 'male_popular',
+    sourceURL: 'https://book.qq.com/book-rank',
+    title: '北境火种',
+    author: '合成作者乙',
+    workURL: 'https://book.qq.com/book-detail/900000002',
+    capturedAt: capturedAt + 1,
+  })), { encoding: 'utf8', flag: 'wx' })
   writeFileSync(corpusPath, [
-    '第一章 山河初醒',
-    '沈砚在陌生朝代醒来时，怀里只剩一页被火燎过的旧典。他先救下抄书匠，再决定追查谁在销毁散落民间的卷册。',
+    '第一章 雾港错钟',
+    '沈砚守着潮墙上的旧钟。第三声钟鸣提前到来，港口却在无风的夜里退潮。',
     '',
-    '第二章 城门夜问',
-    '守门校尉不信一页残纸能救人，沈砚便把纸上的水道记载与城外决堤痕迹逐项对上。',
+    '第二章 纸带回声',
+    '他从导师留下的纸带中辨出一组反向刻度，决定先救被困船队，再追查谁篡改了钟室记录。',
   ].join('\n'), { encoding: 'utf8', flag: 'wx' })
   return {
     root,
@@ -257,9 +478,13 @@ function prepareOwnedFiles(ownedRoot) {
     corpusRoot,
     managedRoot,
     corpusPath,
+    qidianPath,
+    qqPath,
     fakeGatewayPath,
     outboundLedgerPath,
     stepLedgerPath,
+    runtimeAuditDiagnosticPath,
+    counterPath,
   }
 }
 
@@ -320,7 +545,10 @@ export function buildEnvironments(
     BROWSER_OWNED_ROOT: roots.root,
     BROWSER_ARTIFACT_ROOT: path.join(roots.root, 'phase2-test-results'),
     BROWSER_CORPUS_FILE: roots.corpusPath,
+    BROWSER_QIDIAN_SNAPSHOT_PATH: roots.qidianPath,
+    BROWSER_QQ_SNAPSHOT_PATH: roots.qqPath,
     BROWSER_STEP_LEDGER: roots.stepLedgerPath,
+    BROWSER_RUNTIME_AUDIT_DIAGNOSTIC: roots.runtimeAuditDiagnosticPath,
     BROWSER_TEST_DATABASE: databaseName,
     ...providerFixture,
     BROWSER_PRIVATE_PROVIDER_URL: gatewayUrl,
@@ -332,6 +560,7 @@ export function buildEnvironments(
     M2_BROWSER_RUN_NONCE: nonce,
     BROWSER_FAKE_GATEWAY_PORT: String(new URL(gatewayUrl).port),
     BROWSER_SECRET_SENTINEL: SECRET_SENTINEL,
+    BROWSER_FAKE_COUNTER_PATH: roots.counterPath,
   }
   const sensitiveController = {
     ...database,
@@ -369,6 +598,28 @@ function validateSpecs(specs) {
 }
 
 
+export function verifyGatewayCounterLedger(ledger) {
+  const expected = Object.freeze({
+    'asset-ranking': 2,
+    'bible-success': 1,
+    'bible-failure': 1,
+  })
+  const allowed = Object.keys(expected)
+  const counts = Object.fromEntries(allowed.map(kind => [kind, 0]))
+  const lines = String(ledger || '').split(/\r?\n/u).filter(Boolean)
+  for (const line of lines) {
+    if (!Object.hasOwn(counts, line)) {
+      throw new Error('Phase 2 gateway call ledger contains an unknown type')
+    }
+    counts[line] += 1
+  }
+  if (allowed.some(kind => counts[kind] !== expected[kind])) {
+    throw new Error('Phase 2 gateway call ledger has unexpected formal counts')
+  }
+  return counts
+}
+
+
 export function verifyForbiddenOutboundLedger(ledger) {
   if (String(ledger || '') !== '') {
     throw new Error('Phase 2 forbidden outbound ledger is not empty')
@@ -400,6 +651,206 @@ export function verifyBrowserStepLedger(
     throw new Error('Phase 2 browser progress ledger is invalid')
   }
   return lines
+}
+
+
+function exactObjectKeys(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const actual = Object.keys(value).sort()
+  const wanted = [...expected].sort()
+  return (
+    actual.length === wanted.length
+    && actual.every((key, index) => key === wanted[index])
+  )
+}
+
+
+export function verifyRuntimeAuditDiagnostic(serialized) {
+  let diagnostic
+  try {
+    diagnostic = JSON.parse(String(serialized || ''))
+  } catch {
+    throw new Error('Phase 2 runtime audit diagnostic is invalid')
+  }
+  if (
+    !exactObjectKeys(
+      diagnostic,
+      [
+        'responseFailures',
+        'consoleErrors',
+        'healthErrors',
+        'requestFailureDetails',
+        'apiResponseBodyReadErrorDetails',
+      ],
+    )
+    || !Array.isArray(diagnostic.responseFailures)
+    || !Array.isArray(diagnostic.consoleErrors)
+    || !Array.isArray(diagnostic.healthErrors)
+    || !Array.isArray(diagnostic.requestFailureDetails)
+    || !Array.isArray(diagnostic.apiResponseBodyReadErrorDetails)
+    || diagnostic.responseFailures.length > 20
+    || diagnostic.consoleErrors.length > 20
+    || diagnostic.healthErrors.length > 20
+    || diagnostic.requestFailureDetails.length > 20
+    || diagnostic.apiResponseBodyReadErrorDetails.length > 20
+  ) {
+    throw new Error('Phase 2 runtime audit diagnostic is invalid')
+  }
+  const responseKeys = new Set()
+  for (const entry of diagnostic.responseFailures) {
+    const statusIsSafe = entry?.status === 'unparsed'
+      || (
+        Number.isInteger(entry?.status)
+        && entry.status >= 400
+        && entry.status <= 599
+      )
+    const key = `${String(entry?.status)}:${String(entry?.method)}:`
+      + String(entry?.pathnameCategory)
+    if (
+      !exactObjectKeys(
+        entry,
+        ['status', 'method', 'pathnameCategory', 'count'],
+      )
+      || !statusIsSafe
+      || !AUDIT_DIAGNOSTIC_METHODS.has(entry.method)
+      || !AUDIT_DIAGNOSTIC_PATHNAMES.has(entry.pathnameCategory)
+      || !Number.isInteger(entry.count)
+      || entry.count < 1
+      || entry.count > 100
+      || responseKeys.has(key)
+    ) {
+      throw new Error('Phase 2 runtime audit diagnostic is invalid')
+    }
+    responseKeys.add(key)
+  }
+  const consoleKeys = new Set()
+  for (const entry of diagnostic.consoleErrors) {
+    if (
+      !exactObjectKeys(entry, ['category', 'count'])
+      || !AUDIT_DIAGNOSTIC_CONSOLES.has(entry.category)
+      || !Number.isInteger(entry.count)
+      || entry.count < 1
+      || entry.count > 100
+      || consoleKeys.has(entry.category)
+    ) {
+      throw new Error('Phase 2 runtime audit diagnostic is invalid')
+    }
+    consoleKeys.add(entry.category)
+  }
+  const healthKeys = new Set()
+  for (const entry of diagnostic.healthErrors) {
+    if (
+      !exactObjectKeys(entry, ['category', 'count'])
+      || !AUDIT_DIAGNOSTIC_HEALTH.has(entry.category)
+      || !Number.isInteger(entry.count)
+      || entry.count < 1
+      || entry.count > 100
+      || healthKeys.has(entry.category)
+    ) {
+      throw new Error('Phase 2 runtime audit diagnostic is invalid')
+    }
+    healthKeys.add(entry.category)
+  }
+  const requestFailureKeys = new Set()
+  for (const entry of diagnostic.requestFailureDetails) {
+    const key = `${String(entry?.method)}:${String(entry?.pathCategory)}:`
+      + String(entry?.errorCategory)
+    if (
+      !exactObjectKeys(
+        entry,
+        ['method', 'pathCategory', 'errorCategory', 'count'],
+      )
+      || !AUDIT_DIAGNOSTIC_METHODS.has(entry.method)
+      || !AUDIT_DIAGNOSTIC_PATHNAMES.has(entry.pathCategory)
+      || !AUDIT_DIAGNOSTIC_ERRORS.has(entry.errorCategory)
+      || !Number.isInteger(entry.count)
+      || entry.count < 1
+      || entry.count > 100
+      || requestFailureKeys.has(key)
+    ) {
+      throw new Error('Phase 2 runtime audit diagnostic is invalid')
+    }
+    requestFailureKeys.add(key)
+  }
+  const bodyReadErrorKeys = new Set()
+  for (const entry of diagnostic.apiResponseBodyReadErrorDetails) {
+    const key = `${String(entry?.method)}:${String(entry?.status)}:`
+      + `${String(entry?.pathCategory)}:${String(entry?.errorCategory)}`
+    if (
+      !exactObjectKeys(
+        entry,
+        ['method', 'status', 'pathCategory', 'errorCategory', 'count'],
+      )
+      || !AUDIT_DIAGNOSTIC_METHODS.has(entry.method)
+      || !Number.isInteger(entry.status)
+      || entry.status < 100
+      || entry.status > 599
+      || !AUDIT_DIAGNOSTIC_PATHNAMES.has(entry.pathCategory)
+      || !AUDIT_DIAGNOSTIC_ERRORS.has(entry.errorCategory)
+      || !Number.isInteger(entry.count)
+      || entry.count < 1
+      || entry.count > 100
+      || bodyReadErrorKeys.has(key)
+    ) {
+      throw new Error('Phase 2 runtime audit diagnostic is invalid')
+    }
+    bodyReadErrorKeys.add(key)
+  }
+  const response = diagnostic.responseFailures.length === 0
+    ? 'none'
+    : diagnostic.responseFailures
+      .map(entry => (
+        `${String(entry.status)}:${entry.method}:${entry.pathnameCategory}`
+        + `=${String(entry.count)}`
+      ))
+      .join(',')
+  const console = diagnostic.consoleErrors.length === 0
+    ? 'none'
+    : diagnostic.consoleErrors
+      .map(entry => `${entry.category}=${String(entry.count)}`)
+      .join(',')
+  const health = diagnostic.healthErrors.length === 0
+    ? 'none'
+    : diagnostic.healthErrors
+      .map(entry => `${entry.category}=${String(entry.count)}`)
+      .join(',')
+  const requestFailures = diagnostic.requestFailureDetails.length === 0
+    ? 'none'
+    : diagnostic.requestFailureDetails
+      .map(entry => (
+        `${entry.method}:${entry.pathCategory}:${entry.errorCategory}`
+        + `=${String(entry.count)}`
+      ))
+      .join(',')
+  const apiBodyReadErrors =
+    diagnostic.apiResponseBodyReadErrorDetails.length === 0
+      ? 'none'
+      : diagnostic.apiResponseBodyReadErrorDetails
+        .map(entry => (
+          `${entry.method}:${String(entry.status)}:${entry.pathCategory}:`
+          + `${entry.errorCategory}=${String(entry.count)}`
+        ))
+        .join(',')
+  return `response[${response}];console[${console}];health[${health}];`
+    + `requestFailures[${requestFailures}];`
+    + `apiBodyReadErrors[${apiBodyReadErrors}]`
+}
+
+
+export function renderPhase2CliFailure(error) {
+  const prefix = 'Phase 2 browser stopped after '
+  const message = error instanceof Error ? error.message : ''
+  const step = message.startsWith(prefix) ? message.slice(prefix.length) : ''
+  if (!ALLOWED_BROWSER_STEPS.includes(step)) {
+    return 'Phase 2 browser acceptance failed.\n'
+  }
+  let diagnostic = ''
+  try {
+    diagnostic = verifyRuntimeAuditDiagnostic(error.phase2AuditDiagnostic)
+  } catch {
+    return `Phase 2 browser acceptance failed after ${step}.\n`
+  }
+  return `Phase 2 browser acceptance failed after ${step}; ${diagnostic}.\n`
 }
 
 
@@ -570,10 +1021,15 @@ async function runOneScenario({
           readFileSync(roots.stepLedgerPath, 'utf8'),
         )
         const lastStep = steps.at(-1) || 'no-browser-step'
-        throw new Error(
+        const stopped = new Error(
           `Phase 2 browser stopped after ${lastStep}`,
           { cause: error },
         )
+        stopped.phase2AuditDiagnostic = readFileSync(
+          roots.runtimeAuditDiagnosticPath,
+          'utf8',
+        )
+        throw stopped
       }
       verifyBrowserStepLedger(
         readFileSync(roots.stepLedgerPath, 'utf8'),
@@ -581,6 +1037,9 @@ async function runOneScenario({
       )
       verifyForbiddenOutboundLedger(
         readFileSync(roots.outboundLedgerPath, 'utf8'),
+      )
+      verifyGatewayCounterLedger(
+        readFileSync(roots.counterPath, 'utf8'),
       )
       await runBoundedOwnedCommand(
         python,
@@ -675,7 +1134,7 @@ export function isCommandLineEntrypoint(argumentPath, modulePath) {
 if (isCommandLineEntrypoint(process.argv[1], import.meta.url)) {
   runPhase2({ specs: resolveCommandLineSpecs(process.argv.slice(2)) })
     .catch(error => {
-      process.stderr.write('Phase 2 browser acceptance failed.\n')
+      process.stderr.write(renderPhase2CliFailure(error))
       process.exitCode = 1
       return error
     })
