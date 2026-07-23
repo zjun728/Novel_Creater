@@ -20,6 +20,28 @@ function readWorkspaceFile(relativePath) {
 }
 
 
+const RUN_ONE_SCENARIO_BOUNDARY =
+  /async function runOneScenario\(([\s\S]*?)\r?\n\}\r?\n\r?\n\r?\nexport async function runPhase2C/u
+const BACKEND_SOURCE_BOUNDARY =
+  /const BACKEND_SOURCE = String\.raw`([\s\S]*?)`\r?\n\r?\nconst FAKE_GATEWAY_SOURCE/u
+const FAKE_GATEWAY_SOURCE_BOUNDARY =
+  /const FAKE_GATEWAY_SOURCE = String\.raw`([\s\S]*?)`(?:\r?\n)+const VERIFICATION_SOURCE/u
+const MANUAL_CONFIGURATION_SOURCE_BOUNDARY =
+  /const MANUAL_CONFIGURATION_SOURCE = String\.raw`([\s\S]*?)`\r?\n\r?\nexport function validateSpecs/u
+const VISIBLE_SELECT_HELPER_BOUNDARY =
+  /(async function chooseVisibleSelectOption[\s\S]*?)\r?\n\}\r?\n\r?\n\r?\nfunction safeDiagnosticText/u
+
+
+function assertBoundaryAcceptsLfAndCrlf(boundary, lfSource, description) {
+  assert.match(lfSource, boundary, `${description} must accept LF`)
+  assert.match(
+    lfSource.replaceAll('\n', '\r\n'),
+    boundary,
+    `${description} must accept CRLF`,
+  )
+}
+
+
 test('Phase 2C is the only default browser authority and retired M2 files are absent', () => {
   const rootPackage = JSON.parse(readWorkspaceFile('package.json'))
   const frontendPackage = JSON.parse(readWorkspaceFile('frontend/package.json'))
@@ -219,11 +241,14 @@ test('Phase 2C runtime policy has exact closed per-scenario missing-draft counts
 })
 
 
-test('each Phase 2C scenario owns fresh resources and gateway owns only localhost fake I/O', () => {
+test('each LF/CRLF Phase 2C scenario block owns fresh resources and gateway owns only localhost fake I/O', () => {
   const source = readWorkspaceFile('frontend/e2e/run-phase2c.mjs')
-  const scenarioSource = source.match(
-    /async function runOneScenario\(([\s\S]*?)\n\}\n\n\nexport async function runPhase2C/u,
+  assertBoundaryAcceptsLfAndCrlf(
+    RUN_ONE_SCENARIO_BOUNDARY,
+    'async function runOneScenario() {\n}\n\n\nexport async function runPhase2C',
+    'per-scenario lifecycle boundary',
   )
+  const scenarioSource = source.match(RUN_ONE_SCENARIO_BOUNDARY)
   assert.ok(scenarioSource, 'runner must expose one closed per-scenario lifecycle')
   assert.match(scenarioSource[0], /databaseName\s*=\s*databaseNameFactory\(\)/u)
   assert.match(scenarioSource[0], /ownedRootFactory\(\)/u)
@@ -271,11 +296,14 @@ test('gateway ledger accepts the two distinct asset-ranking input generations', 
 })
 
 
-test('Phase 2C backend installs a fail-closed HTTPX boundary before product import', async () => {
+test('LF/CRLF Phase 2C backend block installs a fail-closed HTTPX boundary before product import', async () => {
   const source = readWorkspaceFile('frontend/e2e/run-phase2c.mjs')
-  const match = source.match(
-    /const BACKEND_SOURCE = String\.raw`([\s\S]*?)`\n\nconst FAKE_GATEWAY_SOURCE/u,
+  assertBoundaryAcceptsLfAndCrlf(
+    BACKEND_SOURCE_BOUNDARY,
+    'const BACKEND_SOURCE = String.raw`body`\n\nconst FAKE_GATEWAY_SOURCE',
+    'backend source boundary',
   )
+  const match = source.match(BACKEND_SOURCE_BOUNDARY)
   assert.ok(match, 'backend boundary must remain one closed runner-owned program')
   const backend = match[1]
   assert.ok(
@@ -318,11 +346,14 @@ test('Phase 2C backend installs a fail-closed HTTPX boundary before product impo
 })
 
 
-test('fake gateway fail-closes unknown traffic and returns formal low-confidence fixtures', () => {
+test('LF/CRLF fake gateway block fail-closes unknown traffic and returns formal low-confidence fixtures', () => {
   const source = readWorkspaceFile('frontend/e2e/run-phase2c.mjs')
-  const match = source.match(
-    /const FAKE_GATEWAY_SOURCE = String\.raw`([\s\S]*?)`\n+const VERIFICATION_SOURCE/u,
+  assertBoundaryAcceptsLfAndCrlf(
+    FAKE_GATEWAY_SOURCE_BOUNDARY,
+    'const FAKE_GATEWAY_SOURCE = String.raw`body`\nconst VERIFICATION_SOURCE',
+    'fake gateway source boundary',
   )
+  const match = source.match(FAKE_GATEWAY_SOURCE_BOUNDARY)
   assert.ok(match, 'fake gateway must remain one closed runner-owned program')
   const gateway = match[1]
   assert.match(gateway, /request\.method === 'GET' && request\.url === '\/health'/u)
@@ -348,11 +379,14 @@ test('fake gateway fail-closes unknown traffic and returns formal low-confidence
 })
 
 
-test('manual no-model fixture commits provider disablement and verifies it independently', () => {
+test('LF/CRLF manual no-model block commits provider disablement and verifies it independently', () => {
   const source = readWorkspaceFile('frontend/e2e/run-phase2c.mjs')
-  const match = source.match(
-    /const MANUAL_CONFIGURATION_SOURCE = String\.raw`([\s\S]*?)`\n\nexport function validateSpecs/u,
+  assertBoundaryAcceptsLfAndCrlf(
+    MANUAL_CONFIGURATION_SOURCE_BOUNDARY,
+    'const MANUAL_CONFIGURATION_SOURCE = String.raw`body`\n\nexport function validateSpecs',
+    'manual configuration source boundary',
   )
+  const match = source.match(MANUAL_CONFIGURATION_SOURCE_BOUNDARY)
   assert.ok(match, 'manual configuration source must remain one closed script')
   const manualSource = match[1]
   assert.match(
@@ -391,11 +425,14 @@ test('Phase 2C browser source is UI-only and imports the neutral runtime audit',
 })
 
 
-test('Phase 2C Naive selects click the exact option from the last activated layer', () => {
+test('LF/CRLF Phase 2C Naive-select helper clicks the exact option from the last activated layer', () => {
   const source = readWorkspaceFile('frontend/e2e/phase2c-contract.spec.ts')
-  const helperMatch = source.match(
-    /(async function chooseVisibleSelectOption[\s\S]*?)\n\}\n\n\nfunction safeDiagnosticText/u,
+  assertBoundaryAcceptsLfAndCrlf(
+    VISIBLE_SELECT_HELPER_BOUNDARY,
+    'async function chooseVisibleSelectOption() {\n}\n\n\nfunction safeDiagnosticText',
+    'visible-select helper boundary',
   )
+  const helperMatch = source.match(VISIBLE_SELECT_HELPER_BOUNDARY)
   assert.ok(helperMatch)
   const helperSource = helperMatch[1]
   assert.match(source, /async function chooseVisibleSelectOption/u)
