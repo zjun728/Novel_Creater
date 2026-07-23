@@ -24,6 +24,7 @@ export function createBibleWorkspaceController({
 } = {}) {
   if (!store || typeof projectId !== 'function') throw new TypeError('store and projectId are required')
   const working = ref(null); const confirmOpen = ref(false); const historyOpen = ref(false); const errorSummary = ref(null); const confirmTrigger = ref(null)
+  const recoveryCommand = ref(null)
   const attempts = new Map()
   let generation = 0
   let activeProject = ''
@@ -68,9 +69,19 @@ export function createBibleWorkspaceController({
       correlationId: String(failure?.correlationId || store.error?.correlationId || ''),
     }
   }
-  function setError(failure, value) {
+  function rememberRecovery(type, value, params = {}) {
+    if (!current(value)) return
+    recoveryCommand.value = { type, project: value.project, generation: value.generation, ...params }
+  }
+  function clearFailure(value) {
+    if (!current(value)) return
+    errorSummary.value = null
+    recoveryCommand.value = null
+  }
+  function setError(failure, value, recoveryType, params) {
     if (!current(value)) return
     errorSummary.value = publicFailure(failure)
+    rememberRecovery(recoveryType, value, params)
     nextTick(() => { if (current(value)) focusError() })
   }
   function attemptKey() { const identity = `${projectId()}:${store.draft?.draftVersion ?? ''}:${store.head?.revision ?? ''}`; if (!attempts.has(identity)) attempts.set(identity, keyFactory()); return [identity, attempts.get(identity)] }
@@ -81,7 +92,7 @@ export function createBibleWorkspaceController({
     generation += 1
     activeProject = targetProject
     working.value = null; confirmOpen.value = false; historyOpen.value = false
-    errorSummary.value = null; confirmTrigger.value = null; attempts.clear()
+    errorSummary.value = null; recoveryCommand.value = null; confirmTrigger.value = null; attempts.clear()
     const value = ticket()
     try {
       await store.load(targetProject, { readOnly: isArchived() })
@@ -90,7 +101,7 @@ export function createBibleWorkspaceController({
       return working.value
     } catch (failure) {
       if (!current(value)) return undefined
-      setError(failure, value); throw failure
+      setError(failure, value, 'hydrate'); throw failure
     }
   }
   function edit(value) { if (!editable.value || busy.value) return; working.value = clone(value); store.edit(working.value) }
@@ -101,8 +112,14 @@ export function createBibleWorkspaceController({
       const saved = await store.save(value.project, savedWorking)
       if (!current(value)) return undefined
       working.value = clone(saved?.draft || store.draft?.draft || working.value)
+      clearFailure(value)
       return saved
-    } catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+    } catch (failure) {
+      if (!current(value)) return undefined
+      const status = Number(failure?.status || store.error?.status || store.conflict?.status || 0)
+      setError(failure, value, status === 409 ? 'reloadAuthoritative' : 'save')
+      throw failure
+    }
   }
   function openConfirm(trigger) {
     if (!canConfirm.value) return false
@@ -124,12 +141,16 @@ export function createBibleWorkspaceController({
       if (!current(value)) return undefined
       working.value = clone(result?.bible || store.head?.bible || null)
       confirmOpen.value = false
+      clearFailure(value)
       nextTick(() => { if (current(value)) focusStatus() })
       return result
     } catch (failure) {
       if (!current(value)) return undefined
       if (isClientError(failure)) attempts.delete(identity)
-      setError(failure, value); throw failure
+      const status = Number(failure?.status || store.error?.status || 0)
+      const code = String(failure?.code || store.error?.code || '')
+      setError(failure, value, status >= 500 || code === 'outcome_unknown' ? 'confirm' : status === 409 ? 'reloadAuthoritative' : 'reconcile')
+      throw failure
     }
   }
   async function cloneRevision(source = cloneSource.value) {
@@ -142,26 +163,55 @@ export function createBibleWorkspaceController({
       const result = await store.clone(value.project, command)
       if (!current(value)) return undefined
       working.value = clone(result?.draft || store.draft?.draft || null)
+      clearFailure(value)
       return result
-    } catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+    } catch (failure) { if (!current(value)) return undefined; setError(failure, value, 'reconcile'); throw failure }
   }
   async function openHistory() {
     const value = ticket(); historyOpen.value = true
-    try { const result = await store.loadHistory(value.project, { append: false }); return current(value) ? result : undefined }
-    catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+    try {
+      const result = await store.loadHistory(value.project, { append: false })
+      if (!current(value)) return undefined
+      clearFailure(value); return result
+    }
+    catch (failure) { if (!current(value)) return undefined; setError(failure, value, 'history'); throw failure }
   }
   async function showHistoryDetail(revision) {
     const value = ticket()
-    try { const result = await store.loadHistoryDetail(value.project, revision); return current(value) ? result : undefined }
-    catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+    const safeRevision = Number(revision)
+    try {
+      const result = await store.loadHistoryDetail(value.project, safeRevision)
+      if (!current(value)) return undefined
+      clearFailure(value); return result
+    }
+    catch (failure) { if (!current(value)) return undefined; setError(failure, value, 'historyDetail', { revision: safeRevision }); throw failure }
   }
-  async function loadMoreHistory() {
+  async function loadHistoryPage(beforeRevision) {
+    const value = ticket(); const safeBeforeRevision = Number(beforeRevision)
+    try {
+      const result = await store.loadHistory(value.project, { append: true, beforeRevision: safeBeforeRevision })
+      if (!current(value)) return undefined
+      clearFailure(value); return result
+    }
+    catch (failure) { if (!current(value)) return undefined; setError(failure, value, 'historyPage', { beforeRevision: safeBeforeRevision }); throw failure }
+  }
+  function loadMoreHistory() {
     if (busy.value || store.historyNextBeforeRevision == null) return undefined
-    const value = ticket(); const beforeRevision = store.historyNextBeforeRevision
-    try { const result = await store.loadHistory(value.project, { append: true, beforeRevision }); return current(value) ? result : undefined }
-    catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+    return loadHistoryPage(store.historyNextBeforeRevision)
+  }
+  async function retryFailure() {
+    const command = recoveryCommand.value
+    if (!command || !current(command) || busy.value) return undefined
+    errorSummary.value = null; recoveryCommand.value = null
+    if (command.type === 'save') return save()
+    if (command.type === 'confirm') return confirm()
+    if (command.type === 'history') return openHistory()
+    if (command.type === 'historyDetail') return showHistoryDetail(command.revision)
+    if (command.type === 'historyPage') return loadHistoryPage(command.beforeRevision)
+    if (['hydrate', 'reloadAuthoritative', 'reconcile'].includes(command.type)) return hydrate()
+    return undefined
   }
   function requestLeave() { if (busy.value) return false; return store.dirty !== true || confirmLeave() }
   function beforeUnload(event) { if (store.dirty !== true && !busy.value) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
-  return { working, confirmOpen, historyOpen, errorSummary, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, requestLeave, beforeUnload, confirmLeave: requestLeave }
+  return { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
 }

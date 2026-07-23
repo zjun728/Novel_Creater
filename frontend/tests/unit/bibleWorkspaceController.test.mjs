@@ -69,14 +69,109 @@ test('late project operations cannot publish working state, errors, focus, or di
   saveA.resolve({ draft: { ...bible(), premiseAndPromise: 'A SAVED' } }); historyA.reject(error(500, 'A raw secret'))
   await oldSave; await oldHistory
   assert.equal(workspace.working.value.premiseAndPromise, 'B BODY')
-  assert.equal(workspace.errorSummary.value, null); assert.deepEqual(focus, []); assert.equal(workspace.historyOpen.value, false)
+  assert.equal(workspace.errorSummary.value, null); assert.equal(workspace.recoveryCommand.value, null); assert.deepEqual(focus, []); assert.equal(workspace.historyOpen.value, false)
 })
+
+for (const [confirmOutcome, cloneOutcome] of [['success', 'failure'], ['failure', 'success']]) {
+  test(`late confirmation ${confirmOutcome} and clone ${cloneOutcome} stay fenced from the newer project`, async () => {
+    const confirmA = deferred(); const cloneA = deferred(); let currentProject = 'A'; const focus = []
+    const store = makeStore()
+    store.load = async project => {
+      store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, canClone: true, reasons: [] }
+      store.head = revision(1)
+    }
+    store.confirm = async project => project === 'A' ? confirmA.promise : revision(2)
+    store.clone = async project => project === 'A' ? cloneA.promise : store.draft
+    const workspace = createBibleWorkspaceController({ store, projectId: () => currentProject, focusError: () => focus.push('error'), focusStatus: () => focus.push('status'), keyFactory: () => 'key' })
+    await workspace.hydrate(); workspace.openConfirm()
+    const oldConfirm = workspace.confirm(); const oldClone = workspace.clone(revision(1))
+    currentProject = 'B'; await workspace.hydrate()
+    if (confirmOutcome === 'success') confirmA.resolve(revision(2))
+    else confirmA.reject(error(503, 'late confirm raw secret'))
+    if (cloneOutcome === 'success') cloneA.resolve({ draft: { ...bible(), premiseAndPromise: 'A CLONE' } })
+    else cloneA.reject(error(503, 'late clone raw secret'))
+    await oldConfirm; await oldClone
+    assert.equal(workspace.working.value.premiseAndPromise, 'B BODY')
+    assert.equal(workspace.errorSummary.value, null); assert.equal(workspace.recoveryCommand.value, null)
+    assert.equal(workspace.confirmOpen.value, false); assert.deepEqual(focus, [])
+  })
+}
 
 test('pending writes block route and unload leave even when the draft is clean', async () => {
   const store = makeStore({ saving: true, dirty: false }); const workspace = controller(store, { confirmLeave: () => true })
   assert.equal(workspace.requestLeave(), false)
   const event = { prevented: false, preventDefault() { this.prevented = true }, returnValue: undefined }
   assert.equal(workspace.beforeUnload(event), ''); assert.equal(event.prevented, true)
+})
+
+test('a failed save retries the current working Bible without hydrating or retaining raw failure data', async () => {
+  const store = makeStore(); const saved = []; let saves = 0
+  store.save = async (_project, value) => {
+    saved.push(value)
+    if (++saves === 1) throw Object.assign(new Error('raw provider key secret'), { status: 503, body: { secret: true } })
+    store.dirty = false
+    return { ...store.draft, draft: value }
+  }
+  const workspace = controller(store); await workspace.hydrate()
+  workspace.edit({ ...workspace.working.value, premiseAndPromise: 'LOCAL AFTER 503' })
+  await assert.rejects(workspace.save())
+  assert.equal(store.dirty, true); assert.equal(store.calls.load.length, 1)
+  assert.deepEqual(workspace.recoveryCommand.value, { type: 'save', project: 'project-1', generation: 1 })
+  assert.doesNotMatch(JSON.stringify(workspace.recoveryCommand.value), /provider|key|secret/i)
+  await workspace.retryFailure()
+  assert.equal(store.calls.load.length, 1); assert.equal(saved.length, 2)
+  assert.equal(saved[1].premiseAndPromise, 'LOCAL AFTER 503')
+})
+
+test('a failed confirmation retries with the controller retained idempotency key', async () => {
+  const store = makeStore(); const keys = []; let confirms = 0
+  store.confirm = async (_project, command) => {
+    keys.push(command.idempotencyKey)
+    if (++confirms === 1) throw error(503, 'outcome unknown')
+    store.draft = null; store.head = revision(8)
+    return store.head
+  }
+  const workspace = controller(store); await workspace.hydrate(); workspace.openConfirm()
+  await assert.rejects(workspace.confirm())
+  assert.equal(workspace.confirmOpen.value, true); assert.equal(workspace.recoveryCommand.value.type, 'confirm')
+  await workspace.retryFailure()
+  assert.equal(keys.length, 2); assert.equal(keys[0], keys[1]); assert.equal(workspace.confirmOpen.value, false)
+})
+
+test('load, history list, and history detail failures retry only their corresponding reads', async () => {
+  const store = makeStore(); let loads = 0; let lists = 0; let details = 0
+  store.load = async project => {
+    store.calls.load.push(project)
+    if (++loads === 1) throw error(503, 'load failed')
+  }
+  store.loadHistory = async (project, params) => {
+    store.calls.history.push([project, params])
+    if (++lists === 1) throw error(503, 'history failed')
+    return { items: [], nextBeforeRevision: null }
+  }
+  store.loadHistoryDetail = async (project, itemRevision) => {
+    store.calls.detail.push([project, itemRevision])
+    if (++details === 1) throw error(503, 'detail failed')
+    return revision(itemRevision)
+  }
+  const workspace = controller(store)
+  await assert.rejects(workspace.hydrate()); assert.equal(workspace.recoveryCommand.value.type, 'hydrate')
+  await workspace.retryFailure(); assert.equal(store.calls.load.length, 2)
+  await assert.rejects(workspace.openHistory()); assert.equal(workspace.recoveryCommand.value.type, 'history')
+  await workspace.retryFailure(); assert.equal(store.calls.history.length, 2)
+  await assert.rejects(workspace.showHistoryDetail(7))
+  assert.deepEqual(workspace.recoveryCommand.value, { type: 'historyDetail', project: 'project-1', generation: 2, revision: 7 })
+  await workspace.retryFailure(); assert.deepEqual(store.calls.detail, [['project-1', 7], ['project-1', 7]])
+})
+
+test('a failed clone offers reconciliation and never retries the clone command blindly', async () => {
+  const store = makeStore(); let cloneCalls = 0
+  store.clone = async () => { cloneCalls += 1; throw error(503, 'clone outcome unknown') }
+  const workspace = controller(store); await workspace.hydrate()
+  await assert.rejects(workspace.clone(revision(7)))
+  assert.equal(workspace.recoveryCommand.value.type, 'reconcile')
+  await workspace.retryFailure()
+  assert.equal(cloneCalls, 1); assert.equal(store.calls.load.length, 2)
 })
 
 test('state machine creates an empty first Bible only without a head, and never writes on hydrate', async () => {

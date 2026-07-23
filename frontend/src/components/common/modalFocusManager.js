@@ -1,27 +1,53 @@
+const modalStacks = new WeakMap()
+
+function restoreInert(appRoot, snapshot) {
+  appRoot.inert = snapshot.property
+  if (snapshot.hadAttribute) appRoot.setAttribute?.('inert', snapshot.attribute ?? '')
+  else appRoot.removeAttribute?.('inert')
+}
+
+function connected(target) {
+  return target && target.isConnected !== false
+}
+
 export function createModalFocusManager({
   getDocument = () => globalThis.document,
   getDialog = () => null,
   getInitialFocus = () => null,
 } = {}) {
   let appRoot = null
-  let restoreTarget = null
-  let previousInert = null
+  let entry = null
+  let standaloneRestoreTarget = null
 
   function mount() {
+    if (entry || standaloneRestoreTarget) return
     const documentRef = getDocument?.()
     if (!documentRef) return
-    restoreTarget = documentRef.activeElement
+    const restoreTarget = documentRef.activeElement
     appRoot = documentRef.querySelector?.('#app') ?? null
     if (appRoot) {
-      previousInert = {
-        property: appRoot.inert,
-        hadAttribute: appRoot.hasAttribute?.('inert') === true,
-        attribute: appRoot.getAttribute?.('inert'),
+      let stack = modalStacks.get(appRoot)
+      if (!stack) {
+        stack = {
+          originalInert: {
+            property: appRoot.inert,
+            hadAttribute: appRoot.hasAttribute?.('inert') === true,
+            attribute: appRoot.getAttribute?.('inert'),
+          },
+          entries: [],
+          restoreCandidates: [],
+        }
+        modalStacks.set(appRoot, stack)
       }
+      entry = { restoreTarget, initialTarget: getInitialFocus?.() ?? null }
+      stack.entries.push(entry)
+      stack.restoreCandidates.push(restoreTarget)
       appRoot.inert = true
       appRoot.setAttribute?.('inert', '')
+    } else {
+      standaloneRestoreTarget = restoreTarget
     }
-    getInitialFocus()?.focus?.()
+    (entry?.initialTarget ?? getInitialFocus?.())?.focus?.()
   }
 
   function trapTab(event) {
@@ -42,13 +68,29 @@ export function createModalFocusManager({
   }
 
   function unmount() {
-    if (appRoot && previousInert) {
-      appRoot.inert = previousInert.property
-      if (previousInert.hadAttribute) appRoot.setAttribute?.('inert', previousInert.attribute ?? '')
-      else appRoot.removeAttribute?.('inert')
+    if (appRoot && entry) {
+      const stack = modalStacks.get(appRoot)
+      const index = stack?.entries.indexOf(entry) ?? -1
+      const wasTop = stack && index === stack.entries.length - 1
+      if (stack && index >= 0) stack.entries.splice(index, 1)
+      if (stack?.entries.length) {
+        appRoot.inert = true
+        appRoot.setAttribute?.('inert', '')
+        if (wasTop) {
+          const destination = connected(entry.restoreTarget)
+            ? entry.restoreTarget
+            : stack.entries.at(-1)?.initialTarget
+          if (connected(destination)) destination.focus?.()
+        }
+      } else if (stack) {
+        restoreInert(appRoot, stack.originalInert)
+        modalStacks.delete(appRoot)
+        stack.restoreCandidates.find(connected)?.focus?.()
+      }
+    } else if (connected(standaloneRestoreTarget)) {
+      standaloneRestoreTarget.focus?.()
     }
-    if (restoreTarget?.isConnected !== false) restoreTarget?.focus?.()
-    appRoot = null; restoreTarget = null; previousInert = null
+    appRoot = null; entry = null; standaloneRestoreTarget = null
   }
 
   return { mount, trapTab, unmount }
