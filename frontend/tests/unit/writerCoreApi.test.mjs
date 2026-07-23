@@ -686,18 +686,36 @@ test('bible client encodes project paths and sends only closed Bible commands', 
     await api.bible.draft.save('project/one', { expectedDraftVersion: 3, draft: { ...bible, secret: 'must-not-send' }, extra: 'must-not-send' })
     await api.bible.draft.clone('project/one', { sourceDraftId: 'draft-1' })
     await api.bible.confirm('project/one', { idempotencyKey: 'bible-confirm-1', expectedDraftVersion: 4, expectedHeadRevision: 2, rawText: 'must-not-send' })
+    await api.bible.generate('project/one', {
+      authorInstructions: '强调群像',
+      expectedDraftVersion: 4,
+      expectedHeadRevision: 2,
+      idempotencyKey: 'bible-generation-1',
+      providerId: 'must-not-send',
+      model: 'must-not-send',
+      assets: ['must-not-send'],
+    })
+    await api.bible.generationAttempt('project/one', 'attempt/one')
     await api.bible.history('project/one', { limit: 20, beforeRevision: 81 })
     await api.bible.historyDetail('project/one', 4)
   })
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
     ['GET', '/api/projects/project%2Fone/bible/head'], ['GET', '/api/projects/project%2Fone/bible/draft'],
     ['PUT', '/api/projects/project%2Fone/bible/draft'], ['POST', '/api/projects/project%2Fone/bible/draft/clone'],
-    ['POST', '/api/projects/project%2Fone/bible/confirm'], ['GET', '/api/projects/project%2Fone/bible/history'],
+    ['POST', '/api/projects/project%2Fone/bible/confirm'], ['POST', '/api/projects/project%2Fone/bible/generate'],
+    ['GET', '/api/projects/project%2Fone/bible/generation-attempts/attempt%2Fone'],
+    ['GET', '/api/projects/project%2Fone/bible/history'],
     ['GET', '/api/projects/project%2Fone/bible/history/4'],
   ])
   assert.deepEqual(bodyOf(calls[2]), { expectedDraftVersion: 3, draft: bible })
   assert.deepEqual(bodyOf(calls[3]), { sourceDraftId: 'draft-1' })
   assert.deepEqual(bodyOf(calls[4]), { idempotencyKey: 'bible-confirm-1', expectedDraftVersion: 4, expectedHeadRevision: 2 })
-  assert.equal(new URL(calls[5].url).searchParams.get('limit'), '20')
-  assert.equal(new URL(calls[5].url).searchParams.get('beforeRevision'), '81')
+  assert.deepEqual(bodyOf(calls[5]), {
+    authorInstructions: '强调群像',
+    expectedDraftVersion: 4,
+    expectedHeadRevision: 2,
+    idempotencyKey: 'bible-generation-1',
+  })
+  assert.equal(new URL(calls[7].url).searchParams.get('limit'), '20')
+  assert.equal(new URL(calls[7].url).searchParams.get('beforeRevision'), '81')
 })

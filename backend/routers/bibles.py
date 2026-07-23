@@ -15,6 +15,7 @@ from pydantic import (
 from backend.database import transaction
 from backend.domain.bibles import BiblePayload
 from backend.http_errors import PublicDomainError
+from backend.gateways.bible_provider import BibleProviderGateway
 from backend.repositories.bibles import BibleRepository
 from backend.routers.contracts import get_contract_service
 from backend.services.bibles import (
@@ -22,6 +23,11 @@ from backend.services.bibles import (
     CloneBibleDraft,
     ConfirmBible,
     SaveBibleDraft,
+)
+from backend.services.bible_generation import (
+    BIBLE_AUTHOR_INSTRUCTIONS_MAX_LENGTH,
+    BibleGenerationService,
+    GenerateBibleDraft,
 )
 
 
@@ -31,10 +37,20 @@ _service = BibleService(
     contract_service=get_contract_service(),
     transaction_factory=transaction,
 )
+_generation_service = BibleGenerationService(
+    BibleRepository(),
+    contract_service=get_contract_service(),
+    transaction_factory=transaction,
+    provider_gateway=BibleProviderGateway(),
+)
 
 
 def get_bible_service() -> BibleService:
     return _service
+
+
+def get_bible_generation_service() -> BibleGenerationService:
+    return _generation_service
 
 
 class BibleRequestInvalid(PublicDomainError):
@@ -94,6 +110,20 @@ class ConfirmBibleBody(_StrictBody):
     )
     expectedDraftVersion: int = Field(gt=0)
     expectedHeadRevision: int = Field(ge=0)
+
+
+class GenerateBibleBody(_StrictBody):
+    authorInstructions: str = Field(
+        default="",
+        max_length=BIBLE_AUTHOR_INSTRUCTIONS_MAX_LENGTH,
+    )
+    expectedDraftVersion: int = Field(ge=0)
+    expectedHeadRevision: int = Field(ge=0)
+    idempotencyKey: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
 
 
 def _public_basis(basis):
@@ -177,6 +207,22 @@ def _public_head(result):
     }
 
 
+def _public_generation_attempt(result):
+    return {
+        "id": result.attempt_id,
+        "projectId": result.project_id,
+        "status": result.status,
+        "attemptVersion": result.attempt_version,
+        "providerId": result.provider_id,
+        "modelNameSnapshot": result.model_name_snapshot,
+        "inputManifestHash": result.input_manifest_hash,
+        "resultHash": result.result_hash,
+        "publicErrorCode": result.public_error_code,
+        "createdAt": result.created_at,
+        "completedAt": result.completed_at,
+    }
+
+
 @router.get("/projects/{pid}/bible/head")
 async def get_bible_head(
     pid: str,
@@ -257,6 +303,41 @@ async def confirm_bible(
     )
 
 
+@router.post("/projects/{pid}/bible/generate")
+async def generate_bible(
+    pid: str,
+    raw_body: object = Body(...),
+    service=Depends(get_bible_generation_service),
+):
+    try:
+        body = GenerateBibleBody.model_validate(raw_body)
+    except ValidationError:
+        raise BibleRequestInvalid() from None
+    result = await service.generate(
+        GenerateBibleDraft(
+            project_id=pid,
+            author_instructions=body.authorInstructions,
+            expected_draft_version=body.expectedDraftVersion,
+            expected_head_revision=body.expectedHeadRevision,
+            idempotency_key=body.idempotencyKey,
+        )
+    )
+    return {"attempt": _public_generation_attempt(result)}
+
+
+@router.get(
+    "/projects/{pid}/bible/generation-attempts/{attemptId}"
+)
+async def get_bible_generation_attempt(
+    pid: str,
+    attemptId: str,
+    service=Depends(get_bible_generation_service),
+):
+    return _public_generation_attempt(
+        await service.get_attempt(pid, attemptId)
+    )
+
+
 @router.get("/projects/{pid}/bible/history")
 async def get_bible_history(
     pid: str,
@@ -292,6 +373,7 @@ async def get_bible_history_revision(
 
 __all__ = (
     "BibleRequestInvalid",
+    "get_bible_generation_service",
     "get_bible_service",
     "router",
 )

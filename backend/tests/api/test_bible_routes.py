@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers import bibles
+from backend.http_errors import ProjectArchived
 from backend.security.redaction import install_error_handlers
+from backend.services.bible_generation import (
+    BibleGenerationAttemptNotFound,
+    BibleGenerationNotReady,
+)
 from backend.tests.unit.test_bible_service import (
     HASH_A,
     HASH_D,
@@ -15,13 +22,57 @@ from backend.tests.unit.test_bible_service import (
 )
 
 
+class GenerationHarness:
+    def __init__(self):
+        self.calls = []
+        self.failure = None
+        self.attempt = SimpleNamespace(
+            attempt_id="generation-attempt-1",
+            project_id="p1",
+            status="succeeded",
+            attempt_version=2,
+            provider_id="provider-1",
+            model_name_snapshot="novel-model",
+            input_manifest_hash="9" * 64,
+            result_hash="8" * 64,
+            public_error_code=None,
+            created_at=1_900_000_000_000,
+            completed_at=1_900_000_000_100,
+            api_key="must-not-publish",
+            base_url="https://private.invalid/v1",
+            result_json={"raw": "must-not-publish"},
+        )
+
+    async def generate(self, command):
+        self.calls.append(("generate", command))
+        if self.failure is not None:
+            raise self.failure
+        return self.attempt
+
+    async def get_attempt(self, project_id, attempt_id):
+        self.calls.append(("get", project_id, attempt_id))
+        if self.failure is not None:
+            raise self.failure
+        if project_id != "p1" or attempt_id != self.attempt.attempt_id:
+            raise BibleGenerationAttemptNotFound()
+        return self.attempt
+
+
 def make_client():
     harness = BibleHarness()
+    generation = GenerationHarness()
     app = FastAPI()
     app.include_router(bibles.router, prefix="/api")
     app.dependency_overrides[bibles.get_bible_service] = lambda: harness.service
+    app.dependency_overrides[
+        bibles.get_bible_generation_service
+    ] = lambda: generation
     install_error_handlers(app)
-    return TestClient(app, raise_server_exceptions=False), harness
+    return (
+        TestClient(app, raise_server_exceptions=False),
+        harness,
+        generation,
+    )
 
 
 def save_body(expected=0, **payload_overrides):
@@ -32,7 +83,7 @@ def save_body(expected=0, **payload_overrides):
 
 
 def test_exact_manual_bible_routes_save_confirm_clone_and_read_history():
-    client, _ = make_client()
+    client, _, _ = make_client()
 
     missing_head = client.get("/api/projects/p1/bible/head")
     missing_draft = client.get("/api/projects/p1/bible/draft")
@@ -96,7 +147,7 @@ def test_exact_manual_bible_routes_save_confirm_clone_and_read_history():
 
 
 def test_clone_by_draft_id_only_accepts_the_active_superseded_draft():
-    client, harness = make_client()
+    client, harness, _ = make_client()
     saved = client.put("/api/projects/p1/bible/draft", json=save_body()).json()
 
     current_clone = client.post(
@@ -131,7 +182,7 @@ def test_clone_by_draft_id_only_accepts_the_active_superseded_draft():
 
 
 def test_clone_by_draft_id_hides_a_retired_confirmed_draft():
-    client, _ = make_client()
+    client, _, _ = make_client()
     saved = client.put("/api/projects/p1/bible/draft", json=save_body()).json()
     confirmed = client.post(
         "/api/projects/p1/bible/confirm",
@@ -152,7 +203,7 @@ def test_clone_by_draft_id_hides_a_retired_confirmed_draft():
 
 
 def test_public_dtos_are_explicit_allowlists_without_internal_or_secret_fields():
-    client, _ = make_client()
+    client, _, _ = make_client()
     saved = client.put("/api/projects/p1/bible/draft", json=save_body()).json()
 
     assert set(saved) == {
@@ -202,7 +253,7 @@ def test_public_dtos_are_explicit_allowlists_without_internal_or_secret_fields()
 
 
 def test_request_models_reject_unknown_fields_invalid_clone_source_and_fact_shapes():
-    client, harness = make_client()
+    client, harness, _ = make_client()
     valid = save_body()
     cases = (
         {**valid, "basis": {"selectionRevision": 99}},
@@ -247,7 +298,7 @@ def test_request_models_reject_unknown_fields_invalid_clone_source_and_fact_shap
 
 
 def test_confirm_is_strict_idempotent_and_same_key_different_request_conflicts():
-    client, _ = make_client()
+    client, _, _ = make_client()
     saved = client.put(
         "/api/projects/p1/bible/draft",
         json=save_body(),
@@ -279,7 +330,7 @@ def test_confirm_is_strict_idempotent_and_same_key_different_request_conflicts()
 
 
 def test_unrecorded_confirmation_failure_is_retryable_without_leaking_details():
-    client, harness = make_client()
+    client, harness, _ = make_client()
     saved = client.put(
         "/api/projects/p1/bible/draft",
         json=save_body(),
@@ -318,7 +369,7 @@ def test_unrecorded_confirmation_failure_is_retryable_without_leaking_details():
 
 
 def test_archived_reads_remain_available_but_capabilities_and_mutations_are_closed():
-    client, harness = make_client()
+    client, harness, _ = make_client()
     saved = client.put(
         "/api/projects/p1/bible/draft",
         json=save_body(),
@@ -360,7 +411,7 @@ def test_archived_reads_remain_available_but_capabilities_and_mutations_are_clos
 
 
 def test_no_delete_or_reset_route_is_exposed():
-    client, _ = make_client()
+    client, _, _ = make_client()
     routes = {
         (method, route.path)
         for route in client.app.routes
@@ -376,8 +427,130 @@ def test_no_delete_or_reset_route_is_exposed():
         ("POST", "/api/projects/{pid}/bible/confirm"),
         ("GET", "/api/projects/{pid}/bible/history"),
         ("GET", "/api/projects/{pid}/bible/history/{revision}"),
+        ("POST", "/api/projects/{pid}/bible/generate"),
+        (
+            "GET",
+            "/api/projects/{pid}/bible/generation-attempts/{attemptId}",
+        ),
     }
     assert client.delete("/api/projects/p1/bible/draft").status_code in {
         404,
         405,
     }
+
+
+def test_generation_routes_accept_only_browser_command_and_return_safe_facts():
+    client, _, generation = make_client()
+    body = {
+        "authorInstructions": "强调群像分工。",
+        "expectedDraftVersion": 0,
+        "expectedHeadRevision": 0,
+        "idempotencyKey": "generation-key-1",
+    }
+
+    created = client.post(
+        "/api/projects/p1/bible/generate",
+        json=body,
+    )
+    fetched = client.get(
+        "/api/projects/p1/bible/generation-attempts/generation-attempt-1"
+    )
+
+    assert created.status_code == fetched.status_code == 200
+    assert created.json() == {"attempt": fetched.json()}
+    assert set(fetched.json()) == {
+        "id",
+        "projectId",
+        "status",
+        "attemptVersion",
+        "providerId",
+        "modelNameSnapshot",
+        "inputManifestHash",
+        "resultHash",
+        "publicErrorCode",
+        "createdAt",
+        "completedAt",
+    }
+    command = generation.calls[0][1]
+    assert command.project_id == "p1"
+    assert command.author_instructions == "强调群像分工。"
+    assert command.expected_draft_version == 0
+    assert command.expected_head_revision == 0
+    assert command.idempotency_key == "generation-key-1"
+    rendered = str(created.json()).lower()
+    assert all(
+        forbidden not in rendered
+        for forbidden in (
+            "api_key",
+            "base_url",
+            "private.invalid",
+            "raw",
+            "prompt",
+        )
+    )
+
+
+def test_generation_body_forbids_selection_assets_binding_and_provider_fields():
+    client, _, generation = make_client()
+    valid = {
+        "authorInstructions": "",
+        "expectedDraftVersion": 0,
+        "expectedHeadRevision": 0,
+        "idempotencyKey": "generation-key-1",
+    }
+    extras = (
+        {"selectionRevision": 3},
+        {"seed": {"id": "seed-1"}},
+        {"contract": {"revision": 2}},
+        {"assets": []},
+        {"bindingRevisionId": "binding-1"},
+        {"providerId": "provider-1"},
+        {"model": "novel-model"},
+        {"debug": True},
+    )
+    for extra in extras:
+        response = client.post(
+            "/api/projects/p1/bible/generate",
+            json={**valid, **extra},
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "BibleRequestInvalid"
+    assert generation.calls == []
+
+
+def test_generation_public_errors_cover_not_ready_archived_and_missing_attempt():
+    client, _, generation = make_client()
+    body = {
+        "authorInstructions": "",
+        "expectedDraftVersion": 0,
+        "expectedHeadRevision": 0,
+        "idempotencyKey": "generation-key-1",
+    }
+    generation.failure = BibleGenerationNotReady()
+    not_ready = client.post("/api/projects/p1/bible/generate", json=body)
+    generation.failure = ProjectArchived()
+    archived = client.post("/api/projects/p1/bible/generate", json=body)
+    generation.failure = BibleGenerationAttemptNotFound()
+    missing = client.get(
+        "/api/projects/p1/bible/generation-attempts/missing-attempt"
+    )
+
+    assert (not_ready.status_code, not_ready.json()["code"]) == (
+        422,
+        "BibleGenerationNotReady",
+    )
+    assert (archived.status_code, archived.json()["code"]) == (
+        409,
+        "ProjectArchived",
+    )
+    assert (missing.status_code, missing.json()["code"]) == (
+        404,
+        "BibleGenerationAttemptNotFound",
+    )
+    for response in (not_ready, archived, missing):
+        assert set(response.json()) <= {
+            "code",
+            "message",
+            "correlationId",
+            "retryable",
+        }

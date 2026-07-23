@@ -126,3 +126,151 @@ test('history detail participates in busy state and publishes its error only for
     assert.equal(store.historyLoading, false); assert.equal(store.error.status, 404)
   })
 })
+
+function generationAttempt(projectId, status = 'succeeded', extra = {}) {
+  return {
+    id: `attempt-${projectId}`,
+    projectId,
+    status,
+    attemptVersion: status === 'running' ? 1 : 2,
+    providerId: 'provider-1',
+    modelNameSnapshot: 'novel-model',
+    inputManifestHash: '9'.repeat(64),
+    resultHash: status === 'succeeded' ? '8'.repeat(64) : null,
+    publicErrorCode: status === 'failed'
+      ? 'BibleGenerationProviderFailed'
+      : status === 'outcome_unknown'
+        ? 'BibleGenerationRetryable'
+        : null,
+    createdAt: 1900000000000,
+    completedAt: status === 'running' ? null : 1900000000100,
+    apiKey: 'must-not-publish',
+    rawProviderBody: 'must-not-publish',
+    ...extra,
+  }
+}
+
+test('generate sends one closed command then installs only authoritative head and draft reads', async () => {
+  const bodies = []; let headReads = 0; let draftReads = 0
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/bible/generate')) {
+      bodies.push(JSON.parse(options.body))
+      return response({ attempt: generationAttempt('project-1') })
+    }
+    if (path.endsWith('/bible/head')) {
+      headReads += 1
+      return response(head('project-1'))
+    }
+    if (path.endsWith('/bible/draft')) {
+      draftReads += 1
+      return response(draft('project-1', draftReads === 1 ? 1 : 2, {
+        draft: { ...bible(), premiseAndPromise: draftReads === 1 ? 'BEFORE' : 'AUTHORITATIVE GENERATED' },
+      }))
+    }
+    throw new Error(`unexpected ${path}`)
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore()
+    await store.load('project-1')
+    const result = await store.generate('project-1', {
+      authorInstructions: '强调群像',
+      idempotencyKey: 'generation-key-1',
+      providerId: 'must-not-send',
+    })
+    assert.equal(result.status, 'succeeded')
+    assert.equal(store.generating, false)
+    assert.equal(store.generationAttempt.id, 'attempt-project-1')
+    assert.equal(store.generationAttempt.apiKey, undefined)
+    assert.equal(store.draft.draftVersion, 2)
+    assert.equal(store.draft.draft.premiseAndPromise, 'AUTHORITATIVE GENERATED')
+    assert.deepEqual(bodies, [{
+      authorInstructions: '强调群像',
+      expectedDraftVersion: 1,
+      expectedHeadRevision: 0,
+      idempotencyKey: 'generation-key-1',
+    }])
+    assert.equal(headReads, 2)
+    assert.equal(draftReads, 2)
+  })
+})
+
+test('failed or outcome-unknown generation keeps local draft and never performs authority reads', async () => {
+  for (const status of ['failed', 'outcome_unknown']) {
+    let headReads = 0; let draftReads = 0
+    await withFetch(async (url, options = {}) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/bible/generate')) {
+        return response({ attempt: generationAttempt('project-1', status) })
+      }
+      if (path.endsWith('/bible/head')) { headReads += 1; return response(head('project-1')) }
+      if (path.endsWith('/bible/draft')) { draftReads += 1; return response(draft('project-1', 1, { draft: { ...bible(), premiseAndPromise: 'LOCAL BASIS' } })) }
+      throw new Error(`unexpected ${path}`)
+    }, async () => {
+      setActivePinia(createPinia()); const store = useBibleStore()
+      await store.load('project-1')
+      const before = JSON.stringify(store.draft)
+      const result = await store.generate('project-1', {
+        authorInstructions: '',
+        idempotencyKey: `generation-${status}`,
+      })
+      assert.equal(result.status, status)
+      assert.equal(JSON.stringify(store.draft), before)
+      assert.equal(store.dirty, false)
+      assert.equal(headReads, 1)
+      assert.equal(draftReads, 1)
+    })
+  }
+})
+
+test('dirty state denies generation before transport and late old-project success is fenced', async () => {
+  const oldGeneration = deferred(); let generates = 0; let headReads = 0; let draftReads = 0
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    const isA = path.includes('/project-a/')
+    if (path.endsWith('/bible/generate')) {
+      generates += 1
+      return oldGeneration.promise
+    }
+    if (path.endsWith('/bible/head')) { headReads += 1; return response(head(isA ? 'project-a' : 'project-b')) }
+    if (path.endsWith('/bible/draft')) { draftReads += 1; return response(draft(isA ? 'project-a' : 'project-b')) }
+    throw new Error(`unexpected ${path}`)
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore()
+    await store.load('project-a')
+    store.edit({ ...bible(), premiseAndPromise: 'DIRTY' })
+    await assert.rejects(
+      store.generate('project-a', { authorInstructions: '', idempotencyKey: 'blocked' }),
+      error => error.code === 'bible_generation_dirty',
+    )
+    assert.equal(generates, 0)
+    await store.load('project-a')
+    const pending = store.generate('project-a', {
+      authorInstructions: '',
+      idempotencyKey: 'late-a',
+    })
+    await store.load('project-b')
+    oldGeneration.resolve(response({ attempt: generationAttempt('project-a') }))
+    await pending
+    assert.equal(store.projectId, 'project-b')
+    assert.equal(store.draft.projectId, 'project-b')
+    assert.equal(store.generationAttempt, null)
+    assert.equal(store.generating, false)
+    assert.equal(headReads, 3)
+    assert.equal(draftReads, 3)
+  })
+})
+
+test('loadAttempt uses encoded safe attempt endpoint and fences old projects', async () => {
+  const calls = []
+  await withFetch(async url => {
+    const path = new URL(String(url)).pathname; calls.push(path)
+    return response(generationAttempt('project/one', 'outcome_unknown'))
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore()
+    const result = await store.loadAttempt('project/one', 'attempt/one')
+    assert.equal(result.status, 'outcome_unknown')
+    assert.equal(store.generationAttempt.publicErrorCode, 'BibleGenerationRetryable')
+    assert.equal(store.generationAttempt.rawProviderBody, undefined)
+    assert.equal(calls[0], '/api/projects/project%2Fone/bible/generation-attempts/attempt%2Fone')
+  })
+})

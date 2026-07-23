@@ -20,11 +20,12 @@ function deferred() {
 }
 
 function makeStore(overrides = {}) {
-  const calls = { load: [], edit: [], save: [], confirm: [], clone: [], history: [], detail: [] }
+  const calls = { load: [], edit: [], save: [], confirm: [], generate: [], clone: [], history: [], detail: [] }
   const state = reactive({
     draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] },
     head: revision(7), history: [revision(7)], historyNextBeforeRevision: 6, historyDetail: null,
-    loading: false, saving: false, confirming: false, cloning: false, historyLoading: false,
+    loading: false, saving: false, confirming: false, generating: false, cloning: false, historyLoading: false,
+    generationAttempt: null,
     dirty: false, readOnly: false, canEdit: true, canConfirm: true, canClone: true, reasons: [],
     ...overrides,
   })
@@ -34,6 +35,12 @@ function makeStore(overrides = {}) {
     edit(value) { calls.edit.push(value); state.draft = { ...state.draft, draft: value }; state.dirty = true },
     async save(projectId, value) { calls.save.push([projectId, value]); state.dirty = false; return state.draft },
     async confirm(projectId, command) { calls.confirm.push([projectId, command]); state.draft = null; state.head = revision(8); return state.head },
+    async generate(projectId, command) {
+      calls.generate.push([projectId, command])
+      state.generationAttempt = { id: `attempt-${calls.generate.length}`, status: 'succeeded' }
+      state.draft = { ...state.draft, draftVersion: state.draft.draftVersion + 1, draft: { ...bible(), premiseAndPromise: 'generated' } }
+      return state.generationAttempt
+    },
     async clone(projectId, source) { calls.clone.push([projectId, source]); state.draft = { draftVersion: 3, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] }; return state.draft },
     async loadHistory(projectId, params) { calls.history.push([projectId, params]); return { items: state.history, nextBeforeRevision: state.historyNextBeforeRevision } },
     async loadHistoryDetail(projectId, itemRevision) { calls.detail.push([projectId, itemRevision]); state.historyDetail = revision(itemRevision); return state.historyDetail },
@@ -302,4 +309,87 @@ test('AI Not Ready does not override manual permissions and leave protection han
   assert.equal(workspace.beforeUnload(event), '')
   assert.equal(event.prevented, true)
   assert.equal(workspace.confirmLeave(), false)
+})
+
+test('generation requires only planning readiness, a clean editable draft, and no busy work', async () => {
+  let planningReady = false
+  const store = makeStore()
+  const workspace = controller(store, { planningReady: () => planningReady })
+  await workspace.hydrate()
+  assert.equal(workspace.canGenerate.value, false)
+  assert.equal(workspace.editable.value, true)
+  assert.equal(workspace.canSave.value, false)
+
+  planningReady = true
+  assert.equal(workspace.canGenerate.value, true)
+  store.dirty = true
+  assert.equal(workspace.canGenerate.value, false)
+  assert.equal(workspace.generationDisabledReason.value, '请先保存本地编辑，再使用 AI 生成。')
+  store.dirty = false
+  store.generating = true
+  assert.equal(workspace.busy.value, true)
+  assert.equal(workspace.canGenerate.value, false)
+  store.generating = false
+  assert.equal(workspace.canGenerate.value, true)
+})
+
+test('each explicit generation gets a fresh key and outcome unknown is never auto-retried', async () => {
+  const store = makeStore(); let calls = 0
+  store.generate = async (projectId, command) => {
+    store.calls.generate.push([projectId, command])
+    calls += 1
+    if (calls === 1) return { id: 'attempt-1', status: 'outcome_unknown', publicErrorCode: 'BibleGenerationRetryable' }
+    store.draft = { ...store.draft, draftVersion: 3, draft: { ...bible(), premiseAndPromise: 'GENERATED AUTHORITATIVE' } }
+    return { id: 'attempt-2', status: 'succeeded' }
+  }
+  const workspace = controller(store, { planningReady: () => true })
+  await workspace.hydrate()
+
+  const unknown = await workspace.generate('第一次要求')
+  assert.equal(unknown.status, 'outcome_unknown')
+  assert.equal(workspace.recoveryCommand.value.type, 'reconcile')
+  assert.equal(store.calls.generate.length, 1)
+  await workspace.retryFailure()
+  assert.equal(store.calls.generate.length, 1)
+  assert.equal(store.calls.load.length, 2)
+
+  const succeeded = await workspace.generate('第二次要求')
+  assert.equal(succeeded.status, 'succeeded')
+  assert.equal(workspace.working.value.premiseAndPromise, 'GENERATED AUTHORITATIVE')
+  assert.notEqual(
+    store.calls.generate[0][1].idempotencyKey,
+    store.calls.generate[1][1].idempotencyKey,
+  )
+  assert.deepEqual(
+    store.calls.generate.map(value => value[1].authorInstructions),
+    ['第一次要求', '第二次要求'],
+  )
+})
+
+test('late generation completion cannot publish focus or working state into a new project', async () => {
+  const pending = deferred(); let currentProject = 'A'; const focused = []
+  const store = makeStore()
+  store.load = async project => {
+    store.calls.load.push(project)
+    store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, canClone: true, reasons: [] }
+    store.head = revision(1)
+  }
+  store.generate = async project => project === 'A' ? pending.promise : { status: 'succeeded' }
+  const workspace = createBibleWorkspaceController({
+    store,
+    projectId: () => currentProject,
+    planningReady: () => true,
+    focusError: () => focused.push('error'),
+    focusStatus: () => focused.push('status'),
+    keyFactory: () => 'generation-key',
+  })
+  await workspace.hydrate()
+  const old = workspace.generate('')
+  currentProject = 'B'
+  await workspace.hydrate()
+  pending.resolve({ status: 'succeeded' })
+  await old
+  assert.equal(workspace.working.value.premiseAndPromise, 'B BODY')
+  assert.deepEqual(focused, [])
+  assert.equal(workspace.errorSummary.value, null)
 })

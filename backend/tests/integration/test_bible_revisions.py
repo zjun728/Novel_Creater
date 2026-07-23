@@ -16,6 +16,11 @@ from backend.services.bibles import (
     ConfirmBible,
     SaveBibleDraft,
 )
+from backend.services.bible_generation import (
+    BibleGenerationRetryable,
+    BibleGenerationService,
+    GenerateBibleDraft,
+)
 from backend.tests.integration.test_contract_confirmation import (
     _confirm as confirm_contract,
     _saved as saved_contract,
@@ -107,6 +112,57 @@ async def confirmed_contract_basis(disposable_mysql):
 async def count(session, table):
     row = await session.fetchone(f"SELECT COUNT(*) AS count FROM {table}")
     return int(row["count"])
+
+
+class FakeBibleGateway:
+    def __init__(self, payload=None):
+        self.payload = payload or bible_payload(
+            premiseAndPromise="Provider 生成的未来设计只在原子发布后成为草稿。"
+        )
+        self.calls = 0
+        self.started = None
+        self.release = None
+
+    async def generate(self, **_values):
+        self.calls += 1
+        if self.started is not None:
+            self.started.set()
+        if self.release is not None:
+            await self.release.wait()
+        return self.payload
+
+
+def bible_generation_service(
+    disposable_mysql,
+    contracts,
+    gateway,
+    *,
+    failpoint=lambda _stage: None,
+):
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+    ids = iter(
+        f"93000000-0000-0000-0000-{number:012d}"
+        for number in range(1, 100)
+    )
+    return BibleGenerationService(
+        BibleRepository(),
+        contract_service=contracts,
+        transaction_factory=tx,
+        provider_gateway=gateway,
+        id_factory=lambda: next(ids),
+        clock=lambda: 1_900_000_001_000,
+        failpoint=failpoint,
+    )
+
+
+def generate_command(project_id, key):
+    return GenerateBibleDraft(
+        project_id=project_id,
+        author_instructions="强调群像分工与长期关系代价。",
+        expected_draft_version=0,
+        expected_head_revision=0,
+        idempotency_key=key,
+    )
 
 
 @pytest.mark.asyncio
@@ -860,3 +916,156 @@ async def test_real_failed_request_replays_without_touching_the_editable_draft(
     )
     assert draft == {"active_slot": 1, "draft_version": saved.draft_version}
     assert await count(disposable_mysql.session, "creation_bible_revisions") == 0
+
+
+@pytest.mark.asyncio
+async def test_real_generation_lease_allows_one_gateway_call_and_atomic_draft(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    gateway = FakeBibleGateway()
+    gateway.started = asyncio.Event()
+    gateway.release = asyncio.Event()
+    service = bible_generation_service(
+        disposable_mysql,
+        contracts,
+        gateway,
+    )
+    command = generate_command(
+        contract.project_id,
+        "real-bible-generation-one-call",
+    )
+
+    owner = asyncio.create_task(service.generate(command))
+    await asyncio.wait_for(gateway.started.wait(), timeout=2)
+    inflight = await service.generate(command)
+    gateway.release.set()
+    succeeded = await asyncio.wait_for(owner, timeout=2)
+    replay = await service.generate(command)
+
+    assert inflight.status == "running"
+    assert succeeded.status == replay.status == "succeeded"
+    assert succeeded == replay
+    assert gateway.calls == 1
+    attempt = await disposable_mysql.session.fetchone(
+        """SELECT status,owner_token,lease_expires_at,attempt_version,
+                  result_json,result_hash,public_error_code
+             FROM bible_generation_attempts WHERE id=%s""",
+        (succeeded.attempt_id,),
+    )
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT active_slot,draft_version,base_head_revision,
+                  binding_revision_id,binding_hash,draft_json,content_hash
+             FROM project_bible_drafts
+            WHERE project_id=%s AND active_slot=1""",
+        (contract.project_id,),
+    )
+    assert attempt["status"] == "succeeded"
+    assert attempt["owner_token"] is None
+    assert attempt["lease_expires_at"] is None
+    assert attempt["attempt_version"] == 2
+    assert attempt["result_json"] is not None
+    assert attempt["result_hash"] == succeeded.result_hash
+    assert attempt["public_error_code"] is None
+    assert draft["active_slot"] == 1
+    assert draft["draft_version"] == 1
+    assert draft["base_head_revision"] == 0
+    assert draft["binding_revision_id"] is not None
+    assert draft["binding_hash"] is not None
+    assert draft["content_hash"] == succeeded.result_hash
+
+
+@pytest.mark.asyncio
+async def test_real_expired_generation_lease_cas_terminalizes_without_call(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    gateway = FakeBibleGateway()
+    service = bible_generation_service(
+        disposable_mysql,
+        contracts,
+        gateway,
+    )
+    command = generate_command(
+        contract.project_id,
+        "real-bible-generation-expired",
+    )
+    identity = {}
+    replay, context = await service._reserve(command, identity)
+    assert replay is None
+    assert context is not None
+    await disposable_mysql.session.execute(
+        """UPDATE bible_generation_attempts SET lease_expires_at=%s
+            WHERE id=%s AND owner_token=%s AND attempt_version=1""",
+        (
+            1_900_000_001_000,
+            context["attempt"]["id"],
+            identity["owner_token"],
+        ),
+    )
+
+    expired = await service.generate(command)
+    second = await service.generate(command)
+
+    assert expired == second
+    assert expired.status == "outcome_unknown"
+    assert expired.public_error_code == BibleGenerationRetryable.code
+    assert expired.attempt_version == 2
+    assert gateway.calls == 0
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,owner_token,lease_expires_at,attempt_version,
+                  result_json,result_hash,public_error_code
+             FROM bible_generation_attempts WHERE id=%s""",
+        (expired.attempt_id,),
+    )
+    assert row == {
+        "status": "outcome_unknown",
+        "owner_token": None,
+        "lease_expires_at": None,
+        "attempt_version": 2,
+        "result_json": None,
+        "result_hash": None,
+        "public_error_code": "BibleGenerationRetryable",
+    }
+    assert await count(disposable_mysql.session, "project_bible_drafts") == 0
+
+
+@pytest.mark.asyncio
+async def test_real_generation_publication_failure_rolls_back_draft_and_result(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    gateway = FakeBibleGateway()
+
+    def fail_after_draft(stage):
+        if stage == "after_draft_write":
+            raise RuntimeError("PRIVATE_ATOMIC_FAILURE_DETAIL")
+
+    service = bible_generation_service(
+        disposable_mysql,
+        contracts,
+        gateway,
+        failpoint=fail_after_draft,
+    )
+    result = await service.generate(
+        generate_command(
+            contract.project_id,
+            "real-bible-generation-atomic-failure",
+        )
+    )
+
+    assert result.status == "outcome_unknown"
+    assert result.public_error_code == BibleGenerationRetryable.code
+    assert gateway.calls == 1
+    row = await disposable_mysql.session.fetchone(
+        """SELECT status,result_json,result_hash,public_error_code
+             FROM bible_generation_attempts WHERE id=%s""",
+        (result.attempt_id,),
+    )
+    assert row == {
+        "status": "outcome_unknown",
+        "result_json": None,
+        "result_hash": None,
+        "public_error_code": "BibleGenerationRetryable",
+    }
+    assert await count(disposable_mysql.session, "project_bible_drafts") == 0

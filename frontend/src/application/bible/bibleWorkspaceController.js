@@ -1,4 +1,4 @@
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, toRef } from 'vue'
 
 const REASON_GROUPS = {
   selection_missing: '请选择种子后继续。', seed_missing: '请选择种子后继续。',
@@ -20,6 +20,7 @@ const isClientError = failure => Number(failure?.status) >= 400 && Number(failur
 
 export function createBibleWorkspaceController({
   store, projectId, isArchived = () => false, keyFactory = () => crypto.randomUUID(),
+  planningReady = () => false,
   focusError = () => {}, focusConfirm = () => {}, focusTrigger = () => {}, focusStatus = () => {}, confirmLeave = () => true,
 } = {}) {
   if (!store || typeof projectId !== 'function') throw new TypeError('store and projectId are required')
@@ -28,7 +29,7 @@ export function createBibleWorkspaceController({
   const attempts = new Map()
   let generation = 0
   let activeProject = ''
-  const busy = computed(() => Boolean(store.loading || store.saving || store.confirming || store.cloning || store.historyLoading))
+  const busy = computed(() => Boolean(store.loading || store.saving || store.confirming || store.generating || store.cloning || store.historyLoading))
   const hasDraftBody = computed(() => store.draft?.draft != null)
   const hasHeadBody = computed(() => store.head?.bible != null)
   const mode = computed(() => {
@@ -50,6 +51,14 @@ export function createBibleWorkspaceController({
   const editable = computed(() => (mode.value === 'draft' || mode.value === 'first') && store.canEdit === true)
   const canSave = computed(() => editable.value && store.dirty === true && !busy.value)
   const canConfirm = computed(() => editable.value && store.canConfirm === true && store.dirty !== true && !busy.value)
+  const canGenerate = toRef(() => editable.value && planningReady() === true && store.dirty !== true && !busy.value)
+  const generationDisabledReason = toRef(() => {
+    if (store.dirty === true) return '请先保存本地编辑，再使用 AI 生成。'
+    if (!editable.value) return '当前创作圣经不可编辑。'
+    if (planningReady() !== true) return '请先为 planning 任务配置可用模型。'
+    if (busy.value) return '请等待当前操作完成。'
+    return ''
+  })
   const confirmPreview = computed(() => clone(store.draft?.draft || null))
   const reasonLabels = computed(() => activeReasons.value.map(bibleReasonLabel))
   const cloneSource = computed(() => {
@@ -153,6 +162,32 @@ export function createBibleWorkspaceController({
       throw failure
     }
   }
+  async function generate(authorInstructions = '') {
+    if (!canGenerate.value) return undefined
+    const value = ticket()
+    try {
+      const result = await store.generate(value.project, {
+        authorInstructions: String(authorInstructions || ''),
+        idempotencyKey: keyFactory(),
+      })
+      if (!current(value)) return undefined
+      if (result?.status === 'succeeded') {
+        working.value = clone(store.draft?.draft || null)
+        clearFailure(value)
+        nextTick(() => { if (current(value)) focusStatus() })
+      } else if (result?.status === 'failed' || result?.status === 'outcome_unknown') {
+        setError({
+          status: result.status === 'outcome_unknown' ? 503 : 422,
+          code: result.publicErrorCode || result.status,
+        }, value, 'reconcile')
+      }
+      return result
+    } catch (failure) {
+      if (!current(value)) return undefined
+      setError(failure, value, 'reconcile')
+      throw failure
+    }
+  }
   async function cloneRevision(source = cloneSource.value) {
     if (busy.value || isArchived() || !source) return undefined
     const value = ticket()
@@ -213,5 +248,5 @@ export function createBibleWorkspaceController({
   }
   function requestLeave() { if (busy.value) return false; return store.dirty !== true || confirmLeave() }
   function beforeUnload(event) { if (store.dirty !== true && !busy.value) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
-  return { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
+  return { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, generate, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, retryFailure, requestLeave, beforeUnload, confirmLeave: requestLeave }
 }

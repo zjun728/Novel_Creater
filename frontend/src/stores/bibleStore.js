@@ -86,6 +86,23 @@ function publicRevision(value) {
   }
 }
 
+function publicGenerationAttempt(value) {
+  if (!value || typeof value !== 'object') return null
+  return {
+    id: value.id,
+    projectId: value.projectId,
+    status: value.status,
+    attemptVersion: value.attemptVersion,
+    providerId: value.providerId,
+    modelNameSnapshot: value.modelNameSnapshot,
+    inputManifestHash: value.inputManifestHash,
+    resultHash: value.resultHash ?? null,
+    publicErrorCode: value.publicErrorCode ?? null,
+    createdAt: value.createdAt,
+    completedAt: value.completedAt ?? null,
+  }
+}
+
 function denied(code) {
   return Object.assign(new Error('Bible write is not allowed'), { code })
 }
@@ -102,13 +119,16 @@ export const useBibleStore = defineStore('bible', () => {
   const loading = ref(false)
   const saving = ref(false)
   const confirming = ref(false)
+  const generating = ref(false)
   const cloning = ref(false)
   const historyLoading = ref(false)
   const dirty = ref(false)
+  const generationAttempt = shallowRef(null)
   const readOnly = ref(false)
   const loadGuard = createLatestRequestGuard()
   const writeGuard = createLatestRequestGuard()
   const historyGuard = createLatestRequestGuard()
+  const generationGuard = createLatestRequestGuard()
   const confirmCommands = new Map()
   let stateGeneration = 0
   let editGeneration = 0
@@ -127,11 +147,11 @@ export const useBibleStore = defineStore('bible', () => {
     if (projectId.value !== next) {
       stateGeneration += 1
       editGeneration += 1
-      loadGuard.invalidate(); writeGuard.invalidate(); historyGuard.invalidate()
+      loadGuard.invalidate(); writeGuard.invalidate(); historyGuard.invalidate(); generationGuard.invalidate()
       projectId.value = next; head.value = null; draft.value = null; history.value = []
-      historyNextBeforeRevision.value = null; historyDetail.value = null; error.value = null
+      historyNextBeforeRevision.value = null; historyDetail.value = null; generationAttempt.value = null; error.value = null
       conflict.value = null; dirty.value = false; loading.value = false; saving.value = false
-      confirming.value = false; cloning.value = false; historyLoading.value = false
+      confirming.value = false; generating.value = false; cloning.value = false; historyLoading.value = false
     }
     if (options.readOnly !== undefined) readOnly.value = options.readOnly === true
     return next
@@ -147,6 +167,9 @@ export const useBibleStore = defineStore('bible', () => {
     if (readOnly.value || draft.value?.lifecycle === 'archived' || head.value?.lifecycle === 'archived') throw denied('bible_read_only')
     if (kind === 'edit' || kind === 'save') {
       if (draft.value?.canEdit !== true) throw denied('bible_edit_denied')
+    } else if (kind === 'generate') {
+      if (draft.value?.canEdit !== true) throw denied('bible_edit_denied')
+      if (dirty.value) throw denied('bible_generation_dirty')
     } else if (kind === 'confirm' && draft.value?.canConfirm !== true) throw denied('bible_confirm_denied')
     else if (kind === 'clone' && draft.value?.canClone !== true && head.value?.canClone !== true) throw denied('bible_clone_denied')
   }
@@ -246,6 +269,73 @@ export const useBibleStore = defineStore('bible', () => {
     return promise
   }
 
+  async function generate(nextProjectId, command = {}) {
+    const targetProject = enterProject(nextProjectId)
+    const key = String(command.idempotencyKey || '')
+    if (!key) throw new TypeError('idempotencyKey is required')
+    assertWritable('generate')
+    const requestGeneration = generationGuard.begin()
+    const targetStateGeneration = stateGeneration
+    generating.value = true; error.value = null
+    try {
+      const response = await api.bible.generate(targetProject, {
+        authorInstructions: String(command.authorInstructions || ''),
+        expectedDraftVersion: Number(draft.value?.draftVersion ?? 0),
+        expectedHeadRevision: Number(head.value?.revision || 0),
+        idempotencyKey: key,
+      })
+      const attempt = publicGenerationAttempt(response?.attempt)
+      if (current(generationGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        generationAttempt.value = attempt
+      }
+      if (
+        attempt?.status === 'succeeded'
+        && current(generationGuard, requestGeneration, targetProject, targetStateGeneration)
+      ) {
+        const [loadedHead, loadedDraft] = await Promise.all([
+          api.bible.head(targetProject),
+          api.bible.draft.get(targetProject),
+        ])
+        if (current(generationGuard, requestGeneration, targetProject, targetStateGeneration)) {
+          head.value = publicRevision(loadedHead)
+          draft.value = publicDraft(loadedDraft)
+          dirty.value = false
+          conflict.value = null
+        }
+      }
+      return attempt
+    } catch (failure) {
+      if (current(generationGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        error.value = publicError(failure)
+      }
+      throw failure
+    } finally {
+      if (current(generationGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        generating.value = false
+      }
+    }
+  }
+
+  async function loadAttempt(nextProjectId, attemptId) {
+    const targetProject = enterProject(nextProjectId)
+    const requestGeneration = generationGuard.begin()
+    const targetStateGeneration = stateGeneration
+    try {
+      const attempt = publicGenerationAttempt(
+        await api.bible.generationAttempt(targetProject, attemptId),
+      )
+      if (current(generationGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        generationAttempt.value = attempt
+      }
+      return attempt
+    } catch (failure) {
+      if (current(generationGuard, requestGeneration, targetProject, targetStateGeneration)) {
+        error.value = publicError(failure)
+      }
+      throw failure
+    }
+  }
+
   async function clone(nextProjectId, source) {
     const targetProject = enterProject(nextProjectId)
     assertWritable('clone')
@@ -308,8 +398,9 @@ export const useBibleStore = defineStore('bible', () => {
 
   return {
     projectId, head, draft, history, historyNextBeforeRevision, historyDetail, error, conflict,
-    loading, saving, confirming, cloning, historyLoading, dirty, readOnly, canEdit, canConfirm,
-    canClone, reasons, load, edit, save, confirm, clone, loadHistory, loadHistoryDetail,
+    loading, saving, confirming, generating, cloning, historyLoading, dirty, readOnly,
+    generationAttempt, canEdit, canConfirm, canClone, reasons, load, edit, save, confirm,
+    generate, loadAttempt, clone, loadHistory, loadHistoryDetail,
     setReadOnly, clearHistory,
   }
 })

@@ -154,7 +154,20 @@ test('read-only BibleEditor keeps textareas focusable/copyable but does not emit
 
 test('compiled workspace template exposes an inert busy region and a sibling live status overlay', async () => {
   const page = await compiledTemplate('views/ProjectBibleView.vue')
-  assert.match(page, /aria-busy/); assert.match(page, /inert/); assert.match(page, /role: "status"/); assert.match(page, /AI 辅助：Not Ready/)
+  assert.match(page, /aria-busy/); assert.match(page, /inert/); assert.match(page, /role: "status"/)
+  assert.match(page, /AI 辅助/)
+  assert.match(page, /authorInstructions/)
+  assert.match(page, /生成创作圣经/)
+  assert.match(page, /请先保存/)
+})
+
+test('ProjectBibleView derives AI readiness from the planning binding item only', async () => {
+  const page = await readFile(source('views/ProjectBibleView.vue'), 'utf8')
+  assert.match(page, /useModelBindingStore/)
+  assert.match(page, /taskKey === 'planning'/)
+  assert.match(page, /resolutionStatus === 'bound'/)
+  assert.doesNotMatch(page, /bindingStore\.bindingReady/)
+  assert.doesNotMatch(page, /下一阶段接入/)
 })
 
 test('mounted ProjectBibleView follows first, head-only, superseded, and archived route states through real Pinia/router/fetch', async () => {

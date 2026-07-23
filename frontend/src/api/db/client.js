@@ -5,6 +5,7 @@ import { ApiError, parseApiError } from './api-error.js'
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
 const CHAPTER_DRAFT_GENERATION_TIMEOUT = 1_200_000
+const BIBLE_GENERATION_TIMEOUT = 210_000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   const controller = new AbortController()
@@ -561,6 +562,17 @@ export const api = {
       expectedDraftVersion: data.expectedDraftVersion,
       expectedHeadRevision: data.expectedHeadRevision,
     }),
+    generate: (projectId, data) => post(
+      `/projects/${segment(projectId)}/bible/generate`,
+      pickDefined(data, [
+        'authorInstructions', 'expectedDraftVersion', 'expectedHeadRevision',
+        'idempotencyKey',
+      ]),
+      BIBLE_GENERATION_TIMEOUT,
+    ),
+    generationAttempt: (projectId, attemptId) => get(
+      `/projects/${segment(projectId)}/bible/generation-attempts/${segment(attemptId)}`,
+    ),
     history: (projectId, params = {}) => get(
       `/projects/${segment(projectId)}/bible/history${queryString({
         limit: boundedInteger(params.limit, { min: 1, max: 100 }),
