@@ -15,23 +15,6 @@ class BibleRepository:
     async def lock_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)
 
-    async def lock_selected_seed(self, session, project_id: str):
-        return await session.fetchone(
-            """SELECT selection_revision,seed_id,seed_revision_id,seed_hash
-                 FROM project_selected_seeds
-                WHERE project_id=%s FOR UPDATE""",
-            (project_id,),
-        )
-
-    async def lock_contract_head(self, session, project_id: str):
-        return await session.fetchone(
-            """SELECT revision,creation_contract_id,creation_hash,
-                      style_contract_id,style_hash
-                 FROM project_contract_heads
-                WHERE project_id=%s FOR UPDATE""",
-            (project_id,),
-        )
-
     async def read_active_draft(self, session, project_id: str):
         return await session.fetchone(
             """SELECT * FROM project_bible_drafts

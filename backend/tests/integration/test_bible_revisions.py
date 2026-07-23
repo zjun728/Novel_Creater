@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 
 import pytest
 
@@ -40,10 +39,6 @@ def bible_service(
 ):
     tx = transaction_factory_for(disposable_mysql.connection_config)
 
-    @asynccontextmanager
-    async def read_connection():
-        yield disposable_mysql.session
-
     ids = iter(
         f"91000000-0000-0000-0000-{number:012d}"
         for number in range(1, 100)
@@ -52,7 +47,6 @@ def bible_service(
         repository or BibleRepository(),
         contract_service=contracts,
         transaction_factory=tx,
-        connection_factory=read_connection,
         id_factory=lambda: next(ids),
         clock=lambda: 1_900_000_000_700,
         failpoint=failpoint,
@@ -721,6 +715,86 @@ async def test_failure_settlement_never_overwrites_a_concurrent_success(
         "result_hash": succeeded.content_hash,
         "public_error_code": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_settlement_drift_without_receipt_is_retryable_and_key_can_confirm_latest_draft(
+    disposable_mysql,
+):
+    settlement_started = asyncio.Event()
+    allow_settlement = asyncio.Event()
+    fail_main = True
+
+    class DelayedSettlementBibleService(BibleService):
+        async def _settle_confirmation_failure(self, context):
+            settlement_started.set()
+            await allow_settlement.wait()
+            return await super()._settle_confirmation_failure(context)
+
+    def fail_once(stage):
+        nonlocal fail_main
+        if fail_main and stage == "after_request_reserve":
+            fail_main = False
+            raise RuntimeError("private settlement drift sentinel")
+
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    failing = bible_service(
+        disposable_mysql,
+        contracts,
+        failpoint=fail_once,
+        service_class=DelayedSettlementBibleService,
+    )
+    writer = bible_service(disposable_mysql, contracts)
+    saved = await failing.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    old_command = ConfirmBible(
+        contract.project_id,
+        "real-bible-settlement-drift",
+        saved.draft_version,
+        0,
+    )
+
+    failing_task = asyncio.create_task(failing.confirm(old_command))
+    try:
+        await asyncio.wait_for(settlement_started.wait(), timeout=1)
+        updated = await writer.save_draft(
+            SaveBibleDraft(
+                contract.project_id,
+                saved.draft_version,
+                bible_payload(
+                    premiseAndPromise="并发保存后的新创作圣经前提必须成为唯一可确认版本。"
+                ),
+            )
+        )
+    finally:
+        allow_settlement.set()
+
+    with pytest.raises(PublicDomainError) as captured:
+        await asyncio.wait_for(failing_task, timeout=2)
+
+    receipt_count = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count
+             FROM bible_confirmation_requests
+            WHERE project_id=%s AND idempotency_key=%s""",
+        (contract.project_id, old_command.idempotency_key),
+    )
+    assert captured.value.code == "BibleConfirmationRetryable"
+    assert captured.value.status_code == 503
+    assert captured.value.retryable is True
+    assert receipt_count == {"count": 0}
+
+    with pytest.raises(BibleConflict):
+        await writer.confirm(old_command)
+    succeeded = await writer.confirm(
+        ConfirmBible(
+            contract.project_id,
+            old_command.idempotency_key,
+            updated.draft_version,
+            0,
+        )
+    )
+    assert succeeded.revision == 1
 
 
 @pytest.mark.asyncio

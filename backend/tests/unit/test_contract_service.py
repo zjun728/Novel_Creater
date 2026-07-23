@@ -1309,13 +1309,62 @@ async def test_get_head_reuses_caller_session_and_locks_every_readiness_dependen
         "lock-seed-revision:seed-revision-1",
         "lock-engine:engine-1",
         "lock-binding",
+        "lock-asset:corpus:source-1",
+        "lock-asset:experience:card-1",
         "lock-asset:style:style-primary",
         "lock-asset:style:style-secondary",
-        "lock-asset:experience:card-1",
-        "lock-asset:corpus:source-1",
         "lock-fragments:source-1:source-revision-5",
         "lock-contract-head",
     ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_and_locked_readiness_share_the_canonical_asset_lock_helper():
+    harness = ContractHarness()
+    helper_calls = []
+    original = harness.service._lock_contract_asset_references
+
+    async def observe_helper(
+        session,
+        *,
+        style_refs,
+        experience_refs,
+        corpus_refs,
+    ):
+        helper_calls.append((
+            tuple(ref.id for ref in style_refs),
+            tuple(ref.id for ref in experience_refs),
+            tuple(
+                (
+                    ref.id,
+                    ref.revisionId,
+                    tuple(fragment.fragmentId for fragment in ref.fragments),
+                )
+                for ref in corpus_refs
+            ),
+        ))
+        return await original(
+            session,
+            style_refs=style_refs,
+            experience_refs=experience_refs,
+            corpus_refs=corpus_refs,
+        )
+
+    harness.service._lock_contract_asset_references = observe_helper
+    saved = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(saved))
+    await harness.service.get_head(
+        "p1",
+        session=object(),
+        for_update=True,
+    )
+
+    expected = (
+        ("style-primary", "style-secondary"),
+        ("card-1",),
+        (("source-1", "source-revision-5", ("fragment-1",)),),
+    )
+    assert helper_calls == [expected, expected]
 
 
 @pytest.mark.asyncio

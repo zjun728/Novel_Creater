@@ -12,8 +12,10 @@ from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS, BindingItem, BindingRevision
 from backend.domain.seeds import SeedPayload
 from backend.http_errors import ProjectArchived
+from backend.repositories.bibles import BibleRepository
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.seeds import SeedRepository
+from backend.services.bibles import BibleService, SaveBibleDraft
 from backend.services.contracts import (
     AssetRevisionRef,
     ConfirmContracts,
@@ -44,6 +46,7 @@ from backend.tests.integration.test_contract_drafts import (
     _draft,
 )
 from backend.tests.support.disposable_mysql import transaction_factory_for
+from backend.tests.unit.test_bible_service import bible_payload
 
 
 pytestmark = pytest.mark.mysql
@@ -850,6 +853,286 @@ async def test_real_reverse_cross_project_provider_and_asset_locks_finish_withou
         lock_assets(False), lock_assets(True),
     ), timeout=5)
     assert tuple(result[0]["id"] for result in asset_results) == (STYLE, style2)
+
+
+@pytest.mark.asyncio
+async def test_real_bible_readiness_and_reverse_contract_confirmation_share_asset_lock_order(
+    disposable_mysql,
+):
+    readiness_first_locked = asyncio.Event()
+    release_readiness = asyncio.Event()
+    confirmation_first_locked = asyncio.Event()
+
+    class PausingReadinessRepository(ContractRepository):
+        def __init__(self):
+            self.paused = False
+
+        async def _pause_after_first_asset_lock(self):
+            if self.paused:
+                return
+            self.paused = True
+            readiness_first_locked.set()
+            await release_readiness.wait()
+
+        async def read_style_revision(
+            self,
+            session,
+            asset_id,
+            *,
+            lock=False,
+        ):
+            row = await super().read_style_revision(
+                session,
+                asset_id,
+                lock=lock,
+            )
+            if lock:
+                await self._pause_after_first_asset_lock()
+            return row
+
+        async def read_corpus_revision(
+            self,
+            session,
+            source_id,
+            revision_id,
+            *,
+            lock=False,
+        ):
+            row = await super().read_corpus_revision(
+                session,
+                source_id,
+                revision_id,
+                lock=lock,
+            )
+            if lock:
+                await self._pause_after_first_asset_lock()
+            return row
+
+    class ObservingConfirmationRepository(ContractRepository):
+        def __init__(self):
+            self.observed = False
+
+        def _observe_first_asset_lock(self):
+            if self.observed:
+                return
+            self.observed = True
+            confirmation_first_locked.set()
+
+        async def read_style_revision(
+            self,
+            session,
+            asset_id,
+            *,
+            lock=False,
+        ):
+            row = await super().read_style_revision(
+                session,
+                asset_id,
+                lock=lock,
+            )
+            if lock:
+                self._observe_first_asset_lock()
+            return row
+
+        async def read_corpus_revision(
+            self,
+            session,
+            source_id,
+            revision_id,
+            *,
+            lock=False,
+        ):
+            row = await super().read_corpus_revision(
+                session,
+                source_id,
+                revision_id,
+                lock=lock,
+            )
+            if lock:
+                self._observe_first_asset_lock()
+            return row
+
+    setup_service = _service(disposable_mysql)
+    facts, saved = await _saved(disposable_mysql, setup_service)
+    await setup_service.confirm(_confirm(saved, key="readiness-lock-basis"))
+
+    project2 = "85000000-0000-0000-0000-000000000001"
+    seed2 = "85000000-0000-0000-0000-000000000002"
+    seed_revision2 = "85000000-0000-0000-0000-000000000003"
+    batch2 = "85000000-0000-0000-0000-000000000004"
+    engine2 = "85000000-0000-0000-0000-000000000005"
+    now = 1_900_000_000_600
+    await disposable_mysql.session.execute(
+        """INSERT INTO projects
+           (id,title,genre,description,target_words,target_chapters,status,
+            current_chapter,created_at,updated_at)
+           VALUES (%s,'reverse Bible readiness','fantasy','test',100000,100,
+                   'drafting',0,%s,%s)""",
+        (project2, now, now),
+    )
+    await disposable_mysql.session.execute(
+        "INSERT INTO creative_seeds VALUES (%s,%s,'candidate',%s,%s)",
+        (seed2, project2, now, now),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO creative_seed_revisions
+           (id,project_id,seed_id,revision,payload_json,content_hash,created_at)
+           VALUES (%s,%s,%s,1,%s,%s,%s)""",
+        (
+            seed_revision2,
+            project2,
+            seed2,
+            canonical_json(SEED_PAYLOAD),
+            facts["seed_hash"],
+            now,
+        ),
+    )
+    await disposable_mysql.session.execute(
+        "INSERT INTO creative_seed_heads VALUES (%s,%s,1,%s,%s)",
+        (seed2, seed_revision2, facts["seed_hash"], now),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_seed_selection_revisions
+           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,selected_at)
+           VALUES (%s,1,%s,%s,%s,%s)""",
+        (project2, seed2, seed_revision2, facts["seed_hash"], now),
+    )
+    await disposable_mysql.session.execute(
+        "INSERT INTO project_selected_seeds VALUES (%s,%s,%s,%s,1,%s,%s)",
+        (project2, seed2, seed_revision2, facts["seed_hash"], now, now),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO story_engine_batches
+           (id,project_id,selection_revision,source_type,seed_id,seed_revision_id,seed_hash,
+            binding_revision_id,binding_hash,provider_id,model_name_snapshot,
+            idempotency_key,request_json,request_hash,status,attempt_id,
+            attempt_started_at,lease_expires_at,raw_response_text,
+            raw_response_hash,public_error_code,created_at,finished_at)
+           VALUES (%s,%s,1,'manual',%s,%s,%s,NULL,NULL,NULL,NULL,
+                   'reverse-lock-manual','{}',%s,'succeeded',NULL,NULL,NULL,
+                   NULL,NULL,NULL,%s,%s)""",
+        (
+            batch2,
+            project2,
+            seed2,
+            seed_revision2,
+            facts["seed_hash"],
+            "b" * 64,
+            now,
+            now,
+        ),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO story_engine_options
+           (id,project_id,selection_revision,batch_id,option_order,payload_json,
+            content_hash,created_at)
+           SELECT %s,%s,1,%s,1,payload_json,content_hash,%s
+             FROM story_engine_options WHERE id=%s""",
+        (engine2, project2, batch2, now, ENGINE),
+    )
+    await disposable_mysql.session.execute(
+        "INSERT INTO project_contract_heads VALUES (%s,0,NULL,NULL,NULL,NULL,%s)",
+        (project2, now),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_bible_heads
+           (project_id,revision,bible_revision_id,content_hash,updated_at)
+           VALUES (%s,0,NULL,NULL,%s)""",
+        (PROJECT, now),
+    )
+    reverse_draft = _draft(
+        facts,
+        experience_card_refs=(),
+    ).model_copy(update={"engineOptionId": engine2})
+    saved2 = await setup_service.save_draft(
+        SaveContractDraft(project2, 0, reverse_draft)
+    )
+
+    tx = transaction_factory_for(disposable_mysql.connection_config)
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    def contract_with_repository(repository, prefix):
+        ids = iter(
+            f"{prefix}-0000-0000-0000-{number:012d}"
+            for number in range(1, 100)
+        )
+        return ContractService(
+            repository,
+            transaction_factory=tx,
+            connection_factory=read_connection,
+            id_factory=lambda: next(ids),
+            clock=lambda: now,
+        )
+
+    readiness_contracts = contract_with_repository(
+        PausingReadinessRepository(),
+        "86000000",
+    )
+    confirming_contracts = contract_with_repository(
+        ObservingConfirmationRepository(),
+        "87000000",
+    )
+    bible_ids = iter(
+        f"88000000-0000-0000-0000-{number:012d}"
+        for number in range(1, 100)
+    )
+    bible = BibleService(
+        BibleRepository(),
+        contract_service=readiness_contracts,
+        transaction_factory=tx,
+        id_factory=lambda: next(bible_ids),
+        clock=lambda: now,
+    )
+
+    bible_task = asyncio.create_task(
+        bible.save_draft(SaveBibleDraft(PROJECT, 0, bible_payload()))
+    )
+    try:
+        await asyncio.wait_for(readiness_first_locked.wait(), timeout=1)
+    except BaseException:
+        release_readiness.set()
+        bible_task.cancel()
+        await asyncio.gather(bible_task, return_exceptions=True)
+        raise
+
+    confirmation_task = asyncio.create_task(
+        confirming_contracts.confirm(
+            ConfirmContracts(
+                project2,
+                "reverse-bible-contract-locks",
+                saved2.draft_version,
+                saved2.content_hash,
+            )
+        )
+    )
+    try:
+        try:
+            await asyncio.wait_for(
+                confirmation_first_locked.wait(),
+                timeout=0.25,
+            )
+            confirmation_reached_first_asset = True
+        except TimeoutError:
+            confirmation_reached_first_asset = False
+    finally:
+        release_readiness.set()
+
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(
+            bible_task,
+            confirmation_task,
+            return_exceptions=True,
+        ),
+        timeout=5,
+    )
+    errors = [result for result in outcomes if isinstance(result, BaseException)]
+    assert errors == []
+    assert confirmation_reached_first_asset is False
+    assert outcomes[0].draft_version == 1
+    assert outcomes[1].revision == 1
 
 
 @pytest.mark.parametrize("stage", (

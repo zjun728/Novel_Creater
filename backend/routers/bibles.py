@@ -12,7 +12,7 @@ from pydantic import (
     model_validator,
 )
 
-from backend.database import connection, transaction
+from backend.database import transaction
 from backend.domain.bibles import BiblePayload
 from backend.http_errors import PublicDomainError
 from backend.repositories.bibles import BibleRepository
@@ -30,7 +30,6 @@ _service = BibleService(
     BibleRepository(),
     contract_service=get_contract_service(),
     transaction_factory=transaction,
-    connection_factory=connection,
 )
 
 

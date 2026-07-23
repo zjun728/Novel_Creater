@@ -185,7 +185,6 @@ class BibleService:
         *,
         contract_service,
         transaction_factory,
-        connection_factory,
         id_factory=lambda: str(uuid4()),
         clock=lambda: int(time.time() * 1000),
         failpoint=lambda _stage: None,
@@ -193,7 +192,6 @@ class BibleService:
         self.repository = repository
         self.contract_service = contract_service
         self.transaction_factory = transaction_factory
-        self.connection_factory = connection_factory
         self.id_factory = id_factory
         self.clock = clock
         self.failpoint = failpoint
@@ -265,24 +263,6 @@ class BibleService:
             return None, ("contract_unavailable",)
         return self._contract_basis(result)
 
-    @staticmethod
-    def _locked_rows_match_basis(selected, head, basis: BibleBasis) -> bool:
-        return (
-            selected is not None
-            and head is not None
-            and int(selected.get("selection_revision") or 0)
-            == basis.selection_revision
-            and selected.get("seed_id") == basis.seed_id
-            and selected.get("seed_revision_id") == basis.seed_revision_id
-            and selected.get("seed_hash") == basis.seed_hash
-            and int(head.get("revision") or 0) == basis.contract_revision
-            and head.get("creation_contract_id")
-            == basis.creation_contract_id
-            and head.get("creation_hash") == basis.creation_hash
-            and head.get("style_contract_id") == basis.style_contract_id
-            and head.get("style_hash") == basis.style_hash
-        )
-
     async def _locked_current_basis(
         self,
         session,
@@ -305,14 +285,6 @@ class BibleService:
             if required:
                 raise BiblePreconditionFailed()
             return None, reasons
-        selected = await self.repository.lock_selected_seed(session, project_id)
-        contract_head = await self.repository.lock_contract_head(
-            session, project_id
-        )
-        if not self._locked_rows_match_basis(selected, contract_head, basis):
-            if required:
-                raise BibleConflict()
-            return None, ("contract_basis_changed",)
         return basis, ()
 
     @staticmethod
@@ -1157,17 +1129,18 @@ class BibleService:
                 if matches:
                     _, stored_basis = self._stored_draft(draft)
                     matches = stored_basis == context.draft_basis
-                if matches:
-                    failed_row = dict(request_row)
-                    failed_row["completed_at"] = self.clock()
-                    inserted = (
-                        await self.repository.insert_failed_confirmation_request(
-                            session,
-                            failed_row,
-                        )
+                if not matches:
+                    raise BibleConfirmationRetryable()
+                failed_row = dict(request_row)
+                failed_row["completed_at"] = self.clock()
+                inserted = (
+                    await self.repository.insert_failed_confirmation_request(
+                        session,
+                        failed_row,
                     )
-                    if not inserted:
-                        raise BibleConfirmationRetryable()
+                )
+                if not inserted:
+                    raise BibleConfirmationRetryable()
             raise BibleConfirmationFailed()
         except (
             BibleConflict,

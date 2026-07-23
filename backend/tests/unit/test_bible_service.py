@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -109,9 +110,6 @@ class FakeContractService:
 
 class MemoryBibleRepository:
     def __init__(self):
-        self.contract_service = None
-        self.locked_selection_override = None
-        self.locked_contract_head_override = None
         self.projects = {
             "p1": {"id": "p1", "archived_at": None},
             "archived": {"id": "archived", "archived_at": 1_900_000_000_000},
@@ -149,39 +147,6 @@ class MemoryBibleRepository:
         if row is not None and row["archived_at"] is not None:
             raise ProjectArchived()
         return deepcopy(row)
-
-    def _canonical_contract(self, project_id):
-        assert self.contract_service is not None
-        return self.contract_service.heads.get(project_id)
-
-    async def lock_selected_seed(self, _session, project_id):
-        self.events.append("lock-selected-seed")
-        if self.locked_selection_override is not None:
-            return deepcopy(self.locked_selection_override)
-        head = self._canonical_contract(project_id)
-        if head is None or isinstance(head, dict):
-            return None
-        return {
-            "selection_revision": head.selection_revision,
-            "seed_id": head.seed_ref.id,
-            "seed_revision_id": head.seed_ref.revision_id,
-            "seed_hash": head.seed_ref.content_hash,
-        }
-
-    async def lock_contract_head(self, _session, project_id):
-        self.events.append("lock-contract-head")
-        if self.locked_contract_head_override is not None:
-            return deepcopy(self.locked_contract_head_override)
-        head = self._canonical_contract(project_id)
-        if head is None or isinstance(head, dict):
-            return None
-        return {
-            "revision": head.revision,
-            "creation_contract_id": head.creation_contract_id,
-            "creation_hash": head.creation_hash,
-            "style_contract_id": head.style_contract_id,
-            "style_hash": head.style_hash,
-        }
 
     async def read_active_draft(self, _session, project_id):
         rows = [
@@ -361,7 +326,6 @@ class BibleHarness:
     def __init__(self, *, failpoint=lambda _stage: None):
         self.repository = MemoryBibleRepository()
         self.contract_service = FakeContractService()
-        self.repository.contract_service = self.contract_service
         self._lock = asyncio.Lock()
         ids = iter(
             f"90000000-0000-0000-0000-{number:012d}"
@@ -371,7 +335,6 @@ class BibleHarness:
             self.repository,
             contract_service=self.contract_service,
             transaction_factory=self.transaction,
-            connection_factory=self.connection,
             id_factory=lambda: next(ids),
             clock=lambda: 1_900_000_000_500,
             failpoint=failpoint,
@@ -382,19 +345,13 @@ class BibleHarness:
         async with self._lock:
             snapshot = deepcopy(self.repository.__dict__)
             observed_events = self.repository.events
-            contract_service = self.repository.contract_service
             try:
                 yield object()
             except BaseException:
                 self.repository.__dict__.clear()
                 self.repository.__dict__.update(snapshot)
                 self.repository.events = observed_events
-                self.repository.contract_service = contract_service
                 raise
-
-    @asynccontextmanager
-    async def connection(self):
-        yield object()
 
 
 @pytest.mark.asyncio
@@ -448,27 +405,20 @@ async def test_contract_not_ready_blocks_manual_save_without_model_readiness_rul
 
 
 @pytest.mark.asyncio
-async def test_mutation_rechecks_locked_selection_and_contract_head_after_canonical_read():
+async def test_mutation_uses_canonical_locked_basis_without_bible_shadow_relocks():
     harness = BibleHarness()
-    harness.repository.locked_contract_head_override = {
-        "revision": 1,
-        "creation_contract_id": "creation-a",
-        "creation_hash": HASH_B,
-        "style_contract_id": "style-a",
-        "style_hash": HASH_D,
-    }
 
-    with pytest.raises(BibleConflict):
-        await harness.service.save_draft(
-            SaveBibleDraft("p1", 0, bible_payload())
-        )
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
 
-    assert harness.repository.events[:3] == [
-        "lock-project",
-        "lock-selected-seed",
-        "lock-contract-head",
-    ]
-    assert harness.repository.write_count == 0
+    assert saved.status == "current"
+    assert "lock-selected-seed" not in harness.repository.events
+    assert "lock-contract-head" not in harness.repository.events
+
+
+def test_service_constructor_has_no_unused_connection_factory_dependency():
+    assert "connection_factory" not in inspect.signature(BibleService).parameters
 
 
 @pytest.mark.asyncio
@@ -801,6 +751,64 @@ async def test_rejected_failed_receipt_insert_is_retryable_and_key_is_reusable()
     harness.repository.reject_failed_request_insert = False
     succeeded = await harness.service.confirm(command)
     assert succeeded.revision == 1
+
+
+@pytest.mark.parametrize("drift", ("draft", "head", "basis"))
+@pytest.mark.asyncio
+async def test_unrecorded_settlement_guard_drift_is_retryable(drift):
+    settlement_started = asyncio.Event()
+    allow_settlement = asyncio.Event()
+    fail_main = True
+    harness = BibleHarness()
+    original_settlement = harness.service._settle_confirmation_failure
+
+    async def delayed_settlement(context):
+        settlement_started.set()
+        await allow_settlement.wait()
+        return await original_settlement(context)
+
+    def fail_once(stage):
+        nonlocal fail_main
+        if fail_main and stage == "after_request_reserve":
+            fail_main = False
+            raise RuntimeError("private settlement guard drift")
+
+    harness.service._settle_confirmation_failure = delayed_settlement
+    harness.service.failpoint = fail_once
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
+    command = ConfirmBible("p1", f"retryable-{drift}-drift", saved.draft_version, 0)
+    confirm_task = asyncio.create_task(harness.service.confirm(command))
+    try:
+        await asyncio.wait_for(settlement_started.wait(), timeout=1)
+        if drift == "draft":
+            harness.repository.drafts[("p1", saved.draft_id)][
+                "draft_version"
+            ] += 1
+        elif drift == "head":
+            harness.repository.heads["p1"]["revision"] = 1
+        else:
+            harness.contract_service.heads["p1"] = contract_head(
+                selection_revision=2,
+                seed_id="seed-b",
+                seed_revision_id="seed-revision-b",
+                seed_hash=HASH_D,
+                revision=2,
+                creation_contract_id="creation-b",
+                creation_hash=HASH_E,
+                style_contract_id="style-b",
+                style_hash=HASH_A,
+            )
+    finally:
+        allow_settlement.set()
+
+    with pytest.raises(PublicDomainError) as captured:
+        await asyncio.wait_for(confirm_task, timeout=1)
+
+    assert captured.value.code == "BibleConfirmationRetryable"
+    assert captured.value.status_code == 503
+    assert harness.repository.requests == {}
 
 
 @pytest.mark.asyncio

@@ -659,13 +659,18 @@ class ContractPreviewService(ContractDraftService):
             ],
         }
 
-    async def _lock_contract_assets(self, session, draft):
+    async def _lock_contract_asset_references(
+        self,
+        session,
+        *,
+        style_refs,
+        experience_refs,
+        corpus_refs,
+    ):
         lock_requests = [
-            ("style", draft.primaryStyleRef.id),
-            *(((("style", draft.secondaryStyleRef.id),)
-               if draft.secondaryStyleRef else ())),
-            *(("experience", ref.id) for ref in draft.experienceCardRefs),
-            *(("corpus", ref.id) for ref in draft.corpusSourceRefs),
+            *(("style", ref.id) for ref in style_refs),
+            *(("experience", ref.id) for ref in experience_refs),
+            *(("corpus", ref.id) for ref in corpus_refs),
         ]
         locked_assets = {}
         for kind, asset_id in sorted(lock_requests):
@@ -683,18 +688,15 @@ class ContractPreviewService(ContractDraftService):
                     asset_id,
                     next(
                         ref.revisionId
-                        for ref in draft.corpusSourceRefs
+                        for ref in corpus_refs
                         if ref.id == asset_id
                     ),
                     lock=True,
                 )
             locked_assets[(kind, asset_id)] = row
-        sources = tuple(
-            locked_assets[("corpus", ref.id)] for ref in draft.corpusSourceRefs
-        )
         fragments_by_source = {}
         for ref in sorted(
-            draft.corpusSourceRefs,
+            corpus_refs,
             key=lambda item: (item.id, item.revisionId),
         ):
             fragments_by_source[(ref.id, ref.revisionId)] = (
@@ -708,6 +710,24 @@ class ContractPreviewService(ContractDraftService):
                     lock=True,
                 )
             )
+        return locked_assets, fragments_by_source
+
+    async def _lock_contract_assets(self, session, draft):
+        style_refs = (
+            draft.primaryStyleRef,
+            *((draft.secondaryStyleRef,) if draft.secondaryStyleRef else ()),
+        )
+        locked_assets, fragments_by_source = (
+            await self._lock_contract_asset_references(
+                session,
+                style_refs=style_refs,
+                experience_refs=draft.experienceCardRefs,
+                corpus_refs=draft.corpusSourceRefs,
+            )
+        )
+        sources = tuple(
+            locked_assets[("corpus", ref.id)] for ref in draft.corpusSourceRefs
+        )
         fragments = tuple(
             fragments_by_source[(ref.id, ref.revisionId)]
             for ref in draft.corpusSourceRefs
