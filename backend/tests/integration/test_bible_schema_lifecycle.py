@@ -20,12 +20,18 @@ from backend.tests.integration.test_schema_bootstrap import (
 
 SEED_ID = "00000000-0000-0000-0000-000000000040"
 SEED_REVISION_ID = "00000000-0000-0000-0000-000000000041"
+SEED_B_ID = "00000000-0000-0000-0000-000000000050"
+SEED_B_REVISION_ID = "00000000-0000-0000-0000-000000000051"
+SEED_B_HASH = "d" * 64
 
 
 @dataclass(frozen=True)
 class ContractBasis:
     selection_revision: int
     contract_revision: int
+    seed_id: str
+    seed_revision_id: str
+    seed_hash: str
     creation_contract_id: str
     creation_hash: str
     style_contract_id: str
@@ -34,13 +40,53 @@ class ContractBasis:
 
 async def _insert_first_basis(session) -> ContractBasis:
     creation_id, style_id = await _insert_revision_one_contracts(session)
-    return ContractBasis(1, 1, creation_id, HASH_B, style_id, HASH_C)
+    return ContractBasis(
+        1,
+        1,
+        SEED_ID,
+        SEED_REVISION_ID,
+        HASH_A,
+        creation_id,
+        HASH_B,
+        style_id,
+        HASH_C,
+    )
+
+
+async def _insert_seed_revision(
+    session,
+    *,
+    seed_id: str,
+    seed_revision_id: str,
+    seed_hash: str,
+) -> None:
+    await session.execute(
+        """INSERT INTO creative_seeds
+           (id,project_id,status,created_at,updated_at)
+           VALUES (%s,%s,'candidate',%s,%s)""",
+        (seed_id, PROJECT_ID, NOW, NOW),
+    )
+    await session.execute(
+        """INSERT INTO creative_seed_revisions
+           (id,project_id,seed_id,revision,payload_json,content_hash,created_at)
+           VALUES (%s,%s,%s,1,'{}',%s,%s)""",
+        (seed_revision_id, PROJECT_ID, seed_id, seed_hash, NOW),
+    )
+    await session.execute(
+        """INSERT INTO creative_seed_heads
+           (seed_id,revision_id,revision,content_hash,updated_at)
+           VALUES (%s,%s,1,%s,%s)""",
+        (seed_id, seed_revision_id, seed_hash, NOW),
+    )
 
 
 async def _insert_later_basis(
     session,
     *,
     revision: int,
+    seed_id: str,
+    seed_revision_id: str,
+    seed_hash: str,
     creation_contract_id: str,
     creation_hash: str,
     style_contract_id: str,
@@ -48,27 +94,48 @@ async def _insert_later_basis(
 ) -> ContractBasis:
     await _insert_selection_revision(
         session,
-        seed_id=SEED_ID,
-        seed_revision_id=SEED_REVISION_ID,
+        seed_id=seed_id,
+        seed_revision_id=seed_revision_id,
+        seed_hash=seed_hash,
         selection_revision=revision,
     )
+    changed = await session.execute(
+        """UPDATE project_selected_seeds
+              SET seed_id=%s,seed_revision_id=%s,seed_hash=%s,
+                  selection_revision=%s,selected_at=%s,updated_at=%s
+            WHERE project_id=%s AND selection_revision=%s""",
+        (
+            seed_id,
+            seed_revision_id,
+            seed_hash,
+            revision,
+            NOW,
+            NOW,
+            PROJECT_ID,
+            revision - 1,
+        ),
+    )
+    assert changed == 1
     await session.execute(
         """INSERT INTO creation_contracts
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
             seed_hash,binding_revision_id,binding_hash,channel_profile_key,
-            genre_profile_key,quality_charter_version,total_word_min,
-            total_word_max,chapter_capacity_policy,reference_manifest_json,
-            reference_manifest_hash,content_json,content_hash,confirmed_at)
-           SELECT %s,project_id,%s,%s,seed_id,seed_revision_id,seed_hash,
-                  binding_revision_id,binding_hash,channel_profile_key,
-                  genre_profile_key,quality_charter_version,total_word_min,
-                  total_word_max,chapter_capacity_policy,reference_manifest_json,
+             genre_profile_key,quality_charter_version,total_word_min,
+             total_word_max,chapter_capacity_policy,reference_manifest_json,
+             reference_manifest_hash,content_json,content_hash,confirmed_at)
+           SELECT %s,project_id,%s,%s,%s,%s,%s,
+                   binding_revision_id,binding_hash,channel_profile_key,
+                   genre_profile_key,quality_charter_version,total_word_min,
+                   total_word_max,chapter_capacity_policy,reference_manifest_json,
                   reference_manifest_hash,content_json,%s,confirmed_at
              FROM creation_contracts WHERE project_id=%s AND revision=1""",
         (
             creation_contract_id,
             revision,
             revision,
+            seed_id,
+            seed_revision_id,
+            seed_hash,
             creation_hash,
             PROJECT_ID,
         ),
@@ -90,6 +157,9 @@ async def _insert_later_basis(
     return ContractBasis(
         revision,
         revision,
+        seed_id,
+        seed_revision_id,
+        seed_hash,
         creation_contract_id,
         creation_hash,
         style_contract_id,
@@ -119,9 +189,9 @@ async def _insert_draft(
             PROJECT_ID,
             active_slot,
             basis.selection_revision,
-            SEED_ID,
-            SEED_REVISION_ID,
-            HASH_A,
+            basis.seed_id,
+            basis.seed_revision_id,
+            basis.seed_hash,
             basis.contract_revision,
             basis.creation_contract_id,
             basis.creation_hash,
@@ -177,7 +247,7 @@ async def _insert_confirmation_request(
 
 
 @pytest.mark.mysql
-async def test_active_draft_slot_moves_without_deleting_history(
+async def test_active_draft_slot_moves_across_seed_reselection_without_deleting_history(
     disposable_mysql,
 ):
     session = disposable_mysql.session
@@ -201,9 +271,18 @@ async def test_active_draft_slot_moves_without_deleting_history(
         (draft_a,),
     )
 
+    await _insert_seed_revision(
+        session,
+        seed_id=SEED_B_ID,
+        seed_revision_id=SEED_B_REVISION_ID,
+        seed_hash=SEED_B_HASH,
+    )
     basis_b = await _insert_later_basis(
         session,
         revision=2,
+        seed_id=SEED_B_ID,
+        seed_revision_id=SEED_B_REVISION_ID,
+        seed_hash=SEED_B_HASH,
         creation_contract_id="30000000-0000-0000-0000-000000000002",
         creation_hash="2" * 64,
         style_contract_id="40000000-0000-0000-0000-000000000002",
@@ -218,6 +297,9 @@ async def test_active_draft_slot_moves_without_deleting_history(
     basis_c = await _insert_later_basis(
         session,
         revision=3,
+        seed_id=SEED_ID,
+        seed_revision_id=SEED_REVISION_ID,
+        seed_hash=HASH_A,
         creation_contract_id="30000000-0000-0000-0000-000000000003",
         creation_hash="5" * 64,
         style_contract_id="40000000-0000-0000-0000-000000000003",
@@ -230,15 +312,47 @@ async def test_active_draft_slot_moves_without_deleting_history(
              FROM project_bible_drafts WHERE project_id=%s ORDER BY id""",
         (PROJECT_ID,),
     )
+    selections = await session.fetchall(
+        """SELECT selection_revision,seed_id,seed_revision_id,seed_hash
+             FROM project_seed_selection_revisions
+            WHERE project_id=%s ORDER BY selection_revision""",
+        (PROJECT_ID,),
+    )
+    selected = await session.fetchone(
+        """SELECT selection_revision,seed_id,seed_revision_id,seed_hash
+             FROM project_selected_seeds WHERE project_id=%s""",
+        (PROJECT_ID,),
+    )
     request = await session.fetchone(
         "SELECT draft_id,draft_version,draft_hash FROM bible_confirmation_requests WHERE id=%s",
         (request_a,),
     )
     assert rows == [
         {"id": draft_a, "active_slot": None, "selection_revision": 1, "seed_id": SEED_ID},
-        {"id": draft_b, "active_slot": None, "selection_revision": 2, "seed_id": SEED_ID},
+        {"id": draft_b, "active_slot": None, "selection_revision": 2, "seed_id": SEED_B_ID},
         {"id": draft_c, "active_slot": 1, "selection_revision": 3, "seed_id": SEED_ID},
     ]
+    assert selections == [
+        {
+            "selection_revision": 1,
+            "seed_id": SEED_ID,
+            "seed_revision_id": SEED_REVISION_ID,
+            "seed_hash": HASH_A,
+        },
+        {
+            "selection_revision": 2,
+            "seed_id": SEED_B_ID,
+            "seed_revision_id": SEED_B_REVISION_ID,
+            "seed_hash": SEED_B_HASH,
+        },
+        {
+            "selection_revision": 3,
+            "seed_id": SEED_ID,
+            "seed_revision_id": SEED_REVISION_ID,
+            "seed_hash": HASH_A,
+        },
+    ]
+    assert selected == selections[-1]
     assert request == {
         "draft_id": draft_a,
         "draft_version": 1,
