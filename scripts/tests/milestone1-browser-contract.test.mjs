@@ -137,7 +137,7 @@ test('frontend retains the guarded M1 runner while defaulting e2e to Phase 2', a
   const packageJson = JSON.parse(await readWorkspaceFile('frontend/package.json'))
 
   assert.equal(packageJson.scripts?.['test:e2e:m1'], 'node e2e/run-milestone1.mjs')
-  assert.equal(packageJson.scripts?.['test:e2e'], 'node e2e/run-phase2.mjs')
+  assert.equal(packageJson.scripts?.['test:e2e'], 'node e2e/run-phase2c.mjs')
 })
 
 test('runner injects fixture leak sentinels while the spec contains no literal values', async () => {

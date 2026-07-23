@@ -14,7 +14,7 @@
     "test:e2e:phase2b": "node e2e/run-phase2b.mjs",
     "test:e2e:phase2c": "node e2e/run-phase2c.mjs",
     "test:e2e:phase2": "node e2e/run-phase2.mjs",
-    "test:e2e": "node e2e/run-phase2.mjs"
+    "test:e2e": "node e2e/run-phase2c.mjs"
   },
   "dependencies": {
     "naive-ui": "^2.41.0",

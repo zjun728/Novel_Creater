@@ -43,7 +43,7 @@ const DEFAULT_DEADLINES = Object.freeze({
   browserMs: 300_000,
   stopMs: 8_000,
 })
-const ALLOWED_BROWSER_STEPS = Object.freeze([
+export const ALLOWED_BROWSER_STEPS = Object.freeze([
   'library-navigation-start',
   'library-navigation-finished',
   'library-heading-visible',
@@ -281,7 +281,7 @@ export function buildEnvironments(
     MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD,
     MYSQL_DB: databaseName,
   }
-  const privateFixture = {
+  const providerFixture = {
     BROWSER_PROVIDER_BASE_URL: gatewayUrl,
     BROWSER_SECRET_SENTINEL: SECRET_SENTINEL,
     BROWSER_MODEL_SENTINEL: MODEL_SENTINEL,
@@ -293,12 +293,12 @@ export function buildEnvironments(
     TEST_MYSQL_USER: environment.TEST_MYSQL_USER,
     TEST_MYSQL_PASSWORD: environment.TEST_MYSQL_PASSWORD,
     ...database,
-    ...privateFixture,
+    ...providerFixture,
   }
   const backend = {
     ...base,
     ...database,
-    ...privateFixture,
+    ...providerFixture,
     BROWSER_TEST_DATABASE: databaseName,
     BROWSER_OUTBOUND_LEDGER_PATH: roots.outboundLedgerPath,
     BROWSER_TRANSCRIPT_SENTINEL: TRANSCRIPT_SENTINEL,
@@ -322,7 +322,8 @@ export function buildEnvironments(
     BROWSER_CORPUS_FILE: roots.corpusPath,
     BROWSER_STEP_LEDGER: roots.stepLedgerPath,
     BROWSER_TEST_DATABASE: databaseName,
-    ...privateFixture,
+    ...providerFixture,
+    BROWSER_PRIVATE_PROVIDER_URL: gatewayUrl,
     BROWSER_TRANSCRIPT_SENTINEL: TRANSCRIPT_SENTINEL,
     BROWSER_CORPUS_ROOT_SENTINEL: roots.root,
   }
@@ -335,7 +336,9 @@ export function buildEnvironments(
   const sensitiveController = {
     ...database,
     BROWSER_TEST_DATABASE: databaseName,
-    ...privateFixture,
+    BROWSER_PROVIDER_BASE_URL: gatewayUrl,
+    BROWSER_PRIVATE_PROVIDER_URL: gatewayUrl,
+    BROWSER_SECRET_SENTINEL: SECRET_SENTINEL,
     BROWSER_TRANSCRIPT_SENTINEL: TRANSCRIPT_SENTINEL,
     BROWSER_CORPUS_ROOT_SENTINEL: roots.root,
   }
@@ -374,7 +377,10 @@ export function verifyForbiddenOutboundLedger(ledger) {
 }
 
 
-export function verifyBrowserStepLedger(ledger) {
+export function verifyBrowserStepLedger(
+  ledger,
+  { requireComplete = false } = {},
+) {
   const lines = String(ledger || '').split(/\r?\n/u).filter(Boolean)
   if (
     lines.some(line => !ALLOWED_BROWSER_STEPS.includes(line))
@@ -383,6 +389,13 @@ export function verifyBrowserStepLedger(ledger) {
       && ALLOWED_BROWSER_STEPS.indexOf(line)
         <= ALLOWED_BROWSER_STEPS.indexOf(lines[index - 1])
     ))
+    || (
+      requireComplete
+      && (
+        lines.length !== ALLOWED_BROWSER_STEPS.length
+        || lines.some((line, index) => line !== ALLOWED_BROWSER_STEPS[index])
+      )
+    )
   ) {
     throw new Error('Phase 2 browser progress ledger is invalid')
   }
@@ -443,7 +456,10 @@ async function runOneScenario({
         nonce,
         roots,
       )
-      sensitiveValues = runtimeSensitiveValues(environments.sensitiveController)
+      sensitiveValues = [
+        ...runtimeSensitiveValues(environments.sensitiveController),
+        environments.sensitiveController.BROWSER_TRANSCRIPT_SENTINEL,
+      ].filter(value => typeof value === 'string' && value.length > 0)
       const python = environment.PYTHON || 'python'
       const playwrightCli = path.join(
         frontendRoot,
@@ -559,7 +575,10 @@ async function runOneScenario({
           { cause: error },
         )
       }
-      verifyBrowserStepLedger(readFileSync(roots.stepLedgerPath, 'utf8'))
+      verifyBrowserStepLedger(
+        readFileSync(roots.stepLedgerPath, 'utf8'),
+        { requireComplete: true },
+      )
       verifyForbiddenOutboundLedger(
         readFileSync(roots.outboundLedgerPath, 'utf8'),
       )

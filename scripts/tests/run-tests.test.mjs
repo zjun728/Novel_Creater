@@ -20,13 +20,13 @@ const scriptsDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url
 const repositoryRoot = path.dirname(scriptsDirectory)
 const runnerPath = path.join(scriptsDirectory, 'run-tests.mjs')
 
-test('package scripts retain earlier gates while defaulting to full Phase 2', () => {
+test('package scripts retain earlier gates while Phase 2C remains the default', () => {
   const rootPackage = JSON.parse(readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'))
   const frontendPackage = JSON.parse(
     readFileSync(path.join(repositoryRoot, 'frontend', 'package.json'), 'utf8'),
   )
 
-  assert.equal(rootPackage.scripts['test:browser'], 'node scripts/run-tests.mjs browser-phase2')
+  assert.equal(rootPackage.scripts['test:browser'], 'node scripts/run-tests.mjs browser-phase2c')
   assert.equal(rootPackage.scripts['test:browser:m2'], undefined)
   assert.equal(rootPackage.scripts['test:milestone1'], 'node scripts/run-tests.mjs m1-regression')
   assert.equal(rootPackage.scripts['test:milestone2'], undefined)
@@ -46,7 +46,7 @@ test('package scripts retain earlier gates while defaulting to full Phase 2', ()
   assert.equal(frontendPackage.scripts['test:e2e:m1'], 'node e2e/run-milestone1.mjs')
   assert.equal(frontendPackage.scripts['test:e2e:m2'], undefined)
   assert.equal(frontendPackage.scripts['test:e2e:phase2a'], 'node e2e/run-phase2a.mjs')
-  assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-phase2.mjs')
+  assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-phase2c.mjs')
 })
 
 test('discovers only explicit test modules in stable order', () => {

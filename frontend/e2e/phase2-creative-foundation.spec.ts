@@ -9,8 +9,26 @@ import {
 } from './runtime-observer.mjs'
 
 
+function requiredRunnerOrigin(name: string) {
+  const value = process.env[name]
+  if (!value || !/^http:\/\/127\.0\.0\.1:\d+$/u.test(value)) {
+    throw new Error(`${name} must identify one exact runner-owned origin`)
+  }
+  return value
+}
+
+
+const VITE_ORIGIN = requiredRunnerOrigin('BROWSER_VITE_ORIGIN')
+const BACKEND_ORIGIN = requiredRunnerOrigin('BROWSER_BACKEND_ORIGIN')
+if (VITE_ORIGIN === BACKEND_ORIGIN) {
+  throw new Error('runner-owned Vite and backend origins must be distinct')
+}
 const STEP_LEDGER = process.env.BROWSER_STEP_LEDGER
 if (!STEP_LEDGER) throw new Error('BROWSER_STEP_LEDGER is required')
+const SENSITIVE_VALUES = [
+  ...runtimeSensitiveValues(process.env),
+  process.env.BROWSER_TRANSCRIPT_SENTINEL,
+].filter(value => typeof value === 'string' && value.length > 0)
 
 
 function recordStep(step: string) {
@@ -42,8 +60,25 @@ test('Phase 2 starts from the canonical project library', async ({ page }) => {
   }
 
   assertRuntimeEvidenceHealthy(evidence)
+  const runnerOrigins = new Set([VITE_ORIGIN, BACKEND_ORIGIN])
   expect(
-    scanRuntimeEvidence(evidence, runtimeSensitiveValues(process.env)).matchCount,
+    evidence.requests.every(entry => (
+      runnerOrigins.has(new URL(entry.url).origin)
+    )),
+  ).toBe(true)
+  expect(
+    evidence.responses.every(entry => (
+      runnerOrigins.has(new URL(entry.url).origin)
+    )),
+  ).toBe(true)
+  expect(
+    evidence.apiResponses.every(entry => (
+      new URL(entry.url).origin === BACKEND_ORIGIN
+    )),
+  ).toBe(true)
+  expect(new URL(page.url()).origin).toBe(VITE_ORIGIN)
+  expect(
+    scanRuntimeEvidence(evidence, SENSITIVE_VALUES).matchCount,
   ).toBe(0)
   recordStep('runtime-clean')
 })

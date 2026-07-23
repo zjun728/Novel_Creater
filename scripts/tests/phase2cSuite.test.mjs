@@ -42,12 +42,12 @@ function assertBoundaryAcceptsLfAndCrlf(boundary, lfSource, description) {
 }
 
 
-test('Phase 2C remains an explicit gate while full Phase 2 is the default', () => {
+test('Phase 2C remains the default until full Phase 2 acceptance is complete', () => {
   const rootPackage = JSON.parse(readWorkspaceFile('package.json'))
   const frontendPackage = JSON.parse(readWorkspaceFile('frontend/package.json'))
-  assert.equal(rootPackage.scripts['test:browser'], 'node scripts/run-tests.mjs browser-phase2')
+  assert.equal(rootPackage.scripts['test:browser'], 'node scripts/run-tests.mjs browser-phase2c')
   assert.equal(rootPackage.scripts['test:browser:phase2c'], 'node scripts/run-tests.mjs browser-phase2c')
-  assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-phase2.mjs')
+  assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-phase2c.mjs')
   assert.equal(frontendPackage.scripts['test:e2e:phase2c'], 'node e2e/run-phase2c.mjs')
   for (const alias of ['test:browser:m2', 'test:milestone2']) {
     assert.equal(rootPackage.scripts[alias], undefined)

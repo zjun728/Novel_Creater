@@ -20,16 +20,16 @@ function readWorkspaceFile(relativePath) {
 }
 
 
-test('Phase 2 exposes one formal default browser entrypoint', () => {
+test('Phase 2 exposes one formal explicit browser entrypoint', () => {
   const rootPackage = JSON.parse(readWorkspaceFile('package.json'))
   const frontendPackage = JSON.parse(readWorkspaceFile('frontend/package.json'))
 
-  assert.equal(rootPackage.scripts['test:browser'], 'node scripts/run-tests.mjs browser-phase2')
+  assert.equal(rootPackage.scripts['test:browser'], 'node scripts/run-tests.mjs browser-phase2c')
   assert.equal(
     rootPackage.scripts['test:browser:phase2'],
     'node scripts/run-tests.mjs browser-phase2',
   )
-  assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-phase2.mjs')
+  assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-phase2c.mjs')
   assert.equal(frontendPackage.scripts['test:e2e:phase2'], 'node e2e/run-phase2.mjs')
 })
 
@@ -128,6 +128,11 @@ test('Phase 2 Playwright source is UI-only and uses the runtime observer', () =>
   assert.match(source, /\bobserveRuntime\b/u)
   assert.match(source, /\bassertRuntimeEvidenceHealthy\b/u)
   assert.match(source, /\bscanRuntimeEvidence\b/u)
+  assert.match(source, /BROWSER_VITE_ORIGIN/u)
+  assert.match(source, /BROWSER_BACKEND_ORIGIN/u)
+  assert.match(source, /runnerOrigins\.has\(new URL\(entry\.url\)\.origin\)/u)
+  assert.match(source, /new URL\(entry\.url\)\.origin === BACKEND_ORIGIN/u)
+  assert.match(source, /BROWSER_TRANSCRIPT_SENTINEL/u)
   assert.doesNotMatch(
     source,
     /page\.request|page\.route|page\.evaluate|\bfetch\s*\(|\baxios\b/u,
@@ -153,19 +158,45 @@ test('Phase 2 browser progress ledger is closed and contains no diagnostics', as
 
   assert.deepEqual(
     runner.verifyBrowserStepLedger(
-      'library-navigation-start\nlibrary-navigation-finished\n'
-        + 'library-heading-visible\nlibrary-button-visible\nlibrary-visible\n',
+      'library-navigation-start\nlibrary-navigation-finished\n',
     ),
     [
       'library-navigation-start',
       'library-navigation-finished',
-      'library-heading-visible',
-      'library-button-visible',
-      'library-visible',
     ],
   )
   assert.throws(
     () => runner.verifyBrowserStepLedger('library-navigation-start\nsecret=value\n'),
     /progress ledger/iu,
+  )
+  const fullLedger = runner.ALLOWED_BROWSER_STEPS
+    .map(step => `${step}\n`)
+    .join('')
+  assert.deepEqual(
+    runner.verifyBrowserStepLedger(fullLedger, { requireComplete: true }),
+    runner.ALLOWED_BROWSER_STEPS,
+  )
+  assert.throws(
+    () => runner.verifyBrowserStepLedger(
+      'library-navigation-start\nlibrary-navigation-finished\n',
+      { requireComplete: true },
+    ),
+    /progress ledger/iu,
+  )
+})
+
+
+test('Phase 2 runner scans private gateway and transcript sentinels', () => {
+  const source = readWorkspaceFile('frontend/e2e/run-phase2.mjs')
+
+  assert.match(source, /BROWSER_PRIVATE_PROVIDER_URL:\s*gatewayUrl/u)
+  assert.match(source, /BROWSER_TRANSCRIPT_SENTINEL/u)
+  assert.match(
+    source,
+    /\.\.\.runtimeSensitiveValues\(environments\.sensitiveController\)/u,
+  )
+  assert.match(
+    source,
+    /environments\.sensitiveController\.BROWSER_TRANSCRIPT_SENTINEL/u,
   )
 })
