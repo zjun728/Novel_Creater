@@ -155,7 +155,7 @@ git commit -m "feat: define bible draft lifecycle"
 - Create: `backend/tests/api/test_bible_routes.py`
 - Create: `backend/tests/integration/test_bible_revisions.py`
 
-- [ ] **Step 1: Define and test the payload**
+- [x] **Step 1: Define and test the payload**
 
 Create strict Pydantic models for:
 
@@ -177,7 +177,7 @@ Fields describe future design and cannot claim an event has already occurred.
 Reject unknown keys, blank required text, duplicate stable item ids, and payloads
 outside the bounded field/list lengths. Hash only canonical validated data.
 
-- [ ] **Step 2: Write service RED tests**
+- [x] **Step 2: Write service RED tests**
 
 Cover missing/current/superseded draft and head states, archived read-only,
 server-derived contract basis, `expectedDraftVersion` and
@@ -190,13 +190,13 @@ The service must call the canonical `ContractService.get_head()` result and
 accept only `contract_ready=True`; it must not duplicate contract integrity SQL
 or call the HTTP route.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_domain.py backend/tests/unit/test_bible_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
 ```
 
-- [ ] **Step 4: Implement the routes**
+- [x] **Step 4: Implement the routes**
 
 ```text
 GET  /api/projects/:id/bible/head
@@ -234,7 +234,7 @@ cannot commit, the API returns the stable retryable `503
 BibleConfirmationRetryable` without exposing the original exception, and the
 same idempotency key may later succeed.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_domain.py backend/tests/unit/test_bible_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
