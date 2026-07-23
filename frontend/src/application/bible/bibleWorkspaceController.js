@@ -36,9 +36,12 @@ export function createBibleWorkspaceController({
     return 'first'
   })
   const activeArtifact = computed(() => {
-    if (mode.value === 'archived') return store.head?.bible != null ? store.head : store.draft
+    // Archived projects preserve an unsaved/superseded draft for read-only recovery.
+    // Every displayed concern below (body, status, reasons) uses this same artifact.
+    if (mode.value === 'archived') return store.draft?.draft != null ? store.draft : store.head
     return mode.value === 'head' ? store.head : store.draft
   })
+  const activeBible = computed(() => activeArtifact.value?.draft ?? activeArtifact.value?.bible ?? (store.draft?.canEdit === true ? emptyBible() : null))
   const activeStatus = computed(() => activeArtifact.value?.status || '')
   const activeReasons = computed(() => [...(activeArtifact.value?.reasons || [])])
   const editable = computed(() => (mode.value === 'draft' || mode.value === 'first') && store.canEdit === true)
@@ -59,7 +62,7 @@ export function createBibleWorkspaceController({
     if (!projectId()) return null
     try {
       await store.load(projectId(), { readOnly: isArchived() })
-      working.value = clone(store.draft?.draft ?? store.head?.bible ?? (store.draft?.canEdit === true ? emptyBible() : null))
+      working.value = clone(activeBible.value)
       return working.value
     } catch (failure) { setError(failure); throw failure }
   }

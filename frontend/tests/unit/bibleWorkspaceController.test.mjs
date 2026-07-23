@@ -81,6 +81,17 @@ test('state machine displays a head-only Bible read-only, clones its revision, a
   assert.equal(await archivedWorkspace.clone(archived.head), undefined)
 })
 
+test('archived workspace keeps a superseded draft as its single displayed artifact when a head also exists', async () => {
+  const archivedDraft = { draftVersion: 2, draftId: 'draft-archived', draft: { ...bible(), premiseAndPromise: 'ARCHIVED DRAFT' }, status: 'superseded', lifecycle: 'archived', canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] }
+  const archivedHead = { ...revision(8), bible: { ...bible(), premiseAndPromise: 'ARCHIVED HEAD' }, status: 'current', lifecycle: 'archived', canClone: false, reasons: ['project_archived'] }
+  const store = makeStore({ draft: archivedDraft, head: archivedHead, canEdit: false, canConfirm: false, canClone: false })
+  const workspace = controller(store, { isArchived: () => true }); await workspace.hydrate()
+  assert.equal(workspace.working.value.premiseAndPromise, 'ARCHIVED DRAFT')
+  assert.equal(workspace.activeStatus.value, 'superseded')
+  assert.deepEqual(workspace.activeReasons.value, ['bible_head_changed'])
+  assert.equal(workspace.editable.value, false); assert.equal(workspace.cloneSource.value, null)
+})
+
 test('superseded drafts are read-only and clone with sourceDraftId while confirmed output remains visible and focuses status', async () => {
   const store = makeStore({ draft: { draftVersion: 2, draftId: 'draft-2', draft: bible(), status: 'superseded', canEdit: false, canConfirm: false, canClone: true, reasons: [] } }); const events = []
   store.confirm = async () => { const result = { ...revision(8), bible: { ...bible(), protagonist: 'confirmed' } }; store.draft = null; store.head = result; return result }

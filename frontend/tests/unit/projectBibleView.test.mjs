@@ -137,11 +137,11 @@ test('mounted ProjectBibleView follows first, head-only, superseded, and archive
       if (options.method === 'PUT') { puts.push(JSON.parse(options.body)); return new Response(JSON.stringify(makeDraft(id, { draftVersion: 1 })), { headers: { 'content-type': 'application/json' } }) }
       if (path.endsWith('/bible/draft/clone')) { clones.push(JSON.parse(options.body)); return new Response(JSON.stringify(makeDraft(id, { draftVersion: 2 })), { headers: { 'content-type': 'application/json' } }) }
       if (path.endsWith('/bible/head')) {
-        const value = id === 'first' ? makeHead(id, { revision: 0, bible: null, canClone: false }) : id === 'head' ? makeHead(id, { reasons: ['bible_head_changed'] }) : id === 'archived' ? makeHead(id, { lifecycle: 'archived', canClone: false }) : makeHead(id)
+        const value = id === 'first' ? makeHead(id, { revision: 0, bible: null, canClone: false }) : id === 'head' ? makeHead(id, { reasons: ['bible_head_changed'] }) : id === 'archived' ? makeHead(id, { lifecycle: 'archived', canClone: false, bible: { ...bible(), premiseAndPromise: 'ARCHIVED HEAD' }, reasons: ['project_archived'] }) : makeHead(id)
         return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
       }
       if (path.endsWith('/bible/draft')) {
-        const value = id === 'first' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false }) : id === 'head' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false, reasons: [] }) : id === 'super' ? makeDraft(id, { draftId: 'draft-super', status: 'superseded', canEdit: false, canConfirm: false, reasons: ['bible_head_changed'] }) : makeDraft(id, { lifecycle: 'archived', canEdit: false, canConfirm: false, canClone: false })
+        const value = id === 'first' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false }) : id === 'head' ? makeDraft(id, { draftId: null, draftVersion: null, status: 'missing', draft: null, canConfirm: false, reasons: [] }) : id === 'super' ? makeDraft(id, { draftId: 'draft-super', status: 'superseded', canEdit: false, canConfirm: false, reasons: ['bible_head_changed'] }) : makeDraft(id, { lifecycle: 'archived', status: 'superseded', draft: { ...bible(), premiseAndPromise: 'ARCHIVED DRAFT' }, canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] })
         return new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
       }
       return new Response(JSON.stringify({ id, title: id, archivedAt: id === 'archived' ? '2026-01-01' : null }), { headers: { 'content-type': 'application/json' } })
@@ -155,6 +155,6 @@ test('mounted ProjectBibleView follows first, head-only, superseded, and archive
     allowLeave = true; await router.push('/next'); assert.equal(router.currentRoute.value.fullPath, '/next')
     await router.push('/projects/head/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · current/); assert.match(text(root), /内容已过期，请调整未来设计/); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true); assert.equal(area.props.disabled, false); assert.ok(byText(root, '调整未来设计'))
     await router.push('/projects/super/bible'); await flush(); assert.match(text(root), /superseded/); await byText(root, '调整未来设计').props.onClick(); await flush(); assert.deepEqual(clones.at(-1), { sourceDraftId: 'draft-super' })
-    await router.push('/projects/archived/bible'); await flush(); assert.equal(byText(root, '调整未来设计'), undefined); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true)
+    await router.push('/projects/archived/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · superseded/); assert.match(text(root), /内容已过期，请调整未来设计/); assert.equal(byText(root, '调整未来设计'), undefined); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED DRAFT'); assert.ok(area); assert.equal(area.props.readonly, true)
   } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
 })
