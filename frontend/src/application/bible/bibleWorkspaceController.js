@@ -25,6 +25,8 @@ export function createBibleWorkspaceController({
   if (!store || typeof projectId !== 'function') throw new TypeError('store and projectId are required')
   const working = ref(null); const confirmOpen = ref(false); const historyOpen = ref(false); const errorSummary = ref(null); const confirmTrigger = ref(null)
   const attempts = new Map()
+  let generation = 0
+  let activeProject = ''
   const busy = computed(() => Boolean(store.loading || store.saving || store.confirming || store.cloning || store.historyLoading))
   const hasDraftBody = computed(() => store.draft?.draft != null)
   const hasHeadBody = computed(() => store.head?.bible != null)
@@ -55,43 +57,111 @@ export function createBibleWorkspaceController({
     return null
   })
 
-  function setError(failure) { errorSummary.value = { message: String(failure?.message || '请求失败'), status: Number(failure?.status || 0) }; nextTick(focusError) }
+  function ticket() { return { project: String(projectId() || ''), generation } }
+  function current(value) { return value.project === String(projectId() || '') && value.project === activeProject && value.generation === generation }
+  function publicFailure(failure) {
+    const status = Number(failure?.status || store.error?.status || store.conflict?.status || 0)
+    return {
+      status,
+      code: String(failure?.code || store.error?.code || store.conflict?.code || 'request_failed'),
+      message: status === 409 ? '保存冲突：本地编辑仍保留，请重新加载权威版本后再继续。' : '创作圣经操作失败，请重试。',
+      correlationId: String(failure?.correlationId || store.error?.correlationId || ''),
+    }
+  }
+  function setError(failure, value) {
+    if (!current(value)) return
+    errorSummary.value = publicFailure(failure)
+    nextTick(() => { if (current(value)) focusError() })
+  }
   function attemptKey() { const identity = `${projectId()}:${store.draft?.draftVersion ?? ''}:${store.head?.revision ?? ''}`; if (!attempts.has(identity)) attempts.set(identity, keyFactory()); return [identity, attempts.get(identity)] }
 
   async function hydrate() {
-    if (!projectId()) return null
+    const targetProject = String(projectId() || '')
+    if (!targetProject) return null
+    generation += 1
+    activeProject = targetProject
+    working.value = null; confirmOpen.value = false; historyOpen.value = false
+    errorSummary.value = null; confirmTrigger.value = null; attempts.clear()
+    const value = ticket()
     try {
-      await store.load(projectId(), { readOnly: isArchived() })
+      await store.load(targetProject, { readOnly: isArchived() })
+      if (!current(value)) return undefined
       working.value = clone(activeBible.value)
       return working.value
-    } catch (failure) { setError(failure); throw failure }
+    } catch (failure) {
+      if (!current(value)) return undefined
+      setError(failure, value); throw failure
+    }
   }
   function edit(value) { if (!editable.value || busy.value) return; working.value = clone(value); store.edit(working.value) }
-  async function save() { if (!canSave.value) return undefined; try { const saved = await store.save(projectId(), working.value); working.value = clone(saved?.draft || store.draft?.draft || working.value); return saved } catch (failure) { setError(failure); throw failure } }
-  function openConfirm(trigger) { if (!canConfirm.value) return false; confirmTrigger.value = trigger || null; confirmOpen.value = true; nextTick(focusConfirm); return true }
-  function closeConfirm() { confirmOpen.value = false; nextTick(() => { focusTrigger(); confirmTrigger.value?.focus?.() }) }
+  async function save() {
+    if (!canSave.value) return undefined
+    const value = ticket(); const savedWorking = clone(working.value)
+    try {
+      const saved = await store.save(value.project, savedWorking)
+      if (!current(value)) return undefined
+      working.value = clone(saved?.draft || store.draft?.draft || working.value)
+      return saved
+    } catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+  }
+  function openConfirm(trigger) {
+    if (!canConfirm.value) return false
+    const value = ticket(); confirmTrigger.value = trigger || null; confirmOpen.value = true
+    nextTick(() => { if (current(value)) focusConfirm() })
+    return true
+  }
+  function closeConfirm() {
+    const value = ticket(); const trigger = confirmTrigger.value
+    confirmOpen.value = false
+    nextTick(() => { if (current(value)) { focusTrigger(); trigger?.focus?.() } })
+  }
   async function confirm() {
     if (!canConfirm.value) return undefined
+    const value = ticket()
     const [identity, idempotencyKey] = attemptKey()
     try {
-      const result = await store.confirm(projectId(), { idempotencyKey })
+      const result = await store.confirm(value.project, { idempotencyKey })
+      if (!current(value)) return undefined
       working.value = clone(result?.bible || store.head?.bible || null)
       confirmOpen.value = false
-      nextTick(focusStatus)
+      nextTick(() => { if (current(value)) focusStatus() })
       return result
-    } catch (failure) { if (isClientError(failure)) attempts.delete(identity); setError(failure); throw failure }
+    } catch (failure) {
+      if (!current(value)) return undefined
+      if (isClientError(failure)) attempts.delete(identity)
+      setError(failure, value); throw failure
+    }
   }
   async function cloneRevision(source = cloneSource.value) {
     if (busy.value || isArchived() || !source) return undefined
+    const value = ticket()
     const command = source.sourceDraftId ? { sourceDraftId: source.sourceDraftId }
       : source.sourceRevision ? { sourceRevision: source.sourceRevision }
         : source.draftId ? { sourceDraftId: source.draftId } : { sourceRevision: source.revision }
-    try { const result = await store.clone(projectId(), command); working.value = clone(result?.draft || store.draft?.draft || null); return result } catch (failure) { setError(failure); throw failure }
+    try {
+      const result = await store.clone(value.project, command)
+      if (!current(value)) return undefined
+      working.value = clone(result?.draft || store.draft?.draft || null)
+      return result
+    } catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
   }
-  async function openHistory() { historyOpen.value = true; try { return await store.loadHistory(projectId(), { append: false }) } catch (failure) { setError(failure); throw failure } }
-  async function showHistoryDetail(revision) { try { return await store.loadHistoryDetail(projectId(), revision) } catch (failure) { setError(failure); throw failure } }
-  async function loadMoreHistory() { if (busy.value || store.historyNextBeforeRevision == null) return undefined; try { return await store.loadHistory(projectId(), { append: true, beforeRevision: store.historyNextBeforeRevision }) } catch (failure) { setError(failure); throw failure } }
-  function requestLeave() { return store.dirty !== true || confirmLeave() }
-  function beforeUnload(event) { if (store.dirty !== true) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
+  async function openHistory() {
+    const value = ticket(); historyOpen.value = true
+    try { const result = await store.loadHistory(value.project, { append: false }); return current(value) ? result : undefined }
+    catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+  }
+  async function showHistoryDetail(revision) {
+    const value = ticket()
+    try { const result = await store.loadHistoryDetail(value.project, revision); return current(value) ? result : undefined }
+    catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+  }
+  async function loadMoreHistory() {
+    if (busy.value || store.historyNextBeforeRevision == null) return undefined
+    const value = ticket(); const beforeRevision = store.historyNextBeforeRevision
+    try { const result = await store.loadHistory(value.project, { append: true, beforeRevision }); return current(value) ? result : undefined }
+    catch (failure) { if (!current(value)) return undefined; setError(failure, value); throw failure }
+  }
+  function requestLeave() { if (busy.value) return false; return store.dirty !== true || confirmLeave() }
+  function beforeUnload(event) { if (store.dirty !== true && !busy.value) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
   return { working, confirmOpen, historyOpen, errorSummary, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, requestLeave, beforeUnload, confirmLeave: requestLeave }
 }

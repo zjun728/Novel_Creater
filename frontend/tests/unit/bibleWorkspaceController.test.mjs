@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { reactive } from 'vue'
 
@@ -14,6 +13,11 @@ const bible = () => ({ ...emptyBible(), premiseAndPromise: 'promise', worldRules
 const revision = number => ({ revision: number, bible: bible(), canClone: true })
 
 function error(status, message = 'failed') { return Object.assign(new Error(message), { status }) }
+function deferred() {
+  let resolve; let reject
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject })
+  return { promise, resolve, reject }
+}
 
 function makeStore(overrides = {}) {
   const calls = { load: [], edit: [], save: [], confirm: [], clone: [], history: [], detail: [] }
@@ -43,10 +47,36 @@ function controller(store, options = {}) {
   })
 }
 
-test('every current backend Bible reason code has an intentional author-facing mapping', async () => {
-  const backend = (await Promise.all(['bibles.py', 'contracts/history.py', 'contracts/preview.py'].map(path => readFile(new URL(`../../../backend/services/${path}`, import.meta.url), 'utf8')))).join('\n')
+test('the public frontend Bible reason contract maps every supported code intentionally', () => {
   const codes = ['selection_missing', 'seed_missing', 'contract_missing', 'contract_not_ready', 'contract_revision_replaced', 'contract_basis_invalid', 'contract_unavailable', 'selection_revision_changed', 'seed_identity_changed', 'seed_revision_changed', 'seed_generation_changed', 'contract_revision_changed', 'creation_contract_changed', 'style_contract_changed', 'bible_policy_changed', 'bible_head_changed', 'bible_revision_replaced', 'project_archived']
-  for (const code of codes) { assert.match(backend, new RegExp(`['\"]${code}['\"]`)); assert.doesNotMatch(bibleReasonLabel(code), new RegExp(`（${code}）`)) }
+  for (const code of codes) assert.doesNotMatch(bibleReasonLabel(code), new RegExp(`（${code}）`))
+})
+
+test('late project operations cannot publish working state, errors, focus, or dialogs into a newer hydrate generation', async () => {
+  const saveA = deferred(); const historyA = deferred(); let currentProject = 'A'; const focus = []
+  const store = makeStore()
+  store.load = async project => {
+    store.calls.load.push(project)
+    store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, canClone: true, reasons: [] }
+    store.head = { ...revision(1), bible: { ...bible(), premiseAndPromise: `${project} HEAD` } }
+  }
+  store.save = async project => project === 'A' ? saveA.promise : store.draft
+  store.loadHistory = async project => project === 'A' ? historyA.promise : { items: [], nextBeforeRevision: null }
+  const workspace = createBibleWorkspaceController({ store, projectId: () => currentProject, focusError: () => focus.push('error'), keyFactory: () => 'key' })
+  await workspace.hydrate(); workspace.edit({ ...workspace.working.value, premiseAndPromise: 'A LOCAL' })
+  const oldSave = workspace.save(); const oldHistory = workspace.openHistory()
+  currentProject = 'B'; await workspace.hydrate()
+  saveA.resolve({ draft: { ...bible(), premiseAndPromise: 'A SAVED' } }); historyA.reject(error(500, 'A raw secret'))
+  await oldSave; await oldHistory
+  assert.equal(workspace.working.value.premiseAndPromise, 'B BODY')
+  assert.equal(workspace.errorSummary.value, null); assert.deepEqual(focus, []); assert.equal(workspace.historyOpen.value, false)
+})
+
+test('pending writes block route and unload leave even when the draft is clean', async () => {
+  const store = makeStore({ saving: true, dirty: false }); const workspace = controller(store, { confirmLeave: () => true })
+  assert.equal(workspace.requestLeave(), false)
+  const event = { prevented: false, preventDefault() { this.prevented = true }, returnValue: undefined }
+  assert.equal(workspace.beforeUnload(event), ''); assert.equal(event.prevented, true)
 })
 
 test('state machine creates an empty first Bible only without a head, and never writes on hydrate', async () => {

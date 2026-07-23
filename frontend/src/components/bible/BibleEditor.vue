@@ -53,8 +53,8 @@ function removeItem(field, index) { update(field, (value.value[field] || []).fil
 <style scoped>
 .bible-editor { display:grid; gap:18px; }
 .paper-field,.paper-list { display:grid; gap:7px; }
-.paper-field > span,.paper-list h2 { color:#8b3028; font:700 11px Georgia,'Noto Serif SC',serif; letter-spacing:.12em; }
+.paper-field > span,.paper-list h2 { color:var(--nc-vermilion); font:700 11px Georgia,'Noto Serif SC',serif; letter-spacing:.12em; }
 .paper-list h2 { margin:7px 0 0; font-size:13px; }
-textarea { min-height:78px; resize:vertical; border:1px solid #cdbda5; border-radius:4px; padding:11px; color:#32291f; background:#fffcf5; font:15px/1.65 Georgia,'Noto Serif SC',serif; }
-textarea:disabled { color:#70655a; background:#f4eee2; }
+textarea { min-height:78px; resize:vertical; border:1px solid var(--nc-border); border-radius:4px; padding:11px; color:var(--nc-ink); background:var(--nc-paper); font:15px/1.65 Georgia,'Noto Serif SC',serif; }
+textarea:disabled { color:var(--nc-muted); background:color-mix(in srgb,var(--nc-paper) 88%,var(--nc-canvas)); }
 </style>
