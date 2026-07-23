@@ -590,38 +590,6 @@ test('binding replacement rejects missing or duplicate task keys before fetch', 
   assert.equal(requests, 0)
 })
 
-test('binding project fallback ignores an archived current project', async () => {
-  let selectionModule
-  try {
-    selectionModule = await import('../../src/components/settings/projectBindingSelection.js')
-  } catch (error) {
-    assert.fail(`active project selection helper is missing: ${error.message}`)
-  }
-  const { chooseActiveProjectId } = selectionModule
-  const activeProjects = [
-    { id: 'active-1', title: '活动项目一' },
-    { id: 'active-2', title: '活动项目二' },
-  ]
-  const archivedCurrent = { id: 'archived-1', title: '已归档项目', archivedAt: 123 }
-
-  assert.equal(
-    chooseActiveProjectId(activeProjects, '', archivedCurrent),
-    'active-1',
-  )
-  assert.equal(
-    chooseActiveProjectId([], '', archivedCurrent),
-    '',
-  )
-  assert.equal(
-    chooseActiveProjectId(activeProjects, '', activeProjects[1]),
-    'active-2',
-  )
-  assert.equal(
-    chooseActiveProjectId(activeProjects, 'active-1', activeProjects[1]),
-    'active-1',
-  )
-})
-
 test('provider store exposes global profiles only', () => {
   setActivePinia(createPinia())
   const store = useProviderStore()

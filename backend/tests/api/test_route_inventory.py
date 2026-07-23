@@ -4,6 +4,7 @@ from backend import main
 
 
 DELETED_ROUTERS = (
+    "ai_proxy.py",
     "chapters.py",
     "novel.py",
     "settings_library.py",
@@ -22,6 +23,7 @@ APPROVED_FORMAL_ROUTES = {
     ("GET", "/api/projects/archived"),
     ("POST", "/api/projects"),
     ("GET", "/api/projects/{project_id}"),
+    ("GET", "/api/projects/{project_id}/preparation"),
     ("PUT", "/api/projects/{project_id}"),
     ("POST", "/api/projects/{project_id}/archive"),
     ("POST", "/api/projects/{project_id}/restore"),
