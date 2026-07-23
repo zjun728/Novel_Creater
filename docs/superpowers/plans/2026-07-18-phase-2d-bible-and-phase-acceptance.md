@@ -55,10 +55,16 @@ v1.4, Vue 3, Pinia, Naive UI, Node test runner, pytest, and Playwright.
 - Modify: `backend/schema/25_bible.sql`
 - Modify: `backend/schema/30_planning.sql`
 - Modify: `backend/schema_version.py`
+- Modify: `backend/repositories/planning.py`
+- Modify: `backend/repositories/chapter_sessions.py`
+- Modify: `backend/scripts/reset_writer_core_data.py`
 - Modify: `backend/tests/unit/test_schema_manifest.py`
 - Modify: `backend/tests/unit/test_schema_version.py`
 - Modify: `backend/tests/unit/test_initialize_database.py`
+- Modify: `backend/tests/unit/test_planning_service.py`
+- Modify: `backend/tests/unit/test_reset_writer_core_data.py`
 - Modify: `backend/tests/integration/test_schema_bootstrap.py`
+- Modify: affected schema-version integration and browser fixtures
 - Create: `backend/tests/integration/test_bible_schema_lifecycle.py`
 
 - [ ] **Step 1: Write the schema contract tests**
@@ -109,16 +115,23 @@ basis.
 - [ ] **Step 4: Implement the schema**
 
 Keep all draft rows. Confirmation requests reference `(project_id, draft_id)`
-and retain their own immutable draft version/hash snapshot. Update planning
-foreign keys so future plans freeze both Bible contract hashes instead of the
-removed `contract_hash`. Do not add migration SQL or compatibility views.
+and retain their own immutable draft version/hash snapshot. Keep the existing
+`volume_plans.contract_hash` and `chapter_sessions.contract_hash` meaning: each
+stores the creation-contract content hash. Change only the volume-to-Bible
+foreign-key target from the removed Bible `contract_hash` to
+`creation_bible_revisions.creation_hash`, and update repository reads and
+comparisons against Bible rows accordingly. The exact Bible revision and
+`content_hash` referenced by planning already freeze that revision's
+`style_contract_id` and `style_hash`, so downstream planning does not need a
+second duplicated style-hash column. Do not rename draft DTO/service fields,
+modify `40_drafts.sql`, or add migration SQL or compatibility views.
 
 - [ ] **Step 5: Run GREEN and commit**
 
 ```powershell
 python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py backend/tests/integration/test_bible_schema_lifecycle.py -q
 git diff --check
-git add backend/schema backend/schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py backend/tests/integration/test_bible_schema_lifecycle.py
+git add backend/schema backend/schema_version.py backend/repositories/planning.py backend/repositories/chapter_sessions.py backend/scripts/reset_writer_core_data.py backend/tests frontend/e2e/phase2a-assets-settings.spec.ts frontend/tests/unit/applicationSettingsStore.test.mjs
 git commit -m "feat: define bible draft lifecycle"
 ```
 
