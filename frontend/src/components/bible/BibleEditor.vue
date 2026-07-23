@@ -14,12 +14,19 @@ const arrayFields = [
   ['continuityGuardrails', '连续性护栏'], ['openDesignQuestions', '开放设计问题'],
 ]
 const value = computed(() => props.modelValue || {})
+let nextItemId = 0
 function update(field, next) { emit('update:modelValue', { ...value.value, [field]: next }) }
 function updateItem(field, index, text) {
   const rows = [...(value.value[field] || [])]
   rows[index] = { ...rows[index], text }
   update(field, rows)
 }
+function addItem(field) {
+  const rows = [...(value.value[field] || [])]
+  nextItemId += 1
+  update(field, [...rows, { id: `design-${nextItemId}`, text: '' }])
+}
+function removeItem(field, index) { update(field, (value.value[field] || []).filter((_, row) => row !== index)) }
 </script>
 
 <template>
@@ -33,7 +40,9 @@ function updateItem(field, index, text) {
       <label v-for="(item, index) in value[key] || []" :key="item.id" class="paper-field">
         <span>{{ item.id }}</span>
         <textarea :value="item.text" :disabled="disabled" @input="updateItem(key, index, $event.target.value)" />
+        <button type="button" :disabled="disabled" @click="removeItem(key, index)">删除</button>
       </label>
+      <button type="button" :disabled="disabled" @click="addItem(key)">新增{{ label }}</button>
     </section>
   </section>
 </template>

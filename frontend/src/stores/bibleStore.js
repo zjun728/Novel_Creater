@@ -18,6 +18,15 @@ const BASIS_FIELDS = [
   'bindingRevisionId', 'bindingHash', 'policyVersion',
 ]
 
+function emptyBible() {
+  return {
+    premiseAndPromise: '', powerOrProgressionSystem: '', protagonist: '',
+    toneAndNarrativeBoundaries: '', worldRules: [], coreCast: [], factions: [],
+    longTermConflicts: [], relationshipDynamics: [], continuityGuardrails: [],
+    openDesignQuestions: [],
+  }
+}
+
 function publicError(error) {
   return {
     status: Number(error?.status || 0),
@@ -56,7 +65,7 @@ function publicDraft(value) {
     draftVersion: value.draftVersion,
     baseHeadRevision: value.baseHeadRevision,
     contentHash: value.contentHash,
-    draft: publicBible(value.draft),
+    draft: value.draft == null && value.canEdit === true ? emptyBible() : publicBible(value.draft),
     basis: publicBasis(value.basis),
     canEdit: value.canEdit === true,
     canConfirm: value.canConfirm === true,
@@ -210,17 +219,19 @@ export const useBibleStore = defineStore('bible', () => {
     const targetProject = enterProject(nextProjectId)
     const key = String(command?.idempotencyKey || '')
     if (!key) throw new TypeError('idempotencyKey is required')
-    const commandKey = `${targetProject}:${key}`
-    if (confirmCommands.has(commandKey)) return confirmCommands.get(commandKey)
     assertWritable('confirm')
+    const draftVersion = Number(draft.value?.draftVersion)
+    const headRevision = Number(head.value?.revision || 0)
+    const commandKey = `${targetProject}:${key}:${draftVersion}:${headRevision}`
+    if (confirmCommands.has(commandKey)) return confirmCommands.get(commandKey)
     const targetStateGeneration = stateGeneration
     const promise = (async () => {
       confirming.value = true; error.value = null
       try {
         const confirmed = publicRevision(await api.bible.confirm(targetProject, {
           idempotencyKey: key,
-          expectedDraftVersion: draft.value.draftVersion,
-          expectedHeadRevision: head.value?.revision,
+          expectedDraftVersion: draftVersion,
+          expectedHeadRevision: headRevision,
         }))
         if (projectId.value === targetProject && stateGeneration === targetStateGeneration) {
           head.value = confirmed; draft.value = null; dirty.value = false; conflict.value = null
@@ -228,6 +239,7 @@ export const useBibleStore = defineStore('bible', () => {
         return confirmed
       } catch (failure) {
         if (projectId.value === targetProject && stateGeneration === targetStateGeneration) error.value = publicError(failure)
+        if (Number(failure?.status) >= 400 && Number(failure?.status) < 500) confirmCommands.delete(commandKey)
         throw failure
       } finally {
         if (projectId.value === targetProject && stateGeneration === targetStateGeneration) confirming.value = false

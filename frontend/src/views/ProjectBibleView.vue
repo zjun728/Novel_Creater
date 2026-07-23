@@ -9,15 +9,16 @@ import { useBibleStore } from '../stores/bibleStore.js'
 
 const routeProject = useRouteProject()
 const store = useBibleStore()
-const working = ref(null); const showHistory = ref(false); const confirmOpen = ref(false); const notice = ref('')
+const working = ref(null); const showHistory = ref(false); const confirmOpen = ref(false); const notice = ref(''); const errorSummary = ref(null); const attemptKeys = new Map()
 const projectId = computed(() => routeProject.project.value?.id || '')
-const locked = computed(() => routeProject.state.value === 'archived' || store.readOnly || store.canEdit === false)
+const locked = computed(() => routeProject.state.value === 'archived' || store.readOnly)
 const status = computed(() => store.draft?.status || store.head?.status || '')
 async function hydrate() { if (!projectId.value) return; await store.load(projectId.value, { readOnly: routeProject.state.value === 'archived' }); working.value = structuredClone(store.draft?.draft || store.head?.bible || null) }
 watch(() => [projectId.value, routeProject.state.value], () => { void hydrate().catch(error => { notice.value = error.message || '创作圣经加载失败' }) }, { immediate:true })
 function edit(value) { working.value = value; if (!locked.value) store.edit(value) }
-async function save() { await store.save(projectId.value); notice.value = '草稿已保存' }
-async function confirm() { await store.confirm(projectId.value, { idempotencyKey: `bible-confirm-${store.draft?.draftId}` }); confirmOpen.value = false; notice.value = '已确认新的创作圣经修订' }
+async function save() { try { await store.save(projectId.value); notice.value = '草稿已保存' } catch (error) { errorSummary.value?.focus(); notice.value = store.error?.message || error.message } }
+function attemptKey() { const identity = `${projectId.value}:${store.draft?.draftVersion}:${store.head?.revision || 0}`; if (!attemptKeys.has(identity)) attemptKeys.set(identity, `bible-confirm-${identity}-${crypto.randomUUID()}`); return attemptKeys.get(identity) }
+async function confirm() { try { await store.confirm(projectId.value, { idempotencyKey: attemptKey() }); confirmOpen.value = false; notice.value = '已确认新的创作圣经修订' } catch (error) { errorSummary.value?.focus(); notice.value = store.error?.message || error.message; if (Number(error?.status) >= 400 && Number(error?.status) < 500) attemptKeys.delete(`${projectId.value}:${store.draft?.draftVersion}:${store.head?.revision || 0}`) } }
 async function clone(revision) { await store.clone(projectId.value, { sourceRevision: revision }); working.value = structuredClone(store.draft?.draft || null); showHistory.value = false; notice.value = '已创建未来设计草稿' }
 function preventLeave() { return !store.dirty || window.confirm('存在未保存的创作圣经编辑。确定离开吗？') }
 onBeforeRouteLeave(preventLeave); onBeforeRouteUpdate(preventLeave)
@@ -25,15 +26,15 @@ function beforeUnload(event) { if (store.dirty) { event.preventDefault(); event.
 onMounted(() => window.addEventListener('beforeunload', beforeUnload)); onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 </script>
 <template>
-  <main class="bible-page"><p class="sr-only" aria-live="polite">{{ notice }}</p>
+  <main class="bible-page"><p ref="errorSummary" class="sr-only" tabindex="-1" aria-live="assertive">{{ notice || store.error?.message || store.conflict?.message }}</p>
     <section v-if="routeProject.state.value === 'loading'" class="sheet">正在装订创作圣经…</section>
     <not-found-view v-else-if="routeProject.state.value === 'missing'" title="项目不存在" description="无法打开创作圣经。" />
     <section v-else-if="routeProject.state.value === 'error'" class="sheet">项目加载失败。<button @click="routeProject.reload">重试</button></section>
     <section v-else class="sheet"><header><p>CREATION BIBLE · {{ status || 'DRAFT' }}</p><h1>{{ routeProject.project.value?.title }} 的创作圣经</h1><button @click="showHistory = true">修订历史</button></header>
       <p v-if="store.reasons.length" class="status-note">{{ store.reasons.join('；') }}</p><p v-if="status === 'superseded'" class="status-note">此修订已被替代，内容仅供复制与查阅。</p><p v-if="locked" class="status-note">此项目或当前服务端状态为只读。</p>
       <bible-editor v-if="working" :model-value="working" :disabled="locked || status === 'superseded' || !store.draft" @update:model-value="edit" />
-      <footer v-if="store.draft && !locked"><button :disabled="store.saving || !store.dirty" @click="save">手动保存</button><button :disabled="!store.canConfirm" @click="confirmOpen = true">预览并确认</button></footer>
-      <section v-if="confirmOpen" class="confirm-panel" role="dialog" aria-modal="true"><h2>确认新的未来设计</h2><p>确认会创建不可变修订。请核对上方全部十一项字段。</p><button @click="confirm">确认签印</button><button @click="confirmOpen = false">返回编辑</button></section>
+      <footer v-if="store.draft && !locked"><button :disabled="store.saving || !store.dirty" @click="save">手动保存</button><span v-if="store.dirty">请先保存后再确认</span><button :disabled="store.dirty || !store.canConfirm" @click="confirmOpen = true">预览并确认</button></footer>
+      <section v-if="confirmOpen" class="confirm-panel" role="dialog" aria-modal="true"><h2>确认新的未来设计</h2><p>确认会创建不可变修订。请核对已保存的完整快照。</p><pre>{{ store.draft?.draft }}</pre><button autofocus @click="confirm">确认签印</button><button @click="confirmOpen = false">返回编辑</button></section>
     </section>
     <bible-history-drawer :store="store" :project-id="projectId" :open="showHistory" :read-only="locked" @close="showHistory = false" @clone="clone" />
   </main>

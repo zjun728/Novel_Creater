@@ -21,6 +21,21 @@ export const useSettingStore = defineStore('setting', () => {
   const changeEvents = ref([])
   const loading = ref(false)
 
+  const entitiesByType = computed(() => {
+    const groups = {}
+    for (const type of ENTITY_TYPES) groups[type.value] = []
+    for (const entity of entities.value) {
+      const type = entity.entityType || 'character'
+      if (!groups[type]) groups[type] = []
+      groups[type].push(entity)
+    }
+    return groups
+  })
+
+  const pendingChangeEvents = computed(() => (
+    changeEvents.value.filter(event => event.status === 'pending_review')
+  ))
+
 
 
   async function loadEntities(projectId, filters = {}) {

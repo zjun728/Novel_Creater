@@ -1,8 +1,7 @@
 <script setup>
-import { ref, computed } from 'vue'
-import { NModal, NCard, NButton, NSpin } from 'naive-ui'
+import { computed } from 'vue'
+import { NModal, NCard, NButton } from 'naive-ui'
 import { useMemoryStore } from '@/stores/memoryStore'
-import { useNovelStore } from '@/stores/novelStore'
 
 const props = defineProps({
   projectId: { type: String, required: true }
@@ -11,7 +10,6 @@ const props = defineProps({
 const emit = defineEmits(['close'])
 
 const memoryStore = useMemoryStore()
-const novelStore = useNovelStore()
 
 const result = computed(() => memoryStore.lastStyleAnalysis)
 

@@ -10,7 +10,6 @@ import {
 } from '@/prompts/volumePlan'
 import { useProjectStore } from './projectStore'
 import { useProviderStore } from './providerStore'
-import { useNovelStore } from './novelStore'
 import { useSeedStore } from './seedStore'
 import { useSettingStore } from './settingStore'
 import { normalizeStateProvenance } from '@/utils/stateProvenance'
@@ -137,7 +136,6 @@ export const useVolumeStore = defineStore('volume', () => {
     generating.value = true
     try {
       const provider = await resolveVolumePlanningProvider(project.id)
-      const novelStore = useNovelStore()
       const seedStore = useSeedStore()
       const settingStore = useSettingStore()
 
@@ -160,7 +158,6 @@ export const useVolumeStore = defineStore('volume', () => {
       const planned = await requestVolumePlan(provider, {
         project,
         seed,
-        bible: novelStore.bible,
         settings: settingStore.entities
       }, diagnostics => {
         lastPlanningDiagnostics.value = diagnostics

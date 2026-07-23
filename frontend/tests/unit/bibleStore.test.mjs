@@ -35,7 +35,7 @@ test('draft CAS conflict remains dirty without retry', async () => {
 test('confirm replays the same pending or outcome-unknown command promise and key', async () => {
   const confirmation = deferred(); const bodies = []
   await withFetch(async (url, options = {}) => { const path = new URL(String(url)).pathname; if (path.endsWith('/confirm')) { bodies.push(JSON.parse(options.body)); return confirmation.promise }; return response(path.endsWith('/head') ? head('project-1') : draft('project-1')) }, async () => {
-    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1'); const first = store.confirm('project-1', { idempotencyKey: 'confirm-1' }); const second = store.confirm('project-1', { idempotencyKey: 'confirm-1' }); assert.equal(bodies.length, 1); confirmation.resolve(response(head('project-1', 1))); const [firstResult, secondResult] = await Promise.all([first, second]); const replay = await store.confirm('project-1', { idempotencyKey: 'confirm-1' }); assert.equal(bodies.length, 1); assert.equal(firstResult.revision, 1); assert.equal(secondResult.revision, 1); assert.equal(replay.revision, 1)
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1'); const first = store.confirm('project-1', { idempotencyKey: 'confirm-1' }); const second = store.confirm('project-1', { idempotencyKey: 'confirm-1' }); assert.equal(bodies.length, 1); confirmation.resolve(response(head('project-1', 1))); const [firstResult, secondResult] = await Promise.all([first, second]); assert.equal(bodies.length, 1); assert.equal(firstResult.revision, 1); assert.equal(secondResult.revision, 1)
   })
 })
 
@@ -50,5 +50,28 @@ test('history paginates and ignores a late old-project page', async () => {
   const oldHistory = deferred(); const calls = []
   await withFetch(async url => { const parsed = new URL(String(url)); const path = parsed.pathname; calls.push(path + parsed.search); if (path.includes('project-a/bible/history')) return oldHistory.promise; if (path.includes('/history')) return response({ items: [head('project-b', 3)], nextBeforeRevision: 2 }); return response(path.endsWith('/head') ? head(path.includes('project-a') ? 'project-a' : 'project-b') : draft(path.includes('project-a') ? 'project-a' : 'project-b')) }, async () => {
     setActivePinia(createPinia()); const store = useBibleStore(); const oldLoad = store.loadHistory('project-a', { limit: 20 }); await store.load('project-b'); await store.loadHistory('project-b', { limit: 20 }); oldHistory.resolve(response({ items: [head('project-a', 2)], nextBeforeRevision: null })); await oldLoad; assert.deepEqual(store.history.map(item => item.revision), [3]); assert.equal(store.historyNextBeforeRevision, 2); assert.equal(calls.some(call => call.includes('project-b/bible/history?limit=20')), true)
+  })
+})
+
+test('an editable empty server draft installs a complete local Bible model', async () => {
+  await withFetch(async url => response(new URL(String(url)).pathname.endsWith('/head') ? head('project-1') : draft('project-1', 0, { draft: null })), async () => {
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
+    assert.equal(store.draft.draft.premiseAndPromise, '')
+    assert.deepEqual(store.draft.draft.openDesignQuestions, [])
+    assert.equal(store.draft.canEdit, true)
+  })
+})
+
+test('confirm identity includes draft and head revisions and releases terminal failure', async () => {
+  const calls = []
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/confirm')) { calls.push(JSON.parse(options.body)); return response({ code: 'BibleRequestInvalid', message: 'bad' }, 422) }
+    return response(path.endsWith('/head') ? head('project-1', 0) : draft('project-1', 1))
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore(); await store.load('project-1')
+    await assert.rejects(store.confirm('project-1', { idempotencyKey: 'same' }))
+    await assert.rejects(store.confirm('project-1', { idempotencyKey: 'same' }))
+    assert.equal(calls.length, 2)
   })
 })

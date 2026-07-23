@@ -1,14 +1,15 @@
 <script setup>
-import { onMounted } from 'vue'
+import { watch } from 'vue'
 const props = defineProps({ store: { type: Object, required: true }, projectId: { type: String, required: true }, open: Boolean, readOnly: Boolean })
 const emit = defineEmits(['close', 'clone'])
-onMounted(() => { if (props.open) void props.store.loadHistory(props.projectId, { limit: 20 }) })
+watch(() => [props.open, props.projectId], ([open, projectId]) => { if (open && projectId) void props.store.loadHistory(projectId, { limit: 20 }) }, { immediate: true })
 function more() { void props.store.loadHistory(props.projectId, { limit: 20, beforeRevision: props.store.historyNextBeforeRevision, append: true }) }
 </script>
 <template>
   <aside v-if="open" class="history-overlay" role="dialog" aria-modal="true" aria-label="创作圣经历史">
     <section class="history-sheet"><button aria-label="关闭历史" @click="emit('close')">×</button><h2>修订历史</h2>
-      <article v-for="item in store.history" :key="item.bibleRevisionId || item.revision"><strong>Revision {{ item.revision }}</strong><p>{{ item.status }} · {{ item.confirmedAt || '未确认' }}</p><button v-if="!readOnly && item.canClone" @click="emit('clone', item.revision)">Adjust Future Design</button></article>
+      <article v-for="item in store.history" :key="item.bibleRevisionId || item.revision"><strong>Revision {{ item.revision }}</strong><p>{{ item.status }} · {{ item.confirmedAt || '未确认' }}</p><button @click="store.loadHistoryDetail(projectId, item.revision)">查看详情</button><button v-if="!readOnly && item.canClone" @click="emit('clone', item.revision)">Adjust Future Design</button></article>
+      <section v-if="store.historyDetail" class="history-detail"><h3>Revision {{ store.historyDetail.revision }}</h3><pre>{{ store.historyDetail.bible }}</pre><p>{{ store.historyDetail.reasons.join('；') }}</p><pre>{{ store.historyDetail.basis }}</pre></section>
       <button v-if="store.historyNextBeforeRevision !== null" @click="more">加载更早修订</button>
     </section>
   </aside>
