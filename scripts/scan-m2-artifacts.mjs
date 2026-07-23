@@ -23,7 +23,6 @@ const IMPLEMENTATION_SOURCE_EXTENSIONS = new Set([
 const STRICT_DIRECTORY = /^(?:backend\/assets|docs\/development)(?:\/|$)/u
 const STRICT_PATH_SEGMENT = /(?:^|\/)(?:evidence|output|artifacts)(?:\/|$)/u
 const SUPERPOWERS_DEFINITION_PATH = /^docs\/superpowers\/(?:specs|plans)\/.+/u
-const RFC8785_RESTRICTED_VECTORS = 'tools/control-plane-qa/fixtures/rfc8785-restricted-vectors.json'
 const PRIVATE_SENTINELS = [
   ['browser', 'secret', 'must', 'not', 'leak'].join('-'),
   ['https://private-provider', '.example/v1'].join(''),
@@ -48,8 +47,7 @@ export function classifyM2ArtifactPath(value) {
   if (IMPLEMENTATION_ROOT.test(filePath) && IMPLEMENTATION_SOURCE_EXTENSIONS.has(extension)) {
     return 'implementation-definition'
   }
-  if (filePath === RFC8785_RESTRICTED_VECTORS
-    || filePath === '.gitattributes'
+  if (filePath === '.gitattributes'
     || (extension === '.md' && SUPERPOWERS_DEFINITION_PATH.test(filePath))) {
     return 'implementation-definition'
   }

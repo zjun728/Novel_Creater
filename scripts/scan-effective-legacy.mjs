@@ -3,7 +3,6 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SCANNER_PATH = 'scripts/scan-effective-legacy.mjs'
-const GATEWAY_PATH = 'tools/control-plane-qa/ai-proxy-gateway.mjs'
 const HEAD_PATHS = ['backend', 'frontend', 'scripts', 'tools', 'package.json']
 const EFFECTIVE_PREFIXES = ['backend/', 'frontend/', 'scripts/', 'tools/']
 const EXCLUDED_TEST_PATHS = [
@@ -50,13 +49,6 @@ export function scanEffectiveLegacy({ files, readContent }) {
 
     let source = rawSource
     if (filePath === SCANNER_PATH) source = removeOwnPatternBlock(source)
-    if (filePath === GATEWAY_PATH) {
-      source = removeGatewayProtectiveEntries(source)
-      if (source === null) {
-        findings.push(createFinding(filePath))
-        continue
-      }
-    }
     if (containsRetiredReference(source)) findings.push(createFinding(filePath))
   }
   return findings
@@ -173,43 +165,6 @@ function removeOwnPatternBlock(source) {
   )).join('\n')
 }
 
-function removeGatewayProtectiveEntries(source) {
-  const lines = source.split(/\r?\n/u)
-  const declaration = 'const FORBIDDEN_NORMALIZED_KEYS = new Set(['
-  const starts = lines.flatMap((line, index) => line === declaration ? [index] : [])
-  if (starts.length !== 1) return null
-
-  const end = lines.findIndex((line, index) => index > starts[0] && line === '])')
-  if (end < 0) return null
-  const entryLines = lines.slice(starts[0] + 1, end)
-  const tokens = entryLines.map(line => {
-    const match = /^  '([a-z]+)'[,]?$/u.exec(line)
-    return match?.[1] ?? null
-  })
-  if (tokens.some(token => token === null)) return null
-
-  const expected = new Set(RETIRED_SHADOW_PATTERNS
-    .filter(item => !/[-.]/u.test(item.code))
-    .map(item => item.code.toLowerCase()))
-  const protectedIndices = tokens.flatMap((token, index) => (
-    expected.has(token) ? [index] : []
-  ))
-  const protectedTokens = new Set(protectedIndices.map(index => tokens[index]))
-  if (protectedIndices.length !== expected.size
-    || protectedTokens.size !== expected.size
-    || protectedIndices[0] !== tokens.length - 2
-    || protectedIndices[1] !== tokens.length - 1) {
-    return null
-  }
-
-  const absoluteProtected = new Set(
-    protectedIndices.map(index => starts[0] + 1 + index),
-  )
-  return lines.map((line, index) => (
-    absoluteProtected.has(index) ? '' : line
-  )).join('\n')
-}
-
 function scanDefaultHead(rootDirectory, spawnSyncImpl) {
   const inventory = listHeadInventory(rootDirectory, spawnSyncImpl)
   const rawFiles = inventory.map(entry => entry.path)
@@ -234,9 +189,7 @@ function scanDefaultHead(rootDirectory, spawnSyncImpl) {
     if (!inventoryPaths.has(candidate)) throw new Error('unexpected grep path')
     if (isEffectivePath(candidate)) candidates.add(candidate)
   }
-  for (const protectivePath of [SCANNER_PATH, GATEWAY_PATH]) {
-    if (inventoryPaths.has(protectivePath)) candidates.add(protectivePath)
-  }
+  if (inventoryPaths.has(SCANNER_PATH)) candidates.add(SCANNER_PATH)
 
   const contentCache = new Map()
   const readContent = filePath => {

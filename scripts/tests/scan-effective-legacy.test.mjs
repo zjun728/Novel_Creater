@@ -55,16 +55,6 @@ export const RETIRED_SHADOW_PATTERNS = Object.freeze([
 // END RETIRED SHADOW PATTERNS
 `
 
-const gatewayDefinition = `const FORBIDDEN_NORMALIZED_KEYS = new Set([
-  'apikey',
-  'baseurl',
-  'authorization',
-  'headers',
-  'provideradapter',
-  'applyadapter'
-])
-`
-
 const syntheticBlobId = '1'.repeat(40)
 
 function lsTreeRecord(filePath, {
@@ -299,23 +289,14 @@ test('the pure scanner normalizes Windows separators and emits at most one findi
   assert.deepEqual(readPaths, ['frontend/e2e/formal.spec.ts'])
 })
 
-test('the exact own pattern block and exact gateway deny entries are protective', () => {
-  const files = [
-    'scripts/scan-effective-legacy.mjs',
-    'tools/control-plane-qa/ai-proxy-gateway.mjs',
-  ]
-  const contents = new Map([
-    [files[0], ownDefinition],
-    [files[1], gatewayDefinition],
-  ])
-
+test('the exact own pattern block is the only protective source exception', () => {
   assert.deepEqual(scanEffectiveLegacy({
-    files,
-    readContent: filePath => contents.get(filePath),
+    files: ['scripts/scan-effective-legacy.mjs'],
+    readContent: () => ownDefinition,
   }), [])
 })
 
-test('a retired term outside either protective exception is rejected', () => {
+test('a retired term outside the scanner own block is rejected', () => {
   assert.deepEqual(scanEffectiveLegacy({
     files: ['scripts/scan-effective-legacy.mjs'],
     readContent: () => `${ownDefinition}\nconst applyAdapter = true\n`,
@@ -323,50 +304,6 @@ test('a retired term outside either protective exception is rejected', () => {
     path: 'scripts/scan-effective-legacy.mjs',
     reason: 'retired shadow reference',
   }])
-
-  assert.deepEqual(scanEffectiveLegacy({
-    files: ['tools/control-plane-qa/ai-proxy-gateway.mjs'],
-    readContent: () => `${gatewayDefinition}\nconst providerAdapter = true\n`,
-  }), [{
-    path: 'tools/control-plane-qa/ai-proxy-gateway.mjs',
-    reason: 'retired shadow reference',
-  }])
-})
-
-test('gateway adapter deny entries must both be unique final entries in one exact block', () => {
-  const invalidSources = [
-    `const FORBIDDEN_NORMALIZED_KEYS = new Set([
-  'apikey',
-  'provideradapter'
-])
-`,
-    `const FORBIDDEN_NORMALIZED_KEYS = new Set([
-  'provideradapter',
-  'apikey',
-  'applyadapter'
-])
-`,
-    `const FORBIDDEN_NORMALIZED_KEYS = new Set([
-  'apikey',
-  'provideradapter',
-  'provideradapter',
-  'applyadapter'
-])
-`,
-    gatewayDefinition + gatewayDefinition,
-    gatewayDefinition.replace("  'provideradapter',", " 'provideradapter',"),
-    gatewayDefinition.replace("  'applyadapter'", "  'apply-adapter'"),
-  ]
-
-  for (const source of invalidSources) {
-    assert.deepEqual(scanEffectiveLegacy({
-      files: ['tools/control-plane-qa/ai-proxy-gateway.mjs'],
-      readContent: () => source,
-    }), [{
-      path: 'tools/control-plane-qa/ai-proxy-gateway.mjs',
-      reason: 'retired shadow reference',
-    }])
-  }
 })
 
 test('the scanner throws for missing, duplicated, misplaced, or weakened own blocks', () => {
@@ -683,7 +620,7 @@ test('default orchestration reads the scanner even when grep finds no retired te
   ])
 })
 
-test('default orchestration reads the gateway even when grep finds no retired term', () => {
+test('default orchestration does not force-read an unrelated tool when grep is clean', () => {
   const calls = []
   const result = captureCli({
     rootDirectory: 'synthetic-root',
@@ -703,13 +640,11 @@ test('default orchestration reads the gateway even when grep finds no retired te
   })
 
   assert.deepEqual(result, {
-    status: 1,
+    status: 0,
     stderr: '',
-    stdout: 'tools/control-plane-qa/ai-proxy-gateway.mjs: retired shadow reference\n',
+    stdout: '',
   })
-  assert.deepEqual(calls.filter(args => args[0] === 'show'), [
-    ['show', 'HEAD:tools/control-plane-qa/ai-proxy-gateway.mjs'],
-  ])
+  assert.deepEqual(calls.filter(args => args[0] === 'show'), [])
 })
 
 test('default orchestration treats grep status above one as a redacted failure', () => {

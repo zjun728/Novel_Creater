@@ -6,7 +6,9 @@ from backend import main
 DELETED_ROUTERS = (
     "ai_proxy.py",
     "chapters.py",
+    "control_plane_draft_writes.py",
     "novel.py",
+    "experience_cards.py",
     "settings_library.py",
     "story_blocks.py",
     "volumes.py",
