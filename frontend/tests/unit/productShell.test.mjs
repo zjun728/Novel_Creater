@@ -123,6 +123,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['项目概览', '/projects/project%201/overview', true],
       ['创作种子', '/projects/project%201/seeds', false],
       ['创作契约', '/projects/project%201/contract', false],
+      ['创作圣经', '/projects/project%201/bible', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
     ],
   )
@@ -173,6 +174,7 @@ test('active and archived project contexts have different module surfaces', asyn
     [
       ['项目概览', '/projects/archived-1/overview', true],
       ['创作契约', '/projects/archived-1/contract', false],
+      ['创作圣经', '/projects/archived-1/bible', false],
     ],
   )
   assert.equal(archived.routeTitle, '已归档项目')
@@ -286,6 +288,11 @@ const shellRoutes = [
   {
     path: '/projects/:projectId/contract',
     name: 'ProjectContract',
+    component: Page,
+  },
+  {
+    path: '/projects/:projectId/bible',
+    name: 'ProjectBible',
     component: Page,
   },
   {
@@ -499,6 +506,11 @@ test('the real project overview consumes shell hydration without a duplicate rea
           component: Page,
         },
         {
+          path: '/projects/:projectId/bible',
+          name: 'ProjectBible',
+          component: Page,
+        },
+        {
           path: '/projects/:projectId/settings/models',
           name: 'ProjectModelSettings',
           component: Page,
@@ -559,6 +571,11 @@ test('shared shell hydration preserves the explicit missing-project route state'
           component: Page,
         },
         {
+          path: '/projects/:projectId/bible',
+          name: 'ProjectBible',
+          component: Page,
+        },
+        {
           path: '/projects/:projectId/settings/models',
           name: 'ProjectModelSettings',
           component: Page,
@@ -580,7 +597,7 @@ test('shared shell hydration preserves the explicit missing-project route state'
   }
 })
 
-test('archived project shell exposes only overview and read-only contract navigation', async () => {
+test('archived project shell exposes overview and read-only contract and Bible navigation', async () => {
   const { html } = await renderApp(
     '/projects/archived-1/overview',
     {
@@ -595,6 +612,7 @@ test('archived project shell exposes only overview and read-only contract naviga
   assert.match(html, /class="product-topbar__title"[^>]*>已归档项目</)
   assert.match(html, /href="\/projects\/archived-1\/overview"/)
   assert.match(html, /href="\/projects\/archived-1\/contract"/)
+  assert.match(html, /href="\/projects\/archived-1\/bible"/)
   assert.doesNotMatch(html, /href="\/projects\/archived-1\/(?:seeds|settings\/models)"/)
 })
 
@@ -666,17 +684,6 @@ test('project overview has one clear entry into the formal contract workspace', 
   assert.doesNotMatch(overview, /WriterView|\/writer\//)
 })
 
-test('unreachable writer views cannot reintroduce retired project navigation', async () => {
-  const sources = await Promise.all([
-    readFile(new URL('../../src/views/WriterView.vue', import.meta.url), 'utf8'),
-    readFile(new URL('../../src/views/WriterUnavailableView.vue', import.meta.url), 'utf8'),
-  ])
-  const combined = sources.join('\n')
-
-  assert.doesNotMatch(combined, /\/project\//)
-  assert.doesNotMatch(combined, /[`'"]\/writer\//)
-  assert.doesNotMatch(combined, /router\.push\(['"]\/['"]\)/)
-  assert.match(combined, /chapterWriterPath/)
-  assert.match(combined, /projectOverviewPath/)
-  assert.match(combined, /projectLibraryPath/)
+test('retired WriterView is physically absent and no shell test imports it', async () => {
+  await assert.rejects(readFile(new URL('../../src/views/WriterView.vue', import.meta.url), 'utf8'))
 })

@@ -3,13 +3,6 @@ import { ref } from 'vue'
 import { api } from '@/api/db/client'
 import { chatCompletion } from '@/api/ai'
 import {
-  buildBibleFromSeedPrompt,
-  buildBibleFromSeedRepairPrompt,
-  buildBibleFromSeedSystemPrompt,
-  extractBibleFromText,
-  normalizeBiblePayload
-} from '@/prompts/bibleFromSeed'
-import {
   buildCompactGlobalAuditPrompt,
   buildGlobalAuditRepairPrompt,
   buildGlobalAuditSystemPrompt,
@@ -89,7 +82,6 @@ function normalizeOutlinePayload(data = {}) {
 }
 
 export const useNovelStore = defineStore('novel', () => {
-  const bible = ref(null)
   const outline = ref(null)
   const characters = ref([])
   const plotThreads = ref([])
@@ -98,51 +90,7 @@ export const useNovelStore = defineStore('novel', () => {
   const globalAuditReports = ref([])
   const globalAuditing = ref(false)
   const loading = ref(false)
-  const generatingBible = ref(false)
   const outlineGenerating = ref(false)
-
-  // === 创作圣经 ===
-  async function loadBible(projectId) {
-    loading.value = true
-    try {
-      bible.value = await api.bible.get(projectId)
-      return bible.value
-    } catch (e) {
-      console.error('加载创作圣经失败:', e.message)
-      throw e
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function saveBible(projectId, data) {
-    loading.value = true
-    try {
-      const result = await api.bible.save(projectId, normalizeBiblePayload(data))
-      bible.value = result
-      await refreshProject(projectId)
-      return result
-    } catch (e) {
-      console.error('保存创作圣经失败:', e.message)
-      throw e
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function deleteBible(projectId) {
-    loading.value = true
-    try {
-      await api.bible.delete(projectId)
-      bible.value = null
-      await refreshProject(projectId)
-    } catch (e) {
-      console.error('删除创作圣经失败:', e.message)
-      throw e
-    } finally {
-      loading.value = false
-    }
-  }
 
   async function loadGlobalAudits(projectId) {
     loading.value = true
@@ -241,63 +189,6 @@ export const useNovelStore = defineStore('novel', () => {
   async function deleteGlobalAudit(projectId, reportId) {
     await api.globalAudits.delete(projectId, reportId)
     globalAuditReports.value = globalAuditReports.value.filter(report => report.id !== reportId)
-  }
-
-  async function generateBibleFromSeed(projectId, seed, options = {}) {
-    if (!seed) throw new Error('请先选择一个创作种子')
-    generatingBible.value = true
-    try {
-      const existingBible = await loadBible(projectId)
-      if (existingBible) {
-        throw new Error('当前项目已有创作圣经，不能从种子重复生成并覆盖。请在创作圣经页局部编辑。')
-      }
-
-      const providerStore = useProviderStore()
-      const provider = await providerStore.resolveTaskProvider({
-        projectId,
-        bindingKeys: ['brainstormModelId', 'writingModelId'],
-        taskName: 'bible_from_seed'
-      })
-
-      const result = await chatCompletion(provider, [
-        { role: 'system', content: buildBibleFromSeedSystemPrompt() },
-        { role: 'user', content: buildBibleFromSeedPrompt(seed, options) }
-      ], jsonOptions(provider, {
-        maxTokens: 4096,
-        temperature: 0.45
-      }))
-
-      const text = getCompletionText(result)
-      let bibleData = extractBibleFromText(text)
-      let repairText = ''
-
-      if (!bibleData && text.trim()) {
-        const repairResult = await chatCompletion(provider, [
-          {
-            role: 'system',
-            content: '你是 JSON 修复器。你只能输出合法 JSON，不要输出解释、Markdown 或额外文字。'
-          },
-          {
-            role: 'user',
-            content: buildBibleFromSeedRepairPrompt(text)
-          }
-        ], jsonOptions(provider, {
-          maxTokens: 4096,
-          temperature: 0.2
-        }))
-        repairText = getCompletionText(repairResult)
-        bibleData = extractBibleFromText(repairText)
-      }
-
-      if (!bibleData) {
-        const raw = snippet(repairText) || snippet(text)
-        throw new Error(`AI 没有返回可解析的创作圣经 JSON${raw ? `。返回片段：${raw}` : ''}`)
-      }
-
-      return await saveBible(projectId, normalizeBiblePayload(bibleData))
-    } finally {
-      generatingBible.value = false
-    }
   }
 
   // === 滚动大纲 ===
@@ -641,7 +532,6 @@ export const useNovelStore = defineStore('novel', () => {
   }
 
   return {
-    bible,
     outline,
     characters,
     plotThreads,
@@ -649,13 +539,8 @@ export const useNovelStore = defineStore('novel', () => {
     possibilityCards,
     globalAuditReports,
     loading,
-    generatingBible,
     outlineGenerating,
     globalAuditing,
-    loadBible,
-    saveBible,
-    deleteBible,
-    generateBibleFromSeed,
     loadGlobalAudits,
     generateGlobalAudit,
     deleteGlobalAudit,

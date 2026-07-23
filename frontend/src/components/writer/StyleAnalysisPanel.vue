@@ -12,7 +12,6 @@ const emit = defineEmits(['close'])
 
 const memoryStore = useMemoryStore()
 const novelStore = useNovelStore()
-const applying = ref(false)
 
 const result = computed(() => memoryStore.lastStyleAnalysis)
 
@@ -31,32 +30,6 @@ function barWidth(value) {
   return value ? '70%' : '30%'
 }
 
-async function applyToBible() {
-  applying.value = true
-  try {
-    const bible = novelStore.bible || {}
-    const profile = memoryStore.lastStyleAnalysis
-    let styleText = bible.styleBible || ''
-    styleText += `\n\n## AI 风格分析 (第${profile.analyzedChapterNum}章)\n`
-    styleText += `- 句长：${profile.styleFeatures?.sentenceLength || '-'}\n`
-    styleText += `- 节奏：${profile.styleFeatures?.rhythm || '-'}\n`
-    styleText += `- 词汇：${profile.styleFeatures?.vocabulary || '-'}\n`
-    styleText += `- 语调：${profile.styleFeatures?.tone || '-'}\n`
-    styleText += `- 对话占比：${profile.styleFeatures?.dialogueRatio || '-'}\n`
-    styleText += `- 描写密度：${profile.styleFeatures?.descriptionDensity || '-'}\n`
-    styleText += `- 内心独白：${profile.styleFeatures?.innerMonologueUsage || '-'}\n`
-    if (profile.strengths?.length) {
-      styleText += `- 优点：${profile.strengths.join('、')}\n`
-    }
-    if (profile.comparables?.length) {
-      styleText += `- 风格近似：${profile.comparables.join('、')}\n`
-    }
-    styleText += `- 风格一致性：${profile.styleConsistencyScore || '-'}/10\n`
-    await novelStore.saveBible(props.projectId, { ...bible, styleBible: styleText })
-  } finally {
-    applying.value = false
-  }
-}
 </script>
 
 <template>
@@ -117,9 +90,6 @@ async function applyToBible() {
 
       <div class="flex justify-end gap-2">
         <n-button size="small" @click="emit('close')">关闭</n-button>
-        <n-button size="small" type="primary" :loading="applying" @click="applyToBible">
-          应用为风格圣经
-        </n-button>
       </div>
     </div>
 

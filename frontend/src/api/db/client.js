@@ -97,6 +97,14 @@ const ASSET_RECOMMENDATION_FIELDS = [
   'idempotencyKey', 'engineOptionId', 'taxonomyVersion', 'taxonomyHash',
   'genre', 'creationStage', 'status', 'prohibitedDirections',
 ]
+const BIBLE_SCALAR_FIELDS = [
+  'premiseAndPromise', 'powerOrProgressionSystem', 'protagonist',
+  'toneAndNarrativeBoundaries',
+]
+const BIBLE_ARRAY_FIELDS = [
+  'worldRules', 'coreCast', 'factions', 'longTermConflicts',
+  'relationshipDynamics', 'continuityGuardrails', 'openDesignQuestions',
+]
 
 const seedPayload = value => pickDefined(value, SEED_FIELDS)
 const seedProvenance = value => pickDefined(value, [
@@ -148,6 +156,27 @@ function contractDraft(value = {}) {
     if (Array.isArray(draft[field])) draft[field] = [...draft[field]]
   }
   return draft
+}
+
+function biblePayload(value = {}) {
+  const payload = pickDefined(value, BIBLE_SCALAR_FIELDS)
+  for (const field of BIBLE_ARRAY_FIELDS) {
+    if (Array.isArray(value?.[field])) {
+      payload[field] = value[field].map(item => pickDefined(item, ['id', 'text']))
+    }
+  }
+  return payload
+}
+
+function bibleCloneSource(value = {}) {
+  const hasDraftId = value?.sourceDraftId !== undefined && value.sourceDraftId !== null
+  const hasRevision = value?.sourceRevision !== undefined && value.sourceRevision !== null
+  if (hasDraftId === hasRevision) {
+    throw new TypeError('Expected exactly one Bible clone source')
+  }
+  return hasDraftId
+    ? { sourceDraftId: value.sourceDraftId }
+    : { sourceRevision: positiveRevision(value.sourceRevision) }
 }
 
 function positiveRevision(value) {
@@ -511,6 +540,38 @@ export const api = {
     ),
     clone: (projectId, sourceRevision) => post(
       `/projects/${segment(projectId)}/contracts/${positiveRevision(sourceRevision)}/clone`,
+    ),
+  },
+
+  bible: {
+    head: projectId => get(`/projects/${segment(projectId)}/bible/head`),
+    draft: {
+      get: projectId => get(`/projects/${segment(projectId)}/bible/draft`),
+      save: (projectId, data) => put(`/projects/${segment(projectId)}/bible/draft`, {
+        expectedDraftVersion: data.expectedDraftVersion,
+        draft: biblePayload(data.draft),
+      }),
+      clone: (projectId, source) => post(
+        `/projects/${segment(projectId)}/bible/draft/clone`,
+        bibleCloneSource(source),
+      ),
+    },
+    confirm: (projectId, data) => post(`/projects/${segment(projectId)}/bible/confirm`, {
+      idempotencyKey: data.idempotencyKey,
+      expectedDraftVersion: data.expectedDraftVersion,
+      expectedHeadRevision: data.expectedHeadRevision,
+    }),
+    history: (projectId, params = {}) => get(
+      `/projects/${segment(projectId)}/bible/history${queryString({
+        limit: boundedInteger(params.limit, { min: 1, max: 100 }),
+        beforeRevision: boundedInteger(params.beforeRevision, {
+          min: 1,
+          max: Number.MAX_SAFE_INTEGER,
+        }),
+      })}`,
+    ),
+    historyDetail: (projectId, revision) => get(
+      `/projects/${segment(projectId)}/bible/history/${positiveRevision(revision)}`,
     ),
   },
 

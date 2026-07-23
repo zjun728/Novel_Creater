@@ -4,7 +4,7 @@ import { NButton, NResult, NSkeleton } from 'naive-ui'
 import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
-import { projectContractPath } from '../router/projectRoutes.js'
+import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
 
 const routeProject = useRouteProject()
 </script>
@@ -53,6 +53,11 @@ const routeProject = useRouteProject()
         <span>FORMAL CREATION CONTRACT</span>
         <strong>进入创作契约工作区</strong>
         <small>核对唯一种子，完成五步设计，预览全部变化后一次签印。</small>
+      </router-link>
+      <router-link class="overview-next-action" :to="projectBiblePath(routeProject.project.value.id)">
+        <span>CREATION BIBLE</span>
+        <strong>进入创作圣经工作区</strong>
+        <small>维护未来设计，并只在确认后写入新的不可变修订。</small>
       </router-link>
     </section>
   </main>

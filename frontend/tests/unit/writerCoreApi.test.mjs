@@ -669,3 +669,35 @@ test('corpus discovery rejects an oversized cursor before fetch', async () => {
   assert.equal(calls.length, 1)
   assert.equal(new URL(calls[0].url).searchParams.get('cursor').length, 4096)
 })
+
+test('bible client encodes project paths and sends only closed Bible commands', async () => {
+  const bible = {
+    premiseAndPromise: '一个承诺', worldRules: [{ id: 'rule-1', text: '规则' }],
+    powerOrProgressionSystem: '成长', protagonist: '主角',
+    coreCast: [{ id: 'cast-1', text: '同伴' }], factions: [{ id: 'faction-1', text: '势力' }],
+    longTermConflicts: [{ id: 'conflict-1', text: '冲突' }],
+    relationshipDynamics: [{ id: 'relationship-1', text: '关系' }],
+    toneAndNarrativeBoundaries: '克制', continuityGuardrails: [{ id: 'guardrail-1', text: '连续性' }],
+    openDesignQuestions: [{ id: 'question-1', text: '问题' }],
+  }
+  const calls = await captureRequests(async api => {
+    await api.bible.head('project/one')
+    await api.bible.draft.get('project/one')
+    await api.bible.draft.save('project/one', { expectedDraftVersion: 3, draft: { ...bible, secret: 'must-not-send' }, extra: 'must-not-send' })
+    await api.bible.draft.clone('project/one', { sourceDraftId: 'draft-1' })
+    await api.bible.confirm('project/one', { idempotencyKey: 'bible-confirm-1', expectedDraftVersion: 4, expectedHeadRevision: 2, rawText: 'must-not-send' })
+    await api.bible.history('project/one', { limit: 20, beforeRevision: 81 })
+    await api.bible.historyDetail('project/one', 4)
+  })
+  assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
+    ['GET', '/api/projects/project%2Fone/bible/head'], ['GET', '/api/projects/project%2Fone/bible/draft'],
+    ['PUT', '/api/projects/project%2Fone/bible/draft'], ['POST', '/api/projects/project%2Fone/bible/draft/clone'],
+    ['POST', '/api/projects/project%2Fone/bible/confirm'], ['GET', '/api/projects/project%2Fone/bible/history'],
+    ['GET', '/api/projects/project%2Fone/bible/history/4'],
+  ])
+  assert.deepEqual(bodyOf(calls[2]), { expectedDraftVersion: 3, draft: bible })
+  assert.deepEqual(bodyOf(calls[3]), { sourceDraftId: 'draft-1' })
+  assert.deepEqual(bodyOf(calls[4]), { idempotencyKey: 'bible-confirm-1', expectedDraftVersion: 4, expectedHeadRevision: 2 })
+  assert.equal(new URL(calls[5].url).searchParams.get('limit'), '20')
+  assert.equal(new URL(calls[5].url).searchParams.get('beforeRevision'), '81')
+})

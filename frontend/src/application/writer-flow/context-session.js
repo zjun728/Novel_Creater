@@ -58,7 +58,6 @@ export async function runLoadWriterContextData({
   loaders = {}
 } = {}) {
   const loaderNames = [
-    'loadBible',
     'loadOutline',
     'loadCharacters',
     'loadPlotThreads',

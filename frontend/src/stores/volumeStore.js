@@ -142,7 +142,6 @@ export const useVolumeStore = defineStore('volume', () => {
       const settingStore = useSettingStore()
 
       await Promise.all([
-        novelStore.loadBible(project.id).catch(() => null),
         seedStore.loadSeeds(project.id).catch(() => []),
         settingStore.loadEntities(project.id).catch(() => [])
       ])

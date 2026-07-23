@@ -12,6 +12,7 @@ import {
   experienceLibraryPath,
   projectLibraryPath,
   projectContractPath,
+  projectBiblePath,
   projectModelSettingsPath,
   projectOverviewPath,
   projectSeedsPath,
@@ -77,6 +78,9 @@ function routeTitle(route, project) {
   }
   if (name === 'ProjectContract') {
     return isArchived(project) ? '已归档创作契约' : '创作契约'
+  }
+  if (name === 'ProjectBible') {
+    return isArchived(project) ? '已归档创作圣经' : '创作圣经'
   }
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
@@ -144,6 +148,13 @@ export function createProductShellModel({
             path: projectContractPath(project.id),
             mark: '契',
             selected: routeName(route) === 'ProjectContract',
+          },
+          {
+            key: 'bible',
+            label: '创作圣经',
+            path: projectBiblePath(project.id),
+            mark: '圣',
+            selected: routeName(route) === 'ProjectBible',
           },
           ...(!archived ? [{
             key: 'models',

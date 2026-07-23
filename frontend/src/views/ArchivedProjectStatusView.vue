@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { NAlert, NButton } from 'naive-ui'
 
 import { useProjectStore } from '../stores/projectStore.js'
-import { projectContractPath } from '../router/projectRoutes.js'
+import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
 
 const props = defineProps({
   project: {
@@ -51,6 +51,9 @@ function returnToLibrary() {
       <div class="actions">
         <router-link class="readonly-contract-link" :to="projectContractPath(project.id)">
           查看只读创作契约
+        </router-link>
+        <router-link class="readonly-contract-link" :to="projectBiblePath(project.id)">
+          查看只读创作圣经
         </router-link>
         <n-button :loading="restoring" type="primary" @click="restoreProject">恢复项目</n-button>
         <n-button quaternary @click="returnToLibrary">返回项目库</n-button>
