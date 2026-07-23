@@ -10,6 +10,7 @@ import pytest
 from backend.domain.bibles import BiblePayload, canonical_bible_hash
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.gateways.bible_provider import (
+    BibleProviderError,
     BibleProviderHTTPError,
     BibleProviderParseError,
     BibleProviderTimeoutError,
@@ -400,13 +401,25 @@ class FakeRepository:
         self.draft = None
         return True
 
-    async def cas_update_draft(self, _session, row, expected_version):
+    async def cas_update_draft(
+        self,
+        _session,
+        row,
+        expected_version,
+        *,
+        update_binding=False,
+    ):
         if (
             self.draft is None
             or self.draft["id"] != row["id"]
             or self.draft["draft_version"] != expected_version
         ):
             return False
+        if not update_binding:
+            row["binding_revision_id"] = self.draft.get(
+                "binding_revision_id"
+            )
+            row["binding_hash"] = self.draft.get("binding_hash")
         self.draft = deepcopy(row)
         return True
 
@@ -722,6 +735,16 @@ async def test_expired_owned_lease_becomes_unknown_and_is_never_recalled():
         ),
         (
             BibleProviderTransportError("PRIVATE_TRANSPORT_DETAIL"),
+            "outcome_unknown",
+            BibleGenerationRetryable.code,
+        ),
+        (
+            BibleProviderError("PRIVATE_UNKNOWN_PROVIDER_DETAIL"),
+            "outcome_unknown",
+            BibleGenerationRetryable.code,
+        ),
+        (
+            RuntimeError("PRIVATE_CALL_DETAIL"),
             "outcome_unknown",
             BibleGenerationRetryable.code,
         ),

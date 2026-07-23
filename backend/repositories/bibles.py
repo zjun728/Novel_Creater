@@ -97,10 +97,22 @@ class BibleRepository:
         session,
         row: dict,
         expected_version: int,
+        *,
+        update_binding: bool = False,
     ) -> bool:
+        binding_set = (
+            "binding_revision_id=%s,binding_hash=%s,"
+            if update_binding
+            else ""
+        )
+        binding_values = (
+            (row["binding_revision_id"], row["binding_hash"])
+            if update_binding
+            else ()
+        )
         changed = await session.execute(
-            """UPDATE project_bible_drafts
-                  SET draft_json=%s,content_hash=%s,draft_version=%s,
+            f"""UPDATE project_bible_drafts
+                  SET {binding_set}draft_json=%s,content_hash=%s,draft_version=%s,
                       updated_at=%s
                 WHERE project_id=%s AND id=%s AND active_slot=1
                   AND draft_version=%s
@@ -111,6 +123,7 @@ class BibleRepository:
                   AND creation_contract_id=%s AND creation_hash=%s
                   AND style_contract_id=%s AND style_hash=%s""",
             (
+                *binding_values,
                 row["draft_json"],
                 row["content_hash"],
                 row["draft_version"],

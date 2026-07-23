@@ -976,6 +976,73 @@ async def test_real_generation_lease_allows_one_gateway_call_and_atomic_draft(
 
 
 @pytest.mark.asyncio
+async def test_real_generation_overwrites_manual_draft_with_atomic_provenance(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    manual = bible_service(disposable_mysql, contracts)
+    saved = await manual.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    before = await disposable_mysql.session.fetchone(
+        """SELECT binding_revision_id,binding_hash
+             FROM project_bible_drafts WHERE id=%s""",
+        (saved.draft_id,),
+    )
+    assert before == {"binding_revision_id": None, "binding_hash": None}
+
+    gateway = FakeBibleGateway()
+    generated = await bible_generation_service(
+        disposable_mysql,
+        contracts,
+        gateway,
+    ).generate(
+        GenerateBibleDraft(
+            project_id=contract.project_id,
+            author_instructions="保留手工基础，强化长期关系代价。",
+            expected_draft_version=saved.draft_version,
+            expected_head_revision=0,
+            idempotency_key="real-bible-generation-provenance",
+        )
+    )
+
+    assert generated.status == "succeeded"
+    assert contract.binding_ref is not None
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT id,draft_version,content_hash,binding_revision_id,
+                  binding_hash
+             FROM project_bible_drafts
+            WHERE project_id=%s AND active_slot=1""",
+        (contract.project_id,),
+    )
+    assert draft == {
+        "id": saved.draft_id,
+        "draft_version": saved.draft_version + 1,
+        "content_hash": generated.result_hash,
+        "binding_revision_id": contract.binding_ref.id,
+        "binding_hash": contract.binding_ref.content_hash,
+    }
+
+    confirmed = await manual.confirm(
+        ConfirmBible(
+            contract.project_id,
+            "real-bible-confirm-generated-provenance",
+            draft["draft_version"],
+            0,
+        )
+    )
+    revision = await disposable_mysql.session.fetchone(
+        """SELECT binding_revision_id,binding_hash
+             FROM creation_bible_revisions WHERE id=%s""",
+        (confirmed.bible_revision_id,),
+    )
+    assert revision == {
+        "binding_revision_id": contract.binding_ref.id,
+        "binding_hash": contract.binding_ref.content_hash,
+    }
+
+
+@pytest.mark.asyncio
 async def test_real_expired_generation_lease_cas_terminalizes_without_call(
     disposable_mysql,
 ):
@@ -1035,6 +1102,16 @@ async def test_real_generation_publication_failure_rolls_back_draft_and_result(
     disposable_mysql,
 ):
     contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    manual = bible_service(disposable_mysql, contracts)
+    saved = await manual.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    before = await disposable_mysql.session.fetchone(
+        """SELECT draft_json,content_hash,draft_version,updated_at,
+                  binding_revision_id,binding_hash
+             FROM project_bible_drafts WHERE id=%s""",
+        (saved.draft_id,),
+    )
     gateway = FakeBibleGateway()
 
     def fail_after_draft(stage):
@@ -1048,9 +1125,12 @@ async def test_real_generation_publication_failure_rolls_back_draft_and_result(
         failpoint=fail_after_draft,
     )
     result = await service.generate(
-        generate_command(
-            contract.project_id,
-            "real-bible-generation-atomic-failure",
+        GenerateBibleDraft(
+            project_id=contract.project_id,
+            author_instructions="这次发布必须回滚。",
+            expected_draft_version=saved.draft_version,
+            expected_head_revision=0,
+            idempotency_key="real-bible-generation-atomic-failure",
         )
     )
 
@@ -1068,4 +1148,10 @@ async def test_real_generation_publication_failure_rolls_back_draft_and_result(
         "result_hash": None,
         "public_error_code": "BibleGenerationRetryable",
     }
-    assert await count(disposable_mysql.session, "project_bible_drafts") == 0
+    after = await disposable_mysql.session.fetchone(
+        """SELECT draft_json,content_hash,draft_version,updated_at,
+                  binding_revision_id,binding_hash
+             FROM project_bible_drafts WHERE id=%s""",
+        (saved.draft_id,),
+    )
+    assert after == before

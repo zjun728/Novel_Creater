@@ -913,6 +913,7 @@ class BibleGenerationService:
                     session,
                     row,
                     int(draft["draft_version"]),
+                    update_binding=True,
                 ):
                     raise BibleGenerationConflict()
             else:
@@ -1036,16 +1037,16 @@ class BibleGenerationService:
         except BibleProviderError:
             return await self._terminalize(
                 context,
-                status="failed",
-                code=BibleGenerationProviderFailed.code,
+                status="outcome_unknown",
+                code=BibleGenerationRetryable.code,
             )
         except BaseException as error:
             if isinstance(error, asyncio.CancelledError):
                 raise
             return await self._terminalize(
                 context,
-                status="failed",
-                code=BibleGenerationProviderFailed.code,
+                status="outcome_unknown",
+                code=BibleGenerationRetryable.code,
             )
         if not isinstance(output, BiblePayload):
             return await self._terminalize(
