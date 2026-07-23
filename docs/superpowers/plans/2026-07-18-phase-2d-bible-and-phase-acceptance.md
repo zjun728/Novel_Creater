@@ -67,7 +67,7 @@ v1.4, Vue 3, Pinia, Naive UI, Node test runner, pytest, and Playwright.
 - Modify: affected schema-version integration and browser fixtures
 - Create: `backend/tests/integration/test_bible_schema_lifecycle.py`
 
-- [ ] **Step 1: Write the schema contract tests**
+- [x] **Step 1: Write the schema contract tests**
 
 Assert that `project_bible_drafts` has `id` as its primary key, nullable
 `active_slot`, `UNIQUE(project_id, active_slot)`, and a check allowing only
@@ -90,7 +90,7 @@ contract in Task 4. Bump the exact schema version from `writer-core-v1.3.0` to
 `writer-core-v1.4.0`; a v1.3 database must fail closed until explicitly
 reinitialized, never be modified during application startup.
 
-- [ ] **Step 2: Write the disposable-MySQL lifecycle tests**
+- [x] **Step 2: Write the disposable-MySQL lifecycle tests**
 
 Using the existing `disposable_mysql` fixture, prove:
 
@@ -103,7 +103,7 @@ Using the existing `disposable_mysql` fixture, prove:
 6. a failed confirmation request leaves its draft active and editable;
 7. inserting two rows with `active_slot=1` for one project fails.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py backend/tests/integration/test_bible_schema_lifecycle.py -q
@@ -112,7 +112,7 @@ python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/t
 Expected: failures identify the old draft primary key and incomplete contract
 basis.
 
-- [ ] **Step 4: Implement the schema**
+- [x] **Step 4: Implement the schema**
 
 Keep all draft rows. Confirmation requests reference the draft's complete
 generation identity `(project_id, draft_id, selection_revision,
@@ -130,7 +130,7 @@ comparisons against Bible rows accordingly. The exact Bible revision and
 second duplicated style-hash column. Do not rename draft DTO/service fields,
 modify `40_drafts.sql`, or add migration SQL or compatibility views.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```powershell
 python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py backend/tests/integration/test_bible_schema_lifecycle.py -q
