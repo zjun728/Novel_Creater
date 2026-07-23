@@ -4,7 +4,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { createPinia } from 'pinia'
-import { createSSRApp, defineComponent, h } from 'vue'
+import { createSSRApp, defineComponent, h, reactive } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { renderToString } from '@vue/server-renderer'
 import vuePlugin from '@vitejs/plugin-vue'
@@ -228,6 +228,46 @@ test('desktop breakpoint collapses navigation without removing the route title',
   assert.equal(compact.routeTitle, '项目概览')
   assert.equal(compact.projectContext.title, '典镇山河')
   assert.equal(desktop.sidebarCollapsed, false)
+})
+
+test('forced shell hydration bypasses a matching cached project for lifecycle authority', async () => {
+  const { useShellProjectHydration } = await loadShellModule()
+  const cached = {
+    id: 'project-1',
+    title: '典镇山河',
+    archivedAt: null,
+  }
+  const routeState = reactive({
+    params: { projectId: 'project-1' },
+  })
+  const calls = []
+  const store = {
+    currentProject: cached,
+    async loadProject(projectId) {
+      calls.push(projectId)
+      return {
+        ...cached,
+        archivedAt: 1,
+        lifecycleRevision: 2,
+      }
+    },
+  }
+  let context
+  const Harness = defineComponent({
+    setup() {
+      context = useShellProjectHydration({ route: routeState, store })
+      return () => h('div')
+    },
+  })
+  await renderToString(createSSRApp(Harness))
+
+  assert.deepEqual(calls, [])
+  assert.equal(context.state.value, 'active')
+  await context.reload({ force: true })
+
+  assert.deepEqual(calls, ['project-1'])
+  assert.equal(context.state.value, 'archived')
+  assert.equal(context.project.value.archivedAt, 1)
 })
 
 let vite

@@ -33,7 +33,7 @@ const naiveUiStubPlugin = {
         name,
         inheritAttrs: false,
         setup(_, { attrs, slots }) {
-          return () => h(tag, attrs, slots.default?.())
+          return () => h(tag, attrs, [slots.default?.(), slots.footer?.()])
         },
       })
       export const NButton = stub('NButton', 'button')
@@ -186,9 +186,30 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+function renderedText(target) {
+  if (!target) return ''
+  return [
+    target.text,
+    target.props?.title,
+    target.props?.description,
+    ...(target.children || []).map(renderedText),
+  ].filter(Boolean).join(' ')
+}
+
+function findRenderedNode(target, predicate) {
+  if (!target) return null
+  if (predicate(target)) return target
+  for (const child of target.children || []) {
+    const found = findRenderedNode(child, predicate)
+    if (found) return found
+  }
+  return null
+}
+
 let vite
 let Overview
 let ArchivedOverview
+let NotFoundOverview
 let ShellProjectContext
 
 test.before(async () => {
@@ -206,6 +227,10 @@ test.before(async () => {
     await vite.ssrLoadModule('/src/views/ArchivedProjectStatusView.vue')
   ).default
   ArchivedOverview.render = await clientRender('views/ArchivedProjectStatusView.vue')
+  NotFoundOverview = (
+    await vite.ssrLoadModule('/src/views/NotFoundView.vue')
+  ).default
+  NotFoundOverview.render = await clientRender('views/NotFoundView.vue')
   Overview = (await vite.ssrLoadModule('/src/views/ProjectOverviewView.vue')).default
   Overview.render = await clientRender('views/ProjectOverviewView.vue')
   ShellProjectContext = (
@@ -587,6 +612,163 @@ test('a late archived response for the previous project cannot reload the new sh
       useProjectStore(pinia).currentPreparation.nextAction,
       'continue_contract',
     )
+  } finally {
+    app.unmount()
+    global.fetch = originalFetch
+  }
+})
+
+test('archived reconciliation exposes a failed shell reload and explicit retry reaches the archived view', async () => {
+  const originalFetch = global.fetch
+  const archived = archivedPreparation()
+  global.fetch = async url => {
+    assert.match(String(url), /\/api\/projects\/project%20%2F%20%E4%B8%80\/preparation$/)
+    return new Response(JSON.stringify(archived), {
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const state = ref('active')
+  const project = shallowRef({
+    id: 'project / 一',
+    title: '典镇山河',
+    archivedAt: null,
+    lifecycleRevision: 0,
+  })
+  const error = shallowRef(null)
+  const forceValues = []
+  let shellReloads = 0
+  const reload = async options => {
+    shellReloads += 1
+    forceValues.push(options?.force)
+    if (shellReloads === 1) {
+      error.value = new Error('shell unavailable')
+      state.value = 'error'
+      return null
+    }
+    error.value = null
+    state.value = 'archived'
+    project.value = {
+      ...project.value,
+      archivedAt: 1,
+      lifecycleRevision: 1,
+    }
+    return project.value
+  }
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      {
+        path: '/projects/:projectId/overview',
+        component: Overview,
+      },
+      {
+        path: '/projects/:projectId/contract',
+        component: { render: () => h('div', 'contract') },
+      },
+      {
+        path: '/projects/:projectId/bible',
+        component: { render: () => h('div', 'bible') },
+      },
+      {
+        path: '/projects',
+        component: { render: () => h('div', 'projects') },
+      },
+    ],
+  })
+  const root = node('root')
+  const app = renderer.createApp({ render: () => h(RouterView) })
+  app.use(pinia)
+  app.use(router)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.provide(ShellProjectContext, {
+    state,
+    project,
+    error,
+    reload,
+  })
+
+  try {
+    await router.push('/projects/project%20%2F%20%E4%B8%80/overview')
+    await router.isReady()
+    app.mount(root)
+    await waitFor(() => shellReloads === 1 && state.value === 'error')
+
+    assert.match(renderedText(root), /项目暂时无法加载/)
+    assert.doesNotMatch(renderedText(root), /正在同步项目权威状态/)
+    const retry = findRenderedNode(
+      root,
+      target => target.type === 'button' && /重试/.test(renderedText(target)),
+    )
+    assert.ok(retry)
+    await retry.props.onClick()
+    await waitFor(() => shellReloads === 2 && state.value === 'archived')
+
+    assert.deepEqual(forceValues, [true, true])
+    assert.match(renderedText(root), /恢复项目/)
+    assert.doesNotMatch(renderedText(root), /正在同步项目权威状态/)
+  } finally {
+    app.unmount()
+    global.fetch = originalFetch
+  }
+})
+
+test('a missing shell authority is never hidden by stale archived preparation', async () => {
+  const originalFetch = global.fetch
+  global.fetch = async url => {
+    assert.match(String(url), /\/api\/projects\/project%20%2F%20%E4%B8%80\/preparation$/)
+    return new Response(JSON.stringify(archivedPreparation()), {
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const state = ref('active')
+  const project = shallowRef({
+    id: 'project / 一',
+    title: '典镇山河',
+    archivedAt: null,
+  })
+  let shellReloads = 0
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      {
+        path: '/projects/:projectId/overview',
+        component: Overview,
+      },
+      {
+        path: '/projects',
+        component: { render: () => h('div', 'projects') },
+      },
+    ],
+  })
+  const root = node('root')
+  const app = renderer.createApp({ render: () => h(RouterView) })
+  app.use(pinia)
+  app.use(router)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.provide(ShellProjectContext, {
+    state,
+    project,
+    error: shallowRef(null),
+    reload: async options => {
+      shellReloads += 1
+      assert.equal(options?.force, true)
+      state.value = 'missing'
+      return null
+    },
+  })
+
+  try {
+    await router.push('/projects/project%20%2F%20%E4%B8%80/overview')
+    await router.isReady()
+    app.mount(root)
+    await waitFor(() => shellReloads === 1 && state.value === 'missing')
+
+    assert.match(renderedText(root), /项目不存在或已被删除/)
+    assert.doesNotMatch(renderedText(root), /正在同步项目权威状态/)
   } finally {
     app.unmount()
     global.fetch = originalFetch

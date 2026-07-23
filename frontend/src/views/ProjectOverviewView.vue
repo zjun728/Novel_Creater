@@ -78,7 +78,16 @@ async function refreshPreparation() {
     if (authority.lifecycle === 'archived') {
       if (reconciledArchivedProjectId !== String(projectId)) {
         reconciledArchivedProjectId = String(projectId)
-        await routeProject.reload()
+        try {
+          await routeProject.reload({ force: true })
+        } finally {
+          if (
+            routeProject.state.value !== 'archived'
+            || String(routeProject.project.value?.id || '') !== String(projectId)
+          ) {
+            reconciledArchivedProjectId = ''
+          }
+        }
       }
     } else if (reconciledArchivedProjectId === String(projectId)) {
       reconciledArchivedProjectId = ''
@@ -86,6 +95,11 @@ async function refreshPreparation() {
   } catch {
     // The Store retains a safe retryable state; raw transport details are not rendered.
   }
+}
+
+async function retryRouteProject() {
+  reconciledArchivedProjectId = ''
+  await routeProject.reload({ force: true })
 }
 
 onMounted(() => {
@@ -115,18 +129,6 @@ watch(
     @restored="routeProject.reload"
   />
 
-  <main
-    v-else-if="preparation?.lifecycle === 'archived'"
-    class="overview-page"
-    aria-live="polite"
-  >
-    <n-result
-      status="info"
-      title="项目已归档"
-      description="正在同步项目权威状态，完成后可查看只读内容或恢复项目。"
-    />
-  </main>
-
   <not-found-view
     v-else-if="routeProject.state.value === 'missing'"
     title="项目不存在或已被删除"
@@ -140,7 +142,23 @@ watch(
       :description="routeProject.error.value?.message || '请稍后重试'"
     >
       <template #footer>
-        <n-button type="primary" @click="routeProject.reload">重试</n-button>
+        <n-button type="primary" @click="retryRouteProject">重试</n-button>
+      </template>
+    </n-result>
+  </main>
+
+  <main
+    v-else-if="preparation?.lifecycle === 'archived'"
+    class="overview-page"
+    aria-live="polite"
+  >
+    <n-result
+      status="info"
+      title="项目已归档"
+      description="正在同步项目权威状态，完成后可查看只读内容或恢复项目。"
+    >
+      <template #footer>
+        <n-button type="primary" @click="retryRouteProject">重新同步</n-button>
       </template>
     </n-result>
   </main>

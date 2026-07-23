@@ -248,7 +248,7 @@ export function useShellProjectHydration({ route, store }) {
   let pendingProjectId = ''
   let pending = null
 
-  function hydrate() {
+  function hydrate({ force = false } = {}) {
     const projectId = routeProjectId(route)
     if (!projectId) {
       requestId += 1
@@ -260,6 +260,8 @@ export function useShellProjectHydration({ route, store }) {
       return Promise.resolve(null)
     }
     if (
+      !force
+      &&
       store.currentProject?.id != null
       && String(store.currentProject.id) === projectId
     ) {
