@@ -807,9 +807,15 @@ def test_bible_confirmation_requests_reference_draft_identity_and_snapshot():
     assert "draft_version int not null" in requests
     assert "draft_hash char(64) not null" in requests
     assert (
+        "foreign key (project_id, draft_id, selection_revision, contract_revision, "
+        "creation_hash, style_hash) references project_bible_drafts(project_id, id, "
+        "selection_revision, contract_revision, creation_hash, style_hash) "
+        "on delete restrict"
+    ) in requests
+    assert (
         "foreign key (project_id, draft_id) references "
         "project_bible_drafts(project_id, id) on delete restrict"
-    ) in requests
+    ) not in requests
     assert "draft_id char(36) primary key" not in requests
     assert "unique key uq_bible_confirmation_project" not in requests
 

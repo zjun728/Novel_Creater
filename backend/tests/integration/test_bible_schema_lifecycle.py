@@ -361,6 +361,49 @@ async def test_active_draft_slot_moves_across_seed_reselection_without_deleting_
 
 
 @pytest.mark.mysql
+async def test_confirmation_request_rejects_a_draft_from_another_basis(
+    disposable_mysql,
+):
+    session = disposable_mysql.session
+    basis_a = await _insert_first_basis(session)
+    draft_a = "10000000-0000-0000-0000-000000000004"
+    await _insert_draft(
+        session,
+        draft_id=draft_a,
+        draft_hash="8" * 64,
+        basis=basis_a,
+    )
+
+    await _insert_seed_revision(
+        session,
+        seed_id=SEED_B_ID,
+        seed_revision_id=SEED_B_REVISION_ID,
+        seed_hash=SEED_B_HASH,
+    )
+    basis_b = await _insert_later_basis(
+        session,
+        revision=2,
+        seed_id=SEED_B_ID,
+        seed_revision_id=SEED_B_REVISION_ID,
+        seed_hash=SEED_B_HASH,
+        creation_contract_id="30000000-0000-0000-0000-000000000004",
+        creation_hash="9" * 64,
+        style_contract_id="40000000-0000-0000-0000-000000000004",
+        style_hash="e" * 64,
+    )
+
+    with pytest.raises(aiomysql.IntegrityError):
+        await _insert_confirmation_request(
+            session,
+            request_id="20000000-0000-0000-0000-000000000004",
+            draft_id=draft_a,
+            draft_hash="8" * 64,
+            basis=basis_b,
+            status="reserved",
+        )
+
+
+@pytest.mark.mysql
 async def test_failed_confirmation_keeps_active_draft_editable(disposable_mysql):
     session = disposable_mysql.session
     basis = await _insert_first_basis(session)

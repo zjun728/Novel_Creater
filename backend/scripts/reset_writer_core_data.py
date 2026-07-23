@@ -1,4 +1,4 @@
-"""Reset the frozen v1.1 foundation into v1.3, or verify a v1.3 no-op."""
+"""Reset the frozen v1.1 foundation into v1.4, or verify a v1.4 no-op."""
 
 from __future__ import annotations
 

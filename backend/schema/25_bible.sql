@@ -181,7 +181,7 @@ CREATE TABLE bible_confirmation_requests (
   FOREIGN KEY (project_id, selection_revision, contract_revision, creation_hash) REFERENCES creation_contracts(project_id, selection_revision, revision, content_hash) ON DELETE RESTRICT,
   FOREIGN KEY (project_id, creation_contract_id, contract_revision, creation_hash) REFERENCES creation_contracts(project_id, id, revision, content_hash) ON DELETE RESTRICT,
   FOREIGN KEY (project_id, style_contract_id, contract_revision, style_hash) REFERENCES style_contracts(project_id, id, revision, content_hash) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, draft_id) REFERENCES project_bible_drafts(project_id, id) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, draft_id, selection_revision, contract_revision, creation_hash, style_hash) REFERENCES project_bible_drafts(project_id, id, selection_revision, contract_revision, creation_hash, style_hash) ON DELETE RESTRICT,
   FOREIGN KEY (project_id, bible_revision_id, selection_revision, contract_revision, creation_hash, style_hash, result_revision, result_hash) REFERENCES creation_bible_revisions(project_id, id, selection_revision, contract_revision, creation_hash, style_hash, revision, content_hash) ON DELETE RESTRICT,
   CHECK (selection_revision > 0),
   CHECK (contract_revision > 0),
