@@ -272,7 +272,7 @@ git commit -m "feat: add immutable creation bibles"
 - Modify: `frontend/tests/unit/projectRoutes.test.mjs`
 - Modify: `frontend/tests/unit/productShell.test.mjs`
 
-- [ ] **Step 1: Write API and Store RED tests**
+- [x] **Step 1: Write API and Store RED tests**
 
 Test exact encoded Bible paths, transport allowlists, current-project request
 generations, late-response rejection, explicit save only, same-command
@@ -280,7 +280,7 @@ idempotency replay, CAS conflict without auto-retry, dirty state preservation,
 archived read-only behavior, and server-provided `canEdit/canClone/reasons`.
 The Store never derives basis or revives history locally.
 
-- [ ] **Step 2: Write view RED tests**
+- [x] **Step 2: Write view RED tests**
 
 Cover missing seed, missing/draft/superseded contract, manual editing with no
 Ready model, explicit Save, complete confirmation preview, confirmed read-only,
@@ -288,13 +288,13 @@ Adjust Future Design, superseded content remaining copyable, archive read-only,
 history pagination, focus/live region, refresh/back/forward, narrow layout, and
 dirty route-leave/beforeunload protection.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```powershell
 node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/productShell.test.mjs
 ```
 
-- [ ] **Step 4: Implement the canonical workspace and delete the old path**
+- [x] **Step 4: Implement the canonical workspace and delete the old path**
 
 Add `/projects/:projectId/bible`. Reuse the contract workspace patterns for
 route hydration, dirty generations, module-only overlays, history, CAS, focus,
@@ -306,7 +306,7 @@ components/prompts. Remove Bible-specific state, normalization, generation,
 and setting-projection actions from `novelStore` and `settingStore`; do not leave
 compatibility exports. Build must contain only the canonical Bible route.
 
-- [ ] **Step 5: Run GREEN, build, and commit**
+- [x] **Step 5: Run GREEN, build, and commit**
 
 ```powershell
 node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/productShell.test.mjs
