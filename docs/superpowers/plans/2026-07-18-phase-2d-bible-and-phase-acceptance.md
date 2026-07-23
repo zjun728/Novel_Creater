@@ -397,7 +397,7 @@ git commit -m "feat: generate bible drafts through backend"
 - Create: `frontend/tests/unit/projectPreparationOverview.test.mjs`
 - Modify: `frontend/tests/unit/projectStore.test.mjs`
 
-- [ ] **Step 1: Write the exact DTO RED tests**
+- [x] **Step 1: Write the exact DTO RED tests**
 
 `GET /api/projects/:id/preparation` returns only persisted Phase 2 facts:
 
@@ -419,14 +419,14 @@ planning boundary. Model loss changes only the relevant AI capability/reason;
 it does not invalidate manual preparation. Do not add autosave, projection,
 chapter-session, or general operation fields in Phase 2D.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_project_preparation.py backend/tests/api/test_product_routes.py backend/tests/integration/test_project_archive.py -q
 node --test frontend/tests/unit/projectStore.test.mjs frontend/tests/unit/projectPreparationOverview.test.mjs
 ```
 
-- [ ] **Step 3: Implement and consume one server authority**
+- [x] **Step 3: Implement and consume one server authority**
 
 The project overview renders one primary action and small status summaries from
 this DTO. It does not join Seed/Contract/Bible Stores in the browser. Project
@@ -434,7 +434,7 @@ cards keep their current project-open behavior; no N+1 readiness reads are
 added to the library. Later writing phases extend this DTO when their persisted
 recovery states exist.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```powershell
 python -m pytest backend/tests/unit/test_project_preparation.py backend/tests/api/test_product_routes.py backend/tests/integration/test_project_archive.py -q
