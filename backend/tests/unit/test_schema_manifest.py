@@ -493,18 +493,23 @@ def test_contract_bible_planning_and_session_use_one_composite_generation_chain(
     bibles = _table_statement("creation_bible_revisions")
     assert (
         "unique key uq_bible_revision_generation "
-        "(project_id, selection_revision, contract_revision, contract_hash, "
+        "(project_id, selection_revision, contract_revision, creation_hash, "
         "revision, content_hash)"
     ) in bibles
     assert (
         "unique key uq_bible_revision_full_generation "
-        "(project_id, id, selection_revision, contract_revision, contract_hash, "
-        "revision, content_hash)"
+        "(project_id, id, selection_revision, contract_revision, creation_hash, "
+        "style_hash, revision, content_hash)"
     ) in bibles
     assert (
-        "foreign key (project_id, selection_revision, contract_revision, "
-        "contract_hash) references creation_contracts(project_id, "
-        "selection_revision, revision, content_hash) on delete restrict"
+        "foreign key (project_id, creation_contract_id, contract_revision, "
+        "creation_hash) references creation_contracts(project_id, id, revision, "
+        "content_hash) on delete restrict"
+    ) in bibles
+    assert (
+        "foreign key (project_id, style_contract_id, contract_revision, "
+        "style_hash) references style_contracts(project_id, id, revision, "
+        "content_hash) on delete restrict"
     ) in bibles
 
     volumes = _table_statement("volume_plans")
@@ -517,7 +522,7 @@ def test_contract_bible_planning_and_session_use_one_composite_generation_chain(
         "foreign key (project_id, selection_revision, contract_revision, "
         "contract_hash, bible_revision, bible_hash) references "
         "creation_bible_revisions(project_id, selection_revision, "
-        "contract_revision, contract_hash, revision, content_hash) "
+        "contract_revision, creation_hash, revision, content_hash) "
         "on delete restrict"
     ) in volumes
 
@@ -533,9 +538,9 @@ def test_contract_bible_planning_and_session_use_one_composite_generation_chain(
     confirmations = _table_statement("bible_confirmation_requests")
     assert (
         "foreign key (project_id, bible_revision_id, selection_revision, "
-        "contract_revision, contract_hash, result_revision, result_hash) "
+        "contract_revision, creation_hash, style_hash, result_revision, result_hash) "
         "references creation_bible_revisions(project_id, id, "
-        "selection_revision, contract_revision, contract_hash, revision, "
+        "selection_revision, contract_revision, creation_hash, style_hash, revision, "
         "content_hash) on delete restrict"
     ) in confirmations
 
@@ -747,7 +752,7 @@ def test_contracts_and_specialized_refs_use_real_revision_foreign_keys():
         assert column in fragment_refs
 
 
-def test_bible_history_is_contract_and_selection_bound():
+def test_bible_history_is_bound_to_exact_creation_and_style_contracts():
     for table_name in (
         "project_bible_drafts",
         "bible_generation_attempts",
@@ -757,17 +762,82 @@ def test_bible_history_is_contract_and_selection_bound():
         statement = _table_statement(table_name)
         assert "selection_revision int not null" in statement
         assert "contract_revision int not null" in statement
-        assert "contract_hash char(64) not null" in statement
+        assert "creation_contract_id char(36) not null" in statement
+        assert "creation_hash char(64) not null" in statement
+        assert "style_contract_id char(36) not null" in statement
+        assert "style_hash char(64) not null" in statement
+        assert "contract_hash" not in statement
+        assert (
+            "foreign key (project_id, creation_contract_id, contract_revision, "
+            "creation_hash) references creation_contracts(project_id, id, "
+            "revision, content_hash) on delete restrict"
+        ) in statement
         assert (
             "foreign key (project_id, selection_revision, contract_revision, "
-            "contract_hash) references creation_contracts(project_id, "
+            "creation_hash) references creation_contracts(project_id, "
             "selection_revision, revision, content_hash) on delete restrict"
+        ) in statement
+        assert (
+            "foreign key (project_id, style_contract_id, contract_revision, "
+            "style_hash) references style_contracts(project_id, id, revision, "
+            "content_hash) on delete restrict"
         ) in statement
     revisions = _table_statement("creation_bible_revisions")
     assert "unique key uq_bible_revision_identity (project_id, id, revision, content_hash)" in revisions
     heads = _table_statement("project_bible_heads")
     assert "check ((revision = 0" in heads
     assert "foreign key (project_id, bible_revision_id, revision, content_hash) references creation_bible_revisions(project_id, id, revision, content_hash) on delete restrict" in heads
+
+
+def test_bible_drafts_retain_history_with_one_nullable_active_slot():
+    drafts = _table_statement("project_bible_drafts")
+
+    assert "id char(36) primary key" in drafts
+    assert "project_id char(36) not null" in drafts
+    assert "project_id char(36) primary key" not in drafts
+    assert "active_slot tinyint null" in drafts
+    assert "unique key uq_bible_draft_project_id (project_id, id)" in drafts
+    assert "unique key uq_bible_draft_active_slot (project_id, active_slot)" in drafts
+    assert "check (active_slot is null or active_slot = 1)" in drafts
+
+
+def test_bible_confirmation_requests_reference_draft_identity_and_snapshot():
+    requests = _table_statement("bible_confirmation_requests")
+
+    assert "draft_version int not null" in requests
+    assert "draft_hash char(64) not null" in requests
+    assert (
+        "foreign key (project_id, draft_id) references "
+        "project_bible_drafts(project_id, id) on delete restrict"
+    ) in requests
+    assert "draft_id char(36) primary key" not in requests
+    assert "unique key uq_bible_confirmation_project" not in requests
+
+
+def test_bible_generation_attempts_have_owned_leases_and_exact_terminal_states():
+    attempts = _table_statement("bible_generation_attempts")
+
+    assert "owner_token char(36) null" in attempts
+    assert "lease_expires_at bigint null" in attempts
+    assert "attempt_version int not null" in attempts
+    assert "check (attempt_version > 0)" in attempts
+    assert (
+        "status in ('reserved','running') and owner_token is not null "
+        "and lease_expires_at is not null and result_json is null "
+        "and result_hash is null and public_error_code is null "
+        "and completed_at is null"
+    ) in attempts
+    assert (
+        "status = 'succeeded' and owner_token is null and lease_expires_at is null "
+        "and result_json is not null and result_hash is not null "
+        "and public_error_code is null and completed_at is not null"
+    ) in attempts
+    assert (
+        "status in ('failed','outcome_unknown') and owner_token is null "
+        "and lease_expires_at is null and result_json is null "
+        "and result_hash is null and public_error_code is not null "
+        "and completed_at is not null"
+    ) in attempts
 
 
 def test_planning_roots_and_sessions_freeze_aggregate_generation():
@@ -780,7 +850,7 @@ def test_planning_roots_and_sessions_freeze_aggregate_generation():
         "bible_hash char(64) not null",
         "manifest_hash char(64) not null",
         "foreign key (project_id, selection_revision, contract_revision, contract_hash) references creation_contracts(project_id, selection_revision, revision, content_hash) on delete restrict",
-        "foreign key (project_id, selection_revision, contract_revision, contract_hash, bible_revision, bible_hash) references creation_bible_revisions(project_id, selection_revision, contract_revision, contract_hash, revision, content_hash) on delete restrict",
+        "foreign key (project_id, selection_revision, contract_revision, contract_hash, bible_revision, bible_hash) references creation_bible_revisions(project_id, selection_revision, contract_revision, creation_hash, revision, content_hash) on delete restrict",
     ):
         assert contract in roots
 

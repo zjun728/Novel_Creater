@@ -20,7 +20,7 @@ CREATE TABLE volume_plans (
   UNIQUE KEY uq_volume_generation_identity (project_id, id, selection_revision, contract_revision, contract_hash, bible_revision, bible_hash, manifest_hash),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, selection_revision, contract_revision, contract_hash) REFERENCES creation_contracts(project_id, selection_revision, revision, content_hash) ON DELETE RESTRICT,
-  FOREIGN KEY (project_id, selection_revision, contract_revision, contract_hash, bible_revision, bible_hash) REFERENCES creation_bible_revisions(project_id, selection_revision, contract_revision, contract_hash, revision, content_hash) ON DELETE RESTRICT,
+  FOREIGN KEY (project_id, selection_revision, contract_revision, contract_hash, bible_revision, bible_hash) REFERENCES creation_bible_revisions(project_id, selection_revision, contract_revision, creation_hash, revision, content_hash) ON DELETE RESTRICT,
   CHECK (selection_revision > 0),
   CHECK (contract_revision > 0),
   CHECK (bible_revision > 0),

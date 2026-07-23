@@ -17,6 +17,7 @@ from backend.scripts.initialize_database import (
 
 
 DATABASE_NAME = "writer_core_test"
+V1_3_MANIFEST_HASH = "3e3958b2332dc1ffc593ac2ccb6566a7f6710b6884fc69852373f222e18b55b4"
 
 
 @pytest.mark.asyncio
@@ -285,13 +286,15 @@ async def test_fresh_database_executes_manifest_in_order_and_writes_metadata():
         "INSERT INTO schema_metadata "
         "(singleton_id, schema_version, manifest_hash, initialized_at) VALUES (1, %s, %s, %s)"
     )
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.4.0"
+    assert manifest_hash() != V1_3_MANIFEST_HASH
     assert executed == [
         (create_database, None),
         (f"USE `{DATABASE_NAME}`", None),
         *((statement, None) for statement in read_statements()),
         (
             metadata_insert,
-            (EXPECTED_SCHEMA_VERSION, manifest_hash(), 1_720_000_000_123),
+            ("writer-core-v1.4.0", manifest_hash(), 1_720_000_000_123),
         ),
     ]
     assert result.database_name == DATABASE_NAME

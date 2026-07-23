@@ -200,9 +200,11 @@ async def _insert_confirmed_bible(
     await session.execute(
         """INSERT INTO creation_bible_revisions
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,contract_hash,binding_revision_id,
-            binding_hash,policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,'test-bible-v1',%s,%s,%s)""",
+            seed_hash,contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,binding_revision_id,binding_hash,
+            policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                   'test-bible-v1',%s,%s,%s)""",
         (
             bible_id,
             confirmed.project_id,
@@ -211,7 +213,10 @@ async def _insert_confirmed_bible(
             confirmed.seed_ref.revision_id,
             confirmed.seed_ref.content_hash,
             confirmed.revision,
+            confirmed.creation_contract_id,
             confirmed.creation_hash,
+            confirmed.style_contract_id,
+            confirmed.style_hash,
             confirmed.binding_ref.id,
             confirmed.binding_ref.content_hash,
             canonical_json(content),
@@ -1109,12 +1114,15 @@ async def test_seed_switch_keeps_old_generation_superseded_and_creates_same_numb
     await session.execute(
         """INSERT INTO creation_bible_revisions
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,contract_hash,binding_revision_id,
-            binding_hash,policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,'test-bible-v1',%s,%s,%s)""",
+            seed_hash,contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,binding_revision_id,binding_hash,
+            policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,%s,%s,%s,'test-bible-v1',
+                   %s,%s,%s)""",
         (
             bible_id, WRITE_FENCE_PROJECT, seed_id, seed_revision_id, seed_hash,
-            creation_hash, binding["id"], binding["content_hash"],
+            creation_id, creation_hash, style_id, style_hash,
+            binding["id"], binding["content_hash"],
             canonical_json(bible_content), bible_hash, 1_900_000_000_060,
         ),
     )

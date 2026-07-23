@@ -90,7 +90,7 @@ test('diagnostics retains only the exact safe application allowlist', async () =
   const originalFetch = globalThis.fetch
   const secret = 'diagnostic-secret'
   globalThis.fetch = async () => jsonResponse({
-    schemaVersion: 'writer-core-v1.3.0',
+    schemaVersion: 'writer-core-v1.4.0',
     schemaManifestMatch: true,
     databaseReachable: true,
     managedCorpusStoreReady: false,
@@ -111,7 +111,7 @@ test('diagnostics retains only the exact safe application allowlist', async () =
     await store.loadDiagnostics()
 
     assert.deepEqual(store.diagnostics, {
-      schemaVersion: 'writer-core-v1.3.0',
+      schemaVersion: 'writer-core-v1.4.0',
       schemaManifestMatch: true,
       databaseReachable: true,
       managedCorpusStoreReady: false,

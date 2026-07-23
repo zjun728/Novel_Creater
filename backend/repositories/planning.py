@@ -27,7 +27,7 @@ class PlanningRepository:
         return await session.fetchone(
             """SELECT head.revision,head.bible_revision_id,head.content_hash,
                       bible.selection_revision,bible.contract_revision,
-                      bible.contract_hash
+                      bible.creation_hash AS contract_hash
                FROM project_bible_heads head
                LEFT JOIN creation_bible_revisions bible
                  ON bible.project_id=head.project_id
@@ -75,7 +75,7 @@ class PlanningRepository:
                 AND current_bible.id=bible_head.bible_revision_id
                 AND current_bible.selection_revision=volume.selection_revision
                 AND current_bible.contract_revision=volume.contract_revision
-                AND current_bible.contract_hash=volume.contract_hash
+                AND current_bible.creation_hash=volume.contract_hash
                 AND current_bible.revision=volume.bible_revision
                 AND current_bible.content_hash=volume.bible_hash
                WHERE volume.project_id=%s AND volume.status='active'

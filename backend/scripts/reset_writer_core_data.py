@@ -123,7 +123,7 @@ class ResetPartialStateError(ResetError):
 
 
 async def _classify_reset_source(admin_session, database_name: str) -> str:
-    """Accept only the frozen v1.1 source or current v1.3 target manifest."""
+    """Accept only the frozen v1.1 source or current v1.4 target manifest."""
 
     table_rows = await admin_session.fetchall(
         "SELECT TABLE_NAME FROM information_schema.TABLES "
@@ -152,9 +152,9 @@ async def _classify_reset_source(admin_session, database_name: str) -> str:
             "manifest_hash": manifest_hash(),
         }
     ):
-        return "v1.3-target"
+        return "v1.4-target"
     raise ResetValidationError(
-        "Reset source must be the exact v1.1 source or v1.3 target manifest"
+        "Reset source must be the exact v1.1 source or v1.4 target manifest"
     )
 
 
@@ -774,7 +774,7 @@ def _report(
         source_table_names = V11_TABLE_NAMES
         source_counts = v11_counts
         source_verified_empty_tables = V11_VERIFIED_EMPTY_TABLES
-    elif source_kind == "v1.3-target":
+    elif source_kind == "v1.4-target":
         source_schema_version = EXPECTED_SCHEMA_VERSION
         source_manifest_hash = manifest_hash()
         source_table_names = created_table_names()
@@ -844,7 +844,7 @@ def format_reset_report(report: ResetReport) -> str:
             "verifiedEmptyTables": list(report.source_verified_empty_tables),
         },
         "target": {
-            "kind": "v1.3-target",
+            "kind": "v1.4-target",
             "schemaVersion": report.target_schema_version,
             "manifestHash": report.target_manifest_hash,
             "tables": list(report.target_table_names),
@@ -1083,7 +1083,7 @@ async def reset_writer_core_data(
             return await _load_v11_preserved_state(
                 admin_session, database_name, request,
             )
-        if kind == "v1.3-target":
+        if kind == "v1.4-target":
             return await _load_v11_preserved_state(
                 admin_session, database_name, request, target_schema=True,
             )
@@ -1116,7 +1116,7 @@ async def reset_writer_core_data(
         locked_state = await load_state(locked_kind)
         if locked_state != initial_state:
             raise ResetValidationError("Reset foundation changed while waiting for lock")
-        if locked_kind == "v1.3-target":
+        if locked_kind == "v1.4-target":
             report = _report(
                 database_name, locked_state, executed=False, mode="no-op",
                 source_kind=source_kind,
@@ -1150,13 +1150,13 @@ async def reset_writer_core_data(
             except BaseException:
                 raise
             transaction_started = False
-            if await _classify_reset_source(admin_session, database_name) != "v1.3-target":
-                raise ResetValidationError("Rebuilt database does not match the v1.3 manifest")
+            if await _classify_reset_source(admin_session, database_name) != "v1.4-target":
+                raise ResetValidationError("Rebuilt database does not match the v1.4 manifest")
             readback_state = await _load_v11_preserved_state(
                 admin_session, database_name, request, target_schema=True,
             )
             if readback_state != locked_state:
-                raise ResetValidationError("Rebuilt v1.3 foundation differs from the locked snapshot")
+                raise ResetValidationError("Rebuilt v1.4 foundation differs from the locked snapshot")
             report = _report(
                 database_name, readback_state, executed=True, source_kind=source_kind,
             )

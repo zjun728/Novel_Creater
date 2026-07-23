@@ -893,13 +893,15 @@ async def test_generation_roots_reject_splices_and_allow_same_numbers_after_swit
     disposable_mysql,
 ):
     session = disposable_mysql.session
-    creation_one, _ = await _insert_revision_one_contracts(session)
+    creation_one, style_one = await _insert_revision_one_contracts(session)
     seed_id = "00000000-0000-0000-0000-000000000040"
     seed_revision_id = "00000000-0000-0000-0000-000000000041"
     creation_two = "00000000-0000-0000-0000-000000000130"
+    style_two = "00000000-0000-0000-0000-000000000145"
     bible_one = "00000000-0000-0000-0000-000000000131"
     bible_two = "00000000-0000-0000-0000-000000000132"
     contract_two_hash = "d" * 64
+    style_two_hash = "0" * 64
     bible_one_hash = "e" * 64
     bible_two_hash = "f" * 64
     await _insert_selection_revision(
@@ -923,41 +925,53 @@ async def test_generation_roots_reject_splices_and_allow_same_numbers_after_swit
              FROM creation_contracts WHERE id=%s""",
         (creation_two, contract_two_hash, creation_one),
     )
+    await session.execute(
+        """INSERT INTO style_contracts
+           (id,project_id,creation_contract_id,revision,merged_style_json,
+            likes_json,dislikes_json,content_hash,confirmed_at)
+           VALUES (%s,%s,%s,2,'{}','[]','[]',%s,%s)""",
+        (style_two, PROJECT_ID, creation_two, style_two_hash, NOW),
+    )
 
     with pytest.raises(Exception):
         await session.execute(
             """INSERT INTO creation_bible_revisions
                (id,project_id,revision,selection_revision,seed_id,
-                seed_revision_id,seed_hash,contract_revision,contract_hash,
+                seed_revision_id,seed_hash,contract_revision,
+                creation_contract_id,creation_hash,style_contract_id,style_hash,
                 binding_revision_id,binding_hash,policy_version,content_json,
                 content_hash,confirmed_at)
                VALUES ('00000000-0000-0000-0000-000000000133',%s,1,2,%s,%s,
-                       %s,1,%s,%s,%s,'review-v1','{}',%s,%s)""",
+                       %s,1,%s,%s,%s,%s,%s,%s,'review-v1','{}',%s,%s)""",
             (
-                PROJECT_ID, seed_id, seed_revision_id, HASH_A, HASH_B,
-                BINDING_ID, HASH_A, "9" * 64, NOW,
+                PROJECT_ID, seed_id, seed_revision_id, HASH_A, creation_one,
+                HASH_B, style_one, HASH_C, BINDING_ID, HASH_A, "9" * 64, NOW,
             ),
         )
     await session.execute(
         """INSERT INTO creation_bible_revisions
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,contract_hash,binding_revision_id,
-            binding_hash,policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,'review-v1','{}',%s,%s)""",
+            seed_hash,contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,binding_revision_id,binding_hash,
+            policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,'review-v1','{}',%s,%s)""",
         (
-            bible_one, PROJECT_ID, seed_id, seed_revision_id, HASH_A, HASH_B,
-            BINDING_ID, HASH_A, bible_one_hash, NOW,
+            bible_one, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
+            creation_one, HASH_B, style_one, HASH_C, BINDING_ID, HASH_A,
+            bible_one_hash, NOW,
         ),
     )
     await session.execute(
         """INSERT INTO creation_bible_revisions
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,contract_hash,binding_revision_id,
-            binding_hash,policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,'review-v1','{}',%s,%s)""",
+            seed_hash,contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,binding_revision_id,binding_hash,
+            policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,%s,%s,%s,'review-v1','{}',%s,%s)""",
         (
             bible_two, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
-            contract_two_hash, BINDING_ID, HASH_A, bible_two_hash, NOW,
+            creation_two, contract_two_hash, style_two, style_two_hash,
+            BINDING_ID, HASH_A, bible_two_hash, NOW,
         ),
     )
 
@@ -965,41 +979,47 @@ async def test_generation_roots_reject_splices_and_allow_same_numbers_after_swit
     bible_draft_two_hash = "4" * 64
     await session.execute(
         """INSERT INTO project_bible_drafts
-           (project_id,id,base_head_revision,selection_revision,seed_id,
-            seed_revision_id,seed_hash,contract_revision,contract_hash,
+           (id,project_id,active_slot,base_head_revision,selection_revision,
+            seed_id,seed_revision_id,seed_hash,contract_revision,
+            creation_contract_id,creation_hash,style_contract_id,style_hash,
             binding_revision_id,binding_hash,policy_version,draft_json,
             content_hash,draft_version,created_at,updated_at)
-           VALUES (%s,%s,1,2,%s,%s,%s,2,%s,%s,%s,'review-v1','{}',%s,1,%s,%s)""",
+           VALUES (%s,%s,1,1,2,%s,%s,%s,2,%s,%s,%s,%s,%s,%s,'review-v1',
+                   '{}',%s,1,%s,%s)""",
         (
-            PROJECT_ID, bible_draft_two, seed_id, seed_revision_id, HASH_A,
-            contract_two_hash, BINDING_ID, HASH_A, bible_draft_two_hash, NOW, NOW,
+            bible_draft_two, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
+            creation_two, contract_two_hash, style_two, style_two_hash,
+            BINDING_ID, HASH_A, bible_draft_two_hash, NOW, NOW,
         ),
     )
     with pytest.raises(Exception):
         await session.execute(
             """INSERT INTO bible_confirmation_requests
-               (id,project_id,selection_revision,contract_revision,contract_hash,
+               (id,project_id,selection_revision,contract_revision,
+                creation_contract_id,creation_hash,style_contract_id,style_hash,
                 draft_id,draft_version,draft_hash,idempotency_key,request_hash,
                 status,bible_revision_id,result_revision,result_hash,created_at,
                 completed_at)
-               VALUES ('00000000-0000-0000-0000-000000000143',%s,2,2,%s,%s,1,
-                       %s,%s,%s,'succeeded',%s,1,%s,%s,%s)""",
+               VALUES ('00000000-0000-0000-0000-000000000143',%s,2,2,
+                       %s,%s,%s,%s,%s,1,%s,%s,%s,'succeeded',%s,1,%s,%s,%s)""",
             (
-                PROJECT_ID, contract_two_hash, bible_draft_two,
-                bible_draft_two_hash, "5" * 64, "6" * 64, bible_one,
-                bible_one_hash, NOW, NOW,
+                PROJECT_ID, creation_two, contract_two_hash, style_two,
+                style_two_hash, bible_draft_two, bible_draft_two_hash,
+                "5" * 64, "6" * 64, bible_one, bible_one_hash, NOW, NOW,
             ),
         )
     await session.execute(
         """INSERT INTO bible_confirmation_requests
-           (id,project_id,selection_revision,contract_revision,contract_hash,
+           (id,project_id,selection_revision,contract_revision,
+            creation_contract_id,creation_hash,style_contract_id,style_hash,
             draft_id,draft_version,draft_hash,idempotency_key,request_hash,
             status,bible_revision_id,result_revision,result_hash,created_at,
             completed_at)
-           VALUES ('00000000-0000-0000-0000-000000000144',%s,2,2,%s,%s,1,
-                   %s,%s,%s,'succeeded',%s,2,%s,%s,%s)""",
+           VALUES ('00000000-0000-0000-0000-000000000144',%s,2,2,
+                   %s,%s,%s,%s,%s,1,%s,%s,%s,'succeeded',%s,2,%s,%s,%s)""",
         (
-            PROJECT_ID, contract_two_hash, bible_draft_two, bible_draft_two_hash,
+            PROJECT_ID, creation_two, contract_two_hash, style_two,
+            style_two_hash, bible_draft_two, bible_draft_two_hash,
             "7" * 64, "8" * 64, bible_two, bible_two_hash, NOW, NOW,
         ),
     )

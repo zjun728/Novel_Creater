@@ -239,7 +239,7 @@ test('accepts Phase 2A assets, corpus, Provider, fallback, and model bindings', 
     )
     await fallbackSheet.getByRole('button', { name: '保存 fallback', exact: true }).click()
     await expect(fallbackSheet).toContainText(PROVIDER_B)
-    await expect(page.getByText('writer-core-v1.3.0', { exact: true })).toBeVisible()
+    await expect(page.getByText('writer-core-v1.4.0', { exact: true })).toBeVisible()
     await auditCheckpoint('application-settings')
 
     await page.goto(`/projects/${projectId}/settings/models`)

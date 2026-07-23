@@ -440,16 +440,21 @@ async def _insert_seed_engine_and_contracts(session) -> None:
     await session.execute(
         """INSERT INTO creation_bible_revisions
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,contract_hash,binding_revision_id,
-            binding_hash,policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,'test-bible-v1','{}',%s,%s)""",
+            seed_hash,contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,binding_revision_id,binding_hash,
+            policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,'test-bible-v1',
+                   '{}',%s,%s)""",
         (
             BIBLE_REVISION_ID,
             PROJECT_ID,
             SEED_ID,
             SEED_REVISION_ID,
             "e" * 64,
+            CREATION_ID,
             "7" * 64,
+            STYLE_CONTRACT_ID,
+            "8" * 64,
             BINDING_ID,
             "f" * 64,
             "0" * 64,

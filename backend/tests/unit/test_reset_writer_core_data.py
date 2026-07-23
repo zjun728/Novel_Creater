@@ -130,7 +130,7 @@ class InventorySession:
         }
 
 
-def test_reset_source_contract_freezes_only_v11_and_current_v13():
+def test_reset_source_contract_freezes_only_v11_and_current_v14():
     assert reset_module.V11_SCHEMA_VERSION == "writer-core-v1.1.0"
     assert (
         reset_module.V11_MANIFEST_HASH
@@ -189,7 +189,7 @@ def test_reset_source_contract_freezes_only_v11_and_current_v13():
         "projection_heads",
         "reference_uses",
     )
-    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.3.0"
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.4.0"
     assert not hasattr(reset_module, "M1_SCHEMA_VERSION")
     assert not hasattr(reset_module, "M1_MANIFEST_HASH")
     assert not hasattr(reset_module, "M1_TABLE_NAMES")
@@ -213,13 +213,13 @@ def test_reset_source_validation_has_no_stale_m1_labels():
         ),
         (
             created_table_names,
-            "writer-core-v1.3.0",
+            "writer-core-v1.4.0",
             manifest_hash,
-            "v1.3-target",
+            "v1.4-target",
         ),
     ],
 )
-async def test_reset_classifies_only_frozen_v11_or_current_v13(
+async def test_reset_classifies_only_frozen_v11_or_current_v14(
     tables, version, manifest, expected
 ):
     resolved_manifest = manifest() if callable(manifest) else manifest
@@ -259,7 +259,7 @@ async def test_reset_rejects_m1_or_tampered_inventory(tables, version, manifest)
     session = InventorySession(resolved_tables, version, manifest)
     with pytest.raises(
         reset_module.ResetValidationError,
-        match="v1.1 source or v1.3 target",
+        match="v1.1 source or v1.4 target",
     ):
         await reset_module._classify_reset_source(session, DISPOSABLE)
 
@@ -343,7 +343,7 @@ def test_reset_receipt_labels_frozen_source_and_new_target_without_secrets():
     assert set(decoded["source"]["verifiedEmptyTables"]) <= set(
         reset_module.V11_TABLE_NAMES
     )
-    assert decoded["target"]["kind"] == "v1.3-target"
+    assert decoded["target"]["kind"] == "v1.4-target"
     assert decoded["target"]["schemaVersion"] == EXPECTED_SCHEMA_VERSION
     assert decoded["target"]["manifestHash"] == manifest_hash()
     assert decoded["target"]["expectedCounts"]["selectionRevisions"] == 1
@@ -362,9 +362,9 @@ def test_reset_receipt_labels_frozen_source_and_new_target_without_secrets():
 
 
 @pytest.mark.asyncio
-async def test_v13_source_is_a_verified_noop(monkeypatch):
+async def test_v14_source_is_a_verified_noop(monkeypatch):
     state = _foundation_state()
-    classifications = iter(("v1.3-target", "v1.3-target"))
+    classifications = iter(("v1.4-target", "v1.4-target"))
     events = []
 
     async def classify(*_args):
@@ -391,9 +391,9 @@ async def test_v13_source_is_a_verified_noop(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_v11_source_rebuilds_v13_and_preserves_locked_state(monkeypatch):
+async def test_v11_source_rebuilds_v14_and_preserves_locked_state(monkeypatch):
     state = _foundation_state()
-    classifications = iter(("v1.1-source", "v1.1-source", "v1.3-target"))
+    classifications = iter(("v1.1-source", "v1.1-source", "v1.4-target"))
     loads = []
     events = []
 
@@ -454,7 +454,7 @@ class ResetFlowSession:
 
 
 @pytest.mark.asyncio
-async def test_foundation_insert_uses_v13_project_columns_and_owned_foundation_order():
+async def test_foundation_insert_uses_v14_project_columns_and_owned_foundation_order():
     state = _foundation_state()
 
     class InsertSession:
@@ -600,7 +600,7 @@ async def test_reset_rejects_unversioned_shape_before_preserve_reads_or_ddl():
 
     with pytest.raises(
         reset_module.ResetValidationError,
-        match="exact v1.1 source or v1.3 target",
+        match="exact v1.1 source or v1.4 target",
     ):
         await reset_module.reset_writer_core_data(
             session,

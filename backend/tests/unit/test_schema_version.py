@@ -17,8 +17,8 @@ EXPECTED_QUERY = (
 )
 
 
-def test_expected_schema_version_is_writer_core_v1_3():
-    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.3.0"
+def test_expected_schema_version_is_writer_core_v1_4():
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.4.0"
 
 
 class FakeVersionSession:
@@ -103,6 +103,23 @@ async def test_wrong_version_or_hash_is_rejected_with_expected_values(row):
     assert manifest_hash() in message
     assert "backend.scripts.initialize_database" in message
     assert "reinitialize" in message
+    assert session.executed == [(EXPECTED_QUERY, None)]
+
+
+@pytest.mark.asyncio
+async def test_v1_3_database_is_rejected_read_only():
+    session = FakeVersionSession(
+        row={
+            "schema_version": "writer-core-v1.3.0",
+            "manifest_hash": manifest_hash(),
+        }
+    )
+
+    with pytest.raises(SchemaMismatch) as raised:
+        await verify_schema_version(session)
+
+    assert "writer-core-v1.4.0" in str(raised.value)
+    assert "writer-core-v1.3.0" in str(raised.value)
     assert session.executed == [(EXPECTED_QUERY, None)]
 
 

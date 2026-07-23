@@ -113,7 +113,35 @@ async def test_current_plan_query_compares_full_contract_and_bible_generation():
     assert "JOIN creation_bible_revisions current_bible" in compact
     assert "current_bible.selection_revision=volume.selection_revision" in compact
     assert "current_bible.contract_revision=volume.contract_revision" in compact
-    assert "current_bible.contract_hash=volume.contract_hash" in compact
+    assert "current_bible.creation_hash=volume.contract_hash" in compact
+    assert "current_bible.contract_hash" not in compact
+
+
+@pytest.mark.asyncio
+async def test_bible_head_query_aliases_creation_hash_for_the_existing_dto():
+    from backend.repositories.planning import PlanningRepository
+
+    class BibleHeadSession:
+        def __init__(self):
+            self.sql = ""
+
+        async def fetchone(self, sql, _args):
+            self.sql = sql
+            return None
+
+    session = BibleHeadSession()
+    assert await PlanningRepository().read_bible_head(session, "p1") is None
+    compact = " ".join(session.sql.split())
+    assert "bible.creation_hash AS contract_hash" in compact
+    assert "bible.contract_hash" not in compact
+
+
+def test_chapter_session_generation_fence_uses_bible_creation_hash():
+    from backend.repositories.chapter_sessions import _EFFECTIVE_STATUS
+
+    compact = " ".join(_EFFECTIVE_STATUS.split())
+    assert "current_bible.creation_hash=session.contract_hash" in compact
+    assert "current_bible.contract_hash" not in compact
 
 
 @pytest.mark.asyncio

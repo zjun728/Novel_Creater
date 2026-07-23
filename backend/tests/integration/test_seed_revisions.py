@@ -276,15 +276,24 @@ async def install_first_final_chapter(session, project_id: str, seed) -> None:
     planning_hash = "2" * 64
     candidate_hash = "3" * 64
     change_set_hash = "4" * 64
+    contract = await session.fetchone(
+        """SELECT creation_contract_id,creation_hash,style_contract_id,style_hash
+             FROM project_contract_heads WHERE project_id=%s AND revision=1""",
+        (project_id,),
+    )
     await session.execute(
         """INSERT INTO creation_bible_revisions
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,contract_hash,binding_revision_id,
-            binding_hash,policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,1,%s,NULL,NULL,'test-v1','{}',%s,4)""",
+            seed_hash,contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,binding_revision_id,binding_hash,
+            policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,%s,%s,%s,%s,1,%s,%s,%s,%s,NULL,NULL,'test-v1',
+                   '{}',%s,4)""",
         (
             bible_id, project_id, seed.selection_revision, seed.id,
-            seed.revision_id, seed.content_hash, "c" * 64, bible_hash,
+            seed.revision_id, seed.content_hash,
+            contract["creation_contract_id"], contract["creation_hash"],
+            contract["style_contract_id"], contract["style_hash"], bible_hash,
         ),
     )
     await session.execute(
