@@ -22,6 +22,7 @@ const suiteNames = [
   'browser-phase2a',
   'browser-phase2b',
   'browser-phase2c',
+  'browser-phase2',
 ]
 const integrationEnvironmentNames = [
   'TEST_MYSQL_HOST',
@@ -36,6 +37,7 @@ const mysqlSuites = new Set([
   'browser-phase2a',
   'browser-phase2b',
   'browser-phase2c',
+  'browser-phase2',
 ])
 export const pytestTempStages = Object.freeze({
   m1Regression: path.join('.codex-test-artifacts', 'pytest', 'm1-regression'),
@@ -84,6 +86,9 @@ const phase2bBrowserFiles = [
 const phase2cBrowserFiles = [
   'frontend/e2e/phase2c-contract.spec.ts',
 ]
+const phase2BrowserFiles = [
+  'frontend/e2e/phase2-creative-foundation.spec.ts',
+]
 
 export function discoverTestFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })
@@ -107,6 +112,7 @@ function createSuites(rootDirectory, environment) {
   const phase2aBrowserTests = absolute(phase2aBrowserFiles)
   const phase2bBrowserTests = absolute(phase2bBrowserFiles)
   const phase2cBrowserTests = absolute(phase2cBrowserFiles)
+  const phase2BrowserTests = absolute(phase2BrowserFiles)
   const retainedM1 = [
     [
       python,
@@ -152,6 +158,7 @@ function createSuites(rootDirectory, environment) {
   const browserPhase2A = [[node, ['frontend/e2e/run-phase2a.mjs']]]
   const browserPhase2B = [[node, ['frontend/e2e/run-phase2b.mjs']]]
   const browserPhase2C = [[node, ['frontend/e2e/run-phase2c.mjs']]]
+  const browserPhase2 = [[node, ['frontend/e2e/run-phase2.mjs']]]
 
   return {
     commands: {
@@ -164,6 +171,7 @@ function createSuites(rootDirectory, environment) {
       'browser-phase2a': browserPhase2A,
       'browser-phase2b': browserPhase2B,
       'browser-phase2c': browserPhase2C,
+      'browser-phase2': browserPhase2,
     },
     formalTests: {
       unit: [
@@ -186,6 +194,9 @@ function createSuites(rootDirectory, environment) {
       ],
       'browser-phase2c': [
         ['Phase 2C Playwright spec', phase2cBrowserTests],
+      ],
+      'browser-phase2': [
+        ['Phase 2 Playwright spec', phase2BrowserTests],
       ],
     },
   }
