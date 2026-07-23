@@ -60,6 +60,7 @@ function canonicalBindingEntries(entries) {
 export const useModelBindingStore = defineStore('model-binding', () => {
   const binding = ref(null)
   const bindingStatus = ref(null)
+  const bindingStatusFreshProjectId = ref(null)
   const bindingProjectId = ref(null)
   const bindingCache = ref({})
   const bindingStatusCache = ref({})
@@ -80,6 +81,7 @@ export const useModelBindingStore = defineStore('model-binding', () => {
     bindingProjectId.value = projectId
     binding.value = bindingCache.value[projectId] || null
     bindingStatus.value = bindingStatusCache.value[projectId] || null
+    bindingStatusFreshProjectId.value = null
     bindingsLoading.value = false
     bindingStatusLoading.value = false
   }
@@ -115,6 +117,7 @@ export const useModelBindingStore = defineStore('model-binding', () => {
       bindingStatusLoading.value = false
       return bindingStatus.value
     }
+    bindingStatusFreshProjectId.value = null
     bindingStatusLoading.value = true
     try {
       const status = normalizeBinding(
@@ -124,6 +127,7 @@ export const useModelBindingStore = defineStore('model-binding', () => {
       if (bindingStatusGuard.isCurrent(generation)) {
         bindingStatusCache.value[projectId] = status
         bindingStatus.value = status
+        bindingStatusFreshProjectId.value = projectId
       }
       return status
     } finally {
@@ -169,6 +173,7 @@ export const useModelBindingStore = defineStore('model-binding', () => {
       binding.value = result
       bindingStatusGuard.invalidate()
       bindingStatus.value = null
+      bindingStatusFreshProjectId.value = null
       bindingStatusLoading.value = false
       return result
     })()
@@ -186,6 +191,7 @@ export const useModelBindingStore = defineStore('model-binding', () => {
     bindingStatusGuard.invalidate()
     bindingStatusCache.value = {}
     bindingStatus.value = null
+    bindingStatusFreshProjectId.value = null
     bindingStatusLoading.value = false
   }
 
@@ -206,6 +212,7 @@ export const useModelBindingStore = defineStore('model-binding', () => {
     }
     binding.value = null
     bindingStatus.value = null
+    bindingStatusFreshProjectId.value = null
     bindingProjectId.value = null
     bindingsLoading.value = false
     bindingStatusLoading.value = false
@@ -228,10 +235,12 @@ export const useModelBindingStore = defineStore('model-binding', () => {
   return {
     binding,
     bindingStatus,
+    bindingStatusFreshProjectId,
     bindingProjectId,
     bindingCache,
     bindingStatusCache,
     bindingLoading,
+    bindingStatusLoading,
     bindingSaving,
     bindingComplete,
     bindingReady,

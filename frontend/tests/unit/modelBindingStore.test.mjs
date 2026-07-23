@@ -311,6 +311,45 @@ test('binding complete and ready stay distinct and use only the latest backend s
   })
 })
 
+test('failed forced status refresh invalidates freshness without publishing stale bound readiness', async () => {
+  setActivePinia(createPinia())
+  const store = useModelBindingStore()
+  let failRefresh = false
+
+  await withBrowserGuards(async () => {
+    if (failRefresh) {
+      return jsonResponse({ code: 'status_unavailable' }, 503)
+    }
+    return jsonResponse({
+      projectId: 'same-project',
+      revision: 7,
+      contentHash: 's'.repeat(64),
+      items: TASK_KEYS.map(taskKey => ({
+        taskKey,
+        resolutionStatus: 'bound',
+        providerId: 'provider-1',
+      })),
+      bindingComplete: true,
+      bindingReady: true,
+      reasons: [],
+    })
+  }, async () => {
+    await store.getBindingStatus('same-project', { force: true })
+    assert.equal(store.bindingStatusFreshProjectId, 'same-project')
+
+    failRefresh = true
+    const refresh = store.getBindingStatus('same-project', { force: true })
+    assert.equal(store.bindingStatusLoading, true)
+    assert.equal(store.bindingStatusFreshProjectId, null)
+    await assert.rejects(refresh)
+  })
+
+  assert.equal(store.bindingStatus.projectId, 'same-project')
+  assert.equal(store.bindingStatus.items[1].resolutionStatus, 'bound')
+  assert.equal(store.bindingStatusFreshProjectId, null)
+  assert.equal(store.bindingStatusLoading, false)
+})
+
 test('selecting a cached binding status invalidates an older in-flight refresh', async () => {
   setActivePinia(createPinia())
   const store = useModelBindingStore()

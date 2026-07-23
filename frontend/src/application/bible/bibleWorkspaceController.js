@@ -71,10 +71,16 @@ export function createBibleWorkspaceController({
   function current(value) { return value.project === String(projectId() || '') && value.project === activeProject && value.generation === generation }
   function publicFailure(failure) {
     const status = Number(failure?.status || store.error?.status || store.conflict?.status || 0)
+    const code = String(failure?.code || store.error?.code || store.conflict?.code || 'request_failed')
+    const outcomeUnknown = code === 'outcome_unknown' || code === 'BibleGenerationRetryable'
     return {
       status,
-      code: String(failure?.code || store.error?.code || store.conflict?.code || 'request_failed'),
-      message: status === 409 ? '保存冲突：本地编辑仍保留，请重新加载权威版本后再继续。' : '创作圣经操作失败，请重试。',
+      code,
+      message: outcomeUnknown
+        ? '结果尚未确认，请先重新核对'
+        : status === 409
+          ? '保存冲突：本地编辑仍保留，请重新加载权威版本后再继续。'
+          : '创作圣经操作失败，请重试。',
       correlationId: String(failure?.correlationId || store.error?.correlationId || ''),
     }
   }

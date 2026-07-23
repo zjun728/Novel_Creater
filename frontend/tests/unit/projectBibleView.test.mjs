@@ -170,6 +170,99 @@ test('ProjectBibleView derives AI readiness from the planning binding item only'
   assert.doesNotMatch(page, /下一阶段接入/)
 })
 
+test('failed same-project binding refresh disables generation but preserves manual save and confirm', async () => {
+  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const originalFetch = global.fetch; const originalWindow = global.window
+  let failStatus = false; let generates = 0; let draftVersion = 1
+  const draft = () => ({ projectId: 'stale', lifecycle: 'active', status: 'editable', draftId: 'draft-stale', draftVersion, baseHeadRevision: 0, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] })
+  const head = () => ({ projectId: 'stale', lifecycle: 'active', status: 'current', revision: 0, bible: null, canClone: false, reasons: [] })
+  try {
+    const [Page, Editor, Drawer, BindingModule] = await Promise.all([
+      vite.ssrLoadModule('/src/views/ProjectBibleView.vue'),
+      vite.ssrLoadModule('/src/components/bible/BibleEditor.vue'),
+      vite.ssrLoadModule('/src/components/bible/BibleHistoryDrawer.vue'),
+      vite.ssrLoadModule('/src/stores/modelBindingStore.js'),
+    ])
+    Page.default.render = await clientRender('views/ProjectBibleView.vue'); Editor.default.render = await clientRender('components/bible/BibleEditor.vue'); Drawer.default.render = await clientRender('components/bible/BibleHistoryDrawer.vue')
+    global.window = { confirm: () => true, addEventListener() {}, removeEventListener() {} }
+    global.fetch = async (url, options = {}) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/bindings/status')) {
+        if (failStatus) return new Response(JSON.stringify({ code: 'status_unavailable' }), { status: 503, headers: { 'content-type': 'application/json' } })
+        return new Response(JSON.stringify({
+          projectId: 'stale', revision: 7, contentHash: 's'.repeat(64),
+          items: [{ taskKey: 'planning', resolutionStatus: 'bound', providerId: 'provider-1' }],
+          bindingComplete: false, bindingReady: false, reasons: [],
+        }), { headers: { 'content-type': 'application/json' } })
+      }
+      if (path.endsWith('/bible/head')) return new Response(JSON.stringify(head()), { headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/bible/draft') && options.method === 'PUT') {
+        draftVersion += 1
+        return new Response(JSON.stringify(draft()), { headers: { 'content-type': 'application/json' } })
+      }
+      if (path.endsWith('/bible/draft')) return new Response(JSON.stringify(draft()), { headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/bible/generate')) { generates += 1; throw new Error('generation must stay disabled') }
+      return new Response(JSON.stringify({ id: 'stale', title: 'stale', archivedAt: null }), { headers: { 'content-type': 'application/json' } })
+    }
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/bible', component: Page.default }] })
+    const pinia = createPinia(); const app = renderer.createApp({ render: () => h(RouterView) }); app.use(pinia); app.use(router); app.provide(ssrContextKey, { modules: new Set() })
+    await router.push('/projects/stale/bible'); await router.isReady(); const root = node('root'); app.mount(root)
+    await waitFor(() => byText(root, '生成创作圣经')?.props.disabled === false, () => text(root))
+
+    failStatus = true
+    const bindingStore = BindingModule.useModelBindingStore(pinia)
+    await assert.rejects(bindingStore.getBindingStatus('stale', { force: true }))
+    await flush()
+    assert.equal(byText(root, '生成创作圣经').props.disabled, true)
+    assert.equal(byText(root, '预览并确认').props.disabled, false)
+
+    const editor = walk(root).find(value => value.type === 'textarea' && value.props.value === 'promise')
+    editor.props.onInput({ target: { value: 'manual remains available' } }); await flush()
+    assert.equal(byText(root, '手动保存').props.disabled, false)
+    await byText(root, '手动保存').props.onClick(); await flush()
+    assert.equal(byText(root, '预览并确认').props.disabled, false)
+    assert.equal(generates, 0)
+  } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
+})
+
+test('outcome-unknown generation renders one assertive reconciliation notice without a new key', async () => {
+  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const originalFetch = global.fetch; const originalWindow = global.window; const generationBodies = []
+  const draft = { projectId: 'unknown', lifecycle: 'active', status: 'editable', draftId: 'draft-unknown', draftVersion: 1, baseHeadRevision: 0, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] }
+  const head = { projectId: 'unknown', lifecycle: 'active', status: 'current', revision: 0, bible: null, canClone: false, reasons: [] }
+  try {
+    const [Page, Editor, Drawer] = await Promise.all([vite.ssrLoadModule('/src/views/ProjectBibleView.vue'), vite.ssrLoadModule('/src/components/bible/BibleEditor.vue'), vite.ssrLoadModule('/src/components/bible/BibleHistoryDrawer.vue')])
+    Page.default.render = await clientRender('views/ProjectBibleView.vue'); Editor.default.render = await clientRender('components/bible/BibleEditor.vue'); Drawer.default.render = await clientRender('components/bible/BibleHistoryDrawer.vue')
+    global.window = { confirm: () => true, addEventListener() {}, removeEventListener() {} }
+    global.fetch = async (url, options = {}) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/bindings/status')) return new Response(JSON.stringify({ projectId: 'unknown', revision: 7, contentHash: 'u'.repeat(64), items: [{ taskKey: 'planning', resolutionStatus: 'bound', providerId: 'provider-1' }], bindingComplete: false, bindingReady: false, reasons: [] }), { headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/bible/head')) return new Response(JSON.stringify(head), { headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/bible/draft')) return new Response(JSON.stringify(draft), { headers: { 'content-type': 'application/json' } })
+      if (path.endsWith('/bible/generate')) {
+        generationBodies.push(JSON.parse(options.body))
+        return new Response(JSON.stringify({ attempt: { id: 'attempt-unknown', projectId: 'unknown', status: 'outcome_unknown', attemptVersion: 2, providerId: 'provider-1', modelNameSnapshot: 'model', inputManifestHash: 'i'.repeat(64), resultHash: null, publicErrorCode: 'BibleGenerationRetryable', createdAt: 1, completedAt: 2 } }), { headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ id: 'unknown', title: 'unknown', archivedAt: null }), { headers: { 'content-type': 'application/json' } })
+    }
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/projects/:projectId/bible', component: Page.default }] })
+    const app = renderer.createApp({ render: () => h(RouterView) }); app.use(createPinia()); app.use(router); app.provide(ssrContextKey, { modules: new Set() })
+    await router.push('/projects/unknown/bible'); await router.isReady(); const root = node('root'); app.mount(root)
+    const generate = await waitFor(() => byText(root, '生成创作圣经')?.props.disabled === false && byText(root, '生成创作圣经'), () => text(root))
+    await generate.props.onClick(); await flush()
+
+    const live = walk(root).filter(value => value.props['aria-live'] && text(value).trim())
+    assert.equal(live.length, 1)
+    assert.equal(live[0].props.role, 'alert')
+    assert.equal(live[0].props['aria-live'], 'assertive')
+    assert.match(text(live[0]), /结果尚未确认，请先重新核对/)
+    assert.doesNotMatch(text(root), /操作失败，请重试|生成结果尚未确认，请重新核对当前状态/)
+    assert.equal(generationBodies.length, 1)
+    await byText(root, '重新核对当前状态').props.onClick(); await flush()
+    assert.equal(generationBodies.length, 1)
+  } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
+})
+
 test('mounted ProjectBibleView follows first, head-only, superseded, and archived route states through real Pinia/router/fetch', async () => {
   const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
   const originalFetch = global.fetch; const originalWindow = global.window; const puts = []; const clones = []; let allowLeave = false

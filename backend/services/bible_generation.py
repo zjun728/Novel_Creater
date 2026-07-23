@@ -772,6 +772,18 @@ class BibleGenerationService:
             )
             return self._attempt_result(row)
 
+    async def _settle_cancelled_attempt(self, context):
+        try:
+            await asyncio.shield(
+                self._terminalize(
+                    context,
+                    status="outcome_unknown",
+                    code=BibleGenerationRetryable.code,
+                )
+            )
+        except BaseException:
+            pass
+
     @staticmethod
     def _draft_basis_current(draft, basis, head_revision):
         return (
@@ -971,20 +983,13 @@ class BibleGenerationService:
             replay, context = await self._reserve(command, identity)
         except asyncio.CancelledError:
             if identity:
-                try:
-                    await asyncio.shield(
-                        self._terminalize(
-                            {"identity": dict(identity)},
-                            status="outcome_unknown",
-                            code=BibleGenerationRetryable.code,
-                        )
-                    )
-                except BaseException:
-                    pass
+                await self._settle_cancelled_attempt(
+                    {"identity": dict(identity)}
+                )
             raise
         except PublicDomainError:
             raise
-        except BaseException:
+        except Exception:
             if identity:
                 try:
                     return await asyncio.shield(
@@ -994,7 +999,7 @@ class BibleGenerationService:
                             code=BibleGenerationRetryable.code,
                         )
                     )
-                except BaseException:
+                except Exception:
                     pass
             raise BibleGenerationRetryable() from None
         if replay is not None:
@@ -1008,13 +1013,7 @@ class BibleGenerationService:
                 generation_config=context["generation_config"],
             )
         except asyncio.CancelledError:
-            await asyncio.shield(
-                self._terminalize(
-                    context,
-                    status="outcome_unknown",
-                    code=BibleGenerationRetryable.code,
-                )
-            )
+            await self._settle_cancelled_attempt(context)
             raise
         except BibleProviderParseError:
             return await self._terminalize(
@@ -1040,9 +1039,7 @@ class BibleGenerationService:
                 status="outcome_unknown",
                 code=BibleGenerationRetryable.code,
             )
-        except BaseException as error:
-            if isinstance(error, asyncio.CancelledError):
-                raise
+        except Exception:
             return await self._terminalize(
                 context,
                 status="outcome_unknown",
@@ -1057,13 +1054,7 @@ class BibleGenerationService:
         try:
             return await self._publish(command, context, output)
         except asyncio.CancelledError:
-            await asyncio.shield(
-                self._terminalize(
-                    context,
-                    status="outcome_unknown",
-                    code=BibleGenerationRetryable.code,
-                )
-            )
+            await self._settle_cancelled_attempt(context)
             raise
         except (
             BibleGenerationConflict,
@@ -1075,7 +1066,7 @@ class BibleGenerationService:
                 status="failed",
                 code=BibleGenerationConflict.code,
             )
-        except BaseException:
+        except Exception:
             return await self._terminalize(
                 context,
                 status="outcome_unknown",

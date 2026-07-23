@@ -348,6 +348,10 @@ test('each explicit generation gets a fresh key and outcome unknown is never aut
   const unknown = await workspace.generate('第一次要求')
   assert.equal(unknown.status, 'outcome_unknown')
   assert.equal(workspace.recoveryCommand.value.type, 'reconcile')
+  assert.equal(
+    workspace.errorSummary.value.message,
+    '结果尚未确认，请先重新核对',
+  )
   assert.equal(store.calls.generate.length, 1)
   await workspace.retryFailure()
   assert.equal(store.calls.generate.length, 1)

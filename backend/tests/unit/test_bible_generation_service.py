@@ -788,6 +788,64 @@ async def test_cancel_terminalizes_unknown_without_draft_then_reraises():
     assert gateway.calls == 1
 
 
+@pytest.mark.parametrize("stage", ("gateway", "publish"))
+@pytest.mark.asyncio
+async def test_real_task_cancel_survives_failed_best_effort_settlement(
+    monkeypatch,
+    stage,
+):
+    service, repository, _, _, gateway, _ = _harness()
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    if stage == "gateway":
+        async def block_gateway(**_values):
+            gateway.calls += 1
+            entered.set()
+            await never.wait()
+
+        monkeypatch.setattr(gateway, "generate", block_gateway)
+    else:
+        async def block_publish(*_values):
+            entered.set()
+            await never.wait()
+
+        monkeypatch.setattr(service, "_publish", block_publish)
+
+    async def fail_settlement(*_values, **_options):
+        raise RuntimeError("PRIVATE_SETTLEMENT_DETAIL")
+
+    monkeypatch.setattr(service, "_terminalize", fail_settlement)
+    task = asyncio.create_task(service.generate(_command()))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    [attempt] = repository.attempts.values()
+    assert attempt["status"] == "running"
+    assert attempt["result_json"] is None
+    assert repository.draft is None
+    assert gateway.calls == 1
+
+
+@pytest.mark.parametrize("failure", (KeyboardInterrupt(), SystemExit()))
+@pytest.mark.asyncio
+async def test_process_control_exceptions_are_not_business_outcomes(failure):
+    service, repository, _, _, gateway, _ = _harness(
+        gateway_result=failure
+    )
+
+    with pytest.raises(type(failure)):
+        await service.generate(_command())
+
+    [attempt] = repository.attempts.values()
+    assert attempt["status"] == "running"
+    assert repository.draft is None
+    assert gateway.calls == 1
+
+
 @pytest.mark.asyncio
 async def test_response_basis_drift_fails_without_installing_provider_result():
     service, repository, contracts, _, gateway, _ = _harness()

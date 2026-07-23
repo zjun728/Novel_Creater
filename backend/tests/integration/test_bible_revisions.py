@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -1040,6 +1041,74 @@ async def test_real_generation_overwrites_manual_draft_with_atomic_provenance(
         "binding_revision_id": contract.binding_ref.id,
         "binding_hash": contract.binding_ref.content_hash,
     }
+
+
+@pytest.mark.asyncio
+async def test_real_publish_commit_ack_error_reads_back_succeeded_attempt(
+    disposable_mysql,
+):
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    gateway = FakeBibleGateway()
+    base_transaction = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def commit_ack_fails_after_publish():
+        nonlocal transaction_count
+        transaction_count += 1
+        current = transaction_count
+        async with base_transaction() as session:
+            yield session
+        if current == 2:
+            raise RuntimeError("PRIVATE_PUBLISH_ACK_DETAIL")
+
+    ids = iter(
+        f"93000000-0000-0000-0000-{number:012d}"
+        for number in range(1, 100)
+    )
+    service = BibleGenerationService(
+        BibleRepository(),
+        contract_service=contracts,
+        transaction_factory=commit_ack_fails_after_publish,
+        provider_gateway=gateway,
+        id_factory=lambda: next(ids),
+        clock=lambda: 1_900_000_001_000,
+    )
+    command = generate_command(
+        contract.project_id,
+        "real-bible-generation-publish-ack",
+    )
+
+    succeeded = await service.generate(command)
+    replay = await service.generate(command)
+
+    assert succeeded == replay
+    assert succeeded.status == "succeeded"
+    assert gateway.calls == 1
+    attempt = await disposable_mysql.session.fetchone(
+        """SELECT status,owner_token,lease_expires_at,result_hash,
+                  public_error_code
+             FROM bible_generation_attempts WHERE id=%s""",
+        (succeeded.attempt_id,),
+    )
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT content_hash,binding_revision_id,binding_hash
+             FROM project_bible_drafts
+            WHERE project_id=%s AND active_slot=1""",
+        (contract.project_id,),
+    )
+    assert attempt == {
+        "status": "succeeded",
+        "owner_token": None,
+        "lease_expires_at": None,
+        "result_hash": succeeded.result_hash,
+        "public_error_code": None,
+    }
+    assert draft["content_hash"] == succeeded.result_hash
+    assert draft["binding_revision_id"] == contract.binding_ref.id
+    assert draft["binding_hash"] == contract.binding_ref.content_hash
 
 
 @pytest.mark.asyncio

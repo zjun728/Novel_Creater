@@ -34,7 +34,11 @@ const planningBlocked = computed(() => (
   ))
 ))
 const planningReady = computed(() => (
-  planningBinding.value?.resolutionStatus === 'bound' && !planningBlocked.value
+  bindingStore.bindingStatusFreshProjectId === projectId.value
+  && bindingStore.bindingStatus?.projectId === projectId.value
+  && bindingStore.bindingStatusLoading !== true
+  && planningBinding.value?.resolutionStatus === 'bound'
+  && !planningBlocked.value
 ))
 const workspace = createBibleWorkspaceController({
   store,
@@ -92,12 +96,11 @@ async function confirm() {
   try { if (await workspace.confirm()) notice.value = '已确认新的创作圣经修订' } catch {}
 }
 async function generate() {
+  notice.value = ''
   try {
     const attempt = await workspace.generate(authorInstructions.value)
     if (attempt?.status === 'succeeded') {
       notice.value = '已生成新的创作圣经草稿'
-    } else if (attempt?.status === 'outcome_unknown') {
-      notice.value = '生成结果尚未确认，请重新核对当前状态。'
     }
   } catch {}
 }
