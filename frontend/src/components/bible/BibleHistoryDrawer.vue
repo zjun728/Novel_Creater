@@ -1,16 +1,15 @@
 <script setup>
-import { watch } from 'vue'
-const props = defineProps({ store: { type: Object, required: true }, projectId: { type: String, required: true }, open: Boolean, readOnly: Boolean })
-const emit = defineEmits(['close', 'clone'])
-watch(() => [props.open, props.projectId], ([open, projectId]) => { if (open && projectId) void props.store.loadHistory(projectId, { limit: 20 }) }, { immediate: true })
-function more() { void props.store.loadHistory(props.projectId, { limit: 20, beforeRevision: props.store.historyNextBeforeRevision, append: true }) }
+import BibleEditor from './BibleEditor.vue'
+
+defineProps({ history: { type: Array, default: () => [] }, historyNextBeforeRevision: { default: null }, historyDetail: { type: Object, default: null }, open: Boolean, readOnly: Boolean, busy: Boolean })
+const emit = defineEmits(['close', 'clone', 'detail', 'more'])
 </script>
 <template>
   <aside v-if="open" class="history-overlay" role="dialog" aria-modal="true" aria-label="创作圣经历史">
     <section class="history-sheet"><button aria-label="关闭历史" @click="emit('close')">×</button><h2>修订历史</h2>
-      <article v-for="item in store.history" :key="item.bibleRevisionId || item.revision"><strong>Revision {{ item.revision }}</strong><p>{{ item.status }} · {{ item.confirmedAt || '未确认' }}</p><button @click="store.loadHistoryDetail(projectId, item.revision)">查看详情</button><button v-if="!readOnly && item.canClone" @click="emit('clone', item.revision)">Adjust Future Design</button></article>
-      <section v-if="store.historyDetail" class="history-detail"><h3>Revision {{ store.historyDetail.revision }}</h3><pre>{{ store.historyDetail.bible }}</pre><p>{{ store.historyDetail.reasons.join('；') }}</p><pre>{{ store.historyDetail.basis }}</pre></section>
-      <button v-if="store.historyNextBeforeRevision !== null" @click="more">加载更早修订</button>
+      <article v-for="item in history" :key="item.bibleRevisionId || item.revision"><strong>Revision {{ item.revision }}</strong><p>{{ item.status }} · {{ item.confirmedAt || '未确认' }}</p><button :disabled="busy" @click="emit('detail', item.revision)">查看详情</button><button v-if="!readOnly && item.canClone" :disabled="busy" @click="emit('clone', item)">Adjust Future Design</button></article>
+      <section v-if="historyDetail" class="history-detail"><h3>Revision {{ historyDetail.revision }}</h3><bible-editor v-if="historyDetail.bible" :model-value="historyDetail.bible" disabled /><p>{{ historyDetail.reasons.join('；') }}</p><pre>{{ historyDetail.basis }}</pre></section>
+      <button v-if="historyNextBeforeRevision !== null" :disabled="busy" @click="emit('more')">加载更早修订</button>
     </section>
   </aside>
 </template>
