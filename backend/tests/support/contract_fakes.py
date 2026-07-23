@@ -490,6 +490,42 @@ class MemoryContractRepository:
             and self.fragments[fragment_id]["source_revision_id"] == revision_id
         )
 
+    async def read_contract_asset_references(
+        self,
+        session,
+        *,
+        style_ids,
+        experience_ids,
+        corpus_revision_refs,
+        fragment_refs,
+    ):
+        return {
+            "styles": tuple(
+                deepcopy(self.styles[asset_id])
+                for asset_id in style_ids
+                if asset_id in self.styles
+            ),
+            "experiences": tuple(
+                deepcopy(self.cards[asset_id])
+                for asset_id in experience_ids
+                if asset_id in self.cards
+            ),
+            "corpora": tuple(
+                deepcopy(self.sources[source_id])
+                for source_id, revision_id in corpus_revision_refs
+                if source_id in self.sources
+                and self.sources[source_id]["revision_id"] == revision_id
+            ),
+            "fragments": tuple(
+                deepcopy(self.fragments[fragment_id])
+                for source_id, revision_id, fragment_id in fragment_refs
+                if fragment_id in self.fragments
+                and self.fragments[fragment_id]["source_id"] == source_id
+                and self.fragments[fragment_id]["source_revision_id"]
+                    == revision_id
+            ),
+        }
+
     async def read_confirmed_snapshot(self, session, project_id, revision=None):
         stored = (
             self.confirmed.get(project_id)

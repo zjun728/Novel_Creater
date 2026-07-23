@@ -10,6 +10,7 @@ import { useProjectStore } from '../stores/projectStore.js'
 const routeProject = useRouteProject()
 const projectStore = useProjectStore()
 let mounted = false
+let reconciledArchivedProjectId = ''
 
 const preparation = computed(() => (
   projectStore.preparationProjectId
@@ -67,7 +68,21 @@ async function refreshPreparation() {
   const projectId = routeProject.project.value?.id
   if (routeProject.state.value !== 'active' || !projectId) return
   try {
-    await projectStore.loadPreparation(projectId)
+    const authority = await projectStore.loadPreparation(projectId)
+    if (
+      routeProject.state.value !== 'active'
+      || String(routeProject.project.value?.id || '') !== String(projectId)
+    ) {
+      return
+    }
+    if (authority.lifecycle === 'archived') {
+      if (reconciledArchivedProjectId !== String(projectId)) {
+        reconciledArchivedProjectId = String(projectId)
+        await routeProject.reload()
+      }
+    } else if (reconciledArchivedProjectId === String(projectId)) {
+      reconciledArchivedProjectId = ''
+    }
   } catch {
     // The Store retains a safe retryable state; raw transport details are not rendered.
   }
@@ -99,6 +114,18 @@ watch(
     :project="routeProject.project.value"
     @restored="routeProject.reload"
   />
+
+  <main
+    v-else-if="preparation?.lifecycle === 'archived'"
+    class="overview-page"
+    aria-live="polite"
+  >
+    <n-result
+      status="info"
+      title="项目已归档"
+      description="正在同步项目权威状态，完成后可查看只读内容或恢复项目。"
+    />
+  </main>
 
   <not-found-view
     v-else-if="routeProject.state.value === 'missing'"
@@ -162,7 +189,7 @@ watch(
         </router-link>
 
         <section
-          v-else
+          v-else-if="preparation.nextAction === 'phase_boundary_planning'"
           class="preparation-boundary"
           role="status"
           aria-live="polite"
@@ -171,6 +198,17 @@ watch(
           <strong>创作准备已完成</strong>
           <small>故事规划将在下一阶段接入；这里不会提供一个尚不存在的跳转。</small>
         </section>
+
+        <n-result
+          v-else
+          status="warning"
+          title="创作准备状态需要重新读取"
+          description="当前下一步不完整，系统不会推断或跳转到其他模块。"
+        >
+          <template #footer>
+            <n-button type="primary" @click="refreshPreparation">重新读取</n-button>
+          </template>
+        </n-result>
 
         <p
           v-if="preparation.reasons.includes('planning_model_not_ready')"

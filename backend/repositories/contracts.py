@@ -515,6 +515,122 @@ class ContractRepository:
             (revision_id, source_id, *fragment_ids),
         ))
 
+    async def read_contract_asset_references(
+        self,
+        session,
+        *,
+        style_ids: tuple[str, ...],
+        experience_ids: tuple[str, ...],
+        corpus_revision_refs: tuple[tuple[str, str], ...],
+        fragment_refs: tuple[tuple[str, str, str], ...],
+    ):
+        """Bulk-read the immutable references used by read-only head readiness."""
+
+        styles = ()
+        if style_ids:
+            styles = tuple(await session.fetchall(
+                f"""SELECT asset.id,asset.stable_key,asset.revision,asset.name,
+                           asset.payload_json,asset.content_hash,asset.status,
+                           head.style_template_id AS head_id,
+                           head.revision AS head_revision,
+                           head.content_hash AS head_hash
+                    FROM style_templates asset
+                    LEFT JOIN style_template_heads head
+                      ON head.stable_key=asset.stable_key
+                    WHERE asset.id IN ({','.join(['%s'] * len(style_ids))})
+                    ORDER BY asset.id""",
+                style_ids,
+            ))
+
+        experiences = ()
+        if experience_ids:
+            experiences = tuple(await session.fetchall(
+                f"""SELECT asset.id,asset.stable_key,asset.revision,asset.title,
+                           asset.payload_json,asset.content_hash,asset.status,
+                           head.experience_card_id AS head_id,
+                           head.revision AS head_revision,
+                           head.content_hash AS head_hash
+                    FROM experience_cards asset
+                    LEFT JOIN experience_card_heads head
+                      ON head.stable_key=asset.stable_key
+                    WHERE asset.id IN ({','.join(['%s'] * len(experience_ids))})
+                    ORDER BY asset.id""",
+                experience_ids,
+            ))
+
+        corpora = ()
+        if corpus_revision_refs:
+            pairs = ",".join(["(%s,%s)"] * len(corpus_revision_refs))
+            corpus_args = tuple(
+                value
+                for identity in corpus_revision_refs
+                for value in identity
+            )
+            corpora = tuple(await session.fetchall(
+                f"""SELECT identity.id,identity.source_key,identity.archived_at,
+                           revision.id AS revision_id,revision.revision,
+                           revision.content_hash AS source_hash,revision.status,
+                           revision.display_name AS title,revision.author,
+                           head.revision_id AS head_id,
+                           head.revision AS head_revision,
+                           head.content_hash AS head_hash
+                    FROM corpus_sources identity
+                    LEFT JOIN corpus_source_heads head
+                      ON head.source_id=identity.id
+                    JOIN corpus_source_revisions revision
+                      ON revision.source_id=identity.id
+                    WHERE (identity.id,revision.id) IN ({pairs})
+                    ORDER BY identity.id,revision.id""",
+                corpus_args,
+            ))
+
+        fragments = ()
+        if fragment_refs:
+            triples = ",".join(["(%s,%s,%s)"] * len(fragment_refs))
+            fragment_args = tuple(
+                value
+                for identity in fragment_refs
+                for value in identity
+            )
+            fragments = tuple(await session.fetchall(
+                f"""SELECT source.id AS source_id,
+                           revision.id AS source_revision_id,
+                           revision.revision AS source_revision,
+                           revision.content_hash AS source_hash,
+                           source.archived_at AS source_archived_at,
+                           head.revision_id AS source_head_revision_id,
+                           head.revision AS source_head_revision,
+                           head.content_hash AS source_head_hash,
+                           revision.status AS source_status,
+                           chapter.id AS chapter_id,
+                           fragment.id AS fragment_id,
+                           fragment.content_hash AS fragment_hash,
+                           fragment.chapter_char_start AS fragment_char_start,
+                           fragment.chapter_char_end AS fragment_char_end,
+                           fragment.normalized_text
+                    FROM corpus_sources source
+                    JOIN corpus_source_revisions revision
+                      ON revision.source_id=source.id
+                    LEFT JOIN corpus_source_heads head
+                      ON head.source_id=source.id
+                    JOIN corpus_chapters chapter
+                      ON chapter.corpus_source_id=source.id
+                     AND chapter.source_revision_id=revision.id
+                    JOIN corpus_fragments fragment
+                      ON fragment.corpus_source_id=source.id
+                     AND fragment.corpus_chapter_id=chapter.id
+                    WHERE (source.id,revision.id,fragment.id) IN ({triples})
+                    ORDER BY source.id,revision.id,fragment.id""",
+                fragment_args,
+            ))
+
+        return {
+            "styles": styles,
+            "experiences": experiences,
+            "corpora": corpora,
+            "fragments": fragments,
+        }
+
     async def read_confirmed_snapshot(
         self, session, project_id: str, revision: int | None = None
     ):

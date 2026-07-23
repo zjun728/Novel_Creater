@@ -307,6 +307,86 @@ class ContractHistoryService(ContractPreviewService):
             superseded_reasons=tuple(superseded),
         )
 
+    @staticmethod
+    def _index_bulk_reference_rows(rows, expected, identity):
+        expected = frozenset(expected)
+        indexed = {}
+        for row in tuple(rows or ()):
+            try:
+                key = identity(row)
+            except (KeyError, TypeError):
+                raise ContractPreconditionFailed() from None
+            if key not in expected or key in indexed:
+                raise ContractPreconditionFailed()
+            indexed[key] = row
+        return indexed
+
+    async def _read_contract_asset_references(self, session, result):
+        style_ids = tuple(ref.id for ref in result.style_refs)
+        experience_ids = tuple(
+            ref.id for ref in result.experience_card_refs
+        )
+        corpus_revision_refs = tuple(
+            (ref.id, ref.revisionId)
+            for ref in result.corpus_source_refs
+        )
+        fragment_refs = tuple(dict.fromkeys(
+            (
+                source.id,
+                source.revisionId,
+                fragment.fragmentId,
+            )
+            for source in result.corpus_source_refs
+            for fragment in source.fragments
+        ))
+        if (
+            len(set(style_ids)) != len(style_ids)
+            or len(set(experience_ids)) != len(experience_ids)
+            or len(set(corpus_revision_refs)) != len(corpus_revision_refs)
+        ):
+            raise ContractPreconditionFailed()
+
+        rows = await self.repository.read_contract_asset_references(
+            session,
+            style_ids=style_ids,
+            experience_ids=experience_ids,
+            corpus_revision_refs=corpus_revision_refs,
+            fragment_refs=fragment_refs,
+        )
+        if not isinstance(rows, dict) or set(rows) != {
+            "styles",
+            "experiences",
+            "corpora",
+            "fragments",
+        }:
+            raise ContractPreconditionFailed()
+        return (
+            self._index_bulk_reference_rows(
+                rows["styles"],
+                style_ids,
+                lambda row: row["id"],
+            ),
+            self._index_bulk_reference_rows(
+                rows["experiences"],
+                experience_ids,
+                lambda row: row["id"],
+            ),
+            self._index_bulk_reference_rows(
+                rows["corpora"],
+                corpus_revision_refs,
+                lambda row: (row["id"], row["revision_id"]),
+            ),
+            self._index_bulk_reference_rows(
+                rows["fragments"],
+                fragment_refs,
+                lambda row: (
+                    row["source_id"],
+                    row["source_revision_id"],
+                    row["fragment_id"],
+                ),
+            ),
+        )
+
     async def _get_head_in_session(
         self,
         session,
@@ -408,8 +488,6 @@ class ContractHistoryService(ContractPreviewService):
             except ContractPreconditionFailed:
                 reasons.append("binding_drift")
 
-        locked_assets = {}
-        locked_fragments = {}
         if for_update:
             locked_assets, locked_fragments = (
                 await self._lock_contract_asset_references(
@@ -419,53 +497,67 @@ class ContractHistoryService(ContractPreviewService):
                     corpus_refs=result.corpus_source_refs,
                 )
             )
+            style_rows = {
+                ref.id: locked_assets[("style", ref.id)]
+                for ref in result.style_refs
+            }
+            experience_rows = {
+                ref.id: locked_assets[("experience", ref.id)]
+                for ref in result.experience_card_refs
+            }
+            corpus_rows = {
+                (ref.id, ref.revisionId):
+                    locked_assets[("corpus", ref.id)]
+                for ref in result.corpus_source_refs
+            }
+            fragment_rows = {
+                (
+                    ref.id,
+                    ref.revisionId,
+                    row["fragment_id"],
+                ): row
+                for ref in result.corpus_source_refs
+                for row in locked_fragments[(ref.id, ref.revisionId)]
+            }
+        else:
+            (
+                style_rows,
+                experience_rows,
+                corpus_rows,
+                fragment_rows,
+            ) = await self._read_contract_asset_references(session, result)
 
         for ref in result.style_refs:
-            row = (
-                locked_assets[("style", ref.id)]
-                if for_update
-                else await self.repository.read_style_revision(
-                    session, ref.id
-                )
-            )
+            row = style_rows.get(ref.id)
             reasons.extend(self._asset_reasons(
                 ref, row, kind="style", role=ref.role
             ))
         for ref in result.experience_card_refs:
-            row = (
-                locked_assets[("experience", ref.id)]
-                if for_update
-                else await self.repository.read_experience_revision(
-                    session, ref.id
-                )
-            )
+            row = experience_rows.get(ref.id)
             reasons.extend(self._asset_reasons(
                 ref, row, kind="experience"
             ))
         for ref in result.corpus_source_refs:
-            row = (
-                locked_assets[("corpus", ref.id)]
-                if for_update
-                else await self.repository.read_corpus_revision(
-                    session,
-                    ref.id,
-                    ref.revisionId,
+            row = corpus_rows.get((ref.id, ref.revisionId))
+            source_fragment_rows = tuple(
+                fragment_rows[key]
+                for key in dict.fromkeys(
+                    (
+                        ref.id,
+                        ref.revisionId,
+                        fragment.fragmentId,
+                    )
+                    for fragment in ref.fragments
                 )
-            )
-            fragment_rows = (
-                locked_fragments[(ref.id, ref.revisionId)]
-                if for_update
-                else await self.repository.read_corpus_fragments(
-                    session,
-                    ref.id,
-                    ref.revisionId,
-                    tuple(fragment.fragmentId for fragment in ref.fragments),
-                )
+                if key in fragment_rows
             )
             reasons.extend(self._asset_reasons(
                 ref, row, kind="corpus"
             ))
-            reasons.extend(self._fragment_reasons(ref, fragment_rows))
+            reasons.extend(self._fragment_reasons(
+                ref,
+                source_fragment_rows,
+            ))
 
         head = (
             await self.repository.lock_contract_head(session, project_id)

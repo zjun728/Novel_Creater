@@ -37,6 +37,7 @@ const naiveUiStubPlugin = {
         },
       })
       export const NButton = stub('NButton', 'button')
+      export const NAlert = stub('NAlert')
       export const NResult = stub('NResult')
       export const NSkeleton = stub('NSkeleton')
     `
@@ -75,6 +76,24 @@ function preparation({
     nextAction,
     targetPath,
     reasons: planningReady ? [] : ['planning_model_not_ready'],
+  }
+}
+
+function archivedPreparation() {
+  return {
+    ...preparation({
+      nextAction: 'phase_boundary_planning',
+      targetPath: null,
+    }),
+    lifecycle: 'archived',
+    capabilities: {
+      viewPreparation: true,
+      editContract: false,
+      editBible: false,
+      generateBible: false,
+    },
+    nextAction: 'archived_read_only',
+    reasons: ['project_archived'],
   }
 }
 
@@ -157,8 +176,19 @@ async function waitFor(predicate) {
   assert.fail('condition did not become true')
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
 let vite
 let Overview
+let ArchivedOverview
 let ShellProjectContext
 
 test.before(async () => {
@@ -172,6 +202,10 @@ test.before(async () => {
     ssr: { noExternal: ['naive-ui'] },
     optimizeDeps: { noDiscovery: true },
   })
+  ArchivedOverview = (
+    await vite.ssrLoadModule('/src/views/ArchivedProjectStatusView.vue')
+  ).default
+  ArchivedOverview.render = await clientRender('views/ArchivedProjectStatusView.vue')
   Overview = (await vite.ssrLoadModule('/src/views/ProjectOverviewView.vue')).default
   Overview.render = await clientRender('views/ProjectOverviewView.vue')
   ShellProjectContext = (
@@ -379,6 +413,180 @@ test('returning to the same project overview refreshes its server preparation au
 
     assert.equal(preparationReads, 2)
     assert.equal(useProjectStore(pinia).currentPreparation.nextAction, 'continue_bible')
+  } finally {
+    app.unmount()
+    global.fetch = originalFetch
+  }
+})
+
+test('an archive observed between tabs reconciles the active shell without showing phase complete', async () => {
+  const archived = archivedPreparation()
+  const html = await renderOverview(archived)
+  assert.match(html, /已归档/)
+  assert.doesNotMatch(html, /PHASE 2 COMPLETE|创作准备已完成/)
+
+  const originalFetch = global.fetch
+  let preparationReads = 0
+  global.fetch = async url => {
+    assert.match(String(url), /\/api\/projects\/project%20%2F%20%E4%B8%80\/preparation$/)
+    preparationReads += 1
+    return new Response(JSON.stringify(archived), {
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  const state = ref('active')
+  const project = shallowRef({
+    id: 'project / 一',
+    title: '典镇山河',
+    archivedAt: null,
+    lifecycleRevision: 0,
+  })
+  let shellReloads = 0
+  const reload = async () => {
+    shellReloads += 1
+    state.value = 'archived'
+    project.value = {
+      ...project.value,
+      archivedAt: 1,
+      lifecycleRevision: 1,
+    }
+    return project.value
+  }
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      {
+        path: '/projects/:projectId/overview',
+        component: Overview,
+      },
+      {
+        path: '/projects/:projectId/contract',
+        component: { render: () => h('div', 'contract') },
+      },
+      {
+        path: '/projects/:projectId/bible',
+        component: { render: () => h('div', 'bible') },
+      },
+      {
+        path: '/projects',
+        component: { render: () => h('div', 'projects') },
+      },
+    ],
+  })
+  const app = renderer.createApp({ render: () => h(RouterView) })
+  app.use(pinia)
+  app.use(router)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.provide(ShellProjectContext, {
+    state,
+    project,
+    error: shallowRef(null),
+    reload,
+  })
+
+  try {
+    await router.push('/projects/project%20%2F%20%E4%B8%80/overview')
+    await router.isReady()
+    app.mount(node('root'))
+    await waitFor(() => shellReloads === 1 && state.value === 'archived')
+
+    assert.equal(preparationReads, 1)
+    assert.equal(shellReloads, 1)
+    assert.equal(state.value, 'archived')
+  } finally {
+    app.unmount()
+    global.fetch = originalFetch
+  }
+})
+
+test('a late archived response for the previous project cannot reload the new shell', async () => {
+  const originalFetch = global.fetch
+  const pendingA = deferred()
+  const activeB = preparation({
+    nextAction: 'continue_contract',
+    targetPath: '/projects/B/contract',
+    contract: 'draft',
+    bible: 'missing',
+  })
+  const reads = []
+  global.fetch = async url => {
+    const value = String(url)
+    reads.push(value)
+    if (value.endsWith('/projects/A/preparation')) return pendingA.promise
+    if (value.endsWith('/projects/B/preparation')) {
+      return new Response(JSON.stringify(activeB), {
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected URL: ${value}`)
+  }
+  const state = ref('active')
+  const project = shallowRef({
+    id: 'A',
+    title: 'A',
+    archivedAt: null,
+  })
+  let shellReloads = 0
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      {
+        path: '/projects/:projectId/overview',
+        component: Overview,
+      },
+      {
+        path: '/projects/:projectId/contract',
+        component: { render: () => h('div', 'contract') },
+      },
+    ],
+  })
+  const app = renderer.createApp({ render: () => h(RouterView) })
+  app.use(pinia)
+  app.use(router)
+  app.provide(ssrContextKey, { modules: new Set() })
+  app.provide(ShellProjectContext, {
+    state,
+    project,
+    error: shallowRef(null),
+    reload: async () => {
+      shellReloads += 1
+      return project.value
+    },
+  })
+
+  try {
+    await router.push('/projects/A/overview')
+    await router.isReady()
+    app.mount(node('root'))
+    await waitFor(() => reads.some(value => value.endsWith('/projects/A/preparation')))
+
+    project.value = {
+      id: 'B',
+      title: 'B',
+      archivedAt: null,
+    }
+    await router.push('/projects/B/overview')
+    await waitFor(() => (
+      useProjectStore(pinia).preparationProjectId === 'B'
+      && useProjectStore(pinia).currentPreparation?.nextAction
+        === 'continue_contract'
+    ))
+
+    pendingA.resolve(new Response(JSON.stringify(archivedPreparation()), {
+      headers: { 'content-type': 'application/json' },
+    }))
+    await flush()
+
+    assert.equal(shellReloads, 0)
+    assert.equal(useProjectStore(pinia).preparationProjectId, 'B')
+    assert.equal(
+      useProjectStore(pinia).currentPreparation.nextAction,
+      'continue_contract',
+    )
   } finally {
     app.unmount()
     global.fetch = originalFetch

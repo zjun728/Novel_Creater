@@ -1319,6 +1319,223 @@ async def test_get_head_reuses_caller_session_and_locks_every_readiness_dependen
 
 
 @pytest.mark.asyncio
+async def test_read_only_head_asset_query_count_is_fixed_as_reference_sets_grow():
+    async def count_asset_reads(reference_count):
+        harness = ContractHarness()
+        experience_refs = []
+        corpus_refs = []
+        for index in range(reference_count):
+            card_id = f"bulk-card-{index}"
+            card_payload = {
+                "schemaVersion": "experience-card-v1",
+                "rule": f"choice-{index}",
+            }
+            card = harness.repository._asset_row(
+                card_id,
+                index + 1,
+                card_payload,
+                stable_key=f"bulk-card-key-{index}",
+            )
+            harness.repository.cards[card_id] = card
+            experience_refs.append({
+                "id": card_id,
+                "revision": card["revision"],
+                "contentHash": card["content_hash"],
+            })
+
+            source_id = f"bulk-source-{index}"
+            revision_id = f"bulk-source-revision-{index}"
+            fragment_id = f"bulk-fragment-{index}"
+            source_hash = f"{index + 100:064x}"
+            fragment_hash = f"{index + 1000:064x}"
+            harness.repository.sources[source_id] = {
+                "id": source_id,
+                "revision_id": revision_id,
+                "source_key": f"bulk-source-key-{index}",
+                "revision": index + 1,
+                "source_hash": source_hash,
+                "status": "analyzed",
+                "title": f"source {index}",
+                "author": "author",
+                "head_id": revision_id,
+                "head_revision": index + 1,
+                "head_hash": source_hash,
+            }
+            harness.repository.fragments[fragment_id] = {
+                "source_id": source_id,
+                "source_revision_id": revision_id,
+                "source_revision": index + 1,
+                "source_hash": source_hash,
+                "source_archived_at": None,
+                "source_head_revision_id": revision_id,
+                "source_head_revision": index + 1,
+                "source_head_hash": source_hash,
+                "source_status": "analyzed",
+                "chapter_id": f"bulk-chapter-{index}",
+                "fragment_id": fragment_id,
+                "fragment_hash": fragment_hash,
+                "fragment_char_start": 0,
+                "fragment_char_end": 200,
+                "normalized_text": "reference",
+            }
+            corpus_refs.append({
+                "id": source_id,
+                "revisionId": revision_id,
+                "revision": index + 1,
+                "contentHash": source_hash,
+                "selectionMode": "author",
+                "fragments": ({
+                    "chapterId": f"bulk-chapter-{index}",
+                    "fragmentId": fragment_id,
+                    "fragmentHash": fragment_hash,
+                    "chapterCharStart": 10,
+                    "chapterCharEnd": 110,
+                    "referenceUse": "style",
+                },),
+                "pinnedHistoricalRevision": False,
+            })
+
+        saved = await harness.service.save_draft(command(
+            harness,
+            experienceCardRefs=tuple(experience_refs),
+            corpusSourceRefs=tuple(corpus_refs),
+        ))
+        await harness.service.confirm(confirmation(
+            saved,
+            key=f"bulk-query-count-{reference_count}",
+        ))
+
+        read_calls = 0
+        method_names = (
+            ("read_contract_asset_references",)
+            if hasattr(
+                harness.repository,
+                "read_contract_asset_references",
+            )
+            else (
+                "read_style_revision",
+                "read_experience_revision",
+                "read_corpus_revision",
+                "read_corpus_fragments",
+            )
+        )
+        for method_name in method_names:
+            original = getattr(harness.repository, method_name)
+
+            async def counted(*args, _original=original, **kwargs):
+                nonlocal read_calls
+                read_calls += 1
+                return await _original(*args, **kwargs)
+
+            setattr(harness.repository, method_name, counted)
+
+        head = await harness.service.get_head(
+            "p1",
+            session=object(),
+            for_update=False,
+        )
+        assert head.contract_ready is True
+        return read_calls
+
+    assert (
+        await count_asset_reads(1),
+        await count_asset_reads(6),
+    ) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_read_only_bulk_missing_rows_keep_canonical_asset_and_fragment_reasons():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(saved))
+    original = harness.repository.read_contract_asset_references
+
+    async def omit_expected_rows(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        return {
+            **rows,
+            "experiences": (),
+            "fragments": (),
+        }
+
+    harness.repository.read_contract_asset_references = omit_expected_rows
+
+    head = await harness.service.get_head(
+        "p1",
+        session=object(),
+        for_update=False,
+    )
+
+    assert head.contract_ready is False
+    assert {
+        "experience_missing:card-1",
+        "corpus_fragment_missing:fragment-1",
+        "corpus_fragment_set_drift:source-1",
+    }.issubset(set(head.reasons))
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("duplicate", "wrong_identity", "wrong_fragment_identity"),
+)
+@pytest.mark.asyncio
+async def test_read_only_bulk_rejects_duplicate_or_unrequested_identities(corruption):
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    await harness.service.confirm(confirmation(saved))
+    original = harness.repository.read_contract_asset_references
+
+    async def corrupt_rows(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        if corruption == "wrong_fragment_identity":
+            fragment = deepcopy(rows["fragments"][0])
+            fragment["source_revision_id"] = "wrong-source-revision"
+            return {
+                **rows,
+                "fragments": (fragment,),
+            }
+        first = deepcopy(rows["styles"][0])
+        if corruption == "wrong_identity":
+            first["id"] = "unrequested-style"
+        return {
+            **rows,
+            "styles": (*rows["styles"], first),
+        }
+
+    harness.repository.read_contract_asset_references = corrupt_rows
+
+    with pytest.raises(ContractPreconditionFailed):
+        await harness.service.get_head(
+            "p1",
+            session=object(),
+            for_update=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_read_only_bulk_result_order_never_changes_reference_pairing():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    original = harness.repository.read_contract_asset_references
+
+    async def reverse_rows(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        return {
+            key: tuple(reversed(value))
+            for key, value in rows.items()
+        }
+
+    harness.repository.read_contract_asset_references = reverse_rows
+
+    assert await harness.service.get_head(
+        "p1",
+        session=object(),
+        for_update=False,
+    ) == confirmed
+
+
+@pytest.mark.asyncio
 async def test_confirm_and_locked_readiness_share_the_canonical_asset_lock_helper():
     harness = ContractHarness()
     helper_calls = []

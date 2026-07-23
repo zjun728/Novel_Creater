@@ -117,6 +117,208 @@ async def _count(session, table):
 
 
 @pytest.mark.asyncio
+async def test_real_read_only_contract_assets_use_four_bulk_queries_for_many_refs(
+    disposable_mysql,
+):
+    facts = await _bootstrap(disposable_mysql.session)
+    now = 1_900_000_000_600
+    secondary_style_id = "86000000-0000-0000-0000-000000000001"
+    secondary_payload = style_asset(flavor="章回悬念")
+    secondary_hash = canonical_hash(secondary_payload)
+    await disposable_mysql.session.execute(
+        """INSERT INTO style_templates
+           (id,stable_key,revision,name,payload_json,provenance_json,content_hash,
+            status,created_at)
+           VALUES (%s,'bulk-secondary',1,'批量副风格',%s,'{}',%s,'active',%s)""",
+        (
+            secondary_style_id,
+            canonical_json(secondary_payload),
+            secondary_hash,
+            now,
+        ),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO style_template_heads
+           (stable_key,style_template_id,revision,content_hash,updated_at)
+           VALUES ('bulk-secondary',%s,1,%s,%s)""",
+        (secondary_style_id, secondary_hash, now),
+    )
+
+    experience_ids = [CARD]
+    corpus_refs = [(SOURCE, SOURCE_REV)]
+    fragment_refs = [(SOURCE, SOURCE_REV, FRAGMENT)]
+    for index in range(1, 6):
+        suffix = f"{index:012d}"
+        card_id = f"86000000-0000-0000-0001-{suffix}"
+        card_key = f"bulk-card-{index}"
+        card_payload = {
+            "schemaVersion": "experience-card-v1",
+            "rule": f"bulk-choice-{index}",
+        }
+        card_hash = canonical_hash(card_payload)
+        await disposable_mysql.session.execute(
+            """INSERT INTO experience_cards
+               (id,stable_key,revision,title,category,payload_json,
+                provenance_json,content_hash,status,created_at)
+               VALUES (%s,%s,1,%s,'plot_organization',%s,'{}',%s,'active',%s)""",
+            (
+                card_id,
+                card_key,
+                f"批量经验 {index}",
+                canonical_json(card_payload),
+                card_hash,
+                now + index,
+            ),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO experience_card_heads
+               (stable_key,experience_card_id,revision,content_hash,updated_at)
+               VALUES (%s,%s,1,%s,%s)""",
+            (card_key, card_id, card_hash, now + index),
+        )
+        experience_ids.append(card_id)
+
+        source_id = f"86000000-0000-0000-0002-{suffix}"
+        revision_id = f"86000000-0000-0000-0003-{suffix}"
+        chapter_id = f"86000000-0000-0000-0004-{suffix}"
+        fragment_id = f"86000000-0000-0000-0005-{suffix}"
+        source_hash = f"{index + 100:064x}"
+        fragment_hash = f"{index + 200:064x}"
+        await disposable_mysql.session.execute(
+            """INSERT INTO corpus_blobs
+               (content_hash,byte_length,storage_key,created_at)
+               VALUES (%s,300,%s,%s)""",
+            (source_hash, f"corpus/bulk-{index}", now + index),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO corpus_sources
+               (id,source_key,archived_at,created_at,updated_at)
+               VALUES (%s,%s,NULL,%s,%s)""",
+            (source_id, f"bulk-source-{index}", now + index, now + index),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO corpus_source_revisions
+               (id,source_id,revision,content_hash,relative_path,display_name,
+                author,reference_tags_json,notes,provenance_json,byte_length,
+                encoding,parser_version,normalizer_version,fragmenter_version,
+                index_version,status,public_error_code,imported_at,analyzed_at,
+                created_at)
+               VALUES (%s,%s,1,%s,%s,%s,'作者','[]','','{}',300,'utf-8',
+                       'p1','n1','f1','i1','analyzed',NULL,%s,%s,%s)""",
+            (
+                revision_id,
+                source_id,
+                source_hash,
+                f"bulk-{index}.txt",
+                f"批量语料 {index}",
+                now + index,
+                now + index,
+                now + index,
+            ),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO corpus_source_heads
+               (source_id,revision_id,revision,content_hash,updated_at)
+               VALUES (%s,%s,1,%s,%s)""",
+            (source_id, revision_id, source_hash, now + index),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO corpus_chapters
+               (id,corpus_source_id,source_revision_id,source_revision,
+                source_hash,chapter_order,title,raw_byte_start,raw_byte_end,
+                normalized_char_start,normalized_char_end,normalized_text,
+                content_hash,created_at)
+               VALUES (%s,%s,%s,1,%s,1,'第一章',0,300,0,300,%s,%s,%s)""",
+            (
+                chapter_id,
+                source_id,
+                revision_id,
+                source_hash,
+                "A" * 300,
+                f"{index + 300:064x}",
+                now + index,
+            ),
+        )
+        await disposable_mysql.session.execute(
+            """INSERT INTO corpus_fragments
+               (id,corpus_source_id,corpus_chapter_id,fragment_order,
+                chapter_char_start,chapter_char_end,normalized_text,
+                content_hash,index_payload,analysis_version,created_at)
+               VALUES (%s,%s,%s,1,0,300,%s,%s,'{}','analysis-v1',%s)""",
+            (
+                fragment_id,
+                source_id,
+                chapter_id,
+                "A" * 300,
+                fragment_hash,
+                now + index,
+            ),
+        )
+        corpus_refs.append((source_id, revision_id))
+        fragment_refs.append((source_id, revision_id, fragment_id))
+
+    class CountingSession:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.fetchall_count = 0
+
+        async def fetchall(self, sql, args=None):
+            self.fetchall_count += 1
+            return await self.delegate.fetchall(sql, args)
+
+    counting = CountingSession(disposable_mysql.session)
+    repository = ContractRepository()
+    result = await repository.read_contract_asset_references(
+        counting,
+        style_ids=(STYLE, secondary_style_id),
+        experience_ids=tuple(experience_ids),
+        corpus_revision_refs=tuple(corpus_refs),
+        fragment_refs=tuple(fragment_refs),
+    )
+
+    assert counting.fetchall_count == 4
+    assert {row["id"] for row in result["styles"]} == {
+        STYLE,
+        secondary_style_id,
+    }
+    assert {row["id"] for row in result["experiences"]} == set(experience_ids)
+    assert {
+        (row["id"], row["revision_id"])
+        for row in result["corpora"]
+    } == set(corpus_refs)
+    assert {
+        (
+            row["source_id"],
+            row["source_revision_id"],
+            row["fragment_id"],
+        )
+        for row in result["fragments"]
+    } == set(fragment_refs)
+    assert all(
+        row["source_hash"] in {
+            facts["source_hash"],
+            *(f"{index + 100:064x}" for index in range(1, 6)),
+        }
+        for row in result["corpora"]
+    )
+
+    empty = await repository.read_contract_asset_references(
+        counting,
+        style_ids=(),
+        experience_ids=(),
+        corpus_revision_refs=(),
+        fragment_refs=(),
+    )
+    assert empty == {
+        "styles": (),
+        "experiences": (),
+        "corpora": (),
+        "fragments": (),
+    }
+    assert counting.fetchall_count == 4
+
+
+@pytest.mark.asyncio
 async def test_real_confirmation_freezes_exact_relations_and_replays(disposable_mysql):
     service = _service(disposable_mysql)
     facts, saved = await _saved(disposable_mysql, service)
