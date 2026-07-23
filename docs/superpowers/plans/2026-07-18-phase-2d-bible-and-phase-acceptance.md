@@ -2,23 +2,129 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `subagent-driven-development`, `test-driven-development`,
-> `requesting-code-review`, and `verification-before-completion`.
+> `requesting-code-review`, and `verification-before-completion`. Steps use
+> checkbox syntax for tracking.
 
-**Goal:** Add the formal immutable creation-bible workflow, compute one reliable
-project-preparation readiness view, and complete Phase 2 browser acceptance
-without touching the product database or a real Provider.
+**Goal:** Deliver one formal creation-Bible workflow, one truthful Phase 2
+preparation view, and one full Phase 2 browser acceptance path without touching
+the product database, a real Provider, or a live ranking source.
 
-**Architecture:** A Bible draft is editable future design based on one active
-seed selection and confirmed contract. Optional model generation is one bounded,
-idempotent attempt. Confirmation atomically creates an immutable revision and
-updates the head. Project overview consumes one server readiness DTO rather than
-reconstructing state in the browser.
+**Architecture:** The server derives the current Bible basis from the active
+seed selection and the confirmed creation/style contracts. One nullable
+`active_slot` allows exactly one editable draft per project while retaining
+confirmed and superseded draft rows. Confirmation atomically freezes an
+immutable revision, advances the Bible head, and deactivates the draft. The
+frontend has one canonical `/projects/:projectId/bible` route and `bibleStore`;
+the old `WriterView/CreativeBible` path is deleted rather than kept as a second
+runtime.
 
-**Depends on:** Phase 2A–2C.
+**Tech Stack:** FastAPI, Pydantic v2, async MySQL repositories, MySQL 8 schema
+v1.4, Vue 3, Pinia, Naive UI, Node test runner, pytest, and Playwright.
+
+**Depends on:** Phase 2A-2C on `main`, ending at `a4585ba`.
 
 ---
 
-## Task 1: Define the creation-bible domain and immutable history
+## Frozen Phase 2D decisions
+
+- Development schema is changed directly. There is no migration or old-data
+  compatibility path.
+- A Bible basis freezes `selection_revision`, seed identity, contract revision,
+  creation contract id/hash, and style contract id/hash. `contract_hash` alone
+  is not a valid basis.
+- Manual draft/save/confirm works without a Ready model. Only AI generation
+  requires the `planning` binding.
+- The browser never submits seed, contract, binding, Provider, or model
+  identity. The server resolves and freezes them.
+- A confirmed or superseded draft is never deleted or reactivated. A new
+  current-basis draft is a new row.
+- Phase 2 readiness includes only persisted states that exist now. It does not
+  fabricate autosave recovery, projection rebuild, or general operation state.
+- No plaintext key, Base URL, password, DSN, corpus root, prompt, raw Provider
+  response, or corpus text enters a public DTO, log, report, or browser artifact.
+- New Bible UI and old Bible runtime never coexist as two callable paths. The
+  replacement commit removes the old route-less components, prompts, and Bible
+  Store responsibilities.
+
+---
+
+### Task 1: Correct the Bible schema lifecycle
+
+**Files:**
+
+- Modify: `backend/schema/25_bible.sql`
+- Modify: `backend/schema/30_planning.sql`
+- Modify: `backend/schema_version.py`
+- Modify: `backend/tests/unit/test_schema_manifest.py`
+- Modify: `backend/tests/unit/test_schema_version.py`
+- Modify: `backend/tests/unit/test_initialize_database.py`
+- Modify: `backend/tests/integration/test_schema_bootstrap.py`
+- Create: `backend/tests/integration/test_bible_schema_lifecycle.py`
+
+- [ ] **Step 1: Write the schema contract tests**
+
+Assert that `project_bible_drafts` has `id` as its primary key, nullable
+`active_slot`, `UNIQUE(project_id, active_slot)`, and a check allowing only
+`NULL` or `1`. Every Bible draft, attempt, revision, and confirmation request
+must contain both contract identities:
+
+```text
+contract_revision
+creation_contract_id + creation_hash
+style_contract_id + style_hash
+```
+
+Assert separate foreign keys to `creation_contracts` and `style_contracts`.
+Reject the old single `contract_hash` column and the old `project_id` draft
+primary key.
+
+Assert generation attempts have `owner_token`, `lease_expires_at`, and
+`attempt_version`, with status/lease checks that support the bounded recovery
+contract in Task 4. Bump the exact schema version from `writer-core-v1.3.0` to
+`writer-core-v1.4.0`; a v1.3 database must fail closed until explicitly
+reinitialized, never be modified during application startup.
+
+- [ ] **Step 2: Write the disposable-MySQL lifecycle tests**
+
+Using the existing `disposable_mysql` fixture, prove:
+
+1. draft A can be active;
+2. a confirmation request can retain a foreign-key reference to A;
+3. A can be deactivated without deletion;
+4. draft B can become active under a new selection/contract basis;
+5. B can be deactivated and draft C can become active when the author returns
+   to the same seed under a newer selection generation;
+6. a failed confirmation request leaves its draft active and editable;
+7. inserting two rows with `active_slot=1` for one project fails.
+
+- [ ] **Step 3: Run RED**
+
+```powershell
+python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py backend/tests/integration/test_bible_schema_lifecycle.py -q
+```
+
+Expected: failures identify the old draft primary key and incomplete contract
+basis.
+
+- [ ] **Step 4: Implement the schema**
+
+Keep all draft rows. Confirmation requests reference `(project_id, draft_id)`
+and retain their own immutable draft version/hash snapshot. Update planning
+foreign keys so future plans freeze both Bible contract hashes instead of the
+removed `contract_hash`. Do not add migration SQL or compatibility views.
+
+- [ ] **Step 5: Run GREEN and commit**
+
+```powershell
+python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py backend/tests/integration/test_bible_schema_lifecycle.py -q
+git diff --check
+git add backend/schema backend/schema_version.py backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py backend/tests/integration/test_bible_schema_lifecycle.py
+git commit -m "feat: define bible draft lifecycle"
+```
+
+---
+
+### Task 2: Implement the manual Bible transaction service
 
 **Files:**
 
@@ -32,13 +138,13 @@ reconstructing state in the browser.
 - Create: `backend/tests/api/test_bible_routes.py`
 - Create: `backend/tests/integration/test_bible_revisions.py`
 
-- [ ] **Step 1: Freeze the Bible payload**
+- [ ] **Step 1: Define and test the payload**
 
-Use structured, author-editable sections:
+Create strict Pydantic models for:
 
 ```text
 premiseAndPromise
-worldRules
+worldRules[]
 powerOrProgressionSystem
 protagonist
 coreCast[]
@@ -50,64 +156,134 @@ continuityGuardrails[]
 openDesignQuestions[]
 ```
 
-This is future design, not Canon. Fields never claim an event has happened.
-Every draft/revision freezes:
+Fields describe future design and cannot claim an event has already occurred.
+Reject unknown keys, blank required text, duplicate stable item ids, and payloads
+outside the bounded field/list lengths. Hash only canonical validated data.
 
-```text
-selection revision + seed revision/hash
-contract revision/hash
-planning binding revision/hash when generated
-payload hash
-policy version
-```
+- [ ] **Step 2: Write service RED tests**
 
-- [ ] **Step 2: Write lifecycle tests**
+Cover missing/current/superseded draft and head states, archived read-only,
+server-derived contract basis, `expectedDraftVersion` and
+`expectedHeadRevision` CAS, explicit new-row creation when the prior draft is
+superseded, confirmation idempotency, failed-request replay, transaction
+rollback, confirmed-to-new-draft adjustment, contract style-only drift, and
+A-to-B-to-A selection fencing.
 
-Cover:
+The service must call the canonical `ContractService.get_head()` result and
+accept only `contract_ready=True`; it must not duplicate contract integrity SQL
+or call the HTTP route.
 
-- missing/current/superseded draft and head states;
-- create/update draft with expected draft/head revisions;
-- confirmation request idempotency and CAS;
-- all-or-nothing revision/head/draft update;
-- no delete/reset route or repository method;
-- edit after confirmation clones to a new draft;
-- selection/contract drift invalidates active readiness but keeps history;
-- revisiting the same seed/contract content under a new selection generation
-  never revives the old Bible;
-- archived project is read-only.
-
-- [ ] **Step 3: Run red**
+- [ ] **Step 3: Run RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_domain.py backend/tests/unit/test_bible_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
 ```
 
-- [ ] **Step 4: Implement routes**
-
-Expose:
+- [ ] **Step 4: Implement the routes**
 
 ```text
-GET    /api/projects/:id/bible/head
-GET    /api/projects/:id/bible/draft
-PUT    /api/projects/:id/bible/draft
-POST   /api/projects/:id/bible/draft/clone
-POST   /api/projects/:id/bible/confirm
-GET    /api/projects/:id/bible/history
-GET    /api/projects/:id/bible/history/:revision
+GET  /api/projects/:id/bible/head
+GET  /api/projects/:id/bible/draft
+PUT  /api/projects/:id/bible/draft
+POST /api/projects/:id/bible/draft/clone
+POST /api/projects/:id/bible/confirm
+GET  /api/projects/:id/bible/history
+GET  /api/projects/:id/bible/history/:revision
 ```
 
-No DELETE or reset route exists. Public history returns structured values and
-hash/revision metadata, never prompts or Provider raw output.
+`PUT` with `expectedDraftVersion=0` creates a new current-basis row when no
+current editable draft exists; if a superseded draft occupies the active slot,
+the same transaction deactivates it before inserting the new row. `PUT` with a
+positive expected version updates only the current editable row. Confirmation
+creates the immutable revision, advances the head, completes the confirmation
+request, and clears the active slot in one transaction. No DELETE/reset method,
+route, or repository operation exists.
 
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 5: Run GREEN and commit**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_domain.py backend/tests/unit/test_bible_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
+git diff --check
 git add backend
 git commit -m "feat: add immutable creation bibles"
 ```
 
-## Task 2: Add optional backend Bible generation
+---
+
+### Task 3: Replace the old Bible frontend with one canonical workspace
+
+**Files:**
+
+- Modify: `frontend/src/api/db/client.js`
+- Create: `frontend/src/stores/bibleStore.js`
+- Create: `frontend/src/views/ProjectBibleView.vue`
+- Create: `frontend/src/components/bible/BibleEditor.vue`
+- Create: `frontend/src/components/bible/BibleHistoryDrawer.vue`
+- Modify: `frontend/src/router/projectRoutes.js`
+- Modify: `frontend/src/components/layout/productShell.js`
+- Modify: `frontend/src/views/ProjectOverviewView.vue`
+- Modify: `frontend/src/views/ArchivedProjectStatusView.vue`
+- Delete: `frontend/src/views/WriterView.vue`
+- Delete: `frontend/src/components/bible/CreativeBible.vue`
+- Delete: `frontend/src/components/bible/CharacterArcView.vue`
+- Delete: `frontend/src/components/bible/PlotThreadBoard.vue`
+- Delete: `frontend/src/prompts/bibleFromSeed.js`
+- Delete: `frontend/src/prompts/settingsFromBible.js`
+- Modify: `frontend/src/stores/novelStore.js`
+- Modify: `frontend/src/stores/settingStore.js`
+- Create: `frontend/tests/unit/bibleStore.test.mjs`
+- Create: `frontend/tests/unit/projectBibleView.test.mjs`
+- Modify: `frontend/tests/unit/writerCoreApi.test.mjs`
+- Modify: `frontend/tests/unit/projectRoutes.test.mjs`
+- Modify: `frontend/tests/unit/productShell.test.mjs`
+
+- [ ] **Step 1: Write API and Store RED tests**
+
+Test exact encoded Bible paths, transport allowlists, current-project request
+generations, late-response rejection, explicit save only, same-command
+idempotency replay, CAS conflict without auto-retry, dirty state preservation,
+archived read-only behavior, and server-provided `canEdit/canClone/reasons`.
+The Store never derives basis or revives history locally.
+
+- [ ] **Step 2: Write view RED tests**
+
+Cover missing seed, missing/draft/superseded contract, manual editing with no
+Ready model, explicit Save, complete confirmation preview, confirmed read-only,
+Adjust Future Design, superseded content remaining copyable, archive read-only,
+history pagination, focus/live region, refresh/back/forward, narrow layout, and
+dirty route-leave/beforeunload protection.
+
+- [ ] **Step 3: Run RED**
+
+```powershell
+node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/productShell.test.mjs
+```
+
+- [ ] **Step 4: Implement the canonical workspace and delete the old path**
+
+Add `/projects/:projectId/bible`. Reuse the contract workspace patterns for
+route hydration, dirty generations, module-only overlays, history, CAS, focus,
+and archive state. `planning` Not Ready is shown but does not disable manual
+Save or Confirm.
+
+In the same commit, delete the unreachable `WriterView` and old Bible
+components/prompts. Remove Bible-specific state, normalization, generation,
+and setting-projection actions from `novelStore` and `settingStore`; do not leave
+compatibility exports. Build must contain only the canonical Bible route.
+
+- [ ] **Step 5: Run GREEN, build, and commit**
+
+```powershell
+node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/productShell.test.mjs
+npm --prefix frontend run build
+git diff --check
+git add frontend
+git commit -m "feat: add creation bible workspace"
+```
+
+---
+
+### Task 4: Add one bounded backend Bible generation attempt
 
 **Files:**
 
@@ -115,305 +291,221 @@ git commit -m "feat: add immutable creation bibles"
 - Create: `backend/prompts/bible.py`
 - Create: `backend/services/bible_generation.py`
 - Modify: `backend/routers/bibles.py`
+- Modify: `frontend/src/stores/bibleStore.js`
+- Modify: `frontend/src/views/ProjectBibleView.vue`
 - Create: `backend/tests/unit/test_bible_prompt.py`
 - Create: `backend/tests/unit/test_bible_gateway.py`
 - Create: `backend/tests/unit/test_bible_generation_service.py`
 - Modify: `backend/tests/api/test_bible_routes.py`
 - Modify: `backend/tests/integration/test_bible_revisions.py`
-- Delete: `frontend/src/prompts/bibleFromSeed.js`
-- Modify: `frontend/src/stores/novelStore.js`
-- Modify: `frontend/src/stores/settingStore.js`
+- Modify: `frontend/tests/unit/bibleStore.test.mjs`
+- Modify: `frontend/tests/unit/projectBibleView.test.mjs`
 
-- [ ] **Step 1: Write bounded generation tests**
+- [ ] **Step 1: Write attempt RED tests**
 
-The request uses current selection, confirmed contract, frozen assets/fragments,
-`planning` binding revision, policy version, idempotency key, and author
-instructions. The prompt uses a context budget and includes only necessary
-corpus fragments. The output must match the Bible schema.
+The service resolves current selection, confirmed contract, frozen assets and
+corpus fragments, and the current `planning` binding server-side. Test one
+context budget, one gateway call, strict output validation, manifest hash,
+idempotency, timeout, Provider failure, parse failure, response-basis drift,
+and no draft change on every failure.
 
-Provider failure, parse failure, drift, and timeout create one safe failed
-attempt and do not change the draft. No hidden repair call occurs. A successful
-attempt saves a draft only after the response passes strict validation and the
-manifest is still current.
+Attempt ownership uses `owner_token`, `lease_expires_at`, and
+`attempt_version`. An expired reserved/running attempt becomes
+`outcome_unknown`; it is never silently retried. A new explicit Generate action
+uses a new idempotency key.
 
-- [ ] **Step 2: Run red**
+- [ ] **Step 2: Run RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_prompt.py backend/tests/unit/test_bible_gateway.py backend/tests/unit/test_bible_generation_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
+node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs
 ```
 
-- [ ] **Step 3: Implement one gateway call**
+- [ ] **Step 3: Implement one backend-only generation route**
 
-Resolve `planning` binding server-side. Provider/model/request options are not
-accepted from the browser. Persist actual Provider/model identity, binding
-revision, input/output hashes, and safe status only. Never persist raw response
-or secret-bearing request diagnostics.
+```text
+POST /api/projects/:id/bible/generate
+GET  /api/projects/:id/bible/generation-attempts/:attemptId
+```
 
-- [ ] **Step 4: Remove frontend prompt and commit**
+The browser sends only author instructions, expected draft/head revisions, and
+an idempotency key. Persist safe Provider/model identity and hashes, never raw
+request/response diagnostics. The page disables Generate when `planning` is Not
+Ready, blocks Generate over dirty local edits, and uses a Bible-module overlay.
+Manual editing remains available.
 
-Remove the old Bible generation/normalization actions and imports from
-`novelStore.js` and `settingStore.js`; canonical Bible state now belongs only to
-`bibleStore.js` in Task 3. Do not leave a compatibility export or browser-direct
-generation path.
+- [ ] **Step 4: Run GREEN and commit**
 
 ```powershell
 python -m pytest backend/tests/unit/test_bible_prompt.py backend/tests/unit/test_bible_gateway.py backend/tests/unit/test_bible_generation_service.py backend/tests/api/test_bible_routes.py backend/tests/integration/test_bible_revisions.py -q
-git add backend frontend/src/prompts/bibleFromSeed.js frontend/src/stores/novelStore.js frontend/src/stores/settingStore.js
+node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs
+git diff --check
+git add backend frontend
 git commit -m "feat: generate bible drafts through backend"
 ```
 
-## Task 3: Build the formal Bible page
+---
 
-**Files:**
-
-- Create: `frontend/src/stores/bibleStore.js`
-- Create: `frontend/src/views/ProjectBibleView.vue`
-- Create: `frontend/src/components/bible/BibleEditor.vue`
-- Create: `frontend/src/components/bible/BibleHistoryDrawer.vue`
-- Delete: `frontend/src/components/bible/CreativeBible.vue`
-- Delete: `frontend/src/components/bible/CharacterArcView.vue`
-- Delete: `frontend/src/components/bible/PlotThreadBoard.vue`
-- Modify: `frontend/src/views/WriterView.vue`
-- Modify: `frontend/src/router/projectRoutes.js`
-- Modify: `frontend/src/components/layout/productShell.js`
-- Modify: `frontend/src/views/ProjectOverviewView.vue`
-- Create: `frontend/tests/unit/bibleStore.test.mjs`
-- Create: `frontend/tests/unit/projectBibleView.test.mjs`
-- Modify: `frontend/tests/unit/projectRoutes.test.mjs`
-- Modify: `frontend/tests/unit/productShell.test.mjs`
-
-- [ ] **Step 1: Write view/state tests**
-
-Test:
-
-- missing seed links to Seeds;
-- missing/current/superseded contract links to Contract;
-- manual draft works with no Ready model;
-- Generate is disabled with a precise Go to Model Settings recovery action when
-  `planning` is Not Ready;
-- model generation uses a module-only operation overlay;
-- author edits generated content locally and explicitly saves the draft;
-- Confirm shows the complete frozen basis once and publishes one revision;
-- confirmed view is read-only and has Adjust Future Design, not delete/reset;
-- history is readable and cannot become active through browser-only state;
-- selection/contract drift immediately changes the page to superseded history;
-- archived project is read-only;
-- route refresh/focus/live-region/narrow layout work.
-
-- [ ] **Step 2: Run red**
-
-```powershell
-node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/productShell.test.mjs
-```
-
-- [ ] **Step 3: Implement canonical route**
-
-Add `/projects/:projectId/bible`. Use section forms, repeatable lists with stable
-local keys, explicit Save Draft, and one Confirm action. Do not autosave each
-keystroke and do not create a new revision per edit. Confirmed history has no
-destructive controls.
-
-Delete the old Bible components that rely on missing APIs, browser model calls,
-delete/reset, or parallel arc/thread state. Character arcs and plot-thread
-projections belong to later Canon/planning phases, not the Bible as separate
-facts. Remove the old embedded `CreativeBible` import/tab from `WriterView.vue`
-and replace any still-visible legacy entry with a normal router link to the
-canonical project Bible route. Build must resolve with none of the deleted
-modules imported.
-
-- [ ] **Step 4: Run tests and commit**
-
-```powershell
-node --test frontend/tests/unit/bibleStore.test.mjs frontend/tests/unit/projectBibleView.test.mjs frontend/tests/unit/projectRoutes.test.mjs frontend/tests/unit/productShell.test.mjs
-npm --prefix frontend run build
-git add frontend
-git commit -m "feat: add creation bible workspace"
-```
-
-## Task 4: Create one project-preparation readiness view
+### Task 5: Expose a truthful Phase 2 preparation DTO
 
 **Files:**
 
 - Modify: `backend/repositories/projects.py`
 - Modify: `backend/services/project_lifecycle.py`
 - Modify: `backend/routers/projects.py`
-- Modify: `backend/tests/unit/test_project_creation.py`
-- Modify: `backend/tests/api/test_product_routes.py`
-- Modify: `backend/tests/integration/test_project_archive.py`
+- Modify: `frontend/src/api/db/client.js`
 - Modify: `frontend/src/stores/projectStore.js`
 - Modify: `frontend/src/views/ProjectOverviewView.vue`
-- Modify: `frontend/src/components/layout/productShell.js`
-- Create: `frontend/tests/unit/projectStore.test.mjs`
+- Create: `backend/tests/unit/test_project_preparation.py`
+- Modify: `backend/tests/api/test_product_routes.py`
+- Modify: `backend/tests/integration/test_project_archive.py`
 - Create: `frontend/tests/unit/projectPreparationOverview.test.mjs`
-- Modify: `frontend/tests/unit/productShell.test.mjs`
+- Modify: `frontend/tests/unit/projectStore.test.mjs`
 
-- [ ] **Step 1: Define the readiness DTO**
+- [ ] **Step 1: Write the exact DTO RED tests**
 
-The backend returns:
+`GET /api/projects/:id/preparation` returns only persisted Phase 2 facts:
 
 ```text
-projectionState: synced | drift
-autosaveState: ok | failed
-activeSession: missing | current | superseded
+lifecycle: active | archived
 activeSelection: missing | current
 contract: missing | draft | current | superseded
 bible: missing | draft | current | superseded
-planning: missing | current | superseded
-modelTasks: eight safe readiness values
-hasFinalChapters
-activeOperation
-capabilities:
-  enterWriter / manualEdit / aiGenerate / saveCandidate / finalize
-nextAction:
-  view_operation | rebuild_projections | recover_autosave |
-  continue_writing | select_seed | continue_contract | continue_bible |
-  phase_boundary_planning | phase_boundary_writer
+modelTasks: eight safe task readiness values
+capabilities: viewPreparation | editContract | editBible | generateBible
+nextAction: select_seed | continue_contract | continue_bible |
+            phase_boundary_planning | archived_read_only
+targetPath: encoded canonical path or null
 reasons[]
 ```
 
-`nextAction` is derived on the server from exact revision/hash comparisons.
-Provider/model Not Ready does not change manual preparation readiness; it only
-adds task-level recovery reasons.
+Priority is lifecycle, selection, contract, Bible, then the non-clickable
+planning boundary. Model loss changes only the relevant AI capability/reason;
+it does not invalidate manual preparation. Do not add autosave, projection,
+chapter-session, or general operation fields in Phase 2D.
 
-The fixed priority is:
-
-1. active write/finalization operation;
-2. Canon/Projection drift;
-3. failed autosave on the active draft;
-4. valid active Session/working draft;
-5. missing selection;
-6. missing/superseded contract;
-7. missing/superseded Bible;
-8. missing/superseded planning;
-9. ready to start a new writing Session.
-
-Phase 2 preserves working Phase 1 recovery paths for priorities 1–4. Because
-Phases 3 and 4 are not yet delivered, priorities 8–9 return non-clickable
-`phase_boundary_*` actions with a clear completion message, not dead navigation.
-Phase 3/4 replace those boundary values when their real routes ship.
-
-- [ ] **Step 2: Write transition tests**
-
-Cover new project, selected seed, contract draft/confirmed, Bible
-draft/confirmed, A→B→A, model loss, active operation, Canon/Projection drift,
-failed autosave, current/superseded Session and working draft, current/missing
-planning, archive/restore, refresh, and first finalized chapter. Assert exactly
-one primary next action in the fixed priority order.
-
-- [ ] **Step 3: Run red**
+- [ ] **Step 2: Run RED**
 
 ```powershell
-python -m pytest backend/tests/unit/test_project_creation.py backend/tests/api/test_product_routes.py backend/tests/integration/test_project_archive.py -q
-node --test frontend/tests/unit/projectStore.test.mjs frontend/tests/unit/projectPreparationOverview.test.mjs frontend/tests/unit/productShell.test.mjs
+python -m pytest backend/tests/unit/test_project_preparation.py backend/tests/api/test_product_routes.py backend/tests/integration/test_project_archive.py -q
+node --test frontend/tests/unit/projectStore.test.mjs frontend/tests/unit/projectPreparationOverview.test.mjs
 ```
 
-- [ ] **Step 4: Implement and consume the DTO**
+- [ ] **Step 3: Implement and consume one server authority**
 
-Project overview and project card stop independently inferring readiness from
-multiple stores. Render one primary action and small status summaries. Existing
-recovery/rebuild/resume actions retain their real Phase 1 routes. Do not show
-Phase 3/4 dead navigation; boundary actions explain which preparation is
-complete and which later phase supplies the next real route.
+The project overview renders one primary action and small status summaries from
+this DTO. It does not join Seed/Contract/Bible Stores in the browser. Project
+cards keep their current project-open behavior; no N+1 readiness reads are
+added to the library. Later writing phases extend this DTO when their persisted
+recovery states exist.
 
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 4: Run GREEN and commit**
 
 ```powershell
-python -m pytest backend/tests/unit/test_project_creation.py backend/tests/api/test_product_routes.py backend/tests/integration/test_project_archive.py -q
-node --test frontend/tests/unit/projectStore.test.mjs frontend/tests/unit/projectPreparationOverview.test.mjs frontend/tests/unit/productShell.test.mjs
+python -m pytest backend/tests/unit/test_project_preparation.py backend/tests/api/test_product_routes.py backend/tests/integration/test_project_archive.py -q
+node --test frontend/tests/unit/projectStore.test.mjs frontend/tests/unit/projectPreparationOverview.test.mjs
+git diff --check
 git add backend frontend
-git commit -m "feat: expose creative preparation readiness"
+git commit -m "feat: expose phase two preparation state"
 ```
 
-## Task 5: Delete remaining Phase 2 shadow runtime
+---
+
+### Task 6: Remove the remaining proven-dead shadow runtime
 
 **Files:**
 
-- Audit/delete imports under: `frontend/src/stores/novelStore.js`
-- Audit/delete imports under: `frontend/src/api/ai/`
-- Delete only when now unused:
-  `frontend/src/components/seed/SeedWorkbench.vue`
-- Delete only when now unused:
-  `frontend/src/components/seed/StyleTrialPanel.vue`
-- Audit/delete old Phase 2 exports in: `frontend/src/api/db/client.js`
+- Delete after import-graph proof: `frontend/src/stores/novelStore.js`
+- Delete after import-graph proof: `frontend/src/stores/settingStore.js`
+- Delete after import-graph proof: `frontend/src/stores/memoryStore.js`
+- Delete after import-graph proof: `frontend/src/stores/volumeStore.js`
+- Delete after import-graph proof: `frontend/src/stores/storyBlockStore.js`
+- Delete after import-graph proof: `frontend/src/stores/compareStore.js`
+- Delete after import-graph proof: `frontend/src/stores/writerStore.js`
+- Delete after import-graph proof: obsolete components imported only by the
+  deleted `WriterView`/Stores
+- Delete after import-graph proof: obsolete prompts imported only by those
+  deleted modules
+- Delete after import-graph proof: `frontend/src/api/ai/index.js` and its three
+  browser Provider adapters
+- Keep: `frontend/src/api/ai/providerPresets.js` while `ProviderForm.vue` uses it
 - Modify: `backend/tests/api/test_route_inventory.py`
 - Create: `frontend/tests/unit/phase2RuntimeInventory.test.mjs`
+- Modify: formal unit tests that currently assert the existence of dead files
 
-- [ ] **Step 1: Write runtime inventory tests**
+- [ ] **Step 1: Write behavior/import inventory RED tests**
 
-Assert formal route inventory includes only the canonical Phase 2 routes and
-excludes old `/settings`, market fallback, JSON wizard, old Bible, and
-browser-direct Provider paths. Import the production router/app and verify
-behavior; do not rely only on source regex.
+Import the production router/app and assert canonical routes. Walk production
+imports from active route entries and prove none reaches the legacy Stores,
+components, prompts, browser AI client, or old Bible modules. Source regex may
+support diagnostics but cannot be the only proof.
 
-- [ ] **Step 2: Remove only proven-dead runtime code**
+- [ ] **Step 2: Delete the closed dead cluster**
 
-Use import graph/build evidence. Do not delete historical plans, acceptance
-reports, approved assets, or later-phase writer code solely because it is not
-linked in Phase 2. Remove old runtime modules that now have no canonical caller
-and conflict with the new paths.
+Delete only modules whose complete caller set belongs to the same unreachable
+cluster. Preserve `providerPresets.js` and all current canonical Stores. Do not
+create compatibility exports or empty forwarding files.
 
-- [ ] **Step 3: Run tests and commit**
+- [ ] **Step 3: Verify and commit**
 
 ```powershell
 python -m pytest backend/tests/api/test_route_inventory.py -q
 node --test frontend/tests/unit/phase2RuntimeInventory.test.mjs
 npm --prefix frontend run build
-git add backend frontend
-git commit -m "refactor: remove superseded preparation paths"
+npm test
+git diff --check
+git add backend frontend scripts
+git commit -m "refactor: remove superseded preparation runtime"
 ```
 
-## Task 6: Full Phase 2 browser acceptance
+---
+
+### Task 7: Full Phase 2 browser acceptance and integration
 
 **Files:**
 
 - Create: `frontend/e2e/phase2-creative-foundation.spec.ts`
 - Create: `frontend/e2e/run-phase2.mjs`
 - Create: `frontend/playwright.phase2.config.ts`
+- Modify only if a missing neutral primitive is proven:
+  `frontend/e2e/support/product-runner.mjs`
+- Reuse: `frontend/e2e/runtime-observer.mjs`
+- Reuse: `frontend/e2e/server-log-observer.mjs`
 - Modify: `frontend/package.json`
 - Modify: `package.json`
 - Modify: `scripts/run-tests.mjs`
 - Create: `scripts/tests/phase2Suite.test.mjs`
 - Create: `backend/scripts/prepare_phase2_browser_db.py`
 - Create: `backend/tests/unit/test_prepare_phase2_browser_db.py`
-- Create: `docs/acceptance/2026-07-18-phase-2-creative-foundation.md`
+- Create: `docs/acceptance/2026-07-23-phase-2-creative-foundation.md`
 
-- [ ] **Step 1: Build one runner-owned environment**
+- [ ] **Step 1: Extend the shared runner, not a new lifecycle**
 
-The runner:
+`run-phase2.mjs` must compose `e2e/support/product-runner.mjs`,
+`runtime-observer.mjs`, and `server-log-observer.mjs` for reservation,
+owned-process, runtime evidence, reverse cleanup, and disposable MySQL. It may
+add only Phase 2 fixtures and orchestration. It cannot copy server lifecycle
+code from Phase 2A/B/C runners. `prepare_phase2_browser_db.py` invokes the
+canonical schema initializer and adds only Phase 2 fixtures; it does not
+reimplement bootstrap DDL.
 
-- validates explicit test-only environment variables;
-- creates one random disposable MySQL 8 database;
-- initializes exact v1.3 schema and 10+64 assets;
-- creates a synthetic managed corpus root;
-- starts backend/frontend on reserved loopback ports;
-- injects market/model fakes only through backend composition seams;
-- records PID/DB/root ownership tokens;
-- always terminates children and drops DB in `finally`;
-- scans network/page/console/log/report/screenshot output for secret, Base URL,
-  DSN, absolute-root, and large-corpus sentinels.
+The runner validates explicit `TEST_MYSQL_*`, creates one random
+`novel_creator_test_%` database, verifies `SELECT DATABASE()`, uses a synthetic
+managed corpus root, binds random `127.0.0.1` ports, disables schedulers, and
+injects fakes only at external market/Provider boundaries. Cleanup order is
+servers reverse, reservations, database, root; counts must end at remaining=0.
 
-- [ ] **Step 2: Exercise the full manual path**
+- [ ] **Step 2: Write the UI-only browser scenarios**
 
-In a real browser:
+No `page.request`, `page.route`, `page.evaluate`, browser `fetch`, or Axios
+bypass is allowed. Exercise project creation, 10 styles, 64 cards, synthetic
+corpus, bindings, market snapshots, multiple seeds, A-to-B-to-A, manual engine,
+contract confirm, manual Bible save/confirm, Bible adjustment, history,
+archive read-only, refresh/back/forward, narrow viewport, Not Found, and the
+preparation boundary. A fake Provider scenario covers one successful Bible
+generation and one safe failure without changing the prior draft.
 
-1. create/open a project;
-2. browse 10 styles and 64 cards;
-3. import synthetic corpus and inspect bounded details;
-4. set application fallback and project bindings;
-5. import separate public-rank snapshots;
-6. create multiple manual seeds and select one;
-7. enter a manual engine and complete/confirm a contract;
-8. manually draft/edit/confirm a Bible;
-9. refresh each canonical route and use Back/Forward;
-10. verify overview reports preparation complete with no dead Planning button.
-
-- [ ] **Step 3: Exercise recovery and history**
-
-Test source failure with retained snapshot, model task Not Ready with manual
-fallback, contract drift, Bible drift, active-operation overlay, A→B→A
-supersession, archive read-only, narrow viewport, Not Found, and safe retries.
-
-- [ ] **Step 4: Run the final automated gates**
+- [ ] **Step 3: Run the final gates strictly in sequence**
 
 ```powershell
 npm run test:browser:phase2
@@ -421,28 +513,23 @@ npm test
 npm run test:integration
 npm run build
 git diff --check
-git status --short
 ```
 
-Expected:
+After browser and integration runs, record created/cleaned/remaining database
+counts and verify owned process, port, and temp-root residue is zero. Stop on the
+first failure and use systematic debugging before continuing.
 
-- all suites pass;
-- browser and integration created/cleaned counts match, `remaining=0`;
-- no product DB, real Provider, or live ranking source was contacted;
-- no secret/corpus-root/raw-text sentinel appears;
-- worktree contains only the acceptance report update before final commit.
+- [ ] **Step 4: Independent final review**
 
-- [ ] **Step 5: Perform independent reviews**
+Run a full specification review first. Only after it reports
+Critical/Important/Minor = 0/0/0, run a separate quality/security-boundary
+review. Fix findings through the same implementer and repeat the relevant
+review before rerunning all five gates.
 
-Run one full spec review against the July 18 product specification and one
-code-quality/security-boundary review. Fix every Critical/Important finding and
-rerun all gates.
+- [ ] **Step 5: Record honest acceptance evidence and commit**
 
-- [ ] **Step 6: Record evidence and commit**
-
-Record exact commit, schema version/hash, asset package/hash, test counts,
-browser scenarios, created/cleaned DB counts, secret scans, known Phase 3
-boundary, and the statement:
+The report records exact fresh commands/counts, commit, schema and asset hashes,
+browser scenarios, cleanup counts, and secret scans. It must include:
 
 ```text
 Product DB Ready: not evaluated
@@ -450,38 +537,15 @@ Real Provider Ready: not evaluated
 Content Quality Ready: not evaluated
 ```
 
-Then:
-
 ```powershell
-git add backend/scripts/prepare_phase2_browser_db.py backend/tests/unit/test_prepare_phase2_browser_db.py frontend/e2e frontend/playwright.phase2.config.ts frontend/package.json package.json scripts docs/acceptance/2026-07-18-phase-2-creative-foundation.md
+git add backend/scripts/prepare_phase2_browser_db.py backend/tests/unit/test_prepare_phase2_browser_db.py frontend/e2e frontend/playwright.phase2.config.ts frontend/package.json package.json scripts docs/acceptance/2026-07-23-phase-2-creative-foundation.md
 git commit -m "test: accept phase two creative foundation"
 ```
 
-## Task 7: Merge readiness, without product mutation
+- [ ] **Step 6: Finish the branch**
 
-- [ ] **Step 1: Verify branch evidence**
-
-```powershell
-git status --short --branch
-git log --oneline main..HEAD
-npm test
-npm run test:integration
-npm run test:browser:phase2
-npm run build
-```
-
-- [ ] **Step 2: Review commit scope**
-
-Ensure no runtime compatibility aliases, product DB artifacts, Provider outputs,
-downloaded live HTML, `.env`, corpus blobs, or Playwright reports are tracked.
-
-- [ ] **Step 3: Fast-forward main and push only after all gates pass**
-
-Use the repository's established non-interactive merge/push procedure. Do not
-run the product reset or a real Provider test as part of the merge.
-
-- [ ] **Step 4: Hand off Phase 3**
-
-Phase 3 starts only after Phase 2 public contracts are on `main`. Its inputs are
-the active seed selection, confirmed creation contract, and confirmed Bible
-revisions. No Phase 3 implementation is included in this plan.
+Use `finishing-a-development-branch`. Fetch and compare `origin/main`, do not
+force-push, do not clean the user's other worktrees, and use a safe integration
+worktree if the main worktree is dirty. Merge/push only after the fresh gates
+and final reviews pass. Phase 3 starts from the selected seed, confirmed
+contract, and confirmed Bible revisions; no Phase 3 code is included here.

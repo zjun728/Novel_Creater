@@ -358,9 +358,15 @@ AI 选题聊天不会自动创建种子。作者明确点击“保存为种子�
 
 ### 6.4 创作圣经
 
-契约确认后生成创作圣经，作者可以编辑并确认。圣经不允许删除或重置，只建立 revision 历史。
+契约确认后进入创作圣经。作者在没有可用模型时也可以手工建立、编辑和确认圣经；模型可用时可以显式生成一份 AI 工作稿，但模型不可用只禁用“AI 生成”，不能阻止手工草稿、保存和确认。
 
-圣经确认前不能进入正式故事规划和正文生成。确认后，圣经中的未来设计仍可通过新 revision 调整，但不能篡改已发生 Canon。
+每个项目最多只有一份活动圣经草稿。草稿保存只增加草稿版本，不建立正式 revision。确认时，服务端在同一事务中冻结草稿、建立不可变圣经 revision、推进项目圣经 head，并将该草稿退出活动状态。确认失败时原活动草稿保持不变。后续“调整未来设计”建立新的活动草稿；旧草稿、确认请求和正式 revision 保留，不删除、不重置，也不覆盖历史。
+
+每份草稿和正式 revision 都绑定服务端读取的当前依据：selection revision、seed revision/hash、创作契约 revision、creation contract id/hash、style contract id/hash，以及 AI 生成时使用的 `planning` binding revision/hash。浏览器不能提交或改写这些依据。重新选择旧种子形成的新 selection generation、契约正文变化或风格契约变化都会使旧圣经变成 superseded，只读历史不能被浏览器重新激活。
+
+圣经是未来设计，不是已发生事实。圣经确认前不能进入正式故事规划和正文生成。确认后，未来设计可以通过新 revision 调整，但不能篡改已发生 Canon。
+
+正式运行时只有 `/projects/:projectId/bible`、`bibleStore` 和后端 Bible service 一条链。新链落地时，同一纵向切片必须删除不可达的 `WriterView/CreativeBible` Bible 子链、旧 Bible prompt、旧 Store 中对应状态和浏览器直连生成动作；不保留兼容导出、隐藏路由或第二套状态源。
 
 ## 7. 故事规划与故事块
 
@@ -792,7 +798,8 @@ Provider 公共快照只用于说明历史生成来源，不按名称自动匹�
 | MarketSourceService | 来源适配、手动/计划刷新和安全采集边界 |
 | MarketSnapshotService | 榜单快照、来源时间、规范化趋势视图和失败降级 |
 | CreativeAssetService | 风格、经验卡、语料浏览、导入和冻结引用 |
-| CreationContractService | 种子、发动机、契约和圣经 revision |
+| CreationContractService | 种子、发动机和创作契约 revision |
+| CreationBibleService | 活动圣经草稿、不可变圣经 revision、确认和当前依据校验 |
 | PlanningService | 分卷、情节、故事块和章节小纲 |
 | ContextAssemblyService | 按预算构建本章上下文 manifest |
 | ChapterSessionService | 当前章会话和单一 WorkingDraft |
@@ -824,7 +831,7 @@ Provider 公共快照只用于说明历史生成来源，不按名称自动匹�
 
 产品数据库仍是开发测试数据，可以按新 schema 重建，不做旧版本数据迁移。重置时仅保留已确认的样板项目身份和三个种子作为开发基准，其余派生测试数据清除。
 
-按纵向功能替换完成后删除：
+按纵向功能替换完成后立即删除。旧模块不能与新模块作为两套可调用运行时并存；只有经正式 import graph 和 build 证明仍服务于其他当前模块的共享文件，才允许先拆出仍需部分后再删除旧职责：
 
 - 旧 `WriterView.vue` 和未再使用的旧 writer components；
 - 旧 `writerStore`、旧前端 finalization commands 和旧直接字符串替换逻辑；
