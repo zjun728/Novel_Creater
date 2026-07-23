@@ -577,7 +577,7 @@ git add backend/scripts/prepare_phase2_browser_db.py backend/tests/unit/test_pre
 git commit -m "test: accept phase two creative foundation"
 ```
 
-- [ ] **Step 6: Finish the branch**
+- [x] **Step 6: Finish the branch**
 
 Use `finishing-a-development-branch`. Fetch and compare `origin/main`, do not
 force-push, do not clean the user's other worktrees, and use a safe integration
