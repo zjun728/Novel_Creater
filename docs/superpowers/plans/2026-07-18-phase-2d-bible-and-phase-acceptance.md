@@ -216,6 +216,12 @@ creates the immutable revision, advances the head, completes the confirmation
 request, and clears the active slot in one transaction. No DELETE/reset method,
 route, or repository operation exists.
 
+If an unexpected `Exception` occurs only after that transaction successfully
+reserved the request, the main transaction rolls back the reservation, revision,
+head, and active-slot writes together. A separate narrow transaction may then
+record only a terminal failed receipt after re-locking and verifying the exact
+draft, basis, and head; it never advances the head or changes the draft slot.
+
 - [ ] **Step 5: Run GREEN and commit**
 
 ```powershell

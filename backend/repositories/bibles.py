@@ -206,6 +206,43 @@ class BibleRepository:
         )
         return changed == 1
 
+    async def insert_failed_confirmation_request(
+        self,
+        session,
+        row: dict,
+    ) -> bool:
+        changed = await session.execute(
+            """INSERT INTO bible_confirmation_requests
+               (id,project_id,selection_revision,contract_revision,
+                creation_contract_id,creation_hash,style_contract_id,
+                style_hash,draft_id,draft_version,draft_hash,idempotency_key,
+                request_hash,status,bible_revision_id,result_revision,
+                result_hash,public_error_code,created_at,completed_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'failed',
+                       NULL,NULL,NULL,'BibleConfirmationFailed',%s,%s)""",
+            tuple(
+                row[key]
+                for key in (
+                    "id",
+                    "project_id",
+                    "selection_revision",
+                    "contract_revision",
+                    "creation_contract_id",
+                    "creation_hash",
+                    "style_contract_id",
+                    "style_hash",
+                    "draft_id",
+                    "draft_version",
+                    "draft_hash",
+                    "idempotency_key",
+                    "request_hash",
+                    "created_at",
+                    "completed_at",
+                )
+            ),
+        )
+        return changed == 1
+
     async def insert_revision(self, session, row: dict) -> bool:
         changed = await session.execute(
             """INSERT INTO creation_bible_revisions

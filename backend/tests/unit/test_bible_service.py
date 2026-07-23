@@ -267,6 +267,20 @@ class MemoryBibleRepository:
         self.write_count += 1
         return True
 
+    async def insert_failed_confirmation_request(self, _session, row):
+        key = (row["project_id"], row["idempotency_key"])
+        if key in self.requests:
+            return False
+        self.requests[key] = deepcopy(row) | {
+            "status": "failed",
+            "bible_revision_id": None,
+            "result_revision": None,
+            "result_hash": None,
+            "public_error_code": "BibleConfirmationFailed",
+        }
+        self.write_count += 1
+        return True
+
     async def insert_revision(self, _session, row):
         key = (row["project_id"], row["revision"])
         if key in self.revisions:
@@ -390,6 +404,7 @@ async def test_missing_and_current_draft_use_only_the_canonical_contract_head_ba
     assert saved.status == "current"
     assert saved.draft_version == 1
     assert saved.can_edit is saved.can_confirm is True
+    assert saved.can_clone is False
     assert saved.basis.selection_revision == 1
     assert saved.basis.seed_id == "seed-a"
     assert saved.basis.creation_contract_id == "creation-a"
@@ -671,7 +686,7 @@ async def test_failed_confirmation_request_replays_the_same_safe_failure():
 
 
 @pytest.mark.asyncio
-async def test_confirmation_failpoint_rolls_back_revision_head_request_and_slot():
+async def test_confirmation_failpoint_rolls_back_main_writes_and_settles_failure():
     harness = BibleHarness(
         failpoint=lambda stage: (
             (_ for _ in ()).throw(RuntimeError("rollback sentinel"))
@@ -683,15 +698,28 @@ async def test_confirmation_failpoint_rolls_back_revision_head_request_and_slot(
         SaveBibleDraft("p1", 0, bible_payload())
     )
 
-    with pytest.raises(RuntimeError, match="rollback sentinel"):
-        await harness.service.confirm(
-            ConfirmBible("p1", "rollback-1", saved.draft_version, 0)
-        )
+    command = ConfirmBible("p1", "rollback-1", saved.draft_version, 0)
+
+    with pytest.raises(BibleConfirmationFailed):
+        await harness.service.confirm(command)
 
     assert harness.repository.heads["p1"]["revision"] == 0
     assert harness.repository.revisions == {}
-    assert harness.repository.requests == {}
     assert harness.repository.drafts[("p1", saved.draft_id)]["active_slot"] == 1
+    failed = harness.repository.requests[("p1", "rollback-1")]
+    assert failed["status"] == "failed"
+    assert failed["draft_id"] == saved.draft_id
+    assert failed["draft_version"] == saved.draft_version
+    assert failed["draft_hash"] == saved.content_hash
+
+    writes = harness.repository.write_count
+    with pytest.raises(BibleConfirmationFailed):
+        await harness.service.confirm(command)
+    with pytest.raises(BibleConflict):
+        await harness.service.confirm(
+            ConfirmBible("p1", "rollback-1", saved.draft_version, 1)
+        )
+    assert harness.repository.write_count == writes
 
 
 @pytest.mark.asyncio
@@ -703,6 +731,13 @@ async def test_explicit_clone_supports_superseded_draft_and_confirmed_revision_s
     confirmed = await harness.service.confirm(
         ConfirmBible("p1", "clone-source-confirm", first.draft_version, 0)
     )
+    missing = await harness.service.get_draft("p1")
+    assert confirmed.can_clone is True
+    assert missing.can_clone is True
+    with pytest.raises(BibleNotFound):
+        await harness.service.clone_draft(
+            CloneBibleDraft("p1", source_draft_id=first.draft_id)
+        )
 
     cloned_revision = await harness.service.clone_draft(
         CloneBibleDraft("p1", source_revision=confirmed.revision)
@@ -711,6 +746,15 @@ async def test_explicit_clone_supports_superseded_draft_and_confirmed_revision_s
     assert cloned_revision.base_head_revision == 1
     assert cloned_revision.draft_version == 1
     assert cloned_revision.content_hash == confirmed.content_hash
+    assert cloned_revision.can_clone is False
+    assert (await harness.service.get_head("p1")).can_clone is False
+    assert (
+        await harness.service.get_history_revision("p1", confirmed.revision)
+    ).can_clone is False
+    with pytest.raises(BibleConflict):
+        await harness.service.clone_draft(
+            CloneBibleDraft("p1", source_revision=confirmed.revision)
+        )
 
     updated = await harness.service.save_draft(
         SaveBibleDraft(

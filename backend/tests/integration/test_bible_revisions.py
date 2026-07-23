@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
@@ -26,7 +27,13 @@ from backend.tests.unit.test_bible_service import bible_payload
 pytestmark = pytest.mark.mysql
 
 
-def bible_service(disposable_mysql, contracts, *, failpoint=lambda _stage: None):
+def bible_service(
+    disposable_mysql,
+    contracts,
+    *,
+    failpoint=lambda _stage: None,
+    service_class=BibleService,
+):
     tx = transaction_factory_for(disposable_mysql.connection_config)
 
     @asynccontextmanager
@@ -37,7 +44,7 @@ def bible_service(disposable_mysql, contracts, *, failpoint=lambda _stage: None)
         f"91000000-0000-0000-0000-{number:012d}"
         for number in range(1, 100)
     )
-    return BibleService(
+    return service_class(
         BibleRepository(),
         contract_service=contracts,
         transaction_factory=tx,
@@ -211,7 +218,7 @@ async def test_real_adjustment_creates_new_draft_and_keeps_both_immutable_revisi
 
 
 @pytest.mark.asyncio
-async def test_real_confirmation_failure_rolls_back_every_formal_write(
+async def test_real_confirmation_failure_rolls_back_main_writes_and_is_replayable(
     disposable_mysql,
 ):
     contracts, contract = await confirmed_contract_basis(disposable_mysql)
@@ -220,7 +227,7 @@ async def test_real_confirmation_failure_rolls_back_every_formal_write(
         contracts,
         failpoint=lambda stage: (
             (_ for _ in ()).throw(RuntimeError("real rollback sentinel"))
-            if stage == "after_head_advance"
+            if stage == "after_request_reserve"
             else None
         ),
     )
@@ -228,13 +235,25 @@ async def test_real_confirmation_failure_rolls_back_every_formal_write(
         SaveBibleDraft(contract.project_id, 0, bible_payload())
     )
 
-    with pytest.raises(RuntimeError, match="real rollback sentinel"):
+    command = ConfirmBible(
+        contract.project_id,
+        "real-bible-rollback",
+        saved.draft_version,
+        0,
+    )
+    with pytest.raises(BibleConfirmationFailed):
+        await service.confirm(command)
+
+    writes = await count(disposable_mysql.session, "bible_confirmation_requests")
+    with pytest.raises(BibleConfirmationFailed):
+        await service.confirm(command)
+    with pytest.raises(BibleConflict):
         await service.confirm(
             ConfirmBible(
                 contract.project_id,
-                "real-bible-rollback",
+                command.idempotency_key,
                 saved.draft_version,
-                0,
+                1,
             )
         )
 
@@ -247,14 +266,98 @@ async def test_real_confirmation_failure_rolls_back_every_formal_write(
              FROM project_bible_drafts WHERE id=%s""",
         (saved.draft_id,),
     )
+    visible_draft = await service.get_draft(contract.project_id)
+    request = await disposable_mysql.session.fetchone(
+        """SELECT draft_id,draft_version,draft_hash,status,
+                  public_error_code,result_revision,result_hash
+             FROM bible_confirmation_requests
+            WHERE project_id=%s AND idempotency_key=%s""",
+        (contract.project_id, command.idempotency_key),
+    )
     assert head == {"revision": 0}
     assert draft == {
         "active_slot": 1,
         "draft_version": saved.draft_version,
         "content_hash": saved.content_hash,
     }
+    assert visible_draft.status == "current"
+    assert visible_draft.can_edit is visible_draft.can_confirm is True
+    assert visible_draft.can_clone is False
     assert await count(disposable_mysql.session, "creation_bible_revisions") == 0
-    assert await count(disposable_mysql.session, "bible_confirmation_requests") == 0
+    assert writes == 1
+    assert await count(disposable_mysql.session, "bible_confirmation_requests") == 1
+    assert request == {
+        "draft_id": saved.draft_id,
+        "draft_version": saved.draft_version,
+        "draft_hash": saved.content_hash,
+        "status": "failed",
+        "public_error_code": "BibleConfirmationFailed",
+        "result_revision": None,
+        "result_hash": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_failure_settlement_never_overwrites_a_concurrent_success(
+    disposable_mysql,
+):
+    settlement_started = asyncio.Event()
+    allow_settlement = asyncio.Event()
+
+    class DelayedSettlementBibleService(BibleService):
+        async def _settle_confirmation_failure(self, context):
+            settlement_started.set()
+            await allow_settlement.wait()
+            return await super()._settle_confirmation_failure(context)
+
+    contracts, contract = await confirmed_contract_basis(disposable_mysql)
+    failing = bible_service(
+        disposable_mysql,
+        contracts,
+        failpoint=lambda stage: (
+            (_ for _ in ()).throw(RuntimeError("settlement race sentinel"))
+            if stage == "after_request_reserve"
+            else None
+        ),
+        service_class=DelayedSettlementBibleService,
+    )
+    succeeding = bible_service(disposable_mysql, contracts)
+    saved = await failing.save_draft(
+        SaveBibleDraft(contract.project_id, 0, bible_payload())
+    )
+    command = ConfirmBible(
+        contract.project_id,
+        "real-bible-settlement-race",
+        saved.draft_version,
+        0,
+    )
+
+    failing_task = asyncio.create_task(failing.confirm(command))
+    try:
+        await asyncio.wait_for(settlement_started.wait(), timeout=1)
+    except BaseException:
+        failing_task.cancel()
+        await asyncio.gather(failing_task, return_exceptions=True)
+        raise
+    succeeded = await succeeding.confirm(command)
+    allow_settlement.set()
+    replay = await failing_task
+
+    request = await disposable_mysql.session.fetchone(
+        """SELECT status,bible_revision_id,result_revision,result_hash,
+                  public_error_code
+             FROM bible_confirmation_requests
+            WHERE project_id=%s AND idempotency_key=%s""",
+        (contract.project_id, command.idempotency_key),
+    )
+    assert replay == succeeded
+    assert request == {
+        "status": "succeeded",
+        "bible_revision_id": succeeded.bible_revision_id,
+        "result_revision": succeeded.revision,
+        "result_hash": succeeded.content_hash,
+        "public_error_code": None,
+    }
 
 
 @pytest.mark.asyncio
