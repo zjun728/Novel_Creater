@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 import { useBibleStore } from '../../src/stores/bibleStore.js'
+import { createBibleWorkspaceController } from '../../src/application/bible/bibleWorkspaceController.js'
 
 function deferred() { let resolve; let reject; const promise = new Promise((a, b) => { resolve = a; reject = b }); return { promise, resolve, reject } }
 function bible() { const item = id => [{ id, text: `${id} text` }]; return { premiseAndPromise: 'Promise', worldRules: item('world'), powerOrProgressionSystem: 'Growth', protagonist: 'Hero', coreCast: item('cast'), factions: item('faction'), longTermConflicts: item('conflict'), relationshipDynamics: item('relationship'), toneAndNarrativeBoundaries: 'Tone', continuityGuardrails: item('guardrail'), openDesignQuestions: item('question'), privateField: 'must-not-publish' } }
@@ -66,6 +67,20 @@ test('a real missing draft remains null until the controller creates it, then fi
     await store.save('project-1', { ...bible(), premiseAndPromise: 'first' })
     assert.equal(bodies.length, 1)
     assert.equal(bodies[0].expectedDraftVersion, 0)
+  })
+})
+
+test('the real controller makes a missing draft editable and saves its first local artifact through PUT version zero', async () => {
+  const bodies = []
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (options.method === 'PUT') { bodies.push(JSON.parse(options.body)); return response(draft('project-1', 1)) }
+    return response(path.endsWith('/head') ? head('project-1') : draft('project-1', null, { draftId: null, draftVersion: null, status: 'missing', draft: null }))
+  }, async () => {
+    setActivePinia(createPinia()); const store = useBibleStore(); const workspace = createBibleWorkspaceController({ store, projectId: () => 'project-1' })
+    await workspace.hydrate(); assert.equal(workspace.editable.value, true)
+    workspace.edit({ ...workspace.working.value, premiseAndPromise: 'first local' }); await workspace.save()
+    assert.equal(bodies.length, 1); assert.equal(bodies[0].expectedDraftVersion, 0)
   })
 })
 

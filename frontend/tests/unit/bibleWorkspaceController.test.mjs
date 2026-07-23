@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { reactive } from 'vue'
 
-import { createBibleWorkspaceController } from '../../src/application/bible/bibleWorkspaceController.js'
+import { bibleReasonLabel, createBibleWorkspaceController } from '../../src/application/bible/bibleWorkspaceController.js'
 
 const emptyBible = () => ({
   premiseAndPromise: '', powerOrProgressionSystem: '', protagonist: '', toneAndNarrativeBoundaries: '',
@@ -42,6 +43,12 @@ function controller(store, options = {}) {
   })
 }
 
+test('every current backend Bible reason code has an intentional author-facing mapping', async () => {
+  const backend = (await Promise.all(['bibles.py', 'contracts/history.py', 'contracts/preview.py'].map(path => readFile(new URL(`../../../backend/services/${path}`, import.meta.url), 'utf8')))).join('\n')
+  const codes = ['selection_missing', 'seed_missing', 'contract_missing', 'contract_not_ready', 'contract_revision_replaced', 'contract_basis_invalid', 'contract_unavailable', 'selection_revision_changed', 'seed_identity_changed', 'seed_revision_changed', 'seed_generation_changed', 'contract_revision_changed', 'creation_contract_changed', 'style_contract_changed', 'bible_policy_changed', 'bible_head_changed', 'bible_revision_replaced', 'project_archived']
+  for (const code of codes) { assert.match(backend, new RegExp(`['\"]${code}['\"]`)); assert.doesNotMatch(bibleReasonLabel(code), new RegExp(`（${code}）`)) }
+})
+
 test('state machine creates an empty first Bible only without a head, and never writes on hydrate', async () => {
   const store = makeStore({ draft: { draftVersion: null, draft: null, draftId: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: { revision: 0, bible: null, canClone: false } })
   const workspace = controller(store)
@@ -49,6 +56,19 @@ test('state machine creates an empty first Bible only without a head, and never 
   assert.deepEqual(workspace.working.value, emptyBible())
   assert.equal(store.calls.edit.length, 0)
   assert.equal(store.calls.save.length, 0)
+  assert.equal(workspace.editable.value, true)
+  workspace.edit({ ...workspace.working.value, premiseAndPromise: 'first' })
+  assert.equal(workspace.canSave.value, true)
+})
+
+test('active status and reasons are selected from the artifact being displayed', async () => {
+  const store = makeStore({ draft: { draftVersion: null, draft: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: { ...revision(7), status: 'current', reasons: ['bible_head_changed'] }, reasons: [] })
+  const workspace = controller(store); await workspace.hydrate()
+  assert.equal(workspace.activeStatus.value, 'current')
+  assert.deepEqual(workspace.activeReasons.value, ['bible_head_changed'])
+  store.head = { ...store.head, status: 'superseded', reasons: ['contract_unavailable', 'contract_basis_invalid'] }
+  assert.equal(workspace.activeStatus.value, 'superseded')
+  assert.deepEqual(workspace.reasonLabels.value, ['请完成或重新签署创作契约。', '请完成或重新签署创作契约。'])
 })
 
 test('state machine displays a head-only Bible read-only, clones its revision, and keeps archived heads unclonable', async () => {
@@ -121,7 +141,8 @@ test('history opens, loads a detail, appends a page, and can clone active or arc
 })
 
 test('busy state blocks duplicate actions, every async action focuses errors, and reason labels are safe categories', async () => {
-  const store = makeStore({ saving: true, reasons: ['selection_missing', 'contract_not_ready', 'bible_head_changed', 'project_archived', 'unknown_reason'] }); const focused = []
+  const reasons = ['selection_missing', 'contract_not_ready', 'bible_head_changed', 'project_archived', 'unknown_reason']
+  const store = makeStore({ saving: true, reasons, draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons } }); const focused = []
   const workspace = controller(store, { focusError: () => focused.push('error') })
   await workspace.hydrate()
   assert.equal(workspace.busy.value, true)

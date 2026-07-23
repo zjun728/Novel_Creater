@@ -116,7 +116,10 @@ export const useBibleStore = defineStore('bible', () => {
   const canEdit = computed(() => !readOnly.value && draft.value?.canEdit === true)
   const canConfirm = computed(() => !readOnly.value && draft.value?.canConfirm === true)
   const canClone = computed(() => !readOnly.value && (draft.value?.canClone === true || head.value?.canClone === true))
-  const reasons = computed(() => [...(draft.value?.reasons || head.value?.reasons || [])])
+  const reasons = computed(() => {
+    const draftReasons = draft.value?.reasons || []
+    return [...(draftReasons.length > 0 ? draftReasons : head.value?.reasons || [])]
+  })
 
   function enterProject(nextProjectId, options = {}) {
     const next = String(nextProjectId || '')

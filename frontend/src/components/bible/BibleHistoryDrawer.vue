@@ -9,7 +9,7 @@ const basisFields = [['selectionRevision', '选择版本'], ['seedId', '种子']
   <aside v-if="open" class="history-overlay" role="dialog" aria-modal="true" aria-label="创作圣经历史" :aria-busy="busy || undefined">
     <section class="history-sheet"><button aria-label="关闭历史" @click="emit('close')">×</button><h2>修订历史</h2>
       <article v-for="item in history" :key="item.bibleRevisionId || item.revision"><strong>Revision {{ item.revision }}</strong><p>{{ item.status }} · {{ item.confirmedAt || '未确认' }}</p><button :disabled="busy" @click="emit('detail', item.revision)">查看详情</button><button v-if="!readOnly && item.canClone" :disabled="busy" @click="emit('clone', item)">Adjust Future Design</button></article>
-      <section v-if="historyDetail" class="history-detail"><h3>Revision {{ historyDetail.revision }}</h3><bible-editor v-if="historyDetail.bible" :model-value="historyDetail.bible" disabled /><p v-for="reason in historyDetail.reasons || []" :key="reason">{{ labelReason(reason) }}</p><dl><template v-for="[key, label] in basisFields" :key="key"><dt>{{ label }}</dt><dd>{{ historyDetail.basis?.[key] ?? '—' }}</dd></template></dl></section>
+      <section v-if="historyDetail" class="history-detail"><h3>Revision {{ historyDetail.revision }}</h3><bible-editor v-if="historyDetail.bible" :model-value="historyDetail.bible" read-only :disabled="busy" /><p v-for="reason in historyDetail.reasons || []" :key="reason">{{ labelReason(reason) }}</p><dl><template v-for="[key, label] in basisFields" :key="key"><dt>{{ label }}</dt><dd>{{ historyDetail.basis?.[key] ?? '—' }}</dd></template></dl></section>
       <button v-if="historyNextBeforeRevision !== null" :disabled="busy" @click="emit('more')">加载更早修订</button>
     </section>
   </aside>

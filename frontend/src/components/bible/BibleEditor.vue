@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 
-const props = defineProps({ modelValue: { type: Object, default: null }, disabled: Boolean })
+const props = defineProps({ modelValue: { type: Object, default: null }, disabled: Boolean, readOnly: Boolean })
 const emit = defineEmits(['update:modelValue'])
 
 const scalarFields = [
@@ -34,16 +34,18 @@ function removeItem(field, index) { update(field, (value.value[field] || []).fil
   <section class="bible-editor" aria-label="创作圣经编辑器">
     <label v-for="[key, label] in scalarFields" :key="key" class="paper-field">
       <span>{{ label }}</span>
-      <textarea :value="value[key] || ''" :disabled="disabled" @input="update(key, $event.target.value)" />
+      <textarea v-if="readOnly" :value="value[key] || ''" :readonly="true" :disabled="disabled" />
+      <textarea v-else :value="value[key] || ''" :disabled="disabled" @input="update(key, $event.target.value)" />
     </label>
     <section v-for="[key, label] in arrayFields" :key="key" class="paper-list">
       <h2>{{ label }}</h2>
       <label v-for="(item, index) in value[key] || []" :key="item.id" class="paper-field">
         <span>{{ item.id }}</span>
-        <textarea :value="item.text" :disabled="disabled" @input="updateItem(key, index, $event.target.value)" />
-        <button type="button" :disabled="disabled" @click="removeItem(key, index)">删除</button>
+        <textarea v-if="readOnly" :value="item.text" :readonly="true" :disabled="disabled" />
+        <textarea v-else :value="item.text" :disabled="disabled" @input="updateItem(key, index, $event.target.value)" />
+        <button v-if="!readOnly" type="button" :disabled="disabled" @click="removeItem(key, index)">删除</button>
       </label>
-      <button type="button" :disabled="disabled" @click="addItem(key)">新增{{ label }}</button>
+      <button v-if="!readOnly" type="button" :disabled="disabled" @click="addItem(key)">新增{{ label }}</button>
     </section>
   </section>
 </template>

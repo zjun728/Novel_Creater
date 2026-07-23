@@ -3,6 +3,7 @@ import { computed, nextTick, ref } from 'vue'
 const REASON_GROUPS = {
   selection_missing: '请选择种子后继续。', seed_missing: '请选择种子后继续。',
   contract_missing: '请完成或重新签署创作契约。', contract_not_ready: '请完成或重新签署创作契约。', contract_revision_replaced: '请完成或重新签署创作契约。',
+  contract_basis_invalid: '请完成或重新签署创作契约。', contract_unavailable: '请完成或重新签署创作契约。',
   selection_revision_changed: '内容已过期，请调整未来设计。', seed_identity_changed: '内容已过期，请调整未来设计。', seed_revision_changed: '内容已过期，请调整未来设计。', seed_generation_changed: '内容已过期，请调整未来设计。', contract_revision_changed: '内容已过期，请调整未来设计。', creation_contract_changed: '内容已过期，请调整未来设计。', style_contract_changed: '内容已过期，请调整未来设计。', bible_policy_changed: '内容已过期，请调整未来设计。', bible_head_changed: '内容已过期，请调整未来设计。', bible_revision_replaced: '内容已过期，请调整未来设计。',
   project_archived: '项目已归档，只能查阅。', bible_read_only: '项目已归档，只能查阅。',
 }
@@ -34,11 +35,17 @@ export function createBibleWorkspaceController({
     if (hasHeadBody.value) return 'head'
     return 'first'
   })
-  const editable = computed(() => mode.value === 'draft' && store.canEdit === true)
+  const activeArtifact = computed(() => {
+    if (mode.value === 'archived') return store.head?.bible != null ? store.head : store.draft
+    return mode.value === 'head' ? store.head : store.draft
+  })
+  const activeStatus = computed(() => activeArtifact.value?.status || '')
+  const activeReasons = computed(() => [...(activeArtifact.value?.reasons || [])])
+  const editable = computed(() => (mode.value === 'draft' || mode.value === 'first') && store.canEdit === true)
   const canSave = computed(() => editable.value && store.dirty === true && !busy.value)
   const canConfirm = computed(() => editable.value && store.canConfirm === true && store.dirty !== true && !busy.value)
   const confirmPreview = computed(() => clone(store.draft?.draft || null))
-  const reasonLabels = computed(() => (store.reasons || []).map(bibleReasonLabel))
+  const reasonLabels = computed(() => activeReasons.value.map(bibleReasonLabel))
   const cloneSource = computed(() => {
     if (mode.value === 'superseded' && store.draft?.canClone === true && store.draft?.draftId) return { sourceDraftId: store.draft.draftId }
     if (mode.value === 'head' && store.head?.canClone === true) return { sourceRevision: store.head.revision }
@@ -83,5 +90,5 @@ export function createBibleWorkspaceController({
   async function loadMoreHistory() { if (busy.value || store.historyNextBeforeRevision == null) return undefined; try { return await store.loadHistory(projectId(), { append: true, beforeRevision: store.historyNextBeforeRevision }) } catch (failure) { setError(failure); throw failure } }
   function requestLeave() { return store.dirty !== true || confirmLeave() }
   function beforeUnload(event) { if (store.dirty !== true) return undefined; event.preventDefault(); event.returnValue = ''; return '' }
-  return { working, confirmOpen, historyOpen, errorSummary, busy, mode, editable, canSave, canConfirm, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, requestLeave, beforeUnload, confirmLeave: requestLeave }
+  return { working, confirmOpen, historyOpen, errorSummary, busy, mode, activeStatus, activeReasons, editable, canSave, canConfirm, confirmPreview, reasonLabels, cloneSource, hydrate, edit, save, openConfirm, closeConfirm, confirm, clone: cloneRevision, openHistory, showHistoryDetail, loadMoreHistory, requestLeave, beforeUnload, confirmLeave: requestLeave }
 }
