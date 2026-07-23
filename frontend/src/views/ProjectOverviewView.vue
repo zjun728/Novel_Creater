@@ -1,12 +1,91 @@
 <script setup>
+import { computed, onMounted, watch } from 'vue'
 import { NButton, NResult, NSkeleton } from 'naive-ui'
 
 import ArchivedProjectStatusView from './ArchivedProjectStatusView.vue'
 import NotFoundView from './NotFoundView.vue'
 import { useRouteProject } from '../composables/useRouteProject.js'
-import { projectBiblePath, projectContractPath } from '../router/projectRoutes.js'
+import { useProjectStore } from '../stores/projectStore.js'
 
 const routeProject = useRouteProject()
+const projectStore = useProjectStore()
+let mounted = false
+
+const preparation = computed(() => (
+  projectStore.preparationProjectId
+    === String(routeProject.project.value?.id || '')
+    ? projectStore.currentPreparation
+    : null
+))
+
+const actionCopy = computed(() => ({
+  select_seed: {
+    eyebrow: 'CREATIVE SEED',
+    title: '选择创作种子',
+    description: '从候选种子中明确本项目唯一的当前创作方向。',
+  },
+  continue_contract: {
+    eyebrow: 'CREATION CONTRACT',
+    title: '继续创作契约',
+    description: '完成故事发动机、风格、经验与篇幅边界，并由作者确认。',
+  },
+  continue_bible: {
+    eyebrow: 'CREATION BIBLE',
+    title: '继续创作圣经',
+    description: '补全未来设计；手工建立与确认不依赖可用模型。',
+  },
+}[preparation.value?.nextAction] || null))
+
+const statusItems = computed(() => {
+  const value = preparation.value
+  if (!value) return []
+  const labels = {
+    activeSelection: { missing: '未选择', current: '已选择' },
+    contract: {
+      missing: '未建立',
+      draft: '草稿',
+      current: '已确认',
+      superseded: '需重新确认',
+    },
+    bible: {
+      missing: '未建立',
+      draft: '草稿',
+      current: '已确认',
+      superseded: '需重新确认',
+    },
+  }
+  const planning = value.modelTasks?.find(item => item.taskKey === 'planning')
+  return [
+    ['种子', labels.activeSelection[value.activeSelection] || '未知'],
+    ['创作契约', labels.contract[value.contract] || '未知'],
+    ['创作圣经', labels.bible[value.bible] || '未知'],
+    ['规划模型', planning?.readiness === 'ready' ? '可用' : '不可用'],
+  ]
+})
+
+async function refreshPreparation() {
+  const projectId = routeProject.project.value?.id
+  if (routeProject.state.value !== 'active' || !projectId) return
+  try {
+    await projectStore.loadPreparation(projectId)
+  } catch {
+    // The Store retains a safe retryable state; raw transport details are not rendered.
+  }
+}
+
+onMounted(() => {
+  mounted = true
+  if (projectStore.preparationProjectId !== String(routeProject.project.value?.id || '')) {
+    void refreshPreparation()
+  }
+})
+
+watch(
+  () => [routeProject.state.value, routeProject.project.value?.id],
+  () => {
+    if (mounted) void refreshPreparation()
+  },
+)
 </script>
 
 <template>
@@ -45,20 +124,63 @@ const routeProject = useRouteProject()
     <section class="overview-sheet" aria-labelledby="project-overview-title">
       <p class="eyebrow">PROJECT OVERVIEW</p>
       <h1 id="project-overview-title">{{ routeProject.project.value.title }}</h1>
-      <p>创作契约把已选种子、故事发动机、风格、参考范围与篇幅容量收拢为一份可追溯的正式设计。</p>
-      <router-link
-        class="overview-next-action"
-        :to="projectContractPath(routeProject.project.value.id)"
+      <p>这里汇总服务端已经持久化的创作准备事实，并只给出一个当前下一步。</p>
+
+      <n-result
+        v-if="projectStore.preparationStatus === 'error'"
+        status="error"
+        title="创作准备状态暂时无法加载"
+        description="已保留当前项目，请重新读取服务端状态。"
       >
-        <span>FORMAL CREATION CONTRACT</span>
-        <strong>进入创作契约工作区</strong>
-        <small>核对唯一种子，完成五步设计，预览全部变化后一次签印。</small>
-      </router-link>
-      <router-link class="overview-next-action" :to="projectBiblePath(routeProject.project.value.id)">
-        <span>CREATION BIBLE</span>
-        <strong>进入创作圣经工作区</strong>
-        <small>维护未来设计，并只在确认后写入新的不可变修订。</small>
-      </router-link>
+        <template #footer>
+          <n-button type="primary" @click="refreshPreparation">重新读取</n-button>
+        </template>
+      </n-result>
+
+      <div
+        v-else-if="projectStore.preparationStatus === 'loading' || !preparation"
+        class="preparation-loading"
+        aria-live="polite"
+      >
+        <n-skeleton text :repeat="3" />
+      </div>
+
+      <template v-else>
+        <dl class="preparation-summary" aria-label="创作准备状态">
+          <div v-for="[label, value] in statusItems" :key="label">
+            <dt>{{ label }}</dt>
+            <dd>{{ value }}</dd>
+          </div>
+        </dl>
+
+        <router-link
+          v-if="preparation.targetPath && actionCopy"
+          class="overview-next-action"
+          :to="preparation.targetPath"
+        >
+          <span>{{ actionCopy.eyebrow }}</span>
+          <strong>{{ actionCopy.title }}</strong>
+          <small>{{ actionCopy.description }}</small>
+        </router-link>
+
+        <section
+          v-else
+          class="preparation-boundary"
+          role="status"
+          aria-live="polite"
+        >
+          <span>PHASE 2 COMPLETE</span>
+          <strong>创作准备已完成</strong>
+          <small>故事规划将在下一阶段接入；这里不会提供一个尚不存在的跳转。</small>
+        </section>
+
+        <p
+          v-if="preparation.reasons.includes('planning_model_not_ready')"
+          class="model-note"
+        >
+          规划模型不可用；手工契约与圣经仍可继续，只有 AI 生成被停用。
+        </p>
+      </template>
     </section>
   </main>
 </template>
@@ -67,22 +189,22 @@ const routeProject = useRouteProject()
 .overview-page {
   min-height: 100%;
   padding: clamp(24px, 5vw, 64px);
-  color: #302a23;
-  background: #f4efe4;
+  color: var(--nc-ink);
+  background: var(--nc-canvas);
 }
 .overview-sheet {
   width: min(980px, 100%);
   min-height: 260px;
   margin-inline: auto;
   padding: clamp(28px, 5vw, 54px);
-  border: 1px solid #d8cbb7;
+  border: 1px solid var(--nc-border);
   border-radius: 14px;
-  background: #fffdf8;
+  background: var(--nc-paper);
   box-shadow: 0 24px 64px rgba(58, 43, 27, .07);
 }
 .eyebrow {
   margin: 0 0 12px;
-  color: #9a3f32;
+  color: var(--nc-vermilion);
   font: 700 11px Georgia, serif;
   letter-spacing: .16em;
 }
@@ -95,8 +217,30 @@ h1 {
 .overview-sheet > p:not(.eyebrow) {
   max-width: 60ch;
   margin: 18px 0 0;
-  color: #766c60;
+  color: var(--nc-muted);
   line-height: 1.8;
+}
+.preparation-loading {
+  margin-top: 28px;
+}
+.preparation-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 28px 0 0;
+}
+.preparation-summary div {
+  padding: 14px 16px;
+  border: 1px solid var(--nc-border);
+  border-radius: 8px;
+}
+.preparation-summary dt {
+  color: var(--nc-muted);
+  font-size: 12px;
+}
+.preparation-summary dd {
+  margin: 6px 0 0;
+  font-weight: 700;
 }
 .overview-next-action {
   display: grid;
@@ -104,19 +248,19 @@ h1 {
   gap: 6px;
   margin-top: 30px;
   padding: 20px 22px;
-  border: 1px solid #cdbda5;
+  border: 1px solid var(--nc-border);
   border-radius: 9px;
-  color: #302a23;
-  background: linear-gradient(110deg, #fffaf0, #f4ead9);
+  color: var(--nc-ink);
+  background: var(--nc-paper);
   text-decoration: none;
   transition: border-color .15s ease, transform .15s ease;
 }
 .overview-next-action:hover {
-  border-color: #9a3f32;
+  border-color: var(--nc-vermilion);
   transform: translateY(-2px);
 }
 .overview-next-action span {
-  color: #9a3f32;
+  color: var(--nc-vermilion);
   font-size: 10px;
   font-weight: 750;
   letter-spacing: .15em;
@@ -126,8 +270,39 @@ h1 {
   font-size: 20px;
 }
 .overview-next-action small {
-  color: #766c60;
+  color: var(--nc-muted);
   line-height: 1.7;
+}
+.preparation-boundary {
+  display: grid;
+  width: min(560px, 100%);
+  gap: 6px;
+  margin-top: 30px;
+  padding: 20px 22px;
+  border: 1px solid var(--nc-border);
+  border-radius: 9px;
+  background: var(--nc-paper);
+}
+.preparation-boundary span {
+  color: var(--nc-vermilion);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .15em;
+}
+.preparation-boundary strong {
+  font-family: Georgia, 'Noto Serif SC', serif;
+  font-size: 20px;
+}
+.preparation-boundary small,
+.model-note {
+  color: var(--nc-muted);
+  line-height: 1.7;
+}
+.model-note {
+  margin-top: 14px;
+}
+@media (max-width: 760px) {
+  .preparation-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
   .overview-next-action { transition: none; }

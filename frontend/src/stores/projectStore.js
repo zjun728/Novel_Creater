@@ -16,7 +16,12 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
     const activeProjects = ref([])
     const archivedProjects = ref([])
     const currentProject = ref(null)
+    const currentPreparation = ref(null)
+    const preparationProjectId = ref('')
+    const preparationStatus = ref('idle')
+    const preparationError = ref(null)
     const projectGuard = createLatestRequestGuard()
+    const preparationGuard = createLatestRequestGuard()
     const activeListGuard = createLatestRequestGuard()
     const archivedListGuard = createLatestRequestGuard()
     const mutationTails = new Map()
@@ -63,6 +68,41 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       return project
     }
 
+    async function loadPreparation(projectId) {
+      const targetProjectId = String(projectId)
+      if (preparationProjectId.value !== targetProjectId) {
+        currentPreparation.value = null
+      }
+      preparationProjectId.value = targetProjectId
+      preparationStatus.value = 'loading'
+      preparationError.value = null
+      const generation = preparationGuard.begin()
+      try {
+        const preparation = await projectApi.preparation(projectId)
+        if (preparationGuard.isCurrent(generation)) {
+          currentPreparation.value = preparation
+          preparationStatus.value = 'ready'
+        }
+        return preparation
+      } catch (failure) {
+        if (preparationGuard.isCurrent(generation)) {
+          currentPreparation.value = null
+          preparationStatus.value = 'error'
+          preparationError.value = failure
+        }
+        throw failure
+      }
+    }
+
+    function clearPreparation(projectId) {
+      if (preparationProjectId.value !== String(projectId)) return
+      preparationGuard.invalidate()
+      currentPreparation.value = null
+      preparationProjectId.value = ''
+      preparationStatus.value = 'idle'
+      preparationError.value = null
+    }
+
     async function createProject(title) {
       const created = await projectApi.create({ title })
       activeListGuard.invalidate()
@@ -96,6 +136,7 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
           projectGuard.invalidate()
           currentProject.value = archived
         }
+        clearPreparation(projectId)
         return archived
       })
     }
@@ -111,6 +152,7 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
           projectGuard.invalidate()
           currentProject.value = restored
         }
+        clearPreparation(projectId)
         return restored
       })
     }
@@ -124,6 +166,7 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
           projectGuard.invalidate()
           currentProject.value = null
         }
+        clearPreparation(projectId)
       })
     }
 
@@ -131,9 +174,14 @@ export function createProjectStore(projectApi = api.projects, storeId = 'project
       activeProjects,
       archivedProjects,
       currentProject,
+      currentPreparation,
+      preparationProjectId,
+      preparationStatus,
+      preparationError,
       loadActiveProjects,
       loadArchivedProjects,
       loadProject,
+      loadPreparation,
       createProject,
       renameProject,
       archiveProject,

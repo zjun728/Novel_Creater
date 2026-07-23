@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.database import connection, transaction
 from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
+from backend.routers.contracts import get_contract_service
 from backend.services.model_bindings import ModelBindingService
 from backend.services.project_lifecycle import (
     CreateProject,
@@ -29,6 +30,7 @@ _service = ProjectLifecycleService(
     transaction,
     connection,
     model_binding_service=_binding_service,
+    contract_service=get_contract_service(),
 )
 
 
@@ -84,6 +86,13 @@ async def get_project(project_id: str):
     return _convert_result(
         await _service.get(project_id, include_archived=True)
     )
+
+
+@router.get("/projects/{project_id}/preparation")
+async def get_project_preparation(project_id: str):
+    return (
+        await _service.preparation(project_id)
+    ).model_dump(mode="json", by_alias=True)
 
 
 @router.put("/projects/{project_id}")

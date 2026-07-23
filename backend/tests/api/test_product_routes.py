@@ -11,7 +11,13 @@ from backend.http_errors import ProjectArchived
 from backend.routers import assets, contracts, corpus, projects, seeds, story_engines
 from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
 from backend.security.redaction import install_error_handlers
-from backend.services.project_lifecycle import CreateProject, ProjectResult
+from backend.services.project_lifecycle import (
+    CreateProject,
+    ProjectPreparationCapabilities,
+    ProjectPreparationModelTask,
+    ProjectPreparationResult,
+    ProjectResult,
+)
 from backend.services.seeds import SeedResult
 
 
@@ -192,6 +198,35 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
                 lifecycle_revision=2 if project_id == "archived" else 0,
             )
 
+        async def preparation(self, project_id):
+            self.calls.append(("preparation", project_id))
+            return ProjectPreparationResult(
+                lifecycle="active",
+                active_selection="current",
+                contract="current",
+                bible="draft",
+                model_tasks=tuple(
+                    ProjectPreparationModelTask(
+                        task_key=task_key,
+                        readiness="ready",
+                        reasons=(),
+                    )
+                    for task_key in (
+                        "seed", "planning", "writing", "audit",
+                        "summary", "extraction", "polish", "market",
+                    )
+                ),
+                capabilities=ProjectPreparationCapabilities(
+                    view_preparation=True,
+                    edit_contract=True,
+                    edit_bible=True,
+                    generate_bible=True,
+                ),
+                next_action="continue_bible",
+                target_path="/projects/p1/bible",
+                reasons=("bible_draft",),
+            )
+
         async def rename(self, project_id, title):
             self.calls.append(("rename", project_id, title))
             return project_result(project_id=project_id, title=title)
@@ -232,6 +267,7 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
     archived = client.get("/api/projects/archived")
     created = client.post("/api/projects", json={"title": "New"})
     direct_archived = client.get("/api/projects/archived-id")
+    preparation = client.get("/api/projects/p1/preparation")
     renamed = client.put("/api/projects/p1", json={"title": "Changed"})
     archived_command = client.post(
         "/api/projects/p1/archive",
@@ -255,6 +291,35 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
     assert created.json()["title"] == "New"
     assert created.json()["targetWords"] == 100_000
     assert direct_archived.status_code == 200
+    assert preparation.status_code == 200
+    assert preparation.json() == {
+        "lifecycle": "active",
+        "activeSelection": "current",
+        "contract": "current",
+        "bible": "draft",
+        "modelTasks": [
+            {"taskKey": task_key, "readiness": "ready", "reasons": []}
+            for task_key in (
+                "seed", "planning", "writing", "audit",
+                "summary", "extraction", "polish", "market",
+            )
+        ],
+        "capabilities": {
+            "viewPreparation": True,
+            "editContract": True,
+            "editBible": True,
+            "generateBible": True,
+        },
+        "nextAction": "continue_bible",
+        "targetPath": "/projects/p1/bible",
+        "reasons": ["bible_draft"],
+    }
+    serialized = str(preparation.json()).lower()
+    for forbidden in (
+        "providerid", "providername", "modelname", "baseurl", "apikey",
+        "password", "dsn", "prompt", "rawresponse", "corpustext",
+    ):
+        assert forbidden not in serialized
     assert renamed.json()["title"] == "Changed"
     assert archived_command.json()["lifecycleRevision"] == 5
     assert restored_command.json()["lifecycleRevision"] == 6
@@ -265,6 +330,7 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
         ("list_archived",),
         ("create", service.calls[2][1]),
         ("get", "archived-id", True),
+        ("preparation", "p1"),
         ("rename", "p1", "Changed"),
         ("archive", "p1", 4),
         ("restore", "p1", 5),

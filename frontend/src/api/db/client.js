@@ -240,6 +240,7 @@ export const api = {
     listArchived: () => get('/projects/archived'),
     create: ({ title }) => post('/projects', { title }),
     get: projectId => get(`/projects/${segment(projectId)}`),
+    preparation: projectId => get(`/projects/${segment(projectId)}/preparation`),
     rename: (projectId, { title }) => put(
       `/projects/${segment(projectId)}`,
       { title },

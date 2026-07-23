@@ -673,14 +673,16 @@ test('provider settings route wraps only the safe Provider and model surface', a
   assert.equal(retiredSettings, '')
 })
 
-test('project overview has one clear entry into the formal contract workspace', async () => {
+test('project overview renders one server-authoritative Phase 2 next action', async () => {
   const overview = await readFile(
     new URL('../../src/views/ProjectOverviewView.vue', import.meta.url),
     'utf8',
   )
-  assert.match(overview, /projectContractPath/)
-  assert.match(overview, /进入创作契约工作区/)
-  assert.equal((overview.match(/projectContractPath\(/g) || []).length, 1)
+
+  assert.match(overview, /useProjectStore/)
+  assert.match(overview, /preparation\.targetPath/)
+  assert.equal((overview.match(/class="overview-next-action"/g) || []).length, 1)
+  assert.doesNotMatch(overview, /projectContractPath|projectBiblePath/)
   assert.doesNotMatch(overview, /WriterView|\/writer\//)
 })
 

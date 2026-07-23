@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
+from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.project_lifecycle import (
     lock_active_project,
     lock_project,
@@ -88,6 +89,108 @@ class ProjectRepository:
 
     async def get_any(self, session, project_id: str):
         return await read_project(session, project_id)
+
+    async def read_preparation_snapshot(self, session, project_id: str):
+        """Read the persisted Phase 2 preparation facts in the caller's snapshot."""
+
+        project = await self.get_any(session, project_id)
+        if project is None:
+            return None
+        selection = await session.fetchone(
+            """SELECT selection_revision,seed_id,seed_revision_id,seed_hash
+               FROM project_selected_seeds
+               WHERE project_id=%s""",
+            (project_id,),
+        )
+        contract_draft = await session.fetchone(
+            """SELECT draft.selection_revision,revision.seed_id,
+                      draft.seed_revision_id,draft.seed_hash,
+                      draft.base_head_revision
+               FROM project_contract_drafts draft
+               LEFT JOIN creative_seed_revisions revision
+                 ON revision.id=draft.seed_revision_id
+                AND revision.content_hash=draft.seed_hash
+               WHERE draft.project_id=%s""",
+            (project_id,),
+        )
+        bible_head = await session.fetchone(
+            """SELECT head.revision AS head_revision,
+                      head.bible_revision_id AS head_bible_revision_id,
+                      head.content_hash AS head_content_hash,
+                      revision.id AS revision_id,
+                      revision.revision,
+                      revision.content_hash,
+                      revision.selection_revision,
+                      revision.seed_id,
+                      revision.seed_revision_id,
+                      revision.seed_hash,
+                      revision.contract_revision,
+                      revision.creation_contract_id,
+                      revision.creation_hash,
+                      revision.style_contract_id,
+                      revision.style_hash,
+                      revision.policy_version
+               FROM project_bible_heads head
+               LEFT JOIN creation_bible_revisions revision
+                 ON revision.project_id=head.project_id
+                AND revision.id=head.bible_revision_id
+                AND revision.revision=head.revision
+                AND revision.content_hash=head.content_hash
+               WHERE head.project_id=%s""",
+            (project_id,),
+        )
+        bible_draft = await session.fetchone(
+            """SELECT id AS draft_id,base_head_revision,selection_revision,
+                      seed_id,seed_revision_id,seed_hash,contract_revision,
+                      creation_contract_id,creation_hash,style_contract_id,
+                      style_hash,policy_version
+               FROM project_bible_drafts
+               WHERE project_id=%s AND active_slot=1""",
+            (project_id,),
+        )
+        model_tasks = await session.fetchall(
+            f"""SELECT item.task_key,item.resolution_status,
+                       CASE WHEN
+                         provider.id IS NOT NULL
+                         AND provider.lifecycle_status='active'
+                         AND provider.enabled=1
+                         AND LOWER(TRIM(provider.provider_type))=
+                           '{GENERATION_PROVIDER_TYPE}'
+                         AND provider.model_name IS NOT NULL
+                         AND TRIM(provider.model_name)<>''
+                         AND provider.base_url IS NOT NULL
+                         AND TRIM(provider.base_url)<>''
+                         AND provider.api_key IS NOT NULL
+                         AND TRIM(provider.api_key)<>''
+                       THEN 1 ELSE 0 END AS provider_ready,
+                       CASE WHEN provider.model_name=item.model_name_snapshot
+                       THEN 1 ELSE 0 END AS model_snapshot_matches
+                FROM project_model_binding_heads head
+                JOIN project_model_binding_revisions revision
+                  ON revision.project_id=head.project_id
+                 AND revision.id=head.binding_revision_id
+                 AND revision.revision=head.revision
+                 AND revision.content_hash=head.content_hash
+                JOIN project_model_binding_items item
+                  ON item.binding_revision_id=revision.id
+                LEFT JOIN provider_profiles provider
+                  ON provider.id=item.provider_id
+                WHERE head.project_id=%s
+                ORDER BY CASE item.task_key
+                  WHEN 'seed' THEN 1 WHEN 'planning' THEN 2
+                  WHEN 'writing' THEN 3 WHEN 'audit' THEN 4
+                  WHEN 'summary' THEN 5 WHEN 'extraction' THEN 6
+                  WHEN 'polish' THEN 7 WHEN 'market' THEN 8 ELSE 9 END""",
+            (project_id,),
+        )
+        return {
+            "project": project,
+            "selection": selection,
+            "contract_draft": contract_draft,
+            "bible_head": bible_head,
+            "bible_draft": bible_draft,
+            "model_tasks": tuple(model_tasks),
+        }
 
     async def lock_any(self, session, project_id: str):
         return await lock_project(session, project_id)

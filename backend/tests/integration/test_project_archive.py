@@ -377,6 +377,52 @@ async def test_archive_and_restore_preserve_workflow_and_foundations(
 
 
 @pytest.mark.asyncio
+async def test_preparation_snapshot_tracks_archive_and_restore_without_model_secrets(
+    disposable_mysql,
+):
+    projects, _, transaction, read_connection = _services(disposable_mysql)
+    await projects.create(_project())
+    preparation_service = ProjectLifecycleService(
+        ProjectRepository(),
+        transaction,
+        read_connection,
+        contract_service=ContractService(
+            ContractRepository(),
+            transaction_factory=transaction,
+            connection_factory=read_connection,
+        ),
+    )
+
+    active = await preparation_service.preparation(PROJECT_ID)
+    assert active.lifecycle == "active"
+    assert active.active_selection == "missing"
+    assert active.next_action == "select_seed"
+    assert len(active.model_tasks) == len(TASK_KEYS)
+    assert all(item.readiness == "not_ready" for item in active.model_tasks)
+
+    await projects.archive(PROJECT_ID, 0)
+    archived = await preparation_service.preparation(PROJECT_ID)
+    assert archived.lifecycle == "archived"
+    assert archived.next_action == "archived_read_only"
+    assert archived.target_path is None
+    assert archived.capabilities.model_dump() == {
+        "view_preparation": True,
+        "edit_contract": False,
+        "edit_bible": False,
+        "generate_bible": False,
+    }
+
+    await projects.restore(PROJECT_ID, 1)
+    restored = await preparation_service.preparation(PROJECT_ID)
+    assert restored.lifecycle == "active"
+    assert restored.next_action == "select_seed"
+    public = restored.model_dump(mode="json", by_alias=True)
+    serialized = str(public).lower()
+    for forbidden in ("provider", "baseurl", "apikey", "password", "dsn"):
+        assert forbidden not in serialized
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_cas_and_archived_only_permanent_delete(
     disposable_mysql,
 ):
