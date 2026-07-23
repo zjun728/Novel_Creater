@@ -43,6 +43,14 @@ const SENSITIVE_VALUES = [
   ...runtimeSensitiveValues(process.env),
   requiredEnvironment('BROWSER_TRANSCRIPT_SENTINEL'),
 ].filter(value => typeof value === 'string' && value.length > 0)
+const PROMPT_SENTINEL = requiredEnvironment('BROWSER_PROMPT_SENTINEL')
+const RAW_PROVIDER_SENTINEL = requiredEnvironment('BROWSER_RAW_PROVIDER_SENTINEL')
+const CORPUS_TEXT_SENTINEL = requiredEnvironment('BROWSER_CORPUS_TEXT_SENTINEL')
+const OUTPUT_ONLY_SENTINELS = [
+  PROMPT_SENTINEL,
+  RAW_PROVIDER_SENTINEL,
+  CORPUS_TEXT_SENTINEL,
+]
 const STRICT_UUID = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
 const PROJECT_TITLE = 'Phase 2 创作地基验收'
 const SEED_A = Object.freeze([
@@ -639,10 +647,14 @@ async function enterCapacity(page, projectId: string) {
 async function confirmContract(page, projectId: string) {
   await page.goto(`/projects/${projectId}/contract`)
   await expect(page.getByRole('heading', { name: '本书创作契约' })).toBeVisible()
+  recordStep('contract-workspace-visible')
   await fillManualEngines(page, projectId)
+  recordStep('story-engines-recorded')
+  recordStep('asset-recommendations-returned')
   await selectStyles(page, projectId)
   await selectAssets(page, projectId)
   await enterCapacity(page, projectId)
+  recordStep('contract-scope-selected')
   await expect(page.getByRole('heading', { name: '预览全部变化，再一次确认' }))
     .toBeVisible()
   const confirmed = page.waitForResponse(response => (
@@ -666,6 +678,18 @@ function bibleEditor(page) {
 function bibleScalar(page, label: string) {
   return bibleEditor(page).locator('label').filter({ hasText: label })
     .locator('textarea')
+}
+
+
+async function bibleEditorSnapshot(scope) {
+  const textareas = scope.locator('textarea')
+  const fields = await textareas.all()
+  return {
+    textareaCount: fields.length,
+    textareaValues: await Promise.all(
+      fields.map(field => field.inputValue()),
+    ),
+  }
 }
 
 
@@ -696,7 +720,7 @@ async function completeBible(page, projectId: string) {
   recordStep('bible-workspace-visible')
   const generationPanel = page.getByRole('region', { name: 'AI 生成创作圣经' })
   await generationPanel.getByLabel('作者补充要求（可选）')
-    .fill('保持人物欲望、群像关系和现实代价具体。')
+    .fill(`保持人物欲望、群像关系和现实代价具体。 ${PROMPT_SENTINEL}`)
   const generated = page.waitForResponse(response => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname
@@ -712,6 +736,8 @@ async function completeBible(page, projectId: string) {
   recordStep('bible-generation-notice-visible')
   await expect(bibleScalar(page, '主角')).toHaveValue(/沈砚谨慎/u)
   recordStep('bible-generation-succeeded')
+  await generationPanel.getByLabel('作者补充要求（可选）')
+    .fill('')
 
   await bibleScalar(page, '主角').fill(
     '沈砚谨慎、重证据，却会为了眼前的人主动承担公开判断的代价。',
@@ -738,16 +764,27 @@ async function completeBible(page, projectId: string) {
   expect((await cloned).status()).toBe(200)
   await expect(page.getByText('已创建未来设计草稿', { exact: true })).toBeVisible()
   recordStep('bible-adjustment-created')
-  const preserved = await bibleScalar(page, '主角').inputValue()
+  const preserved = await bibleEditorSnapshot(bibleEditor(page))
+  expect(preserved.textareaCount).toBeGreaterThanOrEqual(11)
+  recordStep('bible-failure-state-captured')
   await generationPanel.getByLabel('作者补充要求（可选）')
-    .fill('FAIL_SAFE')
+    .fill(`FAIL_SAFE ${PROMPT_SENTINEL}`)
+  recordStep('bible-failure-instructions-set')
+  const failureButton = generationPanel.getByRole('button', {
+    name: '生成创作圣经',
+  })
+  await expect(failureButton).toBeEnabled()
+  recordStep('bible-failure-ready')
   const failed = page.waitForResponse(response => (
     response.request().method() === 'POST'
     && new URL(response.url()).pathname
       === `/api/projects/${projectId}/bible/generate`
   ))
-  await generationPanel.getByRole('button', { name: '生成创作圣经' }).click()
+  await failureButton.click()
+  recordStep('bible-failure-submitted')
   const failedResponse = await failed
+  await generationPanel.getByLabel('作者补充要求（可选）')
+    .fill('')
   recordStep('bible-failure-returned')
   expect(failedResponse.status()).toBe(200)
   expect(await failedResponse.json()).toMatchObject({
@@ -757,12 +794,14 @@ async function completeBible(page, projectId: string) {
     },
   })
   await expect(page.getByRole('alert')).toContainText('创作圣经操作失败')
-  await expect(bibleScalar(page, '主角')).toHaveValue(preserved)
+  expect(await bibleEditorSnapshot(bibleEditor(page)))
+    .toEqual(preserved)
   recordStep('bible-failure-preserved')
 
   await bibleScalar(page, '主角').fill(
     '沈砚仍重证据，但第二版要求他先听完同伴的代价，再作公开判断。',
   )
+  const expectedRevisionTwo = await bibleEditorSnapshot(bibleEditor(page))
   const savedSecond = page.waitForResponse(response => (
     response.request().method() === 'PUT'
     && new URL(response.url()).pathname
@@ -784,6 +823,9 @@ async function completeBible(page, projectId: string) {
     history.locator('.history-detail')
       .getByRole('heading', { name: 'Revision 2' }),
   ).toBeVisible()
+  expect(await bibleEditorSnapshot(
+    history.locator('.history-detail'),
+  )).toEqual(expectedRevisionTwo)
   await history.getByRole('button', { name: '关闭历史' }).click()
 }
 
@@ -883,7 +925,9 @@ async function archiveAndVerifyReadOnly(page, projectId: string, runtime) {
 }
 
 
-async function auditRuntime(evidence, checkpoints, projectId: string) {
+async function auditRuntime(evidence, checkpoints, projectId: string, {
+  recordProgress = false,
+} = {}) {
   const audited = { ...evidence, checkpointSurfaces: checkpoints }
   const contractDraftPath = `/api/projects/${projectId}/contract-draft`
   assertRuntimeEvidenceHealthy(evidence, {
@@ -903,8 +947,8 @@ async function auditRuntime(evidence, checkpoints, projectId: string) {
       },
     }],
   })
-  recordStep('audit-known-failures-verified')
-  recordStep('audit-runtime-health-verified')
+  if (recordProgress) recordStep('audit-known-failures-verified')
+  if (recordProgress) recordStep('audit-runtime-health-verified')
   assertExactWrites(audited, [
     { method: 'POST', path: '/api/projects', statuses: [200], count: 1 },
     { method: 'POST', path: '/api/corpus/imports', statuses: [200], count: 1 },
@@ -987,7 +1031,7 @@ async function auditRuntime(evidence, checkpoints, projectId: string) {
       count: 1,
     },
   ])
-  recordStep('audit-writes-verified')
+  if (recordProgress) recordStep('audit-writes-verified')
   const runnerOrigins = new Set([VITE_ORIGIN, BACKEND_ORIGIN])
   expect(evidence.requests.every(entry => (
     runnerOrigins.has(new URL(entry.url).origin)
@@ -998,11 +1042,17 @@ async function auditRuntime(evidence, checkpoints, projectId: string) {
   expect(evidence.apiResponses.every(entry => (
     new URL(entry.url).origin === BACKEND_ORIGIN
   ))).toBe(true)
-  recordStep('audit-origins-verified')
+  if (recordProgress) recordStep('audit-origins-verified')
   expect(scanRuntimeEvidence(audited, SENSITIVE_VALUES)).toEqual({
     matchCount: 0,
   })
-  recordStep('audit-secret-scan-verified')
+  expect(scanRuntimeEvidence({
+    ...audited,
+    requests: [],
+  }, OUTPUT_ONLY_SENTINELS)).toEqual({
+    matchCount: 0,
+  })
+  if (recordProgress) recordStep('audit-secret-scan-verified')
 }
 
 
@@ -1010,6 +1060,7 @@ test('accepts the complete Phase 2 creative foundation through real UI', async (
   page,
 }) => {
   test.setTimeout(240_000)
+  recordStep('browser-test-started')
   const runtime = observeRuntime(page)
   const checkpoints: Array<{ dom: string; visibleText: string }> = []
   let bodyError: unknown = null
@@ -1043,7 +1094,9 @@ test('accepts the complete Phase 2 creative foundation through real UI', async (
     try {
       const evidence = await runtime.finish()
       writeRuntimeAuditDiagnostic(evidence, projectId)
-      await auditRuntime(evidence, checkpoints, projectId)
+      await auditRuntime(evidence, checkpoints, projectId, {
+        recordProgress: bodyError === null,
+      })
     } catch (error) {
       auditError = error
     }

@@ -514,7 +514,7 @@ git commit -m "refactor: remove superseded preparation runtime"
 - Create: `backend/tests/unit/test_prepare_phase2_browser_db.py`
 - Create: `docs/acceptance/2026-07-23-phase-2-creative-foundation.md`
 
-- [ ] **Step 1: Extend the shared runner, not a new lifecycle**
+- [x] **Step 1: Extend the shared runner, not a new lifecycle**
 
 `run-phase2.mjs` must compose `e2e/support/product-runner.mjs`,
 `runtime-observer.mjs`, and `server-log-observer.mjs` for reservation,
@@ -530,7 +530,7 @@ managed corpus root, binds random `127.0.0.1` ports, disables schedulers, and
 injects fakes only at external market/Provider boundaries. Cleanup order is
 servers reverse, reservations, database, root; counts must end at remaining=0.
 
-- [ ] **Step 2: Write the UI-only browser scenarios**
+- [x] **Step 2: Write the UI-only browser scenarios**
 
 No `page.request`, `page.route`, `page.evaluate`, browser `fetch`, or Axios
 bypass is allowed. Exercise project creation, 10 styles, 64 cards, synthetic
@@ -540,7 +540,7 @@ archive read-only, refresh/back/forward, narrow viewport, Not Found, and the
 preparation boundary. A fake Provider scenario covers one successful Bible
 generation and one safe failure without changing the prior draft.
 
-- [ ] **Step 3: Run the final gates strictly in sequence**
+- [x] **Step 3: Run the final gates strictly in sequence**
 
 ```powershell
 npm run test:browser:phase2
@@ -554,7 +554,7 @@ After browser and integration runs, record created/cleaned/remaining database
 counts and verify owned process, port, and temp-root residue is zero. Stop on the
 first failure and use systematic debugging before continuing.
 
-- [ ] **Step 4: Independent final review**
+- [x] **Step 4: Independent final review**
 
 Run a full specification review first. Only after it reports
 Critical/Important/Minor = 0/0/0, run a separate quality/security-boundary
