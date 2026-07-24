@@ -51,7 +51,10 @@ async def test_archived_seed_read_routes_serialize_disabled_capabilities(
     )
     await install_matching_contract(disposable_mysql.session, "p1", selection)
     await install_first_final_chapter(
-        disposable_mysql.session, "p1", selection
+        disposable_mysql.session,
+        disposable_mysql.connection_config,
+        "p1",
+        selection,
     )
     await disposable_mysql.session.execute(
         """UPDATE projects

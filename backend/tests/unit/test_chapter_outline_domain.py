@@ -72,6 +72,29 @@ def _normalize_outline(payload=None, *, planning=None, **overrides):
     )
 
 
+@pytest.mark.parametrize(
+    ("mutate",),
+    (
+        (
+            lambda payload: payload.update(
+                planning_revision_id=payload.pop("planningRevisionId")
+            ),
+        ),
+        (
+            lambda payload: payload["capacityPolicy"].update(
+                target_min=payload["capacityPolicy"].pop("targetMin")
+            ),
+        ),
+    ),
+)
+def test_outline_domain_rejects_python_field_names_at_public_boundary(mutate):
+    payload = _outline_payload()
+    mutate(payload)
+
+    with pytest.raises(ValidationError):
+        DraftChapterOutline.model_validate(payload)
+
+
 def test_normalizes_closed_outline_and_computes_hash_server_side():
     planning = _normalize()
     validated = _normalize_outline(planning=planning)

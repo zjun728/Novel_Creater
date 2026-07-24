@@ -91,6 +91,34 @@ async def test_current_basis_is_one_exact_generation_join_without_provider_secre
 
 
 @pytest.mark.asyncio
+async def test_planning_head_read_carries_the_complete_immutable_generation():
+    session = CapturingSession()
+
+    await PlanningRepository().lock_planning_head(session, "p1")
+
+    _, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert args == ("p1",)
+    for column in (
+        "revision.selection_revision",
+        "revision.seed_id",
+        "revision.seed_revision_id",
+        "revision.seed_hash",
+        "revision.contract_revision",
+        "revision.creation_contract_id",
+        "revision.creation_hash",
+        "revision.style_contract_id",
+        "revision.style_hash",
+        "revision.bible_revision",
+        "revision.bible_revision_id",
+        "revision.bible_hash",
+    ):
+        assert column in compact
+    assert "revision.id=head.planning_revision_id" in compact
+    assert "revision.content_hash=head.content_hash" in compact
+
+
+@pytest.mark.asyncio
 async def test_mutation_sql_uses_cas_and_terminal_rows_clear_active_slot():
     session = CapturingSession()
     repository = PlanningRepository()
@@ -127,6 +155,41 @@ async def test_mutation_sql_uses_cas_and_terminal_rows_clear_active_slot():
     )
     _, terminal_sql, _ = session.calls[-1]
     assert "active_slot=NULL" in " ".join(terminal_sql.split())
+
+
+@pytest.mark.asyncio
+async def test_planning_head_advance_compares_the_complete_previous_head():
+    session = CapturingSession()
+    new_head = {
+        "project_id": "p1",
+        "revision": 2,
+        "planning_revision_id": "planning-2",
+        "content_hash": "b" * 64,
+        "updated_at": 2,
+    }
+    previous_head = {
+        "revision": 1,
+        "planning_revision_id": "planning-1",
+        "content_hash": "a" * 64,
+    }
+
+    assert await PlanningRepository().advance_head_cas(
+        session,
+        new_head,
+        previous_head,
+    )
+
+    _, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "revision=%s" in compact
+    assert "planning_revision_id <=> %s" in compact
+    assert "content_hash <=> %s" in compact
+    assert args[-4:] == (
+        "p1",
+        1,
+        "planning-1",
+        "a" * 64,
+    )
 
 
 @pytest.mark.asyncio

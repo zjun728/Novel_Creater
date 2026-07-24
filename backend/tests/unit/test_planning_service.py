@@ -171,6 +171,21 @@ class MemoryPlanningRepository:
         if row and row["revision"]:
             revision = self.revisions[(project_id, row["revision"])]
             row["content_json"] = revision["content_json"]
+            for key in (
+                "selection_revision",
+                "seed_id",
+                "seed_revision_id",
+                "seed_hash",
+                "contract_revision",
+                "creation_contract_id",
+                "creation_hash",
+                "style_contract_id",
+                "style_hash",
+                "bible_revision",
+                "bible_revision_id",
+                "bible_hash",
+            ):
+                row[key] = revision[key]
         return row
 
     async def read_active_draft(self, _session, project_id):
@@ -229,10 +244,17 @@ class MemoryPlanningRepository:
         self.revisions[(row["project_id"], row["revision"])] = deepcopy(row)
         return True
 
-    async def advance_head_cas(self, _session, row, expected_revision):
+    async def advance_head_cas(self, _session, row, expected_head):
         self.calls.append("advance_head_cas")
         current = self.heads[row["project_id"]]
-        if current["revision"] != expected_revision:
+        if any(
+            current.get(key) != expected_head.get(key)
+            for key in (
+                "revision",
+                "planning_revision_id",
+                "content_hash",
+            )
+        ):
             return False
         current.update(deepcopy(row))
         return True
@@ -264,20 +286,8 @@ class Harness:
     def __init__(self, *, failpoint=None):
         self.repository = MemoryPlanningRepository()
         ids = iter(
-            [
-                "00000000-0000-0000-0000-000000000101",
-                "00000000-0000-0000-0000-000000000102",
-                "00000000-0000-0000-0000-000000000103",
-                "00000000-0000-0000-0000-000000000104",
-                "00000000-0000-0000-0000-000000000105",
-                "00000000-0000-0000-0000-000000000106",
-                "00000000-0000-0000-0000-000000000107",
-                "00000000-0000-0000-0000-000000000108",
-                "00000000-0000-0000-0000-000000000109",
-                "00000000-0000-0000-0000-000000000110",
-                "00000000-0000-0000-0000-000000000111",
-                "00000000-0000-0000-0000-000000000112",
-            ]
+            f"00000000-0000-0000-0000-{number:012d}"
+            for number in range(101, 200)
         )
         repository = self.repository
 
@@ -501,6 +511,68 @@ async def test_confirm_rejects_empty_then_is_atomic_and_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_successful_confirmation_replay_returns_pinned_history_after_basis_changes():
+    harness = Harness()
+    draft = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-historical-replay")
+    )
+    saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            planning_payload(),
+            "save-historical-replay",
+        )
+    )
+    command = ConfirmPlanningDraft(
+        "p1",
+        saved.draft_id,
+        saved.draft_revision,
+        saved.content_hash,
+        "confirm-historical-replay",
+    )
+    confirmed = await harness.service.confirm_draft(command)
+    harness.repository.basis["p1"] = basis(
+        selection_revision=2,
+        seed_id="seed-b",
+        seed_revision_id="seed-revision-b",
+        seed_hash=HASH_E,
+        contract_revision=2,
+        creation_contract_id="creation-b",
+        creation_hash=HASH_D,
+        style_contract_id="style-b",
+        style_hash=HASH_A,
+        bible_revision=2,
+        bible_revision_id="bible-b",
+        bible_hash=HASH_B,
+    )
+    before = deepcopy(
+        {
+            "heads": harness.repository.heads,
+            "drafts": harness.repository.drafts,
+            "revisions": harness.repository.revisions,
+            "requests": harness.repository.requests,
+            "projection_write_count": harness.repository.projection_write_count,
+        }
+    )
+
+    replay = await harness.service.confirm_draft(command)
+
+    assert replay == confirmed
+    assert replay.revision == 1
+    assert replay.content_hash == confirmed.content_hash
+    assert {
+        "heads": harness.repository.heads,
+        "drafts": harness.repository.drafts,
+        "revisions": harness.repository.revisions,
+        "requests": harness.repository.requests,
+        "projection_write_count": harness.repository.projection_write_count,
+    } == before
+
+
+@pytest.mark.asyncio
 async def test_head_one_create_clones_every_stable_identity_and_history_is_immutable():
     harness = Harness()
     draft = await harness.service.create_draft(
@@ -639,6 +711,154 @@ async def test_basis_drift_supersedes_and_a_to_b_to_a_never_reactivates():
 
 
 @pytest.mark.asyncio
+async def test_confirmed_head_is_history_only_after_generation_changes():
+    harness = Harness()
+    draft_a = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-a-confirmed")
+    )
+    saved_a = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft_a.draft_id,
+            draft_a.draft_revision,
+            draft_a.content_hash,
+            planning_payload("A 第一卷"),
+            "save-a-confirmed",
+        )
+    )
+    revision_a = await harness.service.confirm_draft(
+        ConfirmPlanningDraft(
+            "p1",
+            saved_a.draft_id,
+            saved_a.draft_revision,
+            saved_a.content_hash,
+            "confirm-a",
+        )
+    )
+    old_node_ids = {
+        revision_a.content.volumes[0].id,
+        revision_a.content.plots[0].id,
+        revision_a.content.story_blocks[0].id,
+        revision_a.content.story_blocks[0].stages[0].id,
+        revision_a.content.story_blocks[0].stages[0].scene_tasks[0].id,
+    }
+    harness.repository.basis["p1"] = basis(
+        selection_revision=2,
+        seed_id="seed-b",
+        seed_revision_id="seed-revision-b",
+        seed_hash=HASH_E,
+        contract_revision=2,
+        creation_contract_id="creation-b",
+        creation_hash=HASH_D,
+        style_contract_id="style-b",
+        style_hash=HASH_A,
+        bible_revision=2,
+        bible_revision_id="bible-b",
+        bible_hash=HASH_B,
+    )
+
+    state_b = await harness.service.get_state("p1")
+    assert state_b.basis_status == "current"
+    assert state_b.future_plan is None
+    draft_b = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-b-empty")
+    )
+    assert draft_b.base_head_revision == 1
+    assert draft_b.content.volumes == ()
+    assert draft_b.content.story_blocks == ()
+    assert not old_node_ids.intersection(
+        node.id
+        for node in (
+            *draft_b.content.volumes,
+            *draft_b.content.plots,
+            *draft_b.content.story_blocks,
+        )
+    )
+    saved_b = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft_b.draft_id,
+            draft_b.draft_revision,
+            draft_b.content_hash,
+            planning_payload("B 第一卷"),
+            "save-b",
+        )
+    )
+    harness.repository.basis["p1"] = basis(
+        selection_revision=2,
+        seed_id="seed-b",
+        seed_revision_id="seed-revision-b",
+        seed_hash=HASH_E,
+        contract_revision=2,
+        creation_contract_id="creation-b",
+        creation_hash=HASH_D,
+        style_contract_id="style-b",
+        style_hash=HASH_A,
+        bible_revision=3,
+        bible_revision_id="bible-b3",
+        bible_hash=HASH_C,
+    )
+    with pytest.raises(PlanningPreconditionFailed, match="superseded"):
+        await harness.service.confirm_draft(
+            ConfirmPlanningDraft(
+                "p1",
+                saved_b.draft_id,
+                saved_b.draft_revision,
+                saved_b.content_hash,
+                "confirm-stale-b",
+            )
+        )
+
+    draft_b3 = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-b3-empty")
+    )
+    assert draft_b3.content.volumes == ()
+    saved_b3 = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft_b3.draft_id,
+            draft_b3.draft_revision,
+            draft_b3.content_hash,
+            planning_payload("B3 第一卷"),
+            "save-b3",
+        )
+    )
+    revision_b = await harness.service.confirm_draft(
+        ConfirmPlanningDraft(
+            "p1",
+            saved_b3.draft_id,
+            saved_b3.draft_revision,
+            saved_b3.content_hash,
+            "confirm-b3",
+        )
+    )
+    assert revision_b.revision == 2
+    harness.repository.basis["p1"] = basis(
+        selection_revision=3,
+        contract_revision=3,
+        creation_contract_id="creation-a3",
+        creation_hash=HASH_E,
+        style_contract_id="style-a3",
+        style_hash=HASH_A,
+        bible_revision=4,
+        bible_revision_id="bible-a4",
+        bible_hash=HASH_B,
+    )
+
+    state_a3 = await harness.service.get_state("p1")
+    assert state_a3.basis_status == "current"
+    assert state_a3.future_plan is None
+    draft_a3 = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-a3-empty")
+    )
+    assert draft_a3.content.volumes == ()
+    assert draft_a3.content.story_blocks == ()
+    assert tuple(
+        item.revision for item in await harness.service.history("p1")
+    ) == (2, 1)
+
+
+@pytest.mark.asyncio
 async def test_confirmation_requires_synchronized_projection_and_rolls_back_every_write():
     harness = Harness(
         failpoint=lambda stage: (
@@ -687,6 +907,54 @@ async def test_confirmation_requires_synchronized_projection_and_rolls_back_ever
             )
         )
     assert harness.repository.__dict__ == mismatch_before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "drifted_value"),
+    (
+        ("revision", 7),
+        ("planning_revision_id", "foreign-planning-revision"),
+        ("content_hash", HASH_A),
+    ),
+)
+async def test_confirmation_rolls_back_when_any_previous_head_pin_drifts(
+    field,
+    drifted_value,
+):
+    harness = Harness()
+    draft = await harness.service.create_draft(
+        CreatePlanningDraft("p1", f"create-cas-{field}")
+    )
+    saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            planning_payload(),
+            f"save-cas-{field}",
+        )
+    )
+    before = deepcopy(harness.repository.__dict__)
+
+    def drift_head(stage):
+        if stage == "after_revision_insert":
+            harness.repository.heads["p1"][field] = drifted_value
+
+    harness.service.failpoint = drift_head
+    with pytest.raises(PlanningConflict, match="head revision conflict"):
+        await harness.service.confirm_draft(
+            ConfirmPlanningDraft(
+                "p1",
+                saved.draft_id,
+                saved.draft_revision,
+                saved.content_hash,
+                f"confirm-cas-{field}",
+            )
+        )
+
+    assert harness.repository.__dict__ == before
 
 
 @pytest.mark.asyncio

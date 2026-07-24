@@ -5,9 +5,20 @@ from copy import deepcopy
 
 import pytest
 
+from backend.domain.chapter_outlines import (
+    DraftChapterOutline,
+    OutlineCapacityPolicy,
+    normalize_chapter_outline,
+)
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.planning import PlanningRepository
+from backend.services.chapter_sessions import (
+    ChapterSessionConflict,
+    ChapterSessionService,
+    CreateChapterSession,
+)
 from backend.services.contracts import (
     ConfirmContracts,
     ContractService,
@@ -227,6 +238,91 @@ async def _snapshot(session):
     }
 
 
+def _node_ref(node):
+    return {
+        "id": node.id,
+        "revision": node.revision,
+        "contentHash": node.content_hash,
+    }
+
+
+async def _insert_outline_for_planning(session, revision):
+    projection = await session.fetchone(
+        "SELECT * FROM projection_heads WHERE project_id=%s",
+        (PROJECT,),
+    )
+    volume = revision.content.volumes[0]
+    block = revision.content.story_blocks[0]
+    stage = block.stages[0]
+    task = stage.scene_tasks[0]
+    capacity = OutlineCapacityPolicy.model_validate(
+        {"targetMin": 3000, "targetMax": 5000, "softCeiling": 5000}
+    )
+    outline = normalize_chapter_outline(
+        DraftChapterOutline.model_validate(
+            {
+                "schemaVersion": "chapter-outline-v1",
+                "chapterNumber": 1,
+                "planningRevisionId": revision.planning_revision_id,
+                "planningRevision": revision.revision,
+                "planningHash": revision.content_hash,
+                "volumeRef": _node_ref(volume),
+                "storyBlockRef": _node_ref(block),
+                "stageRefs": [_node_ref(stage)],
+                "sceneTaskRefs": [_node_ref(task)],
+                "chapterGoal": "找到封锁线缺口。",
+                "expectedCharacters": ["主角", "同伴"],
+                "continuation": ["承接被困局面"],
+                "plannedTasks": ["观察换岗"],
+                "scenes": ["废弃驿站侦察"],
+                "forbiddenEarlyEvents": ["不可提前揭示内应"],
+                "capacityPolicy": capacity.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+            }
+        ),
+        planning=revision.content,
+        authoritative_chapter_number=1,
+        planning_revision_id=revision.planning_revision_id,
+        planning_revision=revision.revision,
+        capacity_policy=capacity,
+        canon_revision=projection["canon_revision_number"],
+        projection_revision=projection["projection_revision_number"],
+        projection_hash=projection["content_hash"],
+    )
+    outline_id = "98000000-0000-0000-0000-000000000001"
+    await session.execute(
+        """INSERT INTO chapter_outline_revisions
+           (id,project_id,chapter_num,revision,parent_revision,
+            planning_revision_id,planning_revision,planning_hash,
+            canon_revision,projection_revision,projection_hash,
+            content_json,content_hash,created_at)
+           VALUES (%s,%s,1,1,0,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (
+            outline_id,
+            PROJECT,
+            revision.planning_revision_id,
+            revision.revision,
+            revision.content_hash,
+            projection["canon_revision_number"],
+            projection["projection_revision_number"],
+            projection["content_hash"],
+            canonical_json(outline.model_dump(mode="json", by_alias=True)),
+            outline.content_hash,
+            NOW + 1,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO project_chapter_outline_heads
+           (project_id,chapter_num,revision,outline_revision_id,
+            content_hash,updated_at)
+           VALUES (%s,1,1,%s,%s,%s)""",
+        (PROJECT, outline_id, outline.content_hash, NOW + 1),
+    )
+    return outline
+
+
 @pytest.mark.asyncio
 async def test_real_mysql_lifecycle_is_zero_to_one_to_two_with_exact_clone(
     disposable_mysql,
@@ -282,6 +378,56 @@ async def test_real_mysql_lifecycle_is_zero_to_one_to_two_with_exact_clone(
         (PROJECT,),
     )
     assert head["revision"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "drifted_value"),
+    (
+        ("revision", 99),
+        ("planning_revision_id", "99000000-0000-0000-0000-000000000001"),
+        ("content_hash", "f" * 64),
+    ),
+)
+async def test_real_mysql_head_cas_rejects_each_drifted_expected_pin(
+    disposable_mysql,
+    field,
+    drifted_value,
+):
+    service = await _prepare(disposable_mysql)
+    saved = await _save_complete(service)
+    await service.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            saved.draft_id,
+            saved.draft_revision,
+            saved.content_hash,
+            f"confirm-cas-{field}",
+        )
+    )
+    actual = await disposable_mysql.session.fetchone(
+        "SELECT * FROM project_planning_heads WHERE project_id=%s",
+        (PROJECT,),
+    )
+    expected = dict(actual)
+    expected[field] = drifted_value
+    transaction = transaction_factory_for(
+        disposable_mysql.connection_config,
+    )
+    async with transaction() as session:
+        changed = await PlanningRepository().advance_head_cas(
+            session,
+            dict(actual),
+            expected,
+        )
+
+    assert changed is False
+    assert (
+        await disposable_mysql.session.fetchone(
+            "SELECT * FROM project_planning_heads WHERE project_id=%s",
+            (PROJECT,),
+        )
+    ) == actual
 
 
 @pytest.mark.asyncio
@@ -612,6 +758,140 @@ async def test_real_mysql_a_to_b_to_a_generation_never_reactivates_old_draft(
     )
     assert first_row["seed_hash"] == third_row["seed_hash"]
     assert second_row["seed_hash"] != first_row["seed_hash"]
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_confirmed_planning_and_session_are_history_after_generation_change(
+    disposable_mysql,
+):
+    service = await _prepare(disposable_mysql)
+    saved_a = await _save_complete(service)
+    confirm_a = ConfirmPlanningDraft(
+        PROJECT,
+        saved_a.draft_id,
+        saved_a.draft_revision,
+        saved_a.content_hash,
+        "confirm-a-with-session",
+    )
+    revision_a = await service.confirm_draft(confirm_a)
+    outline_a = await _insert_outline_for_planning(
+        disposable_mysql.session,
+        revision_a,
+    )
+    transaction = transaction_factory_for(
+        disposable_mysql.connection_config,
+    )
+    chapter_service = ChapterSessionService(
+        ChapterSessionRepository(),
+        transaction_factory=transaction,
+    )
+    chapter_command = CreateChapterSession(
+        project_id=PROJECT,
+        chapter_number=1,
+        expected_planning_revision=revision_a.revision,
+        expected_planning_hash=revision_a.content_hash,
+        expected_outline_revision=1,
+        expected_outline_hash=outline_a.content_hash,
+        expected_canon_revision=0,
+    )
+    chapter_a = await chapter_service.create_session(chapter_command)
+    before_counts = {
+        table: (
+            await disposable_mysql.session.fetchone(
+                f"SELECT COUNT(*) AS count FROM {table} WHERE project_id=%s",
+                (PROJECT,),
+            )
+        )["count"]
+        for table in ("chapter_sessions", "working_drafts")
+    }
+
+    await _insert_seed_b(disposable_mysql.session)
+    await _advance_basis(
+        disposable_mysql.session,
+        2,
+        "4",
+        target_seed_id=SEED_B,
+        target_seed_revision_id=SEED_B_REVISION,
+    )
+    before_replay = await _snapshot(disposable_mysql.session)
+    replay_a = await service.confirm_draft(confirm_a)
+    assert replay_a == revision_a
+    assert await _snapshot(disposable_mysql.session) == before_replay
+    state_b = await service.get_state(PROJECT)
+    assert state_b.basis_status == "current"
+    assert state_b.future_plan is None
+    with pytest.raises(ChapterSessionConflict, match="generation"):
+        await chapter_service.create_session(chapter_command)
+    after_counts = {
+        table: (
+            await disposable_mysql.session.fetchone(
+                f"SELECT COUNT(*) AS count FROM {table} WHERE project_id=%s",
+                (PROJECT,),
+            )
+        )["count"]
+        for table in ("chapter_sessions", "working_drafts")
+    }
+    assert after_counts == before_counts == {
+        "chapter_sessions": 1,
+        "working_drafts": 1,
+    }
+    persisted = await disposable_mysql.session.fetchone(
+        "SELECT id FROM chapter_sessions WHERE project_id=%s",
+        (PROJECT,),
+    )
+    assert persisted["id"] == chapter_a.session.id
+
+    draft_b = await service.create_draft(
+        CreatePlanningDraft(PROJECT, "create-b-after-confirmed-a")
+    )
+    assert draft_b.base_head_revision == 1
+    assert draft_b.content.volumes == ()
+    assert draft_b.content.story_blocks == ()
+    saved_b = await service.save_draft(
+        SavePlanningDraft(
+            PROJECT,
+            draft_b.draft_id,
+            draft_b.draft_revision,
+            draft_b.content_hash,
+            _payload("B 第一卷"),
+            "save-b-after-confirmed-a",
+        )
+    )
+    revision_b = await service.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            saved_b.draft_id,
+            saved_b.draft_revision,
+            saved_b.content_hash,
+            "confirm-b-after-confirmed-a",
+        )
+    )
+    assert (revision_b.revision, revision_b.parent_revision) == (2, 1)
+    assert tuple(item.revision for item in await service.history(PROJECT)) == (
+        2,
+        1,
+    )
+
+    original_seed = await disposable_mysql.session.fetchone(
+        """SELECT id FROM creative_seed_revisions
+            WHERE project_id=%s AND seed_id=%s AND revision=1""",
+        (PROJECT, SEED),
+    )
+    await _advance_basis(
+        disposable_mysql.session,
+        3,
+        "7",
+        target_seed_id=SEED,
+        target_seed_revision_id=original_seed["id"],
+    )
+    state_a3 = await service.get_state(PROJECT)
+    assert state_a3.future_plan is None
+    draft_a3 = await service.create_draft(
+        CreatePlanningDraft(PROJECT, "create-a3-after-b")
+    )
+    assert draft_a3.base_head_revision == 2
+    assert draft_a3.content.volumes == ()
+    assert draft_a3.content.story_blocks == ()
 
 
 @pytest.mark.parametrize(

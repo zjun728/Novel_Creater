@@ -72,7 +72,14 @@ class PlanningRepository:
         return await session.fetchone(
             """SELECT head.project_id,head.revision,head.planning_revision_id,
                       head.content_hash,head.updated_at,
-                      revision.content_json
+                      revision.content_json,
+                      revision.selection_revision,revision.seed_id,
+                      revision.seed_revision_id,revision.seed_hash,
+                      revision.contract_revision,
+                      revision.creation_contract_id,revision.creation_hash,
+                      revision.style_contract_id,revision.style_hash,
+                      revision.bible_revision,revision.bible_revision_id,
+                      revision.bible_hash
                  FROM project_planning_heads head
                  LEFT JOIN planning_revisions revision
                    ON revision.project_id=head.project_id
@@ -265,20 +272,24 @@ class PlanningRepository:
         self,
         session,
         row: dict,
-        expected_revision: int,
+        expected_head,
     ) -> bool:
         changed = await session.execute(
             """UPDATE project_planning_heads
                   SET revision=%s,planning_revision_id=%s,content_hash=%s,
                       updated_at=%s
-                WHERE project_id=%s AND revision=%s""",
+                WHERE project_id=%s AND revision=%s
+                  AND planning_revision_id <=> %s
+                  AND content_hash <=> %s""",
             (
                 row["revision"],
                 row["planning_revision_id"],
                 row["content_hash"],
                 row["updated_at"],
                 row["project_id"],
-                expected_revision,
+                expected_head["revision"],
+                expected_head.get("planning_revision_id"),
+                expected_head.get("content_hash"),
             ),
         )
         return changed == 1

@@ -22,8 +22,33 @@ class FakeChapterRepository:
             "planning_revision_id": PLANNING_ID,
             "planning_revision": 1,
             "planning_hash": PLANNING_HASH,
+            "current_planning_revision_id": PLANNING_ID,
             "current_planning_revision": 1,
             "current_planning_hash": PLANNING_HASH,
+            "planning_selection_revision": 1,
+            "planning_seed_id": "seed-a",
+            "planning_seed_revision_id": "seed-revision-a",
+            "planning_seed_hash": "1" * 64,
+            "planning_contract_revision": 1,
+            "planning_creation_contract_id": "creation-a",
+            "planning_creation_hash": "2" * 64,
+            "planning_style_contract_id": "style-a",
+            "planning_style_hash": "3" * 64,
+            "planning_bible_revision": 1,
+            "planning_bible_revision_id": "bible-a",
+            "planning_bible_hash": "4" * 64,
+            "current_selection_revision": 1,
+            "current_seed_id": "seed-a",
+            "current_seed_revision_id": "seed-revision-a",
+            "current_seed_hash": "1" * 64,
+            "current_contract_revision": 1,
+            "current_creation_contract_id": "creation-a",
+            "current_creation_hash": "2" * 64,
+            "current_style_contract_id": "style-a",
+            "current_style_hash": "3" * 64,
+            "current_bible_revision": 1,
+            "current_bible_revision_id": "bible-a",
+            "current_bible_hash": "4" * 64,
             "story_block_id": BLOCK_ID,
             "story_block_revision": 2,
             "story_block_hash": BLOCK_HASH,
@@ -255,9 +280,10 @@ async def test_create_session_requires_current_confirmed_outline():
 
 
 @pytest.mark.asyncio
-async def test_repeat_create_returns_existing_session_only_for_exact_pins():
+async def test_repeat_create_revalidates_current_authorities_before_returning_existing():
     from backend.services.chapter_sessions import (
         ChapterSessionConflict,
+        ChapterSessionPreconditionFailed,
         ChapterSessionService,
     )
 
@@ -267,11 +293,23 @@ async def test_repeat_create_returns_existing_session_only_for_exact_pins():
     repo.outline = None
     repo.projection = None
 
-    repeated = await service.create_session(create_command())
-
-    assert repeated.session.id == first.session.id
+    with pytest.raises(ChapterSessionPreconditionFailed, match="outline"):
+        await service.create_session(create_command())
     assert len(repo.sessions) == 1
-    with pytest.raises(ChapterSessionConflict, match="existing"):
+    repo.outline = {
+        **FakeChapterRepository().outline,
+        "current_selection_revision": 2,
+        "current_seed_id": "seed-b",
+    }
+    repo.projection = FakeChapterRepository().projection
+    with pytest.raises(ChapterSessionConflict, match="generation"):
+        await service.create_session(create_command())
+    assert len(repo.sessions) == 1
+
+    repo.outline = FakeChapterRepository().outline
+    repeated = await service.create_session(create_command())
+    assert repeated.session.id == first.session.id
+    with pytest.raises(ChapterSessionConflict, match="Outline"):
         await service.create_session(
             create_command(expected_outline_hash="e" * 64),
         )
@@ -322,6 +360,37 @@ async def test_create_session_rejects_outline_bound_to_noncurrent_planning():
         await service.create_session(create_command())
 
     assert repo.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_outline_from_previous_generation_even_when_head_matches():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    repo.outline.update(
+        current_selection_revision=2,
+        current_seed_id="seed-b",
+        current_seed_revision_id="seed-revision-b",
+        current_seed_hash="5" * 64,
+        current_contract_revision=2,
+        current_creation_contract_id="creation-b",
+        current_creation_hash="6" * 64,
+        current_style_contract_id="style-b",
+        current_style_hash="7" * 64,
+        current_bible_revision=2,
+        current_bible_revision_id="bible-b",
+        current_bible_hash="8" * 64,
+    )
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(ChapterSessionConflict, match="generation"):
+        await service.create_session(create_command())
+
+    assert repo.sessions == []
+    assert repo.working_drafts == {}
 
 
 @pytest.mark.asyncio

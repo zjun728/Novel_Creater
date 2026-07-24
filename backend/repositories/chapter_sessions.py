@@ -45,8 +45,46 @@ class ChapterSessionRepository:
                       outline.canon_revision,outline.projection_revision,
                       outline.projection_hash,
                       outline.content_json AS chapter_outline_json,
+                      current_head.planning_revision_id
+                        AS current_planning_revision_id,
                       current_head.revision AS current_planning_revision,
                       current_head.content_hash AS current_planning_hash,
+                      planning.selection_revision
+                        AS planning_selection_revision,
+                      planning.seed_id AS planning_seed_id,
+                      planning.seed_revision_id
+                        AS planning_seed_revision_id,
+                      planning.seed_hash AS planning_seed_hash,
+                      planning.contract_revision
+                        AS planning_contract_revision,
+                      planning.creation_contract_id
+                        AS planning_creation_contract_id,
+                      planning.creation_hash AS planning_creation_hash,
+                      planning.style_contract_id
+                        AS planning_style_contract_id,
+                      planning.style_hash AS planning_style_hash,
+                      planning.bible_revision AS planning_bible_revision,
+                      planning.bible_revision_id
+                        AS planning_bible_revision_id,
+                      planning.bible_hash AS planning_bible_hash,
+                      selected.selection_revision
+                        AS current_selection_revision,
+                      selected.seed_id AS current_seed_id,
+                      selected.seed_revision_id
+                        AS current_seed_revision_id,
+                      selected.seed_hash AS current_seed_hash,
+                      contract_head.revision AS current_contract_revision,
+                      contract_head.creation_contract_id
+                        AS current_creation_contract_id,
+                      contract_head.creation_hash
+                        AS current_creation_hash,
+                      contract_head.style_contract_id
+                        AS current_style_contract_id,
+                      contract_head.style_hash AS current_style_hash,
+                      bible_head.revision AS current_bible_revision,
+                      bible_head.bible_revision_id
+                        AS current_bible_revision_id,
+                      bible_head.content_hash AS current_bible_hash,
                       JSON_UNQUOTE(JSON_EXTRACT(
                         outline.content_json,'$.storyBlockRef.id'
                       )) AS story_block_id,
@@ -63,7 +101,50 @@ class ChapterSessionRepository:
                   AND outline.id=outline_head.outline_revision_id
                   AND outline.revision=outline_head.revision
                   AND outline.content_hash=outline_head.content_hash
-                 LEFT JOIN project_planning_heads current_head
+                 JOIN planning_revisions planning
+                   ON planning.project_id=outline.project_id
+                  AND planning.id=outline.planning_revision_id
+                  AND planning.revision=outline.planning_revision
+                  AND planning.content_hash=outline.planning_hash
+                 JOIN project_selected_seeds selected
+                   ON selected.project_id=outline.project_id
+                 JOIN project_contract_heads contract_head
+                   ON contract_head.project_id=selected.project_id
+                  AND contract_head.revision>0
+                 JOIN creation_contracts creation
+                   ON creation.project_id=contract_head.project_id
+                  AND creation.id=contract_head.creation_contract_id
+                  AND creation.revision=contract_head.revision
+                  AND creation.content_hash=contract_head.creation_hash
+                  AND creation.selection_revision=selected.selection_revision
+                  AND creation.seed_id=selected.seed_id
+                  AND creation.seed_revision_id=selected.seed_revision_id
+                  AND creation.seed_hash=selected.seed_hash
+                 JOIN style_contracts style
+                   ON style.project_id=contract_head.project_id
+                  AND style.id=contract_head.style_contract_id
+                  AND style.creation_contract_id=creation.id
+                  AND style.revision=contract_head.revision
+                  AND style.content_hash=contract_head.style_hash
+                 JOIN project_bible_heads bible_head
+                   ON bible_head.project_id=selected.project_id
+                  AND bible_head.revision>0
+                 JOIN creation_bible_revisions bible
+                   ON bible.project_id=bible_head.project_id
+                  AND bible.id=bible_head.bible_revision_id
+                  AND bible.revision=bible_head.revision
+                  AND bible.content_hash=bible_head.content_hash
+                  AND bible.selection_revision=selected.selection_revision
+                  AND bible.seed_id=selected.seed_id
+                  AND bible.seed_revision_id=selected.seed_revision_id
+                  AND bible.seed_hash=selected.seed_hash
+                  AND bible.contract_revision=contract_head.revision
+                  AND bible.creation_contract_id=
+                      contract_head.creation_contract_id
+                  AND bible.creation_hash=contract_head.creation_hash
+                  AND bible.style_contract_id=contract_head.style_contract_id
+                  AND bible.style_hash=contract_head.style_hash
+                 JOIN project_planning_heads current_head
                    ON current_head.project_id=outline.project_id
                 WHERE outline_head.project_id=%s
                   AND outline_head.chapter_num=%s

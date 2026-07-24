@@ -46,8 +46,19 @@ class CapabilitySession:
 
 
 @pytest.mark.asyncio
-async def test_cli_uses_safe_defaults_full_capability_gate_and_secret_free_output(workspace_tmp_path):
-    session = CapabilitySession()
+@pytest.mark.parametrize(
+    "version",
+    (
+        "8.4.10",
+        "8.0.36-0ubuntu0.22.04.1",
+        "8.0.36+commercial_1",
+    ),
+)
+async def test_cli_uses_safe_defaults_full_capability_gate_and_secret_free_output(
+    workspace_tmp_path,
+    version,
+):
+    session = CapabilitySession(version=version)
     connector_configs = []
     writes = []
     prompts = []
@@ -104,7 +115,7 @@ async def test_cli_uses_safe_defaults_full_capability_gate_and_secret_free_outpu
         True,
     )]
     rendered = "\n".join(output)
-    for public in ("127.0.0.1", "3307", "root", "novel_creator", "8.4.10"):
+    for public in ("127.0.0.1", "3307", "root", "novel_creator", version):
         assert public in rendered
     assert SECRET not in rendered
 
@@ -116,8 +127,14 @@ async def test_cli_uses_safe_defaults_full_capability_gate_and_secret_free_outpu
         CapabilitySession(version="5.7.44"),
         CapabilitySession(version="8.0.15"),
         CapabilitySession(version="9.0.1"),
+        CapabilitySession(version=80410),
+        CapabilitySession(version="8.0.16garbage"),
+        CapabilitySession(version="8.0.16-"),
+        CapabilitySession(version="8.0.16+"),
         CapabilitySession(collation=None),
         CapabilitySession(json_supported=0),
+        CapabilitySession(json_supported=True),
+        CapabilitySession(json_supported=1.0),
         CapabilitySession(check_count="3"),
     ),
 )

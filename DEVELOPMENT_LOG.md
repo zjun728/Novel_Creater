@@ -87,8 +87,32 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - Phase 3A 从空库建立目标 Schema，不迁移旧 Planning 数据，不保留第二套 Store、
   状态或生成链路。
 
+## 2026-07-24 Phase 3A Planning Aggregate Foundation 完成
+
+- 完成 `writer-core-v1.5.0`、Planning/Outline 聚合、稳定节点身份、
+  canonical hash、显式 Draft 保存、幂等确认、不可变历史与完整 CAS。
+- Seed/Contract/Style/Bible generation fence 已封住 confirmed A → B → A
+  旧 Planning、旧 Outline 和既有 ChapterSession 的复活路径。
+- ChapterSession 创建和既有会话返回都先重校验当前 Planning Head/generation、
+  Outline、Canon 与 Projection。
+- 当前公共 Planning/Outline 输入只接受 camelCase；未恢复 snake_case 兼容、
+  旧 Planning 表、旧 Store 或旧生成链。
+- 当前 schema 的开发重置只清除派生数据并原子重建 Contract/Bible/Planning/
+  Canon/Projection revision 0；不执行旧 schema 迁移。
+- 规格审查和质量审查最终均为 `0/0/0`。
+- Fresh `npm test`：Python `2353 passed, 6 skipped`，根级 Node `191 passed`，
+  前端 `365 passed`，失败 `0`。
+- Fresh Disposable MySQL integration：`300 passed`；数据库
+  `created=299 cleaned=299 remaining=0`，独立查询残留 `0`。
+- Fresh build：Vite `2937 modules transformed`；`git diff --check` exit `0`。
+- Product DB reads/writes：`0/0`；Provider calls：`0`。
+- Phase 3B–3D、Real Provider、Product DB、Phase 4 Writer Loop、Phase 5
+  Finalization 和 Content Quality 均未评估。
+- 详细证据：
+  `docs/acceptance/2026-07-24-phase-3a-planning-aggregate.md`。
+
 ## 下一步
 
-按已批准设计和详细计划实施 Phase 3A Planning Aggregate Foundation。不得提前读写
-产品数据库、调用真实 Provider，或将 Phase 4 Writer Loop、Phase 5 Finalization
-和 Content Quality 标记为已完成。
+从干净的 Phase 3A 提交继续实施 Phase 3B Volumes and Plots：手工与 AI
+Planning Draft、分卷/情节线正式 API 和页面、项目导航与 archived/superseded
+只读历史。自动门禁继续禁止产品数据库和真实 Provider。

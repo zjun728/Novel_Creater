@@ -47,7 +47,10 @@ async def test_archived_project_seed_reads_disable_mutations_but_keep_facts(
     )
     await install_matching_contract(disposable_mysql.session, "p1", selection)
     await install_first_final_chapter(
-        disposable_mysql.session, "p1", selection
+        disposable_mysql.session,
+        disposable_mysql.connection_config,
+        "p1",
+        selection,
     )
     await disposable_mysql.session.execute(
         """UPDATE projects

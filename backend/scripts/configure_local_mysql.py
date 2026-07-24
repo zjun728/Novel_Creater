@@ -8,16 +8,13 @@ import getpass
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 from typing import Awaitable, Callable, Mapping, Sequence
 
 from backend.scripts.initialize_database import _default_connection_factory
-from backend.scripts.reset_writer_core_data import (
-    ResetValidationError,
-    _verify_reset_server_capabilities,
-)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +30,45 @@ _CONFIG_KEYS = frozenset({
 
 class LocalMySQLSetupError(RuntimeError):
     """Local MySQL settings could not be verified and published safely."""
+
+
+async def _verify_server_capabilities(session) -> str:
+    version_row = await session.fetchone("SELECT VERSION() AS version")
+    version = (version_row or {}).get("version")
+    if type(version) is not str:
+        raise LocalMySQLSetupError("Could not verify the MySQL server version")
+    match = re.fullmatch(
+        r"(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z][0-9A-Za-z._-]*)?",
+        version,
+    )
+    if match is None:
+        raise LocalMySQLSetupError("Could not verify the MySQL server version")
+    version_tuple = tuple(int(part) for part in match.groups())
+    if version_tuple < (8, 0, 16) or version_tuple >= (9, 0, 0):
+        raise LocalMySQLSetupError(
+            "Local Writer Core requires MySQL 8.0.16 or newer, below MySQL 9"
+        )
+    collation = await session.fetchone(
+        """SELECT COLLATION_NAME FROM information_schema.COLLATIONS
+           WHERE COLLATION_NAME='utf8mb4_0900_ai_ci'"""
+    )
+    if (collation or {}).get("COLLATION_NAME") != "utf8mb4_0900_ai_ci":
+        raise LocalMySQLSetupError(
+            "MySQL server does not provide required utf8mb4_0900_ai_ci collation"
+        )
+    json_support = await session.fetchone(
+        "SELECT JSON_VALID(%s) AS json_supported",
+        ('{"writerCore":true}',),
+    )
+    json_supported = (json_support or {}).get("json_supported")
+    if type(json_supported) is not int or json_supported != 1:
+        raise LocalMySQLSetupError("MySQL server JSON capability check failed")
+    check_support = await session.fetchone(
+        "SELECT COUNT(*) AS count FROM information_schema.CHECK_CONSTRAINTS"
+    )
+    if type((check_support or {}).get("count")) is not int:
+        raise LocalMySQLSetupError("MySQL server CHECK capability check failed")
+    return version
 
 
 def _port(value: str) -> int:
@@ -171,12 +207,7 @@ async def run_cli(
     connect = connector or _default_connection_factory
     session = await connect(connection_config)
     try:
-        try:
-            version = await _verify_reset_server_capabilities(session)
-        except ResetValidationError as exc:
-            raise LocalMySQLSetupError(
-                "The MySQL server does not satisfy Writer Core capabilities"
-            ) from exc
+        version = await _verify_server_capabilities(session)
     finally:
         await session.close()
 

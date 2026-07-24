@@ -63,6 +63,21 @@ class SaveDraftCandidate:
 
 
 class ChapterSessionService:
+    _GENERATION_FIELDS = (
+        "selection_revision",
+        "seed_id",
+        "seed_revision_id",
+        "seed_hash",
+        "contract_revision",
+        "creation_contract_id",
+        "creation_hash",
+        "style_contract_id",
+        "style_hash",
+        "bible_revision",
+        "bible_revision_id",
+        "bible_hash",
+    )
+
     def __init__(self, repository, *, transaction_factory, connection_factory=None):
         self.repository = repository
         self.transaction_factory = transaction_factory
@@ -100,13 +115,6 @@ class ChapterSessionService:
                 command.project_id,
                 command.chapter_number,
             )
-            if existing is not None:
-                if not self._matches_create_command(existing, command):
-                    raise ChapterSessionConflict(
-                        "existing ChapterSession pins differ from request",
-                    )
-                return await self._workspace(session, existing)
-
             outline = await self.repository.read_current_outline(
                 session,
                 command.project_id,
@@ -116,28 +124,7 @@ class ChapterSessionService:
                 raise ChapterSessionPreconditionFailed(
                     "current confirmed outline is required",
                 )
-            if (
-                int(outline.get("current_planning_revision") or 0)
-                != int(outline["planning_revision"])
-                or outline.get("current_planning_hash")
-                != outline["planning_hash"]
-            ):
-                raise ChapterSessionConflict(
-                    "Planning head differs from the confirmed Outline",
-                )
-            if (
-                command.expected_planning_revision
-                != int(outline["planning_revision"])
-                or command.expected_planning_hash != outline["planning_hash"]
-            ):
-                raise ChapterSessionConflict("Planning revision drift")
-            if (
-                command.expected_outline_revision
-                != int(outline["chapter_outline_revision"])
-                or command.expected_outline_hash
-                != outline["chapter_outline_hash"]
-            ):
-                raise ChapterSessionConflict("Outline revision drift")
+            self._require_current_outline(outline, command)
 
             projection = await self.repository.read_projection_head(
                 session,
@@ -147,24 +134,18 @@ class ChapterSessionService:
                 raise ChapterSessionPreconditionFailed(
                     "Canon and Projection heads are required",
                 )
+            self._require_current_projection(outline, projection, command)
+            if existing is not None:
+                if (
+                    not self._matches_create_command(existing, command)
+                    or not self._matches_current_outline(existing, outline)
+                ):
+                    raise ChapterSessionConflict(
+                        "existing ChapterSession pins differ from current authorities",
+                    )
+                return await self._workspace(session, existing)
+
             canon_revision = int(projection["canon_revision_number"])
-            projection_revision = int(
-                projection["projection_revision_number"],
-            )
-            if canon_revision != projection_revision:
-                raise ChapterSessionPreconditionFailed(
-                    "Canon and Projection must be synchronized",
-                )
-            if canon_revision != command.expected_canon_revision:
-                raise ChapterSessionConflict("Canon revision drift")
-            if (
-                canon_revision != int(outline["canon_revision"])
-                or projection_revision != int(outline["projection_revision"])
-                or projection["content_hash"] != outline["projection_hash"]
-            ):
-                raise ChapterSessionConflict(
-                    "current Canon/Projection differs from Outline baseline",
-                )
 
             now = int(time.time() * 1000)
             session_row = {
@@ -203,6 +184,69 @@ class ChapterSessionService:
             if not await self.repository.upsert_working_draft(session, draft_row):
                 raise ChapterSessionConflict("working draft was not created")
             return await self._workspace(session, session_row)
+
+    def _require_current_outline(
+        self,
+        outline: Mapping[str, Any],
+        command: CreateChapterSession,
+    ) -> None:
+        if (
+            outline.get("current_planning_revision_id")
+            != outline["planning_revision_id"]
+            or int(outline.get("current_planning_revision") or 0)
+            != int(outline["planning_revision"])
+            or outline.get("current_planning_hash")
+            != outline["planning_hash"]
+        ):
+            raise ChapterSessionConflict(
+                "Planning head differs from the confirmed Outline",
+            )
+        if any(
+            outline.get(f"planning_{field}")
+            != outline.get(f"current_{field}")
+            for field in self._GENERATION_FIELDS
+        ):
+            raise ChapterSessionConflict(
+                "Planning generation differs from current authorities",
+            )
+        if (
+            command.expected_planning_revision
+            != int(outline["planning_revision"])
+            or command.expected_planning_hash != outline["planning_hash"]
+        ):
+            raise ChapterSessionConflict("Planning revision drift")
+        if (
+            command.expected_outline_revision
+            != int(outline["chapter_outline_revision"])
+            or command.expected_outline_hash
+            != outline["chapter_outline_hash"]
+        ):
+            raise ChapterSessionConflict("Outline revision drift")
+
+    def _require_current_projection(
+        self,
+        outline: Mapping[str, Any],
+        projection: Mapping[str, Any],
+        command: CreateChapterSession,
+    ) -> None:
+        canon_revision = int(projection["canon_revision_number"])
+        projection_revision = int(
+            projection["projection_revision_number"],
+        )
+        if canon_revision != projection_revision:
+            raise ChapterSessionPreconditionFailed(
+                "Canon and Projection must be synchronized",
+            )
+        if canon_revision != command.expected_canon_revision:
+            raise ChapterSessionConflict("Canon revision drift")
+        if (
+            canon_revision != int(outline["canon_revision"])
+            or projection_revision != int(outline["projection_revision"])
+            or projection["content_hash"] != outline["projection_hash"]
+        ):
+            raise ChapterSessionConflict(
+                "current Canon/Projection differs from Outline baseline",
+            )
 
     async def save_working_draft(self, command: SaveWorkingDraft) -> ChapterWorkspace:
         async with self.transaction_factory() as session:
@@ -331,6 +375,30 @@ class ChapterSessionService:
             == command.expected_outline_hash
             and int(session["expected_canon_revision"])
             == command.expected_canon_revision
+        )
+
+    def _matches_current_outline(
+        self,
+        session: Mapping[str, Any],
+        outline: Mapping[str, Any],
+    ) -> bool:
+        return (
+            session["planning_revision_id"] == outline["planning_revision_id"]
+            and int(session["planning_revision"])
+            == int(outline["planning_revision"])
+            and session["planning_hash"] == outline["planning_hash"]
+            and session["chapter_outline_revision_id"]
+            == outline["chapter_outline_revision_id"]
+            and int(session["chapter_outline_revision"])
+            == int(outline["chapter_outline_revision"])
+            and session["chapter_outline_hash"]
+            == outline["chapter_outline_hash"]
+            and session["story_block_id"] == outline["story_block_id"]
+            and int(session["story_block_revision"])
+            == int(outline["story_block_revision"])
+            and session["story_block_hash"] == outline["story_block_hash"]
+            and int(session["expected_canon_revision"])
+            == int(outline["canon_revision"])
         )
 
     def _working_row(

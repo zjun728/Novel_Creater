@@ -116,6 +116,24 @@ def _normalize(
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "alias"),
+    (
+        ("active_story_block_ref", "activeStoryBlockRef"),
+        ("story_blocks", "storyBlocks"),
+    ),
+)
+def test_planning_domain_rejects_python_field_names_at_public_boundary(
+    field,
+    alias,
+):
+    payload = _valid_payload()
+    payload[field] = payload.pop(alias)
+
+    with pytest.raises(ValidationError):
+        DraftPlanningAggregate.model_validate(payload)
+
+
 def _as_draft_payload(value) -> dict[str, object]:
     return {
         "activeStoryBlockRef": value.active_story_block_id,

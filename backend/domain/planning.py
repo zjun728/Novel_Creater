@@ -31,7 +31,6 @@ class _StrictPlanningValue(BaseModel):
         strict=True,
         frozen=True,
         extra="forbid",
-        populate_by_name=True,
     )
 
     @model_validator(mode="before")

@@ -325,6 +325,40 @@ def test_nested_planning_content_is_also_strict():
     assert response.json()["code"] == "PlanningRequestInvalid"
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        {
+            "active_story_block_ref": None,
+            "volumes": [],
+            "plots": [],
+            "storyBlocks": [],
+        },
+        {
+            "activeStoryBlockRef": None,
+            "volumes": [],
+            "plots": [],
+            "story_blocks": [],
+        },
+    ),
+)
+def test_planning_api_rejects_nested_python_field_names(content):
+    client, _ = make_client()
+
+    response = client.put(
+        "/api/projects/p1/planning/drafts/draft-1",
+        json={
+            "expectedDraftRevision": 1,
+            "expectedDraftHash": HASH,
+            "content": content,
+            "idempotencyKey": "save-draft-1",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "PlanningRequestInvalid"
+
+
 def test_deepest_scene_task_content_forbids_unknown_fields():
     client, _ = make_client()
     content = {

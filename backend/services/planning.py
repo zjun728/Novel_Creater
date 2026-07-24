@@ -169,7 +169,11 @@ class PlanningService:
             active = await self.repository.read_active_draft(
                 session, command.project_id
             )
-            if active is not None and self._basis_matches(active, basis):
+            if active is not None and self._draft_is_current(
+                active,
+                basis,
+                head,
+            ):
                 return self._draft_result(active, basis)
             if active is not None:
                 if not await self.repository.supersede_draft(
@@ -180,9 +184,10 @@ class PlanningService:
                 ):
                     raise PlanningConflict("active Planning Draft changed")
 
+            head_is_current = self._head_matches_basis(head, basis)
             content = (
                 self._planning_from_json(head["content_json"])
-                if int(head["revision"]) > 0
+                if int(head["revision"]) > 0 and head_is_current
                 else self._empty_planning()
             )
             now = self.clock()
@@ -218,7 +223,7 @@ class PlanningService:
                 session, command.project_id, command.draft_id
             )
             self._require_active_draft(draft)
-            if not self._basis_matches(draft, basis):
+            if not self._draft_is_current(draft, basis, head):
                 if not await self.repository.supersede_draft(
                     session,
                     command.project_id,
@@ -236,6 +241,7 @@ class PlanningService:
                 previous_confirmed = (
                     self._planning_from_json(head["content_json"])
                     if int(head["revision"]) > 0
+                    and self._head_matches_basis(head, basis)
                     else None
                 )
                 previous_draft = self._planning_from_json(draft["content_json"])
@@ -321,7 +327,7 @@ class PlanningService:
 
             if draft["status"] != "active" or draft.get("active_slot") != 1:
                 raise PlanningConflict("Planning Draft is not active")
-            if not self._basis_matches(draft, basis):
+            if not self._draft_is_current(draft, basis, head):
                 if not await self.repository.supersede_draft(
                     session,
                     command.project_id,
@@ -393,7 +399,7 @@ class PlanningService:
                     "updated_at": now,
                 }
                 if not await self.repository.advance_head_cas(
-                    session, head_row, int(head["revision"])
+                    session, head_row, head
                 ):
                     raise PlanningConflict("Planning head revision conflict")
                 self._hit("after_head_advance")
@@ -461,13 +467,15 @@ class PlanningService:
             future = (
                 self._planning_from_json(head["content_json"])
                 if int(head["revision"]) > 0
+                and basis is not None
+                and self._head_matches_basis(head, basis)
                 else None
             )
             draft = (
                 self._draft_result(draft_row, basis)
                 if draft_row is not None
                 and basis is not None
-                and self._basis_matches(draft_row, basis)
+                and self._draft_is_current(draft_row, basis, head)
                 else None
             )
             projection_status = self._projection_status(projection)
@@ -594,6 +602,24 @@ class PlanningService:
         basis: Mapping[str, Any],
     ) -> bool:
         return all(row.get(field) == basis.get(field) for field in _BASIS_FIELDS)
+
+    def _head_matches_basis(
+        self,
+        head: Mapping[str, Any],
+        basis: Mapping[str, Any],
+    ) -> bool:
+        return int(head["revision"]) == 0 or self._basis_matches(head, basis)
+
+    def _draft_is_current(
+        self,
+        draft: Mapping[str, Any],
+        basis: Mapping[str, Any],
+        head: Mapping[str, Any],
+    ) -> bool:
+        return (
+            self._basis_matches(draft, basis)
+            and int(draft["base_head_revision"]) == int(head["revision"])
+        )
 
     def _capacity_policy(self, basis: Mapping[str, Any]) -> dict[str, int]:
         value = basis["chapter_capacity_policy"]

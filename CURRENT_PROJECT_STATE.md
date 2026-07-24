@@ -23,12 +23,12 @@
 - Canonical release branch：`main`。
 - Phase 2 验收链已进入 `main`，链末提交：
   `f11faad531f04250f2a987390a468dfd14bf06a3`。
-- 当前完成阶段：**Phase 2 Creative Foundation（创作地基）**。
+- 当前完成交付包：**Phase 3A Planning Aggregate Foundation**。
 - 当前开发分支：`codex/phase3-story-planning`。
-- 当前工作：**Phase 3 Story Planning（故事规划）**。
-- 当前自动证据边界：No-Provider、Disposable MySQL 8、UI-only 真实浏览器。
-- Product DB、Real Provider、Phase 4 Writer Loop、Phase 5 Finalization 和
-  Content Quality 均未评估，不得据 Phase 2 门禁宣告 Ready。
+- 当前工作：**Phase 3B Volumes and Plots**。
+- 当前自动证据边界：No-Provider、Disposable MySQL 8；Phase 3A 未运行浏览器验收。
+- Phase 3B–3D、Product DB、Real Provider、Phase 4 Writer Loop、Phase 5
+  Finalization 和 Content Quality 均未评估，不得据 Phase 3A 门禁宣告 Ready。
 
 ## Phase 2 已完成能力
 
@@ -50,13 +50,27 @@ Phase 2 的 committed acceptance 见：
 上述报告记录了当时的自动门禁结果；本文件没有重新运行这些门禁，也不把报告范围
 外推为产品数据库、真实模型或小说内容质量事实。
 
+## Phase 3A 已完成能力
+
+- `writer-core-v1.5.0` Planning/Outline 闭合领域模型和完整 Schema。
+- Planning Draft、显式保存、幂等确认、不可变历史、稳定节点身份、canonical
+  hash、完整 CAS 和事务回滚。
+- Seed/Contract/Style/Bible generation fence；A → B → A 不复活旧 Planning。
+- ChapterSession 精确钉住当前 Planning、Outline、Canon 与 Projection；
+  existing-session 快速路径不能绕过权威重校验。
+- 当前 schema 同版本开发重置；v1.1/v1.4 迁移、旧 Planning 表、旧 Store 和旧
+  生成链已从当前运行面退役。
+
+Phase 3A committed acceptance 见：
+
+- `docs/acceptance/2026-07-24-phase-3a-planning-aggregate.md`
+
 ## 当前 Schema 与数据库边界
 
-- `main` 当前 committed 源码 Schema：`writer-core-v1.4.0`。
-- Phase 3 设计目标是从空库建立 `writer-core-v1.5.0`，不迁移旧数据，
-  不保留旧 Planning 表兼容查询。
-- 当前阶段不得把源码 Schema 版本当作产品数据库现存版本。
-- 当前没有重新读取、重建或验证产品数据库。
+- 当前开发分支 committed 源码 Schema：`writer-core-v1.5.0`。
+- 产品数据库现存 Schema 未读取、未重建、未验证。
+- 源码 Schema 版本不得推导为产品数据库现存版本。
+- 不迁移旧数据，不保留旧 Planning 表兼容查询。
 - Phase 3 自动集成只能使用随机命名的 Disposable MySQL 测试库。
 
 ## 尚未完成
@@ -73,6 +87,6 @@ Phase 2 的 committed acceptance 见：
 
 ## 唯一下一步
 
-按已批准的 Phase 3 设计和实施计划完成 **Phase 3 Story Planning**。当前先实施
-Phase 3A Planning Aggregate Foundation；不得提前调用真实 Provider、读写产品
-数据库，或把 Phase 4 写作环、Phase 5 定稿和内容质量标记为已完成。
+从干净的 Phase 3A 提交继续实施 **Phase 3B Volumes and Plots**：交付手工与
+AI Planning Draft、分卷/情节线正式 API 和页面、项目导航及 archived/superseded
+只读历史。自动门禁继续禁止真实 Provider 和产品数据库。

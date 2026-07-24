@@ -19,11 +19,15 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
     productPlan,
     developmentLog,
     storyQualityCharter,
+    acceptance,
   ] = await Promise.all([
     readProjectFile('CURRENT_PROJECT_STATE.md'),
     readProjectFile('PRODUCT_DEVELOPMENT_PLAN.md'),
     readProjectFile('DEVELOPMENT_LOG.md'),
     readProjectFile('STORY_QUALITY_CHARTER.md'),
+    readProjectFile(
+      'docs/acceptance/2026-07-24-phase-3a-planning-aggregate.md',
+    ),
   ]);
 
   const currentConclusion = readSection(currentState, '当前结论');
@@ -34,7 +38,7 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
   );
   assert.match(
     currentConclusion,
-    /^- 当前完成阶段：\*\*Phase 2 Creative Foundation（创作地基）\*\*。$/m,
+    /^- 当前完成交付包：\*\*Phase 3A Planning Aggregate Foundation\*\*。$/m,
   );
   assert.match(
     currentConclusion,
@@ -42,17 +46,27 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
   );
   assert.match(
     currentConclusion,
-    /^- 当前工作：\*\*Phase 3 Story Planning（故事规划）\*\*。$/m,
+    /^- 当前工作：\*\*Phase 3B Volumes and Plots\*\*。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- Product DB、Real Provider、Phase 4 Writer Loop、Phase 5 Finalization 和\r?\n  Content Quality 均未评估，不得据 Phase 2 门禁宣告 Ready。$/m,
+    /^- Phase 3B–3D、Product DB、Real Provider、Phase 4 Writer Loop、Phase 5\r?\n  Finalization 和 Content Quality 均未评估，不得据 Phase 3A 门禁宣告 Ready。$/m,
   );
 
   const nextStep = readSection(currentState, '唯一下一步');
   assert.match(
     nextStep,
-    /^按已批准的 Phase 3 设计和实施计划完成 \*\*Phase 3 Story Planning\*\*。当前先实施\r?\nPhase 3A Planning Aggregate Foundation；不得提前调用真实 Provider、读写产品\r?\n数据库，或把 Phase 4 写作环、Phase 5 定稿和内容质量标记为已完成。$/m,
+    /^从干净的 Phase 3A 提交继续实施 \*\*Phase 3B Volumes and Plots\*\*：交付手工与\r?\nAI Planning Draft、分卷\/情节线正式 API 和页面、项目导航及 archived\/superseded\r?\n只读历史。自动门禁继续禁止真实 Provider 和产品数据库。$/m,
+  );
+
+  const schemaBoundary = readSection(currentState, '当前 Schema 与数据库边界');
+  assert.match(
+    schemaBoundary,
+    /^- 当前开发分支 committed 源码 Schema：`writer-core-v1\.5\.0`。$/m,
+  );
+  assert.match(
+    schemaBoundary,
+    /^- 产品数据库现存 Schema 未读取、未重建、未验证。$/m,
   );
 
   const productPlanLines = productPlan.split(/\r?\n/);
@@ -74,6 +88,57 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
   assert.match(
     phase2Log,
     /^- Phase 2 acceptance chain 进入 canonical `main` 后的链末提交：`f11faad`。$/m,
+  );
+
+  const phase3aLog = readSection(
+    developmentLog,
+    '2026-07-24 Phase 3A Planning Aggregate Foundation 完成',
+  );
+  assert.match(phase3aLog, /^- 规格审查和质量审查最终均为 `0\/0\/0`。$/m);
+  assert.match(phase3aLog, /^- Product DB reads\/writes：`0\/0`；Provider calls：`0`。$/m);
+
+  assert.match(
+    acceptance,
+    /^- 工作分支：`codex\/phase3-story-planning`$/m,
+  );
+  assert.match(
+    acceptance,
+    /^- 门禁运行 HEAD：`2fd928c827f07dde73e89d8e3200e3ae8f6bd7d4`$/m,
+  );
+  assert.match(
+    acceptance,
+    /^- Python unit \/ API：`2353 passed, 6 skipped, 0 failed`$/m,
+  );
+  assert.match(
+    acceptance,
+    /^- 根级 Node 合同：`191 passed, 0 skipped, 0 failed`$/m,
+  );
+  assert.match(
+    acceptance,
+    /^- 前端 unit：`365 passed, 0 skipped, 0 failed`$/m,
+  );
+  assert.match(
+    acceptance,
+    /^- Disposable MySQL integration：`300 passed, 0 failed`$/m,
+  );
+  assert.match(
+    acceptance,
+    /^- 数据库：`created=299, cleaned=299, remaining=0`$/m,
+  );
+  assert.match(acceptance, /^- Vite：`2937 modules transformed`$/m);
+  assert.match(
+    acceptance,
+    /^- 规格审查：`Critical 0 \/ Important 0 \/ Minor 0`$/m,
+  );
+  assert.match(
+    acceptance,
+    /^- 质量审查：`Critical 0 \/ Important 0 \/ Minor 0`$/m,
+  );
+  assert.match(acceptance, /^- Provider calls：`0`$/m);
+  assert.match(acceptance, /^- Product DB reads\/writes：`0\/0`$/m);
+  assert.match(
+    acceptance,
+    /^- 未评估：Phase 3B–3D、Real Provider、Product DB、Content Quality$/m,
   );
 
   assert.doesNotMatch(storyQualityCharter, /split_unfinalized_content/);
