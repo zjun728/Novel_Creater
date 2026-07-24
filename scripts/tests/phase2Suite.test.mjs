@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -17,6 +17,73 @@ const repositoryRoot = path.resolve(
 
 function readWorkspaceFile(relativePath) {
   return readFileSync(path.join(repositoryRoot, relativePath), 'utf8')
+}
+
+
+const CURRENT_RUNTIME_ROOTS = Object.freeze([
+  'backend',
+  'frontend/src',
+  'scripts',
+])
+const CURRENT_RUNTIME_EXTENSIONS = new Set([
+  '.js',
+  '.mjs',
+  '.py',
+  '.sql',
+  '.vue',
+])
+const EXCLUDED_RUNTIME_DIRECTORIES = new Set([
+  'backend/tests',
+  'scripts/tests',
+])
+
+
+function currentRuntimeFiles() {
+  const files = []
+  const visit = (absolutePath) => {
+    const relativePath = path.relative(repositoryRoot, absolutePath).replaceAll('\\', '/')
+    if (EXCLUDED_RUNTIME_DIRECTORIES.has(relativePath)) {
+      return
+    }
+    for (const entry of readdirSync(absolutePath, { withFileTypes: true })) {
+      if (entry.name === '__pycache__' || entry.name === 'node_modules') {
+        continue
+      }
+      const child = path.join(absolutePath, entry.name)
+      if (entry.isDirectory()) {
+        visit(child)
+      } else if (CURRENT_RUNTIME_EXTENSIONS.has(path.extname(entry.name))) {
+        files.push(child)
+      }
+    }
+  }
+  for (const relativeRoot of CURRENT_RUNTIME_ROOTS) {
+    visit(path.join(repositoryRoot, relativeRoot))
+  }
+  return files.sort()
+}
+
+
+function retiredSqlPattern(tableName) {
+  const identifier = '(?:`[^`\\r\\n]+`|[A-Za-z_][A-Za-z0-9_$]*)'
+  const qualifier = `(?:${identifier}\\s*\\.\\s*)?`
+  const table = `(?:\`${tableName}\`|${tableName})`
+  const gap = '(?:\\s|/\\*[\\s\\S]*?\\*/|--[^\\r\\n]*(?:\\r?\\n|$)|#[^\\r\\n]*(?:\\r?\\n|$))+'
+  return new RegExp(
+    `(?:FROM|JOIN|INTO|UPDATE|(?:CREATE${gap})?TABLE|TRUNCATE(?:${gap}TABLE)?)${gap}${qualifier}${table}(?=\\s|$|[),;])`,
+    'iu',
+  )
+}
+
+
+function containsRetiredSql(source, tableName) {
+  const identifier = '(?:`[^`\\r\\n]+`|[A-Za-z_][A-Za-z0-9_$]*)'
+  const table = `(?:\`${tableName}\`|${tableName})`
+  const withoutPythonYield = source.replace(
+    new RegExp(`\\byield\\s+from\\s+(?:${identifier}\\s*\\.\\s*)?${table}\\b`, 'giu'),
+    '',
+  )
+  return retiredSqlPattern(tableName).test(withoutPythonYield)
 }
 
 
@@ -48,6 +115,7 @@ test('Phase 2 acceptance report records only fresh bounded evidence', () => {
   )
   assert.equal(existsSync(reportPath), true, 'Phase 2 acceptance report must exist')
   const report = readFileSync(reportPath, 'utf8')
+  assert.doesNotMatch(report, /Phase 3 Ready:\s*(?:true|ready)/iu)
 
   for (const required of [
     '999c1b5fd09798eb2e459f7bda74dcf6b4660f57',
@@ -110,6 +178,95 @@ test('Phase 2 acceptance report records only fresh bounded evidence', () => {
   )
   assert.doesNotMatch(report, /待主控使用 fresh 默认 browser 输出核验/u)
   assert.doesNotMatch(report, /最终验收提交：\s*[0-9a-f]{40}/iu)
+})
+
+
+test('current reset and verifier contain no retired mutable-planning contract', () => {
+  const reset = readWorkspaceFile('backend/scripts/reset_writer_core_data.py')
+  const verifier = readWorkspaceFile('backend/scripts/verify_milestone2_product.py')
+  const runtimeFiles = currentRuntimeFiles()
+
+  assert.doesNotMatch(
+    reset,
+    /writer-core-v1\.[14]\.0|v1\.[14]-(?:source|target)|V11_TABLE_NAMES/u,
+  )
+  assert.doesNotMatch(reset, /frozen_writer_core_v11/u)
+  for (const tableName of [
+    'volume_plans',
+    'story_blocks',
+    'story_stages',
+    'scene_tasks',
+  ]) {
+    const retiredSql = retiredSqlPattern(tableName)
+    for (const filePath of runtimeFiles) {
+      assert.equal(
+        containsRetiredSql(readFileSync(filePath, 'utf8'), tableName),
+        false,
+        `retired SQL contract in ${path.relative(repositoryRoot, filePath)}`,
+      )
+    }
+  }
+  for (const retired of [
+    '/planning/initial',
+    'expected_story_block_revision',
+    'planning_manifest_hash',
+    'planning_snapshot_json',
+    'create_initial_plan',
+  ]) {
+    for (const filePath of runtimeFiles) {
+      assert.equal(
+        readFileSync(filePath, 'utf8').includes(retired),
+        false,
+        `retired runtime contract in ${path.relative(repositoryRoot, filePath)}`,
+      )
+    }
+  }
+  assert.match(verifier, /project_planning_heads/u)
+  assert.match(verifier, /project_chapter_outline_heads/u)
+  assert.match(verifier, /orphan_planning/u)
+})
+
+
+test('retired-contract inventory scans only the closed current runtime surface', () => {
+  const relativePaths = currentRuntimeFiles().map((absolutePath) => (
+    path.relative(repositoryRoot, absolutePath).replaceAll('\\', '/')
+  ))
+
+  assert.equal(relativePaths.includes('backend/scripts/reset_writer_core_data.py'), true)
+  assert.equal(relativePaths.includes('backend/scripts/verify_milestone2_product.py'), true)
+  assert.equal(relativePaths.includes('backend/domain/planning.py'), true)
+  assert.equal(relativePaths.includes('frontend/src/stores/planningStore.js'), true)
+  assert.equal(relativePaths.some((value) => value.startsWith('backend/tests/')), false)
+  assert.equal(relativePaths.some((value) => value.startsWith('scripts/tests/')), false)
+  assert.equal(relativePaths.some((value) => value.startsWith('docs/')), false)
+})
+
+
+test('retired SQL matcher covers quoted and schema-qualified table names only in SQL context', () => {
+  for (const sql of [
+    'FROM story_blocks',
+    'JOIN `story_blocks` block ON block.id=ref.id',
+    'INSERT INTO archive.story_blocks (id) VALUES (1)',
+    'UPDATE `legacy`.`story_blocks` SET title=?',
+    'CREATE TABLE `legacy`.story_blocks (id CHAR(36))',
+    'TABLE legacy.`story_blocks`',
+    'TRUNCATE story_blocks',
+    'FROM /* optimizer hint */ `legacy`.`story_blocks`',
+    'FROM -- optimizer hint\n story_blocks',
+    'FROM # optimizer hint\n `story_blocks`',
+    'from story_blocks',
+    'JoIn legacy.story_blocks block ON block.id=ref.id',
+  ]) {
+    assert.equal(containsRetiredSql(sql, 'story_blocks'), true)
+  }
+  for (const domainText of [
+    'story_blocks = planning.story_blocks',
+    'yield \t  from planning.story_blocks',
+    '"storyBlocks": []',
+    'The story_blocks domain collection is current.',
+  ]) {
+    assert.equal(containsRetiredSql(domainText, 'story_blocks'), false)
+  }
 })
 
 

@@ -28,7 +28,13 @@ from backend.services.contracts import (
     SaveContractDraft,
 )
 from backend.services.model_bindings import ModelBindingService
-from backend.services.planning import CreateInitialPlan, PlanningService
+from backend.services.planning import (
+    ConfirmPlanningDraft,
+    CreatePlanningDraft,
+    PlanningArchived,
+    PlanningService,
+    SavePlanningDraft,
+)
 from backend.services.project_lifecycle import ProjectLifecycleService
 from backend.services.seeds import (
     CreateSeed,
@@ -62,6 +68,10 @@ class _GuardProbeRepository:
     async def lock_active_project(self, _session, _project_id):
         self.actions.append("lock_active_project")
         raise http_errors.ProjectArchived()
+
+    async def read_project_any(self, _session, _project_id):
+        self.actions.append("read_project_any")
+        return {"id": "p1", "archived_at": 1}
 
     def __getattr__(self, name):
         async def downstream(*_args, **_kwargs):
@@ -271,11 +281,40 @@ WRITE_ENTRYPOINTS = (
         lambda service: service.clone_revision("p1", 1),
     ),
     _WriteEntrypoint(
-        "planning.create_initial_plan",
-        "lock_project",
+        "planning.create_draft",
+        "read_project_any",
         _planning_service,
-        lambda service: service.create_initial_plan(
-            CreateInitialPlan("p1", 1, "plan-1")
+        lambda service: service.create_draft(
+            CreatePlanningDraft("p1", "planning-draft-1")
+        ),
+    ),
+    _WriteEntrypoint(
+        "planning.save_draft",
+        "read_project_any",
+        _planning_service,
+        lambda service: service.save_draft(
+            SavePlanningDraft(
+                "p1",
+                "planning-draft-1",
+                1,
+                "a" * 64,
+                {},
+                "planning-save-1",
+            )
+        ),
+    ),
+    _WriteEntrypoint(
+        "planning.confirm_draft",
+        "read_project_any",
+        _planning_service,
+        lambda service: service.confirm_draft(
+            ConfirmPlanningDraft(
+                "p1",
+                "planning-draft-1",
+                1,
+                "a" * 64,
+                "planning-confirm-1",
+            )
         ),
     ),
     _WriteEntrypoint(
@@ -343,7 +382,15 @@ WRITE_ENTRYPOINTS = (
         "lock_project",
         _chapter_service,
         lambda service: service.create_session(
-            CreateChapterSession("p1", 1, 0)
+            CreateChapterSession(
+                "p1",
+                1,
+                1,
+                "a" * 64,
+                1,
+                "b" * 64,
+                0,
+            )
         ),
     ),
     _WriteEntrypoint(
@@ -379,6 +426,15 @@ WRITE_ENTRYPOINTS = (
 )
 
 
+def test_planning_archived_inventory_covers_every_mutating_entrypoint():
+    names = {entrypoint.name for entrypoint in WRITE_ENTRYPOINTS}
+    assert {
+        "planning.create_draft",
+        "planning.save_draft",
+        "planning.confirm_draft",
+    } <= names
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "entrypoint",
@@ -390,7 +446,12 @@ async def test_every_active_project_write_stops_at_archived_guard(entrypoint):
     provider = _ProviderProbe()
     service = entrypoint.service_factory(repository, provider)
 
-    with pytest.raises(http_errors.ProjectArchived):
+    expected_error = (
+        PlanningArchived
+        if entrypoint.name.startswith("planning.")
+        else http_errors.ProjectArchived
+    )
+    with pytest.raises(expected_error):
         await entrypoint.invoke(service)
 
     assert repository.actions == [entrypoint.guard_name]

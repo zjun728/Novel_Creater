@@ -17,9 +17,15 @@ from backend.domain.assets import (
     StyleTemplateRevision,
     load_asset_package,
 )
+from backend.domain.bibles import BiblePayload, canonical_bible_hash
 from backend.domain.contracts import CreationContractPayload, StyleContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
+from backend.domain.planning import (
+    PlanningAggregate,
+    planning_content_hash,
+    validate_confirmable_planning,
+)
 from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption
 from backend.schema_manifest import created_table_names, manifest_hash
@@ -141,6 +147,10 @@ SELECT p.id AS project_id,p.title AS project_title,p.status AS project_status,
        ch.creation_hash,ch.style_hash,
        bible.revision AS bible_revision,
        bible.bible_revision_id,bible.content_hash AS bible_hash,
+       bible_revision.content_json AS bible_json,
+       planning.revision AS planning_revision,
+       planning.planning_revision_id,planning.content_hash AS planning_hash,
+       planning_revision.content_json AS planning_json,
        cr.revision_number AS canon_revision,
        cr.parent_revision_number AS canon_parent_revision,
        cr.idempotency_key AS canon_idempotency_key,
@@ -162,6 +172,17 @@ JOIN project_model_binding_heads bh ON bh.project_id=p.id
 JOIN project_model_binding_revisions br ON br.id=bh.binding_revision_id
 JOIN project_contract_heads ch ON ch.project_id=p.id
 JOIN project_bible_heads bible ON bible.project_id=p.id
+LEFT JOIN creation_bible_revisions bible_revision
+  ON bible_revision.project_id=bible.project_id
+ AND bible_revision.id=bible.bible_revision_id
+ AND bible_revision.revision=bible.revision
+ AND bible_revision.content_hash=bible.content_hash
+JOIN project_planning_heads planning ON planning.project_id=p.id
+LEFT JOIN planning_revisions planning_revision
+  ON planning_revision.project_id=planning.project_id
+ AND planning_revision.id=planning.planning_revision_id
+ AND planning_revision.revision=planning.revision
+ AND planning_revision.content_hash=planning.content_hash
 JOIN projection_heads ph ON ph.project_id=p.id
 JOIN canon_revisions cr ON cr.project_id=p.id AND cr.revision_number=ph.canon_revision_number
 LIMIT 2"""
@@ -187,6 +208,15 @@ FROM project_model_binding_items i LEFT JOIN provider_profiles p ON p.id=i.provi
 WHERE i.binding_revision_id=%s
 ORDER BY FIELD(i.task_key,'seed','planning','writing','audit','summary','extraction','polish','market')"""
 
+_PLANNING_CHAIN_SQL = """/* m2:planning_chain */
+SELECT COUNT(*) AS revision_count,MIN(revision) AS min_revision,
+       MAX(revision) AS max_revision,
+       CAST(SUM(parent_revision=revision-1) AS UNSIGNED)
+         AS continuous_parent_count,
+       CAST(SUM(id=%s AND revision=%s AND content_hash=%s) AS UNSIGNED)
+         AS exact_head_count
+FROM planning_revisions WHERE project_id=%s"""
+
 _LATER_COUNTS_SQL = """/* m2:later_counts */
 SELECT
  (SELECT COUNT(*) FROM story_engine_batches) AS story_engine_batches,
@@ -195,10 +225,15 @@ SELECT
  (SELECT COUNT(*) FROM creation_contracts) AS creation_contracts,
  (SELECT COUNT(*) FROM style_contracts) AS style_contracts,
  (SELECT COUNT(*) FROM contract_confirmation_requests) AS contract_confirmation_requests,
- (SELECT COUNT(*) FROM volume_plans) AS volume_plans,
- (SELECT COUNT(*) FROM story_blocks) AS story_blocks,
- (SELECT COUNT(*) FROM story_stages) AS story_stages,
- (SELECT COUNT(*) FROM scene_tasks) AS scene_tasks,
+ (SELECT COUNT(*) FROM planning_drafts) AS planning_drafts,
+ (SELECT COUNT(*) FROM planning_generation_attempts) AS planning_generation_attempts,
+ (SELECT COUNT(*) FROM planning_revisions) AS planning_revisions,
+ (SELECT COUNT(*) FROM planning_confirmation_requests) AS planning_confirmation_requests,
+ (SELECT COUNT(*) FROM chapter_outline_drafts) AS chapter_outline_drafts,
+ (SELECT COUNT(*) FROM chapter_outline_generation_attempts) AS chapter_outline_generation_attempts,
+ (SELECT COUNT(*) FROM chapter_outline_revisions) AS chapter_outline_revisions,
+ (SELECT COUNT(*) FROM project_chapter_outline_heads) AS project_chapter_outline_heads,
+ (SELECT COUNT(*) FROM chapter_outline_confirmation_requests) AS chapter_outline_confirmation_requests,
  (SELECT COUNT(*) FROM chapter_sessions) AS chapter_sessions,
  (SELECT COUNT(*) FROM working_drafts) AS working_drafts,
  (SELECT COUNT(*) FROM draft_candidates) AS draft_candidates,
@@ -239,6 +274,96 @@ SELECT
  (SELECT COUNT(*) FROM creation_contract_corpus_refs) AS creation_contract_corpus_refs,
  (SELECT COUNT(*) FROM creation_contract_corpus_fragment_refs)
    AS creation_contract_corpus_fragment_refs"""
+
+_ORPHAN_PLANNING_SQL = """/* m2:orphan_planning */
+SELECT
+ (SELECT COUNT(*) FROM planning_drafts d
+   LEFT JOIN projects p ON p.id=d.project_id
+   WHERE p.id IS NULL) AS planning_drafts_without_project,
+ (SELECT COUNT(*) FROM planning_revisions r
+   LEFT JOIN projects p ON p.id=r.project_id
+   WHERE p.id IS NULL) AS planning_revisions_without_project,
+ (SELECT COUNT(*) FROM project_planning_heads h
+   LEFT JOIN planning_revisions r
+     ON r.project_id=h.project_id
+    AND r.id=h.planning_revision_id
+    AND r.revision=h.revision
+    AND r.content_hash=h.content_hash
+   WHERE h.revision>0 AND r.id IS NULL) AS planning_heads_without_revision,
+ (SELECT COUNT(*) FROM planning_generation_attempts a
+   LEFT JOIN planning_drafts d
+     ON d.project_id=a.project_id AND d.id=a.draft_id
+   WHERE d.id IS NULL) AS planning_attempts_without_draft,
+ (SELECT COUNT(*) FROM planning_confirmation_requests c
+   LEFT JOIN planning_drafts d
+     ON d.project_id=c.project_id
+    AND d.id=c.planning_draft_id
+    AND d.draft_revision=c.draft_revision
+    AND d.content_hash=c.draft_hash
+   LEFT JOIN planning_revisions r
+     ON r.project_id=c.project_id
+    AND r.id=c.planning_revision_id
+    AND r.revision=c.result_revision
+    AND r.content_hash=c.result_hash
+   WHERE d.id IS NULL OR (c.status='succeeded' AND r.id IS NULL))
+   AS planning_confirmations_without_lineage,
+ (SELECT COUNT(*) FROM chapter_outline_drafts d
+   LEFT JOIN planning_revisions r
+     ON r.project_id=d.project_id
+    AND r.id=d.planning_revision_id
+    AND r.revision=d.planning_revision
+    AND r.content_hash=d.planning_hash
+   WHERE r.id IS NULL) AS outline_drafts_without_planning,
+ (SELECT COUNT(*) FROM chapter_outline_revisions o
+   LEFT JOIN planning_revisions r
+     ON r.project_id=o.project_id
+    AND r.id=o.planning_revision_id
+    AND r.revision=o.planning_revision
+    AND r.content_hash=o.planning_hash
+   WHERE r.id IS NULL) AS outline_revisions_without_planning,
+ (SELECT COUNT(*) FROM project_chapter_outline_heads h
+   LEFT JOIN chapter_outline_revisions o
+     ON o.project_id=h.project_id
+    AND o.chapter_num=h.chapter_num
+    AND o.id=h.outline_revision_id
+    AND o.revision=h.revision
+    AND o.content_hash=h.content_hash
+   WHERE h.revision>0 AND o.id IS NULL) AS outline_heads_without_revision,
+ (SELECT COUNT(*) FROM chapter_outline_generation_attempts a
+   LEFT JOIN chapter_outline_drafts d
+     ON d.project_id=a.project_id AND d.id=a.outline_draft_id
+   WHERE d.id IS NULL) AS outline_attempts_without_draft,
+ (SELECT COUNT(*) FROM chapter_outline_confirmation_requests c
+   LEFT JOIN chapter_outline_drafts d
+     ON d.project_id=c.project_id
+    AND d.id=c.chapter_outline_draft_id
+    AND d.draft_revision=c.draft_revision
+    AND d.content_hash=c.draft_hash
+   LEFT JOIN chapter_outline_revisions o
+     ON o.project_id=c.project_id
+    AND o.chapter_num=c.chapter_num
+    AND o.id=c.outline_revision_id
+    AND o.revision=c.result_revision
+    AND o.content_hash=c.result_hash
+   WHERE d.id IS NULL OR (c.status='succeeded' AND o.id IS NULL))
+   AS outline_confirmations_without_lineage,
+ (SELECT COUNT(*) FROM chapter_sessions s
+   LEFT JOIN planning_revisions p
+     ON p.project_id=s.project_id
+    AND p.id=s.planning_revision_id
+    AND p.revision=s.planning_revision
+    AND p.content_hash=s.planning_hash
+   LEFT JOIN chapter_outline_revisions o
+     ON o.project_id=s.project_id
+    AND o.chapter_num=s.chapter_num
+    AND o.id=s.chapter_outline_revision_id
+    AND o.revision=s.chapter_outline_revision
+    AND o.content_hash=s.chapter_outline_hash
+   WHERE p.id IS NULL OR o.id IS NULL
+      OR o.planning_revision_id<>s.planning_revision_id
+      OR o.planning_revision<>s.planning_revision
+      OR o.planning_hash<>s.planning_hash)
+   AS sessions_without_planning_or_outline"""
 
 _ASSET_COUNTS_SQL = """/* m2:asset_counts */
 SELECT (SELECT COUNT(*) FROM style_template_heads) AS style_head_count,
@@ -384,7 +509,11 @@ WHERE r.creation_contract_id=%s ORDER BY r.sort_order"""
 
 
 async def _verify_foundation(
-    session, *, expected_database: str, require_l5: bool
+    session,
+    *,
+    expected_database: str,
+    require_l5: bool,
+    expected_planning_revision: int,
 ):
     identity = await session.fetchone(_DATABASE_IDENTITY_SQL)
     _require(
@@ -515,19 +644,172 @@ async def _verify_foundation(
              and _integer(row, "binding_item_count") == len(TASK_KEYS)
              and _integer(row, "bound_item_count") == len(TASK_KEYS),
              "M2 binding head canonical hash mismatch")
-    expected_contract_revision = 1 if require_l5 else 0
+    expected_contract_revision = (
+        1 if require_l5 or expected_planning_revision > 0 else 0
+    )
     _require(_integer(row, "contract_revision") == expected_contract_revision,
              f"M2 requires contract head revision {expected_contract_revision}")
-    if not require_l5:
+    if expected_contract_revision == 0:
         _require(all(row.get(key) is None for key in (
             "creation_contract_id", "style_contract_id", "creation_hash", "style_hash"
         )), "Head zero must not reference contracts")
+    if expected_planning_revision > 0:
+        _require(
+            _integer(row, "bible_revision") == 1
+            and isinstance(row.get("bible_revision_id"), str)
+            and bool(row.get("bible_revision_id"))
+            and isinstance(row.get("bible_hash"), str)
+            and _HASH.fullmatch(row["bible_hash"]) is not None,
+            "Positive Planning verification requires one exact Bible prerequisite",
+        )
+    else:
+        _require(
+            _integer(row, "bible_revision") == 0
+            and row.get("bible_revision_id") is None
+            and row.get("bible_hash") is None,
+            "M2 Bible head must remain at head0",
+        )
+    planning_revision = _integer(row, "planning_revision")
     _require(
-        _integer(row, "bible_revision") == 0
-        and row.get("bible_revision_id") is None
-        and row.get("bible_hash") is None,
-        "M2 Bible head must remain at head0",
+        (
+            planning_revision == expected_planning_revision == 0
+            and row.get("planning_revision_id") is None
+            and row.get("planning_hash") is None
+        )
+        or (
+            planning_revision == expected_planning_revision > 0
+            and isinstance(row.get("planning_revision_id"), str)
+            and bool(row.get("planning_revision_id"))
+            and isinstance(row.get("planning_hash"), str)
+            and _HASH.fullmatch(row["planning_hash"]) is not None
+        ),
+        "M2 Planning head must be head0 or one valid confirmed revision",
     )
+    if expected_planning_revision > 0:
+        payload = await session.fetchone(
+            _L5_CONTRACT_PAYLOAD_SQL,
+            (row.get("creation_contract_id"), row.get("style_contract_id")),
+        )
+        _require(payload is not None, "Positive Planning contract payload is missing")
+        try:
+            creation_json = _json_object(
+                payload.get("creation_json"), "CreationContract"
+            )
+            creation = CreationContractPayload.model_validate({
+                **creation_json,
+                "selectedEngine": _strict_engine(creation_json["selectedEngine"]),
+                "chapterWordRangePreference": tuple(
+                    creation_json["chapterWordRangePreference"]
+                ),
+                "prohibitedDirections": tuple(
+                    creation_json["prohibitedDirections"]
+                ),
+                "experienceCardRefs": tuple(
+                    creation_json["experienceCardRefs"]
+                ),
+                "corpusSourceRefs": tuple({
+                    **source,
+                    "fragments": tuple(source["fragments"]),
+                } for source in creation_json["corpusSourceRefs"]),
+            }, strict=True)
+            style_json = _json_object(
+                payload.get("style_json"), "StyleContract"
+            )
+            style = StyleContractPayload.model_validate({
+                **style_json,
+                "characterVoices": tuple(style_json["characterVoices"]),
+                "primaryRules": tuple(style_json["primaryRules"]),
+                "risks": tuple(style_json["risks"]),
+            }, strict=True)
+            likes = tuple(_json_array(payload.get("likes_json"), "likes"))
+            dislikes = tuple(
+                _json_array(payload.get("dislikes_json"), "dislikes")
+            )
+        except (KeyError, ValidationError, TypeError, ValueError):
+            raise ProductVerificationError(
+                "Positive Planning Contract/Style prerequisite is invalid"
+            ) from None
+        _require(
+            payload.get("creation_content_hash")
+            == canonical_hash(creation)
+            == row.get("creation_hash")
+            and payload.get("style_content_hash")
+            == style_contract_hash(style, likes, dislikes)
+            == row.get("style_hash"),
+            "Positive Planning Contract/Style canonical hash mismatch",
+        )
+        reference_manifest = _json_object(
+            payload.get("reference_manifest_json"),
+            "Contract reference manifest",
+        )
+        _require(
+            canonical_hash(reference_manifest)
+            == payload.get("reference_manifest_hash"),
+            "Positive Planning Contract reference manifest hash mismatch",
+        )
+        try:
+            bible_json = _json_object(row.get("bible_json"), "Bible")
+            for field_name in (
+                "worldRules",
+                "coreCast",
+                "factions",
+                "longTermConflicts",
+                "relationshipDynamics",
+                "continuityGuardrails",
+                "openDesignQuestions",
+            ):
+                if isinstance(bible_json.get(field_name), list):
+                    bible_json[field_name] = tuple(bible_json[field_name])
+            bible = BiblePayload.model_validate(bible_json, strict=True)
+        except (ValidationError, TypeError, ValueError):
+            raise ProductVerificationError(
+                "Positive Planning Bible prerequisite is invalid"
+            ) from None
+        _require(
+            canonical_bible_hash(bible) == row.get("bible_hash"),
+            "Positive Planning Bible canonical hash mismatch",
+        )
+        try:
+            planning_json = _json_object(row.get("planning_json"), "Planning")
+            planning = PlanningAggregate.model_validate(
+                planning_json,
+                strict=True,
+            )
+            validate_confirmable_planning(planning)
+        except (ValidationError, TypeError, ValueError):
+            raise ProductVerificationError(
+                "Positive Planning payload is invalid"
+            ) from None
+        planning_payload = planning.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"content_hash"},
+        )
+        _require(
+            planning_content_hash(planning_payload)
+            == planning.content_hash
+            == row.get("planning_hash"),
+            "Positive Planning canonical hash mismatch",
+        )
+        chain = await session.fetchone(
+            _PLANNING_CHAIN_SQL,
+            (
+                row.get("planning_revision_id"),
+                expected_planning_revision,
+                row.get("planning_hash"),
+                row.get("project_id"),
+            ),
+        )
+        _require(
+            chain is not None
+            and _integer(chain, "revision_count") == expected_planning_revision
+            and _integer(chain, "min_revision") == 1
+            and _integer(chain, "max_revision") == expected_planning_revision
+            and _integer(chain, "continuous_parent_count")
+            == expected_planning_revision
+            and _integer(chain, "exact_head_count") == 1,
+            "M2 Planning history must be the exact continuous 1..N chain",
+        )
     empty_hash = build_projection_bundle(0, ()).content_hash
     _require(_integer(row, "canon_revision") == 0
              and _integer(row, "canon_parent_revision") == 0
@@ -544,7 +826,12 @@ async def _verify_foundation(
     return dict(metadata), dict(row), tuple(dict(item) for item in item_rows)
 
 
-async def _verify_counts(session, *, require_l5: bool) -> None:
+async def _verify_counts(
+    session,
+    *,
+    require_l5: bool,
+    expected_planning_revision: int,
+) -> None:
     row = await session.fetchone(_LATER_COUNTS_SQL)
     _require(row is not None, "M2 later-domain counts are missing")
     expected = {key: 0 for key in row}
@@ -560,7 +847,31 @@ async def _verify_counts(session, *, require_l5: bool) -> None:
         })
         ranged["creation_contract_experience_refs"] = (1, 4)
         ranged["creation_contract_corpus_fragment_refs"] = (1, 20)
+    if expected_planning_revision > 0:
+        expected.update({
+            "creation_contracts": 1,
+            "style_contracts": 1,
+            "creation_bible_revisions": 1,
+        })
     for key in row:
+        if expected_planning_revision > 0 and key in {
+            "planning_drafts",
+            "planning_generation_attempts",
+            "planning_confirmation_requests",
+            "chapter_outline_drafts",
+            "chapter_outline_generation_attempts",
+            "chapter_outline_revisions",
+            "project_chapter_outline_heads",
+            "chapter_outline_confirmation_requests",
+        }:
+            _integer(row, key)
+            continue
+        if key == "planning_revisions" and expected_planning_revision > 0:
+            _require(
+                _integer(row, key) == expected_planning_revision,
+                "M2 Planning revision count must match the explicit expected head",
+            )
+            continue
         value = expected[key]
         actual = _integer(row, key)
         label = key.replace("canon", "Canon")
@@ -573,6 +884,12 @@ async def _verify_counts(session, *, require_l5: bool) -> None:
         else:
             _require(actual == value,
                      f"M2 closed mode count mismatch for {label}")
+    orphan = await session.fetchone(_ORPHAN_PLANNING_SQL)
+    _require(orphan is not None, "M2 Planning orphan counts are missing")
+    _require(
+        all(_integer(orphan, key) == 0 for key in orphan),
+        "M2 Planning/Outline/ChapterSession lineage contains orphan rows",
+    )
 
 
 def _asset_domain(row: Mapping[str, object], *, card: bool):
@@ -964,6 +1281,7 @@ async def verify_milestone2_product(
     require_assets: bool = False,
     require_corpus: bool = False,
     require_l5: bool = False,
+    expected_planning_revision: int = 0,
 ) -> dict[str, object]:
     """Verify one bounded state using SELECT statements only."""
 
@@ -977,6 +1295,11 @@ async def verify_milestone2_product(
         and _DATABASE_NAME.fullmatch(expected_database) is not None,
         "Explicit expected database identity is invalid",
     )
+    _require(
+        type(expected_planning_revision) is int
+        and expected_planning_revision >= 0,
+        "Expected Planning revision must be a non-negative integer",
+    )
     if require_corpus or require_l5:
         _require(
             isinstance(expected_source_hash, str)
@@ -984,9 +1307,16 @@ async def verify_milestone2_product(
             "An explicit lowercase corpus source hash is required",
         )
     metadata, foundation, binding_items = await _verify_foundation(
-        session, expected_database=expected_database, require_l5=require_l5
+        session,
+        expected_database=expected_database,
+        require_l5=require_l5,
+        expected_planning_revision=expected_planning_revision,
     )
-    await _verify_counts(session, require_l5=require_l5)
+    await _verify_counts(
+        session,
+        require_l5=require_l5,
+        expected_planning_revision=expected_planning_revision,
+    )
     receipt: dict[str, object] = {
         "schemaVersion": metadata["schema_version"],
         "manifestHash": metadata["manifest_hash"],
@@ -997,6 +1327,7 @@ async def verify_milestone2_product(
             "providerCount": foundation.get("provider_count"), "bindingRevision": 1,
             "contractRevision": foundation.get("contract_revision"), "canonRevision": 0,
             "projectionRevision": 0,
+            "planningRevision": foundation.get("planning_revision"),
         },
     }
     if require_assets or require_l5:
@@ -1057,6 +1388,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-corpus", action="store_true")
     parser.add_argument("--require-l5", action="store_true")
     parser.add_argument("--source-hash")
+    parser.add_argument("--expected-planning-revision", type=int, default=0)
     return parser
 
 
@@ -1069,6 +1401,10 @@ async def run_cli(
     args = _parser().parse_args(argv)
     if _DATABASE_NAME.fullmatch(args.database) is None:
         raise ProductVerificationError("Database name contains unsupported characters")
+    _require(
+        args.expected_planning_revision >= 0,
+        "Expected Planning revision must be a non-negative integer",
+    )
     if args.require_corpus or args.require_l5:
         _require(
             isinstance(args.source_hash, str)
@@ -1086,6 +1422,7 @@ async def run_cli(
             expected_source_hash=args.source_hash,
             require_assets=args.require_assets, require_corpus=args.require_corpus,
             require_l5=args.require_l5,
+            expected_planning_revision=args.expected_planning_revision,
         )
     finally:
         await session.close()

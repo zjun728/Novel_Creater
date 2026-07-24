@@ -2,18 +2,35 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import hashlib
 import json
 from uuid import uuid4
 
 import aiomysql
 import pytest
 
+from backend.domain.canon import (
+    AssertionOperator,
+    CanonEventInput,
+    ConfirmationStatus,
+    FactKind,
+    ValueCardinality,
+)
+from backend.domain.chapter_outlines import (
+    DraftChapterOutline,
+    OutlineCapacityPolicy,
+    normalize_chapter_outline,
+)
+from backend.domain.bibles import BiblePayload, canonical_bible_hash
+from backend.domain.contracts import CreationContractPayload, StyleContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.planning import DraftPlanningAggregate, normalize_planning_aggregate
 from backend.domain.seeds import (
     SeedInspirationFailure,
     SeedPayload,
     SeedProvenanceSelection,
 )
+from backend.domain.story_engines import StoryEngineOption
 from backend.http_errors import (
     ProjectArchived,
     ProjectBusy,
@@ -22,6 +39,13 @@ from backend.http_errors import (
     SeedNotFound,
 )
 from backend.repositories.seeds import SeedRepository
+from backend.repositories.canon import CanonRepository
+from backend.services.canon import (
+    CanonEventCreate,
+    CanonService,
+    CommitCanonRevision,
+)
+from backend.services.contracts import style_contract_hash
 from backend.services.seeds import (
     ArchiveSeed,
     CreateSeed,
@@ -35,6 +59,8 @@ from backend.services.seed_generation import (
     GenerateSeedInspiration,
     SeedGenerationService,
 )
+from backend.services.project_lifecycle import ProjectLifecycleService
+from backend.services.projections import build_projection_bundle
 from backend.tests.support.disposable_mysql import (
     _TestDatabaseSession,
     transaction_factory_for,
@@ -223,16 +249,137 @@ async def test_archived_project_retains_readable_seed_state_but_rejects_mutation
     assert state_after == state_before
 
 
-async def install_matching_contract(session, project_id: str, seed):
-    binding_id = str(uuid4())
+async def install_matching_contract(
+    session,
+    project_id: str,
+    seed,
+    *,
+    use_existing_foundation: bool = False,
+):
+    if use_existing_foundation:
+        binding = await session.fetchone(
+            """SELECT binding_revision_id,content_hash
+                 FROM project_model_binding_heads WHERE project_id=%s""",
+            (project_id,),
+        )
+        binding_id = binding["binding_revision_id"]
+        binding_hash = binding["content_hash"]
+    else:
+        binding_id = str(uuid4())
+        binding_hash = "b" * 64
+        await session.execute(
+            """INSERT INTO project_model_binding_revisions
+               (id,project_id,revision,content_hash,source_project_id,created_at)
+               VALUES (%s,%s,1,%s,NULL,2)""",
+            (binding_id, project_id, binding_hash),
+        )
     creation_id = str(uuid4())
     style_id = str(uuid4())
-    await session.execute(
-        """INSERT INTO project_model_binding_revisions
-           (id,project_id,revision,content_hash,source_project_id,created_at)
-           VALUES (%s,%s,1,%s,NULL,2)""",
-        (binding_id, project_id, "b" * 64),
+    seed_row = await session.fetchone(
+        "SELECT payload_json FROM creative_seed_revisions WHERE id=%s",
+        (seed.revision_id,),
     )
+    selected_seed = SeedPayload.model_validate(
+        json.loads(seed_row["payload_json"])
+        if isinstance(seed_row["payload_json"], str)
+        else seed_row["payload_json"],
+        strict=True,
+    )
+    engine = StoryEngineOption(
+        name="档案追索",
+        storyPromise="沿失踪档案持续揭开时间异常。",
+        protagonistDesire="找回失踪的姐姐。",
+        sustainedPressure="城市记忆不断被改写。",
+        growthDirection="从孤身查案成长为守护共同记忆的人。",
+        conflictLoop="发现缺页、追查证词、承担改写代价。",
+        ensembleRoles=({"role": "同伴", "purpose": "挑战主角的判断。"},),
+        advantageAndCost="能读取残留记忆，但会遗忘私人经历。",
+        satisfactionSources=("真相翻转",),
+        longFormVariation=("个人、城市、时代三层记忆危机。",),
+        endingAnchor="主角保住共同记忆并接受个人代价。",
+        risks=("档案结构重复",),
+        differentiation="档案缺页直接呈现时间改写。",
+    )
+    creation = CreationContractPayload(
+        schemaVersion="creation-contract-v1",
+        channelProfileKey="web-fiction",
+        genreProfileKey="mystery",
+        qualityCharterVersion="quality-v1",
+        selectionRevision=seed.selection_revision,
+        selectedSeed=selected_seed,
+        seedRevisionId=seed.revision_id,
+        seedHash=seed.content_hash,
+        selectedEngine=engine,
+        engineOptionId="engine-option-1",
+        engineHash=canonical_hash(engine),
+        primaryStyleRef={
+            "id": "style-primary", "revision": 1, "contentHash": "a" * 64,
+        },
+        secondaryStyleRef=None,
+        experienceCardRefs=(),
+        corpusSourceRefs=(),
+        targetTotalWords=100_000,
+        expectedVolumeCount=1,
+        expectedChapterCount=30,
+        chapterWordRangePreference=(2_500, 3_500),
+        prohibitedDirections=("不写无代价升级",),
+        authorNotes="人物选择优先。",
+        modelBindingRef={
+            "id": binding_id, "revision": 1, "contentHash": binding_hash,
+        },
+    )
+    style = StyleContractPayload(
+        schemaVersion="style-contract-v1",
+        readingExperience="清楚好读",
+        narrativeDistance="近距离第三人称",
+        sentenceParagraphRhythm="行动短促，反思舒展",
+        dictionDensity="低修辞密度",
+        dialogueAndSubtext="对白体现人物立场",
+        characterVoices=("主角克制", "同伴直接"),
+        emotionAndInteriority="用选择承载情绪",
+        actionExplanationEnvironment="先动作后解释",
+        primaryRules=("讲清故事",),
+        secondaryFlavor=None,
+        risks=("节奏过快",),
+    )
+    creation_json = canonical_json(creation)
+    creation_hash = canonical_hash(creation)
+    style_json = canonical_json(style)
+    style_hash = style_contract_hash(style, (), ())
+    reference_manifest = {
+        "schemaVersion": "contract-reference-manifest-v1",
+        "seedRef": {
+            "id": seed.id,
+            "revisionId": seed.revision_id,
+            "contentHash": seed.content_hash,
+        },
+        "engineRef": {
+            "id": "engine-option-1",
+            "batchId": "engine-batch-1",
+            "contentHash": canonical_hash(engine),
+        },
+        "bindingRef": {
+            "id": binding_id,
+            "revision": 1,
+            "contentHash": binding_hash,
+        },
+        "styleRefs": [{
+            "id": "style-primary",
+            "revision": 1,
+            "contentHash": "a" * 64,
+        }],
+        "experienceCardRefs": [],
+        "corpusSourceRefs": [],
+    }
+    reference_manifest_json = canonical_json(reference_manifest)
+    reference_manifest_hash = canonical_hash(reference_manifest)
+    capacity_policy = canonical_json({
+        "expectedVolumeCount": creation.expectedVolumeCount,
+        "expectedChapterCount": creation.expectedChapterCount,
+        "chapterWordRangePreference": list(
+            creation.chapterWordRangePreference
+        ),
+    })
     await session.execute(
         """INSERT INTO creation_contracts
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,seed_hash,
@@ -240,47 +387,113 @@ async def install_matching_contract(session, project_id: str, seed):
             genre_profile_key,quality_charter_version,total_word_min,
             total_word_max,chapter_capacity_policy,reference_manifest_json,
             reference_manifest_hash,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,'default','mystery','quality-v1',
-                   90000,110000,'按情节自然切章','{}',%s,'{}',%s,3)""",
+           VALUES (%s,%s,1,%s,%s,%s,%s,%s,%s,'web-fiction','mystery','quality-v1',
+                   100000,100000,%s,%s,%s,%s,%s,3)""",
         (
             creation_id, project_id, seed.selection_revision, seed.id, seed.revision_id,
-            seed.content_hash, binding_id, "b" * 64, "e" * 64, "c" * 64,
+            seed.content_hash, binding_id, binding_hash,
+            capacity_policy,
+            reference_manifest_json, reference_manifest_hash,
+            creation_json, creation_hash,
         ),
     )
     await session.execute(
         """INSERT INTO style_contracts
            (id,project_id,creation_contract_id,revision,merged_style_json,
             likes_json,dislikes_json,content_hash,confirmed_at)
-           VALUES (%s,%s,%s,1,'{}','[]','[]',%s,3)""",
-        (style_id, project_id, creation_id, "d" * 64),
+           VALUES (%s,%s,%s,1,%s,'[]','[]',%s,3)""",
+        (style_id, project_id, creation_id, style_json, style_hash),
     )
-    await session.execute(
-        """INSERT INTO project_contract_heads
-           (project_id,revision,creation_contract_id,style_contract_id,
-            creation_hash,style_hash,updated_at)
-           VALUES (%s,1,%s,%s,%s,%s,3)""",
-        (project_id, creation_id, style_id, "c" * 64, "d" * 64),
-    )
+    if use_existing_foundation:
+        await session.execute(
+            """UPDATE project_contract_heads
+                  SET revision=1,creation_contract_id=%s,style_contract_id=%s,
+                      creation_hash=%s,style_hash=%s,updated_at=3
+                WHERE project_id=%s""",
+            (creation_id, style_id, creation_hash, style_hash, project_id),
+        )
+    else:
+        await session.execute(
+            """INSERT INTO project_contract_heads
+               (project_id,revision,creation_contract_id,style_contract_id,
+                creation_hash,style_hash,updated_at)
+               VALUES (%s,1,%s,%s,%s,%s,3)""",
+            (project_id, creation_id, style_id, creation_hash, style_hash),
+        )
 
 
-async def install_first_final_chapter(session, project_id: str, seed) -> None:
+async def install_first_final_chapter(
+    session,
+    connection_config,
+    project_id: str,
+    seed,
+    *,
+    use_existing_foundation: bool = False,
+) -> None:
     bible_id = str(uuid4())
-    volume_id = str(uuid4())
-    block_id = str(uuid4())
+    planning_id = str(uuid4())
+    outline_id = str(uuid4())
     chapter_session_id = str(uuid4())
     candidate_id = str(uuid4())
     change_set_id = str(uuid4())
     finalization_id = str(uuid4())
     final_chapter_id = str(uuid4())
-    bible_hash = "1" * 64
-    planning_hash = "2" * 64
-    candidate_hash = "3" * 64
-    change_set_hash = "4" * 64
     contract = await session.fetchone(
         """SELECT creation_contract_id,creation_hash,style_contract_id,style_hash
              FROM project_contract_heads WHERE project_id=%s AND revision=1""",
         (project_id,),
     )
+    projection = build_projection_bundle(0, ())
+    projection_hash = projection.content_hash
+    if not use_existing_foundation:
+        await session.execute(
+            """INSERT INTO canon_revisions
+               (id,project_id,revision_number,parent_revision_number,
+                idempotency_key,source_type,source_id,content_hash,created_at)
+               VALUES (%s,%s,0,0,%s,'bootstrap',NULL,%s,4)""",
+            (
+                str(uuid4()),
+                project_id,
+                ProjectLifecycleService.bootstrap_idempotency_key(project_id),
+                projection_hash,
+            ),
+        )
+        await session.execute(
+            """INSERT INTO projection_heads
+               (project_id,canon_revision_number,projection_revision_number,
+                content_hash,updated_at)
+               VALUES (%s,0,0,%s,4)""",
+            (project_id, projection_hash),
+        )
+    projection_head = await session.fetchone(
+        """SELECT canon_revision_number,projection_revision_number,content_hash
+             FROM projection_heads WHERE project_id=%s""",
+        (project_id,),
+    )
+    assert projection_head == {
+        "canon_revision_number": 0,
+        "projection_revision_number": 0,
+        "content_hash": projection_hash,
+    }
+    item = lambda identifier, text: {"id": identifier, "text": text}
+    bible_payload = BiblePayload.model_validate(
+        {
+            "premiseAndPromise": "档案员追查未来来信，并守住城市的共同记忆。",
+            "worldRules": (item("memory-cost", "改写记忆必须付出可追踪代价。"),),
+            "powerOrProgressionSystem": "通过还原档案真相获得线索，而非无代价升级。",
+            "protagonist": "林岚克制谨慎，但会为姐姐和同伴承担风险。",
+            "coreCast": (item("companion", "同伴直接，持续挑战林岚的保守判断。"),),
+            "factions": (item("archive", "档案局试图封存所有异常记录。"),),
+            "longTermConflicts": (item("truth", "公开真相与维持城市记忆长期冲突。"),),
+            "relationshipDynamics": (item("trust", "林岚与同伴从互疑走向有限信任。"),),
+            "toneAndNarrativeBoundaries": "清楚好读，以人物选择推动情节。",
+            "continuityGuardrails": (item("no-free-win", "关键胜利必须伴随损失。"),),
+            "openDesignQuestions": (item("sender", "未来来信的真正发送者尚未确定。"),),
+        },
+        strict=True,
+    )
+    bible_json = canonical_json(bible_payload)
+    bible_hash = canonical_bible_hash(bible_payload)
     await session.execute(
         """INSERT INTO creation_bible_revisions
            (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
@@ -288,68 +501,318 @@ async def install_first_final_chapter(session, project_id: str, seed) -> None:
             style_contract_id,style_hash,binding_revision_id,binding_hash,
             policy_version,content_json,content_hash,confirmed_at)
            VALUES (%s,%s,1,%s,%s,%s,%s,1,%s,%s,%s,%s,NULL,NULL,'test-v1',
-                   '{}',%s,4)""",
+                   %s,%s,4)""",
         (
             bible_id, project_id, seed.selection_revision, seed.id,
             seed.revision_id, seed.content_hash,
             contract["creation_contract_id"], contract["creation_hash"],
-            contract["style_contract_id"], contract["style_hash"], bible_hash,
+            contract["style_contract_id"], contract["style_hash"],
+            bible_json, bible_hash,
         ),
     )
-    await session.execute(
-        """INSERT INTO project_bible_heads
-           (project_id,revision,bible_revision_id,content_hash,updated_at)
-           VALUES (%s,1,%s,%s,4)""",
-        (project_id, bible_id, bible_hash),
+    if use_existing_foundation:
+        await session.execute(
+            """UPDATE project_bible_heads
+                  SET revision=1,bible_revision_id=%s,content_hash=%s,updated_at=4
+                WHERE project_id=%s""",
+            (bible_id, bible_hash, project_id),
+        )
+    else:
+        await session.execute(
+            """INSERT INTO project_bible_heads
+               (project_id,revision,bible_revision_id,content_hash,updated_at)
+               VALUES (%s,1,%s,%s,4)""",
+            (project_id, bible_id, bible_hash),
+        )
+    planning = normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(
+            {
+                "activeStoryBlockRef": "block",
+                "volumes": [
+                    {
+                        "clientNodeKey": "volume",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "第一卷",
+                        "coreChange": "主角建立第一个可靠据点。",
+                        "mainPressure": "追兵逼近。",
+                        "ensembleFocus": ["主角", "同伴"],
+                        "forbiddenEvents": ["不可提前揭示幕后人"],
+                    }
+                ],
+                "plots": [
+                    {
+                        "clientNodeKey": "plot",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "立足主线",
+                        "plotType": "main",
+                        "storyQuestion": "主角如何活下来？",
+                        "futureDirection": "从逃亡转为主动布局。",
+                        "expectedPayoff": "建立据点。",
+                        "relatedCharacters": ["主角"],
+                    }
+                ],
+                "storyBlocks": [
+                    {
+                        "clientNodeKey": "block",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "夜渡封锁线",
+                        "volumeRef": "volume",
+                        "plotRefs": ["plot"],
+                        "entrySituation": "二人被困。",
+                        "blockGoal": "穿过封锁线。",
+                        "mainPressure": "追兵压缩路线。",
+                        "expectedChange": "二人建立信任。",
+                        "openQuestions": ["内应是谁"],
+                        "involvedCharacters": ["主角", "同伴"],
+                        "stages": [
+                            {
+                                "clientNodeKey": "stage",
+                                "lifecycle": "active",
+                                "order": 1,
+                                "title": "寻找缺口",
+                                "purpose": "确认封锁薄弱处。",
+                                "dramaticQuestion": "能否在暴露前找到缺口？",
+                                "sceneTasks": [
+                                    {
+                                        "clientNodeKey": "scene",
+                                        "lifecycle": "active",
+                                        "order": 1,
+                                        "task": "观察换岗。",
+                                        "completionEvidence": "取得换岗间隔。",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        previous_confirmed=None,
+        previous_draft=None,
+        id_factory=iter(str(uuid4()) for _ in range(5)).__next__,
     )
+    planning_json = canonical_json(
+        planning.model_dump(mode="json", by_alias=True)
+    )
+    planning_hash = planning.content_hash
     await session.execute(
-        """INSERT INTO volume_plans
-           (id,project_id,selection_revision,contract_revision,contract_hash,
-            bible_revision,bible_hash,manifest_hash,volume_num,title,
-            direction_json,revision,status,created_at,updated_at)
-           VALUES (%s,%s,%s,1,%s,1,%s,%s,1,'Volume','{}',1,'active',5,5)""",
+        """INSERT INTO planning_revisions
+           (id,project_id,revision,parent_revision,selection_revision,seed_id,
+            seed_revision_id,seed_hash,contract_revision,creation_contract_id,
+            creation_hash,style_contract_id,style_hash,bible_revision,
+            bible_revision_id,bible_hash,content_json,content_hash,created_at)
+           VALUES (%s,%s,1,0,%s,%s,%s,%s,1,%s,%s,%s,%s,1,%s,%s,%s,%s,5)""",
         (
-            volume_id, project_id, seed.selection_revision, "c" * 64,
-            bible_hash, planning_hash,
+            planning_id, project_id, seed.selection_revision, seed.id,
+            seed.revision_id, seed.content_hash,
+            contract["creation_contract_id"], contract["creation_hash"],
+            contract["style_contract_id"], contract["style_hash"],
+            bible_id, bible_hash, planning_json, planning_hash,
+        ),
+    )
+    if use_existing_foundation:
+        await session.execute(
+            """UPDATE project_planning_heads
+                  SET revision=1,planning_revision_id=%s,content_hash=%s,updated_at=5
+                WHERE project_id=%s""",
+            (planning_id, planning_hash, project_id),
+        )
+    else:
+        await session.execute(
+            """INSERT INTO project_planning_heads
+               (project_id,revision,planning_revision_id,content_hash,updated_at)
+               VALUES (%s,1,%s,%s,5)""",
+            (project_id, planning_id, planning_hash),
+        )
+    block = planning.story_blocks[0]
+    stage = block.stages[0]
+    scene_task = stage.scene_tasks[0]
+    node_ref = lambda node: {
+        "id": node.id,
+        "revision": node.revision,
+        "contentHash": node.content_hash,
+    }
+    capacity = OutlineCapacityPolicy.model_validate(
+        {"targetMin": 2500, "targetMax": 3200, "softCeiling": 3800}
+    )
+    outline = normalize_chapter_outline(
+        DraftChapterOutline.model_validate(
+            {
+                "schemaVersion": "chapter-outline-v1",
+                "chapterNumber": 1,
+                "planningRevisionId": planning_id,
+                "planningRevision": 1,
+                "planningHash": planning_hash,
+                "volumeRef": node_ref(planning.volumes[0]),
+                "storyBlockRef": node_ref(block),
+                "stageRefs": [node_ref(stage)],
+                "sceneTaskRefs": [node_ref(scene_task)],
+                "chapterGoal": "找到封锁线缺口。",
+                "expectedCharacters": ["主角", "同伴"],
+                "continuation": ["承接被困局面"],
+                "plannedTasks": ["观察换岗"],
+                "scenes": ["废弃驿站侦察"],
+                "forbiddenEarlyEvents": ["不可提前揭示内应"],
+                "capacityPolicy": capacity.model_dump(
+                    mode="json", by_alias=True
+                ),
+            }
+        ),
+        planning=planning,
+        authoritative_chapter_number=1,
+        planning_revision_id=planning_id,
+        planning_revision=1,
+        capacity_policy=capacity,
+        canon_revision=projection_head["canon_revision_number"],
+        projection_revision=projection_head["projection_revision_number"],
+        projection_hash=projection_head["content_hash"],
+    )
+    outline_json = canonical_json(
+        outline.model_dump(mode="json", by_alias=True)
+    )
+    outline_hash = outline.content_hash
+    await session.execute(
+        """INSERT INTO chapter_outline_revisions
+           (id,project_id,chapter_num,revision,parent_revision,
+            planning_revision_id,planning_revision,planning_hash,
+            canon_revision,projection_revision,projection_hash,
+            content_json,content_hash,created_at)
+           VALUES (%s,%s,1,1,0,%s,1,%s,0,0,%s,%s,%s,5)""",
+        (
+            outline_id, project_id, planning_id, planning_hash,
+            projection_hash, outline_json, outline_hash,
         ),
     )
     await session.execute(
-        """INSERT INTO story_blocks
-           (id,project_id,volume_plan_id,block_num,title,goal_json,revision,
-            status,created_at,updated_at)
-           VALUES (%s,%s,%s,1,'Block','{}',1,'active',5,5)""",
-        (block_id, project_id, volume_id),
+        """INSERT INTO project_chapter_outline_heads
+           (project_id,chapter_num,revision,outline_revision_id,
+            content_hash,updated_at)
+           VALUES (%s,1,1,%s,%s,5)""",
+        (project_id, outline_id, outline_hash),
     )
     await session.execute(
         """INSERT INTO chapter_sessions
-           (id,project_id,selection_revision,contract_revision,contract_hash,
-            bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,
-            story_block_id,chapter_num,expected_canon_revision,
-            expected_story_block_revision,planning_snapshot_json,status,
+           (id,project_id,planning_revision_id,planning_revision,planning_hash,
+            story_block_id,story_block_revision,story_block_hash,
+            chapter_outline_revision_id,chapter_outline_revision,
+            chapter_outline_hash,chapter_num,expected_canon_revision,status,
             created_at,finalized_at)
-           VALUES (%s,%s,%s,1,%s,1,%s,%s,%s,%s,1,0,1,'{}','final',6,7)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,0,'drafting',6,NULL)""",
         (
-            chapter_session_id, project_id, seed.selection_revision,
-            "c" * 64, bible_hash, volume_id, planning_hash, block_id,
+            chapter_session_id, project_id, planning_id, 1, planning_hash,
+            block.id, block.revision, block.content_hash,
+            outline_id, 1, outline_hash,
         ),
+    )
+    working_content = "draft"
+    working_hash = hashlib.sha256(working_content.encode("utf-8")).hexdigest()
+    working_source = canonical_json(
+        {
+            "operation": "generate",
+            "planningRevisionId": planning_id,
+            "outlineRevisionId": outline_id,
+        }
+    )
+    await session.execute(
+        """INSERT INTO working_drafts
+           (id,project_id,chapter_session_id,revision,content,content_hash,
+            source_payload_json,updated_at)
+           VALUES (%s,%s,%s,1,%s,%s,%s,6)""",
+        (
+            str(uuid4()), project_id, chapter_session_id,
+            working_content, working_hash, working_source,
+        ),
+    )
+    candidate_content = "draft"
+    candidate_hash = hashlib.sha256(candidate_content.encode("utf-8")).hexdigest()
+    candidate_provenance = canonical_json(
+        {"source": "working-draft", "workingDraftRevision": 1}
     )
     await session.execute(
         """INSERT INTO draft_candidates
            (id,project_id,chapter_session_id,working_draft_revision,content,
             content_hash,provenance_json,created_at)
-           VALUES (%s,%s,%s,1,'draft',%s,'{}',6)""",
-        (candidate_id, project_id, chapter_session_id, candidate_hash),
+           VALUES (%s,%s,%s,1,%s,%s,%s,6)""",
+        (
+            candidate_id, project_id, chapter_session_id,
+            candidate_content, candidate_hash, candidate_provenance,
+        ),
     )
+    change_set_payload = {
+        "candidateId": candidate_id,
+        "events": [],
+        "expectedCanonRevision": projection_head["canon_revision_number"],
+    }
+    change_set_json = canonical_json(change_set_payload)
+    change_set_hash = canonical_hash(change_set_payload)
     await session.execute(
         """INSERT INTO finalization_change_sets
            (id,project_id,draft_candidate_id,extraction_id,candidate_hash,
-            expected_canon_revision,expected_story_block_revision,payload_json,
-            content_hash,created_at,confirmed_at)
-           VALUES (%s,%s,%s,'test-extraction',%s,0,1,'{}',%s,6,7)""",
+            expected_canon_revision,expected_planning_hash,
+            expected_outline_hash,payload_json,content_hash,created_at,confirmed_at)
+           VALUES (%s,%s,%s,%s,%s,0,%s,%s,%s,%s,6,7)""",
         (
-            change_set_id, project_id, candidate_id, candidate_hash,
-            change_set_hash,
+            change_set_id, project_id, candidate_id, str(uuid4()),
+            candidate_hash, planning_hash, outline_hash,
+            change_set_json, change_set_hash,
         ),
+    )
+    canon_event = CanonEventCreate(
+        id=str(uuid4()),
+        event=CanonEventInput(
+            entity_id=None,
+            fact_kind=FactKind.DYNAMIC_EVENT,
+            field_path="chapter.1.finalized",
+            value={"status": "final"},
+            evidence={
+                "chapterSessionId": chapter_session_id,
+                "draftCandidateId": candidate_id,
+            },
+            effective_start_chapter=1,
+            effective_end_chapter=1,
+            confirmation_status=ConfirmationStatus.CONFIRMED,
+            assertion_operator=AssertionOperator.EQUALS,
+            value_cardinality=ValueCardinality.SINGLE,
+        ),
+    )
+    canon_result = await CanonService(
+        CanonRepository(clock=lambda: 7),
+        transaction_factory=transaction_factory_for(connection_config),
+        clock=lambda: 7,
+    ).commit(
+        CommitCanonRevision(
+            project_id=project_id,
+            expected_head=projection_head["canon_revision_number"],
+            idempotency_key=canonical_hash(
+                {
+                    "projectId": project_id,
+                    "changeSetHash": change_set_hash,
+                    "source": "finalization",
+                }
+            ),
+            source_type="finalization",
+            source_id=finalization_id,
+            entities=(),
+            aliases=(),
+            events=(canon_event,),
+        )
+    )
+    finalization_key = canonical_hash(
+        {
+            "projectId": project_id,
+            "candidateHash": candidate_hash,
+            "changeSetHash": change_set_hash,
+        }
+    )
+    finalization_result = canonical_json(
+        {
+            "chapterNumber": 1,
+            "committedCanonRevision": canon_result.revision_number,
+            "projectionHash": canon_result.projection_hash,
+        }
     )
     await session.execute(
         """INSERT INTO finalization_records
@@ -357,23 +820,35 @@ async def install_first_final_chapter(session, project_id: str, seed) -> None:
             idempotency_key,candidate_hash,change_set_hash,
             expected_canon_revision,committed_canon_revision,
             result_payload_json,finalized_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,1,'{}',7)""",
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,7)""",
         (
             finalization_id, project_id, chapter_session_id, candidate_id,
-            change_set_id, "5" * 64, candidate_hash, change_set_hash,
+            change_set_id, finalization_key, candidate_hash, change_set_hash,
+            canon_result.revision_number, finalization_result,
         ),
     )
+    final_content = "final"
+    final_content_hash = hashlib.sha256(final_content.encode("utf-8")).hexdigest()
     await session.execute(
         """INSERT INTO final_chapters
            (id,project_id,chapter_session_id,draft_candidate_id,
             finalization_record_id,chapter_num,title,content,content_hash,
-            canon_revision,story_block_revision,planning_snapshot_json,
-            finalized_at)
-           VALUES (%s,%s,%s,%s,%s,1,'Final','final',%s,1,1,'{}',7)""",
+            canon_revision,planning_revision_id,planning_revision,
+            planning_hash,chapter_outline_revision_id,
+            chapter_outline_revision,chapter_outline_hash,finalized_at)
+           VALUES (%s,%s,%s,%s,%s,1,'Final',%s,%s,%s,%s,1,%s,%s,1,%s,7)""",
         (
             final_chapter_id, project_id, chapter_session_id, candidate_id,
-            finalization_id, "6" * 64,
+            finalization_id, final_content, final_content_hash,
+            canon_result.revision_number, planning_id, planning_hash,
+            outline_id, outline_hash,
         ),
+    )
+    await session.execute(
+        """UPDATE chapter_sessions
+              SET status='final',finalized_at=7
+            WHERE id=%s AND project_id=%s AND status='drafting'""",
+        (chapter_session_id, project_id),
     )
 
 
@@ -735,7 +1210,70 @@ async def test_first_final_chapter_locks_only_selection_history(disposable_mysql
         )
     )
     await install_matching_contract(disposable_mysql.session, "p1", active)
-    await install_first_final_chapter(disposable_mysql.session, "p1", active)
+    await install_first_final_chapter(
+        disposable_mysql.session,
+        disposable_mysql.connection_config,
+        "p1",
+        active,
+    )
+    final_authority = await disposable_mysql.session.fetchone(
+        """SELECT session.status,session.finalized_at,
+                  head.canon_revision_number,head.projection_revision_number,
+                  (SELECT COUNT(*) FROM canon_revisions
+                    WHERE project_id='p1') AS canon_revision_count,
+                  (SELECT COUNT(*) FROM canon_events
+                    WHERE project_id='p1' AND revision_number=1) AS canon_event_count,
+                  (SELECT COUNT(*) FROM working_drafts
+                    WHERE project_id='p1' AND revision=1) AS working_draft_count
+             FROM chapter_sessions session
+             JOIN projection_heads head ON head.project_id=session.project_id
+            WHERE session.project_id='p1'"""
+    )
+    assert final_authority == {
+        "status": "final",
+        "finalized_at": 7,
+        "canon_revision_number": 1,
+        "projection_revision_number": 1,
+        "canon_revision_count": 2,
+        "canon_event_count": 1,
+        "working_draft_count": 1,
+    }
+    bible_authority = await disposable_mysql.session.fetchone(
+        """SELECT bible.id,bible.content_json,bible.content_hash,
+                  head.bible_revision_id,head.content_hash AS head_hash,
+                  planning.bible_revision_id AS planning_bible_revision_id,
+                  planning.bible_hash AS planning_bible_hash
+             FROM creation_bible_revisions bible
+             JOIN project_bible_heads head
+               ON head.project_id=bible.project_id
+              AND head.bible_revision_id=bible.id
+             JOIN planning_revisions planning
+               ON planning.project_id=bible.project_id
+              AND planning.bible_revision_id=bible.id
+            WHERE bible.project_id='p1' AND bible.revision=1"""
+    )
+    bible_json = (
+        json.loads(bible_authority["content_json"])
+        if isinstance(bible_authority["content_json"], str)
+        else bible_authority["content_json"]
+    )
+    for field_name in (
+        "worldRules",
+        "coreCast",
+        "factions",
+        "longTermConflicts",
+        "relationshipDynamics",
+        "continuityGuardrails",
+        "openDesignQuestions",
+    ):
+        if isinstance(bible_json.get(field_name), list):
+            bible_json[field_name] = tuple(bible_json[field_name])
+    stored_bible = BiblePayload.model_validate(bible_json, strict=True)
+    assert bible_authority["content_hash"] == canonical_bible_hash(stored_bible)
+    assert bible_authority["bible_revision_id"] == bible_authority["id"]
+    assert bible_authority["planning_bible_revision_id"] == bible_authority["id"]
+    assert bible_authority["head_hash"] == bible_authority["content_hash"]
+    assert bible_authority["planning_bible_hash"] == bible_authority["content_hash"]
 
     created_after_final = await service.create(
         CreateSeed(project_id="p1", payload=payload("定稿后候选"))

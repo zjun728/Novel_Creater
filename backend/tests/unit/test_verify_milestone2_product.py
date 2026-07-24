@@ -1,13 +1,16 @@
 import json
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
 import pytest
 
 from backend.domain.assets import load_asset_package
+from backend.domain.bibles import BiblePayload, canonical_bible_hash
 from backend.domain.contracts import CreationContractPayload, StyleContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import BindingItem, BindingRevision, TASK_KEYS
+from backend.domain.planning import DraftPlanningAggregate, normalize_planning_aggregate
 from backend.domain.seeds import SeedPayload
 from backend.domain.story_engines import StoryEngineOption
 from backend.schema_manifest import created_table_names, manifest_hash
@@ -216,6 +219,9 @@ def base_rows():
             "bible_revision": 0,
             "bible_revision_id": None,
             "bible_hash": None,
+            "planning_revision": 0,
+            "planning_revision_id": None,
+            "planning_hash": None,
             "canon_revision": 0,
             "canon_parent_revision": 0,
             "canon_idempotency_key": ProjectLifecycleService.bootstrap_idempotency_key(PROJECT_ID),
@@ -263,10 +269,15 @@ def base_rows():
             "creation_contracts": 0,
             "style_contracts": 0,
             "contract_confirmation_requests": 0,
-            "volume_plans": 0,
-            "story_blocks": 0,
-            "story_stages": 0,
-            "scene_tasks": 0,
+            "planning_drafts": 0,
+            "planning_generation_attempts": 0,
+            "planning_revisions": 0,
+            "planning_confirmation_requests": 0,
+            "chapter_outline_drafts": 0,
+            "chapter_outline_generation_attempts": 0,
+            "chapter_outline_revisions": 0,
+            "project_chapter_outline_heads": 0,
+            "chapter_outline_confirmation_requests": 0,
             "chapter_sessions": 0,
             "working_drafts": 0,
             "draft_candidates": 0,
@@ -306,6 +317,19 @@ def base_rows():
             "creation_contract_experience_refs": 0,
             "creation_contract_corpus_refs": 0,
             "creation_contract_corpus_fragment_refs": 0,
+        },
+        "orphan_planning": {
+            "planning_drafts_without_project": 0,
+            "planning_revisions_without_project": 0,
+            "planning_heads_without_revision": 0,
+            "planning_attempts_without_draft": 0,
+            "planning_confirmations_without_lineage": 0,
+            "outline_drafts_without_planning": 0,
+            "outline_revisions_without_planning": 0,
+            "outline_heads_without_revision": 0,
+            "outline_attempts_without_draft": 0,
+            "outline_confirmations_without_lineage": 0,
+            "sessions_without_planning_or_outline": 0,
         },
     }
 
@@ -606,6 +630,7 @@ async def test_base_receipt_is_select_only_bounded_and_requires_fresh_head_zero(
         "contractRevision": 0,
         "canonRevision": 0,
         "projectionRevision": 0,
+        "planningRevision": 0,
     }
     assert all(call[1].lstrip().upper().startswith("/* M2:") for call in session.calls)
     assert all("SELECT" in call[1].upper() for call in session.calls)
@@ -1305,3 +1330,213 @@ async def test_l5_corpus_ref_must_bind_the_exact_verified_source(field, value):
             require_l5=True,
             expected_source_hash="c" * 64,
         )
+def test_verifier_uses_current_planning_heads_and_no_retired_sql_tables():
+    from backend.scripts import verify_milestone2_product as verifier
+
+    source = Path(verifier.__file__).read_text(encoding="utf-8")
+    for retired_sql in (
+        "FROM volume_plans",
+        "FROM story_blocks",
+        "FROM story_stages",
+        "FROM scene_tasks",
+    ):
+        assert retired_sql not in source
+    assert "project_planning_heads" in source
+    assert "project_chapter_outline_heads" in source
+    assert "orphan_planning" in source
+    assert "Phase 3 Ready" not in source
+
+
+@pytest.mark.asyncio
+async def test_verifier_requires_explicit_planning_head_and_matching_revision_count():
+    from backend.scripts.verify_milestone2_product import verify_milestone2_product
+
+    rows = base_rows()
+    canonical_contract = _valid_l5_rows()["l5_contract_payload"]
+    item = lambda identifier, text: {"id": identifier, "text": text}
+    bible = BiblePayload.model_validate(
+        {
+            "premiseAndPromise": "主角必须守住共同记忆。",
+            "worldRules": (item("cost", "改变事实必须付出代价。"),),
+            "powerOrProgressionSystem": "通过解决问题逐步成长。",
+            "protagonist": "主角克制但愿意承担责任。",
+            "coreCast": (item("ally", "同伴会挑战主角判断。"),),
+            "factions": (item("keepers", "守护者维持既有秩序。"),),
+            "longTermConflicts": (item("truth", "真相与秩序冲突。"),),
+            "relationshipDynamics": (item("trust", "互疑逐步转为信任。"),),
+            "toneAndNarrativeBoundaries": "清楚好读，以选择推动情节。",
+            "continuityGuardrails": (item("loss", "关键胜利必须伴随损失。"),),
+            "openDesignQuestions": (item("traitor", "内应身份尚未确定。"),),
+        },
+        strict=True,
+    )
+    planning = normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(
+            {
+                "activeStoryBlockRef": "block",
+                "volumes": [{
+                    "clientNodeKey": "volume",
+                    "order": 1,
+                    "title": "第一卷",
+                    "coreChange": "主角建立据点。",
+                    "mainPressure": "追兵逼近。",
+                    "ensembleFocus": ["主角", "同伴"],
+                    "forbiddenEvents": ["不可提前揭示内应"],
+                }],
+                "plots": [{
+                    "clientNodeKey": "plot",
+                    "order": 1,
+                    "title": "立足",
+                    "plotType": "main",
+                    "storyQuestion": "主角如何活下来？",
+                    "futureDirection": "从逃亡转为布局。",
+                    "expectedPayoff": "建立据点。",
+                    "relatedCharacters": ["主角"],
+                }],
+                "storyBlocks": [{
+                    "clientNodeKey": "block",
+                    "order": 1,
+                    "title": "突破封锁",
+                    "volumeRef": "volume",
+                    "plotRefs": ["plot"],
+                    "entrySituation": "二人被困。",
+                    "blockGoal": "穿过封锁。",
+                    "mainPressure": "追兵压缩路线。",
+                    "expectedChange": "二人建立信任。",
+                    "openQuestions": ["内应是谁"],
+                    "involvedCharacters": ["主角", "同伴"],
+                    "stages": [{
+                        "clientNodeKey": "stage",
+                        "order": 1,
+                        "title": "寻找缺口",
+                        "purpose": "确认封锁薄弱处。",
+                        "dramaticQuestion": "能否及时找到缺口？",
+                        "sceneTasks": [{
+                            "clientNodeKey": "task",
+                            "order": 1,
+                            "task": "观察换岗。",
+                            "completionEvidence": "取得换岗间隔。",
+                        }],
+                    }],
+                }],
+            }
+        ),
+        previous_confirmed=None,
+        previous_draft=None,
+        id_factory=iter(f"node-{index}" for index in range(1, 6)).__next__,
+    )
+    rows["l5_contract_payload"] = canonical_contract
+    rows["foundation"].update(
+        contract_revision=1,
+        creation_contract_id="creation-contract-1",
+        style_contract_id="style-contract-1",
+        creation_hash=canonical_contract["creation_content_hash"],
+        style_hash=canonical_contract["style_content_hash"],
+        bible_revision=1,
+        bible_revision_id="bible-revision-1",
+        bible_hash=canonical_bible_hash(bible),
+        bible_json=canonical_json(bible),
+        planning_revision=1,
+        planning_revision_id="planning-revision-1",
+        planning_hash=planning.content_hash,
+        planning_json=canonical_json(
+            planning.model_dump(mode="json", by_alias=True)
+        ),
+    )
+    rows["planning_chain"] = {
+        "revision_count": 1,
+        "min_revision": 1,
+        "max_revision": 1,
+        "continuous_parent_count": 1,
+        "exact_head_count": 1,
+    }
+    rows["later_counts"].update(
+        creation_contracts=1,
+        style_contracts=1,
+        creation_bible_revisions=1,
+    )
+    rows["later_counts"]["planning_revisions"] = 1
+    receipt = await verify_milestone2_product(
+        ReceiptSession(rows),
+        expected_database=DATABASE,
+        expected_planning_revision=1,
+    )
+    assert receipt["project"]["planningRevision"] == 1
+
+    with pytest.raises(RuntimeError, match="Planning head"):
+        await verify_milestone2_product(
+            ReceiptSession(rows),
+            expected_database=DATABASE,
+            expected_planning_revision=2,
+        )
+
+    broken = base_rows()
+    broken["foundation"].update(rows["foundation"])
+    broken["l5_contract_payload"] = canonical_contract
+    broken["later_counts"].update(rows["later_counts"])
+    broken["planning_chain"] = {
+        **rows["planning_chain"],
+        "min_revision": 2,
+    }
+    with pytest.raises(RuntimeError, match="continuous"):
+        await verify_milestone2_product(
+            ReceiptSession(broken),
+            expected_database=DATABASE,
+            expected_planning_revision=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_verifier_rejects_planning_or_session_orphan_counts():
+    from backend.scripts.verify_milestone2_product import verify_milestone2_product
+
+    rows = base_rows()
+    rows["orphan_planning"]["planning_attempts_without_draft"] = 1
+    with pytest.raises(RuntimeError, match="orphan"):
+        await verify_milestone2_product(
+            ReceiptSession(rows),
+            expected_database=DATABASE,
+        )
+
+
+@pytest.mark.asyncio
+async def test_verifier_cli_passes_explicit_expected_planning_revision(
+    monkeypatch,
+):
+    from backend.scripts import verify_milestone2_product as verifier
+
+    captured = {}
+
+    class Session:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    session = Session()
+
+    async def connect(config):
+        captured["config"] = config
+        return session
+
+    async def verify(_session, **kwargs):
+        captured["verify"] = kwargs
+        return {"project": {"planningRevision": kwargs["expected_planning_revision"]}}
+
+    monkeypatch.setattr(verifier, "verify_milestone2_product", verify)
+    output = []
+    await verifier.run_cli(
+        [
+            "--database",
+            DATABASE,
+            "--expected-planning-revision",
+            "3",
+        ],
+        connection_config={"host": "db.test"},
+        connection_factory=connect,
+        output=output.append,
+    )
+
+    assert captured["verify"]["expected_planning_revision"] == 3
+    assert session.closed is True
+    assert json.loads(output[0])["project"]["planningRevision"] == 3
