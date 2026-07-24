@@ -21,10 +21,16 @@ _PROJECT_OWNED_DELETE_ORDER = (
     "draft_candidates",
     "working_drafts",
     "chapter_sessions",
-    "scene_tasks",
-    "story_stages",
-    "story_blocks",
-    "volume_plans",
+    "chapter_outline_confirmation_requests",
+    "project_chapter_outline_heads",
+    "chapter_outline_generation_attempts",
+    "chapter_outline_drafts",
+    "chapter_outline_revisions",
+    "planning_confirmation_requests",
+    "project_planning_heads",
+    "planning_generation_attempts",
+    "planning_drafts",
+    "planning_revisions",
     "project_bible_heads",
     "bible_confirmation_requests",
     "project_bible_drafts",
@@ -349,6 +355,14 @@ class ProjectRepository:
         await session.execute(
             """INSERT INTO project_bible_heads
                (project_id, revision, bible_revision_id, content_hash, updated_at)
+               VALUES (%s,0,NULL,NULL,%s)""",
+            (project_id, self._clock()),
+        )
+
+    async def insert_planning_head0(self, session, project_id: str) -> None:
+        await session.execute(
+            """INSERT INTO project_planning_heads
+               (project_id, revision, planning_revision_id, content_hash, updated_at)
                VALUES (%s,0,NULL,NULL,%s)""",
             (project_id, self._clock()),
         )

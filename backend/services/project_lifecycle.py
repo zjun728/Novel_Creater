@@ -161,6 +161,7 @@ class ProjectLifecycleService:
             )
             await self.repository.insert_contract_head0(session, command.id)
             await self.repository.insert_bible_head0(session, command.id)
+            await self.repository.insert_planning_head0(session, command.id)
             await self.model_binding_service.initialize_project(
                 session, command.id
             )

@@ -8,35 +8,24 @@ import pytest
 from backend import http_errors
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS
+from backend.domain.planning import (
+    DraftPlanningAggregate,
+    normalize_planning_aggregate,
+)
 from backend.domain.seeds import SeedPayload
-from backend.gateways.chapter_draft_provider import ChapterDraftProviderError
 from backend.repositories.canon import CanonRepository
-from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.model_bindings import ModelBindingRepository
-from backend.repositories.planning import PlanningRepository
 from backend.repositories.projects import ProjectRepository
 from backend.repositories.seeds import SeedRepository
 from backend.repositories.story_engines import StoryEngineRepository
 from backend.services.canon import CanonService, CommitCanonRevision
-from backend.services.chapter_draft_generation import (
-    ChapterDraftGenerationFailed,
-    ChapterDraftGenerationService,
-    GenerateWorkingDraft,
-)
-from backend.services.chapter_sessions import (
-    ChapterSessionService,
-    CreateChapterSession,
-    SaveDraftCandidate,
-    SaveWorkingDraft,
-)
 from backend.services.contracts import (
     ConfirmContracts,
     ContractService,
     SaveContractDraft,
 )
 from backend.services.model_bindings import ModelBindingService
-from backend.services.planning import CreateInitialPlan, PlanningService
 from backend.services.project_lifecycle import (
     CreateProject,
     ProjectLifecycleService,
@@ -230,6 +219,216 @@ async def _insert_confirmed_bible(
            VALUES (%s,1,%s,%s,%s)""",
         (confirmed.project_id, bible_id, content_hash, now),
     )
+
+
+def _canonical_planning():
+    return normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(
+            {
+                "activeStoryBlockRef": "block",
+                "volumes": [
+                    {
+                        "clientNodeKey": "volume",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "第一卷",
+                        "coreChange": "主角建立第一个可靠据点。",
+                        "mainPressure": "追兵逼近。",
+                        "ensembleFocus": ["主角", "同伴"],
+                        "forbiddenEvents": ["不可提前揭示幕后人"],
+                    }
+                ],
+                "plots": [
+                    {
+                        "clientNodeKey": "plot",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "立足主线",
+                        "plotType": "main",
+                        "storyQuestion": "主角如何活下来？",
+                        "futureDirection": "从逃亡转为主动布局。",
+                        "expectedPayoff": "建立据点。",
+                        "relatedCharacters": ["主角"],
+                    }
+                ],
+                "storyBlocks": [
+                    {
+                        "clientNodeKey": "block",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "夜渡封锁线",
+                        "volumeRef": "volume",
+                        "plotRefs": ["plot"],
+                        "entrySituation": "二人被困。",
+                        "blockGoal": "穿过封锁线。",
+                        "mainPressure": "追兵压缩路线。",
+                        "expectedChange": "二人建立信任。",
+                        "openQuestions": ["内应是谁"],
+                        "involvedCharacters": ["主角", "同伴"],
+                        "stages": [
+                            {
+                                "clientNodeKey": "stage",
+                                "lifecycle": "active",
+                                "order": 1,
+                                "title": "寻找缺口",
+                                "purpose": "确认封锁薄弱处。",
+                                "dramaticQuestion": "能否在暴露前找到缺口？",
+                                "sceneTasks": [
+                                    {
+                                        "clientNodeKey": "task",
+                                        "lifecycle": "active",
+                                        "order": 1,
+                                        "task": "观察换岗。",
+                                        "completionEvidence": "取得换岗间隔。",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        previous_confirmed=None,
+        previous_draft=None,
+        id_factory=iter(
+            f"8d000000-0000-0000-0000-{number:012d}"
+            for number in range(100, 105)
+        ).__next__,
+    )
+
+
+async def _planning_basis(session, project_id: str):
+    return await session.fetchone(
+        """SELECT selected.selection_revision,selected.seed_id,
+                  selected.seed_revision_id,selected.seed_hash,
+                  contract.revision AS contract_revision,
+                  contract.creation_contract_id,contract.creation_hash,
+                  contract.style_contract_id,contract.style_hash,
+                  bible.revision AS bible_revision,
+                  bible.bible_revision_id,bible.content_hash AS bible_hash
+             FROM project_selected_seeds selected
+             JOIN project_contract_heads contract
+               ON contract.project_id=selected.project_id
+             JOIN project_bible_heads bible
+               ON bible.project_id=selected.project_id
+            WHERE selected.project_id=%s""",
+        (project_id,),
+    )
+
+
+async def _insert_confirmed_planning(session, project_id: str, now: int):
+    planning = _canonical_planning()
+    content_json = canonical_json(
+        planning.model_dump(mode="json", by_alias=True)
+    )
+    basis = await _planning_basis(session, project_id)
+    assert basis is not None
+    parameters = (
+        project_id,
+        basis["selection_revision"],
+        basis["seed_id"],
+        basis["seed_revision_id"],
+        basis["seed_hash"],
+        basis["contract_revision"],
+        basis["creation_contract_id"],
+        basis["creation_hash"],
+        basis["style_contract_id"],
+        basis["style_hash"],
+        basis["bible_revision"],
+        basis["bible_revision_id"],
+        basis["bible_hash"],
+        content_json,
+        planning.content_hash,
+        now,
+    )
+    await session.execute(
+        """INSERT INTO planning_drafts
+           (id,project_id,active_slot,base_head_revision,draft_revision,
+            selection_revision,seed_id,seed_revision_id,seed_hash,
+            contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,bible_revision,bible_revision_id,
+            bible_hash,content_json,content_hash,source_attempt_id,status,
+            created_at,updated_at)
+           VALUES ('8d000000-0000-0000-0001-000000000001',%s,NULL,0,1,
+                   %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,
+                   'confirmed',%s,%s)""",
+        (*parameters, now),
+    )
+    await session.execute(
+        """INSERT INTO planning_revisions
+           (id,project_id,revision,parent_revision,selection_revision,seed_id,
+            seed_revision_id,seed_hash,contract_revision,creation_contract_id,
+            creation_hash,style_contract_id,style_hash,bible_revision,
+            bible_revision_id,bible_hash,content_json,content_hash,created_at)
+           VALUES ('8d000000-0000-0000-0001-000000000002',%s,1,0,%s,%s,%s,
+                   %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        parameters,
+    )
+    assert await session.execute(
+        """INSERT INTO project_planning_heads
+           (project_id,revision,planning_revision_id,content_hash,updated_at)
+           VALUES (%s,1,'8d000000-0000-0000-0001-000000000002',%s,%s)""",
+        (project_id, planning.content_hash, now),
+    ) == 1
+    return planning
+
+
+async def _write_current_planning_draft(
+    transaction,
+    project_id: str,
+    now: int,
+    *,
+    after_lock=None,
+    fail_after_lock: bool = False,
+):
+    planning = _canonical_planning()
+    async with transaction() as session:
+        repository = ProjectRepository()
+        project = await repository.lock_active_project(session, project_id)
+        if project is None:
+            if await repository.lock_any(session, project_id) is not None:
+                raise http_errors.ProjectArchived()
+            raise http_errors.ProjectNotFound()
+        if after_lock is not None:
+            await after_lock(session)
+        if fail_after_lock:
+            raise RuntimeError("controlled planning write failure")
+        basis = await _planning_basis(session, project_id)
+        assert basis is not None
+        await session.execute(
+            """INSERT INTO planning_drafts
+               (id,project_id,active_slot,base_head_revision,draft_revision,
+                selection_revision,seed_id,seed_revision_id,seed_hash,
+                contract_revision,creation_contract_id,creation_hash,
+                style_contract_id,style_hash,bible_revision,bible_revision_id,
+                bible_hash,content_json,content_hash,source_attempt_id,status,
+                created_at,updated_at)
+               VALUES ('8d000000-0000-0000-0001-000000000003',%s,1,1,2,
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,
+                       'active',%s,%s)""",
+            (
+                project_id,
+                basis["selection_revision"],
+                basis["seed_id"],
+                basis["seed_revision_id"],
+                basis["seed_hash"],
+                basis["contract_revision"],
+                basis["creation_contract_id"],
+                basis["creation_hash"],
+                basis["style_contract_id"],
+                basis["style_hash"],
+                basis["bible_revision"],
+                basis["bible_revision_id"],
+                basis["bible_hash"],
+                canonical_json(
+                    planning.model_dump(mode="json", by_alias=True)
+                ),
+                planning.content_hash,
+                now,
+                now,
+            ),
+        )
+    return planning
 
 
 async def _wait(event: asyncio.Event) -> None:
@@ -933,34 +1132,9 @@ async def test_archived_project_keeps_seed_reads_but_blocks_writes_and_inheritan
     assert inherited.source_project_id is None
 
 
-class _GeneratedDraftGateway:
-    def __init__(self):
-        self.calls = 0
-
-    async def generate(self, **_kwargs):
-        self.calls += 1
-        return "测试生成正文"
-
-
-async def _prepare_generation_race(disposable_mysql):
+async def _prepare_planning_race(disposable_mysql):
     facts = await bootstrap_contract_fixture(disposable_mysql.session)
     now = 1_900_000_000_050
-    empty_hash = build_projection_bundle(0, ()).content_hash
-    await disposable_mysql.session.execute(
-        """INSERT INTO canon_revisions
-           (id,project_id,revision_number,parent_revision_number,idempotency_key,
-            source_type,source_id,content_hash,created_at)
-           VALUES ('8e000000-0000-0000-0000-000000000001',%s,0,0,%s,
-                   'bootstrap',NULL,%s,%s)""",
-        (WRITE_FENCE_PROJECT, "0" * 64, empty_hash, now),
-    )
-    await disposable_mysql.session.execute(
-        """INSERT INTO projection_heads
-           (project_id,canon_revision_number,projection_revision_number,
-            content_hash,updated_at)
-           VALUES (%s,0,0,%s,%s)""",
-        (WRITE_FENCE_PROJECT, empty_hash, now),
-    )
     transaction = transaction_factory_for(disposable_mysql.connection_config)
 
     @asynccontextmanager
@@ -998,255 +1172,12 @@ async def _prepare_generation_race(disposable_mysql):
         bible_id="8e000000-0000-0000-0002-000000000001",
         now=now,
     )
-    planning_service = PlanningService(
-        PlanningRepository(),
-        transaction_factory=transaction,
-        connection_factory=read_connection,
+    planning = await _insert_confirmed_planning(
+        disposable_mysql.session,
+        WRITE_FENCE_PROJECT,
+        now,
     )
-    plan = await planning_service.create_initial_plan(
-        CreateInitialPlan(
-            WRITE_FENCE_PROJECT,
-            confirmed.revision,
-            "generation-race-plan",
-        )
-    )
-    chapter_service = ChapterSessionService(
-        ChapterSessionRepository(),
-        transaction_factory=transaction,
-        connection_factory=read_connection,
-    )
-    workspace = await chapter_service.create_session(
-        CreateChapterSession(
-            WRITE_FENCE_PROJECT,
-            plan.active_block.revision,
-            0,
-        )
-    )
-    workspace = await chapter_service.save_working_draft(
-        SaveWorkingDraft(
-            WRITE_FENCE_PROJECT,
-            workspace.session.id,
-            workspace.working_draft.revision,
-            "归档竞争前的作者正文。",
-        )
-    )
-    return transaction, workspace
-
-
-@pytest.mark.asyncio
-async def test_seed_switch_keeps_old_generation_superseded_and_creates_same_numbers(
-    disposable_mysql,
-):
-    transaction, old_workspace = await _prepare_generation_race(disposable_mysql)
-    session = disposable_mysql.session
-
-    @asynccontextmanager
-    async def read_connection():
-        yield session
-
-    chapter_repository = ChapterSessionRepository()
-    chapter_service = ChapterSessionService(
-        chapter_repository,
-        transaction_factory=transaction,
-        connection_factory=read_connection,
-    )
-    old_workspace = await chapter_service.save_candidate(
-        SaveDraftCandidate(
-            WRITE_FENCE_PROJECT,
-            old_workspace.session.id,
-            old_workspace.working_draft.revision,
-        )
-    )
-    seed_id = "8e000000-0000-0000-0003-000000000001"
-    seed_revision_id = "8e000000-0000-0000-0003-000000000002"
-    creation_id = "8e000000-0000-0000-0003-000000000003"
-    style_id = "8e000000-0000-0000-0003-000000000004"
-    bible_id = "8e000000-0000-0000-0003-000000000005"
-    seed_hash = "4" * 64
-    creation_hash = "5" * 64
-    style_hash = "6" * 64
-    bible_content = {
-        "schemaVersion": "creation-bible-v1",
-        "selectionRevision": 2,
-        "contractRevision": 2,
-    }
-    bible_hash = canonical_hash(bible_content)
-    await session.execute(
-        """INSERT INTO creative_seeds
-           (id,project_id,status,created_at,updated_at)
-           VALUES (%s,%s,'candidate',%s,%s)""",
-        (seed_id, WRITE_FENCE_PROJECT, 1_900_000_000_060, 1_900_000_000_060),
-    )
-    await session.execute(
-        """INSERT INTO creative_seed_revisions
-           (id,project_id,seed_id,revision,payload_json,content_hash,created_at)
-           VALUES (%s,%s,%s,1,'{}',%s,%s)""",
-        (
-            seed_revision_id, WRITE_FENCE_PROJECT, seed_id, seed_hash,
-            1_900_000_000_060,
-        ),
-    )
-    await session.execute(
-        """INSERT INTO creative_seed_heads
-           (seed_id,revision_id,revision,content_hash,updated_at)
-           VALUES (%s,%s,1,%s,%s)""",
-        (seed_id, seed_revision_id, seed_hash, 1_900_000_000_060),
-    )
-    await session.execute(
-        """INSERT INTO project_seed_selection_revisions
-           (project_id,selection_revision,seed_id,seed_revision_id,seed_hash,
-            selected_at)
-           VALUES (%s,2,%s,%s,%s,%s)""",
-        (
-            WRITE_FENCE_PROJECT, seed_id, seed_revision_id, seed_hash,
-            1_900_000_000_060,
-        ),
-    )
-    await session.execute(
-        """UPDATE project_selected_seeds
-              SET seed_id=%s,seed_revision_id=%s,seed_hash=%s,
-                  selection_revision=2,selected_at=%s,updated_at=%s
-            WHERE project_id=%s AND selection_revision=1""",
-        (
-            seed_id, seed_revision_id, seed_hash, 1_900_000_000_060,
-            1_900_000_000_060, WRITE_FENCE_PROJECT,
-        ),
-    )
-    await session.execute(
-        """INSERT INTO creation_contracts
-           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,binding_revision_id,binding_hash,channel_profile_key,
-            genre_profile_key,quality_charter_version,total_word_min,
-            total_word_max,chapter_capacity_policy,reference_manifest_json,
-            reference_manifest_hash,content_json,content_hash,confirmed_at)
-           SELECT %s,project_id,2,2,%s,%s,%s,binding_revision_id,binding_hash,
-                  channel_profile_key,genre_profile_key,quality_charter_version,
-                  total_word_min,total_word_max,chapter_capacity_policy,
-                  reference_manifest_json,reference_manifest_hash,content_json,
-                  %s,%s
-             FROM creation_contracts WHERE project_id=%s AND revision=1""",
-        (
-            creation_id, seed_id, seed_revision_id, seed_hash, creation_hash,
-            1_900_000_000_060, WRITE_FENCE_PROJECT,
-        ),
-    )
-    await session.execute(
-        """INSERT INTO style_contracts
-           (id,project_id,creation_contract_id,revision,merged_style_json,
-            likes_json,dislikes_json,content_hash,confirmed_at)
-           SELECT %s,project_id,%s,2,merged_style_json,likes_json,dislikes_json,
-                  %s,%s
-             FROM style_contracts WHERE project_id=%s AND revision=1""",
-        (
-            style_id, creation_id, style_hash, 1_900_000_000_060,
-            WRITE_FENCE_PROJECT,
-        ),
-    )
-    await session.execute(
-        """UPDATE project_contract_heads
-              SET revision=2,creation_contract_id=%s,style_contract_id=%s,
-                  creation_hash=%s,style_hash=%s,updated_at=%s
-            WHERE project_id=%s AND revision=1""",
-        (
-            creation_id, style_id, creation_hash, style_hash,
-            1_900_000_000_060, WRITE_FENCE_PROJECT,
-        ),
-    )
-    binding = await session.fetchone(
-        """SELECT id,content_hash FROM project_model_binding_revisions
-            WHERE project_id=%s AND revision=1""",
-        (WRITE_FENCE_PROJECT,),
-    )
-    await session.execute(
-        """INSERT INTO creation_bible_revisions
-           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,creation_contract_id,creation_hash,
-            style_contract_id,style_hash,binding_revision_id,binding_hash,
-            policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,%s,%s,%s,'test-bible-v1',
-                   %s,%s,%s)""",
-        (
-            bible_id, WRITE_FENCE_PROJECT, seed_id, seed_revision_id, seed_hash,
-            creation_id, creation_hash, style_id, style_hash,
-            binding["id"], binding["content_hash"],
-            canonical_json(bible_content), bible_hash, 1_900_000_000_060,
-        ),
-    )
-    await session.execute(
-        """UPDATE project_bible_heads
-              SET revision=2,bible_revision_id=%s,content_hash=%s,updated_at=%s
-            WHERE project_id=%s AND revision=1""",
-        (
-            bible_id, bible_hash, 1_900_000_000_060, WRITE_FENCE_PROJECT,
-        ),
-    )
-
-    planning_service = PlanningService(
-        PlanningRepository(),
-        transaction_factory=transaction,
-        connection_factory=read_connection,
-    )
-    new_plan = await planning_service.create_initial_plan(
-        CreateInitialPlan(
-            WRITE_FENCE_PROJECT,
-            2,
-            "generation-switch-plan",
-        )
-    )
-    new_workspace = await chapter_service.create_session(
-        CreateChapterSession(
-            WRITE_FENCE_PROJECT,
-            new_plan.active_block.revision,
-            0,
-        )
-    )
-
-    assert new_plan.active_volume.volume_num == 1
-    assert new_plan.active_block.block_num == 1
-    assert new_workspace.session.chapter_num == old_workspace.session.chapter_num == 1
-    assert new_workspace.session.id != old_workspace.session.id
-    assert new_workspace.session.selection_revision == 2
-    old_session = await chapter_repository.read_session_by_id(
-        session, WRITE_FENCE_PROJECT, old_workspace.session.id,
-    )
-    old_draft = await chapter_repository.read_working_draft(
-        session, old_workspace.session.id,
-    )
-    old_candidates = await chapter_repository.list_candidates(
-        session, old_workspace.session.id,
-    )
-    assert old_session["status"] == "superseded"
-    assert old_draft["effective_status"] == "superseded"
-    assert old_candidates[0]["effective_status"] == "superseded"
-    assert (await chapter_service.get_current(WRITE_FENCE_PROJECT)).session.status == (
-        "drafting"
-    )
-
-
-class _BlockingGenerationGateway:
-    def __init__(self, *, outcome):
-        self.outcome = outcome
-        self.calls = 0
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def generate(self, **_kwargs):
-        self.calls += 1
-        self.entered.set()
-        await _wait(self.release)
-        if isinstance(self.outcome, BaseException):
-            raise self.outcome
-        return self.outcome
-
-
-class _GenerationConnectionRepository(ChapterSessionRepository):
-    def __init__(self, connection_ids):
-        super().__init__()
-        self.connection_ids = connection_ids
-
-    async def lock_project(self, session, project_id):
-        self.connection_ids["generation"] = id(session.raw)
-        return await super().lock_project(session, project_id)
+    return transaction, planning, now
 
 
 class _ArchiveAttemptRepository(ProjectRepository):
@@ -1325,30 +1256,26 @@ async def test_generation_archive_cleanup_bounds_and_consumes_early_failures():
     assert failed.done() and blocked.done()
 
 
-async def _run_generation_archive_race(
+async def _run_planning_archive_race(
     disposable_mysql,
     *,
-    provider_outcome,
+    fail_write: bool,
 ):
-    transaction, workspace = await _prepare_generation_race(disposable_mysql)
+    transaction, planning, now = await _prepare_planning_race(disposable_mysql)
     connection_ids = {}
     archive_attempted = asyncio.Event()
     archive_completed = asyncio.Event()
-    gateway = _BlockingGenerationGateway(outcome=provider_outcome)
-    generation_service = ChapterDraftGenerationService(
-        _GenerationConnectionRepository(connection_ids),
-        provider_gateway=gateway,
-        transaction_factory=transaction,
-    )
+    write_entered = asyncio.Event()
+    release_write = asyncio.Event()
     archive_service = ProjectLifecycleService(
         _ArchiveAttemptRepository(archive_attempted, connection_ids),
         transaction,
     )
-    command = GenerateWorkingDraft(
-        WRITE_FENCE_PROJECT,
-        workspace.session.id,
-        workspace.working_draft.revision,
-    )
+
+    async def hold_project_lock(session):
+        connection_ids["planning"] = id(session.raw)
+        write_entered.set()
+        await _wait(release_write)
 
     async def archive_with_completion():
         try:
@@ -1356,93 +1283,92 @@ async def _run_generation_archive_race(
         finally:
             archive_completed.set()
 
-    generation_task = asyncio.create_task(
-        generation_service.generate_working_draft(command)
+    planning_task = asyncio.create_task(
+        _write_current_planning_draft(
+            transaction,
+            WRITE_FENCE_PROJECT,
+            now + 1,
+            after_lock=hold_project_lock,
+            fail_after_lock=fail_write,
+        )
     )
     archive_task = None
     try:
-        await _wait(gateway.entered)
+        await _wait(write_entered)
         archive_task = asyncio.create_task(archive_with_completion())
         await _wait(archive_attempted)
-        assert set(connection_ids) == {"generation", "archive"}
+        assert set(connection_ids) == {"planning", "archive"}
         assert len(set(connection_ids.values())) == 2
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(archive_completed.wait(), timeout=0.1)
         assert not archive_task.done()
-        gateway.release.set()
-        generation_result, archive_result = await _settle_race_tasks(
-            (generation_task, archive_task)
+        release_write.set()
+        planning_result, archive_result = await _settle_race_tasks(
+            (planning_task, archive_task)
         )
     finally:
-        gateway.release.set()
-        await _settle_race_tasks((generation_task, archive_task))
+        release_write.set()
+        await _settle_race_tasks((planning_task, archive_task))
 
     return {
-        "workspace": workspace,
-        "gateway": gateway,
-        "generation_result": generation_result,
+        "planning": planning,
+        "planning_result": planning_result,
         "archive_result": archive_result,
     }
 
 
 @pytest.mark.asyncio
-async def test_real_generation_lock_then_archive_commits_draft_before_archive(
+async def test_real_planning_write_lock_then_archive_commits_before_archive(
     disposable_mysql,
 ):
-    generated = "模型完成的测试正文。"
-    race = await _run_generation_archive_race(
+    race = await _run_planning_archive_race(
         disposable_mysql,
-        provider_outcome=generated,
+        fail_write=False,
     )
 
-    assert race["gateway"].calls == 1
-    assert race["generation_result"].working_draft.content == generated
+    assert race["planning_result"].content_hash == race["planning"].content_hash
     assert isinstance(race["archive_result"], ProjectResult)
     draft = await disposable_mysql.session.fetchone(
-        """SELECT revision,content FROM working_drafts
-           WHERE chapter_session_id=%s""",
-        (race["workspace"].session.id,),
+        """SELECT draft_revision,content_hash,status
+             FROM planning_drafts
+            WHERE id='8d000000-0000-0000-0001-000000000003'""",
     )
     project = await disposable_mysql.session.fetchone(
         """SELECT archived_at,lifecycle_revision FROM projects WHERE id=%s""",
         (WRITE_FENCE_PROJECT,),
     )
     assert draft == {
-        "revision": race["workspace"].working_draft.revision + 1,
-        "content": generated,
+        "draft_revision": 2,
+        "content_hash": race["planning"].content_hash,
+        "status": "active",
     }
     assert project["archived_at"] is not None
     assert project["lifecycle_revision"] == 1
 
 
 @pytest.mark.asyncio
-async def test_real_generation_failure_rolls_back_then_archive_succeeds(
+async def test_real_planning_write_failure_rolls_back_then_archive_succeeds(
     disposable_mysql,
 ):
-    race = await _run_generation_archive_race(
+    race = await _run_planning_archive_race(
         disposable_mysql,
-        provider_outcome=ChapterDraftProviderError("fake provider failure"),
+        fail_write=True,
     )
 
-    assert race["gateway"].calls == 1
     assert isinstance(
-        race["generation_result"],
-        ChapterDraftGenerationFailed,
+        race["planning_result"],
+        RuntimeError,
     )
     assert isinstance(race["archive_result"], ProjectResult)
     draft = await disposable_mysql.session.fetchone(
-        """SELECT revision,content FROM working_drafts
-           WHERE chapter_session_id=%s""",
-        (race["workspace"].session.id,),
+        """SELECT id FROM planning_drafts
+            WHERE id='8d000000-0000-0000-0001-000000000003'""",
     )
     project = await disposable_mysql.session.fetchone(
         """SELECT archived_at,lifecycle_revision FROM projects WHERE id=%s""",
         (WRITE_FENCE_PROJECT,),
     )
-    assert draft == {
-        "revision": race["workspace"].working_draft.revision,
-        "content": race["workspace"].working_draft.content,
-    }
+    assert draft is None
     assert project["archived_at"] is not None
     assert project["lifecycle_revision"] == 1
 
@@ -1523,44 +1449,21 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
         bible_id="8f000000-0000-0000-0004-000000000001",
         now=now,
     )
-    planning_service = PlanningService(
-        PlanningRepository(),
-        transaction_factory=transaction,
-        connection_factory=read_connection,
+    planning = await _insert_confirmed_planning(
+        disposable_mysql.session,
+        WRITE_FENCE_PROJECT,
+        now,
     )
-    plan = await planning_service.create_initial_plan(
-        CreateInitialPlan(
-            WRITE_FENCE_PROJECT,
-            confirmed.revision,
-            "write-fence-plan",
-        )
-    )
-    chapter_repository = ChapterSessionRepository()
-    chapter_service = ChapterSessionService(
-        chapter_repository,
-        transaction_factory=transaction,
-        connection_factory=read_connection,
-    )
-    workspace = await chapter_service.create_session(
-        CreateChapterSession(
-            WRITE_FENCE_PROJECT,
-            plan.active_block.revision,
-            0,
-        )
-    )
-    await chapter_service.save_working_draft(
-        SaveWorkingDraft(
-            WRITE_FENCE_PROJECT,
-            workspace.session.id,
-            workspace.working_draft.revision,
-            "归档前的有效工作稿。",
-        )
-    )
-    generated_gateway = _GeneratedDraftGateway()
-    generation_service = ChapterDraftGenerationService(
-        chapter_repository,
-        provider_gateway=generated_gateway,
-        transaction_factory=transaction,
+    planning_before_archive = await disposable_mysql.session.fetchone(
+        """SELECT head.revision,head.content_hash,revision.content_json
+             FROM project_planning_heads head
+             JOIN planning_revisions revision
+               ON revision.project_id=head.project_id
+              AND revision.id=head.planning_revision_id
+              AND revision.revision=head.revision
+              AND revision.content_hash=head.content_hash
+            WHERE head.project_id=%s""",
+        (WRITE_FENCE_PROJECT,),
     )
     story_service = StoryEngineService(
         StoryEngineRepository(),
@@ -1576,6 +1479,17 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
     )
 
     await project_service.archive(WRITE_FENCE_PROJECT, 0)
+    assert await disposable_mysql.session.fetchone(
+        """SELECT head.revision,head.content_hash,revision.content_json
+             FROM project_planning_heads head
+             JOIN planning_revisions revision
+               ON revision.project_id=head.project_id
+              AND revision.id=head.planning_revision_id
+              AND revision.revision=head.revision
+              AND revision.content_hash=head.content_hash
+            WHERE head.project_id=%s""",
+        (WRITE_FENCE_PROJECT,),
+    ) == planning_before_archive
     await disposable_mysql.session.execute(
         """UPDATE story_engine_batches
               SET source_type='provider',binding_revision_id=%s,binding_hash=%s,
@@ -1626,12 +1540,10 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
             )
         ),
         "planning": await capture(
-            planning_service.create_initial_plan(
-                CreateInitialPlan(
-                    WRITE_FENCE_PROJECT,
-                    confirmed.revision,
-                    "blocked-plan",
-                )
+            _write_current_planning_draft(
+                transaction,
+                WRITE_FENCE_PROJECT,
+                now + 1,
             )
         ),
         "story-engine": await capture(
@@ -1643,52 +1555,7 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
                 )
             )
         ),
-        "chapter-session": await capture(
-            chapter_service.create_session(
-                CreateChapterSession(
-                    WRITE_FENCE_PROJECT,
-                    plan.active_block.revision,
-                    0,
-                )
-            )
-        ),
     }
-    current_draft = await disposable_mysql.session.fetchone(
-        "SELECT revision FROM working_drafts WHERE chapter_session_id=%s",
-        (workspace.session.id,),
-    )
-    results["working-draft"] = await capture(
-        chapter_service.save_working_draft(
-            SaveWorkingDraft(
-                WRITE_FENCE_PROJECT,
-                workspace.session.id,
-                int(current_draft["revision"]),
-                "不能落入归档项目。",
-            )
-        )
-    )
-    current_draft = await disposable_mysql.session.fetchone(
-        "SELECT revision FROM working_drafts WHERE chapter_session_id=%s",
-        (workspace.session.id,),
-    )
-    results["candidate"] = await capture(
-        chapter_service.save_candidate(
-            SaveDraftCandidate(
-                WRITE_FENCE_PROJECT,
-                workspace.session.id,
-                int(current_draft["revision"]),
-            )
-        )
-    )
-    results["generated-draft"] = await capture(
-        generation_service.generate_working_draft(
-            GenerateWorkingDraft(
-                WRITE_FENCE_PROJECT,
-                workspace.session.id,
-                int(current_draft["revision"]),
-            )
-        )
-    )
     results["outcome-unknown"] = await capture(
         story_service.mark_outcome_unknown(
             WRITE_FENCE_PROJECT,
@@ -1718,7 +1585,10 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
         name: type(result).__name__
         for name, result in results.items()
     }
-    assert generated_gateway.calls == 0
+    assert await disposable_mysql.session.fetchone(
+        """SELECT id FROM planning_drafts
+            WHERE id='8d000000-0000-0000-0001-000000000003'"""
+    ) is None
 
     await disposable_mysql.session.execute(
         """UPDATE story_engine_batches
@@ -1734,6 +1604,16 @@ async def test_archived_project_rejects_every_known_write_and_restore_reopens_wr
             payload=_seed_payload("Restored seed"),
         )
     )
+    planning_after_restore = await _write_current_planning_draft(
+        transaction,
+        WRITE_FENCE_PROJECT,
+        now + 2,
+    )
 
     assert restored.archived_at is None
     assert created_after_restore.project_id == WRITE_FENCE_PROJECT
+    assert planning_after_restore.content_hash == planning.content_hash
+    assert await disposable_mysql.session.fetchone(
+        """SELECT status,draft_revision FROM planning_drafts
+            WHERE id='8d000000-0000-0000-0001-000000000003'"""
+    ) == {"status": "active", "draft_revision": 2}

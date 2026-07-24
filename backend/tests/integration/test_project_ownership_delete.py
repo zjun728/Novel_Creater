@@ -3,6 +3,16 @@ from __future__ import annotations
 import pytest
 from pymysql.err import IntegrityError
 
+from backend.domain.chapter_outlines import (
+    DraftChapterOutline,
+    OutlineCapacityPolicy,
+    normalize_chapter_outline,
+)
+from backend.domain.json_contracts import canonical_json
+from backend.domain.planning import (
+    DraftPlanningAggregate,
+    normalize_planning_aggregate,
+)
 from backend.repositories.projects import ProjectRepository
 from backend.tests.support.disposable_mysql import transaction_factory_for
 
@@ -50,6 +60,15 @@ WORKING_ID = "70000000-0000-0000-0000-000000000007"
 CHANGE_SET_ID = "70000000-0000-0000-0000-000000000008"
 FINALIZATION_ID = "70000000-0000-0000-0000-000000000009"
 FINAL_CHAPTER_ID = "70000000-0000-0000-0000-000000000010"
+PLOT_ID = "70000000-0000-0000-0000-000000000011"
+PLANNING_DRAFT_ID = "70000000-0000-0000-0000-000000000012"
+PLANNING_ATTEMPT_ID = "70000000-0000-0000-0000-000000000013"
+PLANNING_REVISION_ID = "70000000-0000-0000-0000-000000000014"
+PLANNING_CONFIRMATION_ID = "70000000-0000-0000-0000-000000000015"
+OUTLINE_DRAFT_ID = "70000000-0000-0000-0000-000000000016"
+OUTLINE_ATTEMPT_ID = "70000000-0000-0000-0000-000000000017"
+OUTLINE_REVISION_ID = "70000000-0000-0000-0000-000000000018"
+OUTLINE_CONFIRMATION_ID = "70000000-0000-0000-0000-000000000019"
 ENTITY_ID = "80000000-0000-0000-0000-000000000001"
 CANON_REVISION_ID = "80000000-0000-0000-0000-000000000002"
 ALIAS_ID = "80000000-0000-0000-0000-000000000004"
@@ -82,10 +101,16 @@ PRIVATE_TABLES_WITHOUT_CLONE_ROWS = (
     "creation_contract_corpus_refs",
     "creation_bible_revisions",
     "project_bible_heads",
-    "volume_plans",
-    "story_blocks",
-    "story_stages",
-    "scene_tasks",
+    "planning_drafts",
+    "planning_generation_attempts",
+    "planning_revisions",
+    "project_planning_heads",
+    "planning_confirmation_requests",
+    "chapter_outline_drafts",
+    "chapter_outline_generation_attempts",
+    "chapter_outline_revisions",
+    "project_chapter_outline_heads",
+    "chapter_outline_confirmation_requests",
     "chapter_sessions",
     "working_drafts",
     "draft_candidates",
@@ -538,52 +563,365 @@ async def _insert_generation_ledgers(session) -> None:
         )
 
 
+def _planning_and_outline():
+    planning = normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(
+            {
+                "activeStoryBlockRef": "block",
+                "volumes": [
+                    {
+                        "clientNodeKey": "volume",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "第一卷",
+                        "coreChange": "主角建立第一个可靠据点。",
+                        "mainPressure": "追兵逼近。",
+                        "ensembleFocus": ["主角", "同伴"],
+                        "forbiddenEvents": ["不可提前揭示幕后人"],
+                    }
+                ],
+                "plots": [
+                    {
+                        "clientNodeKey": "plot",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "立足主线",
+                        "plotType": "main",
+                        "storyQuestion": "主角如何活下来？",
+                        "futureDirection": "从逃亡转为主动布局。",
+                        "expectedPayoff": "建立据点。",
+                        "relatedCharacters": ["主角"],
+                    }
+                ],
+                "storyBlocks": [
+                    {
+                        "clientNodeKey": "block",
+                        "lifecycle": "active",
+                        "order": 1,
+                        "title": "夜渡封锁线",
+                        "volumeRef": "volume",
+                        "plotRefs": ["plot"],
+                        "entrySituation": "二人被困。",
+                        "blockGoal": "穿过封锁线。",
+                        "mainPressure": "追兵压缩路线。",
+                        "expectedChange": "二人建立信任。",
+                        "openQuestions": ["内应是谁"],
+                        "involvedCharacters": ["主角", "同伴"],
+                        "stages": [
+                            {
+                                "clientNodeKey": "stage",
+                                "lifecycle": "active",
+                                "order": 1,
+                                "title": "寻找缺口",
+                                "purpose": "确认封锁薄弱处。",
+                                "dramaticQuestion": "能否在暴露前找到缺口？",
+                                "sceneTasks": [
+                                    {
+                                        "clientNodeKey": "scene",
+                                        "lifecycle": "active",
+                                        "order": 1,
+                                        "task": "观察换岗。",
+                                        "completionEvidence": "取得换岗间隔。",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        previous_confirmed=None,
+        previous_draft=None,
+        id_factory=iter(
+            (VOLUME_ID, PLOT_ID, BLOCK_ID, STAGE_ID, SCENE_ID)
+        ).__next__,
+    )
+    block = planning.story_blocks[0]
+    stage = block.stages[0]
+    task = stage.model_dump(mode="json", by_alias=True)["sceneTasks"][0]
+    node_ref = lambda node: {
+        "id": node.id,
+        "revision": node.revision,
+        "contentHash": node.content_hash,
+    }
+    task_ref = {
+        "id": task["id"],
+        "revision": task["revision"],
+        "contentHash": task["contentHash"],
+    }
+    capacity = OutlineCapacityPolicy.model_validate(
+        {"targetMin": 2500, "targetMax": 3200, "softCeiling": 3800}
+    )
+    outline = normalize_chapter_outline(
+        DraftChapterOutline.model_validate(
+            {
+                "schemaVersion": "chapter-outline-v1",
+                "chapterNumber": 1,
+                "planningRevisionId": PLANNING_REVISION_ID,
+                "planningRevision": 1,
+                "planningHash": planning.content_hash,
+                "volumeRef": node_ref(planning.volumes[0]),
+                "storyBlockRef": node_ref(block),
+                "stageRefs": [node_ref(stage)],
+                "sceneTaskRefs": [task_ref],
+                "chapterGoal": "找到封锁线缺口。",
+                "expectedCharacters": ["主角", "同伴"],
+                "continuation": ["承接被困局面"],
+                "plannedTasks": ["观察换岗"],
+                "scenes": ["废弃驿站侦察"],
+                "forbiddenEarlyEvents": ["不可提前揭示内应"],
+                "capacityPolicy": capacity.model_dump(
+                    mode="json", by_alias=True
+                ),
+            }
+        ),
+        planning=planning,
+        authoritative_chapter_number=1,
+        planning_revision_id=PLANNING_REVISION_ID,
+        planning_revision=1,
+        capacity_policy=capacity,
+        canon_revision=1,
+        projection_revision=1,
+        projection_hash="1" * 64,
+    )
+    return planning, outline
+
+
 async def _insert_planning_draft_canon_and_projections(session) -> None:
-    await session.execute(
-        """INSERT INTO volume_plans
-           (id,project_id,selection_revision,contract_revision,contract_hash,
-            bible_revision,bible_hash,manifest_hash,volume_num,title,
-            direction_json,revision,status,created_at,updated_at)
-           VALUES (%s,%s,1,1,%s,1,%s,%s,1,'Volume','{}',1,'active',%s,%s)""",
-        (VOLUME_ID, PROJECT_ID, "7" * 64, "0" * 64, "2" * 64, NOW, NOW),
+    planning, outline = _planning_and_outline()
+    planning_json = canonical_json(
+        planning.model_dump(mode="json", by_alias=True)
+    )
+    outline_json = canonical_json(
+        outline.model_dump(mode="json", by_alias=True)
     )
     await session.execute(
-        """INSERT INTO story_blocks
-           (id,project_id,volume_plan_id,block_num,title,goal_json,revision,status,
+        """INSERT INTO planning_drafts
+           (id,project_id,active_slot,base_head_revision,draft_revision,
+            selection_revision,seed_id,seed_revision_id,seed_hash,
+            contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,bible_revision,bible_revision_id,
+            bible_hash,content_json,content_hash,source_attempt_id,status,
             created_at,updated_at)
-           VALUES (%s,%s,%s,1,'Block','{}',1,'active',%s,%s)""",
-        (BLOCK_ID, PROJECT_ID, VOLUME_ID, NOW, NOW),
+           VALUES (%s,%s,NULL,0,1,1,%s,%s,%s,1,%s,%s,%s,%s,1,%s,%s,
+                   %s,%s,%s,'confirmed',%s,%s)""",
+        (
+            PLANNING_DRAFT_ID,
+            PROJECT_ID,
+            SEED_ID,
+            SEED_REVISION_ID,
+            "e" * 64,
+            CREATION_ID,
+            "7" * 64,
+            STYLE_CONTRACT_ID,
+            "8" * 64,
+            BIBLE_REVISION_ID,
+            "0" * 64,
+            planning_json,
+            planning.content_hash,
+            PLANNING_ATTEMPT_ID,
+            NOW,
+            NOW,
+        ),
     )
     await session.execute(
-        """INSERT INTO story_stages
-           (id,project_id,story_block_id,stage_order,title,plan_json,revision,
-            status,created_at,updated_at)
-           VALUES (%s,%s,%s,1,'Stage','{}',1,'in_progress',%s,%s)""",
-        (STAGE_ID, PROJECT_ID, BLOCK_ID, NOW, NOW),
+        """INSERT INTO planning_generation_attempts
+           (id,project_id,draft_id,operation_id,active_slot,idempotency_key,
+            request_fingerprint,binding_revision_id,binding_revision,
+            binding_hash,provider_id,model_name_snapshot,fencing_token,
+            lease_expires_at,input_manifest_json,input_manifest_hash,
+            result_content_json,result_content_hash,loaded_draft_revision,
+            loaded_at,failure_code,status,created_at,updated_at)
+           VALUES (%s,%s,%s,%s,NULL,%s,%s,%s,1,%s,%s,'test-model',1,%s,
+                   '{}',%s,%s,%s,1,%s,NULL,'succeeded',%s,%s)""",
+        (
+            PLANNING_ATTEMPT_ID,
+            PROJECT_ID,
+            PLANNING_DRAFT_ID,
+            PLANNING_ATTEMPT_ID,
+            "planning-attempt",
+            "3" * 64,
+            BINDING_ID,
+            "f" * 64,
+            PROVIDER_ID,
+            NOW + 60_000,
+            "4" * 64,
+            planning_json,
+            planning.content_hash,
+            NOW,
+            NOW,
+            NOW,
+        ),
     )
     await session.execute(
-        """INSERT INTO scene_tasks
-           (id,project_id,story_stage_id,task_order,task_json,revision,status,
+        """INSERT INTO planning_revisions
+           (id,project_id,revision,parent_revision,selection_revision,seed_id,
+            seed_revision_id,seed_hash,contract_revision,creation_contract_id,
+            creation_hash,style_contract_id,style_hash,bible_revision,
+            bible_revision_id,bible_hash,content_json,content_hash,created_at)
+           VALUES (%s,%s,1,0,1,%s,%s,%s,1,%s,%s,%s,%s,1,%s,%s,%s,%s,%s)""",
+        (
+            PLANNING_REVISION_ID,
+            PROJECT_ID,
+            SEED_ID,
+            SEED_REVISION_ID,
+            "e" * 64,
+            CREATION_ID,
+            "7" * 64,
+            STYLE_CONTRACT_ID,
+            "8" * 64,
+            BIBLE_REVISION_ID,
+            "0" * 64,
+            planning_json,
+            planning.content_hash,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO project_planning_heads
+           (project_id,revision,planning_revision_id,content_hash,updated_at)
+           VALUES (%s,1,%s,%s,%s)""",
+        (PROJECT_ID, PLANNING_REVISION_ID, planning.content_hash, NOW),
+    )
+    await session.execute(
+        """INSERT INTO planning_confirmation_requests
+           (id,project_id,planning_draft_id,draft_revision,draft_hash,
+            expected_head_revision,idempotency_key,request_fingerprint,status,
+            planning_revision_id,result_revision,result_hash,public_error_code,
+            created_at,completed_at)
+           VALUES (%s,%s,%s,1,%s,0,%s,%s,'succeeded',%s,1,%s,NULL,%s,%s)""",
+        (
+            PLANNING_CONFIRMATION_ID,
+            PROJECT_ID,
+            PLANNING_DRAFT_ID,
+            planning.content_hash,
+            "planning-confirmation",
+            "5" * 64,
+            PLANNING_REVISION_ID,
+            planning.content_hash,
+            NOW,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO chapter_outline_drafts
+           (id,project_id,chapter_num,active_slot,base_head_revision,
+            draft_revision,planning_revision_id,planning_revision,planning_hash,
+            canon_revision,projection_revision,projection_hash,content_json,
+            content_hash,source_attempt_id,status,created_at,updated_at)
+           VALUES (%s,%s,1,NULL,0,1,%s,1,%s,1,1,%s,%s,%s,%s,'confirmed',
+                   %s,%s)""",
+        (
+            OUTLINE_DRAFT_ID,
+            PROJECT_ID,
+            PLANNING_REVISION_ID,
+            planning.content_hash,
+            "1" * 64,
+            outline_json,
+            outline.content_hash,
+            OUTLINE_ATTEMPT_ID,
+            NOW,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO chapter_outline_generation_attempts
+           (id,project_id,outline_draft_id,operation_id,active_slot,
+            idempotency_key,request_fingerprint,binding_revision_id,
+            binding_revision,binding_hash,provider_id,model_name_snapshot,
+            fencing_token,lease_expires_at,input_manifest_json,
+            input_manifest_hash,result_content_json,result_content_hash,
+            loaded_outline_draft_revision,loaded_at,failure_code,status,
             created_at,updated_at)
-           VALUES (%s,%s,%s,1,'{}',1,'in_progress',%s,%s)""",
-        (SCENE_ID, PROJECT_ID, STAGE_ID, NOW, NOW),
+           VALUES (%s,%s,%s,%s,NULL,%s,%s,%s,1,%s,%s,'test-model',1,%s,'{}',
+                   %s,%s,%s,1,%s,NULL,'succeeded',%s,%s)""",
+        (
+            OUTLINE_ATTEMPT_ID,
+            PROJECT_ID,
+            OUTLINE_DRAFT_ID,
+            OUTLINE_ATTEMPT_ID,
+            "outline-attempt",
+            "6" * 64,
+            BINDING_ID,
+            "f" * 64,
+            PROVIDER_ID,
+            NOW + 60_000,
+            "7" * 64,
+            outline_json,
+            outline.content_hash,
+            NOW,
+            NOW,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO chapter_outline_revisions
+           (id,project_id,chapter_num,revision,parent_revision,
+            planning_revision_id,planning_revision,planning_hash,
+            canon_revision,projection_revision,projection_hash,content_json,
+            content_hash,created_at)
+           VALUES (%s,%s,1,1,0,%s,1,%s,1,1,%s,%s,%s,%s)""",
+        (
+            OUTLINE_REVISION_ID,
+            PROJECT_ID,
+            PLANNING_REVISION_ID,
+            planning.content_hash,
+            "1" * 64,
+            outline_json,
+            outline.content_hash,
+            NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO project_chapter_outline_heads
+           (project_id,chapter_num,revision,outline_revision_id,content_hash,
+            updated_at)
+           VALUES (%s,1,1,%s,%s,%s)""",
+        (PROJECT_ID, OUTLINE_REVISION_ID, outline.content_hash, NOW),
+    )
+    await session.execute(
+        """INSERT INTO chapter_outline_confirmation_requests
+           (id,project_id,chapter_num,chapter_outline_draft_id,draft_revision,
+            draft_hash,expected_head_revision,planning_revision_id,
+            planning_revision,planning_hash,canon_revision,projection_revision,
+            projection_hash,idempotency_key,request_fingerprint,status,
+            outline_revision_id,result_revision,result_hash,public_error_code,
+            created_at,completed_at)
+           VALUES (%s,%s,1,%s,1,%s,0,%s,1,%s,1,1,%s,%s,%s,'succeeded',
+                   %s,1,%s,NULL,%s,%s)""",
+        (
+            OUTLINE_CONFIRMATION_ID,
+            PROJECT_ID,
+            OUTLINE_DRAFT_ID,
+            outline.content_hash,
+            PLANNING_REVISION_ID,
+            planning.content_hash,
+            "1" * 64,
+            "outline-confirmation",
+            "8" * 64,
+            OUTLINE_REVISION_ID,
+            outline.content_hash,
+            NOW,
+            NOW,
+        ),
     )
     await session.execute(
         """INSERT INTO chapter_sessions
-           (id,project_id,selection_revision,contract_revision,contract_hash,
-            bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,
-            story_block_id,chapter_num,expected_canon_revision,
-            expected_story_block_revision,planning_snapshot_json,status,
+           (id,project_id,planning_revision_id,planning_revision,planning_hash,
+            story_block_id,story_block_revision,story_block_hash,
+            chapter_outline_revision_id,chapter_outline_revision,
+            chapter_outline_hash,chapter_num,expected_canon_revision,status,
             created_at,finalized_at)
-           VALUES (%s,%s,1,1,%s,1,%s,%s,%s,%s,1,1,1,'{}','drafting',%s,NULL)""",
+           VALUES (%s,%s,%s,1,%s,%s,1,%s,%s,1,%s,1,1,'drafting',%s,NULL)""",
         (
             SESSION_ID,
             PROJECT_ID,
-            "7" * 64,
-            "0" * 64,
-            VOLUME_ID,
-            "2" * 64,
+            PLANNING_REVISION_ID,
+            planning.content_hash,
             BLOCK_ID,
+            planning.story_blocks[0].content_hash,
+            OUTLINE_REVISION_ID,
+            outline.content_hash,
             NOW,
         ),
     )
@@ -604,10 +942,21 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
     await session.execute(
         """INSERT INTO finalization_change_sets
            (id,project_id,draft_candidate_id,extraction_id,candidate_hash,
-            expected_canon_revision,expected_story_block_revision,payload_json,
-            content_hash,created_at,confirmed_at)
-           VALUES (%s,%s,%s,'extraction',%s,1,1,'{}',%s,%s,%s)""",
-        (CHANGE_SET_ID, PROJECT_ID, CANDIDATE_ID, "9" * 64, "7" * 64, NOW, NOW),
+            expected_canon_revision,expected_planning_hash,
+            expected_outline_hash,payload_json,content_hash,created_at,
+            confirmed_at)
+           VALUES (%s,%s,%s,'extraction',%s,1,%s,%s,'{}',%s,%s,%s)""",
+        (
+            CHANGE_SET_ID,
+            PROJECT_ID,
+            CANDIDATE_ID,
+            "9" * 64,
+            planning.content_hash,
+            outline.content_hash,
+            "7" * 64,
+            NOW,
+            NOW,
+        ),
     )
     await session.execute(
         """INSERT INTO finalization_records
@@ -632,9 +981,11 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
         """INSERT INTO final_chapters
            (id,project_id,chapter_session_id,draft_candidate_id,
             finalization_record_id,chapter_num,title,content,content_hash,
-            canon_revision,story_block_revision,planning_snapshot_json,
-            finalized_at)
-           VALUES (%s,%s,%s,%s,%s,1,'Final','final',%s,2,1,'{}',%s)""",
+            canon_revision,planning_revision_id,planning_revision,
+            planning_hash,chapter_outline_revision_id,
+            chapter_outline_revision,chapter_outline_hash,finalized_at)
+           VALUES (%s,%s,%s,%s,%s,1,'Final','final',%s,2,%s,1,%s,%s,1,%s,
+                   %s)""",
         (
             FINAL_CHAPTER_ID,
             PROJECT_ID,
@@ -642,6 +993,10 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
             CANDIDATE_ID,
             FINALIZATION_ID,
             "a" * 64,
+            PLANNING_REVISION_ID,
+            planning.content_hash,
+            OUTLINE_REVISION_ID,
+            outline.content_hash,
             NOW,
         ),
     )
@@ -848,7 +1203,16 @@ async def test_permanent_delete_failure_rolls_back_the_entire_owned_graph(
         "project_seed_selection_revisions",
         "creation_contracts",
         "creation_bible_revisions",
-        "volume_plans",
+        "planning_drafts",
+        "planning_generation_attempts",
+        "planning_revisions",
+        "project_planning_heads",
+        "planning_confirmation_requests",
+        "chapter_outline_drafts",
+        "chapter_outline_generation_attempts",
+        "chapter_outline_revisions",
+        "project_chapter_outline_heads",
+        "chapter_outline_confirmation_requests",
         "chapter_sessions",
         "final_chapters",
         "market_analyses",
@@ -928,20 +1292,21 @@ async def test_cross_project_private_parent_references_are_rejected_by_family(
         (
             "planning",
             """INSERT INTO chapter_sessions
-               (id,project_id,selection_revision,contract_revision,contract_hash,
-                bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,
-                story_block_id,chapter_num,
-                expected_canon_revision,expected_story_block_revision,
-                planning_snapshot_json,status,created_at,finalized_at)
-               VALUES ('99000000-0000-0000-0000-000000000002',%s,1,1,%s,
-                       1,%s,%s,%s,%s,2,1,1,'{}','drafting',%s,NULL)""",
+               (id,project_id,planning_revision_id,planning_revision,
+                planning_hash,story_block_id,story_block_revision,
+                story_block_hash,chapter_outline_revision_id,
+                chapter_outline_revision,chapter_outline_hash,chapter_num,
+                expected_canon_revision,status,created_at,finalized_at)
+               VALUES ('99000000-0000-0000-0000-000000000002',%s,%s,1,%s,
+                       %s,1,%s,%s,1,%s,2,1,'drafting',%s,NULL)""",
             (
                 CLONE_ID,
-                "7" * 64,
-                "0" * 64,
-                VOLUME_ID,
-                "2" * 64,
+                PLANNING_REVISION_ID,
+                _planning_and_outline()[0].content_hash,
                 BLOCK_ID,
+                _planning_and_outline()[0].story_blocks[0].content_hash,
+                OUTLINE_REVISION_ID,
+                _planning_and_outline()[1].content_hash,
                 NOW,
             ),
             """DELETE FROM chapter_sessions
@@ -952,11 +1317,20 @@ async def test_cross_project_private_parent_references_are_rejected_by_family(
             "draft-finalization",
             """INSERT INTO finalization_change_sets
                (id,project_id,draft_candidate_id,extraction_id,candidate_hash,
-                expected_canon_revision,expected_story_block_revision,
-                payload_json,content_hash,created_at,confirmed_at)
+                expected_canon_revision,expected_planning_hash,
+                expected_outline_hash,payload_json,content_hash,created_at,
+                confirmed_at)
                VALUES ('99000000-0000-0000-0000-000000000003',%s,%s,
-                       'cross-extraction',%s,2,1,'{}',%s,%s,NULL)""",
-            (CLONE_ID, CANDIDATE_ID, "2" * 64, "5" * 64, NOW),
+                       'cross-extraction',%s,2,%s,%s,'{}',%s,%s,NULL)""",
+            (
+                CLONE_ID,
+                CANDIDATE_ID,
+                "2" * 64,
+                _planning_and_outline()[0].content_hash,
+                _planning_and_outline()[1].content_hash,
+                "5" * 64,
+                NOW,
+            ),
             """DELETE FROM finalization_change_sets
                WHERE id='99000000-0000-0000-0000-000000000003'""",
             None,
