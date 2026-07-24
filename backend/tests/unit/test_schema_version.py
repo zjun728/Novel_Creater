@@ -15,10 +15,11 @@ from backend.schema_version import (
 EXPECTED_QUERY = (
     "SELECT schema_version, manifest_hash FROM schema_metadata WHERE singleton_id=1"
 )
+V1_4_MANIFEST_HASH = "d4ca983a7748cdf1e05867a2ab4ccb958e76bf82a59aab8e56398693af4dc428"
 
 
-def test_expected_schema_version_is_writer_core_v1_4():
-    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.4.0"
+def test_expected_schema_version_is_writer_core_v1_5():
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.5.0"
 
 
 class FakeVersionSession:
@@ -107,19 +108,19 @@ async def test_wrong_version_or_hash_is_rejected_with_expected_values(row):
 
 
 @pytest.mark.asyncio
-async def test_v1_3_database_is_rejected_read_only():
+async def test_v1_4_database_is_rejected_read_only():
     session = FakeVersionSession(
         row={
-            "schema_version": "writer-core-v1.3.0",
-            "manifest_hash": manifest_hash(),
+            "schema_version": "writer-core-v1.4.0",
+            "manifest_hash": V1_4_MANIFEST_HASH,
         }
     )
 
     with pytest.raises(SchemaMismatch) as raised:
         await verify_schema_version(session)
 
+    assert "writer-core-v1.5.0" in str(raised.value)
     assert "writer-core-v1.4.0" in str(raised.value)
-    assert "writer-core-v1.3.0" in str(raised.value)
     assert session.executed == [(EXPECTED_QUERY, None)]
 
 

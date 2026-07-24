@@ -49,7 +49,7 @@ class FakeService:
 
     async def get_diagnostics(self):
         return SimpleNamespace(
-            schema_version="writer-core-v1.4.0",
+            schema_version="writer-core-v1.5.0",
             schema_manifest_match=True,
             database_reachable=True,
             managed_corpus_store_ready=False,
@@ -120,7 +120,7 @@ def test_diagnostics_response_has_exact_safe_allowlist():
 
     assert response.status_code == 200
     assert response.json() == {
-        "schemaVersion": "writer-core-v1.4.0",
+        "schemaVersion": "writer-core-v1.5.0",
         "schemaManifestMatch": True,
         "databaseReachable": True,
         "managedCorpusStoreReady": False,

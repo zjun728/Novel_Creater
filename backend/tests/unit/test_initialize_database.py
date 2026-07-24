@@ -17,7 +17,7 @@ from backend.scripts.initialize_database import (
 
 
 DATABASE_NAME = "writer_core_test"
-V1_3_MANIFEST_HASH = "3e3958b2332dc1ffc593ac2ccb6566a7f6710b6884fc69852373f222e18b55b4"
+V1_4_MANIFEST_HASH = "d4ca983a7748cdf1e05867a2ab4ccb958e76bf82a59aab8e56398693af4dc428"
 
 
 @pytest.mark.asyncio
@@ -286,21 +286,21 @@ async def test_fresh_database_executes_manifest_in_order_and_writes_metadata():
         "INSERT INTO schema_metadata "
         "(singleton_id, schema_version, manifest_hash, initialized_at) VALUES (1, %s, %s, %s)"
     )
-    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.4.0"
-    assert manifest_hash() != V1_3_MANIFEST_HASH
+    assert EXPECTED_SCHEMA_VERSION == "writer-core-v1.5.0"
+    assert manifest_hash() != V1_4_MANIFEST_HASH
     assert executed == [
         (create_database, None),
         (f"USE `{DATABASE_NAME}`", None),
         *((statement, None) for statement in read_statements()),
         (
             metadata_insert,
-            ("writer-core-v1.4.0", manifest_hash(), 1_720_000_000_123),
+            ("writer-core-v1.5.0", manifest_hash(), 1_720_000_000_123),
         ),
     ]
     assert result.database_name == DATABASE_NAME
     assert result.schema_version == EXPECTED_SCHEMA_VERSION
     assert result.manifest_hash == manifest_hash()
-    assert result.table_count == len(created_table_names()) == 77
+    assert result.table_count == len(created_table_names()) == 83
 
 
 @pytest.mark.asyncio

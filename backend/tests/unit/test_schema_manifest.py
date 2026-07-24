@@ -86,10 +86,16 @@ EXPECTED_TABLES = {
     "creation_bible_revisions",
     "project_bible_heads",
     "bible_confirmation_requests",
-    "volume_plans",
-    "story_blocks",
-    "story_stages",
-    "scene_tasks",
+    "planning_drafts",
+    "planning_generation_attempts",
+    "planning_revisions",
+    "project_planning_heads",
+    "planning_confirmation_requests",
+    "chapter_outline_drafts",
+    "chapter_outline_generation_attempts",
+    "chapter_outline_revisions",
+    "project_chapter_outline_heads",
+    "chapter_outline_confirmation_requests",
     "chapter_sessions",
     "working_drafts",
     "draft_candidates",
@@ -439,110 +445,311 @@ def test_market_and_generation_ledgers_freeze_safe_identities():
     assert "status = 'reserved'" not in style_trial_request
 
 
-def test_generation_numbering_is_scoped_to_the_immutable_planning_root():
-    volumes = _table_statement("volume_plans")
-    assert (
-        "unique key uq_volume_num "
-        "(project_id, selection_revision, contract_revision, contract_hash, "
-        "bible_revision, bible_hash, volume_num)"
-    ) in volumes
-    assert "unique key uq_volume_num (project_id, volume_num)" not in volumes
-
-    blocks = _table_statement("story_blocks")
-    assert (
-        "unique key uq_block_num (project_id, volume_plan_id, block_num)"
-    ) in blocks
-    assert "unique key uq_block_num (project_id, block_num)" not in blocks
-
-    sessions = _table_statement("chapter_sessions")
-    assert (
-        "unique key uq_chapter_session_num "
-        "(project_id, selection_revision, contract_revision, contract_hash, "
-        "bible_revision, bible_hash, volume_plan_id, planning_manifest_hash, "
-        "chapter_num)"
-    ) in sessions
-    assert (
-        "unique key uq_chapter_session_num (project_id, chapter_num)"
-    ) not in sessions
-
-    final_chapters = _table_statement("final_chapters")
-    assert (
-        "unique key uq_final_chapter_num "
-        "(project_id, chapter_session_id, chapter_num)"
-    ) in final_chapters
+def test_planning_manifest_replaces_mutable_tables_with_ordered_aggregate_ledgers():
+    created = created_table_names()
+    planning_tables = (
+        "planning_drafts",
+        "planning_generation_attempts",
+        "planning_revisions",
+        "project_planning_heads",
+        "planning_confirmation_requests",
+        "chapter_outline_drafts",
+        "chapter_outline_generation_attempts",
+        "chapter_outline_revisions",
+        "project_chapter_outline_heads",
+        "chapter_outline_confirmation_requests",
+    )
+    assert tuple(name for name in created if name in planning_tables) == planning_tables
+    assert set(created).isdisjoint(
+        {"volume_plans", "story_blocks", "story_stages", "scene_tasks"}
+    )
+    for table_name in planning_tables:
+        statement = _table_statement(table_name)
+        assert (
+            "project_id char(36) not null" in statement
+            or "project_id char(36) primary key" in statement
+        )
 
 
-def test_contract_bible_planning_and_session_use_one_composite_generation_chain():
-    bindings = _table_statement("project_model_binding_revisions")
-    assert (
-        "unique key uq_binding_revision_hash_identity "
-        "(project_id, id, content_hash)"
-    ) in bindings
+def test_planning_draft_pins_exact_basis_and_has_one_active_slot():
+    draft = _table_statement("planning_drafts")
+    for column in (
+        "active_slot tinyint null",
+        "base_head_revision int not null",
+        "draft_revision int not null",
+        "selection_revision int not null",
+        "seed_id char(36) not null",
+        "seed_revision_id char(36) not null",
+        "seed_hash char(64) not null",
+        "contract_revision int not null",
+        "creation_contract_id char(36) not null",
+        "creation_hash char(64) not null",
+        "style_contract_id char(36) not null",
+        "style_hash char(64) not null",
+        "bible_revision int not null",
+        "bible_revision_id char(36) not null",
+        "bible_hash char(64) not null",
+        "content_json json not null",
+        "content_hash char(64) not null",
+        "source_attempt_id char(36) null",
+        "status varchar(24) not null",
+    ):
+        assert column in draft
+    for contract in (
+        "unique key uq_planning_draft_project_id (project_id, id)",
+        "unique key uq_planning_draft_active_slot (project_id, active_slot)",
+        "foreign key (project_id, selection_revision, seed_id, seed_revision_id, seed_hash) references project_seed_selection_revisions(project_id, selection_revision, seed_id, seed_revision_id, seed_hash) on delete restrict",
+        "foreign key (project_id, creation_contract_id, contract_revision, creation_hash) references creation_contracts(project_id, id, revision, content_hash) on delete restrict",
+        "foreign key (project_id, style_contract_id, contract_revision, style_hash) references style_contracts(project_id, id, revision, content_hash) on delete restrict",
+        "foreign key (project_id, bible_revision_id, selection_revision, contract_revision, creation_hash, style_hash, bible_revision, bible_hash) references creation_bible_revisions(project_id, id, selection_revision, contract_revision, creation_hash, style_hash, revision, content_hash) on delete restrict",
+        "check (active_slot is null or active_slot = 1)",
+        "check (status in ('active','confirmed','superseded'))",
+        "status = 'active' and active_slot is not null and active_slot = 1",
+        "status in ('confirmed','superseded') and active_slot is null",
+    ):
+        assert contract in draft
+    assert "foreign key (source_attempt_id)" not in draft
 
-    contracts = _table_statement("creation_contracts")
+
+def test_planning_generation_attempts_freeze_model_lease_fence_and_closed_states():
+    for table_name, draft_column, loaded_column, draft_table in (
+        (
+            "planning_generation_attempts",
+            "draft_id",
+            "loaded_draft_revision",
+            "planning_drafts",
+        ),
+        (
+            "chapter_outline_generation_attempts",
+            "outline_draft_id",
+            "loaded_outline_draft_revision",
+            "chapter_outline_drafts",
+        ),
+    ):
+        attempt = _table_statement(table_name)
+        for column in (
+            f"{draft_column} char(36) not null",
+            "operation_id char(36) not null",
+            "active_slot tinyint null",
+            "idempotency_key varchar(64) not null",
+            "request_fingerprint char(64) not null",
+            "binding_revision_id char(36) not null",
+            "binding_revision int not null",
+            "binding_hash char(64) not null",
+            "provider_id char(36) not null",
+            "model_name_snapshot varchar(200) not null",
+            "fencing_token bigint not null",
+            "lease_expires_at bigint not null",
+            "input_manifest_json json not null",
+            "input_manifest_hash char(64) not null",
+            "result_content_json json null",
+            "result_content_hash char(64) null",
+            f"{loaded_column} int null",
+            "loaded_at bigint null",
+            "failure_code varchar(64) null",
+            "status varchar(24) not null",
+            "created_at bigint not null",
+            "updated_at bigint not null",
+        ):
+            assert column in attempt
+        unique_contracts = (
+            (
+                "unique key uq_planning_operation (project_id, operation_id)",
+                "unique key uq_planning_generation_idempotency (project_id, idempotency_key)",
+                "unique key uq_active_planning_generation (draft_id, active_slot)",
+                "unique key uq_planning_fencing (draft_id, fencing_token)",
+            )
+            if table_name == "planning_generation_attempts"
+            else (
+                "unique key uq_outline_operation (project_id, operation_id)",
+                "unique key uq_outline_generation_idempotency (project_id, idempotency_key)",
+                "unique key uq_active_outline_generation (outline_draft_id, active_slot)",
+                "unique key uq_outline_fencing (outline_draft_id, fencing_token)",
+            )
+        )
+        for contract in (
+            *unique_contracts,
+            f"foreign key (project_id, {draft_column}) references {draft_table}(project_id, id) on delete restrict",
+            "foreign key (project_id, binding_revision_id, binding_revision, binding_hash) references project_model_binding_revisions(project_id, id, revision, content_hash) on delete restrict",
+            "foreign key (provider_id) references provider_profiles(id) on delete restrict",
+            "check (status in ('pending','succeeded','failed','superseded'))",
+            "status = 'succeeded'",
+            "status = 'failed'",
+            "status = 'superseded'",
+        ):
+            assert contract in attempt
+        assert (
+            attempt.count(
+                "status = 'pending' and active_slot is not null "
+                "and active_slot = 1"
+            )
+            == 2
+        )
+        assert (
+            f"{loaded_column} is not null and {loaded_column} > 0 "
+            "and loaded_at is not null"
+        ) in attempt
+        assert "prompt" not in attempt
+        assert "raw_output" not in attempt
+        assert "api_key" not in attempt
+
+
+def test_planning_revision_head_and_confirmation_are_exact_and_immutable():
+    revision = _table_statement("planning_revisions")
+    for contract in (
+        "revision int not null",
+        "parent_revision int not null",
+        "content_json json not null",
+        "content_hash char(64) not null",
+        "created_at bigint not null",
+        "unique key uq_planning_revision (project_id, revision)",
+        "unique key uq_planning_revision_identity (project_id, id, revision, content_hash)",
+        "foreign key (project_id, bible_revision_id, selection_revision, contract_revision, creation_hash, style_hash, bible_revision, bible_hash) references creation_bible_revisions(project_id, id, selection_revision, contract_revision, creation_hash, style_hash, revision, content_hash) on delete restrict",
+    ):
+        assert contract in revision
+    head = _table_statement("project_planning_heads")
     assert (
-        "unique key uq_creation_contract_generation "
-        "(project_id, selection_revision, revision, content_hash)"
-    ) in contracts
-    assert (
-        "foreign key (project_id, binding_revision_id, binding_hash) "
-        "references project_model_binding_revisions(project_id, id, content_hash) "
+        "foreign key (project_id, planning_revision_id, revision, content_hash) "
+        "references planning_revisions(project_id, id, revision, content_hash) "
         "on delete restrict"
-    ) in contracts
+    ) in head
+    assert "revision = 0 and planning_revision_id is null and content_hash is null" in head
+    assert "revision > 0 and planning_revision_id is not null and content_hash is not null" in head
+    request = _table_statement("planning_confirmation_requests")
+    for contract in (
+        "idempotency_key char(64) not null",
+        "request_fingerprint char(64) not null",
+        "status varchar(16) not null",
+        "planning_revision_id char(36) null",
+        "result_revision int null",
+        "result_hash char(64) null",
+        "created_at bigint not null",
+        "completed_at bigint null",
+        "unique key uq_planning_confirmation_idempotency (project_id, idempotency_key)",
+        "check (status in ('pending','succeeded','failed'))",
+        "status = 'pending' and planning_revision_id is null",
+        "status = 'succeeded' and planning_revision_id is not null "
+        "and result_revision is not null",
+    ):
+        assert contract in request
+    assert "reserved" not in request
 
-    bibles = _table_statement("creation_bible_revisions")
-    assert (
-        "unique key uq_bible_revision_generation "
-        "(project_id, selection_revision, contract_revision, creation_hash, "
-        "revision, content_hash)"
-    ) in bibles
-    assert (
-        "unique key uq_bible_revision_full_generation "
-        "(project_id, id, selection_revision, contract_revision, creation_hash, "
-        "style_hash, revision, content_hash)"
-    ) in bibles
-    assert (
-        "foreign key (project_id, creation_contract_id, contract_revision, "
-        "creation_hash) references creation_contracts(project_id, id, revision, "
-        "content_hash) on delete restrict"
-    ) in bibles
-    assert (
-        "foreign key (project_id, style_contract_id, contract_revision, "
-        "style_hash) references style_contracts(project_id, id, revision, "
-        "content_hash) on delete restrict"
-    ) in bibles
 
-    volumes = _table_statement("volume_plans")
+def test_outline_tables_pin_exact_planning_canon_projection_and_chapter():
+    for table_name in (
+        "chapter_outline_drafts",
+        "chapter_outline_revisions",
+        "chapter_outline_confirmation_requests",
+    ):
+        statement = _table_statement(table_name)
+        for column in (
+            "chapter_num int not null",
+            "planning_revision_id char(36) not null",
+            "planning_revision int not null",
+            "planning_hash char(64) not null",
+            "canon_revision int not null",
+            "projection_revision int not null",
+            "projection_hash char(64) not null",
+        ):
+            assert column in statement
+        assert (
+            "foreign key (project_id, planning_revision_id, planning_revision, "
+            "planning_hash) references planning_revisions(project_id, id, revision, "
+            "content_hash) on delete restrict"
+        ) in statement
+    draft = _table_statement("chapter_outline_drafts")
+    assert "unique key uq_outline_draft_active_slot (project_id, chapter_num, active_slot)" in draft
     assert (
-        "unique key uq_volume_generation_identity "
-        "(project_id, id, selection_revision, contract_revision, contract_hash, "
-        "bible_revision, bible_hash, manifest_hash)"
-    ) in volumes
+        "status = 'active' and active_slot is not null and active_slot = 1"
+        in draft
+    )
+    assert "status in ('confirmed','superseded') and active_slot is null" in draft
+    revision = _table_statement("chapter_outline_revisions")
+    assert "unique key uq_outline_revision (project_id, chapter_num, revision)" in revision
+    assert "unique key uq_outline_revision_identity (project_id, id, revision, content_hash)" in revision
     assert (
-        "foreign key (project_id, selection_revision, contract_revision, "
-        "contract_hash, bible_revision, bible_hash) references "
-        "creation_bible_revisions(project_id, selection_revision, "
-        "contract_revision, creation_hash, revision, content_hash) "
+        "unique key uq_outline_revision_planning_identity "
+        "(project_id, chapter_num, id, revision, content_hash, "
+        "planning_revision_id, planning_revision, planning_hash)"
+    ) in revision
+    head = _table_statement("project_chapter_outline_heads")
+    assert "primary key (project_id, chapter_num)" in head
+    assert "revision = 0 and outline_revision_id is null and content_hash is null" in head
+    assert "revision > 0 and outline_revision_id is not null and content_hash is not null" in head
+    request = _table_statement("chapter_outline_confirmation_requests")
+    assert "check (status in ('pending','succeeded','failed'))" in request
+    assert "status = 'pending' and outline_revision_id is null" in request
+    assert (
+        "status = 'succeeded' and outline_revision_id is not null "
+        "and result_revision is not null"
+    ) in request
+    assert "reserved" not in request
+
+
+def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
+    session = _table_statement("chapter_sessions")
+    for column in (
+        "planning_revision_id char(36) not null",
+        "planning_revision int not null",
+        "planning_hash char(64) not null",
+        "story_block_id char(36) not null",
+        "story_block_revision int not null",
+        "story_block_hash char(64) not null",
+        "chapter_outline_revision_id char(36) not null",
+        "chapter_outline_revision int not null",
+        "chapter_outline_hash char(64) not null",
+        "expected_canon_revision int not null",
+    ):
+        assert column in session
+    for forbidden in (
+        "volume_plan_id",
+        "planning_manifest_hash",
+        "planning_snapshot_json",
+        "expected_story_block_revision",
+        "selection_revision",
+        "contract_revision",
+        "bible_revision",
+    ):
+        assert forbidden not in session
+    assert (
+        "foreign key (project_id, planning_revision_id, planning_revision, "
+        "planning_hash) references planning_revisions(project_id, id, revision, "
+        "content_hash) on delete restrict"
+    ) in session
+    assert (
+        "foreign key (project_id, chapter_num, chapter_outline_revision_id, "
+        "chapter_outline_revision, chapter_outline_hash, planning_revision_id, "
+        "planning_revision, planning_hash) references "
+        "chapter_outline_revisions(project_id, chapter_num, id, revision, "
+        "content_hash, planning_revision_id, planning_revision, planning_hash) "
         "on delete restrict"
-    ) in volumes
+    ) in session
 
-    sessions = _table_statement("chapter_sessions")
-    assert (
-        "foreign key (project_id, volume_plan_id, selection_revision, "
-        "contract_revision, contract_hash, bible_revision, bible_hash, "
-        "planning_manifest_hash) references volume_plans(project_id, id, "
-        "selection_revision, contract_revision, contract_hash, bible_revision, "
-        "bible_hash, manifest_hash) on delete restrict"
-    ) in sessions
+    change_set = _table_statement("finalization_change_sets")
+    assert "expected_planning_hash char(64) not null" in change_set
+    assert "expected_outline_hash char(64) not null" in change_set
+    assert "expected_story_block_revision" not in change_set
 
-    confirmations = _table_statement("bible_confirmation_requests")
+    final_chapter = _table_statement("final_chapters")
+    for column in (
+        "planning_revision_id char(36) not null",
+        "planning_revision int not null",
+        "planning_hash char(64) not null",
+        "chapter_outline_revision_id char(36) not null",
+        "chapter_outline_revision int not null",
+        "chapter_outline_hash char(64) not null",
+    ):
+        assert column in final_chapter
     assert (
-        "foreign key (project_id, bible_revision_id, selection_revision, "
-        "contract_revision, creation_hash, style_hash, result_revision, result_hash) "
-        "references creation_bible_revisions(project_id, id, "
-        "selection_revision, contract_revision, creation_hash, style_hash, revision, "
-        "content_hash) on delete restrict"
-    ) in confirmations
+        "foreign key (project_id, chapter_num, chapter_outline_revision_id, "
+        "chapter_outline_revision, chapter_outline_hash, planning_revision_id, "
+        "planning_revision, planning_hash) references "
+        "chapter_outline_revisions(project_id, chapter_num, id, revision, "
+        "content_hash, planning_revision_id, planning_revision, planning_hash) "
+        "on delete restrict"
+    ) in final_chapter
+    assert "story_block_revision" not in final_chapter
+    assert "planning_snapshot_json" not in final_chapter
 
 
 def test_corpus_revision_identity_allows_metadata_only_revisions_on_one_blob():
@@ -846,35 +1053,46 @@ def test_bible_generation_attempts_have_owned_leases_and_exact_terminal_states()
     ) in attempts
 
 
-def test_planning_roots_and_sessions_freeze_aggregate_generation():
-    roots = _table_statement("volume_plans")
+def test_planning_revisions_and_sessions_freeze_aggregate_generation():
+    revision = _table_statement("planning_revisions")
     for contract in (
         "selection_revision int not null",
+        "seed_id char(36) not null",
+        "seed_revision_id char(36) not null",
+        "seed_hash char(64) not null",
         "contract_revision int not null",
-        "contract_hash char(64) not null",
+        "creation_contract_id char(36) not null",
+        "creation_hash char(64) not null",
+        "style_contract_id char(36) not null",
+        "style_hash char(64) not null",
         "bible_revision int not null",
+        "bible_revision_id char(36) not null",
         "bible_hash char(64) not null",
-        "manifest_hash char(64) not null",
-        "foreign key (project_id, selection_revision, contract_revision, contract_hash) references creation_contracts(project_id, selection_revision, revision, content_hash) on delete restrict",
-        "foreign key (project_id, selection_revision, contract_revision, contract_hash, bible_revision, bible_hash) references creation_bible_revisions(project_id, selection_revision, contract_revision, creation_hash, revision, content_hash) on delete restrict",
     ):
-        assert contract in roots
+        assert contract in revision
 
     sessions = _table_statement("chapter_sessions")
     for contract in (
-        "selection_revision int not null",
-        "contract_revision int not null",
-        "contract_hash char(64) not null",
-        "bible_revision int not null",
-        "bible_hash char(64) not null",
-        "planning_manifest_hash char(64) not null",
+        "planning_revision_id char(36) not null",
+        "planning_revision int not null",
+        "planning_hash char(64) not null",
+        "story_block_id char(36) not null",
+        "story_block_revision int not null",
+        "story_block_hash char(64) not null",
+        "chapter_outline_revision_id char(36) not null",
+        "chapter_outline_revision int not null",
+        "chapter_outline_hash char(64) not null",
     ):
         assert contract in sessions
 
 
-def test_existing_planning_draft_canon_and_projection_tables_remain_present():
+def test_planning_draft_canon_and_projection_tables_are_present():
     unchanged = {
-        "volume_plans", "story_blocks", "story_stages", "scene_tasks",
+        "planning_drafts", "planning_generation_attempts", "planning_revisions",
+        "project_planning_heads", "planning_confirmation_requests",
+        "chapter_outline_drafts", "chapter_outline_generation_attempts",
+        "chapter_outline_revisions", "project_chapter_outline_heads",
+        "chapter_outline_confirmation_requests",
         "chapter_sessions", "working_drafts", "draft_candidates", "final_chapters",
         "finalization_change_sets", "finalization_records", "canon_entities",
         "entity_aliases", "canon_revisions", "canon_events",
@@ -902,21 +1120,55 @@ def test_project_private_parent_child_edges_are_project_scoped():
             "references creative_seed_revisions(project_id, seed_id, id, "
             "content_hash) on delete restrict",
         ),
-        "story_blocks": (
-            "foreign key (project_id, volume_plan_id) references "
-            "volume_plans(project_id, id) on delete cascade",
+        "planning_generation_attempts": (
+            "foreign key (project_id, draft_id) references "
+            "planning_drafts(project_id, id) on delete restrict",
         ),
-        "story_stages": (
-            "foreign key (project_id, story_block_id) references "
-            "story_blocks(project_id, id) on delete cascade",
+        "project_planning_heads": (
+            "foreign key (project_id, planning_revision_id, revision, content_hash) "
+            "references planning_revisions(project_id, id, revision, content_hash) "
+            "on delete restrict",
         ),
-        "scene_tasks": (
-            "foreign key (project_id, story_stage_id) references "
-            "story_stages(project_id, id) on delete cascade",
+        "planning_confirmation_requests": (
+            "foreign key (project_id, planning_draft_id, draft_revision, "
+            "draft_hash) references planning_drafts(project_id, id, "
+            "draft_revision, content_hash) on delete restrict",
+        ),
+        "chapter_outline_drafts": (
+            "foreign key (project_id, planning_revision_id, planning_revision, "
+            "planning_hash) references planning_revisions(project_id, id, "
+            "revision, content_hash) on delete restrict",
+        ),
+        "chapter_outline_generation_attempts": (
+            "foreign key (project_id, outline_draft_id) references "
+            "chapter_outline_drafts(project_id, id) on delete restrict",
+        ),
+        "project_chapter_outline_heads": (
+            "foreign key (project_id, chapter_num, outline_revision_id, revision, "
+            "content_hash) references chapter_outline_revisions(project_id, "
+            "chapter_num, id, revision, content_hash) on delete restrict",
+        ),
+        "chapter_outline_confirmation_requests": (
+            "foreign key (project_id, chapter_outline_draft_id, draft_revision, "
+            "draft_hash) references chapter_outline_drafts(project_id, id, "
+            "draft_revision, content_hash) on delete restrict",
+            "foreign key (project_id, chapter_num, outline_revision_id, "
+            "result_revision, result_hash, planning_revision_id, "
+            "planning_revision, planning_hash) references "
+            "chapter_outline_revisions(project_id, chapter_num, id, revision, "
+            "content_hash, planning_revision_id, planning_revision, "
+            "planning_hash) on delete restrict",
         ),
         "chapter_sessions": (
-            "foreign key (project_id, volume_plan_id, story_block_id) references "
-            "story_blocks(project_id, volume_plan_id, id) on delete restrict",
+            "foreign key (project_id, planning_revision_id, planning_revision, "
+            "planning_hash) references planning_revisions(project_id, id, "
+            "revision, content_hash) on delete restrict",
+            "foreign key (project_id, chapter_num, chapter_outline_revision_id, "
+            "chapter_outline_revision, chapter_outline_hash, planning_revision_id, "
+            "planning_revision, planning_hash) references "
+            "chapter_outline_revisions(project_id, chapter_num, id, revision, "
+            "content_hash, planning_revision_id, planning_revision, planning_hash) "
+            "on delete restrict",
         ),
         "working_drafts": (
             "foreign key (project_id, chapter_session_id) references "
@@ -986,9 +1238,10 @@ def test_project_private_parent_child_edges_are_project_scoped():
 
     for parent in (
         "creative_seed_revisions",
-        "volume_plans",
-        "story_blocks",
-        "story_stages",
+        "planning_drafts",
+        "planning_revisions",
+        "chapter_outline_drafts",
+        "chapter_outline_revisions",
         "chapter_sessions",
         "draft_candidates",
         "finalization_change_sets",
