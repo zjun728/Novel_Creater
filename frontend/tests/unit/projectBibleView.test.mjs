@@ -11,10 +11,9 @@ import { createSSRApp, h } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
-import { createServer } from 'vite'
-import vuePlugin from '@vitejs/plugin-vue'
 
-const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
+import { createProjectBibleViteServer } from '../support/projectBibleViteServer.mjs'
+
 const source = path => new URL(`../../src/${path}`, import.meta.url)
 const bible = () => ({
   premiseAndPromise: 'promise', powerOrProgressionSystem: 'power', protagonist: 'hero', toneAndNarrativeBoundaries: 'tone',
@@ -103,7 +102,7 @@ test('the recursive source inventory has no retired Bible workspace imports', as
 })
 
 test('Vite compiles the page through its controller and SSR renders the 11-field disabled preview and history detail', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   try {
     const [Page, Editor, Drawer] = await Promise.all([
       vite.ssrLoadModule('/src/views/ProjectBibleView.vue'), vite.ssrLoadModule('/src/components/bible/BibleEditor.vue'), vite.ssrLoadModule('/src/components/bible/BibleHistoryDrawer.vue'),
@@ -118,7 +117,7 @@ test('Vite compiles the page through its controller and SSR renders the 11-field
 })
 
 test('the Vite-loaded BibleEditor emits scalar/list edits and renders disabled controls', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   try {
     const Editor = (await vite.ssrLoadModule('/src/components/bible/BibleEditor.vue')).default
     Editor.render = await clientRender('components/bible/BibleEditor.vue')
@@ -140,7 +139,7 @@ test('the Vite-loaded BibleEditor emits scalar/list edits and renders disabled c
 })
 
 test('read-only BibleEditor keeps textareas focusable/copyable but does not emit edits or show list controls', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   try {
     const Editor = (await vite.ssrLoadModule('/src/components/bible/BibleEditor.vue')).default; Editor.render = await clientRender('components/bible/BibleEditor.vue')
     const emitted = []; const root = node('root'); const app = renderer.createApp(Editor, { modelValue: bible(), readOnly: true, 'onUpdate:modelValue': value => emitted.push(value) })
@@ -171,7 +170,7 @@ test('ProjectBibleView derives AI readiness from the planning binding item only'
 })
 
 test('failed same-project binding refresh disables generation but preserves manual save and confirm', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window
   let failStatus = false; let generates = 0; let draftVersion = 1
   const draft = () => ({ projectId: 'stale', lifecycle: 'active', status: 'editable', draftId: 'draft-stale', draftVersion, baseHeadRevision: 0, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] })
@@ -226,7 +225,7 @@ test('failed same-project binding refresh disables generation but preserves manu
 })
 
 test('outcome-unknown generation renders one assertive reconciliation notice without a new key', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const generationBodies = []
   const draft = { projectId: 'unknown', lifecycle: 'active', status: 'editable', draftId: 'draft-unknown', draftVersion: 1, baseHeadRevision: 0, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] }
   const head = { projectId: 'unknown', lifecycle: 'active', status: 'current', revision: 0, bible: null, canClone: false, reasons: [] }
@@ -264,7 +263,7 @@ test('outcome-unknown generation renders one assertive reconciliation notice wit
 })
 
 test('mounted ProjectBibleView follows first, head-only, superseded, and archived route states through real Pinia/router/fetch', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const puts = []; const clones = []; let allowLeave = false
   const item = id => [{ id, text: id }]
   const makeDraft = (id, extra = {}) => ({ projectId: id, lifecycle: 'active', status: 'editable', draftId: 'draft-1', draftVersion: 1, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [], ...extra })
@@ -304,7 +303,7 @@ test('mounted ProjectBibleView follows first, head-only, superseded, and archive
 })
 
 test('mounted load retry and conflict recovery keep local edits until authoritative reload is confirmed', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const originalDocument = global.document; let allowReload = false; let headCalls = 0; let draftCalls = 0; let root
   const body = node('body')
   const makeDraft = () => ({ projectId: 'conflict', lifecycle: 'active', status: 'editable', draftId: 'draft-conflict', draftVersion: 1, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] })
@@ -366,7 +365,7 @@ test('mounted load retry and conflict recovery keep local edits until authoritat
 })
 
 test('real store recovery retries save, confirm, and history without leaving the active modal focus domain', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const originalDocument = global.document
   const body = node('body'); let root; let saveCalls = 0; let historyCalls = 0; let cloneCalls = 0; const saves = []; const confirms = []; let headReads = 0; let draftReads = 0
   const makeDraft = (premise = 'SERVER', version = 1) => ({ projectId: 'recovery', lifecycle: 'active', status: 'editable', draftId: 'draft-recovery', draftVersion: version, draft: { ...bible(), premiseAndPromise: premise }, canEdit: true, canConfirm: true, canClone: true, reasons: [] })
@@ -438,7 +437,7 @@ test('real store recovery retries save, confirm, and history without leaving the
 })
 
 test('mounted history dialog traps focus, restores its trigger, and ignores Escape while busy', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   const originalDocument = global.document; let root; const body = node('body')
   try {
     const [Drawer, Editor] = await Promise.all([vite.ssrLoadModule('/src/components/bible/BibleHistoryDrawer.vue'), vite.ssrLoadModule('/src/components/bible/BibleEditor.vue')])
@@ -477,7 +476,7 @@ test('mounted history dialog traps focus, restores its trigger, and ignores Esca
 })
 
 test('real Pinia, router, and fetch keep a forced B context clean when A save resolves late', async () => {
-  const vite = await createServer({ configFile: false, root: frontendRoot, resolve: { alias: { '@': fileURLToPath(new URL('../../src', import.meta.url)) } }, server: { middlewareMode: true, hmr: false, ws: false }, appType: 'custom', logLevel: 'error', plugins: [vuePlugin()] })
+  const vite = await createProjectBibleViteServer()
   const originalFetch = global.fetch; const originalWindow = global.window; const pendingA = deferred(); const puts = []
   const makeDraft = (id, premise = `${id} BODY`) => ({ projectId: id, lifecycle: 'active', status: 'editable', draftId: `draft-${id}`, draftVersion: 1, draft: { ...bible(), premiseAndPromise: premise }, canEdit: true, canConfirm: true, canClone: true, reasons: [] })
   const makeHead = id => ({ projectId: id, lifecycle: 'active', status: 'current', revision: 1, bible: { ...bible(), premiseAndPromise: `${id} HEAD` }, canClone: true, reasons: [] })
