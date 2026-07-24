@@ -20,6 +20,7 @@ _PRIVATE_TEXT = re.compile(
     r"|raw[\s_.-]*source(?:[\s_.-]*(?:text|content|payload))?"
     r"|corpus(?:[\s_.-]*(?:text|content|payload|fragment))?)"
     r"\s*[:=]\s*\S+"
+    r"|\bauthorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+\S+"
     r"|\bauthorization\s*:?\s*bearer\s+\S+"
     r"|\bbearer\s+[A-Za-z0-9][A-Za-z0-9._~+/=-]{7,}"
     r"|(?:mysql|postgres(?:ql)?|mariadb)://\S+",
@@ -37,6 +38,7 @@ def _is_private_manifest_key(value: object) -> bool:
     )
     return (
         is_provider_secret_key(value)
+        or is_provider_secret_key(normalized)
         or normalized in {"accesstoken", "bearertoken"}
         or "corpus" in normalized
         or "rawsource" in normalized

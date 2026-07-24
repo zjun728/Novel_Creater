@@ -142,6 +142,8 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
     ("manifest", "instructions"),
     (
         ({"apiKey": "PRIVATE_API_KEY_SENTINEL"}, "安全要求"),
+        ({"api key": "PRIVATE_SPACED_API_KEY_SENTINEL"}, "安全要求"),
+        ({"api   key": "PRIVATE_WIDE_API_KEY_SENTINEL"}, "安全要求"),
         ({"Authorization": "Bearer PRIVATE_AUTH_SENTINEL"}, "安全要求"),
         ({"database": {"password": "PRIVATE_PASSWORD_SENTINEL"}}, "安全要求"),
         ({"dsn": "mysql://PRIVATE_DSN_SENTINEL"}, "安全要求"),
@@ -151,6 +153,10 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
         ),
         (
             {"runtime": {"base_url": "PRIVATE_BASE_URL_SNAKE_SENTINEL"}},
+            "安全要求",
+        ),
+        (
+            {"runtime": {"base url": "PRIVATE_SPACED_BASE_URL_SENTINEL"}},
             "安全要求",
         ),
         ({"credentials": {"token": "PRIVATE_TOKEN_SENTINEL"}}, "安全要求"),
@@ -204,6 +210,15 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
         (
             {
                 "notes": (
+                    "Authorization :  Basic "
+                    "PRIVATE_MANIFEST_BASIC_SENTINEL"
+                )
+            },
+            "安全要求",
+        ),
+        (
+            {
+                "notes": (
                     "sourceDocumentText="
                     "PRIVATE_EMBEDDED_SOURCE_TEXT_SENTINEL"
                 )
@@ -214,6 +229,10 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
         (
             _manifest(),
             "Authorization Bearer PRIVATE_INSTRUCTION_BEARER_SENTINEL",
+        ),
+        (
+            _manifest(),
+            "Authorization: Basic PRIVATE_INSTRUCTION_BASIC_SENTINEL",
         ),
         (
             _manifest(),
@@ -240,6 +259,8 @@ def test_prompt_rejects_private_or_raw_material_with_one_safe_error(
         marker not in rendered
         for marker in (
             "PRIVATE_API_KEY_SENTINEL",
+            "PRIVATE_SPACED_API_KEY_SENTINEL",
+            "PRIVATE_WIDE_API_KEY_SENTINEL",
             "PRIVATE_AUTH_SENTINEL",
             "PRIVATE_PASSWORD_SENTINEL",
             "PRIVATE_DSN_SENTINEL",
@@ -247,14 +268,17 @@ def test_prompt_rejects_private_or_raw_material_with_one_safe_error(
             "PRIVATE_INSTRUCTION_SENTINEL",
             "PRIVATE_BASE_URL_SENTINEL",
             "PRIVATE_BASE_URL_SNAKE_SENTINEL",
+            "PRIVATE_SPACED_BASE_URL_SENTINEL",
             "PRIVATE_TOKEN_SENTINEL",
             "PRIVATE_ACCESS_TOKEN_SENTINEL",
             "PRIVATE_BEARER_TOKEN_SENTINEL",
             "PRIVATE_SOURCE_TEXT_SENTINEL",
             "PRIVATE_SOURCE_TEXT_SNAKE_SENTINEL",
             "PRIVATE_MANIFEST_BEARER_SENTINEL",
+            "PRIVATE_MANIFEST_BASIC_SENTINEL",
             "PRIVATE_EMBEDDED_SOURCE_TEXT_SENTINEL",
             "PRIVATE_INSTRUCTION_BEARER_SENTINEL",
+            "PRIVATE_INSTRUCTION_BASIC_SENTINEL",
             "PRIVATE_INSTRUCTION_TOKEN_SENTINEL",
             "PRIVATE_STANDALONE_BEARER_SENTINEL",
         )
