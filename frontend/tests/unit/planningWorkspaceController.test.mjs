@@ -203,6 +203,62 @@ test('reorder is deterministic and preserves node identity', () => {
   )
 })
 
+test('reorder swaps active slots only and leaves retired snapshots byte-for-byte unchanged', () => {
+  const content = emptyContent()
+  const retired = {
+    id: 'plot-retired',
+    order: 2,
+    title: '旧线',
+    plotType: 'other',
+    storyQuestion: '旧问题',
+    futureDirection: '',
+    expectedPayoff: '',
+    relatedCharacters: [],
+    revision: 7,
+    contentHash: 'c'.repeat(64),
+    lifecycle: 'retired',
+  }
+  content.plots = [
+    { id: 'plot-a', order: 1, title: 'A', lifecycle: 'active' },
+    retired,
+    { id: 'plot-b', order: 3, title: 'B', lifecycle: 'active' },
+  ]
+  const store = createStore({ content })
+  const controller = createPlanningWorkspaceController({
+    store,
+    projectId: () => 'project-1',
+  })
+  const retiredSnapshot = structuredClone(retired)
+
+  assert.equal(controller.movePlot('plot-retired', -1), false)
+  assert.deepEqual(store.localContent.plots[1], retiredSnapshot)
+  assert.equal(controller.movePlot('plot-b', -1), true)
+  assert.deepEqual(
+    store.localContent.plots.map(item => [item.id, item.order]),
+    [['plot-b', 1], ['plot-retired', 2], ['plot-a', 3]],
+  )
+  assert.deepEqual(store.localContent.plots[1], retiredSnapshot)
+})
+
+test('a lone active node cannot cross retired nodes during reorder', () => {
+  const content = emptyContent()
+  content.volumes = [
+    { id: 'volume-retired-a', order: 1, title: '旧一', lifecycle: 'retired' },
+    { id: 'volume-active', order: 2, title: '现卷', lifecycle: 'active' },
+    { id: 'volume-retired-b', order: 3, title: '旧二', lifecycle: 'retired' },
+  ]
+  const store = createStore({ content })
+  const controller = createPlanningWorkspaceController({
+    store,
+    projectId: () => 'project-1',
+  })
+  const snapshot = JSON.parse(JSON.stringify(store.localContent.volumes))
+
+  assert.equal(controller.moveVolume('volume-active', -1), false)
+  assert.equal(controller.moveVolume('volume-active', 1), false)
+  assert.deepEqual(store.localContent.volumes, snapshot)
+})
+
 test('volume and plot only drafts may save but cannot confirm until full aggregate exists', async () => {
   const content = emptyContent()
   content.volumes.push({ id: 'volume-1', order: 1, title: '第一卷', lifecycle: 'active' })
@@ -335,6 +391,65 @@ test('leave protection skips same-project planning tabs and prompts once elsewhe
     preventDefault() { this.prevented += 1 },
     returnValue: undefined,
   }
+  assert.equal(controller.beforeUnload(event), '')
+  assert.equal(event.prevented, 1)
+})
+
+test('author instructions are project-local unsaved UI and reset only after entering another project', () => {
+  let prompts = 0
+  let allowLeave = false
+  const store = createStore()
+  const controller = createPlanningWorkspaceController({
+    store,
+    projectId: () => store.projectId,
+    confirmLeave: () => {
+      prompts += 1
+      return allowLeave
+    },
+  })
+  controller.enterProject('project-1')
+  controller.authorInstructions.value = 'A 项目的补充要求'
+  controller.notice.value = 'A notice'
+  controller.historyOpen.value = true
+
+  assert.equal(controller.requestRouteLeave({
+    name: 'ProjectPlanningPlots',
+    params: { projectId: 'project-1' },
+  }), true)
+  assert.equal(prompts, 0)
+  assert.equal(controller.requestRouteLeave({
+    name: 'ProjectPlanningVolumes',
+    params: { projectId: 'project-2' },
+  }), false)
+  assert.equal(prompts, 1)
+  assert.equal(controller.authorInstructions.value, 'A 项目的补充要求')
+  assert.equal(controller.historyOpen.value, true)
+
+  allowLeave = true
+  assert.equal(controller.requestRouteLeave({
+    name: 'ProjectPlanningVolumes',
+    params: { projectId: 'project-2' },
+  }), true)
+  controller.enterProject('project-2')
+  assert.equal(controller.authorInstructions.value, '')
+  assert.equal(controller.notice.value, '')
+  assert.equal(controller.historyOpen.value, false)
+})
+
+test('author instructions participate in beforeunload protection', () => {
+  const store = createStore()
+  const controller = createPlanningWorkspaceController({
+    store,
+    projectId: () => 'project-1',
+  })
+  controller.enterProject('project-1')
+  controller.authorInstructions.value = '尚未用于生成'
+  const event = {
+    prevented: 0,
+    preventDefault() { this.prevented += 1 },
+    returnValue: undefined,
+  }
+
   assert.equal(controller.beforeUnload(event), '')
   assert.equal(event.prevented, 1)
 })

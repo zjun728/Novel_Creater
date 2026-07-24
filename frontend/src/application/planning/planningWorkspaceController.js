@@ -90,6 +90,8 @@ export function createPlanningWorkspaceController({
   const historyOpen = ref(false)
   const authorInstructions = ref('')
   const notice = ref('')
+  const activeProject = ref('')
+  const projectScope = ref(0)
   const busy = computed(() => Boolean(
     store.loading
     || store.saving
@@ -101,6 +103,8 @@ export function createPlanningWorkspaceController({
     store.generationOutcomeUnknown
     || store.awaitingAuthoritativeReload,
   ))
+  const editorLocked = computed(() => busy.value || hasCriticalRecovery.value)
+  const hasUnsavedLocalUI = computed(() => hasText(authorInstructions.value))
   const readOnly = computed(() => Boolean(
     isArchived()
     || store.state?.basisStatus === 'archived'
@@ -155,27 +159,25 @@ export function createPlanningWorkspaceController({
   })
 
   function replaceCollection(collection, items) {
-    if (!editable.value || busy.value || !store.localContent) return false
+    if (!editable.value || editorLocked.value || !store.localContent) return false
     store.editLocal({
       ...clone(store.localContent),
-      [collection]: items.map((item, index) => ({
-        ...item,
-        order: index + 1,
-      })),
+      [collection]: items,
     })
     return true
   }
 
   function addNode(collection, fields) {
-    if (!editable.value || busy.value) return false
+    if (!editable.value || editorLocked.value) return false
+    const existing = store.localContent?.[collection] || []
     const node = {
       clientNodeKey: String(keyFactory()),
-      order: (store.localContent?.[collection]?.length || 0) + 1,
+      order: Math.max(0, ...existing.map(item => Number(item.order) || 0)) + 1,
       lifecycle: 'active',
     }
     for (const field of fields) node[field] = field.endsWith('s') ? [] : ''
     return replaceCollection(collection, [
-      ...(store.localContent?.[collection] || []),
+      ...existing,
       node,
     ])
   }
@@ -210,15 +212,40 @@ export function createPlanningWorkspaceController({
   function moveNode(collection, nodeKey, direction) {
     const items = [...(store.localContent?.[collection] || [])]
     const from = items.findIndex(item => identity(item) === String(nodeKey))
-    const to = from + Math.sign(Number(direction) || 0)
-    if (from < 0 || to < 0 || to >= items.length) return false
-    ;[items[from], items[to]] = [items[to], items[from]]
+    if (from < 0 || !active(items[from])) return false
+    const activeIndexes = items
+      .map((item, index) => active(item) ? index : -1)
+      .filter(index => index >= 0)
+    const activePosition = activeIndexes.indexOf(from)
+    const targetPosition = activePosition + Math.sign(Number(direction) || 0)
+    if (activePosition < 0 || targetPosition < 0 || targetPosition >= activeIndexes.length) {
+      return false
+    }
+    const to = activeIndexes[targetPosition]
+    const fromOrder = items[from].order
+    const toOrder = items[to].order
+    const moved = { ...items[from], order: toOrder }
+    const displaced = { ...items[to], order: fromOrder }
+    items[from] = displaced
+    items[to] = moved
     return replaceCollection(collection, items)
+  }
+
+  function enterProject(nextProjectId) {
+    const normalized = String(nextProjectId || '')
+    if (normalized === activeProject.value) return false
+    activeProject.value = normalized
+    authorInstructions.value = ''
+    notice.value = ''
+    historyOpen.value = false
+    projectScope.value += 1
+    return true
   }
 
   async function hydrate() {
     const targetProjectId = String(projectId() || '')
     if (!targetProjectId) return undefined
+    enterProject(targetProjectId)
     return store.ensureLoaded(targetProjectId)
   }
 
@@ -277,12 +304,22 @@ export function createPlanningWorkspaceController({
 
   function requestRouteLeave(to) {
     if (projectPlanningRoute(to, projectId())) return true
-    if (!store.dirty && !hasCriticalRecovery.value && !store.generating) return true
+    if (
+      !store.dirty
+      && !hasCriticalRecovery.value
+      && !store.generating
+      && !hasUnsavedLocalUI.value
+    ) return true
     return confirmLeave()
   }
 
   function beforeUnload(event) {
-    if (!store.dirty && !hasCriticalRecovery.value && !store.generating) return undefined
+    if (
+      !store.dirty
+      && !hasCriticalRecovery.value
+      && !store.generating
+      && !hasUnsavedLocalUI.value
+    ) return undefined
     event.preventDefault()
     event.returnValue = ''
     return ''
@@ -292,7 +329,9 @@ export function createPlanningWorkspaceController({
     historyOpen,
     authorInstructions,
     notice,
+    projectScope,
     busy,
+    editorLocked,
     readOnly,
     editable,
     canCreateDraft,
@@ -303,6 +342,7 @@ export function createPlanningWorkspaceController({
     localOverlay,
     hasCriticalRecovery,
     generationDisabledReason,
+    enterProject,
     hydrate,
     createManualDraft,
     addVolume: () => addNode('volumes', VOLUME_FIELDS),

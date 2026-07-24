@@ -99,6 +99,10 @@ watch(confirmOpen, async open => {
     confirmFocus.unmount()
   }
 })
+watch(
+  () => props.controller.projectScope.value,
+  () => { confirmOpen.value = false },
+)
 onBeforeUnmount(() => confirmFocus.unmount())
 </script>
 
@@ -171,6 +175,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
             v-if="activeTab === 'volumes'"
             :model-value="planningContent.volumes || []"
             :read-only="!controller.editable.value"
+            :disabled="controller.editorLocked.value"
             @add="controller.addVolume"
             @update="controller.updateVolume"
             @remove="controller.removeVolume"
@@ -180,6 +185,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
             v-else
             :model-value="planningContent.plots || []"
             :read-only="!controller.editable.value"
+            :disabled="controller.editorLocked.value"
             @add="controller.addPlot"
             @update="controller.updatePlot"
             @remove="controller.removePlot"
@@ -243,7 +249,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
           v-model="controller.authorInstructions.value"
           rows="3"
           maxlength="4000"
-          :disabled="controller.busy.value"
+          :disabled="controller.editorLocked.value"
           placeholder="例如：强化第二卷群像冲突，但不要提前揭露残卷来源。"
         />
         <button

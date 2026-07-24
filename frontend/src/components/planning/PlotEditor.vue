@@ -1,7 +1,8 @@
 <script setup>
-defineProps({
+const props = defineProps({
   modelValue: { type: Array, default: () => [] },
   readOnly: { type: Boolean, default: false },
+  disabled: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['add', 'update', 'remove', 'move'])
@@ -11,11 +12,35 @@ const parseList = value => String(value || '')
   .split(/\r?\n/u)
   .map(item => item.trim())
   .filter(Boolean)
+const activeItems = () => props.modelValue.filter(node => node.lifecycle !== 'retired')
+const activePosition = node => activeItems().findIndex(item => nodeKey(item) === nodeKey(node))
+const cannotMove = (node, direction) => {
+  const position = activePosition(node)
+  const target = position + direction
+  return position < 0 || target < 0 || target >= activeItems().length
+}
 
 function update(node, field, value) {
+  if (props.readOnly || props.disabled || node.lifecycle === 'retired') return
   emit('update', nodeKey(node), {
     [field]: field === 'relatedCharacters' ? parseList(value) : value,
   })
+}
+
+function add() {
+  if (!props.readOnly && !props.disabled) emit('add')
+}
+
+function move(node, direction) {
+  if (!props.readOnly && !props.disabled && !cannotMove(node, direction)) {
+    emit('move', nodeKey(node), direction)
+  }
+}
+
+function remove(node) {
+  if (!props.readOnly && !props.disabled && node.lifecycle !== 'retired') {
+    emit('remove', nodeKey(node))
+  }
 }
 </script>
 
@@ -26,7 +51,7 @@ function update(node, field, value) {
         <p>PLOT DESK</p>
         <h2 id="plot-editor-heading">情节线规划</h2>
       </div>
-      <button v-if="!readOnly" type="button" @click="emit('add')">新增情节线</button>
+      <button v-if="!readOnly" type="button" :disabled="disabled" @click="add">新增情节线</button>
     </header>
 
     <p class="editor-intro">
@@ -43,7 +68,7 @@ function update(node, field, value) {
         <span>线 {{ String(index + 1).padStart(2, '0') }}</span>
         <strong v-if="plot.lifecycle === 'retired'">已退役 · 只读保留</strong>
       </div>
-      <fieldset :disabled="readOnly || plot.lifecycle === 'retired'">
+      <fieldset :disabled="readOnly || disabled || plot.lifecycle === 'retired'">
         <label>
           情节线名称
           <input :value="plot.title" @input="update(plot, 'title', $event.target.value)">
@@ -78,9 +103,9 @@ function update(node, field, value) {
         </label>
       </fieldset>
       <footer v-if="!readOnly && plot.lifecycle !== 'retired'">
-        <button type="button" :disabled="index === 0" @click="emit('move', nodeKey(plot), -1)">上移</button>
-        <button type="button" :disabled="index === modelValue.length - 1" @click="emit('move', nodeKey(plot), 1)">下移</button>
-        <button type="button" class="danger" @click="emit('remove', nodeKey(plot))">
+        <button type="button" :disabled="disabled || cannotMove(plot, -1)" @click="move(plot, -1)">上移</button>
+        <button type="button" :disabled="disabled || cannotMove(plot, 1)" @click="move(plot, 1)">下移</button>
+        <button type="button" class="danger" :disabled="disabled" @click="remove(plot)">
           {{ plot.id ? '退役情节线' : '撤销新增' }}
         </button>
       </footer>

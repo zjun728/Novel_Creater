@@ -2,6 +2,7 @@
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
   readOnly: { type: Boolean, default: false },
+  disabled: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['add', 'update', 'remove', 'move'])
@@ -11,13 +12,37 @@ const parseList = value => String(value || '')
   .split(/\r?\n/u)
   .map(item => item.trim())
   .filter(Boolean)
+const activeItems = () => props.modelValue.filter(node => node.lifecycle !== 'retired')
+const activePosition = node => activeItems().findIndex(item => nodeKey(item) === nodeKey(node))
+const cannotMove = (node, direction) => {
+  const position = activePosition(node)
+  const target = position + direction
+  return position < 0 || target < 0 || target >= activeItems().length
+}
 
 function update(node, field, value) {
+  if (props.readOnly || props.disabled || node.lifecycle === 'retired') return
   emit('update', nodeKey(node), {
     [field]: ['ensembleFocus', 'forbiddenEvents'].includes(field)
       ? parseList(value)
       : value,
   })
+}
+
+function add() {
+  if (!props.readOnly && !props.disabled) emit('add')
+}
+
+function move(node, direction) {
+  if (!props.readOnly && !props.disabled && !cannotMove(node, direction)) {
+    emit('move', nodeKey(node), direction)
+  }
+}
+
+function remove(node) {
+  if (!props.readOnly && !props.disabled && node.lifecycle !== 'retired') {
+    emit('remove', nodeKey(node))
+  }
 }
 </script>
 
@@ -28,7 +53,7 @@ function update(node, field, value) {
         <p>VOLUME DESK</p>
         <h2 id="volume-editor-heading">分卷规划</h2>
       </div>
-      <button v-if="!readOnly" type="button" @click="emit('add')">新增分卷</button>
+      <button v-if="!readOnly" type="button" :disabled="disabled" @click="add">新增分卷</button>
     </header>
 
     <p class="editor-intro">
@@ -45,7 +70,7 @@ function update(node, field, value) {
         <span>卷 {{ String(index + 1).padStart(2, '0') }}</span>
         <strong v-if="volume.lifecycle === 'retired'">已退役 · 只读保留</strong>
       </div>
-      <fieldset :disabled="readOnly || volume.lifecycle === 'retired'">
+      <fieldset :disabled="readOnly || disabled || volume.lifecycle === 'retired'">
         <label>
           卷名
           <input
@@ -87,17 +112,17 @@ function update(node, field, value) {
         </label>
       </fieldset>
       <footer v-if="!readOnly && volume.lifecycle !== 'retired'">
-        <button type="button" :disabled="index === 0" @click="emit('move', nodeKey(volume), -1)">
+        <button type="button" :disabled="disabled || cannotMove(volume, -1)" @click="move(volume, -1)">
           上移
         </button>
         <button
           type="button"
-          :disabled="index === modelValue.length - 1"
-          @click="emit('move', nodeKey(volume), 1)"
+          :disabled="disabled || cannotMove(volume, 1)"
+          @click="move(volume, 1)"
         >
           下移
         </button>
-        <button type="button" class="danger" @click="emit('remove', nodeKey(volume))">
+        <button type="button" class="danger" :disabled="disabled" @click="remove(volume)">
           {{ volume.id ? '退役分卷' : '撤销新增' }}
         </button>
       </footer>

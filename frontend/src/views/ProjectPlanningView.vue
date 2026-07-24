@@ -44,6 +44,7 @@ const controller = createPlanningWorkspaceController({
 watch(
   () => [projectId.value, routeProject.state.value],
   ([nextProjectId, lifecycle]) => {
+    controller.enterProject(nextProjectId)
     if (
       nextProjectId
       && ['active', 'archived'].includes(lifecycle)
