@@ -7,6 +7,7 @@ import pytest
 
 from backend import http_errors
 from backend.domain.model_bindings import TASK_KEYS
+from backend.repositories.projects import ProjectRepository
 from backend.services.bibles import BIBLE_POLICY_VERSION
 from backend.services.project_lifecycle import ProjectLifecycleService
 
@@ -130,6 +131,19 @@ class _Repository:
         return self.snapshot
 
 
+class _SqlRecordingSession:
+    def __init__(self):
+        self.calls = []
+
+    async def fetchone(self, sql, args=None):
+        self.calls.append(("fetchone", " ".join(sql.split()), args))
+        return {"id": "project-1"}
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append(("fetchall", " ".join(sql.split()), args))
+        return []
+
+
 class _ContractService:
     def __init__(self, result):
         self.result = result
@@ -151,6 +165,35 @@ def _service(snapshot, contract):
         contract_service=contract_service,
     )
     return service, repository, contract_service, transaction
+
+
+@pytest.mark.asyncio
+async def test_preparation_operation_query_is_scoped_to_current_active_draft():
+    session = _SqlRecordingSession()
+
+    await ProjectRepository().read_preparation_snapshot(session, "project-1")
+
+    operation_queries = [
+        (sql, args)
+        for method, sql, args in session.calls
+        if method == "fetchone"
+        and "JOIN planning_generation_attempts attempt" in sql
+    ]
+    assert operation_queries == [
+        (
+            "SELECT attempt.operation_id,attempt.status "
+            "FROM planning_drafts draft "
+            "JOIN planning_generation_attempts attempt "
+            "ON attempt.project_id=draft.project_id "
+            "AND attempt.draft_id=draft.id "
+            "WHERE draft.project_id=%s "
+            "AND draft.active_slot=1 AND draft.status='active' "
+            "AND attempt.active_slot=1 AND attempt.status='pending' "
+            "ORDER BY attempt.created_at DESC,attempt.operation_id DESC "
+            "LIMIT 1",
+            ("project-1",),
+        )
+    ]
 
 
 @pytest.mark.asyncio

@@ -1207,6 +1207,132 @@ async def _make_preparation_bible_current(session):
     )
 
 
+async def _insert_pending_planning_attempt(
+    session,
+    *,
+    draft_id,
+    attempt_id,
+    operation_id,
+    idempotency_key,
+    fencing_token,
+    now,
+):
+    binding = await session.fetchone(
+        """SELECT head.binding_revision_id,head.revision AS binding_revision,
+                  head.content_hash AS binding_hash,item.provider_id,
+                  item.model_name_snapshot
+             FROM project_model_binding_heads head
+             JOIN project_model_binding_items item
+               ON item.binding_revision_id=head.binding_revision_id
+              AND item.task_key='planning'
+            WHERE head.project_id=%s""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert binding is not None
+    manifest = {"schemaVersion": "planning-generation-v1"}
+    await session.execute(
+        """INSERT INTO planning_generation_attempts
+           (id,project_id,draft_id,operation_id,active_slot,idempotency_key,
+            request_fingerprint,binding_revision_id,binding_revision,binding_hash,
+            provider_id,model_name_snapshot,fencing_token,lease_expires_at,
+            input_manifest_json,input_manifest_hash,result_content_json,
+            result_content_hash,loaded_draft_revision,loaded_at,failure_code,
+            status,created_at,updated_at)
+           VALUES (%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                   NULL,NULL,NULL,NULL,NULL,'pending',%s,%s)""",
+        (
+            attempt_id,
+            WRITE_FENCE_PROJECT,
+            draft_id,
+            operation_id,
+            idempotency_key,
+            "f" * 64,
+            binding["binding_revision_id"],
+            binding["binding_revision"],
+            binding["binding_hash"],
+            binding["provider_id"],
+            binding["model_name_snapshot"],
+            fencing_token,
+            now + 60_000,
+            canonical_json(manifest),
+            canonical_hash(manifest),
+            now,
+            now,
+        ),
+    )
+
+
+async def _insert_valid_chapter_session(session, *, now, chapter_num=7):
+    planning = await session.fetchone(
+        """SELECT id,revision,content_hash
+             FROM planning_revisions
+            WHERE project_id=%s AND revision=1""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert planning is not None
+    outline_id = "8f000000-0000-0000-0001-000000000001"
+    outline = {"chapter": chapter_num}
+    outline_hash = canonical_hash(outline)
+    await session.execute(
+        """INSERT INTO chapter_outline_revisions
+           (id,project_id,chapter_num,revision,parent_revision,
+            planning_revision_id,planning_revision,planning_hash,
+            canon_revision,projection_revision,projection_hash,
+            content_json,content_hash,created_at)
+           VALUES (%s,%s,%s,1,0,%s,%s,%s,0,0,%s,%s,%s,%s)""",
+        (
+            outline_id,
+            WRITE_FENCE_PROJECT,
+            chapter_num,
+            planning["id"],
+            planning["revision"],
+            planning["content_hash"],
+            "0" * 64,
+            canonical_json(outline),
+            outline_hash,
+            now,
+        ),
+    )
+    session_id = "8f000000-0000-0000-0002-000000000001"
+    await session.execute(
+        """INSERT INTO chapter_sessions
+           (id,project_id,planning_revision_id,planning_revision,planning_hash,
+            story_block_id,story_block_revision,story_block_hash,
+            chapter_outline_revision_id,chapter_outline_revision,
+            chapter_outline_hash,chapter_num,expected_canon_revision,status,
+            created_at,finalized_at)
+           VALUES (%s,%s,%s,%s,%s,%s,1,%s,%s,1,%s,%s,0,'drafting',%s,NULL)""",
+        (
+            session_id,
+            WRITE_FENCE_PROJECT,
+            planning["id"],
+            planning["revision"],
+            planning["content_hash"],
+            "8f000000-0000-0000-0003-000000000001",
+            "1" * 64,
+            outline_id,
+            outline_hash,
+            chapter_num,
+            now,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO working_drafts
+           (id,project_id,chapter_session_id,revision,content,content_hash,
+            source_payload_json,updated_at)
+           VALUES (%s,%s,%s,1,%s,%s,%s,%s)""",
+        (
+            "8f000000-0000-0000-0004-000000000001",
+            WRITE_FENCE_PROJECT,
+            session_id,
+            "working draft",
+            canonical_hash("working draft"),
+            canonical_json({}),
+            now,
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_preparation_keeps_confirmed_planning_as_archived_read_only_entry(
     disposable_mysql,
@@ -1313,6 +1439,151 @@ async def test_preparation_recovers_real_pending_planning_operation_without_secr
         "apiKey",
     ):
         assert forbidden not in str(public)
+
+
+@pytest.mark.asyncio
+async def test_preparation_chooses_pending_attempt_for_current_active_draft(
+    disposable_mysql,
+):
+    transaction, _, now = await _prepare_planning_race(disposable_mysql)
+    await _make_preparation_bible_current(disposable_mysql.session)
+    await disposable_mysql.session.execute(
+        """UPDATE planning_drafts
+              SET status='superseded'
+            WHERE project_id=%s
+              AND id='8d000000-0000-0000-0001-000000000001'""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    await _write_current_planning_draft(
+        transaction,
+        WRITE_FENCE_PROJECT,
+        now + 1,
+    )
+    await _insert_pending_planning_attempt(
+        disposable_mysql.session,
+        draft_id="8d000000-0000-0000-0001-000000000001",
+        attempt_id="8e000000-0000-0000-0004-000000000001",
+        operation_id="8e000000-0000-0000-0004-000000000002",
+        idempotency_key="old-draft-token-2",
+        fencing_token=2,
+        now=now + 2,
+    )
+    current_operation_id = "8e000000-0000-0000-0004-000000000003"
+    await _insert_pending_planning_attempt(
+        disposable_mysql.session,
+        draft_id="8d000000-0000-0000-0001-000000000003",
+        attempt_id="8e000000-0000-0000-0004-000000000004",
+        operation_id=current_operation_id,
+        idempotency_key="current-draft-token-1",
+        fencing_token=1,
+        now=now + 3,
+    )
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    result = await _preparation_service(
+        transaction,
+        read_connection,
+    ).preparation(WRITE_FENCE_PROJECT)
+
+    assert result.next_action == "recover_planning_operation"
+    assert result.planning_operation is not None
+    assert result.planning_operation.operation_id == current_operation_id
+
+
+@pytest.mark.asyncio
+async def test_preparation_ignores_old_draft_attempt_and_continues_writing(
+    disposable_mysql,
+):
+    transaction, _, now = await _prepare_planning_race(disposable_mysql)
+    await _make_preparation_bible_current(disposable_mysql.session)
+    await disposable_mysql.session.execute(
+        """UPDATE planning_drafts
+              SET status='superseded'
+            WHERE project_id=%s
+              AND id='8d000000-0000-0000-0001-000000000001'""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    await _insert_pending_planning_attempt(
+        disposable_mysql.session,
+        draft_id="8d000000-0000-0000-0001-000000000001",
+        attempt_id="8e000000-0000-0000-0005-000000000001",
+        operation_id="8e000000-0000-0000-0005-000000000002",
+        idempotency_key="old-draft-only",
+        fencing_token=2,
+        now=now + 2,
+    )
+    await _insert_valid_chapter_session(
+        disposable_mysql.session,
+        now=now + 3,
+    )
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    result = await _preparation_service(
+        transaction,
+        read_connection,
+    ).preparation(WRITE_FENCE_PROJECT)
+
+    assert result.planning_operation is None
+    assert result.next_action == "continue_writing"
+    assert result.target_path.endswith("/write/chapters/7")
+
+
+@pytest.mark.asyncio
+async def test_preparation_operation_selection_is_stable_when_tokens_and_times_match(
+    disposable_mysql,
+):
+    transaction, _, now = await _prepare_planning_race(disposable_mysql)
+    await _make_preparation_bible_current(disposable_mysql.session)
+    await disposable_mysql.session.execute(
+        """UPDATE planning_drafts
+              SET status='superseded'
+            WHERE project_id=%s
+              AND id='8d000000-0000-0000-0001-000000000001'""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    await _write_current_planning_draft(
+        transaction,
+        WRITE_FENCE_PROJECT,
+        now + 1,
+    )
+    await _insert_pending_planning_attempt(
+        disposable_mysql.session,
+        draft_id="8d000000-0000-0000-0001-000000000001",
+        attempt_id="8e000000-0000-0000-0006-000000000001",
+        operation_id="8e000000-0000-0000-0006-000000000099",
+        idempotency_key="same-token-time-old",
+        fencing_token=1,
+        now=now + 2,
+    )
+    current_operation_id = "8e000000-0000-0000-0006-000000000001"
+    await _insert_pending_planning_attempt(
+        disposable_mysql.session,
+        draft_id="8d000000-0000-0000-0001-000000000003",
+        attempt_id="8e000000-0000-0000-0006-000000000002",
+        operation_id=current_operation_id,
+        idempotency_key="same-token-time-current",
+        fencing_token=1,
+        now=now + 2,
+    )
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    service = _preparation_service(transaction, read_connection)
+    first = await service.preparation(WRITE_FENCE_PROJECT)
+    second = await service.preparation(WRITE_FENCE_PROJECT)
+
+    assert first.planning_operation is not None
+    assert second.planning_operation is not None
+    assert first.planning_operation.operation_id == current_operation_id
+    assert second.planning_operation.operation_id == current_operation_id
 
 
 class _ArchiveAttemptRepository(ProjectRepository):

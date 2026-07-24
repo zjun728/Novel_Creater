@@ -193,10 +193,15 @@ class ProjectRepository:
             (project_id,),
         )
         planning_operation = await session.fetchone(
-            """SELECT operation_id,status
-               FROM planning_generation_attempts
-               WHERE project_id=%s AND active_slot=1 AND status='pending'
-               ORDER BY fencing_token DESC
+            """SELECT attempt.operation_id,attempt.status
+               FROM planning_drafts draft
+               JOIN planning_generation_attempts attempt
+                 ON attempt.project_id=draft.project_id
+                AND attempt.draft_id=draft.id
+               WHERE draft.project_id=%s
+                 AND draft.active_slot=1 AND draft.status='active'
+                 AND attempt.active_slot=1 AND attempt.status='pending'
+               ORDER BY attempt.created_at DESC,attempt.operation_id DESC
                LIMIT 1""",
             (project_id,),
         )
