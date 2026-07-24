@@ -439,6 +439,141 @@ test('planning client uses revisioned aggregate paths and strict write allowlist
   assert.equal(JSON.stringify(calls).includes('must-not-send'), false)
 })
 
+test('planning generation uses encoded paths and closed request and response DTOs', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  const secret = 'sk-must-not-cross-planning-client'
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse({
+      operationId: 'operation/1',
+      status: 'succeeded',
+      failureCode: null,
+      model: {
+        providerId: 'provider-1',
+        modelName: 'deepseek-v4-flash',
+        apiKey: secret,
+        runtime: { baseURL: `https://${secret}@provider.invalid` },
+      },
+      loaded: true,
+      loadedDraftRevision: 3,
+      provider: { apiKey: secret },
+      prompt: secret,
+      rawOutput: secret,
+      manifest: { secret },
+      dsn: `mysql://root:${secret}@database/novel`,
+    })
+  }
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const generated = await api.planning.generateDraft(
+      'project/1',
+      'draft/1',
+      {
+        draftRevision: 2,
+        draftHash: 'a'.repeat(64),
+        idempotencyKey: 'planning-generate-1',
+        authorInstructions: '加强群像冲突',
+        provider: { apiKey: secret },
+        model: secret,
+        prompt: secret,
+        rawOutput: secret,
+        manifest: { secret },
+        dsn: secret,
+      },
+    )
+    const queried = await api.planning.getOperation('project/1', 'operation/1')
+
+    assert.deepEqual(calls.map(call => [
+      call.options.method,
+      new URL(call.url).pathname,
+    ]), [
+      ['POST', '/api/projects/project%2F1/planning/drafts/draft%2F1/generate'],
+      ['GET', '/api/projects/project%2F1/planning/operations/operation%2F1'],
+    ])
+    assert.deepEqual(bodyOf(calls[0]), {
+      draftRevision: 2,
+      draftHash: 'a'.repeat(64),
+      idempotencyKey: 'planning-generate-1',
+      authorInstructions: '加强群像冲突',
+    })
+    assert.equal(bodyOf(calls[1]), undefined)
+    const expected = {
+      operationId: 'operation/1',
+      status: 'succeeded',
+      failureCode: null,
+      model: {
+        providerId: 'provider-1',
+        modelName: 'deepseek-v4-flash',
+      },
+      loaded: true,
+      loadedDraftRevision: 3,
+    }
+    assert.deepEqual(generated, expected)
+    assert.deepEqual(queried, expected)
+    assert.equal(JSON.stringify({ generated, queried }).includes(secret), false)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('planning operation response fails closed with a fixed secret-safe error', async () => {
+  const originalFetch = global.fetch
+  const secret = 'sk-malicious-operation-response'
+  global.fetch = async () => jsonResponse({
+    operationId: 'operation-1',
+    status: 'invented',
+    failureCode: secret,
+    model: { providerId: secret, modelName: secret },
+    loaded: true,
+    loadedDraftRevision: null,
+    rawOutput: secret,
+  })
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await assert.rejects(
+      api.planning.getOperation('project-1', 'operation-1'),
+      error => {
+        assert.match(error.message, /invalid planning operation response/i)
+        assert.equal(String(error).includes(secret), false)
+        return true
+      },
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('planning operation model summary fail-closes encoded credential text', async () => {
+  const originalFetch = global.fetch
+  const secret = 'ENCODED_MODEL_SECRET'
+  global.fetch = async () => jsonResponse({
+    operationId: 'operation-1',
+    status: 'pending',
+    failureCode: null,
+    model: {
+      providerId: 'provider-1',
+      modelName: `Authorization%253ABearer%2520${secret}`,
+    },
+    loaded: false,
+    loadedDraftRevision: null,
+  })
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const result = await api.planning.getOperation('project-1', 'operation-1')
+    assert.deepEqual(result.model, {
+      providerId: 'unavailable',
+      modelName: 'unavailable',
+    })
+    assert.equal(JSON.stringify(result).includes(secret), false)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
 test('planning save recursively allows only the closed draft DTO fields', async () => {
   const calls = await captureRequests(async api => {
     await api.planning.saveDraft('project-1', 'draft-1', {

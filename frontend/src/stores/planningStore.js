@@ -93,8 +93,13 @@ export const usePlanningStore = defineStore('planning', () => {
   const loading = ref(false)
   const saving = ref(false)
   const confirming = ref(false)
+  const generating = ref(false)
+  const reconciling = ref(false)
+  const generationOperation = shallowRef(null)
+  const generationOutcomeUnknown = ref(false)
   const loadGuard = createLatestRequestGuard()
   const mutationGuard = createLatestRequestGuard()
+  const generationGuard = createLatestRequestGuard()
   let stateGeneration = 0
 
   function enterProject(nextProjectId) {
@@ -104,6 +109,7 @@ export const usePlanningStore = defineStore('planning', () => {
       stateGeneration += 1
       loadGuard.invalidate()
       mutationGuard.invalidate()
+      generationGuard.invalidate()
       projectId.value = normalized
       state.value = null
       history.value = []
@@ -113,6 +119,10 @@ export const usePlanningStore = defineStore('planning', () => {
       loading.value = false
       saving.value = false
       confirming.value = false
+      generating.value = false
+      reconciling.value = false
+      generationOperation.value = null
+      generationOutcomeUnknown.value = false
     }
     return normalized
   }
@@ -174,9 +184,30 @@ export const usePlanningStore = defineStore('planning', () => {
     }
   }
 
+  async function ensureLoaded(nextProjectId, options = {}) {
+    const targetProjectId = String(nextProjectId || '')
+    if (!targetProjectId) throw new TypeError('projectId is required')
+    if (
+      options?.force !== true
+      && projectId.value === targetProjectId
+      && state.value !== null
+    ) {
+      return state.value
+    }
+    const loaded = await load(targetProjectId)
+    if (
+      options?.force === true
+      && projectId.value === targetProjectId
+      && !generationOperation.value?.operationId
+    ) {
+      generationOutcomeUnknown.value = false
+    }
+    return loaded
+  }
+
   async function createDraft(nextProjectId, command) {
     const targetProjectId = enterProject(nextProjectId)
-    if (saving.value || confirming.value) {
+    if (saving.value || confirming.value || generating.value) {
       throw new Error('已有操作正在进行')
     }
     const requestGeneration = mutationGuard.begin()
@@ -293,7 +324,7 @@ export const usePlanningStore = defineStore('planning', () => {
     if (dirty.value) {
       throw new Error('请先保存本地修改，再确认规划')
     }
-    if (saving.value || confirming.value) {
+    if (saving.value || confirming.value || generating.value) {
       throw new Error('已有操作正在进行')
     }
     const requestGeneration = mutationGuard.begin()
@@ -398,6 +429,267 @@ export const usePlanningStore = defineStore('planning', () => {
     }
   }
 
+  function generationIsCurrent(requestGeneration, targetProjectId) {
+    return (
+      projectId.value === targetProjectId
+      && generationGuard.isCurrent(requestGeneration)
+    )
+  }
+
+  function safeRecoveryOperationId(failure) {
+    const value = failure?.operationId
+    if (
+      typeof value !== 'string'
+      || !value
+      || value.length > 512
+      || !/^[A-Za-z0-9][A-Za-z0-9._~/-]*$/.test(value)
+    ) {
+      return ''
+    }
+    return value
+  }
+
+  function outcomeUnknownFailure(hasOperationId) {
+    const failure = new Error(
+      hasOperationId
+        ? '生成结果未知，请使用操作编号重新核对'
+        : '生成结果未知且没有操作编号；本地内容已保留，请重新加载后恢复',
+    )
+    failure.code = 'PlanningGenerationOutcomeUnknown'
+    failure.status = 0
+    return failure
+  }
+
+  function isUnknownTransportFailure(failure) {
+    const status = Number(failure?.status || 0)
+    const code = String(failure?.code || '')
+    return (
+      status === 0
+      && (
+        !code
+        || code === 'request_failed'
+        || code === 'request_timeout'
+        || code === 'invalid_response'
+      )
+    )
+  }
+
+  async function acceptGenerationOperation(
+    result,
+    {
+      requestGeneration,
+      targetProjectId,
+      targetDraftId,
+    },
+  ) {
+    if (!generationIsCurrent(requestGeneration, targetProjectId)) return result
+    if (
+      generationOperation.value
+      && generationOperation.value.operationId !== result.operationId
+    ) {
+      return result
+    }
+
+    generationOperation.value = result
+    generationOutcomeUnknown.value = false
+    if (result.status === 'pending') {
+      generating.value = true
+      error.value = null
+      return result
+    }
+
+    if (!(result.status === 'succeeded' && result.loaded === true)) {
+      generating.value = false
+      if (result.status === 'failed') {
+        error.value = {
+          status: 0,
+          code: result.failureCode || 'PlanningGenerationFailed',
+          message: '规划生成失败，本地内容未改变',
+          correlationId: '',
+        }
+      } else {
+        error.value = null
+      }
+      return result
+    }
+
+    try {
+      const loaded = await api.planning.get(targetProjectId)
+      if (
+        !generationIsCurrent(requestGeneration, targetProjectId)
+        || generationOperation.value?.operationId !== result.operationId
+      ) {
+        return result
+      }
+      const loadedDraft = loaded?.draft
+      if (
+        loaded?.projectId !== targetProjectId
+        || loadedDraft?.draftId !== targetDraftId
+        || loadedDraft?.draftRevision !== result.loadedDraftRevision
+      ) {
+        error.value = {
+          status: 0,
+          code: 'PlanningGenerationReloadMismatch',
+          message: '生成已完成，但权威工作稿状态不匹配；本地内容已保留',
+          correlationId: '',
+        }
+        return result
+      }
+
+      state.value = loaded
+      if (!dirty.value) {
+        localContent.value = editableContent(loadedDraft.content)
+        dirty.value = false
+      }
+      error.value = null
+    } catch (failure) {
+      if (
+        generationIsCurrent(requestGeneration, targetProjectId)
+        && generationOperation.value?.operationId === result.operationId
+      ) {
+        error.value = {
+          status: Number(failure?.status || 0),
+          code: 'PlanningGenerationRefreshFailed',
+          message: '生成已完成，但刷新权威工作稿失败；本地内容已保留',
+          correlationId: String(failure?.correlationId || ''),
+        }
+      }
+    } finally {
+      if (
+        generationIsCurrent(requestGeneration, targetProjectId)
+        && generationOperation.value?.operationId === result.operationId
+      ) {
+        generating.value = false
+      }
+    }
+    return result
+  }
+
+  async function generateDraft(command) {
+    const currentDraft = state.value?.draft
+    const targetProjectId = projectId.value
+    if (!targetProjectId || !currentDraft) {
+      throw new TypeError('An active Planning draft is required')
+    }
+    if (state.value?.capabilities?.generate !== true) {
+      throw new Error('规划生成模型未就绪')
+    }
+    if (dirty.value) {
+      throw new Error('请先保存本地修改，再生成规划')
+    }
+    if (generationOutcomeUnknown.value) {
+      throw new Error('上次生成结果未知，请先重新加载后再生成')
+    }
+    if (generating.value || reconciling.value) {
+      throw new Error('已有规划生成正在进行')
+    }
+    if (saving.value || confirming.value) {
+      throw new Error('已有操作正在进行')
+    }
+
+    const targetDraftId = currentDraft.draftId
+    const requestGeneration = generationGuard.begin()
+    generating.value = true
+    generationOperation.value = null
+    generationOutcomeUnknown.value = false
+    error.value = null
+    try {
+      const result = await api.planning.generateDraft(
+        targetProjectId,
+        targetDraftId,
+        {
+          draftRevision: currentDraft.draftRevision,
+          draftHash: currentDraft.contentHash,
+          idempotencyKey: command.idempotencyKey,
+          authorInstructions: command.authorInstructions,
+        },
+      )
+      if (!generationIsCurrent(requestGeneration, targetProjectId)) {
+        return result
+      }
+      generationOperation.value = result
+      return await acceptGenerationOperation(result, {
+        requestGeneration,
+        targetProjectId,
+        targetDraftId,
+      })
+    } catch (failure) {
+      if (!generationIsCurrent(requestGeneration, targetProjectId)) {
+        throw failure
+      }
+      if (!isUnknownTransportFailure(failure)) {
+        generating.value = false
+        generationOperation.value = null
+        generationOutcomeUnknown.value = false
+        error.value = publicError(failure)
+        throw failure
+      }
+      const operationId = safeRecoveryOperationId(failure)
+      if (operationId) {
+        generationOperation.value = { operationId }
+        generationOutcomeUnknown.value = true
+        generating.value = true
+      } else {
+        generationOperation.value = null
+        generationOutcomeUnknown.value = true
+        generating.value = false
+      }
+      const publicFailure = outcomeUnknownFailure(Boolean(operationId))
+      error.value = publicError(publicFailure)
+      throw publicFailure
+    }
+  }
+
+  async function reconcileGeneration() {
+    const targetProjectId = projectId.value
+    const operationId = generationOperation.value?.operationId
+    const targetDraftId = state.value?.draft?.draftId
+    if (!targetProjectId || !operationId || !targetDraftId) {
+      throw new Error('没有可重新核对的规划生成操作')
+    }
+    if (reconciling.value) {
+      throw new Error('规划生成结果正在核对')
+    }
+
+    const requestGeneration = generationGuard.begin()
+    reconciling.value = true
+    generating.value = true
+    try {
+      const result = await api.planning.getOperation(
+        targetProjectId,
+        operationId,
+      )
+      if (
+        !generationIsCurrent(requestGeneration, targetProjectId)
+        || generationOperation.value?.operationId !== operationId
+      ) {
+        return result
+      }
+      return await acceptGenerationOperation(result, {
+        requestGeneration,
+        targetProjectId,
+        targetDraftId,
+      })
+    } catch (failure) {
+      if (
+        generationIsCurrent(requestGeneration, targetProjectId)
+        && generationOperation.value?.operationId === operationId
+      ) {
+        generationOutcomeUnknown.value = true
+        generating.value = true
+        error.value = publicError(failure)
+      }
+      throw failure
+    } finally {
+      if (
+        generationIsCurrent(requestGeneration, targetProjectId)
+        && generationOperation.value?.operationId === operationId
+      ) {
+        reconciling.value = false
+      }
+    }
+  }
+
   function discardLocal() {
     localContent.value = editableContent(state.value?.draft?.content)
     dirty.value = false
@@ -407,9 +699,14 @@ export const usePlanningStore = defineStore('planning', () => {
     stateGeneration += 1
     loadGuard.invalidate()
     mutationGuard.invalidate()
+    generationGuard.invalidate()
     loading.value = false
     saving.value = false
     confirming.value = false
+    generating.value = false
+    reconciling.value = false
+    generationOperation.value = null
+    generationOutcomeUnknown.value = false
   }
 
   return {
@@ -422,11 +719,18 @@ export const usePlanningStore = defineStore('planning', () => {
     loading,
     saving,
     confirming,
+    generating,
+    reconciling,
+    generationOperation,
+    generationOutcomeUnknown,
     load,
+    ensureLoaded,
     createDraft,
     editLocal,
     saveDraft,
     confirmDraft,
+    generateDraft,
+    reconcileGeneration,
     discardLocal,
     invalidate,
   }

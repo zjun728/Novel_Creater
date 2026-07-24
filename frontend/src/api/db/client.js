@@ -233,6 +233,108 @@ function planningDraftContent(value) {
   }
 }
 
+const PLANNING_OPERATION_STATUSES = new Set([
+  'pending',
+  'succeeded',
+  'failed',
+  'superseded',
+])
+const PLANNING_FAILURE_CODES = new Set([
+  'PlanningGenerationCancelled',
+  'PlanningGenerationFailed',
+  'PlanningProviderFailed',
+  'PlanningProviderResultInvalid',
+])
+const PRIVATE_OPERATION_TEXT = /(?:api[-_ ]?key|authorization|bearer|password|passwd|secret|token|dsn|mysql:\/\/|https?:\/\/|(?:sk|rk|pk)[-_][A-Za-z0-9])/i
+
+function publicPlanningLabel(value) {
+  if (
+    typeof value !== 'string'
+    || !value
+    || value !== value.trim()
+    || value.length > 512
+    || /[\u0000-\u001f\u007f]/.test(value)
+    || PRIVATE_OPERATION_TEXT.test(value)
+  ) {
+    return null
+  }
+  return value
+}
+
+function planningOperationResponse(value, expectedOperationId) {
+  const invalid = () => {
+    throw new TypeError('Invalid Planning operation response')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
+
+  const operationId = publicPlanningLabel(value.operationId)
+  if (!operationId || (expectedOperationId && operationId !== expectedOperationId)) {
+    invalid()
+  }
+  const status = value.status
+  const failureCode = value.failureCode
+  const loaded = value.loaded
+  const loadedDraftRevision = value.loadedDraftRevision
+  const revisionIsPositive = (
+    Number.isInteger(loadedDraftRevision) && loadedDraftRevision > 0
+  )
+  const commonValid = (
+    PLANNING_OPERATION_STATUSES.has(status)
+    && typeof loaded === 'boolean'
+    && (
+      failureCode === null
+      || (
+        typeof failureCode === 'string'
+        && PLANNING_FAILURE_CODES.has(failureCode)
+      )
+    )
+    && (loadedDraftRevision === null || revisionIsPositive)
+  )
+  const stateValid = commonValid && (
+    (
+      status === 'pending'
+      && failureCode === null
+      && loaded === false
+      && loadedDraftRevision === null
+    )
+    || (
+      status === 'succeeded'
+      && failureCode === null
+      && (
+        (loaded === false && loadedDraftRevision === null)
+        || (loaded === true && revisionIsPositive)
+      )
+    )
+    || (
+      status === 'failed'
+      && PLANNING_FAILURE_CODES.has(failureCode)
+      && loaded === false
+      && loadedDraftRevision === null
+    )
+    || (
+      status === 'superseded'
+      && failureCode === null
+      && loaded === false
+      && loadedDraftRevision === null
+    )
+  )
+  if (!stateValid) invalid()
+
+  const providerId = publicPlanningLabel(value.model?.providerId)
+  const modelName = publicPlanningLabel(value.model?.modelName)
+  const model = providerId && modelName
+    ? { providerId, modelName }
+    : { providerId: 'unavailable', modelName: 'unavailable' }
+  return {
+    operationId,
+    status,
+    failureCode,
+    model,
+    loaded,
+    loadedDraftRevision,
+  }
+}
+
 function bibleCloneSource(value = {}) {
   const hasDraftId = value?.sourceDraftId !== undefined && value.sourceDraftId !== null
   const hasRevision = value?.sourceRevision !== undefined && value.sourceRevision !== null
@@ -681,6 +783,23 @@ export const api = {
         expectedDraftHash: data.expectedDraftHash,
         idempotencyKey: data.idempotencyKey,
       },
+    ),
+    generateDraft: async (projectId, draftId, data) => planningOperationResponse(
+      await post(
+        `/projects/${segment(projectId)}/planning/drafts/${segment(draftId)}/generate`,
+        pickDefined(data, [
+          'draftRevision',
+          'draftHash',
+          'idempotencyKey',
+          'authorInstructions',
+        ]),
+      ),
+    ),
+    getOperation: async (projectId, operationId) => planningOperationResponse(
+      await get(
+        `/projects/${segment(projectId)}/planning/operations/${segment(operationId)}`,
+      ),
+      String(operationId),
     ),
   },
 

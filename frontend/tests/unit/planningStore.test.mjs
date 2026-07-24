@@ -61,6 +61,27 @@ function state(projectId = 'project-1', activeDraft = null) {
   }
 }
 
+function readyState(projectId = 'project-1', activeDraft = draft()) {
+  const result = state(projectId, activeDraft)
+  result.capabilities.generate = true
+  return result
+}
+
+function operation(overrides = {}) {
+  return {
+    operationId: 'operation-1',
+    status: 'succeeded',
+    failureCode: null,
+    model: {
+      providerId: 'provider-1',
+      modelName: 'deepseek-v4-flash',
+    },
+    loaded: true,
+    loadedDraftRevision: 2,
+    ...overrides,
+  }
+}
+
 function deferred() {
   let resolve
   let reject
@@ -90,7 +111,433 @@ test('planning transport exposes only the revisioned aggregate endpoints', () =>
   assert.equal(typeof api.planning.createDraft, 'function')
   assert.equal(typeof api.planning.saveDraft, 'function')
   assert.equal(typeof api.planning.confirmDraft, 'function')
+  assert.equal(typeof api.planning.generateDraft, 'function')
+  assert.equal(typeof api.planning.getOperation, 'function')
   assert.equal(api.planning.createInitial, undefined)
+})
+
+test('ensureLoaded preserves dirty content for same-project route switches and reload is explicit', async () => {
+  let reads = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => {
+      reads += 1
+      return state('project-1', draft(reads === 1 ? HASH : NEXT_HASH, reads))
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.ensureLoaded('project-1')
+    const local = { ...store.localContent, activeStoryBlockRef: 'author-edit' }
+    store.editLocal(local)
+
+    await store.ensureLoaded('project-1')
+
+    assert.equal(reads, 1)
+    assert.deepEqual(store.localContent, local)
+    assert.equal(store.dirty, true)
+
+    await store.ensureLoaded('project-1', { force: true })
+    assert.equal(reads, 2)
+    assert.equal(store.state.draft.draftRevision, 2)
+    assert.equal(store.dirty, false)
+  })
+})
+
+test('one active generation sends one POST and pending reconciliation uses GET only', async () => {
+  const pendingPost = deferred()
+  const calls = []
+  await withApiMethods([
+    [api.planning, 'get', async () => readyState('project-1', draft())],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async (projectId, draftId, command) => {
+      calls.push(['post', projectId, draftId, structuredClone(command)])
+      return pendingPost.promise
+    }],
+    [api.planning, 'getOperation', async (projectId, operationId) => {
+      calls.push(['get', projectId, operationId])
+      return operation({
+        operationId,
+        status: 'superseded',
+        loaded: false,
+        loadedDraftRevision: null,
+      })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    const first = store.generateDraft({
+      idempotencyKey: 'generate-1',
+      authorInstructions: '加强人物冲突',
+    })
+    assert.equal(store.generating, true)
+    await assert.rejects(
+      store.generateDraft({
+        idempotencyKey: 'generate-2',
+        authorInstructions: '',
+      }),
+      /generation.*progress|生成.*进行/i,
+    )
+    pendingPost.resolve(operation({
+      status: 'pending',
+      loaded: false,
+      loadedDraftRevision: null,
+    }))
+    await first
+    assert.equal(store.generating, true)
+
+    await store.reconcileGeneration()
+
+    assert.deepEqual(calls, [
+      ['post', 'project-1', 'draft-1', {
+        draftRevision: 1,
+        draftHash: HASH,
+        idempotencyKey: 'generate-1',
+        authorInstructions: '加强人物冲突',
+      }],
+      ['get', 'project-1', 'operation-1'],
+    ])
+    assert.equal(store.generationOperation.status, 'superseded')
+    assert.equal(store.generating, false)
+  })
+})
+
+test('unknown POST result never retries and preserves local content with explicit recovery state', async () => {
+  let posts = 0
+  let gets = 0
+  const unknown = Object.assign(new Error('network result unknown'), {
+    code: 'request_timeout',
+    operationId: 'operation-unknown',
+  })
+  await withApiMethods([
+    [api.planning, 'get', async () => readyState('project-1', draft())],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => {
+      posts += 1
+      throw unknown
+    }],
+    [api.planning, 'getOperation', async (_projectId, operationId) => {
+      gets += 1
+      return operation({
+        operationId,
+        status: 'failed',
+        failureCode: 'PlanningGenerationFailed',
+        loaded: false,
+        loadedDraftRevision: null,
+      })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    const before = structuredClone(store.localContent)
+
+    await assert.rejects(
+      store.generateDraft({ idempotencyKey: 'unknown-1', authorInstructions: '' }),
+      error => {
+        assert.equal(error.code, 'PlanningGenerationOutcomeUnknown')
+        assert.match(error.message, /结果未知.*操作编号/)
+        assert.equal(error.message.includes(unknown.message), false)
+        return true
+      },
+    )
+
+    assert.equal(posts, 1)
+    assert.equal(gets, 0)
+    assert.equal(store.generationOutcomeUnknown, true)
+    assert.equal(store.generationOperation.operationId, 'operation-unknown')
+    assert.deepEqual(store.localContent, before)
+
+    await store.reconcileGeneration()
+    assert.equal(posts, 1)
+    assert.equal(gets, 1)
+    assert.equal(store.generationOutcomeUnknown, false)
+    assert.equal(store.generating, false)
+  })
+})
+
+test('unknown POST result without operation id is recoverable and never guesses success', async () => {
+  let posts = 0
+  const failure = Object.assign(new Error('timeout detail must not surface'), {
+    code: 'request_timeout',
+  })
+  await withApiMethods([
+    [api.planning, 'get', async () => readyState('project-1', draft())],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => {
+      posts += 1
+      throw failure
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    const before = structuredClone(store.localContent)
+
+    await assert.rejects(
+      store.generateDraft({ idempotencyKey: 'unknown-no-id', authorInstructions: '' }),
+      error => {
+        assert.equal(error.code, 'PlanningGenerationOutcomeUnknown')
+        assert.match(error.message, /结果未知.*没有操作编号/)
+        assert.equal(error.message.includes(failure.message), false)
+        return true
+      },
+    )
+
+    assert.equal(store.generating, false)
+    assert.equal(store.generationOperation, null)
+    assert.equal(store.error.code, 'PlanningGenerationOutcomeUnknown')
+    assert.match(store.error.message, /结果未知.*操作编号|operation.*unknown/i)
+    assert.deepEqual(store.localContent, before)
+    await assert.rejects(
+      store.generateDraft({ idempotencyKey: 'must-not-repost', authorInstructions: '' }),
+      /结果未知.*重新加载/,
+    )
+    assert.equal(posts, 1)
+
+    await store.ensureLoaded('project-1', { force: true })
+    assert.equal(store.generationOutcomeUnknown, false)
+  })
+})
+
+test('known HTTP generation rejection is not mislabeled as an unknown outcome', async () => {
+  const conflict = Object.assign(new Error('规划版本已变化'), {
+    status: 409,
+    code: 'PlanningGenerationConflict',
+    correlationId: 'corr-known',
+  })
+  await withApiMethods([
+    [api.planning, 'get', async () => readyState('project-1', draft())],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => { throw conflict }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+
+    await assert.rejects(
+      store.generateDraft({ idempotencyKey: 'known-conflict', authorInstructions: '' }),
+      conflict,
+    )
+
+    assert.equal(store.generating, false)
+    assert.equal(store.generationOutcomeUnknown, false)
+    assert.equal(store.generationOperation, null)
+    assert.equal(store.error.code, 'PlanningGenerationConflict')
+  })
+})
+
+test('loaded generation reloads authoritative exact draft but never overwrites a dirty local edit', async () => {
+  const generated = deferred()
+  let reads = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => {
+      reads += 1
+      return readyState('project-1', reads === 1 ? draft() : draft(NEXT_HASH, 2))
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => generated.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    const generating = store.generateDraft({
+      idempotencyKey: 'generate-loaded',
+      authorInstructions: '',
+    })
+    const local = { ...store.localContent, activeStoryBlockRef: 'author-edit' }
+    store.editLocal(local)
+    generated.resolve(operation())
+    await generating
+
+    assert.equal(reads, 2)
+    assert.equal(store.state.draft.draftRevision, 2)
+    assert.deepEqual(store.localContent, local)
+    assert.equal(store.dirty, true)
+    assert.equal(store.generationOperation.status, 'succeeded')
+    assert.equal(store.generating, false)
+  })
+})
+
+test('loaded generation remains the single active generation until authority reload settles', async () => {
+  const reload = deferred()
+  let reads = 0
+  let posts = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => {
+      reads += 1
+      if (reads === 1) return readyState('project-1', draft())
+      return reload.promise
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => {
+      posts += 1
+      return operation()
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    const first = store.generateDraft({
+      idempotencyKey: 'generate-authority-reload',
+      authorInstructions: '',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    assert.equal(store.generating, true)
+    await assert.rejects(
+      store.generateDraft({
+        idempotencyKey: 'must-not-post',
+        authorInstructions: '',
+      }),
+      /generation.*progress|生成.*进行/i,
+    )
+    assert.equal(posts, 1)
+
+    reload.resolve(readyState('project-1', draft(NEXT_HASH, 2)))
+    await first
+    assert.equal(store.generating, false)
+  })
+})
+
+test('failed, superseded and unloaded results never reload or overwrite local content', async () => {
+  for (const result of [
+    operation({
+      status: 'failed',
+      failureCode: 'PlanningGenerationFailed',
+      loaded: false,
+      loadedDraftRevision: null,
+    }),
+    operation({
+      status: 'superseded',
+      loaded: false,
+      loadedDraftRevision: null,
+    }),
+    operation({
+      status: 'succeeded',
+      loaded: false,
+      loadedDraftRevision: null,
+    }),
+  ]) {
+    let reads = 0
+    await withApiMethods([
+      [api.planning, 'get', async () => {
+        reads += 1
+        return readyState('project-1', draft())
+      }],
+      [api.planning, 'history', async () => ({ items: [] })],
+      [api.planning, 'generateDraft', async () => result],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = usePlanningStore()
+      await store.load('project-1')
+      const before = structuredClone(store.localContent)
+      await store.generateDraft({
+        idempotencyKey: `generate-${result.status}`,
+        authorInstructions: '',
+      })
+      assert.equal(reads, 1)
+      assert.deepEqual(store.localContent, before)
+      assert.equal(store.dirty, false)
+    })
+  }
+})
+
+test('late old-project and old-operation results cannot overwrite current state', async () => {
+  const oldPost = deferred()
+  const oldGet = deferred()
+  await withApiMethods([
+    [api.planning, 'get', async projectId => readyState(projectId, {
+      ...draft(),
+      projectId,
+      draftId: `${projectId}-draft`,
+    })],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async projectId => (
+      projectId === 'project-1' ? oldPost.promise : operation({
+        operationId: 'operation-new',
+        loaded: false,
+        loadedDraftRevision: null,
+      })
+    )],
+    [api.planning, 'getOperation', async () => oldGet.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    const first = store.generateDraft({
+      idempotencyKey: 'old-project',
+      authorInstructions: '',
+    })
+    await store.load('project-2')
+    oldPost.resolve(operation({
+      operationId: 'operation-old',
+      loaded: false,
+      loadedDraftRevision: null,
+    }))
+    await first
+    assert.equal(store.projectId, 'project-2')
+    assert.equal(store.generationOperation, null)
+
+    const second = await store.generateDraft({
+      idempotencyKey: 'new-operation',
+      authorInstructions: '',
+    })
+    assert.equal(second.operationId, 'operation-new')
+    store.generationOperation = operation({
+      operationId: 'operation-old',
+      status: 'pending',
+      loaded: false,
+      loadedDraftRevision: null,
+    })
+    const reconcile = store.reconcileGeneration()
+    store.generationOperation = operation({
+      operationId: 'operation-new',
+      loaded: false,
+      loadedDraftRevision: null,
+    })
+    oldGet.resolve(operation({
+      operationId: 'operation-old',
+      loaded: true,
+      loadedDraftRevision: 2,
+    }))
+    await reconcile
+    assert.equal(store.generationOperation.operationId, 'operation-new')
+    assert.equal(store.state.draft.draftId, 'project-2-draft')
+  })
+})
+
+test('model-unready rejects only generation while manual editing and save remain available', async () => {
+  let generates = 0
+  let saves = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => state('project-1', draft())],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => {
+      generates += 1
+      return operation()
+    }],
+    [api.planning, 'saveDraft', async () => {
+      saves += 1
+      return draft(NEXT_HASH, 2)
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    await assert.rejects(
+      store.generateDraft({ idempotencyKey: 'unready', authorInstructions: '' }),
+      /model.*not ready|模型.*未就绪/i,
+    )
+    assert.equal(generates, 0)
+
+    store.editLocal({ ...store.localContent, activeStoryBlockRef: 'manual' })
+    await store.saveDraft({ idempotencyKey: 'manual-save' })
+    assert.equal(saves, 1)
+    assert.equal(store.dirty, false)
+  })
 })
 
 test('planning store loads state, history and starts an explicit draft', async () => {
