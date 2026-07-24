@@ -34,6 +34,47 @@ PLANNING_GENERATION_LEASE_MS = 240_000
 PLANNING_AUTHOR_INSTRUCTIONS_MAX_LENGTH = 4_000
 PLANNING_RESERVE_RECONCILIATION_LIMIT = 3
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+_SENSITIVE_IDEMPOTENCY_SHAPE = re.compile(
+    r"(?:^|[._:-])"
+    r"(?:(?:sk|rk|pk)[_-][A-Za-z0-9]|gh[pousr]_[A-Za-z0-9]|"
+    r"github_pat_[A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_AWS_ACCESS_KEY_SHAPE = re.compile(
+    r"(?:^|[._:-])(?:AKIA|ASIA)[A-Z0-9]{16}(?:$|[._:-])",
+    re.IGNORECASE,
+)
+_SENSITIVE_IDEMPOTENCY_MARKERS = (
+    "authorization",
+    "bearer",
+    "apikey",
+    "accesstoken",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "dsn",
+)
+
+
+def is_safe_planning_idempotency_key(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or _IDEMPOTENCY_KEY.fullmatch(value) is None
+    ):
+        return False
+    normalized = re.sub(r"[._:-]+", "", value).lower()
+    return (
+        not any(
+            marker in normalized
+            for marker in _SENSITIVE_IDEMPOTENCY_MARKERS
+        )
+        and _SENSITIVE_IDEMPOTENCY_SHAPE.search(value) is None
+        and _AWS_ACCESS_KEY_SHAPE.search(value) is None
+    )
+
+
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _BASIS_FIELDS = (
     "selection_revision",
@@ -76,6 +117,12 @@ class PlanningGenerationNotReady(PublicDomainError):
     status_code = 422
     code = "PlanningGenerationNotReady"
     message = "Planning generation prerequisites are unavailable"
+
+
+class PlanningGenerationRequestInvalid(PublicDomainError):
+    status_code = 422
+    code = "PlanningGenerationRequestInvalid"
+    message = "Planning generation request is invalid"
 
 
 class PlanningGenerationConflict(PublicDomainError):
@@ -239,13 +286,10 @@ class PlanningGenerationService:
         project_id: str,
         idempotency_key: str,
     ) -> PlanningOperationResult:
-        if (
-            not isinstance(project_id, str)
-            or not project_id.strip()
-            or not isinstance(idempotency_key, str)
-            or _IDEMPOTENCY_KEY.fullmatch(idempotency_key) is None
-        ):
+        if not isinstance(project_id, str) or not project_id.strip():
             raise PlanningGenerationOperationNotFound()
+        if not is_safe_planning_idempotency_key(idempotency_key):
+            raise PlanningGenerationRequestInvalid()
         try:
             async with self._transaction() as session:
                 operation = (
@@ -923,6 +967,10 @@ class PlanningGenerationService:
 
     @staticmethod
     def _validate(command):
+        if not is_safe_planning_idempotency_key(
+            getattr(command, "idempotency_key", None)
+        ):
+            raise PlanningGenerationRequestInvalid()
         if (
             not isinstance(command, GeneratePlanningDraft)
             or not isinstance(command.project_id, str)
@@ -932,10 +980,6 @@ class PlanningGenerationService:
             or type(command.draft_revision) is not int
             or command.draft_revision < 1
             or _HASH.fullmatch(command.draft_hash or "") is None
-            or _IDEMPOTENCY_KEY.fullmatch(
-                command.idempotency_key or ""
-            )
-            is None
             or not isinstance(command.author_instructions, str)
             or len(command.author_instructions)
             > PLANNING_AUTHOR_INSTRUCTIONS_MAX_LENGTH
@@ -956,8 +1000,10 @@ __all__ = (
     "PlanningGenerationIdempotencyConflict",
     "PlanningGenerationNotReady",
     "PlanningGenerationOperationNotFound",
+    "PlanningGenerationRequestInvalid",
     "PlanningGenerationRetryable",
     "PlanningGenerationService",
     "PlanningOperationResult",
     "PublicModelSummary",
+    "is_safe_planning_idempotency_key",
 )

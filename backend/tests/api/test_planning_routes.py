@@ -31,6 +31,30 @@ from backend.services.planning_generation import (
 
 HASH = "a" * 64
 NEXT_HASH = "b" * 64
+SENSITIVE_PLANNING_KEYS = (
+    "sk-TestSentinel123456",
+    "sk_TestSentinel123456",
+    "ghp_TestSentinel12345678901234567890",
+    "gho_TestSentinel12345678901234567890",
+    "ghu_TestSentinel12345678901234567890",
+    "ghs_TestSentinel12345678901234567890",
+    "ghr_TestSentinel12345678901234567890",
+    "github_pat_TestSentinel1234567890",
+    "AKIAABCDEFGHIJKLMNOP",
+    "ASIA1234567890ABCDEF",
+    "Authorization-Bearer-TestSentinel",
+    "bearer.TestSentinel",
+    "apiKey-TestSentinel",
+    "api_key.TestSentinel",
+    "access-token-TestSentinel",
+    "TOKEN-TestSentinel",
+    "planning.secret.attempt",
+    "PASSWORD:TestSentinel",
+    "passwd-TestSentinel",
+    "credential_TestSentinel",
+    "DSN.TestSentinel",
+    "planning%2Dencoded",
+)
 
 
 def aggregate(content_hash: str = HASH) -> PlanningAggregate:
@@ -706,6 +730,49 @@ def test_operation_by_key_not_found_is_fixed_safe_404():
     assert "missing-key" not in response.text
 
 
+def test_generation_routes_reject_sensitive_keys_before_service_calls():
+    for key in SENSITIVE_PLANNING_KEYS:
+        client, _, generation = make_client()
+        generated = client.post(
+            "/api/projects/p1/planning/drafts/draft-1/generate",
+            json={
+                "draftRevision": 1,
+                "draftHash": HASH,
+                "idempotencyKey": key,
+                "authorInstructions": "",
+            },
+        )
+        path_key = key.replace("%", "%2525")
+        recovered = client.get(
+            "/api/projects/p1/planning/operations/by-idempotency-key/"
+            f"{path_key}"
+        )
+
+        for response in (generated, recovered):
+            assert response.status_code == 422
+            assert response.json()["code"] == "PlanningRequestInvalid"
+            assert key not in response.text
+            assert "TestSentinel" not in response.text
+        assert generation.commands == []
+        assert generation.key_queries == []
+
+
+def test_generation_routes_keep_the_ordinary_closed_key_contract():
+    for key in (
+        "planning-2026.07:attempt_1",
+        "123e4567-e89b-12d3-a456-426614174000",
+    ):
+        client, _, generation = make_client()
+
+        recovered = client.get(
+            "/api/projects/p1/planning/operations/by-idempotency-key/"
+            f"{key}"
+        )
+
+        assert recovered.status_code == 200
+        assert generation.key_queries == [("p1", key)]
+
+
 @pytest.mark.parametrize(
     "extra",
     (
@@ -870,7 +937,7 @@ def test_generate_fail_closes_entire_model_for_api_key_shaped_name():
         json={
             "draftRevision": 1,
             "draftHash": HASH,
-            "idempotencyKey": "generate-secret-model",
+            "idempotencyKey": "generate-redacted-model",
             "authorInstructions": "",
         },
     )
@@ -951,7 +1018,7 @@ def test_operation_model_projection_decodes_and_rejects_secret_shapes(
             json={
                 "draftRevision": 1,
                 "draftHash": HASH,
-                "idempotencyKey": "secret-projection",
+                "idempotencyKey": "redacted-projection",
                 "authorInstructions": "",
             },
         )

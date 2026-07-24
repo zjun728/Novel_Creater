@@ -12,10 +12,34 @@ from backend.domain.planning import (
     normalize_planning_aggregate,
 )
 from backend.gateways.planning_provider import PlanningProviderError
-from backend.http_errors import ProjectArchived
+from backend.http_errors import ProjectArchived, PublicDomainError
 
 
 NOW = 2_000_000_000_000
+SENSITIVE_PLANNING_KEYS = (
+    "sk-TestSentinel123456",
+    "sk_TestSentinel123456",
+    "ghp_TestSentinel12345678901234567890",
+    "gho_TestSentinel12345678901234567890",
+    "ghu_TestSentinel12345678901234567890",
+    "ghs_TestSentinel12345678901234567890",
+    "ghr_TestSentinel12345678901234567890",
+    "github_pat_TestSentinel1234567890",
+    "AKIAABCDEFGHIJKLMNOP",
+    "ASIA1234567890ABCDEF",
+    "Authorization-Bearer-TestSentinel",
+    "bearer.TestSentinel",
+    "apiKey-TestSentinel",
+    "api_key.TestSentinel",
+    "access-token-TestSentinel",
+    "TOKEN-TestSentinel",
+    "planning.secret.attempt",
+    "PASSWORD:TestSentinel",
+    "passwd-TestSentinel",
+    "credential_TestSentinel",
+    "DSN.TestSentinel",
+    "planning%2Dencoded",
+)
 
 
 def _draft_payload(title: str = "旧卷") -> dict[str, object]:
@@ -1081,6 +1105,7 @@ async def test_get_operation_by_key_is_one_pure_read_with_no_hidden_work():
 async def test_get_operation_by_key_uses_one_fixed_safe_not_found():
     from backend.services.planning_generation import (
         PlanningGenerationOperationNotFound,
+        PlanningGenerationRequestInvalid,
     )
 
     service, repository, gateway, tracker = _service()
@@ -1088,16 +1113,51 @@ async def test_get_operation_by_key_uses_one_fixed_safe_not_found():
 
     with pytest.raises(PlanningGenerationOperationNotFound) as missing:
         await service.get_operation_by_key("p1", "missing-key")
-    with pytest.raises(PlanningGenerationOperationNotFound) as invalid:
+    with pytest.raises(PlanningGenerationRequestInvalid) as invalid:
         await service.get_operation_by_key("p1", "bad/key")
 
-    for caught in (missing, invalid):
-        assert str(caught.value) == "Planning generation operation not found"
-        assert "missing-key" not in repr(caught.value)
-        assert "bad/key" not in repr(caught.value)
+    assert str(missing.value) == "Planning generation operation not found"
+    assert str(invalid.value) == "Planning generation request is invalid"
+    assert "missing-key" not in repr(missing.value)
+    assert "bad/key" not in repr(invalid.value)
     assert repository.plain_key_reads == 1
     assert tracker.entries == entries_before + 1
     assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sensitive_keys_fail_before_repository_or_gateway_with_fixed_error():
+    for key in SENSITIVE_PLANNING_KEYS:
+        service, repository, gateway, tracker = _service()
+
+        with pytest.raises(PublicDomainError) as generated:
+            await service.generate(_command(key))
+        with pytest.raises(PublicDomainError) as recovered:
+            await service.get_operation_by_key("p1", key)
+
+        for caught in (generated, recovered):
+            assert caught.value.code == "PlanningGenerationRequestInvalid"
+            assert str(caught.value) == "Planning generation request is invalid"
+            assert key not in str(caught.value)
+            assert key not in repr(caught.value)
+        assert tracker.entries == 0
+        assert repository.lock_order == []
+        assert repository.plain_key_reads == 0
+        assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_ordinary_closed_key_remains_valid_for_generate_and_recovery():
+    for key in (
+        "planning-2026.07:attempt_1",
+        "123e4567-e89b-12d3-a456-426614174000",
+    ):
+        service, _repository, _gateway, _tracker = _service()
+
+        generated = await service.generate(_command(key))
+        recovered = await service.get_operation_by_key("p1", key)
+
+        assert recovered == generated
 
 
 @pytest.mark.asyncio

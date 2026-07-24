@@ -99,6 +99,31 @@ function jsonResponse(body, status = 200) {
   })
 }
 
+const SENSITIVE_PLANNING_KEYS = [
+  'sk-TestSentinel123456',
+  'sk_TestSentinel123456',
+  'ghp_TestSentinel12345678901234567890',
+  'gho_TestSentinel12345678901234567890',
+  'ghu_TestSentinel12345678901234567890',
+  'ghs_TestSentinel12345678901234567890',
+  'ghr_TestSentinel12345678901234567890',
+  'github_pat_TestSentinel1234567890',
+  'AKIAABCDEFGHIJKLMNOP',
+  'ASIA1234567890ABCDEF',
+  'Authorization-Bearer-TestSentinel',
+  'bearer.TestSentinel',
+  'apiKey-TestSentinel',
+  'api_key.TestSentinel',
+  'access-token-TestSentinel',
+  'TOKEN-TestSentinel',
+  'planning.secret.attempt',
+  'PASSWORD:TestSentinel',
+  'passwd-TestSentinel',
+  'credential_TestSentinel',
+  'DSN.TestSentinel',
+  'planning%2Dencoded',
+]
+
 async function withApiMethods(replacements, run) {
   const originals = []
   for (const [owner, key, replacement] of replacements) {
@@ -121,6 +146,38 @@ test('planning transport exposes only the revisioned aggregate endpoints', () =>
   assert.equal(typeof api.planning.generateDraft, 'function')
   assert.equal(typeof api.planning.getOperation, 'function')
   assert.equal(api.planning.createInitial, undefined)
+})
+
+test('sensitive generation keys fail before API calls and never enter recovery state', async () => {
+  let generationCalls = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => readyState('project-1', draft())],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => {
+      generationCalls += 1
+      throw new TypeError('Invalid Planning idempotency key')
+    }],
+  ], async () => {
+    for (const key of SENSITIVE_PLANNING_KEYS) {
+      setActivePinia(createPinia())
+      const store = usePlanningStore()
+      await store.load('project-1')
+
+      await assert.rejects(
+        store.generateDraft({ idempotencyKey: key, authorInstructions: '' }),
+        error => {
+          assert.equal(error.message, 'Invalid Planning idempotency key')
+          assert.equal(String(error).includes(key), false)
+          return true
+        },
+      )
+      assert.equal(store.generating, false)
+      assert.equal(store.generationOutcomeUnknown, false)
+      assert.equal(store.generationRecoveryKey, '')
+      assert.equal(store.generationOperation, null)
+    }
+  })
+  assert.equal(generationCalls, 0)
 })
 
 test('ensureLoaded preserves dirty content for same-project route switches and reload is explicit', async () => {

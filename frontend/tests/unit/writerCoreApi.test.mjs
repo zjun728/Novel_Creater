@@ -28,6 +28,31 @@ function bodyOf(call) {
   return call.options.body === undefined ? undefined : JSON.parse(call.options.body)
 }
 
+const SENSITIVE_PLANNING_KEYS = [
+  'sk-TestSentinel123456',
+  'sk_TestSentinel123456',
+  'ghp_TestSentinel12345678901234567890',
+  'gho_TestSentinel12345678901234567890',
+  'ghu_TestSentinel12345678901234567890',
+  'ghs_TestSentinel12345678901234567890',
+  'ghr_TestSentinel12345678901234567890',
+  'github_pat_TestSentinel1234567890',
+  'AKIAABCDEFGHIJKLMNOP',
+  'ASIA1234567890ABCDEF',
+  'Authorization-Bearer-TestSentinel',
+  'bearer.TestSentinel',
+  'apiKey-TestSentinel',
+  'api_key.TestSentinel',
+  'access-token-TestSentinel',
+  'TOKEN-TestSentinel',
+  'planning.secret.attempt',
+  'PASSWORD:TestSentinel',
+  'passwd-TestSentinel',
+  'credential_TestSentinel',
+  'DSN.TestSentinel',
+  'planning%2Dencoded',
+]
+
 test('writer core state performs one read through the product API', async () => {
   const originalFetch = global.fetch
   const calls = []
@@ -586,6 +611,38 @@ test('planning by-key recovery validates the closed idempotency key before GET',
         api.planning.getOperationByIdempotencyKey('project-1', key),
         /invalid planning idempotency key/i,
       )
+    }
+    assert.equal(calls, 0)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('planning generation and recovery reject sensitive keys before body, URL or fetch', async () => {
+  const originalFetch = global.fetch
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse()
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const key of SENSITIVE_PLANNING_KEYS) {
+      for (const request of [
+        () => api.planning.generateDraft('project-1', 'draft-1', {
+          draftRevision: 1,
+          draftHash: 'a'.repeat(64),
+          idempotencyKey: key,
+          authorInstructions: '',
+        }),
+        () => api.planning.getOperationByIdempotencyKey('project-1', key),
+      ]) {
+        await assert.rejects(request(), error => {
+          assert.equal(error.message, 'Invalid Planning idempotency key')
+          assert.equal(String(error).includes(key), false)
+          return true
+        })
+      }
     }
     assert.equal(calls, 0)
   } finally {

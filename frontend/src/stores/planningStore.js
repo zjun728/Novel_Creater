@@ -1,7 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef } from 'vue'
 
-import { api } from '../api/db/client.js'
+import {
+  api,
+  isSafePlanningIdempotencyKey,
+} from '../api/db/client.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 function clone(value) {
@@ -684,6 +687,9 @@ export const usePlanningStore = defineStore('planning', () => {
     const targetProjectId = projectId.value
     if (!targetProjectId || !currentDraft) {
       throw new TypeError('An active Planning draft is required')
+    }
+    if (!isSafePlanningIdempotencyKey(command?.idempotencyKey)) {
+      throw new TypeError('Invalid Planning idempotency key')
     }
     if (awaitingAuthoritativeReload.value) {
       throw new Error('正在等待权威工作稿回读，请先重新核对')

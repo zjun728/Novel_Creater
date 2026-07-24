@@ -251,6 +251,20 @@ const API_KEY_SHAPED_TEXT = /(?:^|[^A-Za-z0-9])(?:(?:sk|rk|pk)[-_][A-Za-z0-9._~+
 const INVALID_PERCENT_ESCAPE = /%(?![0-9A-Fa-f]{2})/
 const VALID_PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/
 const PRIVATE_OPERATION_ID_TEXT = /(?:authorization|api[-_]?key|credential|password|secret|token|dsn)/i
+const SENSITIVE_PLANNING_KEY_SHAPE = /(?:^|[._:-])(?:(?:sk|rk|pk)[_-][A-Za-z0-9]|gh[pousr]_[A-Za-z0-9]|github_pat_[A-Za-z0-9])/i
+const AWS_ACCESS_KEY_SHAPE = /(?:^|[._:-])(?:AKIA|ASIA)[A-Z0-9]{16}(?:$|[._:-])/i
+const SENSITIVE_PLANNING_KEY_MARKERS = [
+  'authorization',
+  'bearer',
+  'apikey',
+  'accesstoken',
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'credential',
+  'dsn',
+]
 
 function hasValidUnicode(value) {
   for (let index = 0; index < value.length; index += 1) {
@@ -358,16 +372,25 @@ function planningOperationId(value) {
   return value
 }
 
-function planningIdempotencyKey(value) {
+export function isSafePlanningIdempotencyKey(value) {
   if (
     typeof value !== 'string'
     || value.length < 1
     || value.length > 64
     || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
   ) {
-    return null
+    return false
   }
-  return value
+  const normalized = value.replace(/[._:-]+/g, '').toLowerCase()
+  return (
+    !SENSITIVE_PLANNING_KEY_MARKERS.some(marker => normalized.includes(marker))
+    && !SENSITIVE_PLANNING_KEY_SHAPE.test(value)
+    && !AWS_ACCESS_KEY_SHAPE.test(value)
+  )
+}
+
+function planningIdempotencyKey(value) {
+  return isSafePlanningIdempotencyKey(value) ? value : null
 }
 
 function planningOperationResponse(value, expectedOperationId) {
@@ -893,18 +916,24 @@ export const api = {
         idempotencyKey: data.idempotencyKey,
       },
     ),
-    generateDraft: async (projectId, draftId, data) => planningOperationResponse(
-      await post(
+    generateDraft: async (projectId, draftId, data) => {
+      const opaqueKey = planningIdempotencyKey(data?.idempotencyKey)
+      if (!opaqueKey) {
+        throw new TypeError('Invalid Planning idempotency key')
+      }
+      return planningOperationResponse(await post(
         `/projects/${segment(projectId)}/planning/drafts/${segment(draftId)}/generate`,
-        pickDefined(data, [
-          'draftRevision',
-          'draftHash',
-          'idempotencyKey',
-          'authorInstructions',
-        ]),
+        {
+          ...pickDefined(data, [
+            'draftRevision',
+            'draftHash',
+            'authorInstructions',
+          ]),
+          idempotencyKey: opaqueKey,
+        },
         PLANNING_GENERATION_TIMEOUT,
-      ),
-    ),
+      ))
+    },
     getOperation: async (projectId, operationId) => {
       const opaqueId = planningOperationId(operationId)
       if (!opaqueId) throw new TypeError('Invalid Planning operation id')
