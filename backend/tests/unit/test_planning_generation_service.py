@@ -148,6 +148,7 @@ class FakePlanningRepository:
         self.lock_order: list[str] = []
         self.lock_operation_reads = 0
         self.plain_operation_reads = 0
+        self.plain_key_reads = 0
 
     async def lock_active_project(self, _session, project_id):
         self.lock_order.append("project")
@@ -195,6 +196,7 @@ class FakePlanningRepository:
     async def read_generation_attempt_by_key(
         self, _session, project_id, idempotency_key
     ):
+        self.plain_key_reads += 1
         self.lock_order.append("idempotency-read")
         return next(
             (
@@ -1051,6 +1053,51 @@ async def test_get_operation_is_pure_query_with_no_gateway_or_hidden_retry():
     assert tracker.entries == entries_before + 1
     assert _repository.lock_operation_reads == lock_reads_before
     assert _repository.plain_operation_reads == plain_reads_before + 1
+
+
+@pytest.mark.asyncio
+async def test_get_operation_by_key_is_one_pure_read_with_no_hidden_work():
+    service, repository, gateway, tracker = _service()
+    generated = await service.generate(_command("recovery-key"))
+    calls_before = len(gateway.calls)
+    entries_before = tracker.entries
+    key_reads_before = repository.plain_key_reads
+    operation_reads_before = repository.plain_operation_reads
+    lock_reads_before = repository.lock_operation_reads
+    repository.lock_order.clear()
+
+    observed = await service.get_operation_by_key("p1", "recovery-key")
+
+    assert observed == generated
+    assert repository.lock_order == ["idempotency-read"]
+    assert tracker.entries == entries_before + 1
+    assert repository.plain_key_reads == key_reads_before + 1
+    assert repository.plain_operation_reads == operation_reads_before
+    assert repository.lock_operation_reads == lock_reads_before
+    assert len(gateway.calls) == calls_before
+
+
+@pytest.mark.asyncio
+async def test_get_operation_by_key_uses_one_fixed_safe_not_found():
+    from backend.services.planning_generation import (
+        PlanningGenerationOperationNotFound,
+    )
+
+    service, repository, gateway, tracker = _service()
+    entries_before = tracker.entries
+
+    with pytest.raises(PlanningGenerationOperationNotFound) as missing:
+        await service.get_operation_by_key("p1", "missing-key")
+    with pytest.raises(PlanningGenerationOperationNotFound) as invalid:
+        await service.get_operation_by_key("p1", "bad/key")
+
+    for caught in (missing, invalid):
+        assert str(caught.value) == "Planning generation operation not found"
+        assert "missing-key" not in repr(caught.value)
+        assert "bad/key" not in repr(caught.value)
+    assert repository.plain_key_reads == 1
+    assert tracker.entries == entries_before + 1
+    assert gateway.calls == []
 
 
 @pytest.mark.asyncio

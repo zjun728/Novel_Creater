@@ -34,6 +34,8 @@ from backend.services.planning_generation import (
 
 
 router = APIRouter(tags=["planning"])
+_IDEMPOTENCY_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+_IDEMPOTENCY_KEY = re.compile(_IDEMPOTENCY_KEY_PATTERN)
 _service = PlanningService(
     PlanningRepository(),
     transaction_factory=transaction,
@@ -523,6 +525,25 @@ async def generate_planning_draft(
         )
     )
     return _public_operation(result)
+
+
+@router.get(
+    "/projects/{pid}/planning/operations/by-idempotency-key/"
+    "{idempotency_key}"
+)
+async def get_planning_operation_by_idempotency_key(
+    pid: str,
+    idempotency_key: str,
+    service=Depends(get_planning_generation_service),
+):
+    if (
+        not 1 <= len(idempotency_key) <= 64
+        or _IDEMPOTENCY_KEY.fullmatch(idempotency_key) is None
+    ):
+        raise PlanningRequestInvalid()
+    return _public_operation(
+        await service.get_operation_by_key(pid, idempotency_key)
+    )
 
 
 @router.get("/projects/{pid}/planning/operations/{operation_id}")

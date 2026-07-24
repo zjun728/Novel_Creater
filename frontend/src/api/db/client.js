@@ -6,6 +6,7 @@ const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api')
 const DEFAULT_TIMEOUT = 30000
 const CHAPTER_DRAFT_GENERATION_TIMEOUT = 1_200_000
 const BIBLE_GENERATION_TIMEOUT = 210_000
+const PLANNING_GENERATION_TIMEOUT = 210_000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   const controller = new AbortController()
@@ -351,6 +352,18 @@ function planningOperationId(value) {
     || !/^[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(value)
     || PRIVATE_OPERATION_ID_TEXT.test(value)
     || API_KEY_SHAPED_TEXT.test(value)
+  ) {
+    return null
+  }
+  return value
+}
+
+function planningIdempotencyKey(value) {
+  if (
+    typeof value !== 'string'
+    || value.length < 1
+    || value.length > 64
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
   ) {
     return null
   }
@@ -889,6 +902,7 @@ export const api = {
           'idempotencyKey',
           'authorInstructions',
         ]),
+        PLANNING_GENERATION_TIMEOUT,
       ),
     ),
     getOperation: async (projectId, operationId) => {
@@ -899,6 +913,17 @@ export const api = {
           `/projects/${segment(projectId)}/planning/operations/${segment(opaqueId)}`,
         ),
         opaqueId,
+      )
+    },
+    getOperationByIdempotencyKey: async (projectId, idempotencyKey) => {
+      const opaqueKey = planningIdempotencyKey(idempotencyKey)
+      if (!opaqueKey) {
+        throw new TypeError('Invalid Planning idempotency key')
+      }
+      return planningOperationResponse(
+        await get(
+          `/projects/${segment(projectId)}/planning/operations/by-idempotency-key/${segment(opaqueKey)}`,
+        ),
       )
     },
   },

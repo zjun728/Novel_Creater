@@ -485,6 +485,10 @@ test('planning generation uses encoded paths and closed request and response DTO
       },
     )
     const queried = await api.planning.getOperation('project/1', operationId)
+    const recovered = await api.planning.getOperationByIdempotencyKey(
+      'project/1',
+      'planning:generate:1',
+    )
 
     assert.deepEqual(calls.map(call => [
       call.options.method,
@@ -492,6 +496,10 @@ test('planning generation uses encoded paths and closed request and response DTO
     ]), [
       ['POST', '/api/projects/project%2F1/planning/drafts/draft%2F1/generate'],
       ['GET', `/api/projects/project%2F1/planning/operations/${operationId}`],
+      [
+        'GET',
+        '/api/projects/project%2F1/planning/operations/by-idempotency-key/planning%3Agenerate%3A1',
+      ],
     ])
     assert.deepEqual(bodyOf(calls[0]), {
       draftRevision: 2,
@@ -500,6 +508,7 @@ test('planning generation uses encoded paths and closed request and response DTO
       authorInstructions: '加强群像冲突',
     })
     assert.equal(bodyOf(calls[1]), undefined)
+    assert.equal(bodyOf(calls[2]), undefined)
     const expected = {
       operationId,
       status: 'succeeded',
@@ -513,7 +522,72 @@ test('planning generation uses encoded paths and closed request and response DTO
     }
     assert.deepEqual(generated, expected)
     assert.deepEqual(queried, expected)
-    assert.equal(JSON.stringify({ generated, queried }).includes(secret), false)
+    assert.deepEqual(recovered, expected)
+    assert.equal(
+      JSON.stringify({ generated, queried, recovered }).includes(secret),
+      false,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('planning generation POST uses a model-length timeout and operation GET stays default', async () => {
+  const originalFetch = global.fetch
+  const originalSetTimeout = global.setTimeout
+  const delays = []
+  global.setTimeout = (callback, delay, ...args) => {
+    delays.push(delay)
+    return originalSetTimeout(callback, delay, ...args)
+  }
+  global.fetch = async () => jsonResponse({
+    operationId: '123e4567-e89b-12d3-a456-426614174000',
+    status: 'pending',
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'deepseek-v4-flash' },
+    loaded: false,
+    loadedDraftRevision: null,
+  })
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await api.planning.generateDraft('project-1', 'draft-1', {
+      draftRevision: 1,
+      draftHash: 'a'.repeat(64),
+      idempotencyKey: 'timeout-contract',
+      authorInstructions: '',
+    })
+    await api.planning.getOperation(
+      'project-1',
+      '123e4567-e89b-12d3-a456-426614174000',
+    )
+
+    assert.equal(delays.length, 2)
+    assert.ok(delays[0] >= 180_000)
+    assert.notEqual(delays[0], 30_000)
+    assert.equal(delays[1], 30_000)
+  } finally {
+    global.fetch = originalFetch
+    global.setTimeout = originalSetTimeout
+  }
+})
+
+test('planning by-key recovery validates the closed idempotency key before GET', async () => {
+  const originalFetch = global.fetch
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse()
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const key of ['', 'bad/key', 'bad key', 'x'.repeat(65)]) {
+      await assert.rejects(
+        api.planning.getOperationByIdempotencyKey('project-1', key),
+        /invalid planning idempotency key/i,
+      )
+    }
+    assert.equal(calls, 0)
   } finally {
     global.fetch = originalFetch
   }

@@ -234,6 +234,34 @@ class PlanningGenerationService:
             self._raise_if_coordination_failure(exc)
             raise
 
+    async def get_operation_by_key(
+        self,
+        project_id: str,
+        idempotency_key: str,
+    ) -> PlanningOperationResult:
+        if (
+            not isinstance(project_id, str)
+            or not project_id.strip()
+            or not isinstance(idempotency_key, str)
+            or _IDEMPOTENCY_KEY.fullmatch(idempotency_key) is None
+        ):
+            raise PlanningGenerationOperationNotFound()
+        try:
+            async with self._transaction() as session:
+                operation = (
+                    await self.repository.read_generation_attempt_by_key(
+                        session,
+                        project_id,
+                        idempotency_key,
+                    )
+                )
+                if operation is None:
+                    raise PlanningGenerationOperationNotFound()
+                return self._operation_result(operation)
+        except Exception as exc:
+            self._raise_if_coordination_failure(exc)
+            raise
+
     async def _reserve(self, command):
         fingerprint = self._request_fingerprint(command)
         async with self._transaction() as session:

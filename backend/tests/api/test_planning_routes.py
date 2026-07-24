@@ -23,6 +23,7 @@ from backend.services.planning import (
 )
 from backend.services.planning_generation import (
     GeneratePlanningDraft,
+    PlanningGenerationOperationNotFound,
     PlanningOperationResult,
     PublicModelSummary,
 )
@@ -152,6 +153,7 @@ class FakePlanningService:
 class FakePlanningGenerationService:
     def __init__(self):
         self.commands = []
+        self.key_queries = []
         self.failure: Exception | None = None
         self.result = PlanningOperationResult(
             operation_id="operation-1",
@@ -177,6 +179,11 @@ class FakePlanningGenerationService:
     async def get_operation(self, project_id, operation_id):
         self._raise()
         assert (project_id, operation_id) == ("p1", "operation-1")
+        return self.result
+
+    async def get_operation_by_key(self, project_id, idempotency_key):
+        self._raise()
+        self.key_queries.append((project_id, idempotency_key))
         return self.result
 
 
@@ -627,8 +634,12 @@ def test_generate_and_get_operation_use_safe_explicit_contract():
     queried = client.get(
         "/api/projects/p1/planning/operations/operation-1"
     )
+    recovered = client.get(
+        "/api/projects/p1/planning/operations/by-idempotency-key/"
+        "generate-planning-1"
+    )
 
-    assert generated.status_code == queried.status_code == 200
+    assert generated.status_code == queried.status_code == recovered.status_code == 200
     expected = {
         "operationId": "operation-1",
         "status": "succeeded",
@@ -640,7 +651,8 @@ def test_generate_and_get_operation_use_safe_explicit_contract():
         "loaded": True,
         "loadedDraftRevision": 2,
     }
-    assert generated.json() == queried.json() == expected
+    assert generated.json() == queried.json() == recovered.json() == expected
+    assert generation.key_queries == [("p1", "generate-planning-1")]
     assert generation.commands == [
         GeneratePlanningDraft(
             project_id="p1",
@@ -651,6 +663,47 @@ def test_generate_and_get_operation_use_safe_explicit_contract():
             author_instructions="强化群像变化。",
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "unsafe_key",
+    (
+        "x" * 65,
+        "bad%25key",
+        "bad%20key",
+        "bad$key",
+    ),
+)
+def test_operation_by_key_rejects_invalid_keys_with_fixed_error(unsafe_key):
+    client, _, generation = make_client()
+
+    response = client.get(
+        "/api/projects/p1/planning/operations/by-idempotency-key/"
+        f"{unsafe_key}"
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "PlanningRequestInvalid"
+    assert generation.key_queries == []
+    assert unsafe_key not in response.text
+
+
+def test_operation_by_key_not_found_is_fixed_safe_404():
+    client, _, generation = make_client()
+    generation.failure = PlanningGenerationOperationNotFound()
+
+    response = client.get(
+        "/api/projects/p1/planning/operations/by-idempotency-key/"
+        "missing-key"
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "code": "PlanningGenerationOperationNotFound",
+        "message": "Planning generation operation not found",
+        "correlationId": response.json()["correlationId"],
+    }
+    assert "missing-key" not in response.text
 
 
 @pytest.mark.parametrize(

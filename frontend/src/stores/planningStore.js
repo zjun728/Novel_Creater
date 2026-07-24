@@ -96,6 +96,7 @@ export const usePlanningStore = defineStore('planning', () => {
   const generating = ref(false)
   const reconciling = ref(false)
   const generationOperation = shallowRef(null)
+  const generationRecoveryKey = ref('')
   const generationOutcomeUnknown = ref(false)
   const awaitingAuthoritativeReload = ref(false)
   const loadGuard = createLatestRequestGuard()
@@ -123,6 +124,7 @@ export const usePlanningStore = defineStore('planning', () => {
       generating.value = false
       reconciling.value = false
       generationOperation.value = null
+      generationRecoveryKey.value = ''
       generationOutcomeUnknown.value = false
       awaitingAuthoritativeReload.value = false
     }
@@ -190,6 +192,13 @@ export const usePlanningStore = defineStore('planning', () => {
     const targetProjectId = String(nextProjectId || '')
     if (!targetProjectId) throw new TypeError('projectId is required')
     if (
+      options?.force === true
+      && projectId.value === targetProjectId
+      && generationOutcomeUnknown.value
+    ) {
+      throw new Error('生成结果未知，请先使用原幂等键重新核对')
+    }
+    if (
       options?.force !== true
       && projectId.value === targetProjectId
       && state.value !== null
@@ -225,15 +234,7 @@ export const usePlanningStore = defineStore('planning', () => {
       }
       return state.value
     }
-    const loaded = await load(targetProjectId)
-    if (
-      options?.force === true
-      && projectId.value === targetProjectId
-      && !generationOperation.value?.operationId
-    ) {
-      generationOutcomeUnknown.value = false
-    }
-    return loaded
+    return await load(targetProjectId)
   }
 
   async function createDraft(nextProjectId, command) {
@@ -299,6 +300,9 @@ export const usePlanningStore = defineStore('planning', () => {
     }
     if (awaitingAuthoritativeReload.value) {
       throw new Error('正在等待权威工作稿回读，暂不能保存')
+    }
+    if (generationOutcomeUnknown.value) {
+      throw new Error('生成结果未知，请先使用原幂等键恢复后再保存')
     }
     if (saving.value || confirming.value) {
       throw new Error('已有操作正在进行')
@@ -470,26 +474,9 @@ export const usePlanningStore = defineStore('planning', () => {
     )
   }
 
-  function safeRecoveryOperationId(failure) {
-    const value = failure?.operationId
-    if (
-      typeof value !== 'string'
-      || !value
-      || value.length > 128
-      || !/^[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(value)
-      || /(?:authorization|api[-_]?key|credential|password|secret|token|dsn)/i.test(value)
-      || /(?:^|[^A-Za-z0-9])(?:(?:sk|rk|pk)[-_][A-Za-z0-9._~+/=-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})(?:$|[^A-Za-z0-9])/i.test(value)
-    ) {
-      return ''
-    }
-    return value
-  }
-
-  function outcomeUnknownFailure(hasOperationId) {
+  function outcomeUnknownFailure() {
     const failure = new Error(
-      hasOperationId
-        ? '生成结果未知，请使用操作编号重新核对'
-        : '生成结果未知且没有操作编号；本地内容已保留，请重新加载后恢复',
+      '生成结果未知；本地内容已保留，请使用原幂等键重新核对',
     )
     failure.code = 'PlanningGenerationOutcomeUnknown'
     failure.status = 0
@@ -500,12 +487,15 @@ export const usePlanningStore = defineStore('planning', () => {
     const status = Number(failure?.status || 0)
     const code = String(failure?.code || '')
     return (
-      status === 0
-      && (
-        !code
-        || code === 'request_failed'
-        || code === 'request_timeout'
-        || code === 'invalid_response'
+      status >= 500
+      || (
+        status === 0
+        && (
+          !code
+          || code === 'request_failed'
+          || code === 'request_timeout'
+          || code === 'invalid_response'
+        )
       )
     )
   }
@@ -593,6 +583,7 @@ export const usePlanningStore = defineStore('planning', () => {
       localContent.value = nextLocalContent
       dirty.value = false
       error.value = null
+      generationRecoveryKey.value = ''
       generationOutcomeUnknown.value = false
       awaitingAuthoritativeReload.value = false
       generating.value = false
@@ -661,6 +652,7 @@ export const usePlanningStore = defineStore('planning', () => {
     }
 
     if (!(result.status === 'succeeded' && result.loaded === true)) {
+      generationRecoveryKey.value = ''
       generationOutcomeUnknown.value = false
       awaitingAuthoritativeReload.value = false
       generating.value = false
@@ -716,6 +708,7 @@ export const usePlanningStore = defineStore('planning', () => {
     const requestGeneration = generationGuard.begin()
     generating.value = true
     generationOperation.value = null
+    generationRecoveryKey.value = command.idempotencyKey
     generationOutcomeUnknown.value = false
     awaitingAuthoritativeReload.value = false
     error.value = null
@@ -746,24 +739,17 @@ export const usePlanningStore = defineStore('planning', () => {
       if (!isUnknownTransportFailure(failure)) {
         generating.value = false
         generationOperation.value = null
+        generationRecoveryKey.value = ''
         generationOutcomeUnknown.value = false
         awaitingAuthoritativeReload.value = false
         error.value = publicError(failure)
         throw failure
       }
-      const operationId = safeRecoveryOperationId(failure)
-      if (operationId) {
-        generationOperation.value = { operationId }
-        generationOutcomeUnknown.value = true
-        awaitingAuthoritativeReload.value = false
-        generating.value = true
-      } else {
-        generationOperation.value = null
-        generationOutcomeUnknown.value = true
-        awaitingAuthoritativeReload.value = false
-        generating.value = false
-      }
-      const publicFailure = outcomeUnknownFailure(Boolean(operationId))
+      generationOperation.value = null
+      generationOutcomeUnknown.value = true
+      awaitingAuthoritativeReload.value = false
+      generating.value = true
+      const publicFailure = outcomeUnknownFailure()
       error.value = publicError(publicFailure)
       throw publicFailure
     }
@@ -772,8 +758,18 @@ export const usePlanningStore = defineStore('planning', () => {
   async function reconcileGeneration() {
     const targetProjectId = projectId.value
     const operationId = generationOperation.value?.operationId
+    const recoveryKey = generationRecoveryKey.value
     const targetDraftId = state.value?.draft?.draftId
-    if (!targetProjectId || !operationId || !targetDraftId) {
+    const recoverByKey = (
+      !operationId
+      && generationOutcomeUnknown.value
+      && Boolean(recoveryKey)
+    )
+    if (
+      !targetProjectId
+      || !targetDraftId
+      || (!operationId && !recoverByKey)
+    ) {
       throw new Error('没有可重新核对的规划生成操作')
     }
     if (reconciling.value) {
@@ -784,13 +780,25 @@ export const usePlanningStore = defineStore('planning', () => {
     reconciling.value = true
     generating.value = true
     try {
-      const result = await api.planning.getOperation(
-        targetProjectId,
-        operationId,
-      )
+      const result = recoverByKey
+        ? await api.planning.getOperationByIdempotencyKey(
+          targetProjectId,
+          recoveryKey,
+        )
+        : await api.planning.getOperation(
+          targetProjectId,
+          operationId,
+        )
       if (
         !generationIsCurrent(requestGeneration, targetProjectId)
-        || generationOperation.value?.operationId !== operationId
+        || (
+          recoverByKey
+            ? (
+              generationOperation.value !== null
+              || generationRecoveryKey.value !== recoveryKey
+            )
+            : generationOperation.value?.operationId !== operationId
+        )
       ) {
         return result
       }
@@ -802,7 +810,14 @@ export const usePlanningStore = defineStore('planning', () => {
     } catch (failure) {
       if (
         generationIsCurrent(requestGeneration, targetProjectId)
-        && generationOperation.value?.operationId === operationId
+        && (
+          recoverByKey
+            ? (
+              generationOperation.value === null
+              && generationRecoveryKey.value === recoveryKey
+            )
+            : generationOperation.value?.operationId === operationId
+        )
       ) {
         generationOutcomeUnknown.value = true
         generating.value = true
@@ -810,10 +825,7 @@ export const usePlanningStore = defineStore('planning', () => {
       }
       throw failure
     } finally {
-      if (
-        generationIsCurrent(requestGeneration, targetProjectId)
-        && generationOperation.value?.operationId === operationId
-      ) {
+      if (generationIsCurrent(requestGeneration, targetProjectId)) {
         reconciling.value = false
       }
     }
@@ -835,6 +847,7 @@ export const usePlanningStore = defineStore('planning', () => {
     generating.value = false
     reconciling.value = false
     generationOperation.value = null
+    generationRecoveryKey.value = ''
     generationOutcomeUnknown.value = false
     awaitingAuthoritativeReload.value = false
   }
@@ -852,6 +865,7 @@ export const usePlanningStore = defineStore('planning', () => {
     generating,
     reconciling,
     generationOperation,
+    generationRecoveryKey,
     generationOutcomeUnknown,
     awaitingAuthoritativeReload,
     load,

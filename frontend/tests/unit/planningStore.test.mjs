@@ -92,6 +92,13 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
 async function withApiMethods(replacements, run) {
   const originals = []
   for (const [owner, key, replacement] of replacements) {
@@ -203,102 +210,162 @@ test('one active generation sends one POST and pending reconciliation uses GET o
   })
 })
 
-test('unknown POST result never retries and preserves local content with explicit recovery state', async () => {
+test('real client network, abort and 504 failures recover only by idempotency key', async () => {
+  const originalFetch = global.fetch
+  const failures = ['network', 'abort', 'http-504']
+  try {
+    for (const mode of failures) {
+      let posts = 0
+      let byKeyReads = 0
+      let planningReads = 0
+      const key = `unknown-${mode}`
+      global.fetch = async (url, options) => {
+        const path = new URL(String(url)).pathname
+        if (path.endsWith('/planning') && options.method === 'GET') {
+          planningReads += 1
+          return jsonResponse(readyState('project-1', draft()))
+        }
+        if (path.endsWith('/planning/history')) {
+          return jsonResponse({ items: [] })
+        }
+        if (path.endsWith('/generate')) {
+          posts += 1
+          if (mode === 'network') throw new TypeError('network sentinel')
+          if (mode === 'abort') {
+            const aborted = new Error('abort sentinel')
+            aborted.name = 'AbortError'
+            throw aborted
+          }
+          return jsonResponse({
+            code: 'GatewayTimeout',
+            message: 'gateway timeout',
+            operationId: 'must-be-discarded-by-api-error',
+          }, 504)
+        }
+        if (path.includes('/operations/by-idempotency-key/')) {
+          byKeyReads += 1
+          return jsonResponse({
+            code: 'PlanningGenerationOperationNotFound',
+            message: 'Planning generation operation not found',
+          }, 404)
+        }
+        throw new Error(`unexpected request ${options.method} ${path}`)
+      }
+
+      setActivePinia(createPinia())
+      const store = usePlanningStore()
+      await store.load('project-1')
+      const before = structuredClone(store.localContent)
+      await assert.rejects(
+        store.generateDraft({ idempotencyKey: key, authorInstructions: '' }),
+        error => error.code === 'PlanningGenerationOutcomeUnknown',
+      )
+
+      assert.equal(posts, 1)
+      assert.equal(store.generationOperation, null)
+      assert.equal(store.generationRecoveryKey, key)
+      assert.equal(store.generationOutcomeUnknown, true)
+      assert.equal(store.generating, true)
+      assert.deepEqual(store.localContent, before)
+
+      await assert.rejects(
+        store.reconcileGeneration(),
+        error => error.status === 404,
+      )
+      assert.equal(byKeyReads, 1)
+      assert.equal(store.generationOutcomeUnknown, true)
+      assert.equal(store.generationRecoveryKey, key)
+      await assert.rejects(
+        store.generateDraft({
+          idempotencyKey: `${key}-again`,
+          authorInstructions: '',
+        }),
+        /结果未知|生成.*进行/,
+      )
+      await assert.rejects(
+        store.saveDraft({ idempotencyKey: `${key}-save` }),
+        /结果未知|恢复/,
+      )
+      await assert.rejects(
+        store.ensureLoaded('project-1', { force: true }),
+        /幂等键|结果未知/,
+      )
+      assert.equal(posts, 1)
+      assert.equal(planningReads, 1)
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('by-key recovery fixes operation id then reconciles by id and exact state GET', async () => {
+  const originalFetch = global.fetch
+  const operationId = '123e4567-e89b-12d3-a456-426614174000'
+  const paths = []
+  let planningReads = 0
   let posts = 0
-  let gets = 0
-  const unknown = Object.assign(new Error('network result unknown'), {
-    code: 'request_timeout',
-    operationId: 'operation-unknown',
-  })
-  await withApiMethods([
-    [api.planning, 'get', async () => readyState('project-1', draft())],
-    [api.planning, 'history', async () => ({ items: [] })],
-    [api.planning, 'generateDraft', async () => {
-      posts += 1
-      throw unknown
-    }],
-    [api.planning, 'getOperation', async (_projectId, operationId) => {
-      gets += 1
-      return operation({
-        operationId,
-        status: 'failed',
-        failureCode: 'PlanningGenerationFailed',
-        loaded: false,
-        loadedDraftRevision: null,
-      })
-    }],
-  ], async () => {
+  try {
+    global.fetch = async (url, options) => {
+      const path = new URL(String(url)).pathname
+      paths.push([options.method, path])
+      if (path.endsWith('/planning') && options.method === 'GET') {
+        planningReads += 1
+        return jsonResponse(
+          planningReads === 1
+            ? readyState('project-1', draft())
+            : readyState('project-1', draft(NEXT_HASH, 2)),
+        )
+      }
+      if (path.endsWith('/planning/history')) {
+        return jsonResponse({ items: [] })
+      }
+      if (path.endsWith('/generate')) {
+        posts += 1
+        throw new TypeError('network result unknown')
+      }
+      if (path.includes('/operations/by-idempotency-key/')) {
+        return jsonResponse(operation({
+          operationId,
+          status: 'pending',
+          loaded: false,
+          loadedDraftRevision: null,
+        }))
+      }
+      if (path.endsWith(`/operations/${operationId}`)) {
+        return jsonResponse(operation({ operationId }))
+      }
+      throw new Error(`unexpected request ${options.method} ${path}`)
+    }
+
     setActivePinia(createPinia())
     const store = usePlanningStore()
     await store.load('project-1')
-    const before = structuredClone(store.localContent)
-
     await assert.rejects(
-      store.generateDraft({ idempotencyKey: 'unknown-1', authorInstructions: '' }),
-      error => {
-        assert.equal(error.code, 'PlanningGenerationOutcomeUnknown')
-        assert.match(error.message, /结果未知.*操作编号/)
-        assert.equal(error.message.includes(unknown.message), false)
-        return true
-      },
+      store.generateDraft({
+        idempotencyKey: 'recover-by-key',
+        authorInstructions: '',
+      }),
+      error => error.code === 'PlanningGenerationOutcomeUnknown',
     )
 
-    assert.equal(posts, 1)
-    assert.equal(gets, 0)
-    assert.equal(store.generationOutcomeUnknown, true)
-    assert.equal(store.generationOperation.operationId, 'operation-unknown')
-    assert.deepEqual(store.localContent, before)
+    await store.reconcileGeneration()
+    assert.equal(store.generationOperation.operationId, operationId)
+    assert.equal(store.generationOperation.status, 'pending')
+    assert.equal(store.generationOutcomeUnknown, false)
 
     await store.reconcileGeneration()
     assert.equal(posts, 1)
-    assert.equal(gets, 1)
-    assert.equal(store.generationOutcomeUnknown, false)
+    assert.equal(store.state.draft.draftRevision, 2)
+    assert.equal(store.generationRecoveryKey, '')
     assert.equal(store.generating, false)
-  })
-})
-
-test('unknown POST result without operation id is recoverable and never guesses success', async () => {
-  let posts = 0
-  const failure = Object.assign(new Error('timeout detail must not surface'), {
-    code: 'request_timeout',
-  })
-  await withApiMethods([
-    [api.planning, 'get', async () => readyState('project-1', draft())],
-    [api.planning, 'history', async () => ({ items: [] })],
-    [api.planning, 'generateDraft', async () => {
-      posts += 1
-      throw failure
-    }],
-  ], async () => {
-    setActivePinia(createPinia())
-    const store = usePlanningStore()
-    await store.load('project-1')
-    const before = structuredClone(store.localContent)
-
-    await assert.rejects(
-      store.generateDraft({ idempotencyKey: 'unknown-no-id', authorInstructions: '' }),
-      error => {
-        assert.equal(error.code, 'PlanningGenerationOutcomeUnknown')
-        assert.match(error.message, /结果未知.*没有操作编号/)
-        assert.equal(error.message.includes(failure.message), false)
-        return true
-      },
-    )
-
-    assert.equal(store.generating, false)
-    assert.equal(store.generationOperation, null)
-    assert.equal(store.error.code, 'PlanningGenerationOutcomeUnknown')
-    assert.match(store.error.message, /结果未知.*操作编号|operation.*unknown/i)
-    assert.deepEqual(store.localContent, before)
-    await assert.rejects(
-      store.generateDraft({ idempotencyKey: 'must-not-repost', authorInstructions: '' }),
-      /结果未知.*重新加载/,
-    )
-    assert.equal(posts, 1)
-
-    await store.ensureLoaded('project-1', { force: true })
-    assert.equal(store.generationOutcomeUnknown, false)
-  })
+    assert.deepEqual(paths.slice(3).map(item => item[1]), [
+      '/api/projects/project-1/planning/operations/by-idempotency-key/recover-by-key',
+      `/api/projects/project-1/planning/operations/${operationId}`,
+      '/api/projects/project-1/planning',
+    ])
+  } finally {
+    global.fetch = originalFetch
+  }
 })
 
 test('known HTTP generation rejection is not mislabeled as an unknown outcome', async () => {
@@ -432,54 +499,6 @@ test('authority reload failure keeps the known operation gate until GET reconcil
     assert.equal(store.awaitingAuthoritativeReload, false)
     assert.equal(store.generating, false)
     assert.equal(store.state.draft.draftRevision, 2)
-  })
-})
-
-test('unknown outcome stays unknown through a failed exact reload and clears only after success', async () => {
-  const unknown = Object.assign(new Error('transport detail'), {
-    code: 'request_timeout',
-    operationId: 'operation-unknown',
-  })
-  let stateReads = 0
-  let operationReads = 0
-  await withApiMethods([
-    [api.planning, 'get', async () => {
-      stateReads += 1
-      if (stateReads === 1) return readyState('project-1', draft())
-      if (stateReads === 2) {
-        throw Object.assign(new Error('authority unavailable'), { status: 503 })
-      }
-      return readyState('project-1', draft(NEXT_HASH, 2))
-    }],
-    [api.planning, 'history', async () => ({ items: [] })],
-    [api.planning, 'generateDraft', async () => { throw unknown }],
-    [api.planning, 'getOperation', async (_projectId, operationId) => {
-      operationReads += 1
-      return operation({ operationId })
-    }],
-  ], async () => {
-    setActivePinia(createPinia())
-    const store = usePlanningStore()
-    await store.load('project-1')
-    await assert.rejects(
-      store.generateDraft({
-        idempotencyKey: 'unknown-then-loaded',
-        authorInstructions: '',
-      }),
-      /结果未知/,
-    )
-
-    await store.reconcileGeneration()
-    assert.equal(store.generationOutcomeUnknown, true)
-    assert.equal(store.awaitingAuthoritativeReload, true)
-    assert.equal(store.generating, true)
-
-    await store.reconcileGeneration()
-    assert.equal(operationReads, 2)
-    assert.equal(stateReads, 3)
-    assert.equal(store.generationOutcomeUnknown, false)
-    assert.equal(store.awaitingAuthoritativeReload, false)
-    assert.equal(store.generating, false)
   })
 })
 
