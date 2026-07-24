@@ -1,281 +1,711 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from copy import deepcopy
+import json
+
 import pytest
 
 from backend.domain.json_contracts import canonical_hash
+from backend.http_errors import ProjectArchived
+from backend.services.planning import (
+    ConfirmPlanningDraft,
+    CreatePlanningDraft,
+    PlanningConflict,
+    PlanningPreconditionFailed,
+    PlanningService,
+    SavePlanningDraft,
+)
 
 
-class FakePlanningRepository:
+HASH_A = "a" * 64
+HASH_B = "b" * 64
+HASH_C = "c" * 64
+HASH_D = "d" * 64
+HASH_E = "e" * 64
+
+
+def basis(**changes):
+    value = {
+        "selection_revision": 1,
+        "seed_id": "seed-a",
+        "seed_revision_id": "seed-revision-a",
+        "seed_hash": HASH_A,
+        "contract_revision": 1,
+        "creation_contract_id": "creation-a",
+        "creation_hash": HASH_B,
+        "style_contract_id": "style-a",
+        "style_hash": HASH_C,
+        "bible_revision": 1,
+        "bible_revision_id": "bible-a",
+        "bible_hash": HASH_D,
+        "chapter_capacity_policy": json.dumps(
+            {
+                "expectedVolumeCount": 3,
+                "expectedChapterCount": 60,
+                "chapterWordRangePreference": [3000, 5000],
+            }
+        ),
+    }
+    value.update(changes)
+    return value
+
+
+def planning_payload(title: str = "第一卷"):
+    return {
+        "activeStoryBlockRef": "block",
+        "volumes": [
+            {
+                "clientNodeKey": "volume",
+                "order": 1,
+                "title": title,
+                "coreChange": "主角建立第一个可靠据点。",
+                "mainPressure": "追兵逼近。",
+                "ensembleFocus": ["主角", "同伴"],
+                "forbiddenEvents": ["不可提前揭示幕后人"],
+            }
+        ],
+        "plots": [
+            {
+                "clientNodeKey": "plot",
+                "order": 1,
+                "title": "立足主线",
+                "plotType": "main",
+                "storyQuestion": "主角如何活下来？",
+                "futureDirection": "从逃亡转为主动布局。",
+                "expectedPayoff": "建立据点。",
+                "relatedCharacters": ["主角"],
+            }
+        ],
+        "storyBlocks": [
+            {
+                "clientNodeKey": "block",
+                "order": 1,
+                "title": "夜渡封锁线",
+                "volumeRef": "volume",
+                "plotRefs": ["plot"],
+                "entrySituation": "二人被困。",
+                "blockGoal": "穿过封锁线。",
+                "mainPressure": "追兵压缩路线。",
+                "expectedChange": "二人建立信任。",
+                "openQuestions": ["内应是谁"],
+                "involvedCharacters": ["主角", "同伴"],
+                "stages": [
+                    {
+                        "clientNodeKey": "stage",
+                        "order": 1,
+                        "title": "寻找缺口",
+                        "purpose": "确认封锁薄弱处。",
+                        "dramaticQuestion": "能否在暴露前找到缺口？",
+                        "sceneTasks": [
+                            {
+                                "clientNodeKey": "task",
+                                "order": 1,
+                                "task": "观察换岗。",
+                                "completionEvidence": "取得换岗间隔。",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+class MemoryPlanningRepository:
     def __init__(self):
-        self.project = {"id": "p1", "title": "永乐大典"}
-        self.contract_head = {
-            "revision": 1,
-            "creation_contract_id": "creation-1",
-            "style_contract_id": "style-1",
-            "creation_hash": "c" * 64,
-            "contract_ready": True,
-            "reasons": (),
+        self.projects = {
+            "p1": {
+                "id": "p1",
+                "archived_at": None,
+            }
         }
-        self.creation_contract = {
-            "id": "creation-1",
-            "revision": 1,
-            "seed_id": "seed-1",
-            "seed_revision_id": "seed-rev-1",
-            "content_json": {
-                "storyEngine": {
-                    "name": "典籍入山河",
-                    "storyPromise": "主角以永乐大典残页为引，在乱世中把知识变成可见的秩序和代价。",
-                },
-                "chapterCapacityPolicy": {
-                    "targetMin": 3500,
-                    "targetMax": 4500,
-                    "softCeiling": 5200,
-                },
-            },
-            "content_hash": "c" * 64,
+        self.basis = {"p1": basis()}
+        self.heads = {
+            "p1": {
+                "project_id": "p1",
+                "revision": 0,
+                "planning_revision_id": None,
+                "content_hash": None,
+                "content_json": None,
+            }
         }
-        self.selected_seed = {
-            "selection_revision": 3,
-            "seed_id": "seed-1",
-            "seed_revision_id": "seed-rev-1",
-            "seed_hash": "s" * 64,
-            "title": "典镇山河",
-            "payload_json": {
-                "protagonist": "沈砚",
-                "coreConflict": "典籍知识能救人，也会招来权力与贪欲。",
-                "openingHook": "他在大典残页中看见一个即将被洪水吞没的县城。",
-            },
+        self.drafts: dict[tuple[str, str], dict] = {}
+        self.revisions: dict[tuple[str, int], dict] = {}
+        self.requests: dict[tuple[str, str], dict] = {}
+        self.projections = {
+            "p1": {
+                "project_id": "p1",
+                "canon_revision_number": 0,
+                "projection_revision_number": 0,
+                "content_hash": HASH_E,
+            }
         }
-        self.bible_head = {
-            "revision": 2,
-            "bible_revision_id": "bible-2",
-            "content_hash": "b" * 64,
-            "selection_revision": 3,
-            "contract_revision": 1,
-            "contract_hash": "c" * 64,
-        }
-        self.plan = None
-        self.inserted = None
+        self.calls: list[str] = []
+        self.projection_write_count = 0
 
-    async def lock_project(self, session, project_id):
-        return self.project if project_id == "p1" else None
+    async def lock_active_project(self, _session, project_id):
+        self.calls.append("lock_active_project")
+        project = self.projects.get(project_id)
+        if project and project["archived_at"] is not None:
+            raise ProjectArchived()
+        return project
 
-    async def read_current_plan(self, session, project_id):
-        return self.plan
+    async def read_project_any(self, _session, project_id):
+        return self.projects.get(project_id)
 
-    async def read_contract_head(self, session, project_id):
-        return self.contract_head
+    async def read_current_basis(self, _session, project_id):
+        self.calls.append("read_current_basis")
+        return deepcopy(self.basis.get(project_id))
 
-    async def read_creation_contract(self, session, creation_contract_id):
-        return self.creation_contract if creation_contract_id == "creation-1" else None
+    async def lock_planning_head(self, _session, project_id):
+        self.calls.append("lock_planning_head")
+        row = deepcopy(self.heads.get(project_id))
+        if row and row["revision"]:
+            revision = self.revisions[(project_id, row["revision"])]
+            row["content_json"] = revision["content_json"]
+        return row
 
-    async def read_selected_seed(self, session, project_id):
-        return self.selected_seed
+    async def read_active_draft(self, _session, project_id):
+        self.calls.append("read_active_draft")
+        for (pid, _), row in self.drafts.items():
+            if pid == project_id and row["status"] == "active":
+                return deepcopy(row)
+        return None
 
-    async def read_bible_head(self, session, project_id):
-        return self.bible_head
+    async def read_draft(self, _session, project_id, draft_id):
+        self.calls.append("read_draft")
+        row = self.drafts.get((project_id, draft_id))
+        return deepcopy(row) if row else None
 
-    async def insert_initial_plan(self, session, bundle):
-        self.inserted = bundle
-        self.plan = bundle
+    async def insert_draft(self, _session, row):
+        self.calls.append("insert_draft")
+        self.drafts[(row["project_id"], row["id"])] = deepcopy(row)
         return True
 
+    async def update_draft_cas(
+        self, _session, row, *, expected_revision, expected_hash
+    ):
+        self.calls.append("update_draft_cas")
+        current = self.drafts.get((row["project_id"], row["id"]))
+        if (
+            current is None
+            or current["status"] != "active"
+            or current["draft_revision"] != expected_revision
+            or current["content_hash"] != expected_hash
+        ):
+            return False
+        current.update(deepcopy(row))
+        current["active_slot"] = 1 if row["status"] == "active" else None
+        return True
 
-class FakeTx:
-    async def __aenter__(self):
-        return object()
+    async def supersede_draft(self, _session, project_id, draft_id, updated_at):
+        self.calls.append("supersede_draft")
+        row = self.drafts.get((project_id, draft_id))
+        if row is None or row["status"] != "active":
+            return False
+        row.update(status="superseded", active_slot=None, updated_at=updated_at)
+        return True
 
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
+    async def find_confirmation(self, _session, project_id, idempotency_key):
+        self.calls.append("find_confirmation")
+        row = self.requests.get((project_id, idempotency_key))
+        return deepcopy(row) if row else None
 
+    async def insert_confirmation_pending(self, _session, row):
+        self.calls.append("insert_confirmation_pending")
+        self.requests[(row["project_id"], row["idempotency_key"])] = deepcopy(row)
+        return True
 
-def tx_factory():
-    return FakeTx()
+    async def insert_revision(self, _session, row):
+        self.calls.append("insert_revision")
+        self.revisions[(row["project_id"], row["revision"])] = deepcopy(row)
+        return True
 
+    async def advance_head_cas(self, _session, row, expected_revision):
+        self.calls.append("advance_head_cas")
+        current = self.heads[row["project_id"]]
+        if current["revision"] != expected_revision:
+            return False
+        current.update(deepcopy(row))
+        return True
 
-@pytest.mark.asyncio
-async def test_current_plan_query_compares_full_contract_and_bible_generation():
-    from backend.repositories.planning import PlanningRepository
+    async def finish_confirmation(self, _session, row):
+        self.calls.append("finish_confirmation")
+        current = self.requests[(row["project_id"], row["idempotency_key"])]
+        current.update(deepcopy(row))
+        return True
 
-    class EmptyPlanSession:
-        def __init__(self):
-            self.sql = ""
+    async def list_revisions(self, _session, project_id):
+        return tuple(
+            deepcopy(row)
+            for (pid, _), row in sorted(
+                self.revisions.items(), key=lambda item: item[0][1], reverse=True
+            )
+            if pid == project_id
+        )
 
-        async def fetchone(self, sql, _args):
-            self.sql = sql
-            return None
+    async def read_projection_head(self, _session, project_id):
+        return deepcopy(self.projections.get(project_id))
 
-    session = EmptyPlanSession()
-    assert await PlanningRepository().read_current_plan(session, "p1") is None
-    compact = " ".join(session.sql.split())
-    assert "JOIN creation_contracts current_contract" in compact
-    assert "current_contract.selection_revision=volume.selection_revision" in compact
-    assert "JOIN creation_bible_revisions current_bible" in compact
-    assert "current_bible.selection_revision=volume.selection_revision" in compact
-    assert "current_bible.contract_revision=volume.contract_revision" in compact
-    assert "current_bible.creation_hash=volume.contract_hash" in compact
-    assert "current_bible.contract_hash" not in compact
-
-
-@pytest.mark.asyncio
-async def test_bible_head_query_aliases_creation_hash_for_the_existing_dto():
-    from backend.repositories.planning import PlanningRepository
-
-    class BibleHeadSession:
-        def __init__(self):
-            self.sql = ""
-
-        async def fetchone(self, sql, _args):
-            self.sql = sql
-            return None
-
-    session = BibleHeadSession()
-    assert await PlanningRepository().read_bible_head(session, "p1") is None
-    compact = " ".join(session.sql.split())
-    assert "bible.creation_hash AS contract_hash" in compact
-    assert "bible.contract_hash" not in compact
-
-
-def test_chapter_session_generation_fence_uses_bible_creation_hash():
-    from backend.repositories.chapter_sessions import _EFFECTIVE_STATUS
-
-    compact = " ".join(_EFFECTIVE_STATUS.split())
-    assert "current_bible.creation_hash=session.contract_hash" in compact
-    assert "current_bible.contract_hash" not in compact
-
-
-@pytest.mark.asyncio
-async def test_initial_planning_requires_confirmed_contract_head():
-    from backend.services.planning import CreateInitialPlan, PlanningPreconditionFailed, PlanningService
-
-    repo = FakePlanningRepository()
-    repo.contract_head = None
-    service = PlanningService(repo, transaction_factory=tx_factory)
-
-    with pytest.raises(PlanningPreconditionFailed, match="confirmed contract"):
-        await service.create_initial_plan(CreateInitialPlan(
-            project_id="p1",
-            expected_contract_revision=1,
-            idempotency_key="m3-test",
-        ))
+    async def lock_projection_head(self, _session, project_id):
+        self.calls.append("lock_projection_head")
+        return deepcopy(self.projections.get(project_id))
 
 
-@pytest.mark.asyncio
-async def test_initial_planning_creates_one_active_story_block_without_chapter_counts():
-    from backend.services.planning import CreateInitialPlan, PlanningService
+class Harness:
+    def __init__(self, *, failpoint=None):
+        self.repository = MemoryPlanningRepository()
+        ids = iter(
+            [
+                "00000000-0000-0000-0000-000000000101",
+                "00000000-0000-0000-0000-000000000102",
+                "00000000-0000-0000-0000-000000000103",
+                "00000000-0000-0000-0000-000000000104",
+                "00000000-0000-0000-0000-000000000105",
+                "00000000-0000-0000-0000-000000000106",
+                "00000000-0000-0000-0000-000000000107",
+                "00000000-0000-0000-0000-000000000108",
+                "00000000-0000-0000-0000-000000000109",
+                "00000000-0000-0000-0000-000000000110",
+                "00000000-0000-0000-0000-000000000111",
+                "00000000-0000-0000-0000-000000000112",
+            ]
+        )
+        repository = self.repository
 
-    repo = FakePlanningRepository()
-    service = PlanningService(repo, transaction_factory=tx_factory)
+        @asynccontextmanager
+        async def transaction():
+            snapshot = deepcopy(repository.__dict__)
+            try:
+                yield object()
+            except BaseException:
+                repository.__dict__.clear()
+                repository.__dict__.update(snapshot)
+                raise
 
-    result = await service.create_initial_plan(CreateInitialPlan(
-        project_id="p1",
-        expected_contract_revision=1,
-        idempotency_key="m3-test",
-    ))
+        @asynccontextmanager
+        async def connection():
+            yield object()
 
-    assert result.has_planning is True
-    assert result.contract_revision == 1
-    assert result.selection_revision == 3
-    assert result.contract_hash == "c" * 64
-    assert result.bible_revision == 2
-    assert result.bible_hash == "b" * 64
-    assert result.active_volume.status == "active"
-    assert result.active_block.status == "active"
-    assert result.active_block.goal["chapterCapacity"] == {
-        "targetMin": 3500,
-        "targetMax": 4500,
-        "softCeiling": 5200,
-    }
-    assert "targetChapterCount" not in result.active_block.goal
-    assert "continuationCount" not in result.active_block.goal
-    assert [stage.status for stage in result.stages] == [
-        "in_progress", "pending", "pending",
-    ]
-    assert all(task.status == "pending" for task in result.scene_tasks)
-    assert repo.inserted["manifest_hash"] == canonical_hash({
-        "selectionRevision": 3,
-        "contractRevision": 1,
-        "contractHash": "c" * 64,
-        "bibleRevision": 2,
-        "bibleHash": "b" * 64,
-        "volume": repo.inserted["volume"]["payload"],
-        "block": repo.inserted["block"]["payload"],
-        "stages": [stage["payload"] for stage in repo.inserted["stages"]],
-        "sceneTasks": [task["payload"] for task in repo.inserted["scene_tasks"]],
-    })
-    assert repo.inserted["volume"]["selection_revision"] == 3
-    assert repo.inserted["volume"]["contract_hash"] == "c" * 64
-    assert repo.inserted["volume"]["bible_revision"] == 2
-    assert repo.inserted["volume"]["bible_hash"] == "b" * 64
+        self.service = PlanningService(
+            repository,
+            transaction_factory=transaction,
+            connection_factory=connection,
+            id_factory=ids.__next__,
+            clock=lambda: 1_900_000_000_000,
+            failpoint=failpoint,
+        )
 
 
 @pytest.mark.asyncio
-async def test_initial_planning_requires_confirmed_bible_head():
-    from backend.services.planning import (
-        CreateInitialPlan,
-        PlanningPreconditionFailed,
-        PlanningService,
-    )
-
-    repo = FakePlanningRepository()
-    repo.bible_head = {"revision": 0, "bible_revision_id": None, "content_hash": None}
+async def test_create_requires_current_bible_and_head_zero_is_one_empty_draft():
+    harness = Harness()
+    harness.repository.basis["p1"] = None
 
     with pytest.raises(PlanningPreconditionFailed, match="Bible"):
-        await PlanningService(repo, transaction_factory=tx_factory).create_initial_plan(
-            CreateInitialPlan(
-                project_id="p1",
-                expected_contract_revision=1,
-                idempotency_key="m3-test",
+        await harness.service.create_draft(CreatePlanningDraft("p1", "create-1"))
+
+    harness.repository.basis["p1"] = basis()
+    first = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-1")
+    )
+    second = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-2")
+    )
+
+    assert second == first
+    assert first.base_head_revision == 0
+    assert first.draft_revision == 1
+    assert first.content.active_story_block_id is None
+    assert first.content.volumes == first.content.plots == ()
+    assert first.content.story_blocks == ()
+    assert first.capacity_policy == {
+        "targetMin": 3000,
+        "targetMax": 5000,
+        "softCeiling": 5000,
+    }
+    serialized = json.dumps(
+        first.content.model_dump(mode="json", by_alias=True), ensure_ascii=False
+    )
+    for forbidden in ("典籍", "第一卷", "3500", "4500", "5200"):
+        assert forbidden not in serialized
+    assert len(harness.repository.drafts) == 1
+
+
+@pytest.mark.parametrize(
+    "invalid_range",
+    (
+        None,
+        [],
+        [3000],
+        [3000, 5000, 6000],
+        [True, 5000],
+        [3000.0, 5000],
+        ["3000", 5000],
+        [0, 5000],
+        [5000, 3000],
+    ),
+)
+@pytest.mark.asyncio
+async def test_create_rejects_noncanonical_contract_capacity_without_writes(
+    invalid_range,
+):
+    harness = Harness()
+    harness.repository.basis["p1"]["chapter_capacity_policy"] = json.dumps(
+        {
+            "expectedVolumeCount": 3,
+            "expectedChapterCount": 60,
+            "chapterWordRangePreference": invalid_range,
+        }
+    )
+
+    with pytest.raises(PlanningPreconditionFailed, match="capacity"):
+        await harness.service.create_draft(
+            CreatePlanningDraft("p1", "invalid-capacity")
+        )
+
+    assert harness.repository.drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_target_shape_as_a_second_capacity_contract():
+    harness = Harness()
+    harness.repository.basis["p1"]["chapter_capacity_policy"] = json.dumps(
+        {"targetMin": 3000, "targetMax": 5000, "softCeiling": 6000}
+    )
+
+    with pytest.raises(PlanningPreconditionFailed, match="capacity"):
+        await harness.service.create_draft(
+            CreatePlanningDraft("p1", "second-shape")
+        )
+
+    assert harness.repository.drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_save_is_cas_and_allocates_new_node_ids_only_on_the_server():
+    harness = Harness()
+    draft = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-1")
+    )
+
+    saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            planning_payload(),
+            "save-1",
+        )
+    )
+
+    assert saved.draft_revision == 2
+    assert saved.content.volumes[0].id.startswith("00000000-")
+    assert saved.content.volumes[0].id != "volume"
+    server_before = deepcopy(
+        harness.repository.drafts[("p1", draft.draft_id)]
+    )
+    with pytest.raises(PlanningConflict, match="draft revision"):
+        await harness.service.save_draft(
+            SavePlanningDraft(
+                "p1",
+                draft.draft_id,
+                draft.draft_revision,
+                draft.content_hash,
+                planning_payload("不应覆盖服务端"),
+                "save-stale",
+            )
+        )
+    assert harness.repository.drafts[("p1", draft.draft_id)] == server_before
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_empty_then_is_atomic_and_idempotent():
+    harness = Harness()
+    empty = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-1")
+    )
+    with pytest.raises(PlanningPreconditionFailed, match="not confirmable"):
+        await harness.service.confirm_draft(
+            ConfirmPlanningDraft(
+                "p1",
+                empty.draft_id,
+                empty.draft_revision,
+                empty.content_hash,
+                "confirm-empty",
+            )
+        )
+    assert harness.repository.revisions == {}
+
+    saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            empty.draft_id,
+            empty.draft_revision,
+            empty.content_hash,
+            planning_payload(),
+            "save-1",
+        )
+    )
+    command = ConfirmPlanningDraft(
+        "p1",
+        saved.draft_id,
+        saved.draft_revision,
+        saved.content_hash,
+        "confirm-1",
+    )
+    harness.repository.calls.clear()
+    first = await harness.service.confirm_draft(command)
+    first_confirm_calls = tuple(harness.repository.calls)
+    replay = await harness.service.confirm_draft(command)
+
+    assert replay == first
+    assert first.revision == 1
+    assert harness.repository.heads["p1"]["revision"] == 1
+    assert harness.repository.drafts[("p1", saved.draft_id)]["status"] == "confirmed"
+    assert harness.repository.requests[("p1", "confirm-1")]["status"] == "succeeded"
+    assert harness.repository.projection_write_count == 0
+    assert first_confirm_calls == (
+        "lock_active_project",
+        "read_current_basis",
+        "lock_planning_head",
+        "read_draft",
+        "lock_projection_head",
+        "find_confirmation",
+        "insert_confirmation_pending",
+        "insert_revision",
+        "advance_head_cas",
+        "update_draft_cas",
+        "finish_confirmation",
+    )
+    with pytest.raises(PlanningConflict, match="idempotency"):
+        await harness.service.confirm_draft(
+            ConfirmPlanningDraft(
+                "p1",
+                saved.draft_id,
+                saved.draft_revision + 1,
+                saved.content_hash,
+                "confirm-1",
             )
         )
 
 
 @pytest.mark.asyncio
-async def test_initial_planning_is_idempotent_when_plan_already_exists():
-    from backend.services.planning import CreateInitialPlan, PlanningService
+async def test_head_one_create_clones_every_stable_identity_and_history_is_immutable():
+    harness = Harness()
+    draft = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-1")
+    )
+    saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            planning_payload(),
+            "save-1",
+        )
+    )
+    revision = await harness.service.confirm_draft(
+        ConfirmPlanningDraft(
+            "p1",
+            saved.draft_id,
+            saved.draft_revision,
+            saved.content_hash,
+            "confirm-1",
+        )
+    )
 
-    repo = FakePlanningRepository()
-    service = PlanningService(repo, transaction_factory=tx_factory)
-    first = await service.create_initial_plan(CreateInitialPlan(
-        project_id="p1",
-        expected_contract_revision=1,
-        idempotency_key="m3-test",
-    ))
-    inserted = repo.inserted
+    cloned = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-adjustment")
+    )
+    history_before = await harness.service.history("p1")
 
-    second = await service.create_initial_plan(CreateInitialPlan(
-        project_id="p1",
-        expected_contract_revision=1,
-        idempotency_key="m3-test",
-    ))
+    assert cloned.base_head_revision == 1
+    assert cloned.content == revision.content
+    assert cloned.content_hash == revision.content_hash
+    assert history_before == (revision,)
 
-    assert second == first
-    assert repo.inserted is inserted
+    formal = cloned.content.model_dump(mode="json", by_alias=True)
+    formal["activeStoryBlockRef"] = formal.pop("activeStoryBlockId")
+    for block in formal["storyBlocks"]:
+        block["volumeRef"] = block.pop("volumeId")
+        block["plotRefs"] = block.pop("plotIds")
+        for stage in block["stages"]:
+            stage.pop("storyBlockId")
+            for task in stage["sceneTasks"]:
+                task.pop("stageId")
+    formal.pop("schemaVersion")
+    formal.pop("contentHash")
+    adjusted = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            cloned.draft_id,
+            cloned.draft_revision,
+            cloned.content_hash,
+            formal,
+            "save-adjustment",
+        )
+    )
+    await harness.service.confirm_draft(
+        ConfirmPlanningDraft(
+            "p1",
+            adjusted.draft_id,
+            adjusted.draft_revision,
+            adjusted.content_hash,
+            "confirm-2",
+        )
+    )
+    history_after = await harness.service.history("p1")
+
+    assert tuple(item.revision for item in history_after) == (2, 1)
+    assert history_after[1] == revision
 
 
 @pytest.mark.asyncio
-async def test_initial_planning_reads_current_creation_contract_selected_engine_shape():
-    from backend.services.planning import CreateInitialPlan, PlanningService
+async def test_basis_drift_supersedes_and_a_to_b_to_a_never_reactivates():
+    harness = Harness()
+    first = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-a")
+    )
+    harness.repository.basis["p1"] = basis(
+        selection_revision=2,
+        seed_id="seed-b",
+        seed_revision_id="seed-revision-b",
+        seed_hash=HASH_E,
+        contract_revision=2,
+        creation_contract_id="creation-b",
+        creation_hash=HASH_D,
+        style_contract_id="style-b",
+        style_hash=HASH_A,
+        bible_revision=2,
+        bible_revision_id="bible-b",
+        bible_hash=HASH_B,
+    )
 
-    repo = FakePlanningRepository()
-    repo.creation_contract["content_json"] = {
-        "selectedEngine": {
-            "name": "典籍入山河",
-            "storyPromise": "穿越知识、典籍残卷、山河治理和群像成长绑定成长期发动机。",
-        },
-        "chapterCapacityPolicy": {
-            "targetMin": 3500,
-            "targetMax": 4500,
-            "softCeiling": 5200,
-        },
+    with pytest.raises(PlanningPreconditionFailed, match="superseded"):
+        await harness.service.save_draft(
+            SavePlanningDraft(
+                "p1",
+                first.draft_id,
+                first.draft_revision,
+                first.content_hash,
+                planning_payload(),
+                "stale-a",
+            )
+        )
+    assert harness.repository.drafts[("p1", first.draft_id)]["status"] == "superseded"
+
+    second = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-b")
+    )
+    harness.repository.basis["p1"] = basis(
+        selection_revision=3,
+        contract_revision=3,
+        creation_contract_id="creation-a3",
+        creation_hash=HASH_E,
+        style_contract_id="style-a3",
+        style_hash=HASH_A,
+        bible_revision=3,
+        bible_revision_id="bible-a3",
+        bible_hash=HASH_B,
+    )
+    with pytest.raises(PlanningPreconditionFailed, match="superseded"):
+        await harness.service.save_draft(
+            SavePlanningDraft(
+                "p1",
+                second.draft_id,
+                second.draft_revision,
+                second.content_hash,
+                planning_payload(),
+                "stale-b",
+            )
+        )
+    third = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-a3")
+    )
+    assert third.draft_id not in {first.draft_id, second.draft_id}
+    assert harness.repository.drafts[("p1", first.draft_id)]["status"] == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_confirmation_requires_synchronized_projection_and_rolls_back_every_write():
+    harness = Harness(
+        failpoint=lambda stage: (
+            (_ for _ in ()).throw(RuntimeError("rollback sentinel"))
+            if stage == "after_head_advance"
+            else None
+        )
+    )
+    draft = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-1")
+    )
+    saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            planning_payload(),
+            "save-1",
+        )
+    )
+    before = deepcopy(harness.repository.__dict__)
+    with pytest.raises(RuntimeError, match="rollback sentinel"):
+        await harness.service.confirm_draft(
+            ConfirmPlanningDraft(
+                "p1",
+                saved.draft_id,
+                saved.draft_revision,
+                saved.content_hash,
+                "confirm-failpoint",
+            )
+        )
+    assert harness.repository.__dict__ == before
+
+    harness.service.failpoint = None
+    harness.repository.projections["p1"]["canon_revision_number"] = 1
+    mismatch_before = deepcopy(harness.repository.__dict__)
+    with pytest.raises(PlanningPreconditionFailed, match="Projection"):
+        await harness.service.confirm_draft(
+            ConfirmPlanningDraft(
+                "p1",
+                saved.draft_id,
+                saved.draft_revision,
+                saved.content_hash,
+                "confirm-mismatch",
+            )
+        )
+    assert harness.repository.__dict__ == mismatch_before
+
+
+@pytest.mark.asyncio
+async def test_archived_mutations_reject_but_state_remains_readable_and_separated():
+    harness = Harness()
+    state = await harness.service.get_state("p1")
+
+    assert state.future_plan is None
+    assert state.actual_progress == ()
+    assert state.canon_projection_status == {
+        "canonRevision": 0,
+        "projectionRevision": 0,
+        "contentHash": HASH_E,
+        "synchronized": True,
     }
-    service = PlanningService(repo, transaction_factory=tx_factory)
 
-    result = await service.create_initial_plan(CreateInitialPlan(
-        project_id="p1",
-        expected_contract_revision=1,
-        idempotency_key="m3-test",
-    ))
-
-    assert result.active_block.title == "典籍入山河"
-    assert "典籍入山河" in result.active_volume.direction["direction"]
+    harness.repository.projects["p1"]["archived_at"] = 123
+    archived = await harness.service.get_state("p1")
+    assert archived.archived is True
+    for operation in (
+        harness.service.create_draft(CreatePlanningDraft("p1", "archived-create")),
+        harness.service.save_draft(
+            SavePlanningDraft("p1", "missing", 1, HASH_A, planning_payload(), "x")
+        ),
+        harness.service.confirm_draft(
+            ConfirmPlanningDraft("p1", "missing", 1, HASH_A, "y")
+        ),
+    ):
+        with pytest.raises(ProjectArchived):
+            await operation

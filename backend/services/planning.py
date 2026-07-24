@@ -1,23 +1,42 @@
+"""Transactional lifecycle for the single revisioned Planning aggregate."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
 import re
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
-from backend.domain.json_contracts import canonical_hash
+from pydantic import ValidationError
+
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.planning import (
-    PlanningState,
-    SceneTaskView,
-    StoryBlockView,
-    StoryStageView,
-    VolumePlanView,
+    DraftPlanningAggregate,
+    PlanningAggregate,
+    PlanningDomainError,
+    normalize_planning_aggregate,
+    validate_confirmable_planning,
 )
 
 
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+_HASH = re.compile(r"^[0-9a-f]{64}$")
+_BASIS_FIELDS = (
+    "selection_revision",
+    "seed_id",
+    "seed_revision_id",
+    "seed_hash",
+    "contract_revision",
+    "creation_contract_id",
+    "creation_hash",
+    "style_contract_id",
+    "style_hash",
+    "bible_revision",
+    "bible_revision_id",
+    "bible_hash",
+)
 
 
 class PlanningError(RuntimeError):
@@ -41,313 +60,643 @@ class PlanningConflict(PlanningError):
 
 
 @dataclass(frozen=True)
-class CreateInitialPlan:
+class CreatePlanningDraft:
     project_id: str
-    expected_contract_revision: int
     idempotency_key: str
 
 
+@dataclass(frozen=True)
+class SavePlanningDraft:
+    project_id: str
+    draft_id: str
+    expected_revision: int
+    expected_hash: str
+    content: Mapping[str, object]
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
+class ConfirmPlanningDraft:
+    project_id: str
+    draft_id: str
+    expected_draft_revision: int
+    expected_draft_hash: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
+class PlanningDraftResult:
+    project_id: str
+    draft_id: str
+    base_head_revision: int
+    draft_revision: int
+    content_hash: str
+    content: PlanningAggregate
+    status: str
+    capacity_policy: dict[str, int]
+
+
+@dataclass(frozen=True)
+class PlanningRevisionResult:
+    project_id: str
+    planning_revision_id: str
+    revision: int
+    parent_revision: int
+    content_hash: str
+    content: PlanningAggregate
+
+
+@dataclass(frozen=True)
+class PlanningHeadResult:
+    revision: int
+    planning_revision_id: str | None
+    content_hash: str | None
+
+
+@dataclass(frozen=True)
+class PlanningState:
+    project_id: str
+    head: PlanningHeadResult
+    draft: PlanningDraftResult | None
+    future_plan: PlanningAggregate | None
+    actual_progress: tuple[object, ...]
+    canon_projection_status: dict[str, object]
+    capacity_policy: dict[str, int] | None
+    archived: bool
+
+
 class PlanningService:
-    def __init__(self, repository, *, transaction_factory, connection_factory=None):
+    def __init__(
+        self,
+        repository,
+        *,
+        transaction_factory,
+        connection_factory=None,
+        id_factory: Callable[[], str] | None = None,
+        clock: Callable[[], int] | None = None,
+        failpoint: Callable[[str], None] | None = None,
+    ):
         self.repository = repository
         self.transaction_factory = transaction_factory
         self.connection_factory = connection_factory
+        self.id_factory = id_factory or (lambda: str(uuid4()))
+        self.clock = clock or (lambda: int(time.time() * 1000))
+        self.failpoint = failpoint
 
-    async def get_state(self, project_id: str) -> PlanningState:
-        if self.connection_factory is None:
-            raise RuntimeError("Planning read connection is unavailable")
-        async with self.connection_factory() as session:
-            project = await self.repository.lock_project(session, project_id)
-            if project is None:
-                raise PlanningNotFound("Project not found")
-            head = await self.repository.read_contract_head(session, project_id)
-            plan = await self.repository.read_current_plan(session, project_id)
-            return self._state_from_plan(project_id, head, plan)
-
-    async def create_initial_plan(self, command: CreateInitialPlan) -> PlanningState:
-        self._validate_command(command)
+    async def create_draft(
+        self, command: CreatePlanningDraft
+    ) -> PlanningDraftResult:
+        self._validate_project_and_key(command.project_id, command.idempotency_key)
         async with self.transaction_factory() as session:
-            project = await self.repository.lock_project(session, command.project_id)
-            if project is None:
-                raise PlanningNotFound("Project not found")
-            existing = await self.repository.read_current_plan(session, command.project_id)
-            head = await self.repository.read_contract_head(session, command.project_id)
-            if existing is not None:
-                self._require_contract_revision(head, command.expected_contract_revision)
-                return self._state_from_plan(command.project_id, head, existing)
-            self._require_contract_revision(head, command.expected_contract_revision)
-            creation = await self.repository.read_creation_contract(
-                session, head["creation_contract_id"],
-            )
-            if creation is None:
-                raise PlanningPreconditionFailed("confirmed contract payload is missing")
-            seed = await self.repository.read_selected_seed(session, command.project_id)
-            bible = await self.repository.read_bible_head(
+            await self._require_active_project(session, command.project_id)
+            basis = await self._require_current_basis(session, command.project_id)
+            head = await self._require_head(session, command.project_id)
+            active = await self.repository.read_active_draft(
                 session, command.project_id
             )
-            self._require_bible_generation(
-                bible, selected_seed=seed, contract_head=head
+            if active is not None and self._basis_matches(active, basis):
+                return self._draft_result(active, basis)
+            if active is not None:
+                if not await self.repository.supersede_draft(
+                    session,
+                    command.project_id,
+                    active["id"],
+                    self.clock(),
+                ):
+                    raise PlanningConflict("active Planning Draft changed")
+
+            content = (
+                self._planning_from_json(head["content_json"])
+                if int(head["revision"]) > 0
+                else self._empty_planning()
             )
-            bundle = self._initial_bundle(
-                project=project,
-                head=head,
-                creation_contract=creation,
-                selected_seed=seed or {},
-                bible_head=bible,
+            now = self.clock()
+            row = {
+                "id": self.id_factory(),
+                "project_id": command.project_id,
+                "active_slot": 1,
+                "base_head_revision": int(head["revision"]),
+                "draft_revision": 1,
+                **self._basis_values(basis),
+                "content_json": self._planning_json(content),
+                "content_hash": content.content_hash,
+                "source_attempt_id": None,
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+            }
+            if not await self.repository.insert_draft(session, row):
+                raise PlanningConflict("Planning Draft was not created")
+            return self._draft_result(row, basis)
+
+    async def save_draft(
+        self, command: SavePlanningDraft
+    ) -> PlanningDraftResult:
+        self._validate_save(command)
+        superseded = False
+        result = None
+        async with self.transaction_factory() as session:
+            await self._require_active_project(session, command.project_id)
+            basis = await self._require_current_basis(session, command.project_id)
+            head = await self._require_head(session, command.project_id)
+            draft = await self.repository.read_draft(
+                session, command.project_id, command.draft_id
             )
-            inserted = await self.repository.insert_initial_plan(session, bundle)
-            if not inserted:
-                raise PlanningConflict("Planning write did not create the initial plan")
-            return self._state_from_plan(command.project_id, head, bundle)
+            self._require_active_draft(draft)
+            if not self._basis_matches(draft, basis):
+                if not await self.repository.supersede_draft(
+                    session,
+                    command.project_id,
+                    command.draft_id,
+                    self.clock(),
+                ):
+                    raise PlanningConflict("Planning Draft changed")
+                superseded = True
+            else:
+                self._require_draft_cas(
+                    draft,
+                    command.expected_revision,
+                    command.expected_hash,
+                )
+                previous_confirmed = (
+                    self._planning_from_json(head["content_json"])
+                    if int(head["revision"]) > 0
+                    else None
+                )
+                previous_draft = self._planning_from_json(draft["content_json"])
+                try:
+                    normalized = normalize_planning_aggregate(
+                        DraftPlanningAggregate.model_validate(command.content),
+                        previous_confirmed=previous_confirmed,
+                        previous_draft=previous_draft,
+                        id_factory=self.id_factory,
+                    )
+                except ValidationError as exc:
+                    raise PlanningRequestInvalid(
+                        "Planning content is invalid"
+                    ) from exc
+                except PlanningDomainError as exc:
+                    raise PlanningRequestInvalid(str(exc)) from exc
+                row = {
+                    **draft,
+                    "draft_revision": int(draft["draft_revision"]) + 1,
+                    "content_json": self._planning_json(normalized),
+                    "content_hash": normalized.content_hash,
+                    "status": "active",
+                    "updated_at": self.clock(),
+                }
+                if not await self.repository.update_draft_cas(
+                    session,
+                    row,
+                    expected_revision=command.expected_revision,
+                    expected_hash=command.expected_hash,
+                ):
+                    raise PlanningConflict("Planning draft revision conflict")
+                result = self._draft_result(row, basis)
+        if superseded:
+            raise PlanningPreconditionFailed(
+                "Planning Draft is superseded by the current Seed, Contract, or Bible"
+            )
+        assert result is not None
+        return result
 
-    def _validate_command(self, command: CreateInitialPlan) -> None:
-        if not command.project_id:
-            raise PlanningRequestInvalid("project_id is required")
-        if command.expected_contract_revision < 1:
-            raise PlanningRequestInvalid("expected contract revision is required")
-        if _IDEMPOTENCY_KEY.fullmatch(command.idempotency_key or "") is None:
-            raise PlanningRequestInvalid("idempotency key is invalid")
-
-    def _require_contract_revision(
-        self, head: Mapping[str, Any] | None, expected_revision: int,
-    ) -> None:
-        if not head or int(head.get("revision") or 0) < 1:
-            raise PlanningPreconditionFailed("confirmed contract is required")
-        if int(head.get("revision") or 0) != expected_revision:
-            raise PlanningConflict("contract revision drift")
-        if head.get("contract_ready") is False:
-            raise PlanningPreconditionFailed("confirmed contract is not ready")
-
-    def _require_bible_generation(
-        self,
-        bible: Mapping[str, Any] | None,
-        *,
-        selected_seed: Mapping[str, Any] | None,
-        contract_head: Mapping[str, Any],
-    ) -> None:
-        if not bible or int(bible.get("revision") or 0) < 1:
-            raise PlanningPreconditionFailed("confirmed Bible is required")
-        if not selected_seed:
-            raise PlanningPreconditionFailed("selected seed is required")
-        if (
-            int(bible.get("selection_revision") or 0)
-            != int(selected_seed.get("selection_revision") or 0)
-            or int(bible.get("contract_revision") or 0)
-            != int(contract_head.get("revision") or 0)
-            or bible.get("contract_hash") != contract_head.get("creation_hash")
-        ):
-            raise PlanningPreconditionFailed("confirmed Bible is superseded")
-
-    def _initial_bundle(
-        self,
-        *,
-        project: Mapping[str, Any],
-        head: Mapping[str, Any],
-        creation_contract: Mapping[str, Any],
-        selected_seed: Mapping[str, Any],
-        bible_head: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        now = int(time.time() * 1000)
-        project_id = str(project["id"])
-        content = self._json_object(creation_contract.get("content_json"))
-        seed_payload = self._json_object(selected_seed.get("payload_json"))
-        story_engine = self._json_object(
-            content.get("selectedEngine") or content.get("storyEngine")
+    async def confirm_draft(
+        self, command: ConfirmPlanningDraft
+    ) -> PlanningRevisionResult:
+        self._validate_confirm(command)
+        fingerprint = canonical_hash(
+            {
+                "projectId": command.project_id,
+                "draftId": command.draft_id,
+                "draftRevision": command.expected_draft_revision,
+                "draftHash": command.expected_draft_hash,
+            }
         )
-        capacity = self._capacity(content.get("chapterCapacityPolicy"))
-        engine_name = self._clean(story_engine.get("name")) or "本书主线"
-        promise = self._clean(story_engine.get("storyPromise")) or "把选定故事承诺落到具体人物选择、阻力和后果。"
-        protagonist = self._clean(seed_payload.get("protagonist")) or "主角"
-        pressure = self._clean(seed_payload.get("coreConflict")) or promise
-        hook = self._clean(seed_payload.get("openingHook")) or "以一个可见问题打开局面。"
-        volume_payload = {
-            "schemaVersion": "volume-plan-v1",
-            "contractRevision": int(head["revision"]),
-            "direction": f"{engine_name}：先把核心承诺落到第一段连续剧情。",
-            "longTermPromise": promise,
-            "readerExperience": "故事优先，具体行动、人物选择和现实后果优先。",
-        }
-        block_payload = {
-            "schemaVersion": "story-block-v1",
-            "contractRevision": int(head["revision"]),
-            "goal": f"{protagonist}从{hook}入局，第一次证明典籍知识能改变局面，同时付出代价。",
-            "entrySituation": hook,
-            "mainPressure": pressure,
-            "involvedCharacters": [protagonist],
-            "openQuestions": ["典籍知识的收益、代价和觊觎者需要在行动中显形。"],
-            "chapterCapacity": capacity,
-        }
-        stage_payloads = (
-            {
-                "schemaVersion": "story-stage-v1",
-                "purpose": "入局与误判",
-                "dramaticQuestion": "主角能否把看似无用的知识变成可见行动？",
-                "naturalContinuation": "允许跨章延续，不强制本章完成。",
-            },
-            {
-                "schemaVersion": "story-stage-v1",
-                "purpose": "试用与代价",
-                "dramaticQuestion": "第一次成功会引来什么误会、利益冲突或新压力？",
-                "naturalContinuation": "根据章节容量领取任务，未完成项滚入下一章。",
-            },
-            {
-                "schemaVersion": "story-stage-v1",
-                "purpose": "后果与转向",
-                "dramaticQuestion": "人物关系和局势如何因这次选择发生可追踪变化？",
-                "naturalContinuation": "块目标自然完成、失败或转向时再关闭。",
-            },
-        )
-        task_payloads = (
-            {
-                "schemaVersion": "scene-task-v1",
-                "stageOrder": 1,
-                "task": "用一个具体麻烦开场，让主角必须做选择，而不是解释设定。",
-                "acceptance": "读者能看见问题、人物立场和行动压力。",
-            },
-            {
-                "schemaVersion": "scene-task-v1",
-                "stageOrder": 1,
-                "task": "让典籍知识通过行动产生效果，同时暴露局限或成本。",
-                "acceptance": "知识不是说明书，而是改变局面的工具。",
-            },
-            {
-                "schemaVersion": "scene-task-v1",
-                "stageOrder": 2,
-                "task": "安排至少一个配角因自身目的推动或阻碍主角。",
-                "acceptance": "配角不是陪衬，有独立欲望和判断。",
-            },
-            {
-                "schemaVersion": "scene-task-v1",
-                "stageOrder": 3,
-                "task": "留下一个自然未解决项，交给后续故事块或下一章延续。",
-                "acceptance": "不硬塞钩子，不机械清零。",
-            },
-        )
-        manifest_hash = canonical_hash({
-            "selectionRevision": int(selected_seed["selection_revision"]),
-            "contractRevision": int(head["revision"]),
-            "contractHash": head["creation_hash"],
-            "bibleRevision": int(bible_head["revision"]),
-            "bibleHash": bible_head["content_hash"],
-            "volume": volume_payload,
-            "block": block_payload,
-            "stages": list(stage_payloads),
-            "sceneTasks": list(task_payloads),
-        })
-        volume_id = str(uuid4())
-        block_id = str(uuid4())
-        stage_ids = [str(uuid4()) for _ in stage_payloads]
-        return {
-            "selection_revision": int(selected_seed["selection_revision"]),
-            "contract_revision": int(head["revision"]),
-            "contract_hash": head["creation_hash"],
-            "bible_revision": int(bible_head["revision"]),
-            "bible_hash": bible_head["content_hash"],
-            "manifest_hash": manifest_hash,
-            "volume": {
-                "id": volume_id, "project_id": project_id, "volume_num": 1,
-                "selection_revision": int(selected_seed["selection_revision"]),
-                "contract_revision": int(head["revision"]),
-                "contract_hash": head["creation_hash"],
-                "bible_revision": int(bible_head["revision"]),
-                "bible_hash": bible_head["content_hash"],
-                "manifest_hash": manifest_hash,
-                "title": "第一卷 山河初启", "payload": volume_payload,
-                "revision": 1, "status": "active",
-                "created_at": now, "updated_at": now,
-            },
-            "block": {
-                "id": block_id, "project_id": project_id, "volume_plan_id": volume_id,
-                "block_num": 1, "title": engine_name, "payload": block_payload,
-                "revision": 1, "status": "active",
-                "created_at": now, "updated_at": now,
-            },
-            "stages": tuple({
-                "id": stage_id, "project_id": project_id, "story_block_id": block_id,
-                "stage_order": index, "title": payload["purpose"],
-                "payload": payload, "revision": 1,
-                "status": "in_progress" if index == 1 else "pending",
-                "created_at": now, "updated_at": now,
-            } for index, (stage_id, payload) in enumerate(zip(stage_ids, stage_payloads), start=1)),
-            "scene_tasks": tuple({
-                "id": str(uuid4()), "project_id": project_id,
-                "story_stage_id": stage_ids[int(payload["stageOrder"]) - 1],
-                "task_order": index, "payload": payload, "revision": 1,
-                "status": "pending", "created_at": now, "updated_at": now,
-            } for index, payload in enumerate(task_payloads, start=1)),
-        }
+        superseded = False
+        result = None
+        async with self.transaction_factory() as session:
+            await self._require_active_project(session, command.project_id)
+            basis = await self._require_current_basis(session, command.project_id)
+            head = await self._require_head(session, command.project_id)
+            draft = await self.repository.read_draft(
+                session, command.project_id, command.draft_id
+            )
+            if draft is None:
+                raise PlanningNotFound("Planning Draft not found")
+            projection = await self.repository.lock_projection_head(
+                session, command.project_id
+            )
+            if projection is None:
+                raise PlanningPreconditionFailed("Canon/Projection head is missing")
+            request = await self.repository.find_confirmation(
+                session, command.project_id, command.idempotency_key
+            )
+            if request is not None:
+                if request["request_fingerprint"] != fingerprint:
+                    raise PlanningConflict("idempotency key fingerprint conflict")
+                if request["status"] == "succeeded":
+                    result = await self._confirmed_result(
+                        session,
+                        command.project_id,
+                        int(request["result_revision"]),
+                        request["result_hash"],
+                    )
+                    return result
+                raise PlanningConflict("Planning confirmation is pending")
 
-    def _state_from_plan(
-        self,
-        project_id: str,
-        head: Mapping[str, Any] | None,
-        plan: Mapping[str, Any] | None,
-    ) -> PlanningState:
-        contract_revision = int((head or {}).get("revision") or 0)
-        if plan is None:
+            if draft["status"] != "active" or draft.get("active_slot") != 1:
+                raise PlanningConflict("Planning Draft is not active")
+            if not self._basis_matches(draft, basis):
+                if not await self.repository.supersede_draft(
+                    session,
+                    command.project_id,
+                    command.draft_id,
+                    self.clock(),
+                ):
+                    raise PlanningConflict("Planning Draft changed")
+                superseded = True
+            else:
+                self._require_draft_cas(
+                    draft,
+                    command.expected_draft_revision,
+                    command.expected_draft_hash,
+                )
+                canon_revision = int(projection["canon_revision_number"])
+                projection_revision = int(
+                    projection["projection_revision_number"]
+                )
+                if canon_revision != projection_revision:
+                    raise PlanningPreconditionFailed(
+                        "Canon and Projection are not synchronized"
+                    )
+                now = self.clock()
+                request_row = {
+                    "id": self.id_factory(),
+                    "project_id": command.project_id,
+                    "planning_draft_id": command.draft_id,
+                    "draft_revision": command.expected_draft_revision,
+                    "draft_hash": command.expected_draft_hash,
+                    "expected_head_revision": int(head["revision"]),
+                    "idempotency_key": command.idempotency_key,
+                    "request_fingerprint": fingerprint,
+                    "status": "pending",
+                    "created_at": now,
+                }
+                if not await self.repository.insert_confirmation_pending(
+                    session, request_row
+                ):
+                    raise PlanningConflict("Planning confirmation was not reserved")
+                self._hit("after_confirmation_pending")
+
+                content = self._planning_from_json(draft["content_json"])
+                try:
+                    validate_confirmable_planning(content)
+                except PlanningDomainError as exc:
+                    raise PlanningPreconditionFailed(str(exc)) from exc
+                revision_number = int(head["revision"]) + 1
+                revision_row = {
+                    "id": self.id_factory(),
+                    "project_id": command.project_id,
+                    "revision": revision_number,
+                    "parent_revision": int(head["revision"]),
+                    **self._basis_values(basis),
+                    "content_json": self._planning_json(content),
+                    "content_hash": content.content_hash,
+                    "created_at": now,
+                }
+                if not await self.repository.insert_revision(
+                    session, revision_row
+                ):
+                    raise PlanningConflict("Planning revision was not inserted")
+                self._hit("after_revision_insert")
+
+                head_row = {
+                    "project_id": command.project_id,
+                    "revision": revision_number,
+                    "planning_revision_id": revision_row["id"],
+                    "content_hash": content.content_hash,
+                    "updated_at": now,
+                }
+                if not await self.repository.advance_head_cas(
+                    session, head_row, int(head["revision"])
+                ):
+                    raise PlanningConflict("Planning head revision conflict")
+                self._hit("after_head_advance")
+
+                terminal_draft = {
+                    **draft,
+                    "status": "confirmed",
+                    "updated_at": now,
+                }
+                if not await self.repository.update_draft_cas(
+                    session,
+                    terminal_draft,
+                    expected_revision=command.expected_draft_revision,
+                    expected_hash=command.expected_draft_hash,
+                ):
+                    raise PlanningConflict("Planning Draft changed during confirmation")
+                self._hit("after_draft_confirmed")
+
+                confirmation_row = {
+                    "project_id": command.project_id,
+                    "idempotency_key": command.idempotency_key,
+                    "request_fingerprint": fingerprint,
+                    "status": "succeeded",
+                    "planning_revision_id": revision_row["id"],
+                    "result_revision": revision_number,
+                    "result_hash": content.content_hash,
+                    "completed_at": now,
+                }
+                if not await self.repository.finish_confirmation(
+                    session, confirmation_row
+                ):
+                    raise PlanningConflict("Planning confirmation was not completed")
+                self._hit("after_confirmation_succeeded")
+                result = self._revision_result(revision_row)
+        if superseded:
+            raise PlanningPreconditionFailed(
+                "Planning Draft is superseded by the current Seed, Contract, or Bible"
+            )
+        assert result is not None
+        return result
+
+    async def history(self, project_id: str) -> tuple[PlanningRevisionResult, ...]:
+        self._validate_project(project_id)
+        async with self._read_connection() as session:
+            project = await self.repository.read_project_any(session, project_id)
+            if project is None:
+                raise PlanningNotFound("Project not found")
+            rows = await self.repository.list_revisions(session, project_id)
+            return tuple(self._revision_result(row) for row in rows)
+
+    async def get_state(self, project_id: str) -> PlanningState:
+        self._validate_project(project_id)
+        async with self._read_connection() as session:
+            project = await self.repository.read_project_any(session, project_id)
+            if project is None:
+                raise PlanningNotFound("Project not found")
+            basis = await self.repository.read_current_basis(session, project_id)
+            head = await self.repository.lock_planning_head(session, project_id)
+            if head is None:
+                raise PlanningPreconditionFailed("Planning head is missing")
+            draft_row = await self.repository.read_active_draft(session, project_id)
+            projection = await self.repository.read_projection_head(
+                session, project_id
+            )
+            future = (
+                self._planning_from_json(head["content_json"])
+                if int(head["revision"]) > 0
+                else None
+            )
+            draft = (
+                self._draft_result(draft_row, basis)
+                if draft_row is not None
+                and basis is not None
+                and self._basis_matches(draft_row, basis)
+                else None
+            )
+            projection_status = self._projection_status(projection)
             return PlanningState(
-                project_id=project_id, has_planning=False,
-                contract_revision=contract_revision, active_volume=None,
-                active_block=None, stages=(), scene_tasks=(), manifest_hash=None,
+                project_id=project_id,
+                head=PlanningHeadResult(
+                    revision=int(head["revision"]),
+                    planning_revision_id=head["planning_revision_id"],
+                    content_hash=head["content_hash"],
+                ),
+                draft=draft,
+                future_plan=future,
+                actual_progress=(),
+                canon_projection_status=projection_status,
+                capacity_policy=(
+                    self._capacity_policy(basis) if basis is not None else None
+                ),
+                archived=project.get("archived_at") is not None,
             )
-        volume = plan["volume"]
-        block = plan["block"]
-        stages = tuple(plan.get("stages") or ())
-        tasks = tuple(plan.get("scene_tasks") or ())
-        return PlanningState(
-            project_id=project_id, has_planning=True,
-            contract_revision=contract_revision,
-            active_volume=VolumePlanView(
-                id=volume["id"], project_id=volume["project_id"],
-                volume_num=int(volume["volume_num"]), title=volume["title"],
-                direction=volume["payload"], revision=int(volume["revision"]),
-                status=volume["status"],
-            ),
-            active_block=StoryBlockView(
-                id=block["id"], project_id=block["project_id"],
-                volume_plan_id=block["volume_plan_id"],
-                block_num=int(block["block_num"]), title=block["title"],
-                goal=block["payload"], revision=int(block["revision"]),
-                status=block["status"],
-            ),
-            stages=tuple(StoryStageView(
-                id=stage["id"], project_id=stage["project_id"],
-                story_block_id=stage["story_block_id"],
-                stage_order=int(stage["stage_order"]), title=stage["title"],
-                plan=stage["payload"], revision=int(stage["revision"]),
-                status=stage["status"],
-            ) for stage in stages),
-            scene_tasks=tuple(SceneTaskView(
-                id=task["id"], project_id=task["project_id"],
-                story_stage_id=task["story_stage_id"],
-                task_order=int(task["task_order"]), task=task["payload"],
-                revision=int(task["revision"]), status=task["status"],
-            ) for task in tasks),
-            manifest_hash=plan.get("manifest_hash"),
-            selection_revision=int(plan.get("selection_revision") or 0),
-            contract_hash=plan.get("contract_hash"),
-            bible_revision=int(plan.get("bible_revision") or 0),
-            bible_hash=plan.get("bible_hash"),
+
+    async def _confirmed_result(
+        self,
+        session,
+        project_id: str,
+        revision: int,
+        content_hash: str,
+    ) -> PlanningRevisionResult:
+        rows = await self.repository.list_revisions(session, project_id)
+        for row in rows:
+            if (
+                int(row["revision"]) == revision
+                and row["content_hash"] == content_hash
+            ):
+                return self._revision_result(row)
+        raise PlanningConflict("confirmed Planning revision is missing")
+
+    async def _require_active_project(self, session, project_id: str):
+        project = await self.repository.lock_active_project(session, project_id)
+        if project is None:
+            raise PlanningNotFound("Project not found")
+        return project
+
+    async def _require_current_basis(self, session, project_id: str):
+        basis = await self.repository.read_current_basis(session, project_id)
+        if basis is None:
+            raise PlanningPreconditionFailed(
+                "current confirmed Seed, Contract, Style, and Bible are required"
+            )
+        return basis
+
+    async def _require_head(self, session, project_id: str):
+        head = await self.repository.lock_planning_head(session, project_id)
+        if head is None:
+            raise PlanningPreconditionFailed("Planning head is missing")
+        if int(head["revision"]) > 0 and (
+            head.get("planning_revision_id") is None
+            or head.get("content_hash") is None
+            or head.get("content_json") is None
+        ):
+            raise PlanningPreconditionFailed("Planning head revision is incomplete")
+        return head
+
+    def _empty_planning(self) -> PlanningAggregate:
+        payload: dict[str, object] = {
+            "schemaVersion": "planning-v1",
+            "activeStoryBlockId": None,
+            "volumes": (),
+            "plots": (),
+            "storyBlocks": (),
+        }
+        content_hash = canonical_hash(payload)
+        return PlanningAggregate.model_validate(
+            {**payload, "contentHash": content_hash}
         )
 
-    def _json_object(self, value: Any) -> dict[str, Any]:
-        if isinstance(value, dict):
-            return dict(value)
+    def _planning_from_json(self, value: object) -> PlanningAggregate:
+        if isinstance(value, PlanningAggregate):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value).decode("utf-8")
+        if isinstance(value, str):
+            value = json.loads(value)
+        return PlanningAggregate.model_validate(value)
+
+    def _planning_json(self, value: PlanningAggregate) -> str:
+        return canonical_json(value.model_dump(mode="json", by_alias=True))
+
+    def _basis_values(self, basis: Mapping[str, Any]) -> dict[str, Any]:
+        return {field: basis[field] for field in _BASIS_FIELDS}
+
+    def _basis_matches(
+        self,
+        row: Mapping[str, Any],
+        basis: Mapping[str, Any],
+    ) -> bool:
+        return all(row.get(field) == basis.get(field) for field in _BASIS_FIELDS)
+
+    def _capacity_policy(self, basis: Mapping[str, Any]) -> dict[str, int]:
+        value = basis["chapter_capacity_policy"]
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value).decode("utf-8")
         if isinstance(value, str):
             try:
-                loaded = json.loads(value)
-            except json.JSONDecodeError:
-                return {}
-            return loaded if isinstance(loaded, dict) else {}
-        return {}
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise PlanningPreconditionFailed(
+                    "chapter capacity policy is invalid"
+                ) from exc
+        if not isinstance(value, Mapping):
+            raise PlanningPreconditionFailed("chapter capacity policy is invalid")
+        word_range = value.get("chapterWordRangePreference")
+        if (
+            not isinstance(word_range, (list, tuple))
+            or len(word_range) != 2
+            or any(type(item) is not int for item in word_range)
+        ):
+            raise PlanningPreconditionFailed("chapter capacity policy is invalid")
+        target_min, target_max = word_range
+        if not 0 < target_min <= target_max:
+            raise PlanningPreconditionFailed("chapter capacity policy is invalid")
+        result = {
+            "targetMin": target_min,
+            "targetMax": target_max,
+            "softCeiling": target_max,
+        }
+        return result
 
-    def _capacity(self, value: Any) -> dict[str, int]:
-        data = self._json_object(value)
+    def _draft_result(
+        self,
+        row: Mapping[str, Any],
+        basis: Mapping[str, Any],
+    ) -> PlanningDraftResult:
+        return PlanningDraftResult(
+            project_id=str(row["project_id"]),
+            draft_id=str(row["id"]),
+            base_head_revision=int(row["base_head_revision"]),
+            draft_revision=int(row["draft_revision"]),
+            content_hash=str(row["content_hash"]),
+            content=self._planning_from_json(row["content_json"]),
+            status=str(row["status"]),
+            capacity_policy=self._capacity_policy(basis),
+        )
+
+    def _revision_result(
+        self, row: Mapping[str, Any]
+    ) -> PlanningRevisionResult:
+        return PlanningRevisionResult(
+            project_id=str(row["project_id"]),
+            planning_revision_id=str(row["id"]),
+            revision=int(row["revision"]),
+            parent_revision=int(row["parent_revision"]),
+            content_hash=str(row["content_hash"]),
+            content=self._planning_from_json(row["content_json"]),
+        )
+
+    def _projection_status(
+        self, row: Mapping[str, Any] | None
+    ) -> dict[str, object]:
+        if row is None:
+            raise PlanningPreconditionFailed("Canon/Projection head is missing")
+        canon = int(row["canon_revision_number"])
+        projection = int(row["projection_revision_number"])
         return {
-            "targetMin": int(data.get("targetMin") or 3500),
-            "targetMax": int(data.get("targetMax") or 4500),
-            "softCeiling": int(data.get("softCeiling") or 5200),
+            "canonRevision": canon,
+            "projectionRevision": projection,
+            "contentHash": row["content_hash"],
+            "synchronized": canon == projection,
         }
 
-    def _clean(self, value: Any) -> str:
-        return str(value or "").strip()
+    def _require_active_draft(self, row: Mapping[str, Any] | None) -> None:
+        if row is None:
+            raise PlanningNotFound("Planning Draft not found")
+        if row["status"] != "active" or row.get("active_slot") != 1:
+            raise PlanningConflict("Planning Draft is not active")
+
+    def _require_draft_cas(
+        self,
+        row: Mapping[str, Any],
+        expected_revision: int,
+        expected_hash: str,
+    ) -> None:
+        if (
+            int(row["draft_revision"]) != expected_revision
+            or row["content_hash"] != expected_hash
+        ):
+            raise PlanningConflict("Planning draft revision conflict")
+
+    def _validate_project(self, project_id: str) -> None:
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise PlanningRequestInvalid("project_id is required")
+
+    def _validate_project_and_key(
+        self, project_id: str, idempotency_key: str
+    ) -> None:
+        self._validate_project(project_id)
+        if _IDEMPOTENCY_KEY.fullmatch(idempotency_key or "") is None:
+            raise PlanningRequestInvalid("idempotency key is invalid")
+
+    def _validate_save(self, command: SavePlanningDraft) -> None:
+        self._validate_project_and_key(
+            command.project_id, command.idempotency_key
+        )
+        if not command.draft_id:
+            raise PlanningRequestInvalid("draft_id is required")
+        if command.expected_revision < 1:
+            raise PlanningRequestInvalid("expected draft revision is invalid")
+        if _HASH.fullmatch(command.expected_hash or "") is None:
+            raise PlanningRequestInvalid("expected draft hash is invalid")
+        if not isinstance(command.content, Mapping):
+            raise PlanningRequestInvalid("Planning content is required")
+
+    def _validate_confirm(self, command: ConfirmPlanningDraft) -> None:
+        self._validate_project_and_key(
+            command.project_id, command.idempotency_key
+        )
+        if not command.draft_id:
+            raise PlanningRequestInvalid("draft_id is required")
+        if command.expected_draft_revision < 1:
+            raise PlanningRequestInvalid("expected draft revision is invalid")
+        if _HASH.fullmatch(command.expected_draft_hash or "") is None:
+            raise PlanningRequestInvalid("expected draft hash is invalid")
+
+    def _hit(self, stage: str) -> None:
+        if self.failpoint is not None:
+            self.failpoint(stage)
+
+    def _read_connection(self):
+        if self.connection_factory is None:
+            raise RuntimeError("Planning read connection is unavailable")
+        return self.connection_factory()
+
+
+__all__ = (
+    "ConfirmPlanningDraft",
+    "CreatePlanningDraft",
+    "PlanningConflict",
+    "PlanningDraftResult",
+    "PlanningError",
+    "PlanningHeadResult",
+    "PlanningNotFound",
+    "PlanningPreconditionFailed",
+    "PlanningRequestInvalid",
+    "PlanningRevisionResult",
+    "PlanningService",
+    "PlanningState",
+    "SavePlanningDraft",
+)
