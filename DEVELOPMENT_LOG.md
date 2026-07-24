@@ -1,6 +1,6 @@
 # 开发日志
 
-> 只记录当前有效的决策与证据摘要。日期：`2026-07-18`。不记录密钥、DSN、原始运行日志或本地截图。
+> 只记录当前有效的决策与证据摘要。日期：`2026-07-24`。不记录密钥、DSN、原始运行日志或本地截图。
 
 ## 2026-07-18 产品主规格重置
 
@@ -64,8 +64,31 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - 产品服务按 v1.2 正式启动前，需要单独明确批准一次开发数据库重建；正常启动不得自动执行 DDL。
 - 本阶段没有真实 Provider、正文生成或作者内容阅读，不能推导正文质量。
 
+## 2026-07-23 Phase 2 Creative Foundation 完成
+
+- Phase 2 完成创作资产、Provider/模型设置、市场与种子、故事发动机与创作契约、
+  创作圣经及其正式页面。
+- 最终自动验收提交：`0a855f4`；验收报告提交：`c0b8663`。
+- Phase 2 acceptance chain 进入 canonical `main` 后的链末提交：`f11faad`。
+- Committed acceptance 报告记录的证据边界是 No-Provider、Disposable MySQL 8、
+  UI-only 真实浏览器；本日志不把该历史门禁冒充本轮重新运行结果。
+- Product DB Ready、Real Provider Ready、Phase 4 Writer Loop、Phase 5
+  Finalization 和 Content Quality Ready 均未评估。
+
+## 2026-07-24 Phase 3 Story Planning 启动
+
+- Canonical release branch：`main`。
+- 当前开发分支：`codex/phase3-story-planning`。
+- 已批准
+  `docs/superpowers/specs/2026-07-24-phase-3-story-planning-design.md`。
+- 当前工作是 Planning aggregate、Volume、Plot、StoryBlock、Stage、SceneTask
+  和 ChapterOutline，不是正文写作或定稿。
+- Planning 只保存未来计划；实际完成状态只允许从 Canon/Projection 读取。
+- Phase 3A 从空库建立目标 Schema，不迁移旧 Planning 数据，不保留第二套 Store、
+  状态或生成链路。
+
 ## 下一步
 
-Phase 1 完成最终审计后合并 `main`。随后编写并审计 Phase 2“创作准备”详细计划。
-正式正文生成前必须先修复既有最小写作路径的 WorkingDraft Integrity，不能让服务端旧稿、
-迟到响应或长事务覆盖作者屏幕可见正文。
+按已批准设计和详细计划实施 Phase 3A Planning Aggregate Foundation。不得提前读写
+产品数据库、调用真实 Provider，或将 Phase 4 Writer Loop、Phase 5 Finalization
+和 Content Quality 标记为已完成。
