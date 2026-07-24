@@ -291,4 +291,10 @@ async def bootstrap_canon_project(session, project_id: str) -> str:
             content_hash, updated_at) VALUES (%s,0,0,%s,%s)""",
         (project_id, bundle.content_hash, now_ms),
     )
+    await session.execute(
+        """INSERT INTO project_planning_heads
+           (project_id, revision, planning_revision_id, content_hash, updated_at)
+           VALUES (%s,0,NULL,NULL,%s)""",
+        (project_id, now_ms),
+    )
     return bundle.content_hash

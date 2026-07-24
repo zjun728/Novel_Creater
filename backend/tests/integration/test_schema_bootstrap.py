@@ -1,6 +1,10 @@
+import json
+import re
+
 import aiomysql
 import pytest
 
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.repositories.assets import AssetRepository
 from backend.schema_manifest import manifest_hash
 from backend.schema_version import EXPECTED_SCHEMA_VERSION, SchemaMismatch, verify_schema_version
@@ -33,8 +37,12 @@ EXPECTED_TABLES = {
     "creation_contract_corpus_fragment_refs",
     "project_bible_drafts", "bible_generation_attempts",
     "creation_bible_revisions", "project_bible_heads",
-    "bible_confirmation_requests", "volume_plans", "story_blocks",
-    "story_stages", "scene_tasks", "chapter_sessions", "working_drafts",
+    "bible_confirmation_requests", "planning_drafts",
+    "planning_generation_attempts", "planning_revisions",
+    "project_planning_heads", "planning_confirmation_requests",
+    "chapter_outline_drafts", "chapter_outline_generation_attempts",
+    "chapter_outline_revisions", "project_chapter_outline_heads",
+    "chapter_outline_confirmation_requests", "chapter_sessions", "working_drafts",
     "draft_candidates", "finalization_change_sets", "finalization_records",
     "final_chapters", "canon_entities", "entity_aliases", "canon_revisions",
     "canon_events", "current_state_projections", "memory_views",
@@ -102,6 +110,12 @@ async def _insert_foundation_project(
     await session.execute(
         """INSERT INTO project_bible_heads
            (project_id,revision,bible_revision_id,content_hash,updated_at)
+           VALUES (%s,0,NULL,NULL,%s)""",
+        (project_id, NOW),
+    )
+    await session.execute(
+        """INSERT INTO project_planning_heads
+           (project_id,revision,planning_revision_id,content_hash,updated_at)
            VALUES (%s,0,NULL,NULL,%s)""",
         (project_id, NOW),
     )
@@ -457,6 +471,362 @@ async def _index_column_sequences(session, table_name):
         tuple(column for _, column in sorted(columns))
         for columns in by_name.values()
     }
+
+
+async def _assert_mysql_rejects(statement):
+    with pytest.raises((aiomysql.IntegrityError, aiomysql.OperationalError)) as exc_info:
+        await statement
+    assert exc_info.value.args[0] in {1452, 3819}
+
+
+async def _assert_selected_disposable_database(disposable_mysql):
+    selected = await disposable_mysql.session.fetchone(
+        "SELECT DATABASE() AS database_name"
+    )
+    assert selected == {"database_name": disposable_mysql.database_name}
+    assert re.fullmatch(
+        r"novel_creator_test_[a-f0-9]{32}",
+        disposable_mysql.database_name,
+    )
+
+
+async def _insert_planning_outline_fixture(session):
+    creation_id, style_id = await _insert_revision_one_contracts(session)
+    seed_id = "00000000-0000-0000-0000-000000000040"
+    seed_revision_id = "00000000-0000-0000-0000-000000000041"
+    bible_id = "00000000-0000-0000-0000-000000000200"
+    bible_document = {
+        "premise": "A displaced archivist protects a dangerous catalogue.",
+        "worldRules": ["Recorded names may alter local history."],
+    }
+    bible_hash = canonical_hash(bible_document)
+    await session.execute(
+        """INSERT INTO creation_bible_revisions
+           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
+            seed_hash,contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,binding_revision_id,binding_hash,
+            policy_version,content_json,content_hash,confirmed_at)
+           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,'phase3a-test',
+                   %s,%s,%s)""",
+        (
+            bible_id, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
+            creation_id, HASH_B, style_id, HASH_C, BINDING_ID, HASH_A,
+            canonical_json(bible_document), bible_hash, NOW,
+        ),
+    )
+    await session.execute(
+        """UPDATE project_contract_heads
+              SET revision=1,creation_contract_id=%s,style_contract_id=%s,
+                  creation_hash=%s,style_hash=%s,updated_at=%s
+            WHERE project_id=%s""",
+        (creation_id, style_id, HASH_B, HASH_C, NOW, PROJECT_ID),
+    )
+    await session.execute(
+        """UPDATE project_bible_heads
+              SET revision=1,bible_revision_id=%s,content_hash=%s,updated_at=%s
+            WHERE project_id=%s""",
+        (bible_id, bible_hash, NOW, PROJECT_ID),
+    )
+
+    volume_id = "00000000-0000-0000-0000-000000000210"
+    plot_id = "00000000-0000-0000-0000-000000000211"
+    block_id = "00000000-0000-0000-0000-000000000212"
+    stage_id = "00000000-0000-0000-0000-000000000213"
+    scene_task_id = "00000000-0000-0000-0000-000000000214"
+    planning_documents = (
+        {
+            "volumes": [
+                {
+                    "id": volume_id,
+                    "title": "The Lost Catalogue",
+                    "direction": "Keep the catalogue out of court hands.",
+                    "status": "active",
+                },
+            ],
+            "plots": [
+                {
+                    "id": plot_id,
+                    "title": "Who controls recorded history",
+                    "promise": "Every use of the catalogue changes an alliance.",
+                    "status": "active",
+                },
+            ],
+            "storyBlocks": [
+                {
+                    "id": block_id,
+                    "volumeId": volume_id,
+                    "plotIds": [plot_id],
+                    "title": "Escape the archive",
+                    "goal": "Leave the sealed district with the catalogue.",
+                    "status": "active",
+                    "stages": [
+                        {
+                            "id": stage_id,
+                            "title": "The first pursuit",
+                            "sceneTasks": [
+                                {
+                                    "id": scene_task_id,
+                                    "intent": "Force a choice between speed and secrecy.",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+            "activeStoryBlockId": block_id,
+        },
+        {
+            "volumes": [
+                {
+                    "id": volume_id,
+                    "title": "The Lost Catalogue",
+                    "direction": "Reach the river network without exposing the catalogue.",
+                    "status": "active",
+                },
+            ],
+            "plots": [
+                {
+                    "id": plot_id,
+                    "title": "Who controls recorded history",
+                    "promise": "Each apparent ally wants a different version of the past.",
+                    "status": "active",
+                },
+            ],
+            "storyBlocks": [
+                {
+                    "id": block_id,
+                    "volumeId": volume_id,
+                    "plotIds": [plot_id],
+                    "title": "Escape the archive",
+                    "goal": "Cross the river before the copied warrant arrives.",
+                    "status": "active",
+                    "stages": [
+                        {
+                            "id": stage_id,
+                            "title": "The river checkpoint",
+                            "sceneTasks": [
+                                {
+                                    "id": scene_task_id,
+                                    "intent": "Make the pursuer and protagonist bargain in public.",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+            "activeStoryBlockId": block_id,
+        },
+    )
+    planning_ids = (
+        "00000000-0000-0000-0000-000000000201",
+        "00000000-0000-0000-0000-000000000202",
+    )
+    planning_hashes = tuple(canonical_hash(item) for item in planning_documents)
+    for revision, (revision_id, document, content_hash) in enumerate(
+        zip(planning_ids, planning_documents, planning_hashes),
+        start=1,
+    ):
+        await session.execute(
+            """INSERT INTO planning_revisions
+               (id,project_id,revision,parent_revision,selection_revision,
+                seed_id,seed_revision_id,seed_hash,contract_revision,
+                creation_contract_id,creation_hash,style_contract_id,style_hash,
+                bible_revision,bible_revision_id,bible_hash,content_json,
+                content_hash,created_at)
+               VALUES (%s,%s,%s,%s,1,%s,%s,%s,1,%s,%s,%s,%s,1,%s,%s,%s,%s,%s)""",
+            (
+                revision_id, PROJECT_ID, revision, revision - 1, seed_id,
+                seed_revision_id, HASH_A, creation_id, HASH_B, style_id,
+                HASH_C, bible_id, bible_hash, canonical_json(document),
+                content_hash, NOW,
+            ),
+        )
+
+    story_block_hashes = tuple(
+        canonical_hash(document["storyBlocks"][0])
+        for document in planning_documents
+    )
+    outline_documents = (
+        {
+            "chapterNum": 1,
+            "planningRevision": 1,
+            "storyBlockId": block_id,
+            "storyBlockRevision": 1,
+            "storyBlockHash": story_block_hashes[0],
+            "sceneTaskIds": [scene_task_id],
+            "chapterIntent": "Escape the archive without revealing the catalogue.",
+        },
+        {
+            "chapterNum": 1,
+            "planningRevision": 2,
+            "storyBlockId": block_id,
+            "storyBlockRevision": 2,
+            "storyBlockHash": story_block_hashes[1],
+            "sceneTaskIds": [scene_task_id],
+            "chapterIntent": "Turn the river checkpoint into a temporary alliance.",
+        },
+    )
+    outline_ids = (
+        "00000000-0000-0000-0000-000000000203",
+        "00000000-0000-0000-0000-000000000204",
+    )
+    outline_hashes = tuple(canonical_hash(item) for item in outline_documents)
+    projection_hash = canonical_hash(
+        {"canonRevision": 0, "projectionRevision": 0, "entities": []},
+    )
+    for revision, (
+        outline_id,
+        outline_document,
+        outline_hash,
+        planning_id,
+        planning_hash,
+    ) in enumerate(
+        zip(
+            outline_ids,
+            outline_documents,
+            outline_hashes,
+            planning_ids,
+            planning_hashes,
+        ),
+        start=1,
+    ):
+        await session.execute(
+            """INSERT INTO chapter_outline_revisions
+               (id,project_id,chapter_num,revision,parent_revision,
+                planning_revision_id,planning_revision,planning_hash,
+                canon_revision,projection_revision,projection_hash,content_json,
+                content_hash,created_at)
+               VALUES (%s,%s,1,%s,%s,%s,%s,%s,0,0,%s,%s,%s,%s)""",
+            (
+                outline_id, PROJECT_ID, revision, revision - 1, planning_id,
+                revision, planning_hash, projection_hash,
+                canonical_json(outline_document), outline_hash, NOW,
+            ),
+        )
+
+    return {
+        "seed_id": seed_id,
+        "seed_revision_id": seed_revision_id,
+        "creation_id": creation_id,
+        "style_id": style_id,
+        "bible_id": bible_id,
+        "bible_hash": bible_hash,
+        "planning_documents": planning_documents,
+        "planning_ids": planning_ids,
+        "planning_hashes": planning_hashes,
+        "outline_documents": outline_documents,
+        "outline_ids": outline_ids,
+        "outline_hashes": outline_hashes,
+        "projection_hash": projection_hash,
+        "story_block_id": block_id,
+        "story_block_hashes": story_block_hashes,
+    }
+
+
+async def _insert_planning_draft(
+    session,
+    fixture,
+    *,
+    draft_id,
+    active_slot,
+    status,
+):
+    await session.execute(
+        """INSERT INTO planning_drafts
+           (id,project_id,active_slot,base_head_revision,draft_revision,
+            selection_revision,seed_id,seed_revision_id,seed_hash,
+            contract_revision,creation_contract_id,creation_hash,
+            style_contract_id,style_hash,bible_revision,bible_revision_id,
+            bible_hash,content_json,content_hash,source_attempt_id,status,
+            created_at,updated_at)
+           VALUES (%s,%s,%s,0,1,1,%s,%s,%s,1,%s,%s,%s,%s,1,%s,%s,%s,%s,
+                   NULL,%s,%s,%s)""",
+        (
+            draft_id, PROJECT_ID, active_slot, fixture["seed_id"],
+            fixture["seed_revision_id"], HASH_A, fixture["creation_id"], HASH_B,
+            fixture["style_id"], HASH_C, fixture["bible_id"],
+            fixture["bible_hash"], canonical_json(fixture["planning_documents"][0]),
+            fixture["planning_hashes"][0], status, NOW, NOW,
+        ),
+    )
+
+
+async def _insert_outline_draft(
+    session,
+    fixture,
+    *,
+    draft_id,
+    active_slot,
+    status,
+):
+    await session.execute(
+        """INSERT INTO chapter_outline_drafts
+           (id,project_id,chapter_num,active_slot,base_head_revision,
+            draft_revision,planning_revision_id,planning_revision,planning_hash,
+            canon_revision,projection_revision,projection_hash,content_json,
+            content_hash,source_attempt_id,status,created_at,updated_at)
+           VALUES (%s,%s,1,%s,0,1,%s,1,%s,0,0,%s,%s,%s,NULL,%s,%s,%s)""",
+        (
+            draft_id, PROJECT_ID, active_slot, fixture["planning_ids"][0],
+            fixture["planning_hashes"][0], fixture["projection_hash"],
+            canonical_json(fixture["outline_documents"][0]),
+            fixture["outline_hashes"][0], status, NOW, NOW,
+        ),
+    )
+
+
+async def _insert_generation_attempt(
+    session,
+    *,
+    table_name,
+    draft_column,
+    loaded_revision_column,
+    draft_id,
+    sequence,
+    status,
+    active_slot,
+    result_content_json,
+    result_content_hash,
+    loaded_revision,
+    loaded_at,
+    failure_code,
+):
+    assert table_name in {
+        "planning_generation_attempts",
+        "chapter_outline_generation_attempts",
+    }
+    assert draft_column in {"draft_id", "outline_draft_id"}
+    assert loaded_revision_column in {
+        "loaded_draft_revision",
+        "loaded_outline_draft_revision",
+    }
+    attempt_id = f"00000000-0000-0000-0000-{sequence:012d}"
+    operation_id = f"00000000-0000-0000-0001-{sequence:012d}"
+    input_manifest = {"sequence": sequence, "draftId": draft_id}
+    await session.execute(
+        f"""INSERT INTO {table_name}
+            (id,project_id,{draft_column},operation_id,active_slot,
+             idempotency_key,request_fingerprint,binding_revision_id,
+             binding_revision,binding_hash,provider_id,model_name_snapshot,
+             fencing_token,lease_expires_at,input_manifest_json,
+             input_manifest_hash,result_content_json,result_content_hash,
+             {loaded_revision_column},loaded_at,failure_code,status,created_at,
+             updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,'test-model',%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (
+            attempt_id, PROJECT_ID, draft_id, operation_id, active_slot,
+            f"attempt-{sequence}",
+            canonical_hash({"request": sequence}),
+            BINDING_ID, HASH_A,
+            "00000000-0000-0000-0000-000000000205",
+            sequence, NOW + 1000, canonical_json(input_manifest),
+            canonical_hash(input_manifest), result_content_json,
+            result_content_hash, loaded_revision, loaded_at, failure_code,
+            status, NOW, NOW,
+        ),
+    )
+    return attempt_id
 
 
 @pytest.mark.mysql
@@ -889,237 +1259,421 @@ async def test_asset_recommendation_running_request_requires_linked_running_atte
 
 
 @pytest.mark.mysql
-async def test_generation_roots_reject_splices_and_allow_same_numbers_after_switch(
+async def test_planning_outline_and_session_reject_cross_generation_splices(
     disposable_mysql,
 ):
+    await _assert_selected_disposable_database(disposable_mysql)
     session = disposable_mysql.session
-    creation_one, style_one = await _insert_revision_one_contracts(session)
-    seed_id = "00000000-0000-0000-0000-000000000040"
-    seed_revision_id = "00000000-0000-0000-0000-000000000041"
-    creation_two = "00000000-0000-0000-0000-000000000130"
-    style_two = "00000000-0000-0000-0000-000000000145"
-    bible_one = "00000000-0000-0000-0000-000000000131"
-    bible_two = "00000000-0000-0000-0000-000000000132"
-    contract_two_hash = "d" * 64
-    style_two_hash = "0" * 64
-    bible_one_hash = "e" * 64
-    bible_two_hash = "f" * 64
-    await _insert_selection_revision(
-        session,
-        seed_id=seed_id,
-        seed_revision_id=seed_revision_id,
-        selection_revision=2,
-    )
-    await session.execute(
-        """INSERT INTO creation_contracts
-           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,binding_revision_id,binding_hash,channel_profile_key,
-            genre_profile_key,quality_charter_version,total_word_min,
-            total_word_max,chapter_capacity_policy,reference_manifest_json,
-            reference_manifest_hash,content_json,content_hash,confirmed_at)
-           SELECT %s,project_id,2,2,seed_id,seed_revision_id,seed_hash,
-                  binding_revision_id,binding_hash,channel_profile_key,
-                  genre_profile_key,quality_charter_version,total_word_min,
-                  total_word_max,chapter_capacity_policy,reference_manifest_json,
-                  reference_manifest_hash,content_json,%s,confirmed_at
-             FROM creation_contracts WHERE id=%s""",
-        (creation_two, contract_two_hash, creation_one),
-    )
-    await session.execute(
-        """INSERT INTO style_contracts
-           (id,project_id,creation_contract_id,revision,merged_style_json,
-            likes_json,dislikes_json,content_hash,confirmed_at)
-           VALUES (%s,%s,%s,2,'{}','[]','[]',%s,%s)""",
-        (style_two, PROJECT_ID, creation_two, style_two_hash, NOW),
-    )
+    fixture = await _insert_planning_outline_fixture(session)
+    planning_a, planning_b = fixture["planning_ids"]
+    hash_a, hash_b = fixture["planning_hashes"]
 
-    with pytest.raises(Exception):
-        await session.execute(
-            """INSERT INTO creation_bible_revisions
-               (id,project_id,revision,selection_revision,seed_id,
-                seed_revision_id,seed_hash,contract_revision,
-                creation_contract_id,creation_hash,style_contract_id,style_hash,
-                binding_revision_id,binding_hash,policy_version,content_json,
-                content_hash,confirmed_at)
-               VALUES ('00000000-0000-0000-0000-000000000133',%s,1,2,%s,%s,
-                       %s,1,%s,%s,%s,%s,%s,%s,'review-v1','{}',%s,%s)""",
-            (
-                PROJECT_ID, seed_id, seed_revision_id, HASH_A, creation_one,
-                HASH_B, style_one, HASH_C, BINDING_ID, HASH_A, "9" * 64, NOW,
-            ),
-        )
-    await session.execute(
-        """INSERT INTO creation_bible_revisions
-           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,creation_contract_id,creation_hash,
-            style_contract_id,style_hash,binding_revision_id,binding_hash,
-            policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,1,1,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,'review-v1','{}',%s,%s)""",
-        (
-            bible_one, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
-            creation_one, HASH_B, style_one, HASH_C, BINDING_ID, HASH_A,
-            bible_one_hash, NOW,
-        ),
-    )
-    await session.execute(
-        """INSERT INTO creation_bible_revisions
-           (id,project_id,revision,selection_revision,seed_id,seed_revision_id,
-            seed_hash,contract_revision,creation_contract_id,creation_hash,
-            style_contract_id,style_hash,binding_revision_id,binding_hash,
-            policy_version,content_json,content_hash,confirmed_at)
-           VALUES (%s,%s,2,2,%s,%s,%s,2,%s,%s,%s,%s,%s,%s,'review-v1','{}',%s,%s)""",
-        (
-            bible_two, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
-            creation_two, contract_two_hash, style_two, style_two_hash,
-            BINDING_ID, HASH_A, bible_two_hash, NOW,
-        ),
-    )
-
-    bible_draft_two = "00000000-0000-0000-0000-000000000142"
-    bible_draft_two_hash = "4" * 64
-    await session.execute(
-        """INSERT INTO project_bible_drafts
-           (id,project_id,active_slot,base_head_revision,selection_revision,
-            seed_id,seed_revision_id,seed_hash,contract_revision,
-            creation_contract_id,creation_hash,style_contract_id,style_hash,
-            binding_revision_id,binding_hash,policy_version,draft_json,
-            content_hash,draft_version,created_at,updated_at)
-           VALUES (%s,%s,1,1,2,%s,%s,%s,2,%s,%s,%s,%s,%s,%s,'review-v1',
-                   '{}',%s,1,%s,%s)""",
-        (
-            bible_draft_two, PROJECT_ID, seed_id, seed_revision_id, HASH_A,
-            creation_two, contract_two_hash, style_two, style_two_hash,
-            BINDING_ID, HASH_A, bible_draft_two_hash, NOW, NOW,
-        ),
-    )
-    with pytest.raises(Exception):
-        await session.execute(
-            """INSERT INTO bible_confirmation_requests
-               (id,project_id,selection_revision,contract_revision,
-                creation_contract_id,creation_hash,style_contract_id,style_hash,
-                draft_id,draft_version,draft_hash,idempotency_key,request_hash,
-                status,bible_revision_id,result_revision,result_hash,created_at,
-                completed_at)
-               VALUES ('00000000-0000-0000-0000-000000000143',%s,2,2,
-                       %s,%s,%s,%s,%s,1,%s,%s,%s,'succeeded',%s,1,%s,%s,%s)""",
-            (
-                PROJECT_ID, creation_two, contract_two_hash, style_two,
-                style_two_hash, bible_draft_two, bible_draft_two_hash,
-                "5" * 64, "6" * 64, bible_one, bible_one_hash, NOW, NOW,
-            ),
-        )
-    await session.execute(
-        """INSERT INTO bible_confirmation_requests
-           (id,project_id,selection_revision,contract_revision,
-            creation_contract_id,creation_hash,style_contract_id,style_hash,
-            draft_id,draft_version,draft_hash,idempotency_key,request_hash,
-            status,bible_revision_id,result_revision,result_hash,created_at,
-            completed_at)
-           VALUES ('00000000-0000-0000-0000-000000000144',%s,2,2,
-                   %s,%s,%s,%s,%s,1,%s,%s,%s,'succeeded',%s,2,%s,%s,%s)""",
-        (
-            PROJECT_ID, creation_two, contract_two_hash, style_two,
-            style_two_hash, bible_draft_two, bible_draft_two_hash,
-            "7" * 64, "8" * 64, bible_two, bible_two_hash, NOW, NOW,
-        ),
-    )
-
-    with pytest.raises(Exception):
-        await session.execute(
-            """INSERT INTO volume_plans
-               (id,project_id,selection_revision,contract_revision,
-                contract_hash,bible_revision,bible_hash,manifest_hash,
-                volume_num,title,direction_json,revision,status,created_at,
-                updated_at)
-               VALUES ('00000000-0000-0000-0000-000000000134',%s,2,1,%s,1,
-                       %s,%s,1,'splice','{}',1,'active',%s,%s)""",
-            (PROJECT_ID, HASH_B, bible_one_hash, "1" * 64, NOW, NOW),
-        )
-
-    volume_one = "00000000-0000-0000-0000-000000000135"
-    volume_two = "00000000-0000-0000-0000-000000000136"
-    block_one = "00000000-0000-0000-0000-000000000137"
-    block_two = "00000000-0000-0000-0000-000000000138"
-    manifest_one = "2" * 64
-    manifest_two = "3" * 64
-    await session.execute(
-        """INSERT INTO volume_plans
-           (id,project_id,selection_revision,contract_revision,contract_hash,
-            bible_revision,bible_hash,manifest_hash,volume_num,title,
-            direction_json,revision,status,created_at,updated_at)
-           VALUES (%s,%s,1,1,%s,1,%s,%s,1,'generation one','{}',1,'active',
-                   %s,%s)""",
-        (volume_one, PROJECT_ID, HASH_B, bible_one_hash, manifest_one, NOW, NOW),
-    )
-    await session.execute(
-        """INSERT INTO volume_plans
-           (id,project_id,selection_revision,contract_revision,contract_hash,
-            bible_revision,bible_hash,manifest_hash,volume_num,title,
-            direction_json,revision,status,created_at,updated_at)
-           VALUES (%s,%s,2,2,%s,2,%s,%s,1,'generation two','{}',1,'active',
-                   %s,%s)""",
-        (
-            volume_two, PROJECT_ID, contract_two_hash, bible_two_hash,
-            manifest_two, NOW, NOW,
-        ),
-    )
-    for block_id, volume_id in (
-        (block_one, volume_one),
-        (block_two, volume_two),
+    for planning_id, revision, content_hash in (
+        (planning_a, 2, hash_b),
+        (planning_b, 1, hash_a),
+        (planning_a, 1, hash_b),
     ):
-        await session.execute(
-            """INSERT INTO story_blocks
-               (id,project_id,volume_plan_id,block_num,title,goal_json,revision,
-                status,created_at,updated_at)
-               VALUES (%s,%s,%s,1,'block','{}',1,'active',%s,%s)""",
-            (block_id, PROJECT_ID, volume_id, NOW, NOW),
+        await _assert_mysql_rejects(
+            session.execute(
+                """UPDATE project_planning_heads
+                      SET revision=%s,planning_revision_id=%s,content_hash=%s,
+                          updated_at=%s
+                    WHERE project_id=%s""",
+                (revision, planning_id, content_hash, NOW, PROJECT_ID),
+            ),
         )
+    await session.execute(
+        """UPDATE project_planning_heads
+              SET revision=2,planning_revision_id=%s,content_hash=%s,updated_at=%s
+            WHERE project_id=%s""",
+        (planning_b, hash_b, NOW, PROJECT_ID),
+    )
+
+    splice_outline = {
+        "chapterNum": 2,
+        "storyBlockId": fixture["story_block_id"],
+        "chapterIntent": "This row must not splice two planning identities.",
+    }
+    await _assert_mysql_rejects(
+        session.execute(
+            """INSERT INTO chapter_outline_revisions
+               (id,project_id,chapter_num,revision,parent_revision,
+                planning_revision_id,planning_revision,planning_hash,
+                canon_revision,projection_revision,projection_hash,content_json,
+                content_hash,created_at)
+               VALUES ('00000000-0000-0000-0000-000000000220',%s,2,1,0,
+                       %s,2,%s,0,0,%s,%s,%s,%s)""",
+            (
+                PROJECT_ID, planning_a, hash_b, fixture["projection_hash"],
+                canonical_json(splice_outline), canonical_hash(splice_outline),
+                NOW,
+            ),
+        ),
+    )
 
     session_columns = (
-        "id,project_id,selection_revision,contract_revision,contract_hash,"
-        "bible_revision,bible_hash,volume_plan_id,planning_manifest_hash,"
-        "story_block_id,chapter_num,expected_canon_revision,"
-        "expected_story_block_revision,planning_snapshot_json,status,"
+        "id,project_id,planning_revision_id,planning_revision,planning_hash,"
+        "story_block_id,story_block_revision,story_block_hash,"
+        "chapter_outline_revision_id,chapter_outline_revision,"
+        "chapter_outline_hash,chapter_num,expected_canon_revision,status,"
         "created_at,finalized_at"
     )
-    placeholders = ",".join(("%s",) * 17)
-    await session.execute(
-        f"INSERT INTO chapter_sessions ({session_columns}) VALUES ({placeholders})",
-        (
-            "00000000-0000-0000-0000-000000000139", PROJECT_ID, 1, 1,
-            HASH_B, 1, bible_one_hash, volume_one, manifest_one, block_one, 1,
-            0, 1, "{}", "drafting", NOW, None,
-        ),
-    )
-    with pytest.raises(Exception):
-        await session.execute(
+    placeholders = ",".join(("%s",) * 16)
+    await _assert_mysql_rejects(
+        session.execute(
             f"INSERT INTO chapter_sessions ({session_columns}) VALUES ({placeholders})",
             (
-                "00000000-0000-0000-0000-000000000140", PROJECT_ID, 2, 2,
-                contract_two_hash, 2, bible_two_hash, volume_one, manifest_one,
-                block_one, 1, 0, 1, "{}", "drafting", NOW, None,
+                "00000000-0000-0000-0000-000000000221", PROJECT_ID,
+                planning_a, 1, hash_a, fixture["story_block_id"], 1,
+                fixture["story_block_hashes"][0], fixture["outline_ids"][1], 2,
+                fixture["outline_hashes"][1], 1, 0, "drafting", NOW, None,
             ),
-        )
+        ),
+    )
     await session.execute(
         f"INSERT INTO chapter_sessions ({session_columns}) VALUES ({placeholders})",
         (
-            "00000000-0000-0000-0000-000000000141", PROJECT_ID, 2, 2,
-            contract_two_hash, 2, bible_two_hash, volume_two, manifest_two,
-            block_two, 1, 0, 1, "{}", "drafting", NOW, None,
+            "00000000-0000-0000-0000-000000000222", PROJECT_ID,
+            planning_b, 2, hash_b, fixture["story_block_id"], 2,
+            fixture["story_block_hashes"][1], fixture["outline_ids"][1], 2,
+            fixture["outline_hashes"][1], 1, 0, "drafting", NOW, None,
         ),
     )
 
-    counts = await session.fetchone(
-        """SELECT
-             (SELECT COUNT(*) FROM volume_plans WHERE volume_num=1) AS volumes,
-             (SELECT COUNT(*) FROM story_blocks WHERE block_num=1) AS blocks,
-             (SELECT COUNT(*) FROM chapter_sessions WHERE chapter_num=1) AS sessions"""
+    persisted = await session.fetchone(
+        """SELECT planning_revision_id,planning_revision,planning_hash,
+                  chapter_outline_revision_id,chapter_outline_revision,
+                  chapter_outline_hash
+             FROM chapter_sessions WHERE project_id=%s AND chapter_num=1""",
+        (PROJECT_ID,),
     )
-    assert counts == {"volumes": 2, "blocks": 2, "sessions": 2}
+    assert persisted == {
+        "planning_revision_id": planning_b,
+        "planning_revision": 2,
+        "planning_hash": hash_b,
+        "chapter_outline_revision_id": fixture["outline_ids"][1],
+        "chapter_outline_revision": 2,
+        "chapter_outline_hash": fixture["outline_hashes"][1],
+    }
 
 
 @pytest.mark.mysql
-async def test_explicit_foundation_fixture_has_eight_bindings_and_zero_contract_head(disposable_mysql):
+async def test_planning_outline_attempts_and_requests_enforce_exact_states(
+    disposable_mysql,
+):
+    await _assert_selected_disposable_database(disposable_mysql)
+    session = disposable_mysql.session
+    fixture = await _insert_planning_outline_fixture(session)
+
+    await _assert_mysql_rejects(
+        _insert_planning_draft(
+            session,
+            fixture,
+            draft_id="00000000-0000-0000-0000-000000000230",
+            active_slot=None,
+            status="active",
+        ),
+    )
+    await _assert_mysql_rejects(
+        _insert_planning_draft(
+            session,
+            fixture,
+            draft_id="00000000-0000-0000-0000-000000000231",
+            active_slot=1,
+            status="confirmed",
+        ),
+    )
+    await _assert_mysql_rejects(
+        _insert_outline_draft(
+            session,
+            fixture,
+            draft_id="00000000-0000-0000-0000-000000000232",
+            active_slot=None,
+            status="active",
+        ),
+    )
+    await _assert_mysql_rejects(
+        _insert_outline_draft(
+            session,
+            fixture,
+            draft_id="00000000-0000-0000-0000-000000000233",
+            active_slot=1,
+            status="confirmed",
+        ),
+    )
+
+    planning_draft_id = "00000000-0000-0000-0000-000000000240"
+    outline_draft_id = "00000000-0000-0000-0000-000000000241"
+    await _insert_planning_draft(
+        session,
+        fixture,
+        draft_id=planning_draft_id,
+        active_slot=1,
+        status="active",
+    )
+    await _insert_outline_draft(
+        session,
+        fixture,
+        draft_id=outline_draft_id,
+        active_slot=1,
+        status="active",
+    )
+    await _insert_active_provider(
+        session,
+        "00000000-0000-0000-0000-000000000205",
+        "Phase 3A attempt fixture",
+    )
+
+    attempt_tables = (
+        (
+            "planning_generation_attempts",
+            "draft_id",
+            "loaded_draft_revision",
+            planning_draft_id,
+            "planning_drafts",
+        ),
+        (
+            "chapter_outline_generation_attempts",
+            "outline_draft_id",
+            "loaded_outline_draft_revision",
+            outline_draft_id,
+            "chapter_outline_drafts",
+        ),
+    )
+    invalid_cases = (
+        ("pending_null_slot", "pending", None, "none", None, None, None),
+        ("terminal_slot", "succeeded", 1, "pair", None, None, None),
+        ("loaded_revision_only", "succeeded", None, "pair", 1, None, None),
+        ("loaded_at_only", "succeeded", None, "pair", None, NOW, None),
+        ("non_succeeded_loaded", "failed", None, "none", 1, NOW, "failed"),
+        ("pending_result", "pending", 1, "pair", None, None, None),
+        ("pending_failure", "pending", 1, "none", None, None, "failed"),
+        ("succeeded_without_result", "succeeded", None, "none", None, None, None),
+        ("succeeded_with_failure", "succeeded", None, "pair", None, None, "failed"),
+        ("failed_without_failure", "failed", None, "none", None, None, None),
+        ("failed_with_result", "failed", None, "pair", None, None, "failed"),
+        ("superseded_json_only", "superseded", None, "json", None, None, None),
+        ("superseded_hash_only", "superseded", None, "hash", None, None, None),
+        ("superseded_with_failure", "superseded", None, "none", None, None, "failed"),
+        ("superseded_with_loaded", "superseded", None, "none", 1, NOW, None),
+    )
+    sequence = 300
+    for (
+        table_name,
+        draft_column,
+        loaded_revision_column,
+        draft_id,
+        draft_table,
+    ) in attempt_tables:
+        before = await session.fetchone(
+            f"""SELECT draft_revision,content_json,content_hash
+                  FROM {draft_table} WHERE id=%s""",
+            (draft_id,),
+        )
+        for (
+            case_name,
+            status,
+            active_slot,
+            result_mode,
+            loaded_revision,
+            loaded_at,
+            failure_code,
+        ) in invalid_cases:
+            sequence += 1
+            result_document = {"case": case_name, "table": table_name}
+            result_json = (
+                canonical_json(result_document)
+                if result_mode in {"pair", "json"}
+                else None
+            )
+            result_hash = (
+                canonical_hash(result_document)
+                if result_mode in {"pair", "hash"}
+                else None
+            )
+            await _assert_mysql_rejects(
+                _insert_generation_attempt(
+                    session,
+                    table_name=table_name,
+                    draft_column=draft_column,
+                    loaded_revision_column=loaded_revision_column,
+                    draft_id=draft_id,
+                    sequence=sequence,
+                    status=status,
+                    active_slot=active_slot,
+                    result_content_json=result_json,
+                    result_content_hash=result_hash,
+                    loaded_revision=loaded_revision,
+                    loaded_at=loaded_at,
+                    failure_code=failure_code,
+                ),
+            )
+
+        sequence += 1
+        superseded_result = {
+            "case": "complete_superseded_result",
+            "table": table_name,
+        }
+        attempt_id = await _insert_generation_attempt(
+            session,
+            table_name=table_name,
+            draft_column=draft_column,
+            loaded_revision_column=loaded_revision_column,
+            draft_id=draft_id,
+            sequence=sequence,
+            status="superseded",
+            active_slot=None,
+            result_content_json=canonical_json(superseded_result),
+            result_content_hash=canonical_hash(superseded_result),
+            loaded_revision=None,
+            loaded_at=None,
+            failure_code=None,
+        )
+        attempt = await session.fetchone(
+            f"""SELECT status,result_content_json,result_content_hash,
+                       failure_code
+                  FROM {table_name} WHERE id=%s""",
+            (attempt_id,),
+        )
+        after = await session.fetchone(
+            f"""SELECT draft_revision,content_json,content_hash
+                  FROM {draft_table} WHERE id=%s""",
+            (draft_id,),
+        )
+        assert attempt["status"] == "superseded"
+        assert json.loads(attempt["result_content_json"]) == superseded_result
+        assert attempt["result_content_hash"] == canonical_hash(superseded_result)
+        assert attempt["failure_code"] is None
+        assert after == before
+
+    await _assert_mysql_rejects(
+        session.execute(
+            """INSERT INTO planning_confirmation_requests
+               (id,project_id,planning_draft_id,draft_revision,draft_hash,
+                expected_head_revision,idempotency_key,request_fingerprint,
+                status,planning_revision_id,result_revision,result_hash,
+                public_error_code,created_at,completed_at)
+               VALUES ('00000000-0000-0000-0000-000000000400',%s,%s,1,%s,0,
+                       %s,%s,'pending',%s,1,%s,NULL,%s,NULL)""",
+            (
+                PROJECT_ID, planning_draft_id, fixture["planning_hashes"][0],
+                "planning-pending-with-result", HASH_A,
+                fixture["planning_ids"][0], fixture["planning_hashes"][0], NOW,
+            ),
+        ),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            """INSERT INTO planning_confirmation_requests
+               (id,project_id,planning_draft_id,draft_revision,draft_hash,
+                expected_head_revision,idempotency_key,request_fingerprint,
+                status,planning_revision_id,result_revision,result_hash,
+                public_error_code,created_at,completed_at)
+               VALUES ('00000000-0000-0000-0000-000000000401',%s,%s,1,%s,0,
+                       %s,%s,'succeeded',NULL,NULL,NULL,NULL,%s,%s)""",
+            (
+                PROJECT_ID, planning_draft_id, fixture["planning_hashes"][0],
+                "planning-succeeded-with-null-result", HASH_B, NOW, NOW,
+            ),
+        ),
+    )
+    await session.execute(
+        """INSERT INTO planning_confirmation_requests
+           (id,project_id,planning_draft_id,draft_revision,draft_hash,
+            expected_head_revision,idempotency_key,request_fingerprint,status,
+            planning_revision_id,result_revision,result_hash,public_error_code,
+            created_at,completed_at)
+           VALUES ('00000000-0000-0000-0000-000000000402',%s,%s,1,%s,0,%s,%s,
+                   'pending',NULL,NULL,NULL,NULL,%s,NULL)""",
+        (
+            PROJECT_ID, planning_draft_id, fixture["planning_hashes"][0],
+            "planning-pending-valid", HASH_C, NOW,
+        ),
+    )
+    await session.execute(
+        """INSERT INTO planning_confirmation_requests
+           (id,project_id,planning_draft_id,draft_revision,draft_hash,
+            expected_head_revision,idempotency_key,request_fingerprint,status,
+            planning_revision_id,result_revision,result_hash,public_error_code,
+            created_at,completed_at)
+           VALUES ('00000000-0000-0000-0000-000000000403',%s,%s,1,%s,0,%s,%s,
+                   'succeeded',%s,1,%s,NULL,%s,%s)""",
+        (
+            PROJECT_ID, planning_draft_id, fixture["planning_hashes"][0],
+            "planning-succeeded-valid", "d" * 64, fixture["planning_ids"][0],
+            fixture["planning_hashes"][0], NOW, NOW,
+        ),
+    )
+
+    outline_confirmation_prefix = (
+        "id,project_id,chapter_num,chapter_outline_draft_id,draft_revision,"
+        "draft_hash,expected_head_revision,planning_revision_id,"
+        "planning_revision,planning_hash,canon_revision,projection_revision,"
+        "projection_hash,idempotency_key,request_fingerprint,status,"
+        "outline_revision_id,result_revision,result_hash,public_error_code,"
+        "created_at,completed_at"
+    )
+    outline_placeholders = ",".join(("%s",) * 22)
+    outline_common = (
+        PROJECT_ID, 1, outline_draft_id, 1, fixture["outline_hashes"][0], 0,
+        fixture["planning_ids"][0], 1, fixture["planning_hashes"][0], 0, 0,
+        fixture["projection_hash"],
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            f"""INSERT INTO chapter_outline_confirmation_requests
+                ({outline_confirmation_prefix}) VALUES ({outline_placeholders})""",
+            (
+                "00000000-0000-0000-0000-000000000410", *outline_common,
+                "outline-pending-with-result", HASH_A, "pending",
+                fixture["outline_ids"][0], 1, fixture["outline_hashes"][0],
+                None, NOW, None,
+            ),
+        ),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            f"""INSERT INTO chapter_outline_confirmation_requests
+                ({outline_confirmation_prefix}) VALUES ({outline_placeholders})""",
+            (
+                "00000000-0000-0000-0000-000000000411", *outline_common,
+                "outline-succeeded-with-null-result", HASH_B, "succeeded",
+                None, None, None, None, NOW, NOW,
+            ),
+        ),
+    )
+    await session.execute(
+        f"""INSERT INTO chapter_outline_confirmation_requests
+            ({outline_confirmation_prefix}) VALUES ({outline_placeholders})""",
+        (
+            "00000000-0000-0000-0000-000000000412", *outline_common,
+            "outline-pending-valid", HASH_C, "pending",
+            None, None, None, None, NOW, None,
+        ),
+    )
+    await session.execute(
+        f"""INSERT INTO chapter_outline_confirmation_requests
+            ({outline_confirmation_prefix}) VALUES ({outline_placeholders})""",
+        (
+            "00000000-0000-0000-0000-000000000413", *outline_common,
+            "outline-succeeded-valid", "e" * 64, "succeeded",
+            fixture["outline_ids"][0], 1, fixture["outline_hashes"][0],
+            None, NOW, NOW,
+        ),
+    )
+
+    confirmations = await session.fetchone(
+        """SELECT
+             (SELECT COUNT(*) FROM planning_confirmation_requests) AS planning,
+             (SELECT COUNT(*) FROM chapter_outline_confirmation_requests) AS outlines"""
+    )
+    assert confirmations == {"planning": 2, "outlines": 2}
+
+
+@pytest.mark.mysql
+async def test_explicit_foundation_fixture_has_eight_bindings_and_zero_heads(
+    disposable_mysql,
+):
     await _insert_foundation_project(disposable_mysql.session)
     items = await disposable_mysql.session.fetchall(
         "SELECT task_key,resolution_status FROM project_model_binding_items WHERE binding_revision_id=%s ORDER BY task_key",
@@ -1133,6 +1687,11 @@ async def test_explicit_foundation_fixture_has_eight_bindings_and_zero_contract_
         "SELECT revision,creation_contract_id,style_contract_id FROM project_contract_heads WHERE project_id=%s",
         (PROJECT_ID,),
     )
+    planning_head = await disposable_mysql.session.fetchone(
+        """SELECT revision,planning_revision_id,content_hash
+             FROM project_planning_heads WHERE project_id=%s""",
+        (PROJECT_ID,),
+    )
     assert len(items) == 8
     assert {row["task_key"] for row in items} == set(TASK_KEYS)
     assert {row["resolution_status"] for row in items} == {"unbound"}
@@ -1141,6 +1700,11 @@ async def test_explicit_foundation_fixture_has_eight_bindings_and_zero_contract_
         "revision": 0,
         "creation_contract_id": None,
         "style_contract_id": None,
+    }
+    assert planning_head == {
+        "revision": 0,
+        "planning_revision_id": None,
+        "content_hash": None,
     }
 
 
