@@ -356,15 +356,27 @@ from backend.domain.chapter_outlines import (
 validated = normalize_chapter_outline(
     DraftChapterOutline.model_validate(outline_payload),
     planning=planning,
+    authoritative_chapter_number=1,
+    planning_revision_id="00000000-0000-0000-0000-000000000301",
+    planning_revision=1,
+    capacity_policy=contract_capacity_policy,
+    canon_revision=0,
+    projection_revision=0,
+    projection_hash="0" * 64,
 )
 assert validated.chapter_number == 1
 assert validated.story_block_ref.id == planning.story_blocks[0].id
 ```
 
-Reject an input `contentHash`, unknown node IDs, mismatched node revision/hash,
-a chapter number below 1, a capacity policy different from the contract
-snapshot, and any extra field. Assert the persisted `ChapterOutline.contentHash`
-is recomputed from the canonical normalized payload.
+Reject an input `contentHash`, an expected Planning ID/revision/hash that differs
+from the server-supplied Planning authority, unknown node IDs, mismatched node
+revision/hash, a chapter number below 1 or different from the server-authoritative
+next chapter, a capacity policy different from the server-supplied contract
+snapshot, an unsynchronized Canon/Projection basis, and any extra field. Assert
+the persisted `ChapterOutline.contentHash` is recomputed from the canonical
+normalized payload. Add separate Pydantic RED cases for
+`targetMin > targetMax` and `targetMax > softCeiling`; neither may reach
+normalization.
 
 Run:
 
@@ -431,6 +443,12 @@ class OutlineCapacityPolicy(BaseModel):
     target_max: int = Field(alias="targetMax", ge=1)
     soft_ceiling: int = Field(alias="softCeiling", ge=1)
 
+    @model_validator(mode="after")
+    def validate_order(self) -> "OutlineCapacityPolicy":
+        if not self.target_min <= self.target_max <= self.soft_ceiling:
+            raise ValueError("invalid capacity order")
+        return self
+
 class DraftChapterOutline(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
     schema_version: Literal["chapter-outline-v1"] = Field(alias="schemaVersion")
@@ -456,11 +474,35 @@ class DraftChapterOutline(BaseModel):
 ```
 
 Persisted `ChapterOutline` contains the same fields plus a required
-`contentHash`. `normalize_chapter_outline` resolves every ref from the pinned
-aggregate, requires exact revision/hash equality, validates the contract
-capacity snapshot, and computes `contentHash` server-side over the canonical
-payload with the hash field excluded. The browser cannot submit or replace that
-hash.
+`canonRevision`, `projectionRevision`, `projectionHash`, and `contentHash`.
+`normalize_chapter_outline` has this complete authority boundary:
+
+```python
+def normalize_chapter_outline(
+    draft: DraftChapterOutline,
+    *,
+    planning: PlanningAggregate,
+    authoritative_chapter_number: int,
+    planning_revision_id: str,
+    planning_revision: int,
+    capacity_policy: OutlineCapacityPolicy,
+    canon_revision: int,
+    projection_revision: int,
+    projection_hash: str,
+) -> ChapterOutline:
+    ...
+```
+
+All keyword-only authority values come from locked server rows in the later
+service, never from the browser. The function requires the Draft's expected
+chapter number and Planning ID/revision/hash to equal the server authorities,
+resolves every node ref from that pinned aggregate, requires exact node
+revision/hash equality, requires `canon_revision == projection_revision`,
+validates `targetMin <= targetMax <= softCeiling` and exact equality with the
+contract capacity snapshot, and computes `contentHash` server-side over the
+complete canonical persisted payload with the hash field excluded. The browser
+cannot submit or replace the authoritative chapter number, Canon/Projection
+baseline, or Outline hash.
 
 Add exact negative tests proving the Outline is a closed active slice of the
 confirmed aggregate:
