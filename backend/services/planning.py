@@ -454,10 +454,8 @@ class PlanningService:
 
     async def history(self, project_id: str) -> tuple[PlanningRevisionResult, ...]:
         self._validate_project(project_id)
-        async with self._read_connection() as session:
-            project = await self.repository.read_project_any(session, project_id)
-            if project is None:
-                raise PlanningNotFound("Project not found")
+        async with self.transaction_factory() as session:
+            project = await self._lock_project_snapshot(session, project_id)
             basis = await self.repository.read_current_basis(session, project_id)
             head = await self.repository.lock_planning_head(session, project_id)
             if head is None:
@@ -495,10 +493,8 @@ class PlanningService:
 
     async def get_state(self, project_id: str) -> PlanningState:
         self._validate_project(project_id)
-        async with self._read_connection() as session:
-            project = await self.repository.read_project_any(session, project_id)
-            if project is None:
-                raise PlanningNotFound("Project not found")
+        async with self.transaction_factory() as session:
+            project = await self._lock_project_snapshot(session, project_id)
             basis = await self.repository.read_current_basis(session, project_id)
             head = await self.repository.lock_planning_head(session, project_id)
             if head is None:
@@ -562,6 +558,21 @@ class PlanningService:
                 ),
                 archived=archived,
             )
+
+    async def _lock_project_snapshot(self, session, project_id: str):
+        try:
+            project = await self.repository.lock_active_project(
+                session, project_id
+            )
+        except RepositoryProjectArchived:
+            project = None
+        if project is None:
+            project = await self.repository.read_project_any(
+                session, project_id
+            )
+        if project is None:
+            raise PlanningNotFound("Project not found")
+        return project
 
     async def _confirmed_result(
         self,

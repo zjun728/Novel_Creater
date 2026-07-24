@@ -326,6 +326,8 @@ class MemoryPlanningRepository:
 
 class Harness:
     def __init__(self, *, failpoint=None):
+        self.transaction_entries = 0
+        self.connection_entries = 0
         self.repository = MemoryPlanningRepository()
         ids = iter(
             f"00000000-0000-0000-0000-{number:012d}"
@@ -335,6 +337,7 @@ class Harness:
 
         @asynccontextmanager
         async def transaction():
+            self.transaction_entries += 1
             snapshot = deepcopy(repository.__dict__)
             try:
                 yield object()
@@ -345,6 +348,7 @@ class Harness:
 
         @asynccontextmanager
         async def connection():
+            self.connection_entries += 1
             yield object()
 
         self.service = PlanningService(
@@ -1171,3 +1175,14 @@ async def test_history_derives_current_superseded_and_archived_statuses():
     assert {
         (item.display_status, item.display_reason) for item in archived
     } == {("archived", "projectArchived")}
+
+
+@pytest.mark.asyncio
+async def test_history_and_state_use_transaction_snapshot_not_read_connection():
+    harness = Harness()
+
+    await harness.service.history("p1")
+    await harness.service.get_state("p1")
+
+    assert harness.transaction_entries == 2
+    assert harness.connection_entries == 0

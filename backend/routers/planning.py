@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import unquote, unquote_plus, urlsplit
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -221,6 +221,7 @@ _API_KEY_SHAPED_TEXT = re.compile(
     r")(?:$|[^A-Za-z0-9])",
     re.IGNORECASE,
 )
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 def _public_model_summary(model):
@@ -242,7 +243,39 @@ def _public_model_value_is_safe(value) -> bool:
         or not value
         or value != value.strip()
         or len(value) > 512
-        or any(
+    ):
+        return False
+    try:
+        value.encode("utf-8")
+        variants = {value}
+        frontier = {value}
+        for _ in range(2):
+            if any(_INVALID_PERCENT_ESCAPE.search(item) for item in frontier):
+                return False
+            decoded = {
+                candidate
+                for item in frontier
+                for candidate in (
+                    unquote(item, encoding="utf-8", errors="strict"),
+                    unquote_plus(item, encoding="utf-8", errors="strict"),
+                )
+            }
+            if any(len(candidate) > 512 for candidate in decoded):
+                return False
+            frontier = decoded - variants
+            variants.update(decoded)
+            if not frontier:
+                break
+        if any(_INVALID_PERCENT_ESCAPE.search(item) for item in variants):
+            return False
+    except (UnicodeError, ValueError):
+        return False
+    return all(_public_model_variant_is_safe(item) for item in variants)
+
+
+def _public_model_variant_is_safe(value: str) -> bool:
+    if (
+        any(
             ord(character) < 32 or ord(character) == 127
             for character in value
         )
@@ -257,24 +290,83 @@ def _public_model_value_is_safe(value) -> bool:
     return parsed.username is None and parsed.password is None
 
 
-def _public_operation(result):
+def _public_operation_state(result):
     status = result.status
     failure_code = result.failure_code
-    if status not in _PUBLIC_OPERATION_STATUSES:
-        status = "failed"
-        failure_code = "PlanningGenerationFailed"
-    if (
-        failure_code is not None
-        and failure_code not in _SAFE_OPERATION_FAILURE_CODES
-    ):
-        failure_code = "PlanningGenerationFailed"
+    loaded = result.loaded
+    loaded_revision = result.loaded_draft_revision
+    revision_is_positive = (
+        type(loaded_revision) is int and loaded_revision > 0
+    )
+    status_is_public = (
+        isinstance(status, str) and status in _PUBLIC_OPERATION_STATUSES
+    )
+    failure_is_safe = (
+        failure_code is None
+        or (
+            isinstance(failure_code, str)
+            and failure_code in _SAFE_OPERATION_FAILURE_CODES
+        )
+    )
+    common_valid = (
+        status_is_public
+        and type(loaded) is bool
+        and failure_is_safe
+        and (
+            loaded_revision is None
+            or revision_is_positive
+        )
+    )
+    valid = common_valid and (
+        (
+            status == "pending"
+            and failure_code is None
+            and loaded is False
+            and loaded_revision is None
+        )
+        or (
+            status == "succeeded"
+            and failure_code is None
+            and (
+                (loaded is False and loaded_revision is None)
+                or (loaded is True and revision_is_positive)
+            )
+        )
+        or (
+            status == "failed"
+            and isinstance(failure_code, str)
+            and failure_code in _SAFE_OPERATION_FAILURE_CODES
+            and loaded is False
+            and loaded_revision is None
+        )
+        or (
+            status == "superseded"
+            and failure_code is None
+            and loaded is False
+            and loaded_revision is None
+        )
+    )
+    if not valid:
+        return (
+            "failed",
+            "PlanningGenerationFailed",
+            False,
+            None,
+        )
+    return status, failure_code, loaded, loaded_revision
+
+
+def _public_operation(result):
+    status, failure_code, loaded, loaded_revision = (
+        _public_operation_state(result)
+    )
     return {
         "operationId": result.operation_id,
         "status": status,
         "failureCode": failure_code,
         "model": _public_model_summary(result.model),
-        "loaded": result.loaded,
-        "loadedDraftRevision": result.loaded_draft_revision,
+        "loaded": loaded,
+        "loadedDraftRevision": loaded_revision,
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 
@@ -451,6 +452,146 @@ async def test_real_mysql_history_and_capabilities_derive_from_current_authority
         (item.display_status, item.display_reason)
         for item in archived_history
     } == {("archived", "projectArchived")}
+
+
+class _PlanningReadBarrierRepository(PlanningRepository):
+    def __init__(self):
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.armed = True
+
+    def rearm(self):
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.armed = True
+
+    async def lock_active_project(self, session, project_id):
+        row = await super().lock_active_project(session, project_id)
+        if self.armed:
+            self.armed = False
+            self.entered.set()
+            await self.release.wait()
+        return row
+
+
+class _PlanningConfirmProbeRepository(PlanningRepository):
+    def __init__(self):
+        self.lock_attempted = asyncio.Event()
+
+    def rearm(self):
+        self.lock_attempted = asyncio.Event()
+
+    async def lock_active_project(self, session, project_id):
+        self.lock_attempted.set()
+        return await super().lock_active_project(session, project_id)
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_planning_reads_fence_concurrent_confirmation(
+    disposable_mysql,
+):
+    writer = await _prepare(disposable_mysql)
+    first_saved = await _save_complete(writer)
+    await writer.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            first_saved.draft_id,
+            first_saved.draft_revision,
+            first_saved.content_hash,
+            "confirm-read-barrier-1",
+        )
+    )
+    second_draft = await writer.create_draft(
+        CreatePlanningDraft(PROJECT, "create-read-barrier-2")
+    )
+    second_saved = await writer.save_draft(
+        SavePlanningDraft(
+            PROJECT,
+            second_draft.draft_id,
+            second_draft.draft_revision,
+            second_draft.content_hash,
+            _editable(second_draft.content, title="读事务第二版"),
+            "save-read-barrier-2",
+        )
+    )
+    second_command = ConfirmPlanningDraft(
+        PROJECT,
+        second_saved.draft_id,
+        second_saved.draft_revision,
+        second_saved.content_hash,
+        "confirm-read-barrier-2",
+    )
+    transaction = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    barrier = _PlanningReadBarrierRepository()
+    reader = PlanningService(
+        barrier,
+        transaction_factory=transaction,
+    )
+    confirm_probe = _PlanningConfirmProbeRepository()
+    writer.repository = confirm_probe
+
+    history_task = asyncio.create_task(reader.history(PROJECT))
+    await asyncio.wait_for(barrier.entered.wait(), timeout=1)
+    confirm_probe.rearm()
+    confirm_two_task = asyncio.create_task(
+        writer.confirm_draft(second_command)
+    )
+    await asyncio.wait_for(confirm_probe.lock_attempted.wait(), timeout=1)
+    assert confirm_two_task.done() is False
+    barrier.release.set()
+    history_before = await history_task
+    second_revision = await confirm_two_task
+
+    assert [
+        (item.revision, item.display_status) for item in history_before
+    ] == [(1, "current")]
+    assert second_revision.revision == 2
+
+    third_draft = await writer.create_draft(
+        CreatePlanningDraft(PROJECT, "create-read-barrier-3")
+    )
+    third_saved = await writer.save_draft(
+        SavePlanningDraft(
+            PROJECT,
+            third_draft.draft_id,
+            third_draft.draft_revision,
+            third_draft.content_hash,
+            _editable(third_draft.content, title="读事务第三版"),
+            "save-read-barrier-3",
+        )
+    )
+    third_command = ConfirmPlanningDraft(
+        PROJECT,
+        third_saved.draft_id,
+        third_saved.draft_revision,
+        third_saved.content_hash,
+        "confirm-read-barrier-3",
+    )
+    barrier.rearm()
+    confirm_probe.rearm()
+    state_task = asyncio.create_task(reader.get_state(PROJECT))
+    await asyncio.wait_for(barrier.entered.wait(), timeout=1)
+    confirm_three_task = asyncio.create_task(
+        writer.confirm_draft(third_command)
+    )
+    await asyncio.wait_for(confirm_probe.lock_attempted.wait(), timeout=1)
+    assert confirm_three_task.done() is False
+    barrier.release.set()
+    state_before = await state_task
+    third_revision = await confirm_three_task
+
+    assert state_before.project_lifecycle == "active"
+    assert state_before.basis_status == "current"
+    assert state_before.head.revision == 2
+    assert state_before.draft.draft_id == third_draft.draft_id
+    assert state_before.capabilities.generate is True
+    assert third_revision.revision == 3
+    final_history = await reader.history(PROJECT)
+    assert sum(
+        item.display_status == "current" for item in final_history
+    ) == 1
 
 
 @pytest.mark.asyncio

@@ -830,3 +830,162 @@ def test_generate_fail_closes_entire_model_for_api_key_shaped_name():
     }
     for forbidden in (key_sentinel, "private", "model-secret"):
         assert forbidden not in response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "unsafe_value", "forbidden"),
+    (
+        (
+            "get",
+            "Authorization%3ABearer%20AUTH_SENTINEL",
+            "AUTH_SENTINEL",
+        ),
+        (
+            "post",
+            "Authorization%3aBearer%20LOWER_SENTINEL",
+            "LOWER_SENTINEL",
+        ),
+        ("get", "apiKey%3DKEY_SENTINEL", "KEY_SENTINEL"),
+        ("post", "sk%2Dprivate%2Dencoded%2Dsecret", "encoded-secret"),
+        ("get", "sk%2dprivate%2dlower%2dsecret", "lower-secret"),
+        (
+            "post",
+            "sk%252Dprivate%252Ddouble%252Dsecret",
+            "double-secret",
+        ),
+        ("get", "model%FFDECODE_SENTINEL", "DECODE_SENTINEL"),
+        ("post", "model%ZZINVALID_SENTINEL", "INVALID_SENTINEL"),
+        ("get", "\ud800SURROGATE_SENTINEL", "SURROGATE_SENTINEL"),
+    ),
+)
+def test_operation_model_projection_decodes_and_rejects_secret_shapes(
+    method,
+    unsafe_value,
+    forbidden,
+):
+    client, _, generation = make_client()
+    generation.result = replace(
+        generation.result,
+        model=PublicModelSummary(
+            provider_id="provider-1",
+            model_name=unsafe_value,
+        ),
+    )
+
+    if method == "post":
+        response = client.post(
+            "/api/projects/p1/planning/drafts/draft-1/generate",
+            json={
+                "draftRevision": 1,
+                "draftHash": HASH,
+                "idempotencyKey": "secret-projection",
+                "authorInstructions": "",
+            },
+        )
+    else:
+        response = client.get(
+            "/api/projects/p1/planning/operations/operation-1"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == {
+        "providerId": "unavailable",
+        "modelName": "unavailable",
+    }
+    assert forbidden not in response.text
+    assert "private" not in response.text
+
+
+@pytest.mark.parametrize(
+    (
+        "status",
+        "failure_code",
+        "loaded",
+        "loaded_revision",
+    ),
+    (
+        ("pending", "PlanningProviderFailed", False, None),
+        ("pending", None, True, 2),
+        ("succeeded", "PlanningProviderFailed", True, 2),
+        ("succeeded", None, False, 2),
+        ("failed", None, False, None),
+        ("failed", "PlanningProviderFailed", True, 2),
+        ("superseded", "PlanningProviderFailed", False, None),
+        ("superseded", None, True, 2),
+        ("succeeded", None, True, 0),
+        ("succeeded", None, True, -1),
+    ),
+)
+def test_operation_projection_fail_closes_invalid_state_combinations(
+    status,
+    failure_code,
+    loaded,
+    loaded_revision,
+):
+    client, _, generation = make_client()
+    generation.result = replace(
+        generation.result,
+        status=status,
+        failure_code=failure_code,
+        loaded=loaded,
+        loaded_draft_revision=loaded_revision,
+    )
+
+    response = client.get(
+        "/api/projects/p1/planning/operations/operation-1"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "operationId": "operation-1",
+        "status": "failed",
+        "failureCode": "PlanningGenerationFailed",
+        "model": {
+            "providerId": "provider-1",
+            "modelName": "deepseek-v4-flash",
+        },
+        "loaded": False,
+        "loadedDraftRevision": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "failure_code", "loaded", "loaded_revision"),
+    (
+        ("pending", None, False, None),
+        ("succeeded", None, False, None),
+        ("succeeded", None, True, 2),
+        ("failed", "PlanningProviderFailed", False, None),
+        ("superseded", None, False, None),
+    ),
+)
+def test_operation_projection_preserves_every_valid_public_combination(
+    status,
+    failure_code,
+    loaded,
+    loaded_revision,
+):
+    client, _, generation = make_client()
+    generation.result = replace(
+        generation.result,
+        status=status,
+        failure_code=failure_code,
+        loaded=loaded,
+        loaded_draft_revision=loaded_revision,
+    )
+
+    response = client.post(
+        "/api/projects/p1/planning/drafts/draft-1/generate",
+        json={
+            "draftRevision": 1,
+            "draftHash": HASH,
+            "idempotencyKey": f"valid-{status}-{loaded}",
+            "authorInstructions": "",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == status
+    assert response.json()["failureCode"] == failure_code
+    assert response.json()["loaded"] is loaded
+    assert response.json()["loadedDraftRevision"] == loaded_revision
