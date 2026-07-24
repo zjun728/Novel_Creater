@@ -350,6 +350,18 @@ class PlanningRepository:
             (project_id, idempotency_key),
         )
 
+    async def read_generation_attempt_by_key(
+        self,
+        session,
+        project_id: str,
+        idempotency_key: str,
+    ):
+        return await session.fetchone(
+            """SELECT * FROM planning_generation_attempts
+                WHERE project_id=%s AND idempotency_key=%s""",
+            (project_id, idempotency_key),
+        )
+
     async def lock_generation_attempt(
         self,
         session,
@@ -360,6 +372,18 @@ class PlanningRepository:
             """SELECT * FROM planning_generation_attempts
                 WHERE project_id=%s AND operation_id=%s
                 FOR UPDATE""",
+            (project_id, operation_id),
+        )
+
+    async def read_generation_attempt(
+        self,
+        session,
+        project_id: str,
+        operation_id: str,
+    ):
+        return await session.fetchone(
+            """SELECT * FROM planning_generation_attempts
+                WHERE project_id=%s AND operation_id=%s""",
             (project_id, operation_id),
         )
 

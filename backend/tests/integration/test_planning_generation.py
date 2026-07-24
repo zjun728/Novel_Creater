@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
@@ -234,6 +236,34 @@ class _FakePlanningGateway:
         return self.output
 
 
+class _BlockingPlanningGateway(_FakePlanningGateway):
+    def __init__(self, output):
+        super().__init__(output)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        self.entered.set()
+        await self.release.wait()
+        return self.output
+
+
+class _ReplayBarrierPlanningRepository(PlanningRepository):
+    def __init__(self):
+        self.project_locked = asyncio.Event()
+        self.allow_lookup = asyncio.Event()
+        self.armed = True
+
+    async def lock_active_project(self, session, project_id):
+        row = await super().lock_active_project(session, project_id)
+        if self.armed:
+            self.armed = False
+            self.project_locked.set()
+            await self.allow_lookup.wait()
+        return row
+
+
 @pytest.mark.asyncio
 async def test_real_mysql_service_reserves_and_atomically_loads_generation(
     disposable_mysql,
@@ -322,6 +352,119 @@ async def test_real_mysql_service_reserves_and_atomically_loads_generation(
         "SELECT DATABASE() AS database_name"
     )
     assert selected["database_name"] == disposable_mysql.database_name
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_same_key_replay_cannot_deadlock_attempt_terminalization(
+    disposable_mysql,
+):
+    from backend.services.planning_generation import (
+        GeneratePlanningDraft,
+        PlanningGenerationService,
+    )
+
+    planning = await _prepare(disposable_mysql)
+    draft = await planning.create_draft(
+        CreatePlanningDraft(PROJECT, "create-deadlock-regression-draft")
+    )
+    output = {
+        "activeStoryBlockRef": None,
+        "volumes": [],
+        "plots": [],
+        "storyBlocks": [],
+    }
+    gateway = _BlockingPlanningGateway(output)
+    transaction = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    identifiers = iter(
+        f"99000000-0000-0000-0000-{number:012d}"
+        for number in range(1, 20)
+    )
+    service = PlanningGenerationService(
+        PlanningRepository(),
+        provider_gateway=gateway,
+        transaction_factory=transaction,
+        id_factory=identifiers.__next__,
+        clock=lambda: NOW + 200,
+    )
+    command = GeneratePlanningDraft(
+        project_id=PROJECT,
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        draft_hash=draft.content_hash,
+        idempotency_key="same-key-deadlock-regression",
+        author_instructions="",
+    )
+    original = asyncio.create_task(service.generate(command))
+    await gateway.entered.wait()
+    persisted = await disposable_mysql.session.fetchone(
+        """SELECT * FROM planning_generation_attempts
+            WHERE project_id=%s AND idempotency_key=%s""",
+        (PROJECT, command.idempotency_key),
+    )
+    operation_id = persisted["operation_id"]
+    attempt_locked = asyncio.Event()
+    replay_repository = _ReplayBarrierPlanningRepository()
+    replay_service = PlanningGenerationService(
+        replay_repository,
+        provider_gateway=gateway,
+        transaction_factory=transaction,
+        id_factory=lambda: "must-not-allocate-on-replay",
+        clock=lambda: NOW + 200,
+    )
+
+    async def terminalize_attempt():
+        async with transaction() as session:
+            attempt = await PlanningRepository().lock_generation_attempt(
+                session, PROJECT, operation_id
+            )
+            attempt_locked.set()
+            await replay_repository.project_locked.wait()
+            project = await PlanningRepository().lock_active_project(
+                session, PROJECT
+            )
+            assert project is not None
+            assert await PlanningRepository().fail_generation_attempt(
+                session,
+                project_id=PROJECT,
+                operation_id=operation_id,
+                fencing_token=int(attempt["fencing_token"]),
+                failure_code="PlanningProviderFailed",
+                updated_at=NOW + 201,
+            )
+
+    terminalizer = asyncio.create_task(terminalize_attempt())
+    await attempt_locked.wait()
+    replay = asyncio.create_task(replay_service.generate(command))
+    await replay_repository.project_locked.wait()
+    await asyncio.sleep(0)
+    replay_repository.allow_lookup.set()
+    try:
+        replay_result = await asyncio.wait_for(replay, timeout=5)
+        await asyncio.wait_for(terminalizer, timeout=5)
+    finally:
+        gateway.release.set()
+    original_result = await asyncio.wait_for(original, timeout=5)
+    terminal_replay = await asyncio.wait_for(
+        replay_service.generate(command),
+        timeout=5,
+    )
+
+    assert replay_result.operation_id == operation_id
+    assert replay_result.status == "pending"
+    assert original_result.operation_id == operation_id
+    assert original_result.status == "failed"
+    assert terminal_replay.operation_id == operation_id
+    assert terminal_replay.status == "failed"
+    assert len(gateway.calls) == 1
+    remaining = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count
+             FROM planning_generation_attempts
+            WHERE project_id=%s AND status='pending' AND active_slot=1""",
+        (PROJECT,),
+    )
+    assert remaining["count"] == 0
 
 
 @pytest.mark.asyncio

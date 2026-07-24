@@ -11,6 +11,7 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import ValidationError
+from pymysql.err import MySQLError
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.planning import (
@@ -54,6 +55,7 @@ _BINDING_FIELDS = (
     "provider_id",
     "model_name_snapshot",
 )
+_MYSQL_COORDINATION_CODES = frozenset({1205, 1213, 3572})
 _PROVIDER_AUTHORITY_FIELDS = (
     "id",
     "provider_type",
@@ -91,6 +93,13 @@ class PlanningGenerationOperationNotFound(PublicDomainError):
     status_code = 404
     code = "PlanningGenerationOperationNotFound"
     message = "Planning generation operation not found"
+
+
+class PlanningGenerationRetryable(PublicDomainError):
+    status_code = 503
+    code = "PlanningGenerationRetryable"
+    message = "Planning generation is busy; retry the operation lookup"
+    retryable = True
 
 
 @dataclass(frozen=True)
@@ -140,10 +149,18 @@ class PlanningGenerationService:
         command: GeneratePlanningDraft,
     ) -> PlanningOperationResult:
         self._validate(command)
-        replay, context = await self._reserve(command)
+        try:
+            replay, context = await self._reserve(command)
+        except Exception as exc:
+            self._raise_if_coordination_failure(exc)
+            raise
         if replay is not None:
             return replay
         assert context is not None
+        if "expired_replay" in context:
+            return await self._await_settlement(
+                self._supersede_expired_replay(context)
+            )
 
         try:
             output = await self._gateway.generate(
@@ -156,12 +173,12 @@ class PlanningGenerationService:
             await self._settle_cancelled(context)
             raise
         except PlanningProviderError:
-            return await self._fail(
-                context, "PlanningProviderFailed"
+            return await self._await_settlement(
+                self._fail(context, "PlanningProviderFailed")
             )
         except Exception:
-            return await self._fail(
-                context, "PlanningProviderFailed"
+            return await self._await_settlement(
+                self._fail(context, "PlanningProviderFailed")
             )
 
         try:
@@ -175,15 +192,13 @@ class PlanningGenerationService:
             ValueError,
             RecursionError,
         ):
-            return await self._fail(
-                context, "PlanningProviderResultInvalid"
+            return await self._await_settlement(
+                self._fail(context, "PlanningProviderResultInvalid")
             )
 
-        try:
-            return await self._publish(command, context, draft_result)
-        except asyncio.CancelledError:
-            await self._settle_cancelled(context)
-            raise
+        return await self._await_settlement(
+            self._publish(command, context, draft_result)
+        )
 
     async def get_operation(
         self,
@@ -197,16 +212,20 @@ class PlanningGenerationService:
             or not operation_id.strip()
         ):
             raise PlanningGenerationOperationNotFound()
-        async with self._transaction() as session:
-            project = await self.repository.read_project_any(
-                session, project_id
-            )
-            operation = await self.repository.lock_generation_attempt(
-                session, project_id, operation_id
-            )
-            if project is None or operation is None:
-                raise PlanningGenerationOperationNotFound()
-            return self._operation_result(operation)
+        try:
+            async with self._transaction() as session:
+                project = await self.repository.read_project_any(
+                    session, project_id
+                )
+                operation = await self.repository.read_generation_attempt(
+                    session, project_id, operation_id
+                )
+                if project is None or operation is None:
+                    raise PlanningGenerationOperationNotFound()
+                return self._operation_result(operation)
+        except Exception as exc:
+            self._raise_if_coordination_failure(exc)
+            raise
 
     async def _reserve(self, command):
         fingerprint = self._request_fingerprint(command)
@@ -235,7 +254,7 @@ class PlanningGenerationService:
             )
 
             existing = (
-                await self.repository.lock_generation_attempt_by_key(
+                await self.repository.read_generation_attempt_by_key(
                     session,
                     command.project_id,
                     command.idempotency_key,
@@ -249,21 +268,7 @@ class PlanningGenerationService:
                     and int(existing["lease_expires_at"])
                     <= self._clock()
                 ):
-                    if not await self.repository.supersede_generation_attempt(
-                        session,
-                        project_id=command.project_id,
-                        operation_id=existing["operation_id"],
-                        fencing_token=int(existing["fencing_token"]),
-                        updated_at=self._clock(),
-                    ):
-                        raise PlanningGenerationConflict()
-                    existing = (
-                        await self.repository.lock_generation_attempt(
-                            session,
-                            command.project_id,
-                            existing["operation_id"],
-                        )
-                    )
+                    return None, {"expired_replay": dict(existing)}
                 return self._operation_result(existing), None
             if (
                 head is None
@@ -523,13 +528,92 @@ class PlanningGenerationService:
         )
         return self._operation_result(terminal)
 
+    async def _supersede_expired_replay(self, context):
+        expected = context["expired_replay"]
+        async with self._transaction() as session:
+            attempt = await self.repository.lock_generation_attempt(
+                session,
+                expected["project_id"],
+                expected["operation_id"],
+            )
+            if attempt is None:
+                raise PlanningGenerationConflict()
+            if attempt["status"] != "pending":
+                return self._operation_result(attempt)
+            if (
+                attempt["request_fingerprint"]
+                != expected["request_fingerprint"]
+                or int(attempt["fencing_token"])
+                != int(expected["fencing_token"])
+                or int(attempt["lease_expires_at"]) > self._clock()
+            ):
+                raise PlanningGenerationConflict()
+            if not await self.repository.supersede_generation_attempt(
+                session,
+                project_id=attempt["project_id"],
+                operation_id=attempt["operation_id"],
+                fencing_token=int(attempt["fencing_token"]),
+                updated_at=self._clock(),
+            ):
+                raise PlanningGenerationConflict()
+            terminal = await self.repository.lock_generation_attempt(
+                session,
+                attempt["project_id"],
+                attempt["operation_id"],
+            )
+            return self._operation_result(terminal)
+
+    async def _await_settlement(self, awaitable):
+        task = asyncio.create_task(awaitable)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(task)
+            except BaseException:
+                pass
+            raise
+        except Exception as exc:
+            self._raise_if_coordination_failure(exc)
+            raise
+
     async def _settle_cancelled(self, context):
         try:
-            await asyncio.shield(
+            await self._await_settlement(
                 self._fail(context, "PlanningGenerationCancelled")
             )
         except BaseException:
             pass
+
+    @staticmethod
+    def _is_coordination_failure(error):
+        pending = [error]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if (
+                isinstance(current, MySQLError)
+                and current.args
+                and current.args[0] in _MYSQL_COORDINATION_CODES
+            ):
+                return True
+            if isinstance(current, BaseExceptionGroup):
+                pending.extend(current.exceptions)
+            cause = getattr(current, "__cause__", None)
+            context = getattr(current, "__context__", None)
+            if cause is not None:
+                pending.append(cause)
+            if context is not None:
+                pending.append(context)
+        return False
+
+    @classmethod
+    def _raise_if_coordination_failure(cls, error):
+        if cls._is_coordination_failure(error):
+            raise PlanningGenerationRetryable() from None
 
     @classmethod
     def _manifest(cls, command, *, basis, draft):
@@ -818,6 +902,7 @@ __all__ = (
     "PlanningGenerationIdempotencyConflict",
     "PlanningGenerationNotReady",
     "PlanningGenerationOperationNotFound",
+    "PlanningGenerationRetryable",
     "PlanningGenerationService",
     "PlanningOperationResult",
     "PublicModelSummary",

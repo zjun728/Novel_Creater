@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 
 import pytest
+from pymysql.err import OperationalError
 
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.planning import (
@@ -145,6 +146,8 @@ class FakePlanningRepository:
         self.attempts: dict[str, dict] = {}
         self.load_calls = 0
         self.lock_order: list[str] = []
+        self.lock_operation_reads = 0
+        self.plain_operation_reads = 0
 
     async def lock_active_project(self, _session, project_id):
         self.lock_order.append("project")
@@ -189,10 +192,32 @@ class FakePlanningRepository:
             None,
         )
 
+    async def read_generation_attempt_by_key(
+        self, _session, project_id, idempotency_key
+    ):
+        self.lock_order.append("idempotency-read")
+        return next(
+            (
+                row
+                for row in self.attempts.values()
+                if row["project_id"] == project_id
+                and row["idempotency_key"] == idempotency_key
+            ),
+            None,
+        )
+
     async def lock_generation_attempt(
         self, _session, project_id, operation_id
     ):
+        self.lock_operation_reads += 1
         self.lock_order.append("operation")
+        row = self.attempts.get(operation_id)
+        return row if row and row["project_id"] == project_id else None
+
+    async def read_generation_attempt(
+        self, _session, project_id, operation_id
+    ):
+        self.plain_operation_reads += 1
         row = self.attempts.get(operation_id)
         return row if row and row["project_id"] == project_id else None
 
@@ -383,6 +408,61 @@ class BlockingGateway(FakeGateway):
         return deepcopy(self.output)
 
 
+class SettlementBarrierRepository(FakePlanningRepository):
+    def __init__(self):
+        super().__init__()
+        self.settlement_entered = asyncio.Event()
+        self.release_settlement = asyncio.Event()
+        self.block_next_operation_lock = True
+
+    async def lock_generation_attempt(
+        self, session, project_id, operation_id
+    ):
+        if self.block_next_operation_lock:
+            self.block_next_operation_lock = False
+            self.settlement_entered.set()
+            await self.release_settlement.wait()
+        return await super().lock_generation_attempt(
+            session, project_id, operation_id
+        )
+
+
+class CoordinationFailureRepository(FakePlanningRepository):
+    def __init__(self, stage, code):
+        super().__init__()
+        self.stage = stage
+        self.code = code
+
+    def _raise(self):
+        raise OperationalError(
+            self.code,
+            "RAW_DATABASE_COORDINATION_SENTINEL",
+        )
+
+    async def lock_active_project(self, session, project_id):
+        if self.stage == "reserve":
+            self._raise()
+        return await super().lock_active_project(session, project_id)
+
+    async def read_generation_attempt(
+        self, session, project_id, operation_id
+    ):
+        if self.stage == "get":
+            self._raise()
+        return await super().read_generation_attempt(
+            session, project_id, operation_id
+        )
+
+    async def lock_generation_attempt(
+        self, session, project_id, operation_id
+    ):
+        if self.stage == "settlement":
+            self._raise()
+        return await super().lock_generation_attempt(
+            session, project_id, operation_id
+        )
+
+
 def _service(
     repository=None,
     gateway=None,
@@ -457,7 +537,7 @@ async def test_success_uses_two_short_transactions_and_atomically_loads_exact_dr
         "head",
         "draft",
         "binding",
-        "idempotency",
+        "idempotency-read",
         "active",
         "token",
     ]
@@ -615,6 +695,47 @@ async def test_gateway_failure_and_malformed_result_terminalize_without_loading(
         assert result.loaded is False
         assert repository.load_calls == 0
         assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output", "failure_code"),
+    (
+        (
+            PlanningProviderError("Planning provider failed"),
+            "PlanningProviderFailed",
+        ),
+        ({"not": "a planning draft"}, "PlanningProviderResultInvalid"),
+    ),
+    ids=("provider-failure", "invalid-result"),
+)
+async def test_cancel_during_first_settlement_await_still_releases_owned_attempt(
+    output,
+    failure_code,
+):
+    repository = SettlementBarrierRepository()
+    tracker = TransactionTracker()
+    service, repository, _gateway, _tracker = _service(
+        repository=repository,
+        gateway=FakeGateway(output),
+        tracker=tracker,
+    )
+    pending = asyncio.create_task(service.generate(_command()))
+    await repository.settlement_entered.wait()
+
+    pending.cancel()
+    repository.release_settlement.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    attempt = repository.attempts["operation-1"]
+    assert attempt["status"] == "failed"
+    assert attempt["active_slot"] is None
+    assert attempt["failure_code"] == failure_code
+    assert repository.draft["draft_revision"] == 1
+    assert repository.draft["source_attempt_id"] is None
+    assert repository.load_calls == 0
+    assert tracker.active == 0
 
 
 @pytest.mark.asyncio
@@ -785,12 +906,52 @@ async def test_get_operation_is_pure_query_with_no_gateway_or_hidden_retry():
     generated = await service.generate(_command())
     calls_before = len(gateway.calls)
     entries_before = tracker.entries
+    lock_reads_before = _repository.lock_operation_reads
+    plain_reads_before = _repository.plain_operation_reads
 
     observed = await service.get_operation("p1", generated.operation_id)
 
     assert observed == generated
     assert len(gateway.calls) == calls_before
     assert tracker.entries == entries_before + 1
+    assert _repository.lock_operation_reads == lock_reads_before
+    assert _repository.plain_operation_reads == plain_reads_before + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "code"),
+    (("reserve", 1213), ("get", 1205), ("settlement", 3572)),
+)
+async def test_mysql_coordination_failures_map_to_one_safe_retryable_error(
+    stage,
+    code,
+):
+    from backend.services.planning_generation import (
+        PlanningGenerationRetryable,
+    )
+
+    repository = CoordinationFailureRepository(stage, code)
+    gateway = FakeGateway(
+        PlanningProviderError("Planning provider failed")
+    )
+    service, _repository, gateway, _tracker = _service(
+        repository=repository,
+        gateway=gateway,
+    )
+
+    with pytest.raises(PlanningGenerationRetryable) as caught:
+        if stage == "get":
+            await service.get_operation("p1", "operation-1")
+        else:
+            await service.generate(_command())
+
+    assert str(caught.value) == (
+        "Planning generation is busy; retry the operation lookup"
+    )
+    assert caught.value.__cause__ is None
+    assert "RAW_DATABASE_COORDINATION_SENTINEL" not in repr(caught.value)
+    assert len(gateway.calls) == (1 if stage == "settlement" else 0)
 
 
 def test_public_result_has_no_secret_prompt_raw_manifest_or_dsn_fields():
