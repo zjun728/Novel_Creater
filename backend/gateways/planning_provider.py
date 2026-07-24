@@ -13,7 +13,10 @@ from pydantic import ValidationError
 
 from backend.domain.planning import DraftPlanningAggregate
 from backend.domain.provider_policy import provider_type_is_supported
-from backend.prompts.planning import build_planning_messages
+from backend.prompts.planning import (
+    PlanningGenerationManifest,
+    build_planning_messages,
+)
 from backend.security.provider_secrets import (
     normalize_provider_secrets,
     provider_response_text_contains_secret,
@@ -26,10 +29,9 @@ PROVIDER_TIMEOUT_SECONDS = 180
 MAX_PROVIDER_RESPONSE_BYTES = 128 * 1024
 _SAFE_ERROR = "Planning provider failed"
 
-# These aliases deliberately retain the repository's Mapping-based Provider
-# runtime convention instead of introducing a second Provider DTO.
+# Retain the repository's Mapping-based Provider runtime convention instead of
+# introducing a second Provider DTO.
 PublicProviderRuntime: TypeAlias = Mapping[str, object]
-PlanningGenerationManifest: TypeAlias = Mapping[str, object]
 
 
 @runtime_checkable
@@ -90,19 +92,33 @@ class PlanningProviderGateway:
                 or max_output_tokens <= 0
             ):
                 raise ValueError(_SAFE_ERROR)
+            frozen_manifest = PlanningGenerationManifest.model_validate(
+                manifest,
+                strict=True,
+            )
             messages = build_planning_messages(
-                manifest=manifest,
+                manifest=frozen_manifest,
                 author_instructions=author_instructions,
             )
-            frozen_value = manifest.get("draft")
-            frozen_draft = (
-                DraftPlanningAggregate.model_validate(
-                    frozen_value,
-                    strict=True,
-                )
-                if isinstance(frozen_value, Mapping)
-                else None
+            frozen_draft = frozen_manifest.draft
+            secrets = normalize_provider_secrets((api_key, base_url))
+            rendered_messages = json.dumps(
+                messages,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
             )
+            if (
+                provider_response_text_contains_secret(
+                    rendered_messages,
+                    secrets,
+                )
+                or provider_response_value_contains_secret(
+                    messages,
+                    secrets,
+                )
+            ):
+                raise ValueError(_SAFE_ERROR)
             endpoint = self._endpoint(base_url.strip())
             authorization = f"Bearer {api_key.strip()}"
             body = {
@@ -119,6 +135,7 @@ class PlanningProviderGateway:
             ValueError,
             OverflowError,
             UnicodeError,
+            httpx.InvalidURL,
         ):
             raise PlanningProviderError(_SAFE_ERROR) from None
 
@@ -194,18 +211,19 @@ class PlanningProviderGateway:
                 value,
                 strict=True,
             )
-            if frozen_draft is not None:
-                if (
-                    draft.active_story_block_ref
-                    != frozen_draft.active_story_block_ref
-                    or draft.story_blocks != frozen_draft.story_blocks
-                ):
-                    raise ValueError(_SAFE_ERROR)
-            return draft.model_dump(
+            if (
+                draft.active_story_block_ref
+                != frozen_draft.active_story_block_ref
+                or draft.story_blocks != frozen_draft.story_blocks
+            ):
+                raise ValueError(_SAFE_ERROR)
+            result = draft.model_dump(
                 mode="json",
                 by_alias=True,
                 exclude_none=True,
             )
+            result["activeStoryBlockRef"] = draft.active_story_block_ref
+            return result
         except (
             UnicodeError,
             ValueError,

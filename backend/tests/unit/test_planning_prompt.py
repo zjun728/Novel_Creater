@@ -286,11 +286,52 @@ def test_prompt_rejects_private_or_raw_material_with_one_safe_error(
 
 
 def test_prompt_rejects_oversized_manifest_without_echo():
+    manifest = _manifest()
+    manifest["storyContext"]["premise"] = (
+        "私" * PLANNING_MAX_PROMPT_BYTES
+    )
     with pytest.raises(ValueError) as caught:
         build_planning_messages(
-            manifest={"storyContext": {"premise": "私" * PLANNING_MAX_PROMPT_BYTES}},
+            manifest=manifest,
             author_instructions="扩展长期线。",
         )
 
     assert str(caught.value) == "Planning prompt input invalid"
     assert "私" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "non_mapping",
+        "draft_list",
+        "missing_draft",
+        "extra_top",
+        "extra_basis",
+        "extra_story_context",
+    ),
+)
+def test_prompt_requires_one_closed_strict_manifest(case, caplog):
+    manifest = _manifest()
+    if case == "non_mapping":
+        manifest = []
+    elif case == "draft_list":
+        manifest["draft"] = []
+    elif case == "missing_draft":
+        manifest.pop("draft")
+    elif case == "extra_top":
+        manifest["unknown"] = "UNKNOWN_MANIFEST_SENTINEL"
+    elif case == "extra_basis":
+        manifest["basis"]["unknown"] = "UNKNOWN_MANIFEST_SENTINEL"
+    else:
+        manifest["storyContext"]["unknown"] = "UNKNOWN_MANIFEST_SENTINEL"
+
+    with pytest.raises(ValueError) as caught:
+        build_planning_messages(
+            manifest=manifest,
+            author_instructions="扩展长期线。",
+        )
+
+    assert str(caught.value) == "Planning prompt input invalid"
+    exposed = repr(caught.value) + caplog.text
+    assert "UNKNOWN_MANIFEST_SENTINEL" not in exposed

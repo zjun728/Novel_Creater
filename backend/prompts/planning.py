@@ -6,6 +6,8 @@ from collections.abc import Mapping
 import json
 import re
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from backend.domain.json_contracts import canonical_json
 from backend.domain.planning import DraftPlanningAggregate
 from backend.security.provider_secrets import is_provider_secret_key
@@ -26,6 +28,50 @@ _PRIVATE_TEXT = re.compile(
     r"|(?:mysql|postgres(?:ql)?|mariadb)://\S+",
     re.IGNORECASE,
 )
+_STRICT_MANIFEST = ConfigDict(
+    strict=True,
+    frozen=True,
+    extra="forbid",
+    hide_input_in_errors=True,
+)
+
+
+class PlanningGenerationBasis(BaseModel):
+    model_config = _STRICT_MANIFEST
+
+    project_id: str = Field(alias="projectId", min_length=1)
+    basis_hash: str = Field(
+        alias="basisHash",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    draft_revision: int = Field(alias="draftRevision", ge=1)
+    draft_hash: str = Field(
+        alias="draftHash",
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class PlanningStoryContext(BaseModel):
+    model_config = _STRICT_MANIFEST
+
+    premise: str = Field(min_length=1)
+    continuity_guardrails: tuple[str, ...] = Field(
+        default=(),
+        alias="continuityGuardrails",
+    )
+
+    @field_validator("continuity_guardrails", mode="before")
+    @classmethod
+    def accept_json_array(cls, value):
+        return tuple(value) if isinstance(value, list) else value
+
+
+class PlanningGenerationManifest(BaseModel):
+    model_config = _STRICT_MANIFEST
+
+    basis: PlanningGenerationBasis
+    draft: DraftPlanningAggregate
+    story_context: PlanningStoryContext = Field(alias="storyContext")
 
 
 def _is_private_manifest_key(value: object) -> bool:
@@ -85,27 +131,30 @@ def _validate_safe_manifest(value: Mapping[str, object]) -> None:
 
 def build_planning_messages(
     *,
-    manifest: Mapping[str, object],
+    manifest: PlanningGenerationManifest | Mapping[str, object],
     author_instructions: str,
 ) -> tuple[dict[str, str], ...]:
     """Build one JSON-only Planning request from a frozen, secret-free manifest."""
 
     try:
-        if not isinstance(manifest, Mapping):
-            raise ValueError(_SAFE_ERROR)
         if not isinstance(author_instructions, str):
             raise ValueError(_SAFE_ERROR)
         author_instructions.encode("utf-8")
         if _PRIVATE_TEXT.search(author_instructions):
             raise ValueError(_SAFE_ERROR)
-        _validate_safe_manifest(manifest)
-        manifest_snapshot = json.loads(
-            json.dumps(
-                dict(manifest),
-                ensure_ascii=False,
-                allow_nan=False,
-            )
+        manifest_value = PlanningGenerationManifest.model_validate(
+            manifest,
+            strict=True,
         )
+        manifest_snapshot = manifest_value.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        )
+        manifest_snapshot["draft"]["activeStoryBlockRef"] = (
+            manifest_value.draft.active_story_block_ref
+        )
+        _validate_safe_manifest(manifest_snapshot)
         instruction = {
             "task": "Generate one complete Planning draft",
             "editableScope": ["volumes", "plots"],
@@ -156,4 +205,10 @@ def build_planning_messages(
         raise ValueError(_SAFE_ERROR) from None
 
 
-__all__ = ("PLANNING_MAX_PROMPT_BYTES", "build_planning_messages")
+__all__ = (
+    "PLANNING_MAX_PROMPT_BYTES",
+    "PlanningGenerationBasis",
+    "PlanningGenerationManifest",
+    "PlanningStoryContext",
+    "build_planning_messages",
+)

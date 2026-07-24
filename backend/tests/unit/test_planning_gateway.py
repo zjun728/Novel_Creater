@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 
+from backend.domain.planning import DraftPlanningAggregate
 from backend.gateways.planning_provider import (
     PlanningProvider,
     PlanningProviderError,
@@ -26,6 +27,7 @@ def _manifest() -> dict[str, object]:
     return {
         "basis": {
             "projectId": "project-1",
+            "basisHash": "b" * 64,
             "draftRevision": 3,
             "draftHash": "a" * 64,
         },
@@ -403,3 +405,126 @@ async def test_gateway_maps_http_and_runtime_configuration_failures_to_same_erro
             "PRIVATE_API_KEY_SENTINEL",
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_runtime_secret_in_allowed_manifest_field_before_request(
+    caplog,
+):
+    requests = []
+    manifest = _manifest()
+    manifest["storyContext"]["premise"] = (
+        "prefix PRIVATE_API_KEY_SENTINEL suffix"
+    )
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: requests.append(request)
+            or _response(_planning_payload(), request=request)
+        )
+    )
+
+    with pytest.raises(PlanningProviderError) as caught:
+        await gateway.generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=manifest,
+            author_instructions="扩展卷级变化。",
+        )
+
+    assert requests == []
+    assert str(caught.value) == "Planning provider failed"
+    exposed = repr(caught.value) + caplog.text
+    assert "PRIVATE_API_KEY_SENTINEL" not in exposed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ("non_mapping", "draft_list", "missing_draft", "extra_manifest"),
+)
+async def test_gateway_rejects_invalid_manifest_before_provider_call(
+    case, caplog
+):
+    requests = []
+    manifest = _manifest()
+    if case == "non_mapping":
+        manifest = []
+    elif case == "draft_list":
+        manifest["draft"] = []
+    elif case == "missing_draft":
+        manifest.pop("draft")
+    else:
+        manifest["unknown"] = "UNKNOWN_MANIFEST_SENTINEL"
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: requests.append(request)
+            or _response(_planning_payload(), request=request)
+        )
+    )
+
+    with pytest.raises(PlanningProviderError) as caught:
+        await gateway.generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=manifest,
+            author_instructions="扩展卷级变化。",
+        )
+
+    assert requests == []
+    assert str(caught.value) == "Planning provider failed"
+    assert "UNKNOWN_MANIFEST_SENTINEL" not in (
+        repr(caught.value) + caplog.text
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_maps_malformed_url_to_fixed_error_without_echo(caplog):
+    requests = []
+    provider = {
+        **_provider(),
+        "base_url": "https://provider.example:PRIVATE_URL_SENTINEL/v1",
+    }
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: requests.append(request)
+            or _response(_planning_payload(), request=request)
+        )
+    )
+
+    with pytest.raises(PlanningProviderError) as caught:
+        await gateway.generate(
+            provider=provider,
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions="扩展卷级变化。",
+        )
+
+    assert requests == []
+    assert str(caught.value) == "Planning provider failed"
+    assert "PRIVATE_URL_SENTINEL" not in (
+        repr(caught.value) + caplog.text
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_retains_required_nullable_active_story_block_ref():
+    manifest = _manifest()
+    manifest["draft"]["activeStoryBlockRef"] = None
+    payload = _planning_payload()
+    payload["activeStoryBlockRef"] = None
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: _response(payload, request=request)
+        )
+    )
+
+    result = await gateway.generate(
+        provider=_provider(),
+        model_name="planning-model",
+        manifest=manifest,
+        author_instructions="扩展卷级变化。",
+    )
+
+    assert "activeStoryBlockRef" in result
+    assert result["activeStoryBlockRef"] is None
+    assert DraftPlanningAggregate.model_validate(result, strict=True)
