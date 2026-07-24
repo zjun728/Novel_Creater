@@ -157,14 +157,12 @@ class PlanningService:
         repository,
         *,
         transaction_factory,
-        connection_factory=None,
         id_factory: Callable[[], str] | None = None,
         clock: Callable[[], int] | None = None,
         failpoint: Callable[[str], None] | None = None,
     ):
         self.repository = repository
         self.transaction_factory = transaction_factory
-        self.connection_factory = connection_factory
         self.id_factory = id_factory or (lambda: str(uuid4()))
         self.clock = clock or (lambda: int(time.time() * 1000))
         self.failpoint = failpoint
@@ -850,12 +848,6 @@ class PlanningService:
     def _hit(self, stage: str) -> None:
         if self.failpoint is not None:
             self.failpoint(stage)
-
-    def _read_connection(self):
-        if self.connection_factory is None:
-            raise RuntimeError("Planning read connection is unavailable")
-        return self.connection_factory()
-
 
 __all__ = (
     "ConfirmPlanningDraft",

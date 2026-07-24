@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from copy import deepcopy
+import inspect
 import json
 
 import pytest
@@ -327,7 +328,6 @@ class MemoryPlanningRepository:
 class Harness:
     def __init__(self, *, failpoint=None):
         self.transaction_entries = 0
-        self.connection_entries = 0
         self.repository = MemoryPlanningRepository()
         ids = iter(
             f"00000000-0000-0000-0000-{number:012d}"
@@ -346,15 +346,9 @@ class Harness:
                 repository.__dict__.update(snapshot)
                 raise
 
-        @asynccontextmanager
-        async def connection():
-            self.connection_entries += 1
-            yield object()
-
         self.service = PlanningService(
             repository,
             transaction_factory=transaction,
-            connection_factory=connection,
             id_factory=ids.__next__,
             clock=lambda: 1_900_000_000_000,
             failpoint=failpoint,
@@ -1178,11 +1172,17 @@ async def test_history_derives_current_superseded_and_archived_statuses():
 
 
 @pytest.mark.asyncio
-async def test_history_and_state_use_transaction_snapshot_not_read_connection():
+async def test_history_and_state_use_transaction_snapshot():
     harness = Harness()
 
     await harness.service.history("p1")
     await harness.service.get_state("p1")
 
     assert harness.transaction_entries == 2
-    assert harness.connection_entries == 0
+
+
+def test_planning_service_has_only_the_transaction_read_path():
+    parameters = inspect.signature(PlanningService).parameters
+
+    assert "connection_factory" not in parameters
+    assert not hasattr(PlanningService, "_read_connection")

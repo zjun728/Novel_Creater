@@ -9,7 +9,7 @@ from urllib.parse import unquote, unquote_plus, urlsplit
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from backend.database import connection, transaction
+from backend.database import transaction
 from backend.domain.planning import DraftPlanningAggregate
 from backend.gateways.planning_provider import PlanningProviderGateway
 from backend.http_errors import PublicDomainError
@@ -37,7 +37,6 @@ router = APIRouter(tags=["planning"])
 _service = PlanningService(
     PlanningRepository(),
     transaction_factory=transaction,
-    connection_factory=connection,
 )
 _generation_service = PlanningGenerationService(
     PlanningRepository(),

@@ -191,7 +191,6 @@ async def _prepare(disposable_mysql, *, failpoint=None):
     service = PlanningService(
         PlanningRepository(),
         transaction_factory=transaction,
-        connection_factory=read_connection,
         id_factory=ids.__next__,
         clock=lambda: NOW,
         failpoint=failpoint,
