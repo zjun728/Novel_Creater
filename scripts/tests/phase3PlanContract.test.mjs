@@ -57,7 +57,7 @@ test('Phase 3B detailed plan freezes its delivery and safety contract', async ()
   );
   assertHasLine(
     frozenDecisions,
-    '- Short-lived Vite test servers keep optimizeDeps.noDiscovery enabled, and package gates verify no new deps_temp_* residue.',
+    '- Short-lived Vite test servers keep optimizeDeps.noDiscovery enabled, and package gates require the final deps_temp_* residue count to equal zero.',
   );
   assertHasLine(task9, 'npm run test:browser:phase3b');
 
