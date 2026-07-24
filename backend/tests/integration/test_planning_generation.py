@@ -5,6 +5,7 @@ import pytest
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.repositories.planning import PlanningRepository
 from backend.services.planning import CreatePlanningDraft
+from backend.tests.support.disposable_mysql import transaction_factory_for
 from backend.tests.integration.test_contract_drafts import PROJECT
 from backend.tests.integration.test_planning_aggregate_lifecycle import _prepare
 
@@ -217,6 +218,110 @@ async def test_real_mysql_failed_attempt_releases_active_slot_for_next_token(
         disposable_mysql.session,
         draft.draft_id,
     ) == 2
+
+
+class _FakePlanningGateway:
+    def __init__(self, output):
+        self.output = output
+        self.calls = []
+
+    async def generate(
+        self, *, provider, model_name, manifest, author_instructions
+    ):
+        self.calls.append(
+            (dict(provider), model_name, manifest, author_instructions)
+        )
+        return self.output
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_service_reserves_and_atomically_loads_generation(
+    disposable_mysql,
+):
+    from backend.services.planning_generation import (
+        GeneratePlanningDraft,
+        PlanningGenerationService,
+    )
+
+    planning = await _prepare(disposable_mysql)
+    draft = await planning.create_draft(
+        CreatePlanningDraft(PROJECT, "create-service-generation-draft")
+    )
+    output = {
+        "activeStoryBlockRef": None,
+        "volumes": [
+            {
+                "clientNodeKey": "generated-volume",
+                "order": 1,
+                "title": "AI 第一卷",
+                "coreChange": "主角建立第一个据点。",
+                "mainPressure": "追兵逼近。",
+                "ensembleFocus": ["主角", "同伴"],
+                "forbiddenEvents": ["不可提前揭示幕后人"],
+            }
+        ],
+        "plots": [
+            {
+                "clientNodeKey": "generated-plot",
+                "order": 1,
+                "title": "立足主线",
+                "plotType": "main",
+                "storyQuestion": "主角如何站稳脚跟？",
+                "futureDirection": "从逃亡转向主动布局。",
+                "expectedPayoff": "建立据点。",
+                "relatedCharacters": ["主角"],
+            }
+        ],
+        "storyBlocks": [],
+    }
+    gateway = _FakePlanningGateway(output)
+    identifiers = iter(
+        f"98000000-0000-0000-0000-{number:012d}"
+        for number in range(1, 20)
+    )
+    service = PlanningGenerationService(
+        PlanningRepository(),
+        provider_gateway=gateway,
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        id_factory=identifiers.__next__,
+        clock=lambda: NOW + 100,
+    )
+
+    result = await service.generate(
+        GeneratePlanningDraft(
+            project_id=PROJECT,
+            draft_id=draft.draft_id,
+            draft_revision=draft.draft_revision,
+            draft_hash=draft.content_hash,
+            idempotency_key="real-service-generation",
+            author_instructions="强化群像变化。",
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.loaded is True
+    assert result.loaded_draft_revision == draft.draft_revision + 1
+    assert result.model.model_name == "test-model"
+    assert len(gateway.calls) == 1
+    persisted_draft = await disposable_mysql.session.fetchone(
+        "SELECT * FROM planning_drafts WHERE id=%s",
+        (draft.draft_id,),
+    )
+    persisted_attempt = await disposable_mysql.session.fetchone(
+        """SELECT * FROM planning_generation_attempts
+            WHERE operation_id=%s""",
+        (result.operation_id,),
+    )
+    assert persisted_draft["source_attempt_id"] == persisted_attempt["id"]
+    assert persisted_attempt["loaded_draft_revision"] == (
+        draft.draft_revision + 1
+    )
+    selected = await disposable_mysql.session.fetchone(
+        "SELECT DATABASE() AS database_name"
+    )
+    assert selected["database_name"] == disposable_mysql.database_name
 
 
 @pytest.mark.asyncio
