@@ -20,6 +20,34 @@ let ariaHiddenSnapshot = null
 const listText = value => (
   Array.isArray(value) && value.length ? value.join('、') : '无'
 )
+const nodeId = node => String(node?.id || node?.clientNodeKey || '')
+
+function relationLabel(items, targetId, kind) {
+  const normalized = String(targetId || '')
+  if (!normalized) return `未关联${kind}`
+  const target = (items || []).find(item => nodeId(item) === normalized)
+  return target
+    ? `${target.title || `未命名${kind}`}（${normalized}）`
+    : `未找到${kind}（${normalized}）`
+}
+
+function volumeRelation(content, block) {
+  return relationLabel(content?.volumes, block?.volumeId, '分卷')
+}
+
+function plotRelations(content, block) {
+  const ids = Array.isArray(block?.plotIds) ? block.plotIds : []
+  return ids.length
+    ? ids.map(id => relationLabel(content?.plots, id, '情节线')).join('、')
+    : '无'
+}
+
+function isActiveStoryBlock(content, block) {
+  return (
+    String(content?.activeStoryBlockId || '')
+    && String(content.activeStoryBlockId) === nodeId(block)
+  )
+}
 
 function setBackgroundHidden(hidden) {
   const appRoot = globalThis.document?.querySelector?.('#app')
@@ -153,7 +181,18 @@ onBeforeUnmount(() => {
                 v-for="block in item.content?.storyBlocks || []"
                 :key="block.id || block.clientNodeKey"
               >
-                <h4>{{ block.title || '未命名故事块' }}</h4>
+                <div class="block-heading">
+                  <h4>{{ block.title || '未命名故事块' }}</h4>
+                  <strong v-if="isActiveStoryBlock(item.content, block)">
+                    当前活动故事块
+                  </strong>
+                </div>
+                <p class="block-relations">
+                  所属分卷：{{ volumeRelation(item.content, block) }}
+                </p>
+                <p class="block-relations">
+                  关联情节线：{{ plotRelations(item.content, block) }}
+                </p>
                 <dl>
                   <div><dt>进入情境</dt><dd>{{ block.entrySituation || '未填写' }}</dd></div>
                   <div><dt>故事块目标</dt><dd>{{ block.blockGoal || '未填写' }}</dd></div>
@@ -209,6 +248,9 @@ button { border:1px solid var(--nc-border); border-radius:6px; padding:8px 12px;
 .revision-card h3 { margin:0; padding-bottom:7px; border-bottom:1px solid var(--nc-border); font-size:15px; }
 .revision-card article { padding:13px; border:1px solid var(--nc-border); border-radius:8px; }
 .revision-card h4,.revision-card h5 { margin:0 0 9px; }
+.block-heading { display:flex; align-items:start; justify-content:space-between; gap:12px; }
+.block-heading strong { flex:none; color:var(--nc-vermilion); font-size:12px; }
+.block-relations { margin:5px 0; color:var(--nc-muted); line-height:1.6; }
 .revision-card dl { display:grid; gap:7px; margin:0; }
 .revision-card dl div { display:grid; grid-template-columns:90px 1fr; gap:10px; }
 .revision-card dt { color:var(--nc-muted); font-size:12px; }

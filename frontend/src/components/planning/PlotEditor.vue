@@ -14,6 +14,9 @@ const parseList = value => String(value || '')
   .filter(Boolean)
 const activeItems = () => props.modelValue.filter(node => node.lifecycle !== 'retired')
 const activePosition = node => activeItems().findIndex(item => nodeKey(item) === nodeKey(node))
+const controlDisabled = node => (
+  props.readOnly || props.disabled || node.lifecycle === 'retired'
+)
 const cannotMove = (node, direction) => {
   const position = activePosition(node)
   const target = position + direction
@@ -21,7 +24,7 @@ const cannotMove = (node, direction) => {
 }
 
 function update(node, field, value) {
-  if (props.readOnly || props.disabled || node.lifecycle === 'retired') return
+  if (controlDisabled(node)) return
   emit('update', nodeKey(node), {
     [field]: field === 'relatedCharacters' ? parseList(value) : value,
   })
@@ -71,11 +74,19 @@ function remove(node) {
       <fieldset :disabled="readOnly || disabled || plot.lifecycle === 'retired'">
         <label>
           情节线名称
-          <input :value="plot.title" @input="update(plot, 'title', $event.target.value)">
+          <input
+            :value="plot.title"
+            :disabled="controlDisabled(plot)"
+            @input="update(plot, 'title', $event.target.value)"
+          >
         </label>
         <label>
           类型
-          <select :value="plot.plotType" @change="update(plot, 'plotType', $event.target.value)">
+          <select
+            :value="plot.plotType"
+            :disabled="controlDisabled(plot)"
+            @change="update(plot, 'plotType', $event.target.value)"
+          >
             <option value="">请选择</option>
             <option value="main">主线</option>
             <option value="character">人物线</option>
@@ -87,19 +98,39 @@ function remove(node) {
         </label>
         <label>
           故事问题
-          <textarea :value="plot.storyQuestion" rows="3" @input="update(plot, 'storyQuestion', $event.target.value)" />
+          <textarea
+            :value="plot.storyQuestion"
+            :disabled="controlDisabled(plot)"
+            rows="3"
+            @input="update(plot, 'storyQuestion', $event.target.value)"
+          />
         </label>
         <label>
           未来走向
-          <textarea :value="plot.futureDirection" rows="3" @input="update(plot, 'futureDirection', $event.target.value)" />
+          <textarea
+            :value="plot.futureDirection"
+            :disabled="controlDisabled(plot)"
+            rows="3"
+            @input="update(plot, 'futureDirection', $event.target.value)"
+          />
         </label>
         <label>
           预期回报
-          <textarea :value="plot.expectedPayoff" rows="3" @input="update(plot, 'expectedPayoff', $event.target.value)" />
+          <textarea
+            :value="plot.expectedPayoff"
+            :disabled="controlDisabled(plot)"
+            rows="3"
+            @input="update(plot, 'expectedPayoff', $event.target.value)"
+          />
         </label>
         <label>
           相关人物（每行一项）
-          <textarea :value="listValue(plot.relatedCharacters)" rows="3" @input="update(plot, 'relatedCharacters', $event.target.value)" />
+          <textarea
+            :value="listValue(plot.relatedCharacters)"
+            :disabled="controlDisabled(plot)"
+            rows="3"
+            @input="update(plot, 'relatedCharacters', $event.target.value)"
+          />
         </label>
       </fieldset>
       <footer v-if="!readOnly && plot.lifecycle !== 'retired'">

@@ -14,6 +14,9 @@ const parseList = value => String(value || '')
   .filter(Boolean)
 const activeItems = () => props.modelValue.filter(node => node.lifecycle !== 'retired')
 const activePosition = node => activeItems().findIndex(item => nodeKey(item) === nodeKey(node))
+const controlDisabled = node => (
+  props.readOnly || props.disabled || node.lifecycle === 'retired'
+)
 const cannotMove = (node, direction) => {
   const position = activePosition(node)
   const target = position + direction
@@ -21,7 +24,7 @@ const cannotMove = (node, direction) => {
 }
 
 function update(node, field, value) {
-  if (props.readOnly || props.disabled || node.lifecycle === 'retired') return
+  if (controlDisabled(node)) return
   emit('update', nodeKey(node), {
     [field]: ['ensembleFocus', 'forbiddenEvents'].includes(field)
       ? parseList(value)
@@ -75,6 +78,7 @@ function remove(node) {
           卷名
           <input
             :value="volume.title"
+            :disabled="controlDisabled(volume)"
             @input="update(volume, 'title', $event.target.value)"
           >
         </label>
@@ -82,6 +86,7 @@ function remove(node) {
           核心变化
           <textarea
             :value="volume.coreChange"
+            :disabled="controlDisabled(volume)"
             rows="3"
             @input="update(volume, 'coreChange', $event.target.value)"
           />
@@ -90,6 +95,7 @@ function remove(node) {
           主要压力
           <textarea
             :value="volume.mainPressure"
+            :disabled="controlDisabled(volume)"
             rows="3"
             @input="update(volume, 'mainPressure', $event.target.value)"
           />
@@ -98,6 +104,7 @@ function remove(node) {
           群像焦点（每行一项）
           <textarea
             :value="listValue(volume.ensembleFocus)"
+            :disabled="controlDisabled(volume)"
             rows="3"
             @input="update(volume, 'ensembleFocus', $event.target.value)"
           />
@@ -106,6 +113,7 @@ function remove(node) {
           本卷禁区（每行一项）
           <textarea
             :value="listValue(volume.forbiddenEvents)"
+            :disabled="controlDisabled(volume)"
             rows="3"
             @input="update(volume, 'forbiddenEvents', $event.target.value)"
           />

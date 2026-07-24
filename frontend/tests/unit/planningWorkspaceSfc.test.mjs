@@ -282,6 +282,74 @@ function planningState(projectId = 'A') {
   }
 }
 
+function historyAggregate() {
+  return {
+    schemaVersion: 'planning-v1',
+    activeStoryBlockId: 'block-1',
+    contentHash: '7'.repeat(64),
+    volumes: [{
+      id: 'volume-1',
+      order: 1,
+      title: '入世卷',
+      coreChange: '从逃亡到入局',
+      mainPressure: '两方追索',
+      ensembleFocus: ['沈砚'],
+      forbiddenEvents: ['不提前揭密'],
+      revision: 1,
+      contentHash: 'a'.repeat(64),
+      lifecycle: 'active',
+    }],
+    plots: [{
+      id: 'plot-1',
+      order: 1,
+      title: '残卷主线',
+      plotType: 'main',
+      storyQuestion: '残卷从何而来',
+      futureDirection: '追到京师',
+      expectedPayoff: '揭开首层目录',
+      relatedCharacters: ['沈砚'],
+      revision: 1,
+      contentHash: 'b'.repeat(64),
+      lifecycle: 'active',
+    }],
+    storyBlocks: [{
+      id: 'block-1',
+      order: 1,
+      title: '夜入县衙',
+      entrySituation: '追兵封城',
+      blockGoal: '取得残卷',
+      mainPressure: '守卫换班',
+      expectedChange: '拿到线索',
+      openQuestions: ['谁在接应'],
+      involvedCharacters: ['沈砚'],
+      volumeId: 'volume-1',
+      plotIds: ['plot-1', 'plot-missing'],
+      revision: 1,
+      contentHash: 'c'.repeat(64),
+      lifecycle: 'active',
+      stages: [{
+        id: 'stage-1',
+        order: 1,
+        title: '潜入',
+        purpose: '进入库房',
+        dramaticQuestion: '能否避开巡夜',
+        revision: 1,
+        contentHash: 'd'.repeat(64),
+        lifecycle: 'active',
+        sceneTasks: [{
+          id: 'task-1',
+          order: 1,
+          task: '偷换腰牌',
+          completionEvidence: '成功进入内院',
+          revision: 1,
+          contentHash: 'e'.repeat(64),
+          lifecycle: 'active',
+        }],
+      }],
+    }],
+  }
+}
+
 function workspaceStore() {
   const calls = []
   return reactive({
@@ -292,7 +360,7 @@ function workspaceStore() {
     dirty: false,
     error: null,
     loading: false,
-    saving: true,
+    saving: false,
     confirming: false,
     generating: false,
     reconciling: false,
@@ -357,24 +425,26 @@ test('mounted workspace locks editor mutations for every busy or recovery state 
     const volumeTitle = () => walk(root).find(item => (
       item.type === 'input' && item.props.value === '入世卷'
     ))
-    const volumeFieldset = () => walk(root).find(item => item.type === 'fieldset')
-    assert.equal(volumeFieldset().props.disabled, true)
-    volumeTitle().props.onInput?.({ target: { value: '不应写入' } })
-    await flush()
-    assert.equal(store.calls.length, 0)
-
-    for (const flag of ['loading', 'confirming', 'awaitingAuthoritativeReload']) {
-      store.saving = false
+    for (const flag of [
+      'saving',
+      'loading',
+      'confirming',
+      'generating',
+      'reconciling',
+      'awaitingAuthoritativeReload',
+      'generationOutcomeUnknown',
+    ]) {
       store[flag] = true
       await flush()
-      assert.equal(volumeFieldset().props.disabled, true, flag)
+      assert.equal(volumeTitle().props.disabled, true, flag)
       volumeTitle().props.onInput?.({ target: { value: `blocked-${flag}` } })
       assert.equal(store.calls.length, 0, flag)
+      assert.equal(store.localContent.volumes[0].title, '入世卷', flag)
       store[flag] = false
+      await flush()
+      assert.equal(volumeTitle().props.disabled, false, `${flag} recovered`)
     }
 
-    await flush()
-    assert.equal(volumeFieldset().props.disabled, false)
     volumeTitle().props.onInput({ target: { value: '可继续编辑' } })
     await flush()
     assert.equal(store.calls.length, 1)
@@ -548,7 +618,7 @@ test('mounted history drawer renders the immutable hierarchy and owns modal keyb
       planningRevisionId: 'revision-7',
       revision: 7,
       createdAt: '2026-07-25',
-      content: planningContent(),
+      content: historyAggregate(),
     }]
     const Harness = defineComponent({
       setup() {
@@ -572,6 +642,9 @@ test('mounted history drawer renders the immutable hierarchy and owns modal keyb
     assert.match(text(dialog), /残卷主线/)
     assert.match(text(dialog), /残卷从何而来/)
     assert.match(text(dialog), /夜入县衙/)
+    assert.match(text(dialog), /当前活动故事块/)
+    assert.match(text(dialog), /所属分卷：入世卷（volume-1）/)
+    assert.match(text(dialog), /关联情节线：残卷主线（plot-1）、未找到情节线（plot-missing）/)
     assert.match(text(dialog), /进入库房/)
     assert.match(text(dialog), /偷换腰牌/)
     assert.match(text(dialog), /成功进入内院/)
