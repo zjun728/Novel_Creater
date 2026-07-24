@@ -574,9 +574,13 @@ test('planning save recursively allows only the closed draft DTO fields', async 
 
 test('chapter session client separates session draft and explicit candidate writes', async () => {
   const calls = await captureRequests(async api => {
-    await api.chapterSessions.current('project-1')
-    await api.chapterSessions.create('project-1', {
-      expectedStoryBlockRevision: 1,
+    await api.chapterSessions.get('project-1', 1)
+    await api.chapterSessions.create('project-1', 1, {
+      chapterNumber: 1,
+      expectedPlanningRevision: 1,
+      expectedPlanningHash: 'a'.repeat(64),
+      expectedOutlineRevision: 3,
+      expectedOutlineHash: 'c'.repeat(64),
       expectedCanonRevision: 0,
       apiKey: 'must-not-send',
     })
@@ -599,15 +603,19 @@ test('chapter session client separates session draft and explicit candidate writ
   })
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
-    ['GET', '/api/projects/project-1/chapter-sessions/current'],
-    ['POST', '/api/projects/project-1/chapter-sessions'],
+    ['GET', '/api/projects/project-1/chapter-sessions/1'],
+    ['POST', '/api/projects/project-1/chapter-sessions/1'],
     ['PUT', '/api/projects/project-1/chapter-sessions/session-1/working-draft'],
     ['POST', '/api/projects/project-1/chapter-sessions/session-1/generate-working-draft'],
     ['POST', '/api/projects/project-1/chapter-sessions/session-1/candidates'],
   ])
   assert.equal(bodyOf(calls[0]), undefined)
   assert.deepEqual(bodyOf(calls[1]), {
-    expectedStoryBlockRevision: 1,
+    chapterNumber: 1,
+    expectedPlanningRevision: 1,
+    expectedPlanningHash: 'a'.repeat(64),
+    expectedOutlineRevision: 3,
+    expectedOutlineHash: 'c'.repeat(64),
     expectedCanonRevision: 0,
   })
   assert.deepEqual(bodyOf(calls[2]), {

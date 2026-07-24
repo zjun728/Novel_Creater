@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import re
 import time
 from typing import Any, Mapping
 from uuid import uuid4
@@ -38,7 +39,11 @@ class ChapterSessionRequestInvalid(ChapterSessionError):
 @dataclass(frozen=True)
 class CreateChapterSession:
     project_id: str
-    expected_story_block_revision: int
+    chapter_number: int
+    expected_planning_revision: int
+    expected_planning_hash: str
+    expected_outline_revision: int
+    expected_outline_hash: str
     expected_canon_revision: int
 
 
@@ -63,62 +68,127 @@ class ChapterSessionService:
         self.transaction_factory = transaction_factory
         self.connection_factory = connection_factory
 
-    async def get_current(self, project_id: str) -> ChapterWorkspace | None:
+    async def get(
+        self,
+        project_id: str,
+        chapter_number: int,
+    ) -> ChapterWorkspace | None:
+        if not project_id or chapter_number < 1:
+            raise ChapterSessionRequestInvalid(
+                "project and chapter are required",
+            )
         if self.connection_factory is None:
             raise RuntimeError("Chapter session read connection is unavailable")
         async with self.connection_factory() as session:
-            current = await self.repository.read_latest_chapter_session(session, project_id)
-            if current is None:
+            chapter_session = await self.repository.read_chapter_session(
+                session,
+                project_id,
+                chapter_number,
+            )
+            if chapter_session is None:
                 return None
-            return await self._workspace(session, current)
+            return await self._workspace(session, chapter_session)
 
     async def create_session(self, command: CreateChapterSession) -> ChapterWorkspace:
-        if not command.project_id:
-            raise ChapterSessionRequestInvalid("project_id is required")
+        self._validate_create_command(command)
         async with self.transaction_factory() as session:
             project = await self.repository.lock_project(session, command.project_id)
             if project is None:
                 raise ChapterSessionNotFound("Project not found")
-            plan = await self.repository.read_active_plan(session, command.project_id)
-            if plan is None:
-                raise ChapterSessionPreconditionFailed("active planning is required")
-            block = plan["block"]
-            if int(block["revision"]) != command.expected_story_block_revision:
-                raise ChapterSessionConflict("story block revision drift")
-            canon = await self.repository.read_projection_head(session, command.project_id)
-            canon_revision = int((canon or {}).get("canon_revision_number") or 0)
-            if canon_revision != command.expected_canon_revision:
-                raise ChapterSessionConflict("canon revision drift")
-            chapter_num = int(project.get("current_chapter") or 0) + 1
-            generation = {
-                "selection_revision": int(plan["selection_revision"]),
-                "contract_revision": int(plan["contract_revision"]),
-                "contract_hash": plan["contract_hash"],
-                "bible_revision": int(plan["bible_revision"]),
-                "bible_hash": plan["bible_hash"],
-                "volume_plan_id": plan["volume"]["id"],
-                "planning_manifest_hash": plan["manifest_hash"],
-            }
             existing = await self.repository.read_chapter_session(
-                session, command.project_id, chapter_num, generation,
+                session,
+                command.project_id,
+                command.chapter_number,
             )
             if existing is not None:
+                if not self._matches_create_command(existing, command):
+                    raise ChapterSessionConflict(
+                        "existing ChapterSession pins differ from request",
+                    )
                 return await self._workspace(session, existing)
+
+            outline = await self.repository.read_current_outline(
+                session,
+                command.project_id,
+                command.chapter_number,
+            )
+            if outline is None:
+                raise ChapterSessionPreconditionFailed(
+                    "current confirmed outline is required",
+                )
+            if (
+                int(outline.get("current_planning_revision") or 0)
+                != int(outline["planning_revision"])
+                or outline.get("current_planning_hash")
+                != outline["planning_hash"]
+            ):
+                raise ChapterSessionConflict(
+                    "Planning head differs from the confirmed Outline",
+                )
+            if (
+                command.expected_planning_revision
+                != int(outline["planning_revision"])
+                or command.expected_planning_hash != outline["planning_hash"]
+            ):
+                raise ChapterSessionConflict("Planning revision drift")
+            if (
+                command.expected_outline_revision
+                != int(outline["chapter_outline_revision"])
+                or command.expected_outline_hash
+                != outline["chapter_outline_hash"]
+            ):
+                raise ChapterSessionConflict("Outline revision drift")
+
+            projection = await self.repository.read_projection_head(
+                session,
+                command.project_id,
+            )
+            if projection is None:
+                raise ChapterSessionPreconditionFailed(
+                    "Canon and Projection heads are required",
+                )
+            canon_revision = int(projection["canon_revision_number"])
+            projection_revision = int(
+                projection["projection_revision_number"],
+            )
+            if canon_revision != projection_revision:
+                raise ChapterSessionPreconditionFailed(
+                    "Canon and Projection must be synchronized",
+                )
+            if canon_revision != command.expected_canon_revision:
+                raise ChapterSessionConflict("Canon revision drift")
+            if (
+                canon_revision != int(outline["canon_revision"])
+                or projection_revision != int(outline["projection_revision"])
+                or projection["content_hash"] != outline["projection_hash"]
+            ):
+                raise ChapterSessionConflict(
+                    "current Canon/Projection differs from Outline baseline",
+                )
+
             now = int(time.time() * 1000)
             session_row = {
-                "id": str(uuid4()), "project_id": command.project_id,
-                "selection_revision": int(plan["selection_revision"]),
-                "contract_revision": int(plan["contract_revision"]),
-                "contract_hash": plan["contract_hash"],
-                "bible_revision": int(plan["bible_revision"]),
-                "bible_hash": plan["bible_hash"],
-                "volume_plan_id": plan["volume"]["id"],
-                "planning_manifest_hash": plan["manifest_hash"],
-                "story_block_id": block["id"], "chapter_num": chapter_num,
+                "id": str(uuid4()),
+                "project_id": command.project_id,
+                "planning_revision_id": outline["planning_revision_id"],
+                "planning_revision": int(outline["planning_revision"]),
+                "planning_hash": outline["planning_hash"],
+                "story_block_id": outline["story_block_id"],
+                "story_block_revision": int(outline["story_block_revision"]),
+                "story_block_hash": outline["story_block_hash"],
+                "chapter_outline_revision_id": outline[
+                    "chapter_outline_revision_id"
+                ],
+                "chapter_outline_revision": int(
+                    outline["chapter_outline_revision"],
+                ),
+                "chapter_outline_hash": outline["chapter_outline_hash"],
+                "chapter_num": command.chapter_number,
                 "expected_canon_revision": canon_revision,
-                "expected_story_block_revision": int(block["revision"]),
-                "planning_snapshot": self._planning_snapshot(plan),
-                "status": "drafting", "created_at": now, "finalized_at": None,
+                "chapter_outline": outline["chapter_outline"],
+                "status": "drafting",
+                "created_at": now,
+                "finalized_at": None,
             }
             if not await self.repository.insert_chapter_session(session, session_row):
                 raise ChapterSessionConflict("chapter session was not created")
@@ -142,13 +212,7 @@ class ChapterSessionService:
                 raise ProjectNotFound()
             chapter_session = await self.repository.read_session_by_id(
                 session, command.project_id, command.chapter_session_id,
-            ) if hasattr(self.repository, "read_session_by_id") else None
-            if chapter_session is None:
-                latest = await self.repository.read_latest_chapter_session(
-                    session, command.project_id,
-                )
-                if latest and latest["id"] == command.chapter_session_id:
-                    chapter_session = latest
+            )
             if chapter_session is None:
                 raise ChapterSessionNotFound("Chapter session not found")
             effective_status = chapter_session.get(
@@ -184,13 +248,7 @@ class ChapterSessionService:
                 raise ProjectNotFound()
             chapter_session = await self.repository.read_session_by_id(
                 session, command.project_id, command.chapter_session_id,
-            ) if hasattr(self.repository, "read_session_by_id") else None
-            if chapter_session is None:
-                latest = await self.repository.read_latest_chapter_session(
-                    session, command.project_id,
-                )
-                if latest and latest["id"] == command.chapter_session_id:
-                    chapter_session = latest
+            )
             if chapter_session is None:
                 raise ChapterSessionNotFound("Chapter session not found")
             if chapter_session.get(
@@ -230,15 +288,50 @@ class ChapterSessionService:
             candidates=tuple(self._candidate_view(row) for row in candidates),
         )
 
-    def _planning_snapshot(self, plan: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "manifestHash": plan.get("manifest_hash"),
-            "storyBlock": plan["block"]["payload"],
-            "storyBlockId": plan["block"]["id"],
-            "storyBlockRevision": int(plan["block"]["revision"]),
-            "stages": [stage["payload"] for stage in plan.get("stages", ())],
-            "sceneTasks": [task["payload"] for task in plan.get("scene_tasks", ())],
-        }
+    def _validate_create_command(self, command: CreateChapterSession) -> None:
+        if (
+            type(command.project_id) is not str
+            or not command.project_id
+            or type(command.chapter_number) is not int
+            or command.chapter_number < 1
+            or type(command.expected_planning_revision) is not int
+            or command.expected_planning_revision < 1
+            or type(command.expected_outline_revision) is not int
+            or command.expected_outline_revision < 1
+            or type(command.expected_canon_revision) is not int
+            or command.expected_canon_revision < 0
+            or type(command.expected_planning_hash) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                command.expected_planning_hash,
+            ) is None
+            or type(command.expected_outline_hash) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                command.expected_outline_hash,
+            ) is None
+        ):
+            raise ChapterSessionRequestInvalid(
+                "chapter session create command is invalid",
+            )
+
+    def _matches_create_command(
+        self,
+        session: Mapping[str, Any],
+        command: CreateChapterSession,
+    ) -> bool:
+        return (
+            int(session["chapter_num"]) == command.chapter_number
+            and int(session["planning_revision"])
+            == command.expected_planning_revision
+            and session["planning_hash"] == command.expected_planning_hash
+            and int(session["chapter_outline_revision"])
+            == command.expected_outline_revision
+            and session["chapter_outline_hash"]
+            == command.expected_outline_hash
+            and int(session["expected_canon_revision"])
+            == command.expected_canon_revision
+        )
 
     def _working_row(
         self, project_id: str, chapter_session_id: str, *, revision: int,
@@ -257,19 +350,20 @@ class ChapterSessionService:
 
     def _session_view(self, row) -> ChapterSessionView:
         return ChapterSessionView(
-            id=row["id"], project_id=row["project_id"],
-            story_block_id=row["story_block_id"], chapter_num=int(row["chapter_num"]),
+            id=row["id"],
+            project_id=row["project_id"],
+            planning_revision_id=row["planning_revision_id"],
+            planning_revision=int(row["planning_revision"]),
+            planning_hash=row["planning_hash"],
+            story_block_id=row["story_block_id"],
+            story_block_revision=int(row["story_block_revision"]),
+            story_block_hash=row["story_block_hash"],
+            chapter_outline_revision_id=row["chapter_outline_revision_id"],
+            chapter_outline_revision=int(row["chapter_outline_revision"]),
+            chapter_outline_hash=row["chapter_outline_hash"],
+            chapter_num=int(row["chapter_num"]),
             expected_canon_revision=int(row["expected_canon_revision"]),
-            expected_story_block_revision=int(row["expected_story_block_revision"]),
-            planning_snapshot=row["planning_snapshot"],
             status=row.get("effective_status", row["status"]),
-            selection_revision=int(row["selection_revision"]),
-            contract_revision=int(row["contract_revision"]),
-            contract_hash=row["contract_hash"],
-            bible_revision=int(row["bible_revision"]),
-            bible_hash=row["bible_hash"],
-            volume_plan_id=row["volume_plan_id"],
-            planning_manifest_hash=row["planning_manifest_hash"],
         )
 
     def _draft_view(self, row) -> WorkingDraftView:

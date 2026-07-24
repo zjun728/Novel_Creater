@@ -19,6 +19,14 @@ function requireProjectId(value) {
   return normalized
 }
 
+function requireChapterNumber(value) {
+  const normalized = Number(value)
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    throw new TypeError('chapterNumber is required')
+  }
+  return normalized
+}
+
 function requireWorkspace(workspace) {
   if (!workspace?.session?.id || !workspace?.workingDraft) {
     throw new TypeError('chapter session is required')
@@ -28,6 +36,7 @@ function requireWorkspace(workspace) {
 
 export const useChapterSessionStore = defineStore('chapterSession', () => {
   const projectId = ref('')
+  const chapterNumber = ref(0)
   const workspace = shallowRef(null)
   const error = shallowRef(null)
   const loading = ref(false)
@@ -48,10 +57,35 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     Array.isArray(workspace.value?.candidates) ? [...workspace.value.candidates] : []
   ))
   const hasSession = computed(() => Boolean(session.value?.id))
+  const writeBusy = computed(() => (
+    creating.value
+    || savingDraft.value
+    || savingCandidate.value
+    || generatingDraft.value
+  ))
+  const busy = computed(() => loading.value || writeBusy.value)
 
-  function enterProject(nextProjectId) {
-    const normalized = requireProjectId(nextProjectId)
-    if (projectId.value !== normalized) {
+  function resetPendingFlags() {
+    loading.value = false
+    creating.value = false
+    savingDraft.value = false
+    savingCandidate.value = false
+    generatingDraft.value = false
+  }
+
+  function assertWriteAvailable() {
+    if (writeBusy.value) {
+      throw new TypeError('chapter session write is already in progress')
+    }
+  }
+
+  function enterContext(nextProjectId, nextChapterNumber) {
+    const normalizedProjectId = requireProjectId(nextProjectId)
+    const normalizedChapterNumber = requireChapterNumber(nextChapterNumber)
+    if (
+      projectId.value !== normalizedProjectId
+      || chapterNumber.value !== normalizedChapterNumber
+    ) {
       stateGeneration += 1
       loadGuard.invalidate()
       createGuard.invalidate()
@@ -60,18 +94,25 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       generationGuard.invalidate()
       workspace.value = null
       error.value = null
-      loading.value = false
-      creating.value = false
-      savingDraft.value = false
-      savingCandidate.value = false
-      generatingDraft.value = false
-      projectId.value = normalized
+      resetPendingFlags()
+      projectId.value = normalizedProjectId
+      chapterNumber.value = normalizedChapterNumber
     }
-    return normalized
+    return {
+      projectId: normalizedProjectId,
+      chapterNumber: normalizedChapterNumber,
+    }
   }
 
-  function isCurrent(guard, generation, targetProjectId, targetStateGeneration) {
+  function isCurrent(
+    guard,
+    generation,
+    targetProjectId,
+    targetChapterNumber,
+    targetStateGeneration,
+  ) {
     return projectId.value === targetProjectId
+      && chapterNumber.value === targetChapterNumber
       && guard.isCurrent(generation)
       && stateGeneration === targetStateGeneration
   }
@@ -81,60 +122,114 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     error.value = null
   }
 
-  async function load(nextProjectId) {
-    const targetProjectId = enterProject(nextProjectId)
+  async function load(nextProjectId, nextChapterNumber) {
+    const {
+      projectId: targetProjectId,
+      chapterNumber: targetChapterNumber,
+    } = enterContext(nextProjectId, nextChapterNumber)
     const generation = loadGuard.begin()
-    const targetStateGeneration = ++stateGeneration
+    const targetStateGeneration = stateGeneration
     loading.value = true
     try {
-      const loaded = await api.chapterSessions.current(targetProjectId)
-      if (isCurrent(loadGuard, generation, targetProjectId, targetStateGeneration)) {
+      const loaded = await api.chapterSessions.get(
+        targetProjectId,
+        targetChapterNumber,
+      )
+      if (isCurrent(
+        loadGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         acceptWorkspace(loaded)
       }
       return loaded
     } catch (failure) {
-      if (isCurrent(loadGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        loadGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         error.value = publicError(failure)
       }
       throw failure
     } finally {
-      if (projectId.value === targetProjectId && loadGuard.isCurrent(generation)) {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && loadGuard.isCurrent(generation)
+      ) {
         loading.value = false
       }
     }
   }
 
-  async function create(nextProjectId, command) {
-    const targetProjectId = enterProject(nextProjectId)
+  async function create(nextProjectId, nextChapterNumber, command) {
+    const {
+      projectId: targetProjectId,
+      chapterNumber: targetChapterNumber,
+    } = enterContext(nextProjectId, nextChapterNumber)
+    assertWriteAvailable()
     const generation = createGuard.begin()
-    const targetStateGeneration = ++stateGeneration
+    const targetStateGeneration = stateGeneration
     creating.value = true
     try {
-      const created = await api.chapterSessions.create(targetProjectId, {
-        expectedStoryBlockRevision: command.expectedStoryBlockRevision,
-        expectedCanonRevision: command.expectedCanonRevision,
-      })
-      if (isCurrent(createGuard, generation, targetProjectId, targetStateGeneration)) {
+      const created = await api.chapterSessions.create(
+        targetProjectId,
+        targetChapterNumber,
+        {
+          chapterNumber: command.chapterNumber,
+          expectedPlanningRevision: command.expectedPlanningRevision,
+          expectedPlanningHash: command.expectedPlanningHash,
+          expectedOutlineRevision: command.expectedOutlineRevision,
+          expectedOutlineHash: command.expectedOutlineHash,
+          expectedCanonRevision: command.expectedCanonRevision,
+        },
+      )
+      if (isCurrent(
+        createGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         acceptWorkspace(created)
       }
       return created
     } catch (failure) {
-      if (isCurrent(createGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        createGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         error.value = publicError(failure)
       }
       throw failure
     } finally {
-      if (projectId.value === targetProjectId && createGuard.isCurrent(generation)) {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && createGuard.isCurrent(generation)
+      ) {
         creating.value = false
       }
     }
   }
 
   async function saveWorkingDraft(nextProjectId, content) {
-    const targetProjectId = enterProject(nextProjectId)
+    const {
+      projectId: targetProjectId,
+      chapterNumber: targetChapterNumber,
+    } = enterContext(nextProjectId, chapterNumber.value)
+    assertWriteAvailable()
     const current = requireWorkspace(workspace.value)
     const generation = draftGuard.begin()
-    const targetStateGeneration = ++stateGeneration
+    const targetStateGeneration = stateGeneration
     savingDraft.value = true
     try {
       const saved = await api.chapterSessions.saveWorkingDraft(
@@ -145,27 +240,47 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
           content,
         },
       )
-      if (isCurrent(draftGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        draftGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         acceptWorkspace(saved)
       }
       return saved
     } catch (failure) {
-      if (isCurrent(draftGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        draftGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         error.value = publicError(failure)
       }
       throw failure
     } finally {
-      if (projectId.value === targetProjectId && draftGuard.isCurrent(generation)) {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && draftGuard.isCurrent(generation)
+      ) {
         savingDraft.value = false
       }
     }
   }
 
   async function saveCandidate(nextProjectId) {
-    const targetProjectId = enterProject(nextProjectId)
+    const {
+      projectId: targetProjectId,
+      chapterNumber: targetChapterNumber,
+    } = enterContext(nextProjectId, chapterNumber.value)
+    assertWriteAvailable()
     const current = requireWorkspace(workspace.value)
     const generation = candidateGuard.begin()
-    const targetStateGeneration = ++stateGeneration
+    const targetStateGeneration = stateGeneration
     savingCandidate.value = true
     try {
       const saved = await api.chapterSessions.saveCandidate(
@@ -173,27 +288,47 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
         current.session.id,
         { expectedWorkingDraftRevision: current.workingDraft.revision },
       )
-      if (isCurrent(candidateGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        candidateGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         acceptWorkspace(saved)
       }
       return saved
     } catch (failure) {
-      if (isCurrent(candidateGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        candidateGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         error.value = publicError(failure)
       }
       throw failure
     } finally {
-      if (projectId.value === targetProjectId && candidateGuard.isCurrent(generation)) {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && candidateGuard.isCurrent(generation)
+      ) {
         savingCandidate.value = false
       }
     }
   }
 
   async function generateWorkingDraft(nextProjectId, authorInstruction = '') {
-    const targetProjectId = enterProject(nextProjectId)
+    const {
+      projectId: targetProjectId,
+      chapterNumber: targetChapterNumber,
+    } = enterContext(nextProjectId, chapterNumber.value)
+    assertWriteAvailable()
     const current = requireWorkspace(workspace.value)
     const generation = generationGuard.begin()
-    const targetStateGeneration = ++stateGeneration
+    const targetStateGeneration = stateGeneration
     generatingDraft.value = true
     try {
       const generated = await api.chapterSessions.generateWorkingDraft(
@@ -204,17 +339,33 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
           authorInstruction,
         },
       )
-      if (isCurrent(generationGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        generationGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         acceptWorkspace(generated)
       }
       return generated
     } catch (failure) {
-      if (isCurrent(generationGuard, generation, targetProjectId, targetStateGeneration)) {
+      if (isCurrent(
+        generationGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
         error.value = publicError(failure)
       }
       throw failure
     } finally {
-      if (projectId.value === targetProjectId && generationGuard.isCurrent(generation)) {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && generationGuard.isCurrent(generation)
+      ) {
         generatingDraft.value = false
       }
     }
@@ -227,10 +378,12 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     draftGuard.invalidate()
     candidateGuard.invalidate()
     generationGuard.invalidate()
+    resetPendingFlags()
   }
 
   return {
     projectId,
+    chapterNumber,
     workspace,
     error,
     loading,
@@ -242,6 +395,8 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     workingDraft,
     candidates,
     hasSession,
+    writeBusy,
+    busy,
     load,
     create,
     saveWorkingDraft,

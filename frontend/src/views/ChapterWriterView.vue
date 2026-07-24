@@ -1,6 +1,11 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import {
+  onBeforeRouteLeave,
+  onBeforeRouteUpdate,
+  useRoute,
+  useRouter,
+} from 'vue-router'
 import {
   NAlert,
   NButton,
@@ -12,76 +17,55 @@ import {
   NTag,
 } from 'naive-ui'
 
-import { api } from '@/api/db/client'
 import { useChapterSessionStore } from '@/stores/chapterSessionStore'
-import { usePlanningStore } from '@/stores/planningStore'
+import {
+  createChapterEditorState,
+  decideChapterNavigation,
+} from '@/utils/chapterEditorState'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
 import { projectOverviewPath } from '@/router/projectRoutes'
 
 const route = useRoute()
 const router = useRouter()
-const planningStore = usePlanningStore()
 const chapterSessionStore = useChapterSessionStore()
 const loadGuard = createLatestRequestGuard()
 
 const loading = ref(true)
 const pageError = ref('')
-const writerCoreState = ref(null)
-const editorContent = ref('')
 const authorInstruction = ref('')
-const lastLoadedDraftRevision = ref(null)
+const editorState = createChapterEditorState()
+const editorContent = editorState.editorContent
 
 const projectId = computed(() => String(route.params.projectId || ''))
-const activeBlock = computed(() => planningStore.activeBlock)
+const chapterNumber = computed(() => Number(route.params.chapterNumber))
 const session = computed(() => chapterSessionStore.session)
 const workingDraft = computed(() => chapterSessionStore.workingDraft)
 const candidates = computed(() => chapterSessionStore.candidates)
-const canCreateSession = computed(() => (
-  planningStore.planningReady
-  && activeBlock.value?.revision != null
-  && writerCoreState.value?.canonHeadRevision != null
-  && !chapterSessionStore.hasSession
+const canSaveDraft = computed(() => (
+  chapterSessionStore.hasSession
+  && !chapterSessionStore.busy
 ))
-const canSaveDraft = computed(() => chapterSessionStore.hasSession && !chapterSessionStore.savingDraft)
 const canGenerateDraft = computed(() => (
   chapterSessionStore.hasSession
-  && !chapterSessionStore.generatingDraft
+  && !chapterSessionStore.busy
   && workingDraft.value?.revision != null
 ))
 const canSaveCandidate = computed(() => (
   chapterSessionStore.hasSession
-  && !chapterSessionStore.savingCandidate
+  && !chapterSessionStore.busy
   && workingDraft.value?.revision != null
 ))
 
-function syncEditorFromWorkspace() {
-  const draft = workingDraft.value
-  if (!draft) {
-    editorContent.value = ''
-    lastLoadedDraftRevision.value = null
-    return
-  }
-  if (lastLoadedDraftRevision.value !== draft.revision) {
-    editorContent.value = draft.content || ''
-    lastLoadedDraftRevision.value = draft.revision
-  }
-}
-
-async function loadWorkspace(nextProjectId) {
+async function loadWorkspace(nextProjectId, nextChapterNumber) {
   const targetProjectId = String(nextProjectId || '')
+  const targetChapterNumber = Number(nextChapterNumber)
   const generation = loadGuard.begin()
   loading.value = true
   pageError.value = ''
-  writerCoreState.value = null
   try {
-    const [state] = await Promise.all([
-      api.writerCore.state(targetProjectId),
-      planningStore.load(targetProjectId),
-      chapterSessionStore.load(targetProjectId),
-    ])
+    await chapterSessionStore.load(targetProjectId, targetChapterNumber)
     if (!loadGuard.isCurrent(generation)) return
-    writerCoreState.value = state
-    syncEditorFromWorkspace()
+    editorState.syncFromWorkspace(chapterSessionStore.workspace)
   } catch (error) {
     if (!loadGuard.isCurrent(generation)) return
     pageError.value = error.message || '章节工作台加载失败'
@@ -90,22 +74,21 @@ async function loadWorkspace(nextProjectId) {
   }
 }
 
-async function createChapterSession() {
-  await chapterSessionStore.create(projectId.value, {
-    expectedStoryBlockRevision: activeBlock.value.revision,
-    expectedCanonRevision: writerCoreState.value.canonHeadRevision,
-  })
-  syncEditorFromWorkspace()
-}
-
 async function saveWorkingDraft() {
-  await chapterSessionStore.saveWorkingDraft(projectId.value, editorContent.value)
-  syncEditorFromWorkspace()
+  const saveToken = editorState.beginSave()
+  const saved = await chapterSessionStore.saveWorkingDraft(
+    projectId.value,
+    editorContent.value,
+  )
+  editorState.finishSave(saved, saveToken)
 }
 
 async function generateWorkingDraft() {
-  await chapterSessionStore.generateWorkingDraft(projectId.value, authorInstruction.value)
-  syncEditorFromWorkspace()
+  const generated = await chapterSessionStore.generateWorkingDraft(
+    projectId.value,
+    authorInstruction.value,
+  )
+  editorState.finishGeneration(generated)
 }
 
 async function saveCandidate() {
@@ -116,15 +99,23 @@ function backToProject() {
   router.push(projectOverviewPath(projectId.value))
 }
 
-watch(() => route.params.projectId, nextProjectId => {
-  loadWorkspace(String(nextProjectId || ''))
+function canLeaveChapter() {
+  return decideChapterNavigation({
+    busy: chapterSessionStore.busy,
+    dirty: editorState.dirty.value,
+    confirmDiscard: () => window.confirm('当前工作稿尚未保存，确认放弃这些修改吗？'),
+  })
+}
+
+watch(() => [route.params.projectId, route.params.chapterNumber], ([nextProjectId, nextChapterNumber]) => {
+  loadWorkspace(String(nextProjectId || ''), Number(nextChapterNumber))
 }, { immediate: true })
 
-watch(workingDraft, syncEditorFromWorkspace)
+onBeforeRouteUpdate(() => canLeaveChapter())
+onBeforeRouteLeave(() => canLeaveChapter())
 
 onBeforeUnmount(() => {
   loadGuard.invalidate()
-  planningStore.invalidate()
   chapterSessionStore.invalidate()
 })
 </script>
@@ -139,7 +130,7 @@ onBeforeUnmount(() => {
     <n-result v-else-if="pageError" status="error" title="章节工作台未能加载" :description="pageError" class="writer-result">
       <template #footer>
         <n-button @click="backToProject">返回项目</n-button>
-        <n-button type="primary" @click="loadWorkspace(projectId)">重试</n-button>
+        <n-button type="primary" @click="loadWorkspace(projectId, chapterNumber)">重试</n-button>
       </template>
     </n-result>
 
@@ -153,8 +144,8 @@ onBeforeUnmount(() => {
         <n-button @click="backToProject">返回项目</n-button>
       </header>
 
-      <n-alert v-if="!planningStore.planningReady" type="warning" class="writer-alert" title="滚动规划尚未就绪">
-        请先回到项目页完成本书创作契约和首个滚动规划，再创建章节会话。
+      <n-alert v-if="!session" type="warning" class="writer-alert" title="本章小纲尚未确认">
+        请先完成并确认本章小纲。Phase 3A 暂不提供小纲创作入口，已有章节会话仍可继续编辑。
       </n-alert>
 
       <section class="workspace-grid">
@@ -164,7 +155,7 @@ onBeforeUnmount(() => {
               <div>
                 <strong>WorkingDraft</strong>
                 <span v-if="session">第 {{ session.chapterNum }} 章 · revision {{ workingDraft?.revision }}</span>
-                <span v-else>尚未创建章节会话</span>
+                <span v-else>第 {{ chapterNumber }} 章 · 尚未创建章节会话</span>
               </div>
               <n-tag :type="session ? 'success' : 'default'" :bordered="false">
                 {{ session ? 'drafting' : 'not started' }}
@@ -177,7 +168,7 @@ onBeforeUnmount(() => {
             type="textarea"
             :autosize="{ minRows: 22 }"
             placeholder="在这里手动输入、粘贴或继续编辑章节正文。AI 生成只会进入工作稿，不会自动保存候选。"
-            :disabled="!session"
+            :disabled="!session || chapterSessionStore.generatingDraft"
           />
 
           <div class="generation-box">
@@ -194,12 +185,12 @@ onBeforeUnmount(() => {
 
           <div class="editor-actions">
             <n-button
+              v-if="!session"
               type="primary"
-              :disabled="!canCreateSession"
+              :disabled="true"
               :loading="chapterSessionStore.creating"
-              @click="createChapterSession"
             >
-              创建章节会话
+              请先完成并确认本章小纲
             </n-button>
             <n-button
               type="primary"
@@ -229,9 +220,12 @@ onBeforeUnmount(() => {
         </n-card>
 
         <aside class="side-stack">
-          <n-card title="当前故事块" :bordered="false">
-            <p class="muted">{{ activeBlock?.title || '暂无当前故事块' }}</p>
-            <p v-if="activeBlock" class="small">revision {{ activeBlock.revision }} · {{ activeBlock.status }}</p>
+          <n-card title="本章权威基线" :bordered="false">
+            <template v-if="session">
+              <p class="muted">Planning R{{ session.planningRevision }}</p>
+              <p class="small">Outline R{{ session.chapterOutlineRevision }} · StoryBlock R{{ session.storyBlockRevision }}</p>
+            </template>
+            <p v-else class="muted">确认本章小纲后，系统会在这里展示不可变的 Planning、StoryBlock 与 Outline 基线。</p>
           </n-card>
 
           <n-card title="候选稿" :bordered="false">

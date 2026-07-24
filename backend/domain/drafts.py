@@ -8,19 +8,18 @@ from typing import Any, Mapping
 class ChapterSessionView:
     id: str
     project_id: str
+    planning_revision_id: str
+    planning_revision: int
+    planning_hash: str
     story_block_id: str
+    story_block_revision: int
+    story_block_hash: str
+    chapter_outline_revision_id: str
+    chapter_outline_revision: int
+    chapter_outline_hash: str
     chapter_num: int
     expected_canon_revision: int
-    expected_story_block_revision: int
-    planning_snapshot: Mapping[str, Any]
     status: str
-    selection_revision: int = 0
-    contract_revision: int = 0
-    contract_hash: str = ""
-    bible_revision: int = 0
-    bible_hash: str = ""
-    volume_plan_id: str = ""
-    planning_manifest_hash: str = ""
 
 
 @dataclass(frozen=True)

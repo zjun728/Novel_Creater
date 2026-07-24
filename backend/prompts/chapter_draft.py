@@ -14,7 +14,7 @@ def build_chapter_draft_messages(
     working_draft: Mapping,
     author_instruction: str = "",
 ) -> list[dict[str, str]]:
-    planning = chapter_session.get("planning_snapshot") or {}
+    chapter_outline = chapter_session.get("chapter_outline") or {}
     system = (
         "你是长篇男频小说写作助手。任务是写出让读者愿意继续读的章节正文，"
         "不要写分析、不要列规则、不要输出 JSON。正文要有具体场景、人物反应、"
@@ -22,7 +22,7 @@ def build_chapter_draft_messages(
     )
     user_parts = [
         f"章节：第 {int(chapter_session.get('chapter_num') or 1)} 章",
-        f"当前故事块与规划：{_safe_json(planning)}",
+        f"本章已确认小纲：{_safe_json(chapter_outline)}",
         f"当前工作稿：{working_draft.get('content') or '（空）'}",
     ]
     instruction = str(author_instruction or "").strip()

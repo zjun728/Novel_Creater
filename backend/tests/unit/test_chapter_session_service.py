@@ -5,110 +5,98 @@ import pytest
 from backend import http_errors
 
 
+PLANNING_ID = "planning-revision-1"
+PLANNING_HASH = "a" * 64
+BLOCK_ID = "story-block-1"
+BLOCK_HASH = "b" * 64
+OUTLINE_ID = "outline-revision-1"
+OUTLINE_HASH = "c" * 64
+PROJECTION_HASH = "d" * 64
+
+
 class FakeChapterRepository:
     def __init__(self):
         self.archived = False
         self.project = {"id": "p1", "current_chapter": 0}
-        self.canon = {"canon_revision_number": 0}
-        self.plan = {
-            "manifest_hash": "a" * 64,
-            "selection_revision": 3,
-            "contract_revision": 1,
-            "contract_hash": "c" * 64,
-            "bible_revision": 2,
-            "bible_hash": "b" * 64,
-            "volume": {"id": "volume-1"},
-            "block": {
-                "id": "block-1", "project_id": "p1", "revision": 1,
-                "title": "典籍入山河", "payload": {"goal": "入局"},
+        self.outline = {
+            "planning_revision_id": PLANNING_ID,
+            "planning_revision": 1,
+            "planning_hash": PLANNING_HASH,
+            "current_planning_revision": 1,
+            "current_planning_hash": PLANNING_HASH,
+            "story_block_id": BLOCK_ID,
+            "story_block_revision": 2,
+            "story_block_hash": BLOCK_HASH,
+            "chapter_outline_revision_id": OUTLINE_ID,
+            "chapter_outline_revision": 3,
+            "chapter_outline_hash": OUTLINE_HASH,
+            "canon_revision": 0,
+            "projection_revision": 0,
+            "projection_hash": PROJECTION_HASH,
+            "chapter_outline": {
+                "chapterGoal": "主角第一次靠典籍知识解决眼前麻烦",
+                "storyBlockRef": {
+                    "id": BLOCK_ID,
+                    "revision": 2,
+                    "contentHash": BLOCK_HASH,
+                },
+                "scenes": ["织机故障", "主角判断木轴受潮"],
             },
-            "stages": [{
-                "id": "stage-1", "project_id": "p1", "story_block_id": "block-1",
-                "stage_order": 1, "title": "入局", "payload": {"purpose": "入局"},
-                "revision": 1, "status": "in_progress",
-            }],
-            "scene_tasks": [{
-                "id": "task-1", "project_id": "p1", "story_stage_id": "stage-1",
-                "task_order": 1, "payload": {"task": "写一个具体麻烦"},
-                "revision": 1, "status": "pending",
-            }],
         }
-        self.session = None
+        self.projection = {
+            "canon_revision_number": 0,
+            "projection_revision_number": 0,
+            "content_hash": PROJECTION_HASH,
+        }
         self.sessions = []
-        self.generation_current = True
-        self.working_draft = None
         self.working_drafts = {}
         self.candidates = []
+        self.chapter_reads = []
 
     async def lock_project(self, session, project_id):
         if self.archived:
             raise http_errors.ProjectArchived()
         return self.project if project_id == "p1" else None
 
-    async def read_active_plan(self, session, project_id):
-        return self.plan
+    async def read_current_outline(self, session, project_id, chapter_number):
+        if project_id != "p1" or chapter_number != 1:
+            return None
+        return self.outline
 
     async def read_projection_head(self, session, project_id):
-        return self.canon
+        return self.projection
 
-    def _effective_status(self, row):
-        current = (
-            self.generation_current
-            and row["selection_revision"] == self.plan["selection_revision"]
-            and row["contract_revision"] == self.plan["contract_revision"]
-            and row["contract_hash"] == self.plan["contract_hash"]
-            and row["bible_revision"] == self.plan["bible_revision"]
-            and row["bible_hash"] == self.plan["bible_hash"]
-            and row["volume_plan_id"] == self.plan["volume"]["id"]
-            and row["planning_manifest_hash"] == self.plan["manifest_hash"]
+    async def read_chapter_session(self, session, project_id, chapter_number):
+        self.chapter_reads.append((project_id, chapter_number))
+        return next(
+            (
+                row
+                for row in reversed(self.sessions)
+                if row["project_id"] == project_id
+                and row["chapter_num"] == chapter_number
+            ),
+            None,
         )
-        return row["status"] if current else "superseded"
-
-    async def read_chapter_session(
-        self, session, project_id, chapter_num, generation=None,
-    ):
-        for row in reversed(self.sessions):
-            if row["chapter_num"] != chapter_num:
-                continue
-            if generation is not None and any(
-                row[key] != generation[key]
-                for key in (
-                    "selection_revision", "contract_revision", "contract_hash",
-                    "bible_revision", "bible_hash", "volume_plan_id",
-                    "planning_manifest_hash",
-                )
-            ):
-                continue
-            return row | {"effective_status": self._effective_status(row)}
-        return None
-
-    async def read_latest_chapter_session(self, session, project_id):
-        if self.session is None:
-            return None
-        return self.session | {"effective_status": self._effective_status(self.session)}
 
     async def read_session_by_id(self, session, project_id, chapter_session_id):
-        for row in self.sessions:
-            if row["id"] == chapter_session_id:
-                return row | {"effective_status": self._effective_status(row)}
-        return None
+        return next(
+            (
+                row
+                for row in self.sessions
+                if row["project_id"] == project_id
+                and row["id"] == chapter_session_id
+            ),
+            None,
+        )
 
     async def insert_chapter_session(self, session, row):
-        self.session = row
         self.sessions.append(row)
         return True
 
     async def read_working_draft(self, session, chapter_session_id):
-        row = self.working_drafts.get(chapter_session_id)
-        if row is None:
-            return None
-        chapter_session = next(
-            item for item in self.sessions if item["id"] == chapter_session_id
-        )
-        return row | {"effective_status": self._effective_status(chapter_session)}
+        return self.working_drafts.get(chapter_session_id)
 
     async def upsert_working_draft(self, session, row):
-        self.working_draft = row
         self.working_drafts[row["chapter_session_id"]] = row
         return True
 
@@ -119,12 +107,8 @@ class FakeChapterRepository:
         return True
 
     async def list_candidates(self, session, chapter_session_id):
-        chapter_session = next(
-            item for item in self.sessions if item["id"] == chapter_session_id
-        )
-        effective_status = self._effective_status(chapter_session)
         return [
-            item | {"effective_status": effective_status}
+            item
             for item in self.candidates
             if item["chapter_session_id"] == chapter_session_id
         ]
@@ -142,89 +126,55 @@ def tx_factory():
     return FakeTx()
 
 
+def create_command(**overrides):
+    from backend.services.chapter_sessions import CreateChapterSession
+
+    values = {
+        "project_id": "p1",
+        "chapter_number": 1,
+        "expected_planning_revision": 1,
+        "expected_planning_hash": PLANNING_HASH,
+        "expected_outline_revision": 3,
+        "expected_outline_hash": OUTLINE_HASH,
+        "expected_canon_revision": 0,
+    }
+    values.update(overrides)
+    return CreateChapterSession(**values)
+
+
 @pytest.mark.asyncio
-async def test_create_session_requires_active_planning():
-    from backend.services.chapter_sessions import (
-        ChapterSessionPreconditionFailed,
-        ChapterSessionService,
-        CreateChapterSession,
+async def test_get_chapter_session_reads_exact_chapter_and_never_latest():
+    from backend.services.chapter_sessions import ChapterSessionService
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(
+        repo,
+        transaction_factory=tx_factory,
+        connection_factory=tx_factory,
     )
+    created = await service.create_session(create_command())
+    repo.chapter_reads.clear()
 
-    repo = FakeChapterRepository()
-    repo.plan = None
-    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    chapter_one = await service.get("p1", 1)
+    chapter_two = await service.get("p1", 2)
 
-    with pytest.raises(ChapterSessionPreconditionFailed, match="planning"):
-        await service.create_session(CreateChapterSession(
-            project_id="p1", expected_story_block_revision=1,
-            expected_canon_revision=0,
-        ))
-
-
-@pytest.mark.asyncio
-async def test_create_session_creates_empty_working_draft_without_candidate():
-    from backend.services.chapter_sessions import ChapterSessionService, CreateChapterSession
-
-    repo = FakeChapterRepository()
-    service = ChapterSessionService(repo, transaction_factory=tx_factory)
-
-    result = await service.create_session(CreateChapterSession(
-        project_id="p1", expected_story_block_revision=1,
-        expected_canon_revision=0,
-    ))
-
-    assert result.session.chapter_num == 1
-    assert result.session.status == "drafting"
-    assert result.working_draft.revision == 1
-    assert result.working_draft.content == ""
-    assert result.candidates == ()
-    assert repo.session["expected_story_block_revision"] == 1
-    assert repo.session["selection_revision"] == 3
-    assert repo.session["contract_revision"] == 1
-    assert repo.session["contract_hash"] == "c" * 64
-    assert repo.session["bible_revision"] == 2
-    assert repo.session["bible_hash"] == "b" * 64
-    assert repo.session["volume_plan_id"] == "volume-1"
-    assert repo.session["planning_manifest_hash"] == "a" * 64
-    assert repo.working_draft["source_payload"]["source"] == "manual-empty"
+    assert chapter_one.session.id == created.session.id
+    assert chapter_two is None
+    assert repo.chapter_reads == [("p1", 1), ("p1", 2)]
 
 
 @pytest.mark.asyncio
-async def test_save_working_draft_updates_revision_and_does_not_create_candidate():
+@pytest.mark.parametrize(
+    ("project_id", "chapter_number"),
+    (("", 1), ("p1", 0)),
+)
+async def test_get_chapter_session_validates_project_and_chapter(
+    project_id,
+    chapter_number,
+):
     from backend.services.chapter_sessions import (
+        ChapterSessionRequestInvalid,
         ChapterSessionService,
-        CreateChapterSession,
-        SaveWorkingDraft,
-    )
-
-    repo = FakeChapterRepository()
-    service = ChapterSessionService(repo, transaction_factory=tx_factory)
-    created = await service.create_session(CreateChapterSession(
-        project_id="p1", expected_story_block_revision=1,
-        expected_canon_revision=0,
-    ))
-
-    updated = await service.save_working_draft(SaveWorkingDraft(
-        project_id="p1",
-        chapter_session_id=created.session.id,
-        expected_revision=1,
-        content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
-    ))
-
-    assert updated.working_draft.revision == 2
-    assert updated.working_draft.content.startswith("沈清源")
-    assert updated.candidates == ()
-    assert repo.candidates == []
-
-
-@pytest.mark.asyncio
-async def test_generation_drift_returns_superseded_workspace_and_rejects_writes():
-    from backend.services.chapter_sessions import (
-        ChapterSessionConflict,
-        ChapterSessionService,
-        CreateChapterSession,
-        SaveDraftCandidate,
-        SaveWorkingDraft,
     )
 
     repo = FakeChapterRepository()
@@ -233,118 +183,312 @@ async def test_generation_drift_returns_superseded_workspace_and_rejects_writes(
         transaction_factory=tx_factory,
         connection_factory=tx_factory,
     )
-    created = await service.create_session(
-        CreateChapterSession(
-            project_id="p1",
-            expected_story_block_revision=1,
-            expected_canon_revision=0,
-        )
-    )
-    await service.save_working_draft(
-        SaveWorkingDraft(
-            project_id="p1",
-            chapter_session_id=created.session.id,
-            expected_revision=1,
-            content="旧代际正文",
-        )
-    )
-    await service.save_candidate(
-        SaveDraftCandidate(
-            project_id="p1",
-            chapter_session_id=created.session.id,
-            expected_working_draft_revision=2,
-        )
-    )
-    repo.generation_current = False
 
-    current = await service.get_current("p1")
-    assert current.session.status == "superseded"
-    assert current.working_draft.status == "superseded"
-    assert current.candidates[0].status == "superseded"
+    with pytest.raises(ChapterSessionRequestInvalid):
+        await service.get(project_id, chapter_number)
 
-    with pytest.raises(ChapterSessionConflict, match="superseded"):
-        await service.save_working_draft(
-            SaveWorkingDraft(
-                project_id="p1",
-                chapter_session_id=created.session.id,
-                expected_revision=1,
-                content="不得复活旧代际",
-            )
-        )
+    assert repo.chapter_reads == []
 
 
 @pytest.mark.asyncio
-async def test_seed_switch_creates_same_number_session_in_new_generation():
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("chapter_number", 0),
+        ("chapter_number", True),
+        ("chapter_number", "1"),
+        ("chapter_number", None),
+        ("expected_planning_revision", 0),
+        ("expected_planning_revision", True),
+        ("expected_planning_revision", "1"),
+        ("expected_planning_revision", None),
+        ("expected_planning_hash", "A" * 64),
+        ("expected_planning_hash", "a" * 63),
+        ("expected_planning_hash", None),
+        ("expected_outline_revision", 0),
+        ("expected_outline_revision", False),
+        ("expected_outline_revision", "3"),
+        ("expected_outline_revision", None),
+        ("expected_outline_hash", "not-a-hash"),
+        ("expected_outline_hash", None),
+        ("expected_canon_revision", -1),
+        ("expected_canon_revision", False),
+        ("expected_canon_revision", "0"),
+        ("expected_canon_revision", None),
+    ),
+)
+async def test_create_session_service_rejects_invalid_six_value_command(
+    field,
+    value,
+):
     from backend.services.chapter_sessions import (
+        ChapterSessionRequestInvalid,
         ChapterSessionService,
-        CreateChapterSession,
     )
 
     repo = FakeChapterRepository()
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
-    first = await service.create_session(
-        CreateChapterSession(
-            project_id="p1",
-            expected_story_block_revision=1,
-            expected_canon_revision=0,
-        )
+
+    with pytest.raises(ChapterSessionRequestInvalid):
+        await service.create_session(create_command(**{field: value}))
+
+    assert repo.sessions == []
+    assert repo.working_drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_create_session_requires_current_confirmed_outline():
+    from backend.services.chapter_sessions import (
+        ChapterSessionPreconditionFailed,
+        ChapterSessionService,
     )
-    repo.plan = {
-        **repo.plan,
-        "selection_revision": 4,
-        "manifest_hash": "d" * 64,
-        "volume": {"id": "volume-2"},
-        "block": {
-            **repo.plan["block"],
-            "id": "block-2",
-        },
+
+    repo = FakeChapterRepository()
+    repo.outline = None
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(ChapterSessionPreconditionFailed, match="outline"):
+        await service.create_session(create_command())
+
+    assert repo.sessions == []
+    assert repo.working_drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_repeat_create_returns_existing_session_only_for_exact_pins():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    first = await service.create_session(create_command())
+    repo.outline = None
+    repo.projection = None
+
+    repeated = await service.create_session(create_command())
+
+    assert repeated.session.id == first.session.id
+    assert len(repo.sessions) == 1
+    with pytest.raises(ChapterSessionConflict, match="existing"):
+        await service.create_session(
+            create_command(expected_outline_hash="e" * 64),
+        )
+    assert len(repo.sessions) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("expected_planning_revision", 2, "Planning"),
+        ("expected_planning_hash", "e" * 64, "Planning"),
+        ("expected_outline_revision", 4, "Outline"),
+        ("expected_outline_hash", "f" * 64, "Outline"),
+    ),
+)
+async def test_create_session_rejects_browser_revision_or_hash_drift(
+    field, value, message,
+):
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(ChapterSessionConflict, match=message):
+        await service.create_session(create_command(**{field: value}))
+
+    assert repo.sessions == []
+    assert repo.working_drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_outline_bound_to_noncurrent_planning():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    repo.outline["current_planning_revision"] = 2
+    repo.outline["current_planning_hash"] = "e" * 64
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(ChapterSessionConflict, match="Planning"):
+        await service.create_session(create_command())
+
+    assert repo.sessions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("canon_revision", "projection_revision"),
+    ((1, 0), (0, 1)),
+)
+async def test_create_session_requires_synchronized_canon_and_projection(
+    canon_revision, projection_revision,
+):
+    from backend.services.chapter_sessions import (
+        ChapterSessionPreconditionFailed,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    repo.projection["canon_revision_number"] = canon_revision
+    repo.projection["projection_revision_number"] = projection_revision
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(
+        ChapterSessionPreconditionFailed,
+        match="Canon.*Projection",
+    ):
+        await service.create_session(create_command())
+
+    assert repo.sessions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("canon_revision_number", 1),
+        ("projection_revision_number", 1),
+        ("content_hash", "e" * 64),
+    ),
+)
+async def test_create_session_rejects_current_heads_that_differ_from_outline_baseline(
+    key, value,
+):
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    if key in {"canon_revision_number", "projection_revision_number"}:
+        repo.projection["canon_revision_number"] = value
+        repo.projection["projection_revision_number"] = value
+    else:
+        repo.projection[key] = value
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(ChapterSessionConflict, match="baseline"):
+        await service.create_session(
+            create_command(
+                expected_canon_revision=repo.projection[
+                    "canon_revision_number"
+                ],
+            )
+        )
+
+    assert repo.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_create_session_pins_server_joined_planning_block_outline_and_canon():
+    from backend.services.chapter_sessions import ChapterSessionService
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    result = await service.create_session(create_command())
+
+    assert result.session.chapter_num == 1
+    assert result.session.status == "drafting"
+    assert result.working_draft.revision == 1
+    assert result.working_draft.content == ""
+    assert result.candidates == ()
+    assert repo.sessions[0] == {
+        "id": result.session.id,
+        "project_id": "p1",
+        "planning_revision_id": PLANNING_ID,
+        "planning_revision": 1,
+        "planning_hash": PLANNING_HASH,
+        "story_block_id": BLOCK_ID,
+        "story_block_revision": 2,
+        "story_block_hash": BLOCK_HASH,
+        "chapter_outline_revision_id": OUTLINE_ID,
+        "chapter_outline_revision": 3,
+        "chapter_outline_hash": OUTLINE_HASH,
+        "chapter_num": 1,
+        "expected_canon_revision": 0,
+        "chapter_outline": repo.outline["chapter_outline"],
+        "status": "drafting",
+        "created_at": repo.sessions[0]["created_at"],
+        "finalized_at": None,
+    }
+    assert result.session.planning_revision_id == PLANNING_ID
+    assert result.session.planning_revision == 1
+    assert result.session.planning_hash == PLANNING_HASH
+    assert result.session.story_block_id == BLOCK_ID
+    assert result.session.story_block_revision == 2
+    assert result.session.story_block_hash == BLOCK_HASH
+    assert result.session.chapter_outline_revision_id == OUTLINE_ID
+    assert result.session.chapter_outline_revision == 3
+    assert result.session.chapter_outline_hash == OUTLINE_HASH
+    assert result.session.expected_canon_revision == 0
+    assert repo.working_drafts[result.session.id]["source_payload"] == {
+        "source": "manual-empty",
     }
 
-    second = await service.create_session(
-        CreateChapterSession(
+
+@pytest.mark.asyncio
+async def test_save_working_draft_updates_revision_and_does_not_create_candidate():
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+
+    updated = await service.save_working_draft(
+        SaveWorkingDraft(
             project_id="p1",
-            expected_story_block_revision=1,
-            expected_canon_revision=0,
+            chapter_session_id=created.session.id,
+            expected_revision=1,
+            content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
         )
     )
 
-    assert second.session.id != first.session.id
-    assert second.session.chapter_num == first.session.chapter_num == 1
-    assert second.session.selection_revision == 4
-    old = await repo.read_session_by_id(object(), "p1", first.session.id)
-    assert old["effective_status"] == "superseded"
-    assert (await repo.read_working_draft(object(), first.session.id))[
-        "effective_status"
-    ] == "superseded"
+    assert updated.working_draft.revision == 2
+    assert updated.working_draft.content.startswith("沈清源")
+    assert updated.candidates == ()
+    assert repo.candidates == []
 
 
 @pytest.mark.asyncio
 async def test_save_candidate_freezes_current_working_draft_explicitly():
     from backend.services.chapter_sessions import (
         ChapterSessionService,
-        CreateChapterSession,
         SaveDraftCandidate,
         SaveWorkingDraft,
     )
 
     repo = FakeChapterRepository()
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
-    created = await service.create_session(CreateChapterSession(
-        project_id="p1", expected_story_block_revision=1,
-        expected_canon_revision=0,
-    ))
-    await service.save_working_draft(SaveWorkingDraft(
-        project_id="p1",
-        chapter_session_id=created.session.id,
-        expected_revision=1,
-        content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
-    ))
+    created = await service.create_session(create_command())
+    await service.save_working_draft(
+        SaveWorkingDraft(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_revision=1,
+            content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
+        )
+    )
 
-    result = await service.save_candidate(SaveDraftCandidate(
-        project_id="p1",
-        chapter_session_id=created.session.id,
-        expected_working_draft_revision=2,
-    ))
+    result = await service.save_candidate(
+        SaveDraftCandidate(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_working_draft_revision=2,
+        )
+    )
 
     assert len(result.candidates) == 1
     assert result.candidates[0].working_draft_revision == 2
@@ -357,41 +501,43 @@ async def test_save_candidate_freezes_current_working_draft_explicitly():
 async def test_existing_draft_writes_recheck_active_project(operation):
     from backend.services.chapter_sessions import (
         ChapterSessionService,
-        CreateChapterSession,
         SaveDraftCandidate,
         SaveWorkingDraft,
     )
 
     repo = FakeChapterRepository()
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
-    created = await service.create_session(CreateChapterSession(
-        project_id="p1", expected_story_block_revision=1,
-        expected_canon_revision=0,
-    ))
-    await service.save_working_draft(SaveWorkingDraft(
-        project_id="p1",
-        chapter_session_id=created.session.id,
-        expected_revision=1,
-        content="归档前正文",
-    ))
+    created = await service.create_session(create_command())
+    await service.save_working_draft(
+        SaveWorkingDraft(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_revision=1,
+            content="归档前正文",
+        )
+    )
     repo.archived = True
 
     if operation == "working-draft":
-        awaitable = service.save_working_draft(SaveWorkingDraft(
-            project_id="p1",
-            chapter_session_id=created.session.id,
-            expected_revision=2,
-            content="不能保存",
-        ))
+        awaitable = service.save_working_draft(
+            SaveWorkingDraft(
+                project_id="p1",
+                chapter_session_id=created.session.id,
+                expected_revision=2,
+                content="不能保存",
+            )
+        )
     else:
-        awaitable = service.save_candidate(SaveDraftCandidate(
-            project_id="p1",
-            chapter_session_id=created.session.id,
-            expected_working_draft_revision=2,
-        ))
+        awaitable = service.save_candidate(
+            SaveDraftCandidate(
+                project_id="p1",
+                chapter_session_id=created.session.id,
+                expected_working_draft_revision=2,
+            )
+        )
 
     with pytest.raises(http_errors.ProjectArchived):
         await awaitable
 
-    assert repo.working_draft["content"] == "归档前正文"
+    assert repo.working_drafts[created.session.id]["content"] == "归档前正文"
     assert repo.candidates == []

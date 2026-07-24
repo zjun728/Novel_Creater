@@ -155,7 +155,6 @@ const CANONICAL_RUNTIME = [
   'stores/bibleStore.js',
   'stores/chapterSessionStore.js',
   'stores/creationContractStore.js',
-  'stores/planningStore.js',
   'api/ai/providerPresets.js',
 ]
 
@@ -180,6 +179,7 @@ const PRESERVED_FUTURE_RUNTIME = [
   'components/planning/PlanningWorkspace.vue',
   'components/project/ContractHeadSummary.vue',
   'components/project/WriterCoreStateCard.vue',
+  'stores/planningStore.js',
 ]
 
 test('planning foundation keeps one store and one workspace without retired initial or V2 paths', async () => {
@@ -207,6 +207,62 @@ test('planning foundation keeps one store and one workspace without retired init
   assert.doesNotMatch(workspace, /<strong>R\{\{\s*headRevision/)
   await assert.rejects(
     access(path.join(sourceRoot, 'components/planning/PlanningWorkspaceV2.vue')),
+  )
+})
+
+test('chapter writer has one exact-outline session path and no legacy StoryBlock creation input', async () => {
+  const readSource = relativePath => readFile(
+    path.join(sourceRoot, relativePath),
+    'utf8',
+  )
+  const [client, store, writer] = await Promise.all([
+    readSource('api/db/client.js'),
+    readSource('stores/chapterSessionStore.js'),
+    readSource('views/ChapterWriterView.vue'),
+  ])
+
+  for (const [name, source] of [
+    ['client', client],
+    ['store', store],
+    ['writer', writer],
+  ]) {
+    assert.doesNotMatch(
+      source,
+      /expectedStoryBlockRevision/,
+      `${name} still carries the retired StoryBlock-only session command`,
+    )
+  }
+  assert.doesNotMatch(writer, /planningStore|usePlanningStore/)
+  assert.doesNotMatch(writer, /watch\(\s*workingDraft/)
+  assert.match(writer, /createChapterEditorState/)
+  assert.match(writer, /decideChapterNavigation/)
+  assert.match(writer, /editorState\.finishSave/)
+  assert.match(writer, /editorState\.finishGeneration/)
+  assert.match(writer, /onBeforeRouteLeave/)
+  assert.match(writer, /onBeforeRouteUpdate/)
+  assert.match(
+    writer,
+    /:disabled="!session \|\| chapterSessionStore\.generatingDraft"/,
+  )
+  assert.match(store, /const busy = computed\(/)
+  assert.match(store, /function assertWriteAvailable\(/)
+  assert.match(writer, /请先完成并确认本章小纲/)
+  assert.match(
+    writer,
+    /<n-button\s+v-if="!session"[\s\S]*?:disabled="true"/,
+  )
+  assert.match(
+    writer,
+    /watch\(\s*\(\)\s*=>\s*\[route\.params\.projectId,\s*route\.params\.chapterNumber\]/,
+  )
+  assert.doesNotMatch(client, /chapterSessions\/current|chapterSessions:\s*\{[\s\S]*?current:/)
+  assert.match(store, /const chapterNumber = ref\(0\)/)
+  assert.match(
+    store,
+    /api\.chapterSessions\.get\(\s*targetProjectId,\s*targetChapterNumber,/,
+  )
+  await assert.rejects(
+    access(path.join(sourceRoot, 'views/ChapterWriterViewV2.vue')),
   )
 })
 

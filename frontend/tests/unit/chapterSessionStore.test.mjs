@@ -6,21 +6,42 @@ import { createPinia, setActivePinia } from 'pinia'
 import { api } from '../../src/api/db/client.js'
 import { useChapterSessionStore } from '../../src/stores/chapterSessionStore.js'
 
-function workspace({ content = '', revision = 1, candidates = [] } = {}) {
+function workspace({
+  chapterNumber = 1,
+  content = '',
+  revision = 1,
+  candidates = [],
+} = {}) {
   return {
     projectId: 'project-1',
     session: {
-      id: 'session-1', chapterNum: 1, expectedCanonRevision: 0,
-      expectedStoryBlockRevision: 1, status: 'drafting',
-      planningSnapshot: { storyBlockId: 'block-1' },
+      id: `session-${chapterNumber}`, chapterNum: chapterNumber, expectedCanonRevision: 0,
+      planningRevisionId: 'planning-revision-1',
+      planningRevision: 1,
+      planningHash: 'a'.repeat(64),
+      storyBlockId: 'block-1',
+      storyBlockRevision: 2,
+      storyBlockHash: 'b'.repeat(64),
+      chapterOutlineRevisionId: 'outline-revision-1',
+      chapterOutlineRevision: 3,
+      chapterOutlineHash: 'c'.repeat(64),
+      status: 'drafting',
     },
     workingDraft: {
-      id: 'draft-1', chapterSessionId: 'session-1',
+      id: `draft-${chapterNumber}`, chapterSessionId: `session-${chapterNumber}`,
       revision, content, contentHash: 'a'.repeat(64),
       sourcePayload: { source: 'manual-empty' },
     },
     candidates,
   }
+}
+
+function deferred() {
+  let resolve
+  const promise = new Promise(next => {
+    resolve = next
+  })
+  return { promise, resolve }
 }
 
 async function withApiMethods(replacements, run) {
@@ -39,8 +60,8 @@ async function withApiMethods(replacements, run) {
 test('chapter session store edits working draft without creating candidate', async () => {
   const calls = []
   await withApiMethods([
-    [api.chapterSessions, 'create', async (projectId, command) => {
-      calls.push(['create', projectId, structuredClone(command)])
+    [api.chapterSessions, 'create', async (projectId, chapterNumber, command) => {
+      calls.push(['create', projectId, chapterNumber, structuredClone(command)])
       return workspace()
     }],
     [api.chapterSessions, 'saveWorkingDraft', async (projectId, sessionId, command) => {
@@ -62,8 +83,12 @@ test('chapter session store edits working draft without creating candidate', asy
   ], async () => {
     setActivePinia(createPinia())
     const store = useChapterSessionStore()
-    await store.create('project-1', {
-      expectedStoryBlockRevision: 1,
+    await store.create('project-1', 1, {
+      chapterNumber: 1,
+      expectedPlanningRevision: 1,
+      expectedPlanningHash: 'a'.repeat(64),
+      expectedOutlineRevision: 3,
+      expectedOutlineHash: 'c'.repeat(64),
       expectedCanonRevision: 0,
       apiKey: 'must-not-send',
     })
@@ -75,7 +100,14 @@ test('chapter session store edits working draft without creating candidate', asy
     await store.saveCandidate('project-1')
     assert.equal(store.candidates.length, 1)
     assert.deepEqual(calls, [
-      ['create', 'project-1', { expectedStoryBlockRevision: 1, expectedCanonRevision: 0 }],
+      ['create', 'project-1', 1, {
+        chapterNumber: 1,
+        expectedPlanningRevision: 1,
+        expectedPlanningHash: 'a'.repeat(64),
+        expectedOutlineRevision: 3,
+        expectedOutlineHash: 'c'.repeat(64),
+        expectedCanonRevision: 0,
+      }],
       ['draft', 'project-1', 'session-1', { expectedRevision: 1, content: '正文' }],
       ['generate', 'project-1', 'session-1', {
         expectedWorkingDraftRevision: 2,
@@ -84,4 +116,207 @@ test('chapter session store edits working draft without creating candidate', asy
       ['candidate', 'project-1', 'session-1', { expectedWorkingDraftRevision: 3 }],
     ])
   })
+})
+
+test('chapter session store isolates late reads when switching chapters in one project', async () => {
+  const first = deferred()
+  const second = deferred()
+  const calls = []
+
+  await withApiMethods([
+    [api.chapterSessions, 'get', async (projectId, chapterNumber) => {
+      calls.push([projectId, chapterNumber])
+      return chapterNumber === 1 ? first.promise : second.promise
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    const chapterOneLoad = store.load('project-1', 1)
+    const chapterTwoLoad = store.load('project-1', 2)
+    second.resolve(workspace({ chapterNumber: 2, content: '第二章' }))
+    await chapterTwoLoad
+    first.resolve(workspace({ chapterNumber: 1, content: '第一章' }))
+    await chapterOneLoad
+
+    assert.deepEqual(calls, [
+      ['project-1', 1],
+      ['project-1', 2],
+    ])
+    assert.equal(store.projectId, 'project-1')
+    assert.equal(store.chapterNumber, 2)
+    assert.equal(store.session.chapterNum, 2)
+    assert.equal(store.workingDraft.content, '第二章')
+  })
+})
+
+test('invalidate clears every pending flag and late completions cannot revive them', async () => {
+  const scenarios = [
+    {
+      name: 'load',
+      flag: 'loading',
+      start: store => store.load('project-1', 1),
+      seed: false,
+    },
+    {
+      name: 'create',
+      flag: 'creating',
+      start: store => store.create('project-1', 1, {
+        chapterNumber: 1,
+        expectedPlanningRevision: 1,
+        expectedPlanningHash: 'a'.repeat(64),
+        expectedOutlineRevision: 3,
+        expectedOutlineHash: 'c'.repeat(64),
+        expectedCanonRevision: 0,
+      }),
+      seed: false,
+    },
+    {
+      name: 'saveWorkingDraft',
+      flag: 'savingDraft',
+      start: store => store.saveWorkingDraft('project-1', '正文'),
+      seed: true,
+    },
+    {
+      name: 'generateWorkingDraft',
+      flag: 'generatingDraft',
+      start: store => store.generateWorkingDraft('project-1', '更有烟火气'),
+      seed: true,
+    },
+    {
+      name: 'saveCandidate',
+      flag: 'savingCandidate',
+      start: store => store.saveCandidate('project-1'),
+      seed: true,
+    },
+  ]
+
+  for (const scenario of scenarios) {
+    const gate = deferred()
+    await withApiMethods([
+      [api.chapterSessions, 'get', async () => (
+        scenario.name === 'load' ? gate.promise : workspace()
+      )],
+      [api.chapterSessions, 'create', async () => (
+        scenario.name === 'create' ? gate.promise : workspace()
+      )],
+      [api.chapterSessions, 'saveWorkingDraft', async () => (
+        scenario.name === 'saveWorkingDraft' ? gate.promise : workspace()
+      )],
+      [api.chapterSessions, 'generateWorkingDraft', async () => (
+        scenario.name === 'generateWorkingDraft' ? gate.promise : workspace()
+      )],
+      [api.chapterSessions, 'saveCandidate', async () => (
+        scenario.name === 'saveCandidate' ? gate.promise : workspace()
+      )],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = useChapterSessionStore()
+      if (scenario.seed) await store.load('project-1', 1)
+
+      const pending = scenario.start(store)
+      assert.equal(store[scenario.flag], true, `${scenario.name} did not enter pending state`)
+      store.invalidate()
+      for (const flag of [
+        'loading',
+        'creating',
+        'savingDraft',
+        'savingCandidate',
+        'generatingDraft',
+      ]) {
+        assert.equal(store[flag], false, `${scenario.name} left ${flag} active`)
+      }
+
+      gate.resolve(workspace({ content: `${scenario.name} response`, revision: 2 }))
+      await pending
+      for (const flag of [
+        'loading',
+        'creating',
+        'savingDraft',
+        'savingCandidate',
+        'generatingDraft',
+      ]) {
+        assert.equal(store[flag], false, `${scenario.name} completion revived ${flag}`)
+      }
+    })
+  }
+})
+
+test('same chapter write operations are mutually exclusive before any second API call', async () => {
+  const scenarios = [
+    ['create', 'saveWorkingDraft'],
+    ['saveWorkingDraft', 'generateWorkingDraft'],
+    ['generateWorkingDraft', 'saveCandidate'],
+    ['saveCandidate', 'create'],
+  ]
+
+  for (const [activeName, blockedName] of scenarios) {
+    const gate = deferred()
+    const calls = {
+      create: 0,
+      saveWorkingDraft: 0,
+      generateWorkingDraft: 0,
+      saveCandidate: 0,
+    }
+    await withApiMethods([
+      [api.chapterSessions, 'get', async () => workspace()],
+      [api.chapterSessions, 'create', async () => {
+        calls.create += 1
+        return activeName === 'create' ? gate.promise : workspace()
+      }],
+      [api.chapterSessions, 'saveWorkingDraft', async () => {
+        calls.saveWorkingDraft += 1
+        return activeName === 'saveWorkingDraft' ? gate.promise : workspace({ revision: 2 })
+      }],
+      [api.chapterSessions, 'generateWorkingDraft', async () => {
+        calls.generateWorkingDraft += 1
+        return activeName === 'generateWorkingDraft' ? gate.promise : workspace({
+          content: 'AI 生成正文',
+          revision: 2,
+        })
+      }],
+      [api.chapterSessions, 'saveCandidate', async () => {
+        calls.saveCandidate += 1
+        return activeName === 'saveCandidate' ? gate.promise : workspace({
+          candidates: [{ id: 'candidate-1', workingDraftRevision: 1 }],
+        })
+      }],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = useChapterSessionStore()
+      await store.load('project-1', 1)
+      const invoke = {
+        create: () => store.create('project-1', 1, {
+          chapterNumber: 1,
+          expectedPlanningRevision: 1,
+          expectedPlanningHash: 'a'.repeat(64),
+          expectedOutlineRevision: 3,
+          expectedOutlineHash: 'c'.repeat(64),
+          expectedCanonRevision: 0,
+        }),
+        saveWorkingDraft: () => store.saveWorkingDraft('project-1', '正文'),
+        generateWorkingDraft: () => store.generateWorkingDraft('project-1', ''),
+        saveCandidate: () => store.saveCandidate('project-1'),
+      }
+
+      const pending = invoke[activeName]()
+      assert.equal(store.busy, true)
+      await assert.rejects(
+        invoke[blockedName](),
+        /write is already in progress/,
+      )
+      assert.equal(calls[blockedName], 0)
+
+      gate.resolve(workspace({
+        content: activeName === 'generateWorkingDraft' ? 'AI 生成正文' : '正文',
+        revision: 2,
+        candidates: activeName === 'saveCandidate'
+          ? [{ id: 'candidate-1', workingDraftRevision: 1 }]
+          : [],
+      }))
+      await pending
+      assert.equal(store.busy, false)
+      assert.equal(store.workingDraft.revision, 2)
+    })
+  }
 })

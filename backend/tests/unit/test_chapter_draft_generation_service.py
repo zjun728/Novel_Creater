@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from urllib.parse import quote
 
 import pytest
@@ -11,6 +12,10 @@ class FakeChapterRepository:
     def __init__(self):
         self.archived = False
         self.provider = {
+            "binding_revision_id": "binding-revision-1",
+            "binding_revision": 1,
+            "binding_hash": "9" * 64,
+            "binding_item_hash": "8" * 64,
             "id": "provider-writing",
             "name": "联通云",
             "provider_type": "openai-compatible",
@@ -23,23 +28,25 @@ class FakeChapterRepository:
         self.session = {
             "id": "session-1",
             "project_id": "p1",
+            "planning_revision_id": "planning-revision-1",
+            "planning_revision": 1,
+            "planning_hash": "a" * 64,
             "story_block_id": "block-1",
+            "story_block_revision": 2,
+            "story_block_hash": "b" * 64,
+            "chapter_outline_revision_id": "outline-revision-1",
+            "chapter_outline_revision": 3,
+            "chapter_outline_hash": "c" * 64,
             "chapter_num": 1,
             "expected_canon_revision": 0,
-            "expected_story_block_revision": 1,
-            "planning_snapshot": {
-                "storyBlock": {"title": "典籍入山河", "goal": "入局"},
-                "stages": [{"purpose": "让主角第一次用知识解决麻烦"}],
-                "sceneTasks": [{"task": "织机故障引出沈清源的判断"}],
+            "outline_canon_revision": 0,
+            "outline_projection_revision": 0,
+            "outline_projection_hash": "d" * 64,
+            "chapter_outline": {
+                "chapterGoal": "主角第一次用典籍知识解决眼前麻烦",
+                "scenes": ["织机故障", "主角判断木轴受潮"],
             },
             "status": "drafting",
-            "selection_revision": 1,
-            "contract_revision": 1,
-            "contract_hash": "a" * 64,
-            "bible_revision": 1,
-            "bible_hash": "b" * 64,
-            "volume_plan_id": "volume-1",
-            "planning_manifest_hash": "c" * 64,
         }
         self.working_draft = {
             "id": "draft-1",
@@ -52,8 +59,14 @@ class FakeChapterRepository:
             "source_payload": {"source": "manual-empty"},
             "updated_at": 1,
         }
+        self.projection_head = {
+            "canon_revision_number": 0,
+            "projection_revision_number": 0,
+            "content_hash": "d" * 64,
+        }
         self.candidates = []
         self.upsert_calls = []
+        self.cas_calls = []
 
     async def lock_project(self, session, project_id):
         if self.archived:
@@ -73,8 +86,19 @@ class FakeChapterRepository:
     async def resolve_writing_provider(self, session, project_id):
         return self.provider if project_id == "p1" else None
 
-    async def upsert_working_draft(self, session, row):
+    async def read_projection_head(self, session, project_id):
+        return self.projection_head if project_id == "p1" else None
+
+    async def upsert_working_draft(
+        self,
+        session,
+        row,
+        *,
+        expected_revision=None,
+        expected_content_hash=None,
+    ):
         self.upsert_calls.append(row)
+        self.cas_calls.append((expected_revision, expected_content_hash))
         self.working_draft = row
         return True
 
@@ -94,19 +118,70 @@ def tx_factory():
     return FakeTx()
 
 
+class TransactionTracker:
+    def __init__(self):
+        self.active = 0
+        self.entries = 0
+
+    def factory(self):
+        tracker = self
+
+        class TrackingTx:
+            async def __aenter__(self):
+                tracker.active += 1
+                tracker.entries += 1
+                return object()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                tracker.active -= 1
+                return False
+
+        return TrackingTx()
+
+
 class FakeGateway:
-    def __init__(self, output="沈清源站在织机前，先听见的是木轴发涩的吱呀声。"):
+    def __init__(
+        self,
+        output="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
+        *,
+        tracker=None,
+        on_generate=None,
+    ):
         self.output = output
+        self.tracker = tracker
+        self.on_generate = on_generate
         self.calls = []
 
     async def generate(self, *, provider, messages, generation_config):
+        if self.tracker is not None:
+            assert self.tracker.active == 0
         self.calls.append({
             "provider": dict(provider),
             "messages": list(messages),
             "generation_config": dict(generation_config),
         })
+        if self.on_generate is not None:
+            self.on_generate()
         if isinstance(self.output, BaseException):
             raise self.output
+        return self.output
+
+
+class BlockingGateway(FakeGateway):
+    def __init__(self, tracker):
+        super().__init__(tracker=tracker)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def generate(self, *, provider, messages, generation_config):
+        self.entered.set()
+        assert self.tracker.active == 0
+        self.calls.append({
+            "provider": dict(provider),
+            "messages": list(messages),
+            "generation_config": dict(generation_config),
+        })
+        await self.release.wait()
         return self.output
 
 
@@ -138,11 +213,146 @@ async def test_generation_writes_provider_output_to_working_draft_without_candid
     assert result.working_draft.source_payload["authorInstruction"] == "多一点市井对话"
     assert result.candidates == ()
     assert repo.candidates == []
+    assert repo.cas_calls == [(1, "e3b0c44298fc1c149afbf4c8996fb924"
+                                "27ae41e4649b934ca495991b7852b855")]
     assert len(gateway.calls) == 1
     rendered_messages = "\n".join(message["content"] for message in gateway.calls[0]["messages"])
-    assert "典籍入山河" in rendered_messages
+    assert "主角第一次用典籍知识解决眼前麻烦" in rendered_messages
+    assert "织机故障" in rendered_messages
     assert "多一点市井对话" in rendered_messages
+    assert "planning_snapshot" not in rendered_messages
     assert "secret-key" not in rendered_messages
+
+
+@pytest.mark.asyncio
+async def test_generation_releases_transaction_while_provider_is_pending():
+    from backend.services.chapter_draft_generation import (
+        ChapterDraftGenerationService,
+        GenerateWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    tracker = TransactionTracker()
+    gateway = BlockingGateway(tracker)
+    service = ChapterDraftGenerationService(
+        repo,
+        provider_gateway=gateway,
+        transaction_factory=tracker.factory,
+    )
+
+    pending = asyncio.create_task(service.generate_working_draft(
+        GenerateWorkingDraft(
+            project_id="p1",
+            chapter_session_id="session-1",
+            expected_working_draft_revision=1,
+        )
+    ))
+    await gateway.entered.wait()
+    assert tracker.active == 0
+    async with tracker.factory():
+        assert tracker.active == 1
+    gateway.release.set()
+
+    result = await pending
+
+    assert result.working_draft.revision == 2
+    assert tracker.active == 0
+    assert tracker.entries == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "session-pin",
+        "draft-revision",
+        "draft-hash",
+        "projection-revision",
+        "projection-hash",
+        "binding-identity",
+        "provider-identity",
+        "canon-projection-unsynchronized",
+    ),
+)
+async def test_generation_rechecks_frozen_session_and_draft_before_write(drift):
+    from backend.services.chapter_draft_generation import (
+        ChapterDraftGenerationConflict,
+        ChapterDraftGenerationService,
+        GenerateWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    tracker = TransactionTracker()
+
+    def mutate_after_freeze():
+        if drift == "session-pin":
+            repo.session = {
+                **repo.session,
+                "chapter_outline_hash": "f" * 64,
+            }
+        elif drift == "draft-revision":
+            repo.working_draft = {
+                **repo.working_draft,
+                "revision": 2,
+            }
+        elif drift == "draft-hash":
+            repo.working_draft = {
+                **repo.working_draft,
+                "content_hash": "f" * 64,
+            }
+        elif drift == "projection-revision":
+            repo.projection_head = {
+                **repo.projection_head,
+                "canon_revision_number": 1,
+                "projection_revision_number": 1,
+            }
+        elif drift == "projection-hash":
+            repo.projection_head = {
+                **repo.projection_head,
+                "content_hash": "f" * 64,
+            }
+        elif drift == "binding-identity":
+            repo.provider = {
+                **repo.provider,
+                "binding_revision_id": "binding-revision-2",
+                "binding_revision": 2,
+                "binding_hash": "7" * 64,
+            }
+        elif drift == "provider-identity":
+            repo.provider = {
+                **repo.provider,
+                "id": "provider-writing-2",
+            }
+        else:
+            repo.projection_head = {
+                **repo.projection_head,
+                "canon_revision_number": 1,
+            }
+
+    gateway = FakeGateway(
+        tracker=tracker,
+        on_generate=mutate_after_freeze,
+    )
+    service = ChapterDraftGenerationService(
+        repo,
+        provider_gateway=gateway,
+        transaction_factory=tracker.factory,
+    )
+
+    with pytest.raises(
+        ChapterDraftGenerationConflict,
+        match="^chapter generation inputs changed$",
+    ):
+        await service.generate_working_draft(GenerateWorkingDraft(
+            project_id="p1",
+            chapter_session_id="session-1",
+            expected_working_draft_revision=1,
+        ))
+
+    assert len(gateway.calls) == 1
+    assert repo.upsert_calls == []
+    assert tracker.active == 0
+    assert tracker.entries == 2
 
 
 @pytest.mark.asyncio

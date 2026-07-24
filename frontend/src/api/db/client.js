@@ -685,11 +685,20 @@ export const api = {
   },
 
   chapterSessions: {
-    current: projectId => get(`/projects/${segment(projectId)}/chapter-sessions/current`),
-    create: (projectId, data) => post(`/projects/${segment(projectId)}/chapter-sessions`, {
-      expectedStoryBlockRevision: data.expectedStoryBlockRevision,
-      expectedCanonRevision: data.expectedCanonRevision,
-    }),
+    get: (projectId, chapterNumber) => get(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(chapterNumber)}`,
+    ),
+    create: (projectId, chapterNumber, data) => post(
+      `/projects/${segment(projectId)}/chapter-sessions/${segment(chapterNumber)}`,
+      {
+        chapterNumber: data.chapterNumber,
+        expectedPlanningRevision: data.expectedPlanningRevision,
+        expectedPlanningHash: data.expectedPlanningHash,
+        expectedOutlineRevision: data.expectedOutlineRevision,
+        expectedOutlineHash: data.expectedOutlineHash,
+        expectedCanonRevision: data.expectedCanonRevision,
+      },
+    ),
     saveWorkingDraft: (projectId, sessionId, data) => put(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/working-draft`,
       {

@@ -49,6 +49,8 @@ class GenerateWorkingDraft:
 
 
 class ChapterDraftGenerationService:
+    _INPUTS_CHANGED = "chapter generation inputs changed"
+
     def __init__(
         self,
         repository,
@@ -80,41 +82,98 @@ class ChapterDraftGenerationService:
                 raise ChapterSessionPreconditionFailed("working draft is required")
             if int(draft["revision"]) != command.expected_working_draft_revision:
                 raise ChapterDraftGenerationConflict("working draft revision drift")
+            projection_head = await self.repository.read_projection_head(
+                session,
+                command.project_id,
+            )
+            frozen_projection_identity = self._projection_identity(
+                chapter_session,
+                projection_head,
+            )
             provider = await self.repository.resolve_writing_provider(
                 session, command.project_id,
             )
             if provider is None:
                 raise ChapterDraftGenerationPreconditionFailed("writing provider is required")
+            frozen_session_identity = self._session_identity(chapter_session)
+            frozen_draft_identity = self._draft_identity(draft)
+            frozen_provider = dict(provider)
+            frozen_provider_identity = self._provider_identity(provider)
             messages = build_chapter_draft_messages(
                 chapter_session=chapter_session,
                 working_draft=draft,
                 author_instruction=command.author_instruction,
             )
-            try:
-                generated = await self.provider_gateway.generate(
-                    provider=provider,
-                    messages=messages,
-                    generation_config=self._generation_config(provider),
+
+        try:
+            generated = await self.provider_gateway.generate(
+                provider=frozen_provider,
+                messages=messages,
+                generation_config=self._generation_config(frozen_provider),
+            )
+        except ChapterDraftProviderError as exc:
+            raise ChapterDraftGenerationFailed("chapter draft generation failed") from exc
+        try:
+            content = validate_provider_response_text(
+                generated,
+                strip=True,
+            )
+            secrets = (
+                frozen_provider.get("api_key"),
+                frozen_provider.get("base_url"),
+            )
+            if (
+                provider_response_text_contains_secret(content, secrets)
+                or provider_response_value_contains_secret(content, secrets)
+            ):
+                raise ValueError("provider response rejected")
+        except (TypeError, ValueError, RecursionError):
+            raise ChapterDraftGenerationFailed(
+                "chapter draft generation failed"
+            ) from None
+
+        async with self.transaction_factory() as session:
+            if await self.repository.lock_project(
+                session, command.project_id
+            ) is None:
+                raise ProjectNotFound()
+            current_session = await self.repository.read_session_by_id(
+                session,
+                command.project_id,
+                command.chapter_session_id,
+            )
+            current_draft = await self.repository.read_working_draft(
+                session,
+                command.chapter_session_id,
+            )
+            current_projection_head = await self.repository.read_projection_head(
+                session,
+                command.project_id,
+            )
+            current_provider = await self.repository.resolve_writing_provider(
+                session,
+                command.project_id,
+            )
+            if (
+                current_session is None
+                or current_draft is None
+                or current_provider is None
+                or self._session_identity(current_session)
+                != frozen_session_identity
+                or self._draft_identity(current_draft)
+                != frozen_draft_identity
+                or self._projection_identity(
+                    current_session,
+                    current_projection_head,
+                ) != frozen_projection_identity
+                or self._provider_identity(current_provider)
+                != frozen_provider_identity
+            ):
+                raise ChapterDraftGenerationConflict(
+                    self._INPUTS_CHANGED,
                 )
-            except ChapterDraftProviderError as exc:
-                raise ChapterDraftGenerationFailed("chapter draft generation failed") from exc
-            try:
-                content = validate_provider_response_text(
-                    generated,
-                    strip=True,
-                )
-                secrets = (provider.get("api_key"), provider.get("base_url"))
-                if (
-                    provider_response_text_contains_secret(content, secrets)
-                    or provider_response_value_contains_secret(content, secrets)
-                ):
-                    raise ValueError("provider response rejected")
-            except (TypeError, ValueError, RecursionError):
-                raise ChapterDraftGenerationFailed(
-                    "chapter draft generation failed"
-                ) from None
             row = {
-                "id": draft["id"],
+                "id": current_draft["id"],
                 "project_id": command.project_id,
                 "chapter_session_id": command.chapter_session_id,
                 "revision": command.expected_working_draft_revision + 1,
@@ -122,19 +181,108 @@ class ChapterDraftGenerationService:
                 "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "source_payload": {
                     "source": "ai-generation",
-                    "providerId": provider["id"],
-                    "modelName": provider["model_name"],
+                    "providerId": frozen_provider["id"],
+                    "modelName": frozen_provider["model_name"],
                     "authorInstruction": str(command.author_instruction or "").strip(),
-                    "workingDraftRevision": int(draft["revision"]),
+                    "workingDraftRevision": int(current_draft["revision"]),
                 },
                 "updated_at": int(time.time() * 1000),
             }
-            if not await self.repository.upsert_working_draft(session, row):
+            if not await self.repository.upsert_working_draft(
+                session,
+                row,
+                expected_revision=int(current_draft["revision"]),
+                expected_content_hash=current_draft["content_hash"],
+            ):
                 raise ChapterSessionConflict("working draft was not saved")
             return await ChapterSessionService(
                 self.repository,
                 transaction_factory=self.transaction_factory,
-            )._workspace(session, chapter_session)
+            )._workspace(session, current_session)
+
+    def _session_identity(self, chapter_session: Mapping[str, object]) -> tuple[object, ...]:
+        return tuple(chapter_session.get(key) for key in (
+            "id",
+            "project_id",
+            "planning_revision_id",
+            "planning_revision",
+            "planning_hash",
+            "story_block_id",
+            "story_block_revision",
+            "story_block_hash",
+            "chapter_outline_revision_id",
+            "chapter_outline_revision",
+            "chapter_outline_hash",
+            "chapter_num",
+            "expected_canon_revision",
+            "outline_canon_revision",
+            "outline_projection_revision",
+            "outline_projection_hash",
+            "status",
+        ))
+
+    def _draft_identity(self, draft: Mapping[str, object]) -> tuple[object, ...]:
+        return tuple(draft.get(key) for key in (
+            "id",
+            "project_id",
+            "chapter_session_id",
+            "revision",
+            "content",
+            "content_hash",
+        ))
+
+    def _projection_identity(
+        self,
+        chapter_session: Mapping[str, object],
+        projection_head: Mapping[str, object] | None,
+    ) -> tuple[int, int, object]:
+        try:
+            canon_revision = int(projection_head["canon_revision_number"])
+            projection_revision = int(
+                projection_head["projection_revision_number"],
+            )
+            projection_hash = projection_head["content_hash"]
+            outline_canon_revision = int(
+                chapter_session["outline_canon_revision"],
+            )
+            outline_projection_revision = int(
+                chapter_session["outline_projection_revision"],
+            )
+            outline_projection_hash = chapter_session[
+                "outline_projection_hash"
+            ]
+            expected_canon_revision = int(
+                chapter_session["expected_canon_revision"],
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ChapterDraftGenerationConflict(self._INPUTS_CHANGED) from None
+        if (
+            canon_revision != projection_revision
+            or canon_revision != expected_canon_revision
+            or canon_revision != outline_canon_revision
+            or projection_revision != outline_projection_revision
+            or projection_hash != outline_projection_hash
+        ):
+            raise ChapterDraftGenerationConflict(self._INPUTS_CHANGED)
+        return canon_revision, projection_revision, projection_hash
+
+    def _provider_identity(
+        self,
+        provider: Mapping[str, object],
+    ) -> tuple[object, ...]:
+        return tuple(provider.get(key) for key in (
+            "binding_revision_id",
+            "binding_revision",
+            "binding_hash",
+            "binding_item_hash",
+            "id",
+            "provider_type",
+            "model_name",
+            "base_url",
+            "api_key",
+            "temperature",
+            "max_output_tokens",
+        ))
 
     def _generation_config(self, provider: Mapping[str, object]) -> dict[str, object]:
         return {
