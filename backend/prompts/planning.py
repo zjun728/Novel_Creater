@@ -8,13 +8,21 @@ import re
 
 from backend.domain.json_contracts import canonical_json
 from backend.domain.planning import DraftPlanningAggregate
+from backend.security.provider_secrets import is_provider_secret_key
 
 
 PLANNING_MAX_PROMPT_BYTES = 96 * 1024
 _SAFE_ERROR = "Planning prompt input invalid"
-_PRIVATE_INSTRUCTION = re.compile(
-    r"(?:api[\s_-]*key|authorization|password|dsn)\s*[:=]"
-    r"|(?:mysql|postgres(?:ql)?|mariadb)://",
+_PRIVATE_TEXT = re.compile(
+    r"(?:api[\s_-]*key|base[\s_-]*url|access[\s_-]*token"
+    r"|bearer[\s_-]*token|token|password|dsn)\s*[:=]\s*\S+"
+    r"|(?:source[\s_.-]*document[\s_.-]*text"
+    r"|raw[\s_.-]*source(?:[\s_.-]*(?:text|content|payload))?"
+    r"|corpus(?:[\s_.-]*(?:text|content|payload|fragment))?)"
+    r"\s*[:=]\s*\S+"
+    r"|\bauthorization\s*:?\s*bearer\s+\S+"
+    r"|\bbearer\s+[A-Za-z0-9][A-Za-z0-9._~+/=-]{7,}"
+    r"|(?:mysql|postgres(?:ql)?|mariadb)://\S+",
     re.IGNORECASE,
 )
 
@@ -28,9 +36,24 @@ def _is_private_manifest_key(value: object) -> bool:
         if character.isalnum()
     )
     return (
-        normalized in {"apikey", "authorization", "password", "dsn"}
+        is_provider_secret_key(value)
+        or normalized in {"accesstoken", "bearertoken"}
         or "corpus" in normalized
-        or normalized in {"rawtext", "sourcetext", "documenttext"}
+        or "rawsource" in normalized
+        or (
+            "sourcedocument" in normalized
+            and any(
+                marker in normalized
+                for marker in ("text", "content", "payload")
+            )
+        )
+        or normalized in {
+            "rawtext",
+            "sourcetext",
+            "documenttext",
+            "sourcedocument",
+            "sourcedocumenttext",
+        }
     )
 
 
@@ -49,8 +72,11 @@ def _validate_safe_manifest(value: Mapping[str, object]) -> None:
                 pending.append((nested, depth + 1))
         elif isinstance(item, (list, tuple)):
             pending.extend((nested, depth + 1) for nested in item)
+        elif isinstance(item, str):
+            if _PRIVATE_TEXT.search(item):
+                raise ValueError(_SAFE_ERROR)
         elif item is not None and not isinstance(
-            item, (str, int, float, bool)
+            item, (int, float, bool)
         ):
             raise ValueError(_SAFE_ERROR)
 
@@ -68,7 +94,7 @@ def build_planning_messages(
         if not isinstance(author_instructions, str):
             raise ValueError(_SAFE_ERROR)
         author_instructions.encode("utf-8")
-        if _PRIVATE_INSTRUCTION.search(author_instructions):
+        if _PRIVATE_TEXT.search(author_instructions):
             raise ValueError(_SAFE_ERROR)
         _validate_safe_manifest(manifest)
         manifest_snapshot = json.loads(

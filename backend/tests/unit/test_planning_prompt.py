@@ -146,6 +146,27 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
         ({"database": {"password": "PRIVATE_PASSWORD_SENTINEL"}}, "安全要求"),
         ({"dsn": "mysql://PRIVATE_DSN_SENTINEL"}, "安全要求"),
         (
+            {"runtime": {"baseURL": "PRIVATE_BASE_URL_SENTINEL"}},
+            "安全要求",
+        ),
+        (
+            {"runtime": {"base_url": "PRIVATE_BASE_URL_SNAKE_SENTINEL"}},
+            "安全要求",
+        ),
+        ({"credentials": {"token": "PRIVATE_TOKEN_SENTINEL"}}, "安全要求"),
+        (
+            {"credentials": {"accessToken": "PRIVATE_ACCESS_TOKEN_SENTINEL"}},
+            "安全要求",
+        ),
+        (
+            {
+                "credentials": {
+                    "bearer_token": "PRIVATE_BEARER_TOKEN_SENTINEL"
+                }
+            },
+            "安全要求",
+        ),
+        (
             {
                 "corpusFragments": [
                     {"text": "PRIVATE_RAW_CORPUS_SENTINEL"}
@@ -153,7 +174,55 @@ def test_prompt_requests_exact_closed_draft_shape_and_preserves_frozen_structure
             },
             "安全要求",
         ),
+        (
+            {
+                "sources": {
+                    "sourceDocumentText": "PRIVATE_SOURCE_TEXT_SENTINEL"
+                }
+            },
+            "安全要求",
+        ),
+        (
+            {
+                "sources": {
+                    "source_document_text": (
+                        "PRIVATE_SOURCE_TEXT_SNAKE_SENTINEL"
+                    )
+                }
+            },
+            "安全要求",
+        ),
+        (
+            {
+                "notes": (
+                    "Authorization: Bearer "
+                    "PRIVATE_MANIFEST_BEARER_SENTINEL"
+                )
+            },
+            "安全要求",
+        ),
+        (
+            {
+                "notes": (
+                    "sourceDocumentText="
+                    "PRIVATE_EMBEDDED_SOURCE_TEXT_SENTINEL"
+                )
+            },
+            "安全要求",
+        ),
         (_manifest(), "password=PRIVATE_INSTRUCTION_SENTINEL"),
+        (
+            _manifest(),
+            "Authorization Bearer PRIVATE_INSTRUCTION_BEARER_SENTINEL",
+        ),
+        (
+            _manifest(),
+            "bearer token=PRIVATE_INSTRUCTION_TOKEN_SENTINEL",
+        ),
+        (
+            _manifest(),
+            "Bearer PRIVATE_STANDALONE_BEARER_SENTINEL",
+        ),
     ),
 )
 def test_prompt_rejects_private_or_raw_material_with_one_safe_error(
@@ -176,6 +245,18 @@ def test_prompt_rejects_private_or_raw_material_with_one_safe_error(
             "PRIVATE_DSN_SENTINEL",
             "PRIVATE_RAW_CORPUS_SENTINEL",
             "PRIVATE_INSTRUCTION_SENTINEL",
+            "PRIVATE_BASE_URL_SENTINEL",
+            "PRIVATE_BASE_URL_SNAKE_SENTINEL",
+            "PRIVATE_TOKEN_SENTINEL",
+            "PRIVATE_ACCESS_TOKEN_SENTINEL",
+            "PRIVATE_BEARER_TOKEN_SENTINEL",
+            "PRIVATE_SOURCE_TEXT_SENTINEL",
+            "PRIVATE_SOURCE_TEXT_SNAKE_SENTINEL",
+            "PRIVATE_MANIFEST_BEARER_SENTINEL",
+            "PRIVATE_EMBEDDED_SOURCE_TEXT_SENTINEL",
+            "PRIVATE_INSTRUCTION_BEARER_SENTINEL",
+            "PRIVATE_INSTRUCTION_TOKEN_SENTINEL",
+            "PRIVATE_STANDALONE_BEARER_SENTINEL",
         )
     )
 
