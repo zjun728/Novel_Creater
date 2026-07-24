@@ -253,6 +253,7 @@ const VALID_PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/
 const PRIVATE_OPERATION_ID_TEXT = /(?:authorization|api[-_]?key|credential|password|secret|token|dsn)/i
 const SENSITIVE_PLANNING_KEY_SHAPE = /(?:^|[._:-])(?:(?:sk|rk|pk)[_-][A-Za-z0-9]|gh[pousr]_[A-Za-z0-9]|github_pat_[A-Za-z0-9])/i
 const AWS_ACCESS_KEY_SHAPE = /(?:^|[._:-])(?:AKIA|ASIA)[A-Z0-9]{16}(?:$|[._:-])/i
+const GOOGLE_API_KEY_SHAPE = /(?:^|[._:-])AIza[A-Za-z0-9_-]{20,}(?:$|[._:-])/
 const SENSITIVE_PLANNING_KEY_MARKERS = [
   'authorization',
   'bearer',
@@ -386,6 +387,7 @@ export function isSafePlanningIdempotencyKey(value) {
     !SENSITIVE_PLANNING_KEY_MARKERS.some(marker => normalized.includes(marker))
     && !SENSITIVE_PLANNING_KEY_SHAPE.test(value)
     && !AWS_ACCESS_KEY_SHAPE.test(value)
+    && !GOOGLE_API_KEY_SHAPE.test(value)
   )
 }
 

@@ -44,6 +44,9 @@ _AWS_ACCESS_KEY_SHAPE = re.compile(
     r"(?:^|[._:-])(?:AKIA|ASIA)[A-Z0-9]{16}(?:$|[._:-])",
     re.IGNORECASE,
 )
+_GOOGLE_API_KEY_SHAPE = re.compile(
+    r"(?:^|[._:-])AIza[A-Za-z0-9_-]{20,}(?:$|[._:-])"
+)
 _SENSITIVE_IDEMPOTENCY_MARKERS = (
     "authorization",
     "bearer",
@@ -72,6 +75,7 @@ def is_safe_planning_idempotency_key(value: object) -> bool:
         )
         and _SENSITIVE_IDEMPOTENCY_SHAPE.search(value) is None
         and _AWS_ACCESS_KEY_SHAPE.search(value) is None
+        and _GOOGLE_API_KEY_SHAPE.search(value) is None
     )
 
 

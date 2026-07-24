@@ -39,6 +39,7 @@ const SENSITIVE_PLANNING_KEYS = [
   'github_pat_TestSentinel1234567890',
   'AKIAABCDEFGHIJKLMNOP',
   'ASIA1234567890ABCDEF',
+  'AIzaTestSentinel12345678901234567890123',
   'Authorization-Bearer-TestSentinel',
   'bearer.TestSentinel',
   'apiKey-TestSentinel',
