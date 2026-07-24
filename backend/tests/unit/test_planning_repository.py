@@ -482,7 +482,7 @@ async def test_load_generation_result_is_one_exact_attempt_owned_draft_cas():
     )
 
 
-def test_phase3a_planning_router_exposes_only_the_revisioned_task7_contract():
+def test_phase3b_planning_router_exposes_only_the_closed_revisioned_contract():
     import backend.routers.planning as planning_router
 
     assert planning_router.router.tags == ["planning"]
@@ -498,6 +498,19 @@ def test_phase3a_planning_router_exposes_only_the_revisioned_task7_contract():
         (
             "POST",
             "/projects/{pid}/planning/drafts/{draft_id}/confirm",
+        ),
+        (
+            "POST",
+            "/projects/{pid}/planning/drafts/{draft_id}/generate",
+        ),
+        (
+            "GET",
+            "/projects/{pid}/planning/operations/{operation_id}",
+        ),
+        (
+            "GET",
+            "/projects/{pid}/planning/operations/"
+            "by-idempotency-key/{idempotency_key}",
         ),
     }
     assert all("/planning/initial" not in path for _, path in routes)
