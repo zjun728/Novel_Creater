@@ -221,6 +221,7 @@ _API_KEY_SHAPED_TEXT = re.compile(
     re.IGNORECASE,
 )
 _INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_VALID_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 
 
 def _public_model_summary(model):
@@ -265,6 +266,9 @@ def _public_model_value_is_safe(value) -> bool:
             variants.update(decoded)
             if not frontier:
                 break
+        else:
+            if any(_VALID_PERCENT_ESCAPE.search(item) for item in frontier):
+                return False
         if any(_INVALID_PERCENT_ESCAPE.search(item) for item in variants):
             return False
     except (UnicodeError, ValueError):

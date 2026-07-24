@@ -853,6 +853,26 @@ def test_generate_fail_closes_entire_model_for_api_key_shaped_name():
             "sk%252Dprivate%252Ddouble%252Dsecret",
             "double-secret",
         ),
+        (
+            "get",
+            "sk%25252Dprivate%25252Dtriple%25252Dsecret",
+            "triple-secret",
+        ),
+        (
+            "post",
+            "sk%25252dprivate%25252dlower%25252dsecret",
+            "lower-secret",
+        ),
+        (
+            "get",
+            "Authorization%25253ABearer%252520AUTH_TRIPLE_SENTINEL",
+            "AUTH_TRIPLE_SENTINEL",
+        ),
+        (
+            "post",
+            "Authorization%25253aBearer%252520LOWER_TRIPLE_SENTINEL",
+            "LOWER_TRIPLE_SENTINEL",
+        ),
         ("get", "model%FFDECODE_SENTINEL", "DECODE_SENTINEL"),
         ("post", "model%ZZINVALID_SENTINEL", "INVALID_SENTINEL"),
         ("get", "\ud800SURROGATE_SENTINEL", "SURROGATE_SENTINEL"),
@@ -894,6 +914,49 @@ def test_operation_model_projection_decodes_and_rejects_secret_shapes(
     }
     assert forbidden not in response.text
     assert "private" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "model_name"),
+    (
+        ("get", "deepseek-v4-flash"),
+        ("post", "model+preview"),
+        ("get", "model preview"),
+    ),
+)
+def test_operation_model_projection_preserves_ordinary_model_names(
+    method,
+    model_name,
+):
+    client, _, generation = make_client()
+    generation.result = replace(
+        generation.result,
+        model=PublicModelSummary(
+            provider_id="provider-1",
+            model_name=model_name,
+        ),
+    )
+
+    if method == "post":
+        response = client.post(
+            "/api/projects/p1/planning/drafts/draft-1/generate",
+            json={
+                "draftRevision": 1,
+                "draftHash": HASH,
+                "idempotencyKey": "ordinary-model-projection",
+                "authorInstructions": "",
+            },
+        )
+    else:
+        response = client.get(
+            "/api/projects/p1/planning/operations/operation-1"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == {
+        "providerId": "provider-1",
+        "modelName": model_name,
+    }
 
 
 @pytest.mark.parametrize(
