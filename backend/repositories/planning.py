@@ -395,6 +395,13 @@ class PlanningRepository:
             (draft_id,),
         )
 
+    async def read_active_generation_attempt(self, session, draft_id: str):
+        return await session.fetchone(
+            """SELECT * FROM planning_generation_attempts
+                WHERE draft_id=%s AND status='pending' AND active_slot=1""",
+            (draft_id,),
+        )
+
     async def lock_planning_binding(self, session, project_id: str):
         return await session.fetchone(
             """SELECT head.binding_revision_id,

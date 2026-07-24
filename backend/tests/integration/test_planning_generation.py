@@ -468,6 +468,124 @@ async def test_real_mysql_same_key_replay_cannot_deadlock_attempt_terminalizatio
 
 
 @pytest.mark.asyncio
+async def test_real_mysql_different_key_cannot_deadlock_active_attempt_terminalization(
+    disposable_mysql,
+):
+    from backend.services.planning_generation import (
+        GeneratePlanningDraft,
+        PlanningGenerationConflict,
+        PlanningGenerationService,
+    )
+
+    planning = await _prepare(disposable_mysql)
+    draft = await planning.create_draft(
+        CreatePlanningDraft(PROJECT, "create-different-key-deadlock-draft")
+    )
+    gateway = _BlockingPlanningGateway(
+        {
+            "activeStoryBlockRef": None,
+            "volumes": [],
+            "plots": [],
+            "storyBlocks": [],
+        }
+    )
+    transaction = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    identifiers = iter(
+        f"99100000-0000-0000-0000-{number:012d}"
+        for number in range(1, 20)
+    )
+    service = PlanningGenerationService(
+        PlanningRepository(),
+        provider_gateway=gateway,
+        transaction_factory=transaction,
+        id_factory=identifiers.__next__,
+        clock=lambda: NOW + 300,
+    )
+    original_command = GeneratePlanningDraft(
+        project_id=PROJECT,
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        draft_hash=draft.content_hash,
+        idempotency_key="different-key-original",
+        author_instructions="",
+    )
+    competing_command = GeneratePlanningDraft(
+        project_id=PROJECT,
+        draft_id=draft.draft_id,
+        draft_revision=draft.draft_revision,
+        draft_hash=draft.content_hash,
+        idempotency_key="different-key-competing",
+        author_instructions="",
+    )
+    original = asyncio.create_task(service.generate(original_command))
+    await gateway.entered.wait()
+    persisted = await disposable_mysql.session.fetchone(
+        """SELECT * FROM planning_generation_attempts
+            WHERE project_id=%s AND idempotency_key=%s""",
+        (PROJECT, original_command.idempotency_key),
+    )
+    operation_id = persisted["operation_id"]
+    attempt_locked = asyncio.Event()
+    replay_repository = _ReplayBarrierPlanningRepository()
+    competing_service = PlanningGenerationService(
+        replay_repository,
+        provider_gateway=gateway,
+        transaction_factory=transaction,
+        id_factory=lambda: "must-not-allocate-while-active",
+        clock=lambda: NOW + 300,
+    )
+
+    async def terminalize_attempt():
+        async with transaction() as session:
+            attempt = await PlanningRepository().lock_generation_attempt(
+                session, PROJECT, operation_id
+            )
+            attempt_locked.set()
+            await replay_repository.project_locked.wait()
+            project = await PlanningRepository().lock_active_project(
+                session, PROJECT
+            )
+            assert project is not None
+            assert await PlanningRepository().fail_generation_attempt(
+                session,
+                project_id=PROJECT,
+                operation_id=operation_id,
+                fencing_token=int(attempt["fencing_token"]),
+                failure_code="PlanningProviderFailed",
+                updated_at=NOW + 301,
+            )
+
+    terminalizer = asyncio.create_task(terminalize_attempt())
+    await attempt_locked.wait()
+    competing = asyncio.create_task(
+        competing_service.generate(competing_command)
+    )
+    await replay_repository.project_locked.wait()
+    await asyncio.sleep(0)
+    replay_repository.allow_lookup.set()
+    try:
+        with pytest.raises(PlanningGenerationConflict):
+            await asyncio.wait_for(competing, timeout=5)
+        await asyncio.wait_for(terminalizer, timeout=5)
+    finally:
+        gateway.release.set()
+    original_result = await asyncio.wait_for(original, timeout=5)
+
+    assert original_result.operation_id == operation_id
+    assert original_result.status == "failed"
+    assert len(gateway.calls) == 1
+    remaining = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count
+             FROM planning_generation_attempts
+            WHERE project_id=%s AND status='pending' AND active_slot=1""",
+        (PROJECT,),
+    )
+    assert remaining["count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_real_mysql_planning_binding_lock_returns_exact_task_and_runtime(
     disposable_mysql,
 ):

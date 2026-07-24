@@ -234,6 +234,19 @@ class FakePlanningRepository:
             None,
         )
 
+    async def read_active_generation_attempt(self, _session, draft_id):
+        self.lock_order.append("active-read")
+        return next(
+            (
+                row
+                for row in self.attempts.values()
+                if row["draft_id"] == draft_id
+                and row["status"] == "pending"
+                and row["active_slot"] == 1
+            ),
+            None,
+        )
+
     async def next_fencing_token(self, _session, draft_id):
         self.lock_order.append("token")
         tokens = [
@@ -538,7 +551,7 @@ async def test_success_uses_two_short_transactions_and_atomically_loads_exact_dr
         "draft",
         "binding",
         "idempotency-read",
-        "active",
+        "active-read",
         "token",
     ]
 
@@ -736,6 +749,77 @@ async def test_cancel_during_first_settlement_await_still_releases_owned_attempt
     assert repository.draft["source_attempt_id"] is None
     assert repository.load_calls == 0
     assert tracker.active == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", (2, 4))
+async def test_multiple_cancellations_wait_for_owned_settlement_and_leave_no_task(
+    cancel_count,
+):
+    repository = SettlementBarrierRepository()
+    tracker = TransactionTracker()
+    service, repository, _gateway, _tracker = _service(
+        repository=repository,
+        gateway=FakeGateway(
+            PlanningProviderError("Planning provider failed")
+        ),
+        tracker=tracker,
+    )
+    pending = asyncio.create_task(service.generate(_command()))
+    await repository.settlement_entered.wait()
+
+    for _ in range(cancel_count):
+        pending.cancel()
+        await asyncio.sleep(0)
+        assert not pending.done()
+    repository.release_settlement.set()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    await asyncio.sleep(0)
+
+    attempt = repository.attempts["operation-1"]
+    assert attempt["status"] == "failed"
+    assert attempt["active_slot"] is None
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done()
+        and task.get_name() == "planning-generation-settlement"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_wait_propagates_finished_settlement_failure_without_leak():
+    service, _repository, _gateway, _tracker = _service()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def failing_settlement():
+        entered.set()
+        await release.wait()
+        raise RuntimeError("SETTLEMENT_FAILURE_SENTINEL")
+
+    pending = asyncio.create_task(
+        service._await_settlement(failing_settlement())
+    )
+    await entered.wait()
+    pending.cancel()
+    await asyncio.sleep(0)
+    pending.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(
+        RuntimeError, match="^SETTLEMENT_FAILURE_SENTINEL$"
+    ):
+        await pending
+    await asyncio.sleep(0)
+    assert not [
+        task
+        for task in asyncio.all_tasks()
+        if not task.done()
+        and task.get_name() == "planning-generation-settlement"
+    ]
 
 
 @pytest.mark.asyncio
@@ -952,6 +1036,45 @@ async def test_mysql_coordination_failures_map_to_one_safe_retryable_error(
     assert caught.value.__cause__ is None
     assert "RAW_DATABASE_COORDINATION_SENTINEL" not in repr(caught.value)
     assert len(gateway.calls) == (1 if stage == "settlement" else 0)
+
+
+def test_coordination_classifier_requires_all_explicit_mysql_leaves():
+    from backend.services.planning_generation import (
+        PlanningGenerationService,
+    )
+
+    direct = OperationalError(1213, "direct")
+    pure_group = ExceptionGroup(
+        "pure",
+        [
+            OperationalError(1205, "timeout"),
+            ExceptionGroup(
+                "nested",
+                [OperationalError(3572, "nowait")],
+            ),
+        ],
+    )
+    mixed_group = ExceptionGroup(
+        "mixed",
+        [OperationalError(1213, "deadlock"), RuntimeError("bug")],
+    )
+    try:
+        try:
+            raise OperationalError(1213, "implicit")
+        except OperationalError:
+            raise RuntimeError("programming failure")
+    except RuntimeError as error:
+        implicit_context = error
+    assert isinstance(implicit_context.__context__, OperationalError)
+
+    assert PlanningGenerationService._is_coordination_failure(direct)
+    assert PlanningGenerationService._is_coordination_failure(pure_group)
+    assert not PlanningGenerationService._is_coordination_failure(
+        mixed_group
+    )
+    assert not PlanningGenerationService._is_coordination_failure(
+        implicit_context
+    )
 
 
 def test_public_result_has_no_secret_prompt_raw_manifest_or_dsn_fields():

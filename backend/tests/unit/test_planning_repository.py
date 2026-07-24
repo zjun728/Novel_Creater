@@ -30,6 +30,7 @@ PUBLIC_METHODS = {
     "lock_generation_attempt",
     "read_generation_attempt",
     "lock_active_generation_attempt",
+    "read_active_generation_attempt",
     "insert_generation_attempt",
     "next_fencing_token",
     "supersede_generation_attempt",
@@ -257,16 +258,23 @@ async def test_generation_attempt_reads_are_exact_and_never_lock():
     await repository.read_generation_attempt(
         session, "p1", "operation-1"
     )
+    await repository.read_active_generation_attempt(session, "draft-1")
 
-    key_sql = " ".join(session.calls[-2][1].split())
-    operation_sql = " ".join(session.calls[-1][1].split())
-    assert session.calls[-2][2] == ("p1", "key-1")
+    key_sql = " ".join(session.calls[-3][1].split())
+    operation_sql = " ".join(session.calls[-2][1].split())
+    active_sql = " ".join(session.calls[-1][1].split())
+    assert session.calls[-3][2] == ("p1", "key-1")
     assert "project_id=%s AND idempotency_key=%s" in key_sql
     assert "FOR UPDATE" not in key_sql
-    assert session.calls[-1][2] == ("p1", "operation-1")
+    assert session.calls[-2][2] == ("p1", "operation-1")
     assert "project_id=%s AND operation_id=%s" in operation_sql
     assert "FOR UPDATE" not in operation_sql
-    assert all(call[0] == "fetchone" for call in session.calls[-2:])
+    assert session.calls[-1][2] == ("draft-1",)
+    assert "draft_id=%s" in active_sql
+    assert "status='pending'" in active_sql
+    assert "active_slot=1" in active_sql
+    assert "FOR UPDATE" not in active_sql
+    assert all(call[0] == "fetchone" for call in session.calls[-3:])
 
 
 @pytest.mark.asyncio

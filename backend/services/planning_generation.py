@@ -32,6 +32,7 @@ from backend.security.provider_secrets import (
 
 PLANNING_GENERATION_LEASE_MS = 240_000
 PLANNING_AUTHOR_INSTRUCTIONS_MAX_LENGTH = 4_000
+PLANNING_RESERVE_RECONCILIATION_LIMIT = 3
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _BASIS_FIELDS = (
@@ -149,18 +150,24 @@ class PlanningGenerationService:
         command: GeneratePlanningDraft,
     ) -> PlanningOperationResult:
         self._validate(command)
-        try:
-            replay, context = await self._reserve(command)
-        except Exception as exc:
-            self._raise_if_coordination_failure(exc)
-            raise
-        if replay is not None:
-            return replay
-        assert context is not None
-        if "expired_replay" in context:
-            return await self._await_settlement(
-                self._supersede_expired_replay(context)
+        context = None
+        for _ in range(PLANNING_RESERVE_RECONCILIATION_LIMIT):
+            try:
+                replay, context = await self._reserve(command)
+            except Exception as exc:
+                self._raise_if_coordination_failure(exc)
+                raise
+            if replay is not None:
+                return replay
+            assert context is not None
+            if "expired_attempt" not in context:
+                break
+            await self._await_settlement(
+                self._supersede_expired_attempt(context)
             )
+            context = None
+        if context is None:
+            raise PlanningGenerationConflict()
 
         try:
             output = await self._gateway.generate(
@@ -268,7 +275,7 @@ class PlanningGenerationService:
                     and int(existing["lease_expires_at"])
                     <= self._clock()
                 ):
-                    return None, {"expired_replay": dict(existing)}
+                    return None, {"expired_attempt": dict(existing)}
                 return self._operation_result(existing), None
             if (
                 head is None
@@ -280,21 +287,14 @@ class PlanningGenerationService:
             if not self._provider_ready(binding):
                 raise PlanningGenerationNotReady()
 
-            active = await self.repository.lock_active_generation_attempt(
+            active = await self.repository.read_active_generation_attempt(
                 session, command.draft_id
             )
             now = self._clock()
             if active is not None:
                 if int(active["lease_expires_at"]) > now:
                     raise PlanningGenerationConflict()
-                if not await self.repository.supersede_generation_attempt(
-                    session,
-                    project_id=command.project_id,
-                    operation_id=active["operation_id"],
-                    fencing_token=int(active["fencing_token"]),
-                    updated_at=now,
-                ):
-                    raise PlanningGenerationConflict()
+                return None, {"expired_attempt": dict(active)}
 
             fencing_token = await self.repository.next_fencing_token(
                 session, command.draft_id
@@ -528,8 +528,8 @@ class PlanningGenerationService:
         )
         return self._operation_result(terminal)
 
-    async def _supersede_expired_replay(self, context):
-        expected = context["expired_replay"]
+    async def _supersede_expired_attempt(self, context):
+        expected = context["expired_attempt"]
         async with self._transaction() as session:
             attempt = await self.repository.lock_generation_attempt(
                 session,
@@ -564,51 +564,67 @@ class PlanningGenerationService:
             return self._operation_result(terminal)
 
     async def _await_settlement(self, awaitable):
-        task = asyncio.create_task(awaitable)
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
+        task = asyncio.create_task(
+            awaitable,
+            name="planning-generation-settlement",
+        )
+        current = asyncio.current_task()
+        cancellation_requested = False
+
+        def consume_outer_cancellation():
+            nonlocal cancellation_requested
+            if current is None or current.cancelling() <= 0:
+                return False
+            cancellation_requested = True
+            uncancel = getattr(current, "uncancel", None)
+            if uncancel is not None:
+                while current.cancelling() > 0:
+                    uncancel()
+            return True
+
+        while not task.done():
             try:
                 await asyncio.shield(task)
-            except BaseException:
-                pass
+            except asyncio.CancelledError:
+                outer_cancel = consume_outer_cancellation()
+                if task.done():
+                    break
+                if outer_cancel:
+                    continue
+                break
+            except Exception:
+                break
+        consume_outer_cancellation()
+        try:
+            result = task.result()
+        except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._raise_if_coordination_failure(exc)
             raise
+        if cancellation_requested:
+            raise asyncio.CancelledError
+        return result
 
     async def _settle_cancelled(self, context):
-        try:
-            await self._await_settlement(
-                self._fail(context, "PlanningGenerationCancelled")
-            )
-        except BaseException:
-            pass
+        await self._await_settlement(
+            self._fail(context, "PlanningGenerationCancelled")
+        )
 
     @staticmethod
     def _is_coordination_failure(error):
-        pending = [error]
-        seen = set()
-        while pending:
-            current = pending.pop()
-            if id(current) in seen:
-                continue
-            seen.add(id(current))
-            if (
-                isinstance(current, MySQLError)
-                and current.args
-                and current.args[0] in _MYSQL_COORDINATION_CODES
-            ):
-                return True
-            if isinstance(current, BaseExceptionGroup):
-                pending.extend(current.exceptions)
-            cause = getattr(current, "__cause__", None)
-            context = getattr(current, "__context__", None)
-            if cause is not None:
-                pending.append(cause)
-            if context is not None:
-                pending.append(context)
-        return False
+        if isinstance(error, BaseExceptionGroup):
+            return bool(error.exceptions) and all(
+                PlanningGenerationService._is_coordination_failure(
+                    nested
+                )
+                for nested in error.exceptions
+            )
+        return (
+            isinstance(error, MySQLError)
+            and bool(error.args)
+            and error.args[0] in _MYSQL_COORDINATION_CODES
+        )
 
     @classmethod
     def _raise_if_coordination_failure(cls, error):
@@ -898,6 +914,7 @@ __all__ = (
     "GeneratePlanningDraft",
     "PLANNING_AUTHOR_INSTRUCTIONS_MAX_LENGTH",
     "PLANNING_GENERATION_LEASE_MS",
+    "PLANNING_RESERVE_RECONCILIATION_LIMIT",
     "PlanningGenerationConflict",
     "PlanningGenerationIdempotencyConflict",
     "PlanningGenerationNotReady",
