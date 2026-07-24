@@ -5,6 +5,9 @@ import test from 'node:test';
 const readProjectFile = (path) =>
   readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
 
+const phase3bPlan =
+  'docs/superpowers/plans/2026-07-24-phase-3b-volumes-and-plots.md';
+
 const readSection = (document, heading) => {
   const marker = `## ${heading}`;
   const start = document.indexOf(marker);
@@ -12,6 +15,71 @@ const readSection = (document, heading) => {
   const next = document.indexOf('\n## ', start + marker.length);
   return document.slice(start, next === -1 ? document.length : next);
 };
+
+const readTask = (document, heading) => {
+  const marker = `### ${heading}`;
+  const start = document.indexOf(marker);
+  assert.notEqual(start, -1, `missing task: ${marker}`);
+  const next = document.indexOf('\n### ', start + marker.length);
+  return document.slice(start, next === -1 ? document.length : next);
+};
+
+const assertHasLine = (document, expected) => {
+  assert.ok(
+    document.split(/\r?\n/).includes(expected),
+    `missing exact line: ${expected}`,
+  );
+};
+
+const normalizeWhitespace = (document) => document.replace(/\s+/g, ' ').trim();
+
+test('Phase 3B detailed plan freezes its delivery and safety contract', async () => {
+  const plan = await readProjectFile(phase3bPlan);
+  const frozenDecisions = readSection(plan, 'Frozen decisions');
+  const task1 = readTask(plan, 'Task 1: Freeze the Phase 3B Contract');
+  const task3 = readTask(
+    plan,
+    'Task 3: Add Attempt, Lease, and Fencing Persistence',
+  );
+  const task9 = readTask(plan, 'Task 9: Add the Formal Phase 3B Browser Gate');
+
+  assertHasLine(
+    frozenDecisions,
+    '- Delivery branch: `codex/phase3b-volumes-plots`.',
+  );
+  assertHasLine(
+    frozenDecisions,
+    '- Phase 3A already owns the final `planning-v1` aggregate and v1.5 tables. Phase 3B makes no schema change and adds no migration or compatibility path.',
+  );
+  assertHasLine(
+    task3,
+    '- [ ] **Step 3: Implement against `planning_generation_attempts`**',
+  );
+  assertHasLine(
+    frozenDecisions,
+    '- Short-lived Vite test servers keep optimizeDeps.noDiscovery enabled, and package gates verify no new deps_temp_* residue.',
+  );
+  assertHasLine(task9, 'npm run test:browser:phase3b');
+
+  assertHasLine(
+    frozenDecisions,
+    '- The two routes use one `planningStore` and one `PlanningWorkspace.vue`; no `planningV2Store`, `volumeStore`, `plotStore`, `PlanningWorkspaceV2`, compatibility alias, or archived duplicate component is allowed.',
+  );
+  assertHasLine(
+    frozenDecisions,
+    '- AI generation never confirms a Planning revision, writes Canon, opens a ChapterSession, or calls a real Provider during automated acceptance.',
+  );
+  assertHasLine(
+    frozenDecisions,
+    '- Clicking “AI 生成规划” is the author’s explicit authorization to load the result into that exact saved Draft snapshot. If the Draft, project lifecycle, basis, head, binding, or fencing token changes before publish, the attempt is retained as succeeded/superseded evidence and does not change the Draft. There is no second “load result” API or button.',
+  );
+  assert.ok(
+    normalizeWhitespace(task1).includes(
+      'The contract must also reject `planningV2Store`, `PlanningWorkspaceV2`, `volumeStore`, `plotStore`, a real Provider, product database use, and a separate result-load endpoint.',
+    ),
+    'Task 1 must explicitly reject the forbidden implementation alternatives',
+  );
+});
 
 test('Phase 3 planning facts are current and the obsolete split action is retired', async () => {
   const [

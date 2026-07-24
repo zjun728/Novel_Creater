@@ -26,6 +26,7 @@
 - Clicking “AI 生成规划” is the author’s explicit authorization to load the result into that exact saved Draft snapshot. If the Draft, project lifecycle, basis, head, binding, or fencing token changes before publish, the attempt is retained as succeeded/superseded evidence and does not change the Draft. There is no second “load result” API or button.
 - AI generation never confirms a Planning revision, writes Canon, opens a ChapterSession, or calls a real Provider during automated acceptance.
 - Missing model readiness disables only AI generation. Manual create, edit, save, and confirm remain available.
+- Short-lived Vite test servers keep optimizeDeps.noDiscovery enabled, and package gates verify no new deps_temp_* residue.
 - The API, logs, errors, screenshots, reports, and artifacts expose no prompt, raw Provider output, corpus text, input manifest, API key, Authorization header, password, or DSN.
 - The two routes use one `planningStore` and one `PlanningWorkspace.vue`; no `planningV2Store`, `volumeStore`, `plotStore`, `PlanningWorkspaceV2`, compatibility alias, or archived duplicate component is allowed.
 
