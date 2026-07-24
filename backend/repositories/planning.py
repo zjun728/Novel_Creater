@@ -336,3 +336,210 @@ class PlanningRepository:
                 WHERE project_id=%s FOR UPDATE""",
             (project_id,),
         )
+
+    async def lock_generation_attempt_by_key(
+        self,
+        session,
+        project_id: str,
+        idempotency_key: str,
+    ):
+        return await session.fetchone(
+            """SELECT * FROM planning_generation_attempts
+                WHERE project_id=%s AND idempotency_key=%s
+                FOR UPDATE""",
+            (project_id, idempotency_key),
+        )
+
+    async def lock_generation_attempt(
+        self,
+        session,
+        project_id: str,
+        operation_id: str,
+    ):
+        return await session.fetchone(
+            """SELECT * FROM planning_generation_attempts
+                WHERE project_id=%s AND operation_id=%s
+                FOR UPDATE""",
+            (project_id, operation_id),
+        )
+
+    async def lock_active_generation_attempt(self, session, draft_id: str):
+        return await session.fetchone(
+            """SELECT * FROM planning_generation_attempts
+                WHERE draft_id=%s AND status='pending' AND active_slot=1
+                FOR UPDATE""",
+            (draft_id,),
+        )
+
+    async def insert_generation_attempt(self, session, row: dict) -> bool:
+        changed = await session.execute(
+            """INSERT INTO planning_generation_attempts
+               (id,project_id,draft_id,operation_id,active_slot,
+                idempotency_key,request_fingerprint,binding_revision_id,
+                binding_revision,binding_hash,provider_id,model_name_snapshot,
+                fencing_token,lease_expires_at,input_manifest_json,
+                input_manifest_hash,status,created_at,updated_at)
+               VALUES (%s,%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       'pending',%s,%s)""",
+            tuple(
+                row[key]
+                for key in (
+                    "id",
+                    "project_id",
+                    "draft_id",
+                    "operation_id",
+                    "idempotency_key",
+                    "request_fingerprint",
+                    "binding_revision_id",
+                    "binding_revision",
+                    "binding_hash",
+                    "provider_id",
+                    "model_name_snapshot",
+                    "fencing_token",
+                    "lease_expires_at",
+                    "input_manifest_json",
+                    "input_manifest_hash",
+                    "created_at",
+                    "updated_at",
+                )
+            ),
+        )
+        return changed == 1
+
+    async def next_fencing_token(self, session, draft_id: str) -> int:
+        latest = await session.fetchone(
+            """SELECT fencing_token FROM planning_generation_attempts
+                WHERE draft_id=%s
+                ORDER BY fencing_token DESC
+                LIMIT 1 FOR UPDATE""",
+            (draft_id,),
+        )
+        return 1 if latest is None else int(latest["fencing_token"]) + 1
+
+    async def supersede_generation_attempt(
+        self,
+        session,
+        *,
+        project_id: str,
+        operation_id: str,
+        fencing_token: int,
+        updated_at: int,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE planning_generation_attempts
+                  SET status='superseded',active_slot=NULL,updated_at=%s
+                WHERE project_id=%s AND operation_id=%s
+                  AND status='pending' AND active_slot=1
+                  AND fencing_token=%s""",
+            (updated_at, project_id, operation_id, fencing_token),
+        )
+        return changed == 1
+
+    async def fail_generation_attempt(
+        self,
+        session,
+        *,
+        project_id: str,
+        operation_id: str,
+        fencing_token: int,
+        failure_code: str,
+        updated_at: int,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE planning_generation_attempts
+                  SET status='failed',active_slot=NULL,failure_code=%s,
+                      updated_at=%s
+                WHERE project_id=%s AND operation_id=%s
+                  AND status='pending' AND active_slot=1
+                  AND fencing_token=%s""",
+            (
+                failure_code,
+                updated_at,
+                project_id,
+                operation_id,
+                fencing_token,
+            ),
+        )
+        return changed == 1
+
+    async def succeed_generation_attempt(
+        self,
+        session,
+        *,
+        project_id: str,
+        operation_id: str,
+        fencing_token: int,
+        result_content_json: str,
+        result_content_hash: str,
+        updated_at: int,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE planning_generation_attempts
+                  SET status='succeeded',active_slot=NULL,
+                      result_content_json=%s,result_content_hash=%s,
+                      updated_at=%s
+                WHERE project_id=%s AND operation_id=%s
+                  AND status='pending' AND active_slot=1
+                  AND fencing_token=%s""",
+            (
+                result_content_json,
+                result_content_hash,
+                updated_at,
+                project_id,
+                operation_id,
+                fencing_token,
+            ),
+        )
+        return changed == 1
+
+    async def load_generation_result_into_draft(
+        self,
+        session,
+        *,
+        project_id: str,
+        draft_id: str,
+        expected_revision: int,
+        expected_hash: str,
+        operation_id: str,
+        content_json: str,
+        content_hash: str,
+        loaded_at: int,
+    ) -> bool:
+        loaded_revision = expected_revision + 1
+        changed = await session.execute(
+            """UPDATE planning_drafts draft
+                 JOIN planning_generation_attempts attempt
+                   ON attempt.project_id=draft.project_id
+                  AND attempt.draft_id=draft.id
+                  SET draft.draft_revision=%s,
+                      draft.content_json=%s,draft.content_hash=%s,
+                      draft.source_attempt_id=attempt.id,
+                      draft.updated_at=%s,
+                      attempt.loaded_draft_revision=%s,
+                      attempt.loaded_at=%s
+                WHERE draft.project_id=%s AND draft.id=%s
+                  AND draft.status='active' AND draft.active_slot=1
+                  AND draft.draft_revision=%s AND draft.content_hash=%s
+                  AND attempt.operation_id=%s
+                  AND attempt.status='succeeded'
+                  AND attempt.result_content_hash=%s
+                  AND attempt.result_content_json=CAST(%s AS JSON)
+                  AND attempt.loaded_draft_revision IS NULL
+                  AND attempt.loaded_at IS NULL""",
+            (
+                loaded_revision,
+                content_json,
+                content_hash,
+                loaded_at,
+                loaded_revision,
+                loaded_at,
+                project_id,
+                draft_id,
+                expected_revision,
+                expected_hash,
+                operation_id,
+                content_hash,
+                content_json,
+            ),
+        )
+        return changed == 2

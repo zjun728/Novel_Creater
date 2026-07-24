@@ -25,6 +25,15 @@ PUBLIC_METHODS = {
     "list_revisions",
     "read_projection_head",
     "lock_projection_head",
+    "lock_generation_attempt_by_key",
+    "lock_generation_attempt",
+    "lock_active_generation_attempt",
+    "insert_generation_attempt",
+    "next_fencing_token",
+    "supersede_generation_attempt",
+    "fail_generation_attempt",
+    "succeed_generation_attempt",
+    "load_generation_result_into_draft",
 }
 
 
@@ -207,6 +216,191 @@ async def test_projection_read_and_lock_are_read_only_head_queries():
     assert "FROM projection_heads" in second
     assert second.endswith("FOR UPDATE")
     assert all(call[0] == "fetchone" for call in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_generation_attempt_locks_use_exact_key_operation_and_active_draft():
+    session = CapturingSession()
+    repository = PlanningRepository()
+
+    await repository.lock_generation_attempt_by_key(session, "p1", "key-1")
+    await repository.lock_generation_attempt(session, "p1", "operation-1")
+    await repository.lock_active_generation_attempt(session, "draft-1")
+
+    key_sql = " ".join(session.calls[-3][1].split())
+    operation_sql = " ".join(session.calls[-2][1].split())
+    active_sql = " ".join(session.calls[-1][1].split())
+    assert session.calls[-3][2] == ("p1", "key-1")
+    assert "project_id=%s AND idempotency_key=%s" in key_sql
+    assert key_sql.endswith("FOR UPDATE")
+    assert session.calls[-2][2] == ("p1", "operation-1")
+    assert "project_id=%s AND operation_id=%s" in operation_sql
+    assert operation_sql.endswith("FOR UPDATE")
+    assert session.calls[-1][2] == ("draft-1",)
+    assert "draft_id=%s" in active_sql
+    assert "status='pending'" in active_sql
+    assert "active_slot=1" in active_sql
+    assert active_sql.endswith("FOR UPDATE")
+
+
+@pytest.mark.asyncio
+async def test_generation_insert_is_pending_and_uses_only_final_schema_columns():
+    session = CapturingSession()
+    row = {
+        "id": "attempt-1",
+        "project_id": "p1",
+        "draft_id": "draft-1",
+        "operation_id": "operation-1",
+        "idempotency_key": "key-1",
+        "request_fingerprint": "a" * 64,
+        "binding_revision_id": "binding-1",
+        "binding_revision": 1,
+        "binding_hash": "b" * 64,
+        "provider_id": "provider-1",
+        "model_name_snapshot": "model-1",
+        "fencing_token": 1,
+        "lease_expires_at": 20,
+        "input_manifest_json": "{}",
+        "input_manifest_hash": "c" * 64,
+        "created_at": 10,
+        "updated_at": 10,
+    }
+
+    assert await PlanningRepository().insert_generation_attempt(session, row)
+
+    _, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "INSERT INTO planning_generation_attempts" in compact
+    assert "active_slot" in compact
+    assert "'pending'" in compact
+    assert "result_content_json" not in compact
+    assert "failure_code" not in compact
+    assert args == tuple(row.values())
+
+
+@pytest.mark.asyncio
+async def test_next_fencing_token_locks_latest_attempt_and_increments_monotonically():
+    class LatestTokenSession(CapturingSession):
+        async def fetchone(self, sql, args=None):
+            self.calls.append(("fetchone", sql, args))
+            return {"fencing_token": 41}
+
+    session = LatestTokenSession()
+
+    token = await PlanningRepository().next_fencing_token(session, "draft-1")
+
+    assert token == 42
+    _, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert args == ("draft-1",)
+    assert "WHERE draft_id=%s" in compact
+    assert "ORDER BY fencing_token DESC" in compact
+    assert "LIMIT 1 FOR UPDATE" in compact
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "extra_kwargs", "set_fragments"),
+    (
+        (
+            "supersede_generation_attempt",
+            {},
+            ("status='superseded'", "active_slot=NULL"),
+        ),
+        (
+            "fail_generation_attempt",
+            {"failure_code": "ProviderFailed"},
+            ("status='failed'", "failure_code=%s", "active_slot=NULL"),
+        ),
+        (
+            "succeed_generation_attempt",
+            {
+                "result_content_json": '{"ok":true}',
+                "result_content_hash": "d" * 64,
+            },
+            (
+                "status='succeeded'",
+                "result_content_json=%s",
+                "result_content_hash=%s",
+                "active_slot=NULL",
+            ),
+        ),
+    ),
+)
+async def test_terminal_generation_updates_are_exact_fenced_pending_cas(
+    method,
+    extra_kwargs,
+    set_fragments,
+):
+    session = CapturingSession()
+
+    changed = await getattr(PlanningRepository(), method)(
+        session,
+        project_id="p1",
+        operation_id="operation-1",
+        fencing_token=7,
+        updated_at=30,
+        **extra_kwargs,
+    )
+
+    assert changed
+    _, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert all(fragment in compact for fragment in set_fragments)
+    assert "WHERE project_id=%s AND operation_id=%s" in compact
+    assert "status='pending'" in compact
+    assert "active_slot=1" in compact
+    assert "fencing_token=%s" in compact
+    assert args[-3:] == ("p1", "operation-1", 7)
+
+
+@pytest.mark.asyncio
+async def test_load_generation_result_is_one_exact_attempt_owned_draft_cas():
+    class MultiTableSession(CapturingSession):
+        async def execute(self, sql, args=None):
+            self.calls.append(("execute", sql, args))
+            return 2
+
+    session = MultiTableSession()
+
+    changed = await PlanningRepository().load_generation_result_into_draft(
+        session,
+        project_id="p1",
+        draft_id="draft-1",
+        expected_revision=2,
+        expected_hash="a" * 64,
+        operation_id="operation-1",
+        content_json='{"generated":true}',
+        content_hash="b" * 64,
+        loaded_at=40,
+    )
+
+    assert changed
+    _, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "UPDATE planning_drafts draft" in compact
+    assert "JOIN planning_generation_attempts attempt" in compact
+    assert "attempt.project_id=draft.project_id" in compact
+    assert "attempt.draft_id=draft.id" in compact
+    assert "draft.source_attempt_id=attempt.id" in compact
+    assert "attempt.loaded_draft_revision=%s" in compact
+    assert "attempt.loaded_at=%s" in compact
+    assert "draft.project_id=%s AND draft.id=%s" in compact
+    assert "draft.status='active' AND draft.active_slot=1" in compact
+    assert "draft.draft_revision=%s AND draft.content_hash=%s" in compact
+    assert "attempt.operation_id=%s" in compact
+    assert "attempt.status='succeeded'" in compact
+    assert "attempt.result_content_hash=%s" in compact
+    assert "attempt.loaded_draft_revision IS NULL" in compact
+    assert args[-7:] == (
+        "p1",
+        "draft-1",
+        2,
+        "a" * 64,
+        "operation-1",
+        "b" * 64,
+        '{"generated":true}',
+    )
 
 
 def test_phase3a_planning_router_exposes_only_the_revisioned_task7_contract():
