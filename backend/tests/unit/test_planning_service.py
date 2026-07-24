@@ -113,6 +113,22 @@ def planning_payload(title: str = "第一卷"):
     }
 
 
+def editable_payload(content, *, title: str):
+    payload = content.model_dump(mode="json", by_alias=True)
+    payload["activeStoryBlockRef"] = payload.pop("activeStoryBlockId")
+    payload.pop("schemaVersion")
+    payload.pop("contentHash")
+    payload["volumes"][0]["title"] = title
+    for block in payload["storyBlocks"]:
+        block["volumeRef"] = block.pop("volumeId")
+        block["plotRefs"] = block.pop("plotIds")
+        for stage in block["stages"]:
+            stage.pop("storyBlockId")
+            for task in stage["sceneTasks"]:
+                task.pop("stageId")
+    return payload
+
+
 class MemoryPlanningRepository:
     def __init__(self):
         self.projects = {
@@ -140,6 +156,28 @@ class MemoryPlanningRepository:
                 "canon_revision_number": 0,
                 "projection_revision_number": 0,
                 "content_hash": HASH_E,
+            }
+        }
+        self.binding = {
+            "p1": {
+                "binding_revision_id": "binding-revision-1",
+                "binding_revision": 1,
+                "binding_hash": HASH_E,
+                "binding_task_key": "planning",
+                "resolution_status": "bound",
+                "provider_id": "provider-1",
+                "model_name_snapshot": "deepseek-v4-flash",
+                "id": "provider-1",
+                "provider_type": "openai-compatible",
+                "model_name": "deepseek-v4-flash",
+                "base_url": "https://provider.example/v1",
+                "api_key": "unit-test-secret",
+                "enabled": 1,
+                "lifecycle_status": "active",
+                "revision": 1,
+                "temperature": 0.7,
+                "max_context_tokens": 100000,
+                "max_output_tokens": 8000,
             }
         }
         self.calls: list[str] = []
@@ -280,6 +318,10 @@ class MemoryPlanningRepository:
     async def lock_projection_head(self, _session, project_id):
         self.calls.append("lock_projection_head")
         return deepcopy(self.projections.get(project_id))
+
+    async def lock_planning_binding(self, _session, project_id):
+        self.calls.append("lock_planning_binding")
+        return deepcopy(self.binding.get(project_id))
 
 
 class Harness:
@@ -641,7 +683,10 @@ async def test_head_one_create_clones_every_stable_identity_and_history_is_immut
     history_after = await harness.service.history("p1")
 
     assert tuple(item.revision for item in history_after) == (2, 1)
-    assert history_after[1] == revision
+    assert history_after[1].content == revision.content
+    assert history_after[1].content_hash == revision.content_hash
+    assert history_after[1].planning_revision_id == revision.planning_revision_id
+    assert history_after[1].display_status == "superseded"
 
 
 @pytest.mark.asyncio
@@ -971,6 +1016,7 @@ async def test_archived_mutations_reject_but_state_remains_readable_and_separate
         "synchronized": True,
     }
     assert state.basis_status == "current"
+    assert state.project_lifecycle == "active"
     assert state.capabilities.view is True
     assert state.capabilities.edit is True
     assert state.capabilities.confirm is False
@@ -979,6 +1025,7 @@ async def test_archived_mutations_reject_but_state_remains_readable_and_separate
     harness.repository.projects["p1"]["archived_at"] = 123
     archived = await harness.service.get_state("p1")
     assert archived.archived is True
+    assert archived.project_lifecycle == "archived"
     assert archived.basis_status == "current"
     assert archived.capabilities.view is True
     assert archived.capabilities.edit is False
@@ -1018,6 +1065,7 @@ async def test_state_exposes_service_owned_basis_and_confirmation_capabilities()
 
     assert before_save.basis_status == "current"
     assert before_save.capabilities.confirm is False
+    assert before_save.capabilities.generate is True
 
     await harness.service.save_draft(
         SavePlanningDraft(
@@ -1032,6 +1080,23 @@ async def test_state_exposes_service_owned_basis_and_confirmation_capabilities()
     after_save = await harness.service.get_state("p1")
 
     assert after_save.capabilities.confirm is True
+    assert after_save.capabilities.generate is True
+
+    harness.repository.binding["p1"]["enabled"] = 0
+    model_unready = await harness.service.get_state("p1")
+    assert model_unready.capabilities.generate is False
+    assert model_unready.capabilities.edit is True
+    assert model_unready.capabilities.confirm is True
+
+    harness.repository.binding["p1"]["enabled"] = 1
+    harness.repository.binding["p1"]["model_name_snapshot"] = (
+        "unit-test-secret"
+    )
+    harness.repository.binding["p1"]["model_name"] = "unit-test-secret"
+    unsafe_summary = await harness.service.get_state("p1")
+    assert unsafe_summary.capabilities.generate is False
+    assert unsafe_summary.capabilities.edit is True
+    assert unsafe_summary.capabilities.confirm is True
 
     harness.repository.projections["p1"]["canon_revision_number"] = 1
     unsynchronized = await harness.service.get_state("p1")
@@ -1042,3 +1107,67 @@ async def test_state_exposes_service_owned_basis_and_confirmation_capabilities()
     assert unavailable.basis_status == "unavailable"
     assert unavailable.capabilities.edit is False
     assert unavailable.capabilities.confirm is False
+    assert unavailable.capabilities.generate is False
+
+
+@pytest.mark.asyncio
+async def test_history_derives_current_superseded_and_archived_statuses():
+    harness = Harness()
+    first_draft = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-history-1")
+    )
+    first_saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            first_draft.draft_id,
+            first_draft.draft_revision,
+            first_draft.content_hash,
+            planning_payload("第一版"),
+            "save-history-1",
+        )
+    )
+    await harness.service.confirm_draft(
+        ConfirmPlanningDraft(
+            "p1",
+            first_saved.draft_id,
+            first_saved.draft_revision,
+            first_saved.content_hash,
+            "confirm-history-1",
+        )
+    )
+    second_draft = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-history-2")
+    )
+    second_saved = await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            second_draft.draft_id,
+            second_draft.draft_revision,
+            second_draft.content_hash,
+            editable_payload(second_draft.content, title="第二版"),
+            "save-history-2",
+        )
+    )
+    await harness.service.confirm_draft(
+        ConfirmPlanningDraft(
+            "p1",
+            second_saved.draft_id,
+            second_saved.draft_revision,
+            second_saved.content_hash,
+            "confirm-history-2",
+        )
+    )
+
+    current = await harness.service.history("p1")
+    assert [
+        (item.display_status, item.display_reason) for item in current
+    ] == [
+        ("current", "currentPlanningHead"),
+        ("superseded", "newerPlanningOrBasis"),
+    ]
+
+    harness.repository.projects["p1"]["archived_at"] = 1
+    archived = await harness.service.history("p1")
+    assert {
+        (item.display_status, item.display_reason) for item in archived
+    } == {("archived", "projectArchived")}

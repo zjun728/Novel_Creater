@@ -17,6 +17,13 @@ from backend.http_errors import (
     SeedNotFound,
 )
 from backend.security.redaction import install_error_handlers
+from backend.services.planning_generation import (
+    PlanningGenerationConflict,
+    PlanningGenerationIdempotencyConflict,
+    PlanningGenerationNotReady,
+    PlanningGenerationOperationNotFound,
+    PlanningGenerationRetryable,
+)
 
 
 SECRET = "sk-domain-error-sentinel"
@@ -38,6 +45,31 @@ PRIVATE_SQL = "SELECT api_key FROM providers WHERE id='private-provider'"
         (SeedNotFound(), 404, "SeedNotFound"),
         (SeedConflict(), 409, "SeedConflict"),
         (SeedLocked(), 423, "SeedLocked"),
+        (
+            PlanningGenerationNotReady(),
+            422,
+            "PlanningGenerationNotReady",
+        ),
+        (
+            PlanningGenerationConflict(),
+            409,
+            "PlanningGenerationConflict",
+        ),
+        (
+            PlanningGenerationIdempotencyConflict(),
+            409,
+            "PlanningGenerationIdempotencyConflict",
+        ),
+        (
+            PlanningGenerationOperationNotFound(),
+            404,
+            "PlanningGenerationOperationNotFound",
+        ),
+        (
+            PlanningGenerationRetryable(),
+            503,
+            "PlanningGenerationRetryable",
+        ),
     ],
 )
 def test_public_domain_errors_have_exact_safe_shape(error, status, code, caplog):
@@ -58,7 +90,11 @@ def test_public_domain_errors_have_exact_safe_shape(error, status, code, caplog)
 
     assert response.status_code == status
     body = response.json()
-    assert set(body) == {"code", "message", "correlationId"}
+    expected_keys = {"code", "message", "correlationId"}
+    if getattr(error, "retryable", False):
+        expected_keys.add("retryable")
+        assert body["retryable"] is True
+    assert set(body) == expected_keys
     assert body["code"] == code
     assert body["message"] == error.message
     assert body["correlationId"]

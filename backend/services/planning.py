@@ -19,7 +19,12 @@ from backend.domain.planning import (
     normalize_planning_aggregate,
     validate_confirmable_planning,
 )
+from backend.domain.provider_policy import provider_is_generation_ready
 from backend.http_errors import ProjectArchived as RepositoryProjectArchived
+from backend.security.provider_secrets import (
+    normalize_provider_secrets,
+    provider_public_fields_contain_secret,
+)
 
 
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
@@ -109,6 +114,8 @@ class PlanningRevisionResult:
     parent_revision: int
     content_hash: str
     content: PlanningAggregate
+    display_status: str = "current"
+    display_reason: str = "currentPlanningHead"
 
 
 @dataclass(frozen=True)
@@ -138,6 +145,10 @@ class PlanningState:
     capacity_policy: dict[str, int] | None
     capabilities: PlanningCapabilities
     archived: bool
+
+    @property
+    def project_lifecycle(self) -> str:
+        return "archived" if self.archived else "active"
 
 
 class PlanningService:
@@ -447,8 +458,40 @@ class PlanningService:
             project = await self.repository.read_project_any(session, project_id)
             if project is None:
                 raise PlanningNotFound("Project not found")
+            basis = await self.repository.read_current_basis(session, project_id)
+            head = await self.repository.lock_planning_head(session, project_id)
+            if head is None:
+                raise PlanningPreconditionFailed("Planning head is missing")
             rows = await self.repository.list_revisions(session, project_id)
-            return tuple(self._revision_result(row) for row in rows)
+            archived = project.get("archived_at") is not None
+            return tuple(
+                self._revision_result(
+                    row,
+                    display_status=(
+                        "archived"
+                        if archived
+                        else (
+                            "current"
+                            if basis is not None
+                            and int(row["revision"]) == int(head["revision"])
+                            and self._basis_matches(row, basis)
+                            else "superseded"
+                        )
+                    ),
+                    display_reason=(
+                        "projectArchived"
+                        if archived
+                        else (
+                            "currentPlanningHead"
+                            if basis is not None
+                            and int(row["revision"]) == int(head["revision"])
+                            and self._basis_matches(row, basis)
+                            else "newerPlanningOrBasis"
+                        )
+                    ),
+                )
+                for row in rows
+            )
 
     async def get_state(self, project_id: str) -> PlanningState:
         self._validate_project(project_id)
@@ -462,6 +505,9 @@ class PlanningService:
                 raise PlanningPreconditionFailed("Planning head is missing")
             draft_row = await self.repository.read_active_draft(session, project_id)
             projection = await self.repository.read_projection_head(
+                session, project_id
+            )
+            binding = await self.repository.lock_planning_binding(
                 session, project_id
             )
             future = (
@@ -508,7 +554,11 @@ class PlanningService:
                     view=True,
                     edit=not archived and capacity_policy is not None,
                     confirm=confirmable,
-                    generate=False,
+                    generate=(
+                        not archived
+                        and draft is not None
+                        and self._planning_binding_ready(binding)
+                    ),
                 ),
                 archived=archived,
             )
@@ -668,7 +718,11 @@ class PlanningService:
         )
 
     def _revision_result(
-        self, row: Mapping[str, Any]
+        self,
+        row: Mapping[str, Any],
+        *,
+        display_status: str = "current",
+        display_reason: str = "currentPlanningHead",
     ) -> PlanningRevisionResult:
         return PlanningRevisionResult(
             project_id=str(row["project_id"]),
@@ -677,7 +731,36 @@ class PlanningService:
             parent_revision=int(row["parent_revision"]),
             content_hash=str(row["content_hash"]),
             content=self._planning_from_json(row["content_json"]),
+            display_status=display_status,
+            display_reason=display_reason,
         )
+
+    @staticmethod
+    def _planning_binding_ready(binding: Mapping[str, Any] | None) -> bool:
+        if binding is None:
+            return False
+        try:
+            secrets = normalize_provider_secrets(
+                (binding["api_key"], binding["base_url"])
+            )
+            public_model = {
+                "providerId": binding["provider_id"],
+                "modelName": binding["model_name_snapshot"],
+            }
+            return (
+                binding["binding_task_key"] == "planning"
+                and binding["resolution_status"] == "bound"
+                and binding["provider_id"] == binding["id"]
+                and binding["model_name_snapshot"] == binding["model_name"]
+                and int(binding["binding_revision"]) > 0
+                and _HASH.fullmatch(str(binding["binding_hash"])) is not None
+                and provider_is_generation_ready(binding)
+                and not provider_public_fields_contain_secret(
+                    public_model, secrets
+                )
+            )
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            return False
 
     def _projection_status(
         self, row: Mapping[str, Any] | None

@@ -372,12 +372,85 @@ async def test_real_mysql_lifecycle_is_zero_to_one_to_two_with_exact_clone(
 
     assert (first.revision, second.revision) == (1, 2)
     assert tuple(item.revision for item in history) == (2, 1)
-    assert history[1] == first
+    assert history[1].content == first.content
+    assert history[1].content_hash == first.content_hash
+    assert history[1].planning_revision_id == first.planning_revision_id
+    assert history[1].display_status == "superseded"
     head = await disposable_mysql.session.fetchone(
         "SELECT * FROM project_planning_heads WHERE project_id=%s",
         (PROJECT,),
     )
     assert head["revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_history_and_capabilities_derive_from_current_authority(
+    disposable_mysql,
+):
+    service = await _prepare(disposable_mysql)
+    first_saved = await _save_complete(service)
+    await service.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            first_saved.draft_id,
+            first_saved.draft_revision,
+            first_saved.content_hash,
+            "confirm-history-status-1",
+        )
+    )
+    second_draft = await service.create_draft(
+        CreatePlanningDraft(PROJECT, "create-history-status-2")
+    )
+    second_saved = await service.save_draft(
+        SavePlanningDraft(
+            PROJECT,
+            second_draft.draft_id,
+            second_draft.draft_revision,
+            second_draft.content_hash,
+            _editable(second_draft.content, title="第二版第一卷"),
+            "save-history-status-2",
+        )
+    )
+    await service.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            second_saved.draft_id,
+            second_saved.draft_revision,
+            second_saved.content_hash,
+            "confirm-history-status-2",
+        )
+    )
+    active_draft = await service.create_draft(
+        CreatePlanningDraft(PROJECT, "create-history-status-3")
+    )
+
+    state = await service.get_state(PROJECT)
+    history = await service.history(PROJECT)
+
+    assert state.project_lifecycle == "active"
+    assert state.basis_status == "current"
+    assert state.draft.draft_id == active_draft.draft_id
+    assert state.capabilities.generate is True
+    assert [
+        (item.display_status, item.display_reason) for item in history
+    ] == [
+        ("current", "currentPlanningHead"),
+        ("superseded", "newerPlanningOrBasis"),
+    ]
+
+    await disposable_mysql.session.execute(
+        "UPDATE projects SET archived_at=%s WHERE id=%s",
+        (NOW + 20, PROJECT),
+    )
+    archived_state = await service.get_state(PROJECT)
+    archived_history = await service.history(PROJECT)
+    assert archived_state.project_lifecycle == "archived"
+    assert archived_state.capabilities.generate is False
+    assert archived_state.capabilities.edit is False
+    assert {
+        (item.display_status, item.display_reason)
+        for item in archived_history
+    } == {("archived", "projectArchived")}
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.database import connection, transaction
 from backend.domain.planning import DraftPlanningAggregate
+from backend.gateways.planning_provider import PlanningProviderGateway
 from backend.http_errors import PublicDomainError
 from backend.repositories.planning import PlanningRepository
 from backend.services.planning import (
@@ -22,6 +23,11 @@ from backend.services.planning import (
     PlanningService,
     SavePlanningDraft,
 )
+from backend.services.planning_generation import (
+    PLANNING_AUTHOR_INSTRUCTIONS_MAX_LENGTH,
+    GeneratePlanningDraft,
+    PlanningGenerationService,
+)
 
 
 router = APIRouter(tags=["planning"])
@@ -30,10 +36,19 @@ _service = PlanningService(
     transaction_factory=transaction,
     connection_factory=connection,
 )
+_generation_service = PlanningGenerationService(
+    PlanningRepository(),
+    provider_gateway=PlanningProviderGateway(),
+    transaction_factory=transaction,
+)
 
 
 def get_planning_service() -> PlanningService:
     return _service
+
+
+def get_planning_generation_service() -> PlanningGenerationService:
+    return _generation_service
 
 
 class PlanningRequestInvalid(PublicDomainError):
@@ -104,6 +119,19 @@ class ConfirmDraftBody(_StrictBody):
     )
 
 
+class GenerateDraftBody(_StrictBody):
+    draftRevision: int = Field(ge=1)
+    draftHash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    idempotencyKey: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    authorInstructions: str = Field(
+        max_length=PLANNING_AUTHOR_INSTRUCTIONS_MAX_LENGTH
+    )
+
+
 def _raise_public(error: Exception):
     if isinstance(error, ServicePlanningArchived):
         raise PlanningArchived() from None
@@ -154,8 +182,8 @@ def _public_draft(result):
     }
 
 
-def _public_revision(result):
-    return {
+def _public_revision(result, *, include_display_status: bool = False):
+    value = {
         "projectId": result.project_id,
         "planningRevisionId": result.planning_revision_id,
         "revision": result.revision,
@@ -163,12 +191,53 @@ def _public_revision(result):
         "contentHash": result.content_hash,
         "content": _public_content(result.content),
     }
+    if include_display_status:
+        value["displayStatus"] = result.display_status
+        value["displayReason"] = result.display_reason
+    return value
+
+
+_SAFE_OPERATION_FAILURE_CODES = frozenset(
+    {
+        "PlanningGenerationCancelled",
+        "PlanningProviderFailed",
+        "PlanningProviderResultInvalid",
+    }
+)
+_PUBLIC_OPERATION_STATUSES = frozenset(
+    {"pending", "succeeded", "failed", "superseded"}
+)
+
+
+def _public_operation(result):
+    status = result.status
+    failure_code = result.failure_code
+    if status not in _PUBLIC_OPERATION_STATUSES:
+        status = "failed"
+        failure_code = "PlanningGenerationFailed"
+    if (
+        failure_code is not None
+        and failure_code not in _SAFE_OPERATION_FAILURE_CODES
+    ):
+        failure_code = "PlanningGenerationFailed"
+    return {
+        "operationId": result.operation_id,
+        "status": status,
+        "failureCode": failure_code,
+        "model": {
+            "providerId": result.model.provider_id,
+            "modelName": result.model.model_name,
+        },
+        "loaded": result.loaded,
+        "loadedDraftRevision": result.loaded_draft_revision,
+    }
 
 
 def _public_state(result):
     return {
         "projectId": result.project_id,
         "basisStatus": result.basis_status,
+        "projectLifecycle": result.project_lifecycle,
         "head": {
             "revision": result.head.revision,
             "planningRevisionId": result.head.planning_revision_id,
@@ -214,7 +283,12 @@ async def get_planning_history(
         result = await service.history(pid)
     except Exception as error:
         _raise_public(error)
-    return {"items": [_public_revision(item) for item in result]}
+    return {
+        "items": [
+            _public_revision(item, include_display_status=True)
+            for item in result
+        ]
+    }
 
 
 @router.post("/projects/{pid}/planning/drafts", status_code=201)
@@ -289,12 +363,46 @@ async def confirm_planning_draft(
     return _public_revision(result)
 
 
+@router.post("/projects/{pid}/planning/drafts/{draft_id}/generate")
+async def generate_planning_draft(
+    pid: str,
+    draft_id: str,
+    request: Request,
+    service=Depends(get_planning_generation_service),
+):
+    raw_body = await _request_json(request)
+    body = _validate(GenerateDraftBody, raw_body)
+    result = await service.generate(
+        GeneratePlanningDraft(
+            project_id=pid,
+            draft_id=draft_id,
+            draft_revision=body.draftRevision,
+            draft_hash=body.draftHash,
+            idempotency_key=body.idempotencyKey,
+            author_instructions=body.authorInstructions,
+        )
+    )
+    return _public_operation(result)
+
+
+@router.get("/projects/{pid}/planning/operations/{operation_id}")
+async def get_planning_operation(
+    pid: str,
+    operation_id: str,
+    service=Depends(get_planning_generation_service),
+):
+    return _public_operation(
+        await service.get_operation(pid, operation_id)
+    )
+
+
 __all__ = (
     "PlanningArchived",
     "PlanningConflict",
     "PlanningPreconditionFailed",
     "PlanningRequestInvalid",
     "PlanningResourceNotFound",
+    "get_planning_generation_service",
     "get_planning_service",
     "router",
 )
