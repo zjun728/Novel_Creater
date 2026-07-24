@@ -352,12 +352,246 @@ test('loaded generation reloads authoritative exact draft but never overwrites a
     await generating
 
     assert.equal(reads, 2)
-    assert.equal(store.state.draft.draftRevision, 2)
+    assert.equal(store.state.draft.draftRevision, 1)
     assert.deepEqual(store.localContent, local)
     assert.equal(store.dirty, true)
     assert.equal(store.generationOperation.status, 'succeeded')
+    assert.equal(store.awaitingAuthoritativeReload, true)
+    assert.equal(store.generating, true)
+
+    await store.ensureLoaded('project-1', { force: true })
+    assert.equal(reads, 3)
+    assert.equal(store.state.draft.draftRevision, 2)
+    assert.equal(store.dirty, false)
+    assert.equal(store.awaitingAuthoritativeReload, false)
     assert.equal(store.generating, false)
   })
+})
+
+test('authority reload failure keeps the known operation gate until GET reconciliation succeeds', async () => {
+  const refreshFailure = Object.assign(new Error('refresh failed'), {
+    status: 503,
+    code: 'request_failed',
+  })
+  let stateReads = 0
+  let operationReads = 0
+  let posts = 0
+  let saves = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => {
+      stateReads += 1
+      if (stateReads === 1) return readyState('project-1', draft())
+      if (stateReads === 2) throw refreshFailure
+      return readyState('project-1', draft(NEXT_HASH, 2))
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => {
+      posts += 1
+      return operation()
+    }],
+    [api.planning, 'saveDraft', async () => {
+      saves += 1
+      return draft(NEXT_HASH, 2)
+    }],
+    [api.planning, 'getOperation', async (_projectId, operationId) => {
+      operationReads += 1
+      return operation({ operationId })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    await store.generateDraft({
+      idempotencyKey: 'reload-fails',
+      authorInstructions: '',
+    })
+
+    assert.equal(store.awaitingAuthoritativeReload, true)
+    assert.equal(store.generating, true)
+    assert.equal(store.generationOperation.operationId, 'operation-1')
+    assert.equal(store.error.code, 'PlanningGenerationRefreshFailed')
+    await assert.rejects(
+      store.generateDraft({
+        idempotencyKey: 'must-not-repost-after-refresh-failure',
+        authorInstructions: '',
+      }),
+      /generation.*progress|生成.*进行|权威.*回读/i,
+    )
+    assert.equal(posts, 1)
+    await assert.rejects(
+      store.saveDraft({ idempotencyKey: 'must-not-save-before-authority' }),
+      /权威.*回读/,
+    )
+    assert.equal(saves, 0)
+
+    await store.reconcileGeneration()
+
+    assert.equal(operationReads, 1)
+    assert.equal(posts, 1)
+    assert.equal(stateReads, 3)
+    assert.equal(store.awaitingAuthoritativeReload, false)
+    assert.equal(store.generating, false)
+    assert.equal(store.state.draft.draftRevision, 2)
+  })
+})
+
+test('unknown outcome stays unknown through a failed exact reload and clears only after success', async () => {
+  const unknown = Object.assign(new Error('transport detail'), {
+    code: 'request_timeout',
+    operationId: 'operation-unknown',
+  })
+  let stateReads = 0
+  let operationReads = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => {
+      stateReads += 1
+      if (stateReads === 1) return readyState('project-1', draft())
+      if (stateReads === 2) {
+        throw Object.assign(new Error('authority unavailable'), { status: 503 })
+      }
+      return readyState('project-1', draft(NEXT_HASH, 2))
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => { throw unknown }],
+    [api.planning, 'getOperation', async (_projectId, operationId) => {
+      operationReads += 1
+      return operation({ operationId })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    await assert.rejects(
+      store.generateDraft({
+        idempotencyKey: 'unknown-then-loaded',
+        authorInstructions: '',
+      }),
+      /结果未知/,
+    )
+
+    await store.reconcileGeneration()
+    assert.equal(store.generationOutcomeUnknown, true)
+    assert.equal(store.awaitingAuthoritativeReload, true)
+    assert.equal(store.generating, true)
+
+    await store.reconcileGeneration()
+    assert.equal(operationReads, 2)
+    assert.equal(stateReads, 3)
+    assert.equal(store.generationOutcomeUnknown, false)
+    assert.equal(store.awaitingAuthoritativeReload, false)
+    assert.equal(store.generating, false)
+  })
+})
+
+test('authority recovery rejects regressive operation state and keeps the exact operation', async () => {
+  let stateReads = 0
+  let operationReads = 0
+  await withApiMethods([
+    [api.planning, 'get', async () => {
+      stateReads += 1
+      if (stateReads === 1) return readyState('project-1', draft())
+      throw Object.assign(new Error('authority unavailable'), { status: 503 })
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'generateDraft', async () => operation()],
+    [api.planning, 'getOperation', async (_projectId, operationId) => {
+      operationReads += 1
+      return operation({
+        operationId,
+        status: 'pending',
+        loaded: false,
+        loadedDraftRevision: null,
+      })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.load('project-1')
+    await store.generateDraft({
+      idempotencyKey: 'authority-regression',
+      authorInstructions: '',
+    })
+
+    await store.reconcileGeneration()
+
+    assert.equal(operationReads, 1)
+    assert.equal(store.generationOperation.status, 'succeeded')
+    assert.equal(store.generationOperation.loaded, true)
+    assert.equal(store.awaitingAuthoritativeReload, true)
+    assert.equal(store.generating, true)
+    assert.equal(store.error.code, 'PlanningGenerationOperationRegressed')
+  })
+})
+
+test('mismatched or malformed authority reloads stay gated until the exact draft is read', async () => {
+  const badStates = [
+    readyState('project-other', draft(NEXT_HASH, 2)),
+    readyState('project-1', {
+      ...draft(NEXT_HASH, 2),
+      projectId: 'project-other',
+    }),
+    readyState('project-1', { ...draft(NEXT_HASH, 2), draftId: 'draft-other' }),
+    readyState('project-1', draft(NEXT_HASH, 3)),
+    readyState('project-1', {
+      ...draft(NEXT_HASH, 2),
+      contentHash: 'not-a-hash',
+    }),
+    readyState('project-1', {
+      ...draft(NEXT_HASH, 2),
+      content: { ...planningContent(HASH), contentHash: HASH },
+    }),
+    { projectId: 'project-1', draft: { draftId: 'draft-1', draftRevision: 2 } },
+  ]
+
+  for (const badState of badStates) {
+    let stateReads = 0
+    let operationReads = 0
+    let posts = 0
+    await withApiMethods([
+      [api.planning, 'get', async () => {
+        stateReads += 1
+        if (stateReads === 1) return readyState('project-1', draft())
+        if (stateReads === 2) return badState
+        return readyState('project-1', draft(NEXT_HASH, 2))
+      }],
+      [api.planning, 'history', async () => ({ items: [] })],
+      [api.planning, 'generateDraft', async () => {
+        posts += 1
+        return operation()
+      }],
+      [api.planning, 'getOperation', async (_projectId, operationId) => {
+        operationReads += 1
+        return operation({ operationId })
+      }],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = usePlanningStore()
+      await store.load('project-1')
+      await store.generateDraft({
+        idempotencyKey: `bad-authority-${badStates.indexOf(badState)}`,
+        authorInstructions: '',
+      })
+
+      assert.equal(store.awaitingAuthoritativeReload, true)
+      assert.equal(store.generating, true)
+      assert.equal(store.state.draft.draftRevision, 1)
+      await assert.rejects(
+        store.generateDraft({
+          idempotencyKey: 'must-not-repost',
+          authorInstructions: '',
+        }),
+        /generation.*progress|生成.*进行|权威.*回读/i,
+      )
+
+      await store.reconcileGeneration()
+      assert.equal(posts, 1)
+      assert.equal(operationReads, 1)
+      assert.equal(stateReads, 3)
+      assert.equal(store.awaitingAuthoritativeReload, false)
+      assert.equal(store.generating, false)
+      assert.equal(store.state.draft.draftRevision, 2)
+    })
+  }
 })
 
 test('loaded generation remains the single active generation until authority reload settles', async () => {
@@ -392,7 +626,7 @@ test('loaded generation remains the single active generation until authority rel
         idempotencyKey: 'must-not-post',
         authorInstructions: '',
       }),
-      /generation.*progress|生成.*进行/i,
+      /generation.*progress|生成.*进行|权威.*回读/i,
     )
     assert.equal(posts, 1)
 

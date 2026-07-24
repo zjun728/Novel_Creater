@@ -97,6 +97,7 @@ export const usePlanningStore = defineStore('planning', () => {
   const reconciling = ref(false)
   const generationOperation = shallowRef(null)
   const generationOutcomeUnknown = ref(false)
+  const awaitingAuthoritativeReload = ref(false)
   const loadGuard = createLatestRequestGuard()
   const mutationGuard = createLatestRequestGuard()
   const generationGuard = createLatestRequestGuard()
@@ -123,6 +124,7 @@ export const usePlanningStore = defineStore('planning', () => {
       reconciling.value = false
       generationOperation.value = null
       generationOutcomeUnknown.value = false
+      awaitingAuthoritativeReload.value = false
     }
     return normalized
   }
@@ -192,6 +194,35 @@ export const usePlanningStore = defineStore('planning', () => {
       && projectId.value === targetProjectId
       && state.value !== null
     ) {
+      return state.value
+    }
+    if (
+      options?.force === true
+      && projectId.value === targetProjectId
+      && awaitingAuthoritativeReload.value
+      && generationOperation.value?.status === 'succeeded'
+      && generationOperation.value?.loaded === true
+    ) {
+      const operationId = generationOperation.value.operationId
+      const targetDraftId = state.value?.draft?.draftId
+      const requestGeneration = generationGuard.begin()
+      reconciling.value = true
+      generating.value = true
+      try {
+        await reloadGenerationAuthority(generationOperation.value, {
+          requestGeneration,
+          targetProjectId,
+          targetDraftId,
+          allowDirtyDiscard: true,
+        })
+      } finally {
+        if (
+          generationIsCurrent(requestGeneration, targetProjectId)
+          && generationOperation.value?.operationId === operationId
+        ) {
+          reconciling.value = false
+        }
+      }
       return state.value
     }
     const loaded = await load(targetProjectId)
@@ -265,6 +296,9 @@ export const usePlanningStore = defineStore('planning', () => {
     const targetProjectId = projectId.value
     if (!targetProjectId || !currentDraft || !localContent.value) {
       throw new TypeError('An active Planning draft is required')
+    }
+    if (awaitingAuthoritativeReload.value) {
+      throw new Error('正在等待权威工作稿回读，暂不能保存')
     }
     if (saving.value || confirming.value) {
       throw new Error('已有操作正在进行')
@@ -441,8 +475,10 @@ export const usePlanningStore = defineStore('planning', () => {
     if (
       typeof value !== 'string'
       || !value
-      || value.length > 512
-      || !/^[A-Za-z0-9][A-Za-z0-9._~/-]*$/.test(value)
+      || value.length > 128
+      || !/^[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(value)
+      || /(?:authorization|api[-_]?key|credential|password|secret|token|dsn)/i.test(value)
+      || /(?:^|[^A-Za-z0-9])(?:(?:sk|rk|pk)[-_][A-Za-z0-9._~+/=-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})(?:$|[^A-Za-z0-9])/i.test(value)
     ) {
       return ''
     }
@@ -474,6 +510,111 @@ export const usePlanningStore = defineStore('planning', () => {
     )
   }
 
+  function isExactGeneratedDraftState(
+    loaded,
+    {
+      targetProjectId,
+      targetDraftId,
+      loadedDraftRevision,
+    },
+  ) {
+    const loadedDraft = loaded?.draft
+    const content = loadedDraft?.content
+    return (
+      loaded
+      && typeof loaded === 'object'
+      && !Array.isArray(loaded)
+      && loaded.projectId === targetProjectId
+      && loadedDraft
+      && typeof loadedDraft === 'object'
+      && !Array.isArray(loadedDraft)
+      && loadedDraft.projectId === targetProjectId
+      && loadedDraft.draftId === targetDraftId
+      && loadedDraft.draftRevision === loadedDraftRevision
+      && typeof loadedDraft.contentHash === 'string'
+      && /^[0-9a-f]{64}$/i.test(loadedDraft.contentHash)
+      && content
+      && typeof content === 'object'
+      && !Array.isArray(content)
+      && content.schemaVersion === 'planning-v1'
+      && content.contentHash === loadedDraft.contentHash
+      && Array.isArray(content.volumes)
+      && Array.isArray(content.plots)
+      && Array.isArray(content.storyBlocks)
+    )
+  }
+
+  async function reloadGenerationAuthority(
+    result,
+    {
+      requestGeneration,
+      targetProjectId,
+      targetDraftId,
+      allowDirtyDiscard = false,
+    },
+  ) {
+    try {
+      const loaded = await api.planning.get(targetProjectId)
+      if (
+        !generationIsCurrent(requestGeneration, targetProjectId)
+        || generationOperation.value?.operationId !== result.operationId
+      ) {
+        return false
+      }
+      if (!isExactGeneratedDraftState(loaded, {
+        targetProjectId,
+        targetDraftId,
+        loadedDraftRevision: result.loadedDraftRevision,
+      })) {
+        awaitingAuthoritativeReload.value = true
+        generating.value = true
+        error.value = {
+          status: 0,
+          code: 'PlanningGenerationReloadMismatch',
+          message: '生成已完成，但权威工作稿状态不匹配；本地内容已保留',
+          correlationId: '',
+        }
+        return false
+      }
+      if (dirty.value && !allowDirtyDiscard) {
+        awaitingAuthoritativeReload.value = true
+        generating.value = true
+        error.value = {
+          status: 0,
+          code: 'PlanningGenerationLocalEditPending',
+          message: '生成已完成，但存在未保存的本地修改；请重新核对后恢复',
+          correlationId: '',
+        }
+        return false
+      }
+
+      const nextLocalContent = editableContent(loaded.draft.content)
+      state.value = loaded
+      localContent.value = nextLocalContent
+      dirty.value = false
+      error.value = null
+      generationOutcomeUnknown.value = false
+      awaitingAuthoritativeReload.value = false
+      generating.value = false
+      return true
+    } catch (failure) {
+      if (
+        generationIsCurrent(requestGeneration, targetProjectId)
+        && generationOperation.value?.operationId === result.operationId
+      ) {
+        awaitingAuthoritativeReload.value = true
+        generating.value = true
+        error.value = {
+          status: Number(failure?.status || 0),
+          code: 'PlanningGenerationRefreshFailed',
+          message: '生成已完成，但刷新权威工作稿失败；本地内容已保留',
+          correlationId: String(failure?.correlationId || ''),
+        }
+      }
+      return false
+    }
+  }
+
   async function acceptGenerationOperation(
     result,
     {
@@ -489,16 +630,39 @@ export const usePlanningStore = defineStore('planning', () => {
     ) {
       return result
     }
+    const currentOperation = generationOperation.value
+    if (
+      awaitingAuthoritativeReload.value
+      && currentOperation?.status === 'succeeded'
+      && currentOperation.loaded === true
+      && (
+        result.status !== 'succeeded'
+        || result.loaded !== true
+        || result.loadedDraftRevision !== currentOperation.loadedDraftRevision
+      )
+    ) {
+      generating.value = true
+      error.value = {
+        status: 0,
+        code: 'PlanningGenerationOperationRegressed',
+        message: '生成操作状态与已知结果不一致；请继续核对原操作',
+        correlationId: '',
+      }
+      return result
+    }
 
     generationOperation.value = result
-    generationOutcomeUnknown.value = false
     if (result.status === 'pending') {
+      generationOutcomeUnknown.value = false
+      awaitingAuthoritativeReload.value = false
       generating.value = true
       error.value = null
       return result
     }
 
     if (!(result.status === 'succeeded' && result.loaded === true)) {
+      generationOutcomeUnknown.value = false
+      awaitingAuthoritativeReload.value = false
       generating.value = false
       if (result.status === 'failed') {
         error.value = {
@@ -513,55 +677,13 @@ export const usePlanningStore = defineStore('planning', () => {
       return result
     }
 
-    try {
-      const loaded = await api.planning.get(targetProjectId)
-      if (
-        !generationIsCurrent(requestGeneration, targetProjectId)
-        || generationOperation.value?.operationId !== result.operationId
-      ) {
-        return result
-      }
-      const loadedDraft = loaded?.draft
-      if (
-        loaded?.projectId !== targetProjectId
-        || loadedDraft?.draftId !== targetDraftId
-        || loadedDraft?.draftRevision !== result.loadedDraftRevision
-      ) {
-        error.value = {
-          status: 0,
-          code: 'PlanningGenerationReloadMismatch',
-          message: '生成已完成，但权威工作稿状态不匹配；本地内容已保留',
-          correlationId: '',
-        }
-        return result
-      }
-
-      state.value = loaded
-      if (!dirty.value) {
-        localContent.value = editableContent(loadedDraft.content)
-        dirty.value = false
-      }
-      error.value = null
-    } catch (failure) {
-      if (
-        generationIsCurrent(requestGeneration, targetProjectId)
-        && generationOperation.value?.operationId === result.operationId
-      ) {
-        error.value = {
-          status: Number(failure?.status || 0),
-          code: 'PlanningGenerationRefreshFailed',
-          message: '生成已完成，但刷新权威工作稿失败；本地内容已保留',
-          correlationId: String(failure?.correlationId || ''),
-        }
-      }
-    } finally {
-      if (
-        generationIsCurrent(requestGeneration, targetProjectId)
-        && generationOperation.value?.operationId === result.operationId
-      ) {
-        generating.value = false
-      }
-    }
+    awaitingAuthoritativeReload.value = true
+    generating.value = true
+    await reloadGenerationAuthority(result, {
+      requestGeneration,
+      targetProjectId,
+      targetDraftId,
+    })
     return result
   }
 
@@ -571,17 +693,20 @@ export const usePlanningStore = defineStore('planning', () => {
     if (!targetProjectId || !currentDraft) {
       throw new TypeError('An active Planning draft is required')
     }
-    if (state.value?.capabilities?.generate !== true) {
-      throw new Error('规划生成模型未就绪')
-    }
-    if (dirty.value) {
-      throw new Error('请先保存本地修改，再生成规划')
+    if (awaitingAuthoritativeReload.value) {
+      throw new Error('正在等待权威工作稿回读，请先重新核对')
     }
     if (generationOutcomeUnknown.value) {
       throw new Error('上次生成结果未知，请先重新加载后再生成')
     }
     if (generating.value || reconciling.value) {
       throw new Error('已有规划生成正在进行')
+    }
+    if (state.value?.capabilities?.generate !== true) {
+      throw new Error('规划生成模型未就绪')
+    }
+    if (dirty.value) {
+      throw new Error('请先保存本地修改，再生成规划')
     }
     if (saving.value || confirming.value) {
       throw new Error('已有操作正在进行')
@@ -592,6 +717,7 @@ export const usePlanningStore = defineStore('planning', () => {
     generating.value = true
     generationOperation.value = null
     generationOutcomeUnknown.value = false
+    awaitingAuthoritativeReload.value = false
     error.value = null
     try {
       const result = await api.planning.generateDraft(
@@ -621,6 +747,7 @@ export const usePlanningStore = defineStore('planning', () => {
         generating.value = false
         generationOperation.value = null
         generationOutcomeUnknown.value = false
+        awaitingAuthoritativeReload.value = false
         error.value = publicError(failure)
         throw failure
       }
@@ -628,10 +755,12 @@ export const usePlanningStore = defineStore('planning', () => {
       if (operationId) {
         generationOperation.value = { operationId }
         generationOutcomeUnknown.value = true
+        awaitingAuthoritativeReload.value = false
         generating.value = true
       } else {
         generationOperation.value = null
         generationOutcomeUnknown.value = true
+        awaitingAuthoritativeReload.value = false
         generating.value = false
       }
       const publicFailure = outcomeUnknownFailure(Boolean(operationId))
@@ -707,6 +836,7 @@ export const usePlanningStore = defineStore('planning', () => {
     reconciling.value = false
     generationOperation.value = null
     generationOutcomeUnknown.value = false
+    awaitingAuthoritativeReload.value = false
   }
 
   return {
@@ -723,6 +853,7 @@ export const usePlanningStore = defineStore('planning', () => {
     reconciling,
     generationOperation,
     generationOutcomeUnknown,
+    awaitingAuthoritativeReload,
     load,
     ensureLoaded,
     createDraft,

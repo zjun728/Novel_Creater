@@ -245,16 +245,112 @@ const PLANNING_FAILURE_CODES = new Set([
   'PlanningProviderFailed',
   'PlanningProviderResultInvalid',
 ])
-const PRIVATE_OPERATION_TEXT = /(?:api[-_ ]?key|authorization|bearer|password|passwd|secret|token|dsn|mysql:\/\/|https?:\/\/|(?:sk|rk|pk)[-_][A-Za-z0-9])/i
+const PRIVATE_OPERATION_TEXT = /(?:api[\s_-]*key|base[\s_-]*url|access[\s_-]*token|bearer[\s_-]*token|token|password|dsn)\s*[:=]\s*\S+|(?:source[\s_.-]*document[\s_.-]*text|raw[\s_.-]*source(?:[\s_.-]*(?:text|content|payload))?|corpus(?:[\s_.-]*(?:text|content|payload|fragment))?)\s*[:=]\s*\S+|\bauthorization\s*:\s*[A-Za-z][A-Za-z0-9_-]*\s+\S+|\bauthorization\s*:?\s*bearer\s+\S+|\bbearer\s+[A-Za-z0-9][A-Za-z0-9._~+/=-]{7,}|(?:mysql|postgres(?:ql)?|mariadb):\/\/\S+/i
+const API_KEY_SHAPED_TEXT = /(?:^|[^A-Za-z0-9])(?:(?:sk|rk|pk)[-_][A-Za-z0-9._~+/=-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16})(?:$|[^A-Za-z0-9])/i
+const INVALID_PERCENT_ESCAPE = /%(?![0-9A-Fa-f]{2})/
+const VALID_PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/
+const PRIVATE_OPERATION_ID_TEXT = /(?:authorization|api[-_]?key|credential|password|secret|token|dsn)/i
 
-function publicPlanningLabel(value) {
+function hasValidUnicode(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+      index += 1
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false
+    }
+  }
+  return true
+}
+
+function planningTextVariants(value) {
   if (
     typeof value !== 'string'
     || !value
     || value !== value.trim()
     || value.length > 512
-    || /[\u0000-\u001f\u007f]/.test(value)
-    || PRIVATE_OPERATION_TEXT.test(value)
+    || !hasValidUnicode(value)
+  ) {
+    return null
+  }
+  const variants = new Set([value])
+  let frontier = new Set([value])
+  let stopped = false
+  try {
+    for (let round = 0; round < 2; round += 1) {
+      if ([...frontier].some(item => INVALID_PERCENT_ESCAPE.test(item))) {
+        return null
+      }
+      const decoded = new Set()
+      for (const item of frontier) {
+        decoded.add(decodeURIComponent(item))
+        decoded.add(decodeURIComponent(item.replace(/\+/g, ' ')))
+      }
+      if ([...decoded].some(item => item.length > 512 || !hasValidUnicode(item))) {
+        return null
+      }
+      const next = new Set([...decoded].filter(item => !variants.has(item)))
+      for (const item of decoded) variants.add(item)
+      if (next.size === 0) {
+        stopped = true
+        break
+      }
+      frontier = next
+    }
+  } catch {
+    return null
+  }
+  if (!stopped && [...frontier].some(item => VALID_PERCENT_ESCAPE.test(item))) {
+    return null
+  }
+  if ([...variants].some(item => INVALID_PERCENT_ESCAPE.test(item))) {
+    return null
+  }
+  return variants
+}
+
+function planningVariantHasCredentialUrl(value) {
+  const hasAuthority = (
+    /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)
+    || value.startsWith('//')
+  )
+  if (!hasAuthority) return false
+  try {
+    const parsed = new URL(value.startsWith('//') ? `http:${value}` : value)
+    return Boolean(parsed.username || parsed.password)
+  } catch {
+    return true
+  }
+}
+
+function publicPlanningLabel(value) {
+  const variants = planningTextVariants(value)
+  if (!variants) return null
+  for (const variant of variants) {
+    if (
+      /[\u0000-\u001f\u007f]/.test(variant)
+      || PRIVATE_OPERATION_TEXT.test(variant)
+      || API_KEY_SHAPED_TEXT.test(variant)
+      || planningVariantHasCredentialUrl(variant)
+    ) {
+      return null
+    }
+  }
+  return value
+}
+
+function planningOperationId(value) {
+  if (
+    typeof value !== 'string'
+    || !value
+    || value !== value.trim()
+    || value.length > 128
+    || !hasValidUnicode(value)
+    || !/^[A-Za-z0-9][A-Za-z0-9._~-]*$/.test(value)
+    || PRIVATE_OPERATION_ID_TEXT.test(value)
+    || API_KEY_SHAPED_TEXT.test(value)
   ) {
     return null
   }
@@ -267,7 +363,7 @@ function planningOperationResponse(value, expectedOperationId) {
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
 
-  const operationId = publicPlanningLabel(value.operationId)
+  const operationId = planningOperationId(value.operationId)
   if (!operationId || (expectedOperationId && operationId !== expectedOperationId)) {
     invalid()
   }
@@ -795,12 +891,16 @@ export const api = {
         ]),
       ),
     ),
-    getOperation: async (projectId, operationId) => planningOperationResponse(
-      await get(
-        `/projects/${segment(projectId)}/planning/operations/${segment(operationId)}`,
-      ),
-      String(operationId),
-    ),
+    getOperation: async (projectId, operationId) => {
+      const opaqueId = planningOperationId(operationId)
+      if (!opaqueId) throw new TypeError('Invalid Planning operation id')
+      return planningOperationResponse(
+        await get(
+          `/projects/${segment(projectId)}/planning/operations/${segment(opaqueId)}`,
+        ),
+        opaqueId,
+      )
+    },
   },
 
   chapterSessions: {

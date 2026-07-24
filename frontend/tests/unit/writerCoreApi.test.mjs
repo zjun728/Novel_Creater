@@ -443,10 +443,11 @@ test('planning generation uses encoded paths and closed request and response DTO
   const originalFetch = global.fetch
   const calls = []
   const secret = 'sk-must-not-cross-planning-client'
+  const operationId = '123e4567-e89b-12d3-a456-426614174000'
   global.fetch = async (url, options) => {
     calls.push({ url: String(url), options })
     return jsonResponse({
-      operationId: 'operation/1',
+      operationId,
       status: 'succeeded',
       failureCode: null,
       model: {
@@ -483,14 +484,14 @@ test('planning generation uses encoded paths and closed request and response DTO
         dsn: secret,
       },
     )
-    const queried = await api.planning.getOperation('project/1', 'operation/1')
+    const queried = await api.planning.getOperation('project/1', operationId)
 
     assert.deepEqual(calls.map(call => [
       call.options.method,
       new URL(call.url).pathname,
     ]), [
       ['POST', '/api/projects/project%2F1/planning/drafts/draft%2F1/generate'],
-      ['GET', '/api/projects/project%2F1/planning/operations/operation%2F1'],
+      ['GET', `/api/projects/project%2F1/planning/operations/${operationId}`],
     ])
     assert.deepEqual(bodyOf(calls[0]), {
       draftRevision: 2,
@@ -500,7 +501,7 @@ test('planning generation uses encoded paths and closed request and response DTO
     })
     assert.equal(bodyOf(calls[1]), undefined)
     const expected = {
-      operationId: 'operation/1',
+      operationId,
       status: 'succeeded',
       failureCode: null,
       model: {
@@ -548,27 +549,147 @@ test('planning operation response fails closed with a fixed secret-safe error', 
 
 test('planning operation model summary fail-closes encoded credential text', async () => {
   const originalFetch = global.fetch
-  const secret = 'ENCODED_MODEL_SECRET'
+  const unsafeModels = [
+    `ghp_${'A'.repeat(20)}`,
+    `AKIA${'A'.repeat(16)}`,
+    'Authoriza%2574ion%253ABearer%2520DOUBLE_ENCODED_SECRET',
+    'https%253A%252F%252Froot%253Apassword%2540provider.invalid%252Fv1',
+    'Authorization%25253ABearer%252520TOO_DEEPLY_ENCODED_SECRET',
+  ]
+  let currentProvider = 'provider-1'
+  let currentModel = unsafeModels[0]
   global.fetch = async () => jsonResponse({
     operationId: 'operation-1',
     status: 'pending',
     failureCode: null,
-    model: {
-      providerId: 'provider-1',
-      modelName: `Authorization%253ABearer%2520${secret}`,
-    },
+    model: { providerId: currentProvider, modelName: currentModel },
     loaded: false,
     loadedDraftRevision: null,
   })
 
   try {
     const { api } = await import('../../src/api/db/client.js')
-    const result = await api.planning.getOperation('project-1', 'operation-1')
-    assert.deepEqual(result.model, {
+    for (const unsafe of unsafeModels) {
+      currentModel = unsafe
+      const getResult = await api.planning.getOperation('project-1', 'operation-1')
+      const postResult = await api.planning.generateDraft('project-1', 'draft-1', {
+        draftRevision: 1,
+        draftHash: 'a'.repeat(64),
+        idempotencyKey: `unsafe-${unsafeModels.indexOf(unsafe)}`,
+        authorInstructions: '',
+      })
+      for (const result of [getResult, postResult]) {
+        assert.deepEqual(result.model, {
+          providerId: 'unavailable',
+          modelName: 'unavailable',
+        })
+        assert.equal(JSON.stringify(result).includes(unsafe), false)
+      }
+    }
+
+    for (const safe of ['deepseek-v4-flash', 'model+preview', 'model preview']) {
+      currentProvider = 'provider-1'
+      currentModel = safe
+      const result = await api.planning.getOperation('project-1', 'operation-1')
+      assert.deepEqual(result.model, {
+        providerId: 'provider-1',
+        modelName: safe,
+      })
+    }
+
+    currentProvider = `ASIA${'Z'.repeat(16)}`
+    currentModel = 'deepseek-v4-flash'
+    const unsafeProvider = await api.planning.getOperation(
+      'project-1',
+      'operation-1',
+    )
+    assert.deepEqual(unsafeProvider.model, {
       providerId: 'unavailable',
       modelName: 'unavailable',
     })
-    assert.equal(JSON.stringify(result).includes(secret), false)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('planning operation ids are closed opaque values before any GET', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse({
+      operationId: 'operation-1',
+      status: 'pending',
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'deepseek-v4-flash' },
+      loaded: false,
+      loadedDraftRevision: null,
+    })
+  }
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const unsafeId of [
+      'operation%252Fsecret',
+      'https://root:password@provider.invalid/operation',
+      `ghp_${'A'.repeat(20)}`,
+      `ASIA${'A'.repeat(16)}`,
+      'operation/token',
+    ]) {
+      await assert.rejects(
+        api.planning.getOperation('project-1', unsafeId),
+        /invalid planning operation id/i,
+      )
+    }
+    assert.equal(calls.length, 0)
+
+    const uuid = '123e4567-e89b-12d3-a456-426614174000'
+    global.fetch = async (url, options) => {
+      calls.push({ url: String(url), options })
+      return jsonResponse({
+        operationId: uuid,
+        status: 'pending',
+        failureCode: null,
+        model: { providerId: 'provider-1', modelName: 'deepseek-v4-flash' },
+        loaded: false,
+        loadedDraftRevision: null,
+      })
+    }
+    const result = await api.planning.getOperation('project-1', uuid)
+    assert.equal(result.operationId, uuid)
+    assert.equal(calls.length, 1)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('a POST response with a sensitive operation id fails closed safely', async () => {
+  const originalFetch = global.fetch
+  const secretId = `ghp_${'B'.repeat(20)}`
+  global.fetch = async () => jsonResponse({
+    operationId: secretId,
+    status: 'pending',
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'deepseek-v4-flash' },
+    loaded: false,
+    loadedDraftRevision: null,
+  })
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await assert.rejects(
+      api.planning.generateDraft('project-1', 'draft-1', {
+        draftRevision: 1,
+        draftHash: 'a'.repeat(64),
+        idempotencyKey: 'sensitive-operation-id',
+        authorInstructions: '',
+      }),
+      error => {
+        assert.match(error.message, /invalid planning operation response/i)
+        assert.equal(String(error).includes(secretId), false)
+        return true
+      },
+    )
   } finally {
     global.fetch = originalFetch
   }
