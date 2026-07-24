@@ -643,6 +643,62 @@ async def test_author_save_during_generation_keeps_result_as_evidence_without_lo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "persisted_manifest",
+    ("{}", "{"),
+    ids=("valid-but-tampered", "invalid-json"),
+)
+async def test_persisted_manifest_tamper_keeps_evidence_without_loading(
+    persisted_manifest,
+):
+    repository = FakePlanningRepository()
+
+    def tamper_manifest():
+        repository.attempts["operation-1"]["input_manifest_json"] = (
+            persisted_manifest
+        )
+
+    service, repository, gateway, _tracker = _service(
+        repository=repository,
+        gateway=FakeGateway(hook=tamper_manifest),
+    )
+
+    result = await service.generate(_command())
+
+    assert result.status == "succeeded"
+    assert result.loaded is False
+    assert result.loaded_draft_revision is None
+    assert repository.draft["draft_revision"] == 1
+    assert repository.draft["source_attempt_id"] is None
+    assert repository.load_calls == 0
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_treats_lease_equal_to_now_as_expired():
+    repository = FakePlanningRepository()
+    current_time = [NOW]
+
+    def reach_exact_expiry():
+        current_time[0] = NOW + 240_000
+
+    service, repository, gateway, _tracker = _service(
+        repository=repository,
+        gateway=FakeGateway(hook=reach_exact_expiry),
+        clock=lambda: current_time[0],
+    )
+
+    result = await service.generate(_command())
+
+    assert result.status == "succeeded"
+    assert result.loaded is False
+    assert result.loaded_draft_revision is None
+    assert repository.draft["draft_revision"] == 1
+    assert repository.load_calls == 0
+    assert len(gateway.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "drift",
     ("project", "basis", "head", "binding", "provider"),
 )

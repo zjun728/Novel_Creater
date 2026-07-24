@@ -393,7 +393,8 @@ class PlanningGenerationService:
                 and self._binding_snapshot(binding) == context["binding"]
                 and self._provider_authority_hash(binding)
                 == context["provider_authority_hash"]
-                and int(attempt["lease_expires_at"]) >= self._clock()
+                and self._persisted_manifest_matches(attempt, context)
+                and int(attempt["lease_expires_at"]) > self._clock()
             )
             if not current:
                 if not await self.repository.succeed_generation_attempt(
@@ -700,14 +701,6 @@ class PlanningGenerationService:
             and attempt["draft_id"] == expected["draft_id"]
             and attempt["operation_id"] == expected["operation_id"]
             and attempt["request_fingerprint"] == context["fingerprint"]
-            and attempt["input_manifest_hash"]
-            == context["manifest_hash"]
-            and context["manifest_hash"]
-            == canonical_hash(
-                context["manifest"].model_dump(
-                    mode="json", by_alias=True
-                )
-            )
             and int(attempt["fencing_token"])
             == int(expected["fencing_token"])
             and all(
@@ -715,6 +708,48 @@ class PlanningGenerationService:
                 for key in _BINDING_FIELDS
             )
         )
+
+    @staticmethod
+    def _persisted_manifest_matches(attempt, context):
+        try:
+            persisted = attempt["input_manifest_json"]
+            if isinstance(persisted, (bytes, bytearray)):
+                persisted = bytes(persisted).decode("utf-8")
+            if isinstance(persisted, str):
+                persisted = json.loads(persisted)
+            if not isinstance(persisted, dict):
+                return False
+            validated = PlanningGenerationManifest.model_validate(
+                persisted,
+                strict=True,
+            )
+            persisted_payload = validated.model_dump(
+                mode="json", by_alias=True
+            )
+            frozen_payload = context["manifest"].model_dump(
+                mode="json", by_alias=True
+            )
+            persisted_canonical = canonical_json(persisted_payload)
+            frozen_canonical = canonical_json(frozen_payload)
+            persisted_hash = canonical_hash(persisted_payload)
+            frozen_hash = canonical_hash(frozen_payload)
+            return (
+                persisted_canonical == frozen_canonical
+                and persisted_payload == frozen_payload
+                and persisted_hash == attempt["input_manifest_hash"]
+                and persisted_hash == context["manifest_hash"]
+                and frozen_hash == context["manifest_hash"]
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            json.JSONDecodeError,
+            UnicodeError,
+            RecursionError,
+        ):
+            return False
 
     @staticmethod
     def _request_fingerprint(command):
