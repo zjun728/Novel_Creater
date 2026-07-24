@@ -476,6 +476,53 @@ class CoordinationFailureRepository(FakePlanningRepository):
         )
 
 
+class ExhaustingExpiredRepository(FakePlanningRepository):
+    def __init__(self):
+        super().__init__()
+        self.reserve_reads = 0
+        self.settles = 0
+        self._add_expired(1)
+
+    def _add_expired(self, number):
+        self.attempts[f"expired-operation-{number}"] = {
+            "id": f"expired-row-{number}",
+            "project_id": "p1",
+            "draft_id": "draft-1",
+            "operation_id": f"expired-operation-{number}",
+            "idempotency_key": f"expired-key-{number}",
+            "request_fingerprint": f"{number:x}".rjust(64, "0"),
+            "binding_revision_id": "binding-1",
+            "binding_revision": 1,
+            "binding_hash": "5" * 64,
+            "provider_id": "provider-1",
+            "model_name_snapshot": "deepseek-v4-flash",
+            "fencing_token": number,
+            "lease_expires_at": NOW - 1,
+            "input_manifest_json": "{}",
+            "input_manifest_hash": "7" * 64,
+            "status": "pending",
+            "active_slot": 1,
+            "failure_code": None,
+            "loaded_draft_revision": None,
+        }
+
+    async def read_active_generation_attempt(self, session, draft_id):
+        self.reserve_reads += 1
+        return await super().read_active_generation_attempt(
+            session, draft_id
+        )
+
+    async def supersede_generation_attempt(self, session, **kwargs):
+        changed = await super().supersede_generation_attempt(
+            session, **kwargs
+        )
+        if changed:
+            self.settles += 1
+            if self.settles < 3:
+                self._add_expired(self.settles + 1)
+        return changed
+
+
 def _service(
     repository=None,
     gateway=None,
@@ -780,6 +827,8 @@ async def test_multiple_cancellations_wait_for_owned_settlement_and_leave_no_tas
     attempt = repository.attempts["operation-1"]
     assert attempt["status"] == "failed"
     assert attempt["active_slot"] is None
+    assert pending.cancelled() is True
+    assert pending.cancelling() == cancel_count
     assert not [
         task
         for task in asyncio.all_tasks()
@@ -814,6 +863,8 @@ async def test_cancelled_wait_propagates_finished_settlement_failure_without_lea
     ):
         await pending
     await asyncio.sleep(0)
+    assert pending.cancelled() is False
+    assert pending.cancelling() == 0
     assert not [
         task
         for task in asyncio.all_tasks()
@@ -1031,11 +1082,35 @@ async def test_mysql_coordination_failures_map_to_one_safe_retryable_error(
             await service.generate(_command())
 
     assert str(caught.value) == (
-        "Planning generation is busy; retry the operation lookup"
+        "Planning state changed; retry this request safely."
     )
     assert caught.value.__cause__ is None
     assert "RAW_DATABASE_COORDINATION_SENTINEL" not in repr(caught.value)
     assert len(gateway.calls) == (1 if stage == "settlement" else 0)
+
+
+@pytest.mark.asyncio
+async def test_expired_reconciliation_exhaustion_is_safe_retryable():
+    from backend.services.planning_generation import (
+        PlanningGenerationRetryable,
+    )
+
+    repository = ExhaustingExpiredRepository()
+    service, repository, gateway, _tracker = _service(
+        repository=repository
+    )
+
+    with pytest.raises(PlanningGenerationRetryable) as caught:
+        await service.generate(_command("new-request-key"))
+
+    assert caught.value.status_code == 503
+    assert caught.value.retryable is True
+    assert str(caught.value) == (
+        "Planning state changed; retry this request safely."
+    )
+    assert repository.reserve_reads == 3
+    assert repository.settles == 3
+    assert gateway.calls == []
 
 
 def test_coordination_classifier_requires_all_explicit_mysql_leaves():

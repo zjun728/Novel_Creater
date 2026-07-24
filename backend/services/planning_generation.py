@@ -99,7 +99,7 @@ class PlanningGenerationOperationNotFound(PublicDomainError):
 class PlanningGenerationRetryable(PublicDomainError):
     status_code = 503
     code = "PlanningGenerationRetryable"
-    message = "Planning generation is busy; retry the operation lookup"
+    message = "Planning state changed; retry this request safely."
     retryable = True
 
 
@@ -167,7 +167,7 @@ class PlanningGenerationService:
             )
             context = None
         if context is None:
-            raise PlanningGenerationConflict()
+            raise PlanningGenerationRetryable()
 
         try:
             output = await self._gateway.generate(
@@ -569,17 +569,23 @@ class PlanningGenerationService:
             name="planning-generation-settlement",
         )
         current = asyncio.current_task()
-        cancellation_requested = False
+        cancellation_observed = False
+        consumed_cancellations = 0
 
         def consume_outer_cancellation():
-            nonlocal cancellation_requested
+            nonlocal cancellation_observed, consumed_cancellations
             if current is None or current.cancelling() <= 0:
                 return False
-            cancellation_requested = True
+            cancellation_observed = True
             uncancel = getattr(current, "uncancel", None)
             if uncancel is not None:
                 while current.cancelling() > 0:
+                    before = current.cancelling()
                     uncancel()
+                    after = current.cancelling()
+                    if after >= before:
+                        break
+                    consumed_cancellations += before - after
             return True
 
         while not task.done():
@@ -602,7 +608,10 @@ class PlanningGenerationService:
         except Exception as exc:
             self._raise_if_coordination_failure(exc)
             raise
-        if cancellation_requested:
+        if cancellation_observed:
+            if current is not None:
+                for _ in range(consumed_cancellations):
+                    current.cancel()
             raise asyncio.CancelledError
         return result
 
