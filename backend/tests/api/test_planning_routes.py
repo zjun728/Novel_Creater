@@ -774,3 +774,59 @@ def test_operation_response_closes_status_to_the_four_public_states():
     assert response.json()["status"] == "failed"
     assert response.json()["failureCode"] == "PlanningGenerationFailed"
     assert "sk-private-runtime-status" not in response.text
+
+
+def test_get_operation_fail_closes_entire_model_for_credential_dsn():
+    client, _, generation = make_client()
+    credential_dsn = "mysql://root:private@database.example/novel"
+    generation.result = replace(
+        generation.result,
+        model=PublicModelSummary(
+            provider_id=credential_dsn,
+            model_name="deepseek-v4-flash",
+        ),
+    )
+
+    response = client.get(
+        "/api/projects/p1/planning/operations/operation-1"
+    )
+
+    assert response.status_code == 200
+    assert set(response.json()["model"]) == {"providerId", "modelName"}
+    assert response.json()["model"] == {
+        "providerId": "unavailable",
+        "modelName": "unavailable",
+    }
+    for forbidden in (credential_dsn, "root", "private"):
+        assert forbidden not in response.text
+
+
+def test_generate_fail_closes_entire_model_for_api_key_shaped_name():
+    client, _, generation = make_client()
+    key_sentinel = "sk-private-model-secret"
+    generation.result = replace(
+        generation.result,
+        model=PublicModelSummary(
+            provider_id="provider-1",
+            model_name=key_sentinel,
+        ),
+    )
+
+    response = client.post(
+        "/api/projects/p1/planning/drafts/draft-1/generate",
+        json={
+            "draftRevision": 1,
+            "draftHash": HASH,
+            "idempotencyKey": "generate-secret-model",
+            "authorInstructions": "",
+        },
+    )
+
+    assert response.status_code == 200
+    assert set(response.json()["model"]) == {"providerId", "modelName"}
+    assert response.json()["model"] == {
+        "providerId": "unavailable",
+        "modelName": "unavailable",
+    }
+    for forbidden in (key_sentinel, "private", "model-secret"):
+        assert forbidden not in response.text

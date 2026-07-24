@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -11,6 +13,7 @@ from backend.database import connection, transaction
 from backend.domain.planning import DraftPlanningAggregate
 from backend.gateways.planning_provider import PlanningProviderGateway
 from backend.http_errors import PublicDomainError
+from backend.prompts.planning import _PRIVATE_TEXT as _PLANNING_PRIVATE_TEXT
 from backend.repositories.planning import PlanningRepository
 from backend.services.planning import (
     ConfirmPlanningDraft,
@@ -207,6 +210,51 @@ _SAFE_OPERATION_FAILURE_CODES = frozenset(
 _PUBLIC_OPERATION_STATUSES = frozenset(
     {"pending", "succeeded", "failed", "superseded"}
 )
+_PUBLIC_MODEL_UNAVAILABLE = "unavailable"
+_API_KEY_SHAPED_TEXT = re.compile(
+    r"(?:^|[^A-Za-z0-9])(?:"
+    r"(?:sk|rk|pk)[-_][A-Za-z0-9._~+/=-]{8,}"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|AIza[A-Za-z0-9_-]{20,}"
+    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"
+    r")(?:$|[^A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _public_model_summary(model):
+    values = (model.provider_id, model.model_name)
+    if any(not _public_model_value_is_safe(value) for value in values):
+        return {
+            "providerId": _PUBLIC_MODEL_UNAVAILABLE,
+            "modelName": _PUBLIC_MODEL_UNAVAILABLE,
+        }
+    return {
+        "providerId": model.provider_id,
+        "modelName": model.model_name,
+    }
+
+
+def _public_model_value_is_safe(value) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 512
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+        or _PLANNING_PRIVATE_TEXT.search(value)
+        or _API_KEY_SHAPED_TEXT.search(value)
+    ):
+        return False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.username is None and parsed.password is None
 
 
 def _public_operation(result):
@@ -224,10 +272,7 @@ def _public_operation(result):
         "operationId": result.operation_id,
         "status": status,
         "failureCode": failure_code,
-        "model": {
-            "providerId": result.model.provider_id,
-            "modelName": result.model.model_name,
-        },
+        "model": _public_model_summary(result.model),
         "loaded": result.loaded,
         "loadedDraftRevision": result.loaded_draft_revision,
     }
