@@ -19,6 +19,7 @@ from backend.domain.planning import (
     normalize_planning_aggregate,
     validate_confirmable_planning,
 )
+from backend.http_errors import ProjectArchived as RepositoryProjectArchived
 
 
 _IDEMPOTENCY_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
@@ -44,6 +45,10 @@ class PlanningError(RuntimeError):
 
 
 class PlanningNotFound(PlanningError):
+    pass
+
+
+class PlanningArchived(PlanningError):
     pass
 
 
@@ -114,14 +119,24 @@ class PlanningHeadResult:
 
 
 @dataclass(frozen=True)
+class PlanningCapabilities:
+    view: bool
+    edit: bool
+    confirm: bool
+    generate: bool
+
+
+@dataclass(frozen=True)
 class PlanningState:
     project_id: str
+    basis_status: str
     head: PlanningHeadResult
     draft: PlanningDraftResult | None
     future_plan: PlanningAggregate | None
     actual_progress: tuple[object, ...]
     canon_projection_status: dict[str, object]
     capacity_policy: dict[str, int] | None
+    capabilities: PlanningCapabilities
     archived: bool
 
 
@@ -456,8 +471,21 @@ class PlanningService:
                 else None
             )
             projection_status = self._projection_status(projection)
+            archived = project.get("archived_at") is not None
+            capacity_policy = (
+                self._capacity_policy(basis) if basis is not None else None
+            )
+            confirmable = (
+                not archived
+                and draft is not None
+                and projection_status["synchronized"] is True
+                and self._is_confirmable(draft.content)
+            )
             return PlanningState(
                 project_id=project_id,
+                basis_status=(
+                    "current" if basis is not None else "unavailable"
+                ),
                 head=PlanningHeadResult(
                     revision=int(head["revision"]),
                     planning_revision_id=head["planning_revision_id"],
@@ -467,10 +495,14 @@ class PlanningService:
                 future_plan=future,
                 actual_progress=(),
                 canon_projection_status=projection_status,
-                capacity_policy=(
-                    self._capacity_policy(basis) if basis is not None else None
+                capacity_policy=capacity_policy,
+                capabilities=PlanningCapabilities(
+                    view=True,
+                    edit=not archived and capacity_policy is not None,
+                    confirm=confirmable,
+                    generate=False,
                 ),
-                archived=project.get("archived_at") is not None,
+                archived=archived,
             )
 
     async def _confirmed_result(
@@ -490,10 +522,23 @@ class PlanningService:
         raise PlanningConflict("confirmed Planning revision is missing")
 
     async def _require_active_project(self, session, project_id: str):
-        project = await self.repository.lock_active_project(session, project_id)
-        if project is None:
+        observed = await self.repository.read_project_any(session, project_id)
+        if observed is None:
             raise PlanningNotFound("Project not found")
-        return project
+        if observed.get("archived_at") is not None:
+            raise PlanningArchived("Project is archived")
+        try:
+            project = await self.repository.lock_active_project(
+                session, project_id
+            )
+        except RepositoryProjectArchived:
+            raise PlanningArchived("Project is archived") from None
+        if project is not None:
+            return project
+        current = await self.repository.read_project_any(session, project_id)
+        if current is not None and current.get("archived_at") is not None:
+            raise PlanningArchived("Project is archived")
+        raise PlanningNotFound("Project not found")
 
     async def _require_current_basis(self, session, project_id: str):
         basis = await self.repository.read_current_basis(session, project_id)
@@ -622,6 +667,13 @@ class PlanningService:
             "synchronized": canon == projection,
         }
 
+    def _is_confirmable(self, content: PlanningAggregate) -> bool:
+        try:
+            validate_confirmable_planning(content)
+        except PlanningDomainError:
+            return False
+        return True
+
     def _require_active_draft(self, row: Mapping[str, Any] | None) -> None:
         if row is None:
             raise PlanningNotFound("Planning Draft not found")
@@ -688,6 +740,8 @@ class PlanningService:
 __all__ = (
     "ConfirmPlanningDraft",
     "CreatePlanningDraft",
+    "PlanningArchived",
+    "PlanningCapabilities",
     "PlanningConflict",
     "PlanningDraftResult",
     "PlanningError",

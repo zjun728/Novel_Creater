@@ -169,6 +169,70 @@ function biblePayload(value = {}) {
   return payload
 }
 
+const PLANNING_IDENTITY_FIELDS = [
+  'id', 'clientNodeKey', 'revision', 'contentHash', 'lifecycle',
+]
+const PLANNING_VOLUME_FIELDS = [
+  ...PLANNING_IDENTITY_FIELDS,
+  'order', 'title', 'coreChange', 'mainPressure', 'ensembleFocus',
+  'forbiddenEvents',
+]
+const PLANNING_PLOT_FIELDS = [
+  ...PLANNING_IDENTITY_FIELDS,
+  'order', 'title', 'plotType', 'storyQuestion', 'futureDirection',
+  'expectedPayoff', 'relatedCharacters',
+]
+const PLANNING_BLOCK_FIELDS = [
+  ...PLANNING_IDENTITY_FIELDS,
+  'order', 'title', 'volumeRef', 'plotRefs', 'entrySituation', 'blockGoal',
+  'mainPressure', 'expectedChange', 'openQuestions', 'involvedCharacters',
+]
+const PLANNING_STAGE_FIELDS = [
+  ...PLANNING_IDENTITY_FIELDS,
+  'order', 'title', 'purpose', 'dramaticQuestion',
+]
+const PLANNING_TASK_FIELDS = [
+  ...PLANNING_IDENTITY_FIELDS,
+  'order', 'task', 'completionEvidence',
+]
+
+function planningArray(value, label, mapper) {
+  if (!Array.isArray(value)) {
+    throw new TypeError(`Expected Planning ${label} array`)
+  }
+  return value.map(mapper)
+}
+
+function planningDraftContent(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Expected Planning draft content')
+  }
+  return {
+    ...pickDefined(value, ['activeStoryBlockRef']),
+    volumes: planningArray(
+      value.volumes,
+      'volumes',
+      item => pickDefined(item, PLANNING_VOLUME_FIELDS),
+    ),
+    plots: planningArray(
+      value.plots,
+      'plots',
+      item => pickDefined(item, PLANNING_PLOT_FIELDS),
+    ),
+    storyBlocks: planningArray(value.storyBlocks, 'storyBlocks', block => ({
+      ...pickDefined(block, PLANNING_BLOCK_FIELDS),
+      stages: planningArray(block?.stages, 'stages', stage => ({
+        ...pickDefined(stage, PLANNING_STAGE_FIELDS),
+        sceneTasks: planningArray(
+          stage?.sceneTasks,
+          'sceneTasks',
+          task => pickDefined(task, PLANNING_TASK_FIELDS),
+        ),
+      })),
+    })),
+  }
+}
+
 function bibleCloneSource(value = {}) {
   const hasDraftId = value?.sourceDraftId !== undefined && value.sourceDraftId !== null
   const hasRevision = value?.sourceRevision !== undefined && value.sourceRevision !== null
@@ -594,10 +658,27 @@ export const api = {
 
   planning: {
     get: projectId => get(`/projects/${segment(projectId)}/planning`),
-    createInitial: (projectId, data) => post(
-      `/projects/${segment(projectId)}/planning/initial`,
+    history: projectId => get(`/projects/${segment(projectId)}/planning/history`),
+    createDraft: (projectId, data) => post(
+      `/projects/${segment(projectId)}/planning/drafts`,
       {
-        expectedContractRevision: data.expectedContractRevision,
+        idempotencyKey: data.idempotencyKey,
+      },
+    ),
+    saveDraft: (projectId, draftId, data) => put(
+      `/projects/${segment(projectId)}/planning/drafts/${segment(draftId)}`,
+      {
+        expectedDraftRevision: data.expectedDraftRevision,
+        expectedDraftHash: data.expectedDraftHash,
+        content: planningDraftContent(data.content),
+        idempotencyKey: data.idempotencyKey,
+      },
+    ),
+    confirmDraft: (projectId, draftId, data) => post(
+      `/projects/${segment(projectId)}/planning/drafts/${segment(draftId)}/confirm`,
+      {
+        expectedDraftRevision: data.expectedDraftRevision,
+        expectedDraftHash: data.expectedDraftHash,
         idempotencyKey: data.idempotencyKey,
       },
     ),

@@ -146,16 +146,29 @@ async def test_projection_read_and_lock_are_read_only_head_queries():
     assert all(call[0] == "fetchone" for call in session.calls)
 
 
-def test_phase3a_planning_router_is_importable_and_fail_closed():
+def test_phase3a_planning_router_exposes_only_the_revisioned_task7_contract():
     import backend.routers.planning as planning_router
 
     assert planning_router.router.tags == ["planning"]
-    assert planning_router.router.routes == []
+    routes = {
+        (next(iter(route.methods)), route.path)
+        for route in planning_router.router.routes
+    }
+    assert routes == {
+        ("GET", "/projects/{pid}/planning"),
+        ("GET", "/projects/{pid}/planning/history"),
+        ("POST", "/projects/{pid}/planning/drafts"),
+        ("PUT", "/projects/{pid}/planning/drafts/{draft_id}"),
+        (
+            "POST",
+            "/projects/{pid}/planning/drafts/{draft_id}/confirm",
+        ),
+    }
+    assert all("/planning/initial" not in path for _, path in routes)
     source = inspect.getsource(planning_router)
     for retired in (
         "CreateInitialPlan",
         "create_initial_plan",
         "/projects/{pid}/planning/initial",
-        "_public_state",
     ):
         assert retired not in source

@@ -7,9 +7,10 @@ import json
 import pytest
 
 from backend.domain.json_contracts import canonical_hash
-from backend.http_errors import ProjectArchived
+from backend.http_errors import ProjectArchived as RepositoryProjectArchived
 from backend.services.planning import (
     ConfirmPlanningDraft,
+    PlanningArchived,
     CreatePlanningDraft,
     PlanningConflict,
     PlanningPreconditionFailed,
@@ -143,15 +144,21 @@ class MemoryPlanningRepository:
         }
         self.calls: list[str] = []
         self.projection_write_count = 0
+        self.raise_archived_on_lock = False
 
     async def lock_active_project(self, _session, project_id):
         self.calls.append("lock_active_project")
+        if self.raise_archived_on_lock:
+            raise RepositoryProjectArchived()
         project = self.projects.get(project_id)
-        if project and project["archived_at"] is not None:
-            raise ProjectArchived()
-        return project
+        return (
+            project
+            if project and project["archived_at"] is None
+            else None
+        )
 
     async def read_project_any(self, _session, project_id):
+        self.calls.append("read_project_any")
         return self.projects.get(project_id)
 
     async def read_current_basis(self, _session, project_id):
@@ -468,6 +475,7 @@ async def test_confirm_rejects_empty_then_is_atomic_and_idempotent():
     assert harness.repository.requests[("p1", "confirm-1")]["status"] == "succeeded"
     assert harness.repository.projection_write_count == 0
     assert first_confirm_calls == (
+        "read_project_any",
         "lock_active_project",
         "read_current_basis",
         "lock_planning_head",
@@ -694,10 +702,20 @@ async def test_archived_mutations_reject_but_state_remains_readable_and_separate
         "contentHash": HASH_E,
         "synchronized": True,
     }
+    assert state.basis_status == "current"
+    assert state.capabilities.view is True
+    assert state.capabilities.edit is True
+    assert state.capabilities.confirm is False
+    assert state.capabilities.generate is False
 
     harness.repository.projects["p1"]["archived_at"] = 123
     archived = await harness.service.get_state("p1")
     assert archived.archived is True
+    assert archived.basis_status == "current"
+    assert archived.capabilities.view is True
+    assert archived.capabilities.edit is False
+    assert archived.capabilities.confirm is False
+    assert archived.capabilities.generate is False
     for operation in (
         harness.service.create_draft(CreatePlanningDraft("p1", "archived-create")),
         harness.service.save_draft(
@@ -707,5 +725,52 @@ async def test_archived_mutations_reject_but_state_remains_readable_and_separate
             ConfirmPlanningDraft("p1", "missing", 1, HASH_A, "y")
         ),
     ):
-        with pytest.raises(ProjectArchived):
+        with pytest.raises(PlanningArchived):
             await operation
+
+
+@pytest.mark.asyncio
+async def test_repository_archive_race_is_translated_without_snapshot_reread():
+    harness = Harness()
+    harness.repository.raise_archived_on_lock = True
+
+    with pytest.raises(PlanningArchived):
+        await harness.service.create_draft(
+            CreatePlanningDraft("p1", "archive-race")
+        )
+
+
+@pytest.mark.asyncio
+async def test_state_exposes_service_owned_basis_and_confirmation_capabilities():
+    harness = Harness()
+    empty = await harness.service.create_draft(
+        CreatePlanningDraft("p1", "create-capabilities")
+    )
+    before_save = await harness.service.get_state("p1")
+
+    assert before_save.basis_status == "current"
+    assert before_save.capabilities.confirm is False
+
+    await harness.service.save_draft(
+        SavePlanningDraft(
+            "p1",
+            empty.draft_id,
+            empty.draft_revision,
+            empty.content_hash,
+            planning_payload(),
+            "save-capabilities",
+        )
+    )
+    after_save = await harness.service.get_state("p1")
+
+    assert after_save.capabilities.confirm is True
+
+    harness.repository.projections["p1"]["canon_revision_number"] = 1
+    unsynchronized = await harness.service.get_state("p1")
+    assert unsynchronized.capabilities.confirm is False
+
+    harness.repository.basis["p1"] = None
+    unavailable = await harness.service.get_state("p1")
+    assert unavailable.basis_status == "unavailable"
+    assert unavailable.capabilities.edit is False
+    assert unavailable.capabilities.confirm is False

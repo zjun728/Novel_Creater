@@ -377,26 +377,199 @@ test('style trials use only the strict backend gateway payload', async () => {
   assert.equal(JSON.stringify(calls).includes('must-not-send'), false)
 })
 
-test('planning client reads state and creates only explicit initial plan payload', async () => {
+test('planning client uses revisioned aggregate paths and strict write allowlists', async () => {
   const calls = await captureRequests(async api => {
-    await api.planning.get('project-1')
-    await api.planning.createInitial('project-1', {
-      expectedContractRevision: 1,
-      idempotencyKey: 'planning-1',
+    await api.planning.get('project/1')
+    await api.planning.history('project/1')
+    await api.planning.createDraft('project/1', {
+      idempotencyKey: 'planning-create-1',
+      apiKey: 'must-not-send',
+      rawText: 'must-not-send',
+    })
+    await api.planning.saveDraft('project/1', 'draft/1', {
+      expectedDraftRevision: 2,
+      expectedDraftHash: 'a'.repeat(64),
+      content: {
+        activeStoryBlockRef: null,
+        volumes: [],
+        plots: [],
+        storyBlocks: [],
+      },
+      idempotencyKey: 'planning-save-1',
+      apiKey: 'must-not-send',
+      rawText: 'must-not-send',
+    })
+    await api.planning.confirmDraft('project/1', 'draft/1', {
+      expectedDraftRevision: 3,
+      expectedDraftHash: 'b'.repeat(64),
+      idempotencyKey: 'planning-confirm-1',
       apiKey: 'must-not-send',
       rawText: 'must-not-send',
     })
   })
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
-    ['GET', '/api/projects/project-1/planning'],
-    ['POST', '/api/projects/project-1/planning/initial'],
+    ['GET', '/api/projects/project%2F1/planning'],
+    ['GET', '/api/projects/project%2F1/planning/history'],
+    ['POST', '/api/projects/project%2F1/planning/drafts'],
+    ['PUT', '/api/projects/project%2F1/planning/drafts/draft%2F1'],
+    ['POST', '/api/projects/project%2F1/planning/drafts/draft%2F1/confirm'],
   ])
   assert.equal(bodyOf(calls[0]), undefined)
-  assert.deepEqual(bodyOf(calls[1]), {
-    expectedContractRevision: 1,
-    idempotencyKey: 'planning-1',
+  assert.equal(bodyOf(calls[1]), undefined)
+  assert.deepEqual(bodyOf(calls[2]), {
+    idempotencyKey: 'planning-create-1',
   })
+  assert.deepEqual(bodyOf(calls[3]), {
+    expectedDraftRevision: 2,
+    expectedDraftHash: 'a'.repeat(64),
+    content: {
+      activeStoryBlockRef: null,
+      volumes: [],
+      plots: [],
+      storyBlocks: [],
+    },
+    idempotencyKey: 'planning-save-1',
+  })
+  assert.deepEqual(bodyOf(calls[4]), {
+    expectedDraftRevision: 3,
+    expectedDraftHash: 'b'.repeat(64),
+    idempotencyKey: 'planning-confirm-1',
+  })
+  assert.equal(JSON.stringify(calls).includes('must-not-send'), false)
+})
+
+test('planning save recursively allows only the closed draft DTO fields', async () => {
+  const calls = await captureRequests(async api => {
+    await api.planning.saveDraft('project-1', 'draft-1', {
+      expectedDraftRevision: 1,
+      expectedDraftHash: 'a'.repeat(64),
+      idempotencyKey: 'planning-save-deep',
+      content: {
+        activeStoryBlockRef: 'block-1',
+        apiKey: 'must-not-send',
+        volumes: [{
+          id: 'volume-1',
+          revision: 1,
+          contentHash: 'b'.repeat(64),
+          lifecycle: 'active',
+          order: 1,
+          title: '第一卷',
+          coreChange: '站稳脚跟',
+          mainPressure: '追兵迫近',
+          ensembleFocus: ['主角'],
+          forbiddenEvents: [],
+          rawOutput: 'must-not-send',
+        }],
+        plots: [{
+          clientNodeKey: 'plot-new',
+          lifecycle: 'active',
+          order: 1,
+          title: '立足',
+          plotType: 'main',
+          storyQuestion: '如何脱险',
+          futureDirection: '转守为攻',
+          expectedPayoff: '建立据点',
+          relatedCharacters: ['主角'],
+          debug: 'must-not-send',
+        }],
+        storyBlocks: [{
+          id: 'block-1',
+          revision: 1,
+          contentHash: 'c'.repeat(64),
+          lifecycle: 'active',
+          order: 1,
+          title: '夜渡',
+          volumeRef: 'volume-1',
+          plotRefs: ['plot-new'],
+          entrySituation: '受困',
+          blockGoal: '穿过封锁',
+          mainPressure: '追兵合围',
+          expectedChange: '建立信任',
+          openQuestions: [],
+          involvedCharacters: ['主角'],
+          providerId: 'must-not-send',
+          stages: [{
+            clientNodeKey: 'stage-new',
+            lifecycle: 'active',
+            order: 1,
+            title: '找缺口',
+            purpose: '观察换岗',
+            dramaticQuestion: '能否及时脱身',
+            apiKey: 'must-not-send',
+            sceneTasks: [{
+              clientNodeKey: 'task-new',
+              lifecycle: 'active',
+              order: 1,
+              task: '记录巡逻',
+              completionEvidence: '获得换岗间隔',
+              rawOutput: 'must-not-send',
+            }],
+          }],
+        }],
+      },
+    })
+  })
+
+  const body = bodyOf(calls[0])
+  assert.deepEqual(body.content, {
+    activeStoryBlockRef: 'block-1',
+    volumes: [{
+      id: 'volume-1',
+      revision: 1,
+      contentHash: 'b'.repeat(64),
+      lifecycle: 'active',
+      order: 1,
+      title: '第一卷',
+      coreChange: '站稳脚跟',
+      mainPressure: '追兵迫近',
+      ensembleFocus: ['主角'],
+      forbiddenEvents: [],
+    }],
+    plots: [{
+      clientNodeKey: 'plot-new',
+      lifecycle: 'active',
+      order: 1,
+      title: '立足',
+      plotType: 'main',
+      storyQuestion: '如何脱险',
+      futureDirection: '转守为攻',
+      expectedPayoff: '建立据点',
+      relatedCharacters: ['主角'],
+    }],
+    storyBlocks: [{
+      id: 'block-1',
+      revision: 1,
+      contentHash: 'c'.repeat(64),
+      lifecycle: 'active',
+      order: 1,
+      title: '夜渡',
+      volumeRef: 'volume-1',
+      plotRefs: ['plot-new'],
+      entrySituation: '受困',
+      blockGoal: '穿过封锁',
+      mainPressure: '追兵合围',
+      expectedChange: '建立信任',
+      openQuestions: [],
+      involvedCharacters: ['主角'],
+      stages: [{
+        clientNodeKey: 'stage-new',
+        lifecycle: 'active',
+        order: 1,
+        title: '找缺口',
+        purpose: '观察换岗',
+        dramaticQuestion: '能否及时脱身',
+        sceneTasks: [{
+          clientNodeKey: 'task-new',
+          lifecycle: 'active',
+          order: 1,
+          task: '记录巡逻',
+          completionEvidence: '获得换岗间隔',
+        }],
+      }],
+    }],
+  })
+  assert.equal(JSON.stringify(body).includes('must-not-send'), false)
 })
 
 test('chapter session client separates session draft and explicit candidate writes', async () => {
@@ -486,9 +659,25 @@ test('every shared client path segment is encoded without changing route structu
     await api.providers.delete('provider/one')
     await api.writerCore.state('project/one')
     await api.planning.get('project/one')
-    await api.planning.createInitial('project/one', {
-      expectedContractRevision: 1,
+    await api.planning.history('project/one')
+    await api.planning.createDraft('project/one', {
       idempotencyKey: 'planning-1',
+    })
+    await api.planning.saveDraft('project/one', 'draft/one', {
+      expectedDraftRevision: 1,
+      expectedDraftHash: 'a'.repeat(64),
+      content: {
+        activeStoryBlockRef: null,
+        volumes: [],
+        plots: [],
+        storyBlocks: [],
+      },
+      idempotencyKey: 'planning-save-1',
+    })
+    await api.planning.confirmDraft('project/one', 'draft/one', {
+      expectedDraftRevision: 2,
+      expectedDraftHash: 'b'.repeat(64),
+      idempotencyKey: 'planning-confirm-1',
     })
     await api.canon.head('project/one')
     await api.canon.entities('project/one', {
@@ -509,15 +698,18 @@ test('every shared client path segment is encoded without changing route structu
     '/api/providers/provider%2Fone',
     '/api/projects/project%2Fone/writer-core/state',
     '/api/projects/project%2Fone/planning',
-    '/api/projects/project%2Fone/planning/initial',
+    '/api/projects/project%2Fone/planning/history',
+    '/api/projects/project%2Fone/planning/drafts',
+    '/api/projects/project%2Fone/planning/drafts/draft%2Fone',
+    '/api/projects/project%2Fone/planning/drafts/draft%2Fone/confirm',
     '/api/projects/project%2Fone/canon/head',
     '/api/projects/project%2Fone/canon/entities',
     '/api/projects/project%2Fone/canon/entities/entity%2Fone',
     '/api/projects/project%2Fone/canon/aliases/resolve',
     '/api/projects/project%2Fone/projections/head',
   ])
-  assert.equal(new URL(calls[13].url).searchParams.get('name'), '张 三/别名')
-  assert.equal(new URL(calls[9].url).search, '')
+  assert.equal(new URL(calls[16].url).searchParams.get('name'), '张 三/别名')
+  assert.equal(new URL(calls[12].url).search, '')
 })
 
 test('project and provider writes use explicit transport allowlists', async () => {

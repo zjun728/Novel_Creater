@@ -1,8 +1,7 @@
 <script setup>
-import { computed } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NList, NListItem, NSpace, NTag } from 'naive-ui'
+import { computed, watch } from 'vue'
+import { NAlert, NButton, NCard, NEmpty, NSkeleton, NTag } from 'naive-ui'
 
-import { useCreationContractStore } from '@/stores/creationContractStore'
 import { usePlanningStore } from '@/stores/planningStore'
 
 const props = defineProps({
@@ -10,127 +9,441 @@ const props = defineProps({
 })
 
 const planningStore = usePlanningStore()
-const contractStore = useCreationContractStore()
 
-const contractRevision = computed(() => Number(contractStore.head?.revision || 0))
-const canCreate = computed(() => (
-  contractStore.head?.hasContract === true
-  && contractStore.head?.contractReady === true
-  && contractRevision.value > 0
-  && !planningStore.hasPlanning
-  && !planningStore.creating
+const headRevision = computed(() => (
+  planningStore.state
+    ? Number(planningStore.state.head?.revision ?? 0)
+    : null
 ))
-const activeBlock = computed(() => planningStore.activeBlock)
-const activeVolume = computed(() => planningStore.activeVolume)
-const stages = computed(() => planningStore.stages)
-const tasks = computed(() => planningStore.sceneTasks)
+const headRevisionLabel = computed(() => (
+  planningStore.state ? `R${headRevision.value}` : '—'
+))
+const draftRevision = computed(() => (
+  planningStore.state?.draft?.draftRevision ?? null
+))
+const futurePlan = computed(() => planningStore.state?.futurePlan || null)
+const actualProgress = computed(() => (
+  Array.isArray(planningStore.state?.actualProgress)
+    ? planningStore.state.actualProgress
+    : []
+))
+const capacityPolicy = computed(() => planningStore.state?.capacityPolicy || null)
+const isReadOnly = computed(() => (
+  planningStore.state?.capabilities?.edit === false
+))
+const planCounts = computed(() => ({
+  volumes: futurePlan.value?.volumes?.length || 0,
+  plots: futurePlan.value?.plots?.length || 0,
+  blocks: futurePlan.value?.storyBlocks?.length || 0,
+}))
 
-function taskCount(stageId) {
-  return tasks.value.filter(task => task.storyStageId === stageId).length
-}
+watch(
+  () => props.projectId,
+  projectId => {
+    if (projectId) void planningStore.load(projectId).catch(() => {})
+  },
+  { immediate: true },
+)
 
-async function createInitialPlanning() {
-  if (!canCreate.value) return
-  await planningStore.createInitial(props.projectId, {
-    expectedContractRevision: contractRevision.value,
-    idempotencyKey: `planning-initial-${contractRevision.value}`,
-  })
+function reloadPlanning() {
+  void planningStore.load(props.projectId).catch(() => {})
 }
 </script>
 
 <template>
-  <section class="planning-panel" aria-labelledby="planning-heading">
-    <div class="section-heading">
+  <section class="planning-workspace" aria-labelledby="planning-heading">
+    <header class="workspace-header">
       <div>
-        <p class="section-index">02 / 滚动规划</p>
-        <h2 id="planning-heading">StoryBlock / Stage / SceneTask</h2>
+        <p class="eyebrow">故事规划 · 单一事实链</p>
+        <h2 id="planning-heading">滚动规划</h2>
+        <p class="lede">
+          未来安排与已经发生的正文事实分开呈现，定稿事实不会被规划静默改写。
+        </p>
       </div>
-      <n-tag v-if="planningStore.planningReady" type="success" round>规划已就绪</n-tag>
-      <n-tag v-else round>等待滚动规划</n-tag>
-    </div>
+      <div class="revision-strip" aria-label="规划版本">
+        <div>
+          <span>确认版本</span>
+          <strong>{{ headRevisionLabel }}</strong>
+        </div>
+        <div>
+          <span>工作草稿</span>
+          <strong>{{ draftRevision === null ? '—' : `D${draftRevision}` }}</strong>
+        </div>
+      </div>
+    </header>
 
-    <n-alert v-if="planningStore.error" type="error" class="planning-alert">
+    <n-alert
+      v-if="planningStore.error"
+      type="error"
+      class="planning-alert"
+      :show-icon="false"
+    >
       {{ planningStore.error.message }}
     </n-alert>
 
-    <n-card v-if="planningStore.hasPlanning && activeBlock" class="planning-card">
-      <template #header>
-        <div class="card-title">
-          <span>当前故事块</span>
-          <strong>{{ activeBlock.title }}</strong>
-        </div>
-      </template>
-      <div class="planning-grid">
-        <div>
-          <p class="label">当前卷</p>
-          <p>{{ activeVolume?.title || '未命名分卷' }}</p>
-        </div>
-        <div>
-          <p class="label">章节容量</p>
-          <p>
-            {{ activeBlock.goal?.chapterCapacity?.targetMin || 3500 }}
-            —
-            {{ activeBlock.goal?.chapterCapacity?.targetMax || 4500 }}
-            字，安全上限约
-            {{ activeBlock.goal?.chapterCapacity?.softCeiling || 5200 }}
-          </p>
-        </div>
-      </div>
-      <p class="block-goal">{{ activeBlock.goal?.goal }}</p>
-      <n-list bordered>
-        <n-list-item v-for="stage in stages" :key="stage.id">
-          <n-space justify="space-between" align="center">
-            <div>
-              <strong>{{ stage.stageOrder }}. {{ stage.title }}</strong>
-              <p class="stage-line">{{ stage.plan?.dramaticQuestion || stage.plan?.purpose }}</p>
-            </div>
-            <n-tag :type="stage.status === 'in_progress' ? 'warning' : 'default'">
-              {{ stage.status }} · SceneTask {{ taskCount(stage.id) }}
-            </n-tag>
-          </n-space>
-        </n-list-item>
-      </n-list>
-    </n-card>
+    <n-alert
+      v-else-if="isReadOnly"
+      type="info"
+      class="planning-alert"
+      :show-icon="false"
+    >
+      当前规划为只读状态；请先完成项目准备条件，或恢复已归档项目。
+    </n-alert>
 
-    <n-card v-else class="planning-card empty-card">
-      <n-empty description="创作契约签印后，可以建立首个滚动规划。">
+    <div v-if="planningStore.loading && !planningStore.state" class="loading-grid">
+      <n-card v-for="index in 2" :key="index" class="plan-card">
+        <n-skeleton text :repeat="4" />
+      </n-card>
+    </div>
+
+    <n-card
+      v-else-if="!planningStore.state"
+      class="plan-card planning-load-failure"
+    >
+      <n-empty description="规划数据加载失败，当前没有可展示的权威状态。">
         <template #extra>
-          <n-button
-            type="primary"
-            :loading="planningStore.creating"
-            :disabled="!canCreate"
-            @click="createInitialPlanning"
-          >
-            创建滚动规划
+          <n-button type="primary" ghost @click="reloadPlanning">
+            重新加载
           </n-button>
         </template>
       </n-empty>
-      <p class="hint">
-        滚动规划只建立分卷方向、当前 StoryBlock、StoryStage 和 SceneTask；
-        不设置目标章节数，不调用模型，也不生成正文。
-      </p>
     </n-card>
+
+    <div v-else class="planning-grid">
+      <n-card class="plan-card future-card">
+        <template #header>
+          <div class="card-heading">
+            <div>
+              <p class="card-kicker">NEXT / 可调整</p>
+              <h3>未来计划</h3>
+            </div>
+            <n-tag v-if="draftRevision !== null" round size="small" type="warning">
+              草稿 D{{ draftRevision }}
+            </n-tag>
+            <n-tag v-else round size="small">暂无草稿</n-tag>
+          </div>
+        </template>
+
+        <div v-if="headRevision === 0" class="head-zero">
+          <span class="zero-mark">0</span>
+          <div>
+            <strong>尚无已确认规划</strong>
+            <p>规划草稿确认后，首个不可变版本会从 R1 开始。</p>
+          </div>
+        </div>
+
+        <div v-else-if="futurePlan" class="plan-summary">
+          <div>
+            <strong>{{ planCounts.volumes }}</strong>
+            <span>分卷方向</span>
+          </div>
+          <div>
+            <strong>{{ planCounts.plots }}</strong>
+            <span>情节线</span>
+          </div>
+          <div>
+            <strong>{{ planCounts.blocks }}</strong>
+            <span>故事块</span>
+          </div>
+        </div>
+
+        <n-empty
+          v-else
+          size="small"
+          description="当前确认版本没有未来规划内容"
+        />
+
+        <div v-if="capacityPolicy" class="capacity-line">
+          <span>章节容量参考</span>
+          <strong>
+            {{ capacityPolicy.targetMin }}–{{ capacityPolicy.targetMax }} 字
+          </strong>
+          <small>软上限 {{ capacityPolicy.softCeiling }} 字</small>
+        </div>
+      </n-card>
+
+      <n-card class="plan-card progress-card">
+        <template #header>
+          <div class="card-heading">
+            <div>
+              <p class="card-kicker">CANON / 只读</p>
+              <h3>已发生事实</h3>
+            </div>
+            <n-tag round size="small" type="success">
+              {{ actualProgress.length }} 条
+            </n-tag>
+          </div>
+        </template>
+
+        <ol v-if="actualProgress.length" class="progress-list">
+          <li
+            v-for="(item, index) in actualProgress"
+            :key="item.id || item.contentHash || index"
+          >
+            <span>{{ String(index + 1).padStart(2, '0') }}</span>
+            <p>{{ item.summary || item.title || '已确认事实' }}</p>
+          </li>
+        </ol>
+        <n-empty
+          v-else
+          size="small"
+          description="尚无从定稿正文投影的已发生事实"
+        />
+
+        <p class="fact-note">
+          此区域只读取 Canon 投影；规划不能反向覆盖已经确认的正文事实。
+        </p>
+      </n-card>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.planning-panel { width: min(1120px, 100%); margin: 42px auto 0; }
-.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
-.section-index { margin: 0; color: #967548; font-size: 10px; font-weight: 800; letter-spacing: .18em; text-transform: uppercase; }
-h2 { margin: 5px 0 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: 24px; font-weight: 650; }
-.planning-alert { margin-bottom: 12px; }
-.planning-card { background: #fffdf8; border: 1px solid #ded2bf; border-radius: 14px; }
-.card-title { display: grid; gap: 4px; }
-.card-title span, .label, .hint, .stage-line { color: #82766a; font-size: 12px; }
-.card-title strong { font-family: Georgia, 'Noto Serif SC', serif; font-size: 21px; }
-.planning-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-bottom: 14px; }
-.planning-grid p { margin: 0; }
-.block-goal { color: #3d362f; line-height: 1.8; }
-.stage-line { margin: 5px 0 0; }
-.empty-card { text-align: center; }
-.hint { max-width: 620px; margin: 14px auto 0; line-height: 1.8; }
-@media (max-width: 720px) {
-  .section-heading, .planning-grid { grid-template-columns: 1fr; align-items: flex-start; }
-  .section-heading { flex-direction: column; }
+.planning-workspace {
+  --ink: #302b25;
+  --muted: #807568;
+  --paper: #fffdf8;
+  --line: #ddd1bf;
+  --accent: #9a6c32;
+  width: min(1120px, 100%);
+  margin: 42px auto 0;
+  color: var(--ink);
+}
+
+.workspace-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 32px;
+  margin-bottom: 18px;
+}
+
+.eyebrow,
+.card-kicker {
+  margin: 0;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .18em;
+}
+
+h2,
+h3 {
+  font-family: Georgia, 'Noto Serif SC', serif;
+  font-weight: 650;
+}
+
+h2 {
+  margin: 6px 0 0;
+  font-size: 28px;
+}
+
+h3 {
+  margin: 5px 0 0;
+  font-size: 20px;
+}
+
+.lede {
+  max-width: 630px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.revision-strip {
+  display: flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 253, 248, .78);
+}
+
+.revision-strip > div {
+  display: grid;
+  min-width: 104px;
+  padding: 10px 16px;
+}
+
+.revision-strip > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.revision-strip span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.revision-strip strong {
+  margin-top: 2px;
+  font-family: Georgia, serif;
+  font-size: 18px;
+}
+
+.planning-alert {
+  margin-bottom: 14px;
+}
+
+.planning-grid,
+.loading-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.18fr) minmax(300px, .82fr);
+  gap: 16px;
+}
+
+.plan-card {
+  min-height: 300px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+}
+
+.future-card {
+  background:
+    linear-gradient(145deg, rgba(154, 108, 50, .055), transparent 44%),
+    var(--paper);
+}
+
+.progress-card {
+  background:
+    linear-gradient(160deg, rgba(65, 105, 90, .055), transparent 48%),
+    var(--paper);
+}
+
+.card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.head-zero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 118px;
+  padding: 14px 0 20px;
+}
+
+.zero-mark {
+  color: rgba(154, 108, 50, .18);
+  font-family: Georgia, serif;
+  font-size: 82px;
+  line-height: .9;
+}
+
+.head-zero strong {
+  font-family: Georgia, 'Noto Serif SC', serif;
+  font-size: 18px;
+}
+
+.head-zero p,
+.fact-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.plan-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  overflow: hidden;
+  margin: 8px 0 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--line);
+}
+
+.plan-summary div {
+  display: grid;
+  gap: 3px;
+  padding: 18px;
+  background: rgba(255, 253, 248, .94);
+}
+
+.plan-summary strong {
+  font-family: Georgia, serif;
+  font-size: 26px;
+}
+
+.plan-summary span,
+.capacity-line span,
+.capacity-line small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.capacity-line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 4px 16px;
+  margin-top: 22px;
+  padding-top: 15px;
+  border-top: 1px dashed var(--line);
+}
+
+.capacity-line small {
+  grid-column: 1 / -1;
+}
+
+.progress-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.progress-list li {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(221, 209, 191, .68);
+}
+
+.progress-list span {
+  color: var(--accent);
+  font-family: Georgia, serif;
+  font-size: 11px;
+}
+
+.progress-list p {
+  margin: 0;
+  line-height: 1.65;
+}
+
+.fact-note {
+  margin-top: 20px;
+  padding: 12px 14px;
+  border-left: 2px solid rgba(65, 105, 90, .5);
+  background: rgba(65, 105, 90, .045);
+}
+
+@media (max-width: 760px) {
+  .workspace-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .planning-grid,
+  .loading-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .revision-strip {
+    width: 100%;
+  }
+
+  .revision-strip > div {
+    flex: 1;
+  }
+
+  .plan-summary {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

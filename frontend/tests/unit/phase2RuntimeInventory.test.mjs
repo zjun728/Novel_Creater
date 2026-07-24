@@ -182,6 +182,34 @@ const PRESERVED_FUTURE_RUNTIME = [
   'components/project/WriterCoreStateCard.vue',
 ]
 
+test('planning foundation keeps one store and one workspace without retired initial or V2 paths', async () => {
+  const readSource = relativePath => readFile(
+    path.join(sourceRoot, relativePath),
+    'utf8',
+  )
+  const [client, store, workspace] = await Promise.all([
+    readSource('api/db/client.js'),
+    readSource('stores/planningStore.js'),
+    readSource('components/planning/PlanningWorkspace.vue'),
+  ])
+
+  assert.doesNotMatch(client, /createInitial|planning\/initial/)
+  assert.doesNotMatch(store, /createInitial|usePlanningStoreV2/)
+  assert.doesNotMatch(workspace, /创建滚动规划|createInitial|AI\s*生成/)
+  assert.match(workspace, /未来计划/)
+  assert.match(workspace, /已发生事实/)
+  assert.match(workspace, /planning-load-failure/)
+  assert.match(workspace, /重新加载/)
+  assert.match(workspace, /v-else-if="!planningStore\.state"/)
+  assert.match(workspace, /headRevisionLabel/)
+  assert.match(workspace, /planningStore\.state\s*\?\s*`R\$\{/)
+  assert.match(workspace, /:\s*'—'/)
+  assert.doesNotMatch(workspace, /<strong>R\{\{\s*headRevision/)
+  await assert.rejects(
+    access(path.join(sourceRoot, 'components/planning/PlanningWorkspaceV2.vue')),
+  )
+})
+
 const RETIRED_CROSS_RUNTIME_FILES = [
   'backend/routers/experience_cards.py',
   'backend/routers/control_plane_draft_writes.py',
