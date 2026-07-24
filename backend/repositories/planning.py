@@ -501,6 +501,7 @@ class PlanningRepository:
         expected_revision: int,
         expected_hash: str,
         operation_id: str,
+        fencing_token: int,
         content_json: str,
         content_hash: str,
         loaded_at: int,
@@ -515,15 +516,20 @@ class PlanningRepository:
                       draft.content_json=%s,draft.content_hash=%s,
                       draft.source_attempt_id=attempt.id,
                       draft.updated_at=%s,
+                      attempt.status='succeeded',
+                      attempt.active_slot=NULL,
+                      attempt.result_content_json=%s,
+                      attempt.result_content_hash=%s,
                       attempt.loaded_draft_revision=%s,
-                      attempt.loaded_at=%s
+                      attempt.loaded_at=%s,
+                      attempt.updated_at=%s
                 WHERE draft.project_id=%s AND draft.id=%s
                   AND draft.status='active' AND draft.active_slot=1
                   AND draft.draft_revision=%s AND draft.content_hash=%s
                   AND attempt.operation_id=%s
-                  AND attempt.status='succeeded'
-                  AND attempt.result_content_hash=%s
-                  AND attempt.result_content_json=CAST(%s AS JSON)
+                  AND attempt.status='pending'
+                  AND attempt.active_slot=1
+                  AND attempt.fencing_token=%s
                   AND attempt.loaded_draft_revision IS NULL
                   AND attempt.loaded_at IS NULL""",
             (
@@ -531,15 +537,17 @@ class PlanningRepository:
                 content_json,
                 content_hash,
                 loaded_at,
+                content_json,
+                content_hash,
                 loaded_revision,
+                loaded_at,
                 loaded_at,
                 project_id,
                 draft_id,
                 expected_revision,
                 expected_hash,
                 operation_id,
-                content_hash,
-                content_json,
+                fencing_token,
             ),
         )
         return changed == 2

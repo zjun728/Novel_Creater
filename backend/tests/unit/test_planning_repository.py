@@ -370,6 +370,7 @@ async def test_load_generation_result_is_one_exact_attempt_owned_draft_cas():
         expected_revision=2,
         expected_hash="a" * 64,
         operation_id="operation-1",
+        fencing_token=7,
         content_json='{"generated":true}',
         content_hash="b" * 64,
         loaded_at=40,
@@ -383,23 +384,28 @@ async def test_load_generation_result_is_one_exact_attempt_owned_draft_cas():
     assert "attempt.project_id=draft.project_id" in compact
     assert "attempt.draft_id=draft.id" in compact
     assert "draft.source_attempt_id=attempt.id" in compact
+    assert "attempt.status='succeeded'" in compact
+    assert "attempt.active_slot=NULL" in compact
+    assert "attempt.result_content_json=%s" in compact
+    assert "attempt.result_content_hash=%s" in compact
     assert "attempt.loaded_draft_revision=%s" in compact
     assert "attempt.loaded_at=%s" in compact
+    assert "attempt.updated_at=%s" in compact
     assert "draft.project_id=%s AND draft.id=%s" in compact
     assert "draft.status='active' AND draft.active_slot=1" in compact
     assert "draft.draft_revision=%s AND draft.content_hash=%s" in compact
     assert "attempt.operation_id=%s" in compact
-    assert "attempt.status='succeeded'" in compact
-    assert "attempt.result_content_hash=%s" in compact
+    assert "attempt.status='pending'" in compact
+    assert "attempt.active_slot=1" in compact
+    assert "attempt.fencing_token=%s" in compact
     assert "attempt.loaded_draft_revision IS NULL" in compact
-    assert args[-7:] == (
+    assert args[-6:] == (
         "p1",
         "draft-1",
         2,
         "a" * 64,
         "operation-1",
-        "b" * 64,
-        '{"generated":true}',
+        7,
     )
 
 

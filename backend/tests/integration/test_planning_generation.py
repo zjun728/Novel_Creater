@@ -121,24 +121,34 @@ async def test_real_mysql_generation_fences_terminal_writes_and_loads_exact_draf
     result = {"generated": True, "operation": second["operation_id"]}
     result_json = canonical_json(result)
     result_hash = canonical_hash(result)
-    assert not await repository.succeed_generation_attempt(
+    draft_before_stale = await disposable_mysql.session.fetchone(
+        "SELECT * FROM planning_drafts WHERE id=%s",
+        (draft.draft_id,),
+    )
+    attempt_before_stale = await disposable_mysql.session.fetchone(
+        "SELECT * FROM planning_generation_attempts WHERE id=%s",
+        (second["id"],),
+    )
+    assert not await repository.load_generation_result_into_draft(
         disposable_mysql.session,
         project_id=PROJECT,
+        draft_id=draft.draft_id,
+        expected_revision=draft.draft_revision,
+        expected_hash=draft.content_hash,
         operation_id=second["operation_id"],
         fencing_token=1,
-        result_content_json=result_json,
-        result_content_hash=result_hash,
-        updated_at=NOW + 20,
+        content_json=result_json,
+        content_hash=result_hash,
+        loaded_at=NOW + 20,
     )
-    assert await repository.succeed_generation_attempt(
-        disposable_mysql.session,
-        project_id=PROJECT,
-        operation_id=second["operation_id"],
-        fencing_token=2,
-        result_content_json=result_json,
-        result_content_hash=result_hash,
-        updated_at=NOW + 21,
-    )
+    assert await disposable_mysql.session.fetchone(
+        "SELECT * FROM planning_drafts WHERE id=%s",
+        (draft.draft_id,),
+    ) == draft_before_stale
+    assert await disposable_mysql.session.fetchone(
+        "SELECT * FROM planning_generation_attempts WHERE id=%s",
+        (second["id"],),
+    ) == attempt_before_stale
     assert await repository.load_generation_result_into_draft(
         disposable_mysql.session,
         project_id=PROJECT,
@@ -146,9 +156,10 @@ async def test_real_mysql_generation_fences_terminal_writes_and_loads_exact_draf
         expected_revision=draft.draft_revision,
         expected_hash=draft.content_hash,
         operation_id=second["operation_id"],
+        fencing_token=2,
         content_json=result_json,
         content_hash=result_hash,
-        loaded_at=NOW + 22,
+        loaded_at=NOW + 21,
     )
 
     loaded_draft = await disposable_mysql.session.fetchone(
@@ -165,7 +176,8 @@ async def test_real_mysql_generation_fences_terminal_writes_and_loads_exact_draf
     assert loaded_attempt["status"] == "succeeded"
     assert loaded_attempt["active_slot"] is None
     assert loaded_attempt["loaded_draft_revision"] == draft.draft_revision + 1
-    assert loaded_attempt["loaded_at"] == NOW + 22
+    assert loaded_attempt["loaded_at"] == NOW + 21
+    assert loaded_attempt["updated_at"] == NOW + 21
 
 
 @pytest.mark.asyncio
