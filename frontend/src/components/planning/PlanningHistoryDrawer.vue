@@ -17,10 +17,45 @@ const focus = createModalFocusManager({
 })
 let ariaHiddenSnapshot = null
 
+const DISPLAY_STATUS_LABELS = Object.freeze({
+  current: '当前版本',
+  superseded: '已被后续规划取代',
+  archived: '项目已归档',
+})
+const DISPLAY_REASON_LABELS = Object.freeze({
+  currentPlanningHead: '当前规划主版本',
+  newerPlanningOrBasis: '已有更新规划或创作依据',
+  projectArchived: '项目已归档',
+})
+const LIFECYCLE_LABELS = Object.freeze({
+  active: '有效',
+  retired: '已退役',
+})
 const listText = value => (
   Array.isArray(value) && value.length ? value.join('、') : '无'
 )
 const nodeId = node => String(node?.id || node?.clientNodeKey || '')
+const knownValue = (values, value) => Object.hasOwn(values, String(value || ''))
+const displayStatusLabel = value => (
+  knownValue(DISPLAY_STATUS_LABELS, value)
+    ? DISPLAY_STATUS_LABELS[value]
+    : '状态不可用'
+)
+const displayReasonLabel = value => (
+  knownValue(DISPLAY_REASON_LABELS, value)
+    ? DISPLAY_REASON_LABELS[value]
+    : '原因不可用'
+)
+const lifecycleLabel = value => (
+  knownValue(LIFECYCLE_LABELS, value)
+    ? LIFECYCLE_LABELS[value]
+    : '生命周期不可用'
+)
+const lifecycleClass = value => (
+  knownValue(LIFECYCLE_LABELS, value)
+    ? `lifecycle-${value}`
+    : 'lifecycle-unknown'
+)
 
 function relationLabel(items, targetId, kind) {
   const normalized = String(targetId || '')
@@ -140,6 +175,10 @@ onBeforeUnmount(() => {
                 {{ item.content?.storyBlocks?.length || 0 }} 个故事块
               </strong>
               <small>{{ item.createdAt || item.confirmedAt || '已确认修订' }}</small>
+              <div class="revision-state">
+                <b>{{ displayStatusLabel(item.displayStatus) }}</b>
+                <small>{{ displayReasonLabel(item.displayReason) }}</small>
+              </div>
             </div>
 
             <section>
@@ -147,8 +186,15 @@ onBeforeUnmount(() => {
               <article
                 v-for="volume in item.content?.volumes || []"
                 :key="volume.id || volume.clientNodeKey"
+                class="node-record"
+                :class="lifecycleClass(volume.lifecycle)"
               >
-                <h4>{{ volume.title || '未命名分卷' }}</h4>
+                <div class="node-heading">
+                  <h4>{{ volume.title || '未命名分卷' }}</h4>
+                  <span class="lifecycle-marker">
+                    分卷 · {{ lifecycleLabel(volume.lifecycle) }}
+                  </span>
+                </div>
                 <dl>
                   <div><dt>核心变化</dt><dd>{{ volume.coreChange || '未填写' }}</dd></div>
                   <div><dt>主要压力</dt><dd>{{ volume.mainPressure || '未填写' }}</dd></div>
@@ -163,8 +209,15 @@ onBeforeUnmount(() => {
               <article
                 v-for="plot in item.content?.plots || []"
                 :key="plot.id || plot.clientNodeKey"
+                class="node-record"
+                :class="lifecycleClass(plot.lifecycle)"
               >
-                <h4>{{ plot.title || '未命名情节线' }}</h4>
+                <div class="node-heading">
+                  <h4>{{ plot.title || '未命名情节线' }}</h4>
+                  <span class="lifecycle-marker">
+                    情节线 · {{ lifecycleLabel(plot.lifecycle) }}
+                  </span>
+                </div>
                 <dl>
                   <div><dt>类型</dt><dd>{{ plot.plotType || '未填写' }}</dd></div>
                   <div><dt>故事问题</dt><dd>{{ plot.storyQuestion || '未填写' }}</dd></div>
@@ -180,12 +233,19 @@ onBeforeUnmount(() => {
               <article
                 v-for="block in item.content?.storyBlocks || []"
                 :key="block.id || block.clientNodeKey"
+                class="node-record"
+                :class="lifecycleClass(block.lifecycle)"
               >
                 <div class="block-heading">
                   <h4>{{ block.title || '未命名故事块' }}</h4>
-                  <strong v-if="isActiveStoryBlock(item.content, block)">
-                    当前活动故事块
-                  </strong>
+                  <div class="node-markers">
+                    <span class="lifecycle-marker">
+                      故事块 · {{ lifecycleLabel(block.lifecycle) }}
+                    </span>
+                    <strong v-if="isActiveStoryBlock(item.content, block)">
+                      当前活动故事块
+                    </strong>
+                  </div>
                 </div>
                 <p class="block-relations">
                   所属分卷：{{ volumeRelation(item.content, block) }}
@@ -205,16 +265,26 @@ onBeforeUnmount(() => {
                   <li
                     v-for="stage in block.stages || []"
                     :key="stage.id || stage.clientNodeKey"
+                    :class="lifecycleClass(stage.lifecycle)"
                   >
-                    <h5>{{ stage.title || '未命名阶段' }}</h5>
+                    <div class="node-heading">
+                      <h5>{{ stage.title || '未命名阶段' }}</h5>
+                      <span class="lifecycle-marker">
+                        阶段 · {{ lifecycleLabel(stage.lifecycle) }}
+                      </span>
+                    </div>
                     <p><b>阶段目的：</b>{{ stage.purpose || '未填写' }}</p>
                     <p><b>戏剧问题：</b>{{ stage.dramaticQuestion || '未填写' }}</p>
                     <ul>
                       <li
                         v-for="task in stage.sceneTasks || []"
                         :key="task.id || task.clientNodeKey"
+                        :class="lifecycleClass(task.lifecycle)"
                       >
                         <b>{{ task.task || '未命名任务' }}</b>
+                        <small class="lifecycle-marker">
+                          场景任务 · {{ lifecycleLabel(task.lifecycle) }}
+                        </small>
                         <span>完成证据：{{ task.completionEvidence || '未填写' }}</span>
                       </li>
                     </ul>
@@ -244,12 +314,20 @@ button { border:1px solid var(--nc-border); border-radius:6px; padding:8px 12px;
 .revision-heading span { grid-row:span 2; color:var(--nc-vermilion); font:600 22px Georgia,serif; }
 .revision-heading strong { font-size:14px; }
 .revision-heading small { color:var(--nc-muted); }
+.revision-state { grid-column:1 / -1; display:flex; align-items:center; gap:10px; margin-top:6px; }
+.revision-state b { color:var(--nc-vermilion); font-size:13px; }
 .revision-card section { display:grid; gap:10px; }
 .revision-card h3 { margin:0; padding-bottom:7px; border-bottom:1px solid var(--nc-border); font-size:15px; }
 .revision-card article { padding:13px; border:1px solid var(--nc-border); border-radius:8px; }
 .revision-card h4,.revision-card h5 { margin:0 0 9px; }
-.block-heading { display:flex; align-items:start; justify-content:space-between; gap:12px; }
+.node-heading,.block-heading { display:flex; align-items:start; justify-content:space-between; gap:12px; }
+.node-markers { display:flex; align-items:end; flex-direction:column; gap:5px; }
 .block-heading strong { flex:none; color:var(--nc-vermilion); font-size:12px; }
+.lifecycle-marker { color:var(--nc-muted); font-size:11px; }
+.lifecycle-retired { border-left:3px solid var(--nc-muted) !important; background:color-mix(in srgb,var(--nc-muted) 8%,var(--nc-paper)) !important; }
+.lifecycle-retired .lifecycle-marker { font-weight:700; }
+.lifecycle-unknown { border:2px dashed var(--nc-vermilion) !important; }
+.lifecycle-unknown .lifecycle-marker { color:var(--nc-vermilion); font-weight:700; }
 .block-relations { margin:5px 0; color:var(--nc-muted); line-height:1.6; }
 .revision-card dl { display:grid; gap:7px; margin:0; }
 .revision-card dl div { display:grid; grid-template-columns:90px 1fr; gap:10px; }

@@ -298,6 +298,17 @@ function historyAggregate() {
       revision: 1,
       contentHash: 'a'.repeat(64),
       lifecycle: 'active',
+    }, {
+      id: 'volume-retired',
+      order: 2,
+      title: '旧卷',
+      coreChange: '旧变化完整保留',
+      mainPressure: '旧压力完整保留',
+      ensembleFocus: ['旧人物'],
+      forbiddenEvents: ['旧禁区'],
+      revision: 2,
+      contentHash: '1'.repeat(64),
+      lifecycle: 'retired',
     }],
     plots: [{
       id: 'plot-1',
@@ -311,6 +322,18 @@ function historyAggregate() {
       revision: 1,
       contentHash: 'b'.repeat(64),
       lifecycle: 'active',
+    }, {
+      id: 'plot-retired',
+      order: 2,
+      title: '旧情节线',
+      plotType: 'other',
+      storyQuestion: '旧问题完整保留',
+      futureDirection: '旧走向完整保留',
+      expectedPayoff: '旧回报完整保留',
+      relatedCharacters: ['旧人物'],
+      revision: 2,
+      contentHash: '2'.repeat(64),
+      lifecycle: 'retired',
     }],
     storyBlocks: [{
       id: 'block-1',
@@ -329,6 +352,7 @@ function historyAggregate() {
       lifecycle: 'active',
       stages: [{
         id: 'stage-1',
+        storyBlockId: 'block-1',
         order: 1,
         title: '潜入',
         purpose: '进入库房',
@@ -338,14 +362,51 @@ function historyAggregate() {
         lifecycle: 'active',
         sceneTasks: [{
           id: 'task-1',
+          stageId: 'stage-1',
           order: 1,
           task: '偷换腰牌',
           completionEvidence: '成功进入内院',
           revision: 1,
           contentHash: 'e'.repeat(64),
           lifecycle: 'active',
+        }, {
+          id: 'task-retired',
+          stageId: 'stage-1',
+          order: 2,
+          task: '旧场景任务',
+          completionEvidence: '旧证据完整保留',
+          revision: 2,
+          contentHash: '3'.repeat(64),
+          lifecycle: 'retired',
         }],
+      }, {
+        id: 'stage-retired',
+        storyBlockId: 'block-1',
+        order: 2,
+        title: '旧阶段',
+        purpose: '旧阶段目的完整保留',
+        dramaticQuestion: '旧戏剧问题完整保留',
+        revision: 2,
+        contentHash: '4'.repeat(64),
+        lifecycle: 'retired',
+        sceneTasks: [],
       }],
+    }, {
+      id: 'block-retired',
+      order: 2,
+      title: '旧故事块',
+      entrySituation: '旧情境完整保留',
+      blockGoal: '旧目标完整保留',
+      mainPressure: '旧压力完整保留',
+      expectedChange: '旧变化完整保留',
+      openQuestions: ['旧开放问题'],
+      involvedCharacters: ['旧人物'],
+      volumeId: 'volume-retired',
+      plotIds: ['plot-retired'],
+      revision: 2,
+      contentHash: '5'.repeat(64),
+      lifecycle: 'retired',
+      stages: [],
     }],
   }
 }
@@ -614,12 +675,42 @@ test('mounted history drawer renders the immutable hierarchy and owns modal keyb
     }
     global.document = documentRef
     const opened = ref(true)
-    const history = [{
-      planningRevisionId: 'revision-7',
-      revision: 7,
-      createdAt: '2026-07-25',
-      content: historyAggregate(),
-    }]
+    const malformedAggregate = historyAggregate()
+    malformedAggregate.volumes[0].lifecycle = 'unexpected'
+    const history = [
+      {
+        planningRevisionId: 'revision-7',
+        revision: 7,
+        createdAt: '2026-07-25',
+        displayStatus: 'current',
+        displayReason: 'currentPlanningHead',
+        content: historyAggregate(),
+      },
+      {
+        planningRevisionId: 'revision-6',
+        revision: 6,
+        createdAt: '2026-07-24',
+        displayStatus: 'superseded',
+        displayReason: 'newerPlanningOrBasis',
+        content: historyAggregate(),
+      },
+      {
+        planningRevisionId: 'revision-5',
+        revision: 5,
+        createdAt: '2026-07-23',
+        displayStatus: 'archived',
+        displayReason: 'projectArchived',
+        content: historyAggregate(),
+      },
+      {
+        planningRevisionId: 'revision-4',
+        revision: 4,
+        createdAt: '2026-07-22',
+        displayStatus: 'unexpected',
+        displayReason: 'unexpected',
+        content: malformedAggregate,
+      },
+    ]
     const Harness = defineComponent({
       setup() {
         return () => h(Drawer.default, {
@@ -643,6 +734,35 @@ test('mounted history drawer renders the immutable hierarchy and owns modal keyb
     assert.match(text(dialog), /残卷从何而来/)
     assert.match(text(dialog), /夜入县衙/)
     assert.match(text(dialog), /当前活动故事块/)
+    assert.match(text(dialog), /当前版本/)
+    assert.match(text(dialog), /当前规划主版本/)
+    assert.match(text(dialog), /已被后续规划取代/)
+    assert.match(text(dialog), /已有更新规划或创作依据/)
+    assert.match(text(dialog), /项目已归档/)
+    assert.match(text(dialog), /状态不可用/)
+    assert.match(text(dialog), /原因不可用/)
+    assert.deepEqual(
+      walk(dialog)
+        .filter(item => item.props.class === 'revision-state')
+        .map(item => text(item).replace(/\s+/gu, '')),
+      [
+        '当前版本当前规划主版本',
+        '已被后续规划取代已有更新规划或创作依据',
+        '项目已归档项目已归档',
+        '状态不可用原因不可用',
+      ],
+    )
+    assert.match(text(dialog), /分卷 · 已退役/)
+    assert.match(text(dialog), /情节线 · 已退役/)
+    assert.match(text(dialog), /故事块 · 已退役/)
+    assert.match(text(dialog), /阶段 · 已退役/)
+    assert.match(text(dialog), /场景任务 · 已退役/)
+    assert.match(text(dialog), /分卷 · 生命周期不可用/)
+    assert.match(text(dialog), /旧变化完整保留/)
+    assert.match(text(dialog), /旧问题完整保留/)
+    assert.match(text(dialog), /旧情境完整保留/)
+    assert.match(text(dialog), /旧阶段目的完整保留/)
+    assert.match(text(dialog), /旧证据完整保留/)
     assert.match(text(dialog), /所属分卷：入世卷（volume-1）/)
     assert.match(text(dialog), /关联情节线：残卷主线（plot-1）、未找到情节线（plot-missing）/)
     assert.match(text(dialog), /进入库房/)
