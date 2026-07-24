@@ -1195,6 +1195,62 @@ test('confirmed planning can create and save the next draft then regain authorit
   })
 })
 
+test('successful save keeps its new draft but fails confirmation closed until authority reload recovers', async () => {
+  const initialDraft = {
+    ...draft(),
+    content: confirmablePlanningContent(),
+  }
+  const savedDraft = {
+    ...draft(NEXT_HASH, 2),
+    content: confirmablePlanningContent(NEXT_HASH),
+  }
+  const refreshFailure = Object.assign(new Error('authority unavailable'), {
+    status: 503,
+    code: 'PlanningUnavailable',
+    correlationId: 'corr-refresh',
+  })
+  let stateReads = 0
+  await withApiMethods([
+    [api.planning, 'get', async projectId => {
+      stateReads += 1
+      if (stateReads === 1) return state(projectId, initialDraft)
+      if (stateReads === 2) throw refreshFailure
+      const loaded = state(projectId, savedDraft)
+      loaded.capabilities.confirm = true
+      return loaded
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'saveDraft', async () => savedDraft],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'project-1',
+      keyFactory: () => 'save-with-refresh-failure',
+    })
+
+    await store.load('project-1')
+    assert.equal(controller.canConfirm.value, true)
+    store.editLocal(confirmableEditableContent())
+
+    const result = await controller.save()
+
+    assert.equal(result.draftRevision, 2)
+    assert.equal(store.state.draft.draftRevision, 2)
+    assert.equal(store.dirty, false)
+    assert.equal(store.error.code, 'PlanningRefreshFailed')
+    assert.equal(store.error.correlationId, 'corr-refresh')
+    assert.equal(store.state.capabilities.confirm, false)
+    assert.equal(controller.canConfirm.value, false)
+
+    await store.ensureLoaded('project-1', { force: true })
+    assert.equal(store.state.capabilities.confirm, true)
+    assert.equal(controller.canConfirm.value, true)
+    assert.equal(stateReads, 3)
+  })
+})
+
 test('discardLocal restores persisted content without creating a version', async () => {
   await withApiMethods([
     [api.planning, 'get', async () => state('project-1', draft())],

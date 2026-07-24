@@ -153,6 +153,10 @@ export const usePlanningStore = defineStore('planning', () => {
     state.value = {
       ...(state.value || { projectId: projectId.value }),
       draft,
+      capabilities: {
+        ...(state.value?.capabilities || {}),
+        confirm: false,
+      },
     }
     localContent.value = editableContent(draft?.content)
     dirty.value = false
