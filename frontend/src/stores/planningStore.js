@@ -149,6 +149,48 @@ export const usePlanningStore = defineStore('planning', () => {
     error.value = null
   }
 
+  function acceptDraftWrite(draft) {
+    state.value = {
+      ...(state.value || { projectId: projectId.value }),
+      draft,
+    }
+    localContent.value = editableContent(draft?.content)
+    dirty.value = false
+    error.value = null
+  }
+
+  async function refreshStateAfterDraftWrite({
+    requestGeneration,
+    targetProjectId,
+    targetGeneration,
+    failureMessage,
+  }) {
+    try {
+      const loaded = await api.planning.get(targetProjectId)
+      if (isCurrent(
+        mutationGuard,
+        requestGeneration,
+        targetProjectId,
+        targetGeneration,
+      )) {
+        acceptState(loaded)
+      }
+    } catch (failure) {
+      if (isCurrent(
+        mutationGuard,
+        requestGeneration,
+        targetProjectId,
+        targetGeneration,
+      )) {
+        error.value = {
+          ...publicError(failure),
+          code: 'PlanningRefreshFailed',
+          message: failureMessage,
+        }
+      }
+    }
+  }
+
   async function load(nextProjectId) {
     const targetProjectId = enterProject(nextProjectId)
     const requestGeneration = loadGuard.begin()
@@ -258,13 +300,13 @@ export const usePlanningStore = defineStore('planning', () => {
         targetProjectId,
         targetGeneration,
       )) {
-        state.value = {
-          ...(state.value || { projectId: targetProjectId }),
-          draft: created,
-        }
-        localContent.value = editableContent(created.content)
-        dirty.value = false
-        error.value = null
+        acceptDraftWrite(created)
+        await refreshStateAfterDraftWrite({
+          requestGeneration,
+          targetProjectId,
+          targetGeneration,
+          failureMessage: '规划工作稿已创建，但刷新失败；请稍后重新加载',
+        })
       }
       return created
     } catch (failure) {
@@ -330,10 +372,13 @@ export const usePlanningStore = defineStore('planning', () => {
         targetProjectId,
         targetGeneration,
       )) {
-        state.value = { ...state.value, draft: saved }
-        localContent.value = editableContent(saved.content)
-        dirty.value = false
-        error.value = null
+        acceptDraftWrite(saved)
+        await refreshStateAfterDraftWrite({
+          requestGeneration,
+          targetProjectId,
+          targetGeneration,
+          failureMessage: '规划工作稿已保存，但刷新失败；请稍后重新加载',
+        })
       }
       return saved
     } catch (failure) {

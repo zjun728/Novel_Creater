@@ -4,6 +4,7 @@ import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { api } from '../../src/api/db/client.js'
+import { createPlanningWorkspaceController } from '../../src/application/planning/planningWorkspaceController.js'
 import { usePlanningStore } from '../../src/stores/planningStore.js'
 
 const HASH = 'a'.repeat(64)
@@ -26,6 +27,86 @@ function editableContent(activeStoryBlockRef = null) {
     volumes: [],
     plots: [],
     storyBlocks: [],
+  }
+}
+
+function confirmablePlanningContent(hash = HASH) {
+  return {
+    schemaVersion: 'planning-v1',
+    activeStoryBlockId: 'block-1',
+    volumes: [{
+      id: 'volume-1',
+      order: 1,
+      title: '第一卷',
+      lifecycle: 'active',
+    }],
+    plots: [{
+      id: 'plot-1',
+      order: 1,
+      title: '典籍暗线',
+      lifecycle: 'active',
+    }],
+    storyBlocks: [{
+      id: 'block-1',
+      order: 1,
+      title: '夜入县衙',
+      volumeId: 'volume-1',
+      plotIds: ['plot-1'],
+      lifecycle: 'active',
+      stages: [{
+        id: 'stage-1',
+        order: 1,
+        title: '潜入',
+        lifecycle: 'active',
+        sceneTasks: [{
+          id: 'task-1',
+          order: 1,
+          task: '取得残卷',
+          completionEvidence: '残卷到手',
+          lifecycle: 'active',
+        }],
+      }],
+    }],
+    contentHash: hash,
+  }
+}
+
+function confirmableEditableContent() {
+  return {
+    activeStoryBlockRef: 'block-1',
+    volumes: [{
+      id: 'volume-1',
+      order: 1,
+      title: '第一卷',
+      lifecycle: 'active',
+    }],
+    plots: [{
+      id: 'plot-1',
+      order: 1,
+      title: '典籍暗线',
+      lifecycle: 'active',
+    }],
+    storyBlocks: [{
+      id: 'block-1',
+      order: 1,
+      title: '夜入县衙',
+      volumeRef: 'volume-1',
+      plotRefs: ['plot-1'],
+      lifecycle: 'active',
+      stages: [{
+        id: 'stage-1',
+        order: 1,
+        title: '潜入',
+        lifecycle: 'active',
+        sceneTasks: [{
+          id: 'task-1',
+          order: 1,
+          task: '取得残卷',
+          completionEvidence: '残卷到手',
+          lifecycle: 'active',
+        }],
+      }],
+    }],
   }
 }
 
@@ -881,10 +962,15 @@ test('model-unready rejects only generation while manual editing and save remain
 
 test('planning store loads state, history and starts an explicit draft', async () => {
   const calls = []
+  let stateReads = 0
   await withApiMethods([
     [api.planning, 'get', async projectId => {
       calls.push(['get', projectId])
-      return state(projectId)
+      stateReads += 1
+      return state(
+        projectId,
+        stateReads === 1 ? null : { ...draft(), projectId },
+      )
     }],
     [api.planning, 'history', async projectId => {
       calls.push(['history', projectId])
@@ -912,21 +998,27 @@ test('planning store loads state, history and starts an explicit draft', async (
       ['get', 'project-1'],
       ['history', 'project-1'],
       ['createDraft', 'project-1', { idempotencyKey: 'planning-draft-1' }],
+      ['get', 'project-1'],
     ])
   })
 })
 
 test('editing is local until save and successful save refreshes the CAS baseline', async () => {
   const calls = []
+  let stateReads = 0
+  const savedDraft = {
+    ...draft(NEXT_HASH, 2),
+    content: { ...planningContent(NEXT_HASH), activeStoryBlockId: 'block-1' },
+  }
   await withApiMethods([
-    [api.planning, 'get', async () => state('project-1', draft())],
+    [api.planning, 'get', async () => {
+      stateReads += 1
+      return state('project-1', stateReads === 1 ? draft() : savedDraft)
+    }],
     [api.planning, 'history', async () => ({ items: [] })],
     [api.planning, 'saveDraft', async (projectId, draftId, body) => {
       calls.push([projectId, draftId, structuredClone(body)])
-      return {
-        ...draft(NEXT_HASH, 2),
-        content: { ...planningContent(NEXT_HASH), activeStoryBlockId: 'block-1' },
-      }
+      return savedDraft
     }],
   ], async () => {
     setActivePinia(createPinia())
@@ -1029,6 +1121,77 @@ test('confirmation refreshes state and history through the canonical endpoints',
         idempotencyKey: 'confirm-draft-1',
       },
     ])
+  })
+})
+
+test('confirmed planning can create and save the next draft then regain authoritative confirmation capability', async () => {
+  const firstDraft = {
+    ...draft(),
+    content: confirmablePlanningContent(),
+  }
+  const nextEmptyDraft = {
+    ...draft(NEXT_HASH, 1),
+    draftId: 'draft-2',
+  }
+  const nextSavedDraft = {
+    ...draft(HASH, 2),
+    draftId: 'draft-2',
+    content: confirmablePlanningContent(HASH),
+  }
+  let stateReads = 0
+  let sequence = 0
+  await withApiMethods([
+    [api.planning, 'get', async projectId => {
+      stateReads += 1
+      if (stateReads === 1) return state(projectId, firstDraft)
+      if (stateReads === 2) return state(projectId, null)
+      if (stateReads === 3) {
+        const loaded = state(projectId, nextEmptyDraft)
+        loaded.capabilities.confirm = false
+        return loaded
+      }
+      const loaded = state(projectId, nextSavedDraft)
+      loaded.capabilities.confirm = true
+      return loaded
+    }],
+    [api.planning, 'history', async () => ({ items: [] })],
+    [api.planning, 'confirmDraft', async () => ({
+      planningRevisionId: 'revision-1',
+      revision: 1,
+      contentHash: HASH,
+      content: confirmablePlanningContent(),
+    })],
+    [api.planning, 'createDraft', async () => nextEmptyDraft],
+    [api.planning, 'saveDraft', async () => nextSavedDraft],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'project-1',
+      keyFactory: () => `planning-command-${++sequence}`,
+    })
+
+    await store.load('project-1')
+    assert.equal(controller.canConfirm.value, true)
+
+    await controller.confirm()
+    assert.equal(store.state.draft, null)
+    assert.equal(controller.canConfirm.value, false)
+
+    await controller.createManualDraft()
+    assert.equal(store.state.draft.draftId, 'draft-2')
+    assert.equal(controller.canConfirm.value, false)
+
+    store.editLocal(confirmableEditableContent())
+    assert.equal(controller.canSave.value, true)
+    await controller.save()
+
+    assert.equal(store.dirty, false)
+    assert.equal(store.state.draft.draftRevision, 2)
+    assert.equal(store.state.capabilities.confirm, true)
+    assert.equal(controller.canConfirm.value, true)
+    assert.equal(stateReads, 4)
   })
 })
 
