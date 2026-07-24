@@ -45,6 +45,8 @@ test('canonical path builders encode project IDs and require positive chapter nu
     projectBiblePath,
     projectModelSettingsPath,
     projectOverviewPath,
+    planningPlotsPath,
+    planningVolumesPath,
     projectSeedsPath,
     styleLibraryPath,
   } = await loadRouteModule()
@@ -55,6 +57,8 @@ test('canonical path builders encode project IDs and require positive chapter nu
   assert.equal(projectSeedsPath('a/b'), '/projects/a%2Fb/seeds')
   assert.equal(projectContractPath('a/b'), '/projects/a%2Fb/contract')
   assert.equal(projectBiblePath('a/b'), '/projects/a%2Fb/bible')
+  assert.equal(planningVolumesPath('a/b'), '/projects/a%2Fb/planning/volumes')
+  assert.equal(planningPlotsPath('a/b'), '/projects/a%2Fb/planning/plots')
   assert.equal(
     projectModelSettingsPath('a/b'),
     '/projects/a%2Fb/settings/models',
@@ -89,6 +93,14 @@ test('formal route registry names only canonical destinations and catches retire
   )
   assert.equal(router.resolve('/projects/project-1/bible').name, 'ProjectBible')
   assert.equal(
+    router.resolve('/projects/project-1/planning/volumes').name,
+    'ProjectPlanningVolumes',
+  )
+  assert.equal(
+    router.resolve('/projects/project-1/planning/plots').name,
+    'ProjectPlanningPlots',
+  )
+  assert.equal(
     router.resolve('/projects/project-1/settings/models').name,
     'ProjectModelSettings',
   )
@@ -103,11 +115,47 @@ test('formal route registry names only canonical destinations and catches retire
     ['', 'project', 'old-id'].join('/'),
     '/writer/old-id/1',
     '/settings',
+    '/projects/project-1/planning',
     '/arbitrary/path',
   ]) {
     const resolved = router.resolve(path)
     assert.equal(resolved.meta.notFound, true, `${path} must select NotFound`)
   }
+})
+
+test('planning tabs share one view and survive direct navigation and browser history', async () => {
+  const { projectRoutes } = await loadRouteModule()
+  const canonicalVolume = projectRoutes.find(
+    route => route.name === 'ProjectPlanningVolumes',
+  )
+  const canonicalPlot = projectRoutes.find(
+    route => route.name === 'ProjectPlanningPlots',
+  )
+  assert.equal(canonicalVolume.component, canonicalPlot.component)
+
+  const PlanningPage = { render: () => null }
+  const routes = projectRoutes.map(route => (
+    ['ProjectPlanningVolumes', 'ProjectPlanningPlots'].includes(route.name)
+      ? { ...route, component: PlanningPage }
+      : route
+  ))
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes,
+  })
+
+  await router.push('/projects/project-1/planning/volumes')
+  await router.isReady()
+  assert.equal(router.currentRoute.value.name, 'ProjectPlanningVolumes')
+
+  await router.push('/projects/project-1/planning/plots')
+  assert.equal(router.currentRoute.value.name, 'ProjectPlanningPlots')
+  router.back()
+  await settle()
+  assert.equal(router.currentRoute.value.name, 'ProjectPlanningVolumes')
+  router.forward()
+  await settle()
+  assert.equal(router.currentRoute.value.name, 'ProjectPlanningPlots')
 })
 
 test('creative asset routes survive direct navigation and browser back/forward', async () => {

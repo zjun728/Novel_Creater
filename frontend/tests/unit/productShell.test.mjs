@@ -124,6 +124,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['创作种子', '/projects/project%201/seeds', false],
       ['创作契约', '/projects/project%201/contract', false],
       ['创作圣经', '/projects/project%201/bible', false],
+      ['故事规划', '/projects/project%201/planning/volumes', false],
       ['模型绑定', '/projects/project%201/settings/models', false],
     ],
   )
@@ -175,6 +176,7 @@ test('active and archived project contexts have different module surfaces', asyn
       ['项目概览', '/projects/archived-1/overview', true],
       ['创作契约', '/projects/archived-1/contract', false],
       ['创作圣经', '/projects/archived-1/bible', false],
+      ['故事规划', '/projects/archived-1/planning/volumes', false],
     ],
   )
   assert.equal(archived.routeTitle, '已归档项目')
@@ -200,6 +202,31 @@ test('active and archived project contexts have different module surfaces', asyn
     archivedContract.projectContext.modules.some(item => ['seeds', 'models'].includes(item.key)),
     false,
   )
+})
+
+test('both planning tabs select one shared project module and keep archive copy truthful', async () => {
+  const { createProductShellModel } = await loadShellModule()
+  for (const name of ['ProjectPlanningVolumes', 'ProjectPlanningPlots']) {
+    const shell = createProductShellModel({
+      route: route(name, '/projects/project-1/planning/volumes', {
+        projectId: 'project-1',
+      }),
+      project: { id: 'project-1', title: '典镇山河', archivedAt: null },
+    })
+    const planning = shell.projectContext.modules.find(item => item.key === 'planning')
+    assert.equal(planning.selected, true)
+    assert.equal(planning.path, '/projects/project-1/planning/volumes')
+    assert.equal(shell.routeTitle, name === 'ProjectPlanningVolumes' ? '分卷规划' : '情节线规划')
+  }
+
+  const archived = createProductShellModel({
+    route: route('ProjectPlanningPlots', '/projects/old/planning/plots', {
+      projectId: 'old',
+    }),
+    project: { id: 'old', title: '旧稿', archivedAt: 1 },
+  })
+  assert.equal(archived.projectContext.modules.find(item => item.key === 'planning').selected, true)
+  assert.equal(archived.routeTitle, '已归档情节线规划')
 })
 
 test('desktop breakpoint collapses navigation without removing the route title', async () => {
@@ -333,6 +360,16 @@ const shellRoutes = [
   {
     path: '/projects/:projectId/bible',
     name: 'ProjectBible',
+    component: Page,
+  },
+  {
+    path: '/projects/:projectId/planning/volumes',
+    name: 'ProjectPlanningVolumes',
+    component: Page,
+  },
+  {
+    path: '/projects/:projectId/planning/plots',
+    name: 'ProjectPlanningPlots',
     component: Page,
   },
   {
@@ -551,6 +588,16 @@ test('the real project overview consumes shell hydration without a duplicate rea
           component: Page,
         },
         {
+          path: '/projects/:projectId/planning/volumes',
+          name: 'ProjectPlanningVolumes',
+          component: Page,
+        },
+        {
+          path: '/projects/:projectId/planning/plots',
+          name: 'ProjectPlanningPlots',
+          component: Page,
+        },
+        {
           path: '/projects/:projectId/settings/models',
           name: 'ProjectModelSettings',
           component: Page,
@@ -616,6 +663,16 @@ test('shared shell hydration preserves the explicit missing-project route state'
           component: Page,
         },
         {
+          path: '/projects/:projectId/planning/volumes',
+          name: 'ProjectPlanningVolumes',
+          component: Page,
+        },
+        {
+          path: '/projects/:projectId/planning/plots',
+          name: 'ProjectPlanningPlots',
+          component: Page,
+        },
+        {
           path: '/projects/:projectId/settings/models',
           name: 'ProjectModelSettings',
           component: Page,
@@ -637,7 +694,7 @@ test('shared shell hydration preserves the explicit missing-project route state'
   }
 })
 
-test('archived project shell exposes overview and read-only contract and Bible navigation', async () => {
+test('archived project shell exposes overview and read-only contract Bible and planning navigation', async () => {
   const { html } = await renderApp(
     '/projects/archived-1/overview',
     {
@@ -653,6 +710,7 @@ test('archived project shell exposes overview and read-only contract and Bible n
   assert.match(html, /href="\/projects\/archived-1\/overview"/)
   assert.match(html, /href="\/projects\/archived-1\/contract"/)
   assert.match(html, /href="\/projects\/archived-1\/bible"/)
+  assert.match(html, /href="\/projects\/archived-1\/planning\/volumes"/)
   assert.doesNotMatch(html, /href="\/projects\/archived-1\/(?:seeds|settings\/models)"/)
 })
 

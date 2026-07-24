@@ -4,6 +4,7 @@ const ProjectOverviewView = () => import('../views/ProjectOverviewView.vue')
 const ProjectSeedsView = () => import('../views/ProjectSeedsView.vue')
 const ProjectContractView = () => import('../views/ProjectContractView.vue')
 const ProjectBibleView = () => import('../views/ProjectBibleView.vue')
+const ProjectPlanningView = () => import('../views/ProjectPlanningView.vue')
 const StyleLibraryView = () => import('../views/assets/StyleLibraryView.vue')
 const ExperienceLibraryView = () => import('../views/assets/ExperienceLibraryView.vue')
 const CorpusLibraryView = () => import('../views/assets/CorpusLibraryView.vue')
@@ -65,6 +66,14 @@ export function projectContractPath(projectId) {
 
 export function projectBiblePath(projectId) {
   return `/projects/${segment(projectId)}/bible`
+}
+
+export function planningVolumesPath(projectId) {
+  return `/projects/${segment(projectId)}/planning/volumes`
+}
+
+export function planningPlotsPath(projectId) {
+  return `/projects/${segment(projectId)}/planning/plots`
 }
 
 export function projectModelSettingsPath(projectId) {
@@ -133,6 +142,18 @@ export const projectRoutes = Object.freeze([
     path: '/projects/:projectId/bible',
     name: 'ProjectBible',
     component: ProjectBibleView,
+    props: true,
+  },
+  {
+    path: '/projects/:projectId/planning/volumes',
+    name: 'ProjectPlanningVolumes',
+    component: ProjectPlanningView,
+    props: true,
+  },
+  {
+    path: '/projects/:projectId/planning/plots',
+    name: 'ProjectPlanningPlots',
+    component: ProjectPlanningView,
     props: true,
   },
   {

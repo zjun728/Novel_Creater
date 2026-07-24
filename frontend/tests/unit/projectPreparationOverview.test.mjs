@@ -284,6 +284,10 @@ async function renderOverview(authority, { fail = false } = {}) {
           path: '/projects/:projectId/bible',
           component: { template: '<div />' },
         },
+        {
+          path: '/projects/:projectId/planning/volumes',
+          component: { template: '<div />' },
+        },
       ],
     })
     await router.push('/projects/project%20%2F%20%E4%B8%80/overview')
@@ -323,19 +327,34 @@ test('overview renders one primary server-selected action and compact persisted 
   assert.match(html, /创作圣经[\s\S]*未建立/)
 })
 
-test('planning boundary is truthful and non-clickable while model loss keeps manual facts', async () => {
+test('planning next action uses the server target while model loss keeps manual facts', async () => {
   const html = await renderOverview(preparation({
-    nextAction: 'phase_boundary_planning',
-    targetPath: null,
+    nextAction: 'continue_planning',
+    targetPath: '/projects/project%20%2F%20%E4%B8%80/planning/volumes',
     planningReady: false,
   }))
 
-  assert.equal((html.match(/class="overview-next-action"/g) || []).length, 0)
-  assert.match(html, /创作准备已完成/)
-  assert.match(html, /故事规划将在下一阶段接入/)
+  assert.equal((html.match(/class="overview-next-action"/g) || []).length, 1)
+  assert.match(html, /href="\/projects\/project%20%2F%20%E4%B8%80\/planning\/volumes"/)
+  assert.match(html, /继续故事规划/)
   assert.match(html, /规划模型不可用/)
   assert.match(html, /创作契约[\s\S]*已确认/)
   assert.match(html, /创作圣经[\s\S]*已确认/)
+})
+
+test('new and recoverable planning states keep the exact server-selected destination', async () => {
+  for (const [nextAction, label] of [
+    ['establish_planning', '开始故事规划'],
+    ['recover_planning_operation', '核对规划生成结果'],
+  ]) {
+    const html = await renderOverview(preparation({
+      nextAction,
+      targetPath: '/projects/project%20%2F%20%E4%B8%80/planning/volumes',
+    }))
+    assert.equal((html.match(/class="overview-next-action"/g) || []).length, 1)
+    assert.match(html, /href="\/projects\/project%20%2F%20%E4%B8%80\/planning\/volumes"/)
+    assert.match(html, new RegExp(label))
+  }
 })
 
 test('overview depends only on projectStore authority and has no browser joins', async () => {
@@ -403,6 +422,10 @@ test('returning to the same project overview refreshes its server preparation au
       {
         path: '/projects/:projectId/bible',
         component: { render: () => h('div', 'bible') },
+      },
+      {
+        path: '/projects/:projectId/planning/volumes',
+        component: { render: () => h('div', 'planning') },
       },
     ],
   })

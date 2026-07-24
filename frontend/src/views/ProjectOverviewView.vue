@@ -35,6 +35,21 @@ const actionCopy = computed(() => ({
     title: '继续创作圣经',
     description: '补全未来设计；手工建立与确认不依赖可用模型。',
   },
+  continue_planning: {
+    eyebrow: 'STORY PLANNING',
+    title: '继续故事规划',
+    description: '建立分卷、情节线与滚动故事块，让后续章节有方向也有调整余地。',
+  },
+  establish_planning: {
+    eyebrow: 'STORY PLANNING',
+    title: '开始故事规划',
+    description: '从空白工作稿建立分卷与情节线，再逐步形成可执行的完整规划。',
+  },
+  recover_planning_operation: {
+    eyebrow: 'STORY PLANNING',
+    title: '核对规划生成结果',
+    description: '沿用原操作标识读取权威结果，不会重复发起一次 AI 生成。',
+  },
 }[preparation.value?.nextAction] || null))
 
 const statusItems = computed(() => {
@@ -202,17 +217,6 @@ watch(
           <small>{{ actionCopy.description }}</small>
         </router-link>
 
-        <section
-          v-else-if="preparation.nextAction === 'phase_boundary_planning'"
-          class="preparation-boundary"
-          role="status"
-          aria-live="polite"
-        >
-          <span>PHASE 2 COMPLETE</span>
-          <strong>创作准备已完成</strong>
-          <small>故事规划将在下一阶段接入；这里不会提供一个尚不存在的跳转。</small>
-        </section>
-
         <n-result
           v-else
           status="warning"
@@ -323,27 +327,6 @@ h1 {
   color: var(--nc-muted);
   line-height: 1.7;
 }
-.preparation-boundary {
-  display: grid;
-  width: min(560px, 100%);
-  gap: 6px;
-  margin-top: 30px;
-  padding: 20px 22px;
-  border: 1px solid var(--nc-border);
-  border-radius: 9px;
-  background: var(--nc-paper);
-}
-.preparation-boundary span {
-  color: var(--nc-vermilion);
-  font-size: 10px;
-  font-weight: 750;
-  letter-spacing: .15em;
-}
-.preparation-boundary strong {
-  font-family: Georgia, 'Noto Serif SC', serif;
-  font-size: 20px;
-}
-.preparation-boundary small,
 .model-note {
   color: var(--nc-muted);
   line-height: 1.7;

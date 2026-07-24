@@ -13,6 +13,7 @@ import {
   projectLibraryPath,
   projectContractPath,
   projectBiblePath,
+  planningVolumesPath,
   projectModelSettingsPath,
   projectOverviewPath,
   projectSeedsPath,
@@ -81,6 +82,12 @@ function routeTitle(route, project) {
   }
   if (name === 'ProjectBible') {
     return isArchived(project) ? '已归档创作圣经' : '创作圣经'
+  }
+  if (name === 'ProjectPlanningVolumes') {
+    return isArchived(project) ? '已归档分卷规划' : '分卷规划'
+  }
+  if (name === 'ProjectPlanningPlots') {
+    return isArchived(project) ? '已归档情节线规划' : '情节线规划'
   }
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
@@ -155,6 +162,16 @@ export function createProductShellModel({
             path: projectBiblePath(project.id),
             mark: '圣',
             selected: routeName(route) === 'ProjectBible',
+          },
+          {
+            key: 'planning',
+            label: '故事规划',
+            path: planningVolumesPath(project.id),
+            mark: '规',
+            selected: [
+              'ProjectPlanningVolumes',
+              'ProjectPlanningPlots',
+            ].includes(routeName(route)),
           },
           ...(!archived ? [{
             key: 'models',

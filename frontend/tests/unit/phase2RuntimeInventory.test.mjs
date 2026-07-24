@@ -24,6 +24,8 @@ const CANONICAL_ROUTES = [
   ['/projects/:projectId/seeds', 'ProjectSeeds'],
   ['/projects/:projectId/contract', 'ProjectContract'],
   ['/projects/:projectId/bible', 'ProjectBible'],
+  ['/projects/:projectId/planning/volumes', 'ProjectPlanningVolumes'],
+  ['/projects/:projectId/planning/plots', 'ProjectPlanningPlots'],
   ['/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)', 'ChapterWriter'],
   ['/settings/providers', 'ProviderSettings'],
   ['/settings/application', 'ApplicationSettings'],
@@ -36,6 +38,7 @@ const RETIRED_RUNTIME = [
   'stores/settingStore.js',
   'stores/memoryStore.js',
   'stores/volumeStore.js',
+  'stores/plotStore.js',
   'stores/storyBlockStore.js',
   'stores/compareStore.js',
   'stores/writerStore.js',
@@ -155,6 +158,8 @@ const CANONICAL_RUNTIME = [
   'stores/bibleStore.js',
   'stores/chapterSessionStore.js',
   'stores/creationContractStore.js',
+  'stores/planningStore.js',
+  'components/planning/PlanningWorkspace.vue',
   'api/ai/providerPresets.js',
 ]
 
@@ -165,6 +170,7 @@ const CANONICAL_ROUTE_VIEWS = [
   'views/ProjectSeedsView.vue',
   'views/ProjectContractView.vue',
   'views/ProjectBibleView.vue',
+  'views/ProjectPlanningView.vue',
   'views/assets/StyleLibraryView.vue',
   'views/assets/ExperienceLibraryView.vue',
   'views/assets/CorpusLibraryView.vue',
@@ -176,10 +182,8 @@ const CANONICAL_ROUTE_VIEWS = [
 ]
 
 const PRESERVED_FUTURE_RUNTIME = [
-  'components/planning/PlanningWorkspace.vue',
   'components/project/ContractHeadSummary.vue',
   'components/project/WriterCoreStateCard.vue',
-  'stores/planningStore.js',
 ]
 
 test('planning foundation keeps one store and one workspace without retired initial or V2 paths', async () => {
@@ -195,16 +199,13 @@ test('planning foundation keeps one store and one workspace without retired init
 
   assert.doesNotMatch(client, /createInitial|planning\/initial/)
   assert.doesNotMatch(store, /createInitial|usePlanningStoreV2/)
-  assert.doesNotMatch(workspace, /创建滚动规划|createInitial|AI\s*生成/)
-  assert.match(workspace, /未来计划/)
-  assert.match(workspace, /已发生事实/)
+  assert.doesNotMatch(workspace, /创建滚动规划|createInitial/)
+  assert.match(workspace, /故事规划工作台/)
+  assert.match(workspace, /完整规划摘要/)
   assert.match(workspace, /planning-load-failure/)
   assert.match(workspace, /重新加载/)
-  assert.match(workspace, /v-else-if="!planningStore\.state"/)
-  assert.match(workspace, /headRevisionLabel/)
-  assert.match(workspace, /planningStore\.state\s*\?\s*`R\$\{/)
-  assert.match(workspace, /:\s*'—'/)
-  assert.doesNotMatch(workspace, /<strong>R\{\{\s*headRevision/)
+  assert.match(workspace, /v-else-if="!store\.state"/)
+  assert.doesNotMatch(workspace, /useVolumeStore|usePlotStore/)
   await assert.rejects(
     access(path.join(sourceRoot, 'components/planning/PlanningWorkspaceV2.vue')),
   )
@@ -449,7 +450,7 @@ async function loadAllSourceImporters() {
   }
 }
 
-test('production app and lazy route graph contain only canonical Phase 2 destinations', async () => {
+test('production app and lazy route graph contain only canonical product destinations', async () => {
   const { activeFiles, projectRoutes } = await loadProductionGraph()
 
   assert.deepEqual(

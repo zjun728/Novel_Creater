@@ -1,449 +1,370 @@
 <script setup>
-import { computed, watch } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NSkeleton, NTag } from 'naive-ui'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  ref,
+  watch,
+} from 'vue'
 
-import { usePlanningStore } from '@/stores/planningStore'
+import { createModalFocusManager } from '../common/modalFocusManager.js'
+import PlanningHistoryDrawer from './PlanningHistoryDrawer.vue'
+import PlotEditor from './PlotEditor.vue'
+import VolumeEditor from './VolumeEditor.vue'
 
 const props = defineProps({
-  projectId: { type: String, required: true },
+  store: { type: Object, required: true },
+  controller: { type: Object, required: true },
+  activeTab: {
+    type: String,
+    required: true,
+    validator: value => ['volumes', 'plots'].includes(value),
+  },
 })
 
-const planningStore = usePlanningStore()
+const confirmOpen = ref(false)
+const confirmDialog = ref(null)
+const confirmInitial = ref(null)
+const confirmFocus = createModalFocusManager({
+  getDialog: () => confirmDialog.value,
+  getInitialFocus: () => confirmInitial.value,
+})
+const planningContent = computed(() => (
+  props.store.localContent
+  || props.store.state?.draft?.content
+  || props.store.state?.futurePlan
+  || null
+))
+const revisionLabel = computed(() => (
+  props.store.state ? `R${Number(props.store.state.head?.revision || 0)}` : '—'
+))
+const draftLabel = computed(() => (
+  props.store.state?.draft?.draftRevision == null
+    ? '—'
+    : `D${props.store.state.draft.draftRevision}`
+))
+const counts = computed(() => {
+  const content = planningContent.value
+  const blocks = content?.storyBlocks || []
+  return {
+    volumes: content?.volumes?.length || 0,
+    plots: content?.plots?.length || 0,
+    storyBlocks: blocks.length,
+    stages: blocks.reduce((total, block) => total + (block.stages?.length || 0), 0),
+    sceneTasks: blocks.reduce((total, block) => (
+      total + (block.stages || []).reduce(
+        (stageTotal, stage) => stageTotal + (stage.sceneTasks?.length || 0),
+        0,
+      )
+    ), 0),
+  }
+})
 
-const headRevision = computed(() => (
-  planningStore.state
-    ? Number(planningStore.state.head?.revision ?? 0)
-    : null
-))
-const headRevisionLabel = computed(() => (
-  planningStore.state ? `R${headRevision.value}` : '—'
-))
-const draftRevision = computed(() => (
-  planningStore.state?.draft?.draftRevision ?? null
-))
-const futurePlan = computed(() => planningStore.state?.futurePlan || null)
-const actualProgress = computed(() => (
-  Array.isArray(planningStore.state?.actualProgress)
-    ? planningStore.state.actualProgress
-    : []
-))
-const capacityPolicy = computed(() => planningStore.state?.capacityPolicy || null)
-const isReadOnly = computed(() => (
-  planningStore.state?.capabilities?.edit === false
-))
-const planCounts = computed(() => ({
-  volumes: futurePlan.value?.volumes?.length || 0,
-  plots: futurePlan.value?.plots?.length || 0,
-  blocks: futurePlan.value?.storyBlocks?.length || 0,
-}))
-
-watch(
-  () => props.projectId,
-  projectId => {
-    if (projectId) void planningStore.load(projectId).catch(() => {})
-  },
-  { immediate: true },
-)
-
-function reloadPlanning() {
-  void planningStore.load(props.projectId).catch(() => {})
+function run(action) {
+  Promise.resolve(action()).catch(() => {})
 }
+
+function openConfirm() {
+  if (!props.controller.canConfirm.value) return
+  confirmOpen.value = true
+}
+
+function closeConfirm() {
+  if (props.store.confirming) return
+  confirmOpen.value = false
+}
+
+function handleConfirmKeydown(event) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeConfirm()
+    return
+  }
+  confirmFocus.trapTab(event)
+}
+
+async function confirmPlanning() {
+  try {
+    if (await props.controller.confirm()) confirmOpen.value = false
+  } catch {
+    // The Store exposes only its public error envelope in the workspace.
+  }
+}
+
+watch(confirmOpen, async open => {
+  if (open) {
+    await nextTick()
+    confirmFocus.mount()
+  } else {
+    confirmFocus.unmount()
+  }
+})
+onBeforeUnmount(() => confirmFocus.unmount())
 </script>
 
 <template>
   <section class="planning-workspace" aria-labelledby="planning-heading">
     <header class="workspace-header">
       <div>
-        <p class="eyebrow">故事规划 · 单一事实链</p>
-        <h2 id="planning-heading">滚动规划</h2>
+        <p class="eyebrow">STORY PLANNING · ONE AGGREGATE</p>
+        <h1 id="planning-heading">故事规划工作台</h1>
         <p class="lede">
-          未来安排与已经发生的正文事实分开呈现，定稿事实不会被规划静默改写。
+          像编辑部整理手稿一样，先写清长期变化与持续追问，再把完整规划交给故事块执行。
         </p>
       </div>
       <div class="revision-strip" aria-label="规划版本">
-        <div>
-          <span>确认版本</span>
-          <strong>{{ headRevisionLabel }}</strong>
-        </div>
-        <div>
-          <span>工作草稿</span>
-          <strong>{{ draftRevision === null ? '—' : `D${draftRevision}` }}</strong>
-        </div>
+        <div><span>确认版本</span><strong>{{ revisionLabel }}</strong></div>
+        <div><span>工作草稿</span><strong>{{ draftLabel }}</strong></div>
       </div>
     </header>
 
-    <n-alert
-      v-if="planningStore.error"
-      type="error"
-      class="planning-alert"
-      :show-icon="false"
-    >
-      {{ planningStore.error.message }}
-    </n-alert>
+    <p v-if="controller.notice.value" class="notice" role="status" aria-live="polite">
+      {{ controller.notice.value }}
+    </p>
+    <section v-if="store.error" class="error-summary" role="alert">
+      <strong>{{ store.error.message }}</strong>
+      <small v-if="store.error.correlationId">参考编号：{{ store.error.correlationId }}</small>
+      <button
+        v-if="controller.hasCriticalRecovery.value"
+        type="button"
+        :disabled="store.reconciling"
+        @click="run(controller.reconcile)"
+      >
+        使用原操作核对结果
+      </button>
+    </section>
 
-    <n-alert
-      v-else-if="isReadOnly"
-      type="info"
-      class="planning-alert"
-      :show-icon="false"
-    >
-      当前规划为只读状态；请先完成项目准备条件，或恢复已归档项目。
-    </n-alert>
+    <section v-if="store.loading && !store.state" class="paper-panel" aria-busy="true">
+      正在展开规划手稿…
+    </section>
+    <section v-else-if="!store.state" class="paper-panel planning-load-failure">
+      <h2>规划数据暂时无法加载</h2>
+      <p>当前没有可展示的权威状态，系统不会推断或拼接旧数据。</p>
+      <button type="button" @click="run(controller.hydrate)">重新加载</button>
+    </section>
 
-    <div v-if="planningStore.loading && !planningStore.state" class="loading-grid">
-      <n-card v-for="index in 2" :key="index" class="plan-card">
-        <n-skeleton text :repeat="4" />
-      </n-card>
-    </div>
+    <template v-else>
+      <aside v-if="controller.readOnly.value" class="read-only-banner">
+        当前项目或规划修订为只读状态；可以查阅正文规划与历史，不能克隆、编辑或写入。
+      </aside>
 
-    <n-card
-      v-else-if="!planningStore.state"
-      class="plan-card planning-load-failure"
-    >
-      <n-empty description="规划数据加载失败，当前没有可展示的权威状态。">
-        <template #extra>
-          <n-button type="primary" ghost @click="reloadPlanning">
-            重新加载
-          </n-button>
-        </template>
-      </n-empty>
-    </n-card>
+      <section v-if="!store.state.draft && !controller.readOnly.value" class="paper-panel empty-draft">
+        <span>BLANK DRAFT</span>
+        <h2>从空白工作稿开始</h2>
+        <p>可以先只建立分卷和情节线并保存；补齐故事块、阶段与场景任务后才能确认。</p>
+        <button
+          type="button"
+          :disabled="!controller.canCreateDraft.value"
+          @click="run(controller.createManualDraft)"
+        >
+          建立空白规划工作稿
+        </button>
+      </section>
 
-    <div v-else class="planning-grid">
-      <n-card class="plan-card future-card">
-        <template #header>
-          <div class="card-heading">
+      <section v-else-if="planningContent" class="workspace-sheet">
+        <div
+          class="workspace-scroll"
+          :class="{ 'streaming-read-only': controller.localOverlay.value }"
+          :inert="controller.localOverlay.value || undefined"
+        >
+          <volume-editor
+            v-if="activeTab === 'volumes'"
+            :model-value="planningContent.volumes || []"
+            :read-only="!controller.editable.value"
+            @add="controller.addVolume"
+            @update="controller.updateVolume"
+            @remove="controller.removeVolume"
+            @move="controller.moveVolume"
+          />
+          <plot-editor
+            v-else
+            :model-value="planningContent.plots || []"
+            :read-only="!controller.editable.value"
+            @add="controller.addPlot"
+            @update="controller.updatePlot"
+            @remove="controller.removePlot"
+            @move="controller.movePlot"
+          />
+
+          <section class="aggregate-summary" aria-label="完整规划摘要">
             <div>
-              <p class="card-kicker">NEXT / 可调整</p>
-              <h3>未来计划</h3>
+              <p>AGGREGATE STATUS</p>
+              <h2>完整规划摘要</h2>
             </div>
-            <n-tag v-if="draftRevision !== null" round size="small" type="warning">
-              草稿 D{{ draftRevision }}
-            </n-tag>
-            <n-tag v-else round size="small">暂无草稿</n-tag>
-          </div>
-        </template>
-
-        <div v-if="headRevision === 0" class="head-zero">
-          <span class="zero-mark">0</span>
-          <div>
-            <strong>尚无已确认规划</strong>
-            <p>规划草稿确认后，首个不可变版本会从 R1 开始。</p>
-          </div>
+            <dl>
+              <div><dt>分卷</dt><dd>{{ counts.volumes }}</dd></div>
+              <div><dt>情节线</dt><dd>{{ counts.plots }}</dd></div>
+              <div><dt>故事块</dt><dd>{{ counts.storyBlocks }}</dd></div>
+              <div><dt>阶段</dt><dd>{{ counts.stages }}</dd></div>
+              <div><dt>场景任务</dt><dd>{{ counts.sceneTasks }}</dd></div>
+            </dl>
+            <ol v-if="planningContent.storyBlocks?.length" class="hierarchy-summary">
+              <li
+                v-for="block in planningContent.storyBlocks"
+                :key="block.id || block.clientNodeKey"
+              >
+                <strong>{{ block.title || '未命名故事块' }}</strong>
+                <span>
+                  分卷 {{ block.volumeRef || '未关联' }} ·
+                  情节线 {{ block.plotRefs?.join('、') || '未关联' }}
+                </span>
+                <ol>
+                  <li
+                    v-for="stage in block.stages || []"
+                    :key="stage.id || stage.clientNodeKey"
+                  >
+                    <b>{{ stage.title || '未命名阶段' }}</b>
+                    <span>
+                      {{ (stage.sceneTasks || []).map(task => task.task).filter(Boolean).join('；') || '尚无场景任务' }}
+                    </span>
+                  </li>
+                </ol>
+              </li>
+            </ol>
+            <p v-if="controller.complete.value" class="complete-note">
+              聚合已完整。请先保存所有本地编辑，再确认不可变修订。
+            </p>
+            <p v-else class="incomplete-note">
+              当前可保存为工作稿，但尚缺完整故事块 / 阶段 / 场景任务，不能确认。
+            </p>
+          </section>
         </div>
 
-        <div v-else-if="futurePlan" class="plan-summary">
-          <div>
-            <strong>{{ planCounts.volumes }}</strong>
-            <span>分卷方向</span>
-          </div>
-          <div>
-            <strong>{{ planCounts.plots }}</strong>
-            <span>情节线</span>
-          </div>
-          <div>
-            <strong>{{ planCounts.blocks }}</strong>
-            <span>故事块</span>
-          </div>
+        <div v-if="controller.localOverlay.value" class="streaming-overlay" role="status" aria-live="polite">
+          <strong>只读流式模式</strong>
+          <span>AI 正在生成并核对当前工作稿；文字保持清晰，可上下滚动查看。</span>
         </div>
+      </section>
 
-        <n-empty
-          v-else
-          size="small"
-          description="当前确认版本没有未来规划内容"
+      <section v-if="store.state.draft && controller.editable.value" class="ai-panel">
+        <label for="planning-author-instructions">作者补充要求（可选）</label>
+        <textarea
+          id="planning-author-instructions"
+          v-model="controller.authorInstructions.value"
+          rows="3"
+          maxlength="4000"
+          :disabled="controller.busy.value"
+          placeholder="例如：强化第二卷群像冲突，但不要提前揭露残卷来源。"
         />
-
-        <div v-if="capacityPolicy" class="capacity-line">
-          <span>章节容量参考</span>
-          <strong>
-            {{ capacityPolicy.targetMin }}–{{ capacityPolicy.targetMax }} 字
-          </strong>
-          <small>软上限 {{ capacityPolicy.softCeiling }} 字</small>
-        </div>
-      </n-card>
-
-      <n-card class="plan-card progress-card">
-        <template #header>
-          <div class="card-heading">
-            <div>
-              <p class="card-kicker">CANON / 只读</p>
-              <h3>已发生事实</h3>
-            </div>
-            <n-tag round size="small" type="success">
-              {{ actualProgress.length }} 条
-            </n-tag>
-          </div>
-        </template>
-
-        <ol v-if="actualProgress.length" class="progress-list">
-          <li
-            v-for="(item, index) in actualProgress"
-            :key="item.id || item.contentHash || index"
-          >
-            <span>{{ String(index + 1).padStart(2, '0') }}</span>
-            <p>{{ item.summary || item.title || '已确认事实' }}</p>
-          </li>
-        </ol>
-        <n-empty
-          v-else
-          size="small"
-          description="尚无从定稿正文投影的已发生事实"
-        />
-
-        <p class="fact-note">
-          此区域只读取 Canon 投影；规划不能反向覆盖已经确认的正文事实。
+        <button
+          type="button"
+          :disabled="!controller.canGenerate.value"
+          @click="run(controller.generate)"
+        >
+          AI 生成当前规划工作稿
+        </button>
+        <p v-if="controller.generationDisabledReason.value">
+          {{ controller.generationDisabledReason.value }}
         </p>
-      </n-card>
-    </div>
+      </section>
+
+      <footer class="workspace-actions">
+        <button type="button" @click="controller.historyOpen.value = true">修订历史</button>
+        <template v-if="controller.editable.value">
+          <button
+            type="button"
+            :disabled="!controller.canSave.value"
+            @click="run(controller.save)"
+          >
+            保存工作稿
+          </button>
+          <button
+            type="button"
+            class="primary"
+            :disabled="!controller.canConfirm.value"
+            @click="openConfirm"
+          >
+            预览并确认
+          </button>
+        </template>
+      </footer>
+    </template>
+
+    <Teleport to="body">
+      <div v-if="confirmOpen" class="confirm-backdrop">
+        <section
+          ref="confirmDialog"
+          class="confirm-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-label="确认故事规划"
+          @keydown="handleConfirmKeydown"
+        >
+          <p>IMMUTABLE REVISION</p>
+          <h2>确认完整规划修订</h2>
+          <p>确认后会形成不可变历史版本。本次只提交已经保存的完整聚合，不会静默改写旧修订。</p>
+          <dl>
+            <div><dt>分卷</dt><dd>{{ counts.volumes }}</dd></div>
+            <div><dt>情节线</dt><dd>{{ counts.plots }}</dd></div>
+            <div><dt>故事块</dt><dd>{{ counts.storyBlocks }}</dd></div>
+          </dl>
+          <footer>
+            <button ref="confirmInitial" type="button" :disabled="store.confirming" @click="closeConfirm">返回核对</button>
+            <button type="button" class="primary" :disabled="store.confirming" @click="confirmPlanning">确认并签印</button>
+          </footer>
+        </section>
+      </div>
+    </Teleport>
+
+    <planning-history-drawer
+      :open="controller.historyOpen.value"
+      :history="store.history"
+      @close="controller.historyOpen.value = false"
+    />
   </section>
 </template>
 
 <style scoped>
-.planning-workspace {
-  --ink: #302b25;
-  --muted: #807568;
-  --paper: #fffdf8;
-  --line: #ddd1bf;
-  --accent: #9a6c32;
-  width: min(1120px, 100%);
-  margin: 42px auto 0;
-  color: var(--ink);
-}
-
-.workspace-header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 32px;
-  margin-bottom: 18px;
-}
-
-.eyebrow,
-.card-kicker {
-  margin: 0;
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: .18em;
-}
-
-h2,
-h3 {
-  font-family: Georgia, 'Noto Serif SC', serif;
-  font-weight: 650;
-}
-
-h2 {
-  margin: 6px 0 0;
-  font-size: 28px;
-}
-
-h3 {
-  margin: 5px 0 0;
-  font-size: 20px;
-}
-
-.lede {
-  max-width: 630px;
-  margin: 8px 0 0;
-  color: var(--muted);
-  line-height: 1.7;
-}
-
-.revision-strip {
-  display: flex;
-  flex: 0 0 auto;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: rgba(255, 253, 248, .78);
-}
-
-.revision-strip > div {
-  display: grid;
-  min-width: 104px;
-  padding: 10px 16px;
-}
-
-.revision-strip > div + div {
-  border-left: 1px solid var(--line);
-}
-
-.revision-strip span {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.revision-strip strong {
-  margin-top: 2px;
-  font-family: Georgia, serif;
-  font-size: 18px;
-}
-
-.planning-alert {
-  margin-bottom: 14px;
-}
-
-.planning-grid,
-.loading-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.18fr) minmax(300px, .82fr);
-  gap: 16px;
-}
-
-.plan-card {
-  min-height: 300px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--paper);
-}
-
-.future-card {
-  background:
-    linear-gradient(145deg, rgba(154, 108, 50, .055), transparent 44%),
-    var(--paper);
-}
-
-.progress-card {
-  background:
-    linear-gradient(160deg, rgba(65, 105, 90, .055), transparent 48%),
-    var(--paper);
-}
-
-.card-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.head-zero {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  min-height: 118px;
-  padding: 14px 0 20px;
-}
-
-.zero-mark {
-  color: rgba(154, 108, 50, .18);
-  font-family: Georgia, serif;
-  font-size: 82px;
-  line-height: .9;
-}
-
-.head-zero strong {
-  font-family: Georgia, 'Noto Serif SC', serif;
-  font-size: 18px;
-}
-
-.head-zero p,
-.fact-note {
-  margin: 6px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.plan-summary {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  overflow: hidden;
-  margin: 8px 0 24px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--line);
-}
-
-.plan-summary div {
-  display: grid;
-  gap: 3px;
-  padding: 18px;
-  background: rgba(255, 253, 248, .94);
-}
-
-.plan-summary strong {
-  font-family: Georgia, serif;
-  font-size: 26px;
-}
-
-.plan-summary span,
-.capacity-line span,
-.capacity-line small {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.capacity-line {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: baseline;
-  gap: 4px 16px;
-  margin-top: 22px;
-  padding-top: 15px;
-  border-top: 1px dashed var(--line);
-}
-
-.capacity-line small {
-  grid-column: 1 / -1;
-}
-
-.progress-list {
-  display: grid;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.progress-list li {
-  display: grid;
-  grid-template-columns: 30px 1fr;
-  gap: 10px;
-  padding: 12px 0;
-  border-bottom: 1px solid rgba(221, 209, 191, .68);
-}
-
-.progress-list span {
-  color: var(--accent);
-  font-family: Georgia, serif;
-  font-size: 11px;
-}
-
-.progress-list p {
-  margin: 0;
-  line-height: 1.65;
-}
-
-.fact-note {
-  margin-top: 20px;
-  padding: 12px 14px;
-  border-left: 2px solid rgba(65, 105, 90, .5);
-  background: rgba(65, 105, 90, .045);
-}
-
-@media (max-width: 760px) {
-  .workspace-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .planning-grid,
-  .loading-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .revision-strip {
-    width: 100%;
-  }
-
-  .revision-strip > div {
-    flex: 1;
-  }
-
-  .plan-summary {
-    grid-template-columns: 1fr;
-  }
-}
+.planning-workspace { width:min(1120px,100%); margin:auto; color:var(--nc-ink); }
+.workspace-header { display:flex; align-items:end; justify-content:space-between; gap:28px; margin-bottom:20px; }
+.eyebrow,.aggregate-summary p:first-child,.empty-draft>span { margin:0; color:var(--nc-vermilion); font:700 10px Georgia,serif; letter-spacing:.18em; }
+h1 { margin:6px 0 0; font:600 clamp(32px,5vw,52px) Georgia,'Noto Serif SC',serif; }
+.lede { max-width:650px; margin:10px 0 0; color:var(--nc-muted); line-height:1.75; }
+.revision-strip { display:flex; flex:none; overflow:hidden; border:1px solid var(--nc-border); border-radius:10px; background:var(--nc-paper); }
+.revision-strip div { display:grid; min-width:100px; padding:10px 14px; }
+.revision-strip div+div { border-left:1px solid var(--nc-border); }
+.revision-strip span { color:var(--nc-muted); font-size:11px; }
+.revision-strip strong { font:600 18px Georgia,serif; }
+.notice,.read-only-banner,.error-summary { margin:0 0 14px; padding:12px 14px; border-left:3px solid var(--nc-vermilion); background:var(--nc-paper); }
+.error-summary { display:flex; align-items:center; gap:12px; border:1px solid var(--nc-vermilion); }
+.error-summary small { color:var(--nc-muted); }
+.error-summary button { margin-left:auto; }
+.read-only-banner { color:var(--nc-muted); border-color:var(--nc-muted); }
+.paper-panel,.workspace-sheet,.ai-panel { border:1px solid var(--nc-border); background:var(--nc-paper); box-shadow:0 22px 58px color-mix(in srgb,var(--nc-ink) 8%,transparent); }
+.paper-panel { padding:clamp(24px,4vw,44px); }
+.paper-panel h2 { margin:6px 0; font:600 28px Georgia,'Noto Serif SC',serif; }
+.paper-panel p { color:var(--nc-muted); line-height:1.7; }
+.workspace-sheet { position:relative; min-height:420px; }
+.workspace-scroll { max-height:calc(100vh - 320px); min-height:420px; overflow:auto; padding:clamp(20px,4vw,38px); transition:opacity .15s ease; }
+.workspace-scroll.streaming-read-only { opacity:.72; }
+.streaming-overlay { position:absolute; z-index:2; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:6px; pointer-events:none; color:var(--nc-ink); background:color-mix(in srgb,var(--nc-paper) 38%,transparent); text-align:center; }
+.streaming-overlay span { max-width:42ch; color:var(--nc-muted); }
+.aggregate-summary { margin-top:28px; padding-top:20px; border-top:2px solid var(--nc-vermilion); }
+.aggregate-summary h2 { margin:5px 0 14px; font:600 24px Georgia,'Noto Serif SC',serif; }
+.aggregate-summary dl,.confirm-panel dl { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin:0; }
+.aggregate-summary dl div,.confirm-panel dl div { padding:10px; border:1px solid var(--nc-border); }
+dt { color:var(--nc-muted); font-size:11px; }
+dd { margin:4px 0 0; font:600 20px Georgia,serif; }
+.hierarchy-summary { display:grid; gap:10px; margin:16px 0 0; padding:0; list-style:none; }
+.hierarchy-summary>li { display:grid; gap:4px; padding:12px 14px; border-left:2px solid var(--nc-border); background:var(--nc-paper); }
+.hierarchy-summary span { color:var(--nc-muted); font-size:12px; line-height:1.6; }
+.hierarchy-summary ol { display:grid; gap:5px; margin:7px 0 0; padding-left:18px; }
+.hierarchy-summary ol li { display:grid; grid-template-columns:minmax(100px,.32fr) 1fr; gap:10px; }
+.complete-note,.incomplete-note { margin:14px 0 0; padding:10px; line-height:1.6; }
+.complete-note { color:#426c58; background:color-mix(in srgb,#426c58 8%,transparent); }
+.incomplete-note { color:var(--nc-muted); background:var(--nc-canvas); }
+.ai-panel { display:grid; gap:8px; margin-top:14px; padding:16px; }
+.ai-panel textarea { border:1px solid var(--nc-border); border-radius:6px; padding:10px; color:var(--nc-ink); background:var(--nc-paper); font:inherit; resize:vertical; }
+.ai-panel p { margin:0; color:var(--nc-muted); font-size:12px; }
+button { border:1px solid var(--nc-border); border-radius:6px; padding:9px 13px; color:var(--nc-ink); background:var(--nc-paper); cursor:pointer; }
+button:disabled { cursor:not-allowed; opacity:.45; }
+.primary { border-color:var(--nc-vermilion); color:var(--nc-vermilion); }
+.workspace-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
+.confirm-backdrop { position:fixed; z-index:34; inset:0; display:grid; place-items:center; padding:24px; background:color-mix(in srgb,var(--nc-ink) 38%,transparent); }
+.confirm-panel { width:min(620px,100%); padding:26px; color:var(--nc-ink); background:var(--nc-paper); box-shadow:0 24px 64px color-mix(in srgb,var(--nc-ink) 22%,transparent); }
+.confirm-panel>p:first-child { color:var(--nc-vermilion); font:700 10px Georgia,serif; letter-spacing:.17em; }
+.confirm-panel h2 { font:600 28px Georgia,'Noto Serif SC',serif; }
+.confirm-panel dl { grid-template-columns:repeat(3,1fr); }
+.confirm-panel footer { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
+@media(max-width:760px){.workspace-header{align-items:start;flex-direction:column}.revision-strip{width:100%}.revision-strip div{flex:1}.aggregate-summary dl{grid-template-columns:repeat(2,1fr)}.workspace-scroll{max-height:none}.error-summary{align-items:start;flex-direction:column}.error-summary button{margin-left:0}}
 </style>
