@@ -97,7 +97,7 @@ class ProjectRepository:
         return await read_project(session, project_id)
 
     async def read_preparation_snapshot(self, session, project_id: str):
-        """Read the persisted Phase 2 preparation facts in the caller's snapshot."""
+        """Read authoritative preparation facts in the caller's snapshot."""
 
         project = await self.get_any(session, project_id)
         if project is None:
@@ -154,6 +154,64 @@ class ProjectRepository:
                WHERE project_id=%s AND active_slot=1""",
             (project_id,),
         )
+        planning_head = await session.fetchone(
+            """SELECT head.revision AS head_revision,
+                      head.planning_revision_id,
+                      head.content_hash AS head_content_hash,
+                      revision.id AS revision_id,
+                      revision.revision,
+                      revision.content_hash,
+                      revision.selection_revision,
+                      revision.seed_id,
+                      revision.seed_revision_id,
+                      revision.seed_hash,
+                      revision.contract_revision,
+                      revision.creation_contract_id,
+                      revision.creation_hash,
+                      revision.style_contract_id,
+                      revision.style_hash,
+                      revision.bible_revision,
+                      revision.bible_revision_id,
+                      revision.bible_hash
+               FROM project_planning_heads head
+               LEFT JOIN planning_revisions revision
+                 ON revision.project_id=head.project_id
+                AND revision.id=head.planning_revision_id
+                AND revision.revision=head.revision
+                AND revision.content_hash=head.content_hash
+               WHERE head.project_id=%s""",
+            (project_id,),
+        )
+        planning_draft = await session.fetchone(
+            """SELECT id AS draft_id,base_head_revision,draft_revision,
+                      content_hash,status,selection_revision,seed_id,
+                      seed_revision_id,seed_hash,contract_revision,
+                      creation_contract_id,creation_hash,style_contract_id,
+                      style_hash,bible_revision,bible_revision_id,bible_hash
+               FROM planning_drafts
+               WHERE project_id=%s AND active_slot=1 AND status='active'""",
+            (project_id,),
+        )
+        planning_operation = await session.fetchone(
+            """SELECT operation_id,status
+               FROM planning_generation_attempts
+               WHERE project_id=%s AND active_slot=1 AND status='pending'
+               ORDER BY fencing_token DESC
+               LIMIT 1""",
+            (project_id,),
+        )
+        chapter_session = await session.fetchone(
+            """SELECT chapter.id AS chapter_session_id,chapter.chapter_num,
+                      draft.id AS working_draft_id
+               FROM chapter_sessions chapter
+               JOIN working_drafts draft
+                 ON draft.project_id=chapter.project_id
+                AND draft.chapter_session_id=chapter.id
+               WHERE chapter.project_id=%s AND chapter.status='drafting'
+               ORDER BY chapter.chapter_num
+               LIMIT 1""",
+            (project_id,),
+        )
         model_tasks = await session.fetchall(
             f"""SELECT item.task_key,item.resolution_status,
                        CASE WHEN
@@ -195,6 +253,10 @@ class ProjectRepository:
             "contract_draft": contract_draft,
             "bible_head": bible_head,
             "bible_draft": bible_draft,
+            "planning_head": planning_head,
+            "planning_draft": planning_draft,
+            "planning_operation": planning_operation,
+            "chapter_session": chapter_session,
             "model_tasks": tuple(model_tasks),
         }
 

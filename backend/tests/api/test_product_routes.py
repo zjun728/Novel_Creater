@@ -15,6 +15,7 @@ from backend.services.project_lifecycle import (
     CreateProject,
     ProjectPreparationCapabilities,
     ProjectPreparationModelTask,
+    ProjectPreparationOperation,
     ProjectPreparationResult,
     ProjectResult,
 )
@@ -205,6 +206,11 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
                 active_selection="current",
                 contract="current",
                 bible="draft",
+                planning="draft",
+                planning_operation=ProjectPreparationOperation(
+                    operation_id="operation-1",
+                    status="pending",
+                ),
                 model_tasks=tuple(
                     ProjectPreparationModelTask(
                         task_key=task_key,
@@ -222,9 +228,9 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
                     edit_bible=True,
                     generate_bible=True,
                 ),
-                next_action="continue_bible",
-                target_path="/projects/p1/bible",
-                reasons=("bible_draft",),
+                next_action="recover_planning_operation",
+                target_path="/projects/p1/planning/volumes",
+                reasons=("planning_operation_pending",),
             )
 
         async def rename(self, project_id, title):
@@ -297,6 +303,11 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
         "activeSelection": "current",
         "contract": "current",
         "bible": "draft",
+        "planning": "draft",
+        "planningOperation": {
+            "operationId": "operation-1",
+            "status": "pending",
+        },
         "modelTasks": [
             {"taskKey": task_key, "readiness": "ready", "reasons": []}
             for task_key in (
@@ -310,9 +321,9 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
             "editBible": True,
             "generateBible": True,
         },
-        "nextAction": "continue_bible",
-        "targetPath": "/projects/p1/bible",
-        "reasons": ["bible_draft"],
+        "nextAction": "recover_planning_operation",
+        "targetPath": "/projects/p1/planning/volumes",
+        "reasons": ["planning_operation_pending"],
     }
     serialized = str(preparation.json()).lower()
     for forbidden in (

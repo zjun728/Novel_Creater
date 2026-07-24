@@ -4,9 +4,13 @@ from contextlib import AbstractAsyncContextManager
 from copy import deepcopy
 
 import pytest
+from pydantic import ValidationError
 
 from backend import http_errors
-from backend.services.project_lifecycle import ProjectLifecycleService
+from backend.services.project_lifecycle import (
+    ProjectLifecycleService,
+    ProjectPreparationResult,
+)
 
 
 def project_row(
@@ -167,6 +171,37 @@ def make_service(repository):
         connections,
     )
     return service, transactions, connections
+
+
+def test_project_preparation_contract_requires_closed_planning_operation():
+    assert "planning" in ProjectPreparationResult.model_fields
+    assert "planning_operation" in ProjectPreparationResult.model_fields
+
+    with pytest.raises(ValidationError):
+        ProjectPreparationResult.model_validate(
+            {
+                "lifecycle": "active",
+                "activeSelection": "current",
+                "contract": "current",
+                "bible": "current",
+                "planning": "draft",
+                "planningOperation": {
+                    "operationId": "operation-1",
+                    "status": "pending",
+                    "inputManifest": "must-not-leave-server",
+                },
+                "modelTasks": [],
+                "capabilities": {
+                    "viewPreparation": True,
+                    "editContract": True,
+                    "editBible": True,
+                    "generateBible": True,
+                },
+                "nextAction": "recover_planning_operation",
+                "targetPath": "/projects/p1/planning/volumes",
+                "reasons": ["planning_operation_pending"],
+            }
+        )
 
 
 @pytest.mark.parametrize(

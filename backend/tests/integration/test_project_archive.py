@@ -19,6 +19,7 @@ from backend.repositories.model_bindings import ModelBindingRepository
 from backend.repositories.projects import ProjectRepository
 from backend.repositories.seeds import SeedRepository
 from backend.repositories.story_engines import StoryEngineRepository
+from backend.services.bibles import BIBLE_POLICY_VERSION
 from backend.services.canon import CanonService, CommitCanonRevision
 from backend.services.contracts import (
     ConfirmContracts,
@@ -596,6 +597,8 @@ async def test_preparation_snapshot_tracks_archive_and_restore_without_model_sec
     assert active.lifecycle == "active"
     assert active.active_selection == "missing"
     assert active.next_action == "select_seed"
+    assert active.planning == "missing"
+    assert active.planning_operation is None
     assert len(active.model_tasks) == len(TASK_KEYS)
     assert all(item.readiness == "not_ready" for item in active.model_tasks)
 
@@ -604,6 +607,8 @@ async def test_preparation_snapshot_tracks_archive_and_restore_without_model_sec
     assert archived.lifecycle == "archived"
     assert archived.next_action == "archived_read_only"
     assert archived.target_path is None
+    assert archived.planning == "missing"
+    assert archived.planning_operation is None
     assert archived.capabilities.model_dump() == {
         "view_preparation": True,
         "edit_contract": False,
@@ -1178,6 +1183,136 @@ async def _prepare_planning_race(disposable_mysql):
         now,
     )
     return transaction, planning, now
+
+
+def _preparation_service(transaction, read_connection):
+    return ProjectLifecycleService(
+        ProjectRepository(),
+        transaction,
+        read_connection,
+        contract_service=ContractService(
+            ContractRepository(),
+            transaction_factory=transaction,
+            connection_factory=read_connection,
+        ),
+    )
+
+
+async def _make_preparation_bible_current(session):
+    await session.execute(
+        """UPDATE creation_bible_revisions
+              SET policy_version=%s
+            WHERE project_id=%s""",
+        (BIBLE_POLICY_VERSION, WRITE_FENCE_PROJECT),
+    )
+
+
+@pytest.mark.asyncio
+async def test_preparation_keeps_confirmed_planning_as_archived_read_only_entry(
+    disposable_mysql,
+):
+    transaction, _, _ = await _prepare_planning_race(disposable_mysql)
+    await _make_preparation_bible_current(disposable_mysql.session)
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    service = _preparation_service(transaction, read_connection)
+    active = await service.preparation(WRITE_FENCE_PROJECT)
+    assert active.planning == "current"
+    assert active.next_action == "phase_boundary_outline"
+    assert active.target_path is None
+
+    await service.archive(WRITE_FENCE_PROJECT, 0)
+    archived = await service.preparation(WRITE_FENCE_PROJECT)
+    assert archived.lifecycle == "archived"
+    assert archived.planning == "current"
+    assert archived.next_action == "archived_read_only"
+    assert (
+        archived.target_path
+        == f"/projects/{WRITE_FENCE_PROJECT}/planning/volumes"
+    )
+
+
+@pytest.mark.asyncio
+async def test_preparation_recovers_real_pending_planning_operation_without_secrets(
+    disposable_mysql,
+):
+    transaction, _, now = await _prepare_planning_race(disposable_mysql)
+    await _make_preparation_bible_current(disposable_mysql.session)
+    await _write_current_planning_draft(
+        transaction,
+        WRITE_FENCE_PROJECT,
+        now + 1,
+    )
+    binding = await disposable_mysql.session.fetchone(
+        """SELECT head.binding_revision_id,head.revision AS binding_revision,
+                  head.content_hash AS binding_hash,item.provider_id,
+                  item.model_name_snapshot
+             FROM project_model_binding_heads head
+             JOIN project_model_binding_items item
+               ON item.binding_revision_id=head.binding_revision_id
+              AND item.task_key='planning'
+            WHERE head.project_id=%s""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert binding is not None
+    manifest = {"schemaVersion": "planning-generation-v1"}
+    await disposable_mysql.session.execute(
+        """INSERT INTO planning_generation_attempts
+           (id,project_id,draft_id,operation_id,active_slot,idempotency_key,
+            request_fingerprint,binding_revision_id,binding_revision,binding_hash,
+            provider_id,model_name_snapshot,fencing_token,lease_expires_at,
+            input_manifest_json,input_manifest_hash,result_content_json,
+            result_content_hash,loaded_draft_revision,loaded_at,failure_code,
+            status,created_at,updated_at)
+           VALUES ('8e000000-0000-0000-0003-000000000001',%s,
+                   '8d000000-0000-0000-0001-000000000003',
+                   '8e000000-0000-0000-0003-000000000002',1,
+                   'pending-preparation',%s,%s,%s,%s,%s,%s,1,%s,%s,%s,
+                   NULL,NULL,NULL,NULL,NULL,'pending',%s,%s)""",
+        (
+            WRITE_FENCE_PROJECT,
+            "f" * 64,
+            binding["binding_revision_id"],
+            binding["binding_revision"],
+            binding["binding_hash"],
+            binding["provider_id"],
+            binding["model_name_snapshot"],
+            now + 60_000,
+            canonical_json(manifest),
+            canonical_hash(manifest),
+            now + 2,
+            now + 2,
+        ),
+    )
+
+    @asynccontextmanager
+    async def read_connection():
+        yield disposable_mysql.session
+
+    result = await _preparation_service(
+        transaction,
+        read_connection,
+    ).preparation(WRITE_FENCE_PROJECT)
+    public = result.model_dump(mode="json", by_alias=True)
+
+    assert result.planning == "draft"
+    assert result.next_action == "recover_planning_operation"
+    assert public["planningOperation"] == {
+        "operationId": "8e000000-0000-0000-0003-000000000002",
+        "status": "pending",
+    }
+    for forbidden in (
+        "providerId",
+        "modelName",
+        "inputManifest",
+        "prompt",
+        "raw",
+        "apiKey",
+    ):
+        assert forbidden not in str(public)
 
 
 class _ArchiveAttemptRepository(ProjectRepository):

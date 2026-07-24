@@ -87,6 +87,10 @@ def _snapshot(
     contract_draft=None,
     bible_head=None,
     bible_draft=None,
+    planning_head=None,
+    planning_draft=None,
+    planning_operation=None,
+    chapter_session=None,
     model_tasks=None,
 ):
     return {
@@ -95,6 +99,10 @@ def _snapshot(
         "contract_draft": contract_draft,
         "bible_head": bible_head,
         "bible_draft": bible_draft,
+        "planning_head": planning_head,
+        "planning_draft": planning_draft,
+        "planning_operation": planning_operation,
+        "chapter_session": chapter_session,
         "model_tasks": (
             _ready_model_tasks() if model_tasks is None else tuple(model_tasks)
         ),
@@ -146,7 +154,7 @@ def _service(snapshot, contract):
 
 
 @pytest.mark.asyncio
-async def test_preparation_uses_one_transaction_and_returns_only_phase_two_fields():
+async def test_preparation_uses_one_transaction_and_returns_closed_fields():
     service, repository, contract_service, transaction = _service(
         _snapshot(selection=None),
         {
@@ -164,6 +172,8 @@ async def test_preparation_uses_one_transaction_and_returns_only_phase_two_field
         "activeSelection": "missing",
         "contract": "missing",
         "bible": "missing",
+        "planning": "missing",
+        "planningOperation": None,
         "modelTasks": [
             {"taskKey": task_key, "readiness": "ready", "reasons": []}
             for task_key in TASK_KEYS
@@ -185,12 +195,58 @@ async def test_preparation_uses_one_transaction_and_returns_only_phase_two_field
 
 
 @pytest.mark.asyncio
-async def test_preparation_priority_is_lifecycle_then_selection_contract_bible_boundary():
+async def test_preparation_priority_is_operation_session_then_foundation_and_planning():
+    planning_path = (
+        "/projects/project%20%2F%20%E4%B8%80/planning/volumes"
+    )
     cases = (
         (
-            _snapshot(archived=True),
+            _snapshot(
+                archived=True,
+                planning_head={
+                    "head_revision": 2,
+                    "planning_revision_id": "planning-2",
+                    "head_content_hash": "e" * 64,
+                    "revision_id": "planning-2",
+                    "revision": 2,
+                    "content_hash": "e" * 64,
+                    **_bible_basis(),
+                    "bible_revision_id": "bible-3",
+                    "bible_revision": 3,
+                    "bible_hash": "d" * 64,
+                },
+            ),
             _contract(),
-            ("archived_read_only", None, "project_archived"),
+            ("archived_read_only", planning_path, "project_archived"),
+        ),
+        (
+            _snapshot(
+                planning_operation={
+                    "operation_id": "operation-1",
+                    "status": "pending",
+                },
+            ),
+            {"revision": 0, "has_contract": False, "contract_ready": False},
+            (
+                "recover_planning_operation",
+                planning_path,
+                "planning_operation_pending",
+            ),
+        ),
+        (
+            _snapshot(
+                chapter_session={
+                    "chapter_session_id": "session-7",
+                    "chapter_num": 7,
+                    "working_draft_id": "draft-7",
+                },
+            ),
+            {"revision": 0, "has_contract": False, "contract_ready": False},
+            (
+                "continue_writing",
+                "/projects/project%20%2F%20%E4%B8%80/write/chapters/7",
+                "chapter_session_active",
+            ),
         ),
         (
             _snapshot(selection=None),
@@ -248,7 +304,60 @@ async def test_preparation_priority_is_lifecycle_then_selection_contract_bible_b
                 },
             ),
             _contract(),
-            ("phase_boundary_planning", None, "phase_boundary_planning"),
+            ("establish_planning", planning_path, "planning_missing"),
+        ),
+        (
+            _snapshot(
+                selection=_selection(),
+                bible_head={
+                    "head_revision": 3,
+                    "head_bible_revision_id": "bible-3",
+                    "head_content_hash": "d" * 64,
+                    "revision_id": "bible-3",
+                    "revision": 3,
+                    "content_hash": "d" * 64,
+                    **_bible_basis(),
+                },
+                planning_draft={
+                    "draft_id": "planning-draft",
+                    "base_head_revision": 0,
+                    "status": "active",
+                    **_bible_basis(),
+                    "bible_revision_id": "bible-3",
+                    "bible_revision": 3,
+                    "bible_hash": "d" * 64,
+                },
+            ),
+            _contract(),
+            ("continue_planning", planning_path, "planning_draft"),
+        ),
+        (
+            _snapshot(
+                selection=_selection(),
+                bible_head={
+                    "head_revision": 3,
+                    "head_bible_revision_id": "bible-3",
+                    "head_content_hash": "d" * 64,
+                    "revision_id": "bible-3",
+                    "revision": 3,
+                    "content_hash": "d" * 64,
+                    **_bible_basis(),
+                },
+                planning_head={
+                    "head_revision": 2,
+                    "planning_revision_id": "planning-2",
+                    "head_content_hash": "e" * 64,
+                    "revision_id": "planning-2",
+                    "revision": 2,
+                    "content_hash": "e" * 64,
+                    **_bible_basis(),
+                    "bible_revision_id": "bible-3",
+                    "bible_revision": 3,
+                    "bible_hash": "d" * 64,
+                },
+            ),
+            _contract(),
+            ("phase_boundary_outline", None, "phase_3c_outline"),
         ),
     )
 
@@ -256,6 +365,38 @@ async def test_preparation_priority_is_lifecycle_then_selection_contract_bible_b
         service, *_ = _service(snapshot, contract)
         result = await service.preparation("project / 一")
         assert (result.next_action, result.target_path, result.reasons[0]) == expected
+
+
+@pytest.mark.asyncio
+async def test_pending_planning_operation_is_closed_safe_and_preempts_session():
+    sentinel = "must-never-leave-preparation"
+    service, *_ = _service(
+        _snapshot(
+            planning_operation={
+                "operation_id": "operation / 一",
+                "status": "pending",
+                "input_manifest_json": sentinel,
+                "model_name_snapshot": sentinel,
+                "provider_id": sentinel,
+            },
+            chapter_session={
+                "chapter_session_id": "session-7",
+                "chapter_num": 7,
+                "working_draft_id": "draft-7",
+            },
+        ),
+        {"revision": 0, "has_contract": False, "contract_ready": False},
+    )
+
+    result = await service.preparation("project / 一")
+    public = result.model_dump(mode="json", by_alias=True)
+
+    assert result.next_action == "recover_planning_operation"
+    assert public["planningOperation"] == {
+        "operationId": "operation / 一",
+        "status": "pending",
+    }
+    assert sentinel not in str(public)
 
 
 @pytest.mark.asyncio

@@ -86,6 +86,18 @@ class ProjectPreparationCapabilities(BaseModel):
     generate_bible: bool = Field(serialization_alias="generateBible")
 
 
+class ProjectPreparationOperation(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        populate_by_name=True,
+    )
+
+    operation_id: str = Field(min_length=1, serialization_alias="operationId")
+    status: Literal["pending"]
+
+
 class ProjectPreparationResult(BaseModel):
     model_config = ConfigDict(
         strict=True,
@@ -100,6 +112,10 @@ class ProjectPreparationResult(BaseModel):
     )
     contract: Literal["missing", "draft", "current", "superseded"]
     bible: Literal["missing", "draft", "current", "superseded"]
+    planning: Literal["missing", "draft", "current", "superseded"]
+    planning_operation: ProjectPreparationOperation | None = Field(
+        serialization_alias="planningOperation"
+    )
     model_tasks: tuple[ProjectPreparationModelTask, ...] = Field(
         serialization_alias="modelTasks"
     )
@@ -108,7 +124,11 @@ class ProjectPreparationResult(BaseModel):
         "select_seed",
         "continue_contract",
         "continue_bible",
-        "phase_boundary_planning",
+        "recover_planning_operation",
+        "continue_writing",
+        "establish_planning",
+        "continue_planning",
+        "phase_boundary_outline",
         "archived_read_only",
     ] = Field(serialization_alias="nextAction")
     target_path: str | None = Field(serialization_alias="targetPath")
@@ -333,6 +353,95 @@ class ProjectLifecycleService:
             return "superseded"
         return "missing"
 
+    @classmethod
+    def _planning_basis(cls, snapshot, contract_result):
+        contract_basis = cls._contract_basis(contract_result)
+        bible_head = snapshot.get("bible_head")
+        if contract_basis is None or bible_head is None:
+            return None
+        head_revision = int(bible_head.get("head_revision") or 0)
+        if (
+            head_revision <= 0
+            or int(bible_head.get("revision") or 0) != head_revision
+            or bible_head.get("head_bible_revision_id")
+            != bible_head.get("revision_id")
+            or bible_head.get("head_content_hash")
+            != bible_head.get("content_hash")
+            or not cls._matches_bible_basis(bible_head, contract_basis)
+        ):
+            return None
+        return {
+            key: value
+            for key, value in contract_basis.items()
+            if key != "policy_version"
+        } | {
+            "bible_revision": head_revision,
+            "bible_revision_id": bible_head["revision_id"],
+            "bible_hash": bible_head["content_hash"],
+        }
+
+    @classmethod
+    def _planning_status(cls, snapshot, contract_result) -> str:
+        basis = cls._planning_basis(snapshot, contract_result)
+        head = snapshot.get("planning_head")
+        draft = snapshot.get("planning_draft")
+        head_revision = int((head or {}).get("head_revision") or 0)
+        draft_is_current = (
+            draft is not None
+            and bool(draft.get("draft_id"))
+            and draft.get("status") == "active"
+            and int(draft.get("base_head_revision") or 0) == head_revision
+            and cls._matches_bible_basis(draft, basis)
+        )
+        head_is_current = (
+            head_revision > 0
+            and int((head or {}).get("revision") or 0) == head_revision
+            and (head or {}).get("planning_revision_id")
+            == (head or {}).get("revision_id")
+            and (head or {}).get("head_content_hash")
+            == (head or {}).get("content_hash")
+            and cls._matches_bible_basis(head, basis)
+        )
+        if draft_is_current:
+            return "draft"
+        if head_is_current:
+            return "current"
+        if head_revision > 0 or draft is not None:
+            return "superseded"
+        return "missing"
+
+    @staticmethod
+    def _planning_operation(snapshot) -> ProjectPreparationOperation | None:
+        row = snapshot.get("planning_operation")
+        if (
+            row is None
+            or row.get("status") != "pending"
+            or not isinstance(row.get("operation_id"), str)
+            or not row["operation_id"]
+        ):
+            return None
+        return ProjectPreparationOperation(
+            operation_id=row["operation_id"],
+            status="pending",
+        )
+
+    @staticmethod
+    def _active_chapter_number(snapshot) -> int | None:
+        row = snapshot.get("chapter_session")
+        if (
+            row is None
+            or not isinstance(row.get("chapter_session_id"), str)
+            or not row["chapter_session_id"]
+            or not isinstance(row.get("working_draft_id"), str)
+            or not row["working_draft_id"]
+        ):
+            return None
+        try:
+            chapter_number = int(row.get("chapter_num"))
+        except (TypeError, ValueError):
+            return None
+        return chapter_number if chapter_number > 0 else None
+
     @staticmethod
     def _project_path(project_id: str, module: str) -> str:
         return f"/projects/{quote(str(project_id), safe='')}/{module}"
@@ -362,6 +471,9 @@ class ProjectLifecycleService:
         )
         contract = self._contract_status(snapshot, contract_result)
         bible = self._bible_status(snapshot, contract_result)
+        planning = self._planning_status(snapshot, contract_result)
+        planning_operation = self._planning_operation(snapshot)
+        active_chapter_number = self._active_chapter_number(snapshot)
         model_tasks = self._model_tasks(snapshot.get("model_tasks"))
         planning_ready = next(
             item.readiness == "ready"
@@ -375,8 +487,23 @@ class ProjectLifecycleService:
         reasons = []
         if lifecycle == "archived":
             next_action = "archived_read_only"
-            target_path = None
+            target_path = (
+                self._project_path(project_id, "planning/volumes")
+                if planning != "missing"
+                else None
+            )
             reasons.append("project_archived")
+        elif planning_operation is not None:
+            next_action = "recover_planning_operation"
+            target_path = self._project_path(project_id, "planning/volumes")
+            reasons.append("planning_operation_pending")
+        elif active_chapter_number is not None:
+            next_action = "continue_writing"
+            target_path = self._project_path(
+                project_id,
+                f"write/chapters/{active_chapter_number}",
+            )
+            reasons.append("chapter_session_active")
         elif active_selection == "missing":
             next_action = "select_seed"
             target_path = self._project_path(project_id, "seeds")
@@ -389,10 +516,18 @@ class ProjectLifecycleService:
             next_action = "continue_bible"
             target_path = self._project_path(project_id, "bible")
             reasons.append(f"bible_{bible}")
+        elif planning == "draft":
+            next_action = "continue_planning"
+            target_path = self._project_path(project_id, "planning/volumes")
+            reasons.append("planning_draft")
+        elif planning != "current":
+            next_action = "establish_planning"
+            target_path = self._project_path(project_id, "planning/volumes")
+            reasons.append(f"planning_{planning}")
         else:
-            next_action = "phase_boundary_planning"
+            next_action = "phase_boundary_outline"
             target_path = None
-            reasons.append("phase_boundary_planning")
+            reasons.append("phase_3c_outline")
         if lifecycle == "active" and not planning_ready:
             reasons.append("planning_model_not_ready")
 
@@ -401,6 +536,8 @@ class ProjectLifecycleService:
             active_selection=active_selection,
             contract=contract,
             bible=bible,
+            planning=planning,
+            planning_operation=planning_operation,
             model_tasks=model_tasks,
             capabilities=ProjectPreparationCapabilities(
                 view_preparation=True,
