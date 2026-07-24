@@ -371,6 +371,29 @@ class PlanningRepository:
             (draft_id,),
         )
 
+    async def lock_planning_binding(self, session, project_id: str):
+        return await session.fetchone(
+            """SELECT head.binding_revision_id,
+                      head.revision AS binding_revision,
+                      head.content_hash AS binding_hash,
+                      item.task_key AS binding_task_key,
+                      item.resolution_status,item.provider_id,
+                      item.model_name_snapshot,
+                      provider.id,provider.provider_type,provider.model_name,
+                      provider.base_url,provider.api_key,provider.enabled,
+                      provider.lifecycle_status,provider.revision,
+                      provider.temperature,provider.max_context_tokens,
+                      provider.max_output_tokens
+                 FROM project_model_binding_heads head
+                 JOIN project_model_binding_items item
+                   ON item.binding_revision_id=head.binding_revision_id
+                  AND item.task_key='planning'
+                 LEFT JOIN provider_profiles provider
+                   ON provider.id=item.provider_id
+                WHERE head.project_id=%s FOR UPDATE""",
+            (project_id,),
+        )
+
     async def insert_generation_attempt(self, session, row: dict) -> bool:
         changed = await session.execute(
             """INSERT INTO planning_generation_attempts

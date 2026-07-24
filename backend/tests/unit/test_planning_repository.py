@@ -34,6 +34,7 @@ PUBLIC_METHODS = {
     "fail_generation_attempt",
     "succeed_generation_attempt",
     "load_generation_result_into_draft",
+    "lock_planning_binding",
 }
 
 
@@ -241,6 +242,45 @@ async def test_generation_attempt_locks_use_exact_key_operation_and_active_draft
     assert "status='pending'" in active_sql
     assert "active_slot=1" in active_sql
     assert active_sql.endswith("FOR UPDATE")
+
+
+@pytest.mark.asyncio
+async def test_planning_binding_lock_reads_exact_task_head_and_provider_runtime():
+    session = CapturingSession()
+
+    await PlanningRepository().lock_planning_binding(session, "p1")
+
+    _, sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert args == ("p1",)
+    assert "FROM project_model_binding_heads head" in compact
+    assert "JOIN project_model_binding_items item" in compact
+    assert "item.binding_revision_id=head.binding_revision_id" in compact
+    assert "item.task_key='planning'" in compact
+    assert "LEFT JOIN provider_profiles provider" in compact
+    for column in (
+        "head.binding_revision_id",
+        "head.revision AS binding_revision",
+        "head.content_hash AS binding_hash",
+        "item.task_key AS binding_task_key",
+        "item.resolution_status",
+        "item.provider_id",
+        "item.model_name_snapshot",
+        "provider.id",
+        "provider.provider_type",
+        "provider.model_name",
+        "provider.base_url",
+        "provider.api_key",
+        "provider.enabled",
+        "provider.lifecycle_status",
+        "provider.revision",
+        "provider.temperature",
+        "provider.max_context_tokens",
+        "provider.max_output_tokens",
+    ):
+        assert column in compact
+    assert "WHERE head.project_id=%s" in compact
+    assert compact.endswith("FOR UPDATE")
 
 
 @pytest.mark.asyncio

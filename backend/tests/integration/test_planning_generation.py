@@ -217,3 +217,83 @@ async def test_real_mysql_failed_attempt_releases_active_slot_for_next_token(
         disposable_mysql.session,
         draft.draft_id,
     ) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_planning_binding_lock_returns_exact_task_and_runtime(
+    disposable_mysql,
+):
+    await _prepare(disposable_mysql)
+    head = await disposable_mysql.session.fetchone(
+        """SELECT binding_revision_id,revision,content_hash
+             FROM project_model_binding_heads WHERE project_id=%s""",
+        (PROJECT,),
+    )
+    planning_item = await disposable_mysql.session.fetchone(
+        """SELECT * FROM project_model_binding_items
+            WHERE binding_revision_id=%s AND task_key='planning'""",
+        (head["binding_revision_id"],),
+    )
+    provider = await disposable_mysql.session.fetchone(
+        """SELECT * FROM provider_profiles
+            WHERE id=(SELECT provider_id FROM project_model_binding_items
+                       WHERE binding_revision_id=%s AND task_key='planning')""",
+        (head["binding_revision_id"],),
+    )
+
+    row = await PlanningRepository().lock_planning_binding(
+        disposable_mysql.session,
+        PROJECT,
+    )
+
+    assert row["binding_revision_id"] == head["binding_revision_id"]
+    assert row["binding_revision"] == head["revision"]
+    assert row["binding_hash"] == head["content_hash"]
+    assert row["binding_task_key"] == planning_item["task_key"] == "planning"
+    assert row["resolution_status"] == planning_item["resolution_status"]
+    assert row["model_name_snapshot"] == planning_item["model_name_snapshot"]
+    for field in (
+        "id",
+        "provider_type",
+        "model_name",
+        "base_url",
+        "api_key",
+        "enabled",
+        "lifecycle_status",
+        "revision",
+        "temperature",
+        "max_context_tokens",
+        "max_output_tokens",
+    ):
+        assert row[field] == provider[field]
+    assert row["provider_id"] == provider["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ("item", "head"))
+async def test_real_mysql_planning_binding_lock_returns_none_without_exact_join(
+    disposable_mysql,
+    missing,
+):
+    await _prepare(disposable_mysql)
+    head = await disposable_mysql.session.fetchone(
+        """SELECT binding_revision_id FROM project_model_binding_heads
+            WHERE project_id=%s""",
+        (PROJECT,),
+    )
+    if missing == "item":
+        await disposable_mysql.session.execute(
+            """DELETE FROM project_model_binding_items
+                WHERE binding_revision_id=%s AND task_key='planning'""",
+            (head["binding_revision_id"],),
+        )
+    else:
+        await disposable_mysql.session.execute(
+            "DELETE FROM project_model_binding_heads WHERE project_id=%s",
+            (PROJECT,),
+        )
+
+    assert await PlanningRepository().lock_planning_binding(
+        disposable_mysql.session,
+        PROJECT,
+    ) is None
