@@ -128,13 +128,23 @@ onBeforeUnmount(() => confirmFocus.unmount())
     <section v-if="store.error" class="error-summary" role="alert">
       <strong>{{ store.error.message }}</strong>
       <small v-if="store.error.correlationId">参考编号：{{ store.error.correlationId }}</small>
+    </section>
+    <section
+      v-if="controller.hasCriticalRecovery.value"
+      class="recovery-summary"
+      role="status"
+      aria-live="polite"
+    >
+      <strong v-if="store.generationOperation?.status === 'pending'">
+        原操作仍在进行，稍后核对
+      </strong>
+      <strong v-else>生成结果尚未完成权威核对</strong>
       <button
-        v-if="controller.hasCriticalRecovery.value"
         type="button"
         :disabled="store.reconciling"
         @click="run(controller.reconcile)"
       >
-        使用原操作核对结果
+        核对原操作
       </button>
     </section>
 
@@ -331,10 +341,10 @@ h1 { margin:6px 0 0; font:600 clamp(32px,5vw,52px) Georgia,'Noto Serif SC',serif
 .revision-strip div+div { border-left:1px solid var(--nc-border); }
 .revision-strip span { color:var(--nc-muted); font-size:11px; }
 .revision-strip strong { font:600 18px Georgia,serif; }
-.notice,.read-only-banner,.error-summary { margin:0 0 14px; padding:12px 14px; border-left:3px solid var(--nc-vermilion); background:var(--nc-paper); }
-.error-summary { display:flex; align-items:center; gap:12px; border:1px solid var(--nc-vermilion); }
+.notice,.read-only-banner,.error-summary,.recovery-summary { margin:0 0 14px; padding:12px 14px; border-left:3px solid var(--nc-vermilion); background:var(--nc-paper); }
+.error-summary,.recovery-summary { display:flex; align-items:center; gap:12px; border:1px solid var(--nc-vermilion); }
 .error-summary small { color:var(--nc-muted); }
-.error-summary button { margin-left:auto; }
+.recovery-summary button { margin-left:auto; }
 .read-only-banner { color:var(--nc-muted); border-color:var(--nc-muted); }
 .paper-panel,.workspace-sheet,.ai-panel { border:1px solid var(--nc-border); background:var(--nc-paper); box-shadow:0 22px 58px color-mix(in srgb,var(--nc-ink) 8%,transparent); }
 .paper-panel { padding:clamp(24px,4vw,44px); }

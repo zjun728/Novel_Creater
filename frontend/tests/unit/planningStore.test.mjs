@@ -356,12 +356,14 @@ test('real client network, abort and 504 failures recover only by idempotency ke
   }
 })
 
-test('by-key recovery fixes operation id then reconciles by id and exact state GET', async () => {
+test('by-key pending recovery stays critical and every later check uses operation id', async () => {
   const originalFetch = global.fetch
   const operationId = '123e4567-e89b-12d3-a456-426614174000'
   const paths = []
   let planningReads = 0
   let posts = 0
+  let byKeyReads = 0
+  let operationReads = 0
   try {
     global.fetch = async (url, options) => {
       const path = new URL(String(url)).pathname
@@ -382,6 +384,7 @@ test('by-key recovery fixes operation id then reconciles by id and exact state G
         throw new TypeError('network result unknown')
       }
       if (path.includes('/operations/by-idempotency-key/')) {
+        byKeyReads += 1
         return jsonResponse(operation({
           operationId,
           status: 'pending',
@@ -390,7 +393,17 @@ test('by-key recovery fixes operation id then reconciles by id and exact state G
         }))
       }
       if (path.endsWith(`/operations/${operationId}`)) {
-        return jsonResponse(operation({ operationId }))
+        operationReads += 1
+        return jsonResponse(operation(
+          operationReads === 1
+            ? {
+              operationId,
+              status: 'pending',
+              loaded: false,
+              loadedDraftRevision: null,
+            }
+            : { operationId },
+        ))
       }
       throw new Error(`unexpected request ${options.method} ${path}`)
     }
@@ -409,15 +422,30 @@ test('by-key recovery fixes operation id then reconciles by id and exact state G
     await store.reconcileGeneration()
     assert.equal(store.generationOperation.operationId, operationId)
     assert.equal(store.generationOperation.status, 'pending')
-    assert.equal(store.generationOutcomeUnknown, false)
+    assert.equal(store.generationOutcomeUnknown, true)
+    assert.equal(store.generating, true)
+    await assert.rejects(
+      store.ensureLoaded('project-1', { force: true }),
+      /结果未知|核对/,
+    )
+
+    await store.reconcileGeneration()
+    assert.equal(store.generationOperation.operationId, operationId)
+    assert.equal(store.generationOperation.status, 'pending')
+    assert.equal(store.generationOutcomeUnknown, true)
+    assert.equal(store.generating, true)
+    assert.equal(store.reconciling, false)
 
     await store.reconcileGeneration()
     assert.equal(posts, 1)
+    assert.equal(byKeyReads, 1)
+    assert.equal(operationReads, 2)
     assert.equal(store.state.draft.draftRevision, 2)
     assert.equal(store.generationRecoveryKey, '')
     assert.equal(store.generating, false)
     assert.deepEqual(paths.slice(3).map(item => item[1]), [
       '/api/projects/project-1/planning/operations/by-idempotency-key/recover-by-key',
+      `/api/projects/project-1/planning/operations/${operationId}`,
       `/api/projects/project-1/planning/operations/${operationId}`,
       '/api/projects/project-1/planning',
     ])

@@ -149,6 +149,16 @@ async function flush() {
   await nextTick()
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
 async function waitFor(predicate, message = 'condition did not become true') {
   for (let index = 0; index < 30; index += 1) {
     const result = predicate()
@@ -510,6 +520,96 @@ test('mounted workspace locks editor mutations for every busy or recovery state 
     await flush()
     assert.equal(store.calls.length, 1)
     assert.equal(store.localContent.volumes[0].title, '可继续编辑')
+    app.unmount()
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
+test('pending recovery stays visible, keyboard-actionable and disabled only while checking', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, Volume, Plot, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
+    Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
+
+    const pendingCheck = deferred()
+    const store = workspaceStore()
+    store.generationOutcomeUnknown = true
+    store.generating = true
+    store.generationOperation = {
+      operationId: 'operation-1',
+      status: 'pending',
+    }
+    let checks = 0
+    store.reconcileGeneration = async () => {
+      checks += 1
+      store.reconciling = true
+      try {
+        if (checks === 1) return await pendingCheck.promise
+        store.generationOperation = {
+          operationId: 'operation-1',
+          status: 'succeeded',
+        }
+        store.generationOutcomeUnknown = false
+        store.generating = false
+        return store.generationOperation
+      } finally {
+        store.reconciling = false
+      }
+    }
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'A',
+    })
+    const root = node('root')
+    const app = renderer.createApp(Workspace.default, {
+      store,
+      controller,
+      activeTab: 'volumes',
+    })
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(root)
+    await flush()
+
+    const recoveryButton = () => byButtonText(root, '核对原操作')
+    assert.match(text(root), /原操作仍在进行，稍后核对/)
+    assert.equal(store.error, null)
+    assert.equal(recoveryButton().props.type, 'button')
+    assert.equal(recoveryButton().props.disabled, false)
+    assert.equal(typeof recoveryButton().props.onClick, 'function')
+
+    recoveryButton().props.onClick()
+    await flush()
+    assert.equal(checks, 1)
+    assert.equal(recoveryButton().props.disabled, true)
+
+    pendingCheck.resolve({
+      operationId: 'operation-1',
+      status: 'pending',
+    })
+    await flush()
+    assert.equal(recoveryButton().props.disabled, false)
+    assert.match(text(root), /原操作仍在进行，稍后核对/)
+
+    recoveryButton().props.onClick()
+    await flush()
+    assert.equal(checks, 2)
+    assert.equal(recoveryButton(), undefined)
     app.unmount()
   } finally {
     global.document = originalDocument

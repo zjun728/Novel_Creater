@@ -647,7 +647,7 @@ export const usePlanningStore = defineStore('planning', () => {
 
     generationOperation.value = result
     if (result.status === 'pending') {
-      generationOutcomeUnknown.value = false
+      generationOutcomeUnknown.value = true
       awaitingAuthoritativeReload.value = false
       generating.value = true
       error.value = null
