@@ -193,11 +193,11 @@ async def test_any_status_reads_and_locks_delegate_to_shared_helpers(
 
 
 @pytest.mark.asyncio
-async def test_unfinished_operation_checks_only_reserved_running_and_unknown_batches():
+async def test_unfinished_operation_checks_story_batches_and_active_planning_lease():
     session = RecordingSession(row={"present": 1})
 
     assert (
-        await projects.ProjectRepository().has_unfinished_operation(
+        await projects.ProjectRepository(clock=lambda: 123).has_unfinished_operation(
             session, "p1"
         )
         is True
@@ -206,10 +206,13 @@ async def test_unfinished_operation_checks_only_reserved_running_and_unknown_bat
     assert session.calls == [
         (
             "fetchone",
-            "SELECT 1 AS present FROM story_engine_batches "
-            "WHERE project_id=%s AND status IN "
-            "('reserved','running','outcome_unknown') LIMIT 1",
-            ("p1",),
+            "SELECT 1 AS present WHERE EXISTS "
+            "( SELECT 1 FROM story_engine_batches WHERE project_id=%s "
+            "AND status IN ('reserved','running','outcome_unknown') ) "
+            "OR EXISTS ( SELECT 1 FROM planning_generation_attempts "
+            "WHERE project_id=%s AND status='pending' AND active_slot=1 "
+            "AND lease_expires_at>%s ) LIMIT 1",
+            ("p1", "p1", 123),
         )
     ]
 

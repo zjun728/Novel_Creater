@@ -274,11 +274,20 @@ class ProjectRepository:
     async def has_unfinished_operation(self, session, project_id: str) -> bool:
         row = await session.fetchone(
             """SELECT 1 AS present
-               FROM story_engine_batches
-               WHERE project_id=%s
-                 AND status IN ('reserved','running','outcome_unknown')
+               WHERE EXISTS (
+                 SELECT 1 FROM story_engine_batches
+                  WHERE project_id=%s
+                    AND status IN ('reserved','running','outcome_unknown')
+               )
+               OR EXISTS (
+                 SELECT 1 FROM planning_generation_attempts
+                  WHERE project_id=%s
+                    AND status='pending'
+                    AND active_slot=1
+                    AND lease_expires_at>%s
+               )
                LIMIT 1""",
-            (project_id,),
+            (project_id, project_id, self._clock()),
         )
         return row is not None
 

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from backend import http_errors
+from backend.domain.bibles import BiblePayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.planning import (
@@ -16,6 +17,7 @@ from backend.domain.seeds import SeedPayload
 from backend.repositories.canon import CanonRepository
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.model_bindings import ModelBindingRepository
+from backend.repositories.planning import PlanningRepository
 from backend.repositories.projects import ProjectRepository
 from backend.repositories.seeds import SeedRepository
 from backend.repositories.story_engines import StoryEngineRepository
@@ -31,6 +33,11 @@ from backend.services.project_lifecycle import (
     CreateProject,
     ProjectLifecycleService,
     ProjectResult,
+)
+from backend.services.planning_generation import (
+    PLANNING_GENERATION_LEASE_MS,
+    GeneratePlanningDraft,
+    PlanningGenerationService,
 )
 from backend.services.projections import build_projection_bundle
 from backend.services.seeds import (
@@ -180,12 +187,14 @@ async def _insert_confirmed_bible(
     *,
     bible_id: str,
     now: int,
+    content: dict | None = None,
 ) -> None:
-    content = {
-        "schemaVersion": "creation-bible-v1",
-        "projectId": confirmed.project_id,
-        "contractRevision": confirmed.revision,
-    }
+    if content is None:
+        content = {
+            "schemaVersion": "creation-bible-v1",
+            "projectId": confirmed.project_id,
+            "contractRevision": confirmed.revision,
+        }
     content_hash = canonical_hash(content)
     await session.execute(
         """INSERT INTO creation_bible_revisions
@@ -1137,7 +1146,72 @@ async def test_archived_project_keeps_seed_reads_but_blocks_writes_and_inheritan
     assert inherited.source_project_id is None
 
 
-async def _prepare_planning_race(disposable_mysql):
+def _planning_generation_bible() -> dict:
+    payload = BiblePayload.model_validate(
+        {
+            "premiseAndPromise": (
+                "一个被追捕的记录者必须保存真相，同时承担公开真相的关系代价。"
+            ),
+            "worldRules": (
+                {
+                    "id": "world-rule-1",
+                    "text": "任何超常力量都必须留下可追踪且不可撤销的代价。",
+                },
+            ),
+            "powerOrProgressionSystem": (
+                "成长依靠选择、训练和有限资源，不允许无依据跃升。"
+            ),
+            "protagonist": "主角谨慎、重视证据，并会承担自己选择的后果。",
+            "coreCast": (
+                {
+                    "id": "cast-1",
+                    "text": "同伴拥有独立目标，不是主角的功能性附庸。",
+                },
+            ),
+            "factions": (
+                {
+                    "id": "faction-1",
+                    "text": "地方势力围绕安全、秩序与真相形成竞争。",
+                },
+            ),
+            "longTermConflicts": (
+                {
+                    "id": "conflict-1",
+                    "text": "保存真相与维持眼前秩序的冲突会逐步升级。",
+                },
+            ),
+            "relationshipDynamics": (
+                {
+                    "id": "relationship-1",
+                    "text": "信任只能通过共同选择和公开代价逐步建立。",
+                },
+            ),
+            "toneAndNarrativeBoundaries": (
+                "保持克制，让人物行动承担情绪和选择的后果。"
+            ),
+            "continuityGuardrails": (
+                {
+                    "id": "guardrail-1",
+                    "text": "已经付出的代价不能被无条件撤销。",
+                },
+            ),
+            "openDesignQuestions": (
+                {
+                    "id": "question-1",
+                    "text": "第一阶段需要决定哪段关系最先承受代价。",
+                },
+            ),
+        },
+        strict=True,
+    )
+    return payload.model_dump(mode="json")
+
+
+async def _prepare_planning_race(
+    disposable_mysql,
+    *,
+    generation_basis: bool = False,
+):
     facts = await bootstrap_contract_fixture(disposable_mysql.session)
     now = 1_900_000_000_050
     transaction = transaction_factory_for(disposable_mysql.connection_config)
@@ -1176,6 +1250,11 @@ async def _prepare_planning_race(disposable_mysql):
         confirmed,
         bible_id="8e000000-0000-0000-0002-000000000001",
         now=now,
+        content=(
+            _planning_generation_bible()
+            if generation_basis
+            else None
+        ),
     )
     planning = await _insert_confirmed_planning(
         disposable_mysql.session,
@@ -1584,6 +1663,163 @@ async def test_preparation_operation_selection_is_stable_when_tokens_and_times_m
     assert second.planning_operation is not None
     assert first.planning_operation.operation_id == current_operation_id
     assert second.planning_operation.operation_id == current_operation_id
+
+
+class _MutablePlanningClock:
+    def __init__(self, value):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+
+class _BlockingPlanningProvider:
+    def __init__(self):
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def generate(self, **_kwargs):
+        self.entered.set()
+        await _wait(self.release)
+        return {
+            "activeStoryBlockRef": None,
+            "volumes": [],
+            "plots": [],
+            "storyBlocks": [],
+        }
+
+
+async def _start_blocked_planning_generation(
+    disposable_mysql,
+    *,
+    id_prefix,
+):
+    transaction, planning, now = await _prepare_planning_race(
+        disposable_mysql,
+        generation_basis=True,
+    )
+    await _write_current_planning_draft(
+        transaction,
+        WRITE_FENCE_PROJECT,
+        now + 1,
+    )
+    clock = _MutablePlanningClock(now + 10)
+    gateway = _BlockingPlanningProvider()
+    identifiers = iter(
+        f"{id_prefix}-0000-0000-0000-{number:012d}"
+        for number in range(1, 20)
+    )
+    generation = PlanningGenerationService(
+        PlanningRepository(),
+        provider_gateway=gateway,
+        transaction_factory=transaction,
+        id_factory=identifiers.__next__,
+        clock=clock,
+    )
+    task = asyncio.create_task(
+        generation.generate(
+            GeneratePlanningDraft(
+                project_id=WRITE_FENCE_PROJECT,
+                draft_id="8d000000-0000-0000-0001-000000000003",
+                draft_revision=2,
+                draft_hash=planning.content_hash,
+                idempotency_key=f"planning-lifecycle-{id_prefix}",
+                author_instructions="",
+            )
+        )
+    )
+    await _wait(gateway.entered)
+    pending = await disposable_mysql.session.fetchone(
+        """SELECT status,active_slot,lease_expires_at
+             FROM planning_generation_attempts
+            WHERE project_id=%s
+            ORDER BY created_at DESC,id DESC LIMIT 1""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert pending["status"] == "pending"
+    assert pending["active_slot"] == 1
+    assert pending["lease_expires_at"] > clock()
+    return transaction, clock, gateway, task
+
+
+@pytest.mark.asyncio
+async def test_active_planning_generation_lease_blocks_archive_until_terminal(
+    disposable_mysql,
+):
+    transaction, clock, gateway, generation_task = (
+        await _start_blocked_planning_generation(
+            disposable_mysql,
+            id_prefix="8a100000",
+        )
+    )
+    lifecycle = ProjectLifecycleService(
+        ProjectRepository(clock=clock),
+        transaction,
+    )
+    try:
+        try:
+            archive_result = await lifecycle.archive(WRITE_FENCE_PROJECT, 0)
+        except BaseException as exc:
+            archive_result = exc
+    finally:
+        gateway.release.set()
+    (result,) = await _settle_race_tasks((generation_task,))
+
+    assert isinstance(archive_result, http_errors.ProjectBusy)
+    assert result.status in {"succeeded", "failed"}
+    terminal = await disposable_mysql.session.fetchone(
+        """SELECT status,active_slot
+             FROM planning_generation_attempts
+            WHERE project_id=%s
+            ORDER BY created_at DESC,id DESC LIMIT 1""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert terminal["status"] in {"succeeded", "failed"}
+    assert terminal["active_slot"] is None
+    archived = await lifecycle.archive(WRITE_FENCE_PROJECT, 0)
+    assert archived.archived_at is not None
+
+
+@pytest.mark.asyncio
+async def test_expired_planning_lease_allows_archive_and_publish_stays_fenced(
+    disposable_mysql,
+):
+    transaction, clock, gateway, generation_task = (
+        await _start_blocked_planning_generation(
+            disposable_mysql,
+            id_prefix="8a200000",
+        )
+    )
+    clock.value += PLANNING_GENERATION_LEASE_MS + 1
+    lifecycle = ProjectLifecycleService(
+        ProjectRepository(clock=clock),
+        transaction,
+    )
+    archived = await lifecycle.archive(WRITE_FENCE_PROJECT, 0)
+    gateway.release.set()
+    result = await asyncio.wait_for(generation_task, timeout=10)
+
+    assert archived.archived_at is not None
+    assert result.status == "succeeded"
+    assert result.loaded is False
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT draft_revision,source_attempt_id
+             FROM planning_drafts
+            WHERE id='8d000000-0000-0000-0001-000000000003'""",
+    )
+    assert draft == {"draft_revision": 2, "source_attempt_id": None}
+    attempt = await disposable_mysql.session.fetchone(
+        """SELECT status,active_slot,loaded_draft_revision
+             FROM planning_generation_attempts
+            WHERE project_id=%s
+            ORDER BY created_at DESC,id DESC LIMIT 1""",
+        (WRITE_FENCE_PROJECT,),
+    )
+    assert attempt == {
+        "status": "succeeded",
+        "active_slot": None,
+        "loaded_draft_revision": None,
+    }
 
 
 class _ArchiveAttemptRepository(ProjectRepository):
