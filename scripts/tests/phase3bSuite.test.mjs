@@ -1,12 +1,26 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { assertSafeBrowserGraph } from '../browser-source-contract.mjs'
 import { runSuites } from '../run-tests.mjs'
-import { runOwnedProductLifecycle } from '../../frontend/e2e/support/product-runner.mjs'
+import {
+  reserveLocalPort,
+  runOwnedProductLifecycle,
+  terminateOwnedProcessTree,
+  waitForOwnedUrl,
+} from '../../frontend/e2e/support/product-runner.mjs'
 
 
 const repositoryRoot = path.resolve(
@@ -18,6 +32,152 @@ const repositoryRoot = path.resolve(
 
 function readWorkspaceFile(relativePath) {
   return readFileSync(path.join(repositoryRoot, relativePath), 'utf8')
+}
+
+
+async function listenOwned(server, port) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(port, '127.0.0.1', resolve)
+  })
+}
+
+
+async function waitForHealth(port, expectedNonce, {
+  timeoutMs = 2_000,
+  waitForUrlImpl = waitForOwnedUrl,
+} = {}) {
+  await waitForUrlImpl(`http://127.0.0.1:${port}/health`, {
+    expectedNonce,
+    timeoutMs,
+    intervalMs: 20,
+  })
+}
+
+
+async function stopOwnedChild(child, {
+  timeoutMs = 2_000,
+  terminateImpl = terminateOwnedProcessTree,
+} = {}) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  await terminateImpl(child, { timeoutMs })
+  if (child.exitCode === null && child.signalCode === null) {
+    throw new Error('owned test child remained alive after forced termination')
+  }
+}
+
+
+async function exerciseLateProxyOutcome(proxySource, outcome) {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3b-late-'))
+  const proxyPath = path.join(root, 'proxy.cjs')
+  const enteredPath = path.join(root, 'entered.signal')
+  const releasePath = path.join(root, 'release.signal')
+  const ledgerPath = path.join(root, 'upstream.log')
+  writeFileSync(proxyPath, proxySource, 'utf8')
+  writeFileSync(ledgerPath, '', 'utf8')
+  const upstreamReservation = await reserveLocalPort()
+  const proxyReservation = await reserveLocalPort()
+  const upstreamPort = upstreamReservation.port
+  const proxyPort = proxyReservation.port
+  await upstreamReservation.release()
+  await proxyReservation.release()
+  const upstream = http.createServer((request, response) => {
+    if (request.method === 'POST' && request.url.endsWith('/generate')) {
+      writeFileSync(enteredPath, 'entered\n', { encoding: 'utf8', flag: 'wx' })
+      const finishGeneration = () => {
+        if (!existsSync(releasePath)) {
+          setTimeout(finishGeneration, 10)
+          return
+        }
+        if (outcome === 'late-status') {
+          const body = JSON.stringify({
+            error: { code: 'LATE_UPSTREAM_FAILURE', message: 'Late failure' },
+          })
+          response.writeHead(409, {
+            'content-type': 'application/json; charset=utf-8',
+            'content-length': String(Buffer.byteLength(body)),
+          })
+          response.end(body)
+        } else {
+          response.destroy()
+        }
+      }
+      finishGeneration()
+      return
+    }
+    if (
+      request.method === 'GET'
+      && request.url.includes('/planning/operations/by-idempotency-key/')
+    ) {
+      const body = JSON.stringify({
+        status: 'pending',
+        operationId: `operation-${outcome}`,
+      })
+      response.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await listenOwned(upstream, upstreamPort)
+  const nonce = `phase3b-late-${outcome}`
+  const child = spawn(
+    process.execPath,
+    [proxyPath, String(proxyPort), String(upstreamPort)],
+    {
+      env: {
+        ...process.env,
+        M2_BROWSER_RUN_NONCE: nonce,
+        BROWSER_PROJECT_ID: '81000000-0000-0000-0000-000000000001',
+        BROWSER_DROP_GENERATION_RESPONSE: '1',
+        BROWSER_GATEWAY_ENTERED_PATH: enteredPath,
+        BROWSER_GATEWAY_RELEASE_PATH: releasePath,
+        BROWSER_UPSTREAM_LEDGER_PATH: ledgerPath,
+        BROWSER_VITE_ORIGIN: 'http://127.0.0.1:4173',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  )
+  const baseUrl = (
+    `http://127.0.0.1:${proxyPort}/api/projects/`
+      + '81000000-0000-0000-0000-000000000001'
+  )
+  try {
+    await waitForHealth(proxyPort, nonce)
+    const unknown = await fetch(
+      `${baseUrl}/planning/drafts/draft/generate`,
+      {
+        method: 'POST',
+        body: '{}',
+        headers: { 'content-type': 'application/json' },
+        signal: AbortSignal.timeout(2_000),
+      },
+    )
+    assert.equal(unknown.status, 503)
+    assert.equal((await unknown.json()).error.code, 'RESULT_UNKNOWN')
+    const reconciled = await fetch(
+      `${baseUrl}/planning/operations/by-idempotency-key/${outcome}`,
+      { signal: AbortSignal.timeout(2_000) },
+    )
+    assert.equal(reconciled.status, 200)
+    assert.deepEqual(
+      await reconciled.json(),
+      { status: 'pending', operationId: `operation-${outcome}` },
+    )
+    await waitForHealth(proxyPort, nonce)
+    return readFileSync(ledgerPath, 'utf8')
+  } finally {
+    if (!existsSync(releasePath)) writeFileSync(releasePath, 'release\n', 'utf8')
+    await stopOwnedChild(child)
+    upstream.closeAllConnections?.()
+    await new Promise(resolve => upstream.close(resolve))
+    rmSync(root, { recursive: true, force: true })
+  }
 }
 
 
@@ -398,6 +558,490 @@ test('Phase 3B runner isolates provider I/O and owns disposable resources', () =
   assert.match(
     source,
     /assertArtifactEvidenceSafeImpl\(\s*roots\.artifactRoot,\s*sensitiveValues,\s*\[roots\.browserResultPath\]/u,
+  )
+})
+
+
+test('Phase 3B contract health wait bounds a stable non-200 response', async () => {
+  const reservation = await reserveLocalPort()
+  const port = reservation.port
+  await reservation.release()
+  const server = http.createServer((_request, response) => {
+    response.writeHead(503, { 'content-type': 'application/json' })
+    response.end(JSON.stringify({ browserRunNonce: 'wrong-nonce' }))
+  })
+  await listenOwned(server, port)
+  const startedAt = Date.now()
+  try {
+    await assert.rejects(
+      waitForHealth(port, 'expected-nonce', { timeoutMs: 120 }),
+      /timed out waiting for runner-owned browser server/u,
+    )
+    assert.equal(Date.now() - startedAt < 1_000, true)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+
+test('Phase 3B contract cleanup force-terminates a child that ignores graceful stop', async () => {
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      "process.on('SIGTERM',()=>{});process.stdout.write('ready\\n');"
+        + 'setInterval(()=>{},1000)',
+    ],
+    {
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  )
+  try {
+    await Promise.race([
+      new Promise(resolve => child.stdout.once('data', resolve)),
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error('non-exiting child did not start')),
+        1_000,
+      )),
+    ])
+    await stopOwnedChild(child, { timeoutMs: 1_000 })
+    assert.equal(child.exitCode !== null || child.signalCode !== null, true)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      await terminateOwnedProcessTree(child, { timeoutMs: 1_000 })
+    }
+  }
+})
+
+
+test('Phase 3B fixture persists the formal seed contract and Bible documents', () => {
+  const source = readWorkspaceFile('frontend/e2e/run-phase3b.mjs')
+  assert.match(source, /from backend\.domain\.bibles import BiblePayload/u)
+  assert.match(
+    source,
+    /from backend\.domain\.contracts import CreationContractPayload/u,
+  )
+  assert.match(
+    source,
+    /from backend\.domain\.seeds import \([\s\S]*?SeedPayload[\s\S]*?seed_revision_document[\s\S]*?\)/u,
+  )
+  assert.match(source, /seed_document = build_seed_fixture_document\(\)/u)
+  assert.match(source, /seed_document = validate_seed_fixture_document\(/u)
+  assert.match(
+    source,
+    /CreationContractPayload\.model_validate_json\([\s\S]*?strict=True/u,
+  )
+  assert.match(source, /BiblePayload\.model_validate\([\s\S]*?strict=True/u)
+  assert.match(source, /bible_content = validate_bible_fixture_document\(/u)
+  assert.match(source, /content=bible_content/u)
+})
+
+
+test('Phase 3B fixture document contract executes official strict validators and rejects mutations', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3b.mjs')
+  assert.equal(typeof runner.FIXTURE_DOCUMENT_CONTRACT_SOURCE, 'string')
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3b-fixture-'))
+  const contractPath = path.join(root, 'fixture_contract.py')
+  const probePath = path.join(root, 'probe.py')
+  writeFileSync(contractPath, runner.FIXTURE_DOCUMENT_CONTRACT_SOURCE, 'utf8')
+  writeFileSync(
+    probePath,
+    String.raw`
+from copy import deepcopy
+
+from fixture_contract import (
+    build_bible_fixture_document,
+    build_creation_fixture_document,
+    build_seed_fixture_document,
+    validate_bible_fixture_document,
+    validate_creation_fixture_document,
+    validate_seed_fixture_document,
+)
+from backend.domain.json_contracts import canonical_hash
+from backend.domain.seeds import (
+    build_seed_provenance,
+    decode_seed_revision,
+    seed_revision_document,
+)
+
+
+def rejects(action):
+    try:
+        action()
+    except (AssertionError, TypeError, ValueError):
+        return
+    raise AssertionError("mutation was accepted")
+
+
+seed_document = build_seed_fixture_document()
+seed_payload, seed_provenance = decode_seed_revision(seed_document)
+assert seed_provenance is None
+seed_hash = canonical_hash(seed_payload)
+assert validate_seed_fixture_document(seed_document, seed_hash) == seed_document
+
+provenance = build_seed_provenance(
+    kind="manual",
+    snapshots=(),
+    analysis=None,
+    inspiration_attempt=None,
+    public_notes=("fixture provenance",),
+)
+provenance_document = seed_revision_document(seed_payload, provenance)
+decoded_payload, decoded_provenance = decode_seed_revision(provenance_document)
+assert decoded_payload == seed_payload
+assert decoded_provenance == provenance
+assert validate_seed_fixture_document(
+    provenance_document,
+    seed_hash,
+) == provenance_document
+
+rejects(lambda: validate_seed_fixture_document(seed_document, "0" * 64))
+invalid_seed = deepcopy(seed_document)
+invalid_seed.pop("logline")
+rejects(lambda: validate_seed_fixture_document(invalid_seed, seed_hash))
+injected_provenance = deepcopy(seed_document)
+injected_provenance["_provenance"] = {"apiKey": "never-echo"}
+rejects(
+    lambda: validate_seed_fixture_document(injected_provenance, seed_hash)
+)
+
+creation_document = build_creation_fixture_document()
+creation_hash = canonical_hash(creation_document)
+assert validate_creation_fixture_document(
+    creation_document,
+    creation_hash,
+) == creation_document
+mutated_creation = deepcopy(creation_document)
+mutated_creation["selectedSeed"]["logline"] = "hash-breaking mutation"
+rejects(
+    lambda: validate_creation_fixture_document(
+        mutated_creation,
+        creation_hash,
+    )
+)
+
+bible_document = build_bible_fixture_document()
+assert validate_bible_fixture_document(bible_document) == bible_document
+invalid_bible = deepcopy(bible_document)
+invalid_bible.pop("continuityGuardrails")
+rejects(lambda: validate_bible_fixture_document(invalid_bible))
+
+print("fixture-contract-behavior=passed")
+`,
+    'utf8',
+  )
+  try {
+    const result = spawnSync('python', [probePath], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PYTHONPATH: [
+          repositoryRoot,
+          process.env.PYTHONPATH,
+        ].filter(Boolean).join(path.delimiter),
+      },
+      timeout: 10_000,
+      windowsHide: true,
+    })
+    assert.equal(
+      result.status,
+      0,
+      `fixture contract probe failed: ${result.stderr || result.stdout}`,
+    )
+    assert.equal(result.stdout.trim(), 'fixture-contract-behavior=passed')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('Phase 3B fake gateway requires the complete public storyContext basis', () => {
+  const source = readWorkspaceFile('frontend/e2e/run-phase3b.mjs')
+  assert.match(source, /const storyContext = evidence\.manifest\.storyContext/u)
+  assert.match(source, /storyContext\.seed\.logline/u)
+  assert.match(source, /storyContext\.engine\.storyPromise/u)
+  assert.match(source, /storyContext\.engine\.conflictLoop/u)
+  assert.match(source, /storyContext\.longFormCapacity\.targetTotalWords/u)
+  assert.match(source, /storyContext\.longFormCapacity\.expectedChapterCount/u)
+  assert.match(source, /storyContext\.coreCharacters/u)
+  assert.match(source, /storyContext\.relationshipDynamics/u)
+  assert.match(source, /storyContext\.worldRules/u)
+  assert.match(source, /storyContext\.continuityGuardrails/u)
+  assert.match(source, /storyContextText\.includes\(expectedSecret\)/u)
+  assert.match(source, /corpus/iu)
+})
+
+
+test('Phase 3B fake gateway recursively rejects private provenance and incomplete public basis', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3b.mjs')
+  assert.equal(typeof runner.FAKE_PLANNING_GATEWAY_SOURCE, 'string')
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3b-gateway-'))
+  const gatewayPath = path.join(root, 'gateway.cjs')
+  const counterPath = path.join(root, 'counter.log')
+  const enteredPath = path.join(root, 'entered.signal')
+  const releasePath = path.join(root, 'release.signal')
+  writeFileSync(gatewayPath, runner.FAKE_PLANNING_GATEWAY_SOURCE, 'utf8')
+  writeFileSync(counterPath, '', 'utf8')
+  const reservation = await reserveLocalPort()
+  const port = reservation.port
+  await reservation.release()
+  const expectedSecret = 'gateway-contract-secret'
+  const child = spawn(process.execPath, [gatewayPath, String(port)], {
+    env: {
+      ...process.env,
+      M2_BROWSER_RUN_NONCE: 'phase3b-gateway-contract',
+      BROWSER_GATEWAY_COUNTER_PATH: counterPath,
+      BROWSER_GATEWAY_ENTERED_PATH: enteredPath,
+      BROWSER_GATEWAY_RELEASE_PATH: releasePath,
+      BROWSER_SECRET_SENTINEL: expectedSecret,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  })
+  const publicStoryContext = {
+    seed: { logline: 'A public logline' },
+    engine: {
+      storyPromise: 'A public promise',
+      conflictLoop: 'A public conflict loop',
+    },
+    longFormCapacity: {
+      targetTotalWords: 200_000,
+      expectedChapterCount: 80,
+    },
+    coreCharacters: [{ id: 'character-1', text: 'A character' }],
+    relationshipDynamics: [{ id: 'relationship-1', text: 'A bond' }],
+    worldRules: [{ id: 'world-rule-1', text: 'A rule' }],
+    continuityGuardrails: [{ id: 'guardrail-1', text: 'A guardrail' }],
+  }
+  const requestBody = storyContext => ({
+    max_tokens: 2_000,
+    messages: [
+      { role: 'system', content: 'Return JSON' },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          manifest: {
+            storyContext,
+            draft: { volumes: [], plots: [] },
+          },
+        }),
+      },
+    ],
+    model: 'test-model',
+    response_format: { type: 'json_object' },
+    stream: false,
+    temperature: 0.2,
+  })
+  const callGateway = storyContext => fetch(
+    `http://127.0.0.1:${port}/v1/chat/completions`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${expectedSecret}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(requestBody(storyContext)),
+      signal: AbortSignal.timeout(2_000),
+    },
+  )
+  try {
+    await waitForHealth(port, 'phase3b-gateway-contract')
+    for (const privateKey of ['provenance', '_provenance', 'Pro_Ve_Nance']) {
+      const privateValue = `private-${privateKey}-must-not-echo`
+      const unsafe = structuredClone(publicStoryContext)
+      unsafe.coreCharacters[0][privateKey] = { nested: privateValue }
+      const rejected = await callGateway(unsafe)
+      assert.equal(rejected.status, 404)
+      const safeBody = await rejected.text()
+      assert.equal(safeBody.includes(privateValue), false)
+      assert.deepEqual(
+        JSON.parse(safeBody),
+        { error: { code: 'NOT_FOUND', message: 'Not found' } },
+      )
+    }
+    const incomplete = structuredClone(publicStoryContext)
+    delete incomplete.relationshipDynamics
+    const incompleteResponse = await callGateway(incomplete)
+    assert.equal(incompleteResponse.status, 404)
+    assert.equal(readFileSync(counterPath, 'utf8'), '')
+
+    writeFileSync(releasePath, 'release\n', { encoding: 'utf8', flag: 'wx' })
+    const accepted = await callGateway(publicStoryContext)
+    assert.equal(accepted.status, 200)
+    assert.equal(readFileSync(counterPath, 'utf8'), 'planning-generation\n')
+  } finally {
+    await stopOwnedChild(child)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('Phase 3B transparent proxy keeps fault state request-local across formal error and reconciliation', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3b.mjs')
+  assert.equal(typeof runner.TRANSPARENT_FAULT_PROXY_SOURCE, 'string')
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3b-proxy-'))
+  const proxyPath = path.join(root, 'proxy.cjs')
+  const enteredPath = path.join(root, 'entered.signal')
+  const releasePath = path.join(root, 'release.signal')
+  const ledgerPath = path.join(root, 'upstream.log')
+  writeFileSync(proxyPath, runner.TRANSPARENT_FAULT_PROXY_SOURCE, 'utf8')
+  writeFileSync(ledgerPath, '', 'utf8')
+  const upstreamReservation = await reserveLocalPort()
+  const proxyReservation = await reserveLocalPort()
+  const upstreamPort = upstreamReservation.port
+  const proxyPort = proxyReservation.port
+  await upstreamReservation.release()
+  await proxyReservation.release()
+  const formalBody = JSON.stringify({
+    error: { code: 'PLANNING_GENERATION_NOT_READY', message: 'Not ready' },
+  })
+  let generationCount = 0
+  const upstream = http.createServer((request, response) => {
+    if (request.method === 'POST' && request.url.endsWith('/generate')) {
+      generationCount += 1
+      if (generationCount === 1) {
+        response.writeHead(409, {
+          'content-type': 'application/json; charset=utf-8',
+          'content-length': String(Buffer.byteLength(formalBody)),
+        })
+        response.end(formalBody)
+        return
+      }
+      if (generationCount === 2) {
+        writeFileSync(enteredPath, 'entered\n', { encoding: 'utf8', flag: 'wx' })
+        const waitForRelease = () => {
+          if (existsSync(releasePath)) {
+            const generated = JSON.stringify({ status: 'succeeded' })
+            response.writeHead(200, {
+              'content-type': 'application/json; charset=utf-8',
+              'content-length': String(Buffer.byteLength(generated)),
+            })
+            response.end(generated)
+            return
+          }
+          setTimeout(waitForRelease, 10)
+        }
+        waitForRelease()
+        return
+      }
+    }
+    if (
+      request.method === 'GET'
+      && request.url.includes('/planning/operations/by-idempotency-key/')
+    ) {
+      const pending = JSON.stringify({
+        status: 'pending',
+        operationId: 'operation-1',
+      })
+      response.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': String(Buffer.byteLength(pending)),
+      })
+      response.end(pending)
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await listenOwned(upstream, upstreamPort)
+  const child = spawn(
+    process.execPath,
+    [proxyPath, String(proxyPort), String(upstreamPort)],
+    {
+      env: {
+        ...process.env,
+        M2_BROWSER_RUN_NONCE: 'phase3b-proxy-contract',
+        BROWSER_PROJECT_ID: '81000000-0000-0000-0000-000000000001',
+        BROWSER_DROP_GENERATION_RESPONSE: '1',
+        BROWSER_GATEWAY_ENTERED_PATH: enteredPath,
+        BROWSER_GATEWAY_RELEASE_PATH: releasePath,
+        BROWSER_UPSTREAM_LEDGER_PATH: ledgerPath,
+        BROWSER_VITE_ORIGIN: 'http://127.0.0.1:4173',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    },
+  )
+  const generationUrl = (
+    `http://127.0.0.1:${proxyPort}/api/projects/`
+      + '81000000-0000-0000-0000-000000000001/planning/drafts/draft/generate'
+  )
+  try {
+    await waitForHealth(proxyPort, 'phase3b-proxy-contract')
+    const startedAt = Date.now()
+    const response = await fetch(
+      generationUrl,
+      {
+        method: 'POST',
+        body: '{}',
+        headers: { 'content-type': 'application/json' },
+        signal: AbortSignal.timeout(2_000),
+      },
+    )
+    assert.equal(response.status, 409)
+    assert.deepEqual(await response.json(), JSON.parse(formalBody))
+    assert.equal(Date.now() - startedAt < 2_000, true)
+
+    const unknown = await fetch(generationUrl, {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json' },
+      signal: AbortSignal.timeout(2_000),
+    })
+    assert.equal(unknown.status, 503)
+    assert.deepEqual(
+      await unknown.json(),
+      {
+        error: {
+          code: 'RESULT_UNKNOWN',
+          message: 'Result must be reconciled',
+        },
+      },
+    )
+    const reconciled = await fetch(
+      `http://127.0.0.1:${proxyPort}/api/projects/`
+        + '81000000-0000-0000-0000-000000000001'
+        + '/planning/operations/by-idempotency-key/key-1',
+      { signal: AbortSignal.timeout(2_000) },
+    )
+    assert.equal(reconciled.status, 200)
+    assert.deepEqual(
+      await reconciled.json(),
+      { status: 'pending', operationId: 'operation-1' },
+    )
+    assert.equal(existsSync(releasePath), true)
+    assert.equal(
+      readFileSync(ledgerPath, 'utf8'),
+      'upstream-generation-status=409\nupstream-generation-status=200\n',
+    )
+  } finally {
+    if (!existsSync(releasePath)) writeFileSync(releasePath, 'release\n', 'utf8')
+    await stopOwnedChild(child)
+    await new Promise(resolve => upstream.close(resolve))
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('Phase 3B transparent proxy finalizes late upstream failure outcomes after fixed 503', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3b.mjs')
+  assert.equal(typeof runner.TRANSPARENT_FAULT_PROXY_SOURCE, 'string')
+  assert.equal(
+    await exerciseLateProxyOutcome(
+      runner.TRANSPARENT_FAULT_PROXY_SOURCE,
+      'late-status',
+    ),
+    'upstream-generation-status=409\n',
+  )
+  assert.equal(
+    await exerciseLateProxyOutcome(
+      runner.TRANSPARENT_FAULT_PROXY_SOURCE,
+      'connection-error',
+    ),
+    'upstream-generation-error=transport\n',
   )
 })
 

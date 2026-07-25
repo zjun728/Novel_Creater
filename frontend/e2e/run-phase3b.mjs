@@ -59,20 +59,177 @@ const DEFAULT_DEADLINES = Object.freeze({
 })
 const phase3BFailureContexts = new WeakMap()
 
-const FIXTURE_SOURCE = String.raw`
+export const FIXTURE_DOCUMENT_CONTRACT_SOURCE = String.raw`
+from backend.domain.bibles import BiblePayload
+from backend.domain.contracts import CreationContractPayload
+from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.seeds import (
+    SeedPayload,
+    decode_seed_revision,
+    seed_revision_document,
+)
+from backend.tests.support.contract_fakes import SEED_PAYLOAD
+from backend.tests.support.story_engine_fakes import option
+
+
+_BIBLE_DOCUMENT = {
+    "premiseAndPromise": (
+        "一个被追捕的记录者必须保存真相，并承担公开真相的关系代价。"
+    ),
+    "worldRules": (
+        {
+            "id": "world-rule-1",
+            "text": "任何超常力量都必须留下可追踪且不可撤销的代价。",
+        },
+    ),
+    "powerOrProgressionSystem": (
+        "成长依靠选择、训练和有限资源，不允许无依据跃升。"
+    ),
+    "protagonist": "主角谨慎、重视证据，并承担自己选择的后果。",
+    "coreCast": (
+        {
+            "id": "cast-1",
+            "text": "同伴拥有独立目标，不是主角的功能性附庸。",
+        },
+    ),
+    "factions": (
+        {
+            "id": "faction-1",
+            "text": "地方势力围绕安全、秩序与真相形成竞争。",
+        },
+    ),
+    "longTermConflicts": (
+        {
+            "id": "conflict-1",
+            "text": "保存真相与维持眼前秩序的冲突会逐步升级。",
+        },
+    ),
+    "relationshipDynamics": (
+        {
+            "id": "relationship-1",
+            "text": "信任只能通过共同选择和公开代价逐步建立。",
+        },
+    ),
+    "toneAndNarrativeBoundaries": (
+        "保持克制，让人物行动承担情绪和选择的后果。"
+    ),
+    "continuityGuardrails": (
+        {
+            "id": "guardrail-1",
+            "text": "已经付出的代价不能被无条件撤销。",
+        },
+    ),
+    "openDesignQuestions": (
+        {
+            "id": "question-1",
+            "text": "第一阶段需要决定哪段关系最先承受代价。",
+        },
+    ),
+}
+
+
+def build_seed_fixture_document(provenance=None):
+    payload = SeedPayload.model_validate(SEED_PAYLOAD, strict=True)
+    return seed_revision_document(payload, provenance)
+
+
+def validate_seed_fixture_document(document, expected_hash):
+    payload, provenance = decode_seed_revision(document)
+    if canonical_hash(payload) != expected_hash:
+        raise ValueError("fixture seed hash mismatch")
+    canonical = seed_revision_document(payload, provenance)
+    if canonical_hash(canonical) != canonical_hash(document):
+        raise ValueError("fixture seed document is not canonical")
+    return canonical
+
+
+def build_creation_fixture_document():
+    seed = SeedPayload.model_validate(SEED_PAYLOAD, strict=True)
+    engine = option(1)
+    document = {
+        "schemaVersion": "creation-contract-v1",
+        "channelProfileKey": "web-fiction",
+        "genreProfileKey": "fantasy",
+        "qualityCharterVersion": "quality-v1",
+        "selectionRevision": 1,
+        "selectedSeed": seed,
+        "seedRevisionId": "seed-revision-1",
+        "seedHash": canonical_hash(seed),
+        "selectedEngine": engine,
+        "engineOptionId": "engine-option-1",
+        "engineHash": canonical_hash(engine),
+        "primaryStyleRef": {
+            "id": "style-primary",
+            "revision": 1,
+            "contentHash": "a" * 64,
+        },
+        "secondaryStyleRef": None,
+        "experienceCardRefs": (),
+        "corpusSourceRefs": (),
+        "targetTotalWords": 200_000,
+        "expectedVolumeCount": 5,
+        "expectedChapterCount": 80,
+        "chapterWordRangePreference": (2_000, 3_000),
+        "prohibitedDirections": ("不写无代价升级",),
+        "authorNotes": "人物选择优先。",
+        "modelBindingRef": None,
+    }
+    return CreationContractPayload.model_validate(
+        document,
+        strict=True,
+    ).model_dump(mode="json", by_alias=True)
+
+
+def validate_creation_fixture_document(document, expected_hash):
+    if isinstance(document, (bytes, bytearray)):
+        document = document.decode("utf-8")
+    if isinstance(document, str):
+        payload = CreationContractPayload.model_validate_json(
+            document,
+            strict=True,
+        )
+    else:
+        payload = CreationContractPayload.model_validate_json(
+            canonical_json(document),
+            strict=True,
+        )
+    canonical = payload.model_dump(mode="json", by_alias=True)
+    if canonical_hash(canonical) != expected_hash:
+        raise ValueError("fixture creation contract hash mismatch")
+    return canonical
+
+
+def build_bible_fixture_document():
+    return BiblePayload.model_validate(
+        _BIBLE_DOCUMENT,
+        strict=True,
+    ).model_dump(mode="json", by_alias=True)
+
+
+def validate_bible_fixture_document(document):
+    if isinstance(document, (bytes, bytearray)):
+        document = document.decode("utf-8")
+    if not isinstance(document, str):
+        document = canonical_json(document)
+    return BiblePayload.model_validate_json(
+        document,
+        strict=True,
+    ).model_dump(mode="json", by_alias=True)
+`
+
+const FIXTURE_SOURCE = FIXTURE_DOCUMENT_CONTRACT_SOURCE + String.raw`
 import asyncio
 import os
 from contextlib import asynccontextmanager
 
 from backend.database import close_pool, connection, transaction
-from backend.domain.json_contracts import canonical_hash
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.planning import PlanningRepository
 from backend.services.bibles import BIBLE_POLICY_VERSION
 from backend.services.contracts import ConfirmContracts, ContractService, SaveContractDraft
 from backend.services.planning import CreatePlanningDraft, PlanningService, SavePlanningDraft
 from backend.services.projections import build_projection_bundle
-from backend.tests.integration.test_contract_drafts import PROJECT, _bootstrap, _draft
+from backend.tests.integration.test_contract_drafts import PROJECT, SEED_REV, _bootstrap, _draft
 from backend.tests.integration.test_planning_aggregate_lifecycle import _payload
 from backend.tests.integration.test_project_archive import _insert_confirmed_bible
 
@@ -83,6 +240,17 @@ async def main():
         selected = await session.fetchone("SELECT DATABASE() AS database_name")
         assert selected == {"database_name": os.environ["MYSQL_DB"]}
         facts = await _bootstrap(session)
+        seed_document = build_seed_fixture_document()
+        seed_document = validate_seed_fixture_document(
+            seed_document,
+            facts["seed_hash"],
+        )
+        await session.execute(
+            """UPDATE creative_seed_revisions
+                  SET payload_json=%s
+                WHERE id=%s AND project_id=%s""",
+            (canonical_json(seed_document), SEED_REV, PROJECT),
+        )
 
     @asynccontextmanager
     async def read_connection():
@@ -111,13 +279,28 @@ async def main():
             saved_contract.content_hash,
         )
     )
+    bible_content = build_bible_fixture_document()
+    bible_content = validate_bible_fixture_document(bible_content)
     bundle = build_projection_bundle(0, ())
     async with transaction() as session:
+        creation_row = await session.fetchone(
+            """SELECT content_json
+                 FROM creation_contracts
+                WHERE project_id=%s AND id=%s""",
+            (PROJECT, confirmed.creation_contract_id),
+        )
+        assert creation_row is not None
+        creation_content = validate_creation_fixture_document(
+            creation_row["content_json"],
+            confirmed.creation_hash,
+        )
+        assert creation_content
         await _insert_confirmed_bible(
             session,
             confirmed,
             bible_id="93000000-0000-0000-0001-000000000001",
             now=NOW,
+            content=bible_content,
         )
         await session.execute(
             """UPDATE creation_bible_revisions
@@ -269,7 +452,7 @@ uvicorn.run(
 )
 `
 
-const TRANSPARENT_FAULT_PROXY_SOURCE = String.raw`
+export const TRANSPARENT_FAULT_PROXY_SOURCE = String.raw`
 const http = require('node:http')
 const { appendFileSync, existsSync, writeFileSync } = require('node:fs')
 
@@ -297,8 +480,14 @@ if (
   throw new Error('invalid owned browser origin')
 }
 let injected = false
-let upstreamDrained = !inject
-const afterUpstreamDrain = []
+let faultUpstreamDrained = !inject
+const afterFaultUpstreamDrain = []
+
+function markFaultUpstreamDrained() {
+  if (faultUpstreamDrained) return
+  faultUpstreamDrained = true
+  for (const deliver of afterFaultUpstreamDrain.splice(0)) deliver()
+}
 
 function fixedUnknown(response) {
   const body = Buffer.from(JSON.stringify({
@@ -316,22 +505,29 @@ function fixedUnknown(response) {
   response.end(body)
 }
 
-function waitForGatewayEntry(response) {
-  const deadline = Date.now() + 30_000
+function waitForGatewayEntry(response, targetState) {
+  const deadline = Date.now() + 5_000
   const check = () => {
+    if (targetState.terminal || response.writableEnded) return
     if (existsSync(enteredPath)) {
       if (!injected) {
         injected = true
+        targetState.injected = true
+        targetState.terminal = true
         fixedUnknown(response)
+        if (targetState.upstreamFinalized) markFaultUpstreamDrained()
       }
       return
     }
     if (Date.now() >= deadline) {
       if (!response.headersSent) {
+        targetState.terminal = true
         const body = Buffer.from('owned provider did not start')
         response.writeHead(504, {
           'content-type': 'text/plain; charset=utf-8',
           'content-length': String(body.length),
+          'access-control-allow-origin': browserOrigin,
+          'vary': 'Origin',
         })
         response.end(body)
       }
@@ -369,6 +565,22 @@ http.createServer((incoming, response) => {
         + '/planning/operations/by-idempotency-key/',
     )
   )
+  const gatePendingLookup = pendingLookup && injected
+  const targetState = {
+    terminal: false,
+    upstreamFailed: false,
+    upstreamFinalized: false,
+    injected: false,
+  }
+  const finalizeUpstream = outcome => {
+    if (!target || targetState.upstreamFinalized) return
+    targetState.upstreamFinalized = true
+    const ledgerEntry = Number.isInteger(outcome.statusCode)
+      ? 'upstream-generation-status=' + String(outcome.statusCode) + '\n'
+      : 'upstream-generation-error=' + outcome.errorKind + '\n'
+    appendFileSync(upstreamLedgerPath, ledgerEntry, 'utf8')
+    if (targetState.injected) markFaultUpstreamDrained()
+  }
   const upstream = http.request({
     host: '127.0.0.1',
     port: upstreamPort,
@@ -376,20 +588,36 @@ http.createServer((incoming, response) => {
     path: incoming.url,
     headers: { ...incoming.headers, host: '127.0.0.1:' + upstreamPort },
   }, upstreamResponse => {
+    const upstreamSucceeded = (
+      upstreamResponse.statusCode >= 200
+      && upstreamResponse.statusCode < 300
+    )
     if (target) {
-      upstreamResponse.resume()
-      upstreamResponse.on('end', () => {
-        appendFileSync(
-          upstreamLedgerPath,
-          'upstream-generation-status=' + String(upstreamResponse.statusCode) + '\n',
-          'utf8',
-        )
-        upstreamDrained = true
-        for (const deliver of afterUpstreamDrain.splice(0)) deliver()
-      })
+      upstreamResponse.once('end', () => finalizeUpstream({
+        statusCode: upstreamResponse.statusCode,
+      }))
+      upstreamResponse.once('aborted', () => finalizeUpstream({
+        errorKind: 'aborted',
+      }))
+      upstreamResponse.once('error', () => finalizeUpstream({
+        errorKind: 'transport',
+      }))
+      if (
+        !upstreamSucceeded
+        && !targetState.injected
+        && !response.headersSent
+        && !response.writableEnded
+      ) {
+        targetState.upstreamFailed = true
+        targetState.terminal = true
+        response.writeHead(upstreamResponse.statusCode, upstreamResponse.headers)
+        upstreamResponse.pipe(response)
+      } else {
+        upstreamResponse.resume()
+      }
       return
     }
-    if (!pendingLookup) {
+    if (!gatePendingLookup) {
       response.writeHead(upstreamResponse.statusCode, upstreamResponse.headers)
       upstreamResponse.pipe(response)
       return
@@ -399,6 +627,7 @@ http.createServer((incoming, response) => {
     upstreamResponse.on('end', () => {
       const body = Buffer.concat(chunks)
       const deliver = () => {
+        if (response.writableEnded || response.destroyed) return
         response.writeHead(upstreamResponse.statusCode, upstreamResponse.headers)
         response.end(body)
       }
@@ -412,8 +641,8 @@ http.createServer((incoming, response) => {
             && !existsSync(releasePath)
           ) {
             writeFileSync(releasePath, 'release\n', { encoding: 'utf8', flag: 'wx' })
-            if (upstreamDrained) deliver()
-            else afterUpstreamDrain.push(deliver)
+            if (faultUpstreamDrained) deliver()
+            else afterFaultUpstreamDrain.push(deliver)
             return
           }
         } catch {
@@ -424,23 +653,28 @@ http.createServer((incoming, response) => {
     })
   })
   upstream.on('error', () => {
-    if (!response.headersSent) {
+    if (target) {
+      targetState.upstreamFailed = true
+      finalizeUpstream({ errorKind: 'transport' })
+    }
+    targetState.terminal = true
+    if (!response.headersSent && !response.writableEnded) {
       const body = Buffer.from('upstream unavailable')
       response.writeHead(502, {
         'content-type': 'text/plain; charset=utf-8',
         'content-length': String(body.length),
       })
       response.end(body)
-    } else {
+    } else if (!response.writableEnded) {
       response.destroy()
     }
   })
   incoming.pipe(upstream)
-  if (target) waitForGatewayEntry(response)
+  if (target) waitForGatewayEntry(response, targetState)
 }).listen(port, '127.0.0.1')
 `
 
-const FAKE_PLANNING_GATEWAY_SOURCE = String.raw`
+export const FAKE_PLANNING_GATEWAY_SOURCE = String.raw`
 const { appendFileSync, existsSync, writeFileSync } = require('node:fs')
 const http = require('node:http')
 
@@ -462,6 +696,26 @@ function send(response, status, payload) {
 
 function reject(response) {
   send(response, 404, { error: { code: 'NOT_FOUND', message: 'Not found' } })
+}
+
+function normalizedPrivateKey(value) {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]/gu, '')
+  return (
+    normalized === 'provenance'
+    || normalized === 'apikey'
+    || normalized === 'authorization'
+    || normalized === 'password'
+    || normalized === 'dsn'
+    || normalized.includes('corpus')
+  )
+}
+
+function containsPrivateKey(value) {
+  if (Array.isArray(value)) return value.some(containsPrivateKey)
+  if (value === null || typeof value !== 'object') return false
+  return Object.entries(value).some(
+    ([key, child]) => normalizedPrivateKey(key) || containsPrivateKey(child),
+  )
 }
 
 http.createServer((incoming, response) => {
@@ -501,6 +755,31 @@ http.createServer((incoming, response) => {
         return
       }
       const evidence = JSON.parse(body.messages[1].content)
+      const storyContext = evidence.manifest.storyContext
+      const storyContextText = JSON.stringify(storyContext)
+      const publicBasis = (
+        typeof storyContext.seed.logline === 'string'
+        && typeof storyContext.engine.storyPromise === 'string'
+        && typeof storyContext.engine.conflictLoop === 'string'
+        && Number.isInteger(storyContext.longFormCapacity.targetTotalWords)
+        && Number.isInteger(storyContext.longFormCapacity.expectedChapterCount)
+        && Array.isArray(storyContext.coreCharacters)
+        && storyContext.coreCharacters.length > 0
+        && Array.isArray(storyContext.relationshipDynamics)
+        && storyContext.relationshipDynamics.length > 0
+        && Array.isArray(storyContext.worldRules)
+        && storyContext.worldRules.length > 0
+        && Array.isArray(storyContext.continuityGuardrails)
+        && storyContext.continuityGuardrails.length > 0
+      )
+      if (
+        !publicBasis
+        || storyContextText.includes(expectedSecret)
+        || containsPrivateKey(storyContext)
+      ) {
+        reject(response)
+        return
+      }
       const draft = evidence.manifest.draft
       const output = {
         ...draft,
