@@ -2,17 +2,31 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import json
 
 import pytest
 from pymysql.err import OperationalError
 
+from backend.domain.bibles import BiblePayload
+from backend.domain.contracts import CreationContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.planning import (
     DraftPlanningAggregate,
     normalize_planning_aggregate,
 )
+from backend.domain.seeds import (
+    SeedPayload,
+    build_seed_provenance,
+    seed_revision_document,
+)
+from backend.domain.story_engines import StoryEngineOption
 from backend.gateways.planning_provider import PlanningProviderError
 from backend.http_errors import ProjectArchived, PublicDomainError
+from backend.prompts.planning import (
+    PLANNING_MAX_PROMPT_BYTES,
+    PLANNING_STORY_CONTEXT_MAX_BYTES,
+    build_planning_messages,
+)
 
 
 NOW = 2_000_000_000_000
@@ -83,6 +97,273 @@ def _persisted_draft(title: str = "旧卷"):
     )
 
 
+def _empty_persisted_draft():
+    return normalize_planning_aggregate(
+        DraftPlanningAggregate.model_validate(
+            {
+                "activeStoryBlockRef": None,
+                "volumes": [],
+                "plots": [],
+                "storyBlocks": [],
+            }
+        ),
+        previous_confirmed=None,
+        previous_draft=None,
+        id_factory=lambda: pytest.fail("empty Planning allocated an ID"),
+    )
+
+
+def _confirmed_story_basis() -> dict[str, object]:
+    seed = SeedPayload.model_validate({
+        "title": "雾港守灯人",
+        "genre": "海洋奇幻",
+        "logline": "失忆守灯人必须在潮灾前修复会吞噬记忆的古灯。",
+        "protagonist": "岑遥，一名谨慎而固执的守灯人。",
+        "desire": "保住港城，也找回被古灯夺走的家人记忆。",
+        "coreConflict": "每次点亮古灯都会救人，也会抹去一段私人记忆。",
+        "worldPressure": "潮灾逼近，港务议会要求永久封存古灯。",
+        "openingHook": "古灯在无人点火时照出了明日沉没的街区。",
+        "differentiation": "以记忆作为航海与守城力量的不可逆代价。",
+    }, strict=True)
+    provenance = build_seed_provenance(
+        kind="manual",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=("PK-challenge 与 sk-placeholder 都是正常小说术语。",),
+    )
+    seed_hash = canonical_hash(seed)
+    engine = StoryEngineOption.model_validate(
+        {
+            "name": "潮灯记忆循环",
+            "storyPromise": "每次守城都迫使人物在共同记忆与私人关系间选择。",
+            "protagonistDesire": "岑遥既要保住港城，也要保住家人的记忆。",
+            "sustainedPressure": "潮线、议会封禁与记忆损耗持续收紧。",
+            "growthDirection": "从独自承担代价转向建立共同记忆制度。",
+            "conflictLoop": "预测潮灾、点灯救援、失去记忆、关系追责。",
+            "ensembleRoles": (
+                {"role": "记忆记录者", "purpose": "保存证据并挑战主角的隐瞒。"},
+            ),
+            "advantageAndCost": "古灯能照见灾害路径，但每次使用都会抹去私人记忆。",
+            "satisfactionSources": ("灾害谜题被验证", "关系账本逐步兑现"),
+            "longFormVariation": ("街区救援", "港城权力斗争", "远海灯塔联盟"),
+            "endingAnchor": "岑遥公开记忆账本，让全城共同承担最后一次点灯。",
+            "risks": ("失忆代价重复",),
+            "differentiation": "记忆既是力量燃料，也是关系连续性的证据。",
+        },
+        strict=True,
+    )
+    contract = CreationContractPayload.model_validate({
+        "schemaVersion": "creation-contract-v1",
+        "channelProfileKey": "web-fiction",
+        "genreProfileKey": "ocean-fantasy",
+        "qualityCharterVersion": "writer-core-quality-v1",
+        "selectionRevision": 1,
+        "selectedSeed": seed,
+        "seedRevisionId": "seed-revision-1",
+        "seedHash": seed_hash,
+        "selectedEngine": engine,
+        "engineOptionId": "engine-option-1",
+        "engineHash": canonical_hash(engine),
+        "primaryStyleRef": {
+            "id": "style-primary",
+            "revision": 2,
+            "contentHash": "c" * 64,
+        },
+        "secondaryStyleRef": None,
+        "experienceCardRefs": (),
+        "corpusSourceRefs": (
+            {
+                "id": "source-1",
+                "revisionId": "source-revision-1",
+                "revision": 1,
+                "contentHash": "d" * 64,
+                "selectionMode": "author",
+                "fragments": (
+                    {
+                        "chapterId": "chapter-1",
+                        "fragmentId": "fragment-1",
+                        "fragmentHash": "e" * 64,
+                        "chapterCharStart": 0,
+                        "chapterCharEnd": 120,
+                        "referenceUse": "structure",
+                    },
+                ),
+                "pinnedHistoricalRevision": True,
+            },
+        ),
+        "targetTotalWords": 1_200_000,
+        "expectedVolumeCount": 10,
+        "expectedChapterCount": 420,
+        "chapterWordRangePreference": (2_800, 3_600),
+        "prohibitedDirections": (
+            "不得用无代价失忆逆转解决冲突。",
+            "不得提前揭示古灯起源。",
+        ),
+        "authorNotes": "人物关系选择必须先于设定说明。",
+        "modelBindingRef": None,
+    }, strict=True)
+    bible = BiblePayload.model_validate({
+        "premiseAndPromise": "守护共同记忆需要人物主动承担无法撤销的私人代价。",
+        "worldRules": (
+            {"id": "world-1", "text": "古灯只能交换记忆，不能凭空创造力量。"},
+            {"id": "world-2", "text": "潮线每天推进一次，退潮不会恢复已失记忆。"},
+        ),
+        "powerOrProgressionSystem": "角色通过掌握灯谱扩大照明范围，但代价随范围增长。",
+        "protagonist": "岑遥会优先救人，却害怕再次忘记最亲近的人。",
+        "coreCast": (
+            {"id": "cast-1", "text": "陆弦负责记录岑遥失去的记忆，也隐瞒自己的交易。"},
+        ),
+        "factions": (
+            {"id": "faction-1", "text": "港务议会在安全与控制古灯之间摇摆。"},
+        ),
+        "longTermConflicts": (
+            {"id": "conflict-1", "text": "救城次数越多，岑遥越难确认自己为何而战。"},
+        ),
+        "relationshipDynamics": (
+            {"id": "relation-1", "text": "岑遥与陆弦的信任取决于是否公开记忆账本。"},
+        ),
+        "toneAndNarrativeBoundaries": "保持克制，不用旁白替人物消解选择代价。",
+        "continuityGuardrails": (
+            {"id": "guard-1", "text": "任何记忆恢复都必须有此前保存的外部记录。"},
+        ),
+        "openDesignQuestions": (
+            {"id": "question-1", "text": "议会中谁最早知道古灯的真实代价？"},
+        ),
+    }, strict=True)
+    return {
+        "seed_hash": seed_hash,
+        "creation_hash": canonical_hash(contract),
+        "bible_hash": canonical_hash(bible),
+        "seed_content_json": canonical_json(
+            seed_revision_document(seed, provenance)
+        ),
+        "creation_content_json": canonical_json(contract),
+        "bible_content_json": canonical_json(bible),
+    }
+
+
+def _worst_case_story_basis() -> dict[str, object]:
+    seed = SeedPayload.model_validate(
+        {
+            field: "种" * 2_000
+            for field in (
+                "title",
+                "genre",
+                "logline",
+                "protagonist",
+                "desire",
+                "coreConflict",
+                "worldPressure",
+                "openingHook",
+                "differentiation",
+            )
+        },
+        strict=True,
+    )
+    provenance = build_seed_provenance(
+        kind="manual",
+        snapshots=(),
+        analysis=None,
+        inspiration_attempt=None,
+        public_notes=("只用于证明正式修订文档不会泄露来源元数据。",),
+    )
+    engine = StoryEngineOption.model_validate(
+        {
+            "name": "潮" * 2_000,
+            "storyPromise": "诺" * 2_000,
+            "protagonistDesire": "愿" * 2_000,
+            "sustainedPressure": "压" * 2_000,
+            "growthDirection": "长" * 2_000,
+            "conflictLoop": "冲" * 2_000,
+            "ensembleRoles": tuple(
+                {
+                    "role": "角" * 2_000,
+                    "purpose": "责" * 2_000,
+                }
+                for _ in range(20)
+            ),
+            "advantageAndCost": "代" * 2_000,
+            "satisfactionSources": tuple("爽" * 2_000 for _ in range(20)),
+            "longFormVariation": tuple("变" * 2_000 for _ in range(20)),
+            "endingAnchor": "终" * 2_000,
+            "risks": tuple("险" * 2_000 for _ in range(20)),
+            "differentiation": "异" * 2_000,
+        },
+        strict=True,
+    )
+    seed_hash = canonical_hash(seed)
+    contract = CreationContractPayload.model_validate(
+        {
+            "schemaVersion": "creation-contract-v1",
+            "channelProfileKey": "web-fiction",
+            "genreProfileKey": "fantasy",
+            "qualityCharterVersion": "quality-v1",
+            "selectionRevision": 1,
+            "selectedSeed": seed,
+            "seedRevisionId": "seed-revision-1",
+            "seedHash": seed_hash,
+            "selectedEngine": engine,
+            "engineOptionId": "engine-option-1",
+            "engineHash": canonical_hash(engine),
+            "primaryStyleRef": {
+                "id": "style-primary",
+                "revision": 1,
+                "contentHash": "c" * 64,
+            },
+            "secondaryStyleRef": None,
+            "experienceCardRefs": (),
+            "corpusSourceRefs": (),
+            "targetTotalWords": 100_000_000,
+            "expectedVolumeCount": 1_000,
+            "expectedChapterCount": 100_000,
+            "chapterWordRangePreference": (1, 100_000),
+            "prohibitedDirections": tuple(
+                "禁" * 2_000 for _ in range(20)
+            ),
+            "authorNotes": "注" * 2_000,
+            "modelBindingRef": None,
+        },
+        strict=True,
+    )
+
+    def bible_items(prefix: str, character: str):
+        return tuple(
+            {
+                "id": f"{prefix}-{index:02d}",
+                "text": character * 4_000,
+            }
+            for index in range(20)
+        )
+
+    bible = BiblePayload.model_validate(
+        {
+            "premiseAndPromise": "旨" * 4_000,
+            "worldRules": bible_items("world", "界"),
+            "powerOrProgressionSystem": "力" * 4_000,
+            "protagonist": "主" * 4_000,
+            "coreCast": bible_items("cast", "人"),
+            "factions": bible_items("faction", "派"),
+            "longTermConflicts": bible_items("conflict", "争"),
+            "relationshipDynamics": bible_items("relation", "系"),
+            "toneAndNarrativeBoundaries": "调" * 4_000,
+            "continuityGuardrails": bible_items("guard", "护"),
+            "openDesignQuestions": bible_items("question", "问"),
+        },
+        strict=True,
+    )
+    return {
+        "seed_hash": seed_hash,
+        "creation_hash": canonical_hash(contract),
+        "bible_hash": canonical_hash(bible),
+        "seed_content_json": canonical_json(
+            seed_revision_document(seed, provenance)
+        ),
+        "creation_content_json": canonical_json(contract),
+        "bible_content_json": canonical_json(bible),
+    }
+
+
 class TransactionTracker:
     def __init__(self):
         self.active = 0
@@ -107,21 +388,25 @@ class TransactionTracker:
 class FakePlanningRepository:
     def __init__(self):
         content = _persisted_draft()
+        story_basis = _confirmed_story_basis()
         self.project = {"id": "p1", "archived_at": None}
         self.basis = {
             "selection_revision": 1,
             "seed_id": "seed-1",
             "seed_revision_id": "seed-revision-1",
-            "seed_hash": "1" * 64,
+            "seed_hash": story_basis["seed_hash"],
             "contract_revision": 2,
             "creation_contract_id": "creation-1",
-            "creation_hash": "2" * 64,
+            "creation_hash": story_basis["creation_hash"],
             "style_contract_id": "style-1",
             "style_hash": "3" * 64,
             "chapter_capacity_policy": '{"chapterWordRangePreference":[3000,5000]}',
             "bible_revision": 3,
             "bible_revision_id": "bible-1",
-            "bible_hash": "4" * 64,
+            "bible_hash": story_basis["bible_hash"],
+            "seed_content_json": story_basis["seed_content_json"],
+            "creation_content_json": story_basis["creation_content_json"],
+            "bible_content_json": story_basis["bible_content_json"],
         }
         self.head = {
             "project_id": "p1",
@@ -628,6 +913,375 @@ async def test_success_uses_two_short_transactions_and_atomically_loads_exact_dr
         "active-read",
         "token",
     ]
+
+
+@pytest.mark.asyncio
+async def test_empty_draft_gateway_manifest_uses_frozen_confirmed_story_basis():
+    repository = FakePlanningRepository()
+    empty = _empty_persisted_draft()
+    repository.draft.update(
+        content_json=canonical_json(
+            empty.model_dump(mode="json", by_alias=True)
+        ),
+        content_hash=empty.content_hash,
+    )
+    gateway = FakeGateway()
+    service, repository, gateway, _tracker = _service(
+        repository=repository,
+        gateway=gateway,
+    )
+    command = _command()
+    command = type(command)(
+        project_id=command.project_id,
+        draft_id=command.draft_id,
+        draft_revision=command.draft_revision,
+        draft_hash=empty.content_hash,
+        idempotency_key=command.idempotency_key,
+        author_instructions=command.author_instructions,
+    )
+
+    result = await service.generate(command)
+
+    assert result.status == "succeeded"
+    assert len(gateway.calls) == 1
+    manifest = gateway.calls[0]["manifest"].model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    story = manifest["storyContext"]
+    assert story == {
+        "premise": "守护共同记忆需要人物主动承担无法撤销的私人代价。",
+        "seed": {
+            "title": "雾港守灯人",
+            "genre": "海洋奇幻",
+            "logline": "失忆守灯人必须在潮灾前修复会吞噬记忆的古灯。",
+            "protagonist": "岑遥，一名谨慎而固执的守灯人。",
+            "desire": "保住港城，也找回被古灯夺走的家人记忆。",
+            "coreConflict": "每次点亮古灯都会救人，也会抹去一段私人记忆。",
+            "worldPressure": "潮灾逼近，港务议会要求永久封存古灯。",
+            "openingHook": "古灯在无人点火时照出了明日沉没的街区。",
+            "differentiation": "以记忆作为航海与守城力量的不可逆代价。",
+        },
+        "engine": {
+            "name": "潮灯记忆循环",
+            "storyPromise": "每次守城都迫使人物在共同记忆与私人关系间选择。",
+            "protagonistDesire": "岑遥既要保住港城，也要保住家人的记忆。",
+            "sustainedPressure": "潮线、议会封禁与记忆损耗持续收紧。",
+            "growthDirection": "从独自承担代价转向建立共同记忆制度。",
+            "conflictLoop": "预测潮灾、点灯救援、失去记忆、关系追责。",
+            "ensembleRoles": [
+                {
+                    "role": "记忆记录者",
+                    "purpose": "保存证据并挑战主角的隐瞒。",
+                }
+            ],
+            "advantageAndCost": (
+                "古灯能照见灾害路径，但每次使用都会抹去私人记忆。"
+            ),
+            "satisfactionSources": ["灾害谜题被验证", "关系账本逐步兑现"],
+            "longFormVariation": [
+                "街区救援",
+                "港城权力斗争",
+                "远海灯塔联盟",
+            ],
+            "endingAnchor": (
+                "岑遥公开记忆账本，让全城共同承担最后一次点灯。"
+            ),
+            "risks": ["失忆代价重复"],
+            "differentiation": "记忆既是力量燃料，也是关系连续性的证据。",
+        },
+        "longFormCapacity": {
+            "targetTotalWords": 1_200_000,
+            "expectedVolumeCount": 10,
+            "expectedChapterCount": 420,
+            "chapterWordRangePreference": [2_800, 3_600],
+        },
+        "protagonist": "岑遥会优先救人，却害怕再次忘记最亲近的人。",
+        "coreCharacters": [
+            {
+                "id": "cast-1",
+                "text": "陆弦负责记录岑遥失去的记忆，也隐瞒自己的交易。",
+            }
+        ],
+        "relationshipDynamics": [
+            {
+                "id": "relation-1",
+                "text": "岑遥与陆弦的信任取决于是否公开记忆账本。",
+            }
+        ],
+        "worldRules": [
+            {
+                "id": "world-1",
+                "text": "古灯只能交换记忆，不能凭空创造力量。",
+            },
+            {
+                "id": "world-2",
+                "text": "潮线每天推进一次，退潮不会恢复已失记忆。",
+            },
+        ],
+        "powerOrProgressionSystem": (
+            "角色通过掌握灯谱扩大照明范围，但代价随范围增长。"
+        ),
+        "longTermConflicts": [
+            {
+                "id": "conflict-1",
+                "text": "救城次数越多，岑遥越难确认自己为何而战。",
+            }
+        ],
+        "toneAndNarrativeBoundaries": (
+            "保持克制，不用旁白替人物消解选择代价。"
+        ),
+        "prohibitedDirections": [
+            "不得用无代价失忆逆转解决冲突。",
+            "不得提前揭示古灯起源。",
+        ],
+        "continuityGuardrails": [
+            {
+                "id": "guard-1",
+                "text": "任何记忆恢复都必须有此前保存的外部记录。",
+            }
+        ],
+        "authorNotes": "人物关系选择必须先于设定说明。",
+    }
+    assert manifest["draft"] == {
+        "activeStoryBlockRef": None,
+        "volumes": [],
+        "plots": [],
+        "storyBlocks": [],
+    }
+    persisted = next(iter(repository.attempts.values()))
+    assert persisted["input_manifest_hash"] == canonical_hash(manifest)
+    serialized = canonical_json(manifest)
+    assert "基于已确认创作依据规划未来分卷与情节线" not in serialized
+    assert all(
+        marker not in serialized.casefold()
+        for marker in (
+            "api_key",
+            "authorization",
+            "raw_output",
+            "raw_corpus",
+            "corpusfragment",
+            "_provenance",
+            "publicnotes",
+            "prompt",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_worst_case_story_basis_is_deterministically_budgeted_pre_gateway():
+    from backend.services.planning_generation import (
+        PlanningGenerationService,
+    )
+
+    repository = FakePlanningRepository()
+    worst = _worst_case_story_basis()
+    repository.basis.update(worst)
+    repository.draft.update(worst)
+    empty = _empty_persisted_draft()
+    repository.draft.update(
+        content_json=canonical_json(
+            empty.model_dump(mode="json", by_alias=True)
+        ),
+        content_hash=empty.content_hash,
+    )
+    gateway = FakeGateway()
+    service, repository, gateway, _tracker = _service(
+        repository=repository,
+        gateway=gateway,
+    )
+    original = _command()
+    command = type(original)(
+        project_id=original.project_id,
+        draft_id=original.draft_id,
+        draft_revision=original.draft_revision,
+        draft_hash=empty.content_hash,
+        idempotency_key=original.idempotency_key,
+        author_instructions="续" * 4_000,
+    )
+
+    manifest_one = PlanningGenerationService._manifest(
+        command,
+        basis=repository.basis,
+        draft=repository.draft,
+    )
+    manifest_two = PlanningGenerationService._manifest(
+        command,
+        basis=repository.basis,
+        draft=repository.draft,
+    )
+    snapshot_one = manifest_one.model_dump(mode="json", by_alias=True)
+    snapshot_two = manifest_two.model_dump(mode="json", by_alias=True)
+    story = snapshot_one["storyContext"]
+    story_bytes = len(canonical_json(story).encode("utf-8"))
+    source_bytes = sum(
+        len(repository.basis[key].encode("utf-8"))
+        for key in (
+            "seed_content_json",
+            "creation_content_json",
+            "bible_content_json",
+        )
+    )
+    messages = build_planning_messages(
+        manifest=manifest_one,
+        author_instructions=command.author_instructions,
+    )
+    message_bytes = len(
+        json.dumps(
+            messages,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    )
+
+    assert source_bytes > PLANNING_STORY_CONTEXT_MAX_BYTES + 1
+    assert story_bytes <= PLANNING_STORY_CONTEXT_MAX_BYTES
+    assert message_bytes <= PLANNING_MAX_PROMPT_BYTES
+    assert canonical_json(snapshot_one) == canonical_json(snapshot_two)
+    assert canonical_hash(snapshot_one) == canonical_hash(snapshot_two)
+    assert story["premise"]
+    assert story["engine"]["storyPromise"]
+    assert story["engine"]["sustainedPressure"]
+    assert story["engine"]["conflictLoop"]
+    assert story["engine"]["endingAnchor"]
+    assert story["protagonist"]
+    assert story["worldRules"][0]["text"]
+    assert story["longTermConflicts"][0]["text"]
+    assert story["continuityGuardrails"][0]["text"]
+    assert story["longFormCapacity"] == {
+        "targetTotalWords": 100_000_000,
+        "expectedVolumeCount": 1_000,
+        "expectedChapterCount": 100_000,
+        "chapterWordRangePreference": [1, 100_000],
+    }
+
+    result = await service.generate(command)
+
+    assert result.status == "succeeded"
+    assert gateway.calls[0]["manifest"] == manifest_one
+    persisted = next(iter(repository.attempts.values()))
+    assert persisted["input_manifest_hash"] == canonical_hash(snapshot_one)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "secret",
+    (
+        "sk-proj-aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hJ4",
+        "sk%2Dproj%2DaB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hJ4",
+    ),
+)
+async def test_over_budget_story_secret_is_rejected_before_compression(
+    secret,
+):
+    from backend.services.planning_generation import (
+        PlanningGenerationNotReady,
+    )
+
+    repository = FakePlanningRepository()
+    worst = _worst_case_story_basis()
+    contract = json.loads(worst["creation_content_json"])
+    contract["authorNotes"] = ("注" * 1_000) + secret
+    contract_hash = canonical_hash(contract)
+    worst.update(
+        creation_hash=contract_hash,
+        creation_content_json=canonical_json(contract),
+    )
+    repository.basis.update(worst)
+    repository.draft.update(worst)
+    empty = _empty_persisted_draft()
+    repository.draft.update(
+        content_json=canonical_json(
+            empty.model_dump(mode="json", by_alias=True)
+        ),
+        content_hash=empty.content_hash,
+    )
+    service, repository, gateway, tracker = _service(
+        repository=repository,
+    )
+    original = _command()
+    command = type(original)(
+        project_id=original.project_id,
+        draft_id=original.draft_id,
+        draft_revision=original.draft_revision,
+        draft_hash=empty.content_hash,
+        idempotency_key=original.idempotency_key,
+        author_instructions=original.author_instructions,
+    )
+
+    with pytest.raises(PlanningGenerationNotReady):
+        await service.generate(command)
+
+    assert repository.attempts == {}
+    assert gateway.calls == []
+    assert tracker.entries == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "secret",
+    (
+        "sk-proj-aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hJ4",
+        "sk%2Dproj%2DaB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hJ4",
+        "sk%5Fproj%5FaB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hJ4",
+        "rk-live-Z9yX8wV7uT6sR5qP4nM3kJ2hG1fD0cB9aA8",
+        "pk_prod_9Z8Y7X6W5V4U3T2S1R0Q9P8N7M6L5K4J",
+    ),
+)
+async def test_confirmed_story_secret_shape_is_rejected_before_gateway(
+    secret,
+):
+    from backend.services.planning_generation import (
+        PlanningGenerationNotReady,
+    )
+
+    repository = FakePlanningRepository()
+    contract = json.loads(repository.basis["creation_content_json"])
+    contract["authorNotes"] = secret
+    contract_hash = canonical_hash(contract)
+    repository.basis.update(
+        creation_hash=contract_hash,
+        creation_content_json=canonical_json(contract),
+    )
+    repository.draft["creation_hash"] = contract_hash
+    service, repository, gateway, tracker = _service(
+        repository=repository,
+    )
+
+    with pytest.raises(PlanningGenerationNotReady):
+        await service.generate(_command())
+
+    assert gateway.calls == []
+    assert repository.attempts == {}
+    assert tracker.entries == 1
+
+
+@pytest.mark.asyncio
+async def test_creation_contract_unknown_field_is_rejected_before_gateway():
+    from backend.services.planning_generation import (
+        PlanningGenerationNotReady,
+    )
+
+    repository = FakePlanningRepository()
+    contract = json.loads(repository.basis["creation_content_json"])
+    contract["legacyPlanningHint"] = "must not bypass the formal contract"
+    contract_hash = canonical_hash(contract)
+    repository.basis.update(
+        creation_hash=contract_hash,
+        creation_content_json=canonical_json(contract),
+    )
+    repository.draft["creation_hash"] = contract_hash
+    service, repository, gateway, tracker = _service(
+        repository=repository,
+    )
+
+    with pytest.raises(PlanningGenerationNotReady):
+        await service.generate(_command())
+
+    assert gateway.calls == []
+    assert repository.attempts == {}
+    assert tracker.entries == 1
 
 
 @pytest.mark.asyncio

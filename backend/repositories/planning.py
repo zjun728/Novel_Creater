@@ -19,15 +19,23 @@ class PlanningRepository:
         return await session.fetchone(
             """SELECT selected.selection_revision,selected.seed_id,
                       selected.seed_revision_id,selected.seed_hash,
+                      seed_revision.payload_json AS seed_content_json,
                       contract_head.revision AS contract_revision,
                       contract_head.creation_contract_id,
                       contract_head.creation_hash,
                       contract_head.style_contract_id,contract_head.style_hash,
                       creation.chapter_capacity_policy,
+                      creation.content_json AS creation_content_json,
                       bible_head.revision AS bible_revision,
                       bible_head.bible_revision_id,
-                      bible_head.content_hash AS bible_hash
+                      bible_head.content_hash AS bible_hash,
+                      bible.content_json AS bible_content_json
                  FROM project_selected_seeds selected
+                 JOIN creative_seed_revisions seed_revision
+                   ON seed_revision.project_id=selected.project_id
+                  AND seed_revision.seed_id=selected.seed_id
+                  AND seed_revision.id=selected.seed_revision_id
+                  AND seed_revision.content_hash=selected.seed_hash
                  JOIN project_contract_heads contract_head
                    ON contract_head.project_id=selected.project_id
                   AND contract_head.revision>0

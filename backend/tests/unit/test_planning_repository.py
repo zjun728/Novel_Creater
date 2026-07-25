@@ -90,6 +90,7 @@ async def test_current_basis_is_one_exact_generation_join_without_provider_secre
     compact = " ".join(sql.split())
     assert args == ("p1",)
     assert "project_selected_seeds selected" in compact
+    assert "creative_seed_revisions seed_revision" in compact
     assert "project_contract_heads contract_head" in compact
     assert "creation_contracts creation" in compact
     assert "style_contracts style" in compact
@@ -99,6 +100,9 @@ async def test_current_basis_is_one_exact_generation_join_without_provider_secre
     assert "bible.selection_revision=selected.selection_revision" in compact
     assert "bible.creation_hash=contract_head.creation_hash" in compact
     assert "bible.style_hash=contract_head.style_hash" in compact
+    assert "seed_revision.payload_json AS seed_content_json" in compact
+    assert "creation.content_json AS creation_content_json" in compact
+    assert "bible.content_json AS bible_content_json" in compact
     forbidden = ("api_key", "base_url", "provider_profiles", "model_name")
     assert all(item not in compact.lower() for item in forbidden)
 

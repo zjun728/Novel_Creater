@@ -8,6 +8,7 @@ from backend.domain.planning import DraftPlanningAggregate
 from backend.prompts.planning import (
     PLANNING_MAX_PROMPT_BYTES,
     build_planning_messages,
+    planning_text_contains_private_material,
 )
 
 
@@ -86,7 +87,60 @@ def _manifest() -> dict[str, object]:
         },
         "storyContext": {
             "premise": "知识带来解决办法，也带来新的关系债。",
-            "continuityGuardrails": ["不得提前揭示内应身份"],
+            "seed": {
+                "title": "旧城抄录者",
+                "genre": "历史奇幻",
+                "logline": "抄录者必须在封城前保存会改变现实的地方志。",
+                "protagonist": "沈砚，一名谨慎的抄录者。",
+                "desire": "让被抹去的人重新留下姓名。",
+                "coreConflict": "保存知识会引来追捕并改变既有秩序。",
+                "worldPressure": "旧城封锁，朝廷禁止私人抄录。",
+                "openingHook": "地方志提前写出了守门人的失踪。",
+                "differentiation": "知识传播会真实改写地方秩序。",
+            },
+            "engine": {
+                "name": "地方志改写循环",
+                "storyPromise": "每次修复地方志都揭开一层被抹去的秩序。",
+                "protagonistDesire": "让被抹去的人重新留下姓名。",
+                "sustainedPressure": "封城与朝廷禁令持续收紧。",
+                "growthDirection": "从独自抄录走向共同保存。",
+                "conflictLoop": "找证据、改旧志、触发追捕、承担关系代价。",
+                "ensembleRoles": [
+                    {"role": "见证者", "purpose": "验证抄本并挑战主角。"}
+                ],
+                "advantageAndCost": "抄本能改变现实，但会制造新的关系债。",
+                "satisfactionSources": ["旧案翻转"],
+                "longFormVariation": ["旧城", "州府", "王朝档案"],
+                "endingAnchor": "共同保存的地方志取代唯一权威抄本。",
+                "risks": ["旧案结构重复"],
+                "differentiation": "知识传播会真实改写地方秩序。",
+            },
+            "longFormCapacity": {
+                "targetTotalWords": 900000,
+                "expectedVolumeCount": 8,
+                "expectedChapterCount": 300,
+                "chapterWordRangePreference": [2800, 3600],
+            },
+            "protagonist": "沈砚会先验证事实，再决定公开多少真相。",
+            "coreCharacters": [
+                {"id": "cast-1", "text": "陆微有独立的救人目标。"}
+            ],
+            "relationshipDynamics": [
+                {"id": "relation-1", "text": "信任依赖双方共享风险。"}
+            ],
+            "worldRules": [
+                {"id": "world-1", "text": "被验证的抄本才能改变现实。"}
+            ],
+            "powerOrProgressionSystem": "修复地方志需要证据、见证人与代价。",
+            "longTermConflicts": [
+                {"id": "conflict-1", "text": "公开真相与维持秩序长期冲突。"}
+            ],
+            "toneAndNarrativeBoundaries": "克制解释，让选择承担后果。",
+            "prohibitedDirections": ["不写无代价知识升级"],
+            "continuityGuardrails": [
+                {"id": "guard-1", "text": "不得提前揭示内应身份。"}
+            ],
+            "authorNotes": "人物关系优先。",
         },
     }
 
@@ -283,6 +337,84 @@ def test_prompt_rejects_private_or_raw_material_with_one_safe_error(
             "PRIVATE_STANDALONE_BEARER_SENTINEL",
         )
     )
+
+
+@pytest.mark.parametrize(
+    "normal_novel_text",
+    (
+        "门锁协议被角色称作 PK-challenge，不是任何访问凭据。",
+        "草稿中的 sk-placeholder 只是尚未命名的技能占位符。",
+        "最终门锁状态叫 PK-challenge-mode-final，仍是剧情术语。",
+        "角色把绝招暂命名为 sk-placeholder-character-skill。",
+        "技能标签 sk-placeholder-character-skill-v2-final 是普通占位名。",
+        "编码标签 sk%2Dplaceholder%2Dcharacter%2Dskill%2Dv2%2Dfinal 也不是密钥。",
+    ),
+)
+def test_prompt_allows_normal_novel_text_that_resembles_short_key_prefixes(
+    normal_novel_text,
+):
+    messages = build_planning_messages(
+        manifest=_manifest(),
+        author_instructions=normal_novel_text,
+    )
+
+    assert normal_novel_text in messages[1]["content"]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("sk-placeholder-character-skill-v2-final", False),
+        (
+            "sk%2dplaceholder%2dcharacter%2dskill%2dv2%2dfinal",
+            False,
+        ),
+        ("pk%5Fplaceholder%5Fcharacter%5Fskill%5Fv2%5Ffinal", False),
+        ("sk-" + ("aB3D" * 7) + "aB3", False),
+        (
+            "sk-proj-aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW2xY4zA6bC8dE0fG2hJ4",
+            True,
+        ),
+        (
+            "rk%2dlive%2dZ9yX8wV7uT6sR5qP4nM3kJ2hG1fD0cB9aA8",
+            True,
+        ),
+        (
+            "pk%5Fprod%5F9Z8Y7X6W5V4U3T2S1R0Q9P8N7M6L5K4J",
+            True,
+        ),
+    ),
+)
+def test_private_material_token_helper_has_randomness_boundary(
+    text,
+    expected,
+):
+    assert planning_text_contains_private_material(text) is expected
+
+
+@pytest.mark.parametrize("prefix", ("sk", "rk", "pk"))
+@pytest.mark.parametrize("separator", ("-", "%2D", "%5F"))
+def test_prompt_rejects_high_entropy_letter_only_provider_token_matrix(
+    prefix,
+    separator,
+):
+    token = (
+        prefix
+        + separator
+        + "proj"
+        + separator
+        + "FlkQlhJbcBrpGhaMgrFwuPncZuvZoxTeyOemJwtDvkXdsIaiNqyS"
+    )
+
+    assert planning_text_contains_private_material(token) is True
+    with pytest.raises(ValueError) as caught:
+        build_planning_messages(
+            manifest=_manifest(),
+            author_instructions=f"沿用凭据 {token}",
+        )
+
+    assert str(caught.value) == "Planning prompt input invalid"
+    assert token not in str(caught.value)
 
 
 def test_prompt_rejects_oversized_manifest_without_echo():

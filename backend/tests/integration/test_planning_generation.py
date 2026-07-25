@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
+from backend.domain.bibles import BiblePayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.repositories.planning import PlanningRepository
 from backend.services.planning import CreatePlanningDraft
@@ -15,6 +17,107 @@ from backend.tests.integration.test_planning_aggregate_lifecycle import _prepare
 pytestmark = pytest.mark.mysql
 
 NOW = 1_940_000_000_000
+
+
+def _confirmed_story_bible():
+    payload = BiblePayload.model_validate(
+        {
+            "premiseAndPromise": (
+                "一个被追捕的记录者必须保存真相，同时承担公开真相的关系代价。"
+            ),
+            "worldRules": (
+                {
+                    "id": "world-rule-1",
+                    "text": "任何超常力量都必须留下可追踪且不可撤销的代价。",
+                },
+            ),
+            "powerOrProgressionSystem": (
+                "成长依靠选择、训练和有限资源，不允许无依据跃升。"
+            ),
+            "protagonist": "主角谨慎、重视证据，并会承担自己选择的后果。",
+            "coreCast": (
+                {
+                    "id": "cast-1",
+                    "text": "同伴拥有独立目标，不是主角的功能性附庸。",
+                },
+            ),
+            "factions": (
+                {
+                    "id": "faction-1",
+                    "text": "地方势力围绕安全、秩序与真相形成竞争。",
+                },
+            ),
+            "longTermConflicts": (
+                {
+                    "id": "conflict-1",
+                    "text": "保存真相与维持眼前秩序的冲突会逐步升级。",
+                },
+            ),
+            "relationshipDynamics": (
+                {
+                    "id": "relationship-1",
+                    "text": "信任只能通过共同选择和公开代价逐步建立。",
+                },
+            ),
+            "toneAndNarrativeBoundaries": (
+                "保持克制，让人物行动承担情绪和选择的后果。"
+            ),
+            "continuityGuardrails": (
+                {
+                    "id": "guardrail-1",
+                    "text": "已经付出的代价不能被无条件撤销。",
+                },
+            ),
+            "openDesignQuestions": (
+                {
+                    "id": "question-1",
+                    "text": "第一阶段需要决定哪段关系最先承受代价。",
+                },
+            ),
+        },
+        strict=True,
+    )
+    return payload.model_dump(mode="json", by_alias=True)
+
+
+async def _prepare_generation_basis(disposable_mysql):
+    planning = await _prepare(disposable_mysql)
+    content = _confirmed_story_bible()
+    content_hash = canonical_hash(content)
+    head = await disposable_mysql.session.fetchone(
+        """SELECT bible_revision_id,revision,updated_at
+             FROM project_bible_heads WHERE project_id=%s""",
+        (PROJECT,),
+    )
+    await disposable_mysql.session.execute(
+        "DELETE FROM project_bible_heads WHERE project_id=%s",
+        (PROJECT,),
+    )
+    await disposable_mysql.session.execute(
+        """UPDATE creation_bible_revisions
+              SET content_json=%s,content_hash=%s
+            WHERE project_id=%s AND id=%s AND revision=%s""",
+        (
+            canonical_json(content),
+            content_hash,
+            PROJECT,
+            head["bible_revision_id"],
+            head["revision"],
+        ),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_bible_heads
+           (project_id,revision,bible_revision_id,content_hash,updated_at)
+           VALUES (%s,%s,%s,%s,%s)""",
+        (
+            PROJECT,
+            head["revision"],
+            head["bible_revision_id"],
+            content_hash,
+            head["updated_at"],
+        ),
+    )
+    return planning
 
 
 async def _attempt_row(session, draft_id, *, number: int):
@@ -273,7 +376,7 @@ async def test_real_mysql_service_reserves_and_atomically_loads_generation(
         PlanningGenerationService,
     )
 
-    planning = await _prepare(disposable_mysql)
+    planning = await _prepare_generation_basis(disposable_mysql)
     draft = await planning.create_draft(
         CreatePlanningDraft(PROJECT, "create-service-generation-draft")
     )
@@ -335,6 +438,52 @@ async def test_real_mysql_service_reserves_and_atomically_loads_generation(
     assert result.loaded_draft_revision == draft.draft_revision + 1
     assert result.model.model_name == "test-model"
     assert len(gateway.calls) == 1
+    manifest = gateway.calls[0][2].model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    assert manifest["draft"] == {
+        "activeStoryBlockRef": None,
+        "volumes": [],
+        "plots": [],
+        "storyBlocks": [],
+    }
+    assert manifest["storyContext"]["seed"]["logline"] == (
+        "少年以县志镇压黑潮。"
+    )
+    assert manifest["storyContext"]["engine"]["storyPromise"]
+    assert manifest["storyContext"]["engine"]["conflictLoop"]
+    assert manifest["storyContext"]["engine"]["endingAnchor"]
+    assert manifest["storyContext"]["longFormCapacity"] == {
+        "targetTotalWords": 150_000,
+        "expectedVolumeCount": 3,
+        "expectedChapterCount": 60,
+        "chapterWordRangePreference": [2_000, 3_000],
+    }
+    assert manifest["storyContext"]["premise"] == (
+        "一个被追捕的记录者必须保存真相，同时承担公开真相的关系代价。"
+    )
+    assert manifest["storyContext"]["coreCharacters"] == [
+        {
+            "id": "cast-1",
+            "text": "同伴拥有独立目标，不是主角的功能性附庸。",
+        }
+    ]
+    assert manifest["storyContext"]["relationshipDynamics"] == [
+        {
+            "id": "relationship-1",
+            "text": "信任只能通过共同选择和公开代价逐步建立。",
+        }
+    ]
+    assert manifest["storyContext"]["worldRules"] == [
+        {
+            "id": "world-rule-1",
+            "text": "任何超常力量都必须留下可追踪且不可撤销的代价。",
+        }
+    ]
+    assert manifest["storyContext"]["prohibitedDirections"] == [
+        "不写无代价升级"
+    ]
     persisted_draft = await disposable_mysql.session.fetchone(
         "SELECT * FROM planning_drafts WHERE id=%s",
         (draft.draft_id,),
@@ -347,6 +496,24 @@ async def test_real_mysql_service_reserves_and_atomically_loads_generation(
     assert persisted_draft["source_attempt_id"] == persisted_attempt["id"]
     assert persisted_attempt["loaded_draft_revision"] == (
         draft.draft_revision + 1
+    )
+    assert json.loads(persisted_attempt["input_manifest_json"]) == manifest
+    assert persisted_attempt["input_manifest_hash"] == canonical_hash(
+        manifest
+    )
+    serialized_manifest = persisted_attempt["input_manifest_json"].casefold()
+    assert all(
+        marker not in serialized_manifest
+        for marker in (
+            "corpus",
+            "raw_output",
+            "prompt",
+            "api_key",
+            "test-only-key",
+            "authorization",
+            "_provenance",
+            "publicnotes",
+        )
     )
     selected = await disposable_mysql.session.fetchone(
         "SELECT DATABASE() AS database_name"
@@ -363,7 +530,7 @@ async def test_real_mysql_same_key_replay_cannot_deadlock_attempt_terminalizatio
         PlanningGenerationService,
     )
 
-    planning = await _prepare(disposable_mysql)
+    planning = await _prepare_generation_basis(disposable_mysql)
     draft = await planning.create_draft(
         CreatePlanningDraft(PROJECT, "create-deadlock-regression-draft")
     )
@@ -477,7 +644,7 @@ async def test_real_mysql_different_key_cannot_deadlock_active_attempt_terminali
         PlanningGenerationService,
     )
 
-    planning = await _prepare(disposable_mysql)
+    planning = await _prepare_generation_basis(disposable_mysql)
     draft = await planning.create_draft(
         CreatePlanningDraft(PROJECT, "create-different-key-deadlock-draft")
     )

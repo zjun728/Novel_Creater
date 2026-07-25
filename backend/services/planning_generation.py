@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import re
@@ -13,6 +14,8 @@ from uuid import uuid4
 from pydantic import ValidationError
 from pymysql.err import MySQLError
 
+from backend.domain.bibles import BiblePayload
+from backend.domain.contracts import CreationContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.domain.planning import (
     DraftPlanningAggregate,
@@ -21,9 +24,19 @@ from backend.domain.planning import (
     normalize_planning_aggregate,
 )
 from backend.domain.provider_policy import provider_is_generation_ready
+from backend.domain.seeds import decode_seed_revision
 from backend.gateways.planning_provider import PlanningProviderError
 from backend.http_errors import ProjectArchived, PublicDomainError
-from backend.prompts.planning import PlanningGenerationManifest
+from backend.prompts.planning import (
+    PLANNING_STORY_ITEM_TEXT_MAX_LENGTH,
+    PLANNING_STORY_CONTEXT_MAX_BYTES,
+    PLANNING_STORY_LIST_MAX_ITEMS,
+    PLANNING_STORY_SEED_TEXT_MAX_LENGTH,
+    PLANNING_STORY_TEXT_MAX_LENGTH,
+    PlanningGenerationManifest,
+    PlanningStoryContext,
+    validate_planning_story_context_candidate,
+)
 from backend.security.provider_secrets import (
     normalize_provider_secrets,
     provider_public_fields_contain_secret,
@@ -719,35 +732,368 @@ class PlanningGenerationService:
     @classmethod
     def _manifest(cls, command, *, basis, draft):
         editable = cls._editable_draft(draft["content_json"])
-        volumes = tuple(editable.volumes)
-        premise = "；".join(
-            f"{volume.title}：{volume.core_change}"
-            for volume in volumes
-        ) or "基于已确认创作依据规划未来分卷与情节线。"
-        guardrails = tuple(
-            rule
-            for volume in volumes
-            for rule in volume.forbidden_events
-        )
         basis_snapshot = cls._basis_snapshot(basis)
-        return PlanningGenerationManifest.model_validate(
-            {
-                "basis": {
-                    "projectId": command.project_id,
-                    "basisHash": canonical_hash(basis_snapshot),
-                    "draftRevision": command.draft_revision,
-                    "draftHash": command.draft_hash,
+        try:
+            return PlanningGenerationManifest.model_validate(
+                {
+                    "basis": {
+                        "projectId": command.project_id,
+                        "basisHash": canonical_hash(basis_snapshot),
+                        "draftRevision": command.draft_revision,
+                        "draftHash": command.draft_hash,
+                    },
+                    "draft": editable.model_dump(
+                        mode="json", by_alias=True
+                    ),
+                    "storyContext": cls._story_context(basis),
                 },
-                "draft": editable.model_dump(
-                    mode="json", by_alias=True
-                ),
-                "storyContext": {
-                    "premise": premise,
-                    "continuityGuardrails": guardrails,
-                },
-            },
+                strict=True,
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            ValidationError,
+            json.JSONDecodeError,
+            UnicodeError,
+            RecursionError,
+        ):
+            raise PlanningGenerationNotReady() from None
+
+    @classmethod
+    def _story_context(cls, basis):
+        seed, _provenance = decode_seed_revision(
+            basis["seed_content_json"]
+        )
+        contract_raw = cls._json_mapping(
+            basis["creation_content_json"]
+        )
+        bible_raw = cls._json_mapping(basis["bible_content_json"])
+        if (
+            canonical_hash(seed) != basis["seed_hash"]
+            or canonical_hash(contract_raw) != basis["creation_hash"]
+            or canonical_hash(bible_raw) != basis["bible_hash"]
+        ):
+            raise ValueError("stored Planning basis hash mismatch")
+
+        contract = CreationContractPayload.model_validate_json(
+            canonical_json(contract_raw),
             strict=True,
         )
+        normalized_bible = dict(bible_raw)
+        for field_name in (
+            "worldRules",
+            "coreCast",
+            "factions",
+            "longTermConflicts",
+            "relationshipDynamics",
+            "continuityGuardrails",
+            "openDesignQuestions",
+        ):
+            value = normalized_bible.get(field_name)
+            if isinstance(value, list):
+                normalized_bible[field_name] = tuple(value)
+        bible = BiblePayload.model_validate(
+            normalized_bible,
+            strict=True,
+        )
+
+        if (
+            contract.selectionRevision
+            != int(basis["selection_revision"])
+            or contract.seedRevisionId != basis["seed_revision_id"]
+            or contract.seedHash != basis["seed_hash"]
+            or canonical_hash(contract.selectedSeed) != basis["seed_hash"]
+        ):
+            raise ValueError("stored Creation Contract basis mismatch")
+
+        def text(value, limit):
+            if not isinstance(value, str):
+                raise ValueError("Planning story context is invalid")
+            bounded = value.strip()[:limit]
+            if not bounded:
+                raise ValueError("Planning story context is invalid")
+            return bounded
+
+        def items(values):
+            return [
+                {
+                    "id": item.id,
+                    "text": text(
+                        item.text,
+                        PLANNING_STORY_ITEM_TEXT_MAX_LENGTH,
+                    ),
+                }
+                for item in tuple(values)[
+                    :PLANNING_STORY_LIST_MAX_ITEMS
+                ]
+            ]
+
+        def text_list(values):
+            return [
+                text(item, PLANNING_STORY_ITEM_TEXT_MAX_LENGTH)
+                for item in tuple(values)[
+                    :PLANNING_STORY_LIST_MAX_ITEMS
+                ]
+            ]
+
+        engine = contract.selectedEngine
+        context = {
+            "premise": text(
+                bible.premiseAndPromise,
+                PLANNING_STORY_TEXT_MAX_LENGTH,
+            ),
+            "seed": {
+                field: text(
+                    getattr(seed, field),
+                    PLANNING_STORY_SEED_TEXT_MAX_LENGTH,
+                )
+                for field in (
+                    "title",
+                    "genre",
+                    "logline",
+                    "protagonist",
+                    "desire",
+                    "coreConflict",
+                    "worldPressure",
+                    "openingHook",
+                    "differentiation",
+                )
+            },
+            "engine": {
+                "name": text(
+                    engine.name,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "storyPromise": text(
+                    engine.storyPromise,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "protagonistDesire": text(
+                    engine.protagonistDesire,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "sustainedPressure": text(
+                    engine.sustainedPressure,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "growthDirection": text(
+                    engine.growthDirection,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "conflictLoop": text(
+                    engine.conflictLoop,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "ensembleRoles": [
+                    {
+                        "role": text(
+                            role.role,
+                            PLANNING_STORY_ITEM_TEXT_MAX_LENGTH,
+                        ),
+                        "purpose": text(
+                            role.purpose,
+                            PLANNING_STORY_ITEM_TEXT_MAX_LENGTH,
+                        ),
+                    }
+                    for role in engine.ensembleRoles[
+                        :PLANNING_STORY_LIST_MAX_ITEMS
+                    ]
+                ],
+                "advantageAndCost": text(
+                    engine.advantageAndCost,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "satisfactionSources": text_list(
+                    engine.satisfactionSources
+                ),
+                "longFormVariation": text_list(
+                    engine.longFormVariation
+                ),
+                "endingAnchor": text(
+                    engine.endingAnchor,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+                "risks": text_list(engine.risks),
+                "differentiation": text(
+                    engine.differentiation,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                ),
+            },
+            "longFormCapacity": {
+                "targetTotalWords": contract.targetTotalWords,
+                "expectedVolumeCount": contract.expectedVolumeCount,
+                "expectedChapterCount": contract.expectedChapterCount,
+                "chapterWordRangePreference": (
+                    contract.chapterWordRangePreference
+                ),
+            },
+            "protagonist": text(
+                bible.protagonist,
+                PLANNING_STORY_TEXT_MAX_LENGTH,
+            ),
+            "coreCharacters": items(bible.coreCast),
+            "relationshipDynamics": items(
+                bible.relationshipDynamics
+            ),
+            "worldRules": items(bible.worldRules),
+            "powerOrProgressionSystem": text(
+                bible.powerOrProgressionSystem,
+                PLANNING_STORY_TEXT_MAX_LENGTH,
+            ),
+            "longTermConflicts": items(bible.longTermConflicts),
+            "toneAndNarrativeBoundaries": text(
+                bible.toneAndNarrativeBoundaries,
+                PLANNING_STORY_TEXT_MAX_LENGTH,
+            ),
+            "prohibitedDirections": text_list(
+                contract.prohibitedDirections
+            ),
+            "continuityGuardrails": items(
+                bible.continuityGuardrails
+            ),
+            "authorNotes": (
+                text(
+                    contract.authorNotes,
+                    PLANNING_STORY_TEXT_MAX_LENGTH,
+                )
+                if contract.authorNotes is not None
+                else None
+            ),
+        }
+        candidate = PlanningStoryContext.model_validate(
+            context,
+            strict=True,
+        ).model_dump(mode="json", by_alias=True)
+        validate_planning_story_context_candidate(candidate)
+        return cls._fit_story_context_budget(candidate)
+
+    @classmethod
+    def _fit_story_context_budget(cls, context):
+        def size():
+            return len(canonical_json(context).encode("utf-8"))
+
+        if size() <= PLANNING_STORY_CONTEXT_MAX_BYTES:
+            return context
+
+        context["authorNotes"] = None
+
+        def nested(*path):
+            value = context
+            for part in path:
+                value = value[part]
+            return value
+
+        for path, minimum in (
+            (("engine", "risks"), 1),
+            (("engine", "satisfactionSources"), 1),
+            (("engine", "longFormVariation"), 1),
+            (("engine", "ensembleRoles"), 1),
+            (("prohibitedDirections",), 0),
+            (("relationshipDynamics",), 1),
+            (("coreCharacters",), 1),
+            (("worldRules",), 1),
+            (("longTermConflicts",), 1),
+            (("continuityGuardrails",), 1),
+        ):
+            values = nested(*path)
+            while (
+                size() > PLANNING_STORY_CONTEXT_MAX_BYTES
+                and len(values) > minimum
+            ):
+                values.pop()
+
+        def string_refs():
+            engine_context = context["engine"]
+            seed_context = context["seed"]
+            for key in (
+                "differentiation",
+                "openingHook",
+                "genre",
+                "title",
+                "desire",
+                "worldPressure",
+                "coreConflict",
+                "protagonist",
+                "logline",
+            ):
+                yield seed_context, key
+            for values in (
+                engine_context["risks"],
+                engine_context["satisfactionSources"],
+                engine_context["longFormVariation"],
+            ):
+                for index in range(len(values)):
+                    yield values, index
+            for role in engine_context["ensembleRoles"]:
+                yield role, "purpose"
+                yield role, "role"
+            for key in (
+                "differentiation",
+                "name",
+                "growthDirection",
+                "protagonistDesire",
+                "advantageAndCost",
+            ):
+                yield engine_context, key
+            for collection in (
+                context["relationshipDynamics"],
+                context["coreCharacters"],
+            ):
+                for item in collection:
+                    yield item, "text"
+            for index in range(len(context["prohibitedDirections"])):
+                yield context["prohibitedDirections"], index
+            yield context, "toneAndNarrativeBoundaries"
+            yield context, "powerOrProgressionSystem"
+
+            yield context, "premise"
+            yield engine_context, "storyPromise"
+            yield engine_context, "sustainedPressure"
+            yield engine_context, "conflictLoop"
+            yield engine_context, "endingAnchor"
+            yield context, "protagonist"
+            for collection in (
+                context["worldRules"],
+                context["longTermConflicts"],
+                context["continuityGuardrails"],
+            ):
+                for item in collection:
+                    yield item, "text"
+
+        for container, key in string_refs():
+            while size() > PLANNING_STORY_CONTEXT_MAX_BYTES:
+                value = container[key]
+                if len(value) <= 1:
+                    break
+                encoded = value.encode("utf-8")
+                excess = size() - PLANNING_STORY_CONTEXT_MAX_BYTES
+                minimum_bytes = len(value[0].encode("utf-8"))
+                target_bytes = max(
+                    minimum_bytes,
+                    len(encoded) - max(excess, 1),
+                )
+                reduced = encoded[:target_bytes].decode(
+                    "utf-8",
+                    errors="ignore",
+                )
+                if not reduced or reduced == value:
+                    reduced = value[:-1]
+                container[key] = reduced
+
+        if size() > PLANNING_STORY_CONTEXT_MAX_BYTES:
+            raise ValueError("Planning story context exceeds byte budget")
+        return context
+
+    @staticmethod
+    def _json_mapping(value):
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value).decode("utf-8")
+        if isinstance(value, str):
+            value = json.loads(value)
+        if not isinstance(value, Mapping):
+            raise ValueError("Planning basis content is invalid")
+        return dict(value)
 
     @staticmethod
     def _editable_draft(value) -> DraftPlanningAggregate:
