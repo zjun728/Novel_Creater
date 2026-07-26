@@ -17,10 +17,33 @@ const PLOT_FIELDS = Object.freeze([
   'relatedCharacters',
 ])
 
+const STORY_BLOCK_FIELDS = Object.freeze([
+  'title',
+  'volumeRef',
+  'plotRefs',
+  'entrySituation',
+  'blockGoal',
+  'mainPressure',
+  'expectedChange',
+  'openQuestions',
+  'involvedCharacters',
+])
+
+const STAGE_FIELDS = Object.freeze([
+  'title',
+  'purpose',
+  'dramaticQuestion',
+])
+
+const SCENE_TASK_FIELDS = Object.freeze([
+  'task',
+  'completionEvidence',
+])
+
 const clone = value => (
   value == null ? value : JSON.parse(JSON.stringify(value))
 )
-const active = node => node?.lifecycle !== 'retired'
+const active = node => node?.lifecycle === 'active'
 const identity = node => String(node?.id || node?.clientNodeKey || '')
 
 function activeNodes(items) {
@@ -29,6 +52,10 @@ function activeNodes(items) {
 
 function hasText(value) {
   return String(value || '').trim().length > 0
+}
+
+function validMoveDirection(direction) {
+  return direction === -1 || direction === 1
 }
 
 export function isCompletePlanningAggregate(content) {
@@ -41,21 +68,39 @@ export function isCompletePlanningAggregate(content) {
   const blockIds = new Set(storyBlocks.map(identity).filter(Boolean))
 
   if (!volumes.length || !plots.length || !storyBlocks.length) return false
-  if (volumes.some(volume => !hasText(volume.title))) return false
-  if (plots.some(plot => !hasText(plot.title))) return false
+  if (volumes.some(volume => (
+    !hasText(volume.title) || !hasText(volume.coreChange)
+  ))) return false
+  if (plots.some(plot => (
+    !hasText(plot.title) || !hasText(plot.storyQuestion)
+  ))) return false
 
   const activeBlockId = String(content.activeStoryBlockRef || '')
   if (!blockIds.has(activeBlockId)) return false
   const block = storyBlocks.find(node => identity(node) === activeBlockId)
   const stages = activeNodes(block?.stages)
-  const plotRefs = Array.isArray(block?.plotRefs) ? block.plotRefs : []
+  const plotRefs = Array.isArray(block?.plotRefs)
+    ? block.plotRefs.map(plotRef => String(plotRef || ''))
+    : []
+  const sceneTasks = stages.flatMap(stage => activeNodes(stage.sceneTasks))
   return (
     hasText(block?.title)
+    && hasText(block?.blockGoal)
     && volumeIds.has(String(block?.volumeRef || ''))
     && plotRefs.length > 0
-    && plotRefs.every(plotRef => plotIds.has(String(plotRef)))
+    && new Set(plotRefs).size === plotRefs.length
+    && plotRefs.every(plotRef => plotIds.has(plotRef))
     && stages.length > 0
-    && stages.some(stage => activeNodes(stage.sceneTasks).length > 0)
+    && stages.every(stage => (
+      hasText(stage.title)
+      && hasText(stage.purpose)
+      && hasText(stage.dramaticQuestion)
+    ))
+    && sceneTasks.length > 0
+    && sceneTasks.every(sceneTask => (
+      hasText(sceneTask.task)
+      && hasText(sceneTask.completionEvidence)
+    ))
   )
 }
 
@@ -92,6 +137,7 @@ export function createPlanningWorkspaceController({
   const notice = ref('')
   const activeProject = ref('')
   const projectScope = ref(0)
+  let storyBlockUndo = null
   const busy = computed(() => Boolean(
     store.loading
     || store.saving
@@ -210,6 +256,7 @@ export function createPlanningWorkspaceController({
   }
 
   function moveNode(collection, nodeKey, direction) {
+    if (!validMoveDirection(direction)) return false
     const items = [...(store.localContent?.[collection] || [])]
     const from = items.findIndex(item => identity(item) === String(nodeKey))
     if (from < 0 || !active(items[from])) return false
@@ -217,7 +264,7 @@ export function createPlanningWorkspaceController({
       .map((item, index) => active(item) ? index : -1)
       .filter(index => index >= 0)
     const activePosition = activeIndexes.indexOf(from)
-    const targetPosition = activePosition + Math.sign(Number(direction) || 0)
+    const targetPosition = activePosition + direction
     if (activePosition < 0 || targetPosition < 0 || targetPosition >= activeIndexes.length) {
       return false
     }
@@ -231,6 +278,335 @@ export function createPlanningWorkspaceController({
     return replaceCollection(collection, items)
   }
 
+  function nextOrder(items) {
+    return Math.max(
+      0,
+      ...(Array.isArray(items) ? items : []).map(item => Number(item.order) || 0),
+    ) + 1
+  }
+
+  function newEditableNode(fields, childCollection = '') {
+    const node = {
+      clientNodeKey: String(keyFactory()),
+      order: 1,
+      lifecycle: 'active',
+    }
+    for (const field of fields) node[field] = field.endsWith('s') ? [] : ''
+    if (childCollection) node[childCollection] = []
+    return node
+  }
+
+  function editStoryContent(edit) {
+    if (!editable.value || editorLocked.value || !store.localContent) return false
+    const content = clone(store.localContent)
+    if (!edit(content)) return false
+    store.editLocal(content)
+    return true
+  }
+
+  function activeIndex(items, nodeKey) {
+    return (Array.isArray(items) ? items : []).findIndex(node => (
+      identity(node) === String(nodeKey) && active(node)
+    ))
+  }
+
+  function patchNode(node, patch, fields) {
+    const allowed = new Set(fields)
+    for (const [field, value] of Object.entries(patch || {})) {
+      if (allowed.has(field)) node[field] = clone(value)
+    }
+  }
+
+  function moveActiveSibling(items, nodeKey, direction) {
+    if (!validMoveDirection(direction)) return false
+    const from = activeIndex(items, nodeKey)
+    if (from < 0) return false
+    const activeIndexes = items
+      .map((item, index) => active(item) ? index : -1)
+      .filter(index => index >= 0)
+    const activePosition = activeIndexes.indexOf(from)
+    const targetPosition = activePosition + direction
+    if (targetPosition < 0 || targetPosition >= activeIndexes.length) return false
+    const to = activeIndexes[targetPosition]
+    const fromOrder = items[from].order
+    const toOrder = items[to].order
+    const moved = { ...items[from], order: toOrder }
+    const displaced = { ...items[to], order: fromOrder }
+    items[from] = displaced
+    items[to] = moved
+    return true
+  }
+
+  function retireHistoricalSceneTasks(sceneTasks) {
+    return (Array.isArray(sceneTasks) ? sceneTasks : []).flatMap(sceneTask => {
+      return sceneTask.id
+        ? [{ ...sceneTask, lifecycle: 'retired' }]
+        : []
+    })
+  }
+
+  function retireHistoricalStages(stages) {
+    return (Array.isArray(stages) ? stages : []).flatMap(stage => {
+      return stage.id
+        ? [{
+            ...stage,
+            lifecycle: 'retired',
+            sceneTasks: retireHistoricalSceneTasks(stage.sceneTasks),
+          }]
+        : []
+    })
+  }
+
+  function addStoryBlock() {
+    return editStoryContent(content => {
+      const storyBlocks = Array.isArray(content.storyBlocks) ? content.storyBlocks : []
+      const block = newEditableNode(STORY_BLOCK_FIELDS, 'stages')
+      block.order = nextOrder(storyBlocks)
+      content.storyBlocks = [...storyBlocks, block]
+      return true
+    })
+  }
+
+  function updateStoryBlock(blockKey, patch) {
+    return editStoryContent(content => {
+      const index = activeIndex(content.storyBlocks, blockKey)
+      if (index < 0) return false
+      patchNode(content.storyBlocks[index], patch, STORY_BLOCK_FIELDS)
+      return true
+    })
+  }
+
+  function removeStoryBlock(blockKey) {
+    let undo = null
+    const changed = editStoryContent(content => {
+      const index = activeIndex(content.storyBlocks, blockKey)
+      if (index < 0) return false
+      const block = content.storyBlocks[index]
+      const activeStoryBlockRef = content.activeStoryBlockRef
+      const wasActive = String(activeStoryBlockRef || '') === identity(block)
+      if (block.id) {
+        content.storyBlocks[index] = {
+          ...block,
+          lifecycle: 'retired',
+          stages: retireHistoricalStages(block.stages),
+        }
+      } else {
+        undo = {
+          kind: 'block',
+          index,
+          node: clone(block),
+        }
+        if (wasActive) undo.restoreActiveStoryBlockRef = activeStoryBlockRef
+        content.storyBlocks.splice(index, 1)
+      }
+      if (wasActive) content.activeStoryBlockRef = null
+      return true
+    })
+    if (changed && undo) storyBlockUndo = undo
+    return changed
+  }
+
+  function moveStoryBlock(blockKey, direction) {
+    return editStoryContent(content => (
+      moveActiveSibling(content.storyBlocks, blockKey, direction)
+    ))
+  }
+
+  function selectActiveStoryBlock(blockKey) {
+    return editStoryContent(content => {
+      if (activeIndex(content.storyBlocks, blockKey) < 0) return false
+      content.activeStoryBlockRef = String(blockKey)
+      return true
+    })
+  }
+
+  function addStage(blockKey) {
+    return editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      const block = content.storyBlocks[blockIndex]
+      const stages = Array.isArray(block.stages) ? block.stages : []
+      const stage = newEditableNode(STAGE_FIELDS, 'sceneTasks')
+      stage.order = nextOrder(stages)
+      block.stages = [...stages, stage]
+      return true
+    })
+  }
+
+  function updateStage(blockKey, stageKey, patch) {
+    return editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      const stages = content.storyBlocks[blockIndex].stages
+      const stageIndex = activeIndex(stages, stageKey)
+      if (stageIndex < 0) return false
+      patchNode(stages[stageIndex], patch, STAGE_FIELDS)
+      return true
+    })
+  }
+
+  function removeStage(blockKey, stageKey) {
+    let undo = null
+    const changed = editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      const stages = content.storyBlocks[blockIndex].stages
+      const stageIndex = activeIndex(stages, stageKey)
+      if (stageIndex < 0) return false
+      const stage = stages[stageIndex]
+      if (stage.id) {
+        stages[stageIndex] = {
+          ...stage,
+          lifecycle: 'retired',
+          sceneTasks: retireHistoricalSceneTasks(stage.sceneTasks),
+        }
+      } else {
+        undo = {
+          kind: 'stage',
+          blockKey: String(blockKey),
+          index: stageIndex,
+          node: clone(stage),
+        }
+        stages.splice(stageIndex, 1)
+      }
+      return true
+    })
+    if (changed && undo) storyBlockUndo = undo
+    return changed
+  }
+
+  function moveStage(blockKey, stageKey, direction) {
+    return editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      return moveActiveSibling(
+        content.storyBlocks[blockIndex].stages,
+        stageKey,
+        direction,
+      )
+    })
+  }
+
+  function addSceneTask(blockKey, stageKey) {
+    return editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      const stages = content.storyBlocks[blockIndex].stages
+      const stageIndex = activeIndex(stages, stageKey)
+      if (stageIndex < 0) return false
+      const stage = stages[stageIndex]
+      const sceneTasks = Array.isArray(stage.sceneTasks) ? stage.sceneTasks : []
+      const sceneTask = newEditableNode(SCENE_TASK_FIELDS)
+      sceneTask.order = nextOrder(sceneTasks)
+      stage.sceneTasks = [...sceneTasks, sceneTask]
+      return true
+    })
+  }
+
+  function updateSceneTask(blockKey, stageKey, taskKey, patch) {
+    return editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      const stages = content.storyBlocks[blockIndex].stages
+      const stageIndex = activeIndex(stages, stageKey)
+      if (stageIndex < 0) return false
+      const sceneTasks = stages[stageIndex].sceneTasks
+      const taskIndex = activeIndex(sceneTasks, taskKey)
+      if (taskIndex < 0) return false
+      patchNode(sceneTasks[taskIndex], patch, SCENE_TASK_FIELDS)
+      return true
+    })
+  }
+
+  function removeSceneTask(blockKey, stageKey, taskKey) {
+    let undo = null
+    const changed = editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      const stages = content.storyBlocks[blockIndex].stages
+      const stageIndex = activeIndex(stages, stageKey)
+      if (stageIndex < 0) return false
+      const sceneTasks = stages[stageIndex].sceneTasks
+      const taskIndex = activeIndex(sceneTasks, taskKey)
+      if (taskIndex < 0) return false
+      const sceneTask = sceneTasks[taskIndex]
+      if (sceneTask.id) {
+        sceneTasks[taskIndex] = { ...sceneTask, lifecycle: 'retired' }
+      } else {
+        undo = {
+          kind: 'task',
+          blockKey: String(blockKey),
+          stageKey: String(stageKey),
+          index: taskIndex,
+          node: clone(sceneTask),
+        }
+        sceneTasks.splice(taskIndex, 1)
+      }
+      return true
+    })
+    if (changed && undo) storyBlockUndo = undo
+    return changed
+  }
+
+  function moveSceneTask(blockKey, stageKey, taskKey, direction) {
+    return editStoryContent(content => {
+      const blockIndex = activeIndex(content.storyBlocks, blockKey)
+      if (blockIndex < 0) return false
+      const stages = content.storyBlocks[blockIndex].stages
+      const stageIndex = activeIndex(stages, stageKey)
+      if (stageIndex < 0) return false
+      return moveActiveSibling(
+        stages[stageIndex].sceneTasks,
+        taskKey,
+        direction,
+      )
+    })
+  }
+
+  function restorePhysicalNode(items, index, node) {
+    const restored = clone(node)
+    if (items.some(item => Number(item.order) === Number(restored.order))) {
+      restored.order = nextOrder(items)
+    }
+    items.splice(Math.min(index, items.length), 0, restored)
+  }
+
+  function undoStoryBlockEdit() {
+    if (!storyBlockUndo) return false
+    const undo = storyBlockUndo
+    const changed = editStoryContent(content => {
+      if (undo.kind === 'block') {
+        if (content.storyBlocks.some(block => identity(block) === identity(undo.node))) {
+          return false
+        }
+        restorePhysicalNode(content.storyBlocks, undo.index, undo.node)
+      } else {
+        const blockIndex = activeIndex(content.storyBlocks, undo.blockKey)
+        if (blockIndex < 0) return false
+        const stages = content.storyBlocks[blockIndex].stages
+        if (undo.kind === 'stage') {
+          if (stages.some(stage => identity(stage) === identity(undo.node))) return false
+          restorePhysicalNode(stages, undo.index, undo.node)
+        } else {
+          const stageIndex = activeIndex(stages, undo.stageKey)
+          if (stageIndex < 0) return false
+          const sceneTasks = stages[stageIndex].sceneTasks
+          if (sceneTasks.some(task => identity(task) === identity(undo.node))) return false
+          restorePhysicalNode(sceneTasks, undo.index, undo.node)
+        }
+      }
+      if (
+        'restoreActiveStoryBlockRef' in undo
+        && content.activeStoryBlockRef == null
+      ) {
+        content.activeStoryBlockRef = undo.restoreActiveStoryBlockRef
+      }
+      return true
+    })
+    if (changed) storyBlockUndo = null
+    return changed
+  }
+
   function enterProject(nextProjectId) {
     const normalized = String(nextProjectId || '')
     if (normalized === activeProject.value) return false
@@ -238,6 +614,7 @@ export function createPlanningWorkspaceController({
     authorInstructions.value = ''
     notice.value = ''
     historyOpen.value = false
+    storyBlockUndo = null
     projectScope.value += 1
     return true
   }
@@ -357,6 +734,20 @@ export function createPlanningWorkspaceController({
     ),
     removePlot: nodeKey => removeNode('plots', nodeKey),
     movePlot: (nodeKey, direction) => moveNode('plots', nodeKey, direction),
+    addStoryBlock,
+    updateStoryBlock,
+    removeStoryBlock,
+    moveStoryBlock,
+    selectActiveStoryBlock,
+    addStage,
+    updateStage,
+    removeStage,
+    moveStage,
+    addSceneTask,
+    updateSceneTask,
+    removeSceneTask,
+    moveSceneTask,
+    undoStoryBlockEdit,
     restoreNode: () => false,
     save,
     generate,

@@ -42,6 +42,7 @@ const completeContent = () => ({
     id: 'block-1',
     order: 1,
     title: '夜入县衙',
+    blockGoal: '在追兵抵达前取得残卷',
     volumeRef: 'volume-1',
     plotRefs: ['plot-1'],
     lifecycle: 'active',
@@ -49,6 +50,8 @@ const completeContent = () => ({
       id: 'stage-1',
       order: 1,
       title: '潜入',
+      purpose: '进入县衙密库',
+      dramaticQuestion: '沈砚能否避开巡夜守卫',
       lifecycle: 'active',
       sceneTasks: [{
         id: 'task-1',
@@ -284,7 +287,7 @@ test('volume and plot only drafts may save but cannot confirm until full aggrega
 
 test('confirmation completeness follows the active block without over-gating other future blocks', () => {
   const content = completeContent()
-  content.storyBlocks.push({
+  const laterBlock = {
     id: 'block-later',
     order: 2,
     title: '后续故事块',
@@ -292,14 +295,15 @@ test('confirmation completeness follows the active block without over-gating oth
     plotRefs: ['plot-1'],
     lifecycle: 'active',
     stages: [],
-  })
-  content.storyBlocks[0].stages.push({
+  }
+  laterBlock.stages.push({
     id: 'stage-empty',
-    order: 2,
+    order: 1,
     title: '预留阶段',
     lifecycle: 'active',
     sceneTasks: [],
   })
+  content.storyBlocks.push(laterBlock)
 
   assert.equal(isCompletePlanningAggregate(content), true)
 })

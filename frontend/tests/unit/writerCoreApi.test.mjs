@@ -876,6 +876,7 @@ test('planning save recursively allows only the closed draft DTO fields', async 
           expectedChange: '建立信任',
           openQuestions: [],
           involvedCharacters: ['主角'],
+          targetChapterCount: 3,
           providerId: 'must-not-send',
           stages: [{
             clientNodeKey: 'stage-new',
@@ -884,6 +885,7 @@ test('planning save recursively allows only the closed draft DTO fields', async 
             title: '找缺口',
             purpose: '观察换岗',
             dramaticQuestion: '能否及时脱身',
+            completed: true,
             apiKey: 'must-not-send',
             sceneTasks: [{
               clientNodeKey: 'task-new',
@@ -891,6 +893,7 @@ test('planning save recursively allows only the closed draft DTO fields', async 
               order: 1,
               task: '记录巡逻',
               completionEvidence: '获得换岗间隔',
+              actualProgress: 1,
               rawOutput: 'must-not-send',
             }],
           }],
@@ -957,7 +960,11 @@ test('planning save recursively allows only the closed draft DTO fields', async 
       }],
     }],
   })
-  assert.equal(JSON.stringify(body).includes('must-not-send'), false)
+  const serialized = JSON.stringify(body)
+  assert.equal(serialized.includes('must-not-send'), false)
+  for (const field of ['targetChapterCount', 'completed', 'actualProgress']) {
+    assert.equal(serialized.includes(`"${field}"`), false)
+  }
 })
 
 test('chapter session client separates session draft and explicit candidate writes', async () => {
