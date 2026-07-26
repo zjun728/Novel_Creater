@@ -29,6 +29,28 @@ class ChapterSessionRepository:
     async def lock_project(self, session, project_id: str):
         return await lock_active_project(session, project_id)
 
+    async def read_active_session(self, session, project_id: str):
+        row = await session.fetchone(
+            """SELECT id,project_id,chapter_num,status
+                 FROM chapter_sessions
+                WHERE project_id=%s AND status='drafting'
+                ORDER BY chapter_num,id
+                LIMIT 1""",
+            (project_id,),
+        )
+        return dict(row) if row else None
+
+    async def read_max_final_chapter_number(self, session, project_id: str):
+        row = await session.fetchone(
+            """SELECT MAX(chapter_num) AS chapter_num
+                 FROM final_chapters
+                WHERE project_id=%s""",
+            (project_id,),
+        )
+        if row is None or row["chapter_num"] is None:
+            return None
+        return int(row["chapter_num"])
+
     async def read_current_outline(
         self,
         session,
