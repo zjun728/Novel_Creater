@@ -1,6 +1,6 @@
 # 开发日志
 
-> 只记录当前有效的决策与证据摘要。日期：`2026-07-24`。不记录密钥、DSN、原始运行日志或本地截图。
+> 只记录当前有效的决策与证据摘要。日期：`2026-07-26`。不记录密钥、DSN、原始运行日志或本地截图。
 
 ## 2026-07-18 产品主规格重置
 
@@ -111,8 +111,44 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - 详细证据：
   `docs/acceptance/2026-07-24-phase-3a-planning-aggregate.md`。
 
+## 2026-07-26 Phase 3B Volumes and Plots 完成
+
+- 分支：`codex/phase3b-volumes-plots`；代码验收快照：`e3c7d18b23fa`。
+- 交付正式 Volume/Plot API、共享 Planning 页面、单一 Store、手工 Draft 和显式
+  AI 生成 Draft。
+- AI 链使用已确认 Seed/Contract/Bible 构建冻结 safe manifest，采用确定性
+  `40 KiB` 预算、前后秘密扫描、两段短事务、幂等键、租约、fencing token 和
+  精确 Draft CAS。
+- 作者编辑或项目生命周期、basis、head、binding、fence 漂移时，迟到结果不会
+  覆盖 Draft；未知结果只按 operation ID 回读，不重复生成。
+- 历史 current/superseded/archived 状态和项目 next action 均由后端权威决定；
+  archived/superseded 状态可读不可写。
+- Task 10 验收文档与事实合同规格审查：`Critical 0 / Important 0 / Minor 0`。
+- Task 10 验收文档与事实合同质量审查：`Critical 0 / Important 0 / Minor 0`。
+- Fresh focused gates：Python `193 passed`；Node/Frontend `59 passed`。
+- Fresh `npm run test:browser:phase3b`：manual/gateway 两个 UI-only 场景通过；
+  数据库 `created=2 cleaned=2 remaining=0`，owned resource residue `0`。
+- Fresh `npm test`：Python `2542 passed, 6 skipped`，Node `216 passed`，
+  frontend `415 passed`，失败 `0`。
+- Fresh Disposable MySQL integration：`317 passed`；数据库
+  `created=316 cleaned=316 remaining=0`；独立查询残留 `0`。
+- Fresh build：Vite `2949 modules transformed`；`git diff --check` exit `0`。
+- 一次先前的 integration 会话被交互中断并留下一个严格匹配
+  `novel_creator_test_<32 lowercase hex>` 的 disposable 库；主控只查询测试
+  namespace、校验名称后删除该库并确认残留 `0`，随后从头完成上述 fresh
+  integration。
+- Product DB reads/writes：`0/0`；Real Provider calls：`0`；Live website
+  access：`0`；任何公共响应、日志、报告和 artifact 均未输出明文 API key。
+- 尚未评估 StoryBlock/Stage/SceneTask、ChapterOutline 作者工作流、Phase 4
+  Writer Loop、Phase 5 Finalization、Product DB、Real Provider 和 Content
+  Quality。
+- 详细证据：
+  `docs/acceptance/2026-07-24-phase-3b-volumes-plots.md`。
+
 ## 下一步
 
-从干净的 Phase 3A 提交继续实施 Phase 3B Volumes and Plots：手工与 AI
-Planning Draft、分卷/情节线正式 API 和页面、项目导航与 archived/superseded
-只读历史。自动门禁继续禁止产品数据库和真实 Provider。
+先编写并批准 Phase 3C Story Blocks and Chapter Outlines 详细计划，再从 Phase 3B
+验收提交继续实施 StoryBlock/Stage/SceneTask、小纲 Draft/AI 草稿/确认/历史、
+ChapterSession 权威钉住、权威章节号与可靠写作入口。继续使用唯一 Planning
+aggregate、`planningStore` 和正式产品链；不创建第二套 Store、状态、页面或生成
+链。自动门禁继续禁止产品数据库和真实 Provider。

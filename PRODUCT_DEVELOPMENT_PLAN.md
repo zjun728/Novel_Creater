@@ -1,6 +1,6 @@
 # 产品开发规划
 
-> 当前有效规划。日期：`2026-07-24`。
+> 当前有效规划。日期：`2026-07-26`。
 
 ## 1. 产品目标
 
@@ -24,7 +24,7 @@ Novel Creator 要帮助作者持续写出长篇、连贯、可控并且让人愿
 | --- | --- | --- |
 | Phase 1 | 产品壳层与项目生命周期 | 已完成门禁 |
 | Phase 2 | 创作资产、Provider/模型设置、市场来源、选题与种子、契约、圣经、模型继承与资产冻结 | 已完成门禁 |
-| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 进行中 |
+| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 3A/3B 已完成，3C 待规划 |
 | Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 待开始 |
 | Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 待开始 |
 | Phase 6 | 小说下载、安全备份、预检与导入 | 待开始 |
@@ -60,6 +60,23 @@ Phase 5 Finalization 或小说内容质量。
 
 Phase 3 不实现正式正文写作、质量审核、Canon 写入或原子定稿，也不以 Schema
 占位或 fake gateway 测试冒充这些能力已经完成。
+
+当前子阶段进度：
+
+- Phase 3A 已完成 Planning aggregate、Draft/Revision/Head、稳定节点身份、
+  generation fence、ChapterSession 权威重校验和 `writer-core-v1.5.0` 地基。
+- Phase 3B 已完成 Volume/Plot 手工与 AI 可编辑 Draft、不可变历史、
+  server-authoritative next action、archived/superseded 只读及正式 UI-only
+  浏览器门禁。
+- Phase 3C 下一步建设 StoryBlock/Stage/SceneTask、小纲 Draft/AI 草稿/确认/历史、
+  ChapterSession 权威钉住、权威章节号与可靠写作入口，继续复用同一 Planning
+  aggregate、Store 和产品链。
+- Phase 3D 随后建设 Future Plan/Actual Progress/Canon Projection 同 revision
+  只读组合并完成 Phase 3 总验收。
+
+Phase 3B 验收不包含真实 Provider、产品数据库、正文生成、Canon 写入或小说内容
+质量；详细证据见
+`docs/acceptance/2026-07-24-phase-3b-volumes-plots.md`。
 
 ## 5. 写作链路的先决修复
 

@@ -81,13 +81,14 @@ test('Phase 3B detailed plan freezes its delivery and safety contract', async ()
   );
 });
 
-test('Phase 3 planning facts are current and the obsolete split action is retired', async () => {
+test('Phase 3B completion facts are current and Phase 3C is the only next step', async () => {
   const [
     currentState,
     productPlan,
     developmentLog,
     storyQualityCharter,
-    acceptance,
+    phase3aAcceptance,
+    phase3bAcceptance,
   ] = await Promise.all([
     readProjectFile('CURRENT_PROJECT_STATE.md'),
     readProjectFile('PRODUCT_DEVELOPMENT_PLAN.md'),
@@ -95,6 +96,9 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
     readProjectFile('STORY_QUALITY_CHARTER.md'),
     readProjectFile(
       'docs/acceptance/2026-07-24-phase-3a-planning-aggregate.md',
+    ),
+    readProjectFile(
+      'docs/acceptance/2026-07-24-phase-3b-volumes-plots.md',
     ),
   ]);
 
@@ -106,25 +110,29 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
   );
   assert.match(
     currentConclusion,
-    /^- 当前完成交付包：\*\*Phase 3A Planning Aggregate Foundation\*\*。$/m,
+    /^- 当前完成交付包：\*\*Phase 3B Volumes and Plots\*\*。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 当前开发分支：`codex\/phase3-story-planning`。$/m,
+    /^- 当前开发分支：`codex\/phase3b-volumes-plots`。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 当前工作：\*\*Phase 3B Volumes and Plots\*\*。$/m,
+    /^- Fresh package gates 的功能代码 HEAD：`e3c7d18b23fa`。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- Phase 3B–3D、Product DB、Real Provider、Phase 4 Writer Loop、Phase 5\r?\n  Finalization 和 Content Quality 均未评估，不得据 Phase 3A 门禁宣告 Ready。$/m,
+    /^- 当前自动证据边界：Real Provider calls `0`、严格 fake gateway、\r?\n  Disposable MySQL 8、UI-only 真实浏览器。$/m,
+  );
+  assert.match(
+    currentConclusion,
+    /^- Phase 3C–3D、Product DB、Real Provider、Phase 4 Writer Loop、Phase 5\r?\n  Finalization 和 Content Quality 均未评估，不得据 Phase 3B 门禁宣告 Ready。$/m,
   );
 
   const nextStep = readSection(currentState, '唯一下一步');
   assert.match(
     nextStep,
-    /^从干净的 Phase 3A 提交继续实施 \*\*Phase 3B Volumes and Plots\*\*：交付手工与\r?\nAI Planning Draft、分卷\/情节线正式 API 和页面、项目导航及 archived\/superseded\r?\n只读历史。自动门禁继续禁止真实 Provider 和产品数据库。$/m,
+    /^先编写并批准 \*\*Phase 3C Story Blocks and Chapter Outlines\*\* 详细实施计划，再从\r?\nPhase 3B 验收提交继续实现 StoryBlock\/Stage\/SceneTask、小纲与可靠写作入口。\r?\n必须复用当前 `planning-v1` 聚合、唯一 `planningStore` 和正式 Planning 链，\r?\n不新增兼容层或第二套状态\/生成链。自动门禁继续禁止真实 Provider 和产品数据库。$/m,
   );
 
   const schemaBoundary = readSection(currentState, '当前 Schema 与数据库边界');
@@ -145,7 +153,7 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
   );
   assert.ok(
     productPlanLines.includes(
-      '| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 进行中 |',
+      '| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 3A/3B 已完成，3C 待规划 |',
     ),
   );
 
@@ -165,49 +173,130 @@ test('Phase 3 planning facts are current and the obsolete split action is retire
   assert.match(phase3aLog, /^- 规格审查和质量审查最终均为 `0\/0\/0`。$/m);
   assert.match(phase3aLog, /^- Product DB reads\/writes：`0\/0`；Provider calls：`0`。$/m);
 
+  const phase3bLog = readSection(
+    developmentLog,
+    '2026-07-26 Phase 3B Volumes and Plots 完成',
+  );
   assert.match(
-    acceptance,
+    phase3bLog,
+    /^- Task 10 验收文档与事实合同规格审查：`Critical 0 \/ Important 0 \/ Minor 0`。$/m,
+  );
+  assert.match(
+    phase3bLog,
+    /^- Task 10 验收文档与事实合同质量审查：`Critical 0 \/ Important 0 \/ Minor 0`。$/m,
+  );
+  assert.match(
+    phase3bLog,
+    /^- Product DB reads\/writes：`0\/0`；Real Provider calls：`0`；Live website\r?\n  access：`0`；任何公共响应、日志、报告和 artifact 均未输出明文 API key。$/m,
+  );
+
+  assert.match(
+    phase3aAcceptance,
     /^- 工作分支：`codex\/phase3-story-planning`$/m,
   );
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- 门禁运行 HEAD：`2fd928c827f07dde73e89d8e3200e3ae8f6bd7d4`$/m,
   );
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- Python unit \/ API：`2353 passed, 6 skipped, 0 failed`$/m,
   );
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- 根级 Node 合同：`191 passed, 0 skipped, 0 failed`$/m,
   );
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- 前端 unit：`365 passed, 0 skipped, 0 failed`$/m,
   );
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- Disposable MySQL integration：`300 passed, 0 failed`$/m,
   );
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- 数据库：`created=299, cleaned=299, remaining=0`$/m,
   );
-  assert.match(acceptance, /^- Vite：`2937 modules transformed`$/m);
+  assert.match(phase3aAcceptance, /^- Vite：`2937 modules transformed`$/m);
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- 规格审查：`Critical 0 \/ Important 0 \/ Minor 0`$/m,
   );
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- 质量审查：`Critical 0 \/ Important 0 \/ Minor 0`$/m,
   );
-  assert.match(acceptance, /^- Provider calls：`0`$/m);
-  assert.match(acceptance, /^- Product DB reads\/writes：`0\/0`$/m);
+  assert.match(phase3aAcceptance, /^- Provider calls：`0`$/m);
+  assert.match(phase3aAcceptance, /^- Product DB reads\/writes：`0\/0`$/m);
   assert.match(
-    acceptance,
+    phase3aAcceptance,
     /^- 未评估：Phase 3B–3D、Real Provider、Product DB、Content Quality$/m,
   );
+
+  assert.match(
+    phase3bAcceptance,
+    /^> 分支：`codex\/phase3b-volumes-plots`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^> Fresh package gates 的功能代码 HEAD：`e3c7d18b23fa`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- Python Planning unit\/API：`193 passed, 0 failed`；exit `0`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- Node\/Frontend focused contracts：`59 passed, 0 failed`；exit `0`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- Task 10 验收文档与事实合同规格审查：`Critical 0 \/ Important 0 \/ Minor 0`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- Task 10 验收文档与事实合同质量审查：`Critical 0 \/ Important 0 \/ Minor 0`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- Browser API bypass：`0`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- owned process \/ port \/ temp root \/ Vite `deps_temp_\*`：`0`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- secret scan findings：`0`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- Python unit \/ API：`2542 passed, 6 skipped, 0 failed`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- 根级 Node 合同：`216 passed, 0 skipped, 0 failed`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- 前端 unit：`415 passed, 0 skipped, 0 failed`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- Disposable MySQL integration：`317 passed, 0 failed`$/m,
+  );
+  assert.match(
+    phase3bAcceptance,
+    /^- 数据库：`created=316, cleaned=316, remaining=0`$/m,
+  );
+  assert.match(phase3bAcceptance, /^- Vite：`2949 modules transformed`$/m);
+  assert.match(phase3bAcceptance, /^- Real Provider calls：`0`$/m);
+  assert.match(
+    phase3bAcceptance,
+    /^- Product DB reads\/writes：`0\/0`$/m,
+  );
+  assert.match(phase3bAcceptance, /^- Live website access：`0`$/m);
 
   assert.doesNotMatch(storyQualityCharter, /split_unfinalized_content/);
   assert.ok(

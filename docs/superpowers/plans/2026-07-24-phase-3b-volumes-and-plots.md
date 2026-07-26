@@ -598,6 +598,7 @@ git commit -m "test: add phase three b browser gate"
 - Modify: `CURRENT_PROJECT_STATE.md`
 - Modify: `PRODUCT_DEVELOPMENT_PLAN.md`
 - Modify: `DEVELOPMENT_LOG.md`
+- Modify: `scripts/tests/phase3PlanContract.test.mjs`
 
 - [ ] **Step 1: Run focused gates**
 
@@ -632,10 +633,14 @@ Record exact fresh test counts, exit codes, created/cleaned/remaining database
 counts, browser goal count, build module count, and secret-scan result. Do not
 reuse Phase3A or historical numbers.
 
+Update the committed Phase 3 facts contract to read the Phase 3B acceptance,
+require Phase 3B as the completed package, and require Phase 3C as the only
+next step. Do not retain the obsolete Phase 3A/Phase 3B-in-progress assertions.
+
 - [ ] **Step 5: Commit package acceptance**
 
 ```powershell
-git add -- docs CURRENT_PROJECT_STATE.md PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md
+git add -- docs CURRENT_PROJECT_STATE.md PRODUCT_DEVELOPMENT_PLAN.md DEVELOPMENT_LOG.md scripts/tests/phase3PlanContract.test.mjs
 git commit -m "test: accept volume and plot planning"
 git show --check --stat --oneline HEAD
 git status --short --branch
