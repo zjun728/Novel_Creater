@@ -17,6 +17,13 @@ from backend.http_errors import (
     SeedNotFound,
 )
 from backend.security.redaction import install_error_handlers
+from backend.routers.chapter_outlines import (
+    ChapterOutlineArchived,
+    ChapterOutlineConflict,
+    ChapterOutlinePreconditionFailed,
+    ChapterOutlineRequestInvalid,
+    ChapterOutlineResourceNotFound,
+)
 from backend.services.planning_generation import (
     PlanningGenerationConflict,
     PlanningGenerationIdempotencyConflict,
@@ -69,6 +76,31 @@ PRIVATE_SQL = "SELECT api_key FROM providers WHERE id='private-provider'"
             PlanningGenerationRetryable(),
             503,
             "PlanningGenerationRetryable",
+        ),
+        (
+            ChapterOutlineRequestInvalid(),
+            422,
+            "ChapterOutlineRequestInvalid",
+        ),
+        (
+            ChapterOutlineResourceNotFound(),
+            404,
+            "ChapterOutlineResourceNotFound",
+        ),
+        (
+            ChapterOutlinePreconditionFailed(),
+            412,
+            "ChapterOutlinePreconditionFailed",
+        ),
+        (
+            ChapterOutlineConflict(),
+            409,
+            "ChapterOutlineConflict",
+        ),
+        (
+            ChapterOutlineArchived(),
+            409,
+            "ChapterOutlineArchived",
         ),
     ],
 )

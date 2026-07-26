@@ -21,6 +21,14 @@ from backend.services.chapter_sessions import (
     SaveDraftCandidate,
     SaveWorkingDraft,
 )
+from backend.services.chapter_outlines import (
+    ChapterOutlineArchived,
+    ChapterOutlineService,
+    ConfirmChapterOutlineDraft,
+    CreateChapterOutlineDraft,
+    SaveChapterOutlineDraft,
+)
+from backend.domain.chapter_outlines import EditableChapterOutlineContent
 from backend.services.contracts import (
     ConfirmContracts,
     ContractDraftInput,
@@ -170,6 +178,14 @@ def _story_service(repository, provider):
 
 def _chapter_service(repository, _provider):
     return ChapterSessionService(repository, transaction_factory=_transaction)
+
+
+def _outline_service(repository, _provider):
+    return ChapterOutlineService(
+        repository,
+        repository,
+        transaction_factory=_transaction,
+    )
 
 
 def _generation_service(repository, provider):
@@ -394,6 +410,45 @@ WRITE_ENTRYPOINTS = (
         ),
     ),
     _WriteEntrypoint(
+        "outline.create_draft",
+        "lock_project",
+        _outline_service,
+        lambda service: service.create_draft(
+            CreateChapterOutlineDraft("p1", 1)
+        ),
+    ),
+    _WriteEntrypoint(
+        "outline.save_draft",
+        "lock_project",
+        _outline_service,
+        lambda service: service.save_draft(
+            SaveChapterOutlineDraft(
+                "p1",
+                1,
+                "outline-draft-1",
+                1,
+                "a" * 64,
+                EditableChapterOutlineContent(),
+            )
+        ),
+    ),
+    _WriteEntrypoint(
+        "outline.confirm_draft",
+        "lock_project",
+        _outline_service,
+        lambda service: service.confirm_draft(
+            ConfirmChapterOutlineDraft(
+                "p1",
+                1,
+                "outline-draft-1",
+                1,
+                "a" * 64,
+                0,
+                "outline-confirm-1",
+            )
+        ),
+    ),
+    _WriteEntrypoint(
         "chapter.save_working_draft",
         "lock_project",
         _chapter_service,
@@ -433,6 +488,11 @@ def test_planning_archived_inventory_covers_every_mutating_entrypoint():
         "planning.save_draft",
         "planning.confirm_draft",
     } <= names
+    assert {
+        "outline.create_draft",
+        "outline.save_draft",
+        "outline.confirm_draft",
+    } <= names
 
 
 @pytest.mark.asyncio
@@ -449,7 +509,11 @@ async def test_every_active_project_write_stops_at_archived_guard(entrypoint):
     expected_error = (
         PlanningArchived
         if entrypoint.name.startswith("planning.")
-        else http_errors.ProjectArchived
+        else (
+            ChapterOutlineArchived
+            if entrypoint.name.startswith("outline.")
+            else http_errors.ProjectArchived
+        )
     )
     with pytest.raises(expected_error):
         await entrypoint.invoke(service)

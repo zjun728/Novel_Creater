@@ -54,6 +54,48 @@ class OutlineCapacityPolicy(_StrictOutlineValue):
         return self
 
 
+class EditableChapterOutlineContent(_StrictOutlineValue):
+    schema_version: Literal["chapter-outline-draft-v1"] = Field(
+        default="chapter-outline-draft-v1",
+        alias="schemaVersion",
+    )
+    volume_ref: PlanningNodeRef | None = Field(
+        default=None,
+        alias="volumeRef",
+    )
+    story_block_ref: PlanningNodeRef | None = Field(
+        default=None,
+        alias="storyBlockRef",
+    )
+    stage_refs: tuple[PlanningNodeRef, ...] = Field(
+        default=(),
+        alias="stageRefs",
+    )
+    scene_task_refs: tuple[PlanningNodeRef, ...] = Field(
+        default=(),
+        alias="sceneTaskRefs",
+    )
+    chapter_goal: str = Field(
+        default="",
+        alias="chapterGoal",
+        max_length=4000,
+    )
+    expected_characters: tuple[str, ...] = Field(
+        default=(),
+        alias="expectedCharacters",
+    )
+    continuation: tuple[str, ...] = ()
+    planned_tasks: tuple[str, ...] = Field(
+        default=(),
+        alias="plannedTasks",
+    )
+    scenes: tuple[str, ...] = ()
+    forbidden_early_events: tuple[str, ...] = Field(
+        default=(),
+        alias="forbiddenEarlyEvents",
+    )
+
+
 class DraftChapterOutline(_StrictOutlineValue):
     schema_version: Literal["chapter-outline-v1"] = Field(alias="schemaVersion")
     chapter_number: int = Field(alias="chapterNumber", ge=1)
@@ -209,6 +251,7 @@ __all__ = (
     "ChapterOutline",
     "ChapterOutlineDomainError",
     "DraftChapterOutline",
+    "EditableChapterOutlineContent",
     "OutlineCapacityPolicy",
     "PlanningNodeRef",
     "normalize_chapter_outline",

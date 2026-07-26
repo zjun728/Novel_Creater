@@ -15,6 +15,7 @@ from backend.routers import (
     assets,
     bibles,
     canon,
+    chapter_outlines,
     chapter_sessions,
     contracts,
     corpus,
@@ -106,6 +107,7 @@ app.include_router(style_trials.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
 app.include_router(bibles.router, prefix="/api")
 app.include_router(planning.router, prefix="/api")
+app.include_router(chapter_outlines.router, prefix="/api")
 app.include_router(chapter_sessions.router, prefix="/api")
 app.include_router(assets.router, prefix="/api")
 app.include_router(corpus.router, prefix="/api")

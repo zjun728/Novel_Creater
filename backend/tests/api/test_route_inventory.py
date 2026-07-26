@@ -85,6 +85,38 @@ APPROVED_FORMAL_ROUTES = {
         "/api/projects/{pid}/planning/operations/"
         "by-idempotency-key/{idempotency_key}",
     ),
+    ("GET", "/api/projects/{pid}/chapter-outlines/current"),
+    (
+        "GET",
+        "/api/projects/{pid}/chapter-outlines/operations/"
+        "by-key/{idempotency_key}",
+    ),
+    (
+        "GET",
+        "/api/projects/{pid}/chapter-outlines/operations/{operation_id}",
+    ),
+    (
+        "GET",
+        "/api/projects/{pid}/chapter-outlines/{chapter_number}",
+    ),
+    (
+        "GET",
+        "/api/projects/{pid}/chapter-outlines/{chapter_number}/history",
+    ),
+    (
+        "POST",
+        "/api/projects/{pid}/chapter-outlines/{chapter_number}/drafts",
+    ),
+    (
+        "PUT",
+        "/api/projects/{pid}/chapter-outlines/{chapter_number}/drafts/"
+        "{draft_id}",
+    ),
+    (
+        "POST",
+        "/api/projects/{pid}/chapter-outlines/{chapter_number}/drafts/"
+        "{draft_id}/confirm",
+    ),
     ("GET", "/api/projects/{pid}/chapter-sessions/{chapter_number}"),
     ("POST", "/api/projects/{pid}/chapter-sessions/{chapter_number}"),
     ("PUT", "/api/projects/{pid}/chapter-sessions/{session_id}/working-draft"),
