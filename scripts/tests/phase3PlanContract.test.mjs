@@ -7,6 +7,8 @@ const readProjectFile = (path) =>
 
 const phase3bPlan =
   'docs/superpowers/plans/2026-07-24-phase-3b-volumes-and-plots.md';
+const phase3cPlan =
+  'docs/superpowers/plans/2026-07-26-phase-3c-story-blocks-and-outlines.md';
 
 const readSection = (document, heading) => {
   const marker = `## ${heading}`;
@@ -32,6 +34,43 @@ const assertHasLine = (document, expected) => {
 };
 
 const normalizeWhitespace = (document) => document.replace(/\s+/g, ' ').trim();
+
+const assertPhase3cPlanContract = (plan) => {
+  const frozenDecisions = readSection(plan, 'Frozen decisions');
+  const fileMap = readSection(plan, 'File map');
+  const browserGate = readTask(
+    plan,
+    'Task 11: Add the formal Phase 3C browser gate',
+  );
+
+  for (const [sectionName, section, phrases] of [
+    [
+      'Frozen decisions',
+      frozenDecisions,
+      [
+        'codex/phase3c-story-blocks-outlines',
+        'no schema change',
+        'StoryBlock',
+        'authoritative chapter',
+      ],
+    ],
+    ['File map', fileMap, ['chapterOutlineController']],
+    [
+      'Task 11: Add the formal Phase 3C browser gate',
+      browserGate,
+      ['npm run test:browser:phase3c'],
+    ],
+  ]) {
+    const normalizedSection = normalizeWhitespace(section).toLowerCase();
+
+    for (const phrase of phrases) {
+      assert.ok(
+        normalizedSection.includes(phrase.toLowerCase()),
+        `${sectionName} must include: ${phrase}`,
+      );
+    }
+  }
+};
 
 test('Phase 3B detailed plan freezes its delivery and safety contract', async () => {
   const plan = await readProjectFile(phase3bPlan);
@@ -304,4 +343,54 @@ test('Phase 3B completion facts are current and Phase 3C is the only next step',
       '允许当前未完成场景在合适的位置自然结束，并把剩余未来任务滚动到下一章。',
     ),
   );
+});
+
+test('Phase 3C contract rejects Task 1 examples without semantic sections', () => {
+  const task1OnlyPlan = `
+### Task 1: Freeze the Phase 3C Contract
+
+- Delivery branch: \`codex/phase3c-story-blocks-outlines\`.
+- Phase 3C makes no schema change.
+- StoryBlock
+- chapterOutlineController
+- authoritative chapter
+- npm run test:browser:phase3c
+`;
+
+  assert.throws(
+    () => assertPhase3cPlanContract(task1OnlyPlan),
+    /missing section: ## Frozen decisions/,
+    'Task 1 examples must not satisfy the Phase 3C semantic contract',
+  );
+});
+
+test('Phase 3C detailed plan freezes its delivery and safety contract', async () => {
+  const runtimeFiles = [
+    'frontend/src/stores/planningStore.js',
+    'frontend/src/application/planning/planningWorkspaceController.js',
+    'frontend/src/components/planning/PlanningWorkspace.vue',
+    'frontend/src/views/ProjectPlanningView.vue',
+    'frontend/src/router/projectRoutes.js',
+  ];
+  const [plan, ...runtimeSources] = await Promise.all([
+    readProjectFile(phase3cPlan),
+    ...runtimeFiles.map(readProjectFile),
+  ]);
+  const runtime = runtimeSources.join('\n');
+
+  assertPhase3cPlanContract(plan);
+
+  for (const forbiddenRuntimeSymbol of [
+    'planningV2Store',
+    'chapterOutlineStore',
+    'storyBlockStore',
+    'PlanningWorkspaceV2',
+    '/planning/initial',
+  ]) {
+    assert.doesNotMatch(
+      runtime,
+      new RegExp(forbiddenRuntimeSymbol, 'i'),
+      `runtime must not contain: ${forbiddenRuntimeSymbol}`,
+    );
+  }
 });
