@@ -11,9 +11,11 @@ import {
   nextTick,
   ssrContextKey,
 } from '@vue/runtime-core'
+import { renderToString } from '@vue/server-renderer'
 import { createPinia } from 'pinia'
 import {
   computed,
+  createSSRApp,
   defineComponent,
   h,
   reactive,
@@ -251,8 +253,29 @@ function planningContent() {
   }
 }
 
+function authoritativePlanningContent(content = planningContent()) {
+  return {
+    schemaVersion: 'planning-v1',
+    activeStoryBlockId: content.activeStoryBlockRef,
+    volumes: structuredClone(content.volumes),
+    plots: structuredClone(content.plots),
+    storyBlocks: content.storyBlocks.map(sourceBlock => {
+      const {
+        volumeRef,
+        plotRefs,
+        ...block
+      } = structuredClone(sourceBlock)
+      return {
+        ...block,
+        volumeId: volumeRef,
+        plotIds: plotRefs,
+      }
+    }),
+    contentHash: '9'.repeat(64),
+  }
+}
+
 function planningState(projectId = 'A') {
-  const content = planningContent()
   return {
     projectId,
     basisStatus: 'current',
@@ -263,19 +286,7 @@ function planningState(projectId = 'A') {
       baseHeadRevision: 1,
       draftRevision: 1,
       contentHash: '9'.repeat(64),
-      content: {
-        schemaVersion: 'planning-v1',
-        activeStoryBlockId: 'block-1',
-        volumes: content.volumes,
-        plots: content.plots,
-        storyBlocks: content.storyBlocks.map(block => ({
-          ...block,
-          volumeId: block.volumeRef,
-          plotIds: block.plotRefs,
-          stages: block.stages,
-        })),
-        contentHash: '9'.repeat(64),
-      },
+      content: authoritativePlanningContent(),
       status: 'active',
       capacityPolicy: { targetMin: 3000, targetMax: 5000, softCeiling: 5000 },
     },
@@ -527,6 +538,387 @@ test('mounted workspace locks editor mutations for every busy or recovery state 
   }
 })
 
+test('mounted story-block workspace edits through one controller, supports physical undo, and becomes truly read-only', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, StoryBlock, Volume, Plot, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/StoryBlockEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
+    Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
+    Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
+
+    let key = 0
+    const store = workspaceStore()
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'A',
+      keyFactory: () => `new-${++key}`,
+    })
+    const root = node('root')
+    const app = renderer.createApp(Workspace.default, {
+      store,
+      controller,
+      activeTab: 'story-blocks',
+    })
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(root)
+    await flush()
+
+    assert.match(text(root), /故事块编排/)
+    assert.match(text(root), /当前活动故事块/)
+    const title = () => walk(root).find(item => (
+      item.type === 'input' && item.props.value === '夜入县衙'
+    ))
+
+    store.saving = true
+    await flush()
+    assert.equal(title().props.disabled, true)
+    title().props.onInput?.({ target: { value: '不应写入' } })
+    assert.equal(store.calls.length, 0)
+    store.saving = false
+    await flush()
+
+    const preview = byButtonText(root, '预览并确认')
+    preview.props.onClick()
+    await flush()
+    const confirm = walk(body).find(item => item.props['aria-label'] === '确认故事规划')
+    assert.ok(confirm)
+    assert.match(text(confirm), /分卷/)
+    assert.match(text(confirm), /情节线/)
+    assert.match(text(confirm), /故事块/)
+    assert.match(text(confirm), /阶段/)
+    assert.match(text(confirm), /场景任务/)
+    assert.match(text(confirm), /活动故事块/)
+    assert.match(text(confirm), /夜入县衙/)
+    byButtonText(body, '返回核对').props.onClick()
+    await flush()
+
+    title().props.onInput({ target: { value: '雨夜入县衙' } })
+    await flush()
+    assert.equal(store.localContent.storyBlocks[0].title, '雨夜入县衙')
+    assert.equal(store.calls.length, 1)
+
+    byButtonText(root, '新增故事块').props.onClick()
+    await flush()
+    assert.equal(store.localContent.storyBlocks.length, 2)
+    assert.equal(store.localContent.storyBlocks[1].clientNodeKey, 'new-1')
+
+    byButtonText(root, '设为当前活动块').props.onClick()
+    await flush()
+    assert.equal(store.localContent.activeStoryBlockRef, 'new-1')
+
+    const addStageButtons = walk(root).filter(item => (
+      item.type === 'button' && text(item).trim() === '新增阶段'
+    ))
+    addStageButtons.at(-1).props.onClick()
+    await flush()
+    assert.equal(store.localContent.storyBlocks[1].stages.length, 1)
+
+    const addTaskButtons = walk(root).filter(item => (
+      item.type === 'button' && text(item).trim() === '新增场景任务'
+    ))
+    addTaskButtons.at(-1).props.onClick()
+    await flush()
+    assert.equal(store.localContent.storyBlocks[1].stages[0].sceneTasks.length, 1)
+
+    const enabledBlockMoveUp = walk(root).find(item => (
+      item.type === 'button'
+      && text(item).trim() === '上移故事块'
+      && item.props.disabled === false
+    ))
+    enabledBlockMoveUp.props.onClick()
+    await flush()
+    assert.equal(store.localContent.storyBlocks[0].clientNodeKey, 'new-1')
+
+    byButtonText(root, '撤销新增故事块').props.onClick()
+    await flush()
+    assert.equal(store.localContent.storyBlocks.length, 1)
+    assert.match(text(root), /已移除新增节点，可撤销一次/)
+    byButtonText(root, '撤销上次物理删除').props.onClick()
+    await flush()
+    assert.equal(store.localContent.storyBlocks.length, 2)
+    assert.equal(store.localContent.activeStoryBlockRef, 'new-1')
+
+    store.state.capabilities.edit = false
+    await flush()
+    const readOnlyTitle = walk(root).find(item => (
+      item.type === 'input' && item.props.value === '雨夜入县衙'
+    ))
+    assert.equal(readOnlyTitle.props.readonly, true)
+    assert.equal(readOnlyTitle.props.disabled, false)
+    for (const action of [
+      '新增故事块',
+      '新增阶段',
+      '新增场景任务',
+      '撤销新增故事块',
+      '撤销上次物理删除',
+      '上移故事块',
+    ]) {
+      assert.equal(byButtonText(root, action), undefined, action)
+    }
+    assert.match(text(root), /只读/)
+    app.unmount()
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
+test('real story-block SSR and mounted controls expose only referenced retired planning options', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, StoryBlock, Volume, Plot, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/StoryBlockEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
+    Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
+    Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
+
+    const content = planningContent()
+    content.volumes.push({
+      id: 'volume-retired',
+      order: 2,
+      title: '旧卷真名',
+      lifecycle: 'retired',
+    })
+    content.plots.push({
+      id: 'plot-retired',
+      order: 2,
+      title: '旧线真名',
+      lifecycle: 'retired',
+    }, {
+      id: 'plot-retired-unreferenced',
+      order: 3,
+      title: '不可新选的旧线',
+      lifecycle: 'retired',
+    })
+    content.storyBlocks[0].volumeRef = 'volume-retired'
+    content.storyBlocks[0].plotRefs = ['plot-1', 'plot-retired']
+    content.storyBlocks.push({
+      id: 'block-retired',
+      order: 2,
+      title: '退役故事块',
+      volumeRef: 'volume-retired',
+      plotRefs: ['plot-retired'],
+      lifecycle: 'retired',
+      stages: [],
+    })
+
+    const store = workspaceStore()
+    store.localContent = content
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'A',
+    })
+    const props = {
+      store,
+      controller,
+      activeTab: 'story-blocks',
+    }
+    const html = await renderToString(createSSRApp(Workspace.default, props))
+    assert.match(html, /旧卷真名/)
+    assert.match(html, /旧线真名/)
+    assert.match(html, /旧卷真名[\s\S]{0,80}已退役/)
+    assert.match(html, /旧线真名[\s\S]{0,80}已退役/)
+    assert.match(html, /<select value="volume-retired"/)
+    assert.match(html, /value="plot-retired"[^>]*checked/)
+    assert.doesNotMatch(html, /不可新选的旧线/)
+
+    const root = node('root')
+    const app = renderer.createApp(Workspace.default, props)
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(root)
+    await flush()
+
+    const selects = walk(root).filter(item => item.type === 'select')
+    const activeVolume = selects.find(item => item.props.value === 'volume-retired')
+    assert.ok(activeVolume)
+    assert.equal(activeVolume.props.disabled, false)
+    assert.match(text(activeVolume), /旧卷真名\s*·\s*已退役/)
+    const retiredVolume = selects.find(item => (
+      item !== activeVolume && item.props.value === 'volume-retired'
+    ))
+    assert.equal(retiredVolume.props.disabled, true)
+
+    const retiredPlots = walk(root).filter(item => (
+      item.type === 'input'
+      && item.props.type === 'checkbox'
+      && item.props.value === 'plot-retired'
+    ))
+    assert.equal(retiredPlots.length, 2)
+    assert.equal(retiredPlots[0].props.checked, true)
+    assert.equal(retiredPlots[0].props.disabled, false)
+    assert.equal(retiredPlots[1].props.checked, true)
+    assert.equal(retiredPlots[1].props.disabled, true)
+    assert.doesNotMatch(text(root), /不可新选的旧线/)
+
+    activeVolume.props.onChange({ target: { value: 'volume-1' } })
+    retiredPlots[0].props.onChange({ target: { checked: false } })
+    await flush()
+    assert.equal(store.localContent.storyBlocks[0].volumeRef, 'volume-1')
+    assert.deepEqual(store.localContent.storyBlocks[0].plotRefs, ['plot-1'])
+    const activeCard = walk(root).find(item => (
+      item.type === 'article'
+      && String(item.props.class || '').includes('active')
+    ))
+    assert.doesNotMatch(text(activeCard), /旧卷真名|旧线真名/)
+    app.unmount()
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
+test('archived future plan uses one canonical DTO normalizer in real SSR and mounted workspace', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, StoryBlock, Volume, Plot, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/StoryBlockEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
+    Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
+    Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
+
+    const content = planningContent()
+    content.volumes.push({
+      id: 'volume-retired',
+      order: 2,
+      title: '权威旧卷',
+      lifecycle: 'retired',
+    })
+    content.plots.push({
+      id: 'plot-retired',
+      order: 2,
+      title: '权威旧线',
+      lifecycle: 'retired',
+    })
+    content.storyBlocks[0].volumeRef = 'volume-retired'
+    content.storyBlocks[0].plotRefs = ['plot-1', 'plot-retired']
+    const futurePlan = authoritativePlanningContent(content)
+    assert.equal('volumeRef' in futurePlan.storyBlocks[0], false)
+    assert.equal('plotRefs' in futurePlan.storyBlocks[0], false)
+
+    const store = workspaceStore()
+    store.localContent = null
+    store.state = {
+      ...planningState(),
+      basisStatus: 'archived',
+      draft: null,
+      futurePlan,
+      capabilities: { view: true, edit: false, confirm: false, generate: false },
+    }
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'A',
+      isArchived: () => true,
+    })
+    const props = {
+      store,
+      controller,
+      activeTab: 'story-blocks',
+    }
+    const html = await renderToString(createSSRApp(Workspace.default, props))
+    assert.match(html, /当前活动故事块/)
+    assert.match(html, /<select value="volume-retired"[^>]*disabled/)
+    assert.match(html, /value="plot-retired"[^>]*checked[^>]*disabled/)
+    assert.match(html, /权威旧卷[\s\S]{0,80}已退役/)
+    assert.match(html, /权威旧线[\s\S]{0,80}已退役/)
+
+    const root = node('root')
+    const app = renderer.createApp(Workspace.default, props)
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(root)
+    await flush()
+    const selectedVolume = walk(root).find(item => (
+      item.type === 'select' && item.props.value === 'volume-retired'
+    ))
+    const checkedPlots = walk(root).filter(item => (
+      item.type === 'input'
+      && item.props.type === 'checkbox'
+      && item.props.checked === true
+    ))
+    assert.ok(selectedVolume)
+    assert.equal(selectedVolume.props.disabled, true)
+    assert.deepEqual(checkedPlots.map(item => item.props.value), ['plot-1', 'plot-retired'])
+    assert.match(text(root), /当前活动故事块/)
+    assert.match(text(root), /权威旧卷\s*·\s*已退役/)
+    assert.match(text(root), /权威旧线\s*·\s*已退役/)
+    app.unmount()
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
+test('real story-block SSR exposes a labelled h3 h4 h5 hierarchy with live titles', async () => {
+  const vite = await createPlanningVite()
+  try {
+    const StoryBlock = await vite.ssrLoadModule(
+      '/src/components/planning/StoryBlockEditor.vue',
+    )
+    const content = planningContent()
+    const html = await renderToString(createSSRApp(StoryBlock.default, {
+      modelValue: content.storyBlocks,
+      volumes: content.volumes,
+      plots: content.plots,
+      activeStoryBlockRef: content.activeStoryBlockRef,
+      readOnly: true,
+    }))
+
+    assert.match(
+      html,
+      /<article[^>]*aria-labelledby="story-block-heading-0"[^>]*>[\s\S]*?<h3 id="story-block-heading-0"[^>]*>故事块 01 · 夜入县衙<\/h3>/u,
+    )
+    assert.match(
+      html,
+      /<section[^>]*aria-labelledby="story-stage-heading-0-0"[^>]*>[\s\S]*?<h4 id="story-stage-heading-0-0"[^>]*>阶段 01 · 潜入<\/h4>/u,
+    )
+    assert.match(
+      html,
+      /<article[^>]*aria-labelledby="story-task-heading-0-0-0"[^>]*>[\s\S]*?<h5 id="story-task-heading-0-0-0"[^>]*>场景任务 01 · 偷换腰牌<\/h5>/u,
+    )
+  } finally {
+    await vite.close()
+  }
+})
+
 test('pending recovery stays visible, keyboard-actionable and disabled only while checking', async () => {
   const vite = await createPlanningVite()
   const originalDocument = global.document
@@ -630,11 +1022,12 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
       activeElement: null,
       querySelector: selector => selector === 'body' ? body : null,
     }
-    const [Page, Workspace, Volume, Plot, Drawer, Shell] = await Promise.all([
+    const [Page, Workspace, Volume, Plot, StoryBlock, Drawer, Shell] = await Promise.all([
       vite.ssrLoadModule('/src/views/ProjectPlanningView.vue'),
       vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
       vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
       vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/StoryBlockEditor.vue'),
       vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
       vite.ssrLoadModule('/src/components/layout/productShell.js'),
     ])
@@ -642,6 +1035,7 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
     Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
 
     global.window = {
@@ -679,6 +1073,11 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
         {
           path: '/projects/:projectId/planning/plots',
           name: 'ProjectPlanningPlots',
+          component: Page.default,
+        },
+        {
+          path: '/projects/:projectId/planning/story-blocks',
+          name: 'ProjectPlanningStoryBlocks',
           component: Page.default,
         },
         { path: '/outside', name: 'Outside', component: { render: () => h('p', 'outside') } },
@@ -724,13 +1123,49 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
       && item.props.disabled === false
     )))
     instructions.props['onUpdate:modelValue']('只属于 A 的要求')
+    const volumeTitle = walk(root).find(item => (
+      item.type === 'input' && item.props.value === '入世卷'
+    ))
+    volumeTitle.props.onInput({ target: { value: 'A 的未保存卷名' } })
     await flush()
+
+    await router.push('/projects/A/planning/story-blocks')
+    await flush()
+    assert.equal(router.currentRoute.value.name, 'ProjectPlanningStoryBlocks')
+    assert.equal(confirms, 0)
+    assert.ok(walk(root).find(item => (
+      item.type === 'input' && item.props.value === '夜入县衙'
+    )))
+    byButtonText(root, '新增故事块').props.onClick()
+    await flush()
+    byButtonText(root, '撤销新增故事块').props.onClick()
+    await flush()
+    assert.ok(byButtonText(root, '撤销上次物理删除'))
 
     await router.push('/projects/A/planning/plots')
     await flush()
     assert.equal(router.currentRoute.value.name, 'ProjectPlanningPlots')
     assert.equal(confirms, 0)
 
+    await router.push('/projects/A/planning/volumes')
+    await flush()
+    assert.ok(walk(root).find(item => (
+      item.type === 'input' && item.props.value === 'A 的未保存卷名'
+    )))
+    assert.equal(confirms, 0)
+
+    await router.push('/projects/A/planning/story-blocks')
+    await flush()
+    assert.ok(byButtonText(root, '撤销上次物理删除'))
+    byButtonText(root, '撤销上次物理删除').props.onClick()
+    await flush()
+    assert.ok(byButtonText(root, '撤销新增故事块'))
+    byButtonText(root, '撤销新增故事块').props.onClick()
+    await flush()
+    assert.ok(byButtonText(root, '撤销上次物理删除'))
+
+    await router.push('/projects/A/planning/volumes')
+    await flush()
     await router.push('/projects/B/planning/volumes')
     assert.equal(router.currentRoute.value.params.projectId, 'A')
     assert.equal(confirms, 1)
@@ -738,6 +1173,10 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
     allowLeave = true
     await router.push('/projects/B/planning/volumes')
     await waitFor(() => router.currentRoute.value.params.projectId === 'B')
+    assert.equal(confirms, 2)
+    await router.push('/projects/B/planning/story-blocks')
+    await flush()
+    assert.equal(byButtonText(root, '撤销上次物理删除'), undefined)
     assert.equal(confirms, 2)
     await router.push('/outside')
     assert.equal(router.currentRoute.value.name, 'Outside')

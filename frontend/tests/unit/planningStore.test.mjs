@@ -5,7 +5,10 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import { api } from '../../src/api/db/client.js'
 import { createPlanningWorkspaceController } from '../../src/application/planning/planningWorkspaceController.js'
-import { usePlanningStore } from '../../src/stores/planningStore.js'
+import {
+  canonicalPlanningContentForUi,
+  usePlanningStore,
+} from '../../src/stores/planningStore.js'
 
 const HASH = 'a'.repeat(64)
 const NEXT_HASH = 'b'.repeat(64)
@@ -143,6 +146,39 @@ function confirmableEditableContent() {
     }],
   }
 }
+
+test('canonical UI normalizer maps only authoritative planning field names', () => {
+  const authoritative = confirmablePlanningContent()
+  authoritative.volumes.push({
+    id: 'volume-retired',
+    order: 2,
+    title: '旧卷',
+    lifecycle: 'retired',
+  })
+  authoritative.plots.push({
+    id: 'plot-retired',
+    order: 2,
+    title: '旧线',
+    lifecycle: 'retired',
+  })
+  authoritative.storyBlocks[0].volumeId = 'volume-retired'
+  authoritative.storyBlocks[0].plotIds = ['plot-1', 'plot-retired']
+  authoritative.storyBlocks[0].volumeRef = 'must-not-be-read'
+  authoritative.storyBlocks[0].plotRefs = ['must-not-be-read']
+
+  const normalized = canonicalPlanningContentForUi(authoritative)
+
+  assert.equal(normalized.activeStoryBlockRef, 'block-1')
+  assert.equal(normalized.storyBlocks[0].volumeRef, 'volume-retired')
+  assert.deepEqual(normalized.storyBlocks[0].plotRefs, ['plot-1', 'plot-retired'])
+  assert.equal(normalized.volumes[1].title, '旧卷')
+  assert.equal(normalized.plots[1].lifecycle, 'retired')
+  assert.equal('activeStoryBlockId' in normalized, false)
+  assert.equal('volumeId' in normalized.storyBlocks[0], false)
+  assert.equal('plotIds' in normalized.storyBlocks[0], false)
+  assert.equal('schemaVersion' in normalized, false)
+  assert.equal('contentHash' in normalized, false)
+})
 
 function draft(hash = HASH, revision = 1) {
   return {

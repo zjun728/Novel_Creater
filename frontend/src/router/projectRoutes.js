@@ -76,6 +76,10 @@ export function planningPlotsPath(projectId) {
   return `/projects/${segment(projectId)}/planning/plots`
 }
 
+export function planningStoryBlocksPath(projectId) {
+  return `/projects/${segment(projectId)}/planning/story-blocks`
+}
+
 export function projectModelSettingsPath(projectId) {
   return `/projects/${segment(projectId)}/settings/models`
 }
@@ -155,6 +159,12 @@ export const projectRoutes = Object.freeze([
     name: 'ProjectPlanningPlots',
     component: ProjectPlanningView,
     props: true,
+  },
+  {
+    path: '/projects/:projectId/planning/story-blocks',
+    name: 'ProjectPlanningStoryBlocks',
+    component: ProjectPlanningView,
+    props: { activeTab: 'story-blocks' },
   },
   {
     path: '/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)',

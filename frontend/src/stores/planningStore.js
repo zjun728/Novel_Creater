@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, shallowRef } from 'vue'
+import { ref, shallowRef, toRaw } from 'vue'
 
 import {
   api,
@@ -8,7 +8,7 @@ import {
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 function clone(value) {
-  return value == null ? value : structuredClone(value)
+  return value == null ? value : structuredClone(toRaw(value))
 }
 
 function editableNode(node, fields) {
@@ -26,7 +26,7 @@ function editableNode(node, fields) {
   return result
 }
 
-function editableContent(content) {
+export function canonicalPlanningContentForUi(content) {
   if (!content) return null
   return {
     activeStoryBlockRef: content.activeStoryBlockId ?? null,
@@ -144,7 +144,7 @@ export const usePlanningStore = defineStore('planning', () => {
 
   function acceptState(loaded) {
     state.value = loaded
-    localContent.value = editableContent(loaded?.draft?.content)
+    localContent.value = canonicalPlanningContentForUi(loaded?.draft?.content)
     dirty.value = false
     error.value = null
   }
@@ -158,7 +158,7 @@ export const usePlanningStore = defineStore('planning', () => {
         confirm: false,
       },
     }
-    localContent.value = editableContent(draft?.content)
+    localContent.value = canonicalPlanningContentForUi(draft?.content)
     dirty.value = false
     error.value = null
   }
@@ -630,7 +630,7 @@ export const usePlanningStore = defineStore('planning', () => {
         return false
       }
 
-      const nextLocalContent = editableContent(loaded.draft.content)
+      const nextLocalContent = canonicalPlanningContentForUi(loaded.draft.content)
       state.value = loaded
       localContent.value = nextLocalContent
       dirty.value = false
@@ -887,7 +887,7 @@ export const usePlanningStore = defineStore('planning', () => {
   }
 
   function discardLocal() {
-    localContent.value = editableContent(state.value?.draft?.content)
+    localContent.value = canonicalPlanningContentForUi(state.value?.draft?.content)
     dirty.value = false
   }
 

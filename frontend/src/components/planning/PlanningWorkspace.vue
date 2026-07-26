@@ -7,9 +7,11 @@ import {
   watch,
 } from 'vue'
 
+import { canonicalPlanningContentForUi } from '../../stores/planningStore.js'
 import { createModalFocusManager } from '../common/modalFocusManager.js'
 import PlanningHistoryDrawer from './PlanningHistoryDrawer.vue'
 import PlotEditor from './PlotEditor.vue'
+import StoryBlockEditor from './StoryBlockEditor.vue'
 import VolumeEditor from './VolumeEditor.vue'
 
 const props = defineProps({
@@ -18,7 +20,7 @@ const props = defineProps({
   activeTab: {
     type: String,
     required: true,
-    validator: value => ['volumes', 'plots'].includes(value),
+    validator: value => ['volumes', 'plots', 'story-blocks'].includes(value),
   },
 })
 
@@ -29,12 +31,14 @@ const confirmFocus = createModalFocusManager({
   getDialog: () => confirmDialog.value,
   getInitialFocus: () => confirmInitial.value,
 })
-const planningContent = computed(() => (
-  props.store.localContent
-  || props.store.state?.draft?.content
-  || props.store.state?.futurePlan
-  || null
-))
+const planningContent = computed(() => {
+  if (props.store.localContent) return props.store.localContent
+  return canonicalPlanningContentForUi(
+    props.store.state?.draft?.content
+    || props.store.state?.futurePlan
+    || null,
+  )
+})
 const revisionLabel = computed(() => (
   props.store.state ? `R${Number(props.store.state.head?.revision || 0)}` : '—'
 ))
@@ -59,6 +63,12 @@ const counts = computed(() => {
     ), 0),
   }
 })
+const activeStoryBlock = computed(() => (
+  (planningContent.value?.storyBlocks || []).find(block => (
+    String(block.id || block.clientNodeKey || '')
+      === String(planningContent.value?.activeStoryBlockRef || '')
+  )) || null
+))
 
 function run(action) {
   Promise.resolve(action()).catch(() => {})
@@ -192,7 +202,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
             @move="controller.moveVolume"
           />
           <plot-editor
-            v-else
+            v-else-if="activeTab === 'plots'"
             :model-value="planningContent.plots || []"
             :read-only="!controller.editable.value"
             :disabled="controller.editorLocked.value"
@@ -200,6 +210,30 @@ onBeforeUnmount(() => confirmFocus.unmount())
             @update="controller.updatePlot"
             @remove="controller.removePlot"
             @move="controller.movePlot"
+          />
+          <story-block-editor
+            v-else-if="activeTab === 'story-blocks'"
+            :model-value="planningContent.storyBlocks || []"
+            :volumes="planningContent.volumes || []"
+            :plots="planningContent.plots || []"
+            :active-story-block-ref="planningContent.activeStoryBlockRef"
+            :undo-available="controller.canUndoStoryBlockEdit.value"
+            :read-only="!controller.editable.value"
+            :disabled="controller.editorLocked.value"
+            @add="controller.addStoryBlock"
+            @update="controller.updateStoryBlock"
+            @remove="controller.removeStoryBlock"
+            @move="controller.moveStoryBlock"
+            @select="controller.selectActiveStoryBlock"
+            @undo="controller.undoStoryBlockEdit"
+            @add-stage="controller.addStage"
+            @update-stage="controller.updateStage"
+            @remove-stage="controller.removeStage"
+            @move-stage="controller.moveStage"
+            @add-scene-task="controller.addSceneTask"
+            @update-scene-task="controller.updateSceneTask"
+            @remove-scene-task="controller.removeSceneTask"
+            @move-scene-task="controller.moveSceneTask"
           />
 
           <section class="aggregate-summary" aria-label="完整规划摘要">
@@ -313,7 +347,12 @@ onBeforeUnmount(() => confirmFocus.unmount())
             <div><dt>分卷</dt><dd>{{ counts.volumes }}</dd></div>
             <div><dt>情节线</dt><dd>{{ counts.plots }}</dd></div>
             <div><dt>故事块</dt><dd>{{ counts.storyBlocks }}</dd></div>
+            <div><dt>阶段</dt><dd>{{ counts.stages }}</dd></div>
+            <div><dt>场景任务</dt><dd>{{ counts.sceneTasks }}</dd></div>
           </dl>
+          <p class="confirm-active">
+            活动故事块：{{ activeStoryBlock?.title || '尚未选择' }}
+          </p>
           <footer>
             <button ref="confirmInitial" type="button" :disabled="store.confirming" @click="closeConfirm">返回核对</button>
             <button type="button" class="primary" :disabled="store.confirming" @click="confirmPlanning">确认并签印</button>
@@ -380,7 +419,8 @@ button:disabled { cursor:not-allowed; opacity:.45; }
 .confirm-panel { width:min(620px,100%); padding:26px; color:var(--nc-ink); background:var(--nc-paper); box-shadow:0 24px 64px color-mix(in srgb,var(--nc-ink) 22%,transparent); }
 .confirm-panel>p:first-child { color:var(--nc-vermilion); font:700 10px Georgia,serif; letter-spacing:.17em; }
 .confirm-panel h2 { font:600 28px Georgia,'Noto Serif SC',serif; }
-.confirm-panel dl { grid-template-columns:repeat(3,1fr); }
+.confirm-panel dl { grid-template-columns:repeat(5,1fr); }
+.confirm-active { margin:14px 0 0; padding:10px 12px; border-left:2px solid var(--nc-vermilion); background:var(--nc-canvas); color:var(--nc-muted); }
 .confirm-panel footer { display:flex; justify-content:flex-end; gap:10px; margin-top:20px; }
-@media(max-width:760px){.workspace-header{align-items:start;flex-direction:column}.revision-strip{width:100%}.revision-strip div{flex:1}.aggregate-summary dl{grid-template-columns:repeat(2,1fr)}.workspace-scroll{max-height:none}.error-summary{align-items:start;flex-direction:column}.error-summary button{margin-left:0}}
+@media(max-width:760px){.workspace-header{align-items:start;flex-direction:column}.revision-strip{width:100%}.revision-strip div{flex:1}.aggregate-summary dl,.confirm-panel dl{grid-template-columns:repeat(2,1fr)}.workspace-scroll{max-height:none}.error-summary{align-items:start;flex-direction:column}.error-summary button{margin-left:0}}
 </style>

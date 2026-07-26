@@ -7,19 +7,25 @@ const source = relativePath => readFile(
   'utf8',
 )
 
-test('one project planning view hosts both canonical tabs and the shared workspace', async () => {
-  const [view, workspace] = await Promise.all([
+test('one project planning view hosts all three canonical tabs and the shared workspace', async () => {
+  const [view, workspace, storyBlocks] = await Promise.all([
     source('views/ProjectPlanningView.vue'),
     source('components/planning/PlanningWorkspace.vue'),
+    source('components/planning/StoryBlockEditor.vue'),
   ])
 
   assert.match(view, /ProjectPlanningVolumes/)
   assert.match(view, /ProjectPlanningPlots/)
+  assert.match(view, /ProjectPlanningStoryBlocks/)
   assert.match(view, /<planning-workspace/)
   assert.match(view, /planningVolumesPath/)
   assert.match(view, /planningPlotsPath/)
+  assert.match(view, /planningStoryBlocksPath/)
+  assert.match(view, />\s*故事块\s*</)
   assert.match(workspace, /<volume-editor/)
   assert.match(workspace, /<plot-editor/)
+  assert.match(workspace, /<story-block-editor/)
+  assert.match(workspace, /activeTab === 'story-blocks'/)
   assert.match(workspace, /<planning-history-drawer/)
   assert.match(workspace, /只读流式模式/)
   assert.match(workspace, /完整规划摘要/)
@@ -27,6 +33,7 @@ test('one project planning view hosts both canonical tabs and the shared workspa
   assert.match(workspace, /stage\.sceneTasks/)
   assert.match(workspace, /createModalFocusManager/)
   assert.match(workspace, /trapTab/)
+  assert.doesNotMatch(`${view}\n${workspace}\n${storyBlocks}`, /outlines|useStoryBlockStore/)
 })
 
 test('planning view owns one local aggregate and exact leave/load boundaries', async () => {
@@ -40,7 +47,19 @@ test('planning view owns one local aggregate and exact leave/load boundaries', a
   assert.match(view, /beforeunload/)
   assert.match(view, /useAppMessage/)
   assert.match(view, /message\.success/)
-  assert.doesNotMatch(view, /useVolumeStore|usePlotStore|PlanningWorkspaceV2/)
+  assert.match(
+    view,
+    /onBeforeRouteLeave\(to => controller\.requestRouteLeave\(to\)\)/,
+  )
+  assert.match(
+    view,
+    /onBeforeRouteUpdate\(to => controller\.requestRouteLeave\(to\)\)/,
+  )
+  assert.doesNotMatch(view, /sameProjectPlanningRoute|requestPlanningRouteLeave/)
+  assert.doesNotMatch(
+    view,
+    /useVolumeStore|usePlotStore|useStoryBlockStore|PlanningWorkspaceV2/,
+  )
 })
 
 test('history is immutable and retired duplicate planning surfaces stay absent', async () => {
@@ -59,9 +78,10 @@ test('history is immutable and retired duplicate planning surfaces stay absent',
 })
 
 test('planning editors expose only their owned fields and no reverse IDs', async () => {
-  const [volume, plot] = await Promise.all([
+  const [volume, plot, storyBlock] = await Promise.all([
     source('components/planning/VolumeEditor.vue'),
     source('components/planning/PlotEditor.vue'),
+    source('components/planning/StoryBlockEditor.vue'),
   ])
 
   for (const field of [
@@ -82,4 +102,23 @@ test('planning editors expose only their owned fields and no reverse IDs', async
   }
   assert.doesNotMatch(plot, /value="(?:growth|world)"/)
   assert.doesNotMatch(plot, /storyBlock/i)
+
+  for (const field of [
+    'title', 'volumeRef', 'plotRefs', 'entrySituation', 'blockGoal',
+    'mainPressure', 'expectedChange', 'openQuestions', 'involvedCharacters',
+    'purpose', 'dramaticQuestion', 'task', 'completionEvidence',
+  ]) {
+    assert.match(storyBlock, new RegExp(field))
+  }
+  assert.doesNotMatch(
+    storyBlock,
+    /targetChapterCount|completed|actualProgress|volumeId|plotIds|storyBlockId|stageId/,
+  )
+  assert.match(storyBlock, /emit\('add'/)
+  assert.match(storyBlock, /emit\('remove'/)
+  assert.match(storyBlock, /emit\('move'/)
+  assert.match(storyBlock, /emit\('select'/)
+  assert.match(storyBlock, /emit\('undo'/)
+  assert.match(storyBlock, /emit\('add-stage'/)
+  assert.match(storyBlock, /emit\('add-scene-task'/)
 })

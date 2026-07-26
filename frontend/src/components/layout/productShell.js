@@ -89,6 +89,9 @@ function routeTitle(route, project) {
   if (name === 'ProjectPlanningPlots') {
     return isArchived(project) ? '已归档情节线规划' : '情节线规划'
   }
+  if (name === 'ProjectPlanningStoryBlocks') {
+    return isArchived(project) ? '已归档故事块规划' : '故事块规划'
+  }
   if (name === 'ProjectModelSettings') {
     return isArchived(project) ? '已归档模型绑定' : '模型绑定'
   }
@@ -171,6 +174,7 @@ export function createProductShellModel({
             selected: [
               'ProjectPlanningVolumes',
               'ProjectPlanningPlots',
+              'ProjectPlanningStoryBlocks',
             ].includes(routeName(route)),
           },
           ...(!archived ? [{

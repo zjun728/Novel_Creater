@@ -115,7 +115,11 @@ function emptyPlanningContent() {
 
 function projectPlanningRoute(route, projectId) {
   return (
-    ['ProjectPlanningVolumes', 'ProjectPlanningPlots'].includes(String(route?.name || ''))
+    [
+      'ProjectPlanningVolumes',
+      'ProjectPlanningPlots',
+      'ProjectPlanningStoryBlocks',
+    ].includes(String(route?.name || ''))
     && String(route?.params?.projectId || '') === String(projectId || '')
   )
 }
@@ -137,7 +141,10 @@ export function createPlanningWorkspaceController({
   const notice = ref('')
   const activeProject = ref('')
   const projectScope = ref(0)
-  let storyBlockUndo = null
+  const storyBlockUndo = ref(null)
+  const canUndoStoryBlockEdit = computed(() => (
+    storyBlockUndoRecoverable(storyBlockUndo.value, store.localContent)
+  ))
   const busy = computed(() => Boolean(
     store.loading
     || store.saving
@@ -310,6 +317,35 @@ export function createPlanningWorkspaceController({
     ))
   }
 
+  function storyBlockUndoRecoverable(undo, content) {
+    if (!undo || !content) return false
+    const undoKey = identity(undo.node)
+    if (!undoKey) return false
+    const storyBlocks = Array.isArray(content.storyBlocks)
+      ? content.storyBlocks
+      : []
+    if (undo.kind === 'block') {
+      return !storyBlocks.some(block => identity(block) === undoKey)
+    }
+
+    const blockIndex = activeIndex(storyBlocks, undo.blockKey)
+    if (blockIndex < 0) return false
+    const stages = Array.isArray(storyBlocks[blockIndex].stages)
+      ? storyBlocks[blockIndex].stages
+      : []
+    if (undo.kind === 'stage') {
+      return !stages.some(stage => identity(stage) === undoKey)
+    }
+    if (undo.kind !== 'task') return false
+
+    const stageIndex = activeIndex(stages, undo.stageKey)
+    if (stageIndex < 0) return false
+    const sceneTasks = Array.isArray(stages[stageIndex].sceneTasks)
+      ? stages[stageIndex].sceneTasks
+      : []
+    return !sceneTasks.some(sceneTask => identity(sceneTask) === undoKey)
+  }
+
   function patchNode(node, patch, fields) {
     const allowed = new Set(fields)
     for (const [field, value] of Object.entries(patch || {})) {
@@ -402,7 +438,7 @@ export function createPlanningWorkspaceController({
       if (wasActive) content.activeStoryBlockRef = null
       return true
     })
-    if (changed && undo) storyBlockUndo = undo
+    if (changed && undo) storyBlockUndo.value = undo
     return changed
   }
 
@@ -471,7 +507,7 @@ export function createPlanningWorkspaceController({
       }
       return true
     })
-    if (changed && undo) storyBlockUndo = undo
+    if (changed && undo) storyBlockUndo.value = undo
     return changed
   }
 
@@ -544,7 +580,7 @@ export function createPlanningWorkspaceController({
       }
       return true
     })
-    if (changed && undo) storyBlockUndo = undo
+    if (changed && undo) storyBlockUndo.value = undo
     return changed
   }
 
@@ -572,8 +608,12 @@ export function createPlanningWorkspaceController({
   }
 
   function undoStoryBlockEdit() {
-    if (!storyBlockUndo) return false
-    const undo = storyBlockUndo
+    if (!storyBlockUndo.value) return false
+    const undo = storyBlockUndo.value
+    if (!storyBlockUndoRecoverable(undo, store.localContent)) {
+      storyBlockUndo.value = null
+      return false
+    }
     const changed = editStoryContent(content => {
       if (undo.kind === 'block') {
         if (content.storyBlocks.some(block => identity(block) === identity(undo.node))) {
@@ -603,7 +643,7 @@ export function createPlanningWorkspaceController({
       }
       return true
     })
-    if (changed) storyBlockUndo = null
+    if (changed) storyBlockUndo.value = null
     return changed
   }
 
@@ -614,55 +654,96 @@ export function createPlanningWorkspaceController({
     authorInstructions.value = ''
     notice.value = ''
     historyOpen.value = false
-    storyBlockUndo = null
+    storyBlockUndo.value = null
     projectScope.value += 1
     return true
+  }
+
+  function checkpointStoryBlockUndo() {
+    storyBlockUndo.value = null
+  }
+
+  function projectTicket(targetProjectId = String(projectId() || '')) {
+    return {
+      scope: projectScope.value,
+      targetProjectId,
+      activeProject: activeProject.value,
+    }
+  }
+
+  function projectTicketIsCurrent(ticket) {
+    return (
+      projectScope.value === ticket.scope
+      && String(projectId() || '') === ticket.targetProjectId
+      && activeProject.value === ticket.activeProject
+    )
   }
 
   async function hydrate() {
     const targetProjectId = String(projectId() || '')
     if (!targetProjectId) return undefined
     enterProject(targetProjectId)
-    return store.ensureLoaded(targetProjectId)
+    const ticket = projectTicket(targetProjectId)
+    const result = await store.ensureLoaded(targetProjectId)
+    if (projectTicketIsCurrent(ticket)) checkpointStoryBlockUndo()
+    return result
   }
 
   async function createManualDraft() {
     if (!canCreateDraft.value) return undefined
-    const result = await store.createDraft(String(projectId()), {
+    const targetProjectId = String(projectId())
+    const ticket = projectTicket(targetProjectId)
+    const result = await store.createDraft(targetProjectId, {
       idempotencyKey: String(keyFactory()),
     })
-    if (store.localContent == null) store.editLocal(emptyPlanningContent())
-    notice.value = '已建立空白规划工作稿'
+    if (projectTicketIsCurrent(ticket)) {
+      checkpointStoryBlockUndo()
+      if (store.localContent == null) store.editLocal(emptyPlanningContent())
+      notice.value = '已建立空白规划工作稿'
+    }
     return result
   }
 
   async function save() {
     if (!canSave.value) return undefined
+    const ticket = projectTicket()
     const result = await store.saveDraft({
       idempotencyKey: String(keyFactory()),
     })
-    notice.value = '规划工作稿已保存'
+    if (projectTicketIsCurrent(ticket)) {
+      checkpointStoryBlockUndo()
+      notice.value = '规划工作稿已保存'
+    }
     return result
   }
 
   async function generate(instructions = authorInstructions.value) {
     if (!canGenerate.value) return undefined
+    const ticket = projectTicket()
     const result = await store.generateDraft({
       idempotencyKey: String(keyFactory()),
       authorInstructions: String(instructions || ''),
     })
-    if (result?.status === 'succeeded') notice.value = 'AI 规划已写入当前工作稿'
+    if (result?.status === 'succeeded' && projectTicketIsCurrent(ticket)) {
+      checkpointStoryBlockUndo()
+      notice.value = 'AI 规划已写入当前工作稿'
+    }
     return result
   }
 
   async function reconcile() {
+    const ticket = projectTicket()
     const result = await store.reconcileGeneration()
-    if (result?.status === 'succeeded') notice.value = '已恢复并核对生成结果'
+    if (result?.status === 'succeeded' && projectTicketIsCurrent(ticket)) {
+      checkpointStoryBlockUndo()
+      notice.value = '已恢复并核对生成结果'
+    }
     return result
   }
 
   async function confirm() {
     if (!canConfirm.value) return undefined
+    const ticket = projectTicket()
     const operationId = operationStore?.start?.({
       label: '正在确认故事规划',
       detail: '确认会创建不可变规划修订',
@@ -672,7 +753,10 @@ export function createPlanningWorkspaceController({
       const result = await store.confirmDraft({
         idempotencyKey: String(keyFactory()),
       })
-      notice.value = '已确认新的故事规划修订'
+      if (projectTicketIsCurrent(ticket)) {
+        checkpointStoryBlockUndo()
+        notice.value = '已确认新的故事规划修订'
+      }
       return result
     } finally {
       if (operationId) operationStore?.finish?.(operationId)
@@ -715,6 +799,7 @@ export function createPlanningWorkspaceController({
     canSave,
     canConfirm,
     canGenerate,
+    canUndoStoryBlockEdit,
     complete,
     localOverlay,
     hasCriticalRecovery,

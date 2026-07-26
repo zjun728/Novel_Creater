@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { reactive } from 'vue'
@@ -7,6 +8,11 @@ import {
   createPlanningWorkspaceController,
   isCompletePlanningAggregate,
 } from '../../src/application/planning/planningWorkspaceController.js'
+
+const storyBlockEditorSource = () => readFile(
+  new URL('../../src/components/planning/StoryBlockEditor.vue', import.meta.url),
+  'utf8',
+)
 
 const emptyContent = () => ({
   activeStoryBlockRef: null,
@@ -70,6 +76,24 @@ function activeBlockContent() {
     }],
   }
 }
+
+test('retired nested editor cards preserve text contrast without cumulative opacity', async () => {
+  const source = await storyBlockEditorSource()
+
+  assert.doesNotMatch(source, /[^{}]*\.retired[^{}]*\{[^}]*opacity\s*:/su)
+  assert.match(source, /\.retired\s*\{[^}]*border-style\s*:\s*dashed/su)
+})
+
+test('story hierarchy source binds article labels to sequential headings and live titles', async () => {
+  const source = await storyBlockEditorSource()
+
+  assert.match(source, /<article[\s\S]*?:aria-labelledby="blockHeadingId\(blockIndex\)"/u)
+  assert.match(source, /<h3[\s\S]*?:id="blockHeadingId\(blockIndex\)"[\s\S]*?block\.title/u)
+  assert.match(source, /class="stage-card"[\s\S]*?:aria-labelledby="stageHeadingId\(blockIndex, stageIndex\)"/u)
+  assert.match(source, /<h4[\s\S]*?:id="stageHeadingId\(blockIndex, stageIndex\)"[\s\S]*?stage\.title/u)
+  assert.match(source, /class="scene-task"[\s\S]*?:aria-labelledby="taskHeadingId\(blockIndex, stageIndex, taskIndex\)"/u)
+  assert.match(source, /<h5[\s\S]*?:id="taskHeadingId\(blockIndex, stageIndex, taskIndex\)"[\s\S]*?sceneTask\.task/u)
+})
 
 test('controller exports the complete nested story editor API', () => {
   const { controller } = createController()
@@ -375,13 +399,16 @@ test('physical story block deletion clears selection and single-step undo restor
   content.activeStoryBlockRef = 'local-block'
   const { controller, store } = createController(content)
 
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
   assert.equal(controller.removeStoryBlock('local-block'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
   assert.equal(store.localContent.activeStoryBlockRef, null)
   assert.deepEqual(store.localContent.storyBlocks.map(block => block.id), ['block-1'])
   assert.equal(controller.undoStoryBlockEdit(), true)
   assert.equal(store.localContent.activeStoryBlockRef, 'local-block')
   assert.equal(store.localContent.storyBlocks[0].clientNodeKey, 'local-block')
   assert.equal(store.localContent.storyBlocks[0].stages[0].clientNodeKey, 'local-stage')
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
   assert.equal(controller.undoStoryBlockEdit(), false)
 })
 
@@ -410,8 +437,11 @@ test('the newest physical nested deletion replaces undo and project switches cle
   controller.enterProject('project-1')
 
   assert.equal(controller.removeStage('block-1', 'stage-local-a'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
   assert.equal(controller.removeSceneTask('block-1', 'stage-local-b', 'task-local-a'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
   assert.equal(controller.undoStoryBlockEdit(), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
   assert.equal(
     store.localContent.storyBlocks[0].stages.some(stage => stage.clientNodeKey === 'stage-local-a'),
     false,
@@ -422,8 +452,118 @@ test('the newest physical nested deletion replaces undo and project switches cle
   )
 
   assert.equal(controller.removeSceneTask('block-1', 'stage-local-b', 'task-local-a'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
   controller.enterProject('project-2')
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
   assert.equal(controller.undoStoryBlockEdit(), false)
+})
+
+test('scene task undo expires when its historical parent stage retires', () => {
+  const content = activeBlockContent()
+  content.storyBlocks[0].stages = [{
+    id: 'stage-history',
+    order: 1,
+    title: '历史阶段',
+    lifecycle: 'active',
+    sceneTasks: [{
+      clientNodeKey: 'task-local',
+      order: 1,
+      task: '临时任务',
+      lifecycle: 'active',
+    }],
+  }]
+  const { controller, store } = createController(content)
+
+  assert.equal(
+    controller.removeSceneTask('block-1', 'stage-history', 'task-local'),
+    true,
+  )
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  assert.equal(controller.removeStage('block-1', 'stage-history'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+  assert.equal(controller.undoStoryBlockEdit(), false)
+
+  store.localContent.storyBlocks[0] = {
+    ...store.localContent.storyBlocks[0],
+    lifecycle: 'active',
+    stages: [{
+      id: 'stage-history',
+      order: 1,
+      title: '历史阶段',
+      lifecycle: 'active',
+      sceneTasks: [],
+    }],
+  }
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+})
+
+test('stage undo expires when its historical parent block retires', () => {
+  const content = activeBlockContent()
+  content.storyBlocks[0].stages = [{
+    clientNodeKey: 'stage-local',
+    order: 1,
+    title: '临时阶段',
+    lifecycle: 'active',
+    sceneTasks: [],
+  }]
+  const { controller, store } = createController(content)
+
+  assert.equal(controller.removeStage('block-1', 'stage-local'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  assert.equal(controller.removeStoryBlock('block-1'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+  assert.equal(controller.undoStoryBlockEdit(), false)
+
+  store.localContent.storyBlocks[0] = {
+    ...store.localContent.storyBlocks[0],
+    lifecycle: 'active',
+    stages: [],
+  }
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+})
+
+test('root story block undo stays valid while unrelated historical nodes retire', () => {
+  const content = activeBlockContent()
+  content.storyBlocks.unshift({
+    clientNodeKey: 'block-local',
+    order: 0,
+    title: '临时故事块',
+    lifecycle: 'active',
+    stages: [],
+  })
+  const { controller, store } = createController(content)
+
+  assert.equal(controller.removeStoryBlock('block-local'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  assert.equal(controller.removeStoryBlock('block-1'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  assert.equal(controller.undoStoryBlockEdit(), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+  assert.equal(store.localContent.storyBlocks[0].clientNodeKey, 'block-local')
+})
+
+test('busy and read-only rejection preserve a structurally valid undo snapshot', () => {
+  const content = activeBlockContent()
+  content.storyBlocks.unshift({
+    clientNodeKey: 'block-local',
+    order: 0,
+    title: '临时故事块',
+    lifecycle: 'active',
+    stages: [],
+  })
+  const { controller, store } = createController(content)
+
+  assert.equal(controller.removeStoryBlock('block-local'), true)
+  store.saving = true
+  assert.equal(controller.undoStoryBlockEdit(), false)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  store.saving = false
+  store.state.capabilities.edit = false
+  assert.equal(controller.undoStoryBlockEdit(), false)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  store.state.capabilities.edit = true
+  assert.equal(controller.undoStoryBlockEdit(), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
 })
 
 test('nested undo restores deleted nodes without overriding a later block selection', () => {
@@ -580,6 +720,7 @@ test('historical retirement cascades without reactivation while local descendant
   assert.equal(retiredBlock.stages[0].sceneTasks.length, 1)
   assert.equal(retiredBlock.stages[0].sceneTasks[0].lifecycle, 'retired')
   assert.equal(store.localContent.activeStoryBlockRef, null)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
   assert.equal(controller.undoStoryBlockEdit(), false)
   assert.equal(controller.updateStoryBlock('block-1', { title: '复活' }), false)
   assert.equal(controller.selectActiveStoryBlock('block-1'), false)
@@ -656,6 +797,7 @@ test('historical stage and scene task retirement cascade independently', () => {
   const { controller, store } = createController(content)
 
   assert.equal(controller.removeStage('block-1', 'stage-history'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
   const retiredStage = store.localContent.storyBlocks[0].stages[0]
   assert.equal(retiredStage.lifecycle, 'retired')
   assert.deepEqual(retiredStage.sceneTasks.map(task => [task.id, task.lifecycle]), [
@@ -665,6 +807,7 @@ test('historical stage and scene task retirement cascade independently', () => {
   assert.equal(controller.removeStage('block-1', 'stage-history'), false)
 
   assert.equal(controller.removeSceneTask('block-1', 'stage-other', 'task-other'), true)
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
   assert.equal(
     store.localContent.storyBlocks[0].stages[1].sceneTasks[0].lifecycle,
     'retired',

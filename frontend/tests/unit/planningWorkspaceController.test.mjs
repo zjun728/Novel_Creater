@@ -132,6 +132,42 @@ function createStore({ content = emptyContent(), archived = false } = {}) {
   })
 }
 
+function contentWithLocalTask() {
+  const content = completeContent()
+  content.storyBlocks[0].stages[0].sceneTasks.push({
+    clientNodeKey: 'task-local',
+    order: 2,
+    task: '尚未保存的场景任务',
+    completionEvidence: '本地证据',
+    lifecycle: 'active',
+  })
+  return content
+}
+
+function contentWithLocalBlock() {
+  const content = completeContent()
+  content.storyBlocks.push({
+    clientNodeKey: 'block-local',
+    order: 2,
+    title: '尚未保存的故事块',
+    volumeRef: '',
+    plotRefs: [],
+    lifecycle: 'active',
+    stages: [],
+  })
+  return content
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
 test('manual draft edits volumes and plots with stable keys and one local aggregate', () => {
   let sequence = 0
   const store = createStore()
@@ -350,6 +386,284 @@ test('one controller owns draft creation save generate recovery and blocking con
   ])
 })
 
+test('successful save checkpoints local deletion undo while failed save preserves it', async () => {
+  const successStore = createStore({ content: contentWithLocalTask() })
+  const successController = createPlanningWorkspaceController({
+    store: successStore,
+    projectId: () => 'project-1',
+    keyFactory: () => 'save-success',
+  })
+  assert.equal(
+    successController.removeSceneTask('block-1', 'stage-1', 'task-local'),
+    true,
+  )
+  assert.equal(successController.canUndoStoryBlockEdit.value, true)
+
+  await successController.save()
+
+  assert.equal(successController.canUndoStoryBlockEdit.value, false)
+  assert.equal(successController.undoStoryBlockEdit(), false)
+
+  const failureStore = createStore({ content: contentWithLocalTask() })
+  failureStore.saveDraft = async () => {
+    throw new Error('save failed')
+  }
+  const failureController = createPlanningWorkspaceController({
+    store: failureStore,
+    projectId: () => 'project-1',
+    keyFactory: () => 'save-failure',
+  })
+  failureController.removeSceneTask('block-1', 'stage-1', 'task-local')
+
+  await assert.rejects(failureController.save(), /save failed/)
+
+  assert.equal(failureController.canUndoStoryBlockEdit.value, true)
+  assert.equal(failureController.undoStoryBlockEdit(), true)
+})
+
+test('AI authoritative replacement and successful reconcile checkpoint the newest undo', async () => {
+  let key = 0
+  const store = createStore({ content: contentWithLocalTask() })
+  const controller = createPlanningWorkspaceController({
+    store,
+    projectId: () => 'project-1',
+    keyFactory: () => `checkpoint-${++key}`,
+  })
+  controller.removeSceneTask('block-1', 'stage-1', 'task-local')
+  await controller.save()
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+
+  controller.addSceneTask('block-1', 'stage-1')
+  const generatedTask = store.localContent.storyBlocks[0]
+    .stages[0].sceneTasks.at(-1).clientNodeKey
+  controller.removeSceneTask('block-1', 'stage-1', generatedTask)
+  store.dirty = false
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  store.generateDraft = async command => {
+    store.calls.push(['generate-authority', command])
+    store.localContent = completeContent()
+    return { status: 'succeeded' }
+  }
+
+  await controller.generate('权威替换')
+
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+  assert.equal(controller.undoStoryBlockEdit(), false)
+  assert.equal(
+    store.localContent.storyBlocks[0].stages[0].sceneTasks
+      .some(task => task.clientNodeKey === generatedTask),
+    false,
+  )
+
+  controller.addSceneTask('block-1', 'stage-1')
+  const reconciledTask = store.localContent.storyBlocks[0]
+    .stages[0].sceneTasks.at(-1).clientNodeKey
+  controller.removeSceneTask('block-1', 'stage-1', reconciledTask)
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+
+  await controller.reconcile()
+
+  assert.equal(controller.canUndoStoryBlockEdit.value, false)
+  assert.equal(controller.undoStoryBlockEdit(), false)
+})
+
+test('hydrate create and confirm success are authoritative undo checkpoints', async () => {
+  const hydrateStore = createStore({ content: contentWithLocalBlock() })
+  const hydrateController = createPlanningWorkspaceController({
+    store: hydrateStore,
+    projectId: () => 'project-1',
+  })
+  hydrateController.removeStoryBlock('block-local')
+  assert.equal(hydrateController.canUndoStoryBlockEdit.value, true)
+  await hydrateController.hydrate()
+  assert.equal(hydrateController.canUndoStoryBlockEdit.value, false)
+
+  const createStoreInstance = createStore({ content: contentWithLocalBlock() })
+  const createController = createPlanningWorkspaceController({
+    store: createStoreInstance,
+    projectId: () => 'project-1',
+    keyFactory: () => 'create-checkpoint',
+  })
+  createController.removeStoryBlock('block-local')
+  createStoreInstance.state.draft = null
+  createStoreInstance.localContent = null
+  await createController.createManualDraft()
+  assert.equal(createController.canUndoStoryBlockEdit.value, false)
+
+  const confirmStore = createStore({ content: contentWithLocalBlock() })
+  const confirmController = createPlanningWorkspaceController({
+    store: confirmStore,
+    projectId: () => 'project-1',
+    keyFactory: () => 'confirm-checkpoint',
+  })
+  confirmController.removeStoryBlock('block-local')
+  confirmStore.dirty = false
+  assert.equal(confirmController.canConfirm.value, true)
+  assert.equal(confirmController.canUndoStoryBlockEdit.value, true)
+  await confirmController.confirm()
+  assert.equal(confirmController.canUndoStoryBlockEdit.value, false)
+})
+
+test('late A save cannot clear B undo or publish a stale success notice', async () => {
+  let project = 'A'
+  const pending = deferred()
+  const store = createStore({ content: contentWithLocalTask() })
+  store.saveDraft = async () => await pending.promise
+  const controller = createPlanningWorkspaceController({
+    store,
+    projectId: () => project,
+    keyFactory: () => 'save-A',
+  })
+  controller.enterProject('A')
+  controller.removeSceneTask('block-1', 'stage-1', 'task-local')
+  const savingA = controller.save()
+
+  project = 'B'
+  controller.enterProject('B')
+  store.localContent = contentWithLocalTask()
+  store.dirty = false
+  controller.removeSceneTask('block-1', 'stage-1', 'task-local')
+  controller.notice.value = 'B notice'
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+
+  pending.resolve({ draftId: 'draft-A' })
+  await savingA
+
+  assert.equal(controller.canUndoStoryBlockEdit.value, true)
+  assert.equal(controller.notice.value, 'B notice')
+  assert.equal(controller.undoStoryBlockEdit(), true)
+})
+
+test('late A generate and reconcile successes cannot alter B local controller state', async () => {
+  for (const operation of ['generate', 'reconcile']) {
+    let project = 'A'
+    const pending = deferred()
+    const store = createStore({ content: completeContent() })
+    if (operation === 'generate') {
+      store.generateDraft = async () => await pending.promise
+    } else {
+      store.reconcileGeneration = async () => await pending.promise
+    }
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => project,
+      keyFactory: () => `${operation}-A`,
+    })
+    controller.enterProject('A')
+    const requestA = operation === 'generate'
+      ? controller.generate('A instructions')
+      : controller.reconcile()
+
+    project = 'B'
+    controller.enterProject('B')
+    store.localContent = contentWithLocalTask()
+    store.dirty = false
+    controller.removeSceneTask('block-1', 'stage-1', 'task-local')
+    controller.notice.value = `B ${operation} notice`
+    assert.equal(controller.canUndoStoryBlockEdit.value, true, operation)
+
+    pending.resolve({ status: 'succeeded' })
+    await requestA
+
+    assert.equal(controller.canUndoStoryBlockEdit.value, true, operation)
+    assert.equal(controller.notice.value, `B ${operation} notice`, operation)
+    assert.equal(controller.undoStoryBlockEdit(), true, operation)
+  }
+})
+
+test('hydrate create and confirm share the same stale-completion fence', async () => {
+  {
+    let project = 'A'
+    const pending = deferred()
+    const store = createStore({ content: completeContent() })
+    store.ensureLoaded = async () => await pending.promise
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => project,
+    })
+    controller.enterProject('A')
+    const hydrateA = controller.hydrate()
+
+    project = 'B'
+    controller.enterProject('B')
+    store.localContent = contentWithLocalTask()
+    store.dirty = false
+    controller.removeSceneTask('block-1', 'stage-1', 'task-local')
+    pending.resolve({ projectId: 'A' })
+    await hydrateA
+
+    assert.equal(controller.canUndoStoryBlockEdit.value, true, 'hydrate')
+  }
+
+  {
+    let project = 'A'
+    const pending = deferred()
+    const store = createStore()
+    store.state.draft = null
+    store.localContent = null
+    store.createDraft = async () => await pending.promise
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => project,
+      keyFactory: () => 'create-A',
+    })
+    controller.enterProject('A')
+    const createA = controller.createManualDraft()
+
+    project = 'B'
+    controller.enterProject('B')
+    store.localContent = null
+    controller.notice.value = 'B create notice'
+    const editCallsBefore = store.calls.length
+    pending.resolve({ draftId: 'draft-A' })
+    await createA
+
+    assert.equal(store.localContent, null, 'create local fallback')
+    assert.equal(store.calls.length, editCallsBefore, 'create edit fallback')
+    assert.equal(controller.notice.value, 'B create notice', 'create notice')
+  }
+
+  {
+    let project = 'A'
+    const pending = deferred()
+    const operations = []
+    const store = createStore({ content: contentWithLocalBlock() })
+    store.confirmDraft = async () => await pending.promise
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => project,
+      keyFactory: () => 'confirm-A',
+      operationStore: {
+        start() {
+          operations.push('start')
+          return 'confirm-operation-A'
+        },
+        finish(id) { operations.push(['finish', id]) },
+      },
+    })
+    controller.enterProject('A')
+    controller.removeStoryBlock('block-local')
+    store.dirty = false
+    const confirmA = controller.confirm()
+
+    project = 'B'
+    controller.enterProject('B')
+    store.localContent = contentWithLocalTask()
+    store.dirty = false
+    controller.removeSceneTask('block-1', 'stage-1', 'task-local')
+    controller.notice.value = 'B confirm notice'
+    pending.resolve({ revision: 2 })
+    await confirmA
+
+    assert.equal(controller.canUndoStoryBlockEdit.value, true, 'confirm')
+    assert.equal(controller.notice.value, 'B confirm notice', 'confirm notice')
+    assert.deepEqual(operations, [
+      'start',
+      ['finish', 'confirm-operation-A'],
+    ])
+  }
+})
+
 test('archived and superseded planning stay immutable while history is read-only', () => {
   const store = createStore({ content: completeContent(), archived: true })
   const controller = createPlanningWorkspaceController({
@@ -366,7 +680,7 @@ test('archived and superseded planning stay immutable while history is read-only
   assert.deepEqual(store.calls, [])
 })
 
-test('leave protection skips same-project planning tabs and prompts once elsewhere', () => {
+test('leave protection skips exactly three same-project planning tabs and prompts elsewhere', () => {
   let prompts = 0
   const store = createStore()
   store.dirty = true
@@ -379,16 +693,27 @@ test('leave protection skips same-project planning tabs and prompts once elsewhe
     },
   })
 
-  assert.equal(controller.requestRouteLeave({
-    name: 'ProjectPlanningPlots',
-    params: { projectId: 'project-1' },
-  }), true)
+  for (const name of [
+    'ProjectPlanningVolumes',
+    'ProjectPlanningPlots',
+    'ProjectPlanningStoryBlocks',
+  ]) {
+    assert.equal(controller.requestRouteLeave({
+      name,
+      params: { projectId: 'project-1' },
+    }), true)
+  }
   assert.equal(prompts, 0)
+  assert.equal(controller.requestRouteLeave({
+    name: 'ProjectPlanningStoryBlocks',
+    params: { projectId: 'project-2' },
+  }), false)
+  assert.equal(prompts, 1)
   assert.equal(controller.requestRouteLeave({
     name: 'ProjectOverview',
     params: { projectId: 'project-1' },
   }), false)
-  assert.equal(prompts, 1)
+  assert.equal(prompts, 2)
 
   const event = {
     prevented: 0,

@@ -46,6 +46,7 @@ test('canonical path builders encode project IDs and require positive chapter nu
     projectModelSettingsPath,
     projectOverviewPath,
     planningPlotsPath,
+    planningStoryBlocksPath,
     planningVolumesPath,
     projectSeedsPath,
     styleLibraryPath,
@@ -59,6 +60,10 @@ test('canonical path builders encode project IDs and require positive chapter nu
   assert.equal(projectBiblePath('a/b'), '/projects/a%2Fb/bible')
   assert.equal(planningVolumesPath('a/b'), '/projects/a%2Fb/planning/volumes')
   assert.equal(planningPlotsPath('a/b'), '/projects/a%2Fb/planning/plots')
+  assert.equal(
+    planningStoryBlocksPath('a/b'),
+    '/projects/a%2Fb/planning/story-blocks',
+  )
   assert.equal(
     projectModelSettingsPath('a/b'),
     '/projects/a%2Fb/settings/models',
@@ -101,6 +106,14 @@ test('formal route registry names only canonical destinations and catches retire
     'ProjectPlanningPlots',
   )
   assert.equal(
+    router.resolve('/projects/project-1/planning/story-blocks').name,
+    'ProjectPlanningStoryBlocks',
+  )
+  assert.equal(
+    router.resolve('/projects/project-1/planning/outlines').meta.notFound,
+    true,
+  )
+  assert.equal(
     router.resolve('/projects/project-1/settings/models').name,
     'ProjectModelSettings',
   )
@@ -131,11 +144,20 @@ test('planning tabs share one view and survive direct navigation and browser his
   const canonicalPlot = projectRoutes.find(
     route => route.name === 'ProjectPlanningPlots',
   )
+  const canonicalStoryBlocks = projectRoutes.find(
+    route => route.name === 'ProjectPlanningStoryBlocks',
+  )
   assert.equal(canonicalVolume.component, canonicalPlot.component)
+  assert.equal(canonicalVolume.component, canonicalStoryBlocks.component)
+  assert.equal(canonicalStoryBlocks.props.activeTab, 'story-blocks')
 
   const PlanningPage = { render: () => null }
   const routes = projectRoutes.map(route => (
-    ['ProjectPlanningVolumes', 'ProjectPlanningPlots'].includes(route.name)
+    [
+      'ProjectPlanningVolumes',
+      'ProjectPlanningPlots',
+      'ProjectPlanningStoryBlocks',
+    ].includes(route.name)
       ? { ...route, component: PlanningPage }
       : route
   ))
@@ -150,12 +172,14 @@ test('planning tabs share one view and survive direct navigation and browser his
 
   await router.push('/projects/project-1/planning/plots')
   assert.equal(router.currentRoute.value.name, 'ProjectPlanningPlots')
+  await router.push('/projects/project-1/planning/story-blocks')
+  assert.equal(router.currentRoute.value.name, 'ProjectPlanningStoryBlocks')
   router.back()
   await settle()
-  assert.equal(router.currentRoute.value.name, 'ProjectPlanningVolumes')
+  assert.equal(router.currentRoute.value.name, 'ProjectPlanningPlots')
   router.forward()
   await settle()
-  assert.equal(router.currentRoute.value.name, 'ProjectPlanningPlots')
+  assert.equal(router.currentRoute.value.name, 'ProjectPlanningStoryBlocks')
 })
 
 test('creative asset routes survive direct navigation and browser back/forward', async () => {

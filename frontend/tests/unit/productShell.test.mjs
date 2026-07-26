@@ -204,9 +204,14 @@ test('active and archived project contexts have different module surfaces', asyn
   )
 })
 
-test('both planning tabs select one shared project module and keep archive copy truthful', async () => {
+test('all planning tabs select one shared project module and keep archive copy truthful', async () => {
   const { createProductShellModel } = await loadShellModule()
-  for (const name of ['ProjectPlanningVolumes', 'ProjectPlanningPlots']) {
+  const titles = {
+    ProjectPlanningVolumes: '分卷规划',
+    ProjectPlanningPlots: '情节线规划',
+    ProjectPlanningStoryBlocks: '故事块规划',
+  }
+  for (const name of Object.keys(titles)) {
     const shell = createProductShellModel({
       route: route(name, '/projects/project-1/planning/volumes', {
         projectId: 'project-1',
@@ -216,7 +221,7 @@ test('both planning tabs select one shared project module and keep archive copy 
     const planning = shell.projectContext.modules.find(item => item.key === 'planning')
     assert.equal(planning.selected, true)
     assert.equal(planning.path, '/projects/project-1/planning/volumes')
-    assert.equal(shell.routeTitle, name === 'ProjectPlanningVolumes' ? '分卷规划' : '情节线规划')
+    assert.equal(shell.routeTitle, titles[name])
   }
 
   const archived = createProductShellModel({
@@ -227,6 +232,18 @@ test('both planning tabs select one shared project module and keep archive copy 
   })
   assert.equal(archived.projectContext.modules.find(item => item.key === 'planning').selected, true)
   assert.equal(archived.routeTitle, '已归档情节线规划')
+
+  const archivedStoryBlocks = createProductShellModel({
+    route: route('ProjectPlanningStoryBlocks', '/projects/old/planning/story-blocks', {
+      projectId: 'old',
+    }),
+    project: { id: 'old', title: '旧稿', archivedAt: 1 },
+  })
+  assert.equal(
+    archivedStoryBlocks.projectContext.modules.find(item => item.key === 'planning').selected,
+    true,
+  )
+  assert.equal(archivedStoryBlocks.routeTitle, '已归档故事块规划')
 })
 
 test('desktop breakpoint collapses navigation without removing the route title', async () => {

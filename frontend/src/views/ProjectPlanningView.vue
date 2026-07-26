@@ -8,27 +8,33 @@ import { useAppMessage } from '../composables/useAppMessage.js'
 import { useRouteProject } from '../composables/useRouteProject.js'
 import {
   planningPlotsPath,
+  planningStoryBlocksPath,
   planningVolumesPath,
 } from '../router/projectRoutes.js'
 import { useOperationStore } from '../stores/operationStore.js'
 import { usePlanningStore } from '../stores/planningStore.js'
 import NotFoundView from './NotFoundView.vue'
 
+const props = defineProps({
+  activeTab: {
+    type: String,
+    default: '',
+    validator: value => ['', 'volumes', 'plots', 'story-blocks'].includes(value),
+  },
+})
 const route = useRoute()
 const routeProject = useRouteProject()
 const planningStore = usePlanningStore()
 const operationStore = useOperationStore()
 const message = useAppMessage()
 const projectId = computed(() => String(route.params.projectId || ''))
-const PLANNING_ROUTE_NAMES = Object.freeze([
-  'ProjectPlanningVolumes',
-  'ProjectPlanningPlots',
-])
+const ROUTE_TABS = Object.freeze({
+  ProjectPlanningVolumes: 'volumes',
+  ProjectPlanningPlots: 'plots',
+  ProjectPlanningStoryBlocks: 'story-blocks',
+})
 const activeTab = computed(() => (
-  PLANNING_ROUTE_NAMES.includes(String(route.name))
-  && route.name === 'ProjectPlanningPlots'
-    ? 'plots'
-    : 'volumes'
+  props.activeTab || ROUTE_TABS[String(route.name)] || 'volumes'
 ))
 
 const controller = createPlanningWorkspaceController({
@@ -87,6 +93,12 @@ onBeforeUnmount(() => (
         :aria-current="activeTab === 'plots' ? 'page' : undefined"
       >
         情节线
+      </router-link>
+      <router-link
+        :to="planningStoryBlocksPath(projectId)"
+        :aria-current="activeTab === 'story-blocks' ? 'page' : undefined"
+      >
+        故事块
       </router-link>
     </nav>
 

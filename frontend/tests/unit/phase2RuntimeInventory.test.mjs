@@ -26,6 +26,7 @@ const CANONICAL_ROUTES = [
   ['/projects/:projectId/bible', 'ProjectBible'],
   ['/projects/:projectId/planning/volumes', 'ProjectPlanningVolumes'],
   ['/projects/:projectId/planning/plots', 'ProjectPlanningPlots'],
+  ['/projects/:projectId/planning/story-blocks', 'ProjectPlanningStoryBlocks'],
   ['/projects/:projectId/write/chapters/:chapterNumber([1-9]\\d*)', 'ChapterWriter'],
   ['/settings/providers', 'ProviderSettings'],
   ['/settings/application', 'ApplicationSettings'],
@@ -160,6 +161,7 @@ const CANONICAL_RUNTIME = [
   'stores/creationContractStore.js',
   'stores/planningStore.js',
   'components/planning/PlanningWorkspace.vue',
+  'components/planning/StoryBlockEditor.vue',
   'api/ai/providerPresets.js',
 ]
 
@@ -186,7 +188,7 @@ const PRESERVED_FUTURE_RUNTIME = [
   'components/project/WriterCoreStateCard.vue',
 ]
 
-test('planning foundation keeps one store and one workspace without retired initial or V2 paths', async () => {
+test('planning foundation keeps one store, one workspace and the active story-block editor without outlines', async () => {
   const readSource = relativePath => readFile(
     path.join(sourceRoot, relativePath),
     'utf8',
@@ -206,6 +208,8 @@ test('planning foundation keeps one store and one workspace without retired init
   assert.match(workspace, /重新加载/)
   assert.match(workspace, /v-else-if="!store\.state"/)
   assert.doesNotMatch(workspace, /useVolumeStore|usePlotStore/)
+  assert.match(workspace, /StoryBlockEditor/)
+  assert.doesNotMatch(workspace, /outlines|useStoryBlockStore/)
   await assert.rejects(
     access(path.join(sourceRoot, 'components/planning/PlanningWorkspaceV2.vue')),
   )
