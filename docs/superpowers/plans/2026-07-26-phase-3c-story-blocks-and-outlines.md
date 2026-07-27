@@ -681,6 +681,8 @@ git commit -m "feat: add chapter outline provider boundary"
 - Modify: `backend/tests/unit/test_planning_generation_service.py`
 - Modify: `backend/tests/integration/test_planning_generation.py`
 - Modify: `backend/tests/api/test_chapter_outline_routes.py`
+- Modify: `backend/tests/api/test_route_inventory.py`
+- Modify: `backend/tests/integration/test_project_archive.py`
 - Modify: `backend/tests/unit/test_main_lifespan.py`
 
 - [ ] **Step 1: Write generation RED tests**
@@ -783,8 +785,8 @@ Any authority drift calls `supersede_attempt`; Provider/parse failures call
 - [ ] **Step 5: Run GREEN and commit**
 
 ```powershell
-python -m pytest backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py backend/tests/unit/test_main_lifespan.py -q
-git add -- backend/services/chapter_outline_generation.py backend/repositories/planning.py backend/services/planning_generation.py backend/routers/chapter_outlines.py backend/main.py backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py backend/tests/unit/test_main_lifespan.py
+python -m pytest backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py backend/tests/api/test_route_inventory.py backend/tests/integration/test_project_archive.py backend/tests/unit/test_main_lifespan.py -q
+git add -- backend/services/chapter_outline_generation.py backend/repositories/planning.py backend/services/planning_generation.py backend/routers/chapter_outlines.py backend/main.py backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py backend/tests/api/test_route_inventory.py backend/tests/integration/test_project_archive.py backend/tests/unit/test_main_lifespan.py
 git commit -m "feat: generate chapter outlines safely"
 ```
 
