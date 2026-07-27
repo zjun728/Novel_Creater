@@ -1,59 +1,54 @@
-"""One strict OpenAI-compatible outbound boundary for Planning generation."""
+"""One strict OpenAI-compatible boundary for ChapterOutline generation."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
-from typing import Protocol, TypeAlias, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import httpx
 from pydantic import ValidationError
 
-from backend.domain.planning import DraftPlanningAggregate
+from backend.domain.chapter_outlines import EditableChapterOutlineContent
 from backend.gateways.openai_json_transport import (
     openai_chat_completions_endpoint,
     request_openai_json,
 )
-from backend.prompts.planning import (
-    PlanningGenerationManifest,
-    build_planning_messages,
+from backend.gateways.planning_provider import PublicProviderRuntime
+from backend.prompts.chapter_outline import (
+    ChapterOutlineGenerationManifest,
+    build_chapter_outline_messages,
 )
 
 
 PROVIDER_TIMEOUT_SECONDS = 180
 MAX_PROVIDER_RESPONSE_BYTES = 128 * 1024
-_SAFE_ERROR = "Planning provider failed"
-
-# Retain the repository's Mapping-based Provider runtime convention instead of
-# introducing a second Provider DTO.
-PublicProviderRuntime: TypeAlias = Mapping[str, object]
+_SAFE_ERROR = "Chapter outline provider failed"
 
 
 @runtime_checkable
-class PlanningProvider(Protocol):
+class ChapterOutlineProvider(Protocol):
     async def generate(
         self,
         *,
         provider: PublicProviderRuntime,
         model_name: str,
-        manifest: PlanningGenerationManifest,
-        author_instructions: str,
-    ) -> dict[str, object]: ...
+        manifest: ChapterOutlineGenerationManifest,
+    ) -> EditableChapterOutlineContent: ...
 
 
-class PlanningProviderError(RuntimeError):
-    """Fixed failure category; no prompt or Provider detail crosses it."""
+class ChapterOutlineProviderError(RuntimeError):
+    """Fixed safe category; no prompt or Provider detail crosses it."""
 
 
 def _raise_safe_provider_error() -> None:
-    raise PlanningProviderError(_SAFE_ERROR)
+    raise ChapterOutlineProviderError(_SAFE_ERROR)
 
 
 def _raise_clean_cancelled_error() -> None:
     raise asyncio.CancelledError()
 
 
-class PlanningProviderGateway:
+class ChapterOutlineProviderGateway:
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None):
         self._transport = transport
 
@@ -66,29 +61,37 @@ class PlanningProviderGateway:
         *,
         provider: PublicProviderRuntime,
         model_name: str,
-        manifest: PlanningGenerationManifest,
-        author_instructions: str,
-    ) -> dict[str, object]:
+        manifest: ChapterOutlineGenerationManifest,
+    ) -> EditableChapterOutlineContent:
         failed = False
         cancelled = False
         frozen_manifest = None
-        frozen_draft = None
         messages = None
+        provider_id = None
         transport_result = None
         value = None
-        draft = None
         result = None
 
         try:
-            frozen_manifest = PlanningGenerationManifest.model_validate(
-                manifest,
-                strict=True,
+            frozen_manifest = (
+                ChapterOutlineGenerationManifest.model_validate(
+                    manifest,
+                    strict=True,
+                )
             )
-            messages = build_planning_messages(
-                manifest=frozen_manifest,
-                author_instructions=author_instructions,
+            provider_id = provider.get("id")
+            if (
+                not isinstance(provider_id, str)
+                or not provider_id.strip()
+                or not isinstance(model_name, str)
+                or frozen_manifest.binding.provider_id
+                != provider_id.strip()
+                or frozen_manifest.binding.model_name != model_name.strip()
+            ):
+                raise ValueError(_SAFE_ERROR)
+            messages = build_chapter_outline_messages(
+                manifest=frozen_manifest
             )
-            frozen_draft = frozen_manifest.draft
         except (
             AttributeError,
             KeyError,
@@ -124,24 +127,12 @@ class PlanningProviderGateway:
             try:
                 if not isinstance(value, dict):
                     raise TypeError(_SAFE_ERROR)
-                draft = DraftPlanningAggregate.model_validate(
+                result = EditableChapterOutlineContent.model_validate(
                     value,
                     strict=True,
                 )
-                if (
-                    draft.active_story_block_ref
-                    != frozen_draft.active_story_block_ref
-                    or draft.story_blocks != frozen_draft.story_blocks
-                ):
+                if not self._has_exact_refs(result, frozen_manifest):
                     raise ValueError(_SAFE_ERROR)
-                result = draft.model_dump(
-                    mode="json",
-                    by_alias=True,
-                    exclude_none=True,
-                )
-                result["activeStoryBlockRef"] = (
-                    draft.active_story_block_ref
-                )
             except (
                 UnicodeError,
                 ValueError,
@@ -157,13 +148,11 @@ class PlanningProviderGateway:
             provider = None
             model_name = None
             manifest = None
-            author_instructions = None
             frozen_manifest = None
-            frozen_draft = None
             messages = None
+            provider_id = None
             transport_result = None
             value = None
-            draft = None
             result = None
             self = None
             if cancelled:
@@ -173,13 +162,50 @@ class PlanningProviderGateway:
         assert result is not None
         return result
 
+    @staticmethod
+    def _has_exact_refs(
+        result: EditableChapterOutlineContent,
+        manifest: ChapterOutlineGenerationManifest,
+    ) -> bool:
+        def matches(ref, node) -> bool:
+            return (
+                ref is not None
+                and ref.id == node.id
+                and ref.revision == node.revision
+                and ref.content_hash == node.content_hash
+            )
+
+        return (
+            matches(result.volume_ref, manifest.volume)
+            and matches(result.story_block_ref, manifest.story_block)
+            and len(result.stage_refs) == len(manifest.allowed_stages)
+            and all(
+                matches(ref, node)
+                for ref, node in zip(
+                    result.stage_refs,
+                    manifest.allowed_stages,
+                    strict=True,
+                )
+            )
+            and len(result.scene_task_refs)
+            == len(manifest.allowed_scene_tasks)
+            and all(
+                matches(ref, node)
+                for ref, node in zip(
+                    result.scene_task_refs,
+                    manifest.allowed_scene_tasks,
+                    strict=True,
+                )
+            )
+        )
+
 
 __all__ = (
     "MAX_PROVIDER_RESPONSE_BYTES",
     "PROVIDER_TIMEOUT_SECONDS",
-    "PlanningGenerationManifest",
-    "PlanningProvider",
-    "PlanningProviderError",
-    "PlanningProviderGateway",
+    "ChapterOutlineGenerationManifest",
+    "ChapterOutlineProvider",
+    "ChapterOutlineProviderError",
+    "ChapterOutlineProviderGateway",
     "PublicProviderRuntime",
 )

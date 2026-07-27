@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import importlib
+import json
+from types import TracebackType
 from urllib.parse import quote
 
+import httpx
 import pytest
 
 
@@ -12,6 +16,82 @@ def _scanner(name):
     if scanner is None:
         pytest.fail(f"shared Provider response scanner is missing: {name}")
     return scanner
+
+
+def _assert_no_sensitive_error_graph(
+    error: BaseException,
+    sentinels: tuple[str, ...],
+) -> None:
+    """Inspect every recoverable production error reference for secrets."""
+
+    pending: list[tuple[object, int]] = [(error, 0)]
+    seen: set[int] = set()
+    evidence: list[str] = []
+    while pending:
+        value, depth = pending.pop()
+        if value is None or depth > 24 or id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, str):
+            evidence.append(value)
+            continue
+        if isinstance(value, bytes):
+            evidence.append(value.decode("utf-8", errors="replace"))
+            continue
+        if isinstance(value, BaseException):
+            evidence.extend((type(value).__name__, str(value)))
+            pending.extend(
+                (
+                    (value.args, depth + 1),
+                    (value.__cause__, depth + 1),
+                    (value.__context__, depth + 1),
+                    (value.__traceback__, depth + 1),
+                    (vars(value), depth + 1),
+                )
+            )
+            if isinstance(value, json.JSONDecodeError):
+                pending.append((value.doc, depth + 1))
+            if isinstance(value, httpx.HTTPError):
+                try:
+                    pending.append((value.request, depth + 1))
+                except RuntimeError:
+                    pass
+                pending.append((getattr(value, "response", None), depth + 1))
+            continue
+        if isinstance(value, TracebackType):
+            filename = value.tb_frame.f_code.co_filename.replace("\\", "/")
+            if "/backend/tests/" not in filename:
+                pending.append((value.tb_frame.f_locals, depth + 1))
+            pending.append((value.tb_next, depth + 1))
+            continue
+        if isinstance(value, httpx.Request):
+            pending.extend(
+                (
+                    (dict(value.headers), depth + 1),
+                    (value.content, depth + 1),
+                    (str(value.url), depth + 1),
+                )
+            )
+            continue
+        if isinstance(value, httpx.Response):
+            pending.extend(
+                (
+                    (dict(value.headers), depth + 1),
+                    (value.content, depth + 1),
+                    (value.request, depth + 1),
+                )
+            )
+            continue
+        if isinstance(value, Mapping):
+            pending.extend((item, depth + 1) for item in value.items())
+            continue
+        if isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend((item, depth + 1) for item in value)
+
+    joined = "\n".join(evidence)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert all(sentinel not in joined for sentinel in sentinels)
 
 
 def test_provider_response_text_validation_requires_str_nonblank_strict_utf8():
@@ -95,3 +175,31 @@ def test_decoded_response_scanner_fails_closed_on_excessive_structure():
 
     with pytest.raises(ValueError, match="response structure exceeds scan limits"):
         scanner(payload, ("short",), max_depth=32)
+
+
+@pytest.mark.parametrize(
+    "secret_path",
+    (
+        ("storyBlockRef", "id"),
+        ("stageRefs", 0, "id"),
+        ("sceneTaskRefs", 0, "contentHash"),
+        ("scenes", 0),
+    ),
+)
+def test_decoded_response_scanner_covers_complete_outline_content(
+    secret_path,
+):
+    scanner = _scanner("provider_response_value_contains_secret")
+    secret = "long-outline-provider-secret"
+    payload = {
+        "storyBlockRef": {"id": "block-1", "contentHash": "a" * 64},
+        "stageRefs": [{"id": "stage-1", "contentHash": "b" * 64}],
+        "sceneTaskRefs": [{"id": "task-1", "contentHash": "c" * 64}],
+        "scenes": ["ordinary scene"],
+    }
+    target = payload
+    for part in secret_path[:-1]:
+        target = target[part]
+    target[secret_path[-1]] = f"prefix {secret} suffix"
+
+    assert scanner(payload, (secret,)) is True

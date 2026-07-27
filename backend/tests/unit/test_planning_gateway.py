@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import importlib
 import json
 
 import httpx
@@ -10,6 +12,9 @@ from backend.gateways.planning_provider import (
     PlanningProvider,
     PlanningProviderError,
     PlanningProviderGateway,
+)
+from backend.tests.unit.test_provider_response_secret_scanning import (
+    _assert_no_sensitive_error_graph,
 )
 
 
@@ -189,6 +194,61 @@ def _response(payload: object, *, request: httpx.Request) -> httpx.Response:
         },
         request=request,
     )
+
+
+class _StaticRawStream(httpx.AsyncByteStream):
+    def __init__(self, content: bytes):
+        self.content = content
+
+    async def __aiter__(self):
+        yield self.content
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _CloseAwareTransport(httpx.AsyncBaseTransport):
+    def __init__(self, *, overlap: bool = False):
+        self.calls = 0
+        self.close_calls = 0
+        self.overlap = overlap
+        self._both_entered = asyncio.Event()
+
+    async def handle_async_request(
+        self,
+        request: httpx.Request,
+    ) -> httpx.Response:
+        if self.close_calls:
+            raise RuntimeError("borrowed transport was already closed")
+        self.calls += 1
+        if self.overlap:
+            if self.calls == 2:
+                self._both_entered.set()
+            await self._both_entered.wait()
+        prepared = _response(_planning_payload(), request=request)
+        return httpx.Response(
+            prepared.status_code,
+            headers=prepared.headers,
+            stream=_StaticRawStream(prepared.content),
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+class _NeverReadCompressedStream(httpx.AsyncByteStream):
+    def __init__(self):
+        self.iterated = False
+        self.closed = False
+
+    async def __aiter__(self):
+        self.iterated = True
+        raise AssertionError("compressed response body must not be read")
+        yield b"unreachable"
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def test_concrete_gateway_satisfies_the_public_planning_provider_protocol():
@@ -584,3 +644,263 @@ async def test_gateway_retains_required_nullable_active_story_block_ref():
     assert "activeStoryBlockRef" in result
     assert result["activeStoryBlockRef"] is None
     assert DraftPlanningAggregate.model_validate(result, strict=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    ("transport", "http", "json", "envelope", "domain"),
+)
+async def test_planning_safe_error_releases_all_sensitive_exception_references(
+    failure,
+    caplog,
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "transport":
+            raise httpx.ConnectError(
+                "REMOTE_FAILURE_SENTINEL",
+                request=request,
+            )
+        if failure == "http":
+            return httpx.Response(
+                503,
+                content=b"RAW_HTTP_BODY_SENTINEL",
+                request=request,
+            )
+        if failure == "json":
+            return httpx.Response(
+                200,
+                content=b'{"RAW_RESPONSE_SENTINEL":',
+                request=request,
+            )
+        if failure == "envelope":
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [],
+                    "raw": "DECODED_ENVELOPE_SENTINEL",
+                },
+                request=request,
+            )
+        payload = {
+            **_planning_payload(),
+            "providerExtra": "DECODED_VALUE_SENTINEL",
+        }
+        return _response(payload, request=request)
+
+    with pytest.raises(PlanningProviderError) as caught:
+        await PlanningProviderGateway(
+            transport=httpx.MockTransport(handler)
+        ).generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions="AUTHOR_INSTRUCTION_SENTINEL",
+        )
+
+    _assert_no_sensitive_error_graph(
+        caught.value,
+        (
+            "PRIVATE_API_KEY_SENTINEL",
+            "AUTHOR_INSTRUCTION_SENTINEL",
+            "REMOTE_FAILURE_SENTINEL",
+            "RAW_HTTP_BODY_SENTINEL",
+            "RAW_RESPONSE_SENTINEL",
+            "DECODED_ENVELOPE_SENTINEL",
+            "DECODED_VALUE_SENTINEL",
+            "Authorization",
+        ),
+    )
+    assert caplog.text == ""
+
+
+@pytest.mark.asyncio
+async def test_planning_gateway_uses_the_shared_bounded_json_transport(
+    monkeypatch,
+):
+    module = importlib.import_module("backend.gateways.planning_provider")
+    try:
+        shared = importlib.import_module(
+            "backend.gateways.openai_json_transport"
+        )
+    except ModuleNotFoundError:
+        pytest.fail("shared OpenAI JSON transport is missing")
+    calls = []
+
+    async def fake_transport(**kwargs):
+        calls.append(kwargs)
+        return shared.OpenAIJSONTransportResult(
+            succeeded=True,
+            value=_planning_payload(),
+        )
+
+    monkeypatch.setattr(module, "request_openai_json", fake_transport)
+    result = await PlanningProviderGateway().generate(
+        provider=_provider(),
+        model_name="planning-model",
+        manifest=_manifest(),
+        author_instructions="AUTHOR_INSTRUCTION_SENTINEL",
+    )
+
+    assert result == _planning_payload()
+    assert len(calls) == 1
+    assert calls[0]["provider"] == _provider()
+    assert calls[0]["model_name"] == "planning-model"
+    assert calls[0]["max_response_bytes"] == module.MAX_PROVIDER_RESPONSE_BYTES
+    assert calls[0]["timeout_seconds"] == module.PROVIDER_TIMEOUT_SECONDS
+    assert [item["role"] for item in calls[0]["messages"]] == [
+        "system",
+        "user",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_planning_cancellation_returns_fresh_secret_free_cancelled_error():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        entered.set()
+        await release.wait()
+        return _response(_planning_payload(), request=request)
+
+    task = asyncio.create_task(
+        PlanningProviderGateway(
+            transport=httpx.MockTransport(handler)
+        ).generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions=(
+                "AUTHOR_INSTRUCTION_SENTINEL "
+                "RAW_CANCELLATION_SENTINEL"
+            ),
+        )
+    )
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+
+    assert task.cancelled() is True
+    _assert_no_sensitive_error_graph(
+        caught.value,
+        (
+            "PRIVATE_API_KEY_SENTINEL",
+            "https://provider.example/v1",
+            "AUTHOR_INSTRUCTION_SENTINEL",
+            "RAW_CANCELLATION_SENTINEL",
+            "authorization",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collision", ("api_key", "base_url"))
+async def test_complete_request_body_is_secret_scanned_before_transport(
+    collision,
+):
+    provider = _provider()
+    calls = []
+    model_name = str(provider[collision])
+
+    with pytest.raises(PlanningProviderError):
+        await PlanningProviderGateway(
+            transport=httpx.MockTransport(
+                lambda request: calls.append(request)
+                or _response(_planning_payload(), request=request)
+            )
+        ).generate(
+            provider=provider,
+            model_name=model_name,
+            manifest=_manifest(),
+            author_instructions="ordinary",
+        )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content_encoding", ("gzip", "br"))
+async def test_nonidentity_content_encoding_is_rejected_without_body_read(
+    content_encoding,
+):
+    stream = _NeverReadCompressedStream()
+    accept_encoding = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        accept_encoding.append(request.headers.get("accept-encoding"))
+        return httpx.Response(
+            200,
+            headers={
+                "content-encoding": content_encoding,
+                "content-length": "64",
+            },
+            stream=stream,
+            request=request,
+        )
+
+    with pytest.raises(PlanningProviderError):
+        await PlanningProviderGateway(
+            transport=httpx.MockTransport(handler)
+        ).generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions="ordinary",
+        )
+
+    assert accept_encoding == ["identity"]
+    assert stream.iterated is False
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
+async def test_injected_transport_is_borrowed_across_sequential_calls():
+    transport = _CloseAwareTransport()
+    gateway = PlanningProviderGateway(transport=transport)
+
+    first = await gateway.generate(
+        provider=_provider(),
+        model_name="planning-model",
+        manifest=_manifest(),
+        author_instructions="first",
+    )
+    second = await gateway.generate(
+        provider=_provider(),
+        model_name="planning-model",
+        manifest=_manifest(),
+        author_instructions="second",
+    )
+
+    assert first == _planning_payload()
+    assert second == _planning_payload()
+    assert transport.calls == 2
+    assert transport.close_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_injected_transport_is_borrowed_across_overlapping_calls():
+    transport = _CloseAwareTransport(overlap=True)
+    gateway = PlanningProviderGateway(transport=transport)
+
+    first, second = await asyncio.gather(
+        gateway.generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions="first",
+        ),
+        gateway.generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions="second",
+        ),
+    )
+
+    assert first == _planning_payload()
+    assert second == _planning_payload()
+    assert transport.calls == 2
+    assert transport.close_calls == 0
