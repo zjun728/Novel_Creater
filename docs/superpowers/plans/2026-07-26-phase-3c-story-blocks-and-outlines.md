@@ -674,12 +674,14 @@ git commit -m "feat: add chapter outline provider boundary"
 - Modify: `backend/repositories/planning.py`
 - Modify: `backend/services/planning_generation.py`
 - Modify: `backend/routers/chapter_outlines.py`
+- Modify: `backend/main.py`
 - Create: `backend/tests/unit/test_chapter_outline_generation_service.py`
 - Create: `backend/tests/integration/test_chapter_outline_generation.py`
 - Modify: `backend/tests/unit/test_planning_repository.py`
 - Modify: `backend/tests/unit/test_planning_generation_service.py`
 - Modify: `backend/tests/integration/test_planning_generation.py`
 - Modify: `backend/tests/api/test_chapter_outline_routes.py`
+- Modify: `backend/tests/unit/test_main_lifespan.py`
 
 - [ ] **Step 1: Write generation RED tests**
 
@@ -715,6 +717,13 @@ GET  /api/projects/{pid}/chapter-outlines/operations/{operation_id}
 ```
 
 Cover same-key replay, different-fingerprint conflict, one pending attempt, expired lease, cancellation, Provider/parse failure, Draft save during generation, chapter/Planning/Canon/Projection/binding/lifecycle drift, stale fence, exact successful load, and read-only operation lookup with no hidden retry.
+
+Because Task 6 made Provider gateways explicit lifecycle resources, registering
+the Outline generation service also registers one exact production Outline
+gateway handle. The FastAPI lifespan starts it after the Planning gateway and
+closes it before the Planning gateway. Cover partial startup rollback, repeated
+lifespans, active-call drain, cleanup failure, and repeated shutdown
+cancellation. Do not create a second Outline gateway in `main.py`.
 
 - [ ] **Step 2: Add Planning drift regression RED tests**
 
@@ -755,10 +764,17 @@ Call `ChapterOutlineProvider.generate()` after the transaction closes.
 Publish transaction:
 
 ```text
-attempt -> project -> chapter authority -> Planning -> Canon/Projection
--> Outline Head/Draft -> binding -> validate output
+project -> chapter authority -> Planning -> Canon/Projection
+-> Outline Head/Draft -> binding -> attempt -> validate output
 -> joined CAS loads exact Draft and marks attempt succeeded -> commit
 ```
+
+This follows the approved global lock order. A non-locking lookup may recover
+the project identity for an operation, but every `FOR UPDATE` attempt lock and
+every terminal attempt update occurs only after the project and upstream
+authority locks. Reserve, publish, failure settlement, confirmation, Session
+creation, and archive paths must never acquire project and attempt locks in the
+opposite order.
 
 Any authority drift calls `supersede_attempt`; Provider/parse failures call
 `fail_attempt`; only the joined Draft/attempt CAS can produce
@@ -767,8 +783,8 @@ Any authority drift calls `supersede_attempt`; Provider/parse failures call
 - [ ] **Step 5: Run GREEN and commit**
 
 ```powershell
-python -m pytest backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py -q
-git add -- backend/services/chapter_outline_generation.py backend/repositories/planning.py backend/services/planning_generation.py backend/routers/chapter_outlines.py backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py
+python -m pytest backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py backend/tests/unit/test_main_lifespan.py -q
+git add -- backend/services/chapter_outline_generation.py backend/repositories/planning.py backend/services/planning_generation.py backend/routers/chapter_outlines.py backend/main.py backend/tests/unit/test_chapter_outline_generation_service.py backend/tests/integration/test_chapter_outline_generation.py backend/tests/unit/test_planning_repository.py backend/tests/unit/test_planning_generation_service.py backend/tests/integration/test_planning_generation.py backend/tests/api/test_chapter_outline_routes.py backend/tests/unit/test_main_lifespan.py
 git commit -m "feat: generate chapter outlines safely"
 ```
 
