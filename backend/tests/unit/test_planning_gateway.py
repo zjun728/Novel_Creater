@@ -196,6 +196,17 @@ def _response(payload: object, *, request: httpx.Request) -> httpx.Response:
     )
 
 
+async def _generate_once(
+    gateway: PlanningProviderGateway,
+    **kwargs,
+):
+    await gateway.start()
+    try:
+        return await gateway.generate(**kwargs)
+    finally:
+        await gateway.aclose()
+
+
 class _StaticRawStream(httpx.AsyncByteStream):
     def __init__(self, content: bytes):
         self.content = content
@@ -274,9 +285,11 @@ async def test_gateway_makes_one_bounded_json_call_and_returns_only_closed_paylo
         requests.append(request)
         return _response(_planning_payload(), request=request)
 
-    result = await PlanningProviderGateway(
+    gateway = PlanningProviderGateway(
         transport=httpx.MockTransport(handler)
-    ).generate(
+    )
+    result = await _generate_once(
+        gateway,
         provider=_provider(),
         model_name="planning-model",
         manifest=_manifest(),
@@ -352,7 +365,8 @@ async def test_gateway_rejects_extra_top_level_and_nested_provider_fields(
         )
     )
     with pytest.raises(PlanningProviderError) as caught:
-        await gateway.generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=_manifest(),
@@ -389,7 +403,8 @@ async def test_gateway_maps_every_malformed_response_to_one_fixed_safe_error(
     )
 
     with pytest.raises(PlanningProviderError) as caught:
-        await gateway.generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=_manifest(),
@@ -425,7 +440,8 @@ async def test_gateway_rejects_provider_secret_echo_without_returning_or_logging
     )
 
     with pytest.raises(PlanningProviderError) as caught:
-        await gateway.generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=_manifest(),
@@ -450,7 +466,8 @@ async def test_gateway_rejects_rewritten_frozen_story_block_content(caplog):
     )
 
     with pytest.raises(PlanningProviderError) as caught:
-        await gateway.generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=_manifest(),
@@ -470,9 +487,11 @@ async def test_gateway_holds_the_initial_manifest_snapshot_across_the_await():
         manifest["draft"]["storyBlocks"][0]["title"] = "later mutation"
         return _response(_planning_payload(), request=request)
 
-    result = await PlanningProviderGateway(
+    gateway = PlanningProviderGateway(
         transport=httpx.MockTransport(handler)
-    ).generate(
+    )
+    result = await _generate_once(
+        gateway,
         provider=_provider(),
         model_name="planning-model",
         manifest=manifest,
@@ -503,7 +522,8 @@ async def test_gateway_maps_http_and_runtime_configuration_failures_to_same_erro
 
     for provider in (_provider(), invalid_runtime):
         with pytest.raises(PlanningProviderError) as caught:
-            await gateway.generate(
+            await _generate_once(
+                gateway,
                 provider=provider,
                 model_name="planning-model",
                 manifest=_manifest(),
@@ -540,7 +560,8 @@ async def test_gateway_rejects_runtime_secret_in_allowed_manifest_field_before_r
     )
 
     with pytest.raises(PlanningProviderError) as caught:
-        await gateway.generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=manifest,
@@ -579,7 +600,8 @@ async def test_gateway_rejects_invalid_manifest_before_provider_call(
     )
 
     with pytest.raises(PlanningProviderError) as caught:
-        await gateway.generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=manifest,
@@ -608,7 +630,8 @@ async def test_gateway_maps_malformed_url_to_fixed_error_without_echo(caplog):
     )
 
     with pytest.raises(PlanningProviderError) as caught:
-        await gateway.generate(
+        await _generate_once(
+            gateway,
             provider=provider,
             model_name="planning-model",
             manifest=_manifest(),
@@ -634,7 +657,8 @@ async def test_gateway_retains_required_nullable_active_story_block_ref():
         )
     )
 
-    result = await gateway.generate(
+    result = await _generate_once(
+        gateway,
         provider=_provider(),
         model_name="planning-model",
         manifest=manifest,
@@ -688,10 +712,12 @@ async def test_planning_safe_error_releases_all_sensitive_exception_references(
         }
         return _response(payload, request=request)
 
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(handler)
+    )
     with pytest.raises(PlanningProviderError) as caught:
-        await PlanningProviderGateway(
-            transport=httpx.MockTransport(handler)
-        ).generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=_manifest(),
@@ -725,30 +751,70 @@ async def test_planning_gateway_uses_the_shared_bounded_json_transport(
         )
     except ModuleNotFoundError:
         pytest.fail("shared OpenAI JSON transport is missing")
-    calls = []
+    instances = []
 
-    async def fake_transport(**kwargs):
-        calls.append(kwargs)
-        return shared.OpenAIJSONTransportResult(
-            succeeded=True,
-            value=_planning_payload(),
-        )
+    class RecordingResource:
+        def __init__(
+            self,
+            *,
+            transport,
+            timeout_seconds,
+            response_byte_limit,
+        ):
+            self.transport = transport
+            self.timeout_seconds = timeout_seconds
+            self.response_byte_limit = response_byte_limit
+            self.start_calls = 0
+            self.close_calls = 0
+            self.requests = []
+            instances.append(self)
 
-    monkeypatch.setattr(module, "request_openai_json", fake_transport)
-    result = await PlanningProviderGateway().generate(
+        async def start(self):
+            self.start_calls += 1
+
+        async def aclose(self):
+            self.close_calls += 1
+
+        async def request(self, **kwargs):
+            self.requests.append(kwargs)
+            return shared.OpenAIJSONTransportResult(
+                succeeded=True,
+                value=_planning_payload(),
+            )
+
+    monkeypatch.setattr(module, "OpenAIJSONTransport", RecordingResource)
+    borrowed = httpx.MockTransport(
+        lambda request: _response(_planning_payload(), request=request)
+    )
+    gateway = PlanningProviderGateway(transport=borrowed)
+    await gateway.start()
+    result = await gateway.generate(
         provider=_provider(),
         model_name="planning-model",
         manifest=_manifest(),
         author_instructions="AUTHOR_INSTRUCTION_SENTINEL",
     )
+    second = await gateway.generate(
+        provider=_provider(),
+        model_name="planning-model",
+        manifest=_manifest(),
+        author_instructions="second",
+    )
+    await gateway.aclose()
 
     assert result == _planning_payload()
-    assert len(calls) == 1
-    assert calls[0]["provider"] == _provider()
-    assert calls[0]["model_name"] == "planning-model"
-    assert calls[0]["max_response_bytes"] == module.MAX_PROVIDER_RESPONSE_BYTES
-    assert calls[0]["timeout_seconds"] == module.PROVIDER_TIMEOUT_SECONDS
-    assert [item["role"] for item in calls[0]["messages"]] == [
+    assert second == _planning_payload()
+    assert len(instances) == 1
+    resource = instances[0]
+    assert resource.transport is borrowed
+    assert resource.timeout_seconds == module.PROVIDER_TIMEOUT_SECONDS
+    assert resource.response_byte_limit == module.MAX_PROVIDER_RESPONSE_BYTES
+    assert resource.start_calls == 1
+    assert resource.close_calls == 1
+    assert len(resource.requests) == 2
+    assert resource.requests[0]["provider"] == _provider()
+    assert resource.requests[0]["model_name"] == "planning-model"
+    assert [item["role"] for item in resource.requests[0]["messages"]] == [
         "system",
         "user",
     ]
@@ -764,10 +830,12 @@ async def test_planning_cancellation_returns_fresh_secret_free_cancelled_error()
         await release.wait()
         return _response(_planning_payload(), request=request)
 
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(handler)
+    )
+    await gateway.start()
     task = asyncio.create_task(
-        PlanningProviderGateway(
-            transport=httpx.MockTransport(handler)
-        ).generate(
+        gateway.generate(
             provider=_provider(),
             model_name="planning-model",
             manifest=_manifest(),
@@ -777,23 +845,27 @@ async def test_planning_cancellation_returns_fresh_secret_free_cancelled_error()
             ),
         )
     )
-    await entered.wait()
-    task.cancel()
+    try:
+        await entered.wait()
+        task.cancel()
 
-    with pytest.raises(asyncio.CancelledError) as caught:
-        await task
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
 
-    assert task.cancelled() is True
-    _assert_no_sensitive_error_graph(
-        caught.value,
-        (
-            "PRIVATE_API_KEY_SENTINEL",
-            "https://provider.example/v1",
-            "AUTHOR_INSTRUCTION_SENTINEL",
-            "RAW_CANCELLATION_SENTINEL",
-            "authorization",
-        ),
-    )
+        assert task.cancelled() is True
+        _assert_no_sensitive_error_graph(
+            caught.value,
+            (
+                "PRIVATE_API_KEY_SENTINEL",
+                "https://provider.example/v1",
+                "AUTHOR_INSTRUCTION_SENTINEL",
+                "RAW_CANCELLATION_SENTINEL",
+                "authorization",
+            ),
+        )
+    finally:
+        release.set()
+        await gateway.aclose()
 
 
 @pytest.mark.asyncio
@@ -805,13 +877,15 @@ async def test_complete_request_body_is_secret_scanned_before_transport(
     calls = []
     model_name = str(provider[collision])
 
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: calls.append(request)
+            or _response(_planning_payload(), request=request)
+        )
+    )
     with pytest.raises(PlanningProviderError):
-        await PlanningProviderGateway(
-            transport=httpx.MockTransport(
-                lambda request: calls.append(request)
-                or _response(_planning_payload(), request=request)
-            )
-        ).generate(
+        await _generate_once(
+            gateway,
             provider=provider,
             model_name=model_name,
             manifest=_manifest(),
@@ -841,10 +915,12 @@ async def test_nonidentity_content_encoding_is_rejected_without_body_read(
             request=request,
         )
 
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(handler)
+    )
     with pytest.raises(PlanningProviderError):
-        await PlanningProviderGateway(
-            transport=httpx.MockTransport(handler)
-        ).generate(
+        await _generate_once(
+            gateway,
             provider=_provider(),
             model_name="planning-model",
             manifest=_manifest(),
@@ -861,18 +937,22 @@ async def test_injected_transport_is_borrowed_across_sequential_calls():
     transport = _CloseAwareTransport()
     gateway = PlanningProviderGateway(transport=transport)
 
-    first = await gateway.generate(
-        provider=_provider(),
-        model_name="planning-model",
-        manifest=_manifest(),
-        author_instructions="first",
-    )
-    second = await gateway.generate(
-        provider=_provider(),
-        model_name="planning-model",
-        manifest=_manifest(),
-        author_instructions="second",
-    )
+    await gateway.start()
+    try:
+        first = await gateway.generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions="first",
+        )
+        second = await gateway.generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions="second",
+        )
+    finally:
+        await gateway.aclose()
 
     assert first == _planning_payload()
     assert second == _planning_payload()
@@ -885,22 +965,510 @@ async def test_injected_transport_is_borrowed_across_overlapping_calls():
     transport = _CloseAwareTransport(overlap=True)
     gateway = PlanningProviderGateway(transport=transport)
 
-    first, second = await asyncio.gather(
-        gateway.generate(
-            provider=_provider(),
-            model_name="planning-model",
-            manifest=_manifest(),
-            author_instructions="first",
-        ),
-        gateway.generate(
-            provider=_provider(),
-            model_name="planning-model",
-            manifest=_manifest(),
-            author_instructions="second",
-        ),
-    )
+    await gateway.start()
+    try:
+        first, second = await asyncio.gather(
+            gateway.generate(
+                provider=_provider(),
+                model_name="planning-model",
+                manifest=_manifest(),
+                author_instructions="first",
+            ),
+            gateway.generate(
+                provider=_provider(),
+                model_name="planning-model",
+                manifest=_manifest(),
+                author_instructions="second",
+            ),
+        )
+    finally:
+        await gateway.aclose()
 
     assert first == _planning_payload()
     assert second == _planning_payload()
     assert transport.calls == 2
     assert transport.close_calls == 0
+
+
+class _DrainGateStream(httpx.AsyncByteStream):
+    def __init__(self, content: bytes):
+        self._content = content
+        self.read_started = asyncio.Event()
+        self.read_release = asyncio.Event()
+        self.close_calls = 0
+
+    async def __aiter__(self):
+        self.read_started.set()
+        await self.read_release.wait()
+        yield self._content
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        self._content = b""
+
+
+class _DrainAwareTransport(httpx.AsyncBaseTransport):
+    def __init__(self, stream: _DrainGateStream):
+        self._stream = stream
+        self.calls = 0
+        self.requests: list[httpx.Request] = []
+        self.close_calls = 0
+
+    async def handle_async_request(
+        self,
+        request: httpx.Request,
+    ) -> httpx.Response:
+        self.calls += 1
+        self.requests.append(request)
+        return httpx.Response(
+            200,
+            stream=self._stream,
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+async def _wait_for_resource_state(resource, state: str) -> None:
+    async with asyncio.timeout(1):
+        while resource.state != state:
+            next_turn = asyncio.Event()
+            asyncio.get_running_loop().call_soon(next_turn.set)
+            await next_turn.wait()
+
+
+async def _next_event_loop_turn() -> None:
+    next_turn = asyncio.Event()
+    asyncio.get_running_loop().call_soon(next_turn.set)
+    await asyncio.wait_for(next_turn.wait(), timeout=1)
+
+
+def _traceback_reaches_any(error: BaseException, targets: tuple[object, ...]):
+    target_ids = {id(target) for target in targets}
+    pending = []
+    traceback = error.__traceback__
+    while traceback is not None:
+        filename = traceback.tb_frame.f_code.co_filename.replace("\\", "/")
+        if "/backend/tests/" not in filename:
+            pending.extend(traceback.tb_frame.f_locals.values())
+        traceback = traceback.tb_next
+
+    seen = set()
+    while pending:
+        value = pending.pop()
+        if value is None or id(value) in seen:
+            continue
+        if id(value) in target_ids:
+            return True
+        seen.add(id(value))
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
+        elif type(value).__module__.startswith(("backend.", "httpx.")):
+            try:
+                pending.extend(vars(value).values())
+            except TypeError:
+                pass
+    return False
+
+
+@pytest.mark.asyncio
+async def test_planning_close_drains_active_generate_and_rejects_late_generate(
+):
+    prepared = _response(
+        _planning_payload(),
+        request=httpx.Request(
+            "POST",
+            "https://provider.example/v1/chat/completions",
+        ),
+    )
+    stream = _DrainGateStream(prepared.content)
+    transport = _DrainAwareTransport(stream)
+    gateway = PlanningProviderGateway(transport=transport)
+    resource = gateway._resource
+    generate_task = None
+    close_task = None
+    late_task = None
+    lock_held = False
+    close_entered = asyncio.Event()
+
+    async def close_gateway() -> None:
+        close_entered.set()
+        await gateway.aclose()
+
+    await asyncio.wait_for(gateway.start(), timeout=1)
+    try:
+        generate_task = asyncio.create_task(
+            gateway.generate(
+                provider=_provider(),
+                model_name="planning-model",
+                manifest=_manifest(),
+                author_instructions="original",
+            )
+        )
+        await asyncio.wait_for(stream.read_started.wait(), timeout=1)
+
+        await asyncio.wait_for(resource._lock.acquire(), timeout=1)
+        lock_held = True
+        close_task = asyncio.create_task(close_gateway())
+        await asyncio.wait_for(close_entered.wait(), timeout=1)
+        late_task = asyncio.create_task(
+            gateway.generate(
+                provider=_provider(),
+                model_name="planning-model",
+                manifest=_manifest(),
+                author_instructions="late",
+            )
+        )
+        resource._lock.release()
+        lock_held = False
+
+        with pytest.raises(PlanningProviderError) as caught:
+            await asyncio.wait_for(late_task, timeout=1)
+        assert str(caught.value) == "Planning provider failed"
+        assert transport.calls == 1
+        assert resource.state == "draining"
+        assert close_task.done() is False
+
+        stream.read_release.set()
+        assert await asyncio.wait_for(generate_task, timeout=1) == (
+            _planning_payload()
+        )
+        await asyncio.wait_for(close_task, timeout=1)
+
+        assert stream.close_calls == 1
+        assert transport.close_calls == 0
+        assert resource.active_calls == 0
+        assert resource.cleanup_task_count == 0
+        assert resource.state == "closed"
+        assert resource._start_task is None
+        assert resource._close_task is None
+        assert generate_task.done() is True
+        assert late_task.done() is True
+        assert close_task.done() is True
+    finally:
+        if lock_held:
+            resource._lock.release()
+        stream.read_release.set()
+        for task in (generate_task, late_task, close_task):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=1)
+                except BaseException:
+                    pass
+        await asyncio.wait_for(gateway.aclose(), timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", (1, 2, 4))
+async def test_planning_cancelled_late_start_has_clean_traceback_and_keeps_close(
+    cancel_count,
+):
+    prompt_sentinel = "LATE_START_PROMPT_SENTINEL"
+    prepared = _response(
+        _planning_payload(),
+        request=httpx.Request(
+            "POST",
+            "https://provider.example/v1/chat/completions",
+        ),
+    )
+    stream = _DrainGateStream(prepared.content)
+    transport = _DrainAwareTransport(stream)
+    gateway = PlanningProviderGateway(transport=transport)
+    resource = gateway._resource
+    generate_task = None
+    close_task = None
+    start_task = None
+
+    await asyncio.wait_for(gateway.start(), timeout=1)
+    try:
+        generate_task = asyncio.create_task(
+            gateway.generate(
+                provider=_provider(),
+                model_name="planning-model",
+                manifest=_manifest(),
+                author_instructions=prompt_sentinel,
+            )
+        )
+        await asyncio.wait_for(stream.read_started.wait(), timeout=1)
+        assert transport.calls == 1
+        request = transport.requests[0]
+        assert prompt_sentinel in request.content.decode("utf-8")
+
+        close_task = asyncio.create_task(gateway.aclose())
+        await _wait_for_resource_state(resource, "draining")
+        shared_close = resource._close_task
+        assert shared_close is not None
+        assert shared_close.done() is False
+
+        start_task = asyncio.create_task(gateway.start())
+        await _next_event_loop_turn()
+        assert start_task.done() is False
+        for _ in range(cancel_count):
+            start_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(start_task, timeout=1)
+
+        assert caught.value.args == ()
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
+        assert start_task.cancelling() == cancel_count
+        assert _traceback_reaches_any(
+            caught.value,
+            (gateway, resource, transport, request),
+        ) is False
+        _assert_no_sensitive_error_graph(
+            caught.value,
+            (
+                "PRIVATE_API_KEY_SENTINEL",
+                "https://provider.example/v1",
+                prompt_sentinel,
+                "MANIFEST_CONTENT_SENTINEL",
+                "authorization",
+            ),
+        )
+        assert resource._close_task is shared_close
+        assert shared_close.cancelled() is False
+        assert shared_close.done() is False
+
+        stream.read_release.set()
+        assert await asyncio.wait_for(generate_task, timeout=1) == (
+            _planning_payload()
+        )
+        await asyncio.wait_for(close_task, timeout=1)
+
+        assert stream.close_calls == 1
+        assert transport.calls == 1
+        assert transport.close_calls == 0
+        assert resource.state == "closed"
+        assert resource.active_calls == 0
+        assert resource.cleanup_task_count == 0
+        assert resource._close_task is None
+        assert shared_close.done() is True
+        assert shared_close.cancelled() is False
+    finally:
+        stream.read_release.set()
+        for task in (generate_task, start_task, close_task):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=1)
+                except BaseException:
+                    pass
+        await asyncio.wait_for(gateway.aclose(), timeout=1)
+
+
+class _OwnedPlanningClient:
+    def __init__(self):
+        self.calls = 0
+        self.close_calls = 0
+
+    def build_request(
+        self,
+        method,
+        url,
+        *,
+        headers,
+        content,
+    ) -> httpx.Request:
+        return httpx.Request(
+            method,
+            url,
+            headers=headers,
+            content=content,
+        )
+
+    async def send(
+        self,
+        request: httpx.Request,
+        *,
+        stream: bool,
+    ) -> httpx.Response:
+        assert stream is True
+        self.calls += 1
+        prepared = _response(_planning_payload(), request=request)
+        return httpx.Response(
+            200,
+            headers=prepared.headers,
+            stream=_StaticRawStream(prepared.content),
+            request=request,
+        )
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+class _OwnedPlanningClientFactory:
+    def __init__(self):
+        self.clients: list[_OwnedPlanningClient] = []
+
+    def __call__(self, **_kwargs):
+        client = _OwnedPlanningClient()
+        self.clients.append(client)
+        return client
+
+
+@pytest.mark.asyncio
+async def test_planning_explicit_restart_keeps_resource_and_uses_new_owned_client(
+    monkeypatch,
+):
+    shared = importlib.import_module(
+        "backend.gateways.openai_json_transport"
+    )
+    factory = _OwnedPlanningClientFactory()
+    monkeypatch.setattr(shared.httpx, "AsyncClient", factory)
+    gateway = PlanningProviderGateway()
+    resource = gateway._resource
+
+    try:
+        await asyncio.wait_for(gateway.start(), timeout=1)
+        first = await asyncio.wait_for(
+            gateway.generate(
+                provider=_provider(),
+                model_name="planning-model",
+                manifest=_manifest(),
+                author_instructions="first lifecycle",
+            ),
+            timeout=1,
+        )
+        await asyncio.wait_for(gateway.aclose(), timeout=1)
+        await asyncio.wait_for(gateway.start(), timeout=1)
+        second = await asyncio.wait_for(
+            gateway.generate(
+                provider=_provider(),
+                model_name="planning-model",
+                manifest=_manifest(),
+                author_instructions="second lifecycle",
+            ),
+            timeout=1,
+        )
+        await asyncio.wait_for(gateway.aclose(), timeout=1)
+    finally:
+        await asyncio.wait_for(gateway.aclose(), timeout=1)
+
+    assert gateway._resource is resource
+    assert first == _planning_payload()
+    assert second == _planning_payload()
+    assert len(factory.clients) == 2
+    assert [client.calls for client in factory.clients] == [1, 1]
+    assert [client.close_calls for client in factory.clients] == [1, 1]
+    assert resource.active_calls == 0
+    assert resource.cleanup_task_count == 0
+    assert resource.state == "closed"
+
+
+class _CancellationProbeStream(httpx.AsyncByteStream):
+    def __init__(self, content: bytes, *, block_read: bool):
+        self._content = content
+        self._block_read = block_read
+        self.read_started = asyncio.Event()
+        self.read_release = asyncio.Event()
+        self.close_started = asyncio.Event()
+        self.close_release = asyncio.Event()
+        self.close_completed = asyncio.Event()
+        self.close_calls = 0
+
+    async def __aiter__(self):
+        self.read_started.set()
+        if self._block_read:
+            await self.read_release.wait()
+        yield self._content
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        self.close_started.set()
+        await self.close_release.wait()
+        self._content = b""
+        self.close_completed.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_during", ("body-read", "response-close"))
+async def test_planning_gateway_repeated_cancellation_waits_for_clean_response_close(
+    cancel_during,
+):
+    payload = _planning_payload()
+    payload["volumes"][0]["title"] = "DECODED_CANCELLED_SENTINEL"
+    prepared = _response(
+        payload,
+        request=httpx.Request(
+            "POST",
+            "https://provider.example/v1/chat/completions",
+        ),
+    )
+    stream = _CancellationProbeStream(
+        prepared.content,
+        block_read=cancel_during == "body-read",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=stream,
+            request=request,
+        )
+
+    gateway = PlanningProviderGateway(
+        transport=httpx.MockTransport(handler)
+    )
+    await gateway.start()
+    task = asyncio.create_task(
+        gateway.generate(
+            provider=_provider(),
+            model_name="planning-model",
+            manifest=_manifest(),
+            author_instructions=(
+                "AUTHOR_INSTRUCTION_SENTINEL "
+                "RAW_CANCELLATION_SENTINEL"
+            ),
+        )
+    )
+    try:
+        if cancel_during == "body-read":
+            await asyncio.wait_for(stream.read_started.wait(), timeout=1)
+            task.cancel()
+            await asyncio.wait_for(stream.close_started.wait(), timeout=1)
+            task.cancel()
+            task.cancel()
+        else:
+            await asyncio.wait_for(stream.close_started.wait(), timeout=1)
+            task.cancel()
+            task.cancel()
+            task.cancel()
+
+        assert task.done() is False
+        stream.close_release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(task, timeout=1)
+
+        assert caught.value.args == ()
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
+        assert task.cancelling() == 3
+        assert stream.close_calls == 1
+        assert stream.close_completed.is_set()
+        _assert_no_sensitive_error_graph(
+            caught.value,
+            (
+                "PRIVATE_API_KEY_SENTINEL",
+                "https://provider.example/v1",
+                "AUTHOR_INSTRUCTION_SENTINEL",
+                "RAW_CANCELLATION_SENTINEL",
+                "DECODED_CANCELLED_SENTINEL",
+                "MANIFEST_CONTENT_SENTINEL",
+                "authorization",
+            ),
+        )
+    finally:
+        stream.read_release.set()
+        stream.close_release.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await asyncio.wait_for(gateway.aclose(), timeout=1)

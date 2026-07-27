@@ -11,8 +11,8 @@ from pydantic import ValidationError
 
 from backend.domain.planning import DraftPlanningAggregate
 from backend.gateways.openai_json_transport import (
+    OpenAIJSONTransport,
     openai_chat_completions_endpoint,
-    request_openai_json,
 )
 from backend.prompts.planning import (
     PlanningGenerationManifest,
@@ -55,11 +55,30 @@ def _raise_clean_cancelled_error() -> None:
 
 class PlanningProviderGateway:
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None):
-        self._transport = transport
+        self._resource = OpenAIJSONTransport(
+            transport=transport,
+            timeout_seconds=PROVIDER_TIMEOUT_SECONDS,
+            response_byte_limit=MAX_PROVIDER_RESPONSE_BYTES,
+        )
 
     @staticmethod
     def _endpoint(base_url: str) -> str:
         return openai_chat_completions_endpoint(base_url)
+
+    async def start(self) -> None:
+        cancelled = False
+        resource = self._resource
+        try:
+            await resource.start()
+        except asyncio.CancelledError:
+            cancelled = True
+        resource = None
+        self = None
+        if cancelled:
+            _raise_clean_cancelled_error()
+
+    async def aclose(self) -> None:
+        await self._resource.aclose()
 
     async def generate(
         self,
@@ -101,13 +120,10 @@ class PlanningProviderGateway:
 
         if not failed:
             try:
-                transport_result = await request_openai_json(
+                transport_result = await self._resource.request(
                     provider=provider,
                     model_name=model_name,
                     messages=messages,
-                    transport=self._transport,
-                    timeout_seconds=PROVIDER_TIMEOUT_SECONDS,
-                    max_response_bytes=MAX_PROVIDER_RESPONSE_BYTES,
                 )
                 if transport_result.cancelled:
                     cancelled = True
