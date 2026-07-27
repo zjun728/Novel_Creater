@@ -45,9 +45,10 @@ _service = PlanningService(
     PlanningRepository(),
     transaction_factory=transaction,
 )
+planning_provider_gateway = PlanningProviderGateway()
 _generation_service = PlanningGenerationService(
     PlanningRepository(),
-    provider_gateway=PlanningProviderGateway(),
+    provider_gateway=planning_provider_gateway,
     transaction_factory=transaction,
 )
 

@@ -1,5 +1,6 @@
 """Novel Creator Writer Core V1 FastAPI entrypoint."""
 
+import asyncio
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
@@ -10,6 +11,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.database import close_pool, connection
+from backend.gateways.openai_json_transport import (
+    OpenAIJSONTransportLifecycleError,
+)
 from backend.routers import (
     application_settings,
     assets,
@@ -34,10 +38,51 @@ from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
 
 
+async def _close_planning_provider_gateway(gateway) -> bool:
+    try:
+        await gateway.aclose()
+    except BaseException:
+        return False
+    finally:
+        gateway = None
+    return True
+
+
+async def _close_pool_for_lifespan() -> BaseException | None:
+    try:
+        await close_pool()
+    except BaseException as error:
+        return error
+    return None
+
+
+async def _settle_independent_cleanup(
+    cleanup: asyncio.Task,
+) -> tuple[object, int]:
+    current = asyncio.current_task()
+    observed_cancellations = 0
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            if current is None or current.cancelling() == 0:
+                continue
+            pending_cancellations = current.cancelling()
+            for _ in range(pending_cancellations):
+                current.uncancel()
+            observed_cancellations += pending_cancellations
+    succeeded = cleanup.result()
+    current = None
+    cleanup = None
+    return succeeded, observed_cancellations
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler_runtime = None
     application_error = None
+    planning_gateway_start_attempted = False
+    shutdown_cancellations = 0
     pool_close_transferred = False
     app.state.market_scheduler_shutdown_transfer = None
     try:
@@ -46,11 +91,32 @@ async def lifespan(app: FastAPI):
         scheduler_runtime = build_market_scheduler_runtime()
         app.state.market_scheduler_runtime = scheduler_runtime
         scheduler_runtime.start()
+        planning_gateway_start_attempted = True
+        await planning.planning_provider_gateway.start()
         yield
     except BaseException as error:
         application_error = error
     finally:
         cleanup_errors = []
+        if planning_gateway_start_attempted:
+            planning_cleanup = asyncio.create_task(
+                _close_planning_provider_gateway(
+                    planning.planning_provider_gateway
+                ),
+                name="planning-provider-gateway-close",
+            )
+            planning_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(planning_cleanup)
+            )
+            planning_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not planning_close_succeeded:
+                cleanup_errors.append(
+                    OpenAIJSONTransportLifecycleError(
+                        "OpenAI JSON transport lifecycle failed"
+                    )
+                )
         if scheduler_runtime is not None:
             try:
                 await scheduler_runtime.stop()
@@ -67,12 +133,30 @@ async def lifespan(app: FastAPI):
                     pool_close_transferred = True
                 cleanup_errors.append(error)
         if not pool_close_transferred:
-            try:
-                await close_pool()
-            except BaseException as error:
-                cleanup_errors.append(error)
+            pool_cleanup = asyncio.create_task(
+                _close_pool_for_lifespan(),
+                name="application-database-pool-close",
+            )
+            pool_error, observed_cancellations = (
+                await _settle_independent_cleanup(pool_cleanup)
+            )
+            pool_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if pool_error is not None:
+                cleanup_errors.append(pool_error)
+        current = asyncio.current_task()
+        if current is not None:
+            for _ in range(shutdown_cancellations):
+                current.cancel()
+        current = None
         all_errors = (
             ([application_error] if application_error is not None else [])
+            + (
+                [asyncio.CancelledError()]
+                if shutdown_cancellations
+                else []
+            )
             + cleanup_errors
         )
         if len(all_errors) == 1:
