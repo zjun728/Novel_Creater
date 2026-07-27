@@ -439,25 +439,8 @@ class PlanningGenerationService:
     async def _publish(self, command, context, output):
         if self._request_fingerprint(command) != context["fingerprint"]:
             raise PlanningGenerationConflict()
-        raw_payload = output.model_dump(mode="json", by_alias=True)
-        raw_json = canonical_json(raw_payload)
-        raw_hash = canonical_hash(raw_payload)
         attempt_context = context["attempt"]
         async with self._transaction() as session:
-            attempt = await self.repository.lock_generation_attempt(
-                session,
-                command.project_id,
-                attempt_context["operation_id"],
-            )
-            if attempt is None:
-                raise PlanningGenerationConflict()
-            if attempt["status"] != "pending":
-                return self._operation_result(attempt)
-            if not self._attempt_is_owned(
-                attempt, context
-            ):
-                raise PlanningGenerationConflict()
-
             try:
                 project = await self.repository.lock_active_project(
                     session, command.project_id
@@ -476,6 +459,19 @@ class PlanningGenerationService:
             binding = await self.repository.lock_planning_binding(
                 session, command.project_id
             )
+            attempt = await self.repository.lock_generation_attempt(
+                session,
+                command.project_id,
+                attempt_context["operation_id"],
+            )
+            if attempt is None:
+                raise PlanningGenerationConflict()
+            if attempt["status"] != "pending":
+                return self._operation_result(attempt)
+            if not self._attempt_is_owned(
+                attempt, context
+            ):
+                raise PlanningGenerationConflict()
             current = (
                 project is not None
                 and basis is not None
@@ -491,31 +487,7 @@ class PlanningGenerationService:
                 and int(attempt["lease_expires_at"]) > self._clock()
             )
             if not current:
-                if not await self.repository.succeed_generation_attempt(
-                    session,
-                    project_id=command.project_id,
-                    operation_id=attempt["operation_id"],
-                    fencing_token=int(attempt["fencing_token"]),
-                    result_content_json=raw_json,
-                    result_content_hash=raw_hash,
-                    updated_at=self._clock(),
-                ):
-                    terminal = (
-                        await self.repository.lock_generation_attempt(
-                            session,
-                            command.project_id,
-                            attempt["operation_id"],
-                        )
-                    )
-                    if terminal is not None and terminal["status"] != "pending":
-                        return self._operation_result(terminal)
-                    raise PlanningGenerationConflict()
-                terminal = await self.repository.lock_generation_attempt(
-                    session,
-                    command.project_id,
-                    attempt["operation_id"],
-                )
-                return self._operation_result(terminal)
+                return await self._supersede_locked(session, attempt)
 
             try:
                 previous_draft = self._planning_from_json(
@@ -580,6 +552,26 @@ class PlanningGenerationService:
     async def _fail(self, context, failure_code):
         attempt_context = context["attempt"]
         async with self._transaction() as session:
+            try:
+                project = await self.repository.lock_active_project(
+                    session, attempt_context["project_id"]
+                )
+            except ProjectArchived:
+                project = None
+            basis = await self.repository.read_current_basis(
+                session, attempt_context["project_id"]
+            )
+            head = await self.repository.lock_planning_head(
+                session, attempt_context["project_id"]
+            )
+            draft = await self.repository.read_draft(
+                session,
+                attempt_context["project_id"],
+                attempt_context["draft_id"],
+            )
+            binding = await self.repository.lock_planning_binding(
+                session, attempt_context["project_id"]
+            )
             attempt = await self.repository.lock_generation_attempt(
                 session,
                 attempt_context["project_id"],
@@ -589,9 +581,52 @@ class PlanningGenerationService:
                 raise PlanningGenerationConflict()
             if attempt["status"] != "pending":
                 return self._operation_result(attempt)
+            if not self._attempt_is_owned(attempt, context):
+                raise PlanningGenerationConflict()
+            current = (
+                project is not None
+                and basis is not None
+                and head is not None
+                and draft is not None
+                and self._basis_snapshot(basis) == context["basis"]
+                and self._head_snapshot(head) == context["head"]
+                and self._draft_snapshot(draft) == context["draft"]
+                and self._binding_snapshot(binding) == context["binding"]
+                and self._provider_authority_hash(binding)
+                == context["provider_authority_hash"]
+                and self._persisted_manifest_matches(attempt, context)
+                and int(attempt["lease_expires_at"]) > self._clock()
+            )
+            if not current:
+                return await self._supersede_locked(session, attempt)
             return await self._fail_locked(
                 session, attempt, failure_code
             )
+
+    async def _supersede_locked(self, session, attempt):
+        if not await self.repository.supersede_generation_attempt(
+            session,
+            project_id=attempt["project_id"],
+            operation_id=attempt["operation_id"],
+            fencing_token=int(attempt["fencing_token"]),
+            updated_at=self._clock(),
+        ):
+            terminal = await self.repository.lock_generation_attempt(
+                session,
+                attempt["project_id"],
+                attempt["operation_id"],
+            )
+            if terminal is None or terminal["status"] == "pending":
+                raise PlanningGenerationConflict()
+            return self._operation_result(terminal)
+        terminal = await self.repository.lock_generation_attempt(
+            session,
+            attempt["project_id"],
+            attempt["operation_id"],
+        )
+        if terminal is None:
+            raise PlanningGenerationConflict()
+        return self._operation_result(terminal)
 
     async def _fail_locked(self, session, attempt, failure_code):
         if not await self.repository.fail_generation_attempt(
@@ -620,6 +655,26 @@ class PlanningGenerationService:
     async def _supersede_expired_attempt(self, context):
         expected = context["expired_attempt"]
         async with self._transaction() as session:
+            try:
+                await self.repository.lock_active_project(
+                    session, expected["project_id"]
+                )
+            except ProjectArchived:
+                pass
+            await self.repository.read_current_basis(
+                session, expected["project_id"]
+            )
+            await self.repository.lock_planning_head(
+                session, expected["project_id"]
+            )
+            await self.repository.read_draft(
+                session,
+                expected["project_id"],
+                expected["draft_id"],
+            )
+            await self.repository.lock_planning_binding(
+                session, expected["project_id"]
+            )
             attempt = await self.repository.lock_generation_attempt(
                 session,
                 expected["project_id"],

@@ -12,14 +12,19 @@ from backend.services.chapter_outlines import (
     ChapterOutlineBasisResult,
     ChapterOutlineCapabilities,
     ChapterOutlineDraftResult,
-    ChapterOutlineOperationResult,
     ChapterOutlineRevisionResult,
     ChapterOutlineState,
     PlanningAuthorityResult,
 )
+from backend.services.chapter_outline_generation import (
+    ChapterOutlineOperationResult,
+    ChapterOutlineGenerationService,
+    PublicModelSummary,
+)
 
 
 HASH = "a" * 64
+OPERATION_ID = "11111111-1111-4111-8111-111111111111"
 
 
 def _basis():
@@ -104,31 +109,52 @@ class _FakeService:
     async def get_operation_by_key(self, project_id, key):
         assert (project_id, key) == ("p1", "safe-key")
         return ChapterOutlineOperationResult(
-            operation_id="operation-1",
+            operation_id=OPERATION_ID,
             status="pending",
             failure_code=None,
+            model=PublicModelSummary(
+                provider_id="provider-1",
+                model_name="test-model",
+            ),
             loaded=False,
             loaded_draft_revision=None,
         )
 
     async def get_operation(self, project_id, operation_id):
-        assert (project_id, operation_id) == ("p1", "operation-1")
+        assert (project_id, operation_id) == ("p1", OPERATION_ID)
         return await self.get_operation_by_key(project_id, "safe-key")
 
 
-def _client():
+class _FakeGenerationService(_FakeService):
+    async def generate(self, command):
+        self.commands.append(command)
+        return await self.get_operation_by_key(
+            command.project_id,
+            command.idempotency_key,
+        )
+
+
+def _client(generation_service=None):
     service = _FakeService()
+    generation_service = generation_service or _FakeGenerationService()
     app = FastAPI()
     app.include_router(chapter_outlines.router, prefix="/api")
     app.dependency_overrides[chapter_outlines.get_chapter_outline_service] = (
         lambda: service
     )
+    app.dependency_overrides[
+        chapter_outlines.get_chapter_outline_generation_service
+    ] = lambda: generation_service
     install_error_handlers(app)
-    return TestClient(app, raise_server_exceptions=False), service
+    return (
+        TestClient(app, raise_server_exceptions=False),
+        service,
+        generation_service,
+    )
 
 
 def test_static_current_route_is_registered_before_dynamic_chapter_route():
-    client, _ = _client()
+    client, _, _ = _client()
     response = client.get("/api/projects/p1/chapter-outlines/current")
 
     assert response.status_code == 200
@@ -155,7 +181,7 @@ def test_current_projector_does_not_accept_arbitrary_mapping_bypass():
 
 
 def test_create_body_is_closed():
-    client, _ = _client()
+    client, _, _ = _client()
     response = client.post(
         "/api/projects/p1/chapter-outlines/1/drafts",
         json={"chapterNumber": 99},
@@ -166,7 +192,7 @@ def test_create_body_is_closed():
 
 
 def test_create_has_no_client_authority_or_idempotency_body():
-    client, service = _client()
+    client, service, _ = _client()
 
     response = client.post(
         "/api/projects/p1/chapter-outlines/1/drafts",
@@ -191,7 +217,7 @@ def test_create_has_no_client_authority_or_idempotency_body():
 
 
 def test_save_rejects_server_owned_fields_inside_editable_content():
-    client, _ = _client()
+    client, _, _ = _client()
 
     response = client.put(
         "/api/projects/p1/chapter-outlines/1/drafts/draft-1",
@@ -210,7 +236,7 @@ def test_save_rejects_server_owned_fields_inside_editable_content():
 
 
 def test_save_projects_internal_active_draft_as_current():
-    client, service = _client()
+    client, service, _ = _client()
 
     response = client.put(
         "/api/projects/p1/chapter-outlines/1/drafts/draft-1",
@@ -230,7 +256,7 @@ def test_save_projects_internal_active_draft_as_current():
 
 
 def test_confirm_projects_closed_command_and_response():
-    client, service = _client()
+    client, service, _ = _client()
 
     response = client.post(
         "/api/projects/p1/chapter-outlines/1/drafts/draft-1/confirm",
@@ -251,21 +277,253 @@ def test_confirm_projects_closed_command_and_response():
 
 
 def test_static_operation_routes_do_not_bind_as_chapter_numbers():
-    client, _ = _client()
+    client, _, _ = _client()
 
     by_key = client.get(
         "/api/projects/p1/chapter-outlines/operations/by-key/safe-key"
     )
     by_id = client.get(
-        "/api/projects/p1/chapter-outlines/operations/operation-1"
+        f"/api/projects/p1/chapter-outlines/operations/{OPERATION_ID}"
     )
 
     assert by_key.status_code == 200
     assert by_id.status_code == 200
     assert by_key.json() == {
-        "operationId": "operation-1",
+        "operationId": OPERATION_ID,
         "status": "pending",
         "failureCode": None,
+        "model": {
+            "providerId": "provider-1",
+            "modelName": "test-model",
+        },
         "loaded": False,
         "loadedDraftRevision": None,
     }
+
+
+def test_generate_route_has_closed_body_and_projects_only_public_summary():
+    client, _, generation = _client()
+
+    response = client.post(
+        "/api/projects/p1/chapter-outlines/1/drafts/draft-1/generate",
+        json={
+            "draftRevision": 1,
+            "draftHash": HASH,
+            "idempotencyKey": "safe-key",
+            "authorInstructions": "强化人物选择。",
+        },
+    )
+
+    assert response.status_code == 200
+    assert generation.commands[0].chapter_number == 1
+    assert generation.commands[0].draft_id == "draft-1"
+    assert response.json() == {
+        "operationId": OPERATION_ID,
+        "status": "pending",
+        "failureCode": None,
+        "model": {
+            "providerId": "provider-1",
+            "modelName": "test-model",
+        },
+        "loaded": False,
+        "loadedDraftRevision": None,
+    }
+    assert all(
+        marker not in response.text.casefold()
+        for marker in (
+            "manifest",
+            "prompt",
+            "raw",
+            "api_key",
+            "authorization",
+            "password",
+            "dsn",
+        )
+    )
+
+    closed = client.post(
+        "/api/projects/p1/chapter-outlines/1/drafts/draft-1/generate",
+        json={
+            "draftRevision": 1,
+            "draftHash": HASH,
+            "idempotencyKey": "safe-key",
+            "authorInstructions": "",
+            "planningRevision": 99,
+        },
+    )
+    assert closed.status_code == 422
+    assert closed.json()["code"] == "ChapterOutlineRequestInvalid"
+
+
+class _CorruptGenerationService:
+    def __init__(self, result):
+        self.result = result
+
+    async def generate(self, _command):
+        return self.result
+
+    async def get_operation(self, _project_id, _operation_id):
+        return self.result
+
+    async def get_operation_by_key(self, _project_id, _key):
+        return self.result
+
+
+def _corrupt_result(**overrides):
+    values = {
+        "operation_id": OPERATION_ID,
+        "status": "pending",
+        "failure_code": None,
+        "model": PublicModelSummary("provider-1", "test-model"),
+        "loaded": False,
+        "loaded_draft_revision": None,
+    }
+    values.update(overrides)
+    return ChapterOutlineOperationResult(**values)
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "json_body", "result", "sentinel"),
+    (
+        (
+            "post",
+            "/api/projects/p1/chapter-outlines/1/drafts/draft-1/generate",
+            {
+                "draftRevision": 1,
+                "draftHash": HASH,
+                "idempotencyKey": "safe-key",
+                "authorInstructions": "",
+            },
+            _corrupt_result(
+                operation_id="api_key=PUBLIC_OPERATION_SENTINEL"
+            ),
+            "PUBLIC_OPERATION_SENTINEL",
+        ),
+        (
+            "get",
+            f"/api/projects/p1/chapter-outlines/operations/{OPERATION_ID}",
+            None,
+            _corrupt_result(
+                status="succeeded",
+                loaded=True,
+                loaded_draft_revision="MALICIOUS_PRIVATE_VALUE",
+            ),
+            "MALICIOUS_PRIVATE_VALUE",
+        ),
+        (
+            "get",
+            "/api/projects/p1/chapter-outlines/operations/by-key/safe-key",
+            None,
+            _corrupt_result(
+                status="succeeded",
+                loaded=True,
+                loaded_draft_revision=0,
+            ),
+            "MALICIOUS_PRIVATE_VALUE",
+        ),
+    ),
+)
+def test_all_operation_routes_fail_closed_on_corrupt_direct_results(
+    method,
+    path,
+    json_body,
+    result,
+    sentinel,
+):
+    client, _, _ = _client(_CorruptGenerationService(result))
+
+    response = client.request(method, path, json=json_body)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "ChapterOutlineConflict"
+    assert sentinel not in response.text
+
+
+class _PersistedOperationService:
+    def __init__(self, row):
+        self.row = row
+
+    async def generate(self, _command):
+        return ChapterOutlineGenerationService._operation_result(self.row)
+
+    async def get_operation(self, _project_id, _operation_id):
+        return ChapterOutlineGenerationService._operation_result(self.row)
+
+    async def get_operation_by_key(self, _project_id, _key):
+        return ChapterOutlineGenerationService._operation_result(self.row)
+
+
+def _persisted_operation_row(status, active_slot):
+    row = {
+        "operation_id": OPERATION_ID,
+        "active_slot": active_slot,
+        "status": status,
+        "failure_code": None,
+        "provider_id": "provider-1",
+        "model_name_snapshot": "ACTIVE_SLOT_ROUTE_SENTINEL",
+        "result_content": None,
+        "result_content_hash": None,
+        "loaded_outline_draft_revision": None,
+        "loaded_at": None,
+    }
+    if status == "succeeded":
+        row.update(
+            result_content={"schemaVersion": "chapter-outline-draft-v1"},
+            result_content_hash=HASH,
+            loaded_outline_draft_revision=2,
+            loaded_at=2_100_000_000_000,
+        )
+    elif status == "failed":
+        row["failure_code"] = "ChapterOutlineProviderFailed"
+    return row
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "json_body"),
+    (
+        (
+            "post",
+            "/api/projects/p1/chapter-outlines/1/drafts/draft-1/generate",
+            {
+                "draftRevision": 1,
+                "draftHash": HASH,
+                "idempotencyKey": "safe-key",
+                "authorInstructions": "",
+            },
+        ),
+        (
+            "get",
+            f"/api/projects/p1/chapter-outlines/operations/{OPERATION_ID}",
+            None,
+        ),
+        (
+            "get",
+            "/api/projects/p1/chapter-outlines/operations/by-key/safe-key",
+            None,
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    ("status", "active_slot"),
+    (
+        ("pending", None),
+        ("succeeded", 1),
+        ("failed", 1),
+        ("superseded", 1),
+    ),
+)
+def test_all_operation_routes_reject_corrupt_persisted_active_slots(
+    method,
+    path,
+    json_body,
+    status,
+    active_slot,
+):
+    row = _persisted_operation_row(status, active_slot)
+    client, _, _ = _client(_PersistedOperationService(row))
+
+    response = client.request(method, path, json=json_body)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "ChapterOutlineConflict"
+    assert "ACTIVE_SLOT_ROUTE_SENTINEL" not in response.text

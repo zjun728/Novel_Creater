@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI):
     scheduler_runtime = None
     application_error = None
     planning_gateway_start_attempted = False
+    outline_gateway_start_attempted = False
     shutdown_cancellations = 0
     pool_close_transferred = False
     app.state.market_scheduler_shutdown_transfer = None
@@ -93,11 +94,32 @@ async def lifespan(app: FastAPI):
         scheduler_runtime.start()
         planning_gateway_start_attempted = True
         await planning.planning_provider_gateway.start()
+        outline_gateway_start_attempted = True
+        await chapter_outlines.chapter_outline_provider_gateway.start()
         yield
     except BaseException as error:
         application_error = error
     finally:
         cleanup_errors = []
+        if outline_gateway_start_attempted:
+            outline_cleanup = asyncio.create_task(
+                _close_planning_provider_gateway(
+                    chapter_outlines.chapter_outline_provider_gateway
+                ),
+                name="chapter-outline-provider-gateway-close",
+            )
+            outline_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(outline_cleanup)
+            )
+            outline_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not outline_close_succeeded:
+                cleanup_errors.append(
+                    OpenAIJSONTransportLifecycleError(
+                        "OpenAI JSON transport lifecycle failed"
+                    )
+                )
         if planning_gateway_start_attempted:
             planning_cleanup = asyncio.create_task(
                 _close_planning_provider_gateway(

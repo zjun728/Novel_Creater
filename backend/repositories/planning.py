@@ -524,36 +524,6 @@ class PlanningRepository:
         )
         return changed == 1
 
-    async def succeed_generation_attempt(
-        self,
-        session,
-        *,
-        project_id: str,
-        operation_id: str,
-        fencing_token: int,
-        result_content_json: str,
-        result_content_hash: str,
-        updated_at: int,
-    ) -> bool:
-        changed = await session.execute(
-            """UPDATE planning_generation_attempts
-                  SET status='succeeded',active_slot=NULL,
-                      result_content_json=%s,result_content_hash=%s,
-                      updated_at=%s
-                WHERE project_id=%s AND operation_id=%s
-                  AND status='pending' AND active_slot=1
-                  AND fencing_token=%s""",
-            (
-                result_content_json,
-                result_content_hash,
-                updated_at,
-                project_id,
-                operation_id,
-                fencing_token,
-            ),
-        )
-        return changed == 1
-
     async def load_generation_result_into_draft(
         self,
         session,

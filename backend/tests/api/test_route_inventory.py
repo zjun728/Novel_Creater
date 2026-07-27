@@ -115,6 +115,11 @@ APPROVED_FORMAL_ROUTES = {
     (
         "POST",
         "/api/projects/{pid}/chapter-outlines/{chapter_number}/drafts/"
+        "{draft_id}/generate",
+    ),
+    (
+        "POST",
+        "/api/projects/{pid}/chapter-outlines/{chapter_number}/drafts/"
         "{draft_id}/confirm",
     ),
     ("GET", "/api/projects/{pid}/chapter-sessions/{chapter_number}"),

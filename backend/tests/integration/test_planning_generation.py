@@ -352,6 +352,17 @@ class _BlockingPlanningGateway(_FakePlanningGateway):
         return self.output
 
 
+class _HookPlanningGateway(_FakePlanningGateway):
+    def __init__(self, output, hook):
+        super().__init__(output)
+        self.hook = hook
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        await self.hook()
+        return self.output
+
+
 class _ReplayBarrierPlanningRepository(PlanningRepository):
     def __init__(self):
         self.project_locked = asyncio.Event()
@@ -519,6 +530,86 @@ async def test_real_mysql_service_reserves_and_atomically_loads_generation(
         "SELECT DATABASE() AS database_name"
     )
     assert selected["database_name"] == disposable_mysql.database_name
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_planning_author_save_drift_terminally_supersedes(
+    disposable_mysql,
+):
+    from backend.services.planning import SavePlanningDraft
+    from backend.services.planning_generation import (
+        GeneratePlanningDraft,
+        PlanningGenerationService,
+    )
+
+    planning = await _prepare_generation_basis(disposable_mysql)
+    draft = await planning.create_draft(
+        CreatePlanningDraft(PROJECT, "create-planning-drift-draft")
+    )
+
+    async def author_save():
+        await planning.save_draft(
+            SavePlanningDraft(
+                PROJECT,
+                draft.draft_id,
+                draft.draft_revision,
+                draft.content_hash,
+                {
+                    "activeStoryBlockRef": None,
+                    "volumes": [],
+                    "plots": [],
+                    "storyBlocks": [],
+                },
+                "save-during-generation",
+            )
+        )
+
+    output = {
+        "activeStoryBlockRef": None,
+        "volumes": [],
+        "plots": [],
+        "storyBlocks": [],
+    }
+    service = PlanningGenerationService(
+        PlanningRepository(),
+        provider_gateway=_HookPlanningGateway(output, author_save),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        id_factory=iter(
+            (
+                "98900000-0000-0000-0000-000000000001",
+                "98900000-0000-0000-0000-000000000002",
+            )
+        ).__next__,
+        clock=lambda: NOW + 150,
+    )
+
+    result = await service.generate(
+        GeneratePlanningDraft(
+            PROJECT,
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            "planning-author-save-drift",
+            "",
+        )
+    )
+
+    assert result.status == "superseded"
+    assert result.loaded is False
+    assert result.loaded_draft_revision is None
+    persisted = await disposable_mysql.session.fetchone(
+        """SELECT status,result_content_json,loaded_draft_revision
+             FROM planning_generation_attempts
+            WHERE project_id=%s AND operation_id=%s""",
+        (PROJECT, result.operation_id),
+    )
+    assert persisted == {
+        "status": "superseded",
+        "result_content_json": None,
+        "loaded_draft_revision": None,
+    }
 
 
 @pytest.mark.asyncio

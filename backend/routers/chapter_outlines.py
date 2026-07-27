@@ -9,6 +9,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.database import transaction
 from backend.domain.chapter_outlines import EditableChapterOutlineContent
+from backend.gateways.chapter_outline_provider import (
+    ChapterOutlineProviderGateway,
+)
 from backend.http_errors import PublicDomainError
 from backend.repositories.chapter_outlines import ChapterOutlineRepository
 from backend.repositories.chapter_sessions import ChapterSessionRepository
@@ -24,6 +27,11 @@ from backend.services.chapter_outlines import (
     CreateChapterOutlineDraft,
     SaveChapterOutlineDraft,
 )
+from backend.services.chapter_outline_generation import (
+    CHAPTER_OUTLINE_AUTHOR_INSTRUCTIONS_MAX_LENGTH,
+    ChapterOutlineGenerationService,
+    GenerateChapterOutline,
+)
 
 
 router = APIRouter(tags=["chapter-outlines"])
@@ -33,10 +41,22 @@ _service = ChapterOutlineService(
     transaction_factory=transaction,
     planning_repository=PlanningRepository(),
 )
+chapter_outline_provider_gateway = ChapterOutlineProviderGateway()
+_generation_service = ChapterOutlineGenerationService(
+    ChapterOutlineRepository(),
+    ChapterSessionRepository(),
+    planning_repository=PlanningRepository(),
+    provider_gateway=chapter_outline_provider_gateway,
+    transaction_factory=transaction,
+)
 
 
 def get_chapter_outline_service() -> ChapterOutlineService:
     return _service
+
+
+def get_chapter_outline_generation_service():
+    return _generation_service
 
 
 class ChapterOutlineRequestInvalid(PublicDomainError):
@@ -96,6 +116,19 @@ class ConfirmDraftBody(_StrictBody):
         min_length=1,
         max_length=64,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+
+
+class GenerateDraftBody(_StrictBody):
+    draftRevision: int = Field(ge=1)
+    draftHash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    idempotencyKey: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    )
+    authorInstructions: str = Field(
+        max_length=CHAPTER_OUTLINE_AUTHOR_INSTRUCTIONS_MAX_LENGTH
     )
 
 
@@ -255,13 +288,34 @@ def _public_state(result):
 
 
 def _public_operation(result):
-    return {
-        "operationId": result.operation_id,
-        "status": result.status,
-        "failureCode": result.failure_code,
-        "loaded": result.loaded,
-        "loadedDraftRevision": result.loaded_draft_revision,
-    }
+    value = None
+    try:
+        if ChapterOutlineGenerationService.public_operation_is_valid(result):
+            value = {
+                "operationId": result.operation_id,
+                "status": result.status,
+                "failureCode": result.failure_code,
+                "model": {
+                    "providerId": result.model.provider_id,
+                    "modelName": result.model.model_name,
+                },
+                "loaded": result.loaded,
+                "loadedDraftRevision": result.loaded_draft_revision,
+            }
+    except (
+        AttributeError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        UnicodeError,
+    ):
+        value = None
+    result = None
+    return value
+
+
+def _raise_public_operation_conflict():
+    raise ChapterOutlineConflict()
 
 
 # Static routes must precede the dynamic /{chapter_number} route.
@@ -283,14 +337,17 @@ async def get_current_chapter_outline(
 async def get_chapter_outline_operation_by_key(
     pid: str,
     idempotency_key: str,
-    service=Depends(get_chapter_outline_service),
+    service=Depends(get_chapter_outline_generation_service),
 ):
     try:
-        return _public_operation(
-            await service.get_operation_by_key(pid, idempotency_key)
-        )
+        result = await service.get_operation_by_key(pid, idempotency_key)
     except Exception as error:
         _raise_public(error)
+    value = _public_operation(result)
+    result = None
+    if value is None:
+        _raise_public_operation_conflict()
+    return value
 
 
 @router.get(
@@ -299,14 +356,17 @@ async def get_chapter_outline_operation_by_key(
 async def get_chapter_outline_operation(
     pid: str,
     operation_id: str,
-    service=Depends(get_chapter_outline_service),
+    service=Depends(get_chapter_outline_generation_service),
 ):
     try:
-        return _public_operation(
-            await service.get_operation(pid, operation_id)
-        )
+        result = await service.get_operation(pid, operation_id)
     except Exception as error:
         _raise_public(error)
+    value = _public_operation(result)
+    result = None
+    if value is None:
+        _raise_public_operation_conflict()
+    return value
 
 
 @router.get("/projects/{pid}/chapter-outlines/{chapter_number}")
@@ -392,6 +452,41 @@ async def save_chapter_outline_draft(
 
 @router.post(
     "/projects/{pid}/chapter-outlines/{chapter_number}/drafts/"
+    "{draft_id}/generate"
+)
+async def generate_chapter_outline_draft(
+    pid: str,
+    chapter_number: int,
+    draft_id: str,
+    request: Request,
+    service=Depends(get_chapter_outline_generation_service),
+):
+    body = _validate(GenerateDraftBody, await _request_json(request))
+    try:
+        result = await service.generate(
+            GenerateChapterOutline(
+                project_id=pid,
+                chapter_number=chapter_number,
+                draft_id=draft_id,
+                draft_revision=body.draftRevision,
+                draft_hash=body.draftHash,
+                idempotency_key=body.idempotencyKey,
+                author_instructions=body.authorInstructions,
+            )
+        )
+    except Exception as error:
+        _raise_public(error)
+    value = _public_operation(result)
+    result = None
+    body = None
+    service = None
+    if value is None:
+        _raise_public_operation_conflict()
+    return value
+
+
+@router.post(
+    "/projects/{pid}/chapter-outlines/{chapter_number}/drafts/"
     "{draft_id}/confirm",
     status_code=201,
 )
@@ -427,5 +522,6 @@ __all__ = (
     "ChapterOutlineRequestInvalid",
     "ChapterOutlineResourceNotFound",
     "get_chapter_outline_service",
+    "get_chapter_outline_generation_service",
     "router",
 )

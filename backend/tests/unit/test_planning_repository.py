@@ -35,7 +35,6 @@ PUBLIC_METHODS = {
     "next_fencing_token",
     "supersede_generation_attempt",
     "fail_generation_attempt",
-    "succeed_generation_attempt",
     "load_generation_result_into_draft",
     "lock_planning_binding",
 }
@@ -388,19 +387,6 @@ async def test_next_fencing_token_locks_latest_attempt_and_increments_monotonica
             "fail_generation_attempt",
             {"failure_code": "ProviderFailed"},
             ("status='failed'", "failure_code=%s", "active_slot=NULL"),
-        ),
-        (
-            "succeed_generation_attempt",
-            {
-                "result_content_json": '{"ok":true}',
-                "result_content_hash": "d" * 64,
-            },
-            (
-                "status='succeeded'",
-                "result_content_json=%s",
-                "result_content_hash=%s",
-                "active_slot=NULL",
-            ),
         ),
     ),
 )

@@ -11,7 +11,10 @@ from backend.gateways.openai_json_transport import (
     OpenAIJSONTransportLifecycleError,
 )
 from backend.gateways.planning_provider import PlanningProviderGateway
-from backend.routers import planning
+from backend.gateways.chapter_outline_provider import (
+    ChapterOutlineProviderGateway,
+)
+from backend.routers import chapter_outlines, planning
 from backend.schema_version import SchemaMismatch
 from backend.tests.support.fakes import FakeAsyncContext
 
@@ -161,6 +164,268 @@ def test_planning_generation_service_uses_the_exposed_gateway_handle():
         planning.get_planning_generation_service()._gateway
         is planning.planning_provider_gateway
     )
+
+
+def test_outline_generation_service_uses_the_exposed_gateway_handle():
+    assert (
+        chapter_outlines.get_chapter_outline_generation_service()._gateway
+        is chapter_outlines.chapter_outline_provider_gateway
+    )
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_planning_then_outline_and_closes_in_reverse(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    class NamedGateway(FakePlanningProviderGateway):
+        def __init__(self, actual_events, name):
+            super().__init__(actual_events)
+            self.name = name
+
+        async def start(self):
+            self.events.append(f"{self.name}-start")
+
+        async def aclose(self):
+            self.events.append(f"{self.name}-close")
+
+    monkeypatch.setattr(
+        main.planning,
+        "planning_provider_gateway",
+        NamedGateway(events, "planning"),
+    )
+    monkeypatch.setattr(
+        main.chapter_outlines,
+        "chapter_outline_provider_gateway",
+        NamedGateway(events, "outline"),
+        raising=False,
+    )
+    context = main.lifespan(main.app)
+
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+
+    assert [
+        event
+        for event in events
+        if event.endswith(("-start", "-close"))
+    ] == [
+        "scheduler-start",
+        "planning-start",
+        "outline-start",
+        "outline-close",
+        "planning-close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_outline_start_failure_rolls_back_both_gateways_before_pool(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    startup_error = RuntimeError("outline startup failed")
+
+    class PlanningGateway(FakePlanningProviderGateway):
+        async def start(self):
+            events.append("planning-start")
+
+        async def aclose(self):
+            events.append("planning-close")
+
+    class OutlineGateway(FakePlanningProviderGateway):
+        async def start(self):
+            events.append("outline-start")
+            raise startup_error
+
+        async def aclose(self):
+            events.append("outline-close")
+
+    monkeypatch.setattr(
+        main.planning, "planning_provider_gateway", PlanningGateway(events)
+    )
+    monkeypatch.setattr(
+        main.chapter_outlines,
+        "chapter_outline_provider_gateway",
+        OutlineGateway(events),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        await main.lifespan(main.app).__aenter__()
+
+    assert caught.value is startup_error
+    assert events[-5:] == [
+        "outline-start",
+        "outline-close",
+        "planning-close",
+        "scheduler-stop",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_restarts_the_outline_gateway_with_a_new_client(
+    monkeypatch,
+):
+    install_lifespan_fakes(monkeypatch)
+    gateway = ChapterOutlineProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(500, request=request)
+        )
+    )
+    monkeypatch.setattr(
+        main.chapter_outlines,
+        "chapter_outline_provider_gateway",
+        gateway,
+        raising=False,
+    )
+
+    first_context = main.lifespan(main.app)
+    await first_context.__aenter__()
+    first_client = gateway._resource._client
+    assert first_client is not None
+    await first_context.__aexit__(None, None, None)
+
+    second_context = main.lifespan(main.app)
+    await second_context.__aenter__()
+    second_client = gateway._resource._client
+    assert second_client is not None
+    assert second_client is not first_client
+    assert first_client.is_closed is True
+    await second_context.__aexit__(None, None, None)
+    assert second_client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_lifespan_drains_outline_before_closing_planning_and_pool(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    class DrainingOutline(FakePlanningProviderGateway):
+        def __init__(self, actual_events):
+            super().__init__(actual_events)
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def aclose(self):
+            events.append("outline-close-start")
+            self.started.set()
+            await self.release.wait()
+            events.append("outline-close-complete")
+
+    outline = DrainingOutline(events)
+    monkeypatch.setattr(
+        main.chapter_outlines,
+        "chapter_outline_provider_gateway",
+        outline,
+        raising=False,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    shutdown = asyncio.create_task(context.__aexit__(None, None, None))
+    try:
+        await asyncio.wait_for(outline.started.wait(), timeout=1)
+        assert "provider-close" not in events
+        assert "close" not in events
+    finally:
+        outline.release.set()
+        await asyncio.wait_for(shutdown, timeout=1)
+
+    assert events[-5:] == [
+        "outline-close-start",
+        "outline-close-complete",
+        "provider-close",
+        "scheduler-stop",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_outline_close_failure_is_sanitized_and_planning_still_closes(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    secret = "OUTLINE_CLOSE_SECRET"
+
+    class FailingOutline(FakePlanningProviderGateway):
+        async def aclose(self):
+            events.append("outline-close")
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr(
+        main.chapter_outlines,
+        "chapter_outline_provider_gateway",
+        FailingOutline(events),
+        raising=False,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(OpenAIJSONTransportLifecycleError) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert caught.value.args == ("OpenAI JSON transport lifecycle failed",)
+    assert events[-4:] == [
+        "outline-close",
+        "provider-close",
+        "scheduler-stop",
+        "close",
+    ]
+    _assert_no_sensitive_error_graph(caught.value, (secret,))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", (1, 2, 4))
+async def test_repeated_cancellation_cannot_interrupt_outline_then_planning_cleanup(
+    monkeypatch,
+    cancel_count,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    class BlockingOutline(FakePlanningProviderGateway):
+        def __init__(self, actual_events):
+            super().__init__(actual_events)
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def aclose(self):
+            events.append("outline-close-start")
+            self.started.set()
+            await self.release.wait()
+            events.append("outline-close-complete")
+
+    outline = BlockingOutline(events)
+    monkeypatch.setattr(
+        main.chapter_outlines,
+        "chapter_outline_provider_gateway",
+        outline,
+        raising=False,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    shutdown = asyncio.create_task(context.__aexit__(None, None, None))
+    try:
+        await asyncio.wait_for(outline.started.wait(), timeout=1)
+        for _ in range(cancel_count):
+            shutdown.cancel()
+            await _next_loop_turn()
+        assert shutdown.done() is False
+        assert "provider-close" not in events
+    finally:
+        outline.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(shutdown, timeout=1)
+    assert events[-5:] == [
+        "outline-close-start",
+        "outline-close-complete",
+        "provider-close",
+        "scheduler-stop",
+        "close",
+    ]
+    assert shutdown.cancelling() == cancel_count
 
 
 @pytest.mark.asyncio

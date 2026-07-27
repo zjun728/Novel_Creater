@@ -1800,8 +1800,9 @@ async def test_expired_planning_lease_allows_archive_and_publish_stays_fenced(
     result = await asyncio.wait_for(generation_task, timeout=10)
 
     assert archived.archived_at is not None
-    assert result.status == "succeeded"
+    assert result.status == "superseded"
     assert result.loaded is False
+    assert result.loaded_draft_revision is None
     draft = await disposable_mysql.session.fetchone(
         """SELECT draft_revision,source_attempt_id
              FROM planning_drafts
@@ -1809,15 +1810,18 @@ async def test_expired_planning_lease_allows_archive_and_publish_stays_fenced(
     )
     assert draft == {"draft_revision": 2, "source_attempt_id": None}
     attempt = await disposable_mysql.session.fetchone(
-        """SELECT status,active_slot,loaded_draft_revision
+        """SELECT status,active_slot,result_content_json,
+                  result_content_hash,loaded_draft_revision
              FROM planning_generation_attempts
             WHERE project_id=%s
             ORDER BY created_at DESC,id DESC LIMIT 1""",
         (WRITE_FENCE_PROJECT,),
     )
     assert attempt == {
-        "status": "succeeded",
+        "status": "superseded",
         "active_slot": None,
+        "result_content_json": None,
+        "result_content_hash": None,
         "loaded_draft_revision": None,
     }
 

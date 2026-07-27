@@ -617,29 +617,6 @@ class FakePlanningRepository:
         )
         return True
 
-    async def succeed_generation_attempt(
-        self,
-        _session,
-        *,
-        project_id,
-        operation_id,
-        fencing_token,
-        result_content_json,
-        result_content_hash,
-        updated_at,
-    ):
-        row = self.attempts.get(operation_id)
-        if not self._owns(row, project_id, fencing_token):
-            return False
-        row.update(
-            status="succeeded",
-            active_slot=None,
-            result_content_json=result_content_json,
-            result_content_hash=result_content_hash,
-            updated_at=updated_at,
-        )
-        return True
-
     async def load_generation_result_into_draft(
         self,
         _session,
@@ -912,6 +889,14 @@ async def test_success_uses_two_short_transactions_and_atomically_loads_exact_dr
         "idempotency-read",
         "active-read",
         "token",
+    ]
+    assert repository.lock_order[8:14] == [
+        "project",
+        "basis",
+        "head",
+        "draft",
+        "binding",
+        "operation",
     ]
 
 
@@ -1555,7 +1540,7 @@ async def test_cancelled_wait_propagates_finished_settlement_failure_without_lea
 
 
 @pytest.mark.asyncio
-async def test_author_save_during_generation_keeps_result_as_evidence_without_loading():
+async def test_author_save_during_generation_supersedes_without_loading():
     repository = FakePlanningRepository()
 
     def author_save():
@@ -1569,7 +1554,7 @@ async def test_author_save_during_generation_keeps_result_as_evidence_without_lo
 
     result = await service.generate(_command())
 
-    assert result.status == "succeeded"
+    assert result.status == "superseded"
     assert result.loaded is False
     assert result.loaded_draft_revision is None
     assert repository.draft["draft_revision"] == 2
@@ -1584,7 +1569,7 @@ async def test_author_save_during_generation_keeps_result_as_evidence_without_lo
     ("{}", "{"),
     ids=("valid-but-tampered", "invalid-json"),
 )
-async def test_persisted_manifest_tamper_keeps_evidence_without_loading(
+async def test_persisted_manifest_tamper_supersedes_without_loading(
     persisted_manifest,
 ):
     repository = FakePlanningRepository()
@@ -1601,7 +1586,7 @@ async def test_persisted_manifest_tamper_keeps_evidence_without_loading(
 
     result = await service.generate(_command())
 
-    assert result.status == "succeeded"
+    assert result.status == "superseded"
     assert result.loaded is False
     assert result.loaded_draft_revision is None
     assert repository.draft["draft_revision"] == 1
@@ -1626,7 +1611,7 @@ async def test_publish_treats_lease_equal_to_now_as_expired():
 
     result = await service.generate(_command())
 
-    assert result.status == "succeeded"
+    assert result.status == "superseded"
     assert result.loaded is False
     assert result.loaded_draft_revision is None
     assert repository.draft["draft_revision"] == 1
@@ -1661,7 +1646,7 @@ async def test_authority_drift_never_overwrites_draft(drift):
 
     result = await service.generate(_command())
 
-    assert result.status == "succeeded"
+    assert result.status == "superseded"
     assert result.loaded is False
     assert repository.draft["draft_revision"] == 1
     assert repository.load_calls == 0
