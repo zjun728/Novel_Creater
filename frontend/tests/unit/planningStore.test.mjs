@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { createPinia, setActivePinia } from 'pinia'
@@ -1539,4 +1540,763 @@ test('invalidate clears busy flags and late completions cannot revive them', asy
     await confirming
     assert.equal(store.confirming, false)
   })
+})
+
+function outlineContent(goal = '取得残卷') {
+  return {
+    schemaVersion: 'chapter-outline-draft-v1',
+    volumeRef: { id: 'volume-1', revision: 1, contentHash: HASH },
+    storyBlockRef: { id: 'block-1', revision: 1, contentHash: HASH },
+    stageRefs: [{ id: 'stage-1', revision: 1, contentHash: HASH }],
+    sceneTaskRefs: [{ id: 'task-1', revision: 1, contentHash: HASH }],
+    chapterGoal: goal,
+    expectedCharacters: ['沈砚'],
+    continuation: ['追兵逼近'],
+    plannedTasks: ['潜入'],
+    scenes: ['县衙外'],
+    forbiddenEarlyEvents: ['不揭密'],
+  }
+}
+
+function outlineDraft(overrides = {}) {
+  return {
+    projectId: 'project-1',
+    chapterNumber: 1,
+    draftId: 'outline-draft-1',
+    baseHeadRevision: 0,
+    draftRevision: 1,
+    contentHash: HASH,
+    content: outlineContent(),
+    basis: {
+      planningAuthority: {
+        planningRevisionId: 'planning-1',
+        revision: 1,
+        contentHash: HASH,
+        content: confirmablePlanningContent(),
+      },
+      canonProjectionAuthority: {
+        canonRevision: 0,
+        projectionRevision: 0,
+        contentHash: HASH,
+        synchronized: true,
+      },
+    },
+    status: 'current',
+    ...overrides,
+  }
+}
+
+function outlineState(projectId = 'project-1', activeDraft = outlineDraft()) {
+  return {
+    projectId,
+    lifecycle: 'active',
+    authoritativeChapterNumber: 1,
+    targetPath: `/projects/${projectId}/planning/story-blocks`,
+    planningAuthority: activeDraft?.basis?.planningAuthority || null,
+    canonProjectionAuthority: activeDraft?.basis?.canonProjectionAuthority || null,
+    confirmedOutline: null,
+    draft: activeDraft ? { ...activeDraft, projectId } : null,
+    activeSession: null,
+    capabilities: {
+      view: true,
+      createDraft: activeDraft == null,
+      editDraft: activeDraft != null,
+      generate: false,
+      confirm: activeDraft != null,
+      startSession: false,
+    },
+    reasons: [],
+  }
+}
+
+test('single planning store owns the exact ChapterOutline child refs', () => {
+  setActivePinia(createPinia())
+  const store = usePlanningStore()
+  for (const field of [
+    'outlineState',
+    'outlineHistory',
+    'outlineLocalContent',
+    'outlineDirty',
+    'outlineError',
+    'outlineLoading',
+    'outlineSaving',
+    'outlineConfirming',
+    'outlineGenerating',
+    'outlineReconciling',
+    'outlineOperation',
+    'outlineRecoveryKey',
+    'outlineOutcomeUnknown',
+    'outlineAwaitingAuthority',
+  ]) {
+    assert.equal(field in store, true, field)
+  }
+  assert.equal(store.outlineDirty, false)
+  assert.deepEqual(store.outlineHistory, [])
+})
+
+test('outline loading is context fenced and same-project reload preserves local edits', async () => {
+  const oldCurrent = deferred()
+  let currentReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', projectId => {
+      currentReads += 1
+      return projectId === 'project-1'
+        ? oldCurrent.promise
+        : Promise.resolve(outlineState(projectId, null))
+    }],
+    [api.chapterOutlines, 'history', async projectId => ({
+      items: [{ projectId, revision: 1, status: 'current' }],
+    })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    const oldLoad = store.loadOutline('project-1')
+    await store.loadOutline('project-2')
+    oldCurrent.resolve(outlineState('project-1'))
+    await oldLoad
+
+    assert.equal(store.outlineState.projectId, 'project-2')
+    assert.equal(store.outlineHistory[0].projectId, 'project-2')
+
+    store.outlineState = outlineState('project-2', {
+      ...outlineDraft(),
+      projectId: 'project-2',
+    })
+    store.outlineLocalContent = outlineContent()
+    store.editOutlineLocal(outlineContent('作者本地目标'))
+    await store.ensureOutlineLoaded('project-2')
+    assert.equal(currentReads, 2)
+    assert.equal(store.outlineLocalContent.chapterGoal, '作者本地目标')
+    assert.equal(store.outlineDirty, true)
+  })
+})
+
+test('outline manual edit stays local until explicit save and works without a model', async () => {
+  const calls = []
+  let reads = 0
+  const saved = outlineDraft({
+    draftRevision: 2,
+    contentHash: NEXT_HASH,
+    content: outlineContent('作者本地目标'),
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      reads += 1
+      const value = outlineState('project-1', reads === 1 ? outlineDraft() : saved)
+      value.capabilities.generate = false
+      return value
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'saveDraft', async (...args) => {
+      calls.push(structuredClone(args))
+      return saved
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('作者本地目标'))
+
+    assert.equal(calls.length, 0)
+    assert.equal(store.outlineState.draft.draftRevision, 1)
+    assert.equal(store.outlineDirty, true)
+    await assert.rejects(
+      store.generateOutlineDraft({
+        idempotencyKey: 'outline-generate',
+        authorInstructions: '',
+      }),
+      /模型.*未就绪|model.*not ready/i,
+    )
+
+    await store.saveOutlineDraft()
+    assert.deepEqual(calls[0], [
+      'project-1',
+      1,
+      'outline-draft-1',
+      {
+        expectedDraftRevision: 1,
+        expectedDraftHash: HASH,
+        content: outlineContent('作者本地目标'),
+      },
+    ])
+    assert.equal(store.outlineState.draft.draftRevision, 2)
+    assert.equal(store.outlineLocalContent.chapterGoal, '作者本地目标')
+    assert.equal(store.outlineDirty, false)
+  })
+})
+
+test('outline save advances its baseline without erasing edits typed while the request is in flight', async () => {
+  const saveResponse = deferred()
+  let currentReads = 0
+  const saved = outlineDraft({
+    draftRevision: 2,
+    contentHash: NEXT_HASH,
+    content: outlineContent('开始保存时的目标'),
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      return outlineState(
+        'project-1',
+        currentReads === 1 ? outlineDraft() : saved,
+      )
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'saveDraft', async () => saveResponse.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('开始保存时的目标'))
+
+    const save = store.saveOutlineDraft()
+    store.editOutlineLocal(outlineContent('保存期间继续输入'))
+    saveResponse.resolve(saved)
+    await save
+
+    assert.equal(store.outlineState.draft.draftRevision, 2)
+    assert.equal(store.outlineState.draft.content.chapterGoal, '开始保存时的目标')
+    assert.equal(store.outlineLocalContent.chapterGoal, '保存期间继续输入')
+    assert.equal(store.outlineDirty, true)
+    assert.equal(currentReads, 2)
+  })
+})
+
+test('outline authority refresh cannot erase edits typed after the save response', async () => {
+  const refreshStarted = deferred()
+  const authorityResponse = deferred()
+  let currentReads = 0
+  const saved = outlineDraft({
+    draftRevision: 2,
+    contentHash: NEXT_HASH,
+    content: outlineContent('服务端已保存目标'),
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      if (currentReads === 1) return outlineState()
+      refreshStarted.resolve()
+      return authorityResponse.promise
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'saveDraft', async () => saved],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('服务端已保存目标'))
+
+    const save = store.saveOutlineDraft()
+    await refreshStarted.promise
+    store.editOutlineLocal(outlineContent('刷新期间继续输入'))
+    authorityResponse.resolve(outlineState('project-1', saved))
+    await save
+
+    assert.equal(store.outlineState.draft.draftRevision, 2)
+    assert.equal(store.outlineState.draft.contentHash, NEXT_HASH)
+    assert.equal(store.outlineState.draft.content.chapterGoal, '服务端已保存目标')
+    assert.equal(store.outlineLocalContent.chapterGoal, '刷新期间继续输入')
+    assert.equal(store.outlineDirty, true)
+    assert.equal(currentReads, 2)
+  })
+})
+
+test('stale outline save cannot replace a newer same-project draft snapshot', async () => {
+  const saveResponse = deferred()
+  let currentReads = 0
+  const newerDraft = outlineDraft({
+    draftRevision: 7,
+    contentHash: NEXT_HASH,
+    content: outlineContent('较新的权威目标'),
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      if (currentReads === 1) return outlineState()
+      if (currentReads === 2) return outlineState('project-1', newerDraft)
+      throw new Error('stale save attempted an authority refresh')
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'saveDraft', async () => saveResponse.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('待保存目标'))
+
+    const save = store.saveOutlineDraft()
+    await store.loadOutline('project-1')
+    saveResponse.resolve(outlineDraft({
+      draftRevision: 2,
+      contentHash: HASH,
+      content: outlineContent('过期保存结果'),
+    }))
+    await save
+
+    assert.equal(store.outlineState.draft.draftRevision, 7)
+    assert.equal(store.outlineLocalContent.chapterGoal, '较新的权威目标')
+    assert.equal(currentReads, 2)
+  })
+})
+
+test('stale outline generation cannot replace a newer draft revision with the same id', async () => {
+  const generationResponse = deferred()
+  let currentReads = 0
+  const newerDraft = outlineDraft({
+    draftRevision: 7,
+    contentHash: NEXT_HASH,
+    content: outlineContent('较新的权威目标'),
+  })
+  const generatedDraft = outlineDraft({
+    draftRevision: 2,
+    contentHash: HASH,
+    content: outlineContent('过期生成结果'),
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      const value = outlineState(
+        'project-1',
+        currentReads === 1
+          ? outlineDraft()
+          : currentReads === 2
+            ? newerDraft
+            : generatedDraft,
+      )
+      value.capabilities.generate = true
+      return value
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'generateDraft', async () => generationResponse.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+
+    const generate = store.generateOutlineDraft({
+      idempotencyKey: 'outline-generate',
+      authorInstructions: '',
+    })
+    await store.loadOutline('project-1')
+    generationResponse.resolve({
+      operationId: 'operation-stale',
+      status: 'succeeded',
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'outline-model' },
+      loaded: true,
+      loadedDraftRevision: 2,
+    })
+    await generate
+
+    assert.equal(store.outlineState.draft.draftRevision, 7)
+    assert.equal(store.outlineLocalContent.chapterGoal, '较新的权威目标')
+    assert.equal(currentReads, 2)
+  })
+})
+
+test('outline reconciliation accepts only the recovery key that started the request', async () => {
+  const reconciliationResponse = deferred()
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      const value = outlineState()
+      value.capabilities.generate = true
+      return value
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'getOperationByKey', async () => reconciliationResponse.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.outlineRecoveryKey = 'outline-recovery-old'
+    store.outlineOutcomeUnknown = true
+
+    const reconcile = store.reconcileOutlineGeneration()
+    store.outlineRecoveryKey = 'outline-recovery-new'
+    reconciliationResponse.resolve({
+      operationId: 'operation-stale',
+      status: 'pending',
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'outline-model' },
+      loaded: false,
+      loadedDraftRevision: null,
+    })
+    await reconcile
+
+    assert.equal(store.outlineRecoveryKey, 'outline-recovery-new')
+    assert.equal(store.outlineOperation, null)
+  })
+})
+
+test('outline unknown generation reconciles by GET and loads only exact authority', async () => {
+  const timeout = Object.assign(new Error('timeout'), {
+    status: 0,
+    code: 'request_timeout',
+  })
+  const generatedDraft = outlineDraft({
+    draftRevision: 2,
+    contentHash: NEXT_HASH,
+    content: outlineContent('AI 权威目标'),
+  })
+  const calls = []
+  let authorityReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      authorityReads += 1
+      const value = outlineState(
+        'project-1',
+        authorityReads === 1 ? outlineDraft() : generatedDraft,
+      )
+      value.capabilities.generate = true
+      return value
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      calls.push('POST')
+      throw timeout
+    }],
+    [api.chapterOutlines, 'getOperationByKey', async () => {
+      calls.push('GET:key')
+      return {
+        operationId: 'operation-1',
+        status: 'succeeded',
+        failureCode: null,
+        model: { providerId: 'provider-1', modelName: 'outline-model' },
+        loaded: true,
+        loadedDraftRevision: 2,
+      }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    await assert.rejects(
+      store.generateOutlineDraft({
+        idempotencyKey: 'outline-generate',
+        authorInstructions: '',
+      }),
+      /结果未知|outcome unknown/i,
+    )
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineLocalContent.chapterGoal, '取得残卷')
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(calls, ['POST', 'GET:key'])
+    assert.equal(store.outlineLocalContent.chapterGoal, 'AI 权威目标')
+    assert.equal(store.outlineDirty, false)
+    assert.equal(store.outlineOutcomeUnknown, false)
+    assert.equal(store.outlineAwaitingAuthority, false)
+  })
+})
+
+test('superseded outline authority never overwrites preserved local edits', async () => {
+  const operationResult = {
+    operationId: 'operation-1',
+    status: 'succeeded',
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'outline-model' },
+    loaded: true,
+    loadedDraftRevision: 2,
+  }
+  let reads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      reads += 1
+      const value = outlineState('project-1', reads === 1
+        ? outlineDraft()
+        : outlineDraft({
+            draftRevision: 2,
+            contentHash: NEXT_HASH,
+            content: outlineContent('远端生成'),
+            status: 'superseded',
+          }))
+      value.capabilities.generate = true
+      return value
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'generateDraft', async () => operationResult],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('作者未保存'))
+    store.outlineDirty = false
+    const promise = store.generateOutlineDraft({
+      idempotencyKey: 'outline-generate',
+      authorInstructions: '',
+    })
+    store.editOutlineLocal(outlineContent('生成期间的新编辑'))
+    await promise
+
+    assert.equal(store.outlineLocalContent.chapterGoal, '生成期间的新编辑')
+    assert.equal(store.outlineDirty, true)
+    assert.equal(store.outlineAwaitingAuthority, true)
+  })
+})
+
+test('confirmed-only and superseded outline states create exactly one current draft', async () => {
+  for (const mode of ['confirmed-only', 'superseded']) {
+    let authorityReads = 0
+    let creates = 0
+    const created = outlineDraft({
+      draftId: `outline-created-${mode}`,
+      status: 'current',
+    })
+    const initial = mode === 'confirmed-only'
+      ? outlineState('project-1', null)
+      : outlineState('project-1', outlineDraft({ status: 'superseded' }))
+    initial.confirmedOutline = {
+      outlineRevisionId: 'confirmed-1',
+      content: outlineContent('已确认目标'),
+    }
+    initial.capabilities.createDraft = true
+    initial.capabilities.editDraft = false
+
+    await withApiMethods([
+      [api.chapterOutlines, 'current', async () => {
+        authorityReads += 1
+        if (authorityReads === 1) return structuredClone(initial)
+        const loaded = outlineState('project-1', created)
+        loaded.confirmedOutline = initial.confirmedOutline
+        return loaded
+      }],
+      [api.chapterOutlines, 'history', async () => ({ items: [] })],
+      [api.chapterOutlines, 'createDraft', async () => {
+        creates += 1
+        return structuredClone(created)
+      }],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = usePlanningStore()
+      await store.loadOutline('project-1')
+
+      await store.createOutlineDraft('project-1')
+
+      assert.equal(creates, 1, mode)
+      assert.equal(authorityReads, 2, mode)
+      assert.equal(store.outlineState.draft.draftId, created.draftId, mode)
+      assert.equal(store.outlineState.draft.status, 'current', mode)
+      assert.equal(store.outlineState.capabilities.editDraft, true, mode)
+      assert.deepEqual(store.outlineLocalContent, created.content, mode)
+    })
+  }
+})
+
+test('forced outline authority retry preserves local edits and retries only on command', async () => {
+  const saved = outlineDraft({
+    draftRevision: 2,
+    contentHash: NEXT_HASH,
+    content: outlineContent('服务端已保存目标'),
+  })
+  const refreshFailure = Object.assign(new Error('authority unavailable'), {
+    status: 503,
+    code: 'AuthorityUnavailable',
+  })
+  let authorityReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      authorityReads += 1
+      if (authorityReads === 1) return outlineState()
+      if (authorityReads <= 3) throw refreshFailure
+      const loaded = outlineState('project-1', saved)
+      loaded.capabilities.generate = true
+      return loaded
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'saveDraft', async () => saved],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('服务端已保存目标'))
+    await store.saveOutlineDraft()
+    assert.equal(store.outlineError.code, 'ChapterOutlineRefreshFailed')
+
+    store.editOutlineLocal(outlineContent('刷新失败后的本地输入'))
+    await assert.rejects(
+      store.ensureOutlineLoaded('project-1', { force: true }),
+      /authority unavailable/,
+    )
+    assert.equal(authorityReads, 3)
+    assert.equal(store.outlineError.code, 'ChapterOutlineRefreshFailed')
+    assert.equal(store.outlineLocalContent.chapterGoal, '刷新失败后的本地输入')
+    assert.equal(store.outlineDirty, true)
+
+    await Promise.resolve()
+    assert.equal(authorityReads, 3)
+
+    await store.ensureOutlineLoaded('project-1', { force: true })
+    assert.equal(authorityReads, 4)
+    assert.equal(store.outlineState.draft.draftRevision, 2)
+    assert.equal(store.outlineState.draft.contentHash, NEXT_HASH)
+    assert.equal(store.outlineState.capabilities.generate, true)
+    assert.equal(store.outlineLocalContent.chapterGoal, '刷新失败后的本地输入')
+    assert.equal(store.outlineDirty, true)
+    assert.equal(store.outlineError, null)
+  })
+})
+
+test('outline reconciliation cannot regress a succeeded operation awaiting authority', async () => {
+  const succeeded = {
+    operationId: 'outline-operation-1',
+    status: 'succeeded',
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'outline-model' },
+    loaded: true,
+    loadedDraftRevision: 2,
+  }
+  const regressiveResults = [
+    { ...succeeded, status: 'pending', loaded: false, loadedDraftRevision: null },
+    { ...succeeded, status: 'failed', loaded: false, loadedDraftRevision: null },
+    { ...succeeded, loadedDraftRevision: 3 },
+  ]
+  let authorityReads = 0
+  let operationReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      authorityReads += 1
+      const loaded = outlineState()
+      loaded.capabilities.generate = true
+      return loaded
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'generateDraft', async () => succeeded],
+    [api.chapterOutlines, 'getOperation', async () => (
+      regressiveResults[operationReads++]
+    )],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    const localBefore = structuredClone(store.outlineLocalContent)
+
+    await store.generateOutlineDraft({
+      idempotencyKey: 'outline-monotonic-operation',
+      authorInstructions: '',
+    })
+    assert.equal(store.outlineAwaitingAuthority, true)
+    assert.deepEqual(store.outlineOperation, succeeded)
+
+    for (const result of regressiveResults) {
+      assert.deepEqual(await store.reconcileOutlineGeneration(), result)
+      assert.deepEqual(store.outlineOperation, succeeded)
+      assert.equal(store.outlineAwaitingAuthority, true)
+      assert.equal(store.outlineOutcomeUnknown, false)
+      assert.equal(store.outlineGenerating, true)
+      assert.deepEqual(store.outlineLocalContent, localBefore)
+      assert.equal(store.outlineDirty, false)
+    }
+
+    assert.equal(operationReads, 3)
+    assert.equal(authorityReads, 2)
+  })
+})
+
+test('stale forced outline load cannot roll back a save accepted while history is pending', async () => {
+  const THIRD_HASH = 'c'.repeat(64)
+  const draftD2 = outlineDraft({
+    draftRevision: 2,
+    contentHash: NEXT_HASH,
+    content: outlineContent('D2 权威目标'),
+  })
+  const draftD3 = outlineDraft({
+    draftRevision: 3,
+    contentHash: THIRD_HASH,
+    content: outlineContent('D3 保存目标'),
+  })
+  const stateD2 = outlineState('project-1', draftD2)
+  stateD2.capabilities.generate = false
+  stateD2.capabilities.confirm = true
+  const stateD3 = outlineState('project-1', draftD3)
+  stateD3.capabilities.generate = true
+  stateD3.capabilities.confirm = false
+  const saveResponse = deferred()
+  const staleHistoryStarted = deferred()
+  const staleHistory = deferred()
+  let authorityReads = 0
+  let historyReads = 0
+
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      authorityReads += 1
+      if (authorityReads <= 2) return structuredClone(stateD2)
+      return structuredClone(stateD3)
+    }],
+    [api.chapterOutlines, 'history', async () => {
+      historyReads += 1
+      if (historyReads === 1) return { items: [{ revision: 2 }] }
+      staleHistoryStarted.resolve()
+      return staleHistory.promise
+    }],
+    [api.chapterOutlines, 'saveDraft', async () => saveResponse.promise],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('D3 保存目标'))
+
+    const save = store.saveOutlineDraft()
+    assert.equal(store.outlineSaving, true)
+    const staleLoad = store.ensureOutlineLoaded('project-1', { force: true })
+    await staleHistoryStarted.promise
+    assert.equal(store.outlineLoading, true)
+
+    saveResponse.resolve(draftD3)
+    await save
+    assert.equal(store.outlineState.draft.draftRevision, 3)
+    assert.equal(store.outlineLoading, true)
+
+    staleHistory.resolve({ items: [{ revision: 999 }] })
+    await staleLoad
+
+    assert.equal(store.outlineState.draft.draftRevision, 3)
+    assert.equal(store.outlineState.draft.contentHash, THIRD_HASH)
+    assert.equal(store.outlineState.draft.content.chapterGoal, 'D3 保存目标')
+    assert.equal(store.outlineState.capabilities.generate, true)
+    assert.equal(store.outlineState.capabilities.confirm, false)
+    assert.equal(store.outlineLocalContent.chapterGoal, 'D3 保存目标')
+    assert.equal(store.outlineDirty, false)
+    assert.deepEqual(store.outlineHistory, [{ revision: 2 }])
+    assert.equal(store.outlineError, null)
+    assert.equal(store.outlineLoading, false)
+    assert.equal(authorityReads, 3)
+    assert.equal(historyReads, 2)
+  })
+})
+
+test('every outline authority writer advances one shared load fence', async () => {
+  const contents = await readFile(
+    new URL('../../src/stores/planningStore.js', import.meta.url),
+    'utf8',
+  )
+  const between = (start, end) => contents.slice(
+    contents.indexOf(start),
+    contents.indexOf(end, contents.indexOf(start)),
+  )
+
+  assert.match(contents, /let outlineAuthorityWriteEpoch = 0/)
+  assert.match(
+    between('async function loadOutline', 'async function ensureOutlineLoaded'),
+    /targetAuthorityWriteEpoch[\s\S]*outlineLoadAuthorityIsCurrent/,
+  )
+  for (const [start, end] of [
+    ['async function createOutlineDraft', 'function editOutlineLocal'],
+    ['async function saveOutlineDraft', 'async function confirmOutlineDraft'],
+    ['async function confirmOutlineDraft', 'function outlineUnknownFailure'],
+    ['async function reloadOutlineGenerationAuthority', 'async function acceptOutlineOperation'],
+  ]) {
+    assert.match(
+      between(start, end),
+      /commitOutlineAuthorityState\([\s\S]*authorityWrite:\s*true/,
+      start,
+    )
+  }
+  assert.match(
+    between('async function generateOutlineDraft', 'async function reconcileOutlineGeneration'),
+    /acceptOutlineOperation/,
+  )
+  assert.match(
+    between('async function reconcileOutlineGeneration', 'function discardOutlineLocal'),
+    /acceptOutlineOperation/,
+  )
 })

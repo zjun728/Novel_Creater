@@ -1314,3 +1314,237 @@ test('bible client encodes project paths and sends only closed Bible commands', 
   assert.equal(new URL(calls[7].url).searchParams.get('limit'), '20')
   assert.equal(new URL(calls[7].url).searchParams.get('beforeRevision'), '81')
 })
+
+test('chapter outline client exposes the exact canonical endpoints and closed commands', async () => {
+  const content = {
+    schemaVersion: 'chapter-outline-draft-v1',
+    volumeRef: { id: 'volume-1', revision: 2, contentHash: 'a'.repeat(64) },
+    storyBlockRef: { id: 'block-1', revision: 3, contentHash: 'b'.repeat(64) },
+    stageRefs: [{ id: 'stage-1', revision: 4, contentHash: 'c'.repeat(64) }],
+    sceneTaskRefs: [{ id: 'task-1', revision: 5, contentHash: 'd'.repeat(64) }],
+    chapterGoal: '取得残卷',
+    expectedCharacters: ['沈砚'],
+    continuation: ['追兵逼近'],
+    plannedTasks: ['潜入县衙'],
+    scenes: ['城门盘查'],
+    forbiddenEarlyEvents: ['不揭示残卷来源'],
+    prompt: 'must-not-send',
+  }
+  const calls = await captureRequests(async api => {
+    await api.chapterOutlines.current('project/1')
+    await api.chapterOutlines.get('project/1', 3)
+    await api.chapterOutlines.history('project/1', 3)
+    await api.chapterOutlines.createDraft('project/1', 3)
+    await api.chapterOutlines.saveDraft('project/1', 3, 'draft-1', {
+      expectedDraftRevision: 2,
+      expectedDraftHash: 'e'.repeat(64),
+      content,
+      idempotencyKey: 'must-not-send',
+    })
+    await api.chapterOutlines.confirmDraft('project/1', 3, 'draft-1', {
+      expectedDraftRevision: 3,
+      expectedDraftHash: 'f'.repeat(64),
+      expectedHeadRevision: 1,
+      idempotencyKey: 'outline-confirm-1',
+      provider: 'must-not-send',
+    })
+  })
+
+  assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
+    ['GET', '/api/projects/project%2F1/chapter-outlines/current'],
+    ['GET', '/api/projects/project%2F1/chapter-outlines/3'],
+    ['GET', '/api/projects/project%2F1/chapter-outlines/3/history'],
+    ['POST', '/api/projects/project%2F1/chapter-outlines/3/drafts'],
+    ['PUT', '/api/projects/project%2F1/chapter-outlines/3/drafts/draft-1'],
+    ['POST', '/api/projects/project%2F1/chapter-outlines/3/drafts/draft-1/confirm'],
+  ])
+  assert.deepEqual(bodyOf(calls[3]), {})
+  assert.deepEqual(bodyOf(calls[4]), {
+    expectedDraftRevision: 2,
+    expectedDraftHash: 'e'.repeat(64),
+    content: {
+      schemaVersion: 'chapter-outline-draft-v1',
+      volumeRef: { id: 'volume-1', revision: 2, contentHash: 'a'.repeat(64) },
+      storyBlockRef: { id: 'block-1', revision: 3, contentHash: 'b'.repeat(64) },
+      stageRefs: [{ id: 'stage-1', revision: 4, contentHash: 'c'.repeat(64) }],
+      sceneTaskRefs: [{ id: 'task-1', revision: 5, contentHash: 'd'.repeat(64) }],
+      chapterGoal: '取得残卷',
+      expectedCharacters: ['沈砚'],
+      continuation: ['追兵逼近'],
+      plannedTasks: ['潜入县衙'],
+      scenes: ['城门盘查'],
+      forbiddenEarlyEvents: ['不揭示残卷来源'],
+    },
+  })
+  assert.equal(JSON.stringify(bodyOf(calls[4])).includes('must-not-send'), false)
+  assert.deepEqual(bodyOf(calls[5]), {
+    expectedDraftRevision: 3,
+    expectedDraftHash: 'f'.repeat(64),
+    expectedHeadRevision: 1,
+    idempotencyKey: 'outline-confirm-1',
+  })
+})
+
+test('chapter outline generation projects only the public operation and uses GET-only recovery', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  const secret = 'sk-must-not-cross-outline-client'
+  const operationId = '11111111-1111-4111-8111-111111111111'
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    return jsonResponse({
+      operationId,
+      status: 'succeeded',
+      failureCode: null,
+      model: {
+        providerId: 'provider-1',
+        modelName: 'outline-model',
+        apiKey: secret,
+      },
+      loaded: true,
+      loadedDraftRevision: 3,
+      manifest: { secret },
+      prompt: secret,
+      rawOutput: secret,
+      provider: { apiKey: secret },
+      dsn: `mysql://root:${secret}@database/novel`,
+    })
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const generated = await api.chapterOutlines.generateDraft(
+      'project/1',
+      3,
+      'draft-1',
+      {
+        draftRevision: 2,
+        draftHash: 'a'.repeat(64),
+        idempotencyKey: 'outline-generate-1',
+        authorInstructions: '强化人物选择',
+        prompt: secret,
+      },
+    )
+    const byKey = await api.chapterOutlines.getOperationByKey(
+      'project/1',
+      'outline:generate:1',
+    )
+    const byId = await api.chapterOutlines.getOperation('project/1', operationId)
+
+    assert.deepEqual(calls.map(call => [
+      call.options.method,
+      new URL(call.url).pathname,
+    ]), [
+      ['POST', '/api/projects/project%2F1/chapter-outlines/3/drafts/draft-1/generate'],
+      ['GET', '/api/projects/project%2F1/chapter-outlines/operations/by-key/outline%3Agenerate%3A1'],
+      ['GET', `/api/projects/project%2F1/chapter-outlines/operations/${operationId}`],
+    ])
+    assert.deepEqual(bodyOf(calls[0]), {
+      draftRevision: 2,
+      draftHash: 'a'.repeat(64),
+      idempotencyKey: 'outline-generate-1',
+      authorInstructions: '强化人物选择',
+    })
+    const expected = {
+      operationId,
+      status: 'succeeded',
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'outline-model' },
+      loaded: true,
+      loadedDraftRevision: 3,
+    }
+    assert.deepEqual(generated, expected)
+    assert.deepEqual(byKey, expected)
+    assert.deepEqual(byId, expected)
+    assert.equal(JSON.stringify({ generated, byKey, byId }).includes(secret), false)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('chapter outline client rejects non-positive chapters and unsafe opaque identifiers before fetch', async () => {
+  const originalFetch = global.fetch
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse()
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const chapterNumber of [0, -1, 1.5, '1', null]) {
+      await assert.rejects(
+        api.chapterOutlines.get('project-1', chapterNumber),
+        /positive chapter number/i,
+      )
+    }
+    for (const request of [
+      () => api.chapterOutlines.saveDraft('project-1', 1, 'draft/secret', {}),
+      () => api.chapterOutlines.getOperation('project-1', 'operation/token'),
+      () => api.chapterOutlines.getOperationByKey('project-1', 'bad/key'),
+      () => api.chapterOutlines.generateDraft('project-1', 1, 'draft-1', {
+        draftRevision: 1,
+        draftHash: 'a'.repeat(64),
+        idempotencyKey: 'apiKey-secret',
+        authorInstructions: '',
+      }),
+    ]) {
+      await assert.rejects(request(), /invalid chapter outline/i)
+    }
+    assert.equal(calls, 0)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('only chapter outline generation receives the model-length timeout', async () => {
+  const originalFetch = global.fetch
+  const originalSetTimeout = global.setTimeout
+  const delays = []
+  global.setTimeout = (callback, delay, ...args) => {
+    delays.push(delay)
+    return originalSetTimeout(callback, delay, ...args)
+  }
+  global.fetch = async () => jsonResponse({
+    operationId: '11111111-1111-4111-8111-111111111111',
+    status: 'pending',
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'outline-model' },
+    loaded: false,
+    loadedDraftRevision: null,
+  })
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await api.chapterOutlines.current('project-1')
+    await api.chapterOutlines.get('project-1', 1)
+    await api.chapterOutlines.history('project-1', 1)
+    await api.chapterOutlines.createDraft('project-1', 1)
+    await api.chapterOutlines.saveDraft('project-1', 1, 'draft-1', {
+      expectedDraftRevision: 1,
+      expectedDraftHash: 'a'.repeat(64),
+      content: {},
+    })
+    await api.chapterOutlines.confirmDraft('project-1', 1, 'draft-1', {
+      expectedDraftRevision: 1,
+      expectedDraftHash: 'a'.repeat(64),
+      expectedHeadRevision: 0,
+      idempotencyKey: 'outline-confirm',
+    })
+    await api.chapterOutlines.generateDraft('project-1', 1, 'draft-1', {
+      draftRevision: 1,
+      draftHash: 'a'.repeat(64),
+      idempotencyKey: 'outline-generate',
+      authorInstructions: '',
+    })
+    await api.chapterOutlines.getOperationByKey('project-1', 'outline-generate')
+    await api.chapterOutlines.getOperation(
+      'project-1',
+      '11111111-1111-4111-8111-111111111111',
+    )
+
+    assert.deepEqual(delays.filter(delay => delay === 30_000).length, 8)
+    assert.ok(delays[6] >= 180_000)
+    assert.notEqual(delays[6], 30_000)
+  } finally {
+    global.fetch = originalFetch
+    global.setTimeout = originalSetTimeout
+  }
+})

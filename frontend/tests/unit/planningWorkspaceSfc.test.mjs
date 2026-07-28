@@ -1022,9 +1022,21 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
       activeElement: null,
       querySelector: selector => selector === 'body' ? body : null,
     }
-    const [Page, Workspace, Volume, Plot, StoryBlock, Drawer, Shell] = await Promise.all([
+    const [
+      Page,
+      Workspace,
+      OutlineWorkspace,
+      OutlineDrawer,
+      Volume,
+      Plot,
+      StoryBlock,
+      Drawer,
+      Shell,
+    ] = await Promise.all([
       vite.ssrLoadModule('/src/views/ProjectPlanningView.vue'),
       vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/ChapterOutlineWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/ChapterOutlineHistoryDrawer.vue'),
       vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
       vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
       vite.ssrLoadModule('/src/components/planning/StoryBlockEditor.vue'),
@@ -1033,6 +1045,12 @@ test('mounted route preserves instructions across tabs, cancels project leave, t
     ])
     Page.default.render = await clientRender('views/ProjectPlanningView.vue')
     Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    OutlineWorkspace.default.render = await clientRender(
+      'components/planning/ChapterOutlineWorkspace.vue',
+    )
+    OutlineDrawer.default.render = await clientRender(
+      'components/planning/ChapterOutlineHistoryDrawer.vue',
+    )
     Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
     Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
     StoryBlock.default.render = await clientRender('components/planning/StoryBlockEditor.vue')
@@ -1338,6 +1356,234 @@ test('mounted history drawer renders the immutable hierarchy and owns modal keyb
     app.unmount()
     assert.equal(appRoot.inert, false)
     assert.equal(appRoot.hasAttribute('aria-hidden'), false)
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
+test('planning workspace embeds outline authoring under story blocks with separate local locks', async () => {
+  const contents = await readFile(
+    source('components/planning/PlanningWorkspace.vue'),
+    'utf8',
+  )
+
+  assert.match(contents, /ChapterOutlineWorkspace/)
+  assert.match(contents, /createChapterOutlineController/)
+  assert.match(contents, /activeTab === 'story-blocks'/)
+  assert.match(contents, /chapter-outline-workspace/)
+  assert.match(contents, /outlineController/)
+  assert.match(contents, /hasCombinedLeaveRisk/)
+  assert.doesNotMatch(
+    contents,
+    /controller\.localOverlay[\s\S]{0,120}chapter-outline-workspace/,
+  )
+})
+
+test('mounted outline selectors are locked to the active story hierarchy and cascade invalid descendants', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/ChapterOutlineWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/ChapterOutlineHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender(
+      'components/planning/ChapterOutlineWorkspace.vue',
+    )
+    Drawer.default.render = await clientRender(
+      'components/planning/ChapterOutlineHistoryDrawer.vue',
+    )
+    const hash = 'a'.repeat(64)
+    const refOf = (id, revision) => ({ id, revision, contentHash: hash })
+    const localContent = {
+      schemaVersion: 'chapter-outline-draft-v1',
+      volumeRef: refOf('volume-other', 2),
+      storyBlockRef: refOf('block-other', 2),
+      stageRefs: [refOf('stage-active', 3), refOf('stage-other', 6)],
+      sceneTaskRefs: [refOf('task-active', 4), refOf('task-other', 7)],
+      chapterGoal: '本章目标',
+      expectedCharacters: [],
+      continuation: [],
+      plannedTasks: [],
+      scenes: [],
+      forbiddenEarlyEvents: [],
+    }
+    const store = reactive({
+      outlineState: {
+        projectId: 'project-1',
+        lifecycle: 'active',
+        authoritativeChapterNumber: 3,
+        planningAuthority: {
+          planningRevisionId: 'planning-1',
+          revision: 1,
+          contentHash: hash,
+          content: {
+            activeStoryBlockId: 'block-active',
+            volumes: [
+              {
+                ...refOf('volume-active', 1),
+                lifecycle: 'active',
+                title: '活动分卷',
+              },
+              {
+                ...refOf('volume-other', 2),
+                lifecycle: 'active',
+                title: '其他分卷',
+              },
+            ],
+            storyBlocks: [
+              {
+                ...refOf('block-active', 2),
+                lifecycle: 'active',
+                title: '活动故事块',
+                volumeId: 'volume-active',
+                stages: [
+                  {
+                    ...refOf('stage-active', 3),
+                    lifecycle: 'active',
+                    title: '活动阶段',
+                    sceneTasks: [{
+                      ...refOf('task-active', 4),
+                      lifecycle: 'active',
+                      task: '活动任务',
+                    }],
+                  },
+                ],
+              },
+              {
+                ...refOf('block-other', 5),
+                lifecycle: 'active',
+                title: '其他故事块',
+                volumeId: 'volume-other',
+                stages: [{
+                  ...refOf('stage-other', 6),
+                  lifecycle: 'active',
+                  title: '其他阶段',
+                  sceneTasks: [{
+                    ...refOf('task-other', 7),
+                    lifecycle: 'active',
+                    task: '其他任务',
+                  }],
+                }],
+              },
+            ],
+          },
+        },
+        canonProjectionAuthority: {
+          canonRevision: 1,
+          projectionRevision: 1,
+          contentHash: hash,
+          synchronized: true,
+        },
+        draft: {
+          draftId: 'draft-1',
+          content: localContent,
+          status: 'current',
+        },
+        confirmedOutline: null,
+        capabilities: { editDraft: true, confirm: true },
+        reasons: [],
+      },
+      outlineHistory: [],
+      outlineLocalContent: localContent,
+      outlineDirty: false,
+      outlineLoading: false,
+      outlineConfirming: false,
+      outlineReconciling: false,
+      outlineError: null,
+    })
+    const controller = {
+      historyOpen: ref(false),
+      authorInstructions: ref(''),
+      notice: ref(''),
+      editorLocked: ref(false),
+      localOverlay: ref(false),
+      hasCriticalRecovery: ref(false),
+      readOnly: ref(false),
+      editable: ref(true),
+      canCreateDraft: ref(false),
+      canSave: ref(true),
+      canGenerate: ref(false),
+      canConfirm: ref(true),
+      generationDisabledReason: ref(''),
+      recovery: ref(null),
+      recoveryActions: ref([]),
+      editLocal(next) {
+        store.outlineLocalContent = structuredClone(next)
+        store.outlineDirty = true
+      },
+      createManualDraft() {},
+      save() {},
+      generate() {},
+      reconcile() {},
+      confirm() {},
+      openHistory() { this.historyOpen.value = true },
+      closeHistory() { this.historyOpen.value = false },
+    }
+    const root = node('root')
+    const app = renderer.createApp(Workspace.default, { store, controller })
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(root)
+    await flush()
+
+    let selects = walk(root).filter(item => item.type === 'select')
+    assert.equal(selects.length, 2)
+    assert.match(text(selects[0]), /活动分卷/)
+    assert.doesNotMatch(text(selects[0]), /其他分卷/)
+    assert.match(text(selects[1]), /活动故事块/)
+    assert.doesNotMatch(text(selects[1]), /其他故事块/)
+    assert.match(text(root), /活动阶段|活动任务/)
+    assert.doesNotMatch(text(root), /其他阶段|其他任务/)
+    assert.equal(
+      byButtonText(root, '保存小纲工作稿').props.disabled,
+      true,
+    )
+    assert.equal(
+      byButtonText(root, '预览并确认小纲').props.disabled,
+      true,
+    )
+
+    selects[1].props.onChange({ target: { value: 'block-active' } })
+    await flush()
+    assert.equal(store.outlineLocalContent.storyBlockRef.id, 'block-active')
+    assert.equal(store.outlineLocalContent.volumeRef.id, 'volume-active')
+    assert.deepEqual(
+      store.outlineLocalContent.stageRefs.map(item => item.id),
+      ['stage-active'],
+    )
+    assert.deepEqual(
+      store.outlineLocalContent.sceneTaskRefs.map(item => item.id),
+      ['task-active'],
+    )
+    assert.equal(
+      byButtonText(root, '保存小纲工作稿').props.disabled,
+      false,
+    )
+
+    const stageCheckbox = walk(root).find(item => (
+      item.type === 'input'
+      && item.props.type === 'checkbox'
+      && item.props.checked === true
+    ))
+    stageCheckbox.props.onChange({ target: { checked: false } })
+    await flush()
+    assert.deepEqual(store.outlineLocalContent.stageRefs, [])
+    assert.deepEqual(store.outlineLocalContent.sceneTaskRefs, [])
+
+    selects = walk(root).filter(item => item.type === 'select')
+    selects[0].props.onChange({ target: { value: '' } })
+    await flush()
+    assert.equal(store.outlineLocalContent.volumeRef, null)
+    assert.equal(store.outlineLocalContent.storyBlockRef, null)
+    assert.deepEqual(store.outlineLocalContent.stageRefs, [])
+    assert.deepEqual(store.outlineLocalContent.sceneTaskRefs, [])
+    app.unmount()
   } finally {
     global.document = originalDocument
     await vite.close()

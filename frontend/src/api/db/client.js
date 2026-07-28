@@ -7,6 +7,7 @@ const DEFAULT_TIMEOUT = 30000
 const CHAPTER_DRAFT_GENERATION_TIMEOUT = 1_200_000
 const BIBLE_GENERATION_TIMEOUT = 210_000
 const PLANNING_GENERATION_TIMEOUT = 210_000
+const CHAPTER_OUTLINE_GENERATION_TIMEOUT = 210_000
 
 async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   const controller = new AbortController()
@@ -466,6 +467,124 @@ function planningOperationResponse(value, expectedOperationId) {
     model,
     loaded,
     loadedDraftRevision,
+  }
+}
+
+const CHAPTER_OUTLINE_FAILURE_CODES = new Set([
+  'ChapterOutlineGenerationCancelled',
+  'ChapterOutlineProviderFailed',
+  'ChapterOutlineProviderResultInvalid',
+])
+
+function positiveChapterNumber(value) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new TypeError('Expected a positive chapter number')
+  }
+  return value
+}
+
+function chapterOutlineOpaqueId(value, label) {
+  const result = planningOperationId(value)
+  if (!result) throw new TypeError(`Invalid Chapter Outline ${label}`)
+  return result
+}
+
+function chapterOutlineIdempotencyKey(value) {
+  if (!isSafePlanningIdempotencyKey(value)) {
+    throw new TypeError('Invalid Chapter Outline idempotency key')
+  }
+  return value
+}
+
+const CHAPTER_OUTLINE_CONTENT_FIELDS = [
+  'schemaVersion',
+  'volumeRef',
+  'storyBlockRef',
+  'stageRefs',
+  'sceneTaskRefs',
+  'chapterGoal',
+  'expectedCharacters',
+  'continuation',
+  'plannedTasks',
+  'scenes',
+  'forbiddenEarlyEvents',
+]
+
+function chapterOutlineNodeRef(value) {
+  return pickDefined(value, ['id', 'revision', 'contentHash'])
+}
+
+function chapterOutlineContent(value = {}) {
+  const content = pickDefined(value, CHAPTER_OUTLINE_CONTENT_FIELDS)
+  for (const field of ['volumeRef', 'storyBlockRef']) {
+    if (content[field] != null) content[field] = chapterOutlineNodeRef(content[field])
+  }
+  for (const field of ['stageRefs', 'sceneTaskRefs']) {
+    if (Array.isArray(content[field])) {
+      content[field] = content[field].map(chapterOutlineNodeRef)
+    }
+  }
+  for (const field of [
+    'expectedCharacters',
+    'continuation',
+    'plannedTasks',
+    'scenes',
+    'forbiddenEarlyEvents',
+  ]) {
+    if (Array.isArray(content[field])) content[field] = [...content[field]]
+  }
+  return content
+}
+
+function chapterOutlineOperationResponse(value, expectedOperationId) {
+  const invalid = () => {
+    throw new TypeError('Invalid ChapterOutline operation response')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
+  const operationId = planningOperationId(value.operationId)
+  if (!operationId || (expectedOperationId && operationId !== expectedOperationId)) {
+    invalid()
+  }
+  const revision = value.loadedDraftRevision
+  const revisionIsPositive = Number.isInteger(revision) && revision > 0
+  const valid = (
+    (
+      value.status === 'pending'
+      && value.failureCode === null
+      && value.loaded === false
+      && revision === null
+    )
+    || (
+      value.status === 'succeeded'
+      && value.failureCode === null
+      && value.loaded === true
+      && revisionIsPositive
+    )
+    || (
+      value.status === 'failed'
+      && CHAPTER_OUTLINE_FAILURE_CODES.has(value.failureCode)
+      && value.loaded === false
+      && revision === null
+    )
+    || (
+      value.status === 'superseded'
+      && value.failureCode === null
+      && value.loaded === false
+      && revision === null
+    )
+  )
+  if (!valid) invalid()
+  const providerId = publicPlanningLabel(value.model?.providerId)
+  const modelName = publicPlanningLabel(value.model?.modelName)
+  return {
+    operationId,
+    status: value.status,
+    failureCode: value.failureCode,
+    model: providerId && modelName
+      ? { providerId, modelName }
+      : { providerId: 'unavailable', modelName: 'unavailable' },
+    loaded: value.loaded,
+    loadedDraftRevision: revision,
   }
 }
 
@@ -957,6 +1076,65 @@ export const api = {
         ),
       )
     },
+  },
+
+  chapterOutlines: {
+    current: async projectId => get(
+      `/projects/${segment(projectId)}/chapter-outlines/current`,
+    ),
+    get: async (projectId, chapterNumber) => get(
+      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}`,
+    ),
+    history: async (projectId, chapterNumber) => get(
+      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/history`,
+    ),
+    createDraft: async (projectId, chapterNumber) => post(
+      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts`,
+      {},
+    ),
+    saveDraft: async (projectId, chapterNumber, draftId, data) => put(
+      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts/${segment(chapterOutlineOpaqueId(draftId, 'draft id'))}`,
+      {
+        expectedDraftRevision: data.expectedDraftRevision,
+        expectedDraftHash: data.expectedDraftHash,
+        content: chapterOutlineContent(data.content),
+      },
+    ),
+    confirmDraft: async (projectId, chapterNumber, draftId, data) => post(
+      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts/${segment(chapterOutlineOpaqueId(draftId, 'draft id'))}/confirm`,
+      {
+        expectedDraftRevision: data.expectedDraftRevision,
+        expectedDraftHash: data.expectedDraftHash,
+        expectedHeadRevision: data.expectedHeadRevision,
+        idempotencyKey: chapterOutlineIdempotencyKey(data.idempotencyKey),
+      },
+    ),
+    generateDraft: async (projectId, chapterNumber, draftId, data) => (
+      chapterOutlineOperationResponse(await post(
+        `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts/${segment(chapterOutlineOpaqueId(draftId, 'draft id'))}/generate`,
+        {
+          draftRevision: data.draftRevision,
+          draftHash: data.draftHash,
+          idempotencyKey: chapterOutlineIdempotencyKey(data.idempotencyKey),
+          authorInstructions: String(data.authorInstructions || ''),
+        },
+        CHAPTER_OUTLINE_GENERATION_TIMEOUT,
+      ))
+    ),
+    getOperation: async (projectId, operationId) => {
+      const opaqueId = chapterOutlineOpaqueId(operationId, 'operation id')
+      return chapterOutlineOperationResponse(
+        await get(
+          `/projects/${segment(projectId)}/chapter-outlines/operations/${segment(opaqueId)}`,
+        ),
+        opaqueId,
+      )
+    },
+    getOperationByKey: async (projectId, idempotencyKey) => (
+      chapterOutlineOperationResponse(await get(
+        `/projects/${segment(projectId)}/chapter-outlines/operations/by-key/${segment(chapterOutlineIdempotencyKey(idempotencyKey))}`,
+      ))
+    ),
   },
 
   chapterSessions: {

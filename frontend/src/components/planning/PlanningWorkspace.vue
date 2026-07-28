@@ -7,8 +7,11 @@ import {
   watch,
 } from 'vue'
 
+import { createChapterOutlineController } from '../../application/planning/chapterOutlineController.js'
+import { useOperationStore } from '../../stores/operationStore.js'
 import { canonicalPlanningContentForUi } from '../../stores/planningStore.js'
 import { createModalFocusManager } from '../common/modalFocusManager.js'
+import ChapterOutlineWorkspace from './ChapterOutlineWorkspace.vue'
 import PlanningHistoryDrawer from './PlanningHistoryDrawer.vue'
 import PlotEditor from './PlotEditor.vue'
 import StoryBlockEditor from './StoryBlockEditor.vue'
@@ -39,6 +42,41 @@ const planningContent = computed(() => {
     || null,
   )
 })
+const outlineController = createChapterOutlineController({
+  store: props.store,
+  projectId: () => String(
+    props.store.projectId
+    || props.store.outlineState?.projectId
+    || props.store.state?.projectId
+    || '',
+  ),
+  operationStore: props.store?._p ? useOperationStore(props.store._p) : null,
+})
+const originalRequestRouteLeave = props.controller.requestRouteLeave
+const originalBeforeUnload = props.controller.beforeUnload
+
+props.controller.requestRouteLeave = to => {
+  if (!outlineController.hasCombinedLeaveRisk(props.controller)) {
+    return originalRequestRouteLeave(to)
+  }
+  const instructions = props.controller.authorInstructions
+  const snapshot = instructions?.value
+  const needsSentinel = !String(snapshot || '').trim()
+  if (needsSentinel && instructions) instructions.value = 'outline-leave-risk'
+  try {
+    return originalRequestRouteLeave(to)
+  } finally {
+    if (needsSentinel && instructions) instructions.value = snapshot
+  }
+}
+props.controller.beforeUnload = event => {
+  if (!outlineController.hasCombinedLeaveRisk(props.controller)) {
+    return originalBeforeUnload(event)
+  }
+  event.preventDefault()
+  event.returnValue = ''
+  return ''
+}
 const revisionLabel = computed(() => (
   props.store.state ? `R${Number(props.store.state.head?.revision || 0)}` : '—'
 ))
@@ -113,7 +151,29 @@ watch(
   () => props.controller.projectScope.value,
   () => { confirmOpen.value = false },
 )
-onBeforeUnmount(() => confirmFocus.unmount())
+watch(
+  () => String(
+    props.store.projectId
+    || props.store.outlineState?.projectId
+    || props.store.state?.projectId
+    || '',
+  ),
+  projectId => {
+    outlineController.enterProject(projectId)
+    if (
+      projectId
+      && typeof props.store.ensureOutlineLoaded === 'function'
+    ) {
+      void outlineController.hydrate().catch(() => {})
+    }
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => {
+  confirmFocus.unmount()
+  props.controller.requestRouteLeave = originalRequestRouteLeave
+  props.controller.beforeUnload = originalBeforeUnload
+})
 </script>
 
 <template>
@@ -285,6 +345,12 @@ onBeforeUnmount(() => confirmFocus.unmount())
           <span>AI 正在生成并核对当前工作稿；文字保持清晰，可上下滚动查看。</span>
         </div>
       </section>
+
+      <chapter-outline-workspace
+        v-if="activeTab === 'story-blocks' && store.outlineState !== undefined"
+        :store="store"
+        :controller="outlineController"
+      />
 
       <section v-if="store.state.draft && controller.editable.value" class="ai-panel">
         <label for="planning-author-instructions">作者补充要求（可选）</label>
