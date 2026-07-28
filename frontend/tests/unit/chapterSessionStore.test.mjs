@@ -11,28 +11,101 @@ function workspace({
   content = '',
   revision = 1,
   candidates = [],
+  sessionId = `session-${chapterNumber}`,
+  planningRevision = 1,
+  planningHash = 'a'.repeat(64),
+  outlineRevision = 3,
+  outlineHash = 'c'.repeat(64),
+  expectedCanonRevision = 0,
 } = {}) {
   return {
     projectId: 'project-1',
     session: {
-      id: `session-${chapterNumber}`, chapterNum: chapterNumber, expectedCanonRevision: 0,
+      id: sessionId, chapterNum: chapterNumber, expectedCanonRevision,
       planningRevisionId: 'planning-revision-1',
-      planningRevision: 1,
-      planningHash: 'a'.repeat(64),
+      planningRevision,
+      planningHash,
       storyBlockId: 'block-1',
       storyBlockRevision: 2,
       storyBlockHash: 'b'.repeat(64),
       chapterOutlineRevisionId: 'outline-revision-1',
-      chapterOutlineRevision: 3,
-      chapterOutlineHash: 'c'.repeat(64),
+      chapterOutlineRevision: outlineRevision,
+      chapterOutlineHash: outlineHash,
       status: 'drafting',
     },
     workingDraft: {
-      id: `draft-${chapterNumber}`, chapterSessionId: `session-${chapterNumber}`,
+      id: `draft-${chapterNumber}`, chapterSessionId: sessionId,
       revision, content, contentHash: 'a'.repeat(64),
       sourcePayload: { source: 'manual-empty' },
     },
     candidates,
+  }
+}
+
+function currentOutline({
+  projectId = 'project-1',
+  chapterNumber = 1,
+  targetPath = `/projects/${projectId}/write/chapters/${chapterNumber}`,
+  confirmed = true,
+  activeSession = null,
+  startSession = true,
+} = {}) {
+  return {
+    projectId,
+    lifecycle: 'active',
+    authoritativeChapterNumber: chapterNumber,
+    targetPath,
+    planningAuthority: {
+      planningRevisionId: 'planning-revision-1',
+      revision: 7,
+      contentHash: 'a'.repeat(64),
+      content: null,
+    },
+    canonProjectionAuthority: {
+      canonRevision: 5,
+      projectionRevision: 5,
+      contentHash: 'd'.repeat(64),
+      synchronized: true,
+    },
+    confirmedOutline: confirmed ? {
+      projectId,
+      chapterNumber,
+      outlineRevisionId: 'outline-revision-1',
+      revision: 9,
+      parentRevision: 8,
+      contentHash: 'c'.repeat(64),
+      content: {
+        schemaVersion: 'chapter-outline-draft-v1',
+        volumeRef: null,
+        storyBlockRef: {
+          id: 'block-1',
+          revision: 2,
+          contentHash: 'b'.repeat(64),
+        },
+        stageRefs: [],
+        sceneTaskRefs: [],
+        chapterGoal: '守住码头，并确认谁泄露了船期。',
+        expectedCharacters: ['林砚'],
+        continuation: ['追查旧账'],
+        plannedTasks: ['稳住船工'],
+        scenes: ['雨夜码头'],
+        forbiddenEarlyEvents: ['不可提前揭示内应'],
+      },
+      basis: {},
+      status: 'current',
+      reason: 'currentOutlineHead',
+    } : null,
+    draft: null,
+    activeSession,
+    capabilities: {
+      view: true,
+      createDraft: false,
+      editDraft: false,
+      generate: false,
+      confirm: false,
+      startSession,
+    },
+    reasons: [],
   }
 }
 
@@ -115,6 +188,227 @@ test('chapter session store edits working draft without creating candidate', asy
       }],
       ['candidate', 'project-1', 'session-1', { expectedWorkingDraftRevision: 3 }],
     ])
+  })
+})
+
+test('authoritative writer entry reads current then creates from exact returned pins', async () => {
+  const calls = []
+  const current = currentOutline()
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => {
+      calls.push(['current', projectId])
+      return current
+    }],
+    [api.chapterSessions, 'create', async (projectId, chapterNumber, command) => {
+      calls.push(['create', projectId, chapterNumber, structuredClone(command)])
+      return workspace({
+        chapterNumber,
+        planningRevision: 7,
+        outlineRevision: 9,
+        expectedCanonRevision: 5,
+      })
+    }],
+    [api.chapterSessions, 'get', async () => {
+      assert.fail('new authoritative entry must not GET an absent Session')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    const authority = await store.openAuthoritative('project-1', 1)
+
+    assert.equal(authority, current)
+    assert.equal(store.session.id, 'session-1')
+    assert.deepEqual(calls, [
+      ['current', 'project-1'],
+      ['create', 'project-1', 1, {
+        chapterNumber: 1,
+        expectedPlanningRevision: 7,
+        expectedPlanningHash: 'a'.repeat(64),
+        expectedOutlineRevision: 9,
+        expectedOutlineHash: 'c'.repeat(64),
+        expectedCanonRevision: 5,
+      }],
+    ])
+    assert.doesNotMatch(JSON.stringify(calls), /apiKey|secret|provider/i)
+  })
+})
+
+test('wrong writer route returns current authority without Session request or redirect', async () => {
+  const current = currentOutline({
+    chapterNumber: 8,
+    targetPath: '/projects/project-1/write/chapters/8',
+  })
+  let sessionRequests = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => current],
+    [api.chapterSessions, 'create', async () => {
+      sessionRequests += 1
+    }],
+    [api.chapterSessions, 'get', async () => {
+      sessionRequests += 1
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    assert.equal(await store.openAuthoritative('project-1', 7), current)
+    assert.equal(sessionRequests, 0)
+    assert.equal(store.hasSession, false)
+  })
+})
+
+test('active authoritative Session is replayed with GET and never POSTed', async () => {
+  const calls = []
+  const current = currentOutline({
+    activeSession: {
+      chapterSessionId: 'session-1',
+      chapterNumber: 1,
+      status: 'drafting',
+      planningRevisionId: 'planning-revision-1',
+      planningRevision: 7,
+      planningHash: 'a'.repeat(64),
+      outlineRevisionId: 'outline-revision-1',
+      outlineRevision: 9,
+      outlineHash: 'c'.repeat(64),
+    },
+    startSession: false,
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => {
+      calls.push(['current', projectId])
+      return current
+    }],
+    [api.chapterSessions, 'get', async (projectId, chapterNumber) => {
+      calls.push(['get', projectId, chapterNumber])
+      return workspace({
+        chapterNumber,
+        planningRevision: 7,
+        outlineRevision: 9,
+        expectedCanonRevision: 5,
+      })
+    }],
+    [api.chapterSessions, 'create', async () => {
+      assert.fail('active Session replay must not POST')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    assert.equal(await store.openAuthoritative('project-1', 1), current)
+    assert.equal(store.session.id, 'session-1')
+    assert.deepEqual(calls, [
+      ['current', 'project-1'],
+      ['get', 'project-1', 1],
+    ])
+  })
+})
+
+test('active Session replay fails closed when the loaded workspace pins drift', async () => {
+  const current = currentOutline({
+    activeSession: {
+      chapterSessionId: 'session-1',
+      chapterNumber: 1,
+      status: 'drafting',
+      planningRevisionId: 'planning-revision-1',
+      planningRevision: 7,
+      planningHash: 'a'.repeat(64),
+      outlineRevisionId: 'outline-revision-1',
+      outlineRevision: 9,
+      outlineHash: 'c'.repeat(64),
+    },
+    startSession: false,
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => current],
+    [api.chapterSessions, 'get', async () => workspace({
+      planningRevision: 6,
+      outlineRevision: 9,
+      expectedCanonRevision: 5,
+    })],
+    [api.chapterSessions, 'create', async () => {
+      assert.fail('active Session drift must not fall back to POST')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    await assert.rejects(
+      store.openAuthoritative('project-1', 1),
+      /authority.*changed|authority.*mismatch/i,
+    )
+    assert.equal(store.hasSession, false)
+    assert.doesNotMatch(JSON.stringify(store.error), /planning-revision|outline-revision/)
+  })
+})
+
+test('missing or non-startable current Outline never creates a Session', async () => {
+  for (const current of [
+    currentOutline({ confirmed: false, startSession: false }),
+    currentOutline({ startSession: false }),
+    {
+      ...currentOutline(),
+      confirmedOutline: {
+        ...currentOutline().confirmedOutline,
+        status: 'superseded',
+      },
+    },
+  ]) {
+    let sessionRequests = 0
+    await withApiMethods([
+      [api.chapterOutlines, 'current', async () => current],
+      [api.chapterSessions, 'create', async () => {
+        sessionRequests += 1
+      }],
+      [api.chapterSessions, 'get', async () => {
+        sessionRequests += 1
+      }],
+    ], async () => {
+      setActivePinia(createPinia())
+      const store = useChapterSessionStore()
+      assert.equal(await store.openAuthoritative('project-1', 1), current)
+      assert.equal(sessionRequests, 0)
+      assert.equal(store.hasSession, false)
+    })
+  }
+})
+
+test('late current response is fenced before it can write state or trigger Session POST', async () => {
+  const first = deferred()
+  const calls = []
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => {
+      calls.push(['current', projectId])
+      return projectId === 'project-1'
+        ? first.promise
+        : currentOutline({ projectId: 'project-2', chapterNumber: 2 })
+    }],
+    [api.chapterSessions, 'create', async (projectId, chapterNumber) => {
+      calls.push(['create', projectId, chapterNumber])
+      return workspace({
+        chapterNumber,
+        planningRevision: 7,
+        outlineRevision: 9,
+        expectedCanonRevision: 5,
+      })
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    const stale = store.openAuthoritative('project-1', 1)
+    const current = store.openAuthoritative('project-2', 2)
+    await current
+    first.resolve(currentOutline({ projectId: 'project-1', chapterNumber: 1 }))
+    assert.equal(await stale, null)
+
+    assert.deepEqual(calls, [
+      ['current', 'project-1'],
+      ['current', 'project-2'],
+      ['create', 'project-2', 2],
+    ])
+    assert.equal(store.projectId, 'project-2')
+    assert.equal(store.chapterNumber, 2)
+    assert.equal(store.session.chapterNum, 2)
   })
 })
 

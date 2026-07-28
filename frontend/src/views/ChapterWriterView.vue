@@ -23,7 +23,10 @@ import {
   decideChapterNavigation,
 } from '@/utils/chapterEditorState'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
-import { projectOverviewPath } from '@/router/projectRoutes'
+import {
+  planningStoryBlocksPath,
+  projectOverviewPath,
+} from '@/router/projectRoutes'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,6 +35,7 @@ const loadGuard = createLatestRequestGuard()
 
 const loading = ref(true)
 const pageError = ref('')
+const outlineAuthority = ref(null)
 const authorInstruction = ref('')
 const editorState = createChapterEditorState()
 const editorContent = editorState.editorContent
@@ -41,6 +45,20 @@ const chapterNumber = computed(() => Number(route.params.chapterNumber))
 const session = computed(() => chapterSessionStore.session)
 const workingDraft = computed(() => chapterSessionStore.workingDraft)
 const candidates = computed(() => chapterSessionStore.candidates)
+const confirmedOutline = computed(
+  () => outlineAuthority.value?.confirmedOutline || null,
+)
+const outlineContent = computed(() => confirmedOutline.value?.content || null)
+const chapterConflict = computed(() => (
+  outlineAuthority.value !== null
+  && outlineAuthority.value.authoritativeChapterNumber !== chapterNumber.value
+))
+const archived = computed(
+  () => outlineAuthority.value?.lifecycle === 'archived',
+)
+const storyBlocksPath = computed(
+  () => planningStoryBlocksPath(projectId.value),
+)
 const canSaveDraft = computed(() => (
   chapterSessionStore.hasSession
   && !chapterSessionStore.busy
@@ -62,9 +80,15 @@ async function loadWorkspace(nextProjectId, nextChapterNumber) {
   const generation = loadGuard.begin()
   loading.value = true
   pageError.value = ''
+  outlineAuthority.value = null
   try {
-    await chapterSessionStore.load(targetProjectId, targetChapterNumber)
+    const current = await chapterSessionStore.openAuthoritative(
+      targetProjectId,
+      targetChapterNumber,
+    )
     if (!loadGuard.isCurrent(generation)) return
+    if (current === null) return
+    outlineAuthority.value = current
     editorState.syncFromWorkspace(chapterSessionStore.workspace)
   } catch (error) {
     if (!loadGuard.isCurrent(generation)) return
@@ -101,7 +125,7 @@ function backToProject() {
 
 function canLeaveChapter() {
   return decideChapterNavigation({
-    busy: chapterSessionStore.busy,
+    busy: chapterSessionStore.writeBusy,
     dirty: editorState.dirty.value,
     confirmDiscard: () => window.confirm('当前工作稿尚未保存，确认放弃这些修改吗？'),
   })
@@ -134,6 +158,30 @@ onBeforeUnmount(() => {
       </template>
     </n-result>
 
+    <n-result
+      v-else-if="chapterConflict"
+      status="warning"
+      title="章节地址与服务端权威不一致"
+      description="当前地址不是服务端确认的权威章节；系统不会自动跳转，也不会读取或创建错误章节的会话。"
+      class="writer-result"
+    >
+      <router-link :to="outlineAuthority.targetPath">
+        前往第 {{ outlineAuthority.authoritativeChapterNumber }} 章
+      </router-link>
+    </n-result>
+
+    <n-result
+      v-else-if="archived"
+      status="info"
+      title="项目已归档"
+      description="章节与小纲仅供查看，归档项目不会读取或创建写作会话。"
+      class="writer-result"
+    >
+      <template #footer>
+        <n-button @click="backToProject">返回项目</n-button>
+      </template>
+    </n-result>
+
     <template v-else>
       <header class="writer-hero">
         <div>
@@ -144,8 +192,14 @@ onBeforeUnmount(() => {
         <n-button @click="backToProject">返回项目</n-button>
       </header>
 
-      <n-alert v-if="!session" type="warning" class="writer-alert" title="本章小纲尚未确认">
-        请先完成并确认本章小纲。Phase 3A 暂不提供小纲创作入口，已有章节会话仍可继续编辑。
+      <n-alert
+        v-if="!confirmedOutline"
+        type="warning"
+        class="writer-alert"
+        title="请先完成并确认本章小纲"
+      >
+        本章没有可用于写作的当前确认小纲。
+        <router-link :to="storyBlocksPath">前往故事块与章节小纲</router-link>
       </n-alert>
 
       <section class="workspace-grid">
@@ -220,8 +274,39 @@ onBeforeUnmount(() => {
         </n-card>
 
         <aside class="side-stack">
+          <n-card
+            v-if="outlineContent"
+            title="已确认小纲（只读）"
+            :bordered="false"
+          >
+            <p class="outline-goal">{{ outlineContent.chapterGoal }}</p>
+            <dl class="outline-summary">
+              <div>
+                <dt>预计登场</dt>
+                <dd>{{ outlineContent.expectedCharacters?.join('、') || '—' }}</dd>
+              </div>
+              <div>
+                <dt>承接线索</dt>
+                <dd>{{ outlineContent.continuation?.join('、') || '—' }}</dd>
+              </div>
+              <div>
+                <dt>计划任务</dt>
+                <dd>{{ outlineContent.plannedTasks?.join('、') || '—' }}</dd>
+              </div>
+              <div>
+                <dt>场景</dt>
+                <dd>{{ outlineContent.scenes?.join('、') || '—' }}</dd>
+              </div>
+              <div>
+                <dt>禁止提前发生</dt>
+                <dd>{{ outlineContent.forbiddenEarlyEvents?.join('、') || '—' }}</dd>
+              </div>
+            </dl>
+          </n-card>
+
           <n-card title="本章权威基线" :bordered="false">
             <template v-if="session">
+              <p class="muted">第 {{ session.chapterNum }} 章 · 状态：{{ session.status }}</p>
               <p class="muted">Planning R{{ session.planningRevision }}</p>
               <p class="small">Outline R{{ session.chapterOutlineRevision }} · StoryBlock R{{ session.storyBlockRevision }}</p>
             </template>
@@ -267,6 +352,11 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .side-stack { display: grid; align-content: start; gap: 16px; }
 .muted { margin: 0; color: #81776a; line-height: 1.7; }
 .small { margin: 10px 0 0; color: #9a8d7c; font-size: 12px; }
+.outline-goal { margin: 0 0 14px; color: #433b32; font-family: Georgia, 'Noto Serif SC', serif; line-height: 1.7; }
+.outline-summary { display: grid; gap: 12px; margin: 0; }
+.outline-summary div { display: grid; gap: 3px; }
+.outline-summary dt { color: #967548; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+.outline-summary dd { margin: 0; color: #6f6559; font-size: 13px; line-height: 1.65; }
 .candidate-list { margin: 14px 0 0; padding-left: 20px; color: #675d51; font-size: 13px; }
 @media (max-width: 900px) { .workspace-grid { grid-template-columns: 1fr; } .writer-hero { align-items: flex-start; flex-direction: column; } }
 </style>

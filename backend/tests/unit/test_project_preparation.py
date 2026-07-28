@@ -7,6 +7,7 @@ import pytest
 
 from backend import http_errors
 from backend.domain.model_bindings import TASK_KEYS
+from backend.repositories.chapter_sessions import ActiveChapterSessionConflict
 from backend.repositories.projects import ProjectRepository
 from backend.services.bibles import BIBLE_POLICY_VERSION
 from backend.services.project_lifecycle import ProjectLifecycleService
@@ -91,7 +92,13 @@ def _snapshot(
     planning_head=None,
     planning_draft=None,
     planning_operation=None,
-    chapter_session=None,
+    active_session=None,
+    max_final_chapter_number=None,
+    authoritative_chapter_number=1,
+    canon_projection=None,
+    outline_head=None,
+    outline_draft=None,
+    outline_operation=None,
     model_tasks=None,
 ):
     return {
@@ -103,7 +110,13 @@ def _snapshot(
         "planning_head": planning_head,
         "planning_draft": planning_draft,
         "planning_operation": planning_operation,
-        "chapter_session": chapter_session,
+        "active_session": active_session,
+        "max_final_chapter_number": max_final_chapter_number,
+        "authoritative_chapter_number": authoritative_chapter_number,
+        "canon_projection": canon_projection,
+        "outline_head": outline_head,
+        "outline_draft": outline_draft,
+        "outline_operation": outline_operation,
         "model_tasks": (
             _ready_model_tasks() if model_tasks is None else tuple(model_tasks)
         ),
@@ -144,6 +157,41 @@ class _SqlRecordingSession:
         return []
 
 
+class _ChapterAuthorityRepository:
+    def __init__(self, *, active=None, maximum=None):
+        self.active = active
+        self.maximum = maximum
+        self.calls = []
+
+    async def read_active_session(self, session, project_id):
+        self.calls.append(("active", session, project_id))
+        return self.active
+
+    async def read_max_final_chapter_number(self, session, project_id):
+        self.calls.append(("maximum", session, project_id))
+        return self.maximum
+
+
+class _OutlineAuthorityRepository:
+    def __init__(self, *, head=None, draft=None, attempt=None):
+        self.head = head
+        self.draft = draft
+        self.attempt = attempt
+        self.calls = []
+
+    async def read_outline_head(self, session, project_id, chapter_number):
+        self.calls.append(("head", session, project_id, chapter_number))
+        return self.head
+
+    async def read_active_draft(self, session, project_id, chapter_number):
+        self.calls.append(("draft", session, project_id, chapter_number))
+        return self.draft
+
+    async def read_active_attempt(self, session, draft_id):
+        self.calls.append(("attempt", session, draft_id))
+        return self.attempt
+
+
 class _ContractService:
     def __init__(self, result):
         self.result = result
@@ -170,8 +218,15 @@ def _service(snapshot, contract):
 @pytest.mark.asyncio
 async def test_preparation_operation_query_is_scoped_to_current_active_draft():
     session = _SqlRecordingSession()
+    chapter_authority = _ChapterAuthorityRepository(maximum=7)
+    outline_authority = _OutlineAuthorityRepository(
+        draft={"id": "outline-draft-8"}
+    )
 
-    await ProjectRepository().read_preparation_snapshot(session, "project-1")
+    snapshot = await ProjectRepository(
+        chapter_session_repository=chapter_authority,
+        chapter_outline_repository=outline_authority,
+    ).read_preparation_snapshot(session, "project-1")
 
     operation_queries = [
         (sql, args)
@@ -193,6 +248,18 @@ async def test_preparation_operation_query_is_scoped_to_current_active_draft():
             "LIMIT 1",
             ("project-1",),
         )
+    ]
+    assert chapter_authority.calls == [
+        ("active", session, "project-1"),
+        ("maximum", session, "project-1"),
+    ]
+    assert snapshot["active_session"] is None
+    assert snapshot["max_final_chapter_number"] == 7
+    assert snapshot["authoritative_chapter_number"] == 8
+    assert outline_authority.calls == [
+        ("head", session, "project-1", 8),
+        ("draft", session, "project-1", 8),
+        ("attempt", session, "outline-draft-8"),
     ]
 
 
@@ -217,6 +284,9 @@ async def test_preparation_uses_one_transaction_and_returns_closed_fields():
         "bible": "missing",
         "planning": "missing",
         "planningOperation": None,
+        "outline": "missing",
+        "outlineOperation": None,
+        "authoritativeChapterNumber": 1,
         "modelTasks": [
             {"taskKey": task_key, "readiness": "ready", "reasons": []}
             for task_key in TASK_KEYS
@@ -264,24 +334,20 @@ async def test_preparation_priority_is_operation_session_then_foundation_and_pla
         ),
         (
             _snapshot(
+                active_session={
+                    "id": "session-7",
+                    "chapter_num": 7,
+                    "status": "drafting",
+                },
+                max_final_chapter_number=9,
+                authoritative_chapter_number=7,
                 planning_operation={
                     "operation_id": "operation-1",
                     "status": "pending",
                 },
-            ),
-            {"revision": 0, "has_contract": False, "contract_ready": False},
-            (
-                "recover_planning_operation",
-                planning_path,
-                "planning_operation_pending",
-            ),
-        ),
-        (
-            _snapshot(
-                chapter_session={
-                    "chapter_session_id": "session-7",
-                    "chapter_num": 7,
-                    "working_draft_id": "draft-7",
+                outline_operation={
+                    "operation_id": "outline-operation-1",
+                    "status": "pending",
                 },
             ),
             {"revision": 0, "has_contract": False, "contract_ready": False},
@@ -400,7 +466,11 @@ async def test_preparation_priority_is_operation_session_then_foundation_and_pla
                 },
             ),
             _contract(),
-            ("phase_boundary_outline", None, "phase_3c_outline"),
+            (
+                "prepare_chapter_outline",
+                "/projects/project%20%2F%20%E4%B8%80/planning/story-blocks",
+                "chapter_outline_missing",
+            ),
         ),
     )
 
@@ -411,7 +481,7 @@ async def test_preparation_priority_is_operation_session_then_foundation_and_pla
 
 
 @pytest.mark.asyncio
-async def test_pending_planning_operation_is_closed_safe_and_preempts_session():
+async def test_active_session_preempts_pending_operations_and_public_state_is_safe():
     sentinel = "must-never-leave-preparation"
     service, *_ = _service(
         _snapshot(
@@ -422,11 +492,19 @@ async def test_pending_planning_operation_is_closed_safe_and_preempts_session():
                 "model_name_snapshot": sentinel,
                 "provider_id": sentinel,
             },
-            chapter_session={
-                "chapter_session_id": "session-7",
-                "chapter_num": 7,
-                "working_draft_id": "draft-7",
+            outline_operation={
+                "operation_id": "outline-operation / 一",
+                "status": "pending",
+                "input_manifest_json": sentinel,
+                "raw_provider_output": sentinel,
             },
+            active_session={
+                "id": "session-7",
+                "chapter_num": 7,
+                "status": "drafting",
+            },
+            max_final_chapter_number=9,
+            authoritative_chapter_number=7,
         ),
         {"revision": 0, "has_contract": False, "contract_ready": False},
     )
@@ -434,12 +512,167 @@ async def test_pending_planning_operation_is_closed_safe_and_preempts_session():
     result = await service.preparation("project / 一")
     public = result.model_dump(mode="json", by_alias=True)
 
-    assert result.next_action == "recover_planning_operation"
+    assert result.next_action == "continue_writing"
     assert public["planningOperation"] == {
         "operationId": "operation / 一",
         "status": "pending",
     }
+    assert public["outlineOperation"] == {
+        "operationId": "outline-operation / 一",
+        "status": "pending",
+    }
+    assert public["authoritativeChapterNumber"] == 7
     assert sentinel not in str(public)
+
+
+def _current_bible_head():
+    return {
+        "head_revision": 3,
+        "head_bible_revision_id": "bible-3",
+        "head_content_hash": "d" * 64,
+        "revision_id": "bible-3",
+        "revision": 3,
+        "content_hash": "d" * 64,
+        **_bible_basis(),
+    }
+
+
+def _current_planning_head():
+    return {
+        "head_revision": 2,
+        "planning_revision_id": "planning-2",
+        "head_content_hash": "e" * 64,
+        "revision_id": "planning-2",
+        "revision": 2,
+        "content_hash": "e" * 64,
+        **_bible_basis(),
+        "bible_revision_id": "bible-3",
+        "bible_revision": 3,
+        "bible_hash": "d" * 64,
+    }
+
+
+def _current_projection():
+    return {
+        "canon_revision": 4,
+        "projection_revision": 4,
+        "content_hash": "f" * 64,
+    }
+
+
+def _outline_basis():
+    return {
+        "planning_revision_id": "planning-2",
+        "planning_revision": 2,
+        "planning_hash": "e" * 64,
+        "canon_revision": 4,
+        "projection_revision": 4,
+        "projection_hash": "f" * 64,
+    }
+
+
+def _outline_draft():
+    return {
+        "draft_id": "outline-draft-8",
+        "chapter_num": 8,
+        "base_head_revision": 0,
+        "draft_revision": 1,
+        "status": "active",
+        **_outline_basis(),
+    }
+
+
+def _outline_head():
+    return {
+        "head_revision": 1,
+        "head_outline_revision_id": "outline-revision-8",
+        "head_content_hash": "1" * 64,
+        "revision_id": "outline-revision-8",
+        "revision": 1,
+        "content_hash": "1" * 64,
+        "chapter_num": 8,
+        **_outline_basis(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_outline_operation_draft_and_confirmed_head_have_fixed_priority():
+    base = {
+        "selection": _selection(),
+        "bible_head": _current_bible_head(),
+        "planning_head": _current_planning_head(),
+        "max_final_chapter_number": 7,
+        "authoritative_chapter_number": 8,
+        "canon_projection": _current_projection(),
+    }
+    story_blocks_path = (
+        "/projects/project%20%2F%20%E4%B8%80/planning/story-blocks"
+    )
+    writer_path = (
+        "/projects/project%20%2F%20%E4%B8%80/write/chapters/8"
+    )
+    cases = (
+        (
+            _snapshot(
+                **base,
+                outline_draft=_outline_draft(),
+                outline_operation={
+                    "operation_id": "outline-operation-8",
+                    "status": "pending",
+                },
+            ),
+            (
+                "recover_chapter_outline_operation",
+                story_blocks_path,
+                "outline_operation_pending",
+                "draft",
+            ),
+        ),
+        (
+            _snapshot(**base, outline_draft=_outline_draft()),
+            (
+                "continue_chapter_outline",
+                story_blocks_path,
+                "chapter_outline_draft",
+                "draft",
+            ),
+        ),
+        (
+            _snapshot(**base, outline_head=_outline_head()),
+            (
+                "start_chapter_session",
+                writer_path,
+                "chapter_outline_current",
+                "current",
+            ),
+        ),
+        (
+            _snapshot(
+                **base,
+                outline_head={
+                    **_outline_head(),
+                    "planning_hash": "9" * 64,
+                },
+            ),
+            (
+                "prepare_chapter_outline",
+                story_blocks_path,
+                "chapter_outline_superseded",
+                "superseded",
+            ),
+        ),
+    )
+
+    for snapshot, expected in cases:
+        service, *_ = _service(snapshot, _contract())
+        result = await service.preparation("project / 一")
+        assert (
+            result.next_action,
+            result.target_path,
+            result.reasons[0],
+            result.outline,
+        ) == expected
+        assert result.authoritative_chapter_number == 8
 
 
 @pytest.mark.asyncio
@@ -716,4 +949,32 @@ async def test_missing_project_fails_before_contract_read():
         await service.preparation("missing")
 
     assert len(repository.calls) == 1
+    assert contract_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_multiple_active_sessions_fail_closed_as_safe_lifecycle_conflict():
+    class SplitAuthorityRepository(_Repository):
+        async def read_preparation_snapshot(self, session, project_id):
+            raise ActiveChapterSessionConflict(
+                "AUTHORITY-SPLIT-MUST-NOT-LEAVE-SERVICE"
+            )
+
+    repository = SplitAuthorityRepository(None)
+    contract_service = _ContractService(_contract())
+    service = ProjectLifecycleService(
+        repository,
+        lambda: _Context(),
+        lambda: _Context(),
+        contract_service=contract_service,
+    )
+
+    with pytest.raises(
+        http_errors.ProjectLifecycleConflict,
+        match="Project lifecycle changed; refresh and retry",
+    ) as caught:
+        await service.preparation("project / 一")
+
+    assert "AUTHORITY-SPLIT" not in str(caught.value)
+    assert caught.value.__cause__ is None
     assert contract_service.calls == []

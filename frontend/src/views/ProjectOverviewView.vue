@@ -50,6 +50,31 @@ const actionCopy = computed(() => ({
     title: '核对规划生成结果',
     description: '沿用原操作标识读取权威结果，不会重复发起一次 AI 生成。',
   },
+  recover_chapter_outline_operation: {
+    eyebrow: 'CHAPTER OUTLINE',
+    title: '核对小纲生成结果',
+    description: '读取本章小纲生成操作的权威结果，不会重复发起生成。',
+  },
+  prepare_chapter_outline: {
+    eyebrow: 'CHAPTER OUTLINE',
+    title: '准备下一章小纲',
+    description: '基于当前规划、Canon 与 Projection 建立本章的写作边界。',
+  },
+  continue_chapter_outline: {
+    eyebrow: 'CHAPTER OUTLINE',
+    title: '继续下一章小纲',
+    description: '完善当前章节小纲并确认，随后即可进入正文工作台。',
+  },
+  start_chapter_session: {
+    eyebrow: 'WRITER',
+    title: '进入章节写作',
+    description: '使用已确认的小纲与固定权威基线创建章节工作会话。',
+  },
+  continue_writing: {
+    eyebrow: 'WRITER',
+    title: '继续章节写作',
+    description: '回到已有章节工作会话，继续编辑工作稿与候选稿。',
+  },
 }[preparation.value?.nextAction] || null))
 
 const statusItems = computed(() => {

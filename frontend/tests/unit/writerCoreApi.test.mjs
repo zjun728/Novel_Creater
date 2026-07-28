@@ -1385,6 +1385,71 @@ test('chapter outline client exposes the exact canonical endpoints and closed co
   })
 })
 
+test('chapter outline current response is a closed projection with pending recovery only', async () => {
+  const originalFetch = global.fetch
+  const secret = 'MUST-NOT-CROSS-CURRENT-OUTLINE'
+  global.fetch = async () => jsonResponse({
+    projectId: 'project-1',
+    lifecycle: 'active',
+    authoritativeChapterNumber: 8,
+    targetPath: '/projects/project-1/write/chapters/8',
+    planningAuthority: null,
+    canonProjectionAuthority: null,
+    confirmedOutline: null,
+    draft: null,
+    activeSession: null,
+    pendingOperation: {
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'pending',
+      providerId: secret,
+      model: secret,
+      manifest: secret,
+      prompt: secret,
+      raw: secret,
+    },
+    capabilities: {
+      view: true,
+      createDraft: true,
+      editDraft: false,
+      generate: false,
+      confirm: false,
+      startSession: false,
+      apiKey: secret,
+    },
+    reasons: ['outlineMissing'],
+    api_key: secret,
+    authorization: secret,
+    password: secret,
+    dsn: secret,
+  })
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const current = await api.chapterOutlines.current('project-1')
+
+    assert.deepEqual(current.pendingOperation, {
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'pending',
+    })
+    assert.deepEqual(Object.keys(current), [
+      'projectId',
+      'lifecycle',
+      'authoritativeChapterNumber',
+      'targetPath',
+      'planningAuthority',
+      'canonProjectionAuthority',
+      'confirmedOutline',
+      'draft',
+      'activeSession',
+      'pendingOperation',
+      'capabilities',
+      'reasons',
+    ])
+    assert.equal(JSON.stringify(current).includes(secret), false)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
 test('chapter outline generation projects only the public operation and uses GET-only recovery', async () => {
   const originalFetch = global.fetch
   const calls = []

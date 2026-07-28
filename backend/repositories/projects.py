@@ -6,6 +6,11 @@ import time
 from uuid import uuid4
 
 from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
+from backend.repositories.chapter_outlines import ChapterOutlineRepository
+from backend.repositories.chapter_sessions import (
+    ChapterSessionRepository,
+    authoritative_chapter,
+)
 from backend.repositories.project_lifecycle import (
     lock_active_project,
     lock_project,
@@ -58,9 +63,22 @@ _PROJECT_OWNED_DELETE_ORDER = (
 class ProjectRepository:
     """All methods require the caller's explicit database session."""
 
-    def __init__(self, *, id_factory=None, clock=None):
+    def __init__(
+        self,
+        *,
+        id_factory=None,
+        clock=None,
+        chapter_session_repository=None,
+        chapter_outline_repository=None,
+    ):
         self._id_factory = id_factory or (lambda: str(uuid4()))
         self._clock = clock or (lambda: int(time.time() * 1000))
+        self.chapter_session_repository = (
+            chapter_session_repository or ChapterSessionRepository()
+        )
+        self.chapter_outline_repository = (
+            chapter_outline_repository or ChapterOutlineRepository()
+        )
 
     async def insert_project(self, session, command) -> None:
         now = self._clock()
@@ -205,16 +223,46 @@ class ProjectRepository:
                LIMIT 1""",
             (project_id,),
         )
-        chapter_session = await session.fetchone(
-            """SELECT chapter.id AS chapter_session_id,chapter.chapter_num,
-                      draft.id AS working_draft_id
-               FROM chapter_sessions chapter
-               JOIN working_drafts draft
-                 ON draft.project_id=chapter.project_id
-                AND draft.chapter_session_id=chapter.id
-               WHERE chapter.project_id=%s AND chapter.status='drafting'
-               ORDER BY chapter.chapter_num
-               LIMIT 1""",
+        active_session = (
+            await self.chapter_session_repository.read_active_session(
+                session,
+                project_id,
+            )
+        )
+        max_final_chapter_number = (
+            await self.chapter_session_repository
+            .read_max_final_chapter_number(session, project_id)
+        )
+        authoritative_chapter_number = authoritative_chapter(
+            active_session,
+            max_final_chapter_number,
+        )
+        outline_head = await self.chapter_outline_repository.read_outline_head(
+            session,
+            project_id,
+            authoritative_chapter_number,
+        )
+        outline_draft = (
+            await self.chapter_outline_repository.read_active_draft(
+                session,
+                project_id,
+                authoritative_chapter_number,
+            )
+        )
+        outline_operation = (
+            await self.chapter_outline_repository.read_active_attempt(
+                session,
+                str(outline_draft["id"]),
+            )
+            if outline_draft is not None
+            else None
+        )
+        canon_projection = await session.fetchone(
+            """SELECT canon_revision_number AS canon_revision,
+                      projection_revision_number AS projection_revision,
+                      content_hash AS projection_hash
+               FROM projection_heads
+               WHERE project_id=%s""",
             (project_id,),
         )
         model_tasks = await session.fetchall(
@@ -261,7 +309,13 @@ class ProjectRepository:
             "planning_head": planning_head,
             "planning_draft": planning_draft,
             "planning_operation": planning_operation,
-            "chapter_session": chapter_session,
+            "active_session": active_session,
+            "max_final_chapter_number": max_final_chapter_number,
+            "authoritative_chapter_number": authoritative_chapter_number,
+            "canon_projection": canon_projection,
+            "outline_head": outline_head,
+            "outline_draft": outline_draft,
+            "outline_operation": outline_operation,
             "model_tasks": tuple(model_tasks),
         }
 

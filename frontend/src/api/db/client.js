@@ -536,6 +536,127 @@ function chapterOutlineContent(value = {}) {
   return content
 }
 
+function chapterOutlinePlanningAuthority(value) {
+  if (value == null) return null
+  return {
+    ...pickDefined(value, [
+      'planningRevisionId',
+      'revision',
+      'contentHash',
+    ]),
+    content: value.content == null
+      ? null
+      : planningDraftContent(value.content),
+  }
+}
+
+function chapterOutlineProjectionAuthority(value) {
+  if (value == null) return null
+  return pickDefined(value, [
+    'canonRevision',
+    'projectionRevision',
+    'contentHash',
+    'synchronized',
+  ])
+}
+
+function chapterOutlineBasis(value) {
+  return {
+    planningAuthority: chapterOutlinePlanningAuthority(
+      value?.planningAuthority,
+    ),
+    canonProjectionAuthority: chapterOutlineProjectionAuthority(
+      value?.canonProjectionAuthority,
+    ),
+  }
+}
+
+function chapterOutlineDraftResponse(value) {
+  if (value == null) return null
+  return {
+    ...pickDefined(value, [
+      'projectId',
+      'chapterNumber',
+      'draftId',
+      'baseHeadRevision',
+      'draftRevision',
+      'contentHash',
+    ]),
+    content: chapterOutlineContent(value.content),
+    basis: chapterOutlineBasis(value.basis),
+    ...pickDefined(value, ['status']),
+  }
+}
+
+function chapterOutlineRevisionResponse(value) {
+  if (value == null) return null
+  return {
+    ...pickDefined(value, [
+      'projectId',
+      'chapterNumber',
+      'outlineRevisionId',
+      'revision',
+      'parentRevision',
+      'contentHash',
+    ]),
+    content: chapterOutlineContent(value.content),
+    basis: chapterOutlineBasis(value.basis),
+    ...pickDefined(value, ['status', 'reason']),
+  }
+}
+
+function chapterOutlineActiveSession(value) {
+  if (value == null) return null
+  return pickDefined(value, [
+    'chapterSessionId',
+    'chapterNumber',
+    'status',
+    'planningRevisionId',
+    'planningRevision',
+    'planningHash',
+    'outlineRevisionId',
+    'outlineRevision',
+    'outlineHash',
+  ])
+}
+
+function chapterOutlinePendingOperation(value) {
+  if (value == null) return null
+  return pickDefined(value, ['operationId', 'status'])
+}
+
+function chapterOutlineStateResponse(value = {}) {
+  return {
+    projectId: value.projectId,
+    lifecycle: value.lifecycle,
+    authoritativeChapterNumber: value.authoritativeChapterNumber,
+    targetPath: value.targetPath,
+    planningAuthority: chapterOutlinePlanningAuthority(
+      value.planningAuthority,
+    ),
+    canonProjectionAuthority: chapterOutlineProjectionAuthority(
+      value.canonProjectionAuthority,
+    ),
+    confirmedOutline: chapterOutlineRevisionResponse(
+      value.confirmedOutline,
+    ),
+    draft: chapterOutlineDraftResponse(value.draft),
+    activeSession: chapterOutlineActiveSession(value.activeSession),
+    pendingOperation: chapterOutlinePendingOperation(
+      value.pendingOperation,
+    ),
+    capabilities: pickDefined(value.capabilities, [
+      'view',
+      'createDraft',
+      'editDraft',
+      'generate',
+      'confirm',
+      'startSession',
+    ]),
+    reasons: Array.isArray(value.reasons) ? [...value.reasons] : [],
+  }
+}
+
 function chapterOutlineOperationResponse(value, expectedOperationId) {
   const invalid = () => {
     throw new TypeError('Invalid ChapterOutline operation response')
@@ -1079,12 +1200,12 @@ export const api = {
   },
 
   chapterOutlines: {
-    current: async projectId => get(
+    current: async projectId => chapterOutlineStateResponse(await get(
       `/projects/${segment(projectId)}/chapter-outlines/current`,
-    ),
-    get: async (projectId, chapterNumber) => get(
+    )),
+    get: async (projectId, chapterNumber) => chapterOutlineStateResponse(await get(
       `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}`,
-    ),
+    )),
     history: async (projectId, chapterNumber) => get(
       `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/history`,
     ),

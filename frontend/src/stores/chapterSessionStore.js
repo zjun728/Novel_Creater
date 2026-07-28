@@ -49,6 +49,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   const draftGuard = createLatestRequestGuard()
   const candidateGuard = createLatestRequestGuard()
   const generationGuard = createLatestRequestGuard()
+  const authoritativeEntryGuard = createLatestRequestGuard()
   let stateGeneration = 0
 
   const session = computed(() => workspace.value?.session || null)
@@ -92,6 +93,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       draftGuard.invalidate()
       candidateGuard.invalidate()
       generationGuard.invalidate()
+      authoritativeEntryGuard.invalidate()
       workspace.value = null
       error.value = null
       resetPendingFlags()
@@ -120,6 +122,163 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   function acceptWorkspace(nextWorkspace) {
     workspace.value = nextWorkspace
     error.value = null
+  }
+
+  function workspaceMatchesAuthority(
+    candidate,
+    current,
+    targetChapterNumber,
+    expectedSessionId = null,
+  ) {
+    const sessionValue = candidate?.session
+    const planning = current?.planningAuthority
+    const projection = current?.canonProjectionAuthority
+    const outline = current?.confirmedOutline
+    const active = current?.activeSession
+    return Boolean(
+      sessionValue?.id
+      && (!expectedSessionId || sessionValue.id === expectedSessionId)
+      && sessionValue.chapterNum === targetChapterNumber
+      && sessionValue.planningRevisionId === planning?.planningRevisionId
+      && sessionValue.planningRevision === planning?.revision
+      && sessionValue.planningHash === planning?.contentHash
+      && sessionValue.chapterOutlineRevisionId === outline?.outlineRevisionId
+      && sessionValue.chapterOutlineRevision === outline?.revision
+      && sessionValue.chapterOutlineHash === outline?.contentHash
+      && sessionValue.expectedCanonRevision === projection?.canonRevision
+      && (
+        !active
+        || (
+          active.chapterSessionId === sessionValue.id
+          && active.chapterNumber === sessionValue.chapterNum
+          && active.planningRevisionId === sessionValue.planningRevisionId
+          && active.planningRevision === sessionValue.planningRevision
+          && active.planningHash === sessionValue.planningHash
+          && active.outlineRevisionId === sessionValue.chapterOutlineRevisionId
+          && active.outlineRevision === sessionValue.chapterOutlineRevision
+          && active.outlineHash === sessionValue.chapterOutlineHash
+        )
+      )
+    )
+  }
+
+  async function openAuthoritative(nextProjectId, nextChapterNumber) {
+    const {
+      projectId: targetProjectId,
+      chapterNumber: targetChapterNumber,
+    } = enterContext(nextProjectId, nextChapterNumber)
+    const generation = authoritativeEntryGuard.begin()
+    const targetStateGeneration = stateGeneration
+    loading.value = true
+    error.value = null
+    try {
+      const current = await api.chapterOutlines.current(targetProjectId)
+      if (!isCurrent(
+        authoritativeEntryGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) return null
+      if (
+        current?.projectId !== targetProjectId
+        || !Number.isInteger(current?.authoritativeChapterNumber)
+        || current.authoritativeChapterNumber < 1
+      ) {
+        throw new TypeError('Invalid ChapterOutline authority state')
+      }
+      const routeMatches = (
+        current.authoritativeChapterNumber === targetChapterNumber
+      )
+      const confirmed = current.confirmedOutline
+      if (
+        current.lifecycle === 'archived'
+        || !routeMatches
+        || !confirmed
+      ) return current
+
+      let loaded
+      if (current.activeSession) {
+        loaded = await api.chapterSessions.get(
+          targetProjectId,
+          targetChapterNumber,
+        )
+        if (!isCurrent(
+          authoritativeEntryGuard,
+          generation,
+          targetProjectId,
+          targetChapterNumber,
+          targetStateGeneration,
+        )) return null
+        if (!workspaceMatchesAuthority(
+          loaded,
+          current,
+          targetChapterNumber,
+          current.activeSession.chapterSessionId,
+        )) {
+          throw new TypeError(
+            'ChapterSession authority changed; refresh and retry',
+          )
+        }
+      } else {
+        if (
+          confirmed.status !== 'current'
+          || current.capabilities?.startSession !== true
+        ) return current
+        const planning = current.planningAuthority
+        const projection = current.canonProjectionAuthority
+        loaded = await api.chapterSessions.create(
+          targetProjectId,
+          targetChapterNumber,
+          {
+            chapterNumber: targetChapterNumber,
+            expectedPlanningRevision: planning?.revision,
+            expectedPlanningHash: planning?.contentHash,
+            expectedOutlineRevision: confirmed.revision,
+            expectedOutlineHash: confirmed.contentHash,
+            expectedCanonRevision: projection?.canonRevision,
+          },
+        )
+        if (!isCurrent(
+          authoritativeEntryGuard,
+          generation,
+          targetProjectId,
+          targetChapterNumber,
+          targetStateGeneration,
+        )) return null
+        if (!workspaceMatchesAuthority(
+          loaded,
+          current,
+          targetChapterNumber,
+        )) {
+          throw new TypeError(
+            'ChapterSession authority changed; refresh and retry',
+          )
+        }
+      }
+      acceptWorkspace(loaded)
+      return current
+    } catch (failure) {
+      if (isCurrent(
+        authoritativeEntryGuard,
+        generation,
+        targetProjectId,
+        targetChapterNumber,
+        targetStateGeneration,
+      )) {
+        workspace.value = null
+        error.value = publicError(failure)
+      }
+      throw failure
+    } finally {
+      if (
+        projectId.value === targetProjectId
+        && chapterNumber.value === targetChapterNumber
+        && authoritativeEntryGuard.isCurrent(generation)
+      ) {
+        loading.value = false
+      }
+    }
   }
 
   async function load(nextProjectId, nextChapterNumber) {
@@ -378,6 +537,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     draftGuard.invalidate()
     candidateGuard.invalidate()
     generationGuard.invalidate()
+    authoritativeEntryGuard.invalidate()
     resetPendingFlags()
   }
 
@@ -398,6 +558,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     writeBusy,
     busy,
     load,
+    openAuthoritative,
     create,
     saveWorkingDraft,
     generateWorkingDraft,

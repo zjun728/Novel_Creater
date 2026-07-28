@@ -1591,12 +1591,13 @@ function outlineState(projectId = 'project-1', activeDraft = outlineDraft()) {
     projectId,
     lifecycle: 'active',
     authoritativeChapterNumber: 1,
-    targetPath: `/projects/${projectId}/planning/story-blocks`,
+    targetPath: `/projects/${projectId}/write/chapters/1`,
     planningAuthority: activeDraft?.basis?.planningAuthority || null,
     canonProjectionAuthority: activeDraft?.basis?.canonProjectionAuthority || null,
     confirmedOutline: null,
     draft: activeDraft ? { ...activeDraft, projectId } : null,
     activeSession: null,
+    pendingOperation: null,
     capabilities: {
       view: true,
       createDraft: activeDraft == null,
@@ -1668,6 +1669,570 @@ test('outline loading is context fenced and same-project reload preserves local 
     assert.equal(currentReads, 2)
     assert.equal(store.outlineLocalContent.chapterGoal, '作者本地目标')
     assert.equal(store.outlineDirty, true)
+  })
+})
+
+test('outline load installs a server pending operation and recovery remains GET-only', async () => {
+  const calls = []
+  const operationId = '11111111-1111-4111-8111-111111111111'
+  const current = {
+    ...outlineState(),
+    pendingOperation: { operationId, status: 'pending' },
+  }
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => {
+      calls.push(['current', projectId])
+      return current
+    }],
+    [api.chapterOutlines, 'history', async projectId => {
+      calls.push(['history', projectId])
+      return { items: [] }
+    }],
+    [api.chapterOutlines, 'getOperation', async (projectId, requestedId) => {
+      calls.push(['getOperation', projectId, requestedId])
+      return {
+        operationId: requestedId,
+        status: 'failed',
+        failureCode: 'providerUnavailable',
+        model: null,
+        loaded: false,
+        loadedDraftRevision: null,
+      }
+    }],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      assert.fail('pending recovery must never POST another generation')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+
+    await store.loadOutline('project-1')
+    assert.deepEqual(store.outlineOperation, {
+      operationId,
+      status: 'pending',
+    })
+    assert.equal(store.outlineGenerating, true)
+    assert.equal(store.outlineOutcomeUnknown, true)
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(calls, [
+      ['current', 'project-1'],
+      ['history', 'project-1'],
+      ['getOperation', 'project-1', operationId],
+    ])
+    assert.equal(store.outlineOperation.status, 'failed')
+    assert.equal(store.outlineGenerating, false)
+  })
+})
+
+test('a newer server pending outline operation replaces an idle terminal operation', async () => {
+  const calls = []
+  const operationA = '11111111-1111-4111-8111-111111111111'
+  const operationB = '22222222-2222-4222-8222-222222222222'
+  let currentReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => {
+      currentReads += 1
+      calls.push(['current', projectId])
+      return {
+        ...outlineState(),
+        pendingOperation: {
+          operationId: currentReads === 1 ? operationA : operationB,
+          status: 'pending',
+        },
+      }
+    }],
+    [api.chapterOutlines, 'history', async projectId => {
+      calls.push(['history', projectId])
+      return { items: [] }
+    }],
+    [api.chapterOutlines, 'getOperation', async (projectId, operationId) => {
+      calls.push(['getOperation', projectId, operationId])
+      return {
+        operationId,
+        status: 'failed',
+        failureCode: 'providerUnavailable',
+        model: null,
+        loaded: false,
+        loadedDraftRevision: null,
+      }
+    }],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      assert.fail('server pending recovery must never POST another generation')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+
+    await store.loadOutline('project-1')
+    await store.reconcileOutlineGeneration()
+    assert.equal(store.outlineOperation.operationId, operationA)
+    assert.equal(store.outlineOperation.status, 'failed')
+    assert.equal(store.outlineGenerating, false)
+    assert.equal(store.outlineOutcomeUnknown, false)
+
+    await store.ensureOutlineLoaded('project-1', { force: true })
+    assert.deepEqual(store.outlineOperation, {
+      operationId: operationB,
+      status: 'pending',
+    })
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineGenerating, true)
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(
+      calls.filter(([method]) => method === 'getOperation'),
+      [
+        ['getOperation', 'project-1', operationA],
+        ['getOperation', 'project-1', operationB],
+      ],
+    )
+  })
+})
+
+test('server pending outline operation waits for the active local generation then installs without reload', async () => {
+  const operationA = '11111111-1111-4111-8111-111111111111'
+  const operationB = '22222222-2222-4222-8222-222222222222'
+  const generationResponse = deferred()
+  const calls = []
+  let currentReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      const current = outlineState()
+      current.capabilities.generate = true
+      current.pendingOperation = currentReads === 1
+        ? null
+        : { operationId: operationB, status: 'pending' }
+      return current
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      calls.push(['POST', operationA])
+      return generationResponse.promise
+    }],
+    [api.chapterOutlines, 'getOperation', async (projectId, operationId) => {
+      calls.push(['GET', projectId, operationId])
+      return {
+        operationId,
+        status: 'failed',
+        failureCode: 'providerUnavailable',
+        model: null,
+        loaded: false,
+        loadedDraftRevision: null,
+      }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+
+    const generate = store.generateOutlineDraft({
+      idempotencyKey: 'outline-operation-a',
+      authorInstructions: '',
+    })
+    await store.ensureOutlineLoaded('project-1', { force: true })
+
+    assert.equal(store.outlineOperation, null)
+    assert.equal(store.outlineRecoveryKey, 'outline-operation-a')
+    assert.equal(store.outlineGenerating, true)
+
+    generationResponse.resolve({
+      operationId: operationA,
+      status: 'failed',
+      failureCode: 'providerUnavailable',
+      model: null,
+      loaded: false,
+      loadedDraftRevision: null,
+    })
+    await generate
+    assert.deepEqual(store.outlineOperation, {
+      operationId: operationB,
+      status: 'pending',
+    })
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineGenerating, true)
+    assert.equal(store.outlineError, null)
+    assert.equal(currentReads, 2)
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(calls, [
+      ['POST', operationA],
+      ['GET', 'project-1', operationB],
+    ])
+  })
+})
+
+test('exact outline authority reload installs its newer pending operation after local success', async () => {
+  const operationA = '11111111-1111-4111-8111-111111111111'
+  const operationB = '22222222-2222-4222-8222-222222222222'
+  const calls = []
+  const authorityReload = deferred()
+  const authorityReloadStarted = deferred()
+  let currentReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => {
+      currentReads += 1
+      if (currentReads === 1) {
+        const initial = outlineState()
+        initial.capabilities.generate = true
+        return initial
+      }
+      authorityReloadStarted.resolve()
+      return await authorityReload.promise
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      calls.push(['POST', operationA])
+      return {
+        operationId: operationA,
+        status: 'succeeded',
+        failureCode: null,
+        model: { providerId: 'provider-1', modelName: 'outline-model' },
+        loaded: true,
+        loadedDraftRevision: 2,
+      }
+    }],
+    [api.chapterOutlines, 'getOperation', async (projectId, operationId) => {
+      calls.push(['GET', projectId, operationId])
+      return {
+        operationId,
+        status: 'failed',
+        failureCode: 'providerUnavailable',
+        model: null,
+        loaded: false,
+        loadedDraftRevision: null,
+      }
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+
+    const generate = store.generateOutlineDraft({
+      idempotencyKey: 'outline-operation-a',
+      authorInstructions: '',
+    })
+    await authorityReloadStarted.promise
+    assert.equal(store.outlineOperation.operationId, operationA)
+    assert.equal(store.outlineOperation.status, 'succeeded')
+    assert.equal(store.outlineAwaitingAuthority, true)
+    assert.equal(store.outlineGenerating, true)
+
+    const exactAuthority = {
+      ...outlineState('project-1', outlineDraft({
+        draftRevision: 2,
+        contentHash: NEXT_HASH,
+        content: outlineContent('AI 权威目标'),
+      })),
+      pendingOperation: {
+        operationId: operationB,
+        status: 'pending',
+      },
+    }
+    exactAuthority.capabilities.generate = true
+    authorityReload.resolve(exactAuthority)
+    await generate
+
+    assert.equal(currentReads, 2)
+    assert.equal(store.outlineState.draft.draftRevision, 2)
+    assert.equal(store.outlineLocalContent.chapterGoal, 'AI 权威目标')
+    assert.deepEqual(store.outlineOperation, {
+      operationId: operationB,
+      status: 'pending',
+    })
+    assert.equal(store.outlineGenerating, true)
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineAwaitingAuthority, false)
+    assert.equal(store.outlineError, null)
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(calls, [
+      ['POST', operationA],
+      ['GET', 'project-1', operationB],
+    ])
+  })
+})
+
+test('failed outline reconciliation releases its deferred newer pending operation', async () => {
+  const operationA = '11111111-1111-4111-8111-111111111111'
+  const operationB = '22222222-2222-4222-8222-222222222222'
+  const calls = []
+  let currentReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      return {
+        ...outlineState(),
+        pendingOperation: {
+          operationId: currentReads === 1 ? operationA : operationB,
+          status: 'pending',
+        },
+      }
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'getOperation', async (projectId, operationId) => {
+      calls.push(['GET', projectId, operationId])
+      return {
+        operationId,
+        status: 'failed',
+        failureCode: 'providerUnavailable',
+        model: null,
+        loaded: false,
+        loadedDraftRevision: null,
+      }
+    }],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      assert.fail('reconciliation must never POST another generation')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    await store.ensureOutlineLoaded('project-1', { force: true })
+    assert.equal(store.outlineOperation.operationId, operationA)
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(store.outlineOperation, {
+      operationId: operationB,
+      status: 'pending',
+    })
+    assert.equal(store.outlineReconciling, false)
+    assert.equal(store.outlineGenerating, true)
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineError, null)
+    assert.equal(currentReads, 2)
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(calls, [
+      ['GET', 'project-1', operationA],
+      ['GET', 'project-1', operationB],
+    ])
+  })
+})
+
+test('successful outline reconciliation releases pending from its exact authority reload', async () => {
+  const operationA = '11111111-1111-4111-8111-111111111111'
+  const operationB = '22222222-2222-4222-8222-222222222222'
+  const calls = []
+  let currentReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      const draft = currentReads < 3
+        ? outlineDraft()
+        : outlineDraft({
+            draftRevision: 2,
+            contentHash: NEXT_HASH,
+            content: outlineContent('AI 权威目标'),
+          })
+      return {
+        ...outlineState('project-1', draft),
+        pendingOperation: {
+          operationId: currentReads === 1 ? operationA : operationB,
+          status: 'pending',
+        },
+      }
+    }],
+    [api.chapterOutlines, 'history', async () => ({ items: [] })],
+    [api.chapterOutlines, 'getOperation', async (projectId, operationId) => {
+      calls.push(['GET', projectId, operationId])
+      if (operationId === operationA) {
+        return {
+          operationId,
+          status: 'succeeded',
+          failureCode: null,
+          model: { providerId: 'provider-1', modelName: 'outline-model' },
+          loaded: true,
+          loadedDraftRevision: 2,
+        }
+      }
+      return {
+        operationId,
+        status: 'failed',
+        failureCode: 'providerUnavailable',
+        model: null,
+        loaded: false,
+        loadedDraftRevision: null,
+      }
+    }],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      assert.fail('reconciliation must never POST another generation')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    await store.ensureOutlineLoaded('project-1', { force: true })
+    assert.equal(store.outlineOperation.operationId, operationA)
+
+    await store.reconcileOutlineGeneration()
+    assert.equal(currentReads, 3)
+    assert.equal(store.outlineState.draft.draftRevision, 2)
+    assert.equal(store.outlineLocalContent.chapterGoal, 'AI 权威目标')
+    assert.deepEqual(store.outlineOperation, {
+      operationId: operationB,
+      status: 'pending',
+    })
+    assert.equal(store.outlineReconciling, false)
+    assert.equal(store.outlineGenerating, true)
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineAwaitingAuthority, false)
+    assert.equal(store.outlineError, null)
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(calls, [
+      ['GET', 'project-1', operationA],
+      ['GET', 'project-1', operationB],
+    ])
+  })
+})
+
+test('outline authority and pending recovery survive a history failure', async () => {
+  const calls = []
+  const operationId = 'outline-operation-history-failure'
+  const historyFailure = new Error('history-internal-detail-must-not-leak')
+  const current = {
+    ...outlineState(),
+    pendingOperation: { operationId, status: 'pending' },
+  }
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => {
+      calls.push(['current', projectId])
+      return current
+    }],
+    [api.chapterOutlines, 'history', async projectId => {
+      calls.push(['history', projectId])
+      throw historyFailure
+    }],
+    [api.chapterOutlines, 'getOperation', async (projectId, requestedId) => {
+      calls.push(['getOperation', projectId, requestedId])
+      return {
+        operationId: requestedId,
+        status: 'failed',
+        failureCode: 'providerUnavailable',
+        model: null,
+        loaded: false,
+        loadedDraftRevision: null,
+      }
+    }],
+    [api.chapterOutlines, 'generateDraft', async () => {
+      assert.fail('history recovery must never POST another generation')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+
+    await assert.rejects(
+      store.loadOutline('project-1'),
+      error => (
+        error.code === 'ChapterOutlineHistoryLoadFailed'
+        && !error.message.includes('history-internal-detail')
+      ),
+    )
+
+    assert.equal(store.outlineState, current)
+    assert.deepEqual(store.outlineOperation, {
+      operationId,
+      status: 'pending',
+    })
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineGenerating, true)
+    assert.equal(store.outlineLoading, false)
+    assert.equal(store.outlineError.code, 'ChapterOutlineHistoryLoadFailed')
+    assert.doesNotMatch(
+      JSON.stringify(store.outlineError),
+      /history-internal-detail/,
+    )
+
+    await store.reconcileOutlineGeneration()
+    assert.deepEqual(calls, [
+      ['current', 'project-1'],
+      ['history', 'project-1'],
+      ['getOperation', 'project-1', operationId],
+    ])
+  })
+})
+
+test('a late old-project history failure cannot clear new authority or operation', async () => {
+  const oldHistory = deferred()
+  const operationId = 'outline-operation-project-2'
+  const projectTwo = {
+    ...outlineState('project-2'),
+    pendingOperation: { operationId, status: 'pending' },
+  }
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async projectId => (
+      projectId === 'project-1' ? outlineState(projectId) : projectTwo
+    )],
+    [api.chapterOutlines, 'history', async projectId => (
+      projectId === 'project-1'
+        ? oldHistory.promise
+        : { items: [{ projectId, revision: 2 }] }
+    )],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    const oldLoad = store.loadOutline('project-1')
+    await Promise.resolve()
+    await store.loadOutline('project-2')
+
+    oldHistory.reject(new Error('old-project-history-failure'))
+    await assert.rejects(
+      oldLoad,
+      error => error.code === 'ChapterOutlineHistoryLoadFailed',
+    )
+
+    assert.equal(store.outlineState, projectTwo)
+    assert.deepEqual(store.outlineOperation, {
+      operationId,
+      status: 'pending',
+    })
+    assert.equal(store.outlineOutcomeUnknown, true)
+    assert.equal(store.outlineGenerating, true)
+    assert.equal(store.outlineHistory[0].projectId, 'project-2')
+    assert.equal(store.outlineError, null)
+    assert.equal(store.outlineLoading, false)
+  })
+})
+
+test('forced outline reload keeps dirty edits when its history fails', async () => {
+  const newerDraft = outlineDraft({
+    draftRevision: 2,
+    contentHash: NEXT_HASH,
+    content: outlineContent('服务端新目标'),
+  })
+  const historyFailure = new Error('history unavailable')
+  let currentReads = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentReads += 1
+      return outlineState(
+        'project-1',
+        currentReads === 1 ? outlineDraft() : newerDraft,
+      )
+    }],
+    [api.chapterOutlines, 'history', async () => {
+      if (currentReads === 1) return { items: [] }
+      throw historyFailure
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = usePlanningStore()
+    await store.loadOutline('project-1')
+    store.editOutlineLocal(outlineContent('作者未保存输入'))
+
+    await assert.rejects(
+      store.ensureOutlineLoaded('project-1', { force: true }),
+      error => error.code === 'ChapterOutlineHistoryLoadFailed',
+    )
+
+    assert.equal(store.outlineState.draft.draftRevision, 2)
+    assert.equal(store.outlineState.draft.contentHash, NEXT_HASH)
+    assert.equal(store.outlineLocalContent.chapterGoal, '作者未保存输入')
+    assert.equal(store.outlineDirty, true)
+    assert.equal(store.outlineError.code, 'ChapterOutlineHistoryLoadFailed')
+    assert.equal(store.outlineLoading, false)
   })
 })
 

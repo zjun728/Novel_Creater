@@ -1426,8 +1426,13 @@ async def test_preparation_keeps_confirmed_planning_as_archived_read_only_entry(
     service = _preparation_service(transaction, read_connection)
     active = await service.preparation(WRITE_FENCE_PROJECT)
     assert active.planning == "current"
-    assert active.next_action == "phase_boundary_outline"
-    assert active.target_path is None
+    assert active.outline == "missing"
+    assert active.authoritative_chapter_number == 1
+    assert active.next_action == "prepare_chapter_outline"
+    assert (
+        active.target_path
+        == f"/projects/{WRITE_FENCE_PROJECT}/planning/story-blocks"
+    )
 
     await service.archive(WRITE_FENCE_PROJECT, 0)
     archived = await service.preparation(WRITE_FENCE_PROJECT)

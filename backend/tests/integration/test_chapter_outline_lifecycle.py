@@ -320,6 +320,7 @@ async def test_real_mysql_manual_outline_save_confirm_replay_and_history(
     assert confirmed.revision == 1
     assert confirmed.content.chapter_goal == "找到封锁线缺口。"
     current = await service.get_current(PROJECT)
+    assert current.target_path == f"/projects/{PROJECT}/write/chapters/1"
     assert current.confirmed_outline == confirmed
     assert current.draft is None
     assert current.capabilities.start_session is True

@@ -65,6 +65,12 @@ def test_create_command_has_no_client_authority_or_idempotency_fields():
     }
 
 
+def test_current_target_path_is_the_url_encoded_authoritative_writer_route():
+    assert ChapterOutlineService._writer_path("project / 一", 8) == (
+        "/projects/project%20%2F%20%E4%B8%80/write/chapters/8"
+    )
+
+
 class _Transaction:
     async def __aenter__(self):
         return object()

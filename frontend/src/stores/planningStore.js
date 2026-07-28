@@ -109,6 +109,14 @@ function publicError(error) {
   }
 }
 
+function chapterOutlineHistoryFailure(failure) {
+  return Object.assign(new Error('章节小纲历史暂时无法加载'), {
+    status: Number(failure?.status || 0),
+    code: 'ChapterOutlineHistoryLoadFailed',
+    correlationId: String(failure?.correlationId || ''),
+  })
+}
+
 export const usePlanningStore = defineStore('planning', () => {
   const projectId = ref('')
   const state = shallowRef(null)
@@ -1022,6 +1030,42 @@ export const usePlanningStore = defineStore('planning', () => {
     outlineError.value = null
   }
 
+  function installServerPendingOutlineOperation(loaded) {
+    const pendingOperation = loaded?.pendingOperation
+    if (
+      pendingOperation?.status !== 'pending'
+      || typeof pendingOperation.operationId !== 'string'
+      || !pendingOperation.operationId
+    ) return
+    const localOperation = outlineOperation.value
+    const localOperationIsProtected = (
+      localOperation?.status === 'pending'
+      || outlineReconciling.value
+      || outlineAwaitingAuthority.value
+      || outlineOutcomeUnknown.value
+      || (
+        outlineGenerating.value
+        && (
+          localOperation !== null
+          || outlineRecoveryKey.value !== ''
+        )
+      )
+    )
+    if (
+      localOperation?.operationId === pendingOperation.operationId
+      || localOperationIsProtected
+    ) return
+    outlineOperation.value = {
+      operationId: pendingOperation.operationId,
+      status: 'pending',
+    }
+    outlineOutcomeUnknown.value = true
+    outlineGenerating.value = true
+    outlineAwaitingAuthority.value = false
+    outlineRecoveryKey.value = ''
+    outlineError.value = null
+  }
+
   function outlineLoadAuthorityIsCurrent(
     requestGeneration,
     targetProjectId,
@@ -1044,6 +1088,7 @@ export const usePlanningStore = defineStore('planning', () => {
     const requestGeneration = outlineLoadGuard.begin()
     const targetContextGeneration = outlineContextGeneration
     const targetAuthorityWriteEpoch = outlineAuthorityWriteEpoch
+    let authorityAccepted = false
     outlineLoading.value = true
     try {
       const loaded = await api.chapterOutlines.current(targetProjectId)
@@ -1055,29 +1100,52 @@ export const usePlanningStore = defineStore('planning', () => {
       ) {
         throw new TypeError('Invalid ChapterOutline authority state')
       }
-      const historyPage = await api.chapterOutlines.history(
+      if (!outlineLoadAuthorityIsCurrent(
+        requestGeneration,
         targetProjectId,
-        chapterNumber,
-      )
+        targetContextGeneration,
+        targetAuthorityWriteEpoch,
+      )) return loaded
+      acceptOutlineState(loaded, {
+        preserveDirty: (
+          options?.preserveLocalEdits === true
+          && outlineDirty.value
+        ),
+      })
+      installServerPendingOutlineOperation(loaded)
+      authorityAccepted = true
+
+      let historyPage
+      try {
+        historyPage = await api.chapterOutlines.history(
+          targetProjectId,
+          chapterNumber,
+        )
+      } catch (failure) {
+        const safeFailure = chapterOutlineHistoryFailure(failure)
+        if (outlineLoadAuthorityIsCurrent(
+          requestGeneration,
+          targetProjectId,
+          targetContextGeneration,
+          targetAuthorityWriteEpoch,
+        )) {
+          outlineError.value = publicError(safeFailure)
+        }
+        throw safeFailure
+      }
       if (outlineLoadAuthorityIsCurrent(
         requestGeneration,
         targetProjectId,
         targetContextGeneration,
         targetAuthorityWriteEpoch,
       )) {
-        acceptOutlineState(loaded, {
-          preserveDirty: (
-            options?.preserveLocalEdits === true
-            && outlineDirty.value
-          ),
-        })
         outlineHistory.value = Array.isArray(historyPage?.items)
           ? historyPage.items
           : []
       }
       return loaded
     } catch (failure) {
-      if (outlineLoadAuthorityIsCurrent(
+      if (!authorityAccepted && outlineLoadAuthorityIsCurrent(
         requestGeneration,
         targetProjectId,
         targetContextGeneration,
@@ -1621,6 +1689,7 @@ export const usePlanningStore = defineStore('planning', () => {
       outlineOutcomeUnknown.value = false
       outlineAwaitingAuthority.value = false
       outlineGenerating.value = false
+      installServerPendingOutlineOperation(outlineState.value)
       return true
     } catch (failure) {
       if (outlineGenerationIsCurrent(
@@ -1703,6 +1772,7 @@ export const usePlanningStore = defineStore('planning', () => {
             correlationId: '',
           }
         : null
+      installServerPendingOutlineOperation(outlineState.value)
       return result
     }
     outlineAwaitingAuthority.value = true
@@ -1900,6 +1970,7 @@ export const usePlanningStore = defineStore('planning', () => {
         context.targetContextGeneration,
       )) {
         outlineReconciling.value = false
+        installServerPendingOutlineOperation(outlineState.value)
       }
     }
   }

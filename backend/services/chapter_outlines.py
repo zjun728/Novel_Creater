@@ -182,6 +182,12 @@ class ChapterOutlineCapabilities:
 
 
 @dataclass(frozen=True)
+class PendingChapterOutlineOperation:
+    operation_id: str
+    status: Literal["pending"]
+
+
+@dataclass(frozen=True)
 class ChapterOutlineState:
     project_id: str
     lifecycle: Literal["active", "archived"]
@@ -192,6 +198,7 @@ class ChapterOutlineState:
     confirmed_outline: ChapterOutlineRevisionResult | None
     draft: ChapterOutlineDraftResult | None
     active_session: ActiveChapterSessionResult | None
+    pending_operation: PendingChapterOutlineOperation | None
     capabilities: ChapterOutlineCapabilities
     reasons: tuple[str, ...]
 
@@ -768,6 +775,14 @@ class ChapterOutlineService:
                 project_id,
                 chapter_number,
             )
+            pending_attempt = (
+                await self.repository.read_active_attempt(
+                    session,
+                    str(draft_row["id"]),
+                )
+                if draft_row is not None
+                else None
+            )
             session_row = (
                 await self.chapter_repository.read_chapter_session(
                     session,
@@ -857,15 +872,26 @@ class ChapterOutlineService:
                 project_id=project_id,
                 lifecycle="archived" if archived else "active",
                 authoritative_chapter_number=chapter_number,
-                target_path=(
-                    f"/projects/{quote(project_id, safe='')}/"
-                    "planning/story-blocks"
-                ),
+                target_path=self._writer_path(project_id, chapter_number),
                 planning_authority=planning_authority,
                 canon_projection_authority=projection_authority,
                 confirmed_outline=confirmed,
                 draft=draft,
                 active_session=active_result,
+                pending_operation=(
+                    PendingChapterOutlineOperation(
+                        operation_id=pending_attempt["operation_id"],
+                        status="pending",
+                    )
+                    if pending_attempt is not None
+                    and pending_attempt.get("status") == "pending"
+                    and isinstance(
+                        pending_attempt.get("operation_id"),
+                        str,
+                    )
+                    and pending_attempt["operation_id"]
+                    else None
+                ),
                 capabilities=capabilities,
                 reasons=self._state_reasons(
                     archived=archived,
@@ -876,6 +902,13 @@ class ChapterOutlineService:
                     confirmed=confirmed,
                 ),
             )
+
+    @staticmethod
+    def _writer_path(project_id: str, chapter_number: int) -> str:
+        return (
+            f"/projects/{quote(str(project_id), safe='')}/"
+            f"write/chapters/{chapter_number}"
+        )
 
     async def _chapter_authority(self, session, project_id: str):
         try:

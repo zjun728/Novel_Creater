@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -70,12 +72,19 @@ class _FakeService:
             project_id=project_id,
             lifecycle="active",
             authoritative_chapter_number=1,
-            target_path="/projects/p1/planning/story-blocks",
+            target_path="/projects/p1/write/chapters/1",
             planning_authority=None,
             canon_projection_authority=None,
             confirmed_outline=None,
             draft=None,
             active_session=None,
+            pending_operation=SimpleNamespace(
+                operation_id=OPERATION_ID,
+                status="pending",
+                api_key="MUST-NOT-LEAVE-CURRENT",
+                provider_id="MUST-NOT-LEAVE-CURRENT",
+                input_manifest={"prompt": "MUST-NOT-LEAVE-CURRENT"},
+            ),
             capabilities=ChapterOutlineCapabilities(
                 view=True,
                 create_draft=False,
@@ -232,9 +241,16 @@ def test_static_current_route_is_registered_before_dynamic_chapter_route():
         "confirmedOutline",
         "draft",
         "activeSession",
+        "pendingOperation",
         "capabilities",
         "reasons",
     }
+    assert response.json()["targetPath"] == "/projects/p1/write/chapters/1"
+    assert response.json()["pendingOperation"] == {
+        "operationId": OPERATION_ID,
+        "status": "pending",
+    }
+    assert "MUST-NOT-LEAVE-CURRENT" not in str(response.json())
 
 
 def test_current_projector_does_not_accept_arbitrary_mapping_bypass():

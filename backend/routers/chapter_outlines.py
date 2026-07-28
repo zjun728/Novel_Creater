@@ -275,6 +275,14 @@ def _public_state(result):
         ),
         "draft": _public_draft(result.draft),
         "activeSession": _public_session(result.active_session),
+        "pendingOperation": (
+            {
+                "operationId": result.pending_operation.operation_id,
+                "status": result.pending_operation.status,
+            }
+            if result.pending_operation is not None
+            else None
+        ),
         "capabilities": {
             "view": result.capabilities.view,
             "createDraft": result.capabilities.create_draft,

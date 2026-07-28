@@ -30,6 +30,7 @@ PUBLIC_METHODS = {
     "lock_attempt",
     "read_attempt",
     "lock_active_attempt",
+    "read_active_attempt",
     "next_fencing_token",
     "insert_attempt",
     "supersede_attempt",
@@ -405,7 +406,7 @@ async def test_attempt_reads_are_exact_normalized_and_lock_only_lock_methods():
         "input_manifest_json": '{"safe":true}',
         "result_content_json": '{"chapterGoal":"generated"}',
     }
-    session = CapturingSession(rows=[dict(raw) for _ in range(5)])
+    session = CapturingSession(rows=[dict(raw) for _ in range(6)])
     repository = _repository_class()()
 
     results = (
@@ -414,6 +415,7 @@ async def test_attempt_reads_are_exact_normalized_and_lock_only_lock_methods():
         await repository.lock_attempt(session, "p1", "operation-1"),
         await repository.read_attempt(session, "p1", "operation-1"),
         await repository.lock_active_attempt(session, "draft-1"),
+        await repository.read_active_attempt(session, "draft-1"),
     )
 
     for result in results:
@@ -429,6 +431,9 @@ async def test_attempt_reads_are_exact_normalized_and_lock_only_lock_methods():
     assert "outline_draft_id=%s" in sql[4]
     assert "status='pending' AND active_slot=1" in sql[4]
     assert sql[4].endswith("FOR UPDATE")
+    assert "outline_draft_id=%s" in sql[5]
+    assert "status='pending' AND active_slot=1" in sql[5]
+    assert "FOR UPDATE" not in sql[5]
 
 
 @pytest.mark.asyncio

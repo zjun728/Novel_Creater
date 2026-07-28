@@ -211,6 +211,9 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
                     operation_id="operation-1",
                     status="pending",
                 ),
+                outline="draft",
+                outline_operation=None,
+                authoritative_chapter_number=8,
                 model_tasks=tuple(
                     ProjectPreparationModelTask(
                         task_key=task_key,
@@ -308,6 +311,9 @@ def test_project_routes_delegate_explicit_lifecycle_contract(monkeypatch):
             "operationId": "operation-1",
             "status": "pending",
         },
+        "outline": "draft",
+        "outlineOperation": None,
+        "authoritativeChapterNumber": 8,
         "modelTasks": [
             {"taskKey": task_key, "readiness": "ready", "reasons": []}
             for task_key in (

@@ -432,6 +432,15 @@ class ChapterOutlineRepository:
         )
         return self._attempt(row) if row else None
 
+    async def read_active_attempt(self, session, draft_id: str):
+        row = await session.fetchone(
+            """SELECT * FROM chapter_outline_generation_attempts
+                WHERE outline_draft_id=%s
+                  AND status='pending' AND active_slot=1""",
+            (draft_id,),
+        )
+        return self._attempt(row) if row else None
+
     async def next_fencing_token(self, session, draft_id: str) -> int:
         latest = await session.fetchone(
             """SELECT fencing_token

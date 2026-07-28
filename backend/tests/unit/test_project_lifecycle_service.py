@@ -176,6 +176,9 @@ def make_service(repository):
 def test_project_preparation_contract_requires_closed_planning_operation():
     assert "planning" in ProjectPreparationResult.model_fields
     assert "planning_operation" in ProjectPreparationResult.model_fields
+    assert "outline" in ProjectPreparationResult.model_fields
+    assert "outline_operation" in ProjectPreparationResult.model_fields
+    assert "authoritative_chapter_number" in ProjectPreparationResult.model_fields
 
     with pytest.raises(ValidationError):
         ProjectPreparationResult.model_validate(
@@ -190,6 +193,9 @@ def test_project_preparation_contract_requires_closed_planning_operation():
                     "status": "pending",
                     "inputManifest": "must-not-leave-server",
                 },
+                "outline": "missing",
+                "outlineOperation": None,
+                "authoritativeChapterNumber": 1,
                 "modelTasks": [],
                 "capabilities": {
                     "viewPreparation": True,
