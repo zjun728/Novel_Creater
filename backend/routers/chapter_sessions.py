@@ -74,7 +74,12 @@ class ChapterDraftGenerationUnavailable(PublicDomainError):
 
 
 class _StrictBody(BaseModel):
-    model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        strict=True,
+        frozen=True,
+        extra="forbid",
+        hide_input_in_errors=True,
+    )
 
 
 class CreateSessionBody(_StrictBody):

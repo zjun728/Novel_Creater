@@ -77,21 +77,51 @@ class FakeChapterRepository:
         self.working_drafts = {}
         self.candidates = []
         self.chapter_reads = []
+        self.max_final_chapter = None
+        self.call_order = []
+        self.active_error = None
 
     async def lock_project(self, session, project_id):
+        self.call_order.append("lock_project")
         if self.archived:
             raise http_errors.ProjectArchived()
         return self.project if project_id == "p1" else None
 
+    async def read_active_session(self, session, project_id):
+        self.call_order.append("read_active_session")
+        if self.active_error is not None:
+            raise self.active_error
+        return next(
+            (
+                {
+                    "id": row["id"],
+                    "project_id": row["project_id"],
+                    "chapter_num": row["chapter_num"],
+                    "status": row["status"],
+                }
+                for row in reversed(self.sessions)
+                if row["project_id"] == project_id
+                and row["status"] == "drafting"
+            ),
+            None,
+        )
+
+    async def read_max_final_chapter_number(self, session, project_id):
+        self.call_order.append("read_max_final_chapter_number")
+        return self.max_final_chapter
+
     async def read_current_outline(self, session, project_id, chapter_number):
+        self.call_order.append("read_current_outline")
         if project_id != "p1" or chapter_number != 1:
             return None
         return self.outline
 
     async def read_projection_head(self, session, project_id):
+        self.call_order.append("read_projection_head")
         return self.projection
 
     async def read_chapter_session(self, session, project_id, chapter_number):
+        self.call_order.append("read_chapter_session")
         self.chapter_reads.append((project_id, chapter_number))
         return next(
             (
@@ -115,13 +145,16 @@ class FakeChapterRepository:
         )
 
     async def insert_chapter_session(self, session, row):
+        self.call_order.append("insert_chapter_session")
         self.sessions.append(row)
         return True
 
     async def read_working_draft(self, session, chapter_session_id):
+        self.call_order.append("read_working_draft")
         return self.working_drafts.get(chapter_session_id)
 
     async def upsert_working_draft(self, session, row):
+        self.call_order.append("upsert_working_draft")
         self.working_drafts[row["chapter_session_id"]] = row
         return True
 
@@ -165,6 +198,37 @@ def create_command(**overrides):
     }
     values.update(overrides)
     return CreateChapterSession(**values)
+
+
+@pytest.mark.parametrize(
+    ("active_session", "max_final_chapter", "expected"),
+    (
+        (None, None, 1),
+        (None, 7, 8),
+        ({"chapter_num": 4}, 99, 4),
+    ),
+)
+def test_authoritative_chapter_uses_active_then_final_then_one(
+    active_session,
+    max_final_chapter,
+    expected,
+):
+    from backend.repositories.chapter_sessions import (
+        authoritative_chapter as repository_authoritative_chapter,
+    )
+    from backend.services.chapter_outlines import (
+        authoritative_chapter as outline_authoritative_chapter,
+    )
+    from backend.services.chapter_sessions import (
+        authoritative_chapter as session_authoritative_chapter,
+    )
+
+    assert outline_authoritative_chapter is repository_authoritative_chapter
+    assert session_authoritative_chapter is repository_authoritative_chapter
+    assert (
+        repository_authoritative_chapter(active_session, max_final_chapter)
+        == expected
+    )
 
 
 @pytest.mark.asyncio
@@ -280,40 +344,136 @@ async def test_create_session_requires_current_confirmed_outline():
 
 
 @pytest.mark.asyncio
-async def test_repeat_create_revalidates_current_authorities_before_returning_existing():
+async def test_create_session_rejects_requested_chapter_outside_server_authority():
     from backend.services.chapter_sessions import (
         ChapterSessionConflict,
-        ChapterSessionPreconditionFailed,
         ChapterSessionService,
     )
 
     repo = FakeChapterRepository()
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
     first = await service.create_session(create_command())
+    repo.call_order.clear()
+
+    with pytest.raises(ChapterSessionConflict, match="server authority"):
+        await service.create_session(create_command(chapter_number=2))
+
+    assert len(repo.sessions) == 1
+    assert repo.sessions[0]["id"] == first.session.id
+    assert repo.call_order == ["lock_project", "read_active_session"]
+
+
+@pytest.mark.asyncio
+async def test_active_session_replays_exact_pins_without_revalidating_new_heads():
+    from backend.services.chapter_sessions import ChapterSessionService
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    first = await service.create_session(create_command())
     repo.outline = None
     repo.projection = None
+    repo.call_order.clear()
+
+    replay = await service.create_session(create_command())
+
+    assert replay.session.id == first.session.id
+    assert repo.call_order == [
+        "lock_project",
+        "read_active_session",
+        "read_chapter_session",
+        "read_working_draft",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_active_session_replay_rejects_browser_pins_that_do_not_match():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    await service.create_session(create_command())
+    repo.call_order.clear()
+
+    with pytest.raises(ChapterSessionConflict, match="pins"):
+        await service.create_session(
+            create_command(expected_outline_hash="e" * 64)
+        )
+
+    assert len(repo.sessions) == 1
+    assert repo.call_order == [
+        "lock_project",
+        "read_active_session",
+        "read_chapter_session",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_active_session_calculates_from_final_before_outline_read():
+    from backend.services.chapter_sessions import (
+        ChapterSessionPreconditionFailed,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    repo.max_final_chapter = 7
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
 
     with pytest.raises(ChapterSessionPreconditionFailed, match="outline"):
-        await service.create_session(create_command())
-    assert len(repo.sessions) == 1
-    repo.outline = {
-        **FakeChapterRepository().outline,
-        "current_selection_revision": 2,
-        "current_seed_id": "seed-b",
-    }
-    repo.projection = FakeChapterRepository().projection
-    with pytest.raises(ChapterSessionConflict, match="generation"):
-        await service.create_session(create_command())
-    assert len(repo.sessions) == 1
+        await service.create_session(create_command(chapter_number=8))
 
-    repo.outline = FakeChapterRepository().outline
-    repeated = await service.create_session(create_command())
-    assert repeated.session.id == first.session.id
-    with pytest.raises(ChapterSessionConflict, match="Outline"):
-        await service.create_session(
-            create_command(expected_outline_hash="e" * 64),
-        )
-    assert len(repo.sessions) == 1
+    assert repo.call_order == [
+        "lock_project",
+        "read_active_session",
+        "read_max_final_chapter_number",
+        "read_current_outline",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_session_checks_archived_project_before_all_authority_reads():
+    from backend.services.chapter_sessions import ChapterSessionService
+
+    repo = FakeChapterRepository()
+    repo.archived = True
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(http_errors.ProjectArchived):
+        await service.create_session(create_command())
+
+    assert repo.call_order == ["lock_project"]
+    assert repo.sessions == []
+    assert repo.working_drafts == {}
+
+
+@pytest.mark.asyncio
+async def test_split_active_session_authority_maps_to_fixed_session_conflict():
+    from backend.repositories.chapter_sessions import (
+        ActiveChapterSessionConflict,
+    )
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    repo.active_error = ActiveChapterSessionConflict(
+        "raw duplicate rows: secret",
+    )
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+
+    with pytest.raises(
+        ChapterSessionConflict,
+        match="authority is inconsistent",
+    ) as caught:
+        await service.create_session(create_command())
+
+    assert "secret" not in str(caught.value)
+    assert repo.call_order == ["lock_project", "read_active_session"]
+    assert repo.sessions == []
+    assert repo.working_drafts == {}
 
 
 @pytest.mark.asyncio

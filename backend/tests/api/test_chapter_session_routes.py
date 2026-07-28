@@ -17,6 +17,7 @@ class FakeChapterSessionService:
     def __init__(self):
         self.saved_content = ""
         self.candidates = ()
+        self.create_error = None
         self.session = ChapterSessionView(
             id="session-1",
             project_id="p1",
@@ -58,6 +59,8 @@ class FakeChapterSessionService:
         return None
 
     async def create_session(self, command):
+        if self.create_error is not None:
+            raise self.create_error
         return self.workspace()
 
     async def save_working_draft(self, command):
@@ -193,6 +196,72 @@ def test_create_chapter_session_rejects_url_body_chapter_mismatch():
 
     assert response.status_code == 422
     assert response.json()["code"] == "ChapterSessionRequestInvalid"
+
+
+def test_create_chapter_session_strictly_rejects_noncanonical_assertions():
+    client, _, _ = make_client()
+    invalid_bodies = (
+        {
+            "chapterNumber": True,
+            "expectedPlanningRevision": 1,
+            "expectedPlanningHash": "a" * 64,
+            "expectedOutlineRevision": 3,
+            "expectedOutlineHash": "c" * 64,
+            "expectedCanonRevision": 0,
+        },
+        {
+            "chapterNumber": 1,
+            "expectedPlanningRevision": "1",
+            "expectedPlanningHash": "a" * 64,
+            "expectedOutlineRevision": 3,
+            "expectedOutlineHash": "c" * 64,
+            "expectedCanonRevision": 0,
+        },
+        {
+            "chapterNumber": 1,
+            "expectedPlanningRevision": 1,
+            "expectedPlanningHash": "A" * 64,
+            "expectedOutlineRevision": 3,
+            "expectedOutlineHash": "c" * 64,
+            "expectedCanonRevision": 0,
+        },
+    )
+
+    for body in invalid_bodies:
+        response = client.post(
+            "/api/projects/p1/chapter-sessions/1",
+            json=body,
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "ChapterSessionRequestInvalid"
+        assert "A" * 64 not in response.text
+
+
+def test_create_chapter_session_returns_fixed_conflict_for_non_authoritative_url():
+    client, service, _ = make_client()
+    service.create_error = chapter_sessions.ChapterSessionConflict(
+        "requested chapter 2 differs from secret raw database state",
+    )
+
+    response = client.post("/api/projects/p1/chapter-sessions/2", json={
+        "chapterNumber": 2,
+        "expectedPlanningRevision": 1,
+        "expectedPlanningHash": "a" * 64,
+        "expectedOutlineRevision": 3,
+        "expectedOutlineHash": "c" * 64,
+        "expectedCanonRevision": 0,
+    }, follow_redirects=False)
+
+    assert response.status_code == 409
+    assert response.headers.get("location") is None
+    body = response.json()
+    assert body["code"] == "ChapterSessionConflict"
+    assert body["message"] == (
+        "Chapter session state changed; refresh and retry"
+    )
+    assert isinstance(body["correlationId"], str)
+    assert "secret" not in response.text
+    assert "database" not in response.text
 
 
 def test_chapter_session_routes_reject_unknown_fields():

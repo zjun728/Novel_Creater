@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.routers import chapter_outlines
+from backend.repositories.chapter_sessions import ActiveChapterSessionConflict
 from backend.security.redaction import install_error_handlers
 from backend.domain.chapter_outlines import EditableChapterOutlineContent
 from backend.services.chapter_outlines import (
@@ -13,6 +14,7 @@ from backend.services.chapter_outlines import (
     ChapterOutlineCapabilities,
     ChapterOutlineDraftResult,
     ChapterOutlineRevisionResult,
+    ChapterOutlineService,
     ChapterOutlineState,
     PlanningAuthorityResult,
 )
@@ -134,8 +136,8 @@ class _FakeGenerationService(_FakeService):
         )
 
 
-def _client(generation_service=None):
-    service = _FakeService()
+def _client(generation_service=None, service=None):
+    service = service or _FakeService()
     generation_service = generation_service or _FakeGenerationService()
     app = FastAPI()
     app.include_router(chapter_outlines.router, prefix="/api")
@@ -151,6 +153,68 @@ def _client(generation_service=None):
         service,
         generation_service,
     )
+
+
+class _Transaction:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _AuthorityOutlineRepository:
+    async def read_project_any(self, session, project_id):
+        return {"id": project_id, "archived_at": None}
+
+    async def lock_project(self, session, project_id):
+        return {"id": project_id, "archived_at": None}
+
+
+class _SplitActiveSessionRepository:
+    async def read_active_session(self, session, project_id):
+        raise ActiveChapterSessionConflict(
+            "raw SQL row AUTHORITY-SPLIT-SENTINEL"
+        )
+
+
+def _split_authority_service():
+    return ChapterOutlineService(
+        _AuthorityOutlineRepository(),
+        _SplitActiveSessionRepository(),
+        transaction_factory=_Transaction,
+    )
+
+
+def _assert_safe_authority_conflict(response):
+    assert response.status_code == 409
+    body = response.json()
+    assert body["code"] == "ChapterOutlineConflict"
+    assert body["message"] == (
+        "Chapter outline state changed; refresh and retry"
+    )
+    assert isinstance(body["correlationId"], str)
+    for forbidden in ("AUTHORITY-SPLIT-SENTINEL", "raw", "SQL", "row"):
+        assert forbidden not in response.text
+
+
+def test_current_route_maps_split_active_session_to_safe_conflict():
+    client, _, _ = _client(service=_split_authority_service())
+
+    response = client.get("/api/projects/p1/chapter-outlines/current")
+
+    _assert_safe_authority_conflict(response)
+
+
+def test_create_route_maps_split_active_session_to_safe_conflict():
+    client, _, _ = _client(service=_split_authority_service())
+
+    response = client.post(
+        "/api/projects/p1/chapter-outlines/1/drafts",
+        json={},
+    )
+
+    _assert_safe_authority_conflict(response)
 
 
 def test_static_current_route_is_registered_before_dynamic_chapter_route():

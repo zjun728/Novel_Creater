@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 import json
+from typing import Mapping
 
 from backend.domain.json_contracts import canonical_json
 from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.project_lifecycle import lock_active_project
+
+
+class ActiveChapterSessionConflict(RuntimeError):
+    pass
+
+
+def authoritative_chapter(
+    active_session: Mapping[str, object] | None,
+    max_final_chapter: int | None,
+) -> int:
+    if active_session is not None:
+        return int(active_session["chapter_num"])
+    if max_final_chapter is not None:
+        return int(max_final_chapter) + 1
+    return 1
 
 
 _SESSION_SELECT = """
@@ -30,15 +46,19 @@ class ChapterSessionRepository:
         return await lock_active_project(session, project_id)
 
     async def read_active_session(self, session, project_id: str):
-        row = await session.fetchone(
+        rows = await session.fetchall(
             """SELECT id,project_id,chapter_num,status
                  FROM chapter_sessions
                 WHERE project_id=%s AND status='drafting'
                 ORDER BY chapter_num,id
-                LIMIT 1""",
+                LIMIT 2""",
             (project_id,),
         )
-        return dict(row) if row else None
+        if len(rows) > 1:
+            raise ActiveChapterSessionConflict(
+                "multiple active ChapterSession rows exist for project"
+            )
+        return dict(rows[0]) if rows else None
 
     async def read_max_final_chapter_number(self, session, project_id: str):
         row = await session.fetchone(

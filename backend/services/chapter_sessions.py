@@ -14,6 +14,10 @@ from backend.domain.drafts import (
     WorkingDraftView,
 )
 from backend.http_errors import ProjectNotFound
+from backend.repositories.chapter_sessions import (
+    ActiveChapterSessionConflict,
+    authoritative_chapter,
+)
 
 
 class ChapterSessionError(RuntimeError):
@@ -110,15 +114,49 @@ class ChapterSessionService:
             project = await self.repository.lock_project(session, command.project_id)
             if project is None:
                 raise ChapterSessionNotFound("Project not found")
-            existing = await self.repository.read_chapter_session(
+            try:
+                active = await self.repository.read_active_session(
+                    session,
+                    command.project_id,
+                )
+            except ActiveChapterSessionConflict:
+                raise ChapterSessionConflict(
+                    "active ChapterSession authority is inconsistent"
+                ) from None
+            if active is not None:
+                chapter_number = authoritative_chapter(active, None)
+                self._require_authoritative_chapter(
+                    command.chapter_number,
+                    chapter_number,
+                )
+                existing = await self.repository.read_chapter_session(
+                    session,
+                    command.project_id,
+                    chapter_number,
+                )
+                if (
+                    existing is None
+                    or existing["id"] != active["id"]
+                    or not self._matches_create_command(existing, command)
+                ):
+                    raise ChapterSessionConflict(
+                        "active ChapterSession pins differ from request"
+                    )
+                return await self._workspace(session, existing)
+
+            maximum = await self.repository.read_max_final_chapter_number(
                 session,
                 command.project_id,
+            )
+            chapter_number = authoritative_chapter(None, maximum)
+            self._require_authoritative_chapter(
                 command.chapter_number,
+                chapter_number,
             )
             outline = await self.repository.read_current_outline(
                 session,
                 command.project_id,
-                command.chapter_number,
+                chapter_number,
             )
             if outline is None:
                 raise ChapterSessionPreconditionFailed(
@@ -135,15 +173,15 @@ class ChapterSessionService:
                     "Canon and Projection heads are required",
                 )
             self._require_current_projection(outline, projection, command)
+            existing = await self.repository.read_chapter_session(
+                session,
+                command.project_id,
+                chapter_number,
+            )
             if existing is not None:
-                if (
-                    not self._matches_create_command(existing, command)
-                    or not self._matches_current_outline(existing, outline)
-                ):
-                    raise ChapterSessionConflict(
-                        "existing ChapterSession pins differ from current authorities",
-                    )
-                return await self._workspace(session, existing)
+                raise ChapterSessionConflict(
+                    "existing ChapterSession conflicts with server authority"
+                )
 
             canon_revision = int(projection["canon_revision_number"])
 
@@ -164,7 +202,7 @@ class ChapterSessionService:
                     outline["chapter_outline_revision"],
                 ),
                 "chapter_outline_hash": outline["chapter_outline_hash"],
-                "chapter_num": command.chapter_number,
+                "chapter_num": chapter_number,
                 "expected_canon_revision": canon_revision,
                 "chapter_outline": outline["chapter_outline"],
                 "status": "drafting",
@@ -184,6 +222,16 @@ class ChapterSessionService:
             if not await self.repository.upsert_working_draft(session, draft_row):
                 raise ChapterSessionConflict("working draft was not created")
             return await self._workspace(session, session_row)
+
+    def _require_authoritative_chapter(
+        self,
+        requested: int,
+        authoritative: int,
+    ) -> None:
+        if requested != authoritative:
+            raise ChapterSessionConflict(
+                "requested chapter differs from server authority"
+            )
 
     def _require_current_outline(
         self,
@@ -375,30 +423,6 @@ class ChapterSessionService:
             == command.expected_outline_hash
             and int(session["expected_canon_revision"])
             == command.expected_canon_revision
-        )
-
-    def _matches_current_outline(
-        self,
-        session: Mapping[str, Any],
-        outline: Mapping[str, Any],
-    ) -> bool:
-        return (
-            session["planning_revision_id"] == outline["planning_revision_id"]
-            and int(session["planning_revision"])
-            == int(outline["planning_revision"])
-            and session["planning_hash"] == outline["planning_hash"]
-            and session["chapter_outline_revision_id"]
-            == outline["chapter_outline_revision_id"]
-            and int(session["chapter_outline_revision"])
-            == int(outline["chapter_outline_revision"])
-            and session["chapter_outline_hash"]
-            == outline["chapter_outline_hash"]
-            and session["story_block_id"] == outline["story_block_id"]
-            and int(session["story_block_revision"])
-            == int(outline["story_block_revision"])
-            and session["story_block_hash"] == outline["story_block_hash"]
-            and int(session["expected_canon_revision"])
-            == int(outline["canon_revision"])
         )
 
     def _working_row(

@@ -6,13 +6,18 @@ from backend.repositories.chapter_sessions import ChapterSessionRepository
 
 
 class CapturingSession:
-    def __init__(self, rows=()):
+    def __init__(self, rows=(), all_rows=()):
         self.calls = []
         self.rows = list(rows)
+        self.all_rows = list(all_rows)
 
     async def fetchone(self, sql, args=None):
         self.calls.append((sql, args))
         return self.rows.pop(0) if self.rows else None
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append((sql, args))
+        return list(self.all_rows)
 
 
 @pytest.mark.asyncio
@@ -57,7 +62,7 @@ async def test_current_outline_reads_exact_planning_and_current_generation_pins(
 @pytest.mark.asyncio
 async def test_active_session_authority_reads_across_all_project_chapters():
     session = CapturingSession(
-        rows=[
+        all_rows=[
             {
                 "id": "session-4",
                 "project_id": "p1",
@@ -82,7 +87,30 @@ async def test_active_session_authority_reads_across_all_project_chapters():
     assert "project_id=%s" in compact
     assert "status='drafting'" in compact
     assert "chapter_num=%s" not in compact
-    assert "LIMIT 1" in compact
+    assert "LIMIT 2" in compact
+
+
+@pytest.mark.asyncio
+async def test_active_session_authority_fails_closed_on_project_wide_split():
+    session = CapturingSession(
+        all_rows=[
+            {
+                "id": "session-4",
+                "project_id": "p1",
+                "chapter_num": 4,
+                "status": "drafting",
+            },
+            {
+                "id": "session-5",
+                "project_id": "p1",
+                "chapter_num": 5,
+                "status": "drafting",
+            },
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="active ChapterSession"):
+        await ChapterSessionRepository().read_active_session(session, "p1")
 
 
 @pytest.mark.asyncio

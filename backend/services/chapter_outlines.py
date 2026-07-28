@@ -23,6 +23,10 @@ from backend.domain.chapter_outlines import (
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.planning import PlanningAggregate
 from backend.http_errors import ProjectArchived as RepositoryProjectArchived
+from backend.repositories.chapter_sessions import (
+    ActiveChapterSessionConflict,
+    authoritative_chapter,
+)
 from backend.repositories.planning import PlanningRepository
 
 
@@ -199,17 +203,6 @@ class ChapterOutlineOperationResult:
     failure_code: str | None
     loaded: bool
     loaded_draft_revision: int | None
-
-
-def authoritative_chapter(
-    active_session: Mapping[str, object] | None,
-    max_final_chapter: int | None,
-) -> int:
-    if active_session is not None:
-        return int(active_session["chapter_num"])
-    if max_final_chapter is not None:
-        return int(max_final_chapter) + 1
-    return 1
 
 
 class ChapterOutlineService:
@@ -885,10 +878,15 @@ class ChapterOutlineService:
             )
 
     async def _chapter_authority(self, session, project_id: str):
-        active = await self.chapter_repository.read_active_session(
-            session,
-            project_id,
-        )
+        try:
+            active = await self.chapter_repository.read_active_session(
+                session,
+                project_id,
+            )
+        except ActiveChapterSessionConflict:
+            raise ChapterOutlineConflict(
+                "active ChapterSession authority is inconsistent"
+            ) from None
         maximum = await self.chapter_repository.read_max_final_chapter_number(
             session,
             project_id,

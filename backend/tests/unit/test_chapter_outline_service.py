@@ -4,7 +4,10 @@ import pytest
 from pydantic import ValidationError
 
 from backend.domain.chapter_outlines import EditableChapterOutlineContent
+from backend.repositories.chapter_sessions import ActiveChapterSessionConflict
 from backend.services.chapter_outlines import (
+    ChapterOutlineConflict,
+    ChapterOutlineService,
     CreateChapterOutlineDraft,
     authoritative_chapter,
 )
@@ -60,3 +63,41 @@ def test_create_command_has_no_client_authority_or_idempotency_fields():
         "project_id",
         "chapter_number",
     }
+
+
+class _Transaction:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _ReadableProjectRepository:
+    async def read_project_any(self, session, project_id):
+        return {"id": project_id, "archived_at": None}
+
+
+class _SplitActiveSessionRepository:
+    async def read_active_session(self, session, project_id):
+        raise ActiveChapterSessionConflict(
+            "raw SQL rows contain AUTHORITY-SPLIT-SENTINEL"
+        )
+
+
+@pytest.mark.asyncio
+async def test_current_read_maps_split_active_session_to_outline_conflict():
+    service = ChapterOutlineService(
+        _ReadableProjectRepository(),
+        _SplitActiveSessionRepository(),
+        transaction_factory=_Transaction,
+    )
+
+    with pytest.raises(
+        ChapterOutlineConflict,
+        match="active ChapterSession authority is inconsistent",
+    ) as caught:
+        await service.get_current("project-1")
+
+    assert "AUTHORITY-SPLIT-SENTINEL" not in str(caught.value)
+    assert caught.value.__cause__ is None
