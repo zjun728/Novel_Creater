@@ -147,7 +147,7 @@ function createSuites(rootDirectory, environment) {
       ],
       pytestTempStages.unitApi,
     ],
-    [node, ['--test', ...scriptTests]],
+    [node, ['--test', '--test-concurrency=1', ...scriptTests]],
     [node, ['--test', ...frontendTests]],
   ]
   const integration = [
