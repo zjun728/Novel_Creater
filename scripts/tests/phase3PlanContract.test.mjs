@@ -43,6 +43,18 @@ const normalizePhase3cMarkdown = (document) =>
     .join('\n')
     .replace(/\n+$/, '');
 
+const mutatePhase3cAcceptance = (source, mutateLf) => {
+  const lfSource = normalizePhase3cMarkdown(source);
+  const lfMutated = mutateLf(lfSource);
+  assert.notEqual(
+    lfMutated,
+    lfSource,
+    'Phase 3C fixture mutation must change the normalized source',
+  );
+  const newline = source.includes('\r\n') ? '\r\n' : '\n';
+  return lfMutated.replace(/\n/g, newline);
+};
+
 const phase3cAcceptanceSections = [
   '元数据',
   '验收结论',
@@ -693,22 +705,44 @@ test('Phase 3C acceptance preserves Markdown list and fence line structure', asy
   const acceptance = await readProjectFile(
     'docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md',
   );
-  const structurallyInvalidAcceptances = [
-    acceptance.replace(
-      '- 验收日期：`2026-07-30`\n- 基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`',
-      '- 验收日期：`2026-07-30` - 基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`',
-    ),
-    acceptance.replace(
-      '```text\nProjectPlanningView',
-      '```text ProjectPlanningView',
-    ),
+  const lfAcceptance = acceptance.replace(/\r\n/g, '\n');
+  const acceptanceVariants = [
+    ['LF', lfAcceptance],
+    ['CRLF', lfAcceptance.replace(/\n/g, '\r\n')],
+  ];
+  const structuralMutators = [
+    (source) =>
+      source.replace(
+        '- 验收日期：`2026-07-30`\n- 基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`',
+        '- 验收日期：`2026-07-30` - 基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`',
+      ),
+    (source) =>
+      source.replace(
+        '```text\nProjectPlanningView',
+        '```text ProjectPlanningView',
+      ),
   ];
 
-  for (const invalidAcceptance of structurallyInvalidAcceptances) {
-    assert.throws(
-      () => assertPhase3cAcceptanceContract(invalidAcceptance),
-      'acceptance must reject merged Markdown list and fence lines',
+  for (const [lineEnding, sourceAcceptance] of acceptanceVariants) {
+    assert.doesNotThrow(
+      () => assertPhase3cAcceptanceContract(sourceAcceptance),
+      `canonical ${lineEnding} acceptance must pass`,
     );
+    for (const mutate of structuralMutators) {
+      const invalidAcceptance = mutatePhase3cAcceptance(
+        sourceAcceptance,
+        mutate,
+      );
+      assert.notEqual(
+        normalizePhase3cMarkdown(invalidAcceptance),
+        normalizePhase3cMarkdown(sourceAcceptance),
+        `${lineEnding} structural mutation must change the fixture`,
+      );
+      assert.throws(
+        () => assertPhase3cAcceptanceContract(invalidAcceptance),
+        `${lineEnding} acceptance must reject merged Markdown list and fence lines`,
+      );
+    }
   }
 });
 
@@ -716,50 +750,70 @@ test('Phase 3C acceptance rejects forged or incorrect reviews and boundary overc
   const acceptance = await readProjectFile(
     'docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md',
   );
-  const invalidAcceptances = [
-    acceptance.replace(
+  const lfAcceptance = acceptance.replace(/\r\n/g, '\n');
+  const acceptanceVariants = [
+    ['LF', lfAcceptance],
+    ['CRLF', lfAcceptance.replace(/\n/g, '\r\n')],
+  ];
+  const invalidAcceptanceMutators = [
+    (source) => source.replace(
       '## Fresh 最终门禁',
       '- Task 12 验收文档与事实合同规格审查最终：`C/I/M 0/0/0`\n\n## Fresh 最终门禁',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '- Task 12 验收文档与事实合同质量审查最终：`C/I/M 0/0/0`',
       '- Task 12 验收文档与事实合同质量审查最终：`C/I/M 0/1/0`',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '## Fresh 最终门禁',
       '- Task 12 验收文档与事实合同安全审查最终：`C/I/M 0/0/0`\n\n## Fresh 最终门禁',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '## 已交付链路',
       'Phase 3 总验收、Phase 4、正式 Writer、Real Provider、Product DB 和 Content Quality 均已 Ready。\n\n## 已交付链路',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '## 下一步',
       '- Phase 4 正式 Writer、Real Provider、Product DB 和 Content Quality 已完成。\n\n## 下一步',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '## 独立审查',
       'Task 12 验收文档与事实合同已经独立审查并通过。\n\n## 独立审查',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '## 独立审查',
       'Phase 3 总验收、Phase 4 正式 Writer、Real Provider、Product DB 和 Content Quality 已 Ready。\n\n## 独立审查',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '## 隔离与未评估边界',
       'Task 12 文档审查通过；Phase 3/4、正式 Writer、Provider、DB 与 Content 均已 Ready。\n\n## 隔离与未评估边界',
     ),
-    acceptance.replace(
+    (source) => source.replace(
       '# Phase 3C Story Blocks and Chapter Outlines 验收报告\n\n',
       '# Phase 3C Story Blocks and Chapter Outlines 验收报告\n\n未受合同约束的前置正文。\n\n',
     ),
   ];
 
-  for (const invalidAcceptance of invalidAcceptances) {
-    assert.throws(
-      () => assertPhase3cAcceptanceContract(invalidAcceptance),
-      'acceptance must reject forged, duplicate, or incorrect reviews and positive boundary overclaims',
+  for (const [lineEnding, sourceAcceptance] of acceptanceVariants) {
+    assert.doesNotThrow(
+      () => assertPhase3cAcceptanceContract(sourceAcceptance),
+      `canonical ${lineEnding} acceptance must pass`,
     );
+    for (const mutate of invalidAcceptanceMutators) {
+      const invalidAcceptance = mutatePhase3cAcceptance(
+        sourceAcceptance,
+        mutate,
+      );
+      assert.notEqual(
+        normalizePhase3cMarkdown(invalidAcceptance),
+        normalizePhase3cMarkdown(sourceAcceptance),
+        `${lineEnding} review/boundary mutation must change the fixture`,
+      );
+      assert.throws(
+        () => assertPhase3cAcceptanceContract(invalidAcceptance),
+        `${lineEnding} acceptance must reject forged, duplicate, or incorrect reviews and positive boundary overclaims`,
+      );
+    }
   }
 });
 
