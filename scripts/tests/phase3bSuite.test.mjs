@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { assertSafeBrowserGraph } from '../browser-source-contract.mjs'
 import { runSuites } from '../run-tests.mjs'
 import {
+  DEFAULT_RUNNER_DEADLINES,
   reserveLocalPort,
   runOwnedProductLifecycle,
   terminateOwnedProcessTree,
@@ -56,7 +57,7 @@ async function waitForHealth(port, expectedNonce, {
 
 
 async function stopOwnedChild(child, {
-  timeoutMs = 2_000,
+  timeoutMs = DEFAULT_RUNNER_DEADLINES.stopMs,
   terminateImpl = terminateOwnedProcessTree,
 } = {}) {
   if (child.exitCode !== null || child.signalCode !== null) return
@@ -606,11 +607,13 @@ test('Phase 3B contract cleanup force-terminates a child that ignores graceful s
         1_000,
       )),
     ])
-    await stopOwnedChild(child, { timeoutMs: 1_000 })
+    await stopOwnedChild(child)
     assert.equal(child.exitCode !== null || child.signalCode !== null, true)
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
-      await terminateOwnedProcessTree(child, { timeoutMs: 1_000 })
+      await terminateOwnedProcessTree(child, {
+        timeoutMs: DEFAULT_RUNNER_DEADLINES.stopMs,
+      })
     }
   }
 })
