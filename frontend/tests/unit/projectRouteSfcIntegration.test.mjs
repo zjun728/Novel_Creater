@@ -209,23 +209,25 @@ function currentOutline({
   activeSession = null,
   startSession = true,
 } = {}) {
+  const planningAuthority = {
+    planningRevisionId: 'planning-1',
+    revision: 7,
+    contentHash: 'a'.repeat(64),
+    content: null,
+  }
+  const canonProjectionAuthority = {
+    canonRevision: 5,
+    projectionRevision: 5,
+    contentHash: 'd'.repeat(64),
+    synchronized: true,
+  }
   return {
     projectId: 'project-1',
     lifecycle: 'active',
     authoritativeChapterNumber: chapterNumber,
     targetPath: `/projects/project-1/write/chapters/${chapterNumber}`,
-    planningAuthority: {
-      planningRevisionId: 'planning-1',
-      revision: 7,
-      contentHash: 'a'.repeat(64),
-      content: null,
-    },
-    canonProjectionAuthority: {
-      canonRevision: 5,
-      projectionRevision: 5,
-      contentHash: 'd'.repeat(64),
-      synchronized: true,
-    },
+    planningAuthority,
+    canonProjectionAuthority,
     confirmedOutline: confirmed ? {
       projectId: 'project-1',
       chapterNumber,
@@ -246,12 +248,16 @@ function currentOutline({
         scenes: ['雨夜码头'],
         forbiddenEarlyEvents: ['不可提前揭示内应'],
       },
-      basis: {},
+      basis: {
+        planningAuthority,
+        canonProjectionAuthority,
+      },
       status: 'current',
       reason: 'currentOutlineHead',
     } : null,
     draft: null,
     activeSession,
+    pendingOperation: null,
     capabilities: {
       view: true,
       createDraft: false,

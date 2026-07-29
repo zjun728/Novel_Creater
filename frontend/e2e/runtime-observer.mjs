@@ -1,8 +1,45 @@
-async function captureApiResponse(response, { url, method, status }) {
+const RESPONSE_BODY_READ_TIMEOUT_MS = 10_000
+
+
+async function readWithTimeout(read, timeoutMs, timeoutMessage) {
+  let timer = null
+  try {
+    return await Promise.race([
+      read(),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(timeoutMessage)),
+          timeoutMs,
+        )
+      }),
+    ])
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
+}
+
+
+async function readBeforeDeadline(read, deadline, timeoutMessage) {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) throw new Error(timeoutMessage)
+  return readWithTimeout(read, remainingMs, timeoutMessage)
+}
+
+
+export async function captureApiResponse(
+  response,
+  { url, method, status },
+  readTimeoutMs = RESPONSE_BODY_READ_TIMEOUT_MS,
+) {
+  const readDeadline = Date.now() + readTimeoutMs
   let headers = {}
   let headersReadError = ''
   try {
-    headers = await response.allHeaders()
+    headers = await readBeforeDeadline(
+      () => response.allHeaders(),
+      readDeadline,
+      'response headers read timed out',
+    )
   } catch (error) {
     headersReadError = error instanceof Error ? error.message : String(error)
   }
@@ -10,7 +47,11 @@ async function captureApiResponse(response, { url, method, status }) {
   let body = ''
   let bodyReadError = ''
   try {
-    body = await response.text()
+    body = await readBeforeDeadline(
+      () => response.text(),
+      readDeadline,
+      'response body read timed out',
+    )
   } catch (error) {
     bodyReadError = error instanceof Error ? error.message : String(error)
   }
@@ -26,11 +67,20 @@ async function captureApiResponse(response, { url, method, status }) {
   }
 }
 
-async function captureRequest(request, { url, method }) {
+export async function captureRequest(
+  request,
+  { url, method },
+  readTimeoutMs = RESPONSE_BODY_READ_TIMEOUT_MS,
+) {
+  const readDeadline = Date.now() + readTimeoutMs
   let headers = {}
   let headersReadError = ''
   try {
-    headers = await request.allHeaders()
+    headers = await readBeforeDeadline(
+      () => request.allHeaders(),
+      readDeadline,
+      'request headers read timed out',
+    )
   } catch (error) {
     headersReadError = error instanceof Error ? error.message : String(error)
   }
@@ -61,6 +111,52 @@ function isApiUrl(url) {
     return pathname === '/api' || pathname.startsWith('/api/')
   } catch {
     return false
+  }
+}
+
+function allowedHttpOrigins(values) {
+  if (values == null) return null
+  if (!Array.isArray(values) || values.length === 0) {
+    throw new TypeError('Runtime HTTP origin allowlist is invalid')
+  }
+  const origins = new Set()
+  for (const value of values) {
+    if (typeof value !== 'string') {
+      throw new TypeError('Runtime HTTP origin allowlist is invalid')
+    }
+    let parsed
+    try {
+      parsed = new URL(value)
+    } catch {
+      throw new TypeError('Runtime HTTP origin allowlist is invalid')
+    }
+    if (
+      !['http:', 'https:'].includes(parsed.protocol)
+      || parsed.hostname !== '127.0.0.1'
+      || !parsed.port
+      || parsed.pathname !== '/'
+      || parsed.search
+      || parsed.hash
+      || parsed.username
+      || parsed.password
+      || parsed.origin !== value
+      || origins.has(value)
+    ) {
+      throw new TypeError('Runtime HTTP origin allowlist is invalid')
+    }
+    origins.add(value)
+  }
+  return origins
+}
+
+function httpOrigin(value) {
+  try {
+    const parsed = new URL(String(value))
+    return ['http:', 'https:'].includes(parsed.protocol)
+      ? parsed.origin
+      : null
+  } catch {
+    return null
   }
 }
 
@@ -217,6 +313,29 @@ export function assertRuntimeEvidenceHealthy(evidence, {
   if ((evidence?.requests || []).some(item => item?.bodyReadError)) {
     throw new Error('Runtime request bodies could not be read')
   }
+  const networkAccess = evidence?.networkAccess
+  if (networkAccess !== undefined) {
+    const counts = [
+      networkAccess?.httpRequestCount,
+      networkAccess?.allowedRequestCount,
+      networkAccess?.forbiddenRequestCount,
+      networkAccess?.forbiddenResponseCount,
+    ]
+    if (
+      counts.some(value => !Number.isInteger(value) || value < 0)
+      || networkAccess.httpRequestCount
+        !== networkAccess.allowedRequestCount + networkAccess.forbiddenRequestCount
+    ) {
+      throw new Error('Runtime HTTP access evidence is invalid')
+    }
+    if (
+      networkAccess.forbiddenRequestCount !== 0
+      || networkAccess.forbiddenResponseCount !== 0
+    ) {
+      throw new Error('Runtime evidence contains forbidden HTTP access')
+    }
+    return { healthy: true, networkAccess: { ...networkAccess } }
+  }
   return { healthy: true }
 }
 
@@ -263,19 +382,24 @@ export function assertExactWrites(evidence, allowlist) {
   for (const write of writes) {
     const method = String(write.method).toUpperCase()
     const path = renderedTarget(write.url)
+    const diagnosticPath = publicDiagnosticPath(write.url)
     const matchIndexes = allowlist.flatMap((entry, index) => (
       entry.method === method && matchesPath(entry.path, path) ? [index] : []
     ))
     if (matchIndexes.length === 0) {
-      throw new Error(`Unmatched runtime write: ${method} ${path}`)
+      throw new Error(`Unmatched runtime write: ${method} ${diagnosticPath}`)
     }
     if (matchIndexes.length !== 1) {
-      throw new Error(`Runtime write matched multiple overlapping rules: ${method} ${path}`)
+      throw new Error(
+        `Runtime write matched multiple overlapping rules: ${method} ${diagnosticPath}`,
+      )
     }
     const [matchIndex] = matchIndexes
     const entry = allowlist[matchIndex]
     if (!entry.statuses.includes(write.status)) {
-      throw new Error(`Unexpected runtime write status for ${method} ${path}`)
+      throw new Error(
+        `Unexpected runtime write status for ${method} ${diagnosticPath}`,
+      )
     }
     matched.get(matchIndex).push(write)
   }
@@ -381,9 +505,144 @@ export function scanRuntimeEvidence(
   }
 }
 
-export function observeRuntime(page) {
+export function assertNoPrivateEvidenceMarkers(surfaces) {
+  const rendered = (Array.isArray(surfaces) ? surfaces : [])
+    .map(value => String(value).toLowerCase())
+    .join('\n')
+  const containsPrivateEvidence = (
+    /(?:^|[\s{,])["']?(?:prompt|manifest|input[_ -]?manifest|rawprovider|raw[_ -]?(?:provider[_ -]?)?output|provider[_ -]?output|corpus[_ -]?text|api[_ -]?key|authorization|password|dsn)["']?\s*[:=]/u
+      .test(rendered)
+    || /\b(?:raw provider|input manifest|corpus text)\b/u.test(rendered)
+  )
+  if (containsPrivateEvidence) {
+    throw new Error('Runtime evidence contains private fields')
+  }
+  return { matchCount: 0 }
+}
+
+
+function publicDiagnosticPath(value) {
+  try {
+    return new URL(String(value)).pathname
+  } catch {
+    return '[invalid-path]'
+  }
+}
+
+
+const PUBLIC_REQUEST_FAILURE_METHODS = new Set([
+  'GET',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'HEAD',
+  'OPTIONS',
+])
+
+
+function publicRequestFailure(value) {
+  const invalid = {
+    method: '[invalid-method]',
+    path: '[invalid-path]',
+  }
+  if (typeof value !== 'string') return invalid
+  const match = /^(\S+)\s+(\S+)(?:\s|$)/u.exec(value)
+  if (!match) return invalid
+  const [, method, rawUrl] = match
+  if (!PUBLIC_REQUEST_FAILURE_METHODS.has(method)) return invalid
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return invalid
+    return {
+      method,
+      path: url.pathname,
+    }
+  } catch {
+    return invalid
+  }
+}
+
+
+export function publicRuntimeDiagnostic(evidence) {
+  const apiResponses = Array.isArray(evidence?.apiResponses)
+    ? evidence.apiResponses
+    : []
+  const requests = Array.isArray(evidence?.requests) ? evidence.requests : []
+  const responses = Array.isArray(evidence?.responses) ? evidence.responses : []
+  const requestFailures = Array.isArray(evidence?.requestFailures)
+    ? evidence.requestFailures
+    : []
+  const responseFailures = responses
+    .filter(item => (
+      (Number(item?.status) < 200 || Number(item?.status) >= 300)
+      && Number(item?.status) !== 304
+    ))
+    .map(item => ({
+      method: item.method,
+      status: item.status,
+      path: publicDiagnosticPath(item.url),
+    }))
+  const networkAccess = evidence?.networkAccess
+  return {
+    consoleErrorCount: Array.isArray(evidence?.consoleErrors)
+      ? evidence.consoleErrors.length
+      : 0,
+    requestFailureCount: requestFailures.length,
+    requestFailures: requestFailures.map(publicRequestFailure),
+    responseFailures,
+    apiResponseCount: apiResponses.length,
+    apiHeaderReadFailures: apiResponses
+      .filter(item => Boolean(item?.headersReadError))
+      .map(item => ({
+        method: item.method,
+        status: item.status,
+        path: publicDiagnosticPath(item.url),
+      })),
+    apiBodyReadFailures: apiResponses
+      .filter(item => Boolean(item?.bodyReadError))
+      .map(item => ({
+        method: item.method,
+        status: item.status,
+        path: publicDiagnosticPath(item.url),
+      })),
+    requestHeaderReadFailures: requests
+      .filter(item => Boolean(item?.headersReadError))
+      .map(item => ({
+        method: item.method,
+        path: publicDiagnosticPath(item.url),
+      })),
+    ...(networkAccess === undefined
+      ? {}
+      : {
+        networkAccess: {
+          httpRequestCount: Number(networkAccess?.httpRequestCount) || 0,
+          allowedRequestCount: Number(networkAccess?.allowedRequestCount) || 0,
+          forbiddenRequestCount: Number(networkAccess?.forbiddenRequestCount) || 0,
+          forbiddenResponseCount: Number(networkAccess?.forbiddenResponseCount) || 0,
+        },
+      }),
+  }
+}
+
+
+export async function settleNavigationBoundary(page, runtime) {
+  await page.waitForLoadState('networkidle')
+  await runtime.settle()
+}
+
+
+export function observeRuntime(page, {
+  allowedOrigins = null,
+  quietWindowMs = 50,
+  readTimeoutMs = RESPONSE_BODY_READ_TIMEOUT_MS,
+  settleTimeoutMs = 15_000,
+} = {}) {
+  const originAllowlist = allowedHttpOrigins(allowedOrigins)
+  const evidenceReadTimeoutMs = Math.min(readTimeoutMs, settleTimeoutMs)
   const pendingApiBodies = new Set()
   const pendingRequests = new Set()
+  const activeApiRequests = new Set()
   const responses = []
   const consoleMessages = []
   const consoleErrors = []
@@ -392,22 +651,60 @@ export function observeRuntime(page) {
   const responseFailures = []
   const apiResponses = []
   const requests = []
+  const networkAccess = originAllowlist === null
+    ? null
+    : {
+      httpRequestCount: 0,
+      allowedRequestCount: 0,
+      forbiddenRequestCount: 0,
+      forbiddenResponseCount: 0,
+    }
+  let activityVersion = 0
 
   const onResponse = response => {
     const method = response.request().method()
     const status = response.status()
     const url = response.url()
+    const origin = httpOrigin(url)
+    if (
+      networkAccess !== null
+      && origin !== null
+      && !originAllowlist.has(origin)
+    ) {
+      networkAccess.forbiddenResponseCount += 1
+    }
     responses.push({ url, method, status })
     if ((status < 200 || status >= 300) && status !== 304) {
       responseFailures.push(`${status} ${method} ${url}`)
     }
     if (!isApiUrl(url)) return
-    pendingApiBodies.add(captureApiResponse(response, { url, method, status }))
+    activityVersion += 1
+    pendingApiBodies.add(captureApiResponse(
+      response,
+      { url, method, status },
+      evidenceReadTimeoutMs,
+    ))
   }
   const onRequest = request => {
     const method = request.method()
     const url = request.url()
-    pendingRequests.add(captureRequest(request, { url, method }))
+    const origin = httpOrigin(url)
+    if (networkAccess !== null && origin !== null) {
+      networkAccess.httpRequestCount += 1
+      if (originAllowlist.has(origin)) networkAccess.allowedRequestCount += 1
+      else networkAccess.forbiddenRequestCount += 1
+    }
+    activityVersion += 1
+    if (isApiUrl(url)) activeApiRequests.add(request)
+    pendingRequests.add(captureRequest(
+      request,
+      { url, method },
+      evidenceReadTimeoutMs,
+    ))
+  }
+  const onRequestFinished = request => {
+    activityVersion += 1
+    activeApiRequests.delete(request)
   }
   const onConsole = message => {
     const rendered = `${message.type()}: ${message.text()}`
@@ -418,12 +715,15 @@ export function observeRuntime(page) {
     pageErrors.push(error.message)
   }
   const onRequestFailed = request => {
+    activityVersion += 1
+    activeApiRequests.delete(request)
     requestFailures.push(
       `${request.method()} ${request.url()} ${request.failure()?.errorText || 'unknown failure'}`,
     )
   }
 
   page.on('request', onRequest)
+  page.on('requestfinished', onRequestFinished)
   page.on('response', onResponse)
   page.on('console', onConsole)
   page.on('pageerror', onPageError)
@@ -446,8 +746,42 @@ export function observeRuntime(page) {
     }
   }
   async function settle() {
-    await drainPendingRequests()
-    await drainPendingApiBodies()
+    const deadline = Date.now() + settleTimeoutMs
+    while (true) {
+      const settleTimeoutMessage = 'runtime evidence did not settle before its deadline'
+      await readBeforeDeadline(
+        () => drainPendingRequests(),
+        deadline,
+        settleTimeoutMessage,
+      )
+      await readBeforeDeadline(
+        () => drainPendingApiBodies(),
+        deadline,
+        settleTimeoutMessage,
+      )
+      const observedVersion = activityVersion
+      if (deadline - Date.now() <= quietWindowMs) {
+        throw new Error(settleTimeoutMessage)
+      }
+      await new Promise(resolve => setTimeout(resolve, quietWindowMs))
+      await readBeforeDeadline(
+        () => drainPendingRequests(),
+        deadline,
+        settleTimeoutMessage,
+      )
+      await readBeforeDeadline(
+        () => drainPendingApiBodies(),
+        deadline,
+        settleTimeoutMessage,
+      )
+      if (Date.now() >= deadline) throw new Error(settleTimeoutMessage)
+      if (
+        activeApiRequests.size === 0
+        && pendingRequests.size === 0
+        && pendingApiBodies.size === 0
+        && activityVersion === observedVersion
+      ) return
+    }
   }
 
   async function finish() {
@@ -459,6 +793,7 @@ export function observeRuntime(page) {
       await settle()
     } finally {
       page.off('request', onRequest)
+      page.off('requestfinished', onRequestFinished)
       page.off('response', onResponse)
       page.off('console', onConsole)
       page.off('pageerror', onPageError)
@@ -475,6 +810,7 @@ export function observeRuntime(page) {
       requestFailures,
       responseFailures,
       pageContent,
+      ...(networkAccess === null ? {} : { networkAccess: { ...networkAccess } }),
     }
   }
 

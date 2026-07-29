@@ -8,12 +8,12 @@ function jsonResponse(body = {}) {
   })
 }
 
-async function captureRequests(run) {
+async function captureRequests(run, responseFor = () => ({})) {
   const originalFetch = global.fetch
   const calls = []
   global.fetch = async (url, options) => {
     calls.push({ url: String(url), options })
-    return jsonResponse()
+    return jsonResponse(responseFor({ url: String(url), options }))
   }
   try {
     const { api } = await import('../../src/api/db/client.js')
@@ -26,6 +26,99 @@ async function captureRequests(run) {
 
 function bodyOf(call) {
   return call.options.body === undefined ? undefined : JSON.parse(call.options.body)
+}
+
+function formalChapterOutlineState(overrides = {}) {
+  return {
+    projectId: 'project-1',
+    lifecycle: 'active',
+    authoritativeChapterNumber: 1,
+    targetPath: '/projects/project-1/write/chapters/1',
+    planningAuthority: null,
+    canonProjectionAuthority: null,
+    confirmedOutline: null,
+    draft: null,
+    activeSession: null,
+    pendingOperation: null,
+    capabilities: {
+      view: true,
+      createDraft: true,
+      editDraft: false,
+      generate: false,
+      confirm: false,
+      startSession: false,
+    },
+    reasons: [],
+    ...overrides,
+  }
+}
+
+function formalChapterOutlineContent() {
+  return {
+    schemaVersion: 'chapter-outline-draft-v1',
+    volumeRef: null,
+    storyBlockRef: null,
+    stageRefs: [],
+    sceneTaskRefs: [],
+    chapterGoal: '',
+    expectedCharacters: [],
+    continuation: [],
+    plannedTasks: [],
+    scenes: [],
+    forbiddenEarlyEvents: [],
+  }
+}
+
+function formalChapterOutlineBasis() {
+  return {
+    planningAuthority: {
+      planningRevisionId: 'planning-r1',
+      revision: 1,
+      contentHash: 'a'.repeat(64),
+      content: null,
+    },
+    canonProjectionAuthority: {
+      canonRevision: 1,
+      projectionRevision: 1,
+      contentHash: 'b'.repeat(64),
+      synchronized: true,
+    },
+  }
+}
+
+function formalChapterOutlineDraft(overrides = {}) {
+  return {
+    projectId: 'project-1',
+    chapterNumber: 1,
+    draftId: 'outline-draft-1',
+    baseHeadRevision: 0,
+    draftRevision: 1,
+    contentHash: 'c'.repeat(64),
+    content: formalChapterOutlineContent(),
+    basis: formalChapterOutlineBasis(),
+    status: 'current',
+    ...overrides,
+  }
+}
+
+function formalChapterOutlineRevision({
+  includeDisplay = true,
+  ...overrides
+} = {}) {
+  return {
+    projectId: 'project-1',
+    chapterNumber: 1,
+    outlineRevisionId: 'outline-revision-1',
+    revision: 1,
+    parentRevision: 0,
+    contentHash: 'c'.repeat(64),
+    content: formalChapterOutlineContent(),
+    basis: formalChapterOutlineBasis(),
+    ...(includeDisplay
+      ? { status: 'current', reason: 'currentOutlineHead' }
+      : {}),
+    ...overrides,
+  }
 }
 
 const SENSITIVE_PLANNING_KEYS = [
@@ -1330,25 +1423,41 @@ test('chapter outline client exposes the exact canonical endpoints and closed co
     forbiddenEarlyEvents: ['不揭示残卷来源'],
     prompt: 'must-not-send',
   }
-  const calls = await captureRequests(async api => {
-    await api.chapterOutlines.current('project/1')
-    await api.chapterOutlines.get('project/1', 3)
-    await api.chapterOutlines.history('project/1', 3)
-    await api.chapterOutlines.createDraft('project/1', 3)
-    await api.chapterOutlines.saveDraft('project/1', 3, 'draft-1', {
-      expectedDraftRevision: 2,
-      expectedDraftHash: 'e'.repeat(64),
-      content,
-      idempotencyKey: 'must-not-send',
-    })
-    await api.chapterOutlines.confirmDraft('project/1', 3, 'draft-1', {
-      expectedDraftRevision: 3,
-      expectedDraftHash: 'f'.repeat(64),
-      expectedHeadRevision: 1,
-      idempotencyKey: 'outline-confirm-1',
-      provider: 'must-not-send',
-    })
-  })
+  const calls = await captureRequests(
+    async api => {
+      await api.chapterOutlines.current('project/1')
+      await api.chapterOutlines.get('project/1', 3)
+      await api.chapterOutlines.history('project/1', 3)
+      await api.chapterOutlines.createDraft('project/1', 3)
+      await api.chapterOutlines.saveDraft('project/1', 3, 'draft-1', {
+        expectedDraftRevision: 2,
+        expectedDraftHash: 'e'.repeat(64),
+        content,
+        idempotencyKey: 'must-not-send',
+      })
+      await api.chapterOutlines.confirmDraft('project/1', 3, 'draft-1', {
+        expectedDraftRevision: 3,
+        expectedDraftHash: 'f'.repeat(64),
+        expectedHeadRevision: 1,
+        idempotencyKey: 'outline-confirm-1',
+        provider: 'must-not-send',
+      })
+    },
+    ({ url, options }) => {
+      const pathname = new URL(url).pathname
+      if (pathname.endsWith('/history')) return { items: [] }
+      if (pathname.endsWith('/confirm')) {
+        return formalChapterOutlineRevision({ includeDisplay: false })
+      }
+      if (
+        pathname.endsWith('/drafts')
+        || options.method === 'PUT'
+      ) {
+        return formalChapterOutlineDraft()
+      }
+      return formalChapterOutlineState()
+    },
+  )
 
   assert.deepEqual(calls.map(call => [call.options.method, new URL(call.url).pathname]), [
     ['GET', '/api/projects/project%2F1/chapter-outlines/current'],
@@ -1388,12 +1497,117 @@ test('chapter outline client exposes the exact canonical endpoints and closed co
 test('chapter outline current response is a closed projection with pending recovery only', async () => {
   const originalFetch = global.fetch
   const secret = 'MUST-NOT-CROSS-CURRENT-OUTLINE'
+  const hash = 'a'.repeat(64)
+  const planningContent = {
+    schemaVersion: 'planning-v1',
+    activeStoryBlockId: 'block-1',
+    volumes: [{
+      id: 'volume-1',
+      revision: 2,
+      contentHash: hash,
+      lifecycle: 'active',
+      order: 1,
+      title: '第一卷',
+      coreChange: '主角站稳脚跟',
+      mainPressure: '县衙追捕',
+      ensembleFocus: ['沈砚', '顾长风'],
+      forbiddenEvents: ['不得提前揭示残卷来源'],
+    }],
+    plots: [{
+      id: 'plot-1',
+      revision: 3,
+      contentHash: hash,
+      lifecycle: 'active',
+      order: 1,
+      title: '残卷疑云',
+      plotType: 'main',
+      storyQuestion: '残卷为何现世',
+      futureDirection: '追查永乐大典散佚线索',
+      expectedPayoff: '揭开第一层幕后势力',
+      relatedCharacters: ['沈砚'],
+    }],
+    storyBlocks: [{
+      id: 'block-1',
+      revision: 4,
+      contentHash: hash,
+      lifecycle: 'active',
+      volumeId: 'volume-1',
+      plotIds: ['plot-1'],
+      order: 1,
+      title: '夜入县衙',
+      entrySituation: '追兵封城',
+      blockGoal: '取得残卷',
+      mainPressure: '巡夜加严',
+      expectedChange: '确认残卷线索',
+      openQuestions: ['内应是谁'],
+      involvedCharacters: ['沈砚', '顾长风'],
+      stages: [{
+        id: 'stage-1',
+        revision: 5,
+        contentHash: hash,
+        lifecycle: 'active',
+        storyBlockId: 'block-1',
+        order: 1,
+        title: '潜入',
+        purpose: '进入档案库',
+        dramaticQuestion: '能否避开巡夜',
+        sceneTasks: [{
+          id: 'task-1',
+          revision: 6,
+          contentHash: hash,
+          lifecycle: 'active',
+          stageId: 'stage-1',
+          order: 1,
+          task: '取得残卷',
+          completionEvidence: '残卷进入主角手中',
+        }],
+      }],
+    }],
+    contentHash: hash,
+  }
   global.fetch = async () => jsonResponse({
     projectId: 'project-1',
     lifecycle: 'active',
     authoritativeChapterNumber: 8,
     targetPath: '/projects/project-1/write/chapters/8',
-    planningAuthority: null,
+    planningAuthority: {
+      planningRevisionId: 'planning-r4',
+      revision: 4,
+      contentHash: hash,
+      content: {
+        ...planningContent,
+        activeStoryBlockRef: 'draft-block-alias',
+        apiKey: secret,
+        volumes: planningContent.volumes.map(item => ({
+          ...item,
+          clientNodeKey: 'draft-volume-alias',
+          apiKey: secret,
+        })),
+        plots: planningContent.plots.map(item => ({
+          ...item,
+          clientNodeKey: 'draft-plot-alias',
+          apiKey: secret,
+        })),
+        storyBlocks: planningContent.storyBlocks.map(block => ({
+          ...block,
+          clientNodeKey: 'draft-block-alias',
+          volumeRef: 'draft-volume-alias',
+          plotRefs: ['draft-plot-alias'],
+          apiKey: secret,
+          stages: block.stages.map(stage => ({
+            ...stage,
+            clientNodeKey: 'draft-stage-alias',
+            apiKey: secret,
+            sceneTasks: stage.sceneTasks.map(task => ({
+              ...task,
+              clientNodeKey: 'draft-task-alias',
+              apiKey: secret,
+            })),
+          })),
+        })),
+      },
+      apiKey: secret,
+    },
     canonProjectionAuthority: null,
     confirmedOutline: null,
     draft: null,
@@ -1430,6 +1644,12 @@ test('chapter outline current response is a closed projection with pending recov
       operationId: '11111111-1111-4111-8111-111111111111',
       status: 'pending',
     })
+    assert.deepEqual(current.planningAuthority, {
+      planningRevisionId: 'planning-r4',
+      revision: 4,
+      contentHash: hash,
+      content: planningContent,
+    })
     assert.deepEqual(Object.keys(current), [
       'projectId',
       'lifecycle',
@@ -1445,6 +1665,1163 @@ test('chapter outline current response is a closed projection with pending recov
       'reasons',
     ])
     assert.equal(JSON.stringify(current).includes(secret), false)
+    assert.doesNotMatch(
+      JSON.stringify(current.planningAuthority),
+      /activeStoryBlockRef|clientNodeKey|volumeRef|plotRefs/u,
+    )
+
+    const responseWithPlanningAuthority = planningAuthority => ({
+      projectId: 'project-1',
+      lifecycle: 'active',
+      authoritativeChapterNumber: 8,
+      targetPath: '/projects/project-1/write/chapters/8',
+      planningAuthority,
+      canonProjectionAuthority: null,
+      confirmedOutline: null,
+      draft: null,
+      activeSession: null,
+      pendingOperation: null,
+      capabilities: {
+        view: true,
+        createDraft: true,
+        editDraft: false,
+        generate: false,
+        confirm: false,
+        startSession: false,
+      },
+      reasons: [],
+    })
+    const authorityFor = content => ({
+      planningRevisionId: 'planning-r4',
+      revision: 4,
+      contentHash: hash,
+      content,
+    })
+    const malformedCases = [
+      ['object schema version', content => {
+        content.schemaVersion = { apiKey: secret }
+      }],
+      ['object active StoryBlock id', content => {
+        content.activeStoryBlockId = { apiKey: secret }
+      }],
+      ['object aggregate content hash', content => {
+        content.contentHash = { apiKey: secret }
+      }],
+      ['null Volume node', content => {
+        content.volumes = [null]
+      }],
+      ['array Volume node', content => {
+        content.volumes = [[]]
+      }],
+      ['null Plot node', content => {
+        content.plots = [null]
+      }],
+      ['array StoryBlock node', content => {
+        content.storyBlocks = [[]]
+      }],
+      ['null Stage node', content => {
+        content.storyBlocks[0].stages = [null]
+      }],
+      ['array SceneTask node', content => {
+        content.storyBlocks[0].stages[0].sceneTasks = [[]]
+      }],
+      ['missing own Stages collection', content => {
+        delete content.storyBlocks[0].stages
+      }],
+      ['missing own SceneTasks collection', content => {
+        delete content.storyBlocks[0].stages[0].sceneTasks
+      }],
+      ['object string-array field', content => {
+        content.volumes[0].ensembleFocus = { apiKey: secret }
+      }],
+      ['object string-array item', content => {
+        content.volumes[0].forbiddenEvents = [{ apiKey: secret }]
+      }],
+      ['object scalar field', content => {
+        content.volumes[0].title = { apiKey: secret }
+      }],
+    ]
+    for (const [label, mutate] of malformedCases) {
+      const malformed = structuredClone(planningContent)
+      mutate(malformed)
+      global.fetch = async () => jsonResponse(
+        responseWithPlanningAuthority(authorityFor(malformed)),
+      )
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        failure => {
+          assert.equal(failure instanceof TypeError, true, label)
+          assert.equal(String(failure).includes(secret), false, label)
+          return true
+        },
+      )
+    }
+
+    for (const missingField of [
+      'schemaVersion',
+      'activeStoryBlockId',
+      'contentHash',
+      'volumes',
+      'plots',
+      'storyBlocks',
+    ]) {
+      const missingRoot = structuredClone(planningContent)
+      delete missingRoot[missingField]
+      global.fetch = async () => jsonResponse(
+        responseWithPlanningAuthority(authorityFor(missingRoot)),
+      )
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+        `missing own root field ${missingField}`,
+      )
+    }
+
+    for (const missingField of [
+      'planningRevisionId',
+      'revision',
+      'contentHash',
+      'content',
+    ]) {
+      const missingAuthority = authorityFor(planningContent)
+      delete missingAuthority[missingField]
+      global.fetch = async () => jsonResponse(
+        responseWithPlanningAuthority(missingAuthority),
+      )
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+        `missing own authority field ${missingField}`,
+      )
+    }
+    for (const [field, invalidValue] of [
+      ['planningRevisionId', { apiKey: secret }],
+      ['revision', { apiKey: secret }],
+      ['contentHash', { apiKey: secret }],
+      ['content', undefined],
+    ]) {
+      const malformedAuthority = authorityFor(planningContent)
+      malformedAuthority[field] = invalidValue
+      global.fetch = async () => jsonResponse(
+        responseWithPlanningAuthority(malformedAuthority),
+      )
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        failure => {
+          assert.equal(failure instanceof TypeError, true, field)
+          assert.equal(String(failure).includes(secret), false, field)
+          return true
+        },
+      )
+    }
+
+    const expectInheritedFieldsRejected = async (
+      inherited,
+      planningAuthority,
+      label,
+    ) => {
+      const originalDescriptors = new Map()
+      try {
+        for (const [field, value] of Object.entries(inherited)) {
+          originalDescriptors.set(
+            field,
+            Object.getOwnPropertyDescriptor(Object.prototype, field),
+          )
+          Object.defineProperty(Object.prototype, field, {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value,
+          })
+        }
+        global.fetch = async () => jsonResponse(
+          responseWithPlanningAuthority(planningAuthority),
+        )
+        await assert.rejects(
+          () => api.chapterOutlines.current('project-1'),
+          TypeError,
+          label,
+        )
+      } finally {
+        for (const [field, descriptor] of originalDescriptors) {
+          if (descriptor) {
+            Object.defineProperty(Object.prototype, field, descriptor)
+          } else {
+            delete Object.prototype[field]
+          }
+        }
+      }
+    }
+    await expectInheritedFieldsRejected(
+      {
+        schemaVersion: planningContent.schemaVersion,
+        activeStoryBlockId: planningContent.activeStoryBlockId,
+        contentHash: planningContent.contentHash,
+        volumes: planningContent.volumes,
+        plots: planningContent.plots,
+        storyBlocks: planningContent.storyBlocks,
+      },
+      authorityFor({}),
+      'inherited Planning content fields',
+    )
+    await expectInheritedFieldsRejected(
+      {
+        planningRevisionId: 'planning-r4',
+        revision: 4,
+        contentHash: hash,
+        content: planningContent,
+      },
+      {},
+      'inherited Planning authority fields',
+    )
+    const inheritedStages = structuredClone(planningContent)
+    delete inheritedStages.storyBlocks[0].stages
+    await expectInheritedFieldsRejected(
+      {
+        stages: planningContent.storyBlocks[0].stages,
+      },
+      authorityFor(inheritedStages),
+      'inherited StoryBlock stages',
+    )
+    const inheritedSceneTasks = structuredClone(planningContent)
+    delete inheritedSceneTasks.storyBlocks[0].stages[0].sceneTasks
+    await expectInheritedFieldsRejected(
+      {
+        sceneTasks: planningContent.storyBlocks[0].stages[0].sceneTasks,
+      },
+      authorityFor(inheritedSceneTasks),
+      'inherited Stage sceneTasks',
+    )
+
+    const inheritedAuthorityDescriptors = new Map()
+    const inheritedProjection = {
+      canonRevision: 3,
+      projectionRevision: 3,
+      contentHash: hash,
+      synchronized: true,
+    }
+    const outlineContent = {
+      schemaVersion: 'chapter-outline-draft-v1',
+      volumeRef: { id: 'volume-1', revision: 2, contentHash: hash },
+      storyBlockRef: { id: 'block-1', revision: 4, contentHash: hash },
+      stageRefs: [{ id: 'stage-1', revision: 5, contentHash: hash }],
+      sceneTaskRefs: [{ id: 'task-1', revision: 6, contentHash: hash }],
+      chapterGoal: '取得残卷',
+      expectedCharacters: ['沈砚'],
+      continuation: ['承接追兵'],
+      plannedTasks: ['潜入县衙'],
+      scenes: ['档案库'],
+      forbiddenEarlyEvents: ['不揭示残卷来源'],
+    }
+    const confirmedOutlineFixture = {
+      projectId: 'project-1',
+      chapterNumber: 8,
+      outlineRevisionId: 'outline-r1',
+      revision: 1,
+      parentRevision: 0,
+      contentHash: hash,
+      content: outlineContent,
+      basis: {
+        planningAuthority: authorityFor(planningContent),
+        canonProjectionAuthority: inheritedProjection,
+      },
+      status: 'confirmed',
+      reason: 'currentOutlineHead',
+    }
+    const draftFixture = {
+      projectId: 'project-1',
+      chapterNumber: 8,
+      draftId: 'outline-d1',
+      baseHeadRevision: 1,
+      draftRevision: 1,
+      contentHash: hash,
+      content: outlineContent,
+      basis: {
+        planningAuthority: authorityFor(planningContent),
+        canonProjectionAuthority: inheritedProjection,
+      },
+      status: 'current',
+    }
+    try {
+      for (const [field, value] of Object.entries({
+        planningAuthority: authorityFor(planningContent),
+        canonProjectionAuthority: inheritedProjection,
+        basis: draftFixture.basis,
+        content: outlineContent,
+        confirmedOutline: confirmedOutlineFixture,
+        draft: draftFixture,
+      })) {
+        inheritedAuthorityDescriptors.set(
+          field,
+          Object.getOwnPropertyDescriptor(Object.prototype, field),
+        )
+        Object.defineProperty(Object.prototype, field, {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value,
+        })
+      }
+      global.fetch = async () => jsonResponse({
+        projectId: 'project-1',
+        lifecycle: 'active',
+        authoritativeChapterNumber: 8,
+        targetPath: '/projects/project-1/write/chapters/8',
+        planningAuthority: null,
+        canonProjectionAuthority: null,
+        confirmedOutline: {
+          ...confirmedOutlineFixture,
+          content: null,
+          basis: {
+            planningAuthority: null,
+            canonProjectionAuthority: null,
+          },
+        },
+        draft: {
+          ...draftFixture,
+          content: null,
+          basis: {
+            planningAuthority: null,
+            canonProjectionAuthority: null,
+          },
+        },
+        activeSession: null,
+        pendingOperation: null,
+        capabilities: {
+          view: true,
+          createDraft: false,
+          editDraft: true,
+          generate: true,
+          confirm: true,
+          startSession: false,
+        },
+        reasons: [],
+      })
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+      )
+
+      global.fetch = async () => jsonResponse({
+        projectId: 'project-1',
+        lifecycle: 'active',
+        authoritativeChapterNumber: 8,
+        targetPath: '/projects/project-1/write/chapters/8',
+        activeSession: null,
+        pendingOperation: null,
+        capabilities: {
+          view: true,
+          createDraft: true,
+          editDraft: false,
+          generate: false,
+          confirm: false,
+          startSession: false,
+        },
+        reasons: [],
+      })
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+      )
+    } finally {
+      for (const [field, descriptor] of inheritedAuthorityDescriptors) {
+        if (descriptor) {
+          Object.defineProperty(Object.prototype, field, descriptor)
+        } else {
+          delete Object.prototype[field]
+        }
+      }
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('chapter outline projection and editable content are strict own-only subtrees', async () => {
+  const originalFetch = global.fetch
+  const secret = 'MUST-NOT-CROSS-OUTLINE-SUBTREE'
+  const hash = 'b'.repeat(64)
+  const projection = {
+    canonRevision: 3,
+    projectionRevision: 3,
+    contentHash: hash,
+    synchronized: true,
+  }
+  const content = {
+    schemaVersion: 'chapter-outline-draft-v1',
+    volumeRef: { id: 'volume-1', revision: 2, contentHash: hash },
+    storyBlockRef: { id: 'block-1', revision: 4, contentHash: hash },
+    stageRefs: [{ id: 'stage-1', revision: 5, contentHash: hash }],
+    sceneTaskRefs: [{ id: 'task-1', revision: 6, contentHash: hash }],
+    chapterGoal: '取得残卷',
+    expectedCharacters: ['沈砚'],
+    continuation: ['承接追兵'],
+    plannedTasks: ['潜入县衙'],
+    scenes: ['档案库'],
+    forbiddenEarlyEvents: ['不揭示残卷来源'],
+  }
+  const planningAuthority = {
+    planningRevisionId: 'planning-r3',
+    revision: 3,
+    contentHash: hash,
+    content: null,
+  }
+  const basis = canonProjectionAuthority => ({
+    planningAuthority,
+    canonProjectionAuthority,
+  })
+  const draft = (draftContent, draftBasis = basis(projection)) => ({
+    projectId: 'project-1',
+    chapterNumber: 8,
+    draftId: 'outline-d1',
+    baseHeadRevision: 1,
+    draftRevision: 1,
+    contentHash: hash,
+    content: draftContent,
+    basis: draftBasis,
+    status: 'current',
+  })
+  const confirmed = (revisionContent, revisionBasis = basis(projection)) => ({
+    projectId: 'project-1',
+    chapterNumber: 8,
+    outlineRevisionId: 'outline-r1',
+    revision: 1,
+    parentRevision: 0,
+    contentHash: hash,
+    content: revisionContent,
+    basis: revisionBasis,
+    status: 'confirmed',
+    reason: 'currentOutlineHead',
+  })
+  const state = overrides => ({
+    projectId: 'project-1',
+    lifecycle: 'active',
+    authoritativeChapterNumber: 8,
+    targetPath: '/projects/project-1/write/chapters/8',
+    planningAuthority: null,
+    canonProjectionAuthority: null,
+    confirmedOutline: null,
+    draft: null,
+    activeSession: null,
+    pendingOperation: null,
+    capabilities: {
+      view: true,
+      createDraft: true,
+      editDraft: false,
+      generate: false,
+      confirm: false,
+      startSession: false,
+    },
+    reasons: [],
+    ...overrides,
+  })
+  const withPrototype = async (properties, run) => {
+    const descriptors = new Map()
+    try {
+      for (const [field, value] of Object.entries(properties)) {
+        descriptors.set(
+          field,
+          Object.getOwnPropertyDescriptor(Object.prototype, field),
+        )
+        Object.defineProperty(Object.prototype, field, {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value,
+        })
+      }
+      await run()
+    } finally {
+      for (const [field, descriptor] of descriptors) {
+        if (descriptor) {
+          Object.defineProperty(Object.prototype, field, descriptor)
+        } else {
+          delete Object.prototype[field]
+        }
+      }
+    }
+  }
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    global.fetch = async () => jsonResponse(state({
+      canonProjectionAuthority: {
+        ...projection,
+        apiKey: secret,
+      },
+      confirmedOutline: confirmed(content),
+      draft: draft({
+        ...content,
+        apiKey: secret,
+      }),
+    }))
+    const valid = await api.chapterOutlines.current('project-1')
+    assert.deepEqual(valid.canonProjectionAuthority, projection)
+    assert.deepEqual(valid.confirmedOutline.content, content)
+    assert.deepEqual(valid.draft.content, content)
+    assert.equal(JSON.stringify(valid).includes(secret), false)
+
+    await withPrototype(projection, async () => {
+      global.fetch = async () => jsonResponse(state({
+        canonProjectionAuthority: {},
+      }))
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+      )
+      global.fetch = async () => jsonResponse(state({
+        draft: draft({}, basis({})),
+      }))
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+      )
+    })
+
+    await withPrototype({
+      chapterGoal: '原型污染目标',
+      expectedCharacters: ['原型污染人物'],
+    }, async () => {
+      global.fetch = async () => jsonResponse(state({
+        confirmedOutline: confirmed({}),
+        draft: draft({}),
+      }))
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+      )
+    })
+
+    for (const [label, malformedProjection] of [
+      ['missing projection field', {
+        canonRevision: 3,
+        projectionRevision: 3,
+        contentHash: hash,
+      }],
+      ['object projection revision', {
+        ...projection,
+        projectionRevision: { apiKey: secret },
+      }],
+      ['object projection synchronized', {
+        ...projection,
+        synchronized: { apiKey: secret },
+      }],
+    ]) {
+      global.fetch = async () => jsonResponse(state({
+        canonProjectionAuthority: malformedProjection,
+      }))
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        failure => {
+          assert.equal(failure instanceof TypeError, true, label)
+          assert.equal(String(failure).includes(secret), false, label)
+          return true
+        },
+      )
+    }
+
+    const malformedContentCases = [
+      ['missing ref fields', value => {
+        value.volumeRef = {}
+      }],
+      ['object ref id', value => {
+        value.volumeRef.id = { apiKey: secret }
+      }],
+      ['null ref array item', value => {
+        value.stageRefs = [null]
+      }],
+      ['array ref array item', value => {
+        value.sceneTaskRefs = [[]]
+      }],
+      ['object ref array', value => {
+        value.stageRefs = { apiKey: secret }
+      }],
+      ['object string-array item', value => {
+        value.expectedCharacters = [{ apiKey: secret }]
+      }],
+      ['object scalar', value => {
+        value.chapterGoal = { apiKey: secret }
+      }],
+    ]
+    for (const [label, mutate] of malformedContentCases) {
+      const malformed = structuredClone(content)
+      mutate(malformed)
+      global.fetch = async () => jsonResponse(state({
+        draft: draft(malformed),
+      }))
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        failure => {
+          assert.equal(failure instanceof TypeError, true, label)
+          assert.equal(String(failure).includes(secret), false, label)
+          return true
+        },
+      )
+    }
+
+    await withPrototype({
+      id: 'volume-1',
+      revision: 2,
+      contentHash: hash,
+    }, async () => {
+      const inheritedRef = structuredClone(content)
+      inheritedRef.volumeRef = {}
+      global.fetch = async () => jsonResponse(state({
+        draft: draft(inheritedRef),
+      }))
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+      )
+    })
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('chapter outline state envelope is one strict own-only formal DTO', async () => {
+  const originalFetch = global.fetch
+  const secret = 'MUST-NOT-CROSS-OUTLINE-STATE'
+  const hash = 'c'.repeat(64)
+  const projection = {
+    canonRevision: 4,
+    projectionRevision: 4,
+    contentHash: hash,
+    synchronized: true,
+  }
+  const planningAuthority = {
+    planningRevisionId: 'planning-r4',
+    revision: 4,
+    contentHash: hash,
+    content: null,
+  }
+  const basis = {
+    planningAuthority,
+    canonProjectionAuthority: projection,
+  }
+  const content = {
+    schemaVersion: 'chapter-outline-draft-v1',
+    volumeRef: null,
+    storyBlockRef: null,
+    stageRefs: [],
+    sceneTaskRefs: [],
+    chapterGoal: '承接上一章',
+    expectedCharacters: [],
+    continuation: [],
+    plannedTasks: [],
+    scenes: [],
+    forbiddenEarlyEvents: [],
+  }
+  const draft = {
+    projectId: 'project-1',
+    chapterNumber: 8,
+    draftId: 'outline-d1',
+    baseHeadRevision: 1,
+    draftRevision: 2,
+    contentHash: hash,
+    content,
+    basis,
+    status: 'current',
+  }
+  const revision = {
+    projectId: 'project-1',
+    chapterNumber: 8,
+    outlineRevisionId: 'outline-r1',
+    revision: 1,
+    parentRevision: 0,
+    contentHash: hash,
+    content,
+    basis,
+    status: 'current',
+    reason: 'currentOutlineHead',
+  }
+  const activeSession = {
+    chapterSessionId: 'session-1',
+    chapterNumber: 8,
+    status: 'active',
+    planningRevisionId: 'planning-r4',
+    planningRevision: 4,
+    planningHash: hash,
+    outlineRevisionId: 'outline-r1',
+    outlineRevision: 1,
+    outlineHash: hash,
+  }
+  const pendingOperation = {
+    operationId: '11111111-1111-4111-8111-111111111111',
+    status: 'pending',
+  }
+  const capabilities = {
+    view: true,
+    createDraft: false,
+    editDraft: true,
+    generate: true,
+    confirm: true,
+    startSession: false,
+  }
+  const activeState = {
+    projectId: 'project-1',
+    lifecycle: 'active',
+    authoritativeChapterNumber: 8,
+    targetPath: '/projects/project-1/write/chapters/8',
+    planningAuthority,
+    canonProjectionAuthority: projection,
+    confirmedOutline: revision,
+    draft,
+    activeSession,
+    pendingOperation,
+    capabilities,
+    reasons: ['generationPending'],
+  }
+  const withPrototype = async (properties, run) => {
+    const descriptors = new Map()
+    try {
+      for (const [field, value] of Object.entries(properties)) {
+        descriptors.set(
+          field,
+          Object.getOwnPropertyDescriptor(Object.prototype, field),
+        )
+        Object.defineProperty(Object.prototype, field, {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value,
+        })
+      }
+      await run()
+    } finally {
+      for (const [field, descriptor] of descriptors) {
+        if (descriptor) {
+          Object.defineProperty(Object.prototype, field, descriptor)
+        } else {
+          delete Object.prototype[field]
+        }
+      }
+    }
+  }
+  const expectRejected = async (api, value, label) => {
+    global.fetch = async () => jsonResponse(value)
+    await assert.rejects(
+      () => api.chapterOutlines.current('project-1'),
+      failure => {
+        assert.equal(failure instanceof TypeError, true, label)
+        assert.equal(String(failure).includes(secret), false, label)
+        return true
+      },
+    )
+  }
+
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    global.fetch = async () => jsonResponse(activeState)
+    const active = await api.chapterOutlines.current('project-1')
+    assert.deepEqual(active, activeState)
+
+    const archivedState = {
+      ...activeState,
+      lifecycle: 'archived',
+      planningAuthority: null,
+      canonProjectionAuthority: null,
+      confirmedOutline: null,
+      draft: null,
+      activeSession: null,
+      pendingOperation: null,
+      capabilities: {
+        view: true,
+        createDraft: false,
+        editDraft: false,
+        generate: false,
+        confirm: false,
+        startSession: false,
+      },
+      reasons: ['projectArchived'],
+    }
+    global.fetch = async () => jsonResponse(archivedState)
+    assert.deepEqual(
+      await api.chapterOutlines.current('project-1'),
+      archivedState,
+    )
+
+    await withPrototype(activeState, async () => {
+      await expectRejected(api, {}, 'inherited complete state')
+    })
+
+    const inheritedChildFields = {
+      ...capabilities,
+      ...pendingOperation,
+      ...activeSession,
+      ...draft,
+      ...revision,
+      ...basis,
+    }
+    await withPrototype(inheritedChildFields, async () => {
+      for (const [label, patch] of [
+        ['empty capabilities', { capabilities: {} }],
+        ['empty pending operation', { pendingOperation: {} }],
+        ['empty active session', { activeSession: {} }],
+        ['empty draft', { draft: {} }],
+        ['empty confirmed revision', { confirmedOutline: {} }],
+        ['empty basis', { draft: { ...draft, basis: {} } }],
+      ]) {
+        await expectRejected(api, { ...activeState, ...patch }, label)
+      }
+    })
+
+    for (const [label, mutate] of [
+      ['object project id', value => {
+        value.projectId = { apiKey: secret }
+      }],
+      ['object reasons item', value => {
+        value.reasons = [{ apiKey: secret }]
+      }],
+      ['object capability', value => {
+        value.capabilities.createDraft = { apiKey: secret }
+      }],
+      ['object pending id', value => {
+        value.pendingOperation.operationId = { apiKey: secret }
+      }],
+      ['object session hash', value => {
+        value.activeSession.planningHash = { apiKey: secret }
+      }],
+      ['object draft id', value => {
+        value.draft.draftId = { apiKey: secret }
+      }],
+      ['object revision reason', value => {
+        value.confirmedOutline.reason = { apiKey: secret }
+      }],
+    ]) {
+      const malformed = structuredClone(activeState)
+      mutate(malformed)
+      await expectRejected(api, malformed, label)
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('chapter outline formal artifacts require full content and non-null basis authorities', async () => {
+  const originalFetch = global.fetch
+  const hash = 'd'.repeat(64)
+  const planningAuthority = {
+    planningRevisionId: 'planning-r4',
+    revision: 4,
+    contentHash: hash,
+    content: null,
+  }
+  const projectionAuthority = {
+    canonRevision: 4,
+    projectionRevision: 4,
+    contentHash: hash,
+    synchronized: true,
+  }
+  const content = {
+    schemaVersion: 'chapter-outline-draft-v1',
+    volumeRef: null,
+    storyBlockRef: null,
+    stageRefs: [],
+    sceneTaskRefs: [],
+    chapterGoal: '承接上一章',
+    expectedCharacters: [],
+    continuation: [],
+    plannedTasks: [],
+    scenes: [],
+    forbiddenEarlyEvents: [],
+  }
+  const draft = {
+    projectId: 'project-1',
+    chapterNumber: 8,
+    draftId: 'outline-d1',
+    baseHeadRevision: 1,
+    draftRevision: 2,
+    contentHash: hash,
+    content,
+    basis: {
+      planningAuthority,
+      canonProjectionAuthority: projectionAuthority,
+    },
+    status: 'current',
+  }
+  const state = draftValue => formalChapterOutlineState({
+    authoritativeChapterNumber: 8,
+    targetPath: '/projects/project-1/write/chapters/8',
+    planningAuthority,
+    canonProjectionAuthority: projectionAuthority,
+    draft: draftValue,
+    capabilities: {
+      view: true,
+      createDraft: false,
+      editDraft: true,
+      generate: true,
+      confirm: true,
+      startSession: false,
+    },
+  })
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    global.fetch = async () => jsonResponse(state(draft))
+    assert.deepEqual(
+      (await api.chapterOutlines.current('project-1')).draft,
+      draft,
+    )
+
+    const malformed = [
+      ['null response content', { ...draft, content: null }],
+      ['empty response content', { ...draft, content: {} }],
+      ['missing response content field', {
+        ...draft,
+        content: Object.fromEntries(
+          Object.entries(content).filter(([field]) => field !== 'scenes'),
+        ),
+      }],
+      ['null Planning basis authority', {
+        ...draft,
+        basis: {
+          ...draft.basis,
+          planningAuthority: null,
+        },
+      }],
+      ['null Canon basis authority', {
+        ...draft,
+        basis: {
+          ...draft.basis,
+          canonProjectionAuthority: null,
+        },
+      }],
+    ]
+    for (const [label, malformedDraft] of malformed) {
+      global.fetch = async () => jsonResponse(state(malformedDraft))
+      await assert.rejects(
+        () => api.chapterOutlines.current('project-1'),
+        TypeError,
+        label,
+      )
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('chapter outline mutation and history responses cross one closed formal boundary', async () => {
+  const originalFetch = global.fetch
+  const secret = 'MUST-NOT-CROSS-OUTLINE-MUTATION'
+  const hash = 'e'.repeat(64)
+  const planningAuthority = {
+    planningRevisionId: 'planning-r5',
+    revision: 5,
+    contentHash: hash,
+    content: null,
+    apiKey: secret,
+  }
+  const projectionAuthority = {
+    canonRevision: 5,
+    projectionRevision: 5,
+    contentHash: hash,
+    synchronized: true,
+    apiKey: secret,
+  }
+  const content = {
+    schemaVersion: 'chapter-outline-draft-v1',
+    volumeRef: null,
+    storyBlockRef: null,
+    stageRefs: [],
+    sceneTaskRefs: [],
+    chapterGoal: '承接上一章',
+    expectedCharacters: [],
+    continuation: [],
+    plannedTasks: [],
+    scenes: [],
+    forbiddenEarlyEvents: [],
+    apiKey: secret,
+  }
+  const expectedContent = Object.fromEntries(
+    Object.entries(content).filter(([field]) => field !== 'apiKey'),
+  )
+  const draft = {
+    projectId: 'project-1',
+    chapterNumber: 8,
+    draftId: 'outline-d1',
+    baseHeadRevision: 1,
+    draftRevision: 2,
+    contentHash: hash,
+    content,
+    basis: {
+      planningAuthority,
+      canonProjectionAuthority: projectionAuthority,
+      apiKey: secret,
+    },
+    status: 'current',
+    apiKey: secret,
+  }
+  const revision = {
+    projectId: 'project-1',
+    chapterNumber: 8,
+    outlineRevisionId: 'outline-r2',
+    revision: 2,
+    parentRevision: 1,
+    contentHash: hash,
+    content,
+    basis: draft.basis,
+    apiKey: secret,
+  }
+  const displayRevision = {
+    ...revision,
+    status: 'current',
+    reason: 'currentOutlineHead',
+  }
+  const expectedBasis = {
+    planningAuthority: {
+      planningRevisionId: 'planning-r5',
+      revision: 5,
+      contentHash: hash,
+      content: null,
+    },
+    canonProjectionAuthority: {
+      canonRevision: 5,
+      projectionRevision: 5,
+      contentHash: hash,
+      synchronized: true,
+    },
+  }
+  const expectedDraft = {
+    projectId: 'project-1',
+    chapterNumber: 8,
+    draftId: 'outline-d1',
+    baseHeadRevision: 1,
+    draftRevision: 2,
+    contentHash: hash,
+    content: expectedContent,
+    basis: expectedBasis,
+    status: 'current',
+  }
+  const expectedRevision = {
+    projectId: 'project-1',
+    chapterNumber: 8,
+    outlineRevisionId: 'outline-r2',
+    revision: 2,
+    parentRevision: 1,
+    contentHash: hash,
+    content: expectedContent,
+    basis: expectedBasis,
+  }
+  const responses = [
+    draft,
+    draft,
+    revision,
+    {
+      items: [displayRevision],
+      nextCursor: { apiKey: secret },
+      apiKey: secret,
+    },
+  ]
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    global.fetch = async () => jsonResponse(responses.shift())
+    const created = await api.chapterOutlines.createDraft('project-1', 8)
+    const saved = await api.chapterOutlines.saveDraft(
+      'project-1',
+      8,
+      'outline-d1',
+      {
+        expectedDraftRevision: 1,
+        expectedDraftHash: hash,
+        content: {},
+      },
+    )
+    const confirmed = await api.chapterOutlines.confirmDraft(
+      'project-1',
+      8,
+      'outline-d1',
+      {
+        expectedDraftRevision: 2,
+        expectedDraftHash: hash,
+        expectedHeadRevision: 1,
+        idempotencyKey: 'outline-confirm-2',
+      },
+    )
+    const history = await api.chapterOutlines.history('project-1', 8)
+
+    assert.deepEqual(created, expectedDraft)
+    assert.deepEqual(saved, expectedDraft)
+    assert.deepEqual(confirmed, expectedRevision)
+    assert.deepEqual(history, {
+      items: [{
+        ...expectedRevision,
+        status: 'current',
+        reason: 'currentOutlineHead',
+      }],
+    })
+    assert.equal(
+      JSON.stringify({ created, saved, confirmed, history }).includes(secret),
+      false,
+    )
+
+    for (const [label, method, body] of [
+      ['malformed create response', 'createDraft', {
+        ...draft,
+        content: null,
+      }],
+      ['malformed save response', 'saveDraft', {
+        ...draft,
+        basis: {
+          ...draft.basis,
+          canonProjectionAuthority: null,
+        },
+      }],
+      ['malformed confirm response', 'confirmDraft', {
+        ...revision,
+        content: {},
+      }],
+      ['malformed history response', 'history', { items: {} }],
+    ]) {
+      global.fetch = async () => jsonResponse(body)
+      const request = method === 'createDraft'
+        ? () => api.chapterOutlines.createDraft('project-1', 8)
+        : method === 'saveDraft'
+          ? () => api.chapterOutlines.saveDraft(
+            'project-1',
+            8,
+            'outline-d1',
+            {
+              expectedDraftRevision: 1,
+              expectedDraftHash: hash,
+              content: {},
+            },
+          )
+          : method === 'confirmDraft'
+            ? () => api.chapterOutlines.confirmDraft(
+              'project-1',
+              8,
+              'outline-d1',
+              {
+                expectedDraftRevision: 2,
+                expectedDraftHash: hash,
+                expectedHeadRevision: 1,
+                idempotencyKey: 'outline-confirm-2',
+              },
+            )
+            : () => api.chapterOutlines.history('project-1', 8)
+      await assert.rejects(request, TypeError, label)
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, 'items')
+    try {
+      Object.defineProperty(Object.prototype, 'items', {
+        configurable: true,
+        enumerable: false,
+        writable: true,
+        value: [displayRevision],
+      })
+      global.fetch = async () => jsonResponse({})
+      await assert.rejects(
+        () => api.chapterOutlines.history('project-1', 8),
+        TypeError,
+      )
+    } finally {
+      if (descriptor) {
+        Object.defineProperty(Object.prototype, 'items', descriptor)
+      } else {
+        delete Object.prototype.items
+      }
+    }
   } finally {
     global.fetch = originalFetch
   }
@@ -1568,14 +2945,40 @@ test('only chapter outline generation receives the model-length timeout', async 
     delays.push(delay)
     return originalSetTimeout(callback, delay, ...args)
   }
-  global.fetch = async () => jsonResponse({
-    operationId: '11111111-1111-4111-8111-111111111111',
-    status: 'pending',
-    failureCode: null,
-    model: { providerId: 'provider-1', modelName: 'outline-model' },
-    loaded: false,
-    loadedDraftRevision: null,
-  })
+  global.fetch = async (url, options) => {
+    const pathname = new URL(url).pathname
+    if (
+      pathname.endsWith('/chapter-outlines/current')
+      || (
+        options.method === 'GET'
+        && pathname.endsWith('/chapter-outlines/1')
+      )
+    ) {
+      return jsonResponse(formalChapterOutlineState())
+    }
+    if (pathname.endsWith('/history')) {
+      return jsonResponse({ items: [] })
+    }
+    if (pathname.endsWith('/confirm')) {
+      return jsonResponse(formalChapterOutlineRevision({
+        includeDisplay: false,
+      }))
+    }
+    if (
+      pathname.endsWith('/drafts')
+      || options.method === 'PUT'
+    ) {
+      return jsonResponse(formalChapterOutlineDraft())
+    }
+    return jsonResponse({
+      operationId: '11111111-1111-4111-8111-111111111111',
+      status: 'pending',
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'outline-model' },
+      loaded: false,
+      loadedDraftRevision: null,
+    })
+  }
   try {
     const { api } = await import('../../src/api/db/client.js')
     await api.chapterOutlines.current('project-1')

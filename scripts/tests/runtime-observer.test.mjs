@@ -38,6 +38,52 @@ function fakeResponse({
   }
 }
 
+test('API response body capture fails closed after its bounded read timeout', async () => {
+  const { captureApiResponse } = await import('../../frontend/e2e/runtime-observer.mjs')
+  assert.equal(typeof captureApiResponse, 'function')
+  const response = fakeResponse({
+    text: async () => new Promise(() => {}),
+  })
+
+  const captured = await captureApiResponse(response, {
+    url: response.url(),
+    method: 'GET',
+    status: 200,
+  }, 5)
+
+  assert.equal(captured.body, '')
+  assert.equal(captured.bodyReadError, 'response body read timed out')
+})
+
+test('request and response header capture fail closed after bounded read timeouts', async () => {
+  const { captureApiResponse, captureRequest } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  assert.equal(typeof captureRequest, 'function')
+  const request = {
+    allHeaders: async () => new Promise(() => {}),
+    postData: () => '',
+  }
+  const response = fakeResponse({
+    allHeaders: async () => new Promise(() => {}),
+  })
+
+  const [capturedRequest, capturedResponse] = await Promise.all([
+    captureRequest(request, {
+      url: 'http://127.0.0.1:5173/api/projects/project-1',
+      method: 'GET',
+    }, 5),
+    captureApiResponse(response, {
+      url: response.url(),
+      method: 'GET',
+      status: 200,
+    }, 5),
+  ])
+
+  assert.equal(capturedRequest.headersReadError, 'request headers read timed out')
+  assert.equal(capturedResponse.headersReadError, 'response headers read timed out')
+})
+
 test('observer keeps listeners through DOM capture, drains again, then detaches', async () => {
   const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
   const page = new FakePage()
@@ -91,7 +137,14 @@ test('observer keeps listeners through DOM capture, drains again, then detaches'
   assert.deepEqual(evidence.requestFailures, [
     'GET http://127.0.0.1:5173/content-timer content timer request failure',
   ])
-  for (const event of ['response', 'console', 'pageerror', 'requestfailed']) {
+  for (const event of [
+    'request',
+    'requestfinished',
+    'response',
+    'console',
+    'pageerror',
+    'requestfailed',
+  ]) {
     assert.equal(page.listenerCount(event), 0)
   }
 })
@@ -115,6 +168,132 @@ test('observer can settle captured bodies before a navigation boundary', async (
   assert.equal(evidence.apiResponses.length, 1)
   assert.equal(evidence.apiResponses[0].body, '{"id":"project-1"}')
   assert.equal(evidence.apiResponses[0].bodyReadError, '')
+})
+
+test('observer settle includes API activity that starts on the next event-loop turn', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const observer = observeRuntime(page, { quietWindowMs: 5 })
+  let bodyCaptured = false
+  const request = {
+    method: () => 'GET',
+    url: () => 'http://127.0.0.1:8000/api/projects/project-1',
+    allHeaders: async () => ({}),
+    postData: () => '',
+  }
+
+  setTimeout(() => {
+    page.emit('request', request)
+    page.emit('response', fakeResponse({
+      url: request.url(),
+      text: async () => {
+        bodyCaptured = true
+        return '{"id":"project-1"}'
+      },
+    }))
+    setTimeout(() => page.emit('requestfinished', request), 1)
+  }, 0)
+
+  await observer.settle()
+
+  assert.equal(bodyCaptured, true)
+  const evidence = await observer.finish()
+  assert.equal(evidence.apiResponses[0].bodyReadError, '')
+})
+
+test('observer settle deadline bounds a stalled request evidence drain', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const observer = observeRuntime(page, {
+    quietWindowMs: 1,
+    settleTimeoutMs: 5,
+  })
+  page.emit('request', {
+    method: () => 'GET',
+    url: () => 'http://127.0.0.1:8000/api/projects/project-1',
+    allHeaders: async () => new Promise(() => {}),
+    postData: () => '',
+  })
+  const startedAt = Date.now()
+
+  await assert.rejects(
+    observer.settle(),
+    /runtime evidence did not settle before its deadline/u,
+  )
+
+  assert.ok(Date.now() - startedAt < 250)
+  page.removeAllListeners()
+})
+
+test('observer settle rejects when an API request never emits a terminal event', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const observer = observeRuntime(page, {
+    quietWindowMs: 1,
+    settleTimeoutMs: 5,
+  })
+  page.emit('request', {
+    method: () => 'GET',
+    url: () => 'http://127.0.0.1:8000/api/projects/project-1',
+    allHeaders: async () => ({}),
+    postData: () => '',
+  })
+  const startedAt = Date.now()
+
+  await assert.rejects(
+    observer.settle(),
+    /runtime evidence did not settle before its deadline/u,
+  )
+
+  assert.ok(Date.now() - startedAt < 250)
+  page.removeAllListeners()
+})
+
+test('failed API requests leave no active request that can block settlement', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const observer = observeRuntime(page, {
+    quietWindowMs: 1,
+    settleTimeoutMs: 100,
+  })
+  const request = {
+    method: () => 'GET',
+    url: () => 'http://127.0.0.1:8000/api/projects/project-1',
+    allHeaders: async () => ({}),
+    postData: () => '',
+    failure: () => ({ errorText: 'connection reset' }),
+  }
+  page.emit('request', request)
+  setTimeout(() => page.emit('requestfailed', request), 0)
+
+  await observer.settle()
+  const evidence = await observer.finish()
+
+  assert.deepEqual(evidence.requestFailures, [
+    'GET http://127.0.0.1:8000/api/projects/project-1 connection reset',
+  ])
+})
+
+test('navigation boundary waits for network idle before settling runtime evidence', async () => {
+  const { settleNavigationBoundary } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  assert.equal(typeof settleNavigationBoundary, 'function')
+  const calls = []
+  const page = {
+    async waitForLoadState(state) {
+      calls.push(`page:${state}`)
+    },
+  }
+  const runtime = {
+    async settle() {
+      calls.push('runtime:settle')
+    },
+  }
+
+  await settleNavigationBoundary(page, runtime)
+
+  assert.deepEqual(calls, ['page:networkidle', 'runtime:settle'])
 })
 
 test('observer records fail-closed header body response console page and request evidence', async () => {
@@ -150,6 +329,91 @@ test('observer records fail-closed header body response console page and request
   assert.deepEqual(evidence.requestFailures, [
     'GET http://127.0.0.1:5173/missing connection closed',
   ])
+})
+
+test('observer allows only exact owned loopback origins and accounts every HTTP request', async () => {
+  const {
+    assertRuntimeEvidenceHealthy,
+    observeRuntime,
+  } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const allowedOrigin = 'http://127.0.0.1:5173'
+  const observer = observeRuntime(page, {
+    allowedOrigins: [allowedOrigin],
+    quietWindowMs: 1,
+  })
+  const request = {
+    method: () => 'GET',
+    url: () => `${allowedOrigin}/assets/index.js`,
+    allHeaders: async () => ({}),
+    postData: () => '',
+  }
+  page.emit('request', request)
+  page.emit('response', fakeResponse({
+    url: request.url(),
+    request: () => request,
+  }))
+  page.emit('requestfinished', request)
+
+  const evidence = await observer.finish()
+
+  assert.deepEqual(assertRuntimeEvidenceHealthy(evidence), {
+    healthy: true,
+    networkAccess: {
+      httpRequestCount: 1,
+      allowedRequestCount: 1,
+      forbiddenRequestCount: 0,
+      forbiddenResponseCount: 0,
+    },
+  })
+})
+
+test('successful external HTTP responses fail closed with secret-safe auditable counts', async () => {
+  const {
+    assertRuntimeEvidenceHealthy,
+    observeRuntime,
+    publicRuntimeDiagnostic,
+  } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const observer = observeRuntime(page, {
+    allowedOrigins: ['http://127.0.0.1:5173'],
+    quietWindowMs: 1,
+  })
+  const secret = 'external-query-secret-must-not-be-rendered'
+  const request = {
+    method: () => 'GET',
+    url: () => `https://example.invalid/private?token=${secret}`,
+    allHeaders: async () => ({}),
+    postData: () => '',
+  }
+  page.emit('request', request)
+  page.emit('response', fakeResponse({
+    url: request.url(),
+    status: 204,
+    request: () => request,
+  }))
+  page.emit('requestfinished', request)
+
+  const evidence = await observer.finish()
+  let rejection = null
+  try {
+    assertRuntimeEvidenceHealthy(evidence)
+  } catch (error) {
+    rejection = error
+  }
+
+  assert.equal(rejection?.message, 'Runtime evidence contains forbidden HTTP access')
+  assert.doesNotMatch(rejection?.message || '', new RegExp(secret, 'u'))
+  assert.deepEqual(publicRuntimeDiagnostic(evidence).networkAccess, {
+    httpRequestCount: 1,
+    allowedRequestCount: 0,
+    forbiddenRequestCount: 1,
+    forbiddenResponseCount: 1,
+  })
+  assert.doesNotMatch(
+    JSON.stringify(publicRuntimeDiagnostic(evidence)),
+    new RegExp(secret, 'u'),
+  )
 })
 
 test('observer excludes Vite source paths containing api and accepts cache revalidation', async () => {
@@ -422,6 +686,24 @@ test('exact write allowlists reject query and hash variants of an allowed route'
       /unmatched/i,
     )
   }
+
+  const secret = 'query-secret-must-not-be-rendered'
+  let rejection = null
+  try {
+    assertExactWrites({
+      apiResponses: [{
+        method: 'PUT',
+        status: 200,
+        url: `http://127.0.0.1:8000${providerPath}?token=${secret}`,
+      }],
+    }, [rule])
+  } catch (error) {
+    rejection = error
+  }
+  assert.match(rejection?.message || '', /unmatched/i)
+  assert.match(rejection?.message || '', new RegExp(providerPath, 'u'))
+  assert.doesNotMatch(rejection?.message || '', new RegExp(secret, 'u'))
+  assert.doesNotMatch(rejection?.message || '', /\?/u)
 })
 
 test('write allowlist rejects invalid rules even when no writes occur', async () => {
@@ -462,6 +744,178 @@ test('runtime secret scan returns only a match count and covers all evidence sur
   assert.equal(result.matchCount, 10)
   assert.deepEqual(Object.keys(result), ['matchCount'])
   assert.equal(JSON.stringify(result).includes(secret), false)
+})
+
+test('private evidence rejection and public diagnostics never echo captured secrets', async () => {
+  const {
+    assertNoPrivateEvidenceMarkers,
+    publicRuntimeDiagnostic,
+  } = await import('../../frontend/e2e/runtime-observer.mjs')
+  assert.equal(typeof assertNoPrivateEvidenceMarkers, 'function')
+  assert.equal(typeof publicRuntimeDiagnostic, 'function')
+  const secret = 'diagnostic-secret-must-not-be-rendered'
+  let rejection = null
+  try {
+    assertNoPrivateEvidenceMarkers([`{"apiKey":"${secret}"}`])
+  } catch (error) {
+    rejection = error
+  }
+  assert.equal(rejection?.message, 'Runtime evidence contains private fields')
+  assert.doesNotMatch(rejection?.message || '', new RegExp(secret, 'u'))
+
+  const diagnostic = publicRuntimeDiagnostic({
+    consoleErrors: [secret],
+    requestFailures: [secret],
+    responseFailures: [`503 GET http://127.0.0.1/api/failure?token=${secret}`],
+    responses: [{
+      method: 'GET',
+      status: 503,
+      url: `http://127.0.0.1/api/failure?token=${secret}`,
+    }],
+    apiResponses: [{
+      method: 'GET',
+      status: 200,
+      url: `http://127.0.0.1/api/current?token=${secret}`,
+      headersReadError: secret,
+      bodyReadError: secret,
+    }],
+    requests: [{
+      method: 'GET',
+      url: `http://127.0.0.1/api/history?token=${secret}`,
+      headersReadError: secret,
+    }],
+  })
+  const rendered = JSON.stringify(diagnostic)
+
+  assert.doesNotMatch(rendered, new RegExp(secret, 'u'))
+  assert.deepEqual(diagnostic, {
+    consoleErrorCount: 1,
+    requestFailureCount: 1,
+    requestFailures: [{
+      method: '[invalid-method]',
+      path: '[invalid-path]',
+    }],
+    responseFailures: [{ method: 'GET', status: 503, path: '/api/failure' }],
+    apiResponseCount: 1,
+    apiHeaderReadFailures: [{ method: 'GET', status: 200, path: '/api/current' }],
+    apiBodyReadFailures: [{ method: 'GET', status: 200, path: '/api/current' }],
+    requestHeaderReadFailures: [{ method: 'GET', path: '/api/history' }],
+  })
+})
+
+test('private evidence scan rejects manifest and raw provider output key forms without echoing values', async () => {
+  const { assertNoPrivateEvidenceMarkers } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  const privateKeys = [
+    'manifest',
+    'inputManifest',
+    'rawOutput',
+    'providerOutput',
+    'rawProviderOutput',
+  ]
+  for (const [index, key] of privateKeys.entries()) {
+    const secret = `private-structure-sentinel-${String(index)}`
+    for (const surface of [
+      JSON.stringify({ [key]: secret }),
+      `info: provider audit ${key}=${secret}`,
+    ]) {
+      let rejection = null
+      try {
+        assertNoPrivateEvidenceMarkers([surface])
+      } catch (error) {
+        rejection = error
+      }
+      assert.equal(
+        rejection?.message,
+        'Runtime evidence contains private fields',
+        key,
+      )
+      assert.doesNotMatch(
+        rejection?.message || '',
+        new RegExp(secret, 'u'),
+        key,
+      )
+    }
+  }
+})
+
+test('public runtime diagnostics expose failed request methods and paths without URL secrets', async () => {
+  const { publicRuntimeDiagnostic } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  const secrets = {
+    username: 'request-user-secret',
+    password: 'request-password-secret',
+    query: 'request-query-secret',
+    hash: 'request-hash-secret',
+    error: 'request-error-secret',
+  }
+  const diagnostic = publicRuntimeDiagnostic({
+    requestFailures: [
+      `PATCH https://${secrets.username}:${secrets.password}`
+        + '@127.0.0.1:8000/api/projects/project-1/supersession'
+        + `?token=${secrets.query}#${secrets.hash} ${secrets.error}`,
+    ],
+  })
+  const rendered = JSON.stringify(diagnostic)
+
+  assert.equal(diagnostic.requestFailureCount, 1)
+  assert.deepEqual(diagnostic.requestFailures, [{
+    method: 'PATCH',
+    path: '/api/projects/project-1/supersession',
+  }])
+  for (const secret of Object.values(secrets)) {
+    assert.doesNotMatch(rendered, new RegExp(secret, 'u'))
+  }
+})
+
+test('public runtime diagnostics replace malformed request failures without losing count', async () => {
+  const { publicRuntimeDiagnostic } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  const secret = 'malformed-request-failure-secret'
+  const diagnostic = publicRuntimeDiagnostic({
+    requestFailures: [secret, null],
+  })
+
+  assert.equal(diagnostic.requestFailureCount, 2)
+  assert.deepEqual(diagnostic.requestFailures, [{
+    method: '[invalid-method]',
+    path: '[invalid-path]',
+  }, {
+    method: '[invalid-method]',
+    path: '[invalid-path]',
+  }])
+  assert.doesNotMatch(JSON.stringify(diagnostic), new RegExp(secret, 'u'))
+})
+
+test('public runtime diagnostics reject untrusted request failure methods', async () => {
+  const { publicRuntimeDiagnostic } = await import(
+    '../../frontend/e2e/runtime-observer.mjs'
+  )
+  const secrets = {
+    method: 'malformed-method-secret',
+    query: 'malformed-method-query-secret',
+    hash: 'malformed-method-hash-secret',
+    error: 'malformed-method-error-secret',
+  }
+  const diagnostic = publicRuntimeDiagnostic({
+    requestFailures: [
+      `${secrets.method} https://127.0.0.1/api/fail`
+        + `?token=${secrets.query}#${secrets.hash} ${secrets.error}`,
+    ],
+  })
+  const rendered = JSON.stringify(diagnostic)
+
+  assert.equal(diagnostic.requestFailureCount, 1)
+  assert.deepEqual(diagnostic.requestFailures, [{
+    method: '[invalid-method]',
+    path: '[invalid-path]',
+  }])
+  for (const secret of Object.values(secrets)) {
+    assert.doesNotMatch(rendered, new RegExp(secret, 'u'))
+  }
 })
 
 test('runtime secret scan recursively covers Windows JSON, slash, and URL variants', async () => {

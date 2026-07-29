@@ -22,12 +22,17 @@ from backend.domain.chapter_outlines import (
 )
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.planning import PlanningAggregate
+from backend.domain.provider_policy import provider_is_generation_ready
 from backend.http_errors import ProjectArchived as RepositoryProjectArchived
 from backend.repositories.chapter_sessions import (
     ActiveChapterSessionConflict,
     authoritative_chapter,
 )
 from backend.repositories.planning import PlanningRepository
+from backend.security.provider_secrets import (
+    normalize_provider_secrets,
+    provider_public_fields_contain_secret,
+)
 
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -749,7 +754,10 @@ class ChapterOutlineService:
     ) -> ChapterOutlineState:
         self._validate_project(project_id)
         async with self.transaction_factory() as session:
-            project = await self._require_project_any(session, project_id)
+            project = await self._lock_project_snapshot(
+                session,
+                project_id,
+            )
             chapter_number, active_session = await self._chapter_authority(
                 session,
                 project_id,
@@ -782,6 +790,14 @@ class ChapterOutlineService:
                 )
                 if draft_row is not None
                 else None
+            )
+            binding = await self.planning_repository.lock_planning_binding(
+                session,
+                project_id,
+            )
+            generation_pending = (
+                pending_attempt is not None
+                and pending_attempt.get("status") == "pending"
             )
             session_row = (
                 await self.chapter_repository.read_chapter_session(
@@ -851,7 +867,14 @@ class ChapterOutlineService:
                 view=True,
                 create_draft=mutations_allowed and not current_draft,
                 edit_draft=mutations_allowed and current_draft,
-                generate=False,
+                generate=(
+                    mutations_allowed
+                    and active_session is None
+                    and current_draft
+                    and not generation_pending
+                    and synchronized
+                    and self._planning_binding_ready(binding)
+                ),
                 confirm=(
                     mutations_allowed
                     and current_draft
@@ -910,6 +933,36 @@ class ChapterOutlineService:
             f"write/chapters/{chapter_number}"
         )
 
+    @staticmethod
+    def _planning_binding_ready(
+        binding: Mapping[str, object] | None,
+    ) -> bool:
+        if binding is None:
+            return False
+        try:
+            secrets = normalize_provider_secrets(
+                (binding["api_key"], binding["base_url"])
+            )
+            public_model = {
+                "providerId": binding["provider_id"],
+                "modelName": binding["model_name_snapshot"],
+            }
+            return (
+                binding["binding_task_key"] == "planning"
+                and binding["resolution_status"] == "bound"
+                and binding["provider_id"] == binding["id"]
+                and binding["model_name_snapshot"] == binding["model_name"]
+                and int(binding["binding_revision"]) > 0
+                and _HASH.fullmatch(str(binding["binding_hash"])) is not None
+                and provider_is_generation_ready(binding)
+                and not provider_public_fields_contain_secret(
+                    public_model,
+                    secrets,
+                )
+            )
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            return False
+
     async def _chapter_authority(self, session, project_id: str):
         try:
             active = await self.chapter_repository.read_active_session(
@@ -940,6 +993,23 @@ class ChapterOutlineService:
 
     async def _require_project_any(self, session, project_id: str):
         project = await self.repository.read_project_any(session, project_id)
+        if project is None:
+            raise ChapterOutlineNotFound("Project not found")
+        return project
+
+    async def _lock_project_snapshot(self, session, project_id: str):
+        try:
+            project = await self.repository.lock_project(
+                session,
+                project_id,
+            )
+        except RepositoryProjectArchived:
+            project = None
+        if project is None:
+            project = await self.repository.read_project_any(
+                session,
+                project_id,
+            )
         if project is None:
             raise ChapterOutlineNotFound("Project not found")
         return project

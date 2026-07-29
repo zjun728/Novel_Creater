@@ -212,6 +212,16 @@ test('outline workspace keeps server authority read-only and closes editing to t
     ]) {
       assert.match(html, new RegExp(label))
     }
+    for (const canonicalOption of [
+      'value="volume-1"',
+      '第一卷',
+      'value="block-1"',
+      '夜入县衙',
+      '潜入',
+      '取得残卷',
+    ]) {
+      assert.match(html, new RegExp(canonicalOption))
+    }
     assert.doesNotMatch(html, /旧卷|旧阶段/)
     assert.doesNotMatch(html, /编辑章节号|编辑 Planning|编辑 Canon|编辑 Projection/)
     assert.match(html, /小纲模型尚未就绪；手工编辑仍可继续/)

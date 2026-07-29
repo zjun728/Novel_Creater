@@ -117,6 +117,17 @@ function chapterOutlineHistoryFailure(failure) {
   })
 }
 
+function chapterOutlinePostConfirmHistoryFailure(failure) {
+  return Object.assign(
+    new Error('章节小纲已确认，但历史刷新失败，请重新读取权威状态'),
+    {
+      status: Number(failure?.status || 0),
+      code: 'ChapterOutlineRefreshFailed',
+      correlationId: String(failure?.correlationId || ''),
+    },
+  )
+}
+
 export const usePlanningStore = defineStore('planning', () => {
   const projectId = ref('')
   const state = shallowRef(null)
@@ -560,6 +571,13 @@ export const usePlanningStore = defineStore('planning', () => {
         history.value = Array.isArray(historyPage?.items)
           ? historyPage.items
           : []
+        if (outlineState.value !== null || outlineLoading.value) {
+          try {
+            await ensureOutlineLoaded(targetProjectId, { force: true })
+          } catch {
+            // The Outline load owns its fenced, retryable authority error.
+          }
+        }
       }
       return confirmed
     } catch (failure) {
@@ -1485,21 +1503,17 @@ export const usePlanningStore = defineStore('planning', () => {
       )) {
         commitOutlineAuthorityState({
           ...outlineState.value,
-          confirmedOutline: confirmed,
+          confirmedOutline: null,
           draft: null,
           capabilities: {
             ...(outlineState.value?.capabilities || {}),
+            createDraft: false,
             editDraft: false,
             generate: false,
             confirm: false,
+            startSession: false,
           },
         }, { authorityWrite: true })
-        outlineHistory.value = [
-          confirmed,
-          ...outlineHistory.value.filter(item => (
-            item.outlineRevisionId !== confirmed.outlineRevisionId
-          )),
-        ]
         replaceOutlineLocal(null)
         const loaded = await refreshOutlineAuthority({
           guard: outlineMutationGuard,
@@ -1521,19 +1535,32 @@ export const usePlanningStore = defineStore('planning', () => {
           targetProjectId,
           targetContextGeneration,
         )) {
-          const historyPage = await api.chapterOutlines.history(
-            targetProjectId,
-            chapterNumber,
-          )
-          if (outlineState.value === loaded && outlineIsCurrent(
-            outlineMutationGuard,
-            requestGeneration,
-            targetProjectId,
-            targetContextGeneration,
-          )) {
-            outlineHistory.value = Array.isArray(historyPage?.items)
-              ? historyPage.items
-              : []
+          try {
+            const historyPage = await api.chapterOutlines.history(
+              targetProjectId,
+              chapterNumber,
+            )
+            if (outlineState.value === loaded && outlineIsCurrent(
+              outlineMutationGuard,
+              requestGeneration,
+              targetProjectId,
+              targetContextGeneration,
+            )) {
+              outlineHistory.value = Array.isArray(historyPage?.items)
+                ? historyPage.items
+                : []
+            }
+          } catch (failure) {
+            if (outlineState.value === loaded && outlineIsCurrent(
+              outlineMutationGuard,
+              requestGeneration,
+              targetProjectId,
+              targetContextGeneration,
+            )) {
+              outlineError.value = publicError(
+                chapterOutlinePostConfirmHistoryFailure(failure),
+              )
+            }
           }
         }
       }

@@ -235,6 +235,159 @@ function planningDraftContent(value) {
   }
 }
 
+const CHAPTER_OUTLINE_PLANNING_IDENTITY_FIELDS = [
+  'id', 'revision', 'contentHash', 'lifecycle',
+]
+const CHAPTER_OUTLINE_PLANNING_VOLUME_FIELDS = [
+  ...CHAPTER_OUTLINE_PLANNING_IDENTITY_FIELDS,
+  'order', 'title', 'coreChange', 'mainPressure', 'ensembleFocus',
+  'forbiddenEvents',
+]
+const CHAPTER_OUTLINE_PLANNING_PLOT_FIELDS = [
+  ...CHAPTER_OUTLINE_PLANNING_IDENTITY_FIELDS,
+  'order', 'title', 'plotType', 'storyQuestion', 'futureDirection',
+  'expectedPayoff', 'relatedCharacters',
+]
+const CHAPTER_OUTLINE_PLANNING_BLOCK_FIELDS = [
+  ...CHAPTER_OUTLINE_PLANNING_IDENTITY_FIELDS,
+  'volumeId', 'plotIds', 'order', 'title', 'entrySituation', 'blockGoal',
+  'mainPressure', 'expectedChange', 'openQuestions', 'involvedCharacters',
+]
+const CHAPTER_OUTLINE_PLANNING_STAGE_FIELDS = [
+  ...CHAPTER_OUTLINE_PLANNING_IDENTITY_FIELDS,
+  'storyBlockId', 'order', 'title', 'purpose', 'dramaticQuestion',
+]
+const CHAPTER_OUTLINE_PLANNING_TASK_FIELDS = [
+  ...CHAPTER_OUTLINE_PLANNING_IDENTITY_FIELDS,
+  'stageId', 'order', 'task', 'completionEvidence',
+]
+const CHAPTER_OUTLINE_PLANNING_NUMBER_FIELDS = new Set([
+  'revision', 'order',
+])
+
+function chapterOutlinePlanningObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`Expected ChapterOutline Planning ${label}`)
+  }
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`Expected ChapterOutline Planning ${label}`)
+  }
+  return value
+}
+
+function chapterOutlinePlanningNode(
+  value,
+  fields,
+  arrayFields = [],
+  label = 'node',
+) {
+  const source = chapterOutlinePlanningObject(value, label)
+  const stringArrayFields = new Set(arrayFields)
+  const node = {}
+  for (const field of fields) {
+    if (!Object.hasOwn(source, field)) {
+      throw new TypeError(`Invalid ChapterOutline Planning ${label}`)
+    }
+    const fieldValue = source[field]
+    if (stringArrayFields.has(field)) {
+      if (
+        !Array.isArray(fieldValue)
+        || fieldValue.some(item => typeof item !== 'string')
+      ) {
+        throw new TypeError(`Invalid ChapterOutline Planning ${label}`)
+      }
+      node[field] = [...fieldValue]
+      continue
+    }
+    const scalarIsValid = CHAPTER_OUTLINE_PLANNING_NUMBER_FIELDS.has(field)
+      ? Number.isInteger(fieldValue)
+      : typeof fieldValue === 'string'
+    if (!scalarIsValid) {
+      throw new TypeError(`Invalid ChapterOutline Planning ${label}`)
+    }
+    node[field] = fieldValue
+  }
+  return node
+}
+
+function chapterOutlinePlanningCollection(source, field, mapper) {
+  if (!Object.hasOwn(source, field)) {
+    throw new TypeError('Invalid ChapterOutline Planning collection')
+  }
+  return planningArray(source[field], field, mapper)
+}
+
+function chapterOutlinePlanningContent(value) {
+  const source = chapterOutlinePlanningObject(value, 'content')
+  const rootFields = [
+    'schemaVersion',
+    'activeStoryBlockId',
+    'contentHash',
+    'volumes',
+    'plots',
+    'storyBlocks',
+  ]
+  if (
+    rootFields.some(field => !Object.hasOwn(source, field))
+    || typeof source.schemaVersion !== 'string'
+    || (
+      source.activeStoryBlockId !== null
+      && typeof source.activeStoryBlockId !== 'string'
+    )
+    || typeof source.contentHash !== 'string'
+  ) {
+    throw new TypeError('Invalid ChapterOutline Planning content')
+  }
+  return {
+    schemaVersion: source.schemaVersion,
+    activeStoryBlockId: source.activeStoryBlockId,
+    volumes: planningArray(source.volumes, 'volumes', item => (
+      chapterOutlinePlanningNode(
+        item,
+        CHAPTER_OUTLINE_PLANNING_VOLUME_FIELDS,
+        ['ensembleFocus', 'forbiddenEvents'],
+        'Volume',
+      )
+    )),
+    plots: planningArray(source.plots, 'plots', item => (
+      chapterOutlinePlanningNode(
+        item,
+        CHAPTER_OUTLINE_PLANNING_PLOT_FIELDS,
+        ['relatedCharacters'],
+        'Plot',
+      )
+    )),
+    storyBlocks: planningArray(source.storyBlocks, 'storyBlocks', block => ({
+      ...chapterOutlinePlanningNode(
+        block,
+        CHAPTER_OUTLINE_PLANNING_BLOCK_FIELDS,
+        ['plotIds', 'openQuestions', 'involvedCharacters'],
+        'StoryBlock',
+      ),
+      stages: chapterOutlinePlanningCollection(block, 'stages', stage => ({
+        ...chapterOutlinePlanningNode(
+          stage,
+          CHAPTER_OUTLINE_PLANNING_STAGE_FIELDS,
+          [],
+          'Stage',
+        ),
+        sceneTasks: chapterOutlinePlanningCollection(
+          stage,
+          'sceneTasks',
+          task => chapterOutlinePlanningNode(
+            task,
+            CHAPTER_OUTLINE_PLANNING_TASK_FIELDS,
+            [],
+            'SceneTask',
+          ),
+        ),
+      })),
+    })),
+    contentHash: source.contentHash,
+  }
+}
+
 const PLANNING_OPERATION_STATUSES = new Set([
   'pending',
   'succeeded',
@@ -496,6 +649,13 @@ function chapterOutlineIdempotencyKey(value) {
   return value
 }
 
+const CHAPTER_OUTLINE_CONTENT_STRING_ARRAY_FIELDS = [
+  'expectedCharacters',
+  'continuation',
+  'plannedTasks',
+  'scenes',
+  'forbiddenEarlyEvents',
+]
 const CHAPTER_OUTLINE_CONTENT_FIELDS = [
   'schemaVersion',
   'volumeRef',
@@ -503,157 +663,399 @@ const CHAPTER_OUTLINE_CONTENT_FIELDS = [
   'stageRefs',
   'sceneTaskRefs',
   'chapterGoal',
-  'expectedCharacters',
-  'continuation',
-  'plannedTasks',
-  'scenes',
-  'forbiddenEarlyEvents',
+  ...CHAPTER_OUTLINE_CONTENT_STRING_ARRAY_FIELDS,
 ]
 
-function chapterOutlineNodeRef(value) {
-  return pickDefined(value, ['id', 'revision', 'contentHash'])
+function chapterOutlineResponseObject(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError(`Invalid ChapterOutline ${label}`)
+  }
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`Invalid ChapterOutline ${label}`)
+  }
+  return value
 }
 
-function chapterOutlineContent(value = {}) {
-  const content = pickDefined(value, CHAPTER_OUTLINE_CONTENT_FIELDS)
+function chapterOutlineNodeRef(value) {
+  const source = chapterOutlineResponseObject(value, 'node reference')
+  if (
+    !Object.hasOwn(source, 'id')
+    || !Object.hasOwn(source, 'revision')
+    || !Object.hasOwn(source, 'contentHash')
+    || typeof source.id !== 'string'
+    || !Number.isInteger(source.revision)
+    || typeof source.contentHash !== 'string'
+  ) {
+    throw new TypeError('Invalid ChapterOutline node reference')
+  }
+  return {
+    id: source.id,
+    revision: source.revision,
+    contentHash: source.contentHash,
+  }
+}
+
+function chapterOutlineContentProjection(value, { requireAll }) {
+  const source = chapterOutlineResponseObject(value, 'content')
+  if (requireAll) {
+    chapterOutlineRequireOwnFields(
+      source,
+      CHAPTER_OUTLINE_CONTENT_FIELDS,
+      'content',
+    )
+  }
+  const content = {}
+  for (const field of ['schemaVersion', 'chapterGoal']) {
+    if (!Object.hasOwn(source, field)) continue
+    if (typeof source[field] !== 'string') {
+      throw new TypeError('Invalid ChapterOutline content')
+    }
+    content[field] = source[field]
+  }
   for (const field of ['volumeRef', 'storyBlockRef']) {
-    if (content[field] != null) content[field] = chapterOutlineNodeRef(content[field])
+    if (!Object.hasOwn(source, field)) continue
+    content[field] = source[field] === null
+      ? null
+      : chapterOutlineNodeRef(source[field])
   }
   for (const field of ['stageRefs', 'sceneTaskRefs']) {
-    if (Array.isArray(content[field])) {
-      content[field] = content[field].map(chapterOutlineNodeRef)
+    if (!Object.hasOwn(source, field)) continue
+    if (!Array.isArray(source[field])) {
+      throw new TypeError('Invalid ChapterOutline content')
     }
+    content[field] = source[field].map(chapterOutlineNodeRef)
   }
-  for (const field of [
-    'expectedCharacters',
-    'continuation',
-    'plannedTasks',
-    'scenes',
-    'forbiddenEarlyEvents',
-  ]) {
-    if (Array.isArray(content[field])) content[field] = [...content[field]]
+  for (const field of CHAPTER_OUTLINE_CONTENT_STRING_ARRAY_FIELDS) {
+    if (!Object.hasOwn(source, field)) continue
+    if (
+      !Array.isArray(source[field])
+      || source[field].some(item => typeof item !== 'string')
+    ) {
+      throw new TypeError('Invalid ChapterOutline content')
+    }
+    content[field] = [...source[field]]
   }
   return content
 }
 
+function chapterOutlineWriteContent(value) {
+  if (value == null) return {}
+  return chapterOutlineContentProjection(value, { requireAll: false })
+}
+
+function chapterOutlineResponseContent(value) {
+  return chapterOutlineContentProjection(value, { requireAll: true })
+}
+
 function chapterOutlinePlanningAuthority(value) {
   if (value == null) return null
+  const source = chapterOutlinePlanningObject(value, 'authority')
+  if (
+    !Object.hasOwn(source, 'planningRevisionId')
+    || !Object.hasOwn(source, 'revision')
+    || !Object.hasOwn(source, 'contentHash')
+    || !Object.hasOwn(source, 'content')
+    || typeof source.planningRevisionId !== 'string'
+    || !Number.isInteger(source.revision)
+    || typeof source.contentHash !== 'string'
+  ) {
+    throw new TypeError('Invalid ChapterOutline Planning authority')
+  }
   return {
-    ...pickDefined(value, [
-      'planningRevisionId',
-      'revision',
-      'contentHash',
-    ]),
-    content: value.content == null
+    planningRevisionId: source.planningRevisionId,
+    revision: source.revision,
+    contentHash: source.contentHash,
+    content: source.content === null
       ? null
-      : planningDraftContent(value.content),
+      : chapterOutlinePlanningContent(source.content),
   }
 }
 
 function chapterOutlineProjectionAuthority(value) {
   if (value == null) return null
-  return pickDefined(value, [
-    'canonRevision',
-    'projectionRevision',
-    'contentHash',
-    'synchronized',
-  ])
+  const source = chapterOutlineResponseObject(value, 'projection authority')
+  if (
+    !Object.hasOwn(source, 'canonRevision')
+    || !Object.hasOwn(source, 'projectionRevision')
+    || !Object.hasOwn(source, 'contentHash')
+    || !Object.hasOwn(source, 'synchronized')
+    || !Number.isInteger(source.canonRevision)
+    || !Number.isInteger(source.projectionRevision)
+    || typeof source.contentHash !== 'string'
+    || typeof source.synchronized !== 'boolean'
+  ) {
+    throw new TypeError('Invalid ChapterOutline projection authority')
+  }
+  return {
+    canonRevision: source.canonRevision,
+    projectionRevision: source.projectionRevision,
+    contentHash: source.contentHash,
+    synchronized: source.synchronized,
+  }
+}
+
+function chapterOutlineRequireOwnFields(source, fields, label) {
+  if (fields.some(field => !Object.hasOwn(source, field))) {
+    throw new TypeError(`Invalid ChapterOutline ${label}`)
+  }
+}
+
+function chapterOutlineResponseScalars(
+  source,
+  {
+    strings = [],
+    integers = [],
+    booleans = [],
+  },
+  label,
+) {
+  chapterOutlineRequireOwnFields(
+    source,
+    [...strings, ...integers, ...booleans],
+    label,
+  )
+  if (
+    strings.some(field => typeof source[field] !== 'string')
+    || integers.some(field => !Number.isInteger(source[field]))
+    || booleans.some(field => typeof source[field] !== 'boolean')
+  ) {
+    throw new TypeError(`Invalid ChapterOutline ${label}`)
+  }
 }
 
 function chapterOutlineBasis(value) {
+  const source = chapterOutlineResponseObject(value, 'basis')
+  chapterOutlineRequireOwnFields(
+    source,
+    ['planningAuthority', 'canonProjectionAuthority'],
+    'basis',
+  )
+  const planningAuthority = chapterOutlinePlanningAuthority(
+    source.planningAuthority,
+  )
+  const canonProjectionAuthority = chapterOutlineProjectionAuthority(
+    source.canonProjectionAuthority,
+  )
+  if (planningAuthority === null || canonProjectionAuthority === null) {
+    throw new TypeError('Invalid ChapterOutline basis')
+  }
   return {
-    planningAuthority: chapterOutlinePlanningAuthority(
-      value?.planningAuthority,
-    ),
-    canonProjectionAuthority: chapterOutlineProjectionAuthority(
-      value?.canonProjectionAuthority,
-    ),
+    planningAuthority,
+    canonProjectionAuthority,
   }
 }
 
 function chapterOutlineDraftResponse(value) {
   if (value == null) return null
+  const source = chapterOutlineResponseObject(value, 'draft')
+  chapterOutlineResponseScalars(
+    source,
+    {
+      strings: ['projectId', 'draftId', 'contentHash', 'status'],
+      integers: [
+        'chapterNumber',
+        'baseHeadRevision',
+        'draftRevision',
+      ],
+    },
+    'draft',
+  )
+  chapterOutlineRequireOwnFields(source, ['content', 'basis'], 'draft')
   return {
-    ...pickDefined(value, [
-      'projectId',
-      'chapterNumber',
-      'draftId',
-      'baseHeadRevision',
-      'draftRevision',
-      'contentHash',
-    ]),
-    content: chapterOutlineContent(value.content),
-    basis: chapterOutlineBasis(value.basis),
-    ...pickDefined(value, ['status']),
+    projectId: source.projectId,
+    chapterNumber: source.chapterNumber,
+    draftId: source.draftId,
+    baseHeadRevision: source.baseHeadRevision,
+    draftRevision: source.draftRevision,
+    contentHash: source.contentHash,
+    content: chapterOutlineResponseContent(source.content),
+    basis: chapterOutlineBasis(source.basis),
+    status: source.status,
   }
 }
 
-function chapterOutlineRevisionResponse(value) {
+function chapterOutlineRevisionResponse(
+  value,
+  { includeDisplay = true } = {},
+) {
   if (value == null) return null
+  const source = chapterOutlineResponseObject(value, 'revision')
+  const stringFields = [
+    'projectId',
+    'outlineRevisionId',
+    'contentHash',
+  ]
+  if (includeDisplay) stringFields.push('status', 'reason')
+  chapterOutlineResponseScalars(
+    source,
+    {
+      strings: stringFields,
+      integers: ['chapterNumber', 'revision', 'parentRevision'],
+    },
+    'revision',
+  )
+  chapterOutlineRequireOwnFields(source, ['content', 'basis'], 'revision')
+  const result = {
+    projectId: source.projectId,
+    chapterNumber: source.chapterNumber,
+    outlineRevisionId: source.outlineRevisionId,
+    revision: source.revision,
+    parentRevision: source.parentRevision,
+    contentHash: source.contentHash,
+    content: chapterOutlineResponseContent(source.content),
+    basis: chapterOutlineBasis(source.basis),
+  }
+  if (includeDisplay) {
+    result.status = source.status
+    result.reason = source.reason
+  }
+  return result
+}
+
+function chapterOutlineRequiredDraftResponse(value) {
+  const result = chapterOutlineDraftResponse(value)
+  if (result === null) throw new TypeError('Invalid ChapterOutline draft')
+  return result
+}
+
+function chapterOutlineRequiredRevisionResponse(value, options) {
+  const result = chapterOutlineRevisionResponse(value, options)
+  if (result === null) throw new TypeError('Invalid ChapterOutline revision')
+  return result
+}
+
+function chapterOutlineHistoryResponse(value) {
+  const source = chapterOutlineResponseObject(value, 'history')
+  chapterOutlineRequireOwnFields(source, ['items'], 'history')
+  if (!Array.isArray(source.items)) {
+    throw new TypeError('Invalid ChapterOutline history')
+  }
   return {
-    ...pickDefined(value, [
-      'projectId',
-      'chapterNumber',
-      'outlineRevisionId',
-      'revision',
-      'parentRevision',
-      'contentHash',
-    ]),
-    content: chapterOutlineContent(value.content),
-    basis: chapterOutlineBasis(value.basis),
-    ...pickDefined(value, ['status', 'reason']),
+    items: source.items.map(item => (
+      chapterOutlineRequiredRevisionResponse(item, { includeDisplay: true })
+    )),
   }
 }
 
 function chapterOutlineActiveSession(value) {
   if (value == null) return null
-  return pickDefined(value, [
-    'chapterSessionId',
-    'chapterNumber',
-    'status',
-    'planningRevisionId',
-    'planningRevision',
-    'planningHash',
-    'outlineRevisionId',
-    'outlineRevision',
-    'outlineHash',
-  ])
+  const source = chapterOutlineResponseObject(value, 'active session')
+  chapterOutlineResponseScalars(
+    source,
+    {
+      strings: [
+        'chapterSessionId',
+        'status',
+        'planningRevisionId',
+        'planningHash',
+        'outlineRevisionId',
+        'outlineHash',
+      ],
+      integers: [
+        'chapterNumber',
+        'planningRevision',
+        'outlineRevision',
+      ],
+    },
+    'active session',
+  )
+  return {
+    chapterSessionId: source.chapterSessionId,
+    chapterNumber: source.chapterNumber,
+    status: source.status,
+    planningRevisionId: source.planningRevisionId,
+    planningRevision: source.planningRevision,
+    planningHash: source.planningHash,
+    outlineRevisionId: source.outlineRevisionId,
+    outlineRevision: source.outlineRevision,
+    outlineHash: source.outlineHash,
+  }
 }
 
 function chapterOutlinePendingOperation(value) {
   if (value == null) return null
-  return pickDefined(value, ['operationId', 'status'])
+  const source = chapterOutlineResponseObject(value, 'pending operation')
+  chapterOutlineResponseScalars(
+    source,
+    { strings: ['operationId', 'status'] },
+    'pending operation',
+  )
+  return {
+    operationId: source.operationId,
+    status: source.status,
+  }
 }
 
-function chapterOutlineStateResponse(value = {}) {
+function chapterOutlineCapabilities(value) {
+  const source = chapterOutlineResponseObject(value, 'capabilities')
+  const fields = [
+    'view',
+    'createDraft',
+    'editDraft',
+    'generate',
+    'confirm',
+    'startSession',
+  ]
+  chapterOutlineResponseScalars(
+    source,
+    { booleans: fields },
+    'capabilities',
+  )
+  return Object.fromEntries(fields.map(field => [field, source[field]]))
+}
+
+function chapterOutlineStateResponse(value) {
+  const source = chapterOutlineResponseObject(value, 'state')
+  chapterOutlineResponseScalars(
+    source,
+    {
+      strings: ['projectId', 'lifecycle', 'targetPath'],
+      integers: ['authoritativeChapterNumber'],
+    },
+    'state',
+  )
+  chapterOutlineRequireOwnFields(
+    source,
+    [
+      'planningAuthority',
+      'canonProjectionAuthority',
+      'confirmedOutline',
+      'draft',
+      'activeSession',
+      'pendingOperation',
+      'capabilities',
+      'reasons',
+    ],
+    'state',
+  )
+  if (
+    !Array.isArray(source.reasons)
+    || source.reasons.some(reason => typeof reason !== 'string')
+  ) {
+    throw new TypeError('Invalid ChapterOutline state')
+  }
   return {
-    projectId: value.projectId,
-    lifecycle: value.lifecycle,
-    authoritativeChapterNumber: value.authoritativeChapterNumber,
-    targetPath: value.targetPath,
+    projectId: source.projectId,
+    lifecycle: source.lifecycle,
+    authoritativeChapterNumber: source.authoritativeChapterNumber,
+    targetPath: source.targetPath,
     planningAuthority: chapterOutlinePlanningAuthority(
-      value.planningAuthority,
+      source.planningAuthority,
     ),
     canonProjectionAuthority: chapterOutlineProjectionAuthority(
-      value.canonProjectionAuthority,
+      source.canonProjectionAuthority,
     ),
     confirmedOutline: chapterOutlineRevisionResponse(
-      value.confirmedOutline,
+      source.confirmedOutline,
     ),
-    draft: chapterOutlineDraftResponse(value.draft),
-    activeSession: chapterOutlineActiveSession(value.activeSession),
+    draft: chapterOutlineDraftResponse(source.draft),
+    activeSession: chapterOutlineActiveSession(source.activeSession),
     pendingOperation: chapterOutlinePendingOperation(
-      value.pendingOperation,
+      source.pendingOperation,
     ),
-    capabilities: pickDefined(value.capabilities, [
-      'view',
-      'createDraft',
-      'editDraft',
-      'generate',
-      'confirm',
-      'startSession',
-    ]),
-    reasons: Array.isArray(value.reasons) ? [...value.reasons] : [],
+    capabilities: chapterOutlineCapabilities(source.capabilities),
+    reasons: [...source.reasons],
   }
 }
 
@@ -1206,29 +1608,37 @@ export const api = {
     get: async (projectId, chapterNumber) => chapterOutlineStateResponse(await get(
       `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}`,
     )),
-    history: async (projectId, chapterNumber) => get(
-      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/history`,
+    history: async (projectId, chapterNumber) => chapterOutlineHistoryResponse(
+      await get(
+        `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/history`,
+      ),
     ),
-    createDraft: async (projectId, chapterNumber) => post(
-      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts`,
-      {},
+    createDraft: async (projectId, chapterNumber) => (
+      chapterOutlineRequiredDraftResponse(await post(
+        `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts`,
+        {},
+      ))
     ),
-    saveDraft: async (projectId, chapterNumber, draftId, data) => put(
-      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts/${segment(chapterOutlineOpaqueId(draftId, 'draft id'))}`,
-      {
-        expectedDraftRevision: data.expectedDraftRevision,
-        expectedDraftHash: data.expectedDraftHash,
-        content: chapterOutlineContent(data.content),
-      },
+    saveDraft: async (projectId, chapterNumber, draftId, data) => (
+      chapterOutlineRequiredDraftResponse(await put(
+        `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts/${segment(chapterOutlineOpaqueId(draftId, 'draft id'))}`,
+        {
+          expectedDraftRevision: data.expectedDraftRevision,
+          expectedDraftHash: data.expectedDraftHash,
+          content: chapterOutlineWriteContent(data.content),
+        },
+      ))
     ),
-    confirmDraft: async (projectId, chapterNumber, draftId, data) => post(
-      `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts/${segment(chapterOutlineOpaqueId(draftId, 'draft id'))}/confirm`,
-      {
-        expectedDraftRevision: data.expectedDraftRevision,
-        expectedDraftHash: data.expectedDraftHash,
-        expectedHeadRevision: data.expectedHeadRevision,
-        idempotencyKey: chapterOutlineIdempotencyKey(data.idempotencyKey),
-      },
+    confirmDraft: async (projectId, chapterNumber, draftId, data) => (
+      chapterOutlineRequiredRevisionResponse(await post(
+        `/projects/${segment(projectId)}/chapter-outlines/${positiveChapterNumber(chapterNumber)}/drafts/${segment(chapterOutlineOpaqueId(draftId, 'draft id'))}/confirm`,
+        {
+          expectedDraftRevision: data.expectedDraftRevision,
+          expectedDraftHash: data.expectedDraftHash,
+          expectedHeadRevision: data.expectedHeadRevision,
+          idempotencyKey: chapterOutlineIdempotencyKey(data.idempotencyKey),
+        },
+      ), { includeDisplay: false })
     ),
     generateDraft: async (projectId, chapterNumber, draftId, data) => (
       chapterOutlineOperationResponse(await post(
