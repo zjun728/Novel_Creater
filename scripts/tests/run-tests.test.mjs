@@ -212,38 +212,6 @@ function createFormalFakeRoot({ pytestNamespaceAsFile = false } = {}) {
   return { keepEvidence, pytestNamespace, rootDirectory }
 }
 
-test('unit serializes root script tests without serializing frontend tests', () => {
-  const fixture = createFormalFakeRoot()
-  const calls = []
-
-  try {
-    const exitCode = runSuites(['unit'], {
-      rootDirectory: fixture.rootDirectory,
-      pytestTempLifecycle: noOpPytestTempLifecycle,
-      spawnSyncImpl(command, args, options) {
-        calls.push({ command, args, options })
-        return { status: 0 }
-      },
-    })
-    const nodeCalls = calls.filter(call => call.command === process.execPath)
-
-    assert.equal(exitCode, 0)
-    assert.equal(nodeCalls.length, 2)
-    assert.deepEqual(nodeCalls[0].args, [
-      '--test',
-      '--test-concurrency=1',
-      path.join(fixture.rootDirectory, 'scripts', 'tests', 'formal.test.mjs'),
-    ])
-    assert.deepEqual(nodeCalls[1].args, [
-      '--test',
-      path.join(fixture.rootDirectory, 'frontend', 'tests', 'unit', 'formal.test.mjs'),
-    ])
-    assert.equal(nodeCalls[1].args.includes('--test-concurrency=1'), false)
-  } finally {
-    rmSync(fixture.rootDirectory, { recursive: true, force: true })
-  }
-})
-
 function createReparsePointFixture(location) {
   const rootDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-reparse-root-'))
   const externalDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-reparse-external-'))

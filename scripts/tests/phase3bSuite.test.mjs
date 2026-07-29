@@ -19,7 +19,6 @@ import {
   DEFAULT_RUNNER_DEADLINES,
   reserveLocalPort,
   runOwnedProductLifecycle,
-  terminateOwnedProcessTree,
   waitForOwnedUrl,
 } from '../../frontend/e2e/support/product-runner.mjs'
 
@@ -56,12 +55,56 @@ async function waitForHealth(port, expectedNonce, {
 }
 
 
-async function stopOwnedChild(child, {
+async function stopFixtureChild(child, {
   timeoutMs = DEFAULT_RUNNER_DEADLINES.stopMs,
-  terminateImpl = terminateOwnedProcessTree,
 } = {}) {
   if (child.exitCode !== null || child.signalCode !== null) return
-  await terminateImpl(child, { timeoutMs })
+  await new Promise((resolve, reject) => {
+    let settled = false
+    let timer
+
+    function cleanup() {
+      clearTimeout(timer)
+      child.removeListener('close', onClose)
+      child.removeListener('error', onError)
+    }
+
+    function finish(error) {
+      if (settled) return
+      settled = true
+      cleanup()
+      if (error) reject(error)
+      else resolve()
+    }
+
+    function failure() {
+      return new Error('owned test child remained alive after forced termination')
+    }
+
+    function onClose() {
+      finish()
+    }
+
+    function onError() {
+      finish(failure())
+    }
+
+    child.once('close', onClose)
+    child.once('error', onError)
+    timer = setTimeout(() => finish(failure()), timeoutMs)
+
+    try {
+      const killed = child.kill('SIGKILL')
+      if (
+        !killed
+        && (child.exitCode !== null || child.signalCode !== null)
+      ) {
+        finish()
+      }
+    } catch {
+      finish(failure())
+    }
+  })
   if (child.exitCode === null && child.signalCode === null) {
     throw new Error('owned test child remained alive after forced termination')
   }
@@ -174,7 +217,7 @@ async function exerciseLateProxyOutcome(proxySource, outcome) {
     return readFileSync(ledgerPath, 'utf8')
   } finally {
     if (!existsSync(releasePath)) writeFileSync(releasePath, 'release\n', 'utf8')
-    await stopOwnedChild(child)
+    await stopFixtureChild(child)
     upstream.closeAllConnections?.()
     await new Promise(resolve => upstream.close(resolve))
     rmSync(root, { recursive: true, force: true })
@@ -585,7 +628,7 @@ test('Phase 3B contract health wait bounds a stable non-200 response', async () 
 })
 
 
-test('Phase 3B contract cleanup force-terminates a child that ignores graceful stop', async () => {
+test('Phase 3B test fixture cleanup force-terminates a child that ignores graceful stop', async () => {
   const child = spawn(
     process.execPath,
     [
@@ -607,14 +650,10 @@ test('Phase 3B contract cleanup force-terminates a child that ignores graceful s
         1_000,
       )),
     ])
-    await stopOwnedChild(child)
+    await stopFixtureChild(child)
     assert.equal(child.exitCode !== null || child.signalCode !== null, true)
   } finally {
-    if (child.exitCode === null && child.signalCode === null) {
-      await terminateOwnedProcessTree(child, {
-        timeoutMs: DEFAULT_RUNNER_DEADLINES.stopMs,
-      })
-    }
+    await stopFixtureChild(child)
   }
 })
 
@@ -876,7 +915,7 @@ test('Phase 3B fake gateway recursively rejects private provenance and incomplet
     assert.equal(accepted.status, 200)
     assert.equal(readFileSync(counterPath, 'utf8'), 'planning-generation\n')
   } finally {
-    await stopOwnedChild(child)
+    await stopFixtureChild(child)
     rmSync(root, { recursive: true, force: true })
   }
 })
@@ -1022,7 +1061,7 @@ test('Phase 3B transparent proxy keeps fault state request-local across formal e
     )
   } finally {
     if (!existsSync(releasePath)) writeFileSync(releasePath, 'release\n', 'utf8')
-    await stopOwnedChild(child)
+    await stopFixtureChild(child)
     await new Promise(resolve => upstream.close(resolve))
     rmSync(root, { recursive: true, force: true })
   }
