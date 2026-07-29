@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import test from 'node:test'
+
+const requireFromFrontend = createRequire(
+  new URL('../../frontend/package.json', import.meta.url),
+)
+const { parse } = requireFromFrontend('@babel/parser')
 
 const readWorkspaceFile = async relativePath => {
   try {
@@ -9,6 +15,153 @@ const readWorkspaceFile = async relativePath => {
     if (error?.code === 'ENOENT') return ''
     throw error
   }
+}
+
+const FUNCTION_LIKE_TYPES = new Set([
+  'ArrowFunctionExpression', 'ClassMethod', 'ClassPrivateMethod',
+  'FunctionDeclaration', 'FunctionExpression', 'ObjectMethod',
+])
+
+const childNodes = node => Object.values(node).flatMap(value => {
+  if (Array.isArray(value)) return value.filter(child => typeof child?.type === 'string')
+  return value && typeof value.type === 'string' ? [value] : []
+})
+
+const walkAst = (node, visit, skipNestedFunctions = false) => {
+  if (!node || typeof node.type !== 'string') return
+  if (skipNestedFunctions && FUNCTION_LIKE_TYPES.has(node.type)) return
+  visit(node)
+  for (const child of childNodes(node)) walkAst(child, visit, skipNestedFunctions)
+}
+
+const findNamedAsyncFunction = (source, functionName) => {
+  const matches = []
+  walkAst(parse(source, { sourceType: 'module' }), node => {
+    if (
+      node.type === 'FunctionDeclaration'
+      && node.id?.name === functionName
+    ) matches.push(node)
+  })
+  assert.equal(matches.length, 1, `expected one named async function: ${functionName}`)
+  const [match] = matches
+  assert.equal(match.async, true)
+  assert.equal(match.generator, false)
+  assert.equal(match.params.length, 0)
+  return match
+}
+
+const directExecutionNodes = functionOrBlock => {
+  const nodes = []
+  const root = functionOrBlock.type === 'BlockStatement' ? functionOrBlock : functionOrBlock.body
+  const walkDirect = node => {
+    if (!node || typeof node.type !== 'string' || FUNCTION_LIKE_TYPES.has(node.type)) return
+    nodes.push(node)
+    if (node.type === 'IfStatement' && node.test.type === 'BooleanLiteral') {
+      walkDirect(node.test.value ? node.consequent : node.alternate)
+      return
+    }
+    for (const child of childNodes(node)) walkDirect(child)
+  }
+  walkDirect(root)
+  return nodes
+}
+
+const isIdentifier = (node, name) => node?.type === 'Identifier' && node.name === name
+
+const isIdentifierCall = (node, name) => (
+  node?.type === 'CallExpression'
+  && isIdentifier(node.callee, name)
+  && node.arguments.length === 0
+)
+
+const isPageCall = (node, method) => (
+  node?.type === 'CallExpression'
+  && node.callee?.type === 'MemberExpression'
+  && node.callee.computed === false
+  && isIdentifier(node.callee.object, 'page')
+  && isIdentifier(node.callee.property, method)
+)
+
+const drainKind = node => {
+  const call = node?.type === 'AwaitExpression' ? node.argument : null
+  if (
+    call?.type !== 'CallExpression'
+    || !isIdentifier(call.callee, 'readBeforeDeadline')
+    || call.arguments.length !== 3
+    || !isIdentifier(call.arguments[1], 'deadline')
+    || !isIdentifier(call.arguments[2], 'settleTimeoutMessage')
+  ) return null
+  const callback = call.arguments[0]
+  if (
+    callback?.type !== 'ArrowFunctionExpression'
+    || callback.async
+    || callback.params.length !== 0
+    || callback.body?.type !== 'CallExpression'
+    || callback.body.arguments.length !== 0
+  ) return null
+  if (isIdentifier(callback.body.callee, 'drainPendingRequests')) return 'Requests'
+  if (isIdentifier(callback.body.callee, 'drainPendingApiBodies')) return 'ApiBodies'
+  return null
+}
+
+const assertSettleContract = source => {
+  const settle = findNamedAsyncFunction(source, 'settle')
+  const calls = directExecutionNodes(settle)
+    .flatMap(node => {
+      const kind = drainKind(node)
+      return kind ? [[node.start, kind]] : []
+    })
+    .sort((left, right) => left[0] - right[0])
+    .map(([, kind]) => kind)
+  assert.deepEqual(calls, ['Requests', 'ApiBodies', 'Requests', 'ApiBodies'])
+}
+
+const assertFinishContract = source => {
+  const finish = findNamedAsyncFunction(source, 'finish')
+  const finalizingTryStatements = finish.body.body.filter(
+    statement => statement.type === 'TryStatement' && statement.finalizer,
+  )
+  assert.equal(finalizingTryStatements.length, 1)
+  const [{ block, finalizer }] = finalizingTryStatements
+  const coreOperations = []
+  for (const statement of block.body) {
+    if (
+      ['ReturnStatement', 'ThrowStatement'].includes(statement.type)
+      && coreOperations.length < 3
+    ) assert.fail('finish core is unreachable after an abrupt statement')
+    const node = statement.type === 'ExpressionStatement' ? statement.expression : null
+    if (node?.type === 'AwaitExpression' && isIdentifierCall(node.argument, 'settle')) {
+      coreOperations.push([node.start, 'settle'])
+    } else if (
+      node?.type === 'AssignmentExpression' && node.operator === '='
+      && isIdentifier(node.left, 'pageContent') && node.right?.type === 'AwaitExpression'
+      && isPageCall(node.right.argument, 'content') && node.right.argument.arguments.length === 0
+    ) coreOperations.push([node.start, 'pageContent'])
+  }
+  const orderedCoreOperations = coreOperations
+    .sort((left, right) => left[0] - right[0])
+    .map(([, kind]) => kind)
+  assert.deepEqual(orderedCoreOperations, ['settle', 'pageContent', 'settle'])
+
+  assert.equal(finalizer.type, 'BlockStatement')
+  const detachments = finalizer.body.map(statement => {
+    const node = statement.type === 'ExpressionStatement' ? statement.expression : null
+    if (
+      !isPageCall(node, 'off')
+      || node.arguments.length !== 2
+      || node.arguments[0]?.type !== 'StringLiteral'
+      || node.arguments[1]?.type !== 'Identifier'
+    ) return null
+    return [node.arguments[0].value, node.arguments[1].name]
+  })
+  assert.deepEqual(detachments, [
+    ['request', 'onRequest'],
+    ['requestfinished', 'onRequestFinished'],
+    ['response', 'onResponse'],
+    ['console', 'onConsole'],
+    ['pageerror', 'onPageError'],
+    ['requestfailed', 'onRequestFailed'],
+  ])
 }
 
 test('Playwright config owns two isolated loopback servers and repository artifacts', async () => {
@@ -42,17 +195,58 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     readWorkspaceFile('frontend/e2e/runtime-observer.mjs'),
   ])
   const combined = `${source}\n${observer}`
-  const settleContract = /async\s+function\s+settle\s*\(\s*\)\s*\{[^{}]*await\s+drainPendingRequests\s*\(\s*\)[^{}]*await\s+drainPendingApiBodies\s*\(\s*\)[^{}]*\}/
-  const finishContract = /async\s+function\s+finish\s*\(\s*\)\s*\{[^{}]*try\s*\{[^{}]*await\s+settle\s*\(\s*\)[^{}]*pageContent\s*=\s*await\s+page\.content\s*\(\s*\)[^{}]*await\s+settle\s*\(\s*\)[^{}]*\}\s*finally\s*\{[^{}]*page\.off\s*\(\s*['"]request['"]\s*,\s*onRequest\s*\)[^{}]*page\.off\s*\(\s*['"]response['"]\s*,\s*onResponse\s*\)[^{}]*page\.off\s*\(\s*['"]console['"]\s*,\s*onConsole\s*\)[^{}]*page\.off\s*\(\s*['"]pageerror['"]\s*,\s*onPageError\s*\)[^{}]*page\.off\s*\(\s*['"]requestfailed['"]\s*,\s*onRequestFailed\s*\)[^{}]*\}/
+  const drainCalls = ['Requests', 'ApiBodies', 'Requests', 'ApiBodies']
+    .map(kind => `await readBeforeDeadline(() => drainPending${kind}(), deadline, settleTimeoutMessage)`)
+    .join('\n')
+  const finishFlow = `
+    try {
+      await settle()
+      pageContent = await page.content()
+      await settle()
+    } finally {
+      page.off('request', onRequest)
+      page.off('requestfinished', onRequestFinished)
+      page.off('response', onResponse)
+      page.off('console', onConsole)
+      page.off('pageerror', onPageError)
+      page.off('requestfailed', onRequestFailed)
+    }
+  `
   const crossFunctionDecoy = `
     async function finish() {}
-    async function unrelated() {
-      try {
-        await settle()
-        pageContent = await page.content()
-        await settle()
-      } finally {
+    async function unrelated() { ${finishFlow} }
+  `
+  const stringDeclarationDecoy = `const decoy = ${JSON.stringify(
+    `async function settle() { ${drainCalls} }`,
+  )}`
+  const commentDeclarationDecoy = `/* async function finish() { ${finishFlow} } */`
+  const nestedSettleDecoy = `
+    async function settle() { async function neverCalled() { ${drainCalls} } }
+  `
+  const conciseNestedSettleDecoy = `
+    async function settle() {
+      const neverCalled = async () => (${drainCalls.replaceAll('\n', ',\n')})
+    }
+  `
+  const objectMethodSettleDecoy = `
+    async function settle() {
+      const neverCalled = { async collect() { ${drainCalls} } }
+    }
+  `
+  const conditionalSettleDecoy = `
+    async function settle() { if (false) { ${drainCalls} } }
+  `
+  const nestedFinishDecoy = `
+    async function finish() { const neverCalled = async () => { ${finishFlow} } }
+  `
+  const splitFinishDecoy = `
+    async function finish() {
+      await settle()
+      pageContent = await page.content()
+      await settle()
+      try {} finally {
         page.off('request', onRequest)
+        page.off('requestfinished', onRequestFinished)
         page.off('response', onResponse)
         page.off('console', onConsole)
         page.off('pageerror', onPageError)
@@ -60,10 +254,23 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       }
     }
   `
+  const conditionalFinishDecoy = `
+    async function finish() { if (false) { ${finishFlow} } }
+  `
+  const returnBeforeCoreFinishDecoy = `
+    async function finish() { ${finishFlow.replace('try {', 'try { return;')} }
+  `
+  const throwBeforeCoreFinishDecoy = `
+    async function finish() { ${finishFlow.replace('try {', 'try { throw new Error();')} }
+  `
   const equivalentFormatting = `
     async  function settle ( ) {
-      await drainPendingRequests ( )
-      await drainPendingApiBodies ( )
+      const ignoredBrace = "}"
+      // await readBeforeDeadline(() => drainPendingApiBodies())
+      await readBeforeDeadline ( ( ) => drainPendingRequests ( ), deadline, settleTimeoutMessage )
+      await readBeforeDeadline ( ( ) => drainPendingApiBodies ( ), deadline, settleTimeoutMessage )
+      await readBeforeDeadline ( ( ) => drainPendingRequests ( ), deadline, settleTimeoutMessage )
+      await readBeforeDeadline ( ( ) => drainPendingApiBodies ( ), deadline, settleTimeoutMessage )
     }
     async  function finish ( ) {
       let pageContent = ''
@@ -73,6 +280,7 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
         await settle ( )
       } finally {
         page.off ( "request", onRequest )
+        page.off ( "requestfinished", onRequestFinished )
         page.off ( "response", onResponse )
         page.off ( "console", onConsole )
         page.off ( "pageerror", onPageError )
@@ -97,11 +305,32 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   }
   assert.match(observer, /new Set\(\)/)
   assert.match(observer, /while\s*\(pendingApiBodies\.size\)/)
-  assert.match(equivalentFormatting, settleContract)
-  assert.match(equivalentFormatting, finishContract)
-  assert.match(observer, settleContract)
-  assert.doesNotMatch(crossFunctionDecoy, finishContract)
-  assert.match(observer, finishContract)
+  assert.doesNotThrow(() => assertSettleContract(equivalentFormatting))
+  assert.doesNotThrow(() => assertFinishContract(equivalentFormatting))
+  const acceptedDecoys = [
+    ['string declaration', () => assertSettleContract(stringDeclarationDecoy)],
+    ['comment declaration', () => assertFinishContract(commentDeclarationDecoy)],
+    ['nested settle function', () => assertSettleContract(nestedSettleDecoy)],
+    ['nested settle concise arrow', () => assertSettleContract(conciseNestedSettleDecoy)],
+    ['nested settle object method', () => assertSettleContract(objectMethodSettleDecoy)],
+    ['conditional settle drains', () => assertSettleContract(conditionalSettleDecoy)],
+    ['nested finish arrow', () => assertFinishContract(nestedFinishDecoy)],
+    ['split finish try', () => assertFinishContract(splitFinishDecoy)],
+    ['conditional finish try', () => assertFinishContract(conditionalFinishDecoy)],
+    ['return before finish core', () => assertFinishContract(returnBeforeCoreFinishDecoy)],
+    ['throw before finish core', () => assertFinishContract(throwBeforeCoreFinishDecoy)],
+  ].flatMap(([label, verify]) => {
+    try {
+      verify()
+      return [label]
+    } catch {
+      return []
+    }
+  })
+  assert.deepEqual(acceptedDecoys, [])
+  assert.doesNotThrow(() => assertSettleContract(observer))
+  assert.throws(() => assertFinishContract(crossFunctionDecoy))
+  assert.doesNotThrow(() => assertFinishContract(observer))
   assert.match(source, /READ_METHODS\.has\(response\.method\)/)
   assert.match(source, /expect\(apiWriteMethods[^]*?\.toEqual\(\[\]\)/)
   assert.match(source, /expect\(apiBodyReadFailures[^]*?\.toEqual\(\[\]\)/)
