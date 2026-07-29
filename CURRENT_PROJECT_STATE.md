@@ -1,6 +1,6 @@
 # 当前项目状态
 
-> 新任务或上下文压缩后先读本文件。事实日期：`2026-07-26`。
+> 新任务或上下文压缩后先读本文件。事实日期：`2026-07-30`。
 
 ## 当前权威
 
@@ -23,13 +23,14 @@
 - Canonical release branch：`main`。
 - Phase 2 验收链已进入 `main`，链末提交：
   `f11faad531f04250f2a987390a468dfd14bf06a3`。
-- 当前完成交付包：**Phase 3B Volumes and Plots**。
-- 当前开发分支：`codex/phase3b-volumes-plots`。
-- Fresh package gates 的功能代码 HEAD：`e3c7d18b23fa`。
+- 当前完成交付包：**Phase 3C Story Blocks and Chapter Outlines**。
+- 当前开发分支：`codex/phase3c-story-blocks-outlines`。
+- Phase 3C 交付基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`。
+- Fresh package gates 的功能代码 HEAD：`056520c1f270fdf8f3888be2713647fff03bf2b8`。
 - 当前自动证据边界：Real Provider calls `0`、严格 fake gateway、
   Disposable MySQL 8、UI-only 真实浏览器。
-- Phase 3C–3D、Product DB、Real Provider、Phase 4 Writer Loop、Phase 5
-  Finalization 和 Content Quality 均未评估，不得据 Phase 3B 门禁宣告 Ready。
+- Phase 3D、Product DB、Real Provider、正式 Writer Loop、Finalization 和
+  Content Quality 均未评估，不得据 Phase 3C 门禁宣告 Ready。
 
 ## Phase 2 已完成能力
 
@@ -87,10 +88,33 @@ Phase 3B committed acceptance 见：
 
 - `docs/acceptance/2026-07-24-phase-3b-volumes-plots.md`
 
+## Phase 3C 已完成能力
+
+- 唯一 `planning-v1` 聚合、唯一 `planningStore` 和第三个 Planning tab 现已覆盖
+  StoryBlock、Stage 与 SceneTask；Planning 不保存 target chapter count、
+  completed 或 manual actual progress。
+- 作者可手工创建、CAS 保存、确认和查看 ChapterOutline 历史；显式 AI 生成只经过
+  fake 外部边界，不自动确认 Outline，也不创建 ChapterSession。
+- authority drift 会 supersede 迟到结果；当前章节由后端权威算法决定，每个项目最多
+  一个 drafting Session。
+- 已存在 Session 保留创建时的 Planning/Outline pins，并可按相同 authority
+  幂等重放。
+- Overview、Outline、Session 和 Writer 均使用后端 `targetPath` 与权威章节；
+  Writer 只读 Outline 摘要并从空 WorkingDraft 进入。
+- 最终门禁：focused Python `250 passed`、focused Node `144/144 passed`；
+  browser `7` 场景；完整 Python `2814 passed, 6 skipped`、root Node `243/243`、
+  frontend Node `522/522`；integration `342 passed`；build
+  `2956 modules transformed`。
+
+Phase 3C acceptance 见：
+
+- `docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`
+
 ## 当前 Schema 与数据库边界
 
 - 当前开发分支 committed 源码 Schema：`writer-core-v1.5.0`。
 - Phase 3B 没有 Schema 变更、迁移或兼容路径。
+- Phase 3C 没有 Schema 变更、迁移或兼容路径。
 - 产品数据库现存 Schema 未读取、未重建、未验证。
 - 源码 Schema 版本不得推导为产品数据库现存版本。
 - 不迁移旧数据，不保留旧 Planning 表兼容查询。
@@ -98,8 +122,6 @@ Phase 3B committed acceptance 见：
 
 ## 尚未完成
 
-- Phase 3C：StoryBlock、Stage、SceneTask、小纲 Draft/AI 草稿/确认/历史、
-  ChapterSession 权威钉住、权威章节号与可靠写作入口。
 - Phase 3D：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合
   和 Phase 3 总验收。
 - Phase 4：正式三栏写作台、可靠自动暂存、流式新稿、改写/扩写/压缩、候选、
@@ -112,7 +134,7 @@ Phase 3B committed acceptance 见：
 
 ## 唯一下一步
 
-先编写并批准 **Phase 3C Story Blocks and Chapter Outlines** 详细实施计划，再从
-Phase 3B 验收提交继续实现 StoryBlock/Stage/SceneTask、小纲与可靠写作入口。
-必须复用当前 `planning-v1` 聚合、唯一 `planningStore` 和正式 Planning 链，
-不新增兼容层或第二套状态/生成链。自动门禁继续禁止真实 Provider 和产品数据库。
+建设并验收 **Phase 3D Future Plan / Actual Progress / Canon Projection**：在同一
+Planning revision 上只读组合 Future Plan、Actual Progress 与 Canon Projection，
+并完成 Phase 3 总验收。继续复用当前 `planning-v1` 聚合、唯一 `planningStore`
+和正式产品链；自动门禁继续禁止真实 Provider、产品数据库和 live 网站。

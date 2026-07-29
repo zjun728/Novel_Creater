@@ -1,6 +1,6 @@
 # 开发日志
 
-> 只记录当前有效的决策与证据摘要。日期：`2026-07-26`。不记录密钥、DSN、原始运行日志或本地截图。
+> 只记录当前有效的决策与证据摘要。日期：`2026-07-30`。不记录密钥、DSN、原始运行日志或本地截图。
 
 ## 2026-07-18 产品主规格重置
 
@@ -145,10 +145,34 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - 详细证据：
   `docs/acceptance/2026-07-24-phase-3b-volumes-plots.md`。
 
+## 2026-07-30 Phase 3C Story Blocks and Chapter Outlines 完成
+
+- 分支：`codex/phase3c-story-blocks-outlines`；交付基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`；功能代码 HEAD：`056520c1f270fdf8f3888be2713647fff03bf2b8`。
+- 交付唯一 `planning-v1`/`planningStore` 上的 StoryBlock/Stage/SceneTask 第三
+  Planning tab，以及手工 ChapterOutline Draft、save CAS、confirm 和 history。
+- 显式 AI 只通过 fake 外部边界生成可编辑 Outline；AI 不确认、不创建 Session；
+  authority drift 会 supersede 迟到结果。
+- 后端权威章节算法与每项目最多一个 drafting Session 约束已接通；已存在 Session
+  保留旧 pins 并支持幂等重放。
+- Overview、Outline、Session 与 Writer 使用 backend `targetPath` 和权威 chapter；
+  Writer 只读 Outline 摘要并从空 WorkingDraft 进入。
+- 交付代码顺序规格/质量、M1 follow-up 与 pinned-session follow-up 的最终
+  `Critical/Important/Minor` 均为 `0/0/0`。
+- Task 12 验收文档与事实合同规格审查最终：`C/I/M 0/0/0`；质量审查最终：`C/I/M 0/0/0`；只覆盖本次五文件 Task 12 包，不外推为任何未评估产品能力 Ready。
+- Fresh focused gates：Python `250 passed, 0 skipped, 0 failed`；Node `144/144 passed, 0 failed, 0 skipped`。
+- 第三次从头 final 五门禁全部 exit `0`；browser `7` 场景，完整 Python `2814 passed, 6 skipped, 0 failed`，root Node `243/243`，frontend Node `522/522`，integration `342 passed`，build `2956 modules transformed`，whitespace errors `0`。
+- browser/integration Disposable MySQL 均 created=cleaned、remaining `0`，最终独立
+  cleanup 的 owned process、port、Phase 3C temp roots、Vite cache 和 test DB
+  均为 `0`。
+- Real Provider calls `0`；Product DB reads/writes `0/0`；live website `0`；secret scan findings `0`。
+- `writer-core-v1.5.0` 未变；Phase 3C 没有 Schema、migration 或 compatibility。
+- Phase 3D 是唯一下一步；正式写作、Finalization、真实 Provider、产品数据库与小说内容质量仍未评估。
+- 详细证据：
+  `docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`。
+
 ## 下一步
 
-先编写并批准 Phase 3C Story Blocks and Chapter Outlines 详细计划，再从 Phase 3B
-验收提交继续实施 StoryBlock/Stage/SceneTask、小纲 Draft/AI 草稿/确认/历史、
-ChapterSession 权威钉住、权威章节号与可靠写作入口。继续使用唯一 Planning
-aggregate、`planningStore` 和正式产品链；不创建第二套 Store、状态、页面或生成
-链。自动门禁继续禁止产品数据库和真实 Provider。
+唯一下一步是 Phase 3D Future Plan / Actual Progress / Canon Projection：在同一
+Planning revision 上只读组合 Future Plan、Actual Progress 与 Canon Projection，
+并完成 Phase 3 总验收。继续复用唯一 Planning aggregate、`planningStore` 和正式
+产品链；自动门禁继续禁止产品数据库、真实 Provider 和 live 网站。
