@@ -16,7 +16,6 @@ from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.planning import PlanningRepository
 from backend.services.chapter_sessions import (
-    ChapterSessionConflict,
     ChapterSessionService,
     CreateChapterSession,
 )
@@ -235,6 +234,18 @@ async def _snapshot(session):
             )
         )
         for table in tables
+    }
+
+
+async def _writer_snapshot(session):
+    return {
+        table: tuple(
+            await session.fetchall(
+                f"SELECT * FROM {table} WHERE project_id=%s ORDER BY id",
+                (PROJECT,),
+            )
+        )
+        for table in ("chapter_sessions", "working_drafts", "draft_candidates")
     }
 
 
@@ -1033,8 +1044,24 @@ async def test_real_mysql_confirmed_planning_and_session_are_history_after_gener
     state_b = await service.get_state(PROJECT)
     assert state_b.basis_status == "current"
     assert state_b.future_plan is None
-    with pytest.raises(ChapterSessionConflict, match="generation"):
-        await chapter_service.create_session(chapter_command)
+    before_chapter_replay = await _snapshot(disposable_mysql.session)
+    before_writer_replay = await _writer_snapshot(disposable_mysql.session)
+    before_chapter_counts = {
+        table: (
+            await disposable_mysql.session.fetchone(
+                f"SELECT COUNT(*) AS count FROM {table} WHERE project_id=%s",
+                (PROJECT,),
+            )
+        )["count"]
+        for table in ("chapter_sessions", "working_drafts")
+    }
+    replayed_chapter = await chapter_service.create_session(chapter_command)
+    assert replayed_chapter.project_id == chapter_a.project_id == PROJECT
+    assert replayed_chapter.session == chapter_a.session
+    assert replayed_chapter.working_draft == chapter_a.working_draft
+    assert replayed_chapter.candidates == chapter_a.candidates == ()
+    assert await _snapshot(disposable_mysql.session) == before_chapter_replay
+    assert await _writer_snapshot(disposable_mysql.session) == before_writer_replay
     after_counts = {
         table: (
             await disposable_mysql.session.fetchone(
@@ -1044,7 +1071,7 @@ async def test_real_mysql_confirmed_planning_and_session_are_history_after_gener
         )["count"]
         for table in ("chapter_sessions", "working_drafts")
     }
-    assert after_counts == before_counts == {
+    assert after_counts == before_chapter_counts == before_counts == {
         "chapter_sessions": 1,
         "working_drafts": 1,
     }
