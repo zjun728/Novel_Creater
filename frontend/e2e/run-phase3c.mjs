@@ -1115,6 +1115,20 @@ function buildCleanupEnvironment(environment, databaseName) {
 }
 
 
+export function phase3CViteConfigSource(baseConfigUrl, ownedRoot) {
+  const cacheDir = path.join(ownedRoot, 'vite-cache')
+  return [
+    `import base from ${JSON.stringify(baseConfigUrl)}`,
+    'export default {',
+    '  ...base,',
+    `  cacheDir: ${JSON.stringify(cacheDir)},`,
+    '  optimizeDeps: { ...base.optimizeDeps, noDiscovery: false },',
+    '}',
+    '',
+  ].join('\n')
+}
+
+
 function createRoots(ownedRoot) {
   const artifactRoot = path.join(ownedRoot, 'artifacts')
   const counterPath = path.join(ownedRoot, 'gateway-counter.log')
@@ -1152,14 +1166,7 @@ function createRoots(ownedRoot) {
   const baseConfigUrl = pathToFileURL(path.join(frontendRoot, 'vite.config.js')).href
   writeFileSync(
     viteConfigPath,
-    [
-      `import base from ${JSON.stringify(baseConfigUrl)}`,
-      'export default {',
-      '  ...base,',
-      '  optimizeDeps: { ...base.optimizeDeps, noDiscovery: true },',
-      '}',
-      '',
-    ].join('\n'),
+    phase3CViteConfigSource(baseConfigUrl, ownedRoot),
     { encoding: 'utf8', flag: 'wx' },
   )
   return {
@@ -1457,29 +1464,117 @@ export function assertArtifactEvidenceSafe(
 }
 
 
-function browserFailure(error, resultPath, sensitiveValues) {
+const PUBLIC_BROWSER_DIAGNOSTIC_METHODS = new Set([
+  'GET',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'HEAD',
+  'OPTIONS',
+])
+const PUBLIC_BROWSER_DIAGNOSTIC_COUNTS = Object.freeze([
+  'consoleErrorCount',
+  'requestFailureCount',
+  'apiResponseCount',
+  'pendingRequestCount',
+])
+const MAX_PUBLIC_BROWSER_SAFE_EVIDENCE_DESCRIPTION_LENGTH = 20_000
+
+
+function publicBrowserDiagnosticPath(value) {
+  return typeof value === 'string'
+    && value.startsWith('/')
+    && !value.includes('?')
+    && !value.includes('#')
+    && !/[\\\s\p{Cc}]/u.test(value)
+}
+
+
+function projectBrowserDiagnosticEntries(entries, { status = null } = {}) {
+  if (!Array.isArray(entries)) return null
+  const projected = []
+  for (const entry of entries) {
+    if (
+      !entry
+      || typeof entry !== 'object'
+      || !PUBLIC_BROWSER_DIAGNOSTIC_METHODS.has(entry.method)
+      || !publicBrowserDiagnosticPath(entry.path)
+    ) return null
+    if (status === 'pending') {
+      if (entry.status !== 'pending') return null
+      projected.push({ method: entry.method, path: entry.path, status: 'pending' })
+    } else if (status === 'http') {
+      if (!Number.isInteger(entry.status) || entry.status < 100 || entry.status > 599) {
+        return null
+      }
+      projected.push({ method: entry.method, status: entry.status, path: entry.path })
+    } else {
+      projected.push({ method: entry.method, path: entry.path })
+    }
+  }
+  return projected
+}
+
+
+function projectBrowserSafeEvidence(description) {
+  if (
+    typeof description !== 'string'
+    || description.length > MAX_PUBLIC_BROWSER_SAFE_EVIDENCE_DESCRIPTION_LENGTH
+  ) return null
+  let diagnostic
+  try {
+    diagnostic = JSON.parse(description)
+  } catch {
+    return null
+  }
+  if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) {
+    return null
+  }
+  const projected = {}
+  for (const field of PUBLIC_BROWSER_DIAGNOSTIC_COUNTS) {
+    if (!Number.isInteger(diagnostic[field]) || diagnostic[field] < 0) return null
+    projected[field] = diagnostic[field]
+  }
+  const details = [
+    ['requestFailures', null],
+    ['responseFailures', 'http'],
+    ['apiHeaderReadFailures', 'http'],
+    ['apiBodyReadFailures', 'http'],
+    ['requestHeaderReadFailures', null],
+    ['pendingRequests', 'pending'],
+  ]
+  for (const [field, status] of details) {
+    const entries = projectBrowserDiagnosticEntries(diagnostic[field], { status })
+    if (entries === null) return null
+    projected[field] = entries
+  }
+  return projected
+}
+
+
+export function formatPhase3CBrowserFailure(_error, resultPath, _sensitiveValues) {
   let detail = 'formal scenario failed'
   try {
     const report = JSON.parse(readFileSync(resultPath, 'utf8'))
-    const tests = (report.suites || []).flatMap(suite => suite.specs || [])
-    const failed = tests.find(spec => (spec.tests || []).some(item => (
-      (item.results || []).some(result => result.status !== 'passed')
-    )))
-    const result = failed?.tests?.flatMap(item => item.results || [])
-      .find(item => item.status !== 'passed')
-    const message = String(result?.error?.message || '').replace(/\s+/gu, ' ').trim()
-    detail = `${String(failed?.title || 'formal scenario failed')}: ${message}`
+    const failedTest = (report.suites || [])
+      .flatMap(suite => suite.specs || [])
+      .flatMap(spec => spec.tests || [])
+      .find(item => (item.results || []).some(result => result.status !== 'passed'))
+    const annotations = Array.isArray(failedTest?.annotations)
+      ? failedTest.annotations
+      : []
+    const runtimeFailureAnnotations = annotations.filter(annotation => (
+      annotation?.type === 'runtime-failure-audit'
+    ))
+    const safeEvidence = runtimeFailureAnnotations.length === 1
+      ? projectBrowserSafeEvidence(runtimeFailureAnnotations[0].description)
+      : null
+    if (safeEvidence) detail = `safe evidence: ${JSON.stringify(safeEvidence)}`
   } catch {
     // The fixed fallback remains safe when the reporter file is unavailable.
   }
-  for (const sensitive of sensitiveValues) {
-    if (typeof sensitive === 'string' && sensitive) {
-      detail = detail.replaceAll(sensitive, '[redacted]')
-    }
-  }
-  return new Error(`Phase 3C browser test failed: ${detail.slice(0, 2000)}`, {
-    cause: error,
-  })
+  return new Error(`Phase 3C browser test failed: ${detail}`)
 }
 
 
@@ -1941,7 +2036,11 @@ export async function runOneScenario({
             },
           )
         } catch (error) {
-          throw browserFailure(error, roots.browserResultPath, sensitiveValues)
+          throw formatPhase3CBrowserFailure(
+            error,
+            roots.browserResultPath,
+            sensitiveValues,
+          )
         }
         browserNetworkAudit = assertBrowserNetworkAudit(
           readFileSync(roots.browserResultPath, 'utf8'),

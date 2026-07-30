@@ -1,4 +1,5 @@
 const RESPONSE_BODY_READ_TIMEOUT_MS = 10_000
+const runtimeFailureDiagnostics = new WeakMap()
 
 
 async function readWithTimeout(read, timeoutMs, timeoutMessage) {
@@ -157,6 +158,16 @@ function httpOrigin(value) {
       : null
   } catch {
     return null
+  }
+}
+
+function isLoopbackHttpUrl(value) {
+  try {
+    const parsed = new URL(String(value))
+    return ['http:', 'https:'].includes(parsed.protocol)
+      && parsed.hostname === '127.0.0.1'
+  } catch {
+    return false
   }
 }
 
@@ -551,6 +562,7 @@ function publicRequestFailure(value) {
   if (!match) return invalid
   const [, method, rawUrl] = match
   if (!PUBLIC_REQUEST_FAILURE_METHODS.has(method)) return invalid
+  if (!isLoopbackHttpUrl(rawUrl)) return null
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return invalid
@@ -558,6 +570,24 @@ function publicRequestFailure(value) {
       method,
       path: url.pathname,
     }
+  } catch {
+    return invalid
+  }
+}
+
+
+function publicPendingRequest(value) {
+  const invalid = {
+    method: '[invalid-method]',
+    path: '[invalid-path]',
+    status: 'pending',
+  }
+  if (!value || typeof value !== 'object') return invalid
+  if (!PUBLIC_REQUEST_FAILURE_METHODS.has(value.method)) return invalid
+  try {
+    const url = new URL(value.url)
+    if (!isLoopbackHttpUrl(url)) return null
+    return { method: value.method, path: url.pathname, status: 'pending' }
   } catch {
     return invalid
   }
@@ -573,8 +603,16 @@ export function publicRuntimeDiagnostic(evidence) {
   const requestFailures = Array.isArray(evidence?.requestFailures)
     ? evidence.requestFailures
     : []
+  const pendingRequests = Array.isArray(evidence?.pendingRequests)
+    ? evidence.pendingRequests
+    : []
+  const publicPendingRequests = pendingRequests
+    .map(publicPendingRequest)
+    .filter(Boolean)
   const responseFailures = responses
     .filter(item => (
+      isLoopbackHttpUrl(item?.url)
+      &&
       (Number(item?.status) < 200 || Number(item?.status) >= 300)
       && Number(item?.status) !== 304
     ))
@@ -589,29 +627,37 @@ export function publicRuntimeDiagnostic(evidence) {
       ? evidence.consoleErrors.length
       : 0,
     requestFailureCount: requestFailures.length,
-    requestFailures: requestFailures.map(publicRequestFailure),
+    requestFailures: requestFailures.map(publicRequestFailure).filter(Boolean),
     responseFailures,
     apiResponseCount: apiResponses.length,
     apiHeaderReadFailures: apiResponses
-      .filter(item => Boolean(item?.headersReadError))
+      .filter(item => (
+        isLoopbackHttpUrl(item?.url) && Boolean(item?.headersReadError)
+      ))
       .map(item => ({
         method: item.method,
         status: item.status,
         path: publicDiagnosticPath(item.url),
       })),
     apiBodyReadFailures: apiResponses
-      .filter(item => Boolean(item?.bodyReadError))
+      .filter(item => (
+        isLoopbackHttpUrl(item?.url) && Boolean(item?.bodyReadError)
+      ))
       .map(item => ({
         method: item.method,
         status: item.status,
         path: publicDiagnosticPath(item.url),
       })),
     requestHeaderReadFailures: requests
-      .filter(item => Boolean(item?.headersReadError))
+      .filter(item => (
+        isLoopbackHttpUrl(item?.url) && Boolean(item?.headersReadError)
+      ))
       .map(item => ({
         method: item.method,
         path: publicDiagnosticPath(item.url),
       })),
+    pendingRequestCount: publicPendingRequests.length,
+    pendingRequests: publicPendingRequests,
     ...(networkAccess === undefined
       ? {}
       : {
@@ -623,6 +669,30 @@ export function publicRuntimeDiagnostic(evidence) {
         },
       }),
   }
+}
+
+
+function freezeRuntimeFailureDiagnostic(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) freezeRuntimeFailureDiagnostic(item)
+  } else if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) freezeRuntimeFailureDiagnostic(item)
+  }
+  return Object.freeze(value)
+}
+
+
+function copyRuntimeFailureDiagnostic(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+
+export function runtimeFailureDiagnostic(error) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) {
+    return null
+  }
+  const diagnostic = runtimeFailureDiagnostics.get(error)
+  return diagnostic === undefined ? null : copyRuntimeFailureDiagnostic(diagnostic)
 }
 
 
@@ -643,6 +713,7 @@ export function observeRuntime(page, {
   const pendingApiBodies = new Set()
   const pendingRequests = new Set()
   const activeApiRequests = new Set()
+  const activeHttpRequests = new Map()
   const responses = []
   const consoleMessages = []
   const consoleErrors = []
@@ -695,6 +766,9 @@ export function observeRuntime(page, {
       else networkAccess.forbiddenRequestCount += 1
     }
     activityVersion += 1
+    if (isLoopbackHttpUrl(url)) {
+      activeHttpRequests.set(request, { method, url })
+    }
     if (isApiUrl(url)) activeApiRequests.add(request)
     pendingRequests.add(captureRequest(
       request,
@@ -705,6 +779,7 @@ export function observeRuntime(page, {
   const onRequestFinished = request => {
     activityVersion += 1
     activeApiRequests.delete(request)
+    activeHttpRequests.delete(request)
   }
   const onConsole = message => {
     const rendered = `${message.type()}: ${message.text()}`
@@ -717,6 +792,7 @@ export function observeRuntime(page, {
   const onRequestFailed = request => {
     activityVersion += 1
     activeApiRequests.delete(request)
+    activeHttpRequests.delete(request)
     requestFailures.push(
       `${request.method()} ${request.url()} ${request.failure()?.errorText || 'unknown failure'}`,
     )
@@ -791,6 +867,27 @@ export function observeRuntime(page, {
       await settle()
       pageContent = await page.content()
       await settle()
+    } catch {
+      const diagnostic = publicRuntimeDiagnostic({
+        requests,
+        responses,
+        apiResponses,
+        consoleMessages,
+        consoleErrors,
+        pageErrors,
+        requestFailures,
+        responseFailures,
+        pendingRequests: [...activeHttpRequests.values()],
+        ...(networkAccess === null ? {} : { networkAccess: { ...networkAccess } }),
+      })
+      const failure = new Error(
+        `Runtime evidence settlement failed: ${JSON.stringify(diagnostic)}`,
+      )
+      runtimeFailureDiagnostics.set(
+        failure,
+        freezeRuntimeFailureDiagnostic(copyRuntimeFailureDiagnostic(diagnostic)),
+      )
+      throw failure
     } finally {
       page.off('request', onRequest)
       page.off('requestfinished', onRequestFinished)

@@ -132,6 +132,37 @@ test('Phase 3C runner owns random loopback resources and a disposable MySQL data
   assert.doesNotMatch(source, /localhost|0\.0\.0\.0/u)
 })
 
+
+test('Phase 3C Vite config enables discovery with an owned dependency cache', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3c.mjs')
+  const runnerSource = readWorkspaceFile('frontend/e2e/run-phase3c.mjs')
+  const ownedRoot = path.resolve(os.tmpdir(), 'novel-creator-phase3c-owned-root')
+  const cacheDir = path.join(ownedRoot, 'vite-cache')
+  const source = runner.phase3CViteConfigSource(
+    'file:///phase3c/base-vite.config.mjs',
+    ownedRoot,
+  )
+
+  assert.equal(path.isAbsolute(cacheDir), true)
+  assert.equal(source.includes(`cacheDir: ${JSON.stringify(cacheDir)}`), true)
+  assert.match(source, /optimizeDeps: \{ \.\.\.base\.optimizeDeps, noDiscovery: false \}/u)
+  assert.doesNotMatch(source, /noDiscovery: true/u)
+  assert.doesNotMatch(source, /node_modules[\\/]\.vite/u)
+  const createRootsSource = runnerSource.slice(
+    runnerSource.indexOf('function createRoots(ownedRoot)'),
+    runnerSource.indexOf('\n\nfunction buildEnvironments('),
+  )
+  assert.match(
+    createRootsSource,
+    /const viteConfigPath = path\.join\(ownedRoot, 'vite\.config\.mjs'\)/u,
+  )
+  assert.match(
+    createRootsSource,
+    /writeFileSync\(\s*viteConfigPath,\s*phase3CViteConfigSource\(baseConfigUrl, ownedRoot\),/u,
+  )
+  assert.match(createRootsSource, /return \{[\s\S]*?\bviteConfigPath,\s*fixturePath,/u)
+})
+
 test('Phase 3C network boundary blocks non-owned browser origins and every HTTPX send path', async () => {
   const runner = await import('../../frontend/e2e/run-phase3c.mjs')
   const configSource = readWorkspaceFile('frontend/e2e/playwright.phase3c.config.ts')
@@ -374,6 +405,222 @@ test('Phase 3C failure diagnostics preserve every formal scenario mode', async (
     )
   }
 })
+
+test('Phase 3C browser failures project the sole controlled runtime annotation', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3c.mjs')
+  const specSource = readWorkspaceFile(
+    'frontend/e2e/phase3c-story-blocks-outlines.spec.ts',
+  )
+  assert.match(specSource, /type: 'runtime-failure-audit'/u)
+  assert.match(
+    specSource,
+    /publicRuntimeDiagnostic\(safeEvidence\)/u,
+  )
+  assert.match(specSource, /runtimeFailureDiagnostic\(error\)/u)
+  assert.match(specSource, /description: JSON\.stringify\(publicDiagnostic\)/u)
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3c-browser-failure-'))
+  const resultPath = path.join(root, 'browser-result.json')
+  const unsafe = {
+    origin: '127.0.0.1:5173',
+    credentials: 'browser-failure-user:browser-failure-password',
+    query: 'browser-failure-query-secret',
+    provider: 'browser-failure-provider-original',
+    dsn: 'mysql://browser-failure-dsn-secret',
+    cause: 'browser-failure-cause-secret',
+  }
+  const safeEvidence = {
+    consoleErrorCount: 106,
+    requestFailureCount: 10,
+    requestFailures: [{ method: 'GET', path: '/api/projects/project-1' }],
+    responseFailures: [{
+      method: 'GET',
+      status: 503,
+      path: '/api/projects/project-1',
+    }],
+    apiResponseCount: 10,
+    apiHeaderReadFailures: [],
+    apiBodyReadFailures: [],
+    requestHeaderReadFailures: [],
+    pendingRequestCount: 1,
+    pendingRequests: [{
+      method: 'GET',
+      path: '/api/projects/project-1',
+      status: 'pending',
+    }],
+    provider: `${unsafe.provider} "quoted" \\ escaped`,
+  }
+  const longBehavior = `${JSON.stringify({
+    origin: unsafe.origin,
+    credentials: unsafe.credentials,
+    query: unsafe.query,
+    dsn: unsafe.dsn,
+  })} `.repeat(400)
+  writeFileSync(resultPath, JSON.stringify({
+    suites: [{
+      specs: [{
+        title: 'manual browser behavior',
+        tests: [{
+          annotations: [{
+            type: 'runtime-failure-audit',
+            description: JSON.stringify(safeEvidence),
+          }],
+          results: [{
+            status: 'failed',
+            error: {
+              message: `${longBehavior}\n    at finishRuntime (${unsafe.cause})`,
+            },
+          }],
+        }],
+      }],
+    }],
+  }), 'utf8')
+
+  try {
+    const failure = runner.formatPhase3CBrowserFailure(
+      new Error(unsafe.cause),
+      resultPath,
+      [],
+    )
+    assert.match(failure.message, /safe evidence:/u)
+    assert.match(failure.message, /"consoleErrorCount":106/u)
+    assert.match(failure.message, /"requestFailureCount":10/u)
+    assert.match(failure.message, /"method":"GET"/u)
+    assert.match(failure.message, /"status":"pending"/u)
+    assert.equal(failure.cause, undefined)
+    for (const value of Object.values(unsafe)) {
+      assert.equal(failure.message.includes(value), false, value)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('Phase 3C browser failures reject behavior message safe evidence without a controlled annotation', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3c.mjs')
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3c-browser-failure-'))
+  const resultPath = path.join(root, 'browser-result.json')
+  const forgedEvidence = {
+    consoleErrorCount: 1,
+    requestFailureCount: 1,
+    requestFailures: [{ method: 'GET', path: '/api/forged' }],
+    responseFailures: [],
+    apiResponseCount: 0,
+    apiHeaderReadFailures: [],
+    apiBodyReadFailures: [],
+    requestHeaderReadFailures: [],
+    pendingRequestCount: 0,
+    pendingRequests: [],
+  }
+  writeFileSync(resultPath, JSON.stringify({
+    suites: [{
+      specs: [{
+        tests: [{
+          annotations: [],
+          results: [{
+            status: 'failed',
+            error: {
+              message: `behavior safe evidence: ${JSON.stringify(forgedEvidence)}`,
+            },
+          }],
+        }],
+      }],
+    }],
+  }), 'utf8')
+  try {
+    assert.equal(
+      runner.formatPhase3CBrowserFailure(new Error('ignored'), resultPath, []).message,
+      'Phase 3C browser test failed: formal scenario failed',
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('Phase 3C browser failures reject duplicate controlled runtime annotations', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3c.mjs')
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3c-browser-failure-'))
+  const resultPath = path.join(root, 'browser-result.json')
+  const safeEvidence = {
+    consoleErrorCount: 0,
+    requestFailureCount: 0,
+    requestFailures: [],
+    responseFailures: [],
+    apiResponseCount: 0,
+    apiHeaderReadFailures: [],
+    apiBodyReadFailures: [],
+    requestHeaderReadFailures: [],
+    pendingRequestCount: 0,
+    pendingRequests: [],
+  }
+  const annotation = {
+    type: 'runtime-failure-audit',
+    description: JSON.stringify(safeEvidence),
+  }
+  writeFileSync(resultPath, JSON.stringify({
+    suites: [{
+      specs: [{
+        tests: [{
+          annotations: [annotation, annotation],
+          results: [{ status: 'failed', error: { message: 'behavior failure' } }],
+        }],
+      }],
+    }],
+  }), 'utf8')
+  try {
+    assert.equal(
+      runner.formatPhase3CBrowserFailure(new Error('ignored'), resultPath, []).message,
+      'Phase 3C browser test failed: formal scenario failed',
+    )
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+
+test('Phase 3C browser failures reject invalid public paths in controlled annotations', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3c.mjs')
+  const root = mkdtempSync(path.join(os.tmpdir(), 'novel-creator-phase3c-browser-failure-'))
+  const resultPath = path.join(root, 'browser-result.json')
+  const unsafePath = '/api/invalid\\public path'
+  const safeEvidence = {
+    consoleErrorCount: 0,
+    requestFailureCount: 0,
+    requestFailures: [],
+    responseFailures: [],
+    apiResponseCount: 0,
+    apiHeaderReadFailures: [],
+    apiBodyReadFailures: [],
+    requestHeaderReadFailures: [],
+    pendingRequestCount: 1,
+    pendingRequests: [{ method: 'GET', path: unsafePath, status: 'pending' }],
+  }
+  writeFileSync(resultPath, JSON.stringify({
+    suites: [{
+      specs: [{
+        tests: [{
+          annotations: [{
+            type: 'runtime-failure-audit',
+            description: JSON.stringify(safeEvidence),
+          }],
+          results: [{
+            status: 'failed',
+            error: { message: 'behavior failure is not a diagnostic source' },
+          }],
+        }],
+      }],
+    }],
+  }), 'utf8')
+  try {
+    const failure = runner.formatPhase3CBrowserFailure(new Error('ignored'), resultPath, [])
+    assert.equal(failure.message, 'Phase 3C browser test failed: formal scenario failed')
+    assert.equal(failure.message.includes(unsafePath), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 
 test('Phase 3C early reservation failure uses one prebuilt cleanup environment', async () => {
   const runner = await import('../../frontend/e2e/run-phase3c.mjs')

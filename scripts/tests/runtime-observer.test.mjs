@@ -20,6 +20,27 @@ class FakePage extends EventEmitter {
   }
 }
 
+function assertSafeErrorChain(error, sensitiveValues) {
+  const observed = []
+  const visited = new Set()
+  const visit = value => {
+    if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
+      return
+    }
+    if (visited.has(value)) return
+    visited.add(value)
+    for (const field of ['message', 'stack']) {
+      if (typeof value[field] === 'string') observed.push(value[field])
+    }
+    visit(value.cause)
+  }
+  visit(error)
+  const rendered = observed.join('\n')
+  for (const sensitive of sensitiveValues) {
+    assert.equal(rendered.includes(sensitive), false)
+  }
+}
+
 function fakeResponse({
   url = 'http://127.0.0.1:8000/api/health',
   method = 'GET',
@@ -294,6 +315,174 @@ test('navigation boundary waits for network idle before settling runtime evidenc
   await settleNavigationBoundary(page, runtime)
 
   assert.deepEqual(calls, ['page:networkidle', 'runtime:settle'])
+})
+
+
+test('observer finish reports only safe pending HTTP request diagnostics when network idle times out', async () => {
+  const { observeRuntime, runtimeFailureDiagnostic } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const secrets = {
+    username: 'pending-request-user-secret',
+    password: 'pending-request-password-secret',
+    query: 'pending-request-query-secret',
+    hash: 'pending-request-hash-secret',
+    error: 'pending-request-load-error-secret',
+    body: 'pending-request-body-secret',
+    header: 'pending-request-header-secret',
+    dsn: 'mysql://pending-request-dsn-secret',
+  }
+  const loadFailure = new Error(`network idle timed out: ${secrets.error}`)
+  loadFailure.cause = new Error(`nested cause: ${secrets.dsn}`)
+  page.waitForLoadState = async () => { throw loadFailure }
+  const observer = observeRuntime(page)
+  const request = {
+    method: () => 'GET',
+    url: () => `http://${secrets.username}:${secrets.password}@127.0.0.1:5173`
+      + `/api/projects/project-1?token=${secrets.query}#${secrets.hash}`,
+    allHeaders: async () => ({ authorization: secrets.header }),
+    postData: () => secrets.body,
+  }
+  page.emit('request', request)
+
+  await assert.rejects(observer.finish(), error => {
+    assert.ok(error instanceof Error)
+    assert.equal(
+      error?.message,
+      'Runtime evidence settlement failed: '
+        + '{"consoleErrorCount":0,"requestFailureCount":0,"requestFailures":[],'
+        + '"responseFailures":[],"apiResponseCount":0,"apiHeaderReadFailures":[],'
+        + '"apiBodyReadFailures":[],"requestHeaderReadFailures":[],'
+        + '"pendingRequestCount":1,"pendingRequests":[{"method":"GET",'
+        + '"path":"/api/projects/project-1","status":"pending"}]}',
+    )
+    const diagnostic = runtimeFailureDiagnostic(error)
+    assert.deepEqual(diagnostic, {
+      consoleErrorCount: 0,
+      requestFailureCount: 0,
+      requestFailures: [],
+      responseFailures: [],
+      apiResponseCount: 0,
+      apiHeaderReadFailures: [],
+      apiBodyReadFailures: [],
+      requestHeaderReadFailures: [],
+      pendingRequestCount: 1,
+      pendingRequests: [{
+        method: 'GET',
+        path: '/api/projects/project-1',
+        status: 'pending',
+      }],
+    })
+    diagnostic.pendingRequests[0].path = '/forged'
+    assert.equal(
+      runtimeFailureDiagnostic(error)?.pendingRequests[0]?.path,
+      '/api/projects/project-1',
+    )
+    assert.equal(
+      runtimeFailureDiagnostic(new Error(`forged ${secrets.error}`)),
+      null,
+    )
+    for (const secret of [
+      ...Object.values(secrets),
+      '127.0.0.1:5173',
+    ]) assert.doesNotMatch(error?.message || '', new RegExp(secret, 'u'))
+    assertSafeErrorChain(error, Object.values(secrets))
+    return true
+  })
+})
+
+
+test('observer finish excludes pending external HTTPS requests from safe diagnostics', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const secrets = {
+    username: 'external-pending-user-secret',
+    password: 'external-pending-password-secret',
+    query: 'external-pending-query-secret',
+    hash: 'external-pending-hash-secret',
+    provider: 'provider-private-original-path',
+  }
+  const loadFailure = new Error('network idle timed out')
+  page.waitForLoadState = async () => { throw loadFailure }
+  const observer = observeRuntime(page)
+  page.emit('request', {
+    method: () => 'GET',
+    url: () => `https://${secrets.username}:${secrets.password}@provider.example.invalid`
+      + `/v1/${secrets.provider}?token=${secrets.query}#${secrets.hash}`,
+    allHeaders: async () => ({}),
+    postData: () => '',
+  })
+
+  await assert.rejects(observer.finish(), error => {
+    assert.ok(error instanceof Error)
+    assert.equal(
+      error?.message,
+      'Runtime evidence settlement failed: '
+        + '{"consoleErrorCount":0,"requestFailureCount":0,"requestFailures":[],'
+        + '"responseFailures":[],"apiResponseCount":0,"apiHeaderReadFailures":[],'
+        + '"apiBodyReadFailures":[],"requestHeaderReadFailures":[],'
+        + '"pendingRequestCount":0,"pendingRequests":[]}',
+    )
+    for (const secret of [
+      ...Object.values(secrets),
+      'provider.example.invalid',
+      '/v1/',
+    ]) assert.doesNotMatch(error?.message || '', new RegExp(secret, 'u'))
+    assertSafeErrorChain(error, Object.values(secrets))
+    return true
+  })
+})
+
+
+test('observer finish excludes external provider details from every public diagnostic path', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const secrets = {
+    username: 'external-diagnostic-user-secret',
+    password: 'external-diagnostic-password-secret',
+    query: 'external-diagnostic-query-secret',
+    hash: 'external-diagnostic-hash-secret',
+    provider: 'provider-diagnostic-original-path',
+    error: 'provider-diagnostic-error-secret',
+  }
+  const url = `https://${secrets.username}:${secrets.password}@provider.example.invalid`
+    + `/api/${secrets.provider}?token=${secrets.query}#${secrets.hash}`
+  const request = {
+    method: () => 'GET',
+    url: () => url,
+    allHeaders: async () => { throw new Error(secrets.error) },
+    postData: () => '',
+    failure: () => ({ errorText: secrets.error }),
+  }
+  const loadFailure = new Error('network idle timed out')
+  page.waitForLoadState = async () => { throw loadFailure }
+  const observer = observeRuntime(page, { quietWindowMs: 1 })
+  page.emit('request', request)
+  page.emit('response', fakeResponse({
+    url,
+    status: 503,
+    request: () => request,
+  }))
+  page.emit('requestfailed', request)
+  await observer.settle()
+
+  await assert.rejects(observer.finish(), error => {
+    assert.ok(error instanceof Error)
+    assert.equal(
+      error?.message,
+      'Runtime evidence settlement failed: '
+        + '{"consoleErrorCount":0,"requestFailureCount":1,"requestFailures":[],'
+        + '"responseFailures":[],"apiResponseCount":1,"apiHeaderReadFailures":[],'
+        + '"apiBodyReadFailures":[],"requestHeaderReadFailures":[],'
+        + '"pendingRequestCount":0,"pendingRequests":[]}',
+    )
+    for (const secret of [
+      ...Object.values(secrets),
+      'provider.example.invalid',
+      '/api/',
+    ]) assert.doesNotMatch(error?.message || '', new RegExp(secret, 'u'))
+    assertSafeErrorChain(error, Object.values(secrets))
+    return true
+  })
 })
 
 test('observer records fail-closed header body response console page and request evidence', async () => {
@@ -800,6 +989,8 @@ test('private evidence rejection and public diagnostics never echo captured secr
     apiHeaderReadFailures: [{ method: 'GET', status: 200, path: '/api/current' }],
     apiBodyReadFailures: [{ method: 'GET', status: 200, path: '/api/current' }],
     requestHeaderReadFailures: [{ method: 'GET', path: '/api/history' }],
+    pendingRequestCount: 0,
+    pendingRequests: [],
   })
 })
 
