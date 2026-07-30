@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
 
+import aiomysql
 import pytest
 
 from backend.domain.chapter_outlines import (
@@ -12,7 +13,15 @@ from backend.domain.chapter_outlines import (
     normalize_chapter_outline,
 )
 from backend.domain.json_contracts import canonical_hash, canonical_json
+from backend.domain.canon import (
+    AssertionOperator,
+    CanonEventInput,
+    ConfirmationStatus,
+    FactKind,
+    ValueCardinality,
+)
 from backend.repositories.chapter_sessions import ChapterSessionRepository
+from backend.repositories.canon import CanonRepository
 from backend.repositories.contracts import ContractRepository
 from backend.repositories.planning import PlanningRepository
 from backend.services.chapter_sessions import (
@@ -25,12 +34,18 @@ from backend.services.contracts import (
     SaveContractDraft,
 )
 from backend.services.planning import (
+    ActualProgressResult,
     ConfirmPlanningDraft,
     CreatePlanningDraft,
     PlanningConflict,
     PlanningPreconditionFailed,
     PlanningService,
     SavePlanningDraft,
+)
+from backend.services.canon import (
+    CanonEventCreate,
+    CanonService,
+    CommitCanonRevision,
 )
 from backend.services.projections import build_projection_bundle
 from backend.tests.integration.test_contract_drafts import (
@@ -247,6 +262,89 @@ async def _writer_snapshot(session):
         )
         for table in ("chapter_sessions", "working_drafts", "draft_candidates")
     }
+
+
+async def _insert_unrelated_actual_progress(
+    session,
+    *,
+    revision: int,
+    field_path: str,
+    value: dict[str, object],
+    row_id: str,
+    bundle_hash: str,
+):
+    await session.execute(
+        """INSERT INTO plot_thread_projections
+           (id,project_id,revision_number,entity_id,subject_key,field_path,
+            payload_json,content_hash,created_at)
+           VALUES (%s,%s,%s,NULL,'global',%s,%s,%s,%s)""",
+        (
+            row_id,
+            PROJECT,
+            revision,
+            field_path,
+            canonical_json(value),
+            bundle_hash,
+            NOW + revision,
+        ),
+    )
+
+
+def _canon_progress_service(disposable_mysql, revision: int, repository=None):
+    return CanonService(
+        repository or CanonRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        id_factory=lambda: f"97000000-0000-0000-0000-{revision + 100:012d}",
+        clock=lambda: NOW + revision,
+    )
+
+
+def _canon_progress_commit(revision: int, field_path: str, value: dict[str, object]):
+    return CommitCanonRevision(
+        project_id=PROJECT,
+        expected_head=revision - 1,
+        idempotency_key=f"{revision:064x}",
+        source_type="manual_test",
+        source_id=f"actual-progress-{revision}",
+        entities=(),
+        aliases=(),
+        events=(
+            CanonEventCreate(
+                f"97000000-0000-0000-0000-{revision + 200:012d}",
+                CanonEventInput(
+                    entity_id=None,
+                    fact_kind=FactKind.DYNAMIC_EVENT,
+                    field_path=field_path,
+                    value=value,
+                    evidence={"source": "integration"},
+                    effective_start_chapter=1,
+                    effective_end_chapter=None,
+                    confirmation_status=ConfirmationStatus.CONFIRMED,
+                    assertion_operator=AssertionOperator.EQUALS,
+                    value_cardinality=ValueCardinality.SINGLE,
+                ),
+            ),
+        ),
+    )
+
+
+async def _assert_project_lock_wait_timeout(connection_config):
+    connection = await aiomysql.connect(
+        **{**connection_config, "autocommit": False}
+    )
+    try:
+        async with connection.cursor(aiomysql.DictCursor) as cursor:
+            await cursor.execute("SET innodb_lock_wait_timeout=1")
+            with pytest.raises(aiomysql.OperationalError) as captured:
+                await cursor.execute(
+                    "SELECT id FROM projects WHERE id=%s FOR UPDATE",
+                    (PROJECT,),
+                )
+            assert captured.value.args[0] == 1205
+    finally:
+        connection.close()
 
 
 def _node_ref(node):
@@ -494,6 +592,173 @@ class _PlanningConfirmProbeRepository(PlanningRepository):
     async def lock_active_project(self, session, project_id):
         self.lock_attempted.set()
         return await super().lock_active_project(session, project_id)
+
+
+class _PlanningProjectionBarrierRepository(PlanningRepository):
+    def __init__(self):
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def read_projection_head(self, session, project_id):
+        row = await super().read_projection_head(session, project_id)
+        self.entered.set()
+        await self.release.wait()
+        return row
+
+
+class _CanonCommitProbeRepository(CanonRepository):
+    def __init__(self):
+        super().__init__()
+        self.lock_attempted = asyncio.Event()
+
+    async def lock_project(self, session, project_id):
+        self.lock_attempted.set()
+        return await super().lock_project(session, project_id)
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_actual_progress_reads_only_the_synchronized_head_revision(
+    disposable_mysql,
+):
+    service = await _prepare(disposable_mysql)
+    committed = await _canon_progress_service(
+        disposable_mysql, 1
+    ).commit(_canon_progress_commit(1, "plot.old", {"status": "old"}))
+    await _insert_unrelated_actual_progress(
+        disposable_mysql.session,
+        revision=2,
+        field_path="plot.future",
+        value={"status": "future"},
+        row_id="97000000-0000-0000-0000-000000000002",
+        bundle_hash=committed.projection_hash,
+    )
+    planning_before = await _snapshot(disposable_mysql.session)
+    before = await disposable_mysql.session.fetchall(
+        """SELECT revision_number,subject_key,field_path,payload_json,content_hash
+             FROM plot_thread_projections WHERE project_id=%s ORDER BY id""",
+        (PROJECT,),
+    )
+
+    state = await service.get_state(PROJECT)
+
+    assert state.actual_progress == (
+        ActualProgressResult(
+            revision_number=1,
+            subject_key="__global__",
+            entity_id=None,
+            field_path="plot.old",
+            value={"status": "old"},
+            content_hash=committed.projection_hash,
+        ),
+    )
+    assert (
+        await disposable_mysql.session.fetchall(
+            """SELECT revision_number,subject_key,field_path,payload_json,content_hash
+                 FROM plot_thread_projections WHERE project_id=%s ORDER BY id""",
+            (PROJECT,),
+        )
+        == before
+    )
+    assert await _snapshot(disposable_mysql.session) == planning_before
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_same_snapshot_keeps_future_status_and_actual_progress_together(
+    disposable_mysql,
+):
+    writer = await _prepare(disposable_mysql)
+    saved = await _save_complete(writer)
+    old = await writer.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            saved.draft_id,
+            saved.draft_revision,
+            saved.content_hash,
+            "confirm-same-snapshot-old",
+        )
+    )
+    old_canon = await _canon_progress_service(
+        disposable_mysql, 1
+    ).commit(_canon_progress_commit(1, "plot.snapshot", {"status": "old"}))
+    barrier = _PlanningProjectionBarrierRepository()
+    canon_probe = _CanonCommitProbeRepository()
+    reader = PlanningService(
+        barrier,
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    read_task = None
+    commit_task = None
+    try:
+        read_task = asyncio.create_task(reader.get_state(PROJECT))
+        await asyncio.wait_for(barrier.entered.wait(), timeout=1)
+        commit_task = asyncio.create_task(
+            _canon_progress_service(disposable_mysql, 2, canon_probe).commit(
+                _canon_progress_commit(2, "plot.snapshot", {"status": "new"})
+            )
+        )
+        await asyncio.wait_for(canon_probe.lock_attempted.wait(), timeout=1)
+        await _assert_project_lock_wait_timeout(disposable_mysql.connection_config)
+        barrier.release.set()
+        old_state = await read_task
+        fresh_canon = await commit_task
+        fresh_state = await reader.get_state(PROJECT)
+    finally:
+        barrier.release.set()
+        for task in (read_task, commit_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (read_task, commit_task) if task is not None),
+            return_exceptions=True,
+        )
+
+    assert old_state.project_lifecycle == "active"
+    assert old_state.basis_status == "current"
+    assert old_state.head.revision == old.revision == 1
+    assert old_state.head.planning_revision_id == old.planning_revision_id
+    assert old_state.head.content_hash == old.content_hash
+    assert old_state.future_plan == old.content
+    assert old_state.canon_projection_status == {
+        "canonRevision": 1,
+        "projectionRevision": 1,
+        "contentHash": old_canon.projection_hash,
+        "synchronized": True,
+    }
+    assert old_state.actual_progress == (
+        ActualProgressResult(
+            revision_number=1,
+            subject_key="__global__",
+            entity_id=None,
+            field_path="plot.snapshot",
+            value={"status": "old"},
+            content_hash=old_canon.projection_hash,
+        ),
+    )
+    assert fresh_state.project_lifecycle == old_state.project_lifecycle
+    assert fresh_state.basis_status == old_state.basis_status
+    assert fresh_state.head == old_state.head
+    assert fresh_state.draft == old_state.draft
+    assert fresh_state.future_plan == old_state.future_plan
+    assert fresh_state.capacity_policy == old_state.capacity_policy
+    assert fresh_state.capabilities == old_state.capabilities
+    assert fresh_state.canon_projection_status == {
+        "canonRevision": 2,
+        "projectionRevision": 2,
+        "contentHash": fresh_canon.projection_hash,
+        "synchronized": True,
+    }
+    assert fresh_state.actual_progress == (
+        ActualProgressResult(
+            revision_number=2,
+            subject_key="__global__",
+            entity_id=None,
+            field_path="plot.snapshot",
+            value={"status": "new"},
+            content_hash=fresh_canon.projection_hash,
+        ),
+    )
 
 
 @pytest.mark.asyncio

@@ -206,14 +206,14 @@ Extend the service harness with progress rows and assert:
 ```python
 state = await harness.service.get_state("p1")
 assert state.actual_progress == (
-    {
-        "revisionNumber": 1,
-        "subjectKey": "global",
-        "entityId": None,
-        "fieldPath": "plot.gunpowder",
-        "value": {"status": "推进"},
-        "contentHash": HASH_A,
-    },
+    ActualProgressResult(
+        revision_number=1,
+        subject_key="global",
+        entity_id=None,
+        field_path="plot.gunpowder",
+        value={"status": "推进"},
+        content_hash=HASH_A,
+    ),
 )
 assert state.canon_projection_status["projectionRevision"] == 1
 ```
@@ -225,18 +225,24 @@ row.
 
 Before implementing production code, add two real-MySQL tests:
 
-1. insert synchronized revision-1 plot progress plus an unrelated revision-2
-   row and require only revision 1;
+1. use the production `CanonService.commit` path to create synchronized
+   revision-1 plot progress, insert an unrelated revision-2 control row, and
+   require only revision 1;
 2. wrap the real repository so `read_projection_head` pauses after returning,
-   start a second transaction that atomically advances the Planning Head,
-   Projection Head, and progress rows, and prove it remains blocked on the
-   Planning Head lock. Resume the first GET and require its `futurePlan`,
-   status, and progress to remain the complete old snapshot; only then let the
-   second transaction commit and require a fresh GET to return the complete
-   new snapshot.
+   start a production `CanonService.commit`, and prove with a database-reported
+   lock-wait timeout that the Planning read still owns the shared project lock.
+   Resume the first GET and require its complete Planning state, status, and
+   progress to remain the old snapshot; only then let the Canon commit complete
+   and require a fresh GET to retain the same Planning Head and `futurePlan`
+   while returning the new synchronized Canon status and progress. The existing
+   concurrent Planning-confirmation test separately proves the production
+   Planning writer is fenced. Do not invent a transaction that advances
+   Planning and Canon/Projection Heads together; the product has no such write
+   operation.
 
-The second test uses `asyncio.Event` only to control the two real database
-connections; it does not add a production failpoint.
+The second test uses `asyncio.Event` only to control real database connections
+and must release every barrier and cancel/gather every unfinished task in
+`finally`; it does not add a production failpoint.
 
 - [ ] **Step 2: Run the focused RED tests**
 
@@ -285,14 +291,16 @@ another projection table.
 In `PlanningService.get_state`, read the Projection Head first inside its
 existing transaction. Only when `canon == projection > 0`, call the new
 repository method with that exact projection revision. Normalize every row to
-the six camelCase public fields above, decode JSON through the existing strict
-JSON helper, validate the lowercase SHA-256, and reject a row whose revision
-does not equal the fixed head.
+a frozen `ActualProgressResult` with the six internal snake_case fields
+`revision_number`, `subject_key`, `entity_id`, `field_path`, `value`, and
+`content_hash`. Decode JSON through the existing strict JSON helper, validate
+the lowercase SHA-256, and reject a row whose revision does not equal the fixed
+head. The router, not the service, owns the camelCase public-key mapping.
 
 For Canon `0` or mismatch use:
 
 ```python
-actual_progress: tuple[dict[str, object], ...] = ()
+actual_progress: tuple[ActualProgressResult, ...] = ()
 ```
 
 Keep `futurePlan`, Draft, Head, capabilities, and archived behavior unchanged.
@@ -300,13 +308,25 @@ Do not add a progress write command or endpoint.
 
 - [ ] **Step 5: Close the router contract**
 
-Keep the existing top-level response shape and serialize only the already
-normalized items:
+Keep the existing top-level response shape and explicitly serialize only the
+six allowed public fields:
 
 ```python
-"actualProgress": [dict(item) for item in result.actual_progress],
+"actualProgress": [
+    {
+        "revisionNumber": item.revision_number,
+        "subjectKey": item.subject_key,
+        "entityId": item.entity_id,
+        "fieldPath": item.field_path,
+        "value": item.value,
+        "contentHash": item.content_hash,
+    }
+    for item in result.actual_progress
+],
 ```
 
+Add a RED API test whose runtime progress item also contains private extra
+fields and require those fields not to cross the response boundary.
 Add an API inventory assertion that no Planning route contains
 `complete`, `progress`, `mark`, `sync-memory`, or `rebuild` as a mutation path.
 

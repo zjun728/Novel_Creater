@@ -126,6 +126,16 @@ class PlanningHeadResult:
 
 
 @dataclass(frozen=True)
+class ActualProgressResult:
+    revision_number: int
+    subject_key: str
+    entity_id: str | None
+    field_path: str
+    value: object
+    content_hash: str
+
+
+@dataclass(frozen=True)
 class PlanningCapabilities:
     view: bool
     edit: bool
@@ -140,7 +150,7 @@ class PlanningState:
     head: PlanningHeadResult
     draft: PlanningDraftResult | None
     future_plan: PlanningAggregate | None
-    actual_progress: tuple[object, ...]
+    actual_progress: tuple[ActualProgressResult, ...]
     canon_projection_status: dict[str, object]
     capacity_policy: dict[str, int] | None
     capabilities: PlanningCapabilities
@@ -519,6 +529,21 @@ class PlanningService:
                 else None
             )
             projection_status = self._projection_status(projection)
+            actual_progress = (
+                self._actual_progress(
+                    await self.repository.read_actual_plot_progress(
+                        session,
+                        project_id,
+                        projection_status["projectionRevision"],
+                    ),
+                    projection_status["projectionRevision"],
+                    projection_status["contentHash"],
+                )
+                if projection_status["canonRevision"]
+                == projection_status["projectionRevision"]
+                and projection_status["canonRevision"] > 0
+                else ()
+            )
             archived = project.get("archived_at") is not None
             capacity_policy = (
                 self._capacity_policy(basis) if basis is not None else None
@@ -541,7 +566,7 @@ class PlanningService:
                 ),
                 draft=draft,
                 future_plan=future,
-                actual_progress=(),
+                actual_progress=actual_progress,
                 canon_projection_status=projection_status,
                 capacity_policy=capacity_policy,
                 capabilities=PlanningCapabilities(
@@ -784,6 +809,81 @@ class PlanningService:
             "contentHash": row["content_hash"],
             "synchronized": canon == projection,
         }
+
+    def _actual_progress(
+        self,
+        rows: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+        revision: object,
+        projection_hash: object,
+    ) -> tuple[ActualProgressResult, ...]:
+        if (
+            type(revision) is not int
+            or revision <= 0
+            or not isinstance(projection_hash, str)
+            or _HASH.fullmatch(projection_hash) is None
+        ):
+            raise PlanningPreconditionFailed("actual progress is invalid")
+        items = []
+        for row in rows:
+            try:
+                row_revision = row["revision_number"]
+                subject_key = row["subject_key"]
+                entity_id = row["entity_id"]
+                field_path = row["field_path"]
+                payload = self._strict_json(row["payload_json"])
+                content_hash = row["content_hash"]
+            except (KeyError, TypeError, UnicodeError, ValueError) as exc:
+                raise PlanningPreconditionFailed("actual progress is invalid") from exc
+            if (
+                type(row_revision) is not int
+                or row_revision < 0
+                or row_revision != revision
+                or not isinstance(subject_key, str)
+                or not subject_key.strip()
+                or subject_key != subject_key.strip()
+                or not isinstance(field_path, str)
+                or not field_path.strip()
+                or field_path != field_path.strip()
+                or not field_path.startswith("plot.")
+                or not field_path.removeprefix("plot.")
+                or entity_id is not None
+                and (
+                    not isinstance(entity_id, str)
+                    or not entity_id.strip()
+                    or entity_id != entity_id.strip()
+                )
+                or not isinstance(content_hash, str)
+                or _HASH.fullmatch(content_hash) is None
+                or content_hash != projection_hash
+            ):
+                raise PlanningPreconditionFailed("actual progress is invalid")
+            items.append(
+                ActualProgressResult(
+                    revision_number=row_revision,
+                    subject_key=subject_key,
+                    entity_id=entity_id,
+                    field_path=field_path,
+                    value=payload,
+                    content_hash=content_hash,
+                )
+            )
+        return tuple(items)
+
+    @staticmethod
+    def _strict_json(value: object) -> object:
+        if isinstance(value, (bytes, bytearray)):
+            value = bytes(value).decode("utf-8")
+        if not isinstance(value, str):
+            raise ValueError("not JSON text")
+        try:
+            return json.loads(
+                value,
+                parse_constant=lambda _value: (_ for _ in ()).throw(
+                    ValueError("invalid JSON constant")
+                ),
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise PlanningPreconditionFailed("actual progress is invalid") from exc
 
     def _is_confirmable(self, content: PlanningAggregate) -> bool:
         try:

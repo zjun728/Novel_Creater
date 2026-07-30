@@ -11,6 +11,7 @@ from backend.domain.json_contracts import canonical_hash
 from backend.http_errors import ProjectArchived as RepositoryProjectArchived
 from backend.services.planning import (
     ConfirmPlanningDraft,
+    ActualProgressResult,
     PlanningArchived,
     CreatePlanningDraft,
     PlanningConflict,
@@ -159,6 +160,7 @@ class MemoryPlanningRepository:
                 "content_hash": HASH_E,
             }
         }
+        self.actual_progress = {"p1": ()}
         self.binding = {
             "p1": {
                 "binding_revision_id": "binding-revision-1",
@@ -316,6 +318,10 @@ class MemoryPlanningRepository:
     async def read_projection_head(self, _session, project_id):
         return deepcopy(self.projections.get(project_id))
 
+    async def read_actual_plot_progress(self, _session, project_id, revision):
+        self.calls.append("read_actual_plot_progress")
+        return deepcopy(self.actual_progress.get(project_id, ()))
+
     async def lock_projection_head(self, _session, project_id):
         self.calls.append("lock_projection_head")
         return deepcopy(self.projections.get(project_id))
@@ -353,6 +359,188 @@ class Harness:
             clock=lambda: 1_900_000_000_000,
             failpoint=failpoint,
         )
+
+
+@pytest.mark.asyncio
+async def test_state_composes_only_the_synchronized_nonzero_plot_progress():
+    harness = Harness()
+    payload = {"status": "推进"}
+    harness.repository.projections["p1"].update(
+        canon_revision_number=1,
+        projection_revision_number=1,
+    )
+    harness.repository.actual_progress["p1"] = (
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": json.dumps(payload),
+            "content_hash": HASH_E,
+        },
+    )
+
+    state = await harness.service.get_state("p1")
+
+    assert state.actual_progress == (
+        ActualProgressResult(
+            revision_number=1,
+            subject_key="global",
+            entity_id=None,
+            field_path="plot.gunpowder",
+            value=payload,
+            content_hash=HASH_E,
+        ),
+    )
+    assert state.canon_projection_status["projectionRevision"] == 1
+    assert "read_actual_plot_progress" in harness.repository.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("canon_revision", "projection_revision"),
+    ((0, 0), (2, 1)),
+)
+async def test_state_returns_no_actual_progress_for_zero_or_unsynchronized_head(
+    canon_revision,
+    projection_revision,
+):
+    harness = Harness()
+    harness.repository.projections["p1"].update(
+        canon_revision_number=canon_revision,
+        projection_revision_number=projection_revision,
+    )
+    harness.repository.actual_progress["p1"] = (
+        {
+            "revision_number": projection_revision,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+    )
+
+    state = await harness.service.get_state("p1")
+
+    assert state.actual_progress == ()
+    assert "read_actual_plot_progress" not in harness.repository.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row",
+    (
+        {
+            "revision_number": -1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 0,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": "a" * 64,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": "not-json",
+            "content_hash": "a" * 64,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": "A" * 64,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": " global",
+            "entity_id": None,
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": " entity-1 ",
+            "field_path": "plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": " plot.gunpowder",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "status.rank",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+        {
+            "revision_number": 1,
+            "subject_key": "global",
+            "entity_id": None,
+            "field_path": "plot.",
+            "payload_json": '{"status":"推进"}',
+            "content_hash": HASH_E,
+        },
+    ),
+)
+async def test_state_rejects_malformed_actual_progress_without_echoing_rows(row):
+    harness = Harness()
+    harness.repository.projections["p1"].update(
+        canon_revision_number=1,
+        projection_revision_number=1,
+    )
+    harness.repository.actual_progress["p1"] = (row,)
+
+    with pytest.raises(PlanningPreconditionFailed) as captured:
+        await harness.service.get_state("p1")
+
+    assert "plot.gunpowder" not in str(captured.value)
 
 
 @pytest.mark.asyncio
