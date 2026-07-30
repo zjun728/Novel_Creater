@@ -343,12 +343,20 @@ function inspectPytestTemp(rootDirectory, stage, { allowNamespaceFile = false } 
   }
 }
 
-function cleanupPytestStage(rootDirectory, stage) {
+function cleanupPytestStage(rootDirectory, stage, {
+  platform = process.platform,
+  rmSyncImpl = rmSync,
+} = {}) {
   const inspected = inspectPytestTemp(rootDirectory, stage, { allowNamespaceFile: true })
   if (!inspected.namespaceStats?.isDirectory() || !inspected.targetStats) return
 
   inspectPytestTemp(rootDirectory, stage)
-  rmSync(inspected.target, { recursive: true, force: true })
+  const removeOptions = { recursive: true, force: true }
+  if (platform === 'win32') {
+    removeOptions.maxRetries = 5
+    removeOptions.retryDelay = 200
+  }
+  rmSyncImpl(inspected.target, removeOptions)
 }
 
 function cleanupPytestNamespace(rootDirectory) {
@@ -384,41 +392,48 @@ function cleanupArtifactRoot(rootDirectory) {
   }
 }
 
-export const defaultPytestTempLifecycle = Object.freeze({
-  prepare(rootDirectory, stage) {
-    const beforeCreate = inspectPytestTemp(rootDirectory, stage)
-    mkdirSync(beforeCreate.namespace, { recursive: true })
-    inspectPytestTemp(rootDirectory, stage)
-    cleanupPytestStage(rootDirectory, stage)
-  },
-  cleanupStage(rootDirectory, stage) {
-    cleanupPytestStage(rootDirectory, stage)
-  },
-  cleanupAll(rootDirectory) {
-    let firstError
-    for (const stage of Object.values(pytestTempStages)) {
+export function createPytestTempLifecycle({
+  platform = process.platform,
+  rmSyncImpl = rmSync,
+} = {}) {
+  return Object.freeze({
+    prepare(rootDirectory, stage) {
+      const beforeCreate = inspectPytestTemp(rootDirectory, stage)
+      mkdirSync(beforeCreate.namespace, { recursive: true })
+      inspectPytestTemp(rootDirectory, stage)
+      cleanupPytestStage(rootDirectory, stage, { platform, rmSyncImpl })
+    },
+    cleanupStage(rootDirectory, stage) {
+      cleanupPytestStage(rootDirectory, stage, { platform, rmSyncImpl })
+    },
+    cleanupAll(rootDirectory) {
+      let firstError
+      for (const stage of Object.values(pytestTempStages)) {
+        try {
+          cleanupPytestStage(rootDirectory, stage, { platform, rmSyncImpl })
+        } catch (error) {
+          firstError ??= error
+        }
+      }
+
       try {
-        cleanupPytestStage(rootDirectory, stage)
+        cleanupPytestNamespace(rootDirectory)
       } catch (error) {
         firstError ??= error
       }
-    }
 
-    try {
-      cleanupPytestNamespace(rootDirectory)
-    } catch (error) {
-      firstError ??= error
-    }
+      try {
+        cleanupArtifactRoot(rootDirectory)
+      } catch (error) {
+        firstError ??= error
+      }
 
-    try {
-      cleanupArtifactRoot(rootDirectory)
-    } catch (error) {
-      firstError ??= error
-    }
+      if (firstError) throw firstError
+    },
+  })
+}
 
-    if (firstError) throw firstError
-  },
-})
+export const defaultPytestTempLifecycle = createPytestTempLifecycle()
 
 function safeErrorCode(error) {
   const code = typeof error?.code === 'string' ? error.code : ''

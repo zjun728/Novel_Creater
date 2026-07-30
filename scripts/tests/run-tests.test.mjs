@@ -14,7 +14,11 @@ import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { discoverTestFiles, runSuites } from '../run-tests.mjs'
+import {
+  createPytestTempLifecycle,
+  discoverTestFiles,
+  runSuites,
+} from '../run-tests.mjs'
 
 const scriptsDirectory = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const repositoryRoot = path.dirname(scriptsDirectory)
@@ -211,6 +215,119 @@ function createFormalFakeRoot({ pytestNamespaceAsFile = false } = {}) {
 
   return { keepEvidence, pytestNamespace, rootDirectory }
 }
+
+test('the Windows pytest stage cleanup uses bounded retries for transient removal errors', () => {
+  const fixture = createFormalFakeRoot()
+  const calls = []
+  const lifecycle = createPytestTempLifecycle({
+    platform: 'win32',
+    rmSyncImpl(target, options) {
+      calls.push({ options, target })
+      rmSync(target, options)
+    },
+  })
+
+  try {
+    lifecycle.cleanupStage(fixture.rootDirectory, approvedPytestTempStages.unitApi)
+
+    assert.deepEqual(calls, [{
+      target: path.join(fixture.rootDirectory, approvedPytestTempStages.unitApi),
+      options: {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 200,
+      },
+    }])
+  } finally {
+    rmSync(fixture.rootDirectory, { recursive: true, force: true })
+  }
+})
+
+test('the non-Windows pytest stage cleanup does not request removal retries', () => {
+  const fixture = createFormalFakeRoot()
+  const calls = []
+  const lifecycle = createPytestTempLifecycle({
+    platform: 'linux',
+    rmSyncImpl(target, options) {
+      calls.push({ options, target })
+      rmSync(target, options)
+    },
+  })
+
+  try {
+    lifecycle.cleanupStage(fixture.rootDirectory, approvedPytestTempStages.unitApi)
+
+    assert.deepEqual(calls, [{
+      target: path.join(fixture.rootDirectory, approvedPytestTempStages.unitApi),
+      options: {
+        recursive: true,
+        force: true,
+      },
+    }])
+  } finally {
+    rmSync(fixture.rootDirectory, { recursive: true, force: true })
+  }
+})
+
+test('a permanent Windows pytest stage removal failure remains fail-closed', () => {
+  const fixture = createFormalFakeRoot()
+  const stage = path.join(fixture.rootDirectory, approvedPytestTempStages.unitApi)
+  const stderr = captureStderr()
+  const permanentError = Object.assign(new Error('synthetic permanent removal failure'), {
+    code: 'EPERM',
+  })
+  let removalCalls = 0
+  let spawnCount = 0
+
+  rmSync(stage, { recursive: true, force: true })
+  const lifecycle = createPytestTempLifecycle({
+    platform: 'win32',
+    rmSyncImpl(target, options) {
+      removalCalls += 1
+      assert.equal(target, stage)
+      assert.deepEqual(options, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 200,
+      })
+      throw permanentError
+    },
+  })
+
+  try {
+    const exitCode = runSuites(['unit'], {
+      rootDirectory: fixture.rootDirectory,
+      environment: lifecycleFailureEnvironment,
+      pytestTempLifecycle: lifecycle,
+      spawnSyncImpl() {
+        spawnCount += 1
+        mkdirSync(stage, { recursive: true })
+        writeFileSync(path.join(stage, 'locked-object'), 'still locked')
+        return { status: 0 }
+      },
+      stderr: stderr.stream,
+    })
+
+    assert.equal(exitCode, 1)
+    assert.equal(spawnCount, 1)
+    assert.equal(removalCalls, 2)
+    assert.equal(existsSync(stage), true)
+    assertSafeLifecycleStderr(
+      stderr.value(),
+      'PYTEST_TEMP_CLEANUP_FAILED',
+      'unit-api',
+    )
+    assertSafeLifecycleStderr(
+      stderr.value(),
+      'PYTEST_TEMP_CLEANUP_ALL_FAILED',
+      'unit-api',
+    )
+  } finally {
+    rmSync(fixture.rootDirectory, { recursive: true, force: true })
+  }
+})
 
 function createReparsePointFixture(location) {
   const rootDirectory = mkdtempSync(path.join(scriptsDirectory, 'pytest-reparse-root-'))
@@ -579,12 +696,21 @@ for (const location of ['artifactRoot', 'pytestNamespace', 'stage']) {
   test(`the default lifecycle rejects a ${location} junction without touching its target`, () => {
     const fixture = createReparsePointFixture(location)
     const stderr = captureStderr()
+    let removalCount = 0
     let spawnCount = 0
+    const lifecycle = createPytestTempLifecycle({
+      platform: 'win32',
+      rmSyncImpl(target, options) {
+        removalCount += 1
+        rmSync(target, options)
+      },
+    })
 
     try {
       const exitCode = runSuites(['unit'], {
         rootDirectory: fixture.rootDirectory,
         environment: lifecycleFailureEnvironment,
+        pytestTempLifecycle: lifecycle,
         spawnSyncImpl() {
           spawnCount += 1
           return { status: 0 }
@@ -594,6 +720,7 @@ for (const location of ['artifactRoot', 'pytestNamespace', 'stage']) {
 
       assert.notEqual(exitCode, 0)
       assert.equal(spawnCount, 0)
+      assert.equal(removalCount, 0)
       assert.equal(existsSync(fixture.externalDirectory), true)
       assert.equal(existsSync(fixture.sentinel), true)
       assert.equal(existsSync(fixture.link), true)
