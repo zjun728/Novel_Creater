@@ -235,6 +235,107 @@ function planningDraftContent(value) {
   }
 }
 
+function planningActualProgressItem(value) {
+  const invalid = () => {
+    throw new TypeError('Invalid Planning actual progress response')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) invalid()
+
+  const revisionNumber = value.revisionNumber
+  const subjectKey = value.subjectKey
+  const entityId = value.entityId
+  const fieldPath = value.fieldPath
+  const publicValue = planningProgressValue(value.value)
+  const contentHash = value.contentHash
+  if (
+    !Number.isInteger(revisionNumber)
+    || revisionNumber <= 0
+    || !planningProgressText(subjectKey)
+    || !(entityId === null || planningProgressText(entityId))
+    || !planningProgressText(fieldPath)
+    || !fieldPath.startsWith('plot.')
+    || fieldPath.slice('plot.'.length).length === 0
+    || publicValue === INVALID_PLANNING_PROGRESS_VALUE
+    || typeof contentHash !== 'string'
+    || !/^[a-f0-9]{64}$/u.test(contentHash)
+  ) invalid()
+
+  return {
+    revisionNumber,
+    subjectKey,
+    entityId,
+    fieldPath,
+    value: publicValue,
+    contentHash,
+  }
+}
+
+function planningProgressText(value) {
+  return (
+    typeof value === 'string'
+    && value.length > 0
+    && value === value.trim()
+    && hasValidUnicode(value)
+  )
+}
+
+const INVALID_PLANNING_PROGRESS_VALUE = Symbol('invalid-planning-progress-value')
+
+function planningProgressValue(value, ancestors = new WeakSet()) {
+  if (typeof value === 'string') return value
+  if (value === null || typeof value === 'boolean') return value
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (!value || typeof value !== 'object' || ancestors.has(value)) {
+    return INVALID_PLANNING_PROGRESS_VALUE
+  }
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      const copied = value.map(item => planningProgressValue(item, ancestors))
+      return copied.includes(INVALID_PLANNING_PROGRESS_VALUE)
+        ? INVALID_PLANNING_PROGRESS_VALUE
+        : copied
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) {
+      return INVALID_PLANNING_PROGRESS_VALUE
+    }
+    const copied = {}
+    for (const key of Object.keys(value)) {
+      const item = planningProgressValue(value[key], ancestors)
+      if (item === INVALID_PLANNING_PROGRESS_VALUE) {
+        return INVALID_PLANNING_PROGRESS_VALUE
+      }
+      Object.defineProperty(copied, key, {
+        value: item,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      })
+    }
+    return copied
+  } catch {
+    return INVALID_PLANNING_PROGRESS_VALUE
+  } finally {
+    ancestors.delete(value)
+  }
+}
+
+function planningStateResponse(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid Planning actual progress response')
+  }
+  const actualProgress = value.actualProgress === undefined
+    ? []
+    : value.actualProgress
+  if (!Array.isArray(actualProgress)) {
+    throw new TypeError('Invalid Planning actual progress response')
+  }
+  return {
+    ...value,
+    actualProgress: actualProgress.map(planningActualProgressItem),
+  }
+}
+
 const CHAPTER_OUTLINE_PLANNING_IDENTITY_FIELDS = [
   'id', 'revision', 'contentHash', 'lifecycle',
 ]
@@ -1535,7 +1636,9 @@ export const api = {
   },
 
   planning: {
-    get: projectId => get(`/projects/${segment(projectId)}/planning`),
+    get: async projectId => planningStateResponse(await get(
+      `/projects/${segment(projectId)}/planning`,
+    )),
     history: projectId => get(`/projects/${segment(projectId)}/planning/history`),
     createDraft: (projectId, data) => post(
       `/projects/${segment(projectId)}/planning/drafts`,

@@ -28,6 +28,12 @@ function bodyOf(call) {
   return call.options.body === undefined ? undefined : JSON.parse(call.options.body)
 }
 
+test('planning actual progress parser remains private to the client module', async () => {
+  const client = await import('../../src/api/db/client.js')
+  assert.equal(Object.hasOwn(client, 'planningActualProgressItem'), false)
+  assert.equal(client.planningActualProgressItem, undefined)
+})
+
 function formalChapterOutlineState(overrides = {}) {
   return {
     projectId: 'project-1',
@@ -556,6 +562,136 @@ test('planning client uses revisioned aggregate paths and strict write allowlist
     idempotencyKey: 'planning-confirm-1',
   })
   assert.equal(JSON.stringify(calls).includes('must-not-send'), false)
+})
+
+test('planning GET closes formal Canon actual progress to its six public fields', async () => {
+  const originalFetch = global.fetch
+  try {
+    global.fetch = async () => jsonResponse({
+      projectId: 'project-1',
+      actualProgress: [{
+        revisionNumber: 3,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.gunpowder',
+        value: {
+          status: 'old',
+          evidence: ['第一章', { chapter: 1, active: true }],
+        },
+        contentHash: 'b'.repeat(64),
+        apiKey: 'must-not-reach-planning-state',
+        privateReasoning: 'must-not-reach-planning-state',
+      }, {
+        revisionNumber: 3,
+        subjectKey: 'plot-thread',
+        entityId: 'thread-1',
+        fieldPath: 'plot.gunpowder',
+        value: ['已埋下', { chapter: 2 }],
+        contentHash: 'b'.repeat(64),
+      }],
+      canonProjectionStatus: {
+        canonRevision: 3,
+        projectionRevision: 3,
+        contentHash: 'b'.repeat(64),
+        synchronized: true,
+      },
+    })
+    const { api } = await import('../../src/api/db/client.js')
+
+    const state = await api.planning.get('project-1')
+
+    assert.deepEqual(state.actualProgress, [{
+      revisionNumber: 3,
+      subjectKey: '__global__',
+      entityId: null,
+      fieldPath: 'plot.gunpowder',
+      value: {
+        status: 'old',
+        evidence: ['第一章', { chapter: 1, active: true }],
+      },
+      contentHash: 'b'.repeat(64),
+    }, {
+      revisionNumber: 3,
+      subjectKey: 'plot-thread',
+      entityId: 'thread-1',
+      fieldPath: 'plot.gunpowder',
+      value: ['已埋下', { chapter: 2 }],
+      contentHash: 'b'.repeat(64),
+    }])
+    assert.equal(JSON.stringify(state.actualProgress).includes('must-not-reach'), false)
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 3,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.\na',
+        value: null,
+        contentHash: 'b'.repeat(64),
+      }],
+    })
+    const newlinePath = await api.planning.get('project-1')
+    assert.equal(newlinePath.actualProgress[0].fieldPath, 'plot.\na')
+
+    global.fetch = async () => jsonResponse({
+      projectId: 'project-1',
+      actualProgress: [{
+        revisionNumber: 0,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.gunpowder',
+        value: null,
+        contentHash: 'a'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 1,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'chapter.gunpowder',
+        value: false,
+        contentHash: 'a'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 1,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.',
+        value: 1,
+        contentHash: 'a'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+    global.fetch = async () => jsonResponse({
+      actualProgress: [{
+        revisionNumber: 1,
+        subjectKey: '__global__',
+        entityId: null,
+        fieldPath: 'plot.gunpowder',
+        value: true,
+        contentHash: 'A'.repeat(64),
+      }],
+    })
+    await assert.rejects(
+      api.planning.get('project-1'),
+      /Invalid Planning actual progress response/i,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
 })
 
 test('planning generation uses encoded paths and closed request and response DTOs', async () => {
