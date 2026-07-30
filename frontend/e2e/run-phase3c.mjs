@@ -26,9 +26,21 @@ import {
   waitForOwnedServer,
 } from './support/product-runner.mjs'
 import {
+  DENY_PROXY_SOURCE,
+  assertDenyProxyLedger,
+} from './support/deny-proxy.mjs'
+import { assertDatabaseResidue } from './support/database-residue.mjs'
+import {
+  collectLeafFailures,
+  compactDiagnostic,
+  redactDiagnostic,
+} from './support/safe-diagnostics.mjs'
+import {
   assertNoPrivateEvidenceMarkers,
   runtimeSensitiveValues,
 } from './runtime-observer.mjs'
+
+export { DENY_PROXY_SOURCE, assertDenyProxyLedger }
 
 
 export const FORMAL_SPECS = Object.freeze([
@@ -837,41 +849,6 @@ http.createServer((incoming, response) => {
 }).listen(port, '127.0.0.1')
 `
 
-export const DENY_PROXY_SOURCE = String.raw`
-const http = require('node:http')
-const { appendFileSync } = require('node:fs')
-
-const port = Number(process.argv[2])
-const nonce = process.env.M2_BROWSER_RUN_NONCE
-const ledgerPath = process.env.BROWSER_DENY_PROXY_LEDGER_PATH
-
-const server = http.createServer((request, response) => {
-  if (request.method === 'GET' && request.url === '/health') {
-    response.writeHead(200, { 'content-type': 'application/json' })
-    response.end(JSON.stringify({ browserRunNonce: nonce }))
-    return
-  }
-  appendFileSync(ledgerPath, 'http-denied\n', 'utf8')
-  response.writeHead(502, {
-    connection: 'close',
-    'content-type': 'text/plain; charset=utf-8',
-  })
-  response.end('outbound request denied')
-})
-
-server.on('connect', (_request, socket) => {
-  appendFileSync(ledgerPath, 'connect-denied\n', 'utf8')
-  socket.end(
-    'HTTP/1.1 502 Bad Gateway\r\n'
-      + 'Connection: close\r\n'
-      + 'Content-Length: 0\r\n'
-      + '\r\n',
-  )
-})
-
-server.listen(port, '127.0.0.1')
-`
-
 export const FAKE_PLANNING_OUTLINE_GATEWAY_SOURCE = String.raw`
 const { appendFileSync, existsSync, writeFileSync } = require('node:fs')
 const http = require('node:http')
@@ -1323,38 +1300,6 @@ function assertBackendOutboundLedger(value, scenario) {
   assertDeepEqual(entries, expected, 'backend HTTPX outbound ledger')
 }
 
-export function assertDenyProxyLedger(value, {
-  expectedHttpCount = 0,
-  expectedConnectCount = 0,
-} = {}) {
-  if (
-    !Number.isInteger(expectedHttpCount)
-    || expectedHttpCount < 0
-    || !Number.isInteger(expectedConnectCount)
-    || expectedConnectCount < 0
-  ) {
-    throw new TypeError('deny proxy ledger expectation is invalid')
-  }
-  const entries = String(value).split(/\r?\n/u).filter(Boolean)
-  if (entries.some(entry => !['http-denied', 'connect-denied'].includes(entry))) {
-    throw new Error('deny proxy ledger did not match its closed contract')
-  }
-  const deniedHttpCount = entries.filter(entry => entry === 'http-denied').length
-  const deniedConnectCount = entries.filter(entry => entry === 'connect-denied').length
-  if (
-    deniedHttpCount !== expectedHttpCount
-    || deniedConnectCount !== expectedConnectCount
-  ) {
-    throw new Error('deny proxy ledger did not match its closed contract')
-  }
-  return {
-    deniedHttpCount,
-    deniedConnectCount,
-    liveWebsiteAccessCount: 0,
-  }
-}
-
-
 function assertUpstreamLedger(value, scenario) {
   const expected = scenario.mode === 'gateway'
     ? 'upstream-generation-status=200\n'
@@ -1636,27 +1581,6 @@ function collectFailureContexts(error, contexts = [], visited = new Set()) {
 }
 
 
-function collectLeafFailures(error, failures = [], visited = new Set()) {
-  if (error && (typeof error === 'object' || typeof error === 'function')) {
-    if (visited.has(error)) return failures
-    visited.add(error)
-    if (error instanceof AggregateError && Array.isArray(error.errors)) {
-      for (const nested of error.errors) {
-        collectLeafFailures(nested, failures, visited)
-      }
-      if (error.errors.length > 0) return failures
-    }
-  }
-  failures.push(error)
-  return failures
-}
-
-
-function compactDiagnostic(value) {
-  return String(value ?? '').replace(/\s+/gu, ' ').trim()
-}
-
-
 function commandSensitiveValues(environment, contexts) {
   const mapped = {
     ...environment,
@@ -1675,17 +1599,6 @@ function commandSensitiveValues(environment, contexts) {
     ...contexts.flatMap(context => context.sensitiveValues || []),
   ].filter(value => typeof value === 'string' && value)
   return [...new Set(values)].sort((left, right) => right.length - left.length)
-}
-
-
-function redactDiagnostic(value, sensitiveValues) {
-  let redacted = String(value)
-  for (const sensitive of sensitiveValues) {
-    redacted = redacted.replaceAll(sensitive, '[redacted]')
-    const encoded = encodeURIComponent(sensitive)
-    if (encoded !== sensitive) redacted = redacted.replaceAll(encoded, '[redacted]')
-  }
-  return redacted
 }
 
 
@@ -1816,6 +1729,80 @@ export async function cleanupOwnedRoot({
     throw new AggregateError(errors, 'Phase 3C root validation and removal failed')
   }
   return true
+}
+
+
+function phase3CResourceAccountingFailure({
+  scenario,
+  ownedRoot,
+  artifactRoot,
+  resultPath,
+  sensitiveValues,
+}) {
+  const error = new AggregateError([], 'Phase 3C resource accounting failed')
+  return attachPhase3CFailureContext(error, {
+    scenario,
+    ownedRoot,
+    artifactRoot,
+    resultPath,
+    sensitiveValues,
+  })
+}
+
+
+export function assertPhase3CResourceAccounting({
+  databaseName,
+  databaseCreated,
+  databaseCleaned,
+  databaseRemaining,
+  ownedRootRemoved,
+  browserNetworkAudit,
+  denyProxyAudit,
+  scenario,
+  ownedRoot,
+  artifactRoot,
+  resultPath,
+  sensitiveValues,
+  assertDatabaseResidueImpl = assertDatabaseResidue,
+}) {
+  let databaseResidue
+  try {
+    databaseResidue = assertDatabaseResidueImpl(databaseName, databaseName, {
+      created: databaseCreated,
+      cleaned: databaseCleaned,
+      remaining: databaseRemaining,
+    })
+  } catch {
+    throw phase3CResourceAccountingFailure({
+      scenario,
+      ownedRoot,
+      artifactRoot,
+      resultPath,
+      sensitiveValues,
+    })
+  }
+  if (
+    databaseResidue.created !== 1
+    || databaseResidue.cleaned !== 1
+    || databaseResidue.remaining !== 0
+    || !ownedRootRemoved
+    || browserNetworkAudit === null
+    || browserNetworkAudit.forbiddenRequestCount !== 0
+    || browserNetworkAudit.forbiddenResponseCount !== 0
+    || denyProxyAudit === null
+    || denyProxyAudit.deniedHttpCount !== 0
+    || denyProxyAudit.deniedConnectCount !== 0
+    || denyProxyAudit.liveWebsiteAccessCount !== 0
+  ) {
+    throw phase3CResourceAccountingFailure({
+      scenario,
+      ownedRoot,
+      artifactRoot,
+      resultPath,
+      sensitiveValues,
+    })
+  }
+  return databaseResidue
 }
 
 
@@ -2132,29 +2119,20 @@ export async function runOneScenario({
     throw error
   }
 
-  if (
-    databaseCreated !== 1
-    || databaseCleaned !== 1
-    || databaseRemaining !== 0
-    || !ownedRootRemoved
-    || browserNetworkAudit === null
-    || browserNetworkAudit.forbiddenRequestCount !== 0
-    || browserNetworkAudit.forbiddenResponseCount !== 0
-    || denyProxyAudit === null
-    || denyProxyAudit.deniedHttpCount !== 0
-    || denyProxyAudit.deniedConnectCount !== 0
-    || denyProxyAudit.liveWebsiteAccessCount !== 0
-  ) {
-    const error = new AggregateError([], 'Phase 3C resource accounting failed')
-    attachPhase3CFailureContext(error, {
-      scenario: scenario.mode,
-      ownedRoot: ownedRootPath,
-      artifactRoot: roots?.artifactRoot,
-      resultPath: roots?.browserResultPath,
-      sensitiveValues: [...sensitiveValues, databaseName],
-    })
-    throw error
-  }
+  assertPhase3CResourceAccounting({
+    databaseName,
+    databaseCreated,
+    databaseCleaned,
+    databaseRemaining,
+    ownedRootRemoved,
+    browserNetworkAudit,
+    denyProxyAudit,
+    scenario: scenario.mode,
+    ownedRoot: ownedRootPath,
+    artifactRoot: roots?.artifactRoot,
+    resultPath: roots?.browserResultPath,
+    sensitiveValues: [...sensitiveValues, databaseName],
+  })
   console.log(
     `Phase3C ${scenario.mode}: browser assertions passed; `
       + `DB created=${databaseCreated} cleaned=${databaseCleaned} `
