@@ -174,6 +174,25 @@ const assertFinishContract = source => {
 
 const assertListenerOwnershipContract = source => {
   const observer = findNamedFunction(source, 'observeRuntime')
+  assert.equal(
+    observer.params.some(parameter => isIdentifier(parameter, 'page')),
+    true,
+    'observeRuntime must receive page directly',
+  )
+  const contextBindings = observer.body.body.flatMap(statement => (
+    statement.type === 'VariableDeclaration' && statement.kind === 'const'
+      ? statement.declarations.filter(declaration => (
+        isIdentifier(declaration.id, 'context')
+        && isPageCall(declaration.init, 'context')
+        && declaration.init.arguments.length === 0
+      ))
+      : []
+  ))
+  assert.equal(
+    contextBindings.length,
+    1,
+    'context must be bound once from page.context() in observeRuntime',
+  )
   const attachments = directExecutionNodes(observer)
     .flatMap(node => {
       const call = node.type === 'ExpressionStatement' ? node.expression : null
@@ -181,14 +200,13 @@ const assertListenerOwnershipContract = source => {
         call?.type !== 'CallExpression'
         || call.callee?.type !== 'MemberExpression'
         || call.callee.computed !== false
-        || !['page', 'context'].includes(call.callee.object?.name)
         || !isIdentifier(call.callee.property, 'on')
         || call.arguments.length !== 2
         || call.arguments[0]?.type !== 'StringLiteral'
         || call.arguments[1]?.type !== 'Identifier'
       ) return []
       return [[
-        call.callee.object.name,
+        call.callee.object?.name,
         call.arguments[0].value,
         call.arguments[1].name,
       ]]
@@ -271,7 +289,8 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     context.on('requestfailed', onRequestFailed)
   `
   const equivalentListenerFormatting = `
-    function observeRuntime ( ) {
+    function observeRuntime ( page ) {
+      const context = page . context ( )
       ${listenerAttachmentFlow.replaceAll('.', ' . ')}
     }
   `
@@ -336,6 +355,18 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       const neverCalled = () => { ${listenerAttachmentFlow} }
     }
   `
+  const foreignContextListenerDecoy = `
+    function observeRuntime(page) {
+      const context = unrelated.context()
+      ${listenerAttachmentFlow}
+    }
+  `
+  const unboundPageListenerDecoy = `
+    function observeRuntime() {
+      const context = page.context()
+      ${listenerAttachmentFlow}
+    }
+  `
   const equivalentFormatting = `
     async  function settle ( ) {
       const ignoredBrace = "}"
@@ -363,8 +394,6 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   `
 
   for (const required of [
-    "context.on('request'", "context.on('requestfinished'", "context.on('response'",
-    "page.on('console'", "page.on('pageerror'", "context.on('requestfailed'",
     'pendingApiBodies.add', 'response.text()',
     'Promise.all(batch)', 'response.status()', 'consoleErrors',
     'response.request().method()', 'consoleMessages', 'pageErrors',
@@ -397,6 +426,8 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     ['throw before finish core', () => assertFinishContract(throwBeforeCoreFinishDecoy)],
     ['wrong listener receiver', () => assertListenerOwnershipContract(wrongListenerReceiverDecoy)],
     ['nested listener attachment', () => assertListenerOwnershipContract(nestedListenerDecoy)],
+    ['foreign context listener owner', () => assertListenerOwnershipContract(foreignContextListenerDecoy)],
+    ['unbound page listener owner', () => assertListenerOwnershipContract(unboundPageListenerDecoy)],
   ].flatMap(([label, verify]) => {
     try {
       verify()
