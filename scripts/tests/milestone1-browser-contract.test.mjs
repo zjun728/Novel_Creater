@@ -75,10 +75,14 @@ const isIdentifierCall = (node, name) => (
 )
 
 const isPageCall = (node, method) => (
+  isReceiverCall(node, 'page', method)
+)
+
+const isReceiverCall = (node, receiver, method) => (
   node?.type === 'CallExpression'
   && node.callee?.type === 'MemberExpression'
   && node.callee.computed === false
-  && isIdentifier(node.callee.object, 'page')
+  && isIdentifier(node.callee.object, receiver)
   && isIdentifier(node.callee.property, method)
 )
 
@@ -147,21 +151,67 @@ const assertFinishContract = source => {
   const detachments = finalizer.body.map(statement => {
     const node = statement.type === 'ExpressionStatement' ? statement.expression : null
     if (
-      !isPageCall(node, 'off')
+      node?.type !== 'CallExpression'
+      || node.callee?.type !== 'MemberExpression'
+      || node.callee.computed !== false
+      || !['page', 'context'].includes(node.callee.object?.name)
+      || !isIdentifier(node.callee.property, 'off')
       || node.arguments.length !== 2
       || node.arguments[0]?.type !== 'StringLiteral'
       || node.arguments[1]?.type !== 'Identifier'
     ) return null
-    return [node.arguments[0].value, node.arguments[1].name]
+    return [node.callee.object.name, node.arguments[0].value, node.arguments[1].name]
   })
   assert.deepEqual(detachments, [
-    ['request', 'onRequest'],
-    ['requestfinished', 'onRequestFinished'],
-    ['response', 'onResponse'],
-    ['console', 'onConsole'],
-    ['pageerror', 'onPageError'],
-    ['requestfailed', 'onRequestFailed'],
+    ['context', 'request', 'onRequest'],
+    ['context', 'requestfinished', 'onRequestFinished'],
+    ['context', 'response', 'onResponse'],
+    ['page', 'console', 'onConsole'],
+    ['page', 'pageerror', 'onPageError'],
+    ['context', 'requestfailed', 'onRequestFailed'],
   ])
+}
+
+const assertListenerOwnershipContract = source => {
+  const observer = findNamedFunction(source, 'observeRuntime')
+  const attachments = directExecutionNodes(observer)
+    .flatMap(node => {
+      const call = node.type === 'ExpressionStatement' ? node.expression : null
+      if (
+        call?.type !== 'CallExpression'
+        || call.callee?.type !== 'MemberExpression'
+        || call.callee.computed !== false
+        || !['page', 'context'].includes(call.callee.object?.name)
+        || !isIdentifier(call.callee.property, 'on')
+        || call.arguments.length !== 2
+        || call.arguments[0]?.type !== 'StringLiteral'
+        || call.arguments[1]?.type !== 'Identifier'
+      ) return []
+      return [[
+        call.callee.object.name,
+        call.arguments[0].value,
+        call.arguments[1].name,
+      ]]
+    })
+  assert.deepEqual(attachments, [
+    ['context', 'request', 'onRequest'],
+    ['context', 'requestfinished', 'onRequestFinished'],
+    ['context', 'response', 'onResponse'],
+    ['page', 'console', 'onConsole'],
+    ['page', 'pageerror', 'onPageError'],
+    ['context', 'requestfailed', 'onRequestFailed'],
+  ])
+}
+
+const findNamedFunction = (source, functionName) => {
+  const matches = []
+  walkAst(parse(source, { sourceType: 'module' }), node => {
+    if (node.type === 'FunctionDeclaration' && node.id?.name === functionName) {
+      matches.push(node)
+    }
+  })
+  assert.equal(matches.length, 1, `expected one named function: ${functionName}`)
+  return matches[0]
 }
 
 test('Playwright config owns two isolated loopback servers and repository artifacts', async () => {
@@ -204,12 +254,25 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       pageContent = await page.content()
       await settle()
     } finally {
-      page.off('request', onRequest)
-      page.off('requestfinished', onRequestFinished)
-      page.off('response', onResponse)
+      context.off('request', onRequest)
+      context.off('requestfinished', onRequestFinished)
+      context.off('response', onResponse)
       page.off('console', onConsole)
       page.off('pageerror', onPageError)
-      page.off('requestfailed', onRequestFailed)
+      context.off('requestfailed', onRequestFailed)
+    }
+  `
+  const listenerAttachmentFlow = `
+    context.on('request', onRequest)
+    context.on('requestfinished', onRequestFinished)
+    context.on('response', onResponse)
+    page.on('console', onConsole)
+    page.on('pageerror', onPageError)
+    context.on('requestfailed', onRequestFailed)
+  `
+  const equivalentListenerFormatting = `
+    function observeRuntime ( ) {
+      ${listenerAttachmentFlow.replaceAll('.', ' . ')}
     }
   `
   const crossFunctionDecoy = `
@@ -245,12 +308,12 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       pageContent = await page.content()
       await settle()
       try {} finally {
-        page.off('request', onRequest)
-        page.off('requestfinished', onRequestFinished)
-        page.off('response', onResponse)
+        context.off('request', onRequest)
+        context.off('requestfinished', onRequestFinished)
+        context.off('response', onResponse)
         page.off('console', onConsole)
         page.off('pageerror', onPageError)
-        page.off('requestfailed', onRequestFailed)
+        context.off('requestfailed', onRequestFailed)
       }
     }
   `
@@ -262,6 +325,16 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   `
   const throwBeforeCoreFinishDecoy = `
     async function finish() { ${finishFlow.replace('try {', 'try { throw new Error();')} }
+  `
+  const wrongListenerReceiverDecoy = `
+    function observeRuntime() {
+      ${listenerAttachmentFlow.replace("context.on('response'", "page.on('response'")}
+    }
+  `
+  const nestedListenerDecoy = `
+    function observeRuntime() {
+      const neverCalled = () => { ${listenerAttachmentFlow} }
+    }
   `
   const equivalentFormatting = `
     async  function settle ( ) {
@@ -279,19 +352,20 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
         pageContent = await page.content ( )
         await settle ( )
       } finally {
-        page.off ( "request", onRequest )
-        page.off ( "requestfinished", onRequestFinished )
-        page.off ( "response", onResponse )
+        context.off ( "request", onRequest )
+        context.off ( "requestfinished", onRequestFinished )
+        context.off ( "response", onResponse )
         page.off ( "console", onConsole )
         page.off ( "pageerror", onPageError )
-        page.off ( "requestfailed", onRequestFailed )
+        context.off ( "requestfailed", onRequestFailed )
       }
     }
   `
 
   for (const required of [
-    "page.on('response'", "page.on('console'", "page.on('pageerror'",
-    "page.on('requestfailed'", 'pendingApiBodies.add', 'response.text()',
+    "context.on('request'", "context.on('requestfinished'", "context.on('response'",
+    "page.on('console'", "page.on('pageerror'", "context.on('requestfailed'",
+    'pendingApiBodies.add', 'response.text()',
     'Promise.all(batch)', 'response.status()', 'consoleErrors',
     'response.request().method()', 'consoleMessages', 'pageErrors',
     'requestFailures', 'responseFailures', 'apiFailures', 'apiWriteMethods',
@@ -305,6 +379,8 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   }
   assert.match(observer, /new Set\(\)/)
   assert.match(observer, /while\s*\(pendingApiBodies\.size\)/)
+  assert.doesNotThrow(() => assertListenerOwnershipContract(equivalentListenerFormatting))
+  assert.doesNotThrow(() => assertListenerOwnershipContract(observer))
   assert.doesNotThrow(() => assertSettleContract(equivalentFormatting))
   assert.doesNotThrow(() => assertFinishContract(equivalentFormatting))
   const acceptedDecoys = [
@@ -319,6 +395,8 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     ['conditional finish try', () => assertFinishContract(conditionalFinishDecoy)],
     ['return before finish core', () => assertFinishContract(returnBeforeCoreFinishDecoy)],
     ['throw before finish core', () => assertFinishContract(throwBeforeCoreFinishDecoy)],
+    ['wrong listener receiver', () => assertListenerOwnershipContract(wrongListenerReceiverDecoy)],
+    ['nested listener attachment', () => assertListenerOwnershipContract(nestedListenerDecoy)],
   ].flatMap(([label, verify]) => {
     try {
       verify()
