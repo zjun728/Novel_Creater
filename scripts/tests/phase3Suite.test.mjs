@@ -2531,6 +2531,39 @@ test('baseline lock proves immutable visible UI and a stale public Bible confirm
     "getByText('Revision 1', { exact: true })).toHaveCount(1)",
   ]) assert.ok(`${scenario}\n${seedLock}\n${staleBible}`.includes(fragment), `baseline lock must retain visible evidence: ${fragment}`)
   assert.match(scenario, /runScenarioStage\('baseline-lock', 'seed-lock-view', \(\) => assertBaselineSeedLockUi\(page, runtime\)\)/u)
+  const contractLockView = scenario.slice(
+    scenario.indexOf("runScenarioStage('baseline-lock', 'contract-lock-view'"),
+    scenario.indexOf("runScenarioStage('baseline-lock', 'bible-lock-view'"),
+  )
+  const contractLockVisible = contractLockView.indexOf("IMMUTABLE REVISION · R1")
+  const contractLockSettled = contractLockView.indexOf('await settleNavigationBoundary(page, runtime)')
+  assert.ok(contractLockVisible >= 0 && contractLockSettled > contractLockVisible, 'Contract must settle before Bible navigation')
+
+  const finalReload = scenario.slice(
+    scenario.indexOf("runScenarioStage('baseline-lock', 'final-baseline-reload'"),
+    scenario.indexOf("}, { runtimeAuditOptions", scenario.indexOf("runScenarioStage('baseline-lock', 'final-baseline-reload'")),
+  )
+  const finalSeedsNavigation = finalReload.indexOf('await page.goto(`/projects/${PROJECT_ID}/seeds`)')
+  const finalSeedsVisible = finalReload.indexOf("getByText('选定代次 1', { exact: true })", finalSeedsNavigation)
+  const finalSeedsSettled = finalReload.indexOf('await settleNavigationBoundary(page, runtime)', finalSeedsVisible)
+  const finalContractNavigation = finalReload.indexOf('await page.goto(`/projects/${PROJECT_ID}/contract`)')
+  const finalContractVisible = finalReload.indexOf("getByText('IMMUTABLE REVISION · R1', { exact: true })", finalContractNavigation)
+  const finalContractSettled = finalReload.indexOf('await settleNavigationBoundary(page, runtime)', finalContractVisible)
+  const finalBibleNavigation = finalReload.indexOf('await page.goto(`/projects/${PROJECT_ID}/bible`)')
+  const finalHistoryVisible = finalReload.indexOf("getByText('Revision 1', { exact: true })", finalBibleNavigation)
+  const finalHistorySettled = finalReload.indexOf('await settleNavigationBoundary(page, runtime)', finalHistoryVisible)
+  assert.ok(
+    finalSeedsNavigation >= 0
+    && finalSeedsVisible > finalSeedsNavigation
+    && finalSeedsSettled > finalSeedsVisible
+    && finalContractNavigation > finalSeedsSettled
+    && finalContractVisible > finalContractNavigation
+    && finalContractSettled > finalContractVisible
+    && finalBibleNavigation > finalContractSettled
+    && finalHistoryVisible > finalBibleNavigation
+    && finalHistorySettled > finalHistoryVisible,
+    'final baseline reads must settle before each following navigation and before completion',
+  )
   assert.doesNotMatch(source, /Creation Bible is already confirmed/u)
   for (const removed of [
     ['selection', 'aba'].join('-'),

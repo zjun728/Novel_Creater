@@ -1267,6 +1267,7 @@ test('baseline-lock: the first Seed, Contract, and Bible stay immutable after a 
       await expect(page.getByText('IMMUTABLE REVISION · R1', { exact: true })).toBeVisible()
       await expect(page.getByRole('button', { name: '普通字段手动录入', exact: true })).toHaveCount(0)
       await expect(page.getByRole('button', { name: '一次确认完整契约', exact: true })).toHaveCount(0)
+      await settleNavigationBoundary(page, runtime)
     })
     await runScenarioStage('baseline-lock', 'bible-lock-view', async () => {
       await page.goto(`/projects/${PROJECT_ID}/bible`)
@@ -1283,11 +1284,14 @@ test('baseline-lock: the first Seed, Contract, and Bible stay immutable after a 
     await runScenarioStage('baseline-lock', 'final-baseline-reload', async () => {
       await page.goto(`/projects/${PROJECT_ID}/seeds`)
       await expect(page.getByText('选定代次 1', { exact: true })).toBeVisible()
+      await settleNavigationBoundary(page, runtime)
       await page.goto(`/projects/${PROJECT_ID}/contract`)
       await expect(page.getByText('IMMUTABLE REVISION · R1', { exact: true })).toBeVisible()
+      await settleNavigationBoundary(page, runtime)
       await page.goto(`/projects/${PROJECT_ID}/bible`)
       await page.getByRole('button', { name: '修订历史', exact: true }).click()
       await expect(page.getByText('Revision 1', { exact: true })).toHaveCount(1)
+      await settleNavigationBoundary(page, runtime)
     })
   }, { runtimeAuditOptions: () => phase3RuntimeAuditOptions(PROJECT_ID, { allowStaleBibleConfirm409: true, contractDraft404Count: 3 }) })
 })
