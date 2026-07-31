@@ -32,6 +32,8 @@ test('confirmed contract components present a permanent baseline without clone c
   ].map(path => source(path)))
   const contents = files.join('\n')
   assert.match(contents, /已确认，作为项目永久基线/)
+  assert.match(contents, /Number\(contractStore\.head\?\.revision \|\| 0\) > 0/)
+  assert.doesNotMatch(contents, /contractStore\.contractReady\s*&&\s*!contractStore\.draft/)
   assert.doesNotMatch(contents, /创建新修订|调整未来设计|cloneRevision/)
 })
 
@@ -614,7 +616,7 @@ function mountWithPinia(component, props, configureStore) {
   return { app, root, store }
 }
 
-test('wizard treats a superseded contract head as not current and starts the selected seed at engine', async () => {
+test('wizard treats a revisioned contract head as a permanent baseline despite stale readiness', async () => {
   const invalidHead = {
     hasContract: true,
     contractReady: false,
@@ -664,11 +666,10 @@ test('wizard treats a superseded contract head as not current and starts the sel
   try {
     await flush()
     const rendered = textContent(mounted.root)
-    assert.doesNotMatch(rendered, /当前生效的创作契约/)
-    assert.ok(walk(mounted.root).find(node => (
+    assert.match(rendered, /已确认，作为项目永久基线/)
+    assert.equal(walk(mounted.root).find(node => (
       node.type === 'nav' && node.props['aria-label'] === '创作契约五个步骤'
-    )))
-    assert.match(rendered, /故事发动机/)
+    )), undefined)
     assert.match(rendered, /雾港错钟/)
     assert.ok(findByText(mounted.root, 'button', '历史修订'))
   } finally {
@@ -1399,7 +1400,11 @@ for (const lateOutcome of ['rejection', 'failed-result']) {
       engineHash: HASH_A,
       primaryStyleRef: primaryStyleRef.value,
       secondaryStyleRef: null,
-    }))
+    }), store => {
+      store.projectId = 'project-1'
+      store.head = { projectId: 'project-1', revision: 0, hasContract: false }
+      store.headHydrated = true
+    })
 
     try {
       const scenario = inputForLabel(mounted.root, '作者场景')

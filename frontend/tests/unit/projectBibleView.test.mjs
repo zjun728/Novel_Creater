@@ -24,6 +24,9 @@ test('confirmed Bible page is a permanent read-only baseline without clone contr
   ].map(path => readFile(source(path), 'utf8')))
   const joined = contents.join('\n')
   assert.match(joined, /已确认，作为项目永久基线/)
+  assert.match(joined, /已确认为项目永久基线/)
+  assert.match(joined, /确认创作圣经/)
+  assert.doesNotMatch(joined, /确认新的未来设计|已确认新的创作圣经修订/)
   assert.doesNotMatch(joined, /调整未来设计|workspace\.clone|cloneSource/)
 })
 
@@ -308,8 +311,8 @@ test('mounted ProjectBibleView follows first, head-only, superseded, and archive
     area.props.onInput({ target: { value: 'dirty again' } }); await flush(); await router.push('/next'); assert.equal(router.currentRoute.value.fullPath, '/projects/first/bible')
     allowLeave = true; await router.push('/next'); assert.equal(router.currentRoute.value.fullPath, '/next')
     await router.push('/projects/head/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · current/); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea'); assert.equal(area.props.readonly, true); assert.equal(area.props.disabled, false); assert.equal(byText(root, '调整未来设计'), undefined)
-    await router.push('/projects/super/bible'); await flush(); assert.match(text(root), /superseded/); assert.equal(byText(root, '调整未来设计'), undefined)
-    await router.push('/projects/archived/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · superseded/); assert.match(text(root), /内容已固定为项目永久基线/); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED DRAFT'); assert.ok(area); assert.equal(area.props.readonly, true)
+    await router.push('/projects/super/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · current/); assert.match(text(root), /已确认，作为项目永久基线/); assert.equal(byText(root, '调整未来设计'), undefined)
+    await router.push('/projects/archived/bible'); await flush(); assert.match(text(root), /CREATION BIBLE · current/); assert.match(text(root), /已确认，作为项目永久基线/); area = walk(root).find(value => value.type === 'textarea' && value.props.value === 'ARCHIVED HEAD'); assert.ok(area); assert.equal(area.props.readonly, true)
   } finally { global.fetch = originalFetch; global.window = originalWindow; await vite.close() }
 })
 

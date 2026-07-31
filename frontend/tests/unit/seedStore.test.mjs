@@ -9,6 +9,49 @@ test('seed store names the one-time confirmation action', async () => {
   assert.match(source, /确认这个种子并进入创作契约/)
 })
 
+test('unknown seed hydration and a confirmed selection fail closed before transport', async () => {
+  setActivePinia(createPinia())
+  const store = useSeedStore()
+  let calls = 0
+  await withFetch(async () => { calls += 1; return jsonResponse({}) }, async () => {
+    for (const action of [
+      () => store.createSeed('p1', PAYLOAD),
+      () => store.updateSeed('p1', 'A', {}),
+      () => store.selectSeed('p1', { seedId: 'A' }),
+      () => store.archiveSeed('p1', 'A', {}),
+      () => store.restoreSeed('p1', 'A', {}),
+      () => store.permanentlyDeleteSeed('p1', 'A', {}),
+      () => store.requestInspiration('p1', {}),
+    ]) await assert.rejects(action)
+    assert.equal(calls, 0)
+  })
+})
+
+test('a server 409 selection keeps the authoritative cards and active selection unchanged', async () => {
+  setActivePinia(createPinia())
+  const store = useSeedStore()
+  const a = seed('A')
+  const b = seed('B')
+  let selectCalls = 0
+  await withFetch(async (url, options = {}) => {
+    const path = String(url)
+    if (path.endsWith('/projects/p1/seeds')) return jsonResponse([a, b])
+    if (path.endsWith('/projects/p1/selected-seed') && options.method === 'GET') return jsonResponse({ activeSelection: null })
+    if (path.endsWith('/projects/p1/selected-seed')) {
+      selectCalls += 1
+      return jsonResponse({ code: 'SelectionConflict', message: 'stale' }, 409)
+    }
+    throw new Error(`unexpected request ${url}`)
+  }, async () => {
+    await store.refresh('p1')
+    const before = JSON.parse(JSON.stringify({ seeds: store.seeds, activeSelection: store.activeSelection, selectionRevision: store.selectionRevision }))
+    await assert.rejects(store.selectSeed('p1', { seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 0 }))
+    assert.equal(selectCalls, 1)
+    assert.deepEqual({ seeds: store.seeds, activeSelection: store.activeSelection, selectionRevision: store.selectionRevision }, before)
+    assert.equal(store.error.status, 409)
+  })
+})
+
 const PAYLOAD = Object.freeze({
   title: '典镇山河',
   genre: '历史穿越',
@@ -128,7 +171,8 @@ test('confirmation does not replace a selected seed when server capabilities den
       capabilities: { ...seed('A').capabilities, canSelect: false, canEdit: false },
     }))
   }, async () => {
-    store.$patch({ seeds: [seed('A')] })
+    store.activateProject('p1')
+    store.$patch({ selectionHydrated: true, seeds: [seed('A')] })
     await store.selectSeed('p1', {
       seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 0,
     })
@@ -170,6 +214,8 @@ test('inspiration remains transient until an explicit Save as Seed command', asy
       },
     }))
   }, async () => {
+    store.activateProject('p1')
+    store.$patch({ selectionHydrated: true })
     const proposal = await store.requestInspiration('p1', {
       transcript: [{ role: 'user', content: '如何增强人物冲突？' }],
       snapshotIds: ['snapshot-1'],
@@ -220,7 +266,8 @@ test('edit, archive, restore and eligible permanent delete are explicit writes o
       },
     }))
   }, async () => {
-    store.$patch({ seeds: [seed('A')] })
+    store.activateProject('p1')
+    store.$patch({ selectionHydrated: true, seeds: [seed('A')] })
     await store.updateSeed('p1', 'A', {
       payload: { ...PAYLOAD, title: '校订稿' },
       expectedSeedRevision: 1,
@@ -249,7 +296,7 @@ test('edit, archive, restore and eligible permanent delete are explicit writes o
   assert.equal(store.seeds.length, 0)
 })
 
-test('a seed mutation supersedes an ordinary refresh without leaving its local loading state stuck', async () => {
+test('a refresh in flight keeps mutations fail-closed until its authoritative selection returns', async () => {
   setActivePinia(createPinia())
   const store = useSeedStore()
   let releaseList
@@ -279,16 +326,16 @@ test('a seed mutation supersedes an ordinary refresh without leaving its local l
     await Promise.resolve()
     assert.equal(store.loading, true)
 
-    await store.createSeed('p1', PAYLOAD, {
+    await assert.rejects(store.createSeed('p1', PAYLOAD, {
       idempotencyKey: 's'.repeat(64),
-    })
+    }))
     assert.equal(store.mutationBusy, false)
-    assert.equal(store.loading, false)
-    assert.equal(store.refreshing, false)
+    assert.equal(store.loading, true)
+    assert.equal(store.refreshing, true)
 
     releaseList(jsonResponse([]))
     await refresh
-    assert.deepEqual(store.seeds.map(item => item.id), ['created'])
+    assert.deepEqual(store.seeds.map(item => item.id), [])
   })
 })
 
@@ -301,6 +348,8 @@ test('late inspiration completion cannot set error or busy state in a newer proj
   })
 
   await withFetch(async () => pending, async () => {
+    store.activateProject('p1')
+    store.$patch({ selectionHydrated: true })
     const oldRequest = store.requestInspiration('p1', {
       transcript: [{ role: 'user', content: 'P1 灵感' }],
       snapshotIds: ['snapshot-1'],

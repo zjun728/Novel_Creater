@@ -93,14 +93,14 @@ async function save() {
   try { if (await workspace.save()) notice.value = '草稿已保存' } catch {}
 }
 async function confirm() {
-  try { if (await workspace.confirm()) notice.value = '已确认新的创作圣经修订' } catch {}
+  try { if (await workspace.confirm()) notice.value = '已确认为项目永久基线' } catch {}
 }
 async function generate() {
   notice.value = ''
   try {
     const attempt = await workspace.generate(authorInstructions.value)
     if (attempt?.status === 'succeeded') {
-      notice.value = '已生成新的创作圣经草稿'
+      notice.value = '创作圣经草稿已生成'
     }
   } catch {}
 }
@@ -118,7 +118,7 @@ async function retryFailure() {
     const result = await workspace.retryFailure()
     if (result === undefined) return
     if (type === 'save') notice.value = '草稿已保存'
-    else if (type === 'confirm') notice.value = '已确认新的创作圣经修订'
+    else if (type === 'confirm') notice.value = '已确认为项目永久基线'
     else if (type === 'hydrate' || type === 'reconcile' || type === 'reloadAuthoritative') notice.value = '已重新加载权威版本'
   } catch {}
 }
@@ -182,7 +182,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
         <footer v-if="editable"><button :disabled="!canSave" @click="save">手动保存</button><span v-if="store.dirty">请先保存后再确认</span><button :disabled="!canConfirm" @click="workspace.openConfirm($event.currentTarget)">预览并确认</button></footer>
         <Teleport to="body" :disabled="!teleportEnabled">
           <div v-if="confirmOpen" class="confirm-overlay">
-            <section ref="confirmDialog" class="confirm-panel" role="dialog" aria-modal="true" aria-label="确认新的未来设计" @keydown="handleConfirmKeydown"><h2>确认新的未来设计</h2><section v-if="errorSummary" ref="confirmErrorTarget" class="modal-error-summary" tabindex="-1" role="alert" aria-live="assertive"><strong>{{ errorSummary.message }}</strong><span v-if="errorSummary.correlationId">参考编号：{{ errorSummary.correlationId }}</span><button v-if="hasConflict" type="button" :disabled="busy" @click="reloadAuthoritative">重新加载权威版本</button><button v-else type="button" :disabled="busy" @click="retryFailure">{{ recoveryLabel }}</button></section><p>确认会创建不可变修订。请核对已保存的完整快照。</p><bible-editor v-if="confirmPreview" :model-value="confirmPreview" read-only :disabled="busy" /><button ref="confirmTarget" @click="confirm">确认签印</button><button :disabled="busy" @click="workspace.closeConfirm">返回编辑</button></section>
+            <section ref="confirmDialog" class="confirm-panel" role="dialog" aria-modal="true" aria-label="确认创作圣经" @keydown="handleConfirmKeydown"><h2>确认创作圣经</h2><section v-if="errorSummary" ref="confirmErrorTarget" class="modal-error-summary" tabindex="-1" role="alert" aria-live="assertive"><strong>{{ errorSummary.message }}</strong><span v-if="errorSummary.correlationId">参考编号：{{ errorSummary.correlationId }}</span><button v-if="hasConflict" type="button" :disabled="busy" @click="reloadAuthoritative">重新加载权威版本</button><button v-else type="button" :disabled="busy" @click="retryFailure">{{ recoveryLabel }}</button></section><p>确认后将作为项目永久基线。请核对已保存的完整快照。</p><bible-editor v-if="confirmPreview" :model-value="confirmPreview" read-only :disabled="busy" /><button ref="confirmTarget" @click="confirm">确认签印</button><button :disabled="busy" @click="workspace.closeConfirm">返回编辑</button></section>
           </div>
         </Teleport>
       </div>

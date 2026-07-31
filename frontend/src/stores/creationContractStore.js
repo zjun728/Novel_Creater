@@ -34,6 +34,18 @@ function readOnlyError() {
   return error
 }
 
+function hydrationError() {
+  const error = new Error('创作契约权威状态尚未加载')
+  error.code = 'contract_hydration_unknown'
+  return error
+}
+
+function baselineLockedError() {
+  const error = new Error('已确认的创作契约是项目永久基线')
+  error.code = 'contract_baseline_locked'
+  return error
+}
+
 export const useCreationContractStore = defineStore('creationContract', () => {
   const projectId = ref('')
   const draft = shallowRef(null)
@@ -51,6 +63,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const requiresReload = ref(false)
   const hasUnsavedChanges = ref(false)
   const readOnly = ref(false)
+  const headHydrated = ref(false)
 
   const loading = ref(false)
   const saving = ref(false)
@@ -101,12 +114,14 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const providerOutcomeUnknown = computed(() => (
     engineBatch.value?.status === 'outcome_unknown'
   ))
+  const baselineLocked = computed(() => Number(head.value?.revision || 0) > 0)
 
   function clearProjectState() {
     draft.value = null
     previewResult.value = null
     confirmed.value = null
     head.value = null
+    headHydrated.value = false
     engineBatch.value = null
     styleTrial.value = null
     history.value = []
@@ -161,6 +176,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
 
   function assertWritable() {
     if (readOnly.value) throw readOnlyError()
+    if (!headHydrated.value) throw hydrationError()
+    if (baselineLocked.value) throw baselineLockedError()
   }
 
   function discardUnsavedChanges() {
@@ -204,6 +221,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     const generation = loadGuard.begin()
     const stateGeneration = ++contractStateGeneration
     loading.value = true
+    headHydrated.value = false
     try {
       const readOnlyLoad = requestedReadOnly === true
       const [loadedDraft, loadedHead, recovery] = readOnlyLoad
@@ -216,6 +234,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
       if (currentContractState(loadGuard, generation, targetProjectId, stateGeneration)) {
         draft.value = loadedDraft
         head.value = loadedHead
+        headHydrated.value = true
         styleTrial.value = null
         recoverableBatches.value = Array.isArray(recovery?.items)
           ? recovery.items.map(item => ({ ...item }))
@@ -237,8 +256,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function saveDraft(nextProjectId, values) {
-    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
+    assertWritable()
     const generation = saveGuard.begin()
     const stateGeneration = ++contractStateGeneration
     const expectedDraftVersion = Number(draft.value?.draftVersion || 0)
@@ -268,8 +287,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function preview(nextProjectId) {
-    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
+    assertWritable()
     const generation = previewGuard.begin()
     const stateGeneration = contractStateGeneration
     previewing.value = true
@@ -289,8 +308,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function confirm(nextProjectId, { idempotencyKey } = {}) {
-    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
+    assertWritable()
     const commandKey = `${targetProjectId}:${String(idempotencyKey || '')}`
     let command = confirmCommands.get(commandKey)
     if (!command) {
@@ -328,8 +347,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function runEngineRequest(nextProjectId, operation, { reconcile = false } = {}) {
-    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
+    assertWritable()
     const generation = engineGuard.begin()
     engineLoading.value = true
     reconciling.value = reconcile
@@ -381,8 +400,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function reconcileRecoverableBatch(nextProjectId, batchId) {
-    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
+    assertWritable()
     const normalizedId = String(batchId || '')
     if (!normalizedId) throw new TypeError('batchId is required')
     if (recoverableCommands.has(normalizedId)) return null
@@ -434,8 +453,8 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   }
 
   async function runStyleTrial(nextProjectId, command) {
-    assertWritable()
     const targetProjectId = enterProject(nextProjectId)
+    assertWritable()
     const generation = styleTrialGuard.begin()
     const stateGeneration = contractStateGeneration
     styleTrialLoading.value = true
@@ -531,6 +550,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     requiresReload,
     hasUnsavedChanges,
     readOnly,
+    headHydrated,
     loading,
     saving,
     previewing,
@@ -544,6 +564,7 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     contractReady,
     readinessReasons,
     providerOutcomeUnknown,
+    baselineLocked,
     markUnsavedChanges,
     discardUnsavedChanges,
     setReadOnly,

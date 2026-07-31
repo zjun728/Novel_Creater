@@ -33,6 +33,7 @@ export function createBibleWorkspaceController({
   const hasDraftBody = computed(() => store.draft?.draft != null)
   const hasHeadBody = computed(() => store.head?.bible != null)
   const mode = computed(() => {
+    if (store.baselineLocked === true) return 'head'
     if (isArchived() || store.readOnly || store.head?.lifecycle === 'archived') return 'archived'
     if (store.draft?.status === 'superseded') return 'superseded'
     if (hasDraftBody.value) return 'draft'
@@ -40,6 +41,7 @@ export function createBibleWorkspaceController({
     return 'first'
   })
   const activeArtifact = computed(() => {
+    if (store.baselineLocked === true) return store.head
     // Archived projects preserve an unsaved/superseded draft for read-only recovery.
     // Every displayed concern below (body, status, reasons) uses this same artifact.
     if (mode.value === 'archived') return store.draft?.draft != null ? store.draft : store.head

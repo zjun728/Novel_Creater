@@ -22,18 +22,29 @@ function capabilityDenied(code) {
   return Object.assign(new Error('当前种子操作不被服务端允许'), { code })
 }
 
+function lockedCapabilities(capabilities = {}) {
+  return {
+    ...capabilities,
+    canEdit: false,
+    canSelect: false,
+    canRestore: false,
+  }
+}
+
 function selectedRows(rows, activeSelection) {
   const selectedId = activeSelection?.seedId ?? null
   return (Array.isArray(rows) ? rows : []).map(seed => ({
     ...seed,
     isSelected: selectedId != null && seed.id === selectedId,
     selectionRevision: Number(activeSelection?.selectionRevision ?? seed.selectionRevision ?? 0),
+    capabilities: selectedId == null ? seed.capabilities : lockedCapabilities(seed.capabilities),
   }))
 }
 
 export const useSeedStore = defineStore('seed', () => {
   const seeds = ref([])
   const activeSelection = ref(null)
+  const selectionHydrated = ref(false)
   const readiness = ref({ ...EMPTY_READINESS })
   const loading = ref(false)
   const refreshing = ref(false)
@@ -65,6 +76,7 @@ export const useSeedStore = defineStore('seed', () => {
     inspirationGuard.invalidate()
     seeds.value = []
     activeSelection.value = null
+    selectionHydrated.value = false
     readiness.value = { ...EMPTY_READINESS }
     loading.value = false
     refreshing.value = false
@@ -85,6 +97,33 @@ export const useSeedStore = defineStore('seed', () => {
     mutationBusy.value = true
     error.value = null
     return { projectKey, generation }
+  }
+
+  function assertHydrated(projectId) {
+    const targetProjectId = activate(projectId)
+    if (!selectionHydrated.value) throw capabilityDenied('seed_hydration_unknown')
+    return targetProjectId
+  }
+
+  function assertMutation(projectId, kind, seedId = null) {
+    assertHydrated(projectId)
+    if (kind === 'create') {
+      if (activeSelection.value !== null) throw capabilityDenied('seed_create_denied')
+      return
+    }
+    const seed = seeds.value.find(item => item.id === seedId)
+    if (!seed) throw capabilityDenied(`seed_${kind}_denied`)
+    if (['update', 'select', 'restore'].includes(kind) && activeSelection.value !== null) {
+      throw capabilityDenied(`seed_${kind}_denied`)
+    }
+    const capability = {
+      update: 'canEdit',
+      select: 'canSelect',
+      archive: 'canArchive',
+      restore: 'canRestore',
+      delete: 'canPermanentlyDelete',
+    }[kind]
+    if (seed.capabilities?.[capability] !== true) throw capabilityDenied(`seed_${kind}_denied`)
   }
 
   function mutationCurrent(state) {
@@ -116,10 +155,10 @@ export const useSeedStore = defineStore('seed', () => {
       seedHash: seed.contentHash,
       selectedAt: null,
       updatedAt: null,
-      seed: { ...seed, isSelected: true },
+      seed: { ...seed, isSelected: true, capabilities: lockedCapabilities(seed.capabilities) },
     }
     seeds.value = selectedRows(seeds.value, activeSelection.value)
-    upsert({ ...seed, isSelected: true, selectionRevision: revision })
+    upsert({ ...seed, isSelected: true, selectionRevision: revision, capabilities: lockedCapabilities(seed.capabilities) })
     readiness.value = {
       seedReady: false,
       contractReady: false,
@@ -132,6 +171,7 @@ export const useSeedStore = defineStore('seed', () => {
     const generation = loadGuard.begin()
     loading.value = true
     refreshing.value = true
+    selectionHydrated.value = false
     error.value = null
     try {
       const [rows, selectedResult] = await Promise.all([
@@ -147,6 +187,7 @@ export const useSeedStore = defineStore('seed', () => {
         activeSelection.value = result.activeSelection
         seeds.value = selectedRows(result.seeds, result.activeSelection)
         readiness.value = result.readiness
+        selectionHydrated.value = true
       }
       return result
     } catch (failure) {
@@ -192,6 +233,7 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function createSeed(projectId, payload, options = {}) {
+    try { assertMutation(projectId, 'create') } catch (failure) { return Promise.reject(failure) }
     return mutate(
       projectId,
       () => api.seeds.create(projectId, payload, options),
@@ -200,6 +242,7 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function updateSeed(projectId, seedId, data) {
+    try { assertMutation(projectId, 'update', seedId) } catch (failure) { return Promise.reject(failure) }
     return mutate(
       projectId,
       () => api.seeds.update(projectId, seedId, data),
@@ -211,10 +254,7 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function selectSeed(projectId, data) {
-    const seed = seeds.value.find(item => item.id === data?.seedId)
-    if (seed?.capabilities?.canSelect !== true) {
-      return Promise.reject(capabilityDenied('seed_select_denied'))
-    }
+    try { assertMutation(projectId, 'select', data?.seedId) } catch (failure) { return Promise.reject(failure) }
     return mutate(
       projectId,
       () => api.seeds.select(projectId, data),
@@ -223,6 +263,7 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function archiveSeed(projectId, seedId, data) {
+    try { assertMutation(projectId, 'archive', seedId) } catch (failure) { return Promise.reject(failure) }
     return mutate(
       projectId,
       () => api.seeds.archive(projectId, seedId, data),
@@ -231,6 +272,7 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function restoreSeed(projectId, seedId, data) {
+    try { assertMutation(projectId, 'restore', seedId) } catch (failure) { return Promise.reject(failure) }
     return mutate(
       projectId,
       () => api.seeds.restore(projectId, seedId, data),
@@ -239,6 +281,7 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function permanentlyDeleteSeed(projectId, seedId, data) {
+    try { assertMutation(projectId, 'delete', seedId) } catch (failure) { return Promise.reject(failure) }
     return mutate(
       projectId,
       () => api.seeds.delete(projectId, seedId, data),
@@ -251,7 +294,8 @@ export const useSeedStore = defineStore('seed', () => {
   const deleteSeed = permanentlyDeleteSeed
 
   async function requestInspiration(projectId, data) {
-    const projectKey = activate(projectId)
+    let projectKey
+    try { projectKey = assertHydrated(projectId) } catch (failure) { return Promise.reject(failure) }
     const generation = inspirationGuard.begin()
     inspirationBusy.value = true
     error.value = null
@@ -274,6 +318,8 @@ export const useSeedStore = defineStore('seed', () => {
   function invalidateLoadSeeds() {
     loadGuard.invalidate()
     seeds.value = []
+    activeSelection.value = null
+    selectionHydrated.value = false
     loading.value = false
     refreshing.value = false
   }
@@ -281,6 +327,7 @@ export const useSeedStore = defineStore('seed', () => {
   return {
     seeds,
     activeSelection,
+    selectionHydrated,
     selectedSeed,
     selectionRevision,
     readiness,

@@ -31,7 +31,7 @@ function makeStore(overrides = {}) {
     draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] },
     head: revision(7), history: [revision(7)], historyNextBeforeRevision: 6, historyDetail: null,
     loading: false, saving: false, confirming: false, generating: false, cloning: false, historyLoading: false,
-    generationAttempt: null,
+    generationAttempt: null, baselineLocked: false,
     dirty: false, readOnly: false, canEdit: true, canConfirm: true, canClone: true, reasons: [],
     ...overrides,
   })
@@ -205,14 +205,15 @@ test('state machine displays a head-only Bible as a read-only permanent baseline
   assert.equal(archivedWorkspace.editable.value, false)
 })
 
-test('archived workspace keeps a superseded draft as its single displayed artifact when a head also exists', async () => {
+test('a locked baseline shows its confirmed head ahead of an archived superseded draft', async () => {
   const archivedDraft = { draftVersion: 2, draftId: 'draft-archived', draft: { ...bible(), premiseAndPromise: 'ARCHIVED DRAFT' }, status: 'superseded', lifecycle: 'archived', canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] }
   const archivedHead = { ...revision(8), bible: { ...bible(), premiseAndPromise: 'ARCHIVED HEAD' }, status: 'current', lifecycle: 'archived', canClone: false, reasons: ['project_archived'] }
-  const store = makeStore({ draft: archivedDraft, head: archivedHead, canEdit: false, canConfirm: false, canClone: false })
+  const store = makeStore({ baselineLocked: true, draft: archivedDraft, head: archivedHead, canEdit: false, canConfirm: false, canClone: false })
   const workspace = controller(store, { isArchived: () => true }); await workspace.hydrate()
-  assert.equal(workspace.working.value.premiseAndPromise, 'ARCHIVED DRAFT')
-  assert.equal(workspace.activeStatus.value, 'superseded')
-  assert.deepEqual(workspace.activeReasons.value, ['bible_head_changed'])
+  assert.equal(workspace.mode.value, 'head')
+  assert.equal(workspace.working.value.premiseAndPromise, 'ARCHIVED HEAD')
+  assert.equal(workspace.activeStatus.value, 'current')
+  assert.deepEqual(workspace.activeReasons.value, ['project_archived'])
   assert.equal(workspace.editable.value, false)
 })
 

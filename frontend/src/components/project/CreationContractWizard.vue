@@ -42,17 +42,10 @@ const steps = Object.freeze([
 ])
 
 const selectedSeed = computed(() => seedStore.selectedSeed)
-const hasSignedHead = computed(() => contractStore.head?.hasContract === true)
-const hasCurrentContract = computed(() => (
-  hasSignedHead.value
-  && contractStore.contractReady
-  && !contractStore.draft
-  && !props.readOnly
-))
-const hasArchivedSignedContract = computed(() => props.readOnly && hasSignedHead.value)
-const displayedSignedContract = computed(() => (
-  hasCurrentContract.value || hasArchivedSignedContract.value
-))
+const baselineLocked = computed(() => Number(contractStore.head?.revision || 0) > 0)
+const hasCurrentContract = computed(() => baselineLocked.value && !props.readOnly)
+const hasArchivedSignedContract = computed(() => props.readOnly && baselineLocked.value)
+const displayedSignedContract = computed(() => baselineLocked.value)
 const archivedInvalidReasons = computed(() => {
   if (!hasArchivedSignedContract.value) return []
   const detailed = Array.isArray(contractStore.head?.supersededReasons)
@@ -204,7 +197,7 @@ onBeforeUnmount(() => {
         <p>先把未来写作的边界与承诺写成一份稿簿，再进入滚动规划。</p>
       </div>
       <div class="ledger-tools">
-        <n-button v-if="contractStore.head?.hasContract" quaternary @click="historyOpen = true">历史修订</n-button>
+        <n-button v-if="baselineLocked" quaternary @click="historyOpen = true">历史修订</n-button>
         <n-tag v-if="hasArchivedSignedContract" type="warning" round :bordered="false">最后签印的历史契约</n-tag>
         <n-tag v-else-if="props.readOnly" type="warning" round :bordered="false">只读档案</n-tag>
         <n-tag v-else-if="hasCurrentContract" type="success" round :bordered="false">已签印</n-tag>
