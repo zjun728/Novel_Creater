@@ -491,6 +491,52 @@ test('browser source AST exposes every test declaration and bounded function cal
   ]) {
     assert.equal(collectBrowserTestDeclarations(`${source}\n${annotation}`, SPEC).length, 6)
   }
+  for (const dynamicDeclaration of [
+    'test(dynamicTitle)',
+    "test.only('dynamic ' + title)",
+    'test(`dynamic ${title}`)',
+  ]) {
+    assert.throws(() => collectBrowserTestDeclarations(dynamicDeclaration, SPEC), /static title/u)
+  }
+  for (const invalidDeclaration of [
+    "test('missing callback')",
+    "test.only('invalid callback', 'not a callback')",
+    "test.skip('invalid annotation declaration', 'not a callback')",
+  ]) assert.throws(() => collectBrowserTestDeclarations(invalidDeclaration, SPEC), /callback/u)
+  const typedDeclarations = collectBrowserTestDeclarations(`
+    const namedBody = async () => {}
+    test('identifier body', namedBody)
+    test('as callback', (async () => {}) as () => Promise<void>)
+    test('satisfies callback', (async () => {}) satisfies () => Promise<void>)
+  `, SPEC)
+  assert.equal(typedDeclarations.length, 3)
+  assert.equal(typedDeclarations[0].calls.size, 0)
+  assert.equal(collectBrowserTestDeclarations("test.skip('identifier annotation callback', namedBody)", SPEC).length, 1)
+  assert.throws(
+    () => collectBrowserTestDeclarations('test.skip(dynamicTitle, async () => {})', SPEC),
+    /static title/u,
+  )
+  const typedHelpers = collectBrowserFunctionGraph(`
+    const castHelper = (async () => {}) as () => Promise<void>
+    const satisfiesHelper = (async () => {}) satisfies () => Promise<void>
+  `, SPEC)
+  assert.ok(typedHelpers.has('castHelper'))
+  assert.ok(typedHelpers.has('satisfiesHelper'))
+  const inlineCallback = collectBrowserTestDeclarations(`
+    test('inline stage', async () => {
+      runScenarioStage('inline', async () => { requiredHelper() })
+    })
+  `, SPEC)[0]
+  assert.ok(inlineCallback.calls.has('runScenarioStage'))
+  assert.ok(inlineCallback.calls.has('requiredHelper'))
+  for (const deadScope of [
+    'const neverRuns = async () => { requiredHelper() }',
+    'class NeverRuns { run() { requiredHelper() } }',
+    'const neverRuns = { run() { requiredHelper() } }',
+  ]) {
+    const declaration = collectBrowserTestDeclarations(`test('dead scope', async () => { ${deadScope} })`, SPEC)[0]
+    assert.equal(declaration.calls.has('requiredHelper'), false)
+  }
   assert.throws(() => assertSafeBrowserSource('fetch("https://forbidden.invalid")'), /fetch/u)
   assertSafeBrowserGraph('entry.spec.ts', relativePath => ({
     'entry.spec.ts': "import './support.ts'",
@@ -555,6 +601,12 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
   assert.throws(() => assertMapped(source.replace('baseline-lock: the first Seed', 'baseline-lock-removed: the first Seed')))
   assert.throws(() => assertMapped(source.replace('已被后续依据取代', '错放 outcome')))
   assert.throws(() => assertMapped(`${source.replaceAll('toBeDisabled', 'notDisabled')}\nasync function unrelatedEvidence() { return page.toBeDisabled() }`))
+  const directPlanning = "createManualPlanning(page, '手工规划 R1', runtime)"
+  for (const deadScope of [
+    `const neverRuns = async () => { ${directPlanning} }`,
+    `class NeverRuns { run() { ${directPlanning} } }`,
+    `const neverRuns = { run() { ${directPlanning} } }`,
+  ]) assert.throws(() => assertMapped(source.replace(directPlanning, deadScope)))
   const directFinish = 'await finishRuntime(runtime, bodyError, writes, runtimeAuditOptions)'
   assert.throws(() => assertMapped(source.replace(directFinish, `async function neverRuns() { ${directFinish} }`)))
   assert.throws(() => assertMapped(source.replace(directFinish, `const neverRuns = async () => { ${directFinish} }`)))

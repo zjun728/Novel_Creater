@@ -50,13 +50,22 @@ export function collectBrowserTestDeclarations(source, sourceName) {
     if (testCall === null) return
     const title = getStaticString(node.arguments[0])
     const callback = testDeclarationCallback(node.arguments)
-    if (title === null || !callback) return
+    const requiresDeclaration = testCall.modifiers.length === 0 || testCall.modifiers.includes('only')
+    if (requiresDeclaration) {
+      if (title === null) throw new Error('browser test declaration requires a static title')
+      if (!callback) throw new Error('browser test declaration must have a callback')
+    } else if (isRuntimeTestAnnotation(testCall.modifiers, node.arguments, title)) {
+      return
+    } else {
+      if (title === null) throw new Error('browser test declaration requires a static title')
+      if (!callback) throw new Error('browser test declaration must have a callback')
+    }
     if (testCall.hasDynamicModifier) throw new Error('browser test declaration modifier must be static')
     declarations.push({
       title,
       modifiers: testCall.modifiers,
-      bodySource: source.slice(callback.body.start, callback.body.end),
-      calls: collectCallNames(callback.body),
+      bodySource: callback.functionNode ? source.slice(callback.functionNode.body.start, callback.functionNode.body.end) : '',
+      calls: callback.functionNode ? collectExecutedCallNames(callback.functionNode.body) : new Set(),
     })
   })
   return declarations
@@ -201,12 +210,23 @@ function testCallModifiers(callee) {
 }
 
 function testDeclarationCallback(argumentsList) {
-  const callback = argumentsList.at(-1)
-  return isFunctionNode(callback) ? callback : null
+  const callback = unwrapExpression(argumentsList.at(-1))
+  if (isFunctionNode(callback)) return { kind: 'function', functionNode: callback }
+  if (callback?.type === 'Identifier') return { kind: 'identifier', functionNode: null }
+  return null
+}
+
+function isRuntimeTestAnnotation(modifiers, argumentsList, title) {
+  if (modifiers.length !== 1) return false
+  if (['slow', 'fail', 'fixme'].includes(modifiers[0])) return argumentsList.length === 0
+  return modifiers[0] === 'skip'
+    && title === null
+    && argumentsList.length === 2
+    && getStaticString(argumentsList[1]) !== null
 }
 
 function isFunctionNode(node) {
-  return ['ArrowFunctionExpression', 'FunctionExpression'].includes(node?.type)
+  return ['ArrowFunctionExpression', 'FunctionExpression'].includes(unwrapExpression(node)?.type)
 }
 
 function namedFunctionNode(node) {
@@ -215,7 +235,7 @@ function namedFunctionNode(node) {
   }
   if (node.type === 'VariableDeclarator'
     && node.id?.type === 'Identifier'
-    && isFunctionNode(node.init)) return { name: node.id.name, functionNode: node.init }
+    && isFunctionNode(node.init)) return { name: node.id.name, functionNode: unwrapExpression(node.init) }
   return null
 }
 
@@ -227,12 +247,32 @@ function collectDirectCallNames(root) {
   return calls
 }
 
-function collectCallNames(root) {
+function collectExecutedCallNames(root) {
   const calls = new Set()
-  walkAst(root, null, null, node => {
-    if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') calls.add(node.callee.name)
-  })
+  visitExecutedNode(root, false)
   return calls
+
+  function visitExecutedNode(node, invokedCallback) {
+    const current = unwrapExpression(node)
+    if (!current || typeof current !== 'object' || typeof current.type !== 'string') return
+    if (isFunctionNode(current)) {
+      if (invokedCallback) visitExecutedNode(current.body, false)
+      return
+    }
+    if (isNestedExecutionScope(current)) return
+    if (current.type === 'CallExpression' || current.type === 'OptionalCallExpression') {
+      if (current.callee?.type === 'Identifier') calls.add(current.callee.name)
+      visitExecutedNode(current.callee, isFunctionNode(current.callee))
+      for (const argument of current.arguments) visitExecutedNode(argument, isFunctionNode(argument))
+      return
+    }
+    for (const [key, value] of Object.entries(current)) {
+      if (['comments', 'errors', 'extra', 'loc', 'tokens'].includes(key)) continue
+      if (Array.isArray(value)) {
+        for (const child of value) visitExecutedNode(child, false)
+      } else visitExecutedNode(value, false)
+    }
+  }
 }
 
 function walkAstWithoutNestedFunctions(node, root, visitor) {
@@ -349,7 +389,9 @@ function unwrapExpression(node) {
     'TSAsExpression',
     'TSInstantiationExpression',
     'TSNonNullExpression',
+    'TSSatisfiesExpression',
     'TSTypeAssertion',
+    'ParenthesizedExpression',
   ].includes(current.type)) current = current.expression
   return current
 }
