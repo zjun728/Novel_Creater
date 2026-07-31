@@ -12,6 +12,7 @@ from backend.repositories.contracts import ContractRepository
 from backend.services.contracts import (
     AssetRevisionRef,
     ConfirmContracts,
+    ContractAlreadyConfirmed,
     ContractConflict,
     ContractDraftIncomplete,
     ContractDraftInput,
@@ -457,7 +458,7 @@ def _service(disposable_mysql):
 
 
 @pytest.mark.asyncio
-async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
+async def test_real_draft_preview_cas_and_confirmed_contract_is_locked(disposable_mysql):
     facts = await _bootstrap(disposable_mysql.session)
     service = _service(disposable_mysql)
     created = await service.save_draft(SaveContractDraft(PROJECT, 0, _draft(facts)))
@@ -550,7 +551,7 @@ async def test_real_draft_preview_cas_and_confirmed_clone(disposable_mysql):
         (CREATION, STYLE_CONTRACT, preview.creation_hash, preview.style_hash, now, PROJECT),
     )
 
-    cloned = await service.clone_revision(PROJECT, 1)
-    assert cloned.base_head_revision == 1
-    assert cloned.draft_version == 1
-    assert cloned.draft.seedRevisionId == SEED_REV
+    with pytest.raises(ContractAlreadyConfirmed):
+        await service.clone_revision(PROJECT, 1)
+    assert await _table_count(disposable_mysql.session, "project_contract_drafts") == 0
+    assert await _table_count(disposable_mysql.session, "creation_contracts") == 1

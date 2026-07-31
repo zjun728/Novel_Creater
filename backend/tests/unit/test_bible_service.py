@@ -11,6 +11,7 @@ import pytest
 from backend.domain.bibles import BiblePayload, canonical_bible_hash
 from backend.domain.json_contracts import canonical_hash
 from backend.http_errors import ProjectArchived, PublicDomainError
+from backend.services import bibles
 from backend.services.bibles import (
     BibleConfirmationFailed,
     BibleConflict,
@@ -582,6 +583,31 @@ async def test_confirmation_is_atomic_immutable_and_same_request_replays():
 
 
 @pytest.mark.asyncio
+async def test_confirmed_bible_is_a_permanent_baseline_but_exact_retry_replays():
+    assert hasattr(bibles, "BibleAlreadyConfirmed")
+    harness = BibleHarness()
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
+    command = ConfirmBible("p1", "confirmed-baseline", saved.draft_version, 0)
+    confirmed = await harness.service.confirm(command)
+
+    assert await harness.service.confirm(command) == confirmed
+    draft = await harness.service.get_draft("p1")
+    assert draft.can_edit is draft.can_confirm is draft.can_clone is False
+    assert "bible_confirmed" in draft.reasons
+    for mutation in (
+        harness.service.save_draft(SaveBibleDraft("p1", 0, bible_payload())),
+        harness.service.clone_draft(CloneBibleDraft("p1", source_revision=1)),
+        harness.service.confirm(ConfirmBible("p1", "new-confirmation", 1, 1)),
+    ):
+        with pytest.raises(bibles.BibleAlreadyConfirmed):
+            await mutation
+    assert harness.repository.heads["p1"]["revision"] == 1
+    assert len(harness.repository.revisions) == 1
+
+
+@pytest.mark.asyncio
 async def test_confirmation_enforces_head_cas_without_retrying():
     harness = BibleHarness()
     saved = await harness.service.save_draft(
@@ -859,7 +885,7 @@ async def test_failed_receipt_transaction_error_is_retryable_and_key_is_reusable
 
 
 @pytest.mark.asyncio
-async def test_explicit_clone_supports_superseded_draft_and_confirmed_revision_sources():
+async def test_confirmed_bible_history_is_read_only():
     harness = BibleHarness()
     first = await harness.service.save_draft(
         SaveBibleDraft("p1", 0, bible_payload())
@@ -868,86 +894,18 @@ async def test_explicit_clone_supports_superseded_draft_and_confirmed_revision_s
         ConfirmBible("p1", "clone-source-confirm", first.draft_version, 0)
     )
     missing = await harness.service.get_draft("p1")
-    assert confirmed.can_clone is True
-    assert missing.can_clone is True
-    with pytest.raises(BibleNotFound):
-        await harness.service.clone_draft(
-            CloneBibleDraft("p1", source_draft_id=first.draft_id)
-        )
-
-    cloned_revision = await harness.service.clone_draft(
-        CloneBibleDraft("p1", source_revision=confirmed.revision)
-    )
-    assert cloned_revision.draft_id != first.draft_id
-    assert cloned_revision.base_head_revision == 1
-    assert cloned_revision.draft_version == 1
-    assert cloned_revision.content_hash == confirmed.content_hash
-    assert cloned_revision.can_clone is False
+    assert confirmed.can_clone is missing.can_clone is False
+    assert "bible_confirmed" in missing.reasons
     assert (await harness.service.get_head("p1")).can_clone is False
     assert (
         await harness.service.get_history_revision("p1", confirmed.revision)
     ).can_clone is False
-    with pytest.raises(BibleConflict):
+    with pytest.raises(bibles.BibleAlreadyConfirmed):
         await harness.service.clone_draft(
             CloneBibleDraft("p1", source_revision=confirmed.revision)
         )
-
-    updated = await harness.service.save_draft(
-        SaveBibleDraft(
-            "p1",
-            cloned_revision.draft_version,
-            bible_payload(protagonist="下一版将让主角采取更审慎的未来策略。"),
-        )
-    )
-    second = await harness.service.confirm(
-        ConfirmBible("p1", "confirm-adjustment", updated.draft_version, 1)
-    )
     history = await harness.service.history("p1")
-
-    assert second.revision == 2
-    assert tuple(item.revision for item in history.items) == (2, 1)
-    assert history.items[0].status == "current"
-    assert history.items[1].status == "superseded"
-    assert harness.repository.revisions[("p1", 1)]["content_hash"] == (
-        confirmed.content_hash
-    )
-
-    harness.contract_service.heads["p1"] = contract_head(
-        selection_revision=2,
-        seed_id="seed-b",
-        seed_revision_id="seed-revision-b",
-        seed_hash=HASH_D,
-        revision=2,
-        creation_contract_id="creation-b",
-        creation_hash=HASH_E,
-        style_contract_id="style-b",
-        style_hash=HASH_A,
-    )
-    superseded = await harness.service.get_draft("p1")
-    assert superseded.status == "missing"
-    source = await harness.service.clone_draft(
-        CloneBibleDraft("p1", source_revision=1)
-    )
-    harness.contract_service.heads["p1"] = contract_head(
-        selection_revision=3,
-        seed_id="seed-a",
-        seed_revision_id="seed-revision-a",
-        seed_hash=HASH_A,
-        revision=3,
-        creation_contract_id="creation-a3",
-        creation_hash=HASH_B,
-        style_contract_id="style-a3",
-        style_hash=HASH_C,
-    )
-    source_view = await harness.service.get_draft("p1")
-    cloned_draft = await harness.service.clone_draft(
-        CloneBibleDraft("p1", source_draft_id=source.draft_id)
-    )
-
-    assert source_view.status == "superseded"
-    assert cloned_draft.draft_id != source.draft_id
-    assert cloned_draft.basis.selection_revision == 3
-    assert cloned_draft.payload == source.payload
+    assert tuple(item.revision for item in history.items) == (1,)
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from backend.domain.json_contracts import canonical_hash
 from backend.http_errors import PublicDomainError
 from backend.repositories.bibles import BibleRepository
 from backend.services.bibles import (
+    BibleAlreadyConfirmed,
     BibleConfirmationFailed,
     BibleConflict,
     BiblePreconditionFailed,
@@ -283,7 +284,7 @@ async def test_get_draft_uses_one_snapshot_across_active_draft_and_head(
 
 
 @pytest.mark.asyncio
-async def test_get_head_uses_one_snapshot_when_a_new_active_draft_is_inserted(
+async def test_confirmed_bible_rejects_clone_and_keeps_head_read_only(
     disposable_mysql,
 ):
     contracts, contract = await confirmed_contract_basis(disposable_mysql)
@@ -299,33 +300,22 @@ async def test_get_head_uses_one_snapshot_when_a_new_active_draft_is_inserted(
             0,
         )
     )
-    repository = PausingReadBibleRepository()
-    reader = bible_service(
-        disposable_mysql,
-        contracts,
-        repository=repository,
-    )
-    repository.arm("head")
-
-    read_task = asyncio.create_task(reader.get_head(contract.project_id))
-    await asyncio.wait_for(repository.observed.wait(), timeout=1)
-    try:
+    with pytest.raises(BibleAlreadyConfirmed):
         await writer.clone_draft(
             CloneBibleDraft(
                 contract.project_id,
                 source_revision=confirmed.revision,
             )
         )
-    finally:
-        repository.release.set()
-    result = await read_task
+    result = await writer.get_head(contract.project_id)
 
     assert result.revision == 1
-    assert result.can_clone is True
+    assert result.can_clone is False
+    assert await count(disposable_mysql.session, "project_bible_drafts") == 1
 
 
 @pytest.mark.asyncio
-async def test_history_uses_one_snapshot_for_head_and_revision_page(
+async def test_confirmed_bible_history_remains_readable_without_revision_two(
     disposable_mysql,
 ):
     contracts, contract = await confirmed_contract_basis(disposable_mysql)
@@ -341,41 +331,23 @@ async def test_history_uses_one_snapshot_for_head_and_revision_page(
             0,
         )
     )
-    repository = PausingReadBibleRepository()
-    reader = bible_service(
-        disposable_mysql,
-        contracts,
-        repository=repository,
-    )
-    repository.arm("head")
-
-    read_task = asyncio.create_task(reader.history(contract.project_id))
-    await asyncio.wait_for(repository.observed.wait(), timeout=1)
-    try:
-        cloned = await writer.clone_draft(
-            CloneBibleDraft(
-                contract.project_id,
-                source_revision=first.revision,
-            )
-        )
+    with pytest.raises(BibleAlreadyConfirmed):
         await writer.confirm(
             ConfirmBible(
                 contract.project_id,
                 "snapshot-history-second",
-                cloned.draft_version,
+                1,
                 first.revision,
             )
         )
-    finally:
-        repository.release.set()
-    result = await read_task
+    result = await writer.history(contract.project_id)
 
     assert tuple(item.revision for item in result.items) == (1,)
     assert result.items[0].status == "current"
 
 
 @pytest.mark.asyncio
-async def test_history_detail_uses_one_snapshot_when_clone_occupies_draft_slot(
+async def test_confirmed_bible_history_detail_is_read_only(
     disposable_mysql,
 ):
     contracts, contract = await confirmed_contract_basis(disposable_mysql)
@@ -391,31 +363,19 @@ async def test_history_detail_uses_one_snapshot_when_clone_occupies_draft_slot(
             0,
         )
     )
-    repository = PausingReadBibleRepository()
-    reader = bible_service(
-        disposable_mysql,
-        contracts,
-        repository=repository,
-    )
-    repository.arm("head")
-
-    read_task = asyncio.create_task(
-        reader.get_history_revision(contract.project_id, confirmed.revision)
-    )
-    await asyncio.wait_for(repository.observed.wait(), timeout=1)
-    try:
+    with pytest.raises(BibleAlreadyConfirmed):
         await writer.clone_draft(
             CloneBibleDraft(
                 contract.project_id,
                 source_revision=confirmed.revision,
             )
         )
-    finally:
-        repository.release.set()
-    result = await read_task
+    result = await writer.get_history_revision(
+        contract.project_id, confirmed.revision
+    )
 
     assert result.revision == confirmed.revision
-    assert result.can_clone is True
+    assert result.can_clone is False
 
 
 @pytest.mark.asyncio
@@ -497,7 +457,7 @@ async def test_bible_write_holds_canonical_corpus_readiness_lock_until_commit(
 
 
 @pytest.mark.asyncio
-async def test_real_adjustment_creates_new_draft_and_keeps_both_immutable_revisions(
+async def test_real_confirmed_bible_permanently_rejects_mutations_and_replays(
     disposable_mysql,
 ):
     contracts, contract = await confirmed_contract_basis(disposable_mysql)
@@ -514,32 +474,28 @@ async def test_real_adjustment_creates_new_draft_and_keeps_both_immutable_revisi
         )
     )
 
-    cloned = await service.clone_draft(
-        CloneBibleDraft(contract.project_id, source_revision=1)
-    )
-    updated = await service.save_draft(
-        SaveBibleDraft(
-            contract.project_id,
-            cloned.draft_version,
-            bible_payload(
-                protagonist="后续版本将让主角以更谨慎的方式承担未来代价。"
-            ),
-        )
-    )
-    second = await service.confirm(
+    assert await service.confirm(
         ConfirmBible(
             contract.project_id,
-            "real-bible-second",
-            updated.draft_version,
-            1,
+            "real-bible-first",
+            first_draft.draft_version,
+            0,
         )
-    )
+    ) == first
+    for mutation in (
+        service.save_draft(
+            SaveBibleDraft(contract.project_id, 0, bible_payload())
+        ),
+        service.clone_draft(
+            CloneBibleDraft(contract.project_id, source_revision=1)
+        ),
+        service.confirm(
+            ConfirmBible(contract.project_id, "real-bible-second", 1, 1)
+        ),
+    ):
+        with pytest.raises(BibleAlreadyConfirmed):
+            await mutation
     page = await service.history(contract.project_id, limit=1)
-    next_page = await service.history(
-        contract.project_id,
-        limit=1,
-        before_revision=page.next_before_revision,
-    )
     rows = await disposable_mysql.session.fetchall(
         """SELECT revision,content_hash,content_json
              FROM creation_bible_revisions
@@ -548,16 +504,9 @@ async def test_real_adjustment_creates_new_draft_and_keeps_both_immutable_revisi
     )
 
     assert first.revision == 1
-    assert second.revision == 2
-    assert first.content_hash != second.content_hash
-    assert tuple(item.revision for item in page.items) == (2,)
-    assert page.next_before_revision == 2
-    assert tuple(item.revision for item in next_page.items) == (1,)
-    assert next_page.next_before_revision is None
-    assert [row["content_hash"] for row in rows] == [
-        first.content_hash,
-        second.content_hash,
-    ]
+    assert tuple(item.revision for item in page.items) == (1,)
+    assert page.next_before_revision is None
+    assert [row["content_hash"] for row in rows] == [first.content_hash]
 
 
 @pytest.mark.parametrize(

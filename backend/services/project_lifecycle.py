@@ -599,8 +599,16 @@ class ProjectLifecycleService:
             if item.task_key == "planning"
         )
 
-        edit_contract = lifecycle == "active" and active_selection == "current"
-        edit_bible = lifecycle == "active" and contract == "current"
+        edit_contract = (
+            lifecycle == "active"
+            and active_selection == "current"
+            and contract != "current"
+        )
+        edit_bible = (
+            lifecycle == "active"
+            and contract == "current"
+            and bible != "current"
+        )
         generate_bible = edit_bible and planning_ready
         reasons = []
         if lifecycle == "archived":

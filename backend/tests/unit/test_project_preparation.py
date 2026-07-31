@@ -862,11 +862,51 @@ async def test_only_planning_model_loss_changes_bible_generation_capability():
         _contract(),
     )
     result = await service.preparation("project / 一")
-    assert result.capabilities.edit_contract is True
+    assert result.capabilities.edit_contract is False
     assert result.capabilities.edit_bible is True
     assert result.capabilities.generate_bible is False
     assert result.reasons == ("bible_missing", "planning_model_not_ready")
     assert result.model_tasks[1].reasons == ("provider_unavailable",)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_baselines_close_contract_and_bible_capabilities_only():
+    current_bible = {
+        "head_revision": 1,
+        "head_bible_revision_id": "bible-1",
+        "head_content_hash": "d" * 64,
+        "revision_id": "bible-1",
+        "revision": 1,
+        "content_hash": "d" * 64,
+        **_bible_basis(),
+    }
+    service, *_ = _service(
+        _snapshot(selection=_selection(), bible_head=current_bible), _contract()
+    )
+
+    result = await service.preparation("project / 一")
+
+    assert result.contract == result.bible == "current"
+    assert result.capabilities.edit_contract is False
+    assert result.capabilities.edit_bible is False
+    assert result.capabilities.generate_bible is False
+    assert result.next_action == "establish_planning"
+
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            contract_draft={**_selection(), "base_head_revision": 0},
+        ),
+        _contract(ready=False, revision=0),
+    )
+    draft_contract = await service.preparation("project / 一")
+    assert draft_contract.contract == "draft"
+    assert draft_contract.capabilities.edit_contract is True
+
+    service, *_ = _service(_snapshot(selection=_selection()), _contract())
+    missing_bible = await service.preparation("project / 一")
+    assert missing_bible.bible == "missing"
+    assert missing_bible.capabilities.edit_bible is True
 
     rows = list(_ready_model_tasks())
     rows[0] = {
@@ -933,7 +973,7 @@ async def test_malformed_model_task_snapshot_fails_closed_to_eight_safe_values(r
     assert tuple(item.task_key for item in result.model_tasks) == TASK_KEYS
     assert all(item.readiness == "not_ready" for item in result.model_tasks)
     assert all(item.reasons == ("binding_incomplete",) for item in result.model_tasks)
-    assert result.capabilities.edit_contract is True
+    assert result.capabilities.edit_contract is False
     assert result.capabilities.edit_bible is True
     assert result.capabilities.generate_bible is False
 

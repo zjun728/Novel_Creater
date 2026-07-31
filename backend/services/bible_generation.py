@@ -31,7 +31,7 @@ from backend.security.provider_secrets import (
     provider_public_fields_contain_secret,
     provider_public_value_contains_secret,
 )
-from backend.services.bibles import BIBLE_POLICY_VERSION
+from backend.services.bibles import BIBLE_POLICY_VERSION, BibleAlreadyConfirmed
 
 
 BIBLE_GENERATION_POLICY_VERSION = "creation-bible-generation-v1"
@@ -650,6 +650,11 @@ class BibleGenerationService:
             )
             if project is None:
                 raise BibleGenerationNotReady()
+            head = await self.repository.lock_bible_head(
+                session, command.project_id
+            )
+            if head is not None and int(head.get("revision") or 0) > 0:
+                raise BibleAlreadyConfirmed()
             existing = (
                 await self.repository.lock_generation_attempt_by_key(
                     session,

@@ -44,6 +44,12 @@ class BibleConflict(PublicDomainError):
     message = "Creation Bible state changed; refresh and retry"
 
 
+class BibleAlreadyConfirmed(PublicDomainError):
+    status_code = 409
+    code = "bible_already_confirmed"
+    message = "Creation Bible is already confirmed"
+
+
 class BiblePreconditionFailed(PublicDomainError):
     status_code = 422
     code = "BiblePreconditionFailed"
@@ -437,6 +443,26 @@ class BibleService:
         lifecycle_reasons = (
             ("project_archived",) if lifecycle == "archived" else ()
         )
+        if head is not None and int(head.get("revision") or 0) > 0:
+            return BibleDraftResult(
+                project_id=project["id"],
+                lifecycle=lifecycle,
+                status="missing",
+                draft_id=None,
+                draft_version=None,
+                base_head_revision=None,
+                content_hash=None,
+                payload=None,
+                basis=current_basis,
+                can_edit=False,
+                can_confirm=False,
+                can_clone=False,
+                reasons=_unique_reasons(
+                    current_basis_reasons, ("bible_confirmed",), lifecycle_reasons,
+                ),
+                created_at=None,
+                updated_at=None,
+            )
         if row is None:
             reasons = _unique_reasons(
                 current_basis_reasons,
@@ -528,11 +554,6 @@ class BibleService:
             tuple(state_reasons),
             ("project_archived",) if lifecycle == "archived" else (),
         )
-        clone_blocked = self._active_draft_is_current(
-            active_draft,
-            head,
-            current_basis,
-        )
         return BibleRevisionResult(
             project_id=project["id"],
             lifecycle=lifecycle,
@@ -543,12 +564,8 @@ class BibleService:
             payload=payload,
             basis=stored_basis,
             can_edit=False,
-            can_clone=(
-                lifecycle == "active"
-                and current_basis is not None
-                and not clone_blocked
-            ),
-            reasons=reasons,
+            can_clone=False,
+            reasons=_unique_reasons(reasons, ("bible_confirmed",)),
             confirmed_at=int(row["confirmed_at"]),
         )
 
@@ -612,6 +629,8 @@ class BibleService:
             )
             if head is None:
                 raise BiblePreconditionFailed()
+            if int(head["revision"]) > 0:
+                raise BibleAlreadyConfirmed()
             if command.expected_draft_version == 0:
                 if current is not None:
                     _, current_stored_basis = self._stored_draft(current)
@@ -726,6 +745,8 @@ class BibleService:
             )
             if head is None:
                 raise BiblePreconditionFailed()
+            if int(head["revision"]) > 0:
+                raise BibleAlreadyConfirmed()
             current_reasons = []
             if current is not None:
                 _, active_basis = self._stored_draft(current)
@@ -938,6 +959,8 @@ class BibleService:
             head = await self.repository.lock_bible_head(
                 session, command.project_id
             )
+            if head is not None and int(head["revision"]) > 0:
+                raise BibleAlreadyConfirmed()
             if draft is None or head is None:
                 raise BibleConflict()
             payload, stored_basis = self._stored_draft(draft)
@@ -1348,6 +1371,7 @@ class BibleService:
 
 __all__ = (
     "BIBLE_POLICY_VERSION",
+    "BibleAlreadyConfirmed",
     "BibleBasis",
     "BibleConfirmationFailed",
     "BibleConfirmationRetryable",

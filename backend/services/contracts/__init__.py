@@ -6,6 +6,7 @@ from .drafts import (
     BindingContractRef,
     ConfirmContracts,
     ConfirmedContractResult,
+    ContractAlreadyConfirmed,
     ContractConflict,
     ContractDraftIncomplete,
     ContractDraftInput,
@@ -29,7 +30,7 @@ from .drafts import (
 
 __all__ = (
     "AssetRevisionRef", "BindingContractRef", "ConfirmContracts",
-    "ConfirmedContractResult", "ContractConflict", "ContractDraftIncomplete",
+    "ConfirmedContractResult", "ContractAlreadyConfirmed", "ContractConflict", "ContractDraftIncomplete",
     "ContractDraftInput", "ContractDraftPayload", "ContractDraftResult",
     "ContractHistoryPage", "ContractNotFound", "ContractPreconditionFailed",
     "ContractService",

@@ -84,6 +84,12 @@ class ContractConflict(PublicDomainError):
     message = "Contract state changed; refresh and retry"
 
 
+class ContractAlreadyConfirmed(PublicDomainError):
+    status_code = 409
+    code = "contract_already_confirmed"
+    message = "Creation Contract is already confirmed"
+
+
 class ContractPreconditionFailed(PublicDomainError):
     status_code = 422
     code = "ContractPreconditionFailed"
@@ -557,6 +563,13 @@ class ContractDraftService:
             if await self.repository.lock_project(session, command.project_id) is None:
                 raise ContractNotFound()
             current = await self.repository.lock_draft(session, command.project_id)
+            head = await self.repository.lock_contract_head(
+                session, command.project_id
+            )
+            if head is None:
+                raise ContractPreconditionFailed()
+            if int(head["revision"]) > 0:
+                raise ContractAlreadyConfirmed()
             if current is None and command.expected_draft_version != 0:
                 raise ContractConflict()
             if (
@@ -564,15 +577,6 @@ class ContractDraftService:
                 and int(current["draft_version"]) != command.expected_draft_version
             ):
                 raise ContractConflict()
-            head = None
-            if current is None:
-                head = await self.repository.read_contract_head(
-                    session, command.project_id
-                )
-                if head is None:
-                    raise ContractPreconditionFailed()
-                if int(head["revision"]) != 0:
-                    raise ContractConflict()
             selected = await self.repository.lock_selected_seed(
                 session, command.project_id
             )
@@ -675,7 +679,7 @@ class ContractDraftService:
 
 __all__ = (
     "AssetRevisionRef", "BindingContractRef", "ConfirmContracts",
-    "ConfirmedContractResult", "ContractConflict", "ContractDraftIncomplete",
+    "ConfirmedContractResult", "ContractAlreadyConfirmed", "ContractConflict", "ContractDraftIncomplete",
     "ContractDraftInput", "ContractDraftPayload", "ContractDraftResult",
     "ContractHistoryPage",
     "ContractDraftService", "ContractNotFound", "ContractPreconditionFailed",

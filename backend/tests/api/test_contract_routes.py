@@ -328,7 +328,7 @@ def test_preview_rejects_falsey_nonobject_bodies(raw_body):
     assert response.json()["code"] == "ContractRequestInvalid"
 
 
-def test_clone_route_delegates_explicit_revision_and_never_overwrites():
+def test_clone_route_rejects_confirmed_baseline_without_creating_a_draft():
     client, harness = make_client()
     saved_response = client.put(
         "/api/projects/p1/contract-draft", json=save_body(harness)
@@ -399,12 +399,10 @@ def test_clone_route_delegates_explicit_revision_and_never_overwrites():
         }
 
     cloned = client.post("/api/projects/p1/contracts/6/clone")
-    second = client.post("/api/projects/p1/contracts/6/clone")
 
-    assert cloned.status_code == 200
-    assert cloned.json()["baseHeadRevision"] == 6
-    assert cloned.json()["draftVersion"] == 1
-    assert second.status_code == 409
+    assert cloned.status_code == 409
+    assert cloned.json()["code"] == "contract_already_confirmed"
+    assert harness.repository.drafts == {}
 
 
 def test_clone_route_requires_explicit_positive_source_revision():
@@ -421,19 +419,19 @@ def test_clone_route_requires_explicit_positive_source_revision():
 
     cloned = client.post("/api/projects/p1/contracts/1/clone")
 
-    assert cloned.status_code == 200
-    assert cloned.json()["baseHeadRevision"] == 1
+    assert cloned.status_code == 409
+    assert cloned.json()["code"] == "contract_already_confirmed"
     assert client.post("/api/projects/p1/contracts/0/clone").status_code == 422
     assert client.post("/api/projects/p1/contracts/not-a-revision/clone").status_code == 422
 
 
-def test_clone_route_returns_stable_404_for_missing_source_revision():
+def test_clone_route_returns_stable_conflict_without_a_confirmed_head():
     client, _ = make_client()
 
     response = client.post("/api/projects/p1/contracts/999/clone")
 
-    assert response.status_code == 404
-    assert response.json()["code"] == "ContractNotFound"
+    assert response.status_code == 409
+    assert response.json()["code"] == "ContractConflict"
 
 
 def test_confirm_route_is_strict_returns_201_and_head_history_are_safe():
@@ -467,7 +465,7 @@ def test_confirm_route_is_strict_returns_201_and_head_history_are_safe():
                for word in forbidden)
 
 
-def test_clone_manifest_failure_is_fixed_422_and_redacts_internal_snapshot():
+def test_clone_manifest_is_not_read_after_confirmation_and_redacts_internal_snapshot():
     client, harness = make_client()
     saved = client.put(
         "/api/projects/p1/contract-draft", json=save_body(harness)
@@ -485,9 +483,9 @@ def test_clone_manifest_failure_is_fixed_422_and_redacts_internal_snapshot():
 
     response = client.post("/api/projects/p1/contracts/1/clone")
 
-    assert response.status_code == 422
+    assert response.status_code == 409
     assert set(response.json()) == {"code", "message", "correlationId"}
-    assert response.json()["code"] == "ContractPreconditionFailed"
+    assert response.json()["code"] == "contract_already_confirmed"
     assert sentinel not in response.text
     assert "reference_manifest" not in response.text.lower()
 
@@ -522,7 +520,7 @@ def test_head_zero_and_history_limit_are_explicit_and_bounded():
     ).status_code == 422
 
 
-def test_history_route_pages_by_exclusive_before_revision_and_rejects_bad_cursor():
+def test_history_route_has_one_permanent_baseline_and_rejects_bad_cursor():
     client, harness = make_client()
     saved = client.put(
         "/api/projects/p1/contract-draft", json=save_body(harness)
@@ -532,27 +530,19 @@ def test_history_route_pages_by_exclusive_before_revision_and_rejects_bad_cursor
         "expectedDraftVersion": saved["draftVersion"],
         "expectedDraftHash": saved["contentHash"],
     })
-    cloned = client.post("/api/projects/p1/contracts/1/clone").json()
-    second = client.post("/api/projects/p1/contracts/confirm", json={
-        "idempotencyKey": "history-route-second",
-        "expectedDraftVersion": cloned["draftVersion"],
-        "expectedDraftHash": cloned["contentHash"],
-    })
+    clone = client.post("/api/projects/p1/contracts/1/clone")
 
     first_page = client.get("/api/projects/p1/contracts/history?limit=1")
     second_page = client.get(
-        "/api/projects/p1/contracts/history?limit=1&beforeRevision=2"
-    )
-    empty_page = client.get(
         "/api/projects/p1/contracts/history?limit=1&beforeRevision=1"
     )
 
-    assert first.status_code == second.status_code == 201
-    assert [item["revision"] for item in first_page.json()["items"]] == [2]
-    assert first_page.json()["nextBeforeRevision"] == 2
-    assert [item["revision"] for item in second_page.json()["items"]] == [1]
-    assert second_page.json()["nextBeforeRevision"] is None
-    assert empty_page.json() == {"items": [], "nextBeforeRevision": None}
+    assert first.status_code == 201
+    assert clone.status_code == 409
+    assert clone.json()["code"] == "contract_already_confirmed"
+    assert [item["revision"] for item in first_page.json()["items"]] == [1]
+    assert first_page.json()["nextBeforeRevision"] is None
+    assert second_page.json() == {"items": [], "nextBeforeRevision": None}
     for cursor in ("0", "-1", "1.5", "true"):
         assert client.get(
             f"/api/projects/p1/contracts/history?beforeRevision={cursor}"

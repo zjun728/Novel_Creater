@@ -12,6 +12,7 @@ from backend.domain.json_contracts import canonical_hash, canonical_json
 from .drafts import (
     AssetRevisionRef,
     BindingContractRef,
+    ContractAlreadyConfirmed,
     ContractConflict,
     ContractDraftPayload,
     ContractDraftResult,
@@ -671,6 +672,10 @@ class ContractHistoryService(ContractPreviewService):
                 raise ContractNotFound()
             if await self.repository.lock_draft(session, project_id) is not None:
                 raise ContractConflict()
+            head = await self.repository.lock_contract_head(session, project_id)
+            if head is None or int(head["revision"]) == 0:
+                raise ContractConflict()
+            raise ContractAlreadyConfirmed()
             selected = await self.repository.lock_selected_seed(session, project_id)
             if selected is None:
                 raise ContractConflict()
@@ -679,9 +684,6 @@ class ContractHistoryService(ContractPreviewService):
             )
             if snapshot is None:
                 raise ContractNotFound()
-            head = await self.repository.read_contract_head(session, project_id)
-            if head is None or int(head["revision"]) == 0:
-                raise ContractConflict()
             try:
                 verified = self._result_from_snapshot(snapshot)
                 if (
