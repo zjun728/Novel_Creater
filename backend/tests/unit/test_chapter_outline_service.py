@@ -9,7 +9,9 @@ from backend.repositories.chapter_sessions import ActiveChapterSessionConflict
 from backend.services.chapter_outlines import (
     ChapterOutlineConflict,
     ChapterOutlineService,
+    ConfirmChapterOutlineDraft,
     CreateChapterOutlineDraft,
+    SaveChapterOutlineDraft,
     authoritative_chapter,
 )
 
@@ -178,6 +180,24 @@ class _OutlineStateRepository:
     ):
         return self.draft
 
+    async def read_draft(
+        self,
+        _session,
+        _project_id,
+        _chapter_number,
+        _draft_id,
+    ):
+        return self.draft
+
+    async def find_confirmation(
+        self,
+        _session,
+        _project_id,
+        _chapter_number,
+        _idempotency_key,
+    ):
+        return None
+
     async def read_active_attempt(self, _session, _draft_id):
         return self.pending_attempt
 
@@ -191,6 +211,7 @@ class _OutlineStateChapterRepository:
         self.calls = calls
         self.active_session = None
         self.session = None
+        self.max_final = None
 
     async def read_active_session(self, _session, _project_id):
         self.calls.append("active-session-read")
@@ -198,7 +219,7 @@ class _OutlineStateChapterRepository:
 
     async def read_max_final_chapter_number(self, _session, _project_id):
         self.calls.append("final-chapter-read")
-        return None
+        return self.max_final
 
     async def read_chapter_session(
         self,
@@ -416,7 +437,21 @@ async def test_drafting_session_can_adjust_the_current_outline_without_repinning
     service, outline, chapter, planning, _calls = _outline_state_service()
     adopted = _active_session_row()["chapter_outline"]
     outline.draft = None
-    outline.head = {"revision": 1, "content": adopted}
+    outline.head = {
+        "project_id": "project-1",
+        "chapter_num": 1,
+        "revision": 1,
+        "parent_revision": 0,
+        "outline_revision_id": "outline-1",
+        "content_hash": HASH,
+        "planning_revision_id": "planning-1",
+        "planning_revision": 1,
+        "planning_hash": HASH,
+        "canon_revision": 0,
+        "projection_revision": 0,
+        "projection_hash": HASH,
+        "content": adopted,
+    }
     outline.authorities["planning_content"] = {
         "schemaVersion": "planning-v1",
         "activeStoryBlockId": None,
@@ -453,22 +488,34 @@ async def test_drafting_session_can_adjust_the_current_outline_without_repinning
 
 
 @pytest.mark.asyncio
-async def test_finalized_session_makes_every_outline_mutation_unavailable_and_rejected():
+async def test_finalized_chapter_rejects_create_save_and_confirm_by_authoritative_number():
     service, outline, chapter, _planning, _calls = _outline_state_service()
-    outline.draft = None
-    outline.head = {"revision": 1, "content": _active_session_row()["chapter_outline"]}
-    chapter.active_session = {"chapter_num": 1, "status": "finalized"}
-    chapter.session = {**_active_session_row(), "status": "finalized"}
+    chapter.max_final = 1
+    command = SaveChapterOutlineDraft(
+        "project-1",
+        1,
+        outline.draft["id"],
+        outline.draft["draft_revision"],
+        outline.draft["content_hash"],
+        EditableChapterOutlineContent(),
+    )
+    confirm = ConfirmChapterOutlineDraft(
+        "project-1",
+        1,
+        outline.draft["id"],
+        outline.draft["draft_revision"],
+        outline.draft["content_hash"],
+        0,
+        "reject-finalized-chapter",
+    )
 
-    state = await service.get_current("project-1")
-
-    assert state.capabilities.create_draft is False
-    assert state.capabilities.edit_draft is False
-    assert state.capabilities.generate is False
-    assert state.capabilities.confirm is False
-    assert state.capabilities.start_session is False
-    with pytest.raises(
-        ChapterOutlineConflict,
-        match="finalized chapter makes Outline immutable",
+    for mutation in (
+        service.create_draft(CreateChapterOutlineDraft("project-1", 1)),
+        service.save_draft(command),
+        service.confirm_draft(confirm),
     ):
-        await service.create_draft(CreateChapterOutlineDraft("project-1", 1))
+        with pytest.raises(
+            ChapterOutlineConflict,
+            match="requested chapter differs from server authority",
+        ):
+            await mutation

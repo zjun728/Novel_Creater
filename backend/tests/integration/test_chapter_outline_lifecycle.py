@@ -971,11 +971,11 @@ async def test_real_mysql_outline_history_and_active_session_pin_exact_authority
     assert current.active_session.chapter_session_id == (
         chapter_session.session.id
     )
-    assert current.planning_authority.revision == planning_two.revision
+    assert current.planning_authority.revision == 3
     assert current.confirmed_outline.outline_revision_id == (
         outline_two.outline_revision_id
     )
-    assert current.confirmed_outline.display_status == "session_pinned"
+    assert current.confirmed_outline.display_status == "superseded"
     assert current.capabilities == type(current.capabilities)(
         view=True,
         create_draft=True,
@@ -1136,10 +1136,17 @@ async def test_real_mysql_drafting_session_keeps_r1_while_outline_advances_to_r2
         (PROJECT, 1),
     )
     preserved_workspace = await chapter_service.get(PROJECT, 1)
+    current = await outline_service.get_current(PROJECT)
 
     assert after_session == before_session
     assert after_session["chapter_outline_revision"] == outline_r1.revision
     assert head == {"revision": outline_r2.revision, "outline_revision_id": outline_r2.outline_revision_id}
+    assert current.confirmed_outline.outline_revision_id == outline_r2.outline_revision_id
+    assert current.confirmed_outline.revision == outline_r2.revision
+    assert current.confirmed_outline.display_status == "current"
+    assert current.active_session.outline_revision == outline_r1.revision
+    assert current.planning_authority.revision == planning.revision
+    assert current.canon_projection_authority.canon_revision == 0
     assert preserved_workspace is not None
     assert preserved_workspace.working_draft.content == "保留的正文工作稿"
     assert [candidate.content for candidate in preserved_workspace.candidates] == [

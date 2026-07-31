@@ -1276,15 +1276,6 @@ class ChapterOutlineService:
         authorities: Mapping[str, object] | None,
         session_row: Mapping[str, object] | None,
     ) -> PlanningAuthorityResult | None:
-        if session_row is not None:
-            return PlanningAuthorityResult(
-                planning_revision_id=str(
-                    session_row["planning_revision_id"]
-                ),
-                revision=int(session_row["planning_revision"]),
-                content_hash=str(session_row["planning_hash"]),
-                content=None,
-            )
         if authorities is None:
             return None
         try:
@@ -1305,17 +1296,6 @@ class ChapterOutlineService:
         authorities: Mapping[str, object] | None,
         session_row: Mapping[str, object] | None,
     ) -> CanonProjectionAuthorityResult | None:
-        if session_row is not None:
-            canon = int(session_row["outline_canon_revision"])
-            projection = int(
-                session_row["outline_projection_revision"]
-            )
-            return CanonProjectionAuthorityResult(
-                canon_revision=canon,
-                projection_revision=projection,
-                content_hash=str(session_row["outline_projection_hash"]),
-                synchronized=canon == projection,
-            )
         if authorities is None:
             return None
         canon = int(authorities["canon_revision"])
@@ -1336,38 +1316,6 @@ class ChapterOutlineService:
         session_row: Mapping[str, object] | None,
         archived: bool,
     ) -> ChapterOutlineRevisionResult | None:
-        if session_row is not None:
-            row = {
-                "id": session_row["chapter_outline_revision_id"],
-                "project_id": project_id,
-                "chapter_num": chapter_number,
-                "revision": session_row["chapter_outline_revision"],
-                "parent_revision": max(
-                    int(session_row["chapter_outline_revision"]) - 1,
-                    0,
-                ),
-                "content_hash": session_row["chapter_outline_hash"],
-                "planning_revision_id": session_row[
-                    "planning_revision_id"
-                ],
-                "planning_revision": session_row["planning_revision"],
-                "planning_hash": session_row["planning_hash"],
-                "canon_revision": session_row["outline_canon_revision"],
-                "projection_revision": session_row[
-                    "outline_projection_revision"
-                ],
-                "projection_hash": session_row["outline_projection_hash"],
-                "content": session_row["chapter_outline"],
-            }
-            return self._revision_result(
-                row,
-                display_status="archived" if archived else "session_pinned",
-                display_reason=(
-                    "projectArchived"
-                    if archived
-                    else "chapterSessionPinned"
-                ),
-            )
         if head is None or int(head["revision"]) == 0:
             return None
         current = (

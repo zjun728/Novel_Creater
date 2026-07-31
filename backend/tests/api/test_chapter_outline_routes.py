@@ -356,7 +356,7 @@ def test_confirm_projects_closed_command_and_response():
     assert "attempt" not in response.text
 
 
-def test_drafting_adjustment_uses_only_public_outline_mutation_routes():
+def test_outline_mutation_routes_keep_the_public_response_shape():
     client, service, _ = _client()
     editable = EditableChapterOutlineContent().model_dump(
         mode="json",
