@@ -1178,6 +1178,52 @@ async def test_second_selection_keeps_first_selection_head_and_single_ledger_row
 
 
 @pytest.mark.asyncio
+async def test_two_first_selection_requests_create_exactly_one_generation(
+    disposable_mysql,
+):
+    await insert_project(disposable_mysql.session, "p1")
+    service = SeedService(
+        SeedRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    seed_a = await service.create(CreateSeed(project_id="p1", payload=payload("A")))
+    seed_b = await service.create(CreateSeed(project_id="p1", payload=payload("B")))
+
+    outcomes = await asyncio.gather(
+        service.select(
+            SelectSeed(
+                project_id="p1", seed_id=seed_a.id,
+                expected_seed_revision=1, expected_selection_revision=0,
+            )
+        ),
+        service.select(
+            SelectSeed(
+                project_id="p1", seed_id=seed_b.id,
+                expected_seed_revision=1, expected_selection_revision=0,
+            )
+        ),
+        return_exceptions=True,
+    )
+
+    successful = [item for item in outcomes if not isinstance(item, BaseException)]
+    rejected = [item for item in outcomes if isinstance(item, BaseException)]
+    assert len(successful) == 1
+    assert len(rejected) == 1
+    assert isinstance(rejected[0], (SeedAlreadyConfirmed, ProjectBusy))
+    assert await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM project_selected_seeds WHERE project_id='p1'"
+    ) == {"count": 1}
+    assert await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM project_seed_selection_revisions WHERE project_id='p1'"
+    ) == {"count": 1}
+
+
+@pytest.mark.asyncio
 async def test_first_final_chapter_locks_only_selection_history(disposable_mysql):
     await insert_project(disposable_mysql.session, "p1")
     service = SeedService(

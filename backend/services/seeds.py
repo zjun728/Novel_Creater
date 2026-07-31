@@ -498,6 +498,11 @@ class SeedService:
             has_final_chapters = await self._lock_project_for_mutation(
                 session, command.project_id
             )
+            selection = await self.repository.lock_selection(
+                session, command.project_id
+            )
+            if selection is not None:
+                raise SeedAlreadyConfirmed()
             head = await self.repository.lock_seed_head(
                 session, command.project_id, command.seed_id
             )
@@ -505,13 +510,8 @@ class SeedService:
                 raise SeedNotFound()
             if int(head["revision"]) != command.expected_seed_revision:
                 raise SeedConflict()
-            selection = await self.repository.lock_selection(
-                session, command.project_id
-            )
             if _selection_revision(selection) != command.expected_selection_revision:
                 raise SeedConflict()
-            if selection is not None:
-                raise SeedAlreadyConfirmed()
             is_selected = bool(
                 selection and selection["seed_id"] == command.seed_id
             )
@@ -574,6 +574,11 @@ class SeedService:
             has_final_chapters = await self._lock_project_for_mutation(
                 session, command.project_id
             )
+            selection = await self.repository.lock_selection(
+                session, command.project_id
+            )
+            if selection is not None:
+                raise SeedAlreadyConfirmed()
             head = await self.repository.lock_seed_head(
                 session, command.project_id, command.seed_id
             )
@@ -581,14 +586,9 @@ class SeedService:
                 raise SeedNotFound()
             if int(head["revision"]) != command.expected_seed_revision:
                 raise SeedConflict()
-            selection = await self.repository.lock_selection(
-                session, command.project_id
-            )
             current_revision = _selection_revision(selection)
             if current_revision != command.expected_selection_revision:
                 raise SeedConflict()
-            if selection is not None:
-                raise SeedAlreadyConfirmed()
             referenced = bool(
                 await self.repository.dependency_count(
                     session, command.project_id, command.seed_id
@@ -631,6 +631,9 @@ class SeedService:
     async def delete(self, command: DeleteSeed) -> None:
         async with self.transaction_factory() as session:
             has_final_chapters = await self._lock_project_for_mutation(
+                session, command.project_id
+            )
+            selection = await self.repository.lock_selection(
                 session, command.project_id
             )
             head = await self.repository.lock_seed_head(
@@ -681,6 +684,11 @@ class SeedService:
             has_final_chapters = await self._lock_project_for_mutation(
                 session, command.project_id
             )
+            selection = await self.repository.lock_selection(
+                session, command.project_id
+            )
+            if target == "candidate" and selection is not None:
+                raise SeedAlreadyConfirmed()
             head = await self.repository.lock_seed_head(
                 session, command.project_id, command.seed_id
             )
@@ -688,14 +696,9 @@ class SeedService:
                 raise SeedNotFound()
             if int(head["revision"]) != command.expected_seed_revision:
                 raise SeedConflict()
-            selection = await self.repository.lock_selection(
-                session, command.project_id
-            )
             selection_revision = _selection_revision(selection)
             if selection_revision != command.expected_selection_revision:
                 raise SeedConflict()
-            if target == "candidate" and selection is not None:
-                raise SeedAlreadyConfirmed()
             selected = bool(
                 selection and selection["seed_id"] == command.seed_id
             )

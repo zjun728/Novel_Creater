@@ -741,7 +741,7 @@ async def test_edit_requires_both_seed_and_project_selection_cas_even_when_unsel
         )
     )
 
-    with pytest.raises(SeedConflict):
+    with pytest.raises(SeedAlreadyConfirmed):
         await harness.service.edit(
             EditSeed(
                 project_id="p1", seed_id=first.id, payload=payload("一改"),
@@ -750,7 +750,7 @@ async def test_edit_requires_both_seed_and_project_selection_cas_even_when_unsel
         )
     assert len(harness.repo.revisions[first.id]) == 1
 
-    with pytest.raises(SeedConflict):
+    with pytest.raises(SeedAlreadyConfirmed):
         await harness.service.edit(
             EditSeed(
                 project_id="p1", seed_id=first.id, payload=payload("一改"),
@@ -775,14 +775,14 @@ async def test_select_is_project_scoped_and_cas_advances_one_revision():
     assert harness.repo.events[-2:] == [
         "selection-revision", "insert-selection",
     ]
-    with pytest.raises(SeedConflict):
+    with pytest.raises(SeedAlreadyConfirmed):
         await harness.service.select(
             SelectSeed(
                 project_id="p1", seed_id=first.id,
                 expected_seed_revision=1, expected_selection_revision=0,
             )
         )
-    with pytest.raises(SeedNotFound):
+    with pytest.raises(SeedAlreadyConfirmed):
         await harness.service.select(
             SelectSeed(
                 project_id="p1", seed_id=other.id,
@@ -988,3 +988,59 @@ async def test_first_selection_locks_every_candidate_except_unreferenced_cleanup
     assert harness.repo.selections["p1"]["seed_id"] == seed_a.id
     assert len(harness.repo.selection_revisions["p1"]) == 1
     assert "replace-selection" not in harness.repo.events
+
+
+@pytest.mark.asyncio
+async def test_confirmed_selection_precedes_stale_seed_and_selection_cas_errors():
+    harness = Harness()
+    seed_a = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("A"))
+    )
+    seed_b = await harness.service.create(
+        CreateSeed(project_id="p1", payload=payload("B"))
+    )
+    await harness.service.archive(
+        ArchiveSeed(
+            project_id="p1",
+            seed_id=seed_b.id,
+            expected_seed_revision=1,
+            expected_selection_revision=0,
+        )
+    )
+    await harness.service.select(
+        SelectSeed(
+            project_id="p1",
+            seed_id=seed_a.id,
+            expected_seed_revision=1,
+            expected_selection_revision=0,
+        )
+    )
+
+    with pytest.raises(SeedAlreadyConfirmed):
+        await harness.service.edit(
+            EditSeed(
+                project_id="p1",
+                seed_id=seed_a.id,
+                payload=payload("A 改写"),
+                expected_seed_revision=2,
+                expected_selection_revision=0,
+            )
+        )
+    with pytest.raises(SeedAlreadyConfirmed):
+        await harness.service.select(
+            SelectSeed(
+                project_id="p1",
+                seed_id=seed_b.id,
+                expected_seed_revision=2,
+                expected_selection_revision=0,
+            )
+        )
+    with pytest.raises(SeedAlreadyConfirmed):
+        await harness.service.restore(
+            RestoreSeed(
+                project_id="p1",
+                seed_id=seed_b.id,
+                expected_seed_revision=2,
+                expected_selection_revision=0,
+            )
+        )
