@@ -350,6 +350,8 @@ export function assertRuntimeEvidenceHealthy(evidence, {
   return { healthy: true }
 }
 
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
 export function assertExactWrites(evidence, allowlist) {
   if (!Array.isArray(allowlist)) throw new TypeError('write allowlist must be an array')
   const ruleKeys = new Set()
@@ -387,7 +389,7 @@ export function assertExactWrites(evidence, allowlist) {
   }
   const writes = (evidence.responses || []).filter(response => (
     isApiUrl(response?.url)
-    && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(response?.method).toUpperCase())
+    && !READ_METHODS.has(String(response?.method).toUpperCase())
   ))
   const matched = new Map(allowlist.map((entry, index) => [index, []]))
 
@@ -817,6 +819,8 @@ export function observeRuntime(page, {
     && context.listeners('requestfinished').includes(onRequestFinished)
     && context.listeners('response').includes(onResponse)
     && context.listeners('requestfailed').includes(onRequestFailed)
+    && page.listeners('console').includes(onConsole)
+    && page.listeners('pageerror').includes(onPageError)
   )
   const matchesObservation = (snapshot, method, pathname) => {
     if (!snapshot || typeof snapshot.method !== 'string' || typeof snapshot.url !== 'string') return false

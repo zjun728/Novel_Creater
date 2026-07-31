@@ -121,6 +121,17 @@ test('observer captures network evidence from its context and leaves page-only n
   assert.equal(observer.observationStage(contextResponse), 'scheduled')
 })
 
+test('observer listener check includes each page diagnostic listener', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  for (const event of ['console', 'pageerror']) {
+    const page = new FakePage()
+    const observer = observeRuntime(page, { quietWindowMs: 1 })
+    page.removeAllListeners(event)
+    assert.equal(observer.listenersAttached(), false, `${event} listener must remain attached`)
+    await observer.finish()
+  }
+})
+
 function fakeResponse({
   url = 'http://127.0.0.1:8000/api/health',
   method = 'GET',
@@ -941,6 +952,13 @@ test('exact write audit derives only API writes from synchronous response metada
     [{ ...response, status: 200 }, /status/i],
     [{ ...response, url: 'http://127.0.0.1:8000/api/projects/p1/unmatched' }, /unmatched/i],
   ]) assert.throws(() => assertExactWrites({ responses: [item], apiResponses: [] }, [rule]), matcher)
+  assert.throws(
+    () => assertExactWrites({
+      responses: [{ ...response, method: 'PURGE' }],
+      apiResponses: [],
+    }, []),
+    /Unmatched runtime write: PURGE/,
+  )
 })
 
 test('exact write allowlists reject query and hash variants of an allowed route', async () => {
