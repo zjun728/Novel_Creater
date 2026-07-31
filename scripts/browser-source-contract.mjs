@@ -218,11 +218,23 @@ function testDeclarationCallback(argumentsList) {
 
 function isRuntimeTestAnnotation(modifiers, argumentsList, title) {
   if (modifiers.length !== 1) return false
-  if (['slow', 'fail', 'fixme'].includes(modifiers[0])) return argumentsList.length === 0
-  return modifiers[0] === 'skip'
-    && title === null
-    && argumentsList.length === 2
-    && getStaticString(argumentsList[1]) !== null
+  if (!['skip', 'slow', 'fail', 'fixme'].includes(modifiers[0])) return false
+  if (argumentsList.length === 0) return true
+  if (title !== null || argumentsList.length > 2) return false
+
+  const condition = unwrapExpression(argumentsList[0])
+  if (isFunctionNode(condition) || isExplicitBooleanCondition(condition)) return true
+  return condition?.type === 'Identifier'
+    && (argumentsList.length === 1 || getStaticString(argumentsList[1]) !== null)
+}
+
+function isExplicitBooleanCondition(node) {
+  if (node?.type === 'BooleanLiteral') return true
+  if (node?.type === 'UnaryExpression') return node.operator === '!'
+  if (node?.type === 'BinaryExpression') {
+    return ['!=', '!==', '==', '===', '<', '<=', '>', '>='].includes(node.operator)
+  }
+  return node?.type === 'LogicalExpression'
 }
 
 function isFunctionNode(node) {

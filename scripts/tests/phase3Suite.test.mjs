@@ -516,6 +516,29 @@ test('browser source AST exposes every test declaration and bounded function cal
     () => collectBrowserTestDeclarations('test.skip(dynamicTitle, async () => {})', SPEC),
     /static title/u,
   )
+  for (const modifier of ['skip', 'slow', 'fail', 'fixme']) {
+    for (const [condition, descriptions] of [
+      ['true', ['', ", 'boolean condition'"]],
+      ['runtimeCondition', ['', ", 'identifier condition'"]],
+      ['({ browserName }) => browserName === \'webkit\'', ['', ", 'callback condition'"]],
+    ]) {
+      for (const description of descriptions) {
+        const annotation = `test.${modifier}(${condition}${description})`
+        assert.equal(collectBrowserTestDeclarations(annotation, SPEC).length, 0, annotation)
+      }
+    }
+    const declared = collectBrowserTestDeclarations(`test.${modifier}('declared ${modifier}', declaredBody)`, SPEC)
+    assert.equal(declared.length, 1)
+    assert.equal(declared[0].title, `declared ${modifier}`)
+    for (const dynamicTitle of ['dynamicTitle', "'dynamic ' + title", '`dynamic ${title}`']) {
+      for (const body of ['async () => {}', 'declaredBody']) {
+        assert.throws(
+          () => collectBrowserTestDeclarations(`test.${modifier}(${dynamicTitle}, ${body})`, SPEC),
+          /static title/u,
+        )
+      }
+    }
+  }
   const typedHelpers = collectBrowserFunctionGraph(`
     const castHelper = (async () => {}) as () => Promise<void>
     const satisfiesHelper = (async () => {}) satisfies () => Promise<void>
@@ -597,7 +620,9 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
   assert.throws(() => assertMapped(`${source}\ntest(\"extra-scenario: double quote\", async () => {})`))
   assert.throws(() => assertMapped(`${source}\ntest(\`extra-scenario: template\`, async () => {})`))
   assert.throws(() => assertMapped(source.replace("test('baseline-lock:", "test.only('baseline-lock:")))
-  assert.throws(() => assertMapped(source.replace("test('baseline-lock:", "test.skip('baseline-lock:")))
+  for (const modifier of ['skip', 'slow', 'fail', 'fixme']) {
+    assert.throws(() => assertMapped(source.replace("test('baseline-lock:", `test.${modifier}('baseline-lock:`)))
+  }
   assert.throws(() => assertMapped(source.replace('baseline-lock: the first Seed', 'baseline-lock-removed: the first Seed')))
   assert.throws(() => assertMapped(source.replace('已被后续依据取代', '错放 outcome')))
   assert.throws(() => assertMapped(`${source.replaceAll('toBeDisabled', 'notDisabled')}\nasync function unrelatedEvidence() { return page.toBeDisabled() }`))
