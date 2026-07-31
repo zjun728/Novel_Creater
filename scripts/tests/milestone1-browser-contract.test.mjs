@@ -199,9 +199,9 @@ const assertListenerOwnershipContract = source => {
     ]
   }
   assert.equal(
-    observer.params.some(parameter => isIdentifier(parameter, 'page')),
+    isIdentifier(observer.params[0], 'page'),
     true,
-    'observeRuntime must receive page directly',
+    'observeRuntime must receive page as its first parameter',
   )
   const contextBindings = []
   walkAst(observer.body, node => {
@@ -224,12 +224,37 @@ const assertListenerOwnershipContract = source => {
     contextBindings,
     'context must be the top-level const binding from page.context()',
   )
-  const topLevelAttachments = observer.body.body.flatMap(statement => (
+  const topLevelAttachmentRecords = observer.body.body.flatMap(statement => (
     statement.type === 'ExpressionStatement'
-      ? [listenerSignature(statement.expression)].filter(Boolean)
+      ? [listenerSignature(statement.expression)]
+        .filter(Boolean)
+        .map(signature => [statement.start, signature])
       : []
   ))
+  const topLevelAttachments = topLevelAttachmentRecords.map(([, signature]) => signature)
   assert.deepEqual(topLevelAttachments, expectedAttachments)
+  assert.equal(
+    contextBindings[0].start < topLevelAttachmentRecords[0][0],
+    true,
+    'context must be bound before listener registration',
+  )
+  const listenerSetupEnd = topLevelAttachmentRecords.at(-1)[0]
+  assert.equal(
+    directExecutionNodes(observer).some(node => (
+      ['ReturnStatement', 'ThrowStatement'].includes(node.type)
+      && node.start < listenerSetupEnd
+    )),
+    false,
+    'listener setup must not be preceded by an abrupt statement',
+  )
+  const pageMutations = []
+  walkAst(observer.body, node => {
+    if (
+      (node.type === 'AssignmentExpression' && isIdentifier(node.left, 'page'))
+      || (node.type === 'UpdateExpression' && isIdentifier(node.argument, 'page'))
+    ) pageMutations.push(node)
+  })
+  assert.equal(pageMutations.length, 0, 'page must not be reassigned or updated')
   const allAttachments = []
   walkAst(observer.body, node => {
     const signature = listenerSignature(node)
@@ -389,6 +414,40 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       ${listenerAttachmentFlow}
     }
   `
+  const wrongFirstParameterDecoy = `
+    function observeRuntime(options, page) {
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+    }
+  `
+  const earlyReturnListenerDecoy = `
+    function observeRuntime(page) {
+      return
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+    }
+  `
+  const earlyThrowListenerDecoy = `
+    function observeRuntime(page) {
+      throw new Error('unreachable listener setup')
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+    }
+  `
+  const pageReassignmentListenerDecoy = `
+    function observeRuntime(page) {
+      page = unrelated.page()
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+    }
+  `
+  const pageUpdateListenerDecoy = `
+    function observeRuntime(page) {
+      page++
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+    }
+  `
   const nestedFakeContextDecoy = `
     function observeRuntime(page) {
       ${listenerOwnerPreamble}
@@ -470,6 +529,11 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     ['nested listener attachment', () => assertListenerOwnershipContract(nestedListenerDecoy)],
     ['foreign context listener owner', () => assertListenerOwnershipContract(foreignContextListenerDecoy)],
     ['unbound page listener owner', () => assertListenerOwnershipContract(unboundPageListenerDecoy)],
+    ['wrong first observer parameter', () => assertListenerOwnershipContract(wrongFirstParameterDecoy)],
+    ['return before listener setup', () => assertListenerOwnershipContract(earlyReturnListenerDecoy)],
+    ['throw before listener setup', () => assertListenerOwnershipContract(earlyThrowListenerDecoy)],
+    ['page reassignment before listener setup', () => assertListenerOwnershipContract(pageReassignmentListenerDecoy)],
+    ['page update before listener setup', () => assertListenerOwnershipContract(pageUpdateListenerDecoy)],
     ['nested fake context listener', () => assertListenerOwnershipContract(nestedFakeContextDecoy)],
     ['shadowed page listener', () => assertListenerOwnershipContract(shadowedPageListenerDecoy)],
   ].flatMap(([label, verify]) => {

@@ -385,8 +385,9 @@ export function assertExactWrites(evidence, allowlist) {
     }
     ruleKeys.add(ruleKey)
   }
-  const writes = (evidence.apiResponses || []).filter(response => (
-    !['GET', 'HEAD', 'OPTIONS'].includes(String(response.method).toUpperCase())
+  const writes = (evidence.responses || []).filter(response => (
+    isApiUrl(response?.url)
+    && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(response?.method).toUpperCase())
   ))
   const matched = new Map(allowlist.map((entry, index) => [index, []]))
 
@@ -708,12 +709,17 @@ export function observeRuntime(page, {
   readTimeoutMs = RESPONSE_BODY_READ_TIMEOUT_MS,
   settleTimeoutMs = 15_000,
 } = {}) {
+  const context = page.context()
   const originAllowlist = allowedHttpOrigins(allowedOrigins)
   const evidenceReadTimeoutMs = Math.min(readTimeoutMs, settleTimeoutMs)
   const pendingApiBodies = new Set()
   const pendingRequests = new Set()
   const activeApiRequests = new Set()
   const activeHttpRequests = new Map()
+  const requestStages = new WeakMap()
+  const responseStages = new WeakMap()
+  const requestMetadata = new WeakMap()
+  const responseMetadata = new WeakMap()
   const responses = []
   const consoleMessages = []
   const consoleErrors = []
@@ -733,9 +739,12 @@ export function observeRuntime(page, {
   let activityVersion = 0
 
   const onResponse = response => {
+    responseStages.set(response, 'entry')
     const method = response.request().method()
     const status = response.status()
     const url = response.url()
+    responseMetadata.set(response, { method, url, status })
+    responseStages.set(response, 'metadata')
     const origin = httpOrigin(url)
     if (
       networkAccess !== null
@@ -745,6 +754,7 @@ export function observeRuntime(page, {
       networkAccess.forbiddenResponseCount += 1
     }
     responses.push({ url, method, status })
+    responseStages.set(response, 'recorded')
     if ((status < 200 || status >= 300) && status !== 304) {
       responseFailures.push(`${status} ${method} ${url}`)
     }
@@ -755,10 +765,14 @@ export function observeRuntime(page, {
       { url, method, status },
       evidenceReadTimeoutMs,
     ))
+    responseStages.set(response, 'scheduled')
   }
   const onRequest = request => {
+    requestStages.set(request, 'entry')
     const method = request.method()
     const url = request.url()
+    requestMetadata.set(request, { method, url })
+    requestStages.set(request, 'metadata')
     const origin = httpOrigin(url)
     if (networkAccess !== null && origin !== null) {
       networkAccess.httpRequestCount += 1
@@ -775,6 +789,7 @@ export function observeRuntime(page, {
       { url, method },
       evidenceReadTimeoutMs,
     ))
+    requestStages.set(request, 'scheduled')
   }
   const onRequestFinished = request => {
     activityVersion += 1
@@ -797,13 +812,27 @@ export function observeRuntime(page, {
       `${request.method()} ${request.url()} ${request.failure()?.errorText || 'unknown failure'}`,
     )
   }
-
-  page.on('request', onRequest)
-  page.on('requestfinished', onRequestFinished)
-  page.on('response', onResponse)
+  const listenersAttached = () => (
+    context.listeners('request').includes(onRequest)
+    && context.listeners('requestfinished').includes(onRequestFinished)
+    && context.listeners('response').includes(onResponse)
+    && context.listeners('requestfailed').includes(onRequestFailed)
+  )
+  const matchesObservation = (snapshot, method, pathname) => {
+    if (!snapshot || typeof snapshot.method !== 'string' || typeof snapshot.url !== 'string') return false
+    if (typeof method !== 'string' || typeof pathname !== 'string') return false
+    try {
+      return snapshot.method === method && new URL(snapshot.url).pathname === pathname
+    } catch {
+      return false
+    }
+  }
+  context.on('request', onRequest)
+  context.on('requestfinished', onRequestFinished)
+  context.on('response', onResponse)
   page.on('console', onConsole)
   page.on('pageerror', onPageError)
-  page.on('requestfailed', onRequestFailed)
+  context.on('requestfailed', onRequestFailed)
 
   const drainPendingRequests = async () => {
     while (pendingRequests.size) {
@@ -889,12 +918,12 @@ export function observeRuntime(page, {
       )
       throw failure
     } finally {
-      page.off('request', onRequest)
-      page.off('requestfinished', onRequestFinished)
-      page.off('response', onResponse)
+      context.off('request', onRequest)
+      context.off('requestfinished', onRequestFinished)
+      context.off('response', onResponse)
       page.off('console', onConsole)
       page.off('pageerror', onPageError)
-      page.off('requestfailed', onRequestFailed)
+      context.off('requestfailed', onRequestFailed)
     }
 
     return {
@@ -911,5 +940,16 @@ export function observeRuntime(page, {
     }
   }
 
-  return { finish, settle }
+  return {
+    finish,
+    settle,
+    listenersAttached,
+    observationStage: object => requestStages.get(object) || responseStages.get(object) || 'unseen',
+    requestObservationMatches: (request, method, pathname) => matchesObservation(requestMetadata.get(request), method, pathname),
+    responseObservationMatches: (response, method, pathname, status) => (
+      Number.isInteger(status)
+      && responseMetadata.get(response)?.status === status
+      && matchesObservation(responseMetadata.get(response), method, pathname)
+    ),
+  }
 }

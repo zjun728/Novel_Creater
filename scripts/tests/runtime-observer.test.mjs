@@ -5,9 +5,14 @@ import test from 'node:test'
 class FakePage extends EventEmitter {
   constructor() {
     super()
+    this.contextEmitter = new EventEmitter()
     this.waitedFor = ''
     this.contentValue = '<main>final DOM</main>'
     this.onContent = null
+  }
+
+  context() {
+    return this.contextEmitter
   }
 
   async waitForLoadState(state) {
@@ -40,6 +45,81 @@ function assertSafeErrorChain(error, sensitiveValues) {
     assert.equal(rendered.includes(sensitive), false)
   }
 }
+
+test('observer captures network evidence from its context and leaves page-only network emits uncounted', async () => {
+  const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const page = new FakePage()
+  const observer = observeRuntime(page, { quietWindowMs: 1 })
+  assert.equal(observer.listenersAttached(), true)
+  const contextRequest = {
+    method: () => 'POST',
+    url: () => 'http://127.0.0.1:8000/api/context-observed',
+    allHeaders: async () => ({}),
+    postData: () => '',
+    failure: () => ({ errorText: 'context failure' }),
+  }
+  const pageRequest = {
+    method: () => 'POST',
+    url: () => 'http://127.0.0.1:8000/api/page-ignored',
+    allHeaders: async () => ({}),
+    postData: () => '',
+    failure: () => ({ errorText: 'page failure' }),
+  }
+  const contextResponse = fakeResponse({
+    url: contextRequest.url(),
+    method: 'POST',
+    request: () => contextRequest,
+    body: '{"source":"context"}',
+  })
+  const pageResponse = fakeResponse({
+    url: pageRequest.url(),
+    method: 'POST',
+    request: () => pageRequest,
+    body: '{"source":"page"}',
+  })
+
+  page.emit('request', pageRequest)
+  page.emit('requestfinished', pageRequest)
+  page.emit('response', pageResponse)
+  page.emit('requestfailed', pageRequest)
+  assert.equal(observer.observationStage(pageRequest), 'unseen')
+  assert.equal(observer.observationStage(pageResponse), 'unseen')
+  assert.equal(observer.requestObservationMatches(pageRequest, 'POST', '/api/page-ignored'), false)
+  assert.equal(observer.responseObservationMatches(pageResponse, 'POST', '/api/page-ignored', 200), false)
+  page.context().emit('request', contextRequest)
+  page.context().emit('requestfinished', contextRequest)
+  page.context().emit('response', contextResponse)
+  page.context().emit('requestfailed', contextRequest)
+  assert.equal(observer.observationStage(contextRequest), 'scheduled')
+  assert.equal(observer.observationStage(contextResponse), 'scheduled')
+  assert.equal(observer.requestObservationMatches(contextRequest, 'POST', '/api/context-observed'), true)
+  assert.equal(observer.requestObservationMatches(contextRequest, 'PUT', '/api/context-observed'), false)
+  assert.equal(observer.requestObservationMatches(contextRequest, 'POST', '/api/other'), false)
+  assert.equal(observer.responseObservationMatches(contextResponse, 'POST', '/api/context-observed', 200), true)
+  assert.equal(observer.responseObservationMatches(contextResponse, 'POST', '/api/context-observed', 201), false)
+  assert.equal(observer.responseObservationMatches(contextResponse, 'PUT', '/api/context-observed', 200), false)
+  assert.equal(observer.responseObservationMatches(contextResponse, 'POST', '/api/other', 200), false)
+  page.emit('console', { type: () => 'error', text: () => 'page console event' })
+  page.emit('pageerror', new Error('page error event'))
+
+  const evidence = await observer.finish()
+
+  assert.deepEqual(evidence.requests.map(record => record.url), [contextRequest.url()])
+  assert.deepEqual(evidence.responses.map(record => record.url), [contextRequest.url()])
+  assert.deepEqual(evidence.apiResponses.map(record => record.url), [contextRequest.url()])
+  assert.deepEqual(evidence.requestFailures, [`POST ${contextRequest.url()} context failure`])
+  assert.deepEqual(evidence.consoleErrors, ['error: page console event'])
+  assert.deepEqual(evidence.pageErrors, ['page error event'])
+  for (const event of ['request', 'requestfinished', 'response', 'requestfailed']) {
+    assert.equal(page.context().listenerCount(event), 0)
+    assert.equal(page.listenerCount(event), 0)
+  }
+  assert.equal(page.listenerCount('console'), 0)
+  assert.equal(page.listenerCount('pageerror'), 0)
+  assert.equal(observer.listenersAttached(), false)
+  assert.equal(observer.observationStage(contextRequest), 'scheduled')
+  assert.equal(observer.observationStage(contextResponse), 'scheduled')
+})
 
 function fakeResponse({
   url = 'http://127.0.0.1:8000/api/health',
@@ -119,7 +199,7 @@ test('observer keeps listeners through DOM capture, drains again, then detaches'
     headers: { 'x-first': 'yes' },
     text: async () => {
       const value = await firstBody
-      page.emit('response', second)
+      page.context().emit('response', second)
       return value
     },
   })
@@ -130,10 +210,10 @@ test('observer keeps listeners through DOM capture, drains again, then detaches'
   })
   page.onContent = async () => {
     await new Promise(resolve => setTimeout(resolve, 0))
-    page.emit('response', capturedDuringContent)
+    page.context().emit('response', capturedDuringContent)
     page.emit('console', { type: () => 'error', text: () => 'content timer console' })
     page.emit('pageerror', new Error('content timer page error'))
-    page.emit('requestfailed', {
+    page.context().emit('requestfailed', {
       method: () => 'GET',
       url: () => 'http://127.0.0.1:5173/content-timer',
       failure: () => ({ errorText: 'content timer request failure' }),
@@ -141,7 +221,7 @@ test('observer keeps listeners through DOM capture, drains again, then detaches'
   }
 
   const observer = observeRuntime(page)
-  page.emit('response', first)
+  page.context().emit('response', first)
   const finishing = observer.finish()
   resolveFirstBody('{"ok":true}')
   const evidence = await finishing
@@ -158,16 +238,10 @@ test('observer keeps listeners through DOM capture, drains again, then detaches'
   assert.deepEqual(evidence.requestFailures, [
     'GET http://127.0.0.1:5173/content-timer content timer request failure',
   ])
-  for (const event of [
-    'request',
-    'requestfinished',
-    'response',
-    'console',
-    'pageerror',
-    'requestfailed',
-  ]) {
-    assert.equal(page.listenerCount(event), 0)
+  for (const event of ['request', 'requestfinished', 'response', 'requestfailed']) {
+    assert.equal(page.context().listenerCount(event), 0)
   }
+  for (const event of ['console', 'pageerror']) assert.equal(page.listenerCount(event), 0)
 })
 
 test('observer can settle captured bodies before a navigation boundary', async () => {
@@ -176,7 +250,7 @@ test('observer can settle captured bodies before a navigation boundary', async (
   let resolveBody
   const body = new Promise(resolve => { resolveBody = resolve })
   const observer = observeRuntime(page)
-  page.emit('response', fakeResponse({
+  page.context().emit('response', fakeResponse({
     url: 'http://127.0.0.1:8000/api/projects/project-1',
     text: async () => body,
   }))
@@ -204,15 +278,15 @@ test('observer settle includes API activity that starts on the next event-loop t
   }
 
   setTimeout(() => {
-    page.emit('request', request)
-    page.emit('response', fakeResponse({
+    page.context().emit('request', request)
+    page.context().emit('response', fakeResponse({
       url: request.url(),
       text: async () => {
         bodyCaptured = true
         return '{"id":"project-1"}'
       },
     }))
-    setTimeout(() => page.emit('requestfinished', request), 1)
+    setTimeout(() => page.context().emit('requestfinished', request), 1)
   }, 0)
 
   await observer.settle()
@@ -229,7 +303,7 @@ test('observer settle deadline bounds a stalled request evidence drain', async (
     quietWindowMs: 1,
     settleTimeoutMs: 5,
   })
-  page.emit('request', {
+  page.context().emit('request', {
     method: () => 'GET',
     url: () => 'http://127.0.0.1:8000/api/projects/project-1',
     allHeaders: async () => new Promise(() => {}),
@@ -243,7 +317,7 @@ test('observer settle deadline bounds a stalled request evidence drain', async (
   )
 
   assert.ok(Date.now() - startedAt < 250)
-  page.removeAllListeners()
+  page.context().removeAllListeners()
 })
 
 test('observer settle rejects when an API request never emits a terminal event', async () => {
@@ -253,7 +327,7 @@ test('observer settle rejects when an API request never emits a terminal event',
     quietWindowMs: 1,
     settleTimeoutMs: 5,
   })
-  page.emit('request', {
+  page.context().emit('request', {
     method: () => 'GET',
     url: () => 'http://127.0.0.1:8000/api/projects/project-1',
     allHeaders: async () => ({}),
@@ -267,7 +341,7 @@ test('observer settle rejects when an API request never emits a terminal event',
   )
 
   assert.ok(Date.now() - startedAt < 250)
-  page.removeAllListeners()
+  page.context().removeAllListeners()
 })
 
 test('failed API requests leave no active request that can block settlement', async () => {
@@ -284,8 +358,8 @@ test('failed API requests leave no active request that can block settlement', as
     postData: () => '',
     failure: () => ({ errorText: 'connection reset' }),
   }
-  page.emit('request', request)
-  setTimeout(() => page.emit('requestfailed', request), 0)
+  page.context().emit('request', request)
+  setTimeout(() => page.context().emit('requestfailed', request), 0)
 
   await observer.settle()
   const evidence = await observer.finish()
@@ -342,7 +416,7 @@ test('observer finish reports only safe pending HTTP request diagnostics when ne
     allHeaders: async () => ({ authorization: secrets.header }),
     postData: () => secrets.body,
   }
-  page.emit('request', request)
+  page.context().emit('request', request)
 
   await assert.rejects(observer.finish(), error => {
     assert.ok(error instanceof Error)
@@ -404,7 +478,7 @@ test('observer finish excludes pending external HTTPS requests from safe diagnos
   const loadFailure = new Error('network idle timed out')
   page.waitForLoadState = async () => { throw loadFailure }
   const observer = observeRuntime(page)
-  page.emit('request', {
+  page.context().emit('request', {
     method: () => 'GET',
     url: () => `https://${secrets.username}:${secrets.password}@provider.example.invalid`
       + `/v1/${secrets.provider}?token=${secrets.query}#${secrets.hash}`,
@@ -456,13 +530,13 @@ test('observer finish excludes external provider details from every public diagn
   const loadFailure = new Error('network idle timed out')
   page.waitForLoadState = async () => { throw loadFailure }
   const observer = observeRuntime(page, { quietWindowMs: 1 })
-  page.emit('request', request)
-  page.emit('response', fakeResponse({
+  page.context().emit('request', request)
+  page.context().emit('response', fakeResponse({
     url,
     status: 503,
     request: () => request,
   }))
-  page.emit('requestfailed', request)
+  page.context().emit('requestfailed', request)
   await observer.settle()
 
   await assert.rejects(observer.finish(), error => {
@@ -489,7 +563,7 @@ test('observer records fail-closed header body response console page and request
   const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
   const page = new FakePage()
   const observer = observeRuntime(page)
-  page.emit('response', fakeResponse({
+  page.context().emit('response', fakeResponse({
     method: 'POST',
     status: 503,
     allHeaders: async () => { throw new Error('headers unavailable') },
@@ -498,7 +572,7 @@ test('observer records fail-closed header body response console page and request
   page.emit('console', { type: () => 'log', text: () => 'ordinary log' })
   page.emit('console', { type: () => 'error', text: () => 'console failed' })
   page.emit('pageerror', new Error('page failed'))
-  page.emit('requestfailed', {
+  page.context().emit('requestfailed', {
     method: () => 'GET',
     url: () => 'http://127.0.0.1:5173/missing',
     failure: () => ({ errorText: 'connection closed' }),
@@ -537,12 +611,12 @@ test('observer allows only exact owned loopback origins and accounts every HTTP 
     allHeaders: async () => ({}),
     postData: () => '',
   }
-  page.emit('request', request)
-  page.emit('response', fakeResponse({
+  page.context().emit('request', request)
+  page.context().emit('response', fakeResponse({
     url: request.url(),
     request: () => request,
   }))
-  page.emit('requestfinished', request)
+  page.context().emit('requestfinished', request)
 
   const evidence = await observer.finish()
 
@@ -575,13 +649,13 @@ test('successful external HTTP responses fail closed with secret-safe auditable 
     allHeaders: async () => ({}),
     postData: () => '',
   }
-  page.emit('request', request)
-  page.emit('response', fakeResponse({
+  page.context().emit('request', request)
+  page.context().emit('response', fakeResponse({
     url: request.url(),
     status: 204,
     request: () => request,
   }))
-  page.emit('requestfinished', request)
+  page.context().emit('requestfinished', request)
 
   const evidence = await observer.finish()
   let rejection = null
@@ -609,12 +683,12 @@ test('observer excludes Vite source paths containing api and accepts cache reval
   const { observeRuntime } = await import('../../frontend/e2e/runtime-observer.mjs')
   const page = new FakePage()
   const observer = observeRuntime(page)
-  page.emit('response', fakeResponse({
+  page.context().emit('response', fakeResponse({
     url: 'http://127.0.0.1:5173/src/api/db/client.js',
     status: 304,
     text: async () => { throw new Error('304 response body is unavailable') },
   }))
-  page.emit('response', fakeResponse({
+  page.context().emit('response', fakeResponse({
     url: 'http://127.0.0.1:8000/api/projects/project-1',
     status: 200,
     body: '{"id":"project-1"}',
@@ -814,7 +888,7 @@ test('runtime health assertion allows one fixed console error only with its cons
 test('observer enforces exact write method path status and count allowlists', async () => {
   const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
   const evidence = {
-    apiResponses: [
+    responses: [
       { method: 'PUT', status: 200, url: 'http://127.0.0.1:8000/api/projects/p1/contract-draft' },
       { method: 'PUT', status: 200, url: 'http://127.0.0.1:8000/api/projects/p1/contract-draft' },
       { method: 'POST', status: 201, url: 'http://127.0.0.1:8000/api/projects/p1/contracts/confirm' },
@@ -853,6 +927,22 @@ test('observer enforces exact write method path status and count allowlists', as
   )
 })
 
+test('exact write audit derives only API writes from synchronous response metadata', async () => {
+  const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const path = '/api/projects/p1/planning/drafts'
+  const rule = { method: 'POST', path, count: 1, statuses: [201] }
+  const response = { method: 'POST', status: 201, url: `http://127.0.0.1:8000${path}` }
+  assert.deepEqual(assertExactWrites({ responses: [response], apiResponses: [] }, [rule]), { writeCount: 1 })
+  for (const [item, matcher] of [
+    [{ ...response, url: 'http://127.0.0.1:8000/assets/write' }, /count/i],
+    [{ ...response, method: 'GET' }, /count/i],
+    [{ ...response, url: `${response.url}?unexpected=1` }, /unmatched/i],
+    [{ ...response, url: `${response.url}#unexpected` }, /unmatched/i],
+    [{ ...response, status: 200 }, /status/i],
+    [{ ...response, url: 'http://127.0.0.1:8000/api/projects/p1/unmatched' }, /unmatched/i],
+  ]) assert.throws(() => assertExactWrites({ responses: [item], apiResponses: [] }, [rule]), matcher)
+})
+
 test('exact write allowlists reject query and hash variants of an allowed route', async () => {
   const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
   const rule = {
@@ -866,7 +956,7 @@ test('exact write allowlists reject query and hash variants of an allowed route'
   for (const suffix of ['?unexpected=1', '#unexpected']) {
     assert.throws(
       () => assertExactWrites({
-        apiResponses: [{
+        responses: [{
           method: 'PUT',
           status: 200,
           url: `http://127.0.0.1:8000${providerPath}${suffix}`,
@@ -880,7 +970,7 @@ test('exact write allowlists reject query and hash variants of an allowed route'
   let rejection = null
   try {
     assertExactWrites({
-      apiResponses: [{
+      responses: [{
         method: 'PUT',
         status: 200,
         url: `http://127.0.0.1:8000${providerPath}?token=${secret}`,
@@ -897,7 +987,7 @@ test('exact write allowlists reject query and hash variants of an allowed route'
 
 test('write allowlist rejects invalid rules even when no writes occur', async () => {
   const { assertExactWrites } = await import('../../frontend/e2e/runtime-observer.mjs')
-  const evidence = { apiResponses: [] }
+  const evidence = { responses: [] }
   const invalidRules = [
     { method: '', path: '/api/write', count: 1, statuses: [200] },
     { method: 'POST', path: 42, count: 1, statuses: [200] },
@@ -910,7 +1000,7 @@ test('write allowlist rejects invalid rules even when no writes occur', async ()
     assert.throws(() => assertExactWrites(evidence, [rule]), /allowlist|rule|method|path|count|status/i)
   }
   assert.throws(() => assertExactWrites({
-    apiResponses: [{ method: 'INVALID', status: 200, url: 'http://127.0.0.1/api/write' }],
+    responses: [{ method: 'INVALID', status: 200, url: 'http://127.0.0.1/api/write' }],
   }, [
     { method: 'INVALID', path: '/api/write', count: 1, statuses: [200] },
   ]), /method/i)
