@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { createPinia, setActivePinia } from 'pinia'
 
 import { api } from '../../src/api/db/client.js'
 import { useCreationContractStore } from '../../src/stores/creationContractStore.js'
+
+test('contract store has no product clone revision action', async () => {
+  const source = await readFile(new URL('../../src/stores/creationContractStore.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /cloneRevision|api\.contracts\.clone/)
+})
 
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
@@ -182,7 +188,6 @@ test('unsaved edit tracking is local-only and can be explicitly discarded withou
     [api.contracts, 'head', unexpectedCall],
     [api.contracts, 'preview', unexpectedCall],
     [api.contracts, 'confirm', unexpectedCall],
-    [api.contracts, 'clone', unexpectedCall],
     [api.storyEngines, 'reconcile', unexpectedCall],
   ], async () => {
     setActivePinia(createPinia())
@@ -221,7 +226,7 @@ test('a local edit invalidates an older load before it can clear the unsaved che
   })
 })
 
-test('successful load, save, confirm and clone checkpoints clear unsaved edit state', async () => {
+test('successful load, save, and confirm checkpoints clear unsaved edit state', async () => {
   let loadVersion = 3
 
   await withApiMethods([
@@ -231,7 +236,6 @@ test('successful load, save, confirm and clone checkpoints clear unsaved edit st
     [api.contracts, 'confirm', async () => ({
       projectId: 'project-1', revision: 1, contractReady: true, reasons: [],
     })],
-    [api.contracts, 'clone', async () => publicDraft('assets', 1)],
   ], async () => {
     setActivePinia(createPinia())
     const store = useCreationContractStore()
@@ -248,10 +252,6 @@ test('successful load, save, confirm and clone checkpoints clear unsaved edit st
     await store.confirm('project-1', { idempotencyKey: 'checkpoint-confirm' })
     assert.equal(store.hasUnsavedChanges, false)
 
-    loadVersion = 1
-    store.markUnsavedChanges()
-    await store.cloneRevision('project-1', 1)
-    assert.equal(store.hasUnsavedChanges, false)
   })
 })
 
@@ -783,67 +783,6 @@ test('confirm replays the exact command for the same idempotency key after draft
   })
 })
 
-test('cloneRevision performs one formal API call and installs the returned backend draft', async () => {
-  let clones = 0
-
-  await withApiMethods([
-    [api.contracts, 'clone', async (projectId, sourceRevision) => {
-      clones += 1
-      assert.equal(sourceRevision, 4)
-      return { ...publicDraft('assets', 1), projectId, baseHeadRevision: 4 }
-    }],
-  ], async () => {
-    setActivePinia(createPinia())
-    const store = useCreationContractStore()
-    const result = await store.cloneRevision('project-1', 4)
-
-    assert.equal(clones, 1)
-    assert.equal(result.baseHeadRevision, 4)
-    assert.equal(store.draft, result)
-    assert.equal(store.lastSavedStage, 'assets')
-  })
-})
-
-test('clone clears prior confirmation replay so the same key confirms the new draft snapshot', async () => {
-  const confirmCalls = []
-  const cloned = {
-    ...publicDraft('assets', 1),
-    contentHash: HASH_B,
-    baseHeadRevision: 1,
-  }
-
-  await withApiMethods([
-    [api.contracts.draft, 'get', async () => publicDraft('assets', 3)],
-    [api.contracts, 'head', async () => ({ contractReady: false, reasons: [] })],
-    [api.contracts, 'confirm', async (_projectId, command) => {
-      confirmCalls.push(structuredClone(command))
-      return { revision: confirmCalls.length, contractReady: true, reasons: [] }
-    }],
-    [api.contracts, 'clone', async () => cloned],
-  ], async () => {
-    setActivePinia(createPinia())
-    const store = useCreationContractStore()
-    await store.load('project-1')
-
-    await store.confirm('project-1', { idempotencyKey: 'reused-key' })
-    await store.cloneRevision('project-1', 1)
-    await store.confirm('project-1', { idempotencyKey: 'reused-key' })
-
-    assert.deepEqual(confirmCalls, [
-      {
-        idempotencyKey: 'reused-key',
-        expectedDraftVersion: 3,
-        expectedDraftHash: HASH_A,
-      },
-      {
-        idempotencyKey: 'reused-key',
-        expectedDraftVersion: 1,
-        expectedDraftHash: HASH_B,
-      },
-    ])
-  })
-})
-
 test('style trial uses the backend gateway and remains temporary contract-neutral state', async () => {
   assert.equal(typeof api.styleTrials?.generate, 'function')
   const restoreStorage = installThrowingLocalStorage()
@@ -1047,7 +986,6 @@ test('archived read-only mode rejects every formal write before transport', asyn
     [api.contracts.draft, 'save', unexpectedWrite],
     [api.contracts, 'preview', unexpectedWrite],
     [api.contracts, 'confirm', unexpectedWrite],
-    [api.contracts, 'clone', unexpectedWrite],
     [api.storyEngines, 'generate', unexpectedWrite],
     [api.storyEngines, 'manual', unexpectedWrite],
     [api.styleTrials, 'generate', unexpectedWrite],
@@ -1060,7 +998,6 @@ test('archived read-only mode rejects every formal write before transport', asyn
       () => store.saveDraft('project-1', draftValues('engine')),
       () => store.preview('project-1'),
       () => store.confirm('project-1', { idempotencyKey: 'archived' }),
-      () => store.cloneRevision('project-1', 1),
       () => store.generateEngineBatch('project-1', { idempotencyKey: 'archived' }),
       () => store.createManualEngineBatch('project-1', { idempotencyKey: 'archived', options: [] }),
       () => store.runStyleTrial('project-1', {}),

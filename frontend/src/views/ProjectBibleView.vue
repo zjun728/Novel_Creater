@@ -53,7 +53,7 @@ const workspace = createBibleWorkspaceController({
   focusStatus: () => statusTarget.value?.focus(),
   confirmLeave: () => window.confirm('存在未保存的创作圣经编辑。确定离开吗？'),
 })
-const { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels, cloneSource } = workspace
+const { working, confirmOpen, historyOpen, errorSummary, recoveryCommand, busy, mode, activeStatus, editable, canSave, canConfirm, canGenerate, generationDisabledReason, confirmPreview, reasonLabels } = workspace
 const editorDisabled = computed(() => busy.value)
 const hasConflict = computed(() => errorSummary.value?.status === 409)
 const globalError = computed(() => errorSummary.value && !confirmOpen.value && !historyOpen.value ? errorSummary.value : null)
@@ -103,9 +103,6 @@ async function generate() {
       notice.value = '已生成新的创作圣经草稿'
     }
   } catch {}
-}
-async function clone(source) {
-  try { if (await workspace.clone(source)) { historyOpen.value = false; notice.value = '已创建未来设计草稿' } } catch {}
 }
 function openHistory() { void workspace.openHistory().catch(() => {}) }
 function showHistoryDetail(revision) { void workspace.showHistoryDetail(revision).catch(() => {}) }
@@ -166,6 +163,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
           AI 辅助：{{ planningReady ? 'Ready' : 'Not Ready' }}（不影响手动保存与确认）
         </aside>
         <p v-for="reason in reasonLabels" :key="reason" class="status-note">{{ reason }}</p>
+        <p v-if="store.baselineLocked" class="status-note">已确认，作为项目永久基线。</p>
         <p v-if="mode === 'superseded'" class="status-note">此修订已被替代，内容仅供复制与查阅。</p>
         <p v-if="locked || mode === 'archived'" class="status-note">此项目或当前服务端状态为只读。</p>
         <bible-editor v-if="working" :model-value="working" :read-only="!editable" :disabled="editorDisabled" @update:model-value="edit" />
@@ -182,7 +180,6 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
           <p v-if="generationDisabledReason" class="status-note">{{ generationDisabledReason }}</p>
         </section>
         <footer v-if="editable"><button :disabled="!canSave" @click="save">手动保存</button><span v-if="store.dirty">请先保存后再确认</span><button :disabled="!canConfirm" @click="workspace.openConfirm($event.currentTarget)">预览并确认</button></footer>
-        <button v-if="cloneSource" :disabled="busy" @click="clone(cloneSource)">调整未来设计</button>
         <Teleport to="body" :disabled="!teleportEnabled">
           <div v-if="confirmOpen" class="confirm-overlay">
             <section ref="confirmDialog" class="confirm-panel" role="dialog" aria-modal="true" aria-label="确认新的未来设计" @keydown="handleConfirmKeydown"><h2>确认新的未来设计</h2><section v-if="errorSummary" ref="confirmErrorTarget" class="modal-error-summary" tabindex="-1" role="alert" aria-live="assertive"><strong>{{ errorSummary.message }}</strong><span v-if="errorSummary.correlationId">参考编号：{{ errorSummary.correlationId }}</span><button v-if="hasConflict" type="button" :disabled="busy" @click="reloadAuthoritative">重新加载权威版本</button><button v-else type="button" :disabled="busy" @click="retryFailure">{{ recoveryLabel }}</button></section><p>确认会创建不可变修订。请核对已保存的完整快照。</p><bible-editor v-if="confirmPreview" :model-value="confirmPreview" read-only :disabled="busy" /><button ref="confirmTarget" @click="confirm">确认签印</button><button :disabled="busy" @click="workspace.closeConfirm">返回编辑</button></section>
@@ -191,7 +188,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
       </div>
       <div v-if="busy" class="busy-overlay" role="status" aria-live="polite" aria-busy="true">正在处理创作圣经…</div>
     </section>
-    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :read-only="locked" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" :label-reason="bibleReasonLabel" @close="historyOpen = false" @clone="clone" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
+    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :read-only="locked || store.baselineLocked" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" :label-reason="bibleReasonLabel" @close="historyOpen = false" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
   </main>
 </template>
 

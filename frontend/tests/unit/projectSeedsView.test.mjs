@@ -14,6 +14,16 @@ const naiveStub = '\0project-seeds-naive-stub'
 let vite
 let ProjectSeedsView
 
+test('seed workspace names the one-time confirmation and removes post-confirmation authoring controls', async () => {
+  const [view, card] = await Promise.all([
+    readFile(new URL('../../src/views/ProjectSeedsView.vue', import.meta.url), 'utf8'),
+    readFile(new URL('../../src/components/seeds/SeedCard.vue', import.meta.url), 'utf8'),
+  ])
+  assert.match(view, /确认这个种子并进入创作契约/)
+  assert.match(view, /确认后不可更换/)
+  assert.doesNotMatch(`${view}\n${card}`, /立即选定/)
+})
+
 test.before(async () => {
   vite = await createServer({
     configFile: false,
@@ -131,7 +141,7 @@ test('one Project Seeds workspace renders Evidence, Inspiration and Saved Seeds 
   assert.match(html, /已存种子/)
   assert.match(html, /手动导入快照/)
   assert.match(html, /保存为种子/)
-  assert.match(html, /选定一个创作种子/)
+  assert.match(html, /确认这个种子并进入创作契约/)
   assert.doesNotMatch(html, /Provider|模型选择|raw JSON|市场项目/)
 })
 

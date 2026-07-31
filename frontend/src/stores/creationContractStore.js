@@ -56,7 +56,6 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const saving = ref(false)
   const previewing = ref(false)
   const confirming = ref(false)
-  const cloning = ref(false)
   const engineLoading = ref(false)
   const reconciling = ref(false)
   const styleTrialLoading = ref(false)
@@ -66,12 +65,11 @@ export const useCreationContractStore = defineStore('creationContract', () => {
   const saveGuard = createLatestRequestGuard()
   const previewGuard = createLatestRequestGuard()
   const confirmGuard = createLatestRequestGuard()
-  const cloneGuard = createLatestRequestGuard()
   const engineGuard = createLatestRequestGuard()
   const styleTrialGuard = createLatestRequestGuard()
   const historyGuard = createLatestRequestGuard()
   const guards = [
-    loadGuard, saveGuard, previewGuard, confirmGuard, cloneGuard,
+    loadGuard, saveGuard, previewGuard, confirmGuard,
     engineGuard, styleTrialGuard, historyGuard,
   ]
   const confirmCommands = new Map()
@@ -123,7 +121,6 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     saving.value = false
     previewing.value = false
     confirming.value = false
-    cloning.value = false
     engineLoading.value = false
     reconciling.value = false
     styleTrialLoading.value = false
@@ -327,33 +324,6 @@ export const useCreationContractStore = defineStore('creationContract', () => {
       throw failure
     } finally {
       if (current(confirmGuard, generation, targetProjectId)) confirming.value = false
-    }
-  }
-
-  async function cloneRevision(nextProjectId, sourceRevision) {
-    assertWritable()
-    const targetProjectId = enterProject(nextProjectId)
-    const generation = cloneGuard.begin()
-    const stateGeneration = ++contractStateGeneration
-    cloning.value = true
-    try {
-      const result = await api.contracts.clone(targetProjectId, sourceRevision)
-      if (currentContractState(cloneGuard, generation, targetProjectId, stateGeneration)) {
-        draft.value = result
-        previewResult.value = null
-        confirmed.value = null
-        conflict.value = null
-        error.value = null
-        requiresReload.value = false
-        hasUnsavedChanges.value = false
-        confirmCommands.clear()
-      }
-      return result
-    } catch (failure) {
-      recordFailure(failure, cloneGuard, generation, targetProjectId, stateGeneration)
-      throw failure
-    } finally {
-      if (current(cloneGuard, generation, targetProjectId)) cloning.value = false
     }
   }
 
@@ -565,7 +535,6 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     saving,
     previewing,
     confirming,
-    cloning,
     engineLoading,
     reconciling,
     styleTrialLoading,
@@ -582,7 +551,6 @@ export const useCreationContractStore = defineStore('creationContract', () => {
     saveDraft,
     preview,
     confirm,
-    cloneRevision,
     generateEngineBatch,
     createManualEngineBatch,
     loadEngineBatch,

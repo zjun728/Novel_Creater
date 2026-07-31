@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 import { useSeedStore } from '../../src/stores/seedStore.js'
+
+test('seed store names the one-time confirmation action', async () => {
+  const source = await readFile(new URL('../../src/stores/seedStore.js', import.meta.url), 'utf8')
+  assert.match(source, /确认这个种子并进入创作契约/)
+})
 
 const PAYLOAD = Object.freeze({
   title: '典镇山河',
@@ -108,37 +114,33 @@ test('refresh consumes activeSelection and marks exactly one saved candidate sel
   assert.equal(store.nextAction.label, '继续创作契约')
 })
 
-test('A to B to A selection uses the returned monotonic aggregate generation without confirmation calls', async () => {
+test('confirmation does not replace a selected seed when server capabilities deny selection', async () => {
   setActivePinia(createPinia())
   const store = useSeedStore()
   const calls = []
-  const revisions = [1, 2, 3]
 
   await withFetch(async (url, options) => {
     const body = JSON.parse(options.body)
     calls.push({ path: String(url), body })
-    const id = body.seedId
-    return jsonResponse(seed(id, revisions.shift(), {
+    return jsonResponse(seed('A', 1, {
       isSelected: true,
-      selectionRevision: calls.length,
+      selectionRevision: 1,
+      capabilities: { ...seed('A').capabilities, canSelect: false, canEdit: false },
     }))
   }, async () => {
-    store.$patch({ seeds: [seed('A'), seed('B')] })
+    store.$patch({ seeds: [seed('A')] })
     await store.selectSeed('p1', {
       seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 0,
     })
-    await store.selectSeed('p1', {
-      seedId: 'B', expectedSeedRevision: 1, expectedSelectionRevision: 1,
-    })
-    await store.selectSeed('p1', {
-      seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 2,
-    })
+    await assert.rejects(store.selectSeed('p1', {
+      seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 1,
+    }))
   })
 
   assert.equal(store.activeSelection.seedId, 'A')
-  assert.equal(store.selectionRevision, 3)
-  assert.deepEqual(calls.map(call => call.body.expectedSelectionRevision), [0, 1, 2])
-  assert.ok(calls.every(call => call.path.endsWith('/projects/p1/selected-seed')))
+  assert.equal(store.selectionRevision, 1)
+  assert.equal(calls.length, 1)
+  assert.ok(calls[0].path.endsWith('/projects/p1/selected-seed'))
 })
 
 test('inspiration remains transient until an explicit Save as Seed command', async () => {

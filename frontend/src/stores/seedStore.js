@@ -18,6 +18,10 @@ function normalizedReadiness(result = {}) {
   }
 }
 
+function capabilityDenied(code) {
+  return Object.assign(new Error('当前种子操作不被服务端允许'), { code })
+}
+
 function selectedRows(rows, activeSelection) {
   const selectedId = activeSelection?.seedId ?? null
   return (Array.isArray(rows) ? rows : []).map(seed => ({
@@ -49,7 +53,7 @@ export const useSeedStore = defineStore('seed', () => {
   const nextAction = computed(() => (
     activeSelection.value
       ? { key: 'continue-contract', label: '继续创作契约' }
-      : { key: 'select-seed', label: '选定一个创作种子' }
+      : { key: 'select-seed', label: '确认这个种子并进入创作契约' }
   ))
 
   function activate(projectId) {
@@ -207,6 +211,10 @@ export const useSeedStore = defineStore('seed', () => {
   }
 
   function selectSeed(projectId, data) {
+    const seed = seeds.value.find(item => item.id === data?.seedId)
+    if (seed?.capabilities?.canSelect !== true) {
+      return Promise.reject(capabilityDenied('seed_select_denied'))
+    }
     return mutate(
       projectId,
       () => api.seeds.select(projectId, data),

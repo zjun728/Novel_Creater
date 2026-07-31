@@ -74,12 +74,12 @@ const disabled = computed(() => props.readOnly || props.busy)
         编辑
       </n-button>
       <n-button
-        v-if="seed.status === 'candidate'"
+        v-if="seed.status === 'candidate' && capabilities.canSelect"
         size="small"
         :disabled="disabled || seed.isSelected || !capabilities.canSelect"
         @click="emit('select', seed)"
       >
-        {{ seed.isSelected ? '当前选定' : '立即选定' }}
+        确认这个种子并进入创作契约
       </n-button>
       <n-button
         v-if="seed.status === 'candidate' && capabilities.canArchive"

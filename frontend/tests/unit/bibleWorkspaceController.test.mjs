@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { reactive } from 'vue'
 
 import { bibleReasonLabel, createBibleWorkspaceController } from '../../src/application/bible/bibleWorkspaceController.js'
+
+test('Bible workspace controller has no clone command branch', async () => {
+  const source = await readFile(new URL('../../src/application/bible/bibleWorkspaceController.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /cloneRevision|store\.clone|cloneSource/)
+})
 
 const emptyBible = () => ({
   premiseAndPromise: '', powerOrProgressionSystem: '', protagonist: '', toneAndNarrativeBoundaries: '',
@@ -79,25 +85,22 @@ test('late project operations cannot publish working state, errors, focus, or di
   assert.equal(workspace.errorSummary.value, null); assert.equal(workspace.recoveryCommand.value, null); assert.deepEqual(focus, []); assert.equal(workspace.historyOpen.value, false)
 })
 
-for (const [confirmOutcome, cloneOutcome] of [['success', 'failure'], ['failure', 'success']]) {
-  test(`late confirmation ${confirmOutcome} and clone ${cloneOutcome} stay fenced from the newer project`, async () => {
-    const confirmA = deferred(); const cloneA = deferred(); let currentProject = 'A'; const focus = []
+for (const confirmOutcome of ['success', 'failure']) {
+  test(`late confirmation ${confirmOutcome} stays fenced from the newer project`, async () => {
+    const confirmA = deferred(); let currentProject = 'A'; const focus = []
     const store = makeStore()
     store.load = async project => {
       store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, canClone: true, reasons: [] }
       store.head = revision(1)
     }
     store.confirm = async project => project === 'A' ? confirmA.promise : revision(2)
-    store.clone = async project => project === 'A' ? cloneA.promise : store.draft
     const workspace = createBibleWorkspaceController({ store, projectId: () => currentProject, focusError: () => focus.push('error'), focusStatus: () => focus.push('status'), keyFactory: () => 'key' })
     await workspace.hydrate(); workspace.openConfirm()
-    const oldConfirm = workspace.confirm(); const oldClone = workspace.clone(revision(1))
+    const oldConfirm = workspace.confirm()
     currentProject = 'B'; await workspace.hydrate()
     if (confirmOutcome === 'success') confirmA.resolve(revision(2))
     else confirmA.reject(error(503, 'late confirm raw secret'))
-    if (cloneOutcome === 'success') cloneA.resolve({ draft: { ...bible(), premiseAndPromise: 'A CLONE' } })
-    else cloneA.reject(error(503, 'late clone raw secret'))
-    await oldConfirm; await oldClone
+    await oldConfirm
     assert.equal(workspace.working.value.premiseAndPromise, 'B BODY')
     assert.equal(workspace.errorSummary.value, null); assert.equal(workspace.recoveryCommand.value, null)
     assert.equal(workspace.confirmOpen.value, false); assert.deepEqual(focus, [])
@@ -171,16 +174,6 @@ test('load, history list, and history detail failures retry only their correspon
   await workspace.retryFailure(); assert.deepEqual(store.calls.detail, [['project-1', 7], ['project-1', 7]])
 })
 
-test('a failed clone offers reconciliation and never retries the clone command blindly', async () => {
-  const store = makeStore(); let cloneCalls = 0
-  store.clone = async () => { cloneCalls += 1; throw error(503, 'clone outcome unknown') }
-  const workspace = controller(store); await workspace.hydrate()
-  await assert.rejects(workspace.clone(revision(7)))
-  assert.equal(workspace.recoveryCommand.value.type, 'reconcile')
-  await workspace.retryFailure()
-  assert.equal(cloneCalls, 1); assert.equal(store.calls.load.length, 2)
-})
-
 test('state machine creates an empty first Bible only without a head, and never writes on hydrate', async () => {
   const store = makeStore({ draft: { draftVersion: null, draft: null, draftId: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: { revision: 0, bible: null, canClone: false } })
   const workspace = controller(store)
@@ -203,14 +196,13 @@ test('active status and reasons are selected from the artifact being displayed',
   assert.deepEqual(workspace.reasonLabels.value, ['请完成或重新签署创作契约。', '请完成或重新签署创作契约。'])
 })
 
-test('state machine displays a head-only Bible read-only, clones its revision, and keeps archived heads unclonable', async () => {
+test('state machine displays a head-only Bible as a read-only permanent baseline', async () => {
   const headOnly = makeStore({ draft: { draftVersion: null, draft: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: revision(7) })
   const workspace = controller(headOnly); await workspace.hydrate()
   assert.deepEqual(workspace.working.value, bible()); assert.equal(workspace.editable.value, false); assert.equal(workspace.canSave.value, false)
-  await workspace.clone(headOnly.head); assert.deepEqual(headOnly.calls.clone[0], ['project-1', { sourceRevision: 7 }])
   const archived = makeStore({ draft: null, head: { ...revision(8), lifecycle: 'archived', canClone: false }, canClone: false })
   const archivedWorkspace = controller(archived, { isArchived: () => true }); await archivedWorkspace.hydrate()
-  assert.equal(await archivedWorkspace.clone(archived.head), undefined)
+  assert.equal(archivedWorkspace.editable.value, false)
 })
 
 test('archived workspace keeps a superseded draft as its single displayed artifact when a head also exists', async () => {
@@ -221,15 +213,14 @@ test('archived workspace keeps a superseded draft as its single displayed artifa
   assert.equal(workspace.working.value.premiseAndPromise, 'ARCHIVED DRAFT')
   assert.equal(workspace.activeStatus.value, 'superseded')
   assert.deepEqual(workspace.activeReasons.value, ['bible_head_changed'])
-  assert.equal(workspace.editable.value, false); assert.equal(workspace.cloneSource.value, null)
+  assert.equal(workspace.editable.value, false)
 })
 
-test('superseded drafts are read-only and clone with sourceDraftId while confirmed output remains visible and focuses status', async () => {
+test('superseded drafts are read-only while confirmed output remains visible and focuses status', async () => {
   const store = makeStore({ draft: { draftVersion: 2, draftId: 'draft-2', draft: bible(), status: 'superseded', canEdit: false, canConfirm: false, canClone: true, reasons: [] } }); const events = []
   store.confirm = async () => { const result = { ...revision(8), bible: { ...bible(), protagonist: 'confirmed' } }; store.draft = null; store.head = result; return result }
   const workspace = controller(store, { focusStatus: () => events.push('status') }); await workspace.hydrate()
-  assert.equal(workspace.editable.value, false); await workspace.clone(store.draft)
-  assert.deepEqual(store.calls.clone[0], ['project-1', { sourceDraftId: 'draft-2' }])
+  assert.equal(workspace.editable.value, false)
   store.draft = { draftVersion: 3, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] }; store.canConfirm = true
   await workspace.hydrate(); await workspace.confirm(); await Promise.resolve()
   assert.equal(workspace.working.value.protagonist, 'confirmed'); assert.deepEqual(events, ['status'])
@@ -274,13 +265,11 @@ test('confirmation reuses an attempt key for outcome-unknown failures but create
   assert.notEqual(store.calls.confirm[2][1].idempotencyKey, store.calls.confirm[3][1].idempotencyKey)
 })
 
-test('history opens, loads a detail, appends a page, and can clone active or archived source revisions', async () => {
+test('history opens, loads a detail, and appends a read-only page', async () => {
   const store = makeStore(); const workspace = controller(store)
   await workspace.openHistory(); await workspace.showHistoryDetail(7); await workspace.loadMoreHistory()
   assert.deepEqual(store.calls.history, [['project-1', { append: false }], ['project-1', { append: true, beforeRevision: 6 }]])
   assert.deepEqual(store.calls.detail, [['project-1', 7]])
-  await workspace.clone(revision(7)); await workspace.clone({ ...revision(6), lifecycle: 'archived' })
-  assert.deepEqual(store.calls.clone, [['project-1', { sourceRevision: 7 }], ['project-1', { sourceRevision: 6 }]])
 })
 
 test('busy state blocks duplicate actions, every async action focuses errors, and reason labels are safe categories', async () => {
@@ -294,7 +283,7 @@ test('busy state blocks duplicate actions, every async action focuses errors, an
   await assert.rejects(workspace.save())
   await Promise.resolve()
   assert.equal(focused[0], 'error')
-  assert.deepEqual(workspace.reasonLabels.value, ['请选择种子后继续。', '请完成或重新签署创作契约。', '内容已过期，请调整未来设计。', '项目已归档，只能查阅。', '状态需重新核对（unknown_reason）'])
+  assert.deepEqual(workspace.reasonLabels.value, ['请选择种子后继续。', '请完成或重新签署创作契约。', '内容已固定为项目永久基线，请查看历史记录。', '项目已归档，只能查阅。', '状态需重新核对（unknown_reason）'])
 })
 
 test('AI Not Ready does not override manual permissions and leave protection handles beforeunload', async () => {
