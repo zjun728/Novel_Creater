@@ -2014,7 +2014,7 @@ test('runtime-health failures emit a closed evidence summary without runtime con
   const projection = project(null, new Error('health never-print'), 'runtime-health', evidence)
   assert.equal(
     projection,
-    'category=audit leaf=runtime-health-summary responseFailureCount=1 consoleErrorCount=1 pageErrorCount=1 requestFailureCount=1 apiReadErrorCount=2 requestReadErrorCount=2 forbiddenRequestCount=2 forbiddenResponseCount=3 responseMethod=GET responsePath=/api/projects/:id/contract-draft responseStatus=500 requestMethod=POST requestPath=/api/projects/:id/seeds requestStatus=unavailable readMethod=GET readPath=/api/projects/:id/contract-draft readStatus=500 responseInventory=GET:/api/projects/:id/contract-draft:500:1 unavailableCount=0 inventoryOmittedCount=0 consoleExact404Count=0 consoleExact409ConflictCount=0 consoleFailedResource409OtherCount=0 consoleVueCapturedErrorCount=0 consoleCategoryOtherCount=1 consoleCategoryOtherApiErrorCount=0 consoleCategoryOtherErrorCount=0 consoleCategoryOtherVueWarnCount=0 consoleCategoryOtherUncaughtCount=0 consoleCategoryOtherAccessFetchCount=0 consoleCategoryOtherFailedResourceCount=0 consoleCategoryOtherGenericErrorCount=1 consoleCategoryOtherNonErrorPrefixCount=0 consoleCategoryOther409TokenCount=0 consoleKnownLinkedCount=0 consoleOtherCount=1',
+    'category=audit leaf=runtime-health-summary responseFailureCount=1 consoleErrorCount=1 pageErrorCount=1 requestFailureCount=1 apiReadErrorCount=2 requestReadErrorCount=2 forbiddenRequestCount=2 forbiddenResponseCount=3 responseMethod=GET responsePath=/api/projects/:id/contract-draft responseStatus=500 requestMethod=POST requestPath=/api/projects/:id/seeds requestStatus=unavailable readMethod=GET readPath=/api/projects/:id/contract-draft readStatus=500 responseInventory=GET:/api/projects/:id/contract-draft:500:1 unavailableCount=0 inventoryOmittedCount=0 consoleKnownLinkedCount=0 consoleOtherCount=1',
   )
   assert.doesNotMatch(projection, /never-print|authorization|127\.0\.0\.1|body|header|url/u)
   assert.equal(
@@ -2087,7 +2087,7 @@ test('runtime-health inventory emits only bounded safe response groups and fixed
   const projection = project(null, new Error('health sentinel'), 'runtime-health', evidence, undefined, options)
   assert.match(
     projection,
-    /responseInventory=GET:\/api\/projects\/:id\/contract-draft:500:1 unavailableCount=3 inventoryOmittedCount=0 consoleExact404Count=0 consoleExact409ConflictCount=0 consoleFailedResource409OtherCount=0 consoleVueCapturedErrorCount=0 consoleCategoryOtherCount=2 consoleCategoryOtherApiErrorCount=0 consoleCategoryOtherErrorCount=0 consoleCategoryOtherVueWarnCount=0 consoleCategoryOtherUncaughtCount=0 consoleCategoryOtherAccessFetchCount=0 consoleCategoryOtherFailedResourceCount=0 consoleCategoryOtherGenericErrorCount=0 consoleCategoryOtherNonErrorPrefixCount=2 consoleCategoryOther409TokenCount=0 consoleKnownLinkedCount=1 consoleOtherCount=1$/u,
+    /responseInventory=GET:\/api\/projects\/:id\/contract-draft:500:1 unavailableCount=3 inventoryOmittedCount=0 consoleKnownLinkedCount=1 consoleOtherCount=1$/u,
   )
   assert.doesNotMatch(projection, /sentinel|body|query|127\.0\.0\.1|untrusted-host|https?:/u)
 
@@ -2135,71 +2135,6 @@ test('runtime-health inventory emits only bounded safe response groups and fixed
   )
 })
 
-test('runtime-health console categories are fixed, exhaustive, and redacted', async () => {
-  const source = workspace(SPEC)
-  const start = source.indexOf('function normalizedRuntimeApiPath')
-  const end = source.indexOf('\nasync function finishRuntime', start)
-  const { publicRuntimeDiagnostic } = await import('../../frontend/e2e/runtime-observer.mjs')
-  const project = new Function(
-    'runtimeFailureDiagnostic', 'publicRuntimeDiagnostic',
-    `${source.slice(start, end)}; return projectPhase3FailureMessage`,
-  )(() => null, publicRuntimeDiagnostic)
-  const resource409Prefix = 'error: Failed to load resource: the server responded with a status of 409'
-  const evidence = {
-    responseFailures: [],
-    consoleErrors: [
-      'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
-      'error: Failed to load resource: the server responded with a status of 409 (Conflict)',
-      `${resource409Prefix} (Vite proxy)`,
-      'error: [界面错误] {"kind":"render"}',
-      'error: ApiError: api-detail-never-print',
-      'error: Error: error-detail-never-print',
-      'error: [Vue warn] warn-detail-never-print',
-      'error: Uncaught TypeError: uncaught-detail-never-print',
-      'error: Access to fetch at https://never-print.test was blocked',
-      'error: Failed to fetch fetch-detail-never-print',
-      'error: Failed to load resource: the server responded with a status of 500 (Server Error)',
-      'error: generic-error-detail-never-print',
-      'console-other-never-print',
-      `${resource409Prefix} (Vite proxy)\nbody-never-print`,
-    ],
-    pageErrors: [], requestFailures: [], apiResponses: [], requests: [],
-    networkAccess: { forbiddenRequestCount: 0, forbiddenResponseCount: 0 },
-  }
-  const projection = project(null, new Error('health categories'), 'runtime-health', evidence)
-  assert.match(
-    projection,
-    /consoleExact404Count=1 consoleExact409ConflictCount=1 consoleFailedResource409OtherCount=1 consoleVueCapturedErrorCount=1 consoleCategoryOtherCount=10 consoleCategoryOtherApiErrorCount=1 consoleCategoryOtherErrorCount=1 consoleCategoryOtherVueWarnCount=1 consoleCategoryOtherUncaughtCount=1 consoleCategoryOtherAccessFetchCount=2 consoleCategoryOtherFailedResourceCount=2 consoleCategoryOtherGenericErrorCount=1 consoleCategoryOtherNonErrorPrefixCount=1 consoleCategoryOther409TokenCount=1 consoleKnownLinkedCount=0 consoleOtherCount=14$/u,
-  )
-  assert.doesNotMatch(projection, /Vite|render|console-other|body-never-print|\[界面错误\]|api-detail|error-detail|warn-detail|uncaught-detail|never-print/u)
-
-  const runner = await import('../../frontend/e2e/run-phase3.mjs')
-  const scenario = 'baseline-lock'
-  const report = playwrightReport([playwrightSpec(scenario, [{
-    results: [{ status: 'failed', errors: [{ message: projection }] }],
-  }])])
-  assert.throws(
-    () => runner.phase3BrowserFailure(report, scenario, ['never-print']),
-    error => error?.message.includes(`scenario=${scenario} ${projection}`),
-  )
-  report.suites[0].specs[0].tests[0].results[0].errors[0].message = projection.replace(
-    'consoleCategoryOtherApiErrorCount=1',
-    'consoleCategoryOtherApiErrorCount=2',
-  )
-  assert.throws(
-    () => runner.phase3BrowserFailure(report, scenario, ['never-print']),
-    error => error?.message.includes('leaf=report-message-unrecognized'),
-  )
-  report.suites[0].specs[0].tests[0].results[0].errors[0].message = projection.replace(
-    'consoleCategoryOther409TokenCount=1',
-    'consoleCategoryOther409TokenCount=11',
-  )
-  assert.throws(
-    () => runner.phase3BrowserFailure(report, scenario, ['never-print']),
-    error => error?.message.includes('leaf=report-message-unrecognized'),
-  )
-})
-
 test('finishRuntime projects six closed audit stages without retaining raw failures for serialization', async () => {
   const source = workspace(SPEC)
   const stageStart = source.indexOf('const AUDIT_STAGES')
@@ -2231,7 +2166,7 @@ test('finishRuntime projects six closed audit stages without retaining raw failu
     assert.equal(
       projected.message,
       stage === 'runtime-health'
-        ? 'category=audit leaf=runtime-health-summary responseFailureCount=0 consoleErrorCount=0 pageErrorCount=0 requestFailureCount=0 apiReadErrorCount=0 requestReadErrorCount=0 forbiddenRequestCount=0 forbiddenResponseCount=0 responseMethod=unavailable responsePath=unavailable responseStatus=unavailable requestMethod=unavailable requestPath=unavailable requestStatus=unavailable readMethod=unavailable readPath=unavailable readStatus=unavailable responseInventory=none unavailableCount=0 inventoryOmittedCount=0 consoleExact404Count=0 consoleExact409ConflictCount=0 consoleFailedResource409OtherCount=0 consoleVueCapturedErrorCount=0 consoleCategoryOtherCount=0 consoleCategoryOtherApiErrorCount=0 consoleCategoryOtherErrorCount=0 consoleCategoryOtherVueWarnCount=0 consoleCategoryOtherUncaughtCount=0 consoleCategoryOtherAccessFetchCount=0 consoleCategoryOtherFailedResourceCount=0 consoleCategoryOtherGenericErrorCount=0 consoleCategoryOtherNonErrorPrefixCount=0 consoleCategoryOther409TokenCount=0 consoleKnownLinkedCount=0 consoleOtherCount=0'
+        ? 'category=audit leaf=runtime-health-summary responseFailureCount=0 consoleErrorCount=0 pageErrorCount=0 requestFailureCount=0 apiReadErrorCount=0 requestReadErrorCount=0 forbiddenRequestCount=0 forbiddenResponseCount=0 responseMethod=unavailable responsePath=unavailable responseStatus=unavailable requestMethod=unavailable requestPath=unavailable requestStatus=unavailable readMethod=unavailable readPath=unavailable readStatus=unavailable responseInventory=none unavailableCount=0 inventoryOmittedCount=0 consoleKnownLinkedCount=0 consoleOtherCount=0'
         : `category=audit leaf=audit-stage stage=${stage} method=unavailable path=unavailable status=unavailable count=1`,
     )
     assert.doesNotMatch(projected.message, /never-print/u)
@@ -2940,10 +2875,14 @@ test('secondary Page console, error, and DOM evidence fail the Phase 3 private a
   const runtime = observePhase3Runtime(main)
   const evidence = await runtime.finish()
   secondaryHandlers.get('console')({ type: () => 'error', text: () => 'Authorization: Bearer console-secret-never-print' })
+  secondaryHandlers.get('console')({ type: () => 'warning', text: () => 'secondary-warning-never-print' })
   secondaryHandlers.get('pageerror')({ message: 'rawProviderOutput=page-secret-never-print' })
   const audited = await runtime.finish()
   assert.ok(evidence.pageContent.includes('secondary-secret-never-print'))
-  assert.ok(audited.consoleErrors.includes('Authorization: Bearer console-secret-never-print'))
+  assert.ok(audited.consoleMessages.includes('error: Authorization: Bearer console-secret-never-print'))
+  assert.ok(audited.consoleErrors.includes('error: Authorization: Bearer console-secret-never-print'))
+  assert.ok(audited.consoleMessages.includes('warning: secondary-warning-never-print'))
+  assert.ok(!audited.consoleErrors.includes('warning: secondary-warning-never-print'))
   assert.ok(audited.pageErrors.includes('rawProviderOutput=page-secret-never-print'))
   const { assertNoPrivateEvidenceMarkers, publicRuntimeDiagnostic } = await import('../../frontend/e2e/runtime-observer.mjs')
   assert.throws(() => assertNoPrivateEvidenceMarkers([

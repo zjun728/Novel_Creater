@@ -314,56 +314,6 @@ function safeLinkedConsoleCounts(evidence, runtimeAuditOptions, responseInventor
   return { knownLinkedCount, otherCount: Math.max(0, consoleErrors.length - knownLinkedCount) }
 }
 
-const FAILED_RESOURCE_409_PREFIX = 'error: Failed to load resource: the server responded with a status of 409'
-const VUE_CAPTURED_ERROR_PREFIX = 'error: [界面错误]'
-
-function safeConsoleCategoryCounts(evidence) {
-  const counts = {
-    exact404Count: 0,
-    exact409ConflictCount: 0,
-    failedResource409OtherCount: 0,
-    vueCapturedErrorCount: 0,
-    otherCount: 0,
-    otherApiErrorCount: 0,
-    otherErrorCount: 0,
-    otherVueWarnCount: 0,
-    otherUncaughtCount: 0,
-    otherAccessFetchCount: 0,
-    otherFailedResourceCount: 0,
-    otherGenericErrorCount: 0,
-    otherNonErrorPrefixCount: 0,
-    other409TokenCount: 0,
-  }
-  for (const message of evidenceItems(evidence?.consoleErrors)) {
-    const value = String(message || '')
-    if (value === CONTRACT_DRAFT_404_MESSAGE) counts.exact404Count += 1
-    else if (value === STALE_BIBLE_CONFIRM_409_MESSAGE) counts.exact409ConflictCount += 1
-    else if (
-      (value === FAILED_RESOURCE_409_PREFIX || value.startsWith(FAILED_RESOURCE_409_PREFIX + ' '))
-      && !/[\r\n]/u.test(value)
-    ) counts.failedResource409OtherCount += 1
-    else if (value === VUE_CAPTURED_ERROR_PREFIX || value.startsWith(VUE_CAPTURED_ERROR_PREFIX + ' ')) {
-      counts.vueCapturedErrorCount += 1
-    } else {
-      counts.otherCount += 1
-      if (value.includes('409')) counts.other409TokenCount += 1
-      if (value.startsWith('error: ApiError')) counts.otherApiErrorCount += 1
-      else if (value.startsWith('error: Error')) counts.otherErrorCount += 1
-      else if (value.startsWith('error: [Vue warn]')) counts.otherVueWarnCount += 1
-      else if (value.startsWith('error: Uncaught')) counts.otherUncaughtCount += 1
-      else if (
-        value.startsWith('error: Access to')
-        || value.startsWith('error: Failed to fetch')
-        || value.startsWith('error: fetch')
-      ) counts.otherAccessFetchCount += 1
-      else if (value.startsWith('error: Failed to load resource')) counts.otherFailedResourceCount += 1
-      else if (value.startsWith('error:')) counts.otherGenericErrorCount += 1
-      else counts.otherNonErrorPrefixCount += 1
-    }
-  }
-  return counts
-}
-
 function firstNon2xxApiResponse(evidence) {
   const response = evidenceItems(evidence?.apiResponses)
     .find(item => Number.isInteger(item?.status) && (item.status < 200 || item.status >= 300))
@@ -415,14 +365,13 @@ function runtimeHealthSummary(evidence, runtimeAuditOptions = null) {
   const read = firstApiReadError(evidence)
   const responseInventory = safeResponseFailureInventory(evidence)
   const consoleCounts = safeLinkedConsoleCounts(evidence, runtimeAuditOptions, responseInventory)
-  const consoleCategories = safeConsoleCategoryCounts(evidence)
   const apiReadErrorCount = apiResponses.reduce((count, item) => (
     count + Number(Boolean(item?.headersReadError)) + Number(Boolean(item?.bodyReadError))
   ), 0)
   const requestReadErrorCount = requests.reduce((count, item) => (
     count + Number(Boolean(item?.headersReadError)) + Number(Boolean(item?.bodyReadError))
   ), 0)
-  return `category=audit leaf=runtime-health-summary responseFailureCount=${evidenceItems(evidence?.responseFailures).length} consoleErrorCount=${evidenceItems(evidence?.consoleErrors).length} pageErrorCount=${evidenceItems(evidence?.pageErrors).length} requestFailureCount=${evidenceItems(evidence?.requestFailures).length} apiReadErrorCount=${apiReadErrorCount} requestReadErrorCount=${requestReadErrorCount} forbiddenRequestCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenRequestCount)} forbiddenResponseCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenResponseCount)} responseMethod=${response.method} responsePath=${response.path} responseStatus=${response.status} requestMethod=${request.method} requestPath=${request.path} requestStatus=${request.status} readMethod=${read.method} readPath=${read.path} readStatus=${read.status} responseInventory=${responseInventory.inventory} unavailableCount=${responseInventory.unavailableCount} inventoryOmittedCount=${responseInventory.inventoryOmittedCount} consoleExact404Count=${consoleCategories.exact404Count} consoleExact409ConflictCount=${consoleCategories.exact409ConflictCount} consoleFailedResource409OtherCount=${consoleCategories.failedResource409OtherCount} consoleVueCapturedErrorCount=${consoleCategories.vueCapturedErrorCount} consoleCategoryOtherCount=${consoleCategories.otherCount} consoleCategoryOtherApiErrorCount=${consoleCategories.otherApiErrorCount} consoleCategoryOtherErrorCount=${consoleCategories.otherErrorCount} consoleCategoryOtherVueWarnCount=${consoleCategories.otherVueWarnCount} consoleCategoryOtherUncaughtCount=${consoleCategories.otherUncaughtCount} consoleCategoryOtherAccessFetchCount=${consoleCategories.otherAccessFetchCount} consoleCategoryOtherFailedResourceCount=${consoleCategories.otherFailedResourceCount} consoleCategoryOtherGenericErrorCount=${consoleCategories.otherGenericErrorCount} consoleCategoryOtherNonErrorPrefixCount=${consoleCategories.otherNonErrorPrefixCount} consoleCategoryOther409TokenCount=${consoleCategories.other409TokenCount} consoleKnownLinkedCount=${consoleCounts.knownLinkedCount} consoleOtherCount=${consoleCounts.otherCount}`
+  return `category=audit leaf=runtime-health-summary responseFailureCount=${evidenceItems(evidence?.responseFailures).length} consoleErrorCount=${evidenceItems(evidence?.consoleErrors).length} pageErrorCount=${evidenceItems(evidence?.pageErrors).length} requestFailureCount=${evidenceItems(evidence?.requestFailures).length} apiReadErrorCount=${apiReadErrorCount} requestReadErrorCount=${requestReadErrorCount} forbiddenRequestCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenRequestCount)} forbiddenResponseCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenResponseCount)} responseMethod=${response.method} responsePath=${response.path} responseStatus=${response.status} requestMethod=${request.method} requestPath=${request.path} requestStatus=${request.status} readMethod=${read.method} readPath=${read.path} readStatus=${read.status} responseInventory=${responseInventory.inventory} unavailableCount=${responseInventory.unavailableCount} inventoryOmittedCount=${responseInventory.inventoryOmittedCount} consoleKnownLinkedCount=${consoleCounts.knownLinkedCount} consoleOtherCount=${consoleCounts.otherCount}`
 }
 
 async function runRuntimeAuditStages(stages) {
@@ -628,9 +577,9 @@ function observePhase3Runtime(page) {
     if (candidate === page || secondaryPages.has(candidate)) return
     secondaryPages.add(candidate)
     candidate.on('console', message => {
-      const text = message.text()
-      if (message.type() === 'error') secondaryConsoleErrors.push(text)
-      else secondaryConsoleMessages.push(text)
+      const rendered = `${message.type()}: ${message.text()}`
+      secondaryConsoleMessages.push(rendered)
+      if (message.type() === 'error') secondaryConsoleErrors.push(rendered)
     })
     candidate.on('pageerror', error => secondaryPageErrors.push(String(error?.message || error)))
   }
