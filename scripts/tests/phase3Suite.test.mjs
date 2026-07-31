@@ -2014,7 +2014,7 @@ test('runtime-health failures emit a closed evidence summary without runtime con
   const projection = project(null, new Error('health never-print'), 'runtime-health', evidence)
   assert.equal(
     projection,
-    'category=audit leaf=runtime-health-summary responseFailureCount=1 consoleErrorCount=1 pageErrorCount=1 requestFailureCount=1 apiReadErrorCount=2 requestReadErrorCount=2 forbiddenRequestCount=2 forbiddenResponseCount=3 responseMethod=GET responsePath=/api/projects/:id/contract-draft responseStatus=500 requestMethod=POST requestPath=/api/projects/:id/seeds requestStatus=unavailable readMethod=GET readPath=/api/projects/:id/contract-draft readStatus=500 responseInventory=GET:/api/projects/:id/contract-draft:500:1 unavailableCount=0 inventoryOmittedCount=0 consoleKnownLinkedCount=0 consoleOtherCount=1',
+    'category=audit leaf=runtime-health-summary responseFailureCount=1 consoleErrorCount=1 pageErrorCount=1 requestFailureCount=1 apiReadErrorCount=2 requestReadErrorCount=2 forbiddenRequestCount=2 forbiddenResponseCount=3 responseMethod=GET responsePath=/api/projects/:id/contract-draft responseStatus=500 requestMethod=POST requestPath=/api/projects/:id/seeds requestStatus=unavailable readMethod=GET readPath=/api/projects/:id/contract-draft readStatus=500 responseInventory=GET:/api/projects/:id/contract-draft:500:1 unavailableCount=0 inventoryOmittedCount=0 consoleExact404Count=0 consoleExact409ConflictCount=0 consoleFailedResource409OtherCount=0 consoleVueCapturedErrorCount=0 consoleCategoryOtherCount=1 consoleKnownLinkedCount=0 consoleOtherCount=1',
   )
   assert.doesNotMatch(projection, /never-print|authorization|127\.0\.0\.1|body|header|url/u)
   assert.equal(
@@ -2087,7 +2087,7 @@ test('runtime-health inventory emits only bounded safe response groups and fixed
   const projection = project(null, new Error('health sentinel'), 'runtime-health', evidence, undefined, options)
   assert.match(
     projection,
-    /responseInventory=GET:\/api\/projects\/:id\/contract-draft:500:1 unavailableCount=3 inventoryOmittedCount=0 consoleKnownLinkedCount=1 consoleOtherCount=1$/u,
+    /responseInventory=GET:\/api\/projects\/:id\/contract-draft:500:1 unavailableCount=3 inventoryOmittedCount=0 consoleExact404Count=0 consoleExact409ConflictCount=0 consoleFailedResource409OtherCount=0 consoleVueCapturedErrorCount=0 consoleCategoryOtherCount=2 consoleKnownLinkedCount=1 consoleOtherCount=1$/u,
   )
   assert.doesNotMatch(projection, /sentinel|body|query|127\.0\.0\.1|untrusted-host|https?:/u)
 
@@ -2135,6 +2135,55 @@ test('runtime-health inventory emits only bounded safe response groups and fixed
   )
 })
 
+test('runtime-health console categories are fixed, exhaustive, and redacted', async () => {
+  const source = workspace(SPEC)
+  const start = source.indexOf('function normalizedRuntimeApiPath')
+  const end = source.indexOf('\nasync function finishRuntime', start)
+  const { publicRuntimeDiagnostic } = await import('../../frontend/e2e/runtime-observer.mjs')
+  const project = new Function(
+    'runtimeFailureDiagnostic', 'publicRuntimeDiagnostic',
+    `${source.slice(start, end)}; return projectPhase3FailureMessage`,
+  )(() => null, publicRuntimeDiagnostic)
+  const resource409Prefix = 'error: Failed to load resource: the server responded with a status of 409'
+  const evidence = {
+    responseFailures: [],
+    consoleErrors: [
+      'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
+      'error: Failed to load resource: the server responded with a status of 409 (Conflict)',
+      `${resource409Prefix} (Vite proxy)`,
+      '[界面错误] {"kind":"render"}',
+      'console-other-never-print',
+      `${resource409Prefix} (Vite proxy)\nbody-never-print`,
+    ],
+    pageErrors: [], requestFailures: [], apiResponses: [], requests: [],
+    networkAccess: { forbiddenRequestCount: 0, forbiddenResponseCount: 0 },
+  }
+  const projection = project(null, new Error('health categories'), 'runtime-health', evidence)
+  assert.match(
+    projection,
+    /consoleExact404Count=1 consoleExact409ConflictCount=1 consoleFailedResource409OtherCount=1 consoleVueCapturedErrorCount=1 consoleCategoryOtherCount=2 consoleKnownLinkedCount=0 consoleOtherCount=6$/u,
+  )
+  assert.doesNotMatch(projection, /Vite|render|console-other|body-never-print|\[界面错误\]/u)
+
+  const runner = await import('../../frontend/e2e/run-phase3.mjs')
+  const scenario = 'baseline-lock'
+  const report = playwrightReport([playwrightSpec(scenario, [{
+    results: [{ status: 'failed', errors: [{ message: projection }] }],
+  }])])
+  assert.throws(
+    () => runner.phase3BrowserFailure(report, scenario, ['never-print']),
+    error => error?.message.includes(`scenario=${scenario} ${projection}`),
+  )
+  report.suites[0].specs[0].tests[0].results[0].errors[0].message = projection.replace(
+    'consoleCategoryOtherCount=2',
+    'consoleCategoryOtherCount=3',
+  )
+  assert.throws(
+    () => runner.phase3BrowserFailure(report, scenario, ['never-print']),
+    error => error?.message.includes('leaf=report-message-unrecognized'),
+  )
+})
+
 test('finishRuntime projects six closed audit stages without retaining raw failures for serialization', async () => {
   const source = workspace(SPEC)
   const stageStart = source.indexOf('const AUDIT_STAGES')
@@ -2166,7 +2215,7 @@ test('finishRuntime projects six closed audit stages without retaining raw failu
     assert.equal(
       projected.message,
       stage === 'runtime-health'
-        ? 'category=audit leaf=runtime-health-summary responseFailureCount=0 consoleErrorCount=0 pageErrorCount=0 requestFailureCount=0 apiReadErrorCount=0 requestReadErrorCount=0 forbiddenRequestCount=0 forbiddenResponseCount=0 responseMethod=unavailable responsePath=unavailable responseStatus=unavailable requestMethod=unavailable requestPath=unavailable requestStatus=unavailable readMethod=unavailable readPath=unavailable readStatus=unavailable responseInventory=none unavailableCount=0 inventoryOmittedCount=0 consoleKnownLinkedCount=0 consoleOtherCount=0'
+        ? 'category=audit leaf=runtime-health-summary responseFailureCount=0 consoleErrorCount=0 pageErrorCount=0 requestFailureCount=0 apiReadErrorCount=0 requestReadErrorCount=0 forbiddenRequestCount=0 forbiddenResponseCount=0 responseMethod=unavailable responsePath=unavailable responseStatus=unavailable requestMethod=unavailable requestPath=unavailable requestStatus=unavailable readMethod=unavailable readPath=unavailable readStatus=unavailable responseInventory=none unavailableCount=0 inventoryOmittedCount=0 consoleExact404Count=0 consoleExact409ConflictCount=0 consoleFailedResource409OtherCount=0 consoleVueCapturedErrorCount=0 consoleCategoryOtherCount=0 consoleKnownLinkedCount=0 consoleOtherCount=0'
         : `category=audit leaf=audit-stage stage=${stage} method=unavailable path=unavailable status=unavailable count=1`,
     )
     assert.doesNotMatch(projected.message, /never-print/u)
