@@ -102,3 +102,11 @@ Task 10 修复及其测试随后一起提交。
 
 Phase 3A 的通过只证明规划聚合地基、代际围栏、事务和正式测试链；不授予
 Phase 3 全阶段、真实模型、产品数据库、正文生成或小说内容质量 Ready。
+
+## 2026-07-31 authority amendment
+
+The A->B->A seed-selection behavior recorded above was valid for the superseded
+Phase 3A contract only. It is not current product authority. The first confirmed
+Seed is now terminal under
+`docs/superpowers/specs/2026-07-31-immutable-boundaries-revision-design.md`;
+new acceptance must prove that a second selection is refused.

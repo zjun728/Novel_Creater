@@ -653,13 +653,15 @@ Use visible product interactions only:
 2. `revision-outline-session`: clone future design, produce R2 while R1 remains
    in history, create an Outline Draft, prove zero Session POST before
    confirmation, confirm Outline, then enter the exact Session.
-3. `unused-outline-supersession`: confirm an Outline without creating a
-   Session, advance Planning Head, and prove the old Outline is read-only
-   superseded.
+3. `baseline-lock`: after first Seed, Contract, and Bible confirmation, the UI
+   exposes no replacement action and direct mutation attempts return the fixed
+   public conflict without changing any head.
 4. `pinned-session`: create a Session, advance Planning Head, refresh Writer,
    and prove the Session retains its historical Planning/Outline pins.
-5. `selection-aba`: select seed A, create downstream Planning/Outline, select
-   B, then A, and prove the old generation never becomes current.
+5. `outline-adjustment-before-finalization`: after a drafting ChapterSession
+   exists, the author adjusts and adopts a new Outline through visible UI;
+   existing prose remains, the old Candidate becomes stale, and a newly saved
+   Candidate is current.
 6. `archived-navigation`: archive from the visible UI, prove Planning and
    Outline are read-only, then back/forward/refresh across all three canonical
    Planning routes.

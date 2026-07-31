@@ -1,5 +1,11 @@
 # Phase 3C Story Blocks and Chapter Outlines 设计
 
+> **2026-07-31 precedence notice:** Where this document permits replacing a
+> confirmed Seed/Bible, treats a drafting ChapterSession as an Outline freeze,
+> or invalidates an adopted Outline merely because Planning Head advances,
+> `docs/superpowers/specs/2026-07-31-immutable-boundaries-revision-design.md`
+> takes precedence.
+
 > 状态：方案 B 已批准；书面规格待作者复核。
 >
 > 基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`。

@@ -1,5 +1,11 @@
 # Novel Creator 写作内核 V1 总体设计
 
+> **2026-07-31 precedence notice:** Where this document permits replacing a
+> confirmed Seed/Bible, treats a drafting ChapterSession as an Outline freeze,
+> or invalidates an adopted Outline merely because Planning Head advances,
+> `docs/superpowers/specs/2026-07-31-immutable-boundaries-revision-design.md`
+> takes precedence.
+
 - 日期：2026-07-11
 - 状态：用户已于 2026-07-11 正式批准，进入分阶段实施计划
 - 唯一代码基线：`4b85e8d`
