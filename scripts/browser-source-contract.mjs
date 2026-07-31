@@ -46,15 +46,15 @@ export function collectBrowserTestDeclarations(source, sourceName) {
   const declarations = []
   walkAst(program, null, null, node => {
     if (node.type !== 'CallExpression') return
-    const modifiers = testCallModifiers(node.callee)
-    if (modifiers === null) return
+    const testCall = testCallModifiers(node.callee)
+    if (testCall === null) return
     const title = getStaticString(node.arguments[0])
-    if (title === null) throw new Error('browser test declaration must have a static title')
-    const callback = node.arguments.find(argument => isFunctionNode(argument))
-    if (!callback) throw new Error('browser test declaration must have a callback')
+    const callback = testDeclarationCallback(node.arguments)
+    if (title === null || !callback) return
+    if (testCall.hasDynamicModifier) throw new Error('browser test declaration modifier must be static')
     declarations.push({
       title,
-      modifiers,
+      modifiers: testCall.modifiers,
       bodySource: source.slice(callback.body.start, callback.body.end),
       calls: collectCallNames(callback.body),
     })
@@ -196,9 +196,13 @@ function testCallModifiers(callee) {
     current = unwrapExpression(current.object)
   }
   if (current?.type !== 'Identifier' || current.name !== 'test') return null
-  if (hasDynamicModifier) throw new Error('browser test declaration modifier must be static')
   if (modifiers.length > 0 && !modifiers.every(modifier => ['only', 'skip', 'fixme', 'fail', 'slow'].includes(modifier))) return null
-  return modifiers
+  return { modifiers, hasDynamicModifier }
+}
+
+function testDeclarationCallback(argumentsList) {
+  const callback = argumentsList.at(-1)
+  return isFunctionNode(callback) ? callback : null
 }
 
 function isFunctionNode(node) {
@@ -233,7 +237,7 @@ function collectCallNames(root) {
 
 function walkAstWithoutNestedFunctions(node, root, visitor) {
   if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
-  if (node !== root && (node.type === 'FunctionDeclaration' || isFunctionNode(node))) return
+  if (node !== root && isNestedExecutionScope(node)) return
   visitor(node)
   for (const [key, value] of Object.entries(node)) {
     if (['comments', 'errors', 'extra', 'loc', 'tokens'].includes(key)) continue
@@ -241,6 +245,11 @@ function walkAstWithoutNestedFunctions(node, root, visitor) {
       for (const child of value) walkAstWithoutNestedFunctions(child, root, visitor)
     } else walkAstWithoutNestedFunctions(value, root, visitor)
   }
+}
+
+function isNestedExecutionScope(node) {
+  return isFunctionNode(node)
+    || ['FunctionDeclaration', 'ObjectMethod', 'ClassDeclaration', 'ClassExpression', 'ClassMethod', 'ClassPrivateMethod'].includes(node?.type)
 }
 
 function assertSafeMember(node, sourceName) {

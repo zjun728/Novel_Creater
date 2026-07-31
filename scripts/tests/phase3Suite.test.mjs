@@ -484,6 +484,13 @@ test('browser source AST exposes every test declaration and bounded function cal
   assert.ok(!helpers.get('runAudited').bodySource.includes('completePhase2PreparationUi'))
   assert.equal(collectBrowserTestDeclarations(`${source}\ntest.only(\"extra: quote\", async () => {})`, SPEC).length, 7)
   assert.equal(collectBrowserTestDeclarations(`${source}\ntest.skip('extra: skip', async () => {})`, SPEC).length, 7)
+  for (const annotation of [
+    'test.slow()',
+    'test.fail()',
+    "test.skip(process.platform === 'win32', 'Windows-only annotation')",
+  ]) {
+    assert.equal(collectBrowserTestDeclarations(`${source}\n${annotation}`, SPEC).length, 6)
+  }
   assert.throws(() => assertSafeBrowserSource('fetch("https://forbidden.invalid")'), /fetch/u)
   assertSafeBrowserGraph('entry.spec.ts', relativePath => ({
     'entry.spec.ts': "import './support.ts'",
@@ -548,6 +555,10 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
   assert.throws(() => assertMapped(source.replace('baseline-lock: the first Seed', 'baseline-lock-removed: the first Seed')))
   assert.throws(() => assertMapped(source.replace('已被后续依据取代', '错放 outcome')))
   assert.throws(() => assertMapped(`${source.replaceAll('toBeDisabled', 'notDisabled')}\nasync function unrelatedEvidence() { return page.toBeDisabled() }`))
+  const directFinish = 'await finishRuntime(runtime, bodyError, writes, runtimeAuditOptions)'
+  assert.throws(() => assertMapped(source.replace(directFinish, `async function neverRuns() { ${directFinish} }`)))
+  assert.throws(() => assertMapped(source.replace(directFinish, `const neverRuns = async () => { ${directFinish} }`)))
+  assert.throws(() => assertMapped(source.replace(directFinish, `class NeverRuns { async audit() { ${directFinish} } }`)))
 })
 
 test('Phase 3 runner stays closed, uses neutral support, and preserves lifecycle failures', async () => {

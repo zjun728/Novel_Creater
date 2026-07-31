@@ -151,6 +151,31 @@ test('public Phase 3 dispatcher removes a developer focus before spawning its cl
   assert.equal(environment.PHASE3_FOCUS_SCENARIO, 'baseline-lock')
 })
 
+test('public Phase 3 dispatcher removes every case variant of a developer focus without mutating its input', () => {
+  const spawns = []
+  const environment = {
+    TEST_MYSQL_HOST: '127.0.0.1', TEST_MYSQL_PORT: '33060',
+    TEST_MYSQL_USER: 'root', TEST_MYSQL_PASSWORD: 'test-only',
+    phase3_focus_scenario: 'foundation-manual-r1',
+    Phase3_Focus_Scenario: 'baseline-lock',
+    PHASE3_FOCUS_SCENARIO: 'archived-navigation',
+  }
+  assert.equal(runSuites(['browser-phase3'], {
+    rootDirectory: repositoryRoot,
+    environment,
+    spawnSyncImpl(_command, _args, options) {
+      spawns.push(options)
+      return { status: 0 }
+    },
+    stderr: { write() {} },
+  }), 0)
+  assert.equal(spawns.length, 1)
+  assert.equal(Object.keys(spawns[0].env).some(key => key.toUpperCase() === 'PHASE3_FOCUS_SCENARIO'), false)
+  assert.equal(environment.phase3_focus_scenario, 'foundation-manual-r1')
+  assert.equal(environment.Phase3_Focus_Scenario, 'baseline-lock')
+  assert.equal(environment.PHASE3_FOCUS_SCENARIO, 'archived-navigation')
+})
+
 test('routes the full Phase 3 browser suite through its closed runner', () => {
   const calls = []
   const exitCode = runSuites(['browser-phase3'], {

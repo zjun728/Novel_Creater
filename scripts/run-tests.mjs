@@ -462,7 +462,9 @@ function writePytestDiagnostic(stderr, code, stage, detail = '') {
 function childEnvironmentForSuite(environment, suite) {
   if (suite !== 'browser-phase3') return environment
   const childEnvironment = { ...environment }
-  delete childEnvironment.PHASE3_FOCUS_SCENARIO
+  for (const key of Object.keys(childEnvironment)) {
+    if (key.toUpperCase() === 'PHASE3_FOCUS_SCENARIO') delete childEnvironment[key]
+  }
   return childEnvironment
 }
 
