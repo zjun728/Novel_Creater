@@ -24,6 +24,7 @@ from backend.domain.seeds import (
 )
 from backend.http_errors import (
     ProjectBusy,
+    SeedAlreadyConfirmed,
     SeedConflict,
     SeedLocked,
     SeedNotFound,
@@ -171,6 +172,7 @@ class SeedService:
         selected: bool,
         referenced: bool,
         has_final_chapters: bool,
+        selection_confirmed: bool = False,
         project_archived: bool = False,
     ) -> SeedMutationCapabilities:
         candidate = status == "candidate"
@@ -179,10 +181,12 @@ class SeedService:
         capabilities = SeedMutationCapabilities(
             referenced=referenced,
             hasFinalChapters=has_final_chapters,
-            canEdit=candidate and not history_locked,
-            canSelect=candidate and not has_final_chapters,
-            canArchive=candidate and not selected,
-            canRestore=archived and not selected,
+            canEdit=candidate and not history_locked and not selection_confirmed,
+            canSelect=(
+                candidate and not has_final_chapters and not selection_confirmed
+            ),
+            canArchive=candidate and not selected and not referenced,
+            canRestore=archived and not selected and not selection_confirmed,
             canPermanentlyDelete=not selected and not referenced,
         )
         if not project_archived:
@@ -205,6 +209,7 @@ class SeedService:
         selection_revision: int | None = None,
         referenced: bool = False,
         has_final_chapters: bool = False,
+        selection_confirmed: bool = False,
         project_archived: bool = False,
     ) -> SeedResult:
         selected = (
@@ -231,6 +236,7 @@ class SeedService:
                 selected=selected,
                 referenced=referenced,
                 has_final_chapters=has_final_chapters,
+                selection_confirmed=selection_confirmed,
                 project_archived=project_archived,
             ),
         )
@@ -393,6 +399,8 @@ class SeedService:
                 session, command.project_id
             )
             selection_revision = _selection_revision(selection)
+            if selection is not None:
+                raise SeedAlreadyConfirmed()
             provenance = await self._resolve_provenance(
                 session,
                 command.project_id,
@@ -436,6 +444,7 @@ class SeedService:
                         selection_revision=selection_revision,
                         referenced=referenced,
                         has_final_chapters=has_final_chapters,
+                        selection_confirmed=False,
                     )
             revision_id = self.id_factory()
             now = self.clock()
@@ -472,6 +481,7 @@ class SeedService:
                 selected=False,
                 referenced=False,
                 has_final_chapters=has_final_chapters,
+                selection_confirmed=False,
             ),
         )
 
@@ -500,6 +510,8 @@ class SeedService:
             )
             if _selection_revision(selection) != command.expected_selection_revision:
                 raise SeedConflict()
+            if selection is not None:
+                raise SeedAlreadyConfirmed()
             is_selected = bool(
                 selection and selection["seed_id"] == command.seed_id
             )
@@ -541,26 +553,6 @@ class SeedService:
                 },
             )
             selection_revision = _selection_revision(selection)
-            if is_selected:
-                selection_revision += 1
-                selection_row = {
-                    "project_id": command.project_id,
-                    "seed_id": command.seed_id,
-                    "seed_revision_id": revision_id,
-                    "seed_hash": content_hash,
-                    "selection_revision": selection_revision,
-                    "selected_at": selection["selected_at"],
-                    "updated_at": now,
-                    "expected_selection_revision": selection_revision - 1,
-                }
-                await self.repository.insert_selection_revision(
-                    session, selection_row
-                )
-                changed = await self.repository.advance_selected_revision(
-                    session, selection_row
-                )
-                if changed is False:
-                    raise SeedConflict()
         return SeedResult(
             id=command.seed_id, project_id=command.project_id,
             status=head["status"], revision=revision_number,
@@ -573,6 +565,7 @@ class SeedService:
                 selected=is_selected,
                 referenced=True if is_selected else referenced,
                 has_final_chapters=has_final_chapters,
+                selection_confirmed=False,
             ),
         )
 
@@ -594,6 +587,8 @@ class SeedService:
             current_revision = _selection_revision(selection)
             if current_revision != command.expected_selection_revision:
                 raise SeedConflict()
+            if selection is not None:
+                raise SeedAlreadyConfirmed()
             referenced = bool(
                 await self.repository.dependency_count(
                     session, command.project_id, command.seed_id
@@ -606,6 +601,7 @@ class SeedService:
                 ),
                 referenced=referenced,
                 has_final_chapters=has_final_chapters,
+                selection_confirmed=False,
             )
             if not capabilities.canSelect:
                 raise SeedLocked()
@@ -622,18 +618,14 @@ class SeedService:
                 "expected_selection_revision": current_revision,
             }
             await self.repository.insert_selection_revision(session, row)
-            if selection is None:
-                await self.repository.insert_selection(session, row)
-            else:
-                changed = await self.repository.replace_selection(session, row)
-                if changed is False:
-                    raise SeedConflict()
+            await self.repository.insert_selection(session, row)
         return self._result(
             head,
             is_selected=True,
             selection_revision=new_revision,
             referenced=True,
             has_final_chapters=has_final_chapters,
+            selection_confirmed=True,
         )
 
     async def delete(self, command: DeleteSeed) -> None:
@@ -664,6 +656,7 @@ class SeedService:
                 selected=selected,
                 referenced=bool(dependencies),
                 has_final_chapters=has_final_chapters,
+                selection_confirmed=selection is not None,
             )
             if not capabilities.canPermanentlyDelete:
                 raise SeedLocked()
@@ -701,6 +694,8 @@ class SeedService:
             selection_revision = _selection_revision(selection)
             if selection_revision != command.expected_selection_revision:
                 raise SeedConflict()
+            if target == "candidate" and selection is not None:
+                raise SeedAlreadyConfirmed()
             selected = bool(
                 selection and selection["seed_id"] == command.seed_id
             )
@@ -714,6 +709,7 @@ class SeedService:
                 selected=selected,
                 referenced=referenced,
                 has_final_chapters=has_final_chapters,
+                selection_confirmed=selection is not None,
             )
             permitted = (
                 capabilities.canArchive
@@ -738,6 +734,7 @@ class SeedService:
             selection_revision=selection_revision,
             referenced=referenced,
             has_final_chapters=has_final_chapters,
+            selection_confirmed=selection is not None,
         )
 
     def _connection(self):
@@ -755,6 +752,9 @@ class SeedService:
             else:
                 project_archived = False
             rows = await self.repository.list_heads(session, project_id)
+            selection_confirmed = (
+                await self.repository.read_selection(session, project_id)
+            ) is not None
             has_final_chapters = bool(
                 await self.repository.count_final_chapters(session, project_id)
             )
@@ -770,6 +770,7 @@ class SeedService:
                         row,
                         referenced=referenced,
                         has_final_chapters=has_final_chapters,
+                        selection_confirmed=selection_confirmed,
                         project_archived=project_archived,
                     )
                 )
@@ -807,6 +808,7 @@ class SeedService:
             is_selected=True,
             referenced=referenced,
             has_final_chapters=has_final_chapters,
+            selection_confirmed=True,
             project_archived=project_archived,
         )
         selection_updated_at = selected.get("selection_updated_at")

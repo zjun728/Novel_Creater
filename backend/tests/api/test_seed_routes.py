@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.domain.seeds import SeedMutationCapabilities, SeedPayload
-from backend.http_errors import SeedNotFound
+from backend.http_errors import SeedAlreadyConfirmed, SeedNotFound
 from backend.routers import seeds
 from backend.security.redaction import install_error_handlers
 from backend.services.seeds import (
@@ -50,6 +50,7 @@ def seed_result(revision=1, selection_revision=0):
 class FakeSeedService:
     def __init__(self):
         self.calls = []
+        self.select_count = 0
 
     async def list(self, project_id):
         self.calls.append(("list", project_id))
@@ -92,6 +93,9 @@ class FakeSeedService:
 
     async def select(self, command):
         self.calls.append(("select", command))
+        self.select_count += 1
+        if self.select_count > 1:
+            raise SeedAlreadyConfirmed()
         return seed_result(1, 1)
 
 
@@ -210,6 +214,26 @@ def test_seed_write_requests_forbid_legacy_or_extra_fields():
         },
     )
     assert response.status_code == 422
+
+
+def test_second_seed_selection_returns_stable_public_409_without_private_details():
+    client, _, _ = make_client()
+    request = {
+        "seedId": "seed-1",
+        "expectedSeedRevision": 1,
+        "expectedSelectionRevision": 0,
+    }
+
+    assert client.put("/api/projects/p1/selected-seed", json=request).status_code == 200
+    response = client.put(
+        "/api/projects/p1/selected-seed",
+        json={**request, "expectedSelectionRevision": 1},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "seed_already_confirmed"
+    assert response.json()["message"] == SeedAlreadyConfirmed.message
+    assert "private" not in response.text.lower()
 
 
 def test_selected_seed_unknown_project_returns_exact_public_404():

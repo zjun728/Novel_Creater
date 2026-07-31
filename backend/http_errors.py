@@ -54,6 +54,12 @@ class SeedLocked(PublicDomainError):
     message = "Seed changes are locked after final chapter creation"
 
 
+class SeedAlreadyConfirmed(PublicDomainError):
+    status_code = 409
+    code = "seed_already_confirmed"
+    message = "A project seed has already been confirmed"
+
+
 class BindingNotFound(PublicDomainError):
     status_code = 404
     code = "BindingNotFound"
