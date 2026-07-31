@@ -517,16 +517,22 @@ test('browser source AST exposes every test declaration and bounded function cal
     /static title/u,
   )
   for (const modifier of ['skip', 'slow', 'fail', 'fixme']) {
+    assert.equal(collectBrowserTestDeclarations(`test.${modifier}()`, SPEC).length, 0)
     for (const [condition, descriptions] of [
       ['true', ['', ", 'boolean condition'"]],
       ['runtimeCondition', ['', ", 'identifier condition'"]],
       ['({ browserName }) => browserName === \'webkit\'', ['', ", 'callback condition'"]],
+      ['shouldAnnotate()', [", 'call condition'"]],
+      ['Boolean(shouldAnnotate())', [", 'Boolean call condition'"]],
+      ['await shouldAnnotate()', [", 'await condition'"]],
+      ['runtimeCondition ? true : false', [", 'conditional condition'"]],
     ]) {
       for (const description of descriptions) {
         const annotation = `test.${modifier}(${condition}${description})`
         assert.equal(collectBrowserTestDeclarations(annotation, SPEC).length, 0, annotation)
       }
     }
+    assert.equal(collectBrowserTestDeclarations(`test.${modifier}(dynamicTitle, 'shape annotation')`, SPEC).length, 0)
     const declared = collectBrowserTestDeclarations(`test.${modifier}('declared ${modifier}', declaredBody)`, SPEC)
     assert.equal(declared.length, 1)
     assert.equal(declared[0].title, `declared ${modifier}`)
@@ -538,6 +544,14 @@ test('browser source AST exposes every test declaration and bounded function cal
         )
       }
     }
+    assert.throws(
+      () => collectBrowserTestDeclarations(`test.${modifier}(runtimeCondition, runtimeDescription)`, SPEC),
+      /static title/u,
+    )
+    assert.throws(
+      () => collectBrowserTestDeclarations(`test.${modifier}(runtimeCondition, 'description', extra)`, SPEC),
+      /static title/u,
+    )
   }
   const typedHelpers = collectBrowserFunctionGraph(`
     const castHelper = (async () => {}) as () => Promise<void>
