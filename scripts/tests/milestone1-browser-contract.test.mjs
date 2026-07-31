@@ -1,12 +1,31 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import test from 'node:test'
+import { observeRuntime } from '../../frontend/e2e/runtime-observer.mjs'
 
 const requireFromFrontend = createRequire(
   new URL('../../frontend/package.json', import.meta.url),
 )
 const { parse } = requireFromFrontend('@babel/parser')
+
+class FakeRuntimePage extends EventEmitter {
+  constructor() {
+    super()
+    this.contextEmitter = new EventEmitter()
+  }
+
+  context() {
+    return this.contextEmitter
+  }
+
+  async waitForLoadState() {}
+
+  async content() {
+    return '<main>runtime observer contract</main>'
+  }
+}
 
 const readWorkspaceFile = async relativePath => {
   try {
@@ -85,67 +104,6 @@ const isReceiverCall = (node, receiver, method) => (
   && isIdentifier(node.callee.object, receiver)
   && isIdentifier(node.callee.property, method)
 )
-
-const patternBindsIdentifier = (node, name) => {
-  if (isIdentifier(node, name)) return true
-  if (node?.type === 'ArrayPattern') {
-    return node.elements.some(element => patternBindsIdentifier(element, name))
-  }
-  if (node?.type === 'ObjectPattern') {
-    return node.properties.some(property => (
-      property?.type === 'RestElement'
-        ? patternBindsIdentifier(property.argument, name)
-        : patternBindsIdentifier(property?.value, name)
-    ))
-  }
-  if (node?.type === 'RestElement') return patternBindsIdentifier(node.argument, name)
-  if (node?.type === 'AssignmentPattern') return patternBindsIdentifier(node.left, name)
-  return false
-}
-
-const functionOwnsIdentifier = (functionNode, name) => {
-  if (functionNode.params.some(parameter => patternBindsIdentifier(parameter, name))) {
-    return true
-  }
-  let ownsIdentifier = false
-  const scan = node => {
-    if (!node || typeof node.type !== 'string' || ownsIdentifier) return
-    if (node !== functionNode.body && FUNCTION_LIKE_TYPES.has(node.type)) return
-    if (
-      (node.type === 'VariableDeclarator' && patternBindsIdentifier(node.id, name))
-      || (node.type === 'CatchClause' && patternBindsIdentifier(node.param, name))
-    ) {
-      ownsIdentifier = true
-      return
-    }
-    for (const child of childNodes(node)) scan(child)
-  }
-  scan(functionNode.body)
-  return ownsIdentifier
-}
-
-const observerPageMutations = observer => {
-  const mutations = []
-  const visit = node => {
-    if (!node || typeof node.type !== 'string') return
-    if (FUNCTION_LIKE_TYPES.has(node.type) && functionOwnsIdentifier(node, 'page')) {
-      return
-    }
-    if (
-      (node.type === 'AssignmentExpression' && patternBindsIdentifier(node.left, 'page'))
-      || (node.type === 'UpdateExpression' && patternBindsIdentifier(node.argument, 'page'))
-      || (node.type === 'VariableDeclarator' && patternBindsIdentifier(node.id, 'page'))
-      || (
-        ['ForInStatement', 'ForOfStatement'].includes(node.type)
-        && node.left?.type !== 'VariableDeclaration'
-        && patternBindsIdentifier(node.left, 'page')
-      )
-    ) mutations.push(node)
-    for (const child of childNodes(node)) visit(child)
-  }
-  for (const statement of observer.body.body) visit(statement)
-  return mutations
-}
 
 const drainKind = node => {
   const call = node?.type === 'AwaitExpression' ? node.argument : null
@@ -233,102 +191,6 @@ const assertFinishContract = source => {
   ])
 }
 
-const assertListenerOwnershipContract = source => {
-  const observer = findNamedFunction(source, 'observeRuntime')
-  const expectedAttachments = [
-    ['context', 'request', 'onRequest'],
-    ['context', 'requestfinished', 'onRequestFinished'],
-    ['context', 'response', 'onResponse'],
-    ['page', 'console', 'onConsole'],
-    ['page', 'pageerror', 'onPageError'],
-    ['context', 'requestfailed', 'onRequestFailed'],
-  ]
-  const controlledEvents = new Set(expectedAttachments.map(([, event]) => event))
-  const listenerSignature = node => {
-    if (
-      node?.type !== 'CallExpression'
-      || node.callee?.type !== 'MemberExpression'
-      || node.callee.computed !== false
-      || !isIdentifier(node.callee.property, 'on')
-      || node.arguments[0]?.type !== 'StringLiteral'
-      || !controlledEvents.has(node.arguments[0].value)
-    ) return null
-    return [
-      node.callee.object?.name,
-      node.arguments[0].value,
-      node.arguments[1]?.name,
-    ]
-  }
-  assert.equal(
-    isIdentifier(observer.params[0], 'page'),
-    true,
-    'observeRuntime must receive page as its first parameter',
-  )
-  const contextBindings = []
-  walkAst(observer.body, node => {
-    if (node.type === 'VariableDeclarator' && isIdentifier(node.id, 'context')) {
-      contextBindings.push(node)
-    }
-  })
-  assert.equal(contextBindings.length, 1, 'context must be bound exactly once')
-  const topLevelContextBindings = observer.body.body.flatMap(statement => (
-    statement.type === 'VariableDeclaration' && statement.kind === 'const'
-      ? statement.declarations.filter(declaration => (
-        isIdentifier(declaration.id, 'context')
-        && isPageCall(declaration.init, 'context')
-        && declaration.init.arguments.length === 0
-      ))
-      : []
-  ))
-  assert.deepEqual(
-    topLevelContextBindings,
-    contextBindings,
-    'context must be the top-level const binding from page.context()',
-  )
-  const topLevelAttachmentRecords = observer.body.body.flatMap(statement => (
-    statement.type === 'ExpressionStatement'
-      ? [listenerSignature(statement.expression)]
-        .filter(Boolean)
-        .map(signature => [statement.start, signature])
-      : []
-  ))
-  const topLevelAttachments = topLevelAttachmentRecords.map(([, signature]) => signature)
-  assert.deepEqual(topLevelAttachments, expectedAttachments)
-  assert.equal(
-    contextBindings[0].start < topLevelAttachmentRecords[0][0],
-    true,
-    'context must be bound before listener registration',
-  )
-  const listenerSetupEnd = topLevelAttachmentRecords.at(-1)[0]
-  assert.equal(
-    directExecutionNodes(observer).some(node => (
-      ['ReturnStatement', 'ThrowStatement'].includes(node.type)
-      && node.start < listenerSetupEnd
-    )),
-    false,
-    'listener setup must not be preceded by an abrupt statement',
-  )
-  const pageMutations = observerPageMutations(observer)
-  assert.equal(pageMutations.length, 0, 'page must not be reassigned or updated')
-  const allAttachments = []
-  walkAst(observer.body, node => {
-    const signature = listenerSignature(node)
-    if (signature) allAttachments.push(signature)
-  })
-  assert.deepEqual(allAttachments, expectedAttachments)
-}
-
-const findNamedFunction = (source, functionName) => {
-  const matches = []
-  walkAst(parse(source, { sourceType: 'module' }), node => {
-    if (node.type === 'FunctionDeclaration' && node.id?.name === functionName) {
-      matches.push(node)
-    }
-  })
-  assert.equal(matches.length, 1, `expected one named function: ${functionName}`)
-  return matches[0]
-}
-
 test('Playwright config owns two isolated loopback servers and repository artifacts', async () => {
   const source = await readWorkspaceFile('frontend/playwright.config.ts')
 
@@ -354,12 +216,54 @@ test('M1 browser spec defines exactly two real-page goals with no direct API wri
   assert.doesNotMatch(source, /page\.request|request\.(?:post|put|patch|delete)\s*\(|fetch\s*\(|route\.(?:fulfill|continue)\s*\(/)
 })
 
+test('M1 runtime observer owns network and diagnostic listeners at runtime', async () => {
+  const networkEvents = ['request', 'requestfinished', 'response', 'requestfailed']
+  const diagnosticEvents = ['console', 'pageerror']
+  const page = new FakeRuntimePage()
+  const observer = observeRuntime(page, { quietWindowMs: 1 })
+
+  for (const event of networkEvents) {
+    assert.equal(page.context().listenerCount(event), 1, `${event} belongs to context`)
+    assert.equal(page.listenerCount(event), 0, `${event} must not belong to page`)
+  }
+  for (const event of diagnosticEvents) {
+    assert.equal(page.listenerCount(event), 1, `${event} belongs to page`)
+    assert.equal(page.context().listenerCount(event), 0, `${event} must not belong to context`)
+  }
+  assert.equal(observer.listenersAttached(), true)
+
+  for (const [owner, event] of [
+    ...networkEvents.map(event => [page.context(), event]),
+    ...diagnosticEvents.map(event => [page, event]),
+  ]) {
+    const isolatedPage = new FakeRuntimePage()
+    const isolatedObserver = observeRuntime(isolatedPage, { quietWindowMs: 1 })
+    const isolatedOwner = owner === page ? isolatedPage : isolatedPage.context()
+    isolatedOwner.removeAllListeners(event)
+    assert.equal(isolatedObserver.listenersAttached(), false, `${event} is required`)
+    await isolatedObserver.finish()
+  }
+
+  await observer.finish()
+  for (const event of networkEvents) {
+    assert.equal(page.context().listenerCount(event), 0, `${event} must detach from context`)
+  }
+  for (const event of diagnosticEvents) {
+    assert.equal(page.listenerCount(event), 0, `${event} must detach from page`)
+  }
+})
+
 test('M1 browser spec awaits every API body and rejects runtime failures and leaks', async () => {
   const [source, observer] = await Promise.all([
     readWorkspaceFile('frontend/e2e/milestone1.spec.ts'),
     readWorkspaceFile('frontend/e2e/runtime-observer.mjs'),
   ])
   const combined = `${source}\n${observer}`
+  assert.match(
+    source,
+    /import\s*\{\s*observeRuntime\s*\}\s*from\s*['"]\.\/runtime-observer\.mjs['"]/,
+  )
+  assert.match(source, /observeRuntime\(page\)/)
   const drainCalls = ['Requests', 'ApiBodies', 'Requests', 'ApiBodies']
     .map(kind => `await readBeforeDeadline(() => drainPending${kind}(), deadline, settleTimeoutMessage)`)
     .join('\n')
@@ -375,23 +279,6 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       page.off('console', onConsole)
       page.off('pageerror', onPageError)
       context.off('requestfailed', onRequestFailed)
-    }
-  `
-  const listenerAttachmentFlow = `
-    context.on('request', onRequest)
-    context.on('requestfinished', onRequestFinished)
-    context.on('response', onResponse)
-    page.on('console', onConsole)
-    page.on('pageerror', onPageError)
-    context.on('requestfailed', onRequestFailed)
-  `
-  const listenerOwnerPreamble = `
-    const context = page.context()
-  `
-  const equivalentListenerFormatting = `
-    function observeRuntime ( page ) {
-      const context = page . context ( )
-      ${listenerAttachmentFlow.replaceAll('.', ' . ')}
     }
   `
   const crossFunctionDecoy = `
@@ -445,112 +332,6 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   const throwBeforeCoreFinishDecoy = `
     async function finish() { ${finishFlow.replace('try {', 'try { throw new Error();')} }
   `
-  const wrongListenerReceiverDecoy = `
-    function observeRuntime(page) {
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow.replace("context.on('response'", "page.on('response'")}
-    }
-  `
-  const nestedListenerDecoy = `
-    function observeRuntime(page) {
-      ${listenerOwnerPreamble}
-      const neverCalled = () => { ${listenerAttachmentFlow} }
-    }
-  `
-  const foreignContextListenerDecoy = `
-    function observeRuntime(page) {
-      const context = unrelated.context()
-      ${listenerAttachmentFlow}
-    }
-  `
-  const unboundPageListenerDecoy = `
-    function observeRuntime() {
-      const context = page.context()
-      ${listenerAttachmentFlow}
-    }
-  `
-  const wrongFirstParameterDecoy = `
-    function observeRuntime(options, page) {
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-    }
-  `
-  const earlyReturnListenerDecoy = `
-    function observeRuntime(page) {
-      return
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-    }
-  `
-  const earlyThrowListenerDecoy = `
-    function observeRuntime(page) {
-      throw new Error('unreachable listener setup')
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-    }
-  `
-  const pageReassignmentListenerDecoy = `
-    function observeRuntime(page) {
-      page = unrelated.page()
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-    }
-  `
-  const pageUpdateListenerDecoy = `
-    function observeRuntime(page) {
-      page++
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-    }
-  `
-  const arrayPageAssignmentDecoy = `
-    function observeRuntime(page) {
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-      [page] = [unrelated.page()]
-    }
-  `
-  const variablePageBindingDecoy = `
-    function observeRuntime(page) {
-      var page = unrelated.page()
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-    }
-  `
-  const forOfPageAssignmentDecoy = `
-    function observeRuntime(page) {
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-      for (page of [unrelated.page()]) {}
-    }
-  `
-  const nestedShadowedPageFormatting = `
-    function observeRuntime(page) {
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-      const unrelated = page => { page = unrelatedPage() }
-    }
-  `
-  const nestedFakeContextDecoy = `
-    function observeRuntime(page) {
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-      const neverCalled = () => {
-        const context = unrelated.context()
-        context.on('response', onResponse)
-      }
-    }
-  `
-  const shadowedPageListenerDecoy = `
-    function observeRuntime(page) {
-      ${listenerOwnerPreamble}
-      ${listenerAttachmentFlow}
-      const neverCalled = () => {
-        const page = unrelated.page()
-        page.on('console', onConsole)
-      }
-    }
-  `
   const equivalentFormatting = `
     async  function settle ( ) {
       const ignoredBrace = "}"
@@ -592,9 +373,6 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   }
   assert.match(observer, /new Set\(\)/)
   assert.match(observer, /while\s*\(pendingApiBodies\.size\)/)
-  assert.doesNotThrow(() => assertListenerOwnershipContract(equivalentListenerFormatting))
-  assert.doesNotThrow(() => assertListenerOwnershipContract(nestedShadowedPageFormatting))
-  assert.doesNotThrow(() => assertListenerOwnershipContract(observer))
   assert.doesNotThrow(() => assertSettleContract(equivalentFormatting))
   assert.doesNotThrow(() => assertFinishContract(equivalentFormatting))
   const acceptedDecoys = [
@@ -609,20 +387,6 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     ['conditional finish try', () => assertFinishContract(conditionalFinishDecoy)],
     ['return before finish core', () => assertFinishContract(returnBeforeCoreFinishDecoy)],
     ['throw before finish core', () => assertFinishContract(throwBeforeCoreFinishDecoy)],
-    ['wrong listener receiver', () => assertListenerOwnershipContract(wrongListenerReceiverDecoy)],
-    ['nested listener attachment', () => assertListenerOwnershipContract(nestedListenerDecoy)],
-    ['foreign context listener owner', () => assertListenerOwnershipContract(foreignContextListenerDecoy)],
-    ['unbound page listener owner', () => assertListenerOwnershipContract(unboundPageListenerDecoy)],
-    ['wrong first observer parameter', () => assertListenerOwnershipContract(wrongFirstParameterDecoy)],
-    ['return before listener setup', () => assertListenerOwnershipContract(earlyReturnListenerDecoy)],
-    ['throw before listener setup', () => assertListenerOwnershipContract(earlyThrowListenerDecoy)],
-    ['page reassignment before listener setup', () => assertListenerOwnershipContract(pageReassignmentListenerDecoy)],
-    ['page update before listener setup', () => assertListenerOwnershipContract(pageUpdateListenerDecoy)],
-    ['array page assignment', () => assertListenerOwnershipContract(arrayPageAssignmentDecoy)],
-    ['variable page binding', () => assertListenerOwnershipContract(variablePageBindingDecoy)],
-    ['for-of page assignment', () => assertListenerOwnershipContract(forOfPageAssignmentDecoy)],
-    ['nested fake context listener', () => assertListenerOwnershipContract(nestedFakeContextDecoy)],
-    ['shadowed page listener', () => assertListenerOwnershipContract(shadowedPageListenerDecoy)],
   ].flatMap(([label, verify]) => {
     try {
       verify()
