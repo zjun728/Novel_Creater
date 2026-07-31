@@ -464,8 +464,44 @@ test('Phase 3 spec contains the six ordered UI-only acceptance scenarios', () =>
   assert.doesNotMatch(source, /剧情线/u)
 })
 
-test('the fourteen roadmap outcomes are explicitly mapped to formal browser evidence', () => {
+test('browser source AST exposes every test declaration and bounded function call edges', async () => {
+  const {
+    assertSafeBrowserGraph,
+    assertSafeBrowserSource,
+    collectBrowserTestDeclarations,
+    collectBrowserFunctionGraph,
+  } = await import('../browser-source-contract.mjs')
   const source = workspace(SPEC)
+  const declarations = collectBrowserTestDeclarations(source, SPEC)
+  assert.equal(declarations.length, 6)
+  assert.deepEqual(declarations.map(item => item.title.split(':', 1)[0]), [
+    'foundation-manual-r1', 'revision-outline-session', 'unused-outline-supersession',
+    'pinned-session', 'baseline-lock', 'archived-navigation',
+  ])
+  assert.ok(declarations.every(item => item.modifiers.length === 0 && item.bodySource.includes('runAudited')))
+  const helpers = collectBrowserFunctionGraph(source, SPEC)
+  assert.ok(helpers.get('runAudited').calls.has('finishRuntime'))
+  assert.ok(!helpers.get('runAudited').bodySource.includes('completePhase2PreparationUi'))
+  assert.equal(collectBrowserTestDeclarations(`${source}\ntest.only(\"extra: quote\", async () => {})`, SPEC).length, 7)
+  assert.equal(collectBrowserTestDeclarations(`${source}\ntest.skip('extra: skip', async () => {})`, SPEC).length, 7)
+  assert.throws(() => assertSafeBrowserSource('fetch("https://forbidden.invalid")'), /fetch/u)
+  assertSafeBrowserGraph('entry.spec.ts', relativePath => ({
+    'entry.spec.ts': "import './support.ts'",
+    'support.ts': 'export const evidence = 1',
+  })[relativePath])
+})
+
+test('the fourteen roadmap outcomes are explicitly mapped to formal browser evidence', async () => {
+  const source = workspace(SPEC)
+  const { collectBrowserTestDeclarations, collectBrowserFunctionGraph } = await import('../browser-source-contract.mjs')
+  const expectedTitles = [
+    'foundation-manual-r1: complete Phase 2 UI, manually confirm R1, and show Canon-0 empty text',
+    'revision-outline-session: clone future design, keep R1 history, and create Session only after Outline confirmation',
+    'unused-outline-supersession: confirmed Outline without Session becomes read-only after Planning Head advances',
+    'pinned-session: Session retains historical Planning and Outline pins after Planning Head advances and Writer refreshes',
+    'baseline-lock: the first Seed, Contract, and Bible stay immutable after a visible stale Bible confirmation conflict',
+    'archived-navigation: archive through UI, then back, forward, and refresh all canonical Planning routes read-only',
+  ]
   const outcomes = [
     ['foundation-manual-r1', 'completePhase2PreparationUi', []],
     ['foundation-manual-r1', 'toBeDisabled', ['createManualPlanning']],
@@ -482,32 +518,22 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
     ['foundation-manual-r1', 'network-audit', ['runAudited', 'finishRuntime']],
     ['archived-navigation', 'assertExactWrites', ['runAudited', 'finishRuntime']],
   ]
-  const declarations = text => [...text.matchAll(/test\('([a-z0-9-]+):/gu)].map(match => match[1])
-  const scenarioSlice = (text, scenario) => {
-    const start = text.indexOf(`test('${scenario}:`)
-    const end = text.indexOf("\ntest('", start + 1)
-    return start < 0 ? '' : text.slice(start, end < 0 ? text.length : end)
-  }
-  const helperSlice = (text, helper) => {
-    const start = text.indexOf(`function ${helper}`) >= 0
-      ? text.indexOf(`function ${helper}`)
-      : text.indexOf(`async function ${helper}`)
-    const end = text.indexOf('\nfunction ', start + 1)
-    return start < 0 ? '' : text.slice(start, end < 0 ? text.length : end)
-  }
   const assertMapped = text => {
-    assert.deepEqual(declarations(text), [
-      'foundation-manual-r1', 'revision-outline-session', 'unused-outline-supersession',
-      'pinned-session', 'baseline-lock', 'archived-navigation',
-    ])
+    const declarations = collectBrowserTestDeclarations(text, SPEC)
+    const helpersByName = collectBrowserFunctionGraph(text, SPEC)
+    assert.deepEqual(declarations.map(item => item.title), expectedTitles)
+    assert.ok(declarations.every(item => item.modifiers.length === 0))
     for (const [scenario, evidence, helpers] of outcomes) {
-      const slice = scenarioSlice(text, scenario)
-      const graph = [slice]
-      let caller = slice
+      const declaration = declarations.find(item => item.title.startsWith(`${scenario}:`))
+      assert.ok(declaration, `missing mapped scenario ${scenario}`)
+      const graph = [declaration.bodySource]
+      let caller = declaration.calls
       for (const helper of helpers) {
-        assert.ok(caller.includes(helper), `${scenario} helper graph must call ${helper}`)
-        caller = helperSlice(text, helper)
-        graph.push(caller)
+        assert.ok(caller.has(helper), `${scenario} helper graph must call ${helper}`)
+        const helperNode = helpersByName.get(helper)
+        assert.ok(helperNode, `${scenario} helper graph must define ${helper}`)
+        caller = helperNode.calls
+        graph.push(helperNode.bodySource)
       }
       assert.match(graph.join('\n'), new RegExp(evidence.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
     }
@@ -515,8 +541,13 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
   assert.equal(outcomes.length, 14)
   assertMapped(source)
   assert.throws(() => assertMapped(`${source}\ntest('extra-scenario: mutation', async () => {})`))
-  assert.throws(() => assertMapped(source.replace("test('baseline-lock:", "test('baseline-lock-removed:")))
+  assert.throws(() => assertMapped(`${source}\ntest(\"extra-scenario: double quote\", async () => {})`))
+  assert.throws(() => assertMapped(`${source}\ntest(\`extra-scenario: template\`, async () => {})`))
+  assert.throws(() => assertMapped(source.replace("test('baseline-lock:", "test.only('baseline-lock:")))
+  assert.throws(() => assertMapped(source.replace("test('baseline-lock:", "test.skip('baseline-lock:")))
+  assert.throws(() => assertMapped(source.replace('baseline-lock: the first Seed', 'baseline-lock-removed: the first Seed')))
   assert.throws(() => assertMapped(source.replace('已被后续依据取代', '错放 outcome')))
+  assert.throws(() => assertMapped(`${source.replaceAll('toBeDisabled', 'notDisabled')}\nasync function unrelatedEvidence() { return page.toBeDisabled() }`))
 })
 
 test('Phase 3 runner stays closed, uses neutral support, and preserves lifecycle failures', async () => {
@@ -536,7 +567,8 @@ test('Phase 3 runner stays closed, uses neutral support, and preserves lifecycle
   assert.match(source, /assertSafeFile = assertSafeTextFile/u)
   assert.doesNotMatch(source, /assertSafeFiles\(ownedRoot, sensitiveValues\)/u)
   assert.match(source, /export function auditAndRemovePhase3Root\([\s\S]*?assertArtifacts\(artifactRoot, sensitiveValues\)[\s\S]*?removeRoot\(ownedRoot, OWNED_ROOT_PREFIX\)/u)
-  assert.match(source, /async cleanupRoot\(ownedRoot\) \{[\s\S]*?auditAndRemovePhase3Root\([\s\S]*?removeRoot: ownedRootRemover/u)
+  assert.match(source, /rootAuditor = auditAndRemovePhase3Root/u)
+  assert.match(source, /async cleanupRoot\(ownedRoot\) \{[\s\S]*?rootAuditor\([\s\S]*?removeRoot: ownedRootRemover/u)
 
   const calls = []
   const first = new Error('initialization sentinel')
@@ -2186,6 +2218,91 @@ test('database-name factory failure follows root registration and still cleans t
   assert.deepEqual(events, ['root-factory', 'set-root', 'database-factory', 'remove-root'])
 })
 
+test('runOneScenario preserves attempted cleanup failures without adding a generic resource error', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3.mjs')
+  const runWithAudit = rootAuditor => runner.runOneScenario({
+    spec: 'phase3-story-planning.spec.ts',
+    scenario: 'foundation-manual-r1',
+    environment: {},
+    ownedRootFactory: () => 'novel-creator-phase3-injected-root',
+    ownedRootRemover() {},
+    rootAuditor,
+    lifecycleRunner: async ({ registerRoot, cleanupRoot }) => {
+      registerRoot({ setRoot: value => value })
+      await cleanupRoot('novel-creator-phase3-injected-root')
+    },
+  })
+
+  const deny = new Error('deny only sentinel')
+  await assert.rejects(
+    runWithAudit(() => ({
+      denyAudit: null,
+      denyAuditAttempted: true,
+      rootRemovalAttempted: true,
+      rootRemoved: true,
+      errors: [deny],
+    })),
+    error => error === deny,
+  )
+
+  const removal = new Error('remove only sentinel')
+  await assert.rejects(
+    runWithAudit(() => ({
+      denyAudit: null,
+      denyAuditAttempted: true,
+      rootRemovalAttempted: true,
+      rootRemoved: false,
+      rootRemovalError: removal,
+      errors: [removal],
+    })),
+    error => error === removal,
+  )
+
+  const browser = new Error('browser sentinel')
+  const denyAndRemoval = [new Error('deny sentinel'), new Error('remove sentinel')]
+  await assert.rejects(
+    runner.runOneScenario({
+      spec: 'phase3-story-planning.spec.ts',
+      scenario: 'foundation-manual-r1',
+      environment: {},
+      ownedRootFactory: () => 'novel-creator-phase3-injected-root',
+      ownedRootRemover() {},
+      rootAuditor: () => ({
+        denyAudit: null,
+        denyAuditAttempted: true,
+        rootRemovalAttempted: true,
+        rootRemoved: false,
+        rootRemovalError: denyAndRemoval[1],
+        errors: denyAndRemoval,
+      }),
+      lifecycleRunner: async ({ registerRoot, cleanupRoot }) => {
+        registerRoot({ setRoot: value => value })
+        let cleanupError
+        try { await cleanupRoot('novel-creator-phase3-injected-root') } catch (error) { cleanupError = error }
+        throw new AggregateError([browser, ...cleanupError.errors], 'injected browser and cleanup failures')
+      },
+    }),
+    error => error instanceof AggregateError
+      && error.errors.length === 3
+      && error.errors.includes(browser)
+      && error.errors.includes(denyAndRemoval[0])
+      && error.errors.includes(denyAndRemoval[1]),
+  )
+
+  await assert.rejects(
+    runner.runOneScenario({
+      spec: 'phase3-story-planning.spec.ts',
+      scenario: 'foundation-manual-r1',
+      environment: {},
+      ownedRootFactory: () => 'novel-creator-phase3-injected-root',
+      lifecycleRunner: async ({ registerRoot }) => {
+        registerRoot({ setRoot: value => value })
+      },
+    }),
+    error => error?.message === 'Phase 3 resource audit failed',
+  )
+})
+
 test('unused Outline supersession is bootstrapped through UI and has no Session write', () => {
   const source = workspace(SPEC)
   const start = source.indexOf("test('unused-outline-supersession")
@@ -2503,7 +2620,7 @@ test('Phase 3 runner registers its owned root before database identity or nonce 
   const nonce = runner.indexOf('randomUUID()')
   const setDatabase = runner.indexOf('lifecycle.setDatabase(databaseName)')
   assert.ok(root >= 0 && database > root && nonce > database && setDatabase > nonce)
-  assert.match(runner, /async cleanupRoot\(ownedRoot\) \{[\s\S]*?auditAndRemovePhase3Root\([\s\S]*?removeRoot: ownedRootRemover/u)
+  assert.match(runner, /async cleanupRoot\(ownedRoot\) \{[\s\S]*?rootAuditor\([\s\S]*?removeRoot: ownedRootRemover/u)
 })
 
 test('Phase 3 cleanup audits the deny ledger even when browser execution has already failed', () => {
@@ -2513,7 +2630,7 @@ test('Phase 3 cleanup audits the deny ledger even when browser execution has alr
   const runner = source.slice(start, end)
   const cleanupRoot = runner.slice(runner.indexOf('async cleanupRoot'), runner.indexOf('\n      },\n    })'))
   const auditRoot = source.slice(source.indexOf('export function auditAndRemovePhase3Root'), source.indexOf('\nexport async function exercisePhase3Lifecycle'))
-  assert.match(cleanupRoot, /auditAndRemovePhase3Root\([\s\S]*?denyLedgerPath/u)
+  assert.match(cleanupRoot, /rootAuditor\([\s\S]*?denyLedgerPath/u)
   assert.match(auditRoot, /denyAudit = assertDenyLedger\(readFile\(denyLedgerPath, 'utf8'\)\)/u)
   assert.ok(auditRoot.indexOf('assertDenyLedger') < auditRoot.indexOf('removeRoot'))
   assert.doesNotMatch(runner, /if \(!scenarioError && \(!rootRemoved/u)
@@ -2533,7 +2650,8 @@ test('deny-ledger audit failure survives alongside a browser failure after root 
     removeRoot: () => {},
     rootExists: () => false,
   })
-  assert.equal(audit.denyAuditChecked, true)
+  assert.equal(audit.denyAuditAttempted, true)
+  assert.equal(audit.rootRemovalAttempted, true)
   assert.equal(audit.rootRemoved, true)
   assert.deepEqual(audit.errors, [forbidden])
 
@@ -2647,4 +2765,43 @@ test('secondary Page console, error, and DOM evidence fail the Phase 3 private a
   const projection = project(null, new Error('private audit failed'), 'private-marker', audited)
   assert.equal(projection, 'category=audit leaf=audit-stage stage=private-marker method=unavailable path=unavailable status=unavailable count=1')
   assert.doesNotMatch(projection, /secondary-secret|console-secret|page-secret/u)
+})
+
+test('secondary Page content read failures are closed audit failures without exception disclosure', async () => {
+  const source = workspace(SPEC)
+  const wrapperStart = source.indexOf('function observePhase3Runtime')
+  const wrapperEnd = source.indexOf('\nasync function completePhase2PreparationUi', wrapperStart)
+  const sentinel = 'secondary-content-sentinel-never-print'
+  const context = {
+    pages: () => [main, secondary],
+    on() {},
+  }
+  const main = { context: () => context }
+  const secondary = {
+    on() {},
+    async content() { throw new Error(sentinel) },
+  }
+  const observePhase3Runtime = new Function(
+    'observeRuntime', 'allowedOrigins',
+    `${source.slice(wrapperStart, wrapperEnd)}; return observePhase3Runtime`,
+  )(() => ({
+    async finish() {
+      return {
+        consoleMessages: [], consoleErrors: [], pageErrors: [], pageContent: '<main>primary</main>',
+        responseFailures: [], requestFailures: [], apiResponses: [], requests: [],
+      }
+    },
+  }), [])
+  const evidence = await observePhase3Runtime(main).finish()
+  assert.deepEqual(evidence.pageErrors, ['secondary-page-content-unavailable'])
+  const { assertRuntimeEvidenceHealthy, publicRuntimeDiagnostic } = await import('../../frontend/e2e/runtime-observer.mjs')
+  assert.throws(() => assertRuntimeEvidenceHealthy(evidence), /page errors/u)
+  const projectionStart = source.indexOf('function normalizedRuntimeApiPath')
+  const projectionEnd = source.indexOf('\nasync function finishRuntime', projectionStart)
+  const project = new Function(
+    'runtimeFailureDiagnostic', 'publicRuntimeDiagnostic',
+    `${source.slice(projectionStart, projectionEnd)}; return projectPhase3FailureMessage`,
+  )(() => null, publicRuntimeDiagnostic)
+  const projection = project(null, new Error('content read failure'), 'runtime-health', evidence)
+  assert.doesNotMatch(projection, new RegExp(sentinel, 'u'))
 })

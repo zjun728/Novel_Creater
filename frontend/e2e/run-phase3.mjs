@@ -152,23 +152,41 @@ export function auditAndRemovePhase3Root({
 }) {
   const errors = []
   let denyAudit = null
-  let denyAuditChecked = false
+  let denyAuditAttempted = false
+  let denyAuditError = null
   let rootRemoved = false
+  let rootRemovalAttempted = false
+  let rootRemovalError = null
   try {
     if (denyLedgerPath) {
-      denyAuditChecked = true
+      denyAuditAttempted = true
       denyAudit = assertDenyLedger(readFile(denyLedgerPath, 'utf8'))
     }
-  } catch (error) { errors.push(error) }
+  } catch (error) {
+    denyAuditError = error
+    errors.push(error)
+  }
   try {
     if (artifactRoot) assertArtifacts(artifactRoot, sensitiveValues)
     for (const target of safeAuditPaths) assertSafeFile(target, sensitiveValues)
   } catch (error) { errors.push(error) }
   try {
+    rootRemovalAttempted = true
     removeRoot(ownedRoot, OWNED_ROOT_PREFIX)
     rootRemoved = !rootExists(ownedRoot)
-  } catch (error) { errors.push(error) }
-  return { denyAudit, denyAuditChecked, rootRemoved, errors }
+  } catch (error) {
+    rootRemovalError = error
+    errors.push(error)
+  }
+  return {
+    denyAudit,
+    denyAuditAttempted,
+    denyAuditError,
+    rootRemoved,
+    rootRemovalAttempted,
+    rootRemovalError,
+    errors,
+  }
 }
 
 export async function exercisePhase3Lifecycle({
@@ -584,6 +602,7 @@ export async function runOneScenario({
   ownedRootFactory = createOwnedRoot,
   lifecycleRunner = exercisePhase3Lifecycle,
   ownedRootRemover = removeOwnedRoot,
+  rootAuditor = auditAndRemovePhase3Root,
   portReservationFactory = reserveLocalPort,
   deadlines = DEADLINES,
 }) {
@@ -596,7 +615,10 @@ export async function runOneScenario({
   let databaseRemaining = 1
   let rootRemoved = false
   let denyAudit = null
-  let denyAuditChecked = false
+  let denyAuditAttempted = false
+  let denyAuditError = null
+  let rootRemovalAttempted = false
+  let rootRemovalError = null
   let browserReport = null
   let sensitiveValues = []
   let serverLogSensitiveValues = []
@@ -698,7 +720,7 @@ export async function runOneScenario({
       async cleanupRoot(ownedRoot) {
         // Generated helper and Vite-cache source is infrastructure, not runtime
         // evidence. Audit only retained browser evidence and the deny ledger.
-        const audit = auditAndRemovePhase3Root({
+        const audit = rootAuditor({
           ownedRoot,
           denyLedgerPath,
           artifactRoot,
@@ -707,8 +729,11 @@ export async function runOneScenario({
           removeRoot: ownedRootRemover,
         })
         denyAudit = audit.denyAudit
-        denyAuditChecked = audit.denyAuditChecked
+        denyAuditAttempted = audit.denyAuditAttempted
+        denyAuditError = audit.denyAuditError
         rootRemoved = audit.rootRemoved
+        rootRemovalAttempted = audit.rootRemovalAttempted
+        rootRemovalError = audit.rootRemovalError
         if (audit.errors.length === 1) throw audit.errors[0]
         if (audit.errors.length > 1) throw new AggregateError(audit.errors, 'Phase 3 root audit and cleanup failed')
       },
@@ -723,8 +748,10 @@ export async function runOneScenario({
     errors.push(error)
   }
   if (
-    !rootRemoved
-    || (denyLedgerPath && (!denyAuditChecked || !denyAudit || denyAudit.deniedHttpCount !== 0 || denyAudit.deniedConnectCount !== 0))
+    !rootRemovalAttempted
+    || (!rootRemoved && !rootRemovalError)
+    || (denyLedgerPath && !denyAuditAttempted)
+    || (denyLedgerPath && !denyAuditError && (!denyAudit || denyAudit.deniedHttpCount !== 0 || denyAudit.deniedConnectCount !== 0))
     || (!scenarioError && !browserReport)
   ) errors.push(new Error('Phase 3 resource audit failed'))
   if (errors.length === 1) throw attachPhase3FailureContext(errors[0], scenario)

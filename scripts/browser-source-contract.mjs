@@ -41,6 +41,57 @@ export function assertSafeBrowserSource(source, options = {}) {
   analyzeBrowserSource(source, options.sourceName)
 }
 
+export function collectBrowserTestDeclarations(source, sourceName) {
+  const program = parseBrowserSourceAst(source, sourceName)
+  const declarations = []
+  walkAst(program, null, null, node => {
+    if (node.type !== 'CallExpression') return
+    const modifiers = testCallModifiers(node.callee)
+    if (modifiers === null) return
+    const title = getStaticString(node.arguments[0])
+    if (title === null) throw new Error('browser test declaration must have a static title')
+    const callback = node.arguments.find(argument => isFunctionNode(argument))
+    if (!callback) throw new Error('browser test declaration must have a callback')
+    declarations.push({
+      title,
+      modifiers,
+      bodySource: source.slice(callback.body.start, callback.body.end),
+      calls: collectCallNames(callback.body),
+    })
+  })
+  return declarations
+}
+
+export function collectBrowserFunctionGraph(source, sourceName) {
+  const program = parseBrowserSourceAst(source, sourceName)
+  const functions = new Map()
+  walkAst(program, null, null, node => {
+    const named = namedFunctionNode(node)
+    if (!named) return
+    if (functions.has(named.name)) throw new Error('duplicate browser helper function: ' + named.name)
+    functions.set(named.name, {
+      bodySource: source.slice(named.functionNode.body.start, named.functionNode.body.end),
+      calls: collectDirectCallNames(named.functionNode.body),
+    })
+  })
+  return functions
+}
+
+function parseBrowserSourceAst(source, sourceName) {
+  if (typeof source !== 'string') throw new TypeError('browser source must be a string')
+  try {
+    return parse(source, {
+      allowAwaitOutsideFunction: true,
+      createImportExpressions: true,
+      plugins: ['dynamicImport', 'importAttributes', 'jsx', 'topLevelAwait', 'typescript'],
+      sourceType: 'unambiguous',
+    }).program
+  } catch (error) {
+    const location = sourceName ? ' in ' + sourceName : ''
+    throw new Error('invalid browser source' + location + ': ' + error.message)
+  }
+}
+
 export function assertSafeBrowserGraph(entry, readSource) {
   if (typeof entry !== 'string' || entry.trim() === '') {
     throw new TypeError('browser graph entry must be a non-empty string')
@@ -79,20 +130,7 @@ export function assertSafeBrowserGraph(entry, readSource) {
 }
 
 function analyzeBrowserSource(source, sourceName) {
-  if (typeof source !== 'string') throw new TypeError('browser source must be a string')
-
-  let program
-  try {
-    program = parse(source, {
-      allowAwaitOutsideFunction: true,
-      createImportExpressions: true,
-      plugins: ['dynamicImport', 'importAttributes', 'jsx', 'topLevelAwait', 'typescript'],
-      sourceType: 'unambiguous',
-    }).program
-  } catch (error) {
-    const location = sourceName ? ' in ' + sourceName : ''
-    throw new Error('invalid browser source' + location + ': ' + error.message)
-  }
+  const program = parseBrowserSourceAst(source, sourceName)
 
   const imports = []
   walkAst(program, null, null, (node, parent, key) => {
@@ -145,6 +183,64 @@ function analyzeBrowserSource(source, sourceName) {
     }
   })
   return imports
+}
+
+function testCallModifiers(callee) {
+  const modifiers = []
+  let hasDynamicModifier = false
+  let current = unwrapExpression(callee)
+  while (current?.type === 'MemberExpression' || current?.type === 'OptionalMemberExpression') {
+    const modifier = getStaticMemberProperty(current)
+    if (modifier === null) hasDynamicModifier = true
+    else modifiers.unshift(modifier)
+    current = unwrapExpression(current.object)
+  }
+  if (current?.type !== 'Identifier' || current.name !== 'test') return null
+  if (hasDynamicModifier) throw new Error('browser test declaration modifier must be static')
+  if (modifiers.length > 0 && !modifiers.every(modifier => ['only', 'skip', 'fixme', 'fail', 'slow'].includes(modifier))) return null
+  return modifiers
+}
+
+function isFunctionNode(node) {
+  return ['ArrowFunctionExpression', 'FunctionExpression'].includes(node?.type)
+}
+
+function namedFunctionNode(node) {
+  if (node.type === 'FunctionDeclaration' && node.id?.type === 'Identifier') {
+    return { name: node.id.name, functionNode: node }
+  }
+  if (node.type === 'VariableDeclarator'
+    && node.id?.type === 'Identifier'
+    && isFunctionNode(node.init)) return { name: node.id.name, functionNode: node.init }
+  return null
+}
+
+function collectDirectCallNames(root) {
+  const calls = new Set()
+  walkAstWithoutNestedFunctions(root, root, node => {
+    if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') calls.add(node.callee.name)
+  })
+  return calls
+}
+
+function collectCallNames(root) {
+  const calls = new Set()
+  walkAst(root, null, null, node => {
+    if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') calls.add(node.callee.name)
+  })
+  return calls
+}
+
+function walkAstWithoutNestedFunctions(node, root, visitor) {
+  if (!node || typeof node !== 'object' || typeof node.type !== 'string') return
+  if (node !== root && (node.type === 'FunctionDeclaration' || isFunctionNode(node))) return
+  visitor(node)
+  for (const [key, value] of Object.entries(node)) {
+    if (['comments', 'errors', 'extra', 'loc', 'tokens'].includes(key)) continue
+    if (Array.isArray(value)) {
+      for (const child of value) walkAstWithoutNestedFunctions(child, root, visitor)
+    } else walkAstWithoutNestedFunctions(value, root, visitor)
+  }
 }
 
 function assertSafeMember(node, sourceName) {

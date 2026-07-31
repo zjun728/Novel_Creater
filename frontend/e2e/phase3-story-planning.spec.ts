@@ -560,6 +560,7 @@ function observePhase3Runtime(page) {
   const secondaryConsoleMessages = []
   const secondaryConsoleErrors = []
   const secondaryPageErrors = []
+  let secondaryPageContentUnavailableCount = 0
   function attachPageEvidence(candidate) {
     if (candidate === page || secondaryPages.has(candidate)) return
     secondaryPages.add(candidate)
@@ -577,14 +578,22 @@ function observePhase3Runtime(page) {
     async finish() {
       const evidence = await runtime.finish()
       const secondaryPageContents = await Promise.all([...secondaryPages].map(async candidate => {
-        try { return await candidate.content() } catch { return '' }
+        try { return await candidate.content() } catch {
+          secondaryPageContentUnavailableCount += 1
+          return ''
+        }
       }))
       return {
         ...evidence,
         consoleMessages: [...evidence.consoleMessages, ...secondaryConsoleMessages],
         consoleErrors: [...evidence.consoleErrors, ...secondaryConsoleErrors],
-        pageErrors: [...evidence.pageErrors, ...secondaryPageErrors],
+        pageErrors: [
+          ...evidence.pageErrors,
+          ...secondaryPageErrors,
+          ...Array(secondaryPageContentUnavailableCount).fill('secondary-page-content-unavailable'),
+        ],
         pageContent: [evidence.pageContent, ...secondaryPageContents].join('\n'),
+        secondaryPageContentUnavailableCount,
       }
     },
   }
