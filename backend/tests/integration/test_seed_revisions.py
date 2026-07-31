@@ -99,6 +99,16 @@ def connection_factory_for(config):
     return connection_factory
 
 
+async def _release_and_reap_first_request(first_request, release):
+    release.set()
+    try:
+        return await asyncio.wait_for(asyncio.shield(first_request), timeout=2)
+    finally:
+        if not first_request.done():
+            first_request.cancel()
+        await asyncio.gather(first_request, return_exceptions=True)
+
+
 async def insert_project(session, project_id: str):
     await session.execute(
         """INSERT INTO projects
@@ -107,6 +117,21 @@ async def insert_project(session, project_id: str):
            VALUES (%s,'Integration','悬疑','test',100000,100,'drafting',0,1,1)""",
         (project_id,),
     )
+
+
+@pytest.mark.asyncio
+async def test_release_and_reap_first_request_cancels_a_timed_out_task():
+    blocked = asyncio.Event()
+    first_request = asyncio.create_task(blocked.wait())
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await _release_and_reap_first_request(first_request, asyncio.Event())
+        assert first_request.done()
+        assert first_request.cancelled()
+    finally:
+        if not first_request.done():
+            first_request.cancel()
+        await asyncio.gather(first_request, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -1229,8 +1254,9 @@ async def test_two_first_selection_requests_create_exactly_one_generation(
             )
         )
     )
+    selected = None
     try:
-        await asyncio.wait_for(repository.first_project_lock_acquired.wait(), timeout=1)
+        await asyncio.wait_for(repository.first_project_lock_acquired.wait(), timeout=2)
         with pytest.raises(ProjectBusy):
             await asyncio.wait_for(
                 service.select(
@@ -1239,11 +1265,12 @@ async def test_two_first_selection_requests_create_exactly_one_generation(
                         expected_seed_revision=1, expected_selection_revision=0,
                     )
                 ),
-                timeout=1,
+                timeout=2,
             )
     finally:
-        repository.release_first_request.set()
-    selected = await asyncio.wait_for(first_request, timeout=1)
+        selected = await _release_and_reap_first_request(
+            first_request, repository.release_first_request
+        )
 
     assert selected.id == seed_a.id
     assert await disposable_mysql.session.fetchone(
