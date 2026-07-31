@@ -137,6 +137,40 @@ function assertSafeTextFile(target, sensitiveValues) {
   }
 }
 
+export function auditAndRemovePhase3Root({
+  ownedRoot,
+  denyLedgerPath,
+  artifactRoot,
+  safeAuditPaths,
+  sensitiveValues,
+  readFile = readFileSync,
+  assertDenyLedger = assertDenyProxyLedger,
+  assertArtifacts = assertSafeFiles,
+  assertSafeFile = assertSafeTextFile,
+  removeRoot = removeOwnedRoot,
+  rootExists = existsSync,
+}) {
+  const errors = []
+  let denyAudit = null
+  let denyAuditChecked = false
+  let rootRemoved = false
+  try {
+    if (denyLedgerPath) {
+      denyAuditChecked = true
+      denyAudit = assertDenyLedger(readFile(denyLedgerPath, 'utf8'))
+    }
+  } catch (error) { errors.push(error) }
+  try {
+    if (artifactRoot) assertArtifacts(artifactRoot, sensitiveValues)
+    for (const target of safeAuditPaths) assertSafeFile(target, sensitiveValues)
+  } catch (error) { errors.push(error) }
+  try {
+    removeRoot(ownedRoot, OWNED_ROOT_PREFIX)
+    rootRemoved = !rootExists(ownedRoot)
+  } catch (error) { errors.push(error) }
+  return { denyAudit, denyAuditChecked, rootRemoved, errors }
+}
+
 export async function exercisePhase3Lifecycle({
   registerRoot,
   initialize,
@@ -548,12 +582,13 @@ export async function runOneScenario({
   environment,
   databaseNameFactory = createDatabaseName,
   ownedRootFactory = createOwnedRoot,
+  lifecycleRunner = exercisePhase3Lifecycle,
+  ownedRootRemover = removeOwnedRoot,
   portReservationFactory = reserveLocalPort,
   deadlines = DEADLINES,
 }) {
-  const databaseName = databaseNameFactory()
-  assertDatabaseName(databaseName)
-  const nonce = randomUUID()
+  let databaseName = ''
+  let nonce = ''
   const ports = []
   let root = null
   let databaseCreated = 0
@@ -561,23 +596,28 @@ export async function runOneScenario({
   let databaseRemaining = 1
   let rootRemoved = false
   let denyAudit = null
+  let denyAuditChecked = false
   let browserReport = null
   let sensitiveValues = []
   let serverLogSensitiveValues = []
   let artifactRoot = null
+  let denyLedgerPath = null
   const safeAuditPaths = []
   let scenarioError = null
   try {
-    await exercisePhase3Lifecycle({
+    await lifecycleRunner({
       registerRoot(lifecycle) {
         root = lifecycle.setRoot(ownedRootFactory(OWNED_ROOT_PREFIX))
-        lifecycle.setDatabase(databaseName)
       },
       async initialize(lifecycle) {
+        databaseName = databaseNameFactory()
+        assertDatabaseName(databaseName)
+        nonce = randomUUID()
+        lifecycle.setDatabase(databaseName)
         artifactRoot = path.join(root, 'artifacts')
         mkdirSync(artifactRoot)
         const resultPath = path.join(root, 'browser-result.json')
-        const denyLedgerPath = path.join(root, 'deny-proxy.log')
+        denyLedgerPath = path.join(root, 'deny-proxy.log')
         const viteConfigPath = path.join(root, 'vite.config.mjs')
         const denyProxyPath = path.join(root, 'deny-proxy.cjs')
         const providerPath = path.join(root, 'fake-provider.cjs')
@@ -647,7 +687,6 @@ export async function runOneScenario({
         }
         browserReport = JSON.parse(readFileSync(resultPath, 'utf8'))
         assertFocusedScenarioReport(browserReport, scenario)
-        denyAudit = assertDenyProxyLedger(readFileSync(denyLedgerPath, 'utf8'))
       },
       cleanupServers: server => stopOwnedServer(server, { sensitiveValues: serverLogSensitiveValues, timeoutMs: deadlines.stopMs }),
       cleanupReservations: reservation => reservation.release(),
@@ -659,17 +698,19 @@ export async function runOneScenario({
       async cleanupRoot(ownedRoot) {
         // Generated helper and Vite-cache source is infrastructure, not runtime
         // evidence. Audit only retained browser evidence and the deny ledger.
-        const errors = []
-        try {
-          assertSafeFiles(artifactRoot, sensitiveValues)
-          for (const target of safeAuditPaths) assertSafeTextFile(target, sensitiveValues)
-        } catch (error) { errors.push(error) }
-        try {
-          removeOwnedRoot(ownedRoot, OWNED_ROOT_PREFIX)
-          rootRemoved = !existsSync(ownedRoot)
-        } catch (error) { errors.push(error) }
-        if (errors.length === 1) throw errors[0]
-        if (errors.length > 1) throw new AggregateError(errors, 'Phase 3 root audit and cleanup failed')
+        const audit = auditAndRemovePhase3Root({
+          ownedRoot,
+          denyLedgerPath,
+          artifactRoot,
+          safeAuditPaths,
+          sensitiveValues,
+          removeRoot: ownedRootRemover,
+        })
+        denyAudit = audit.denyAudit
+        denyAuditChecked = audit.denyAuditChecked
+        rootRemoved = audit.rootRemoved
+        if (audit.errors.length === 1) throw audit.errors[0]
+        if (audit.errors.length > 1) throw new AggregateError(audit.errors, 'Phase 3 root audit and cleanup failed')
       },
     })
   } catch (error) {
@@ -677,11 +718,15 @@ export async function runOneScenario({
   }
   const errors = scenarioError ? [scenarioError] : []
   try {
-    assertDatabaseResidue(databaseName, databaseName, { created: databaseCreated, cleaned: databaseCleaned, remaining: databaseRemaining })
+    if (databaseName) assertDatabaseResidue(databaseName, databaseName, { created: databaseCreated, cleaned: databaseCleaned, remaining: databaseRemaining })
   } catch (error) {
     errors.push(error)
   }
-  if (!scenarioError && (!rootRemoved || !browserReport || !denyAudit || denyAudit.deniedHttpCount !== 0 || denyAudit.deniedConnectCount !== 0)) errors.push(new Error('Phase 3 resource audit failed'))
+  if (
+    !rootRemoved
+    || (denyLedgerPath && (!denyAuditChecked || !denyAudit || denyAudit.deniedHttpCount !== 0 || denyAudit.deniedConnectCount !== 0))
+    || (!scenarioError && !browserReport)
+  ) errors.push(new Error('Phase 3 resource audit failed'))
   if (errors.length === 1) throw attachPhase3FailureContext(errors[0], scenario)
   if (errors.length > 1) throw attachPhase3FailureContext(new AggregateError(errors, 'Phase 3 scenario and resource audit failed'), scenario)
   return browserReport

@@ -459,6 +459,13 @@ function writePytestDiagnostic(stderr, code, stage, detail = '') {
   stderr.write(`[${code}] stage=${pytestStageLabel(stage)}${detail}\n`)
 }
 
+function childEnvironmentForSuite(environment, suite) {
+  if (suite !== 'browser-phase3') return environment
+  const childEnvironment = { ...environment }
+  delete childEnvironment.PHASE3_FOCUS_SCENARIO
+  return childEnvironment
+}
+
 export function runSuites(requested, {
   rootDirectory = root,
   spawnSyncImpl = spawnSync,
@@ -521,6 +528,7 @@ export function runSuites(requested, {
               cwd: rootDirectory,
               stdio: 'inherit',
               shell: false,
+              env: childEnvironmentForSuite(environment, suite),
             })
           } catch (error) {
             result = { status: null, error }

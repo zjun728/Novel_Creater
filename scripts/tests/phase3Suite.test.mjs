@@ -467,27 +467,56 @@ test('Phase 3 spec contains the six ordered UI-only acceptance scenarios', () =>
 test('the fourteen roadmap outcomes are explicitly mapped to formal browser evidence', () => {
   const source = workspace(SPEC)
   const outcomes = [
-    ['foundation-manual-r1', 'completePhase2PreparationUi'],
-    ['foundation-manual-r1', 'toBeDisabled'],
-    ['foundation-manual-r1', '新增场景任务'],
-    ['revision-outline-session', '规划修订历史'],
-    ['foundation-manual-r1', '建立空白规划工作稿'],
-    ['revision-outline-session', '预览并确认小纲'],
-    ['revision-outline-session', 'zero Session POST before confirmation'],
-    ['unused-outline-supersession', '已被后续依据取代'],
-    ['pinned-session', 'Planning R1'],
-    ['baseline-lock', '保存冲突：本地编辑仍保留，请重新加载权威版本后再继续。'],
-    ['archived-navigation', 'page.goForward'],
-    ['foundation-manual-r1', '尚无已定稿事实'],
-    ['foundation-manual-r1', 'network-audit'],
-    ['archived-navigation', 'assertExactWrites'],
+    ['foundation-manual-r1', 'completePhase2PreparationUi', []],
+    ['foundation-manual-r1', 'toBeDisabled', ['createManualPlanning']],
+    ['foundation-manual-r1', '新增场景任务', ['createManualPlanning']],
+    ['revision-outline-session', '规划修订历史', []],
+    ['foundation-manual-r1', '建立空白规划工作稿', ['createManualPlanning']],
+    ['revision-outline-session', '预览并确认小纲', ['createOutline']],
+    ['revision-outline-session', 'zero Session POST before confirmation', []],
+    ['unused-outline-supersession', '已被后续依据取代', []],
+    ['pinned-session', 'Planning R1', []],
+    ['baseline-lock', '保存冲突：本地编辑仍保留，请重新加载权威版本后再继续。', ['assertBaselineStaleBibleConfirmUi']],
+    ['archived-navigation', 'page.goForward', []],
+    ['foundation-manual-r1', '尚无已定稿事实', []],
+    ['foundation-manual-r1', 'network-audit', ['runAudited', 'finishRuntime']],
+    ['archived-navigation', 'assertExactWrites', ['runAudited', 'finishRuntime']],
   ]
-  assert.equal(outcomes.length, 14)
-  for (const [scenario, evidence] of outcomes) {
-    const start = source.indexOf(`test('${scenario}`)
-    assert.notEqual(start, -1, `missing mapped scenario ${scenario}`)
-    assert.match(source, new RegExp(evidence.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
+  const declarations = text => [...text.matchAll(/test\('([a-z0-9-]+):/gu)].map(match => match[1])
+  const scenarioSlice = (text, scenario) => {
+    const start = text.indexOf(`test('${scenario}:`)
+    const end = text.indexOf("\ntest('", start + 1)
+    return start < 0 ? '' : text.slice(start, end < 0 ? text.length : end)
   }
+  const helperSlice = (text, helper) => {
+    const start = text.indexOf(`function ${helper}`) >= 0
+      ? text.indexOf(`function ${helper}`)
+      : text.indexOf(`async function ${helper}`)
+    const end = text.indexOf('\nfunction ', start + 1)
+    return start < 0 ? '' : text.slice(start, end < 0 ? text.length : end)
+  }
+  const assertMapped = text => {
+    assert.deepEqual(declarations(text), [
+      'foundation-manual-r1', 'revision-outline-session', 'unused-outline-supersession',
+      'pinned-session', 'baseline-lock', 'archived-navigation',
+    ])
+    for (const [scenario, evidence, helpers] of outcomes) {
+      const slice = scenarioSlice(text, scenario)
+      const graph = [slice]
+      let caller = slice
+      for (const helper of helpers) {
+        assert.ok(caller.includes(helper), `${scenario} helper graph must call ${helper}`)
+        caller = helperSlice(text, helper)
+        graph.push(caller)
+      }
+      assert.match(graph.join('\n'), new RegExp(evidence.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
+    }
+  }
+  assert.equal(outcomes.length, 14)
+  assertMapped(source)
+  assert.throws(() => assertMapped(`${source}\ntest('extra-scenario: mutation', async () => {})`))
+  assert.throws(() => assertMapped(source.replace("test('baseline-lock:", "test('baseline-lock-removed:")))
+  assert.throws(() => assertMapped(source.replace('已被后续依据取代', '错放 outcome')))
 })
 
 test('Phase 3 runner stays closed, uses neutral support, and preserves lifecycle failures', async () => {
@@ -501,11 +530,13 @@ test('Phase 3 runner stays closed, uses neutral support, and preserves lifecycle
   assert.match(source, /\.\/support\/product-runner\.mjs/u)
   assert.match(source, /runOwnedProductLifecycle/u)
   assert.match(source, /export async function exercisePhase3Lifecycle[\s\S]*?return runOwnedProductLifecycle\(/u)
-  assert.match(source, /await exercisePhase3Lifecycle\(\{/u)
-  assert.match(source, /assertSafeFiles\(artifactRoot, sensitiveValues\)/u)
-  assert.match(source, /for \(const target of safeAuditPaths\) assertSafeTextFile\(target, sensitiveValues\)/u)
+  assert.match(source, /lifecycleRunner = exercisePhase3Lifecycle/u)
+  assert.match(source, /await lifecycleRunner\(\{/u)
+  assert.match(source, /assertArtifacts = assertSafeFiles/u)
+  assert.match(source, /assertSafeFile = assertSafeTextFile/u)
   assert.doesNotMatch(source, /assertSafeFiles\(ownedRoot, sensitiveValues\)/u)
-  assert.match(source, /async cleanupRoot\(ownedRoot\) \{[\s\S]*?try \{[\s\S]*?assertSafeFiles\(artifactRoot, sensitiveValues\)[\s\S]*?catch \(error\) \{ errors\.push\(error\) \}[\s\S]*?try \{[\s\S]*?removeOwnedRoot\(ownedRoot, OWNED_ROOT_PREFIX\)/u)
+  assert.match(source, /export function auditAndRemovePhase3Root\([\s\S]*?assertArtifacts\(artifactRoot, sensitiveValues\)[\s\S]*?removeRoot\(ownedRoot, OWNED_ROOT_PREFIX\)/u)
+  assert.match(source, /async cleanupRoot\(ownedRoot\) \{[\s\S]*?auditAndRemovePhase3Root\([\s\S]*?removeRoot: ownedRootRemover/u)
 
   const calls = []
   const first = new Error('initialization sentinel')
@@ -1777,8 +1808,16 @@ test('baseline runtime audit options resolve only after its UI body establishes 
     },
     [],
   )
+  const injectedPage = {
+    context() {
+      return {
+        pages: () => [injectedPage],
+        on() {},
+      }
+    },
+  }
   let bodyCompleted = false
-  await runAudited({}, [], async () => { bodyCompleted = true }, {
+  await runAudited(injectedPage, [], async () => { bodyCompleted = true }, {
     runtimeAuditOptions: () => ({ projectId: 'current-project' }),
   })
   const finishStart = source.indexOf('async function finishRuntime')
@@ -2105,6 +2144,48 @@ test('runner retains the original initialization failure when residue accounting
   )
 })
 
+test('database-name factory failure follows root registration and still cleans the owned root', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3.mjs')
+  const original = new Error('database-name factory sentinel')
+  const events = []
+  await assert.rejects(
+    runner.runOneScenario({
+      spec: 'phase3-story-planning.spec.ts',
+      scenario: 'foundation-manual-r1',
+      environment: {},
+      ownedRootFactory() {
+        events.push('root-factory')
+        return 'novel-creator-phase3-injected-root'
+      },
+      databaseNameFactory() {
+        events.push('database-factory')
+        throw original
+      },
+      lifecycleRunner: async ({ registerRoot, initialize, cleanupRoot }) => {
+        const lifecycle = {
+          setRoot(value) {
+            events.push('set-root')
+            return value
+          },
+          setDatabase(value) {
+            events.push('set-database')
+            return value
+          },
+        }
+        try {
+          registerRoot(lifecycle)
+          await initialize(lifecycle)
+        } finally {
+          await cleanupRoot('novel-creator-phase3-injected-root')
+        }
+      },
+      ownedRootRemover() { events.push('remove-root') },
+    }),
+    error => error === original,
+  )
+  assert.deepEqual(events, ['root-factory', 'set-root', 'database-factory', 'remove-root'])
+})
+
 test('unused Outline supersession is bootstrapped through UI and has no Session write', () => {
   const source = workspace(SPEC)
   const start = source.indexOf("test('unused-outline-supersession")
@@ -2410,4 +2491,160 @@ test('archived navigation proves three canonical Planning routes stay read-only 
     'archive response waiter must be registered before its UI click',
   )
 
+})
+
+test('Phase 3 runner registers its owned root before database identity or nonce initialization', () => {
+  const source = workspace(RUNNER)
+  const start = source.indexOf('export async function runOneScenario')
+  const end = source.indexOf('\nexport async function runPhase3', start)
+  const runner = source.slice(start, end)
+  const root = runner.indexOf('lifecycle.setRoot(ownedRootFactory(OWNED_ROOT_PREFIX))')
+  const database = runner.indexOf('databaseNameFactory()')
+  const nonce = runner.indexOf('randomUUID()')
+  const setDatabase = runner.indexOf('lifecycle.setDatabase(databaseName)')
+  assert.ok(root >= 0 && database > root && nonce > database && setDatabase > nonce)
+  assert.match(runner, /async cleanupRoot\(ownedRoot\) \{[\s\S]*?auditAndRemovePhase3Root\([\s\S]*?removeRoot: ownedRootRemover/u)
+})
+
+test('Phase 3 cleanup audits the deny ledger even when browser execution has already failed', () => {
+  const source = workspace(RUNNER)
+  const start = source.indexOf('export async function runOneScenario')
+  const end = source.indexOf('\nexport async function runPhase3', start)
+  const runner = source.slice(start, end)
+  const cleanupRoot = runner.slice(runner.indexOf('async cleanupRoot'), runner.indexOf('\n      },\n    })'))
+  const auditRoot = source.slice(source.indexOf('export function auditAndRemovePhase3Root'), source.indexOf('\nexport async function exercisePhase3Lifecycle'))
+  assert.match(cleanupRoot, /auditAndRemovePhase3Root\([\s\S]*?denyLedgerPath/u)
+  assert.match(auditRoot, /denyAudit = assertDenyLedger\(readFile\(denyLedgerPath, 'utf8'\)\)/u)
+  assert.ok(auditRoot.indexOf('assertDenyLedger') < auditRoot.indexOf('removeRoot'))
+  assert.doesNotMatch(runner, /if \(!scenarioError && \(!rootRemoved/u)
+})
+
+test('deny-ledger audit failure survives alongside a browser failure after root cleanup', async () => {
+  const runner = await import('../../frontend/e2e/run-phase3.mjs')
+  const forbidden = new Error('deny ledger sentinel')
+  const audit = runner.auditAndRemovePhase3Root({
+    ownedRoot: 'novel-creator-phase3-injected-root',
+    denyLedgerPath: 'deny-ledger',
+    artifactRoot: null,
+    safeAuditPaths: [],
+    sensitiveValues: [],
+    readFile: () => 'forbidden request',
+    assertDenyLedger: () => { throw forbidden },
+    removeRoot: () => {},
+    rootExists: () => false,
+  })
+  assert.equal(audit.denyAuditChecked, true)
+  assert.equal(audit.rootRemoved, true)
+  assert.deepEqual(audit.errors, [forbidden])
+
+  const browserFailure = new Error('browser failure sentinel')
+  const cleanupFailure = new AggregateError(audit.errors, 'Phase 3 root audit and cleanup failed')
+  await assert.rejects(
+    runner.exercisePhase3Lifecycle({
+      registerRoot(lifecycle) { lifecycle.setRoot('novel-creator-phase3-injected-root') },
+      initialize() { throw browserFailure },
+      cleanupServers() {},
+      cleanupReservations() {},
+      cleanupDatabase() {},
+      cleanupRoot() { throw cleanupFailure },
+    }),
+    error => error instanceof AggregateError
+      && error.errors.includes(browserFailure)
+      && error.errors.includes(cleanupFailure)
+      && cleanupFailure.errors.includes(forbidden),
+  )
+})
+
+test('archived volumes proves read-only state again after a settled reload', () => {
+  const source = workspace(SPEC)
+  const slice = (stage, nextStage) => {
+    const start = source.indexOf(`runScenarioStage('archived-navigation', '${stage}'`)
+    const end = source.indexOf(`runScenarioStage('archived-navigation', '${nextStage}'`, start)
+    return source.slice(start, end)
+  }
+  const volumes = slice('volumes-readonly', 'plots-navigation')
+  const firstGoto = volumes.indexOf('await page.goto(volumes())')
+  const firstSettle = volumes.indexOf('await settleNavigationBoundary(page, runtime)', firstGoto)
+  const reload = volumes.indexOf('await page.reload()', firstSettle)
+  const secondSettle = volumes.indexOf('await settleNavigationBoundary(page, runtime)', reload)
+  const readonlyAgain = volumes.indexOf("getByRole('button', { name: '建立空白规划工作稿' })).toHaveCount(0)", secondSettle)
+  assert.ok(firstGoto >= 0 && firstSettle > firstGoto && reload > firstSettle && secondSettle > reload && readonlyAgain > secondSettle)
+
+  const plots = slice('plots-navigation', 'browser-history')
+  assert.match(plots, /getByRole\('link', \{ name: '情节线', exact: true \}\)\.click\(\)/u)
+  assert.match(plots, /toHaveURL\(new RegExp\(`\$\{plots\(\)\}\$`, 'u'\)\)/u)
+  assert.match(plots, /只读状态；可以查阅正文规划与历史/u)
+
+  const history = slice('browser-history', 'blocks-readonly')
+  assert.match(history, /await page\.goBack\(\)[\s\S]*?\$\{volumes\(\)\}\$/u)
+  assert.match(history, /await page\.goForward\(\)[\s\S]*?\$\{plots\(\)\}\$/u)
+  assert.match(history, /await page\.reload\(\)[\s\S]*?只读状态；可以查阅正文规划与历史/u)
+
+  const blocks = slice('blocks-readonly', 'missing-stage')
+  assert.match(blocks, /getByRole\('link', \{ name: '故事块', exact: true \}\)\.click\(\)/u)
+  assert.match(blocks, /toHaveURL\(new RegExp\(`\$\{blocks\(\)\}\$`, 'u'\)\)/u)
+  assert.match(blocks, /await page\.goBack\(\)[\s\S]*?\$\{plots\(\)\}\$/u)
+  assert.match(blocks, /await page\.goForward\(\)[\s\S]*?\$\{blocks\(\)\}\$/u)
+  assert.match(blocks, /await page\.reload\(\)[\s\S]*?当前小纲为只读权威记录/u)
+  assert.match(blocks, /await settleNavigationBoundary\(page, runtime\)/u)
+})
+
+test('Phase 3 runtime wrapper attaches page-only audits to every context page without duplicating network listeners', () => {
+  const source = workspace(SPEC)
+  const start = source.indexOf('async function runAudited')
+  const end = source.indexOf('\nasync function completePhase2PreparationUi', start)
+  const runAudited = source.slice(start, end)
+  assert.match(source, /function observePhase3Runtime\(page\)/u)
+  assert.match(source, /context\.on\('page', attachPageEvidence\)/u)
+  assert.match(source, /secondaryPageContents/u)
+  assert.match(runAudited, /const runtime = observePhase3Runtime\(page\)/u)
+  assert.doesNotMatch(source, /context\.on\('response', onSecondary/u)
+})
+
+test('secondary Page console, error, and DOM evidence fail the Phase 3 private audit without entering diagnostics', async () => {
+  const source = workspace(SPEC)
+  const wrapperStart = source.indexOf('function observePhase3Runtime')
+  const wrapperEnd = source.indexOf('\nasync function completePhase2PreparationUi', wrapperStart)
+  const handlers = new Map()
+  const secondaryHandlers = new Map()
+  const context = {
+    pages: () => [main, secondary],
+    on(event, listener) { handlers.set(event, listener) },
+  }
+  const main = { context: () => context }
+  const secondary = {
+    on(event, listener) { secondaryHandlers.set(event, listener) },
+    async content() { return '<main>apiKey=secondary-secret-never-print</main>' },
+  }
+  const observePhase3Runtime = new Function(
+    'observeRuntime', 'allowedOrigins',
+    `${source.slice(wrapperStart, wrapperEnd)}; return observePhase3Runtime`,
+  )(() => ({
+    async finish() {
+      return {
+        consoleMessages: [], consoleErrors: [], pageErrors: [], pageContent: '<main>primary</main>',
+      }
+    },
+  }), [])
+  const runtime = observePhase3Runtime(main)
+  const evidence = await runtime.finish()
+  secondaryHandlers.get('console')({ type: () => 'error', text: () => 'Authorization: Bearer console-secret-never-print' })
+  secondaryHandlers.get('pageerror')({ message: 'rawProviderOutput=page-secret-never-print' })
+  const audited = await runtime.finish()
+  assert.ok(evidence.pageContent.includes('secondary-secret-never-print'))
+  assert.ok(audited.consoleErrors.includes('Authorization: Bearer console-secret-never-print'))
+  assert.ok(audited.pageErrors.includes('rawProviderOutput=page-secret-never-print'))
+  const { assertNoPrivateEvidenceMarkers, publicRuntimeDiagnostic } = await import('../../frontend/e2e/runtime-observer.mjs')
+  assert.throws(() => assertNoPrivateEvidenceMarkers([
+    ...audited.consoleErrors, ...audited.pageErrors, audited.pageContent,
+  ]))
+  const projectionStart = source.indexOf('function normalizedRuntimeApiPath')
+  const projectionEnd = source.indexOf('\nasync function finishRuntime', projectionStart)
+  const project = new Function(
+    'runtimeFailureDiagnostic', 'publicRuntimeDiagnostic',
+    `${source.slice(projectionStart, projectionEnd)}; return projectPhase3FailureMessage`,
+  )(() => null, publicRuntimeDiagnostic)
+  const projection = project(null, new Error('private audit failed'), 'private-marker', audited)
+  assert.equal(projection, 'category=audit leaf=audit-stage stage=private-marker method=unavailable path=unavailable status=unavailable count=1')
+  assert.doesNotMatch(projection, /secondary-secret|console-secret|page-secret/u)
 })

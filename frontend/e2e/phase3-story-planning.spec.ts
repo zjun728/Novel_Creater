@@ -547,10 +547,47 @@ function assertRuntimeListenersAttached(runtime, stage) {
 }
 
 async function runAudited(page, writes, body, { runtimeAuditOptions = null } = {}) {
-  const runtime = observeRuntime(page, { allowedOrigins })
+  const runtime = observePhase3Runtime(page)
   let bodyError: unknown = null
   try { await body(runtime) } catch (error) { bodyError = error }
   await finishRuntime(runtime, bodyError, writes, runtimeAuditOptions)
+}
+
+function observePhase3Runtime(page) {
+  const runtime = observeRuntime(page, { allowedOrigins })
+  const context = page.context()
+  const secondaryPages = new Set()
+  const secondaryConsoleMessages = []
+  const secondaryConsoleErrors = []
+  const secondaryPageErrors = []
+  function attachPageEvidence(candidate) {
+    if (candidate === page || secondaryPages.has(candidate)) return
+    secondaryPages.add(candidate)
+    candidate.on('console', message => {
+      const text = message.text()
+      if (message.type() === 'error') secondaryConsoleErrors.push(text)
+      else secondaryConsoleMessages.push(text)
+    })
+    candidate.on('pageerror', error => secondaryPageErrors.push(String(error?.message || error)))
+  }
+  for (const candidate of context.pages()) attachPageEvidence(candidate)
+  context.on('page', attachPageEvidence)
+  return {
+    ...runtime,
+    async finish() {
+      const evidence = await runtime.finish()
+      const secondaryPageContents = await Promise.all([...secondaryPages].map(async candidate => {
+        try { return await candidate.content() } catch { return '' }
+      }))
+      return {
+        ...evidence,
+        consoleMessages: [...evidence.consoleMessages, ...secondaryConsoleMessages],
+        consoleErrors: [...evidence.consoleErrors, ...secondaryConsoleErrors],
+        pageErrors: [...evidence.pageErrors, ...secondaryPageErrors],
+        pageContent: [evidence.pageContent, ...secondaryPageContents].join('\n'),
+      }
+    },
+  }
 }
 
 async function completePhase2PreparationUi(page, runtime, { beforeBibleConfirm = null } = {}) {
@@ -1231,7 +1268,6 @@ test('baseline-lock: the first Seed, Contract, and Bible stay immutable after a 
       await page.getByRole('button', { name: '修订历史', exact: true }).click()
       await expect(page.getByText('Revision 1', { exact: true })).toHaveCount(1)
     })
-    await staleBiblePage.close()
   }, { runtimeAuditOptions: () => phase3RuntimeAuditOptions(PROJECT_ID, { allowStaleBibleConfirm409: true, contractDraft404Count: 3 }) })
 })
 
@@ -1266,6 +1302,11 @@ test('archived-navigation: archive through UI, then back, forward, and refresh a
     })
     await runScenarioStage('archived-navigation', 'volumes-readonly', async () => {
       await page.goto(volumes())
+      await settleNavigationBoundary(page, runtime)
+      await expect(page.getByText('当前项目或规划修订为只读状态；可以查阅正文规划与历史，不能克隆、编辑或写入。')).toBeVisible()
+      await expect(page.getByRole('button', { name: '建立空白规划工作稿' })).toHaveCount(0)
+      await page.reload()
+      await settleNavigationBoundary(page, runtime)
       await expect(page.getByText('当前项目或规划修订为只读状态；可以查阅正文规划与历史，不能克隆、编辑或写入。')).toBeVisible()
       await expect(page.getByRole('button', { name: '建立空白规划工作稿' })).toHaveCount(0)
     })
