@@ -1857,6 +1857,7 @@ test('shared Phase 3 audit options admit the linked first contract-draft 404 and
   )('01234567-89ab-cdef-0123-456789abcdef', undefined)
   const contractDraftPath = '/api/projects/01234567-89ab-cdef-0123-456789abcdef/contract-draft'
   const consoleMessage = 'error: Failed to load resource: the server responded with a status of 404 (Not Found)'
+  const staleBibleConsoleMessage = 'error: Failed to load resource: the server responded with a status of 409 (Conflict)'
   assert.deepEqual(auditOptions, {
     responseFailureAllowlist: [{ status: 404, method: 'GET', pathname: contractDraftPath, count: 1 }],
     consoleErrorAllowlist: [{
@@ -1883,6 +1884,7 @@ test('shared Phase 3 audit options admit the linked first contract-draft 404 and
   assert.doesNotThrow(() => assertRuntimeEvidenceHealthy({
     ...validEvidence,
     responseFailures: [...validEvidence.responseFailures, `409 POST http://127.0.0.1:5173${staleBiblePath}`],
+    consoleErrors: [...validEvidence.consoleErrors, staleBibleConsoleMessage],
   }, staleAuditOptions))
   const baselineAuditOptions = new Function(
     'projectId', 'options',
@@ -1895,12 +1897,19 @@ test('shared Phase 3 audit options admit the linked first contract-draft 404 and
     { status: 404, method: 'GET', pathname: contractDraftPath, count: 3 },
     { status: 409, method: 'POST', pathname: staleBiblePath, count: 1 },
   ])
-  assert.deepEqual(baselineAuditOptions.consoleErrorAllowlist, [{
-    message: consoleMessage,
-    count: 3,
-    linkedResponseFailure: { status: 404, method: 'GET', pathname: contractDraftPath },
-  }])
-  assert.doesNotThrow(() => assertRuntimeEvidenceHealthy({
+  assert.deepEqual(baselineAuditOptions.consoleErrorAllowlist, [
+    {
+      message: consoleMessage,
+      count: 3,
+      linkedResponseFailure: { status: 404, method: 'GET', pathname: contractDraftPath },
+    },
+    {
+      message: staleBibleConsoleMessage,
+      count: 1,
+      linkedResponseFailure: { status: 409, method: 'POST', pathname: staleBiblePath },
+    },
+  ])
+  const baselineEvidence = {
     ...validEvidence,
     responseFailures: [
       ...validEvidence.responseFailures,
@@ -1908,8 +1917,25 @@ test('shared Phase 3 audit options admit the linked first contract-draft 404 and
       ...validEvidence.responseFailures,
       `409 POST http://127.0.0.1:5173${staleBiblePath}`,
     ],
+    consoleErrors: [consoleMessage, consoleMessage, consoleMessage, staleBibleConsoleMessage],
+  }
+  assert.doesNotThrow(() => assertRuntimeEvidenceHealthy(baselineEvidence, baselineAuditOptions))
+  assert.throws(() => assertRuntimeEvidenceHealthy({
+    ...baselineEvidence,
     consoleErrors: [consoleMessage, consoleMessage, consoleMessage],
   }, baselineAuditOptions))
+  assert.throws(() => assertRuntimeEvidenceHealthy({
+    ...baselineEvidence,
+    consoleErrors: [...baselineEvidence.consoleErrors, staleBibleConsoleMessage],
+  }, baselineAuditOptions))
+  assert.throws(() => assertRuntimeEvidenceHealthy(baselineEvidence, {
+    ...baselineAuditOptions,
+    consoleErrorAllowlist: baselineAuditOptions.consoleErrorAllowlist.map(rule => (
+      rule.message === staleBibleConsoleMessage
+        ? { ...rule, linkedResponseFailure: { ...rule.linkedResponseFailure, pathname: staleBiblePath + '/other' } }
+        : rule
+    )),
+  }))
   for (const contractDraft404Count of [0, -1, 1.5, 2, 4, '3', Number.NaN]) {
     assert.throws(() => new Function(
       'projectId', 'options',

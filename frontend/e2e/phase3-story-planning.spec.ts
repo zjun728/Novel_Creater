@@ -424,6 +424,7 @@ function projectPhase3FailureMessage(bodyError, auditError, auditStage, evidence
 }
 
 const CONTRACT_DRAFT_404_MESSAGE = 'error: Failed to load resource: the server responded with a status of 404 (Not Found)'
+const STALE_BIBLE_CONFIRM_409_MESSAGE = 'error: Failed to load resource: the server responded with a status of 409 (Conflict)'
 const CONTRACT_DRAFT_404_COUNTS = new Set([1, 3])
 
 function phase3RuntimeAuditOptions(projectId, { allowStaleBibleConfirm409 = false, contractDraft404Count = 1 } = {}) {
@@ -447,15 +448,26 @@ function phase3RuntimeAuditOptions(projectId, { allowStaleBibleConfirm409 = fals
         count: 1,
       }] : []),
     ],
-    consoleErrorAllowlist: [{
-      message: CONTRACT_DRAFT_404_MESSAGE,
-      count: contractDraft404Count,
-      linkedResponseFailure: {
-        status: 404,
-        method: 'GET',
-        pathname: contractDraftPath,
+    consoleErrorAllowlist: [
+      {
+        message: CONTRACT_DRAFT_404_MESSAGE,
+        count: contractDraft404Count,
+        linkedResponseFailure: {
+          status: 404,
+          method: 'GET',
+          pathname: contractDraftPath,
+        },
       },
-    }],
+      ...(allowStaleBibleConfirm409 ? [{
+        message: STALE_BIBLE_CONFIRM_409_MESSAGE,
+        count: 1,
+        linkedResponseFailure: {
+          status: 409,
+          method: 'POST',
+          pathname: staleBibleConfirmPath,
+        },
+      }] : []),
+    ],
   }
 }
 
