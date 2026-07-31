@@ -583,6 +583,29 @@ async def test_confirmation_is_atomic_immutable_and_same_request_replays():
 
 
 @pytest.mark.asyncio
+async def test_successful_bible_replay_keeps_its_original_dto_after_basis_drift():
+    harness = BibleHarness()
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
+    command = ConfirmBible("p1", "stable-replay", saved.draft_version, 0)
+    first = await harness.service.confirm(command)
+    harness.contract_service.heads["p1"] = contract_head(
+        selection_revision=2,
+        seed_id="seed-b",
+        seed_revision_id="seed-revision-b",
+        seed_hash=HASH_D,
+        revision=2,
+        creation_contract_id="creation-b",
+        creation_hash=HASH_E,
+        style_contract_id="style-b",
+        style_hash=HASH_A,
+    )
+
+    assert await harness.service.confirm(command) == first
+
+
+@pytest.mark.asyncio
 async def test_confirmed_bible_is_a_permanent_baseline_but_exact_retry_replays():
     assert hasattr(bibles, "BibleAlreadyConfirmed")
     harness = BibleHarness()
@@ -604,6 +627,27 @@ async def test_confirmed_bible_is_a_permanent_baseline_but_exact_retry_replays()
         with pytest.raises(bibles.BibleAlreadyConfirmed):
             await mutation
     assert harness.repository.heads["p1"]["revision"] == 1
+    assert len(harness.repository.revisions) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirmed_bible_prioritizes_lock_over_missing_basis_and_stale_cas():
+    harness = BibleHarness()
+    saved = await harness.service.save_draft(
+        SaveBibleDraft("p1", 0, bible_payload())
+    )
+    confirmed = await harness.service.confirm(
+        ConfirmBible("p1", "priority-confirm", saved.draft_version, 0)
+    )
+    harness.contract_service.heads["p1"] = None
+
+    with pytest.raises(bibles.BibleAlreadyConfirmed):
+        await harness.service.save_draft(SaveBibleDraft("p1", 99, bible_payload()))
+    with pytest.raises(bibles.BibleAlreadyConfirmed):
+        await harness.service.clone_draft(CloneBibleDraft("p1", source_revision=99))
+    with pytest.raises(bibles.BibleAlreadyConfirmed):
+        await harness.service.confirm(ConfirmBible("p1", "new-key", 99, 99))
+    assert harness.repository.heads["p1"]["revision"] == confirmed.revision
     assert len(harness.repository.revisions) == 1
 
 

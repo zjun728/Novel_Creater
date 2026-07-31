@@ -584,6 +584,13 @@ class ProjectLifecycleService:
         )
         contract = self._contract_status(snapshot, contract_result)
         bible = self._bible_status(snapshot, contract_result)
+        contract_head_revision = int(
+            _value(contract_result, "revision", 0) or 0
+        )
+        bible_head = snapshot.get("bible_head") or {}
+        bible_head_revision = int(
+            bible_head.get("head_revision", bible_head.get("revision", 0)) or 0
+        )
         planning = self._planning_status(snapshot, contract_result)
         planning_operation = self._planning_operation(snapshot)
         outline = self._outline_status(snapshot, planning)
@@ -602,12 +609,14 @@ class ProjectLifecycleService:
         edit_contract = (
             lifecycle == "active"
             and active_selection == "current"
-            and contract != "current"
+            and contract in {"missing", "draft"}
+            and contract_head_revision == 0
         )
         edit_bible = (
             lifecycle == "active"
             and contract == "current"
-            and bible != "current"
+            and bible in {"missing", "draft"}
+            and bible_head_revision == 0
         )
         generate_bible = edit_bible and planning_ready
         reasons = []

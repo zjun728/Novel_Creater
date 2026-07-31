@@ -1489,6 +1489,17 @@ async def test_confirmed_contract_is_a_permanent_baseline():
 
 
 @pytest.mark.asyncio
+async def test_confirmed_contract_clone_beats_a_legacy_active_draft():
+    harness = ContractHarness()
+    saved = await harness.service.save_draft(command(harness))
+    confirmed = await harness.service.confirm(confirmation(saved))
+    harness.repository.drafts["p1"] = {"id": "legacy-active-draft"}
+
+    with pytest.raises(contracts.ContractAlreadyConfirmed):
+        await harness.service.clone_revision("p1", confirmed.revision)
+
+
+@pytest.mark.asyncio
 async def test_confirm_accepts_a_frozen_seed_revision_with_provenance():
     harness = ContractHarness()
     add_seed_provenance(harness)

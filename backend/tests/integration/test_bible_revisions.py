@@ -447,7 +447,7 @@ async def test_bible_write_holds_canonical_corpus_readiness_lock_until_commit(
 
     assert drift_was_blocked is True
     assert confirmed.revision == 1
-    with pytest.raises(BiblePreconditionFailed):
+    with pytest.raises(BibleAlreadyConfirmed):
         await writer.clone_draft(
             CloneBibleDraft(
                 contract.project_id,

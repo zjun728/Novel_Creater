@@ -908,6 +908,34 @@ async def test_confirmed_baselines_close_contract_and_bible_capabilities_only():
     assert missing_bible.bible == "missing"
     assert missing_bible.capabilities.edit_bible is True
 
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            contract_draft={**_selection(), "base_head_revision": 5},
+        ),
+        _contract(),
+    )
+    legacy_contract_draft = await service.preparation("project / 一")
+    assert legacy_contract_draft.contract == "draft"
+    assert legacy_contract_draft.capabilities.edit_contract is False
+
+    service, *_ = _service(
+        _snapshot(
+            selection=_selection(),
+            bible_head=current_bible,
+            bible_draft={
+                "draft_id": "legacy-bible-draft",
+                "base_head_revision": 1,
+                **_bible_basis(),
+            },
+        ),
+        _contract(),
+    )
+    legacy_bible_draft = await service.preparation("project / 一")
+    assert legacy_bible_draft.bible == "draft"
+    assert legacy_bible_draft.capabilities.edit_bible is False
+    assert legacy_bible_draft.capabilities.generate_bible is False
+
     rows = list(_ready_model_tasks())
     rows[0] = {
         **rows[0],
