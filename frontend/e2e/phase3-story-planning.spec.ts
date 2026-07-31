@@ -324,6 +324,15 @@ function safeConsoleCategoryCounts(evidence) {
     failedResource409OtherCount: 0,
     vueCapturedErrorCount: 0,
     otherCount: 0,
+    otherApiErrorCount: 0,
+    otherErrorCount: 0,
+    otherVueWarnCount: 0,
+    otherUncaughtCount: 0,
+    otherAccessFetchCount: 0,
+    otherFailedResourceCount: 0,
+    otherGenericErrorCount: 0,
+    otherNonErrorPrefixCount: 0,
+    other409TokenCount: 0,
   }
   for (const message of evidenceItems(evidence?.consoleErrors)) {
     const value = String(message || '')
@@ -335,7 +344,22 @@ function safeConsoleCategoryCounts(evidence) {
     ) counts.failedResource409OtherCount += 1
     else if (value === VUE_CAPTURED_ERROR_PREFIX || value.startsWith(VUE_CAPTURED_ERROR_PREFIX + ' ')) {
       counts.vueCapturedErrorCount += 1
-    } else counts.otherCount += 1
+    } else {
+      counts.otherCount += 1
+      if (value.includes('409')) counts.other409TokenCount += 1
+      if (value.startsWith('error: ApiError')) counts.otherApiErrorCount += 1
+      else if (value.startsWith('error: Error')) counts.otherErrorCount += 1
+      else if (value.startsWith('error: [Vue warn]')) counts.otherVueWarnCount += 1
+      else if (value.startsWith('error: Uncaught')) counts.otherUncaughtCount += 1
+      else if (
+        value.startsWith('error: Access to')
+        || value.startsWith('error: Failed to fetch')
+        || value.startsWith('error: fetch')
+      ) counts.otherAccessFetchCount += 1
+      else if (value.startsWith('error: Failed to load resource')) counts.otherFailedResourceCount += 1
+      else if (value.startsWith('error:')) counts.otherGenericErrorCount += 1
+      else counts.otherNonErrorPrefixCount += 1
+    }
   }
   return counts
 }
@@ -398,7 +422,7 @@ function runtimeHealthSummary(evidence, runtimeAuditOptions = null) {
   const requestReadErrorCount = requests.reduce((count, item) => (
     count + Number(Boolean(item?.headersReadError)) + Number(Boolean(item?.bodyReadError))
   ), 0)
-  return `category=audit leaf=runtime-health-summary responseFailureCount=${evidenceItems(evidence?.responseFailures).length} consoleErrorCount=${evidenceItems(evidence?.consoleErrors).length} pageErrorCount=${evidenceItems(evidence?.pageErrors).length} requestFailureCount=${evidenceItems(evidence?.requestFailures).length} apiReadErrorCount=${apiReadErrorCount} requestReadErrorCount=${requestReadErrorCount} forbiddenRequestCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenRequestCount)} forbiddenResponseCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenResponseCount)} responseMethod=${response.method} responsePath=${response.path} responseStatus=${response.status} requestMethod=${request.method} requestPath=${request.path} requestStatus=${request.status} readMethod=${read.method} readPath=${read.path} readStatus=${read.status} responseInventory=${responseInventory.inventory} unavailableCount=${responseInventory.unavailableCount} inventoryOmittedCount=${responseInventory.inventoryOmittedCount} consoleExact404Count=${consoleCategories.exact404Count} consoleExact409ConflictCount=${consoleCategories.exact409ConflictCount} consoleFailedResource409OtherCount=${consoleCategories.failedResource409OtherCount} consoleVueCapturedErrorCount=${consoleCategories.vueCapturedErrorCount} consoleCategoryOtherCount=${consoleCategories.otherCount} consoleKnownLinkedCount=${consoleCounts.knownLinkedCount} consoleOtherCount=${consoleCounts.otherCount}`
+  return `category=audit leaf=runtime-health-summary responseFailureCount=${evidenceItems(evidence?.responseFailures).length} consoleErrorCount=${evidenceItems(evidence?.consoleErrors).length} pageErrorCount=${evidenceItems(evidence?.pageErrors).length} requestFailureCount=${evidenceItems(evidence?.requestFailures).length} apiReadErrorCount=${apiReadErrorCount} requestReadErrorCount=${requestReadErrorCount} forbiddenRequestCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenRequestCount)} forbiddenResponseCount=${closedEvidenceCount(evidence?.networkAccess?.forbiddenResponseCount)} responseMethod=${response.method} responsePath=${response.path} responseStatus=${response.status} requestMethod=${request.method} requestPath=${request.path} requestStatus=${request.status} readMethod=${read.method} readPath=${read.path} readStatus=${read.status} responseInventory=${responseInventory.inventory} unavailableCount=${responseInventory.unavailableCount} inventoryOmittedCount=${responseInventory.inventoryOmittedCount} consoleExact404Count=${consoleCategories.exact404Count} consoleExact409ConflictCount=${consoleCategories.exact409ConflictCount} consoleFailedResource409OtherCount=${consoleCategories.failedResource409OtherCount} consoleVueCapturedErrorCount=${consoleCategories.vueCapturedErrorCount} consoleCategoryOtherCount=${consoleCategories.otherCount} consoleCategoryOtherApiErrorCount=${consoleCategories.otherApiErrorCount} consoleCategoryOtherErrorCount=${consoleCategories.otherErrorCount} consoleCategoryOtherVueWarnCount=${consoleCategories.otherVueWarnCount} consoleCategoryOtherUncaughtCount=${consoleCategories.otherUncaughtCount} consoleCategoryOtherAccessFetchCount=${consoleCategories.otherAccessFetchCount} consoleCategoryOtherFailedResourceCount=${consoleCategories.otherFailedResourceCount} consoleCategoryOtherGenericErrorCount=${consoleCategories.otherGenericErrorCount} consoleCategoryOtherNonErrorPrefixCount=${consoleCategories.otherNonErrorPrefixCount} consoleCategoryOther409TokenCount=${consoleCategories.other409TokenCount} consoleKnownLinkedCount=${consoleCounts.knownLinkedCount} consoleOtherCount=${consoleCounts.otherCount}`
 }
 
 async function runRuntimeAuditStages(stages) {
