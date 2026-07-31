@@ -643,9 +643,6 @@ class SeedService:
                 raise SeedNotFound()
             if int(head["revision"]) != command.expected_seed_revision:
                 raise SeedConflict()
-            selection = await self.repository.lock_selection(
-                session, command.project_id
-            )
             if _selection_revision(selection) != command.expected_selection_revision:
                 raise SeedConflict()
             selected = bool(

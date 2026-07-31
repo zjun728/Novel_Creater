@@ -1044,3 +1044,21 @@ async def test_confirmed_selection_precedes_stale_seed_and_selection_cas_errors(
                 expected_selection_revision=0,
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_delete_locks_project_selection_once():
+    harness = Harness()
+    seed = await harness.service.create(CreateSeed(project_id="p1", payload=payload()))
+    harness.repo.events.clear()
+
+    await harness.service.delete(
+        DeleteSeed(
+            project_id="p1",
+            seed_id=seed.id,
+            expected_seed_revision=1,
+            expected_selection_revision=0,
+        )
+    )
+
+    assert harness.repo.events.count("selection") == 1

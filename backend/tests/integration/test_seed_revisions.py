@@ -1181,8 +1181,22 @@ async def test_second_selection_keeps_first_selection_head_and_single_ledger_row
 async def test_two_first_selection_requests_create_exactly_one_generation(
     disposable_mysql,
 ):
+    class FirstProjectLockBarrierRepository(SeedRepository):
+        def __init__(self):
+            self.first_project_lock_acquired = asyncio.Event()
+            self.release_first_request = asyncio.Event()
+            self._first_lock = True
+
+        async def lock_project(self, session, project_id):
+            project = await super().lock_project(session, project_id)
+            if self._first_lock:
+                self._first_lock = False
+                self.first_project_lock_acquired.set()
+                await self.release_first_request.wait()
+            return project
+
     await insert_project(disposable_mysql.session, "p1")
-    service = SeedService(
+    setup_service = SeedService(
         SeedRepository(),
         transaction_factory=transaction_factory_for(
             disposable_mysql.connection_config
@@ -1191,30 +1205,47 @@ async def test_two_first_selection_requests_create_exactly_one_generation(
             disposable_mysql.connection_config
         ),
     )
-    seed_a = await service.create(CreateSeed(project_id="p1", payload=payload("A")))
-    seed_b = await service.create(CreateSeed(project_id="p1", payload=payload("B")))
-
-    outcomes = await asyncio.gather(
+    seed_a = await setup_service.create(
+        CreateSeed(project_id="p1", payload=payload("A"))
+    )
+    seed_b = await setup_service.create(
+        CreateSeed(project_id="p1", payload=payload("B"))
+    )
+    repository = FirstProjectLockBarrierRepository()
+    service = SeedService(
+        repository,
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    first_request = asyncio.create_task(
         service.select(
             SelectSeed(
                 project_id="p1", seed_id=seed_a.id,
                 expected_seed_revision=1, expected_selection_revision=0,
             )
-        ),
-        service.select(
-            SelectSeed(
-                project_id="p1", seed_id=seed_b.id,
-                expected_seed_revision=1, expected_selection_revision=0,
-            )
-        ),
-        return_exceptions=True,
+        )
     )
+    try:
+        await asyncio.wait_for(repository.first_project_lock_acquired.wait(), timeout=1)
+        with pytest.raises(ProjectBusy):
+            await asyncio.wait_for(
+                service.select(
+                    SelectSeed(
+                        project_id="p1", seed_id=seed_b.id,
+                        expected_seed_revision=1, expected_selection_revision=0,
+                    )
+                ),
+                timeout=1,
+            )
+    finally:
+        repository.release_first_request.set()
+    selected = await asyncio.wait_for(first_request, timeout=1)
 
-    successful = [item for item in outcomes if not isinstance(item, BaseException)]
-    rejected = [item for item in outcomes if isinstance(item, BaseException)]
-    assert len(successful) == 1
-    assert len(rejected) == 1
-    assert isinstance(rejected[0], (SeedAlreadyConfirmed, ProjectBusy))
+    assert selected.id == seed_a.id
     assert await disposable_mysql.session.fetchone(
         "SELECT COUNT(*) AS count FROM project_selected_seeds WHERE project_id='p1'"
     ) == {"count": 1}
