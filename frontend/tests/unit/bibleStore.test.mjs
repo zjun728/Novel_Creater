@@ -53,6 +53,35 @@ test('archived and backend capability denial prevent all writes before transport
   })
 })
 
+test('a same-project authority refresh failure fails closed over a formerly writable draft', async () => {
+  let refreshFails = false
+  let writes = 0
+  await withFetch(async (url, options = {}) => {
+    const path = new URL(String(url)).pathname
+    if (options.method !== 'GET') writes += 1
+    if (refreshFails && path.endsWith('/bible/head')) return response({ code: 'BibleUnavailable' }, 503)
+    return response(path.endsWith('/head') ? head('project-1') : draft('project-1'))
+  }, async () => {
+    setActivePinia(createPinia())
+    const store = useBibleStore()
+    await store.load('project-1')
+    assert.equal(store.canEdit, true)
+    refreshFails = true
+    await assert.rejects(store.load('project-1'))
+
+    assert.equal(store.headHydrated, false)
+    assert.equal(store.canEdit, false)
+    assert.equal(store.canConfirm, false)
+    assert.throws(() => store.edit(bible()))
+    assert.throws(() => store.confirm('project-1', { idempotencyKey: 'stale' }))
+    for (const action of [
+      () => store.save('project-1'),
+      () => store.generate('project-1', { idempotencyKey: 'stale' }),
+    ]) await assert.rejects(action)
+    assert.equal(writes, 0)
+  })
+})
+
 test('a confirmed Bible head locks every write even when a stale draft claims capabilities', async () => {
   let writes = 0
   await withFetch(async (url, options = {}) => {

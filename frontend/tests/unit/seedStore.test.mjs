@@ -27,30 +27,54 @@ test('unknown seed hydration and a confirmed selection fail closed before transp
   })
 })
 
-test('a server 409 selection keeps the authoritative cards and active selection unchanged', async () => {
-  setActivePinia(createPinia())
-  const store = useSeedStore()
-  const a = seed('A')
-  const b = seed('B')
-  let selectCalls = 0
-  await withFetch(async (url, options = {}) => {
-    const path = String(url)
-    if (path.endsWith('/projects/p1/seeds')) return jsonResponse([a, b])
-    if (path.endsWith('/projects/p1/selected-seed') && options.method === 'GET') return jsonResponse({ activeSelection: null })
-    if (path.endsWith('/projects/p1/selected-seed')) {
-      selectCalls += 1
-      return jsonResponse({ code: 'SelectionConflict', message: 'stale' }, 409)
-    }
-    throw new Error(`unexpected request ${url}`)
-  }, async () => {
-    await store.refresh('p1')
-    const before = JSON.parse(JSON.stringify({ seeds: store.seeds, activeSelection: store.activeSelection, selectionRevision: store.selectionRevision }))
-    await assert.rejects(store.selectSeed('p1', { seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 0 }))
-    assert.equal(selectCalls, 1)
-    assert.deepEqual({ seeds: store.seeds, activeSelection: store.activeSelection, selectionRevision: store.selectionRevision }, before)
-    assert.equal(store.error.status, 409)
+for (const failure of [
+  { status: 409, code: 'SelectionConflict' },
+  { status: 503, code: 'outcome_unknown' },
+]) {
+  test(`a ${failure.code} selection failure invalidates stale authority until refresh`, async () => {
+    setActivePinia(createPinia())
+    const store = useSeedStore()
+    const a = seed('A')
+    const b = seed('B')
+    let selectCalls = 0
+    let writes = 0
+    await withFetch(async (url, options = {}) => {
+      const path = String(url)
+      if (path.endsWith('/projects/p1/seeds')) return jsonResponse([a, b])
+      if (path.endsWith('/projects/p1/selected-seed') && options.method === 'GET') return jsonResponse({ activeSelection: null })
+      if (path.endsWith('/projects/p1/selected-seed')) {
+        selectCalls += 1
+        if (selectCalls === 1) return jsonResponse({ code: failure.code, message: 'stale' }, failure.status)
+        return jsonResponse({ ...a, isSelected: true, selectionRevision: 1 })
+      }
+      writes += 1
+      return jsonResponse({})
+    }, async () => {
+      await store.refresh('p1')
+      const before = JSON.parse(JSON.stringify({ seeds: store.seeds, activeSelection: store.activeSelection, selectionRevision: store.selectionRevision }))
+      await assert.rejects(store.selectSeed('p1', { seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 0 }))
+      assert.equal(selectCalls, 1)
+      assert.deepEqual({ seeds: store.seeds, activeSelection: store.activeSelection, selectionRevision: store.selectionRevision }, before)
+      assert.equal(store.selectionHydrated, false)
+      assert.equal(store.error.status, failure.status)
+      for (const action of [
+        () => store.createSeed('p1', PAYLOAD),
+        () => store.updateSeed('p1', 'A', {}),
+        () => store.selectSeed('p1', { seedId: 'A' }),
+        () => store.archiveSeed('p1', 'A', {}),
+        () => store.restoreSeed('p1', 'A', {}),
+        () => store.permanentlyDeleteSeed('p1', 'A', {}),
+        () => store.requestInspiration('p1', {}),
+      ]) await assert.rejects(action)
+      assert.equal(writes, 0)
+
+      await store.refresh('p1')
+      assert.equal(store.selectionHydrated, true)
+      await store.selectSeed('p1', { seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 0 })
+      assert.equal(selectCalls, 2)
+    })
   })
-})
+}
 
 const PAYLOAD = Object.freeze({
   title: '典镇山河',

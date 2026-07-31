@@ -22,6 +22,11 @@ function capabilityDenied(code) {
   return Object.assign(new Error('当前种子操作不被服务端允许'), { code })
 }
 
+function invalidatesSelectionAuthority(failure) {
+  const code = String(failure?.code || failure?.publicErrorCode || failure?.status || '')
+  return Number(failure?.status) === 409 || code === 'outcome_unknown'
+}
+
 function lockedCapabilities(capabilities = {}) {
   return {
     ...capabilities,
@@ -218,14 +223,17 @@ export const useSeedStore = defineStore('seed', () => {
     }
   }
 
-  async function mutate(projectId, command, apply) {
+  async function mutate(projectId, command, apply, onFailure = null) {
     const state = beginMutation(projectId)
     try {
       const result = await command()
       if (mutationCurrent(state)) apply?.(result)
       return result
     } catch (failure) {
-      if (mutationCurrent(state)) error.value = failure
+      if (mutationCurrent(state)) {
+        error.value = failure
+        onFailure?.(failure)
+      }
       throw failure
     } finally {
       finishMutation(state)
@@ -257,8 +265,17 @@ export const useSeedStore = defineStore('seed', () => {
     try { assertMutation(projectId, 'select', data?.seedId) } catch (failure) { return Promise.reject(failure) }
     return mutate(
       projectId,
-      () => api.seeds.select(projectId, data),
+      async () => {
+        const result = await api.seeds.select(projectId, data)
+        if (String(result?.status || result?.publicErrorCode || '') === 'outcome_unknown') {
+          throw capabilityDenied('outcome_unknown')
+        }
+        return result
+      },
       applySelection,
+      failure => {
+        if (invalidatesSelectionAuthority(failure)) selectionHydrated.value = false
+      },
     )
   }
 

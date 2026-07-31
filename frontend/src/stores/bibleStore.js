@@ -122,6 +122,7 @@ export const useBibleStore = defineStore('bible', () => {
   const dirty = ref(false)
   const generationAttempt = shallowRef(null)
   const readOnly = ref(false)
+  const headHydrated = ref(false)
   const loadGuard = createLatestRequestGuard()
   const writeGuard = createLatestRequestGuard()
   const historyGuard = createLatestRequestGuard()
@@ -130,9 +131,9 @@ export const useBibleStore = defineStore('bible', () => {
   let stateGeneration = 0
   let editGeneration = 0
 
-  const baselineLocked = computed(() => Number(head.value?.revision || 0) > 0)
-  const canEdit = computed(() => !readOnly.value && !baselineLocked.value && draft.value?.canEdit === true)
-  const canConfirm = computed(() => !readOnly.value && !baselineLocked.value && draft.value?.canConfirm === true)
+  const baselineLocked = computed(() => headHydrated.value && Number(head.value?.revision || 0) > 0)
+  const canEdit = computed(() => headHydrated.value && !readOnly.value && !baselineLocked.value && draft.value?.canEdit === true)
+  const canConfirm = computed(() => headHydrated.value && !readOnly.value && !baselineLocked.value && draft.value?.canConfirm === true)
   const reasons = computed(() => {
     const draftReasons = draft.value?.reasons || []
     return [...(draftReasons.length > 0 ? draftReasons : head.value?.reasons || [])]
@@ -146,6 +147,7 @@ export const useBibleStore = defineStore('bible', () => {
       editGeneration += 1
       loadGuard.invalidate(); writeGuard.invalidate(); historyGuard.invalidate(); generationGuard.invalidate()
       projectId.value = next; head.value = null; draft.value = null; history.value = []
+      headHydrated.value = false
       historyNextBeforeRevision.value = null; historyDetail.value = null; generationAttempt.value = null; error.value = null
       conflict.value = null; dirty.value = false; loading.value = false; saving.value = false
       confirming.value = false; generating.value = false; historyLoading.value = false
@@ -161,6 +163,7 @@ export const useBibleStore = defineStore('bible', () => {
   }
 
   function assertWritable(kind) {
+    if (!headHydrated.value) throw denied('bible_hydration_unknown')
     if (readOnly.value || baselineLocked.value || draft.value?.lifecycle === 'archived' || head.value?.lifecycle === 'archived') throw denied('bible_read_only')
     if (kind === 'edit' || kind === 'save') {
       if (draft.value?.canEdit !== true) throw denied('bible_edit_denied')
@@ -175,6 +178,7 @@ export const useBibleStore = defineStore('bible', () => {
     const requestGeneration = loadGuard.begin()
     const targetStateGeneration = ++stateGeneration
     loading.value = true
+    headHydrated.value = false
     try {
       const [loadedHead, loadedDraft] = await Promise.all([
         api.bible.head(targetProject), api.bible.draft.get(targetProject),
@@ -182,6 +186,7 @@ export const useBibleStore = defineStore('bible', () => {
       if (current(loadGuard, requestGeneration, targetProject, targetStateGeneration)) {
         head.value = publicRevision(loadedHead)
         draft.value = publicDraft(loadedDraft)
+        headHydrated.value = true
         error.value = null; conflict.value = null; dirty.value = false
       }
       return { head: publicRevision(loadedHead), draft: publicDraft(loadedDraft) }
@@ -288,6 +293,7 @@ export const useBibleStore = defineStore('bible', () => {
         attempt?.status === 'succeeded'
         && current(generationGuard, requestGeneration, targetProject, targetStateGeneration)
       ) {
+        headHydrated.value = false
         const [loadedHead, loadedDraft] = await Promise.all([
           api.bible.head(targetProject),
           api.bible.draft.get(targetProject),
@@ -295,6 +301,7 @@ export const useBibleStore = defineStore('bible', () => {
         if (current(generationGuard, requestGeneration, targetProject, targetStateGeneration)) {
           head.value = publicRevision(loadedHead)
           draft.value = publicDraft(loadedDraft)
+          headHydrated.value = true
           dirty.value = false
           conflict.value = null
         }
@@ -375,7 +382,7 @@ export const useBibleStore = defineStore('bible', () => {
 
   return {
     projectId, head, draft, history, historyNextBeforeRevision, historyDetail, error, conflict,
-    loading, saving, confirming, generating, historyLoading, dirty, readOnly,
+    loading, saving, confirming, generating, historyLoading, dirty, readOnly, headHydrated,
     generationAttempt, baselineLocked, canEdit, canConfirm, reasons, load, edit, save, confirm,
     generate, loadAttempt, loadHistory, loadHistoryDetail,
     setReadOnly, clearHistory,
