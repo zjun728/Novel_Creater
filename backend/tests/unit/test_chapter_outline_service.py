@@ -165,7 +165,10 @@ class _OutlineStateRepository:
         return self.authorities if project_id == "project-1" else None
 
     async def read_outline_head(self, _session, _project_id, _chapter_number):
-        return None
+        return getattr(self, "head", None)
+
+    async def lock_outline_head(self, _session, _project_id, _chapter_number):
+        return getattr(self, "head", None)
 
     async def read_active_draft(
         self,
@@ -177,6 +180,10 @@ class _OutlineStateRepository:
 
     async def read_active_attempt(self, _session, _draft_id):
         return self.pending_attempt
+
+    async def insert_draft(self, _session, row):
+        self.draft = row
+        return True
 
 
 class _OutlineStateChapterRepository:
@@ -402,3 +409,66 @@ async def test_archived_state_falls_back_to_read_after_project_lock():
     assert calls[:2] == ["project-lock", "project-read"]
     assert state.lifecycle == "archived"
     assert state.capabilities.generate is False
+
+
+@pytest.mark.asyncio
+async def test_drafting_session_can_adjust_the_current_outline_without_repinning_it():
+    service, outline, chapter, planning, _calls = _outline_state_service()
+    adopted = _active_session_row()["chapter_outline"]
+    outline.draft = None
+    outline.head = {"revision": 1, "content": adopted}
+    outline.authorities["planning_content"] = {
+        "schemaVersion": "planning-v1",
+        "activeStoryBlockId": None,
+        "volumes": [],
+        "plots": [],
+        "storyBlocks": [],
+        "contentHash": HASH,
+    }
+    planning.basis["chapter_capacity_policy"] = {
+        "chapterWordRangePreference": [2_000, 3_000],
+    }
+    chapter.active_session = {"chapter_num": 1, "status": "drafting"}
+    chapter.session = {**_active_session_row(), "status": "drafting"}
+    service._content_is_confirmable = lambda *_args: True
+
+    initial = await service.get_current("project-1")
+
+    assert initial.capabilities.create_draft is True
+    assert initial.capabilities.edit_draft is False
+    assert initial.capabilities.generate is False
+    assert initial.capabilities.start_session is False
+
+    draft = await service.create_draft(
+        CreateChapterOutlineDraft("project-1", 1)
+    )
+
+    assert draft.base_head_revision == 1
+    assert draft.content.chapter_goal == adopted["chapterGoal"]
+    adjusted = await service.get_current("project-1")
+    assert adjusted.capabilities.edit_draft is True
+    assert adjusted.capabilities.generate is True
+    assert adjusted.capabilities.confirm is True
+    assert adjusted.active_session == initial.active_session
+
+
+@pytest.mark.asyncio
+async def test_finalized_session_makes_every_outline_mutation_unavailable_and_rejected():
+    service, outline, chapter, _planning, _calls = _outline_state_service()
+    outline.draft = None
+    outline.head = {"revision": 1, "content": _active_session_row()["chapter_outline"]}
+    chapter.active_session = {"chapter_num": 1, "status": "finalized"}
+    chapter.session = {**_active_session_row(), "status": "finalized"}
+
+    state = await service.get_current("project-1")
+
+    assert state.capabilities.create_draft is False
+    assert state.capabilities.edit_draft is False
+    assert state.capabilities.generate is False
+    assert state.capabilities.confirm is False
+    assert state.capabilities.start_session is False
+    with pytest.raises(
+        ChapterOutlineConflict,
+        match="finalized chapter makes Outline immutable",
+    ):
+        await service.create_draft(CreateChapterOutlineDraft("project-1", 1))

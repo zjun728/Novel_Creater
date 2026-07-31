@@ -356,6 +356,58 @@ def test_confirm_projects_closed_command_and_response():
     assert "attempt" not in response.text
 
 
+def test_drafting_adjustment_uses_only_public_outline_mutation_routes():
+    client, service, _ = _client()
+    editable = EditableChapterOutlineContent().model_dump(
+        mode="json",
+        by_alias=True,
+    )
+
+    created = client.post(
+        "/api/projects/p1/chapter-outlines/1/drafts",
+        json={},
+    )
+    saved = client.put(
+        "/api/projects/p1/chapter-outlines/1/drafts/draft-1",
+        json={
+            "expectedDraftRevision": 1,
+            "expectedDraftHash": HASH,
+            "content": editable,
+        },
+    )
+    adopted = client.post(
+        "/api/projects/p1/chapter-outlines/1/drafts/draft-1/confirm",
+        json={
+            "expectedDraftRevision": 1,
+            "expectedDraftHash": HASH,
+            "expectedHeadRevision": 1,
+            "idempotencyKey": "adopt-outline-r2-after-drafting-session",
+        },
+    )
+
+    assert [response.status_code for response in (created, saved, adopted)] == [
+        201,
+        200,
+        201,
+    ]
+    assert [type(command).__name__ for command in service.commands] == [
+        "CreateChapterOutlineDraft",
+        "SaveChapterOutlineDraft",
+        "ConfirmChapterOutlineDraft",
+    ]
+    assert adopted.json()["revision"] == 1
+    assert set(adopted.json()) == {
+        "projectId",
+        "chapterNumber",
+        "outlineRevisionId",
+        "revision",
+        "parentRevision",
+        "contentHash",
+        "content",
+        "basis",
+    }
+
+
 def test_static_operation_routes_do_not_bind_as_chapter_numbers():
     client, _, _ = _client()
 

@@ -11,6 +11,8 @@ from backend.repositories.chapter_sessions import ChapterSessionRepository
 from backend.services.chapter_sessions import (
     ChapterSessionService,
     CreateChapterSession,
+    SaveDraftCandidate,
+    SaveWorkingDraft,
 )
 from backend.services.chapter_outlines import (
     ChapterOutlineConflict,
@@ -33,6 +35,7 @@ from backend.tests.integration.test_planning_aggregate_lifecycle import (
     _prepare,
     _save_complete,
 )
+from backend.tests.integration.test_seed_revisions import connection_factory_for
 from backend.tests.support.disposable_mysql import transaction_factory_for
 
 
@@ -363,7 +366,7 @@ async def test_real_mysql_manual_outline_save_confirm_replay_and_history(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mutation", ("save", "confirm"))
-async def test_real_mysql_outline_mutation_observes_session_committed_while_waiting(
+async def test_real_mysql_outline_mutation_allows_drafting_session_committed_while_waiting(
     disposable_mysql,
     mutation,
 ):
@@ -508,8 +511,7 @@ async def test_real_mysql_outline_mutation_observes_session_committed_while_wait
                 },
             )
 
-        with pytest.raises(ChapterOutlineConflict):
-            await _await_race_tasks(mutation_task)
+        await _await_race_tasks(mutation_task)
     except BaseException as error:
         primary_error = error
         raise
@@ -524,8 +526,12 @@ async def test_real_mysql_outline_mutation_observes_session_committed_while_wait
         (PROJECT, saved_second.draft_id),
     )
     assert persisted_draft == {
-        "status": "active",
-        "draft_revision": saved_second.draft_revision,
+        "status": "active" if mutation == "save" else "confirmed",
+        "draft_revision": (
+            saved_second.draft_revision + 1
+            if mutation == "save"
+            else saved_second.draft_revision
+        ),
         "content_hash": saved_second.content_hash,
     }
     revision_count = await disposable_mysql.session.fetchone(
@@ -534,7 +540,7 @@ async def test_real_mysql_outline_mutation_observes_session_committed_while_wait
             WHERE project_id=%s""",
         (PROJECT,),
     )
-    assert revision_count["revision_count"] == 1
+    assert revision_count["revision_count"] == (1 if mutation == "save" else 2)
 
 
 @pytest.mark.asyncio
@@ -972,7 +978,7 @@ async def test_real_mysql_outline_history_and_active_session_pin_exact_authority
     assert current.confirmed_outline.display_status == "session_pinned"
     assert current.capabilities == type(current.capabilities)(
         view=True,
-        create_draft=False,
+        create_draft=True,
         edit_draft=False,
         generate=False,
         confirm=False,
@@ -997,6 +1003,148 @@ async def test_real_mysql_outline_history_and_active_session_pin_exact_authority
         item.display_status == "archived"
         for item in await service.history(PROJECT, 1)
     )
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_drafting_session_keeps_r1_while_outline_advances_to_r2(
+    disposable_mysql,
+):
+    planning_service = await _prepare(disposable_mysql)
+    saved_planning = await _save_complete(planning_service)
+    planning = await planning_service.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            saved_planning.draft_id,
+            saved_planning.draft_revision,
+            saved_planning.content_hash,
+            "confirm-planning-for-drafting-adjustment",
+        )
+    )
+    transaction = transaction_factory_for(disposable_mysql.connection_config)
+    outline_service = ChapterOutlineService(
+        _repository(),
+        ChapterSessionRepository(),
+        transaction_factory=transaction,
+    )
+
+    first_draft = await outline_service.create_draft(
+        CreateChapterOutlineDraft(PROJECT, 1)
+    )
+    first_saved = await outline_service.save_draft(
+        SaveChapterOutlineDraft(
+            PROJECT,
+            1,
+            first_draft.draft_id,
+            first_draft.draft_revision,
+            first_draft.content_hash,
+            _editable_outline(planning.content),
+        )
+    )
+    outline_r1 = await outline_service.confirm_draft(
+        ConfirmChapterOutlineDraft(
+            PROJECT,
+            1,
+            first_saved.draft_id,
+            first_saved.draft_revision,
+            first_saved.content_hash,
+            0,
+            "adopt-outline-r1-for-drafting-adjustment",
+        )
+    )
+    chapter_service = ChapterSessionService(
+        ChapterSessionRepository(),
+        transaction_factory=transaction,
+        connection_factory=connection_factory_for(
+            disposable_mysql.connection_config
+        ),
+    )
+    workspace = await chapter_service.create_session(
+        CreateChapterSession(
+            PROJECT,
+            1,
+            planning.revision,
+            planning.content_hash,
+            outline_r1.revision,
+            outline_r1.content_hash,
+            0,
+        )
+    )
+    saved_workspace = await chapter_service.save_working_draft(
+        SaveWorkingDraft(
+            PROJECT,
+            workspace.session.id,
+            workspace.working_draft.revision,
+            "保留的正文工作稿",
+        )
+    )
+    candidate_workspace = await chapter_service.save_candidate(
+        SaveDraftCandidate(
+            PROJECT,
+            workspace.session.id,
+            saved_workspace.working_draft.revision,
+        )
+    )
+    before_session = await disposable_mysql.session.fetchone(
+        """SELECT id,chapter_outline_revision,chapter_outline_hash,status
+             FROM chapter_sessions WHERE id=%s""",
+        (workspace.session.id,),
+    )
+
+    adjustment = await outline_service.create_draft(
+        CreateChapterOutlineDraft(PROJECT, 1)
+    )
+
+    assert adjustment.base_head_revision == outline_r1.revision
+    assert adjustment.content == outline_r1.content.model_copy(
+        update={"schema_version": "chapter-outline-draft-v1"}
+    )
+    adjusted_content = adjustment.content.model_copy(
+        update={
+            "chapter_goal": "调整后的本章目标。",
+            "scenes": ("调整后的场景。",),
+        }
+    )
+    saved_adjustment = await outline_service.save_draft(
+        SaveChapterOutlineDraft(
+            PROJECT,
+            1,
+            adjustment.draft_id,
+            adjustment.draft_revision,
+            adjustment.content_hash,
+            adjusted_content,
+        )
+    )
+    outline_r2 = await outline_service.confirm_draft(
+        ConfirmChapterOutlineDraft(
+            PROJECT,
+            1,
+            saved_adjustment.draft_id,
+            saved_adjustment.draft_revision,
+            saved_adjustment.content_hash,
+            outline_r1.revision,
+            "adopt-outline-r2-for-drafting-adjustment",
+        )
+    )
+    after_session = await disposable_mysql.session.fetchone(
+        """SELECT id,chapter_outline_revision,chapter_outline_hash,status
+             FROM chapter_sessions WHERE id=%s""",
+        (workspace.session.id,),
+    )
+    head = await disposable_mysql.session.fetchone(
+        """SELECT revision,outline_revision_id FROM project_chapter_outline_heads
+             WHERE project_id=%s AND chapter_num=%s""",
+        (PROJECT, 1),
+    )
+    preserved_workspace = await chapter_service.get(PROJECT, 1)
+
+    assert after_session == before_session
+    assert after_session["chapter_outline_revision"] == outline_r1.revision
+    assert head == {"revision": outline_r2.revision, "outline_revision_id": outline_r2.outline_revision_id}
+    assert preserved_workspace is not None
+    assert preserved_workspace.working_draft.content == "保留的正文工作稿"
+    assert [candidate.content for candidate in preserved_workspace.candidates] == [
+        candidate_workspace.candidates[0].content
+    ]
 
 
 def _repository():

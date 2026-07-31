@@ -255,7 +255,7 @@ class ChapterOutlineService:
                 command.chapter_number,
                 chapter_number,
             )
-            self._require_no_active_session(active_session)
+            self._require_outline_mutable(active_session)
             authorities = await self._require_authorities(
                 session,
                 command.project_id,
@@ -288,7 +288,11 @@ class ChapterOutlineService:
                         "active ChapterOutline Draft changed"
                     )
 
-            content = EditableChapterOutlineContent()
+            content = (
+                self._editable_from_outline(head["content"])
+                if head is not None and head.get("content") is not None
+                else EditableChapterOutlineContent()
+            )
             content_payload = self._editable_payload(content)
             now = self.clock()
             row = {
@@ -327,7 +331,7 @@ class ChapterOutlineService:
                 command.chapter_number,
                 chapter_number,
             )
-            self._require_no_active_session(active_session)
+            self._require_outline_mutable(active_session)
             authorities = await self._require_authorities(
                 session,
                 command.project_id,
@@ -458,7 +462,7 @@ class ChapterOutlineService:
                 command.chapter_number,
                 authoritative_number,
             )
-            self._require_no_active_session(active_session)
+            self._require_outline_mutable(active_session)
             authorities = self._validate_authorities(authorities)
             chapter_number = authoritative_number
             if draft is None:
@@ -851,9 +855,12 @@ class ChapterOutlineService:
                 projection_authority is not None
                 and projection_authority.synchronized
             )
+            session_is_drafting = (
+                active_result is None or active_result.status == "drafting"
+            )
             mutations_allowed = (
                 not archived
-                and active_result is None
+                and session_is_drafting
                 and authorities is not None
             )
             current_draft = (
@@ -869,7 +876,6 @@ class ChapterOutlineService:
                 edit_draft=mutations_allowed and current_draft,
                 generate=(
                     mutations_allowed
-                    and active_session is None
                     and current_draft
                     and not generation_pending
                     and synchronized
@@ -886,7 +892,9 @@ class ChapterOutlineService:
                     )
                 ),
                 start_session=(
-                    mutations_allowed
+                    not archived
+                    and active_result is None
+                    and authorities is not None
                     and synchronized
                     and confirmed_current
                 ),
@@ -1480,8 +1488,8 @@ class ChapterOutlineService:
         reasons = []
         if archived:
             reasons.append("projectArchived")
-        if active_session is not None:
-            reasons.append("activeSessionPinsAuthorities")
+        if active_session is not None and active_session.status != "drafting":
+            reasons.append("finalizedChapterLocksOutline")
         if authorities is None:
             reasons.append("planningOrProjectionUnavailable")
         if projection is not None and not projection.synchronized:
@@ -1623,13 +1631,16 @@ class ChapterOutlineService:
                 "requested chapter differs from server authority"
             )
 
-    def _require_no_active_session(
+    def _require_outline_mutable(
         self,
         active_session: Mapping[str, object] | None,
     ) -> None:
-        if active_session is not None:
+        if active_session is None:
+            return
+        status = active_session.get("effective_status", active_session["status"])
+        if status != "drafting":
             raise ChapterOutlineConflict(
-                "active ChapterSession makes Outline read-only"
+                "finalized chapter makes Outline immutable"
             )
 
     def _require_active_draft(
