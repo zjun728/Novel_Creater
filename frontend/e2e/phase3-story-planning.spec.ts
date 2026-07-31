@@ -315,7 +315,7 @@ function safeLinkedConsoleCounts(evidence, runtimeAuditOptions, responseInventor
 }
 
 const FAILED_RESOURCE_409_PREFIX = 'error: Failed to load resource: the server responded with a status of 409'
-const VUE_CAPTURED_ERROR_PREFIX = '[界面错误]'
+const VUE_CAPTURED_ERROR_PREFIX = 'error: [界面错误]'
 
 function safeConsoleCategoryCounts(evidence) {
   const counts = {

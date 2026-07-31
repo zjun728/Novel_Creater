@@ -2151,7 +2151,7 @@ test('runtime-health console categories are fixed, exhaustive, and redacted', as
       'error: Failed to load resource: the server responded with a status of 404 (Not Found)',
       'error: Failed to load resource: the server responded with a status of 409 (Conflict)',
       `${resource409Prefix} (Vite proxy)`,
-      '[界面错误] {"kind":"render"}',
+      'error: [界面错误] {"kind":"render"}',
       'console-other-never-print',
       `${resource409Prefix} (Vite proxy)\nbody-never-print`,
     ],
