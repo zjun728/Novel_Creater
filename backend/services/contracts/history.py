@@ -10,19 +10,15 @@ from pydantic import ValidationError
 from backend.domain.contracts import CreationContractPayload, StyleContractPayload
 from backend.domain.json_contracts import canonical_hash, canonical_json
 from .drafts import (
-    AssetRevisionRef,
     BindingContractRef,
     ContractAlreadyConfirmed,
     ContractConflict,
-    ContractDraftPayload,
     ContractDraftResult,
     ContractHistoryPage,
     ContractNotFound,
     ContractPreconditionFailed,
     ConfirmedContractResult,
-    CorpusSourceRef,
     EngineContractRef,
-    ModelBindingRef,
     ResolvedAssetRef,
     ResolvedCorpusFragment,
     ResolvedCorpusRef,

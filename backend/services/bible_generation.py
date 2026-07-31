@@ -653,8 +653,6 @@ class BibleGenerationService:
             head = await self.repository.lock_bible_head(
                 session, command.project_id
             )
-            if head is not None and int(head.get("revision") or 0) > 0:
-                raise BibleAlreadyConfirmed()
             existing = (
                 await self.repository.lock_generation_attempt_by_key(
                     session,
@@ -667,6 +665,8 @@ class BibleGenerationService:
                     raise BibleGenerationIdempotencyConflict()
                 if existing["status"] in _TERMINAL:
                     return self._attempt_result(existing), None
+                if head is not None and int(head.get("revision") or 0) > 0:
+                    raise BibleAlreadyConfirmed()
                 if existing["status"] not in {"reserved", "running"}:
                     raise BibleGenerationConflict()
                 if int(existing["lease_expires_at"]) > self._clock():
@@ -692,6 +692,8 @@ class BibleGenerationService:
                 )
                 return self._attempt_result(terminal), None
 
+            if head is not None and int(head.get("revision") or 0) > 0:
+                raise BibleAlreadyConfirmed()
             inputs = await self._load_inputs(
                 session,
                 command,

@@ -535,7 +535,6 @@ class BibleService:
         row,
         head,
         current_basis,
-        active_draft,
         current_basis_reasons=(),
     ) -> BibleRevisionResult:
         lifecycle = self._lifecycle(project)
@@ -567,20 +566,6 @@ class BibleService:
             can_clone=False,
             reasons=_unique_reasons(reasons, ("bible_confirmed",)),
             confirmed_at=int(row["confirmed_at"]),
-        )
-
-    def _active_draft_is_current(
-        self,
-        row,
-        head,
-        current_basis: BibleBasis | None,
-    ) -> bool:
-        if row is None or head is None or current_basis is None:
-            return False
-        _, stored_basis = self._stored_draft(row)
-        return (
-            not self._basis_reasons(stored_basis, current_basis)
-            and int(row["base_head_revision"]) == int(head["revision"])
         )
 
     async def get_draft(self, project_id: str) -> BibleDraftResult:
@@ -1083,11 +1068,10 @@ class BibleService:
             }
             return self._revision_view(
                 project=project,
-                row=revision_row,
-                head=committed_head,
-                current_basis=basis,
-                active_draft=None,
-            )
+            row=revision_row,
+            head=committed_head,
+            current_basis=basis,
+        )
 
     async def _settle_confirmation_failure(
         self,
@@ -1194,9 +1178,6 @@ class BibleService:
             if project is None:
                 raise BibleNotFound()
             head = await self.repository.read_bible_head(session, project_id)
-            active_draft = await self.repository.read_active_draft(
-                session, project_id
-            )
             if head is None:
                 raise BiblePreconditionFailed()
             row = (
@@ -1241,7 +1222,6 @@ class BibleService:
             row=row,
             head=head,
             current_basis=basis,
-            active_draft=active_draft,
             current_basis_reasons=basis_reasons,
         )
         return BibleHeadResult(
@@ -1289,9 +1269,6 @@ class BibleService:
             head = await self.repository.read_bible_head(session, project_id)
             if head is None:
                 raise BiblePreconditionFailed()
-            active_draft = await self.repository.read_active_draft(
-                session, project_id
-            )
             revision_refs = await self.repository.list_revisions(
                 session,
                 project_id,
@@ -1320,7 +1297,6 @@ class BibleService:
                     row=row,
                     head=head,
                     current_basis=basis,
-                    active_draft=active_draft,
                     current_basis_reasons=basis_reasons,
                 )
                 for row in rows
@@ -1344,9 +1320,6 @@ class BibleService:
             if project is None:
                 raise BibleNotFound()
             head = await self.repository.read_bible_head(session, project_id)
-            active_draft = await self.repository.read_active_draft(
-                session, project_id
-            )
             row = await self.repository.read_revision(
                 session, project_id, revision
             )
@@ -1363,7 +1336,6 @@ class BibleService:
             row=row,
             head=head,
             current_basis=basis,
-            active_draft=active_draft,
             current_basis_reasons=basis_reasons,
         )
 

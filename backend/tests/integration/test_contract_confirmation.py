@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-import json
 from types import SimpleNamespace
 
 import pytest

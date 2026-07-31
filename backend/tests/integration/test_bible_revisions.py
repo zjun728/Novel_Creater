@@ -12,7 +12,6 @@ from backend.services.bibles import (
     BibleAlreadyConfirmed,
     BibleConfirmationFailed,
     BibleConflict,
-    BiblePreconditionFailed,
     BibleService,
     CloneBibleDraft,
     ConfirmBible,
