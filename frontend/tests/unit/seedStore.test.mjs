@@ -76,6 +76,59 @@ for (const failure of [
   })
 }
 
+test('a pending selection serializes same-project mutations until its authority is resolved', async () => {
+  setActivePinia(createPinia())
+  const store = useSeedStore()
+  const selection = deferred()
+  const a = seed('A')
+  let selectCalls = 0
+  let otherWrites = 0
+  await withFetch(async (url, options = {}) => {
+    const path = String(url)
+    if (path.endsWith('/projects/p1/seeds') && options.method === 'GET') return jsonResponse([a])
+    if (path.endsWith('/projects/p1/selected-seed') && options.method === 'GET') return jsonResponse({ activeSelection: null })
+    if (path.endsWith('/projects/p1/selected-seed')) {
+      selectCalls += 1
+      if (JSON.parse(options.body).expectedSeedRevision === 1) return selection.promise
+      return jsonResponse({ code: 'secondary_mutation' }, 418)
+    }
+    otherWrites += 1
+    return jsonResponse({})
+  }, async () => {
+    await store.refresh('p1')
+    const pending = store.selectSeed('p1', { seedId: 'A', expectedSeedRevision: 1, expectedSelectionRevision: 0 })
+    await Promise.resolve()
+    const secondary = await Promise.allSettled([
+      () => store.createSeed('p1', PAYLOAD),
+      () => store.updateSeed('p1', 'A', {}),
+      () => store.selectSeed('p1', { seedId: 'A' }),
+      () => store.archiveSeed('p1', 'A', {}),
+      () => store.restoreSeed('p1', 'A', {}),
+      () => store.permanentlyDeleteSeed('p1', 'A', {}),
+    ].map(action => action()))
+
+    selection.resolve(jsonResponse({ code: 'outcome_unknown' }, 503))
+    await assert.rejects(pending, error => error?.code === 'outcome_unknown')
+    for (const result of secondary) {
+      assert.equal(result.status, 'rejected')
+      assert.equal(result.reason?.code, 'seed_mutation_busy')
+    }
+    assert.equal(selectCalls, 1)
+    assert.equal(otherWrites, 0)
+    assert.equal(store.selectionHydrated, false)
+    for (const action of [
+      () => store.createSeed('p1', PAYLOAD),
+      () => store.updateSeed('p1', 'A', {}),
+      () => store.selectSeed('p1', { seedId: 'A' }),
+      () => store.archiveSeed('p1', 'A', {}),
+      () => store.restoreSeed('p1', 'A', {}),
+      () => store.permanentlyDeleteSeed('p1', 'A', {}),
+    ]) await assert.rejects(action, error => error?.code === 'seed_hydration_unknown')
+    assert.equal(selectCalls, 1)
+    assert.equal(otherWrites, 0)
+  })
+})
+
 const PAYLOAD = Object.freeze({
   title: '典镇山河',
   genre: '历史穿越',
@@ -117,6 +170,13 @@ function seed(id, selectionRevision = 0, overrides = {}) {
     },
     ...overrides,
   }
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => { resolve = onResolve; reject = onReject })
+  return { promise, resolve, reject }
 }
 
 async function withFetch(fetchImpl, action) {

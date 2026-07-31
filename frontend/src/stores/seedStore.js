@@ -112,6 +112,7 @@ export const useSeedStore = defineStore('seed', () => {
 
   function assertMutation(projectId, kind, seedId = null) {
     assertHydrated(projectId)
+    if (mutationBusy.value) throw capabilityDenied('seed_mutation_busy')
     if (kind === 'create') {
       if (activeSelection.value !== null) throw capabilityDenied('seed_create_denied')
       return
