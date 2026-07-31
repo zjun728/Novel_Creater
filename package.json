@@ -17,6 +17,7 @@
     "test:browser:phase2c": "node scripts/run-tests.mjs browser-phase2c",
     "test:browser:phase3b": "node scripts/run-tests.mjs browser-phase3b",
     "test:browser:phase3c": "node scripts/run-tests.mjs browser-phase3c",
+    "test:browser:phase3": "node scripts/run-tests.mjs browser-phase3",
     "test:browser:phase2": "node scripts/run-tests.mjs browser-phase2",
     "test:milestone1": "node scripts/run-tests.mjs m1-regression"
   },

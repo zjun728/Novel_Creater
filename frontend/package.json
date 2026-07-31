@@ -15,6 +15,7 @@
     "test:e2e:phase2c": "node e2e/run-phase2c.mjs",
     "test:e2e:phase3b": "node e2e/run-phase3b.mjs",
     "test:e2e:phase3c": "node e2e/run-phase3c.mjs",
+    "test:e2e:phase3": "node e2e/run-phase3.mjs",
     "test:e2e:phase2": "node e2e/run-phase2.mjs",
     "test:e2e": "node e2e/run-phase2.mjs"
   },

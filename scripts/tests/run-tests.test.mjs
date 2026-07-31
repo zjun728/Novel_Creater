@@ -46,12 +46,17 @@ test('package scripts retain earlier and Phase 2C gates while full Phase 2 is de
     rootPackage.scripts['test:browser:phase2'],
     'node scripts/run-tests.mjs browser-phase2',
   )
+  assert.equal(
+    rootPackage.scripts['test:browser:phase3'],
+    'node scripts/run-tests.mjs browser-phase3',
+  )
   assert.equal(rootPackage.scripts.build, 'npm --prefix frontend run build')
   assert.equal(frontendPackage.scripts['test:e2e:m1'], 'node e2e/run-milestone1.mjs')
   assert.equal(frontendPackage.scripts['test:e2e:m2'], undefined)
   assert.equal(frontendPackage.scripts['test:e2e:phase2a'], 'node e2e/run-phase2a.mjs')
   assert.equal(frontendPackage.scripts['test:e2e:phase2c'], 'node e2e/run-phase2c.mjs')
   assert.equal(frontendPackage.scripts['test:e2e:phase2'], 'node e2e/run-phase2.mjs')
+  assert.equal(frontendPackage.scripts['test:e2e:phase3'], 'node e2e/run-phase3.mjs')
   assert.equal(frontendPackage.scripts['test:e2e'], 'node e2e/run-phase2.mjs')
 })
 
@@ -121,6 +126,21 @@ test('uses the injected child process runner', () => {
   assert.equal(calls.length, 1)
   assert.equal(calls[0].command, process.execPath)
   assert.deepEqual(calls[0].args, ['frontend/e2e/run-milestone1.mjs'])
+  assert.equal(calls[0].options.shell, false)
+})
+
+test('routes the full Phase 3 browser suite through its closed runner', () => {
+  const calls = []
+  const exitCode = runSuites(['browser-phase3'], {
+    environment: requiredIntegrationEnvironment,
+    spawnSyncImpl(command, args, options) {
+      calls.push({ command, args, options })
+      return { status: 0 }
+    },
+  })
+
+  assert.equal(exitCode, 0)
+  assert.deepEqual(calls.map(call => call.args), [['frontend/e2e/run-phase3.mjs']])
   assert.equal(calls[0].options.shell, false)
 })
 
