@@ -86,6 +86,67 @@ const isReceiverCall = (node, receiver, method) => (
   && isIdentifier(node.callee.property, method)
 )
 
+const patternBindsIdentifier = (node, name) => {
+  if (isIdentifier(node, name)) return true
+  if (node?.type === 'ArrayPattern') {
+    return node.elements.some(element => patternBindsIdentifier(element, name))
+  }
+  if (node?.type === 'ObjectPattern') {
+    return node.properties.some(property => (
+      property?.type === 'RestElement'
+        ? patternBindsIdentifier(property.argument, name)
+        : patternBindsIdentifier(property?.value, name)
+    ))
+  }
+  if (node?.type === 'RestElement') return patternBindsIdentifier(node.argument, name)
+  if (node?.type === 'AssignmentPattern') return patternBindsIdentifier(node.left, name)
+  return false
+}
+
+const functionOwnsIdentifier = (functionNode, name) => {
+  if (functionNode.params.some(parameter => patternBindsIdentifier(parameter, name))) {
+    return true
+  }
+  let ownsIdentifier = false
+  const scan = node => {
+    if (!node || typeof node.type !== 'string' || ownsIdentifier) return
+    if (node !== functionNode.body && FUNCTION_LIKE_TYPES.has(node.type)) return
+    if (
+      (node.type === 'VariableDeclarator' && patternBindsIdentifier(node.id, name))
+      || (node.type === 'CatchClause' && patternBindsIdentifier(node.param, name))
+    ) {
+      ownsIdentifier = true
+      return
+    }
+    for (const child of childNodes(node)) scan(child)
+  }
+  scan(functionNode.body)
+  return ownsIdentifier
+}
+
+const observerPageMutations = observer => {
+  const mutations = []
+  const visit = node => {
+    if (!node || typeof node.type !== 'string') return
+    if (FUNCTION_LIKE_TYPES.has(node.type) && functionOwnsIdentifier(node, 'page')) {
+      return
+    }
+    if (
+      (node.type === 'AssignmentExpression' && patternBindsIdentifier(node.left, 'page'))
+      || (node.type === 'UpdateExpression' && patternBindsIdentifier(node.argument, 'page'))
+      || (node.type === 'VariableDeclarator' && patternBindsIdentifier(node.id, 'page'))
+      || (
+        ['ForInStatement', 'ForOfStatement'].includes(node.type)
+        && node.left?.type !== 'VariableDeclaration'
+        && patternBindsIdentifier(node.left, 'page')
+      )
+    ) mutations.push(node)
+    for (const child of childNodes(node)) visit(child)
+  }
+  for (const statement of observer.body.body) visit(statement)
+  return mutations
+}
+
 const drainKind = node => {
   const call = node?.type === 'AwaitExpression' ? node.argument : null
   if (
@@ -247,13 +308,7 @@ const assertListenerOwnershipContract = source => {
     false,
     'listener setup must not be preceded by an abrupt statement',
   )
-  const pageMutations = []
-  walkAst(observer.body, node => {
-    if (
-      (node.type === 'AssignmentExpression' && isIdentifier(node.left, 'page'))
-      || (node.type === 'UpdateExpression' && isIdentifier(node.argument, 'page'))
-    ) pageMutations.push(node)
-  })
+  const pageMutations = observerPageMutations(observer)
   assert.equal(pageMutations.length, 0, 'page must not be reassigned or updated')
   const allAttachments = []
   walkAst(observer.body, node => {
@@ -448,6 +503,34 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
       ${listenerAttachmentFlow}
     }
   `
+  const arrayPageAssignmentDecoy = `
+    function observeRuntime(page) {
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+      [page] = [unrelated.page()]
+    }
+  `
+  const variablePageBindingDecoy = `
+    function observeRuntime(page) {
+      var page = unrelated.page()
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+    }
+  `
+  const forOfPageAssignmentDecoy = `
+    function observeRuntime(page) {
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+      for (page of [unrelated.page()]) {}
+    }
+  `
+  const nestedShadowedPageFormatting = `
+    function observeRuntime(page) {
+      ${listenerOwnerPreamble}
+      ${listenerAttachmentFlow}
+      const unrelated = page => { page = unrelatedPage() }
+    }
+  `
   const nestedFakeContextDecoy = `
     function observeRuntime(page) {
       ${listenerOwnerPreamble}
@@ -510,6 +593,7 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
   assert.match(observer, /new Set\(\)/)
   assert.match(observer, /while\s*\(pendingApiBodies\.size\)/)
   assert.doesNotThrow(() => assertListenerOwnershipContract(equivalentListenerFormatting))
+  assert.doesNotThrow(() => assertListenerOwnershipContract(nestedShadowedPageFormatting))
   assert.doesNotThrow(() => assertListenerOwnershipContract(observer))
   assert.doesNotThrow(() => assertSettleContract(equivalentFormatting))
   assert.doesNotThrow(() => assertFinishContract(equivalentFormatting))
@@ -534,6 +618,9 @@ test('M1 browser spec awaits every API body and rejects runtime failures and lea
     ['throw before listener setup', () => assertListenerOwnershipContract(earlyThrowListenerDecoy)],
     ['page reassignment before listener setup', () => assertListenerOwnershipContract(pageReassignmentListenerDecoy)],
     ['page update before listener setup', () => assertListenerOwnershipContract(pageUpdateListenerDecoy)],
+    ['array page assignment', () => assertListenerOwnershipContract(arrayPageAssignmentDecoy)],
+    ['variable page binding', () => assertListenerOwnershipContract(variablePageBindingDecoy)],
+    ['for-of page assignment', () => assertListenerOwnershipContract(forOfPageAssignmentDecoy)],
     ['nested fake context listener', () => assertListenerOwnershipContract(nestedFakeContextDecoy)],
     ['shadowed page listener', () => assertListenerOwnershipContract(shadowedPageListenerDecoy)],
   ].flatMap(([label, verify]) => {
