@@ -188,7 +188,7 @@ onBeforeUnmount(() => { window.removeEventListener('beforeunload', workspace.bef
       </div>
       <div v-if="busy" class="busy-overlay" role="status" aria-live="polite" aria-busy="true">正在处理创作圣经…</div>
     </section>
-    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :read-only="locked || store.baselineLocked" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" :label-reason="bibleReasonLabel" @close="historyOpen = false" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
+    <bible-history-drawer :history="store.history" :history-next-before-revision="store.historyNextBeforeRevision" :history-detail="store.historyDetail" :open="historyOpen" :busy="busy" :error="errorSummary" :retry-label="recoveryLabel" :label-reason="bibleReasonLabel" @close="historyOpen = false" @detail="showHistoryDetail" @more="loadMoreHistory" @retry="retryFailure" />
   </main>
 </template>
 

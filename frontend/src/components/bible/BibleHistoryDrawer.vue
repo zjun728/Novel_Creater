@@ -3,7 +3,7 @@ import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import BibleEditor from './BibleEditor.vue'
 import { createModalFocusManager } from '../common/modalFocusManager.js'
 
-const props = defineProps({ history: { type: Array, default: () => [] }, historyNextBeforeRevision: { default: null }, historyDetail: { type: Object, default: null }, open: Boolean, readOnly: Boolean, busy: Boolean, error: { type: Object, default: null }, retryLabel: { type: String, default: '重试历史' }, labelReason: { type: Function, default: value => `状态需重新核对（${value}）` } })
+const props = defineProps({ history: { type: Array, default: () => [] }, historyNextBeforeRevision: { default: null }, historyDetail: { type: Object, default: null }, open: Boolean, busy: Boolean, error: { type: Object, default: null }, retryLabel: { type: String, default: '重试历史' }, labelReason: { type: Function, default: value => `状态需重新核对（${value}）` } })
 const emit = defineEmits(['close', 'detail', 'more', 'retry'])
 const teleportEnabled = typeof document !== 'undefined'
 const basisFields = [['selectionRevision', '选择版本'], ['seedId', '种子'], ['seedRevisionId', '种子修订'], ['seedHash', '种子哈希'], ['contractRevision', '契约版本'], ['creationContractId', '创作契约'], ['creationHash', '创作哈希'], ['styleContractId', '风格契约'], ['styleHash', '风格哈希'], ['bindingRevisionId', '绑定版本'], ['bindingHash', '绑定哈希'], ['policyVersion', '策略版本']]

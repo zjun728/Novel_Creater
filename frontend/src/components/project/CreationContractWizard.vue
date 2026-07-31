@@ -368,7 +368,6 @@ onBeforeUnmount(() => {
     <ContractHistoryDrawer
       v-model:show="historyOpen"
       :project-id="props.projectId"
-      :read-only="props.readOnly"
     />
   </section>
 </template>

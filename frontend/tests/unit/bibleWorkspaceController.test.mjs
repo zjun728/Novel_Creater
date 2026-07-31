@@ -16,7 +16,7 @@ const emptyBible = () => ({
   continuityGuardrails: [], openDesignQuestions: [],
 })
 const bible = () => ({ ...emptyBible(), premiseAndPromise: 'promise', worldRules: [{ id: 'world-1', text: 'rule' }] })
-const revision = number => ({ revision: number, bible: bible(), canClone: true })
+const revision = number => ({ revision: number, bible: bible() })
 
 function error(status, message = 'failed') { return Object.assign(new Error(message), { status }) }
 function deferred() {
@@ -26,13 +26,13 @@ function deferred() {
 }
 
 function makeStore(overrides = {}) {
-  const calls = { load: [], edit: [], save: [], confirm: [], generate: [], clone: [], history: [], detail: [] }
+  const calls = { load: [], edit: [], save: [], confirm: [], generate: [], history: [], detail: [] }
   const state = reactive({
-    draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] },
+    draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, reasons: [] },
     head: revision(7), history: [revision(7)], historyNextBeforeRevision: 6, historyDetail: null,
-    loading: false, saving: false, confirming: false, generating: false, cloning: false, historyLoading: false,
+    loading: false, saving: false, confirming: false, generating: false, historyLoading: false,
     generationAttempt: null, baselineLocked: false,
-    dirty: false, readOnly: false, canEdit: true, canConfirm: true, canClone: true, reasons: [],
+    dirty: false, readOnly: false, canEdit: true, canConfirm: true, reasons: [],
     ...overrides,
   })
   return Object.assign(state, {
@@ -47,7 +47,6 @@ function makeStore(overrides = {}) {
       state.draft = { ...state.draft, draftVersion: state.draft.draftVersion + 1, draft: { ...bible(), premiseAndPromise: 'generated' } }
       return state.generationAttempt
     },
-    async clone(projectId, source) { calls.clone.push([projectId, source]); state.draft = { draftVersion: 3, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] }; return state.draft },
     async loadHistory(projectId, params) { calls.history.push([projectId, params]); return { items: state.history, nextBeforeRevision: state.historyNextBeforeRevision } },
     async loadHistoryDetail(projectId, itemRevision) { calls.detail.push([projectId, itemRevision]); state.historyDetail = revision(itemRevision); return state.historyDetail },
   })
@@ -70,7 +69,7 @@ test('late project operations cannot publish working state, errors, focus, or di
   const store = makeStore()
   store.load = async project => {
     store.calls.load.push(project)
-    store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, canClone: true, reasons: [] }
+    store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, reasons: [] }
     store.head = { ...revision(1), bible: { ...bible(), premiseAndPromise: `${project} HEAD` } }
   }
   store.save = async project => project === 'A' ? saveA.promise : store.draft
@@ -90,7 +89,7 @@ for (const confirmOutcome of ['success', 'failure']) {
     const confirmA = deferred(); let currentProject = 'A'; const focus = []
     const store = makeStore()
     store.load = async project => {
-      store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, canClone: true, reasons: [] }
+      store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, reasons: [] }
       store.head = revision(1)
     }
     store.confirm = async project => project === 'A' ? confirmA.promise : revision(2)
@@ -175,7 +174,7 @@ test('load, history list, and history detail failures retry only their correspon
 })
 
 test('state machine creates an empty first Bible only without a head, and never writes on hydrate', async () => {
-  const store = makeStore({ draft: { draftVersion: null, draft: null, draftId: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: { revision: 0, bible: null, canClone: false } })
+  const store = makeStore({ draft: { draftVersion: null, draft: null, draftId: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: { revision: 0, bible: null } })
   const workspace = controller(store)
   await workspace.hydrate()
   assert.deepEqual(workspace.working.value, emptyBible())
@@ -200,15 +199,15 @@ test('state machine displays a head-only Bible as a read-only permanent baseline
   const headOnly = makeStore({ draft: { draftVersion: null, draft: null, status: 'missing', canEdit: true, canConfirm: false, reasons: [] }, head: revision(7) })
   const workspace = controller(headOnly); await workspace.hydrate()
   assert.deepEqual(workspace.working.value, bible()); assert.equal(workspace.editable.value, false); assert.equal(workspace.canSave.value, false)
-  const archived = makeStore({ draft: null, head: { ...revision(8), lifecycle: 'archived', canClone: false }, canClone: false })
+  const archived = makeStore({ draft: null, head: { ...revision(8), lifecycle: 'archived' } })
   const archivedWorkspace = controller(archived, { isArchived: () => true }); await archivedWorkspace.hydrate()
   assert.equal(archivedWorkspace.editable.value, false)
 })
 
 test('a locked baseline shows its confirmed head ahead of an archived superseded draft', async () => {
-  const archivedDraft = { draftVersion: 2, draftId: 'draft-archived', draft: { ...bible(), premiseAndPromise: 'ARCHIVED DRAFT' }, status: 'superseded', lifecycle: 'archived', canEdit: false, canConfirm: false, canClone: false, reasons: ['bible_head_changed'] }
-  const archivedHead = { ...revision(8), bible: { ...bible(), premiseAndPromise: 'ARCHIVED HEAD' }, status: 'current', lifecycle: 'archived', canClone: false, reasons: ['project_archived'] }
-  const store = makeStore({ baselineLocked: true, draft: archivedDraft, head: archivedHead, canEdit: false, canConfirm: false, canClone: false })
+  const archivedDraft = { draftVersion: 2, draftId: 'draft-archived', draft: { ...bible(), premiseAndPromise: 'ARCHIVED DRAFT' }, status: 'superseded', lifecycle: 'archived', canEdit: false, canConfirm: false, reasons: ['bible_head_changed'] }
+  const archivedHead = { ...revision(8), bible: { ...bible(), premiseAndPromise: 'ARCHIVED HEAD' }, status: 'current', lifecycle: 'archived', reasons: ['project_archived'] }
+  const store = makeStore({ baselineLocked: true, draft: archivedDraft, head: archivedHead, canEdit: false, canConfirm: false })
   const workspace = controller(store, { isArchived: () => true }); await workspace.hydrate()
   assert.equal(workspace.mode.value, 'head')
   assert.equal(workspace.working.value.premiseAndPromise, 'ARCHIVED HEAD')
@@ -218,11 +217,11 @@ test('a locked baseline shows its confirmed head ahead of an archived superseded
 })
 
 test('superseded drafts are read-only while confirmed output remains visible and focuses status', async () => {
-  const store = makeStore({ draft: { draftVersion: 2, draftId: 'draft-2', draft: bible(), status: 'superseded', canEdit: false, canConfirm: false, canClone: true, reasons: [] } }); const events = []
+  const store = makeStore({ draft: { draftVersion: 2, draftId: 'draft-2', draft: bible(), status: 'superseded', canEdit: false, canConfirm: false, reasons: [] } }); const events = []
   store.confirm = async () => { const result = { ...revision(8), bible: { ...bible(), protagonist: 'confirmed' } }; store.draft = null; store.head = result; return result }
   const workspace = controller(store, { focusStatus: () => events.push('status') }); await workspace.hydrate()
   assert.equal(workspace.editable.value, false)
-  store.draft = { draftVersion: 3, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons: [] }; store.canConfirm = true
+  store.draft = { draftVersion: 3, draft: bible(), canEdit: true, canConfirm: true, reasons: [] }; store.canConfirm = true
   await workspace.hydrate(); await workspace.confirm(); await Promise.resolve()
   assert.equal(workspace.working.value.protagonist, 'confirmed'); assert.deepEqual(events, ['status'])
 })
@@ -275,7 +274,7 @@ test('history opens, loads a detail, and appends a read-only page', async () => 
 
 test('busy state blocks duplicate actions, every async action focuses errors, and reason labels are safe categories', async () => {
   const reasons = ['selection_missing', 'contract_not_ready', 'bible_head_changed', 'project_archived', 'unknown_reason']
-  const store = makeStore({ saving: true, reasons, draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, canClone: true, reasons } }); const focused = []
+  const store = makeStore({ saving: true, reasons, draft: { draftVersion: 2, draft: bible(), canEdit: true, canConfirm: true, reasons } }); const focused = []
   const workspace = controller(store, { focusError: () => focused.push('error') })
   await workspace.hydrate()
   assert.equal(workspace.busy.value, true)
@@ -365,7 +364,7 @@ test('late generation completion cannot publish focus or working state into a ne
   const store = makeStore()
   store.load = async project => {
     store.calls.load.push(project)
-    store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, canClone: true, reasons: [] }
+    store.draft = { draftVersion: 1, draft: { ...bible(), premiseAndPromise: `${project} BODY` }, canEdit: true, canConfirm: true, reasons: [] }
     store.head = revision(1)
   }
   store.generate = async project => project === 'A' ? pending.promise : { status: 'succeeded' }
