@@ -509,13 +509,13 @@ async def test_finalized_chapter_rejects_create_save_and_confirm_by_authoritativ
         "reject-finalized-chapter",
     )
 
-    for mutation in (
-        service.create_draft(CreateChapterOutlineDraft("project-1", 1)),
-        service.save_draft(command),
-        service.confirm_draft(confirm),
+    for mutate in (
+        lambda: service.create_draft(CreateChapterOutlineDraft("project-1", 1)),
+        lambda: service.save_draft(command),
+        lambda: service.confirm_draft(confirm),
     ):
         with pytest.raises(
             ChapterOutlineConflict,
             match="requested chapter differs from server authority",
         ):
-            await mutation
+            await mutate()

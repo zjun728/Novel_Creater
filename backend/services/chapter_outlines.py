@@ -813,20 +813,11 @@ class ChapterOutlineService:
                 else None
             )
             archived = project.get("archived_at") is not None
-            planning_authority = self._state_planning_authority(
-                authorities,
-                session_row,
-            )
-            projection_authority = self._state_projection_authority(
-                authorities,
-                session_row,
-            )
+            planning_authority = self._state_planning_authority(authorities)
+            projection_authority = self._state_projection_authority(authorities)
             confirmed = self._state_confirmed_outline(
-                project_id,
-                chapter_number,
                 head,
                 authorities,
-                session_row,
                 archived,
             )
             draft = (
@@ -1274,7 +1265,6 @@ class ChapterOutlineService:
     def _state_planning_authority(
         self,
         authorities: Mapping[str, object] | None,
-        session_row: Mapping[str, object] | None,
     ) -> PlanningAuthorityResult | None:
         if authorities is None:
             return None
@@ -1294,7 +1284,6 @@ class ChapterOutlineService:
     def _state_projection_authority(
         self,
         authorities: Mapping[str, object] | None,
-        session_row: Mapping[str, object] | None,
     ) -> CanonProjectionAuthorityResult | None:
         if authorities is None:
             return None
@@ -1309,11 +1298,8 @@ class ChapterOutlineService:
 
     def _state_confirmed_outline(
         self,
-        project_id: str,
-        chapter_number: int,
         head: Mapping[str, object] | None,
         authorities: Mapping[str, object] | None,
-        session_row: Mapping[str, object] | None,
         archived: bool,
     ) -> ChapterOutlineRevisionResult | None:
         if head is None or int(head["revision"]) == 0:
