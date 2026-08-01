@@ -11,9 +11,9 @@ from backend.domain.model_bindings import TASK_KEYS
 from backend.domain.seeds import SeedPayload
 from backend.repositories import project_lifecycle
 from backend.services.canon import CanonService, CommitCanonRevision
-from backend.services.chapter_draft_generation import (
-    ChapterDraftGenerationService,
-    GenerateWorkingDraft,
+from backend.services.draft_operations import (
+    DraftOperationService,
+    StartDraftOperation,
 )
 from backend.services.chapter_sessions import (
     ChapterSessionService,
@@ -188,8 +188,8 @@ def _outline_service(repository, _provider):
     )
 
 
-def _generation_service(repository, provider):
-    return ChapterDraftGenerationService(
+def _draft_operation_service(repository, provider):
+    return DraftOperationService(
         repository,
         transaction_factory=_transaction,
         provider_gateway=provider,
@@ -468,11 +468,18 @@ WRITE_ENTRYPOINTS = (
         ),
     ),
     _WriteEntrypoint(
-        "chapter.generate_working_draft",
+        "chapter.start_draft_operation",
         "lock_project",
-        _generation_service,
-        lambda service: service.generate_working_draft(
-            GenerateWorkingDraft("p1", "session-1", 1)
+        _draft_operation_service,
+        lambda service: service.start(
+            StartDraftOperation(
+                project_id="10000000-0000-0000-0000-000000000001",
+                chapter_session_id="20000000-0000-0000-0000-000000000001",
+                operation_type="generate_new",
+                expected_working_draft_revision=1,
+                expected_content_hash="a" * 64,
+                idempotency_key="30000000-0000-0000-0000-000000000001",
+            )
         ),
     ),
     _WriteEntrypoint(
