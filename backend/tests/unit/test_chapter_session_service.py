@@ -80,6 +80,7 @@ class FakeChapterRepository:
         self.max_final_chapter = None
         self.call_order = []
         self.active_error = None
+        self.reject_candidate_insert = False
 
     async def lock_project(self, session, project_id):
         self.call_order.append("lock_project")
@@ -159,12 +160,14 @@ class FakeChapterRepository:
         return True
 
     async def insert_candidate(self, session, row):
+        if self.reject_candidate_insert:
+            return False
         if any(
             item["content_hash"] == row["content_hash"]
             and item["basis_hash"] == row["basis_hash"]
             for item in self.candidates
         ):
-            return False
+            return True
         self.candidates.append(row)
         return True
 
@@ -734,6 +737,50 @@ async def test_save_candidate_freezes_current_working_draft_explicitly():
     assert result.candidates[0].working_draft_revision == 2
     assert result.candidates[0].content == result.working_draft.content
     assert result.candidates[0].content_hash == result.working_draft.content_hash
+
+
+@pytest.mark.asyncio
+async def test_save_candidate_exact_identity_replay_is_idempotent():
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        SaveDraftCandidate,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(
+        SaveWorkingDraft("p1", created.session.id, 1, "同一候选正文")
+    )
+    command = SaveDraftCandidate("p1", created.session.id, 2)
+
+    first = await service.save_candidate(command)
+    replay = await service.save_candidate(command)
+
+    assert len(first.candidates) == len(replay.candidates) == 1
+    assert len(repo.candidates) == 1
+
+
+@pytest.mark.asyncio
+async def test_save_candidate_reports_explicit_repository_identity_conflict():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+        SaveDraftCandidate,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(
+        SaveWorkingDraft("p1", created.session.id, 1, "冲突候选正文")
+    )
+    repo.reject_candidate_insert = True
+
+    with pytest.raises(ChapterSessionConflict, match="candidate identity conflict"):
+        await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
 
 
 @pytest.mark.asyncio
