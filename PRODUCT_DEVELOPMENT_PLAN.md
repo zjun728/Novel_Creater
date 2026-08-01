@@ -1,6 +1,6 @@
 # 产品开发规划
 
-> 当前有效规划。日期：`2026-07-30`。
+> 当前有效规划。日期：`2026-08-01`。
 
 ## 1. 产品目标
 
@@ -24,8 +24,8 @@ Novel Creator 要帮助作者持续写出长篇、连贯、可控并且让人愿
 | --- | --- | --- |
 | Phase 1 | 产品壳层与项目生命周期 | 已完成门禁 |
 | Phase 2 | 创作资产、Provider/模型设置、市场来源、选题与种子、契约、圣经、模型继承与资产冻结 | 已完成门禁 |
-| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 3A/3B/3C 已完成，3D 下一步 |
-| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 待开始 |
+| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 已完成门禁 |
+| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 唯一下一产品包；待开始 |
 | Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 待开始 |
 | Phase 6 | 小说下载、安全备份、预检与导入 | 待开始 |
 | Phase 7 | 产品库、真实 Provider、自由浏览器探索、《典镇山河》30 章人工验收 | 待开始 |
@@ -56,7 +56,7 @@ Phase 5 Finalization 或小说内容质量。
 - 独立 ChapterOutline Draft/Revision，确认后才能创建 ChapterSession；
 - Planning 只保存未来计划；实际进度只能由 Canon/Projection 只读提供；
 - 手工规划不依赖模型；AI 只生成可编辑 Draft，不自动确认；
-- 从空库建立 `writer-core-v1.5.0`，删除旧 Planning 权威，不做兼容迁移。
+- 从空库建立当前精确源码 Schema，删除旧 Planning 权威，不做兼容迁移。
 
 Phase 3 不实现正式正文写作、质量审核、Canon 写入或原子定稿，也不以 Schema
 占位或 fake gateway 测试冒充这些能力已经完成。
@@ -69,14 +69,20 @@ Phase 3 不实现正式正文写作、质量审核、Canon 写入或原子定稿
   server-authoritative next action、archived/superseded 只读及正式 UI-only
   浏览器门禁。
 - Phase 3C 已完成 StoryBlock/Stage/SceneTask、ChapterOutline Draft/save CAS/confirm/history、权威章节号、单一 drafting Session 与可靠 Writer 入口。
-- Phase 3D 是唯一下一步：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合及 Phase 3 总验收。
+- Phase 3D 已完成 Future Plan/Actual Progress/Canon Projection 同 revision 只读组合及完整 Phase 3 验收。
 
-Phase 3C 沿用唯一 `planning-v1` aggregate、唯一 `planningStore` 和
-`writer-core-v1.5.0`；没有 Schema 变更、迁移或兼容路径。其自动验收不包含
-Future Plan/Actual Progress/Canon Projection 组合、真实 Provider、产品数据库、
-正式正文生成、Canon 写入或小说内容
-质量；详细证据见
-`docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`。
+Phase 3 沿用唯一 `planning-v1` aggregate、唯一 `planningStore` 和
+`writer-core-v1.6.0`。Phase 3D 将 Candidate 的 Outline/Planning/Canon/Projection
+依据身份纳入 Schema；从空库建立，不提供 migration 或 compatibility path。Seed、
+Contract 与 Bible 的已确认内容是永久基线；未来 Planning 只处理尚未实现的内容。
+正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改；Phase 3 只交付定稿前
+的权威围栏，原子定稿仍属于 Phase 5。Setting 与知识库仍将在 Phase 5 经由
+Canon/Projection 落地；这不是已交付能力。详细证据见：
+
+- `docs/acceptance/2026-07-30-phase-3-story-planning.md`
+- `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`
+
+- 唯一下一产品包：**Phase 4 Writer Loop**。
 
 ## 5. 写作链路的先决修复
 

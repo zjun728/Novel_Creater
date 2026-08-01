@@ -1,6 +1,6 @@
 # 当前项目状态
 
-> 新任务或上下文压缩后先读本文件。事实日期：`2026-07-30`。
+> 新任务或上下文压缩后先读本文件。事实日期：`2026-08-01`。
 
 ## 当前权威
 
@@ -23,14 +23,15 @@
 - Canonical release branch：`main`。
 - Phase 2 验收链已进入 `main`，链末提交：
   `f11faad531f04250f2a987390a468dfd14bf06a3`。
-- 当前完成交付包：**Phase 3C Story Blocks and Chapter Outlines**。
-- 当前开发分支：`codex/phase3c-story-blocks-outlines`。
-- Phase 3C 交付基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`。
-- Fresh package gates 的功能代码 HEAD：`056520c1f270fdf8f3888be2713647fff03bf2b8`。
-- 当前自动证据边界：Real Provider calls `0`、严格 fake gateway、
-  Disposable MySQL 8、UI-only 真实浏览器。
-- Phase 3D、Product DB、Real Provider、正式 Writer Loop、Finalization 和
-  Content Quality 均未评估，不得据 Phase 3C 门禁宣告 Ready。
+- 当前完成交付包：**Phase 3 Story Planning**。
+- 当前开发分支：`codex/phase3d-boundary-acceptance`。
+- Phase 3D 与 Phase 3 已完成：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。
+- 唯一下一步：**Phase 4 Writer Loop**。
+- 交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`。
+- 功能代码 HEAD：`382dcefa57f575209cc703d3af0e60fd1b11137d`。
+- 当前自动证据边界：Real Provider calls `0`、Product DB reads/writes `0/0`、
+  Disposable MySQL 8、UI-only 真实浏览器；正式 Writer Loop、Finalization 和
+  Content Quality 仍未就绪。
 
 ## Phase 2 已完成能力
 
@@ -106,15 +107,18 @@ Phase 3B committed acceptance 见：
   frontend Node `522/522`；integration `342 passed`；build
   `2956 modules transformed`。
 
-Phase 3C acceptance 见：
+Phase 3 acceptance 见：
 
 - `docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`
+- `docs/acceptance/2026-07-30-phase-3-story-planning.md`
+- `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`
 
 ## 当前 Schema 与数据库边界
 
-- 当前开发分支 committed 源码 Schema：`writer-core-v1.5.0`。
+- 当前开发分支 committed 源码 Schema：`writer-core-v1.6.0`。
 - Phase 3B 没有 Schema 变更、迁移或兼容路径。
 - Phase 3C 没有 Schema 变更、迁移或兼容路径。
+- Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1.6.0`；没有 migration 或 compatibility path。
 - 产品数据库现存 Schema 未读取、未重建、未验证。
 - 源码 Schema 版本不得推导为产品数据库现存版本。
 - 不迁移旧数据，不保留旧 Planning 表兼容查询。
@@ -122,8 +126,6 @@ Phase 3C acceptance 见：
 
 ## 尚未完成
 
-- Phase 3D：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合
-  和 Phase 3 总验收。
 - Phase 4：正式三栏写作台、可靠自动暂存、流式新稿、改写/扩写/压缩、候选、
   对比和融合。
 - Phase 5：质量审核、单次 `FinalizationChangeSet` 提取、整体确认、
@@ -134,7 +136,8 @@ Phase 3C acceptance 见：
 
 ## 唯一下一步
 
-建设并验收 **Phase 3D Future Plan / Actual Progress / Canon Projection**：在同一
-Planning revision 上只读组合 Future Plan、Actual Progress 与 Canon Projection，
-并完成 Phase 3 总验收。继续复用当前 `planning-v1` 聚合、唯一 `planningStore`
-和正式产品链；自动门禁继续禁止真实 Provider、产品数据库和 live 网站。
+建设并验收 **Phase 4 Writer Loop**。它以前序完整的 Phase 3 规划链为基础；自动
+门禁继续禁止真实 Provider、产品数据库和 live 网站。Seed、Contract 与 Bible 的
+已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。正文定稿前对应
+大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持的范围为准。
+Setting 与知识库仍在 Phase 5 通过 Canon/Projection 落地，不在本阶段声称已实现。

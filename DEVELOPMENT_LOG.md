@@ -1,6 +1,6 @@
 # 开发日志
 
-> 只记录当前有效的决策与证据摘要。日期：`2026-07-30`。不记录密钥、DSN、原始运行日志或本地截图。
+> 只记录当前有效的决策与证据摘要。日期：`2026-08-01`。不记录密钥、DSN、原始运行日志或本地截图。
 
 ## 2026-07-18 产品主规格重置
 
@@ -170,9 +170,22 @@ missing/error/retry、IME、Tab 焦点循环、Escape 焦点恢复、全局阻�
 - 详细证据：
   `docs/acceptance/2026-07-26-phase-3c-story-blocks-outlines.md`。
 
+## 2026-07-30 Phase 3 Story Planning 完成
+
+- Phase 3D 与完整 Phase 3 已完成。
+- 唯一下一产品包：Phase 4 Writer Loop。
+- 分支：`codex/phase3d-boundary-acceptance`；交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`；功能代码 HEAD：`382dcefa57f575209cc703d3af0e60fd1b11137d`。
+- 当前源码 Schema 为 `writer-core-v1.6.0`；Candidate 身份包含 Outline/Planning/Canon/Projection 依据，Phase 3D 不提供 migration 或 compatibility path。
+- Future Plan/Actual Progress/Canon Projection 在同一 revision 只读组合，Planning 读取不写 lifecycle。
+- 完整 Fresh 门禁为 browser `6/6`、Python `2871 passed, 6 skipped, 0 failed`、root Node `345/345 passed, 0 failed`、frontend `547/547 passed, 0 failed`、integration `341 passed, 0 failed`、`created=339, cleaned=339, remaining=0`、Vite `8.0.13` 和 `2958 modules`；所有命令 exit `0`。
+- owned process、port、temp、artifact、cache 与 test DB 均为 `0`；Provider `0`、Product DB reads/writes `0/0`、live `0`、UI bypass `0`、secret `0`。
+- Seed、Contract 与 Bible 的已确认内容为永久基线；未来 Planning 只处理尚未实现的内容。正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持的范围为准。
+- Setting 与知识库仍在 Phase 5 通过 Canon/Projection 落地；Phase 4 Writer Loop、Phase 5 Finalization、真实 Provider、产品数据库与内容质量仍未就绪。
+- 规格与质量审查均为 `Critical/Important/Minor = 0/0/0`；详细证据：
+  `docs/acceptance/2026-07-30-phase-3-story-planning.md` 与
+  `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`。
+
 ## 下一步
 
-唯一下一步是 Phase 3D Future Plan / Actual Progress / Canon Projection：在同一
-Planning revision 上只读组合 Future Plan、Actual Progress 与 Canon Projection，
-并完成 Phase 3 总验收。继续复用唯一 Planning aggregate、`planningStore` 和正式
-产品链；自动门禁继续禁止产品数据库、真实 Provider 和 live 网站。
+唯一下一步是 Phase 4 Writer Loop。它以前序完整的 Planning 链为基础；自动门禁继续
+禁止产品数据库、真实 Provider 和 live 网站。

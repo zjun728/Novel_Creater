@@ -369,7 +369,7 @@ test('Phase 3B detailed plan freezes its delivery and safety contract', async ()
   );
 });
 
-test('Phase 3C completion facts are current and Phase 3D is the only next step', async () => {
+test('Phase 3 completion facts are current and Phase 4 is the only next step', async () => {
   const [
     currentState,
     productPlan,
@@ -402,40 +402,36 @@ test('Phase 3C completion facts are current and Phase 3D is the only next step',
   );
   assert.match(
     currentConclusion,
-    /^- 当前完成交付包：\*\*Phase 3C Story Blocks and Chapter Outlines\*\*。$/m,
+    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\*。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 当前开发分支：`codex\/phase3c-story-blocks-outlines`。$/m,
+    /^- 当前开发分支：`codex\/phase3d-boundary-acceptance`。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- Phase 3C 交付基线：`main@59d80d739ef39a09bcd54e1888e4e4da90a98fa3`。$/m,
+    /^- Phase 3D 与 Phase 3 已完成：Future Plan\/Actual Progress\/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- Fresh package gates 的功能代码 HEAD：`056520c1f270fdf8f3888be2713647fff03bf2b8`。$/m,
+    /^- 唯一下一步：\*\*Phase 4 Writer Loop\*\*。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 当前自动证据边界：Real Provider calls `0`、严格 fake gateway、\r?\n  Disposable MySQL 8、UI-only 真实浏览器。$/m,
+    /^- 功能代码 HEAD：`382dcefa57f575209cc703d3af0e60fd1b11137d`。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- Phase 3D、Product DB、Real Provider、正式 Writer Loop、Finalization 和\r?\n  Content Quality 均未评估，不得据 Phase 3C 门禁宣告 Ready。$/m,
+    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`、\r?\n  Disposable MySQL 8、UI-only 真实浏览器；正式 Writer Loop、Finalization 和\r?\n  Content Quality 仍未就绪。$/m,
   );
 
   const nextStep = readSection(currentState, '唯一下一步');
   assert.match(
     nextStep,
-    /^建设并验收 \*\*Phase 3D Future Plan \/ Actual Progress \/ Canon Projection\*\*：在同一\r?\nPlanning revision 上只读组合 Future Plan、Actual Progress 与 Canon Projection，\r?\n并完成 Phase 3 总验收。继续复用当前 `planning-v1` 聚合、唯一 `planningStore`\r?\n和正式产品链；自动门禁继续禁止真实 Provider、产品数据库和 live 网站。$/m,
+    /^建设并验收 \*\*Phase 4 Writer Loop\*\*。它以前序完整的 Phase 3 规划链为基础；自动\r?\n门禁继续禁止真实 Provider、产品数据库和 live 网站。Seed、Contract 与 Bible 的\r?\n已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。正文定稿前对应\r?\n大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持的范围为准。\r?\nSetting 与知识库仍在 Phase 5 通过 Canon\/Projection 落地，不在本阶段声称已实现。$/m,
   );
 
   const schemaBoundary = readSection(currentState, '当前 Schema 与数据库边界');
-  assert.match(
-    schemaBoundary,
-    /^- 当前开发分支 committed 源码 Schema：`writer-core-v1\.5\.0`。$/m,
-  );
   assert.match(
     schemaBoundary,
     /^- 产品数据库现存 Schema 未读取、未重建、未验证。$/m,
@@ -443,6 +439,14 @@ test('Phase 3C completion facts are current and Phase 3D is the only next step',
   assert.match(
     schemaBoundary,
     /^- Phase 3C 没有 Schema 变更、迁移或兼容路径。$/m,
+  );
+  assert.match(
+    schemaBoundary,
+    /^- 当前开发分支 committed 源码 Schema：`writer-core-v1\.6\.0`。$/m,
+  );
+  assert.match(
+    schemaBoundary,
+    /^- Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1\.6\.0`；没有 migration 或 compatibility path。$/m,
   );
 
   const productPlanLines = productPlan.split(/\r?\n/);
@@ -453,7 +457,7 @@ test('Phase 3C completion facts are current and Phase 3D is the only next step',
   );
   assert.ok(
     productPlanLines.includes(
-      '| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 3A/3B/3C 已完成，3D 下一步 |',
+      '| Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 已完成门禁 |',
     ),
   );
   assert.ok(
@@ -463,7 +467,7 @@ test('Phase 3C completion facts are current and Phase 3D is the only next step',
   );
   assert.ok(
     productPlanLines.includes(
-      '- Phase 3D 是唯一下一步：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合及 Phase 3 总验收。',
+      '- Phase 3D 已完成 Future Plan/Actual Progress/Canon Projection 同 revision 只读组合及完整 Phase 3 验收。',
     ),
   );
 
@@ -864,5 +868,215 @@ test('Phase 3C detailed plan freezes its delivery and safety contract', async ()
       new RegExp(forbiddenRuntimeSymbol, 'i'),
       `runtime must not contain: ${forbiddenRuntimeSymbol}`,
     );
+  }
+});
+
+test('Phase 3 immutable-boundary acceptance closes Phase 3 without claiming finalization', async () => {
+  const [acceptance, alignment, currentState, productPlan, developmentLog] = await Promise.all([
+    readProjectFile('docs/acceptance/2026-07-30-phase-3-story-planning.md'),
+    readProjectFile('docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md'),
+    readProjectFile('CURRENT_PROJECT_STATE.md'),
+    readProjectFile('PRODUCT_DEVELOPMENT_PLAN.md'),
+    readProjectFile('DEVELOPMENT_LOG.md'),
+  ]);
+  const sections = Array.from(
+    acceptance.matchAll(/^## (.+)$/gm),
+    ([, heading]) => heading.trimEnd(),
+  );
+  assert.deepEqual(sections, [
+    '元数据',
+    '验收结论',
+    '已交付链路',
+    '独立审查',
+    'Fresh 最终门禁',
+    '隔离与未评估边界',
+    '下一步',
+  ]);
+
+  const requiredAcceptanceFacts = [
+    'codex/phase3d-boundary-acceptance',
+    'main@e8aebd9eb851ccc64f160022984342344905cd15',
+    'functional implementation HEAD',
+    '382dcefa57f575209cc703d3af0e60fd1b11137d',
+    'writer-core-v1.6.0',
+    '14 formal outcomes',
+    '6/6',
+    '2871 passed, 6 skipped, 0 failed',
+    '345/345 passed, 0 failed',
+    '547/547 passed, 0 failed',
+    '341 passed, 0 failed',
+    'created=339, cleaned=339, remaining=0',
+    'Vite 8.0.13',
+    '2958 modules',
+    'owned process',
+    'port',
+    'temp',
+    'artifact',
+    'cache',
+    'test DB',
+    'Provider 0',
+    'Product DB reads/writes 0/0',
+    'live 0',
+    'UI bypass 0',
+    'secret 0',
+    'docs/acceptance/2026-07-30-phase-3-story-planning.md',
+    'CURRENT_PROJECT_STATE.md',
+    'PRODUCT_DEVELOPMENT_PLAN.md',
+    'DEVELOPMENT_LOG.md',
+    'scripts/tests/phase3PlanContract.test.mjs',
+  ];
+  for (const fact of requiredAcceptanceFacts) {
+    assert.ok(acceptance.includes(fact), `acceptance missing: ${fact}`);
+  }
+  for (const outcome of [
+    'completePhase2PreparationUi',
+    'toBeDisabled',
+    '新增场景任务',
+    '规划修订历史',
+    '建立空白规划工作稿',
+    '预览并确认小纲',
+    'zero Session POST before confirmation',
+    '已被后续依据取代',
+    'Planning R1',
+    '保存冲突：本地编辑仍保留，请重新加载权威版本后再继续。',
+    'page.goForward',
+    '尚无已定稿事实',
+    'network-audit',
+    'assertExactWrites',
+  ]) assert.ok(acceptance.includes(outcome), `missing formal outcome: ${outcome}`);
+  assert.match(acceptance, /futurePlan[^\n]*only[^\n]*current basis/iu);
+  assert.match(acceptance, /actualProgress[^\n]*only[^\n]*synchronized[^\n]*plot_thread_projections/iu);
+  assert.match(acceptance, /Canon\/Projection[^\n]*synchronized/iu);
+  assert.match(acceptance, /(?:does not write|不写)[^\n]*planning lifecycle|planning lifecycle[^\n]*(?:does not write|不写)/iu);
+  assert.match(acceptance, /all exit `0`/u);
+  assert.match(acceptance, /owned process `0`.*port `0`.*temp `0`.*artifact `0`.*cache `0`.*test DB `0`/u);
+  for (const boundary of [
+    'Phase 4 Writer',
+    'Phase 5 Finalization',
+    'real Provider',
+    'product DB',
+    'content quality',
+  ]) assert.match(
+    acceptance,
+    new RegExp(`${boundary}[^\\n]*(?:not ready|未就绪)|(?:not ready|未就绪)[^\\n]*${boundary}`, 'iu'),
+    `acceptance must bind ${boundary} to its own non-readiness fact`,
+  );
+  const expectedStoryGateLines = [
+    '- `npm test`：Python `2871 passed, 6 skipped, 0 failed`；root Node `345/345 passed, 0 failed`；frontend `547/547 passed, 0 failed`。',
+    '- focused backend：`376 passed, 0 failed`。',
+    '- `npm run test:integration`：`341 passed, 0 failed`；`created=339, cleaned=339, remaining=0`。',
+    '- `npm run build`：Vite 8.0.13，2958 modules。',
+    '- `npm run test:browser:phase3`：browser `6/6`。',
+    '- `git diff --check`：`0`。',
+    '- all exit `0`。',
+  ];
+  assert.equal(
+    normalizePhase3cMarkdown(readSection(acceptance, 'Fresh 最终门禁')),
+    ['## Fresh 最终门禁', '', ...expectedStoryGateLines].join('\n'),
+    'story acceptance must contain one exact ordered final-gate tuple',
+  );
+  assert.doesNotMatch(acceptance, /(?:duration|elapsed|timestamp|novel_creator_test_|deps_temp_|(?:[A-Za-z]:\\|\/tmp\/)|:\d{2,5}|\b20\d{2}-\d{2}-\d{2}T|\b\d+(?:\.\d+)?(?:ms|s)\b)/iu);
+  assert.deepEqual(
+    [...new Set(acceptance.match(/\b[a-f0-9]{40}\b/giu) || [])].sort(),
+    [
+      '382dcefa57f575209cc703d3af0e60fd1b11137d',
+      'e8aebd9eb851ccc64f160022984342344905cd15',
+    ].sort(),
+    'the report may record only the fixed delivery baseline and functional implementation SHAs',
+  );
+
+  assert.match(currentState, /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\*。$/m);
+  assert.match(currentState, /^- 当前开发分支：`codex\/phase3d-boundary-acceptance`。$/m);
+  assert.match(currentState, /^- Phase 3D 与 Phase 3 已完成：Future Plan\/Actual Progress\/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。$/m);
+  assert.match(currentState, /^- 唯一下一步：\*\*Phase 4 Writer Loop\*\*。$/m);
+  assert.match(currentState, /^- 功能代码 HEAD：`382dcefa57f575209cc703d3af0e60fd1b11137d`。$/m);
+  assert.doesNotMatch(currentState, /Phase 3D[^\n]*下一步/u);
+
+  assert.match(productPlan, /^\| Phase 3 \|.*\| 已完成门禁 \|$/m);
+  assert.match(productPlan, /^\| Phase 4 \|.*\| 唯一下一产品包；待开始 \|$/m);
+  assert.match(productPlan, /^- 唯一下一产品包：\*\*Phase 4 Writer Loop\*\*。$/m);
+  assert.doesNotMatch(productPlan, /Phase 3D[^\n]*下一步/u);
+
+  const phase3Log = readSection(developmentLog, '2026-07-30 Phase 3 Story Planning 完成');
+  assert.match(phase3Log, /^- Phase 3D 与完整 Phase 3 已完成。$/m);
+  assert.match(phase3Log, /^- 唯一下一产品包：Phase 4 Writer Loop。$/m);
+  assert.doesNotMatch(phase3Log, /Phase 3D[^\n]*下一步/u);
+  assert.doesNotMatch(readSection(developmentLog, '下一步'), /Phase 3D[^\n]*下一步/u);
+
+  const alignmentSections = Array.from(
+    alignment.matchAll(/^## (.+)$/gm),
+    ([, heading]) => heading.trimEnd(),
+  );
+  assert.deepEqual(alignmentSections, [
+    '元数据',
+    '不可变边界结果',
+    'Fresh 门禁与审查',
+    '资源与安全账本',
+    '明确延后',
+  ]);
+  for (const fact of [
+    'codex/phase3d-boundary-acceptance',
+    'main@e8aebd9eb851ccc64f160022984342344905cd15',
+    '382dcefa57f575209cc703d3af0e60fd1b11137d',
+    'writer-core-v1.6.0',
+    'Seed second-selection refused',
+    'Contract post-confirmation replacement refused',
+    'Bible post-confirmation replacement refused',
+    'Outline r1 -> r2',
+    'Session entry provenance remains r1',
+    'Candidate A stale',
+    'Candidate B current',
+    'Specification review: Critical/Important/Minor = 0/0/0',
+    'Quality review: Critical/Important/Minor = 0/0/0',
+    'Phase 5 finalization atomic lock and Canon realization',
+  ]) assert.ok(alignment.includes(fact), `alignment acceptance missing: ${fact}`);
+  const expectedAlignmentGateLines = [
+    ...expectedStoryGateLines.slice(0, 6),
+    '- Specification review: Critical/Important/Minor = 0/0/0。',
+    '- Quality review: Critical/Important/Minor = 0/0/0。',
+    expectedStoryGateLines.at(-1),
+  ];
+  assert.equal(
+    normalizePhase3cMarkdown(readSection(alignment, 'Fresh 门禁与审查')),
+    ['## Fresh 门禁与审查', '', ...expectedAlignmentGateLines].join('\n'),
+    'alignment acceptance must contain one exact ordered gate and review tuple',
+  );
+  assert.match(alignment, /owned process `0`.*port `0`.*temp root `0`.*Vite `deps_temp` `0`.*test DB `0`/u);
+  const deferredBoundaryTarget = /(?:Phase 5 Finalization|Finalization|Canon realization|Setting|memory|设定库|知识库|记忆|原子定稿)/iu;
+  const unsafeReportContent = /(?:(?:request|response)\s*(?:body|payload)|api[_ -]?key|authorization|bearer|password|dsn|raw provider|provider output|请求(?:正文|载荷)|响应(?:正文|载荷)|Provider 原文|数据库连接串|密钥|密码|授权|大型日志|large log)/iu;
+  const deferredBoundaryLines = (report) => report
+    .split(/\r?\n/u)
+    .filter((line) => deferredBoundaryTarget.test(line));
+  assert.deepEqual(deferredBoundaryLines(acceptance), [
+    '- 正文定稿后大纲与事实不可修改属于 Phase 5 原子定稿边界；本阶段交付并验证定稿前的权威围栏，不宣称原子定稿已经实现。',
+    '- Setting 与知识库仍将在 Phase 5 通过 Canon/Projection 落地；Phase 3 仍未交付这些能力。',
+    '- Phase 5 Finalization: not ready.',
+    '- 唯一下一产品包为 Phase 4 Writer Loop；Phase 5 再实现正文、小纲、Canon 与 Projection 的原子定稿。',
+  ], 'story acceptance deferred-boundary lines must be exact');
+  assert.equal(
+    normalizePhase3cMarkdown(readSection(alignment, '明确延后')),
+    [
+      '## 明确延后',
+      '',
+      '- Phase 5 finalization atomic lock and Canon realization：延后。',
+      '- Phase 5 才在一个事务中冻结最终小纲与正文、追加 Canon、重建 Projection 并推进 Planning realization。',
+      '- Setting、记忆、人物状态、伏笔与故事进度继续作为 Canon/Projection 派生视图，Phase 3 仍未交付这些能力。',
+    ].join('\n'),
+    'alignment acceptance must freeze the complete deferred boundary',
+  );
+  for (const unsafe of [
+    'request body: secret',
+    'response payload: secret',
+    'Provider output: secret',
+    '请求正文：秘密',
+    '响应载荷：秘密',
+    'Provider 原文：秘密',
+    '数据库连接串：秘密',
+    '密钥：秘密',
+    '密码：秘密',
+    '授权：秘密',
+  ]) assert.match(unsafe, unsafeReportContent, `unsafe guard missed: ${unsafe}`);
+  for (const [name, report] of [['story', acceptance], ['alignment', alignment]]) {
+    assert.doesNotMatch(report, unsafeReportContent, `${name} acceptance contains unsafe evidence`);
   }
 });
