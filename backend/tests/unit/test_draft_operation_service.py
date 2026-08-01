@@ -60,6 +60,7 @@ class TransactionTracker:
         self.repository = repository
         self.active = 0
         self.entries = 0
+        self.events = []
 
     def factory(self):
         tracker = self
@@ -67,6 +68,7 @@ class TransactionTracker:
         class Transaction:
             async def __aenter__(self):
                 self.snapshot = tracker.repository.snapshot()
+                tracker.events.append("transaction-enter")
                 tracker.active += 1
                 tracker.entries += 1
                 return object()
@@ -98,6 +100,8 @@ class FakeGateway:
             self.on_generate()
         if isinstance(self.output, BaseException):
             raise self.output
+        if self.tracker is not None:
+            self.tracker.events.append("gateway-return")
         return self.output
 
 
@@ -1013,6 +1017,58 @@ async def test_provider_or_validation_failure_records_fixed_failure(output, code
     assert repo.revisions == []
     assert repo.events[-1]["event_type"] == "failed"
     assert repo.events[-1]["closed_payload"] == {"failureCode": code}
+
+
+@pytest.mark.asyncio
+async def test_provider_output_scalar_bound_rejects_before_draft_or_recovery_write():
+    gateway = FakeGateway("字" * 100_001)
+    service, repo, _, tracker, _ = make_service(gateway=gateway)
+
+    result = await service.start(command())
+
+    assert result.status == "failed"
+    assert result.failure_code == "DraftProviderResultInvalid"
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
+    assert [event["event_type"] for event in repo.events] == ["started", "failed"]
+    assert tracker.entries == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_output_accepts_100000_astral_unicode_scalars():
+    content = "😀" * 100_000
+    gateway = FakeGateway(content)
+    service, repo, _, _, _ = make_service(gateway=gateway)
+
+    result = await service.start(command())
+
+    assert result.status == "completed"
+    assert len(repo.draft["content"]) == 100_000
+    assert repo.draft["content"] == content
+
+
+@pytest.mark.asyncio
+async def test_provider_output_validation_precedes_success_settlement_transaction():
+    events = []
+
+    class ProbeText(str):
+        def strip(self, chars=None):
+            events.append("content-validation")
+            return super().strip(chars)
+
+    gateway = FakeGateway(ProbeText("有效正文"))
+    service, _, _, tracker, _ = make_service(gateway=gateway)
+    tracker.events = events
+
+    result = await service.start(command())
+
+    assert result.status == "completed"
+    assert events == [
+        "transaction-enter",
+        "gateway-return",
+        "content-validation",
+        "transaction-enter",
+    ]
 
 
 @pytest.mark.asyncio

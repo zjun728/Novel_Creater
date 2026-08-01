@@ -31,6 +31,7 @@ from backend.security.provider_secrets import (
 
 DRAFT_OPERATION_LEASE_MS = 1_260_000
 DRAFT_OPERATION_AUTHOR_INSTRUCTION_MAX_LENGTH = 2_000
+DRAFT_OPERATION_CONTENT_MAX_SCALARS = 100_000
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _FIXED_MESSAGE = "Draft operation state changed; refresh and retry"
 _SESSION_IDENTITY_FIELDS = (
@@ -224,7 +225,26 @@ class DraftOperationService:
             return await self._settle_failure(context, "DraftProviderFailed")
         except Exception:
             raise DraftOperationUnexpectedProviderError() from None
-        return await self._settle_success(context, generated)
+        try:
+            content = self._validated_provider_content(context, generated)
+        except (TypeError, ValueError, RecursionError, UnicodeError):
+            return await self._settle_failure(
+                context, "DraftProviderResultInvalid"
+            )
+        return await self._settle_success(context, content)
+
+    @staticmethod
+    def _validated_provider_content(context, generated):
+        content = validate_provider_response_text(generated, strip=True)
+        if len(content) > DRAFT_OPERATION_CONTENT_MAX_SCALARS:
+            raise ValueError
+        secrets = context["provider_secrets"]
+        if (
+            provider_response_text_contains_secret(content, secrets)
+            or provider_response_value_contains_secret(content, secrets)
+        ):
+            raise ValueError
+        return content
 
     async def _reserve(self, command):
         fingerprint = self._request_fingerprint(command)
@@ -365,7 +385,7 @@ class DraftOperationService:
                 "gateway_messages": gateway_messages,
             }
 
-    async def _settle_success(self, context, generated):
+    async def _settle_success(self, context, content):
         async with self._transaction() as session:
             locked = await self._lock_settlement(session, context)
             terminal = await self._terminal_or_expire_drift(session, context, locked)
@@ -373,18 +393,6 @@ class DraftOperationService:
                 return terminal
             attempt = locked["attempt"]
             draft = locked["draft"]
-            try:
-                content = validate_provider_response_text(generated, strip=True)
-                secrets = context["provider_secrets"]
-                if (
-                    provider_response_text_contains_secret(content, secrets)
-                    or provider_response_value_contains_secret(content, secrets)
-                ):
-                    raise ValueError
-            except (TypeError, ValueError, RecursionError, UnicodeError):
-                return await self._fail_locked(
-                    session, context, attempt, "DraftProviderResultInvalid"
-                )
 
             now = self._clock()
             result_revision = int(draft["revision"]) + 1

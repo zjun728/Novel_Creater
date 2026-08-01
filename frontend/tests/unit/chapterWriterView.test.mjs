@@ -45,6 +45,7 @@ test('writer view has one controller-owned plain-text working draft loop', async
   assert.match(editor, /Array\.from\(text\.value\)\.length/)
   assert.doesNotMatch(editor, /contenteditable/)
   assert.match(editor, /dirty: \{ type: Boolean/)
+  assert.match(editor, /readonly: \{ type: Boolean/)
   assert.match(editor, /status: \{ type: String/)
   assert.match(editor, /lastSavedAt: \{ type: String/)
   for (const label of ['正在暂存', '已暂存', '暂存失败', '与服务端版本冲突']) {
@@ -57,6 +58,13 @@ test('writer view has one controller-owned plain-text working draft loop', async
   assert.ok(conflictBranch)
   assert.doesNotMatch(conflictBranch, /retry|reload|reset|disabled/)
   assert.match(editor, /@click="emit\('retry'\)"/)
+  assert.match(editor, /:readonly="readonly"/)
+  assert.match(editor, /:disabled="disabled"/)
+  assert.match(editor, /:disabled="disabled \|\| readonly"/)
+  assert.match(editor, /if \(props\.readonly \|\| props\.disabled\) return/)
+  const selectionBody = functionBody(editor, 'function emitSelection(')
+  assert.doesNotMatch(selectionBody, /readonly|disabled/)
+  assert.match(editor, /:read-only:not\(:disabled\)/)
 })
 
 test('operation status is a shallow readable overlay with one auditable busy lock', async () => {
@@ -73,7 +81,10 @@ test('operation status is a shallow readable overlay with one auditable busy loc
   assert.match(view, /\{\{ controller\.operationStatusText\.value \}\}/)
   assert.match(view, /draft-operation-layer\s*\{[^}]*pointer-events:\s*none/)
   assert.match(view, /draft-operation-layer[\s\S]*?max-height:/)
+  assert.match(view, /const editorDisabled = computed\(\(\) => !session\.value\)/)
+  assert.match(view, /const editorReadonly = computed\(\(\) => controller\.actionBusy\.value\)/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:disabled="editorDisabled"/)
+  assert.match(view, /plain-text-draft-editor[\s\S]*?:readonly="editorReadonly"/)
   assert.match(view, /writer-outline-link[\s\S]*?:aria-disabled="controller\.actionBusy\.value"/)
   assert.match(view, /@click="guardBusyNavigation"/)
   assert.match(view, /返回项目[\s\S]*?:disabled="controller\.actionBusy\.value"|:disabled="controller\.actionBusy\.value"[\s\S]*?返回项目/)

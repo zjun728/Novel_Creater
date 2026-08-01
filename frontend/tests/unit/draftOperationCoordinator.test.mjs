@@ -152,6 +152,119 @@ test('exact durable-operation 502 keeps the frozen command for same-key replay',
   assert.strictEqual(calls[1], calls[0])
 })
 
+test('explicit unknown retry covers the lease window then reconciles once with the same key', async () => {
+  const starts = []
+  let reads = 0
+  let delays = 0
+  const subject = coordinator({
+    startOperation: async next => {
+      starts.push(next)
+      if (starts.length === 1) {
+        throw new ApiError({ status: 502, code: 'DraftOperationUnavailable' })
+      }
+      if (starts.length === 2) {
+        return operation({
+          status: 'running', lastEventSequence: 1,
+          resultWorkingDraftRevision: null, resultContentHash: null,
+        })
+      }
+      return operation({
+        status: 'expired', lastEventSequence: 1,
+        resultWorkingDraftRevision: null, resultContentHash: null,
+      })
+    },
+    readOperation: async () => {
+      reads += 1
+      return operation({
+        status: 'running', lastEventSequence: 1,
+        resultWorkingDraftRevision: null, resultContentHash: null,
+      })
+    },
+    pollScheduler: () => {
+      delays += 1
+      return { promise: Promise.resolve(), cancel() {} }
+    },
+  })
+
+  await assert.rejects(() => subject.generateNew(command()), ApiError)
+  assert.equal(await subject.retryUnknown(), null)
+  assert.equal(starts.length, 3)
+  assert.strictEqual(starts[1], starts[0])
+  assert.strictEqual(starts[2], starts[0])
+  assert.equal(reads, 1_261)
+  assert.equal(delays, 1_260)
+  assert.equal(subject.status, 'expired')
+})
+
+test('lease-end reconciliation is bounded when the same operation is still running', async () => {
+  let starts = 0
+  const subject = coordinator({
+    startOperation: async () => {
+      starts += 1
+      if (starts === 1) {
+        throw new ApiError({ status: 502, code: 'DraftOperationUnavailable' })
+      }
+      return operation({
+        status: 'running', lastEventSequence: 1,
+        resultWorkingDraftRevision: null, resultContentHash: null,
+      })
+    },
+    readOperation: async () => operation({
+      status: 'running', lastEventSequence: 1,
+      resultWorkingDraftRevision: null, resultContentHash: null,
+    }),
+    pollScheduler: () => ({ promise: Promise.resolve(), cancel() {} }),
+  })
+
+  await assert.rejects(() => subject.generateNew(command()), ApiError)
+  assert.equal(await subject.retryUnknown(), null)
+  assert.equal(starts, 3)
+  assert.equal(subject.status, 'unknown')
+  assert.equal(subject.failureCode, 'request_unknown')
+})
+
+test('reset and dispose cancel explicit lease recovery before automatic replay', async () => {
+  for (const invalidate of [
+    subject => subject.resetContext(),
+    subject => subject.dispose(),
+  ]) {
+    const delay = deferred()
+    let starts = 0
+    let cancelled = 0
+    const subject = coordinator({
+      startOperation: async () => {
+        starts += 1
+        if (starts === 1) {
+          throw new ApiError({ status: 502, code: 'DraftOperationUnavailable' })
+        }
+        return operation({
+          status: 'running', lastEventSequence: 1,
+          resultWorkingDraftRevision: null, resultContentHash: null,
+        })
+      },
+      readOperation: async () => operation({
+        status: 'running', lastEventSequence: 1,
+        resultWorkingDraftRevision: null, resultContentHash: null,
+      }),
+      pollScheduler: () => ({
+        promise: delay.promise,
+        cancel() {
+          cancelled += 1
+          delay.resolve()
+        },
+      }),
+    })
+    await assert.rejects(() => subject.generateNew(command()), ApiError)
+    const recovery = subject.retryUnknown()
+    await Promise.resolve()
+    await Promise.resolve()
+    invalidate(subject)
+    assert.equal(await recovery, null)
+    assert.equal(starts, 2)
+    assert.equal(cancelled, 1)
+  }
+})
+
 test('an unrelated 502 remains a known rejection without recovery state', async () => {
   const subject = coordinator({
     startOperation: async () => {

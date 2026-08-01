@@ -8,6 +8,7 @@ const PUBLIC_STATUSES = new Set(['starting', 'running', 'completed', 'failed', '
 const FAILURE_CODES = new Set(['DraftProviderFailed', 'DraftProviderResultInvalid'])
 const POLL_INTERVAL_MS = 1_000
 const MAX_STATUS_READS = 1_200
+const RECOVERY_LEASE_STATUS_READS = 1_261
 const MAX_BASE_REVISION = 2_147_483_646
 const MAX_RESULT_REVISION = 2_147_483_647
 const OPERATION_FIELDS = [
@@ -249,11 +250,41 @@ export function createDraftOperationCoordinator({
     }
   }
 
-  async function recover(token, frozenCommand, initialOperation) {
+  async function reconcileAfterLease(token, frozenCommand) {
+    let received
+    try {
+      received = await start(frozenCommand)
+    } catch (error) {
+      if (!isCurrent(token)) return null
+      if (isUnknownTransport(error)) markUnknown(frozenCommand)
+      else markKnownFailure(error)
+      throw error
+    }
+    if (!isCurrent(token)) return null
+    let operation
+    try {
+      operation = acceptOperation(received)
+    } catch (error) {
+      if (isCurrent(token)) markKnownFailure(error)
+      throw error
+    }
+    if (operation.status === 'completed') return reloadCompleted(token)
+    if (TERMINAL_STATUSES.has(operation.status)) return null
+    markUnknown(frozenCommand)
+    return null
+  }
+
+  async function recover(token, frozenCommand, initialOperation, reconcileLeaseEnd) {
     let operation = initialOperation
     let reads = 0
+    const maxReads = reconcileLeaseEnd
+      ? RECOVERY_LEASE_STATUS_READS
+      : MAX_STATUS_READS
     while (!TERMINAL_STATUSES.has(operation.status)) {
-      if (reads >= MAX_STATUS_READS) {
+      if (reads >= maxReads) {
+        if (reconcileLeaseEnd && isCurrent(token)) {
+          return reconcileAfterLease(token, frozenCommand)
+        }
         if (isCurrent(token)) markUnknown(frozenCommand)
         return null
       }
@@ -290,7 +321,7 @@ export function createDraftOperationCoordinator({
     return reloadCompleted(token)
   }
 
-  async function submit(frozenCommand) {
+  async function submit(frozenCommand, reconcileLeaseEnd = false) {
     if (disposed) throw new TypeError('draft operation coordinator is disposed')
     if (activeAction) throw new TypeError('draft operation is already in progress')
     const token = ++actionGeneration
@@ -319,7 +350,12 @@ export function createDraftOperationCoordinator({
       }
       if (operation.status === 'completed') return await reloadCompleted(token)
       if (TERMINAL_STATUSES.has(operation.status)) return null
-      return await recover(token, frozenCommand, operation)
+      return await recover(
+        token,
+        frozenCommand,
+        operation,
+        reconcileLeaseEnd,
+      )
     } finally {
       if (isCurrent(token)) {
         activeAction = null
@@ -342,7 +378,7 @@ export function createDraftOperationCoordinator({
     retryUnknown() {
       if (disposed) throw new TypeError('draft operation coordinator is disposed')
       if (!retryCommand) return Promise.reject(new TypeError('no unknown draft operation to retry'))
-      return submit(retryCommand)
+      return submit(retryCommand, true)
     },
     resetContext() {
       if (disposed) return

@@ -10,6 +10,7 @@ import {
 const props = defineProps({
   modelValue: { type: String, default: '' },
   disabled: { type: Boolean, default: false },
+  readonly: { type: Boolean, default: false },
   placeholder: { type: String, default: '' },
   dirty: { type: Boolean, default: false },
   status: { type: String, default: 'idle' },
@@ -35,6 +36,7 @@ function emitSelection(target = textarea.value) {
 }
 
 function updateText(event) {
+  if (props.readonly || props.disabled) return
   try {
     const input = capturePlainTextInput(event.target)
     emit('update:modelValue', input.value)
@@ -62,6 +64,7 @@ defineExpose({ locateRange })
     class="plain-text-draft-editor"
     aria-label="章节正文工作稿"
     :value="modelValue"
+    :readonly="readonly"
     :disabled="disabled"
     :placeholder="placeholder"
     @input="updateText"
@@ -76,7 +79,7 @@ defineExpose({ locateRange })
         <span>与服务端版本冲突</span>
         <span>请先复制当前正文，再刷新页面重新加载服务端版本。</span>
       </template>
-      <span v-else-if="status === 'failed'">暂存失败，<button type="button" :disabled="disabled" @click="emit('retry')">重试</button></span>
+      <span v-else-if="status === 'failed'">暂存失败，<button type="button" :disabled="disabled || readonly" @click="emit('retry')">重试</button></span>
       <span v-else-if="status === 'saving'">正在暂存</span>
       <span v-else-if="dirty">未暂存</span>
       <span v-else>已暂存 {{ savedAt }}</span>
@@ -100,6 +103,7 @@ defineExpose({ locateRange })
   outline: none;
 }
 .plain-text-draft-editor:focus { border-color: #967548; box-shadow: 0 0 0 3px rgba(150, 117, 72, .14); }
+.plain-text-draft-editor:read-only:not(:disabled) { color: #4e463d; background: #faf6ee; cursor: text; }
 .plain-text-draft-editor:disabled { color: #81776a; background: #f1ebdf; cursor: not-allowed; }
 .draft-persistence { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; color: #82786b; font-size: 12px; }
 .draft-status { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; text-align: right; }

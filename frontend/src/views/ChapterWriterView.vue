@@ -94,7 +94,8 @@ function updateAuthorInstruction(nextInstruction) {
   }
 }
 
-const editorDisabled = computed(() => !session.value || controller.actionBusy.value)
+const editorDisabled = computed(() => !session.value)
+const editorReadonly = computed(() => controller.actionBusy.value)
 const commandDisabled = computed(() => (
   !session.value || controller.actionBusy.value || chapterSessionStore.commandBusy
 ))
@@ -292,6 +293,7 @@ onBeforeUnmount(() => {
             <plain-text-draft-editor
               :model-value="autosave.text.value"
               :disabled="editorDisabled"
+              :readonly="editorReadonly"
               :dirty="autosave.dirty.value"
               :status="autosave.status.value"
               :last-saved-at="lastSavedAt"
