@@ -158,13 +158,15 @@ test('Task5 bootstrap scopes every identical save control to its active step and
   const engineWait = "const styleRecommendationsResponse = page.waitForResponse(response => isResponse(response, 'POST', assetRecommendations()))"
   const engineClick = "engine.getByRole('button', { name: '保存草稿并继续' }).click()"
   const styleHeading = "getByRole('heading', { name: '先定阅读感受，再谈写法', exact: true })"
-  const styleStatus = 'expect((await styleRecommendationsResponse).status()).toBe(200)'
+  const engineResponse = 'const response = await styleRecommendationsResponse'
+  const engineStatus = 'const status = response.status()'
+  const engineStatusAssert = 'if (status !== 200) throw new Error(phase2EngineSaveFailure(engineSaveStage, status))'
   const styleWait = "const assetRecommendationsResponse = page.waitForResponse(response => isResponse(response, 'POST', assetRecommendations()))"
   const styleClick = "styleStep.getByRole('button', { name: '保存草稿并继续' }).click()"
   const assetHeading = "getByRole('heading', { name: '逐项授权，片段级冻结', exact: true })"
   const assetStatus = 'expect((await assetRecommendationsResponse).status()).toBe(200)'
   const index = value => helper.indexOf(value)
-  assert.ok(index(engineWait) >= 0 && index(engineWait) < index(engineClick) && index(engineClick) < index(styleHeading) && index(styleHeading) < index(styleStatus), 'Engine save must wait for the first exact asset recommendation POST after Style opens')
+  assert.ok(index(engineWait) >= 0 && index(engineWait) < index(engineClick) && index(engineClick) < index(styleHeading) && index(styleHeading) < index(engineResponse) && index(engineResponse) < index(engineStatus) && index(engineStatus) < index(engineStatusAssert), 'Engine save must wait for the first exact asset recommendation POST after Style opens')
   assert.ok(index(styleWait) >= 0 && index(styleWait) < index(styleClick) && index(styleClick) < index(assetHeading) && index(assetHeading) < index(assetStatus) && index(assetStatus) < index("assetScope.getByRole('button', { name: '保存草稿并继续' }).click()"), 'Style save must wait for the second exact asset recommendation POST after Asset opens')
 })
 
@@ -259,7 +261,7 @@ test('every Phase 3 product-write navigation boundary settles through its shared
   assert.match(planning, /async function createManualPlanning\(page, title: string, runtime\)/u)
   assert.ok(planning.lastIndexOf("getByRole('dialog').getByRole('button', { name: '确认并签印' }).click()") < planning.lastIndexOf('await settleNavigationBoundary(page, runtime)'))
   const outline = helper('createOutline', 'createPlanningRevision')
-  assert.match(outline, /async function createOutline\(page, goal: string, runtime, \{ confirm = true \} = \{\}\)/u)
+  assert.match(outline, /async function createOutline\(page, goal: string, runtime, \{ confirm = true, navigate = true, adoptionLabel = '采用小纲' \} = \{\}\)/u)
   assert.ok(outline.lastIndexOf("getByRole('dialog').getByRole('button', { name: '确认并签印' }).click()") < outline.lastIndexOf('await settleNavigationBoundary(page, runtime)'))
   const revision = helper('createPlanningRevision', "test('foundation-manual-r1")
   assert.match(revision, /async function createPlanningRevision\(page, title: string, runtime\)/u)
@@ -267,7 +269,8 @@ test('every Phase 3 product-write navigation boundary settles through its shared
   const archiveStart = source.indexOf("test('archived-navigation")
   const archive = source.slice(archiveStart)
   ordered(archive, "card.getByRole('button', { name: '归档', exact: true }).click()", 'await page.goto(volumes())', 'Archive must settle before Planning navigation')
-  const revisionScenario = source.slice(source.indexOf("test('revision-outline-session"), source.indexOf("test('unused-outline-supersession"))
+  const revisionScenario = source.slice(source.indexOf("test('revision-outline-session"), source.indexOf("test('outline-adjustment-before-finalization"))
+  assert.match(revisionScenario, /getByRole\('button', \{ name: '采用小纲', exact: true \}\)\.click\(\)/u)
   ordered(revisionScenario, "getByRole('dialog').getByRole('button', { name: '确认并签印' }).click()", 'await page.goto(writer())', 'Direct Outline confirmation must settle before Writer navigation')
   for (const [name, foundationStage] of [
     ['completePhase2PreparationUi', 'phase2-preparation'],
@@ -346,7 +349,7 @@ test('Planning and Outline UI mutations wait for their exact create save and con
   const revision = helper('createPlanningRevision', "test('foundation-manual-r1")
   assertResponseFlow(revision, 'planningDrafts()', "getByRole('button', { name: '建立空白规划工作稿' }).click()", "getByRole('button', { name: '保存工作稿' }).click()", "getByRole('dialog').getByRole('button', { name: '确认并签印' }).click()", 'Planning revision')
   assert.doesNotMatch(revision, /基于当前版本建立新工作稿/u)
-  assert.equal((source.match(/page\.waitForResponse\(response => isResponse\(response,/gu) || []).length, 15, 'exact response matcher must cover every remaining product write and the stale Bible conflict')
+  assert.equal((source.match(/page\.waitForResponse\(response => isResponse\(response, '(?:POST|PUT)',/gu) || []).length, 18, 'static exact response matchers must cover every remaining product write and the stale Bible conflict')
 })
 
 test('Outline creation fills the complete visible reference and content contract before its exact save flow', () => {
@@ -355,6 +358,9 @@ test('Outline creation fills the complete visible reference and content contract
   const end = source.indexOf('\nasync function createPlanningRevision', start)
   assert.ok(start >= 0 && end > start, 'missing createOutline helper')
   const outline = source.slice(start, end)
+  assert.doesNotMatch(source, /预览并确认小纲/u)
+  assert.match(outline, /if \(navigate\) await page\.goto\(blocks\(\)\)/u)
+  assert.match(outline, /getByRole\('button', \{ name: adoptionLabel, exact: true \}\)\.click\(\)/u)
   const ordered = [
     "let stage = 'navigation'",
     "stage = 'create-wait-registration'",
@@ -419,7 +425,7 @@ test('Planning revision and revision scenario scope all R1 evidence to unique se
   assert.doesNotMatch(revision, /\.first\(\)/u)
 
   const scenarioStart = source.indexOf("test('revision-outline-session")
-  const scenarioEnd = source.indexOf("\ntest('unused-outline-supersession", scenarioStart)
+  const scenarioEnd = source.indexOf("\ntest('outline-adjustment-before-finalization", scenarioStart)
   assert.ok(scenarioStart >= 0 && scenarioEnd > scenarioStart, 'missing revision scenario')
   const scenario = source.slice(scenarioStart, scenarioEnd)
   for (const fragment of [
@@ -440,7 +446,7 @@ test('Phase 3 spec contains the six ordered UI-only acceptance scenarios', () =>
   const scenarios = [
     'foundation-manual-r1',
     'revision-outline-session',
-    'unused-outline-supersession',
+    'outline-adjustment-before-finalization',
     'pinned-session',
     'baseline-lock',
     'archived-navigation',
@@ -475,7 +481,7 @@ test('browser source AST exposes every test declaration and bounded function cal
   const declarations = collectBrowserTestDeclarations(source, SPEC)
   assert.equal(declarations.length, 6)
   assert.deepEqual(declarations.map(item => item.title.split(':', 1)[0]), [
-    'foundation-manual-r1', 'revision-outline-session', 'unused-outline-supersession',
+    'foundation-manual-r1', 'revision-outline-session', 'outline-adjustment-before-finalization',
     'pinned-session', 'baseline-lock', 'archived-navigation',
   ])
   assert.ok(declarations.every(item => item.modifiers.length === 0 && item.bodySource.includes('runAudited')))
@@ -587,7 +593,7 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
   const expectedTitles = [
     'foundation-manual-r1: complete Phase 2 UI, manually confirm R1, and show Canon-0 empty text',
     'revision-outline-session: clone future design, keep R1 history, and create Session only after Outline confirmation',
-    'unused-outline-supersession: confirmed Outline without Session becomes read-only after Planning Head advances',
+    'outline-adjustment-before-finalization: adopt r2 through visible navigation while retaining body and making candidate basis explicit',
     'pinned-session: Session retains historical Planning and Outline pins after Planning Head advances and Writer refreshes',
     'baseline-lock: the first Seed, Contract, and Bible stay immutable after a visible stale Bible confirmation conflict',
     'archived-navigation: archive through UI, then back, forward, and refresh all canonical Planning routes read-only',
@@ -598,9 +604,9 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
     ['foundation-manual-r1', '新增场景任务', ['createManualPlanning']],
     ['revision-outline-session', '规划修订历史', []],
     ['foundation-manual-r1', '建立空白规划工作稿', ['createManualPlanning']],
-    ['revision-outline-session', '预览并确认小纲', ['createOutline']],
+    ['revision-outline-session', '采用小纲', ['createOutline']],
     ['revision-outline-session', 'zero Session POST before confirmation', []],
-    ['unused-outline-supersession', '已被后续依据取代', []],
+    ['outline-adjustment-before-finalization', '依据旧小纲，不能定稿', []],
     ['pinned-session', 'Planning R1', []],
     ['baseline-lock', '保存冲突：本地编辑仍保留，请重新加载权威版本后再继续。', ['assertBaselineStaleBibleConfirmUi']],
     ['archived-navigation', 'page.goForward', []],
@@ -638,7 +644,7 @@ test('the fourteen roadmap outcomes are explicitly mapped to formal browser evid
     assert.throws(() => assertMapped(source.replace("test('baseline-lock:", `test.${modifier}('baseline-lock:`)))
   }
   assert.throws(() => assertMapped(source.replace('baseline-lock: the first Seed', 'baseline-lock-removed: the first Seed')))
-  assert.throws(() => assertMapped(source.replace('已被后续依据取代', '错放 outcome')))
+  assert.throws(() => assertMapped(source.replaceAll('依据旧小纲，不能定稿', '错放 outcome')))
   assert.throws(() => assertMapped(`${source.replaceAll('toBeDisabled', 'notDisabled')}\nasync function unrelatedEvidence() { return page.toBeDisabled() }`))
   const directPlanning = "createManualPlanning(page, '手工规划 R1', runtime)"
   for (const deadScope of [
@@ -1476,7 +1482,7 @@ test('revision-outline-session stages preserve safe nested failures and close un
     error => error?.message === 'category=behavior leaf=revision-outline-session stage=verify-r1 method=unavailable path=unavailable status=unavailable',
   )
   const scenarioStart = source.indexOf("test('revision-outline-session")
-  const scenarioEnd = source.indexOf("\ntest('unused-outline-supersession", scenarioStart)
+  const scenarioEnd = source.indexOf("\ntest('outline-adjustment-before-finalization", scenarioStart)
   const scenarioSource = source.slice(scenarioStart, scenarioEnd)
   let previous = -1
   for (const stage of stages) {
@@ -1530,11 +1536,11 @@ test('planning revision flow allows only its closed stages through spec and runn
 test('remaining Phase 3 scenarios expose only their closed ordered stages', async () => {
   const source = workspace(SPEC)
   const contracts = [
-    ['unused-outline-supersession', [
+    ['outline-adjustment-before-finalization', [
       'create-project', 'phase2-preparation', 'disable-planning-model', 'manual-planning',
-      'outline', 'planning-revision', 'supersession-navigation', 'history-open',
-      'history-dialog', 'history-status', 'history-close', 'readonly-note',
-      'save-absent', 'final-settlement',
+      'outline-r1', 'writer-entry', 'working-draft-save', 'candidate-a-save',
+      'outline-link-navigation', 'outline-r2', 'writer-return-navigation',
+      'preserved-draft-and-stale-a', 'candidate-b-save', 'current-b', 'final-settlement',
     ]],
     ['pinned-session', ['create-project', 'phase2-preparation', 'disable-planning-model', 'manual-planning', 'outline', 'writer-before', 'planning-revision', 'writer-after']],
     ['baseline-lock', ['create-project', 'phase2-preparation', 'seed-lock-view', 'contract-lock-view', 'bible-lock-view', 'stale-bible-confirm', 'stale-bible-reload', 'final-baseline-reload']],
@@ -2431,41 +2437,243 @@ test('runOneScenario preserves attempted cleanup failures without adding a gener
   )
 })
 
-test('unused Outline supersession is bootstrapped through UI and has no Session write', () => {
+test('outline adjustment before finalization keeps the body, marks A stale, and requires explicit B', async () => {
   const source = workspace(SPEC)
-  const start = source.indexOf("test('unused-outline-supersession")
+  const runnerSource = workspace(RUNNER)
+  const scenarioName = 'outline-adjustment-before-finalization'
+  const obsoleteScenario = ['unused', 'outline', 'supersession'].join('-')
+  const start = source.indexOf(`test('${scenarioName}`)
   const end = source.indexOf("test('pinned-session", start)
   const scenario = source.slice(start, end)
+  const writerOverviewStart = source.indexOf('async function navigateWriterThroughOverview')
+  const writerOverviewEnd = source.indexOf('\nasync function runFoundationStage', writerOverviewStart)
+  const writerOverview = source.slice(writerOverviewStart, writerOverviewEnd)
+  const writerOverviewTargetStart = source.indexOf('async function writerOverviewTargetKind')
+  const writerOverviewTargetEnd = source.indexOf('\nasync function navigateWriterThroughOverview', writerOverviewTargetStart)
+  const writerOverviewTarget = source.slice(writerOverviewTargetStart, writerOverviewTargetEnd)
+  const writerPreparationTargetStart = source.indexOf('async function assertWriterPreparationTarget')
+  const writerPreparationTargetEnd = source.indexOf('\nasync function writerOverviewTargetKind', writerPreparationTargetStart)
+  const writerPreparationTarget = source.slice(writerPreparationTargetStart, writerPreparationTargetEnd)
+  const outlineNavigationHelperStart = source.indexOf('async function navigateOutlineAdjustmentThroughVisibleLink')
+  const outlineNavigationHelperEnd = source.indexOf('\nasync function runFoundationStage', outlineNavigationHelperStart)
+  const outlineNavigationHelper = source.slice(outlineNavigationHelperStart, outlineNavigationHelperEnd)
+
+  assert.ok(start >= 0 && end > start && writerOverviewStart >= 0 && writerOverviewEnd > writerOverviewStart && writerOverviewTargetStart >= 0 && writerOverviewTargetEnd > writerOverviewTargetStart && writerPreparationTargetStart >= 0 && writerPreparationTargetEnd > writerPreparationTargetStart, 'missing outline adjustment scenario or writer overview helper')
+  assert.ok(outlineNavigationHelperStart >= 0 && outlineNavigationHelperEnd > outlineNavigationHelperStart, 'missing bounded writer outline navigation helper')
+  assert.match(source, /\^category=behavior leaf=writer-outline-navigation stage=\(link-count\|link-visible\|link-click\|path\|workspace-visible\|settlement\) method=unavailable path=unavailable status=unavailable\$\/u\.test\(message\)/u)
+  const expectedOutlineNavigationStages = ['link-count', 'link-visible', 'link-click', 'path', 'workspace-visible', 'settlement']
+  const outlineNavigationStages = [...outlineNavigationHelper.matchAll(/(?:let )?stage = '([^']+)'/gu)].map(match => match[1])
+  assert.deepEqual(outlineNavigationStages, expectedOutlineNavigationStages)
+  assert.match(outlineNavigationHelper, /category=behavior leaf=writer-outline-navigation stage=\$\{stage\} method=unavailable path=unavailable status=unavailable/u)
+  assert.doesNotMatch(outlineNavigationHelper, /page\.(?:goto|evaluate|route)|waitForTimeout|setTimeout|\.getAttribute\(['"]href|\bfetch\(|\brequest\./u)
+  assert.doesNotMatch(source, new RegExp(obsoleteScenario, 'u'))
+  assert.doesNotMatch(runnerSource, new RegExp(obsoleteScenario, 'u'))
+  assert.match(runnerSource, /'outline-adjustment-before-finalization'/u)
   for (const fragment of [
     'createProjectUi(page, runtime)',
     'completePhase2PreparationUi(page, runtime)',
     "createManualPlanning(page, '规划 R1', runtime)",
-    "createOutline(page, '未使用的小纲', runtime)",
-    "createPlanningRevision(page, '推进 Planning Head', runtime)",
-    '已被后续依据取代',
+    "createOutline(page, 'R1 小纲', runtime)",
+    "navigateWriterThroughOverview(page, runtime, 'create')",
+    'navigateOutlineAdjustmentThroughVisibleLink(page, runtime)',
+    "createOutline(page, 'R2 小纲', runtime, { navigate: false, adoptionLabel: '更新当前小纲' })",
+    "navigateWriterThroughOverview(page, runtime, 'replay')",
+    '正文 A 保持不变。',
+    '依据旧小纲，不能定稿',
+    '依据当前小纲',
   ]) assert.match(scenario, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
-  assert.doesNotMatch(scenario, /path:\s*session\(/u)
+  for (const fragment of [
+    "const adjustOutline = page.getByRole('link', { name: '调整本章小纲', exact: true })",
+    'await expect(adjustOutline).toHaveCount(1)',
+    'await expect(adjustOutline).toBeVisible()',
+    'await adjustOutline.click()',
+    'await expect.poll(() => new URL(page.url()).pathname).toBe(blocks())',
+    "await expect(page.getByText('调整本章小纲', { exact: true })).toBeVisible()",
+    'await settleNavigationBoundary(page, runtime)',
+  ]) assert.ok(outlineNavigationHelper.includes(fragment), `outline navigation helper must own ${fragment}`)
+  assert.ok(outlineNavigationHelper.indexOf("stage = 'workspace-visible'") < outlineNavigationHelper.indexOf("await expect(page.getByText('调整本章小纲', { exact: true })).toBeVisible()"))
+  assert.ok(outlineNavigationHelper.indexOf("await expect(page.getByText('调整本章小纲', { exact: true })).toBeVisible()") < outlineNavigationHelper.indexOf("stage = 'settlement'"))
+  assert.ok(outlineNavigationHelper.indexOf("stage = 'settlement'") < outlineNavigationHelper.indexOf('await settleNavigationBoundary(page, runtime)'))
+  assert.doesNotMatch(scenario, /page\.goto\(writer\(\)\)/u)
+  assert.doesNotMatch(scenario, /page\.goto\(blocks\(\)\)/u)
+  assert.doesNotMatch(scenario, /page\.goto\(overview\(\)\)/u)
+  assert.doesNotMatch(scenario, /getByRole\('link', \{ name: '(?:进入|继续)章节写作', exact: true \}\)/u)
+
+  const writerOverviewStages = [
+    'preparation-wait-registration', 'overview-click', 'preparation-response', 'overview-url', 'action-count',
+    'action-href', 'session-wait-registration', 'action-click', 'session-response', 'writer-heading', 'final-settlement',
+  ]
+  assert.match(writerOverview, /async function navigateWriterThroughOverview\(page, runtime, mode: 'create' \| 'replay'\)/u)
+  for (const stage of writerOverviewStages) {
+    assert.match(writerOverview, new RegExp(`(?:let )?stage = '${stage}'`, 'u'), `writer overview helper must expose ${stage}`)
+  }
+  assert.match(writerOverview, /mode === 'create' \? 'POST' : 'GET'/u)
+  assert.match(writerOverview, /mode === 'create' \? 201 : 200/u)
+  assert.match(writerOverview, /category=behavior leaf=writer-overview-flow mode=\$\{mode\} stage=\$\{stage\} method=unavailable path=unavailable status=unavailable/u)
+  assert.ok(writerOverview.indexOf('await settleNavigationBoundary(page, runtime)') < writerOverview.indexOf("const preparation = page.waitForResponse(response => isResponse(response, 'GET', `/api/projects/${PROJECT_ID}/preparation`))"), 'writer overview must settle before registering Preparation')
+  assert.match(writerOverview, /await assertWriterPreparationTarget\(preparationResponse, mode\)/u)
+  assert.match(writerOverview, /await assertWriterOverviewActionHref\(nextAction, mode\)/u)
+  assert.ok(writerOverview.indexOf("await expect(nextAction).toHaveAttribute('href', writer())") < 0, 'action-href assertion must be owned by its delayed diagnostic helper')
+  assert.match(writerOverviewTarget, /actualHref === null\) return 'missing'/u)
+  for (const target of ['seeds', 'contract', 'bible', 'model-settings', 'writer-variant', 'story-blocks-variant', 'volumes-variant', 'plots-variant', 'planning-other', 'write-other', 'project-other', 'absolute-loopback', 'other']) {
+    assert.match(writerOverviewTarget, new RegExp(`'${target}'`, 'u'), `target classifier must expose ${target}`)
+  }
+  assert.match(writerOverviewTarget, /parsed\.hostname === '127\.0\.0\.1'/u)
+  assert.match(writerOverviewTarget, /parsed\.pathname\.startsWith\(projectPrefix\)/u)
+  assert.match(writerOverviewTarget, /catch \{ return 'other' \}/u)
+  assert.match(writerPreparationTarget, /const \{ nextAction, targetPath \} = await response\.json\(\)/u)
+  assert.doesNotMatch(writerPreparationTarget, /response\.json\(\)\.[A-Za-z]/u)
+  assert.match(writerPreparationTarget, /category=behavior leaf=writer-preparation-target mode=\$\{mode\} action=\$\{action\} target=\$\{target\} method=GET path=\/api\/projects\/:id\/preparation status=\$\{status\}/u)
+  for (const action of ['select-seed', 'continue-contract', 'continue-bible', 'continue-planning', 'establish-planning', 'recover-planning', 'recover-outline', 'prepare-outline', 'continue-outline', 'start-session', 'continue-writing', 'unavailable']) {
+    assert.match(writerPreparationTarget, new RegExp(`'${action}'`, 'u'), `Preparation classifier must expose ${action}`)
+  }
 
   const stages = [
-    ['supersession-navigation', 'await page.goto(blocks())'],
-    ['history-open', "page.getByRole('button', { name: '小纲历史', exact: true }).click()"],
-    ['history-dialog', "const outlineHistory = page.getByRole('dialog', { name: '章节小纲历史', exact: true })"],
-    ['history-status', "const supersededOutline = outlineHistory.getByText('已被后续依据取代', { exact: true })"],
-    ['history-close', "outlineHistory.getByRole('button', { name: '关闭', exact: true }).click()"],
-    ['readonly-note', "page.getByText('旧内容保持只读；新工作稿不会自动确认或创建写作会话。', { exact: true })"],
-    ['save-absent', "page.getByRole('button', { name: '保存小纲工作稿' })"],
+    ['writer-entry', "navigateWriterThroughOverview(page, runtime, 'create')"],
+    ['working-draft-save', "getByRole('button', { name: '保存工作稿', exact: true }).click()"],
+    ['candidate-a-save', 'await saveCandidate.click()'],
+    ['outline-link-navigation', 'navigateOutlineAdjustmentThroughVisibleLink(page, runtime)'],
+    ['outline-r2', "createOutline(page, 'R2 小纲', runtime, { navigate: false, adoptionLabel: '更新当前小纲' })"],
+    ['writer-return-navigation', "navigateWriterThroughOverview(page, runtime, 'replay')"],
+    ['preserved-draft-and-stale-a', 'toHaveValue(\'正文 A 保持不变。\')'],
+    ['candidate-b-save', "getByRole('button', { name: '保存为候选', exact: true }).click()"],
+    ['current-b', 'candidateRows.nth(1)'],
     ['final-settlement', 'await settleNavigationBoundary(page, runtime)'],
   ]
   let previous = -1
   for (const [stage, fragment] of stages) {
-    const stageStart = scenario.indexOf(`runScenarioStage('unused-outline-supersession', '${stage}'`, previous)
-    assert.ok(stageStart > previous, `missing supersession diagnostic stage ${stage}`)
-    const nextStage = scenario.indexOf("runScenarioStage('unused-outline-supersession'", stageStart + 1)
+    const stageStart = scenario.indexOf(`runScenarioStage('${scenarioName}', '${stage}'`, previous)
+    assert.ok(stageStart > previous, `missing outline-adjustment diagnostic stage ${stage}`)
+    const nextStage = scenario.indexOf(`runScenarioStage('${scenarioName}'`, stageStart + 1)
     const stageSource = scenario.slice(stageStart, nextStage < 0 ? scenario.length : nextStage)
     assert.ok(stageSource.includes(fragment), `${stage} must own ${fragment}`)
     previous = stageStart
   }
-  assert.doesNotMatch(scenario, /page\.getByText\('已被后续依据取代'/u)
+
+  const candidateAStart = scenario.indexOf(`runScenarioStage('${scenarioName}', 'candidate-a-save'`)
+  const outlineNavigationStart = scenario.indexOf(`runScenarioStage('${scenarioName}', 'outline-link-navigation'`, candidateAStart)
+  const candidateASource = scenario.slice(candidateAStart, outlineNavigationStart)
+  const candidateButtonLocator = "const saveCandidate = page.getByRole('button', { name: '保存为候选', exact: true })"
+  const candidateButtonClick = 'await saveCandidate.click()'
+  const candidateResponse = 'expect((await savedResponse).status()).toBe(201)'
+  const candidateRowAssertion = "await expect(candidateRows.nth(0)).toContainText('依据当前小纲')"
+  const candidateBusySettlement = 'await expect(saveCandidate).toBeEnabled()'
+  const candidateBoundaries = [
+    candidateButtonLocator,
+    candidateButtonClick,
+    candidateResponse,
+    candidateRowAssertion,
+    candidateBusySettlement,
+  ]
+  let candidateBoundary = -1
+  for (const fragment of candidateBoundaries) {
+    const index = candidateASource.indexOf(fragment)
+    assert.ok(index > candidateBoundary, `candidate-a-save must own ordered busy boundary ${fragment}`)
+    candidateBoundary = index
+  }
+  assert.doesNotMatch(candidateASource, /waitForTimeout|setTimeout|page\.evaluate/u)
+
+  const exactWrites = [
+    "{ method: 'POST', path: planningDrafts(), count: 1, statuses: [201] }",
+    "{ method: 'PUT', path: draftPath(planningDrafts()), count: 1, statuses: [200] }",
+    "{ method: 'POST', path: confirmPath(planningDrafts()), count: 1, statuses: [201] }",
+    "{ method: 'POST', path: outlineDrafts(), count: 2, statuses: [201] }",
+    "{ method: 'PUT', path: draftPath(outlineDrafts()), count: 2, statuses: [200] }",
+    "{ method: 'POST', path: confirmPath(outlineDrafts()), count: 2, statuses: [201] }",
+    "{ method: 'POST', path: session(), count: 1, statuses: [201] }",
+    "{ method: 'PUT', path: workingDraftPath(), count: 1, statuses: [200] }",
+    "{ method: 'POST', path: candidatePath(), count: 2, statuses: [201] }",
+  ]
+  for (const write of exactWrites) assert.ok(scenario.includes(write), `missing exact adjustment write: ${write}`)
+
+  const strictStart = source.indexOf('function strictSafeBehaviorProjection')
+  const strictEnd = source.indexOf('\nfunction projectPhase3FailureMessage', strictStart)
+  const strictSafeBehaviorProjection = new Function(
+    `${source.slice(strictStart, strictEnd)}; return strictSafeBehaviorProjection`,
+  )()
+  const runner = await import('../../frontend/e2e/run-phase3.mjs')
+  const projection = 'category=behavior leaf=writer-overview-flow mode=create stage=action-href method=unavailable path=unavailable status=unavailable'
+  for (const mode of ['create', 'replay']) {
+    for (const stage of writerOverviewStages) {
+      const expected = projection.replace('mode=create', `mode=${mode}`).replace('stage=action-href', `stage=${stage}`)
+      assert.equal(strictSafeBehaviorProjection(new Error(expected)), expected)
+    }
+  }
+  const outlineNavigationProjection = 'category=behavior leaf=writer-outline-navigation stage=link-count method=unavailable path=unavailable status=unavailable'
+  for (const stage of expectedOutlineNavigationStages) {
+    const expected = outlineNavigationProjection.replace('stage=link-count', `stage=${stage}`)
+    assert.equal(strictSafeBehaviorProjection(new Error(expected)), expected)
+  }
+  assert.equal(strictSafeBehaviorProjection(new Error(`${outlineNavigationProjection} href=private`)), null)
+  const writerOverviewTargets = [
+    'seeds', 'contract', 'bible', 'model-settings', 'writer-variant', 'story-blocks-variant', 'volumes-variant',
+    'plots-variant', 'planning-other', 'write-other', 'project-other', 'missing', 'absolute-loopback', 'other',
+  ]
+  const targetProjection = 'category=behavior leaf=writer-overview-target mode=create target=story-blocks-variant method=unavailable path=unavailable status=unavailable'
+  for (const mode of ['create', 'replay']) {
+    for (const target of writerOverviewTargets) {
+      const expected = targetProjection.replace('mode=create', `mode=${mode}`).replace('target=story-blocks-variant', `target=${target}`)
+      assert.equal(strictSafeBehaviorProjection(new Error(expected)), expected)
+    }
+  }
+  const preparationActions = ['select-seed', 'continue-contract', 'continue-bible', 'continue-planning', 'establish-planning', 'recover-planning', 'recover-outline', 'prepare-outline', 'continue-outline', 'start-session', 'continue-writing', 'unavailable']
+  const preparationProjection = 'category=behavior leaf=writer-preparation-target mode=create action=start-session target=writer method=GET path=/api/projects/:id/preparation status=200'
+  for (const mode of ['create', 'replay']) {
+    for (const action of preparationActions) {
+      for (const target of ['writer', 'non-writer', 'unavailable']) {
+        const expected = preparationProjection.replace('mode=create', `mode=${mode}`).replace('action=start-session', `action=${action}`).replace('target=writer', `target=${target}`)
+        assert.equal(strictSafeBehaviorProjection(new Error(expected)), expected)
+      }
+    }
+  }
+  const report = playwrightReport([playwrightSpec(scenarioName, [{
+    results: [{ status: 'failed', errors: [{ message: projection }] }],
+  }])])
+  for (const stage of expectedOutlineNavigationStages) {
+    const expected = outlineNavigationProjection.replace('stage=link-count', `stage=${stage}`)
+    report.suites[0].specs[0].tests[0].results[0].errors[0].message = expected
+    assert.throws(
+      () => runner.phase3BrowserFailure(report, scenarioName, ['never-print']),
+      error => error?.message.includes(expected) && !error.message.includes('never-print'),
+    )
+  }
+  report.suites[0].specs[0].tests[0].results[0].errors[0].message = projection
+  assert.throws(
+    () => runner.phase3BrowserFailure(report, scenarioName, ['never-print']),
+    error => error?.message.includes(projection) && !error.message.includes('never-print'),
+  )
+  report.suites[0].specs[0].tests[0].results[0].errors[0].message = targetProjection
+  assert.throws(
+    () => runner.phase3BrowserFailure(report, scenarioName, ['never-print']),
+    error => error?.message.includes(targetProjection) && !error.message.includes('never-print'),
+  )
+  report.suites[0].specs[0].tests[0].results[0].errors[0].message = preparationProjection
+  assert.throws(
+    () => runner.phase3BrowserFailure(report, scenarioName, ['never-print']),
+    error => error?.message.includes(preparationProjection) && !error.message.includes('never-print'),
+  )
+  for (const malformed of [
+    projection.replace('mode=create', 'mode=unknown'),
+    projection.replace('stage=action-href', 'stage=unknown'),
+    projection.replace('method=unavailable', 'method=POST'),
+    `${projection} secret=never-print`,
+    targetProjection.replace('target=story-blocks-variant', 'target=unknown'),
+    targetProjection.replace('path=unavailable', 'path=/api/projects/:id/never-print'),
+    `${targetProjection} secret=never-print`,
+    preparationProjection.replace('action=start-session', 'action=unknown'),
+    preparationProjection.replace('target=writer', 'target=unknown'),
+    preparationProjection.replace('status=200', 'status=700'),
+    `${preparationProjection} secret=never-print`,
+    outlineNavigationProjection.replace('stage=link-count', 'stage=unknown'),
+    `${outlineNavigationProjection} sentinel=never-print`,
+  ]) {
+    assert.equal(strictSafeBehaviorProjection(new Error(malformed)), null)
+    report.suites[0].specs[0].tests[0].results[0].errors[0].message = malformed
+    assert.throws(
+      () => runner.phase3BrowserFailure(report, scenarioName, ['never-print']),
+      error => error?.message.includes('leaf=report-message-unrecognized') && !error.message.includes('never-print'),
+    )
+  }
 })
 
 test('pinned Session is created through UI before Planning R2 advances its head', () => {
@@ -2595,7 +2803,7 @@ test('baseline lock proves immutable visible UI and a stale public Bible confirm
   )
   assert.doesNotMatch(scenario, /disablePlanningModelUi\(page, runtime\)/u)
   for (const ordinaryScenario of [
-    'foundation-manual-r1', 'revision-outline-session', 'unused-outline-supersession', 'pinned-session', 'archived-navigation',
+    'foundation-manual-r1', 'revision-outline-session', 'outline-adjustment-before-finalization', 'pinned-session', 'archived-navigation',
   ]) {
     const ordinaryStart = source.indexOf(`test('${ordinaryScenario}`)
     const ordinaryEnd = source.indexOf("\ntest('", ordinaryStart + 1)
@@ -2703,6 +2911,65 @@ test('Phase 2 preparation exposes only closed safe diagnostic stages', async () 
     () => runner.phase3BrowserFailure(report, 'pinned-session', ['never-print']),
     error => error?.message.includes('leaf=report-message-unrecognized') && !error.message.includes('never-print'),
   )
+})
+
+test('Phase 2 engine save exposes one closed POST diagnostic without raw failure disclosure', async () => {
+  const source = workspace(SPEC)
+  const runnerSource = workspace(RUNNER)
+  const start = source.indexOf('async function completePhase2PreparationUi')
+  const end = source.indexOf('\nasync function chooseVisibleSelectOption', start)
+  const helper = source.slice(start, end)
+  const registration = "const styleRecommendationsResponse = page.waitForResponse(response => isResponse(response, 'POST', assetRecommendations()))"
+  const click = "engine.getByRole('button', { name: '保存草稿并继续' }).click()"
+  const heading = "getByRole('heading', { name: '先定阅读感受，再谈写法', exact: true })).toBeVisible()"
+  const response = 'await styleRecommendationsResponse'
+
+  assert.match(source, /function phase2EngineSaveFailure\(stage, status = 'unavailable'\)/u)
+  assert.match(helper, /let engineSaveStage = 'click'/u)
+  assert.match(helper, /engineSaveStage = 'heading'/u)
+  assert.match(helper, /engineSaveStage = 'response'/u)
+  assert.match(helper, /engineSaveStage = 'status'/u)
+  assert.match(helper, /phase2EngineSaveFailure\(engineSaveStage, status\)/u)
+  assert.match(helper, /strictSafeBehaviorProjection\(error\)[\s\S]*?phase2EngineSaveFailure\(engineSaveStage\)/u)
+  assert.ok(helper.indexOf(registration) < helper.indexOf(click), 'response listener must precede click')
+  assert.ok(helper.indexOf(click) < helper.indexOf(heading), 'click must precede heading visibility')
+  assert.ok(helper.indexOf(heading) < helper.indexOf(response), 'heading visibility must precede response await')
+  assert.match(source, /leaf=phase2-engine-save stage=\(click\|heading\|response\) method=POST path=\\\/api\\\/projects\\\/:id\\\/asset-recommendations status=unavailable/u)
+  assert.match(source, /leaf=phase2-engine-save stage=status method=POST path=\\\/api\\\/projects\\\/:id\\\/asset-recommendations status=\[1-5\]\\d\{2\}/u)
+  assert.match(runnerSource, /leaf=phase2-engine-save stage=\(click\|heading\|response\) method=POST path=\\\/api\\\/projects\\\/:id\\\/asset-recommendations status=unavailable/u)
+  assert.match(runnerSource, /leaf=phase2-engine-save stage=status method=POST path=\\\/api\\\/projects\\\/:id\\\/asset-recommendations status=\(\[1-5\]\\d\{2\}\)/u)
+
+  const runner = await import('../../frontend/e2e/run-phase3.mjs')
+  const projections = [
+    'category=behavior leaf=phase2-engine-save stage=click method=POST path=/api/projects/:id/asset-recommendations status=unavailable',
+    'category=behavior leaf=phase2-engine-save stage=heading method=POST path=/api/projects/:id/asset-recommendations status=unavailable',
+    'category=behavior leaf=phase2-engine-save stage=response method=POST path=/api/projects/:id/asset-recommendations status=unavailable',
+    'category=behavior leaf=phase2-engine-save stage=status method=POST path=/api/projects/:id/asset-recommendations status=503',
+  ]
+  for (const projection of projections) {
+    const report = playwrightReport([playwrightSpec('foundation-manual-r1', [{
+      results: [{ status: 'failed', errors: [{ message: projection }] }],
+    }])])
+    assert.throws(
+      () => runner.phase3BrowserFailure(report, 'foundation-manual-r1', ['engine-secret-never-print']),
+      error => error?.message.includes(projection) && !error.message.includes('engine-secret-never-print'),
+    )
+  }
+
+  for (const message of [
+    'category=behavior leaf=phase2-engine-save stage=unknown method=POST path=/api/projects/:id/asset-recommendations status=unavailable',
+    `${projections[0]} engine-secret-never-print`,
+  ]) {
+    const report = playwrightReport([playwrightSpec('foundation-manual-r1', [{
+      results: [{ status: 'failed', errors: [{ message }] }],
+    }])])
+    assert.throws(
+      () => runner.phase3BrowserFailure(report, 'foundation-manual-r1', ['engine-secret-never-print']),
+      error => error?.message.includes('leaf=report-message-unrecognized')
+        && !error.message.includes('engine-secret-never-print')
+        && !error.message.includes('stage=unknown'),
+    )
+  }
 })
 
 test('Phase 2 Bible confirmation uses the current accessible dialog contract', () => {

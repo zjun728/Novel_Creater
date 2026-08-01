@@ -26,7 +26,7 @@ export const FORMAL_CONFIG = 'playwright.phase3.config.ts'
 export const FORMAL_SCENARIOS = Object.freeze([
   'foundation-manual-r1',
   'revision-outline-session',
-  'unused-outline-supersession',
+  'outline-adjustment-before-finalization',
   'pinned-session',
   'baseline-lock',
   'archived-navigation',
@@ -303,6 +303,14 @@ function safeSpecProjectionLine(message) {
   if (phase2PreparationFlow) {
     return `category=behavior leaf=phase2-preparation-flow stage=${phase2PreparationFlow[1]} method=unavailable path=unavailable status=unavailable`
   }
+  const phase2EngineSaveUnavailable = /^category=behavior leaf=phase2-engine-save stage=(click|heading|response) method=POST path=\/api\/projects\/:id\/asset-recommendations status=unavailable$/u.exec(message)
+  if (phase2EngineSaveUnavailable) {
+    return `category=behavior leaf=phase2-engine-save stage=${phase2EngineSaveUnavailable[1]} method=POST path=/api/projects/:id/asset-recommendations status=unavailable`
+  }
+  const phase2EngineSaveStatus = /^category=behavior leaf=phase2-engine-save stage=status method=POST path=\/api\/projects\/:id\/asset-recommendations status=([1-5]\d{2})$/u.exec(message)
+  if (phase2EngineSaveStatus) {
+    return `category=behavior leaf=phase2-engine-save stage=status method=POST path=/api/projects/:id/asset-recommendations status=${phase2EngineSaveStatus[1]}`
+  }
   const phase2SeedSelection = /^category=behavior leaf=phase2-seed-selection-flow stage=(card-count|card-visible|card-click|modal-visible|wait-registration|confirm-click|response|generation|settlement) method=(PUT|unavailable) path=(\/api\/projects\/:id\/selected-seed|unavailable) status=unavailable$/u.exec(message)
   if (phase2SeedSelection) {
     const [, stage, method, path] = phase2SeedSelection
@@ -331,9 +339,25 @@ function safeSpecProjectionLine(message) {
   if (revisionOutlineSession) {
     return `category=behavior leaf=revision-outline-session stage=${revisionOutlineSession[1]} method=unavailable path=unavailable status=unavailable`
   }
-  const unusedOutlineSupersession = /^category=behavior leaf=unused-outline-supersession stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|outline|planning-revision|supersession-navigation|history-open|history-dialog|history-status|history-close|readonly-note|save-absent|final-settlement) method=unavailable path=unavailable status=unavailable$/u.exec(message)
-  if (unusedOutlineSupersession) {
-    return `category=behavior leaf=unused-outline-supersession stage=${unusedOutlineSupersession[1]} method=unavailable path=unavailable status=unavailable`
+  const writerOverviewFlow = /^category=behavior leaf=writer-overview-flow mode=(create|replay) stage=(preparation-wait-registration|overview-click|preparation-response|overview-url|action-count|action-href|session-wait-registration|action-click|session-response|writer-heading|final-settlement) method=unavailable path=unavailable status=unavailable$/u.exec(message)
+  if (writerOverviewFlow) {
+    return `category=behavior leaf=writer-overview-flow mode=${writerOverviewFlow[1]} stage=${writerOverviewFlow[2]} method=unavailable path=unavailable status=unavailable`
+  }
+  const writerOverviewTarget = /^category=behavior leaf=writer-overview-target mode=(create|replay) target=(seeds|contract|bible|model-settings|writer-variant|story-blocks-variant|volumes-variant|plots-variant|planning-other|write-other|project-other|missing|absolute-loopback|other) method=unavailable path=unavailable status=unavailable$/u.exec(message)
+  if (writerOverviewTarget) {
+    return `category=behavior leaf=writer-overview-target mode=${writerOverviewTarget[1]} target=${writerOverviewTarget[2]} method=unavailable path=unavailable status=unavailable`
+  }
+  const writerPreparationTarget = /^category=behavior leaf=writer-preparation-target mode=(create|replay) action=(select-seed|continue-contract|continue-bible|continue-planning|establish-planning|recover-planning|recover-outline|prepare-outline|continue-outline|start-session|continue-writing|unavailable) target=(writer|non-writer|unavailable) method=GET path=\/api\/projects\/:id\/preparation status=([1-5]\d{2}|unavailable)$/u.exec(message)
+  if (writerPreparationTarget) {
+    return `category=behavior leaf=writer-preparation-target mode=${writerPreparationTarget[1]} action=${writerPreparationTarget[2]} target=${writerPreparationTarget[3]} method=GET path=/api/projects/:id/preparation status=${writerPreparationTarget[4]}`
+  }
+  const writerOutlineNavigation = /^category=behavior leaf=writer-outline-navigation stage=(link-count|link-visible|link-click|path|workspace-visible|settlement) method=unavailable path=unavailable status=unavailable$/u.exec(message)
+  if (writerOutlineNavigation) {
+    return `category=behavior leaf=writer-outline-navigation stage=${writerOutlineNavigation[1]} method=unavailable path=unavailable status=unavailable`
+  }
+  const outlineAdjustmentBeforeFinalization = /^category=behavior leaf=outline-adjustment-before-finalization stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|outline-r1|writer-entry|working-draft-save|candidate-a-save|outline-link-navigation|outline-r2|writer-return-navigation|preserved-draft-and-stale-a|candidate-b-save|current-b|final-settlement) method=unavailable path=unavailable status=unavailable$/u.exec(message)
+  if (outlineAdjustmentBeforeFinalization) {
+    return `category=behavior leaf=outline-adjustment-before-finalization stage=${outlineAdjustmentBeforeFinalization[1]} method=unavailable path=unavailable status=unavailable`
   }
   const pinnedSession = /^category=behavior leaf=pinned-session stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|outline|writer-before|planning-revision|writer-after) method=unavailable path=unavailable status=unavailable$/u.exec(message)
   if (pinnedSession) {

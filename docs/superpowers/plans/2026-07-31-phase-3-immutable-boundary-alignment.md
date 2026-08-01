@@ -1003,10 +1003,20 @@ Expected: all selected tests PASS.
 - [ ] **Step 5: Run one focused browser scenario**
 
 ```powershell
-$env:PHASE3_GREP='@outline-adjustment-before-finalization'
-npm run test:browser:phase3
-Remove-Item Env:PHASE3_GREP
+$env:PHASE3_FOCUS_SCENARIO='outline-adjustment-before-finalization'
+try {
+  node frontend/e2e/run-phase3.mjs
+  $phase3Exit = $LASTEXITCODE
+} finally {
+  Remove-Item Env:PHASE3_FOCUS_SCENARIO -ErrorAction SilentlyContinue
+}
+exit $phase3Exit
 ```
+
+`npm run test:browser:phase3` is the formal closed six-scenario entrypoint; its
+public dispatcher deliberately removes developer focus variables, so do not use
+it for this focused check. The direct runner recognizes only
+`PHASE3_FOCUS_SCENARIO`; the obsolete `PHASE3_GREP` command is not supported.
 
 Expected: the focused scenario passes; runner ledger reports zero owned
 process, port, temp-root, Vite `deps_temp`, and test-database residue.

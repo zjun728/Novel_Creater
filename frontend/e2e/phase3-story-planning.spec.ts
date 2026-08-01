@@ -17,7 +17,7 @@ const FOCUS = String(process.env.PHASE3_FOCUS_SCENARIO || '')
 const SCENARIOS = [
   'foundation-manual-r1',
   'revision-outline-session',
-  'unused-outline-supersession',
+  'outline-adjustment-before-finalization',
   'pinned-session',
   'baseline-lock',
   'archived-navigation',
@@ -46,6 +46,8 @@ function isResponse(response, method: string, expected: string | RegExp) {
 }
 function draftPath(root: string) { return new RegExp(`^${root}/[^/]+$`, 'u') }
 function confirmPath(root: string) { return new RegExp(`^${root}/[^/]+/confirm$`, 'u') }
+function workingDraftPath() { return new RegExp(`^/api/projects/${PROJECT_ID}/chapter-sessions/[^/]+/working-draft$`, 'u') }
+function candidatePath() { return new RegExp(`^/api/projects/${PROJECT_ID}/chapter-sessions/[^/]+/candidates$`, 'u') }
 
 function normalizedRuntimeApiPath(value) {
   const raw = String(value || '')
@@ -390,6 +392,8 @@ function strictSafeBehaviorProjection(bodyError) {
   if (/^category=behavior leaf=planning-revision-flow stage=(navigation|create-wait-registration|create-click|create-response|volume-card|fill-title|save-wait-registration|save-click|save-response|preview-click|confirm-wait-registration|confirm-click|confirm-response|final-settlement) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
   if (/^category=behavior leaf=outline-flow stage=(navigation|create-wait-registration|create-click|create-response|outline-sheet|reference-selects|stage-references|scene-task-references|fill-goal|fill-characters|fill-continuation|fill-tasks|fill-scenes|fill-forbidden|save-wait-registration|save-click|save-response|preview-click|confirm-wait-registration|confirm-click|confirm-response|final-settlement) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
   if (/^category=behavior leaf=phase2-preparation-flow stage=(seed-navigation|seed-editor|seed-save|seed-select|seed-settlement|contract-navigation|contract-manual|engine-save|style-save|asset-save|capacity-save|contract-confirm|contract-settlement|bible-navigation|bible-generate|bible-preview|bible-confirm|final-settlement) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
+  if (/^category=behavior leaf=phase2-engine-save stage=(click|heading|response) method=POST path=\/api\/projects\/:id\/asset-recommendations status=unavailable$/u.test(message)) return message
+  if (/^category=behavior leaf=phase2-engine-save stage=status method=POST path=\/api\/projects\/:id\/asset-recommendations status=[1-5]\d{2}$/u.test(message)) return message
   const phase2SeedSelection = /^category=behavior leaf=phase2-seed-selection-flow stage=(card-count|card-visible|card-click|modal-visible|wait-registration|confirm-click|response|generation|settlement) method=(PUT|unavailable) path=(\/api\/projects\/:id\/selected-seed|unavailable) status=unavailable$/u.exec(message)
   if (phase2SeedSelection) {
     const [, stage, method, path] = phase2SeedSelection
@@ -401,7 +405,11 @@ function strictSafeBehaviorProjection(bodyError) {
   if (/^category=behavior leaf=baseline-stale-bible stage=status method=POST path=\/api\/projects\/:id\/bible\/confirm status=[1-5]\d{2}$/u.test(message)) return message
   if (/^category=behavior leaf=baseline-stale-bible stage=(public-error|reload-action) method=POST path=\/api\/projects\/:id\/bible\/confirm status=409$/u.test(message)) return message
   if (/^category=behavior leaf=revision-outline-session stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|verify-r1|planning-revision|history-r1|outline-before-confirm|outline-confirm|writer-session) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
-  if (/^category=behavior leaf=unused-outline-supersession stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|outline|planning-revision|supersession-navigation|history-open|history-dialog|history-status|history-close|readonly-note|save-absent|final-settlement) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
+  if (/^category=behavior leaf=writer-overview-flow mode=(create|replay) stage=(preparation-wait-registration|overview-click|preparation-response|overview-url|action-count|action-href|session-wait-registration|action-click|session-response|writer-heading|final-settlement) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
+  if (/^category=behavior leaf=writer-overview-target mode=(create|replay) target=(seeds|contract|bible|model-settings|writer-variant|story-blocks-variant|volumes-variant|plots-variant|planning-other|write-other|project-other|missing|absolute-loopback|other) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
+  if (/^category=behavior leaf=writer-preparation-target mode=(create|replay) action=(select-seed|continue-contract|continue-bible|continue-planning|establish-planning|recover-planning|recover-outline|prepare-outline|continue-outline|start-session|continue-writing|unavailable) target=(writer|non-writer|unavailable) method=GET path=\/api\/projects\/:id\/preparation status=([1-5]\d{2}|unavailable)$/u.test(message)) return message
+  if (/^category=behavior leaf=writer-outline-navigation stage=(link-count|link-visible|link-click|path|workspace-visible|settlement) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
+  if (/^category=behavior leaf=outline-adjustment-before-finalization stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|outline-r1|writer-entry|working-draft-save|candidate-a-save|outline-link-navigation|outline-r2|writer-return-navigation|preserved-draft-and-stale-a|candidate-b-save|current-b|final-settlement) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
   if (/^category=behavior leaf=pinned-session stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|outline|writer-before|planning-revision|writer-after) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
   if (/^category=behavior leaf=baseline-lock stage=(create-project|phase2-preparation|seed-lock-view|contract-lock-view|bible-lock-view|stale-bible-confirm|stale-bible-reload|final-baseline-reload) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
   if (/^category=behavior leaf=archived-navigation stage=(create-project|phase2-preparation|disable-planning-model|manual-planning|outline|archive|volumes-readonly|plots-navigation|browser-history|blocks-readonly) method=unavailable path=unavailable status=unavailable$/u.test(message)) return message
@@ -502,6 +510,16 @@ function phase2SeedSelectionFailure(stage) {
   const method = writeStage ? 'PUT' : 'unavailable'
   const path = writeStage ? '/api/projects/:id/selected-seed' : 'unavailable'
   return `category=behavior leaf=phase2-seed-selection-flow stage=${stage} method=${method} path=${path} status=unavailable`
+}
+
+function phase2EngineSaveFailure(stage, status = 'unavailable') {
+  const closedStatus = stage === 'status'
+    && Number.isInteger(status)
+    && status >= 100
+    && status <= 599
+    ? status
+    : 'unavailable'
+  return `category=behavior leaf=phase2-engine-save stage=${stage} method=POST path=/api/projects/:id/asset-recommendations status=${closedStatus}`
 }
 
 function baselineSeedLockFailure(stage) {
@@ -684,9 +702,22 @@ async function completePhase2PreparationUi(page, runtime, { beforeBibleConfirm =
   const engine = page.locator('section.engine-step')
   const styleRecommendationsResponse = page.waitForResponse(response => isResponse(response, 'POST', assetRecommendations()))
   stage = 'engine-save'
-  await engine.getByRole('button', { name: '保存草稿并继续' }).click()
-  await expect(page.getByRole('heading', { name: '先定阅读感受，再谈写法', exact: true })).toBeVisible()
-  expect((await styleRecommendationsResponse).status()).toBe(200)
+  let engineSaveStage = 'click'
+  try {
+    await engine.getByRole('button', { name: '保存草稿并继续' }).click()
+    engineSaveStage = 'heading'
+    await expect(page.getByRole('heading', { name: '先定阅读感受，再谈写法', exact: true })).toBeVisible()
+    engineSaveStage = 'response'
+    const response = await styleRecommendationsResponse
+    engineSaveStage = 'status'
+    const status = response.status()
+    if (status !== 200) throw new Error(phase2EngineSaveFailure(engineSaveStage, status))
+  } catch (error) {
+    const projection = strictSafeBehaviorProjection(error)
+    if (projection) throw new Error(projection)
+    void error
+    throw new Error(phase2EngineSaveFailure(engineSaveStage))
+  }
   const styleStep = page.locator('section.contract-step').filter({
     has: page.getByRole('heading', { name: '先定阅读感受，再谈写法', exact: true }),
   })
@@ -968,10 +999,10 @@ async function createManualPlanning(page, title: string, runtime) {
   })()
 }
 
-async function createOutline(page, goal: string, runtime, { confirm = true } = {}) {
+async function createOutline(page, goal: string, runtime, { confirm = true, navigate = true, adoptionLabel = '采用小纲' } = {}) {
   let stage = 'navigation'
   try {
-    await page.goto(blocks())
+    if (navigate) await page.goto(blocks())
     stage = 'create-wait-registration'
     const createdResponse = page.waitForResponse(response => isResponse(response, 'POST', outlineDrafts()))
     stage = 'create-click'
@@ -1015,7 +1046,7 @@ async function createOutline(page, goal: string, runtime, { confirm = true } = {
     expect((await savedResponse).status()).toBe(200)
     if (confirm) {
       stage = 'preview-click'
-      await page.getByRole('button', { name: '预览并确认小纲' }).click()
+      await page.getByRole('button', { name: adoptionLabel, exact: true }).click()
       stage = 'confirm-wait-registration'
       const confirmedResponse = page.waitForResponse(response => isResponse(response, 'POST', confirmPath(outlineDrafts())))
       stage = 'confirm-click'
@@ -1066,6 +1097,123 @@ async function createPlanningRevision(page, title: string, runtime) {
   } catch (error) {
     void error
     throw new Error(`category=behavior leaf=planning-revision-flow stage=${stage} method=unavailable path=unavailable status=unavailable`)
+  }
+}
+
+async function assertWriterPreparationTarget(response, mode: 'create' | 'replay') {
+  let action = 'unavailable'
+  let target = 'unavailable'
+  let status = 'unavailable'
+  try {
+    const responseStatus = response.status()
+    if (Number.isInteger(responseStatus) && responseStatus >= 100 && responseStatus <= 599) status = String(responseStatus)
+    const { nextAction, targetPath } = await response.json()
+    action = nextAction === 'select_seed' ? 'select-seed'
+      : nextAction === 'continue_contract' ? 'continue-contract'
+        : nextAction === 'continue_bible' ? 'continue-bible'
+          : nextAction === 'continue_planning' ? 'continue-planning'
+            : nextAction === 'establish_planning' ? 'establish-planning'
+              : nextAction === 'recover_planning_operation' ? 'recover-planning'
+                : nextAction === 'recover_chapter_outline_operation' ? 'recover-outline'
+                  : nextAction === 'prepare_chapter_outline' ? 'prepare-outline'
+                    : nextAction === 'continue_chapter_outline' ? 'continue-outline'
+                      : nextAction === 'start_chapter_session' ? 'start-session'
+                        : nextAction === 'continue_writing' ? 'continue-writing' : 'unavailable'
+    target = targetPath === writer() ? 'writer' : typeof targetPath === 'string' ? 'non-writer' : 'unavailable'
+  } catch {}
+  const expectedAction = mode === 'create' ? 'start-session' : 'continue-writing'
+  if (status !== '200' || action !== expectedAction || target !== 'writer') {
+    throw new Error(`category=behavior leaf=writer-preparation-target mode=${mode} action=${action} target=${target} method=GET path=/api/projects/:id/preparation status=${status}`)
+  }
+}
+
+async function writerOverviewTargetKind(nextAction) {
+  let actualHref
+  try { actualHref = await nextAction.getAttribute('href') } catch { return 'other' }
+  if (actualHref === null) return 'missing'
+  const projectPrefix = `/projects/${PROJECT_ID}/`
+  if (actualHref === `${projectPrefix}seeds`) return 'seeds'
+  if (actualHref === `${projectPrefix}contract`) return 'contract'
+  if (actualHref === `${projectPrefix}bible`) return 'bible'
+  if (actualHref === `${projectPrefix}settings/models`) return 'model-settings'
+  if (actualHref.startsWith(`${projectPrefix}write/chapters/`)) return 'writer-variant'
+  if (actualHref.startsWith(`${projectPrefix}planning/story-blocks`)) return 'story-blocks-variant'
+  if (actualHref.startsWith(`${projectPrefix}planning/volumes`)) return 'volumes-variant'
+  if (actualHref.startsWith(`${projectPrefix}planning/plots`)) return 'plots-variant'
+  if (actualHref.startsWith(`${projectPrefix}planning/`)) return 'planning-other'
+  if (actualHref.startsWith(`${projectPrefix}write/`)) return 'write-other'
+  if (actualHref.startsWith(projectPrefix)) return 'project-other'
+  try {
+    const parsed = new URL(actualHref)
+    if (parsed.hostname === '127.0.0.1' && parsed.pathname.startsWith(projectPrefix)) return 'absolute-loopback'
+  } catch { return 'other' }
+  return 'other'
+}
+
+async function assertWriterOverviewActionHref(nextAction, mode: 'create' | 'replay') {
+  try {
+    await expect(nextAction).toHaveAttribute('href', writer())
+  } catch (error) {
+    void error
+    const targetKind = await writerOverviewTargetKind(nextAction)
+    throw new Error(`category=behavior leaf=writer-overview-target mode=${mode} target=${targetKind} method=unavailable path=unavailable status=unavailable`)
+  }
+}
+
+async function navigateWriterThroughOverview(page, runtime, mode: 'create' | 'replay') {
+  let stage = 'preparation-wait-registration'
+  try {
+    const sessionMethod = mode === 'create' ? 'POST' : 'GET'
+    const expectedStatus = mode === 'create' ? 201 : 200
+    await settleNavigationBoundary(page, runtime)
+    const preparation = page.waitForResponse(response => isResponse(response, 'GET', `/api/projects/${PROJECT_ID}/preparation`))
+    stage = 'overview-click'
+    await page.getByRole('link', { name: '项目概览', exact: true }).click()
+    stage = 'preparation-response'
+    const preparationResponse = await preparation
+    await assertWriterPreparationTarget(preparationResponse, mode)
+    stage = 'overview-url'
+    await expect.poll(() => new URL(page.url()).pathname).toBe(overview())
+    const nextAction = page.locator('a.overview-next-action')
+    stage = 'action-count'
+    await expect(nextAction).toHaveCount(1)
+    stage = 'action-href'
+    await assertWriterOverviewActionHref(nextAction, mode)
+    stage = 'session-wait-registration'
+    const sessionResponse = page.waitForResponse(response => isResponse(response, sessionMethod, session()))
+    stage = 'action-click'
+    await nextAction.click()
+    stage = 'session-response'
+    expect((await sessionResponse).status()).toBe(expectedStatus)
+    stage = 'writer-heading'
+    await expect(page.getByRole('heading', { name: '章节工作台', exact: true })).toBeVisible()
+    stage = 'final-settlement'
+    await settleNavigationBoundary(page, runtime)
+  } catch (error) {
+    if (strictSafeBehaviorProjection(error)) throw error
+    void error
+    throw new Error(`category=behavior leaf=writer-overview-flow mode=${mode} stage=${stage} method=unavailable path=unavailable status=unavailable`)
+  }
+}
+
+async function navigateOutlineAdjustmentThroughVisibleLink(page, runtime) {
+  let stage = 'link-count'
+  try {
+    const adjustOutline = page.getByRole('link', { name: '调整本章小纲', exact: true })
+    await expect(adjustOutline).toHaveCount(1)
+    stage = 'link-visible'
+    await expect(adjustOutline).toBeVisible()
+    stage = 'link-click'
+    await adjustOutline.click()
+    stage = 'path'
+    await expect.poll(() => new URL(page.url()).pathname).toBe(blocks())
+    stage = 'workspace-visible'
+    await expect(page.getByText('调整本章小纲', { exact: true })).toBeVisible()
+    stage = 'settlement'
+    await settleNavigationBoundary(page, runtime)
+  } catch (error) {
+    void error
+    throw new Error(`category=behavior leaf=writer-outline-navigation stage=${stage} method=unavailable path=unavailable status=unavailable`)
   }
 }
 
@@ -1153,7 +1301,7 @@ test('revision-outline-session: clone future design, keep R1 history, and create
       expect(sessionPosts, 'zero Session POST before confirmation').toBe(0)
     })
     await runScenarioStage('revision-outline-session', 'outline-confirm', async () => {
-      await page.getByRole('button', { name: '预览并确认小纲' }).click()
+      await page.getByRole('button', { name: '采用小纲', exact: true }).click()
       await page.getByRole('dialog').getByRole('button', { name: '确认并签印' }).click()
       await settleNavigationBoundary(page, runtime)
     })
@@ -1166,49 +1314,63 @@ test('revision-outline-session: clone future design, keep R1 history, and create
   })
 })
 
-test('unused-outline-supersession: confirmed Outline without Session becomes read-only after Planning Head advances', async ({ page }) => {
+test('outline-adjustment-before-finalization: adopt r2 through visible navigation while retaining body and making candidate basis explicit', async ({ page }) => {
   await runAudited(page, () => [...phase2PreparationWrites(),
-    { method: 'POST', path: planningDrafts(), count: 2, statuses: [201] },
-    { method: 'PUT', path: draftPath(planningDrafts()), count: 2, statuses: [200] },
-    { method: 'POST', path: confirmPath(planningDrafts()), count: 2, statuses: [201] },
-    { method: 'POST', path: outlineDrafts(), count: 1, statuses: [201] },
-    { method: 'PUT', path: draftPath(outlineDrafts()), count: 1, statuses: [200] },
-    { method: 'POST', path: confirmPath(outlineDrafts()), count: 1, statuses: [201] },
+    { method: 'POST', path: planningDrafts(), count: 1, statuses: [201] },
+    { method: 'PUT', path: draftPath(planningDrafts()), count: 1, statuses: [200] },
+    { method: 'POST', path: confirmPath(planningDrafts()), count: 1, statuses: [201] },
+    { method: 'POST', path: outlineDrafts(), count: 2, statuses: [201] },
+    { method: 'PUT', path: draftPath(outlineDrafts()), count: 2, statuses: [200] },
+    { method: 'POST', path: confirmPath(outlineDrafts()), count: 2, statuses: [201] },
+    { method: 'POST', path: session(), count: 1, statuses: [201] },
+    { method: 'PUT', path: workingDraftPath(), count: 1, statuses: [200] },
+    { method: 'POST', path: candidatePath(), count: 2, statuses: [201] },
   ], async runtime => {
-    await runScenarioStage('unused-outline-supersession', 'create-project', () => createProjectUi(page, runtime))
-    await runScenarioStage('unused-outline-supersession', 'phase2-preparation', () => completePhase2PreparationUi(page, runtime))
-    await runScenarioStage('unused-outline-supersession', 'disable-planning-model', () => disablePlanningModelUi(page, runtime))
-    await runScenarioStage('unused-outline-supersession', 'manual-planning', () => createManualPlanning(page, '规划 R1', runtime))
-    await runScenarioStage('unused-outline-supersession', 'outline', () => createOutline(page, '未使用的小纲', runtime))
-    await runScenarioStage('unused-outline-supersession', 'planning-revision', () => createPlanningRevision(page, '推进 Planning Head', runtime))
-    await runScenarioStage('unused-outline-supersession', 'supersession-navigation', async () => {
-      await page.goto(blocks())
+    await runScenarioStage('outline-adjustment-before-finalization', 'create-project', () => createProjectUi(page, runtime))
+    await runScenarioStage('outline-adjustment-before-finalization', 'phase2-preparation', () => completePhase2PreparationUi(page, runtime))
+    await runScenarioStage('outline-adjustment-before-finalization', 'disable-planning-model', () => disablePlanningModelUi(page, runtime))
+    await runScenarioStage('outline-adjustment-before-finalization', 'manual-planning', () => createManualPlanning(page, '规划 R1', runtime))
+    await runScenarioStage('outline-adjustment-before-finalization', 'outline-r1', () => createOutline(page, 'R1 小纲', runtime))
+    await runScenarioStage('outline-adjustment-before-finalization', 'writer-entry', () => navigateWriterThroughOverview(page, runtime, 'create'))
+    await runScenarioStage('outline-adjustment-before-finalization', 'working-draft-save', async () => {
+      const workingDraft = page.getByPlaceholder('在这里手动输入、粘贴或继续编辑章节正文。AI 生成只会进入工作稿，不会自动保存候选。', { exact: true })
+      await workingDraft.fill('正文 A 保持不变。')
+      const savedResponse = page.waitForResponse(response => isResponse(response, 'PUT', workingDraftPath()))
+      await page.getByRole('button', { name: '保存工作稿', exact: true }).click()
+      expect((await savedResponse).status()).toBe(200)
     })
-    await runScenarioStage('unused-outline-supersession', 'history-open', async () => {
-      await page.getByRole('button', { name: '小纲历史', exact: true }).click()
+    await runScenarioStage('outline-adjustment-before-finalization', 'candidate-a-save', async () => {
+      const saveCandidate = page.getByRole('button', { name: '保存为候选', exact: true })
+      const savedResponse = page.waitForResponse(response => isResponse(response, 'POST', candidatePath()))
+      await saveCandidate.click()
+      expect((await savedResponse).status()).toBe(201)
+      const candidateRows = page.locator('.candidate-list > li')
+      await expect(candidateRows).toHaveCount(1)
+      await expect(candidateRows.nth(0)).toContainText('依据当前小纲')
+      await expect(saveCandidate).toBeEnabled()
     })
-    await runScenarioStage('unused-outline-supersession', 'history-dialog', async () => {
-      const outlineHistory = page.getByRole('dialog', { name: '章节小纲历史', exact: true })
-      await expect(outlineHistory).toHaveCount(1)
-      await expect(outlineHistory).toBeVisible()
+    await runScenarioStage('outline-adjustment-before-finalization', 'outline-link-navigation', () => navigateOutlineAdjustmentThroughVisibleLink(page, runtime))
+    await runScenarioStage('outline-adjustment-before-finalization', 'outline-r2', () => createOutline(page, 'R2 小纲', runtime, { navigate: false, adoptionLabel: '更新当前小纲' }))
+    await runScenarioStage('outline-adjustment-before-finalization', 'writer-return-navigation', () => navigateWriterThroughOverview(page, runtime, 'replay'))
+    await runScenarioStage('outline-adjustment-before-finalization', 'preserved-draft-and-stale-a', async () => {
+      const workingDraft = page.getByPlaceholder('在这里手动输入、粘贴或继续编辑章节正文。AI 生成只会进入工作稿，不会自动保存候选。', { exact: true })
+      await expect(workingDraft).toHaveValue('正文 A 保持不变。')
+      const candidateRows = page.locator('.candidate-list > li')
+      await expect(candidateRows).toHaveCount(1)
+      await expect(candidateRows.nth(0)).toContainText('依据旧小纲，不能定稿')
     })
-    await runScenarioStage('unused-outline-supersession', 'history-status', async () => {
-      const outlineHistory = page.getByRole('dialog', { name: '章节小纲历史', exact: true })
-      const supersededOutline = outlineHistory.getByText('已被后续依据取代', { exact: true })
-      await expect(supersededOutline).toHaveCount(1)
-      await expect(supersededOutline).toBeVisible()
+    await runScenarioStage('outline-adjustment-before-finalization', 'candidate-b-save', async () => {
+      const savedResponse = page.waitForResponse(response => isResponse(response, 'POST', candidatePath()))
+      await page.getByRole('button', { name: '保存为候选', exact: true }).click()
+      expect((await savedResponse).status()).toBe(201)
     })
-    await runScenarioStage('unused-outline-supersession', 'history-close', async () => {
-      const outlineHistory = page.getByRole('dialog', { name: '章节小纲历史', exact: true })
-      await outlineHistory.getByRole('button', { name: '关闭', exact: true }).click()
+    await runScenarioStage('outline-adjustment-before-finalization', 'current-b', async () => {
+      const candidateRows = page.locator('.candidate-list > li')
+      await expect(candidateRows).toHaveCount(2)
+      await expect(candidateRows.nth(0)).toContainText('依据旧小纲，不能定稿')
+      await expect(candidateRows.nth(1)).toContainText('依据当前小纲')
     })
-    await runScenarioStage('unused-outline-supersession', 'readonly-note', async () => {
-      await expect(page.getByText('旧内容保持只读；新工作稿不会自动确认或创建写作会话。', { exact: true })).toBeVisible()
-    })
-    await runScenarioStage('unused-outline-supersession', 'save-absent', async () => {
-      await expect(page.getByRole('button', { name: '保存小纲工作稿' })).toHaveCount(0)
-    })
-    await runScenarioStage('unused-outline-supersession', 'final-settlement', async () => {
+    await runScenarioStage('outline-adjustment-before-finalization', 'final-settlement', async () => {
       await settleNavigationBoundary(page, runtime)
     })
   })
