@@ -48,6 +48,18 @@ export function capturePlainTextRange(text, selectionStart, selectionEnd) {
   }
 }
 
+export function capturePlainTextInput(target) {
+  if (target === null || typeof target !== 'object') {
+    throw new TypeError('plain text input target must be an object')
+  }
+  const { value, selectionStart, selectionEnd } = target
+  requireText(value)
+  return {
+    value,
+    selection: capturePlainTextRange(value, selectionStart, selectionEnd),
+  }
+}
+
 export function scalarRangeToCodeUnits(text, startOffset, endOffset) {
   requireText(text)
   requireInteger(startOffset, 'start offset')

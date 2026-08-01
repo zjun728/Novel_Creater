@@ -1790,6 +1790,7 @@ export const api = {
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/working-draft`,
       {
         expectedRevision: data.expectedRevision,
+        expectedContentHash: data.expectedContentHash,
         content: data.content,
       },
     ),
@@ -1803,7 +1804,11 @@ export const api = {
     ),
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,
-      { expectedWorkingDraftRevision: data.expectedWorkingDraftRevision },
+      {
+        expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
+        expectedContentHash: data.expectedContentHash,
+        idempotencyKey: data.idempotencyKey,
+      },
     ),
   },
 

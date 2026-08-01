@@ -2,10 +2,48 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  capturePlainTextInput,
   capturePlainTextRange,
   locatePlainTextRange,
   scalarRangeToCodeUnits,
 } from '../../src/utils/plainTextRange.js'
+
+test('captures input text and Unicode selection from one event target, not stale props', () => {
+  const stalePropsText = '甲乙'
+  const target = {
+    value: '😀甲乙',
+    selectionStart: 2,
+    selectionEnd: 2,
+  }
+
+  assert.notEqual(target.value, stalePropsText)
+  assert.deepEqual(capturePlainTextInput(target), {
+    value: '😀甲乙',
+    selection: {
+      startOffset: 1,
+      endOffset: 1,
+      selectedText: '',
+    },
+  })
+})
+
+test('captures a long pasted input without dropping its value or selection', () => {
+  const pasted = `${'甲'.repeat(512)}😀${'乙'.repeat(512)}`
+  const target = {
+    value: pasted,
+    selectionStart: pasted.length,
+    selectionEnd: pasted.length,
+  }
+
+  assert.deepEqual(capturePlainTextInput(target), {
+    value: pasted,
+    selection: {
+      startOffset: 1025,
+      endOffset: 1025,
+      selectedText: '',
+    },
+  })
+})
 
 test('converts textarea UTF-16 selection through Chinese, astral text, and a newline to scalar offsets', () => {
   const text = '甲😀乙\n丙'
@@ -79,6 +117,11 @@ test('rejects every unpaired surrogate before range conversion or textarea side 
     }
 
     assert.throws(() => capturePlainTextRange(text, 0, 1), RangeError)
+    assert.throws(() => capturePlainTextInput({
+      value: text,
+      selectionStart: 0,
+      selectionEnd: 1,
+    }), RangeError)
     assert.throws(() => scalarRangeToCodeUnits(text, 0, 1), RangeError)
     assert.throws(() => locatePlainTextRange(textarea, text, 0, 1), RangeError)
     assert.deepEqual(calls, [])

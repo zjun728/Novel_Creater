@@ -4,6 +4,9 @@ import { computed, ref, shallowRef } from 'vue'
 import { api } from '../api/db/client.js'
 import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
+const CONTENT_HASH = /^[0-9a-f]{64}$/
+const IDEMPOTENCY_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
 function publicError(error) {
   return {
     status: Number(error?.status || 0),
@@ -34,6 +37,58 @@ function requireWorkspace(workspace) {
   return workspace
 }
 
+function requireWorkingDraftCommand(command) {
+  if (
+    !command
+    || !Number.isInteger(command.expectedRevision)
+    || command.expectedRevision < 1
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+    || typeof command.content !== 'string'
+  ) {
+    throw new TypeError('working draft command is required')
+  }
+  return Object.freeze({
+    expectedRevision: command.expectedRevision,
+    expectedContentHash: command.expectedContentHash,
+    content: command.content,
+  })
+}
+
+function requireCandidateCommand(command) {
+  if (
+    !command
+    || !Number.isInteger(command.expectedWorkingDraftRevision)
+    || command.expectedWorkingDraftRevision < 1
+    || typeof command.expectedContentHash !== 'string'
+    || !CONTENT_HASH.test(command.expectedContentHash)
+    || typeof command.idempotencyKey !== 'string'
+    || !IDEMPOTENCY_KEY.test(command.idempotencyKey)
+  ) {
+    throw new TypeError('candidate command is required')
+  }
+  return Object.freeze({
+    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
+    expectedContentHash: command.expectedContentHash,
+    idempotencyKey: command.idempotencyKey,
+  })
+}
+
+function requireGenerationCommand(command) {
+  if (
+    !command
+    || !Number.isInteger(command.expectedWorkingDraftRevision)
+    || command.expectedWorkingDraftRevision < 1
+    || typeof command.authorInstruction !== 'string'
+  ) {
+    throw new TypeError('working draft generation command is required')
+  }
+  return Object.freeze({
+    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
+    authorInstruction: command.authorInstruction,
+  })
+}
+
 const CANDIDATE_BASIS_FIELDS = Object.freeze([
   'outlineRevisionId',
   'outlineRevision',
@@ -53,8 +108,6 @@ const CANDIDATE_PUBLIC_FIELDS = Object.freeze([
   'content',
   'contentHash',
 ])
-const CANDIDATE_HASH = /^[0-9a-f]{64}$/
-
 function candidateBasisIsSafe(candidate) {
   return (
     typeof candidate?.outlineRevisionId === 'string'
@@ -62,19 +115,19 @@ function candidateBasisIsSafe(candidate) {
     && Number.isInteger(candidate.outlineRevision)
     && candidate.outlineRevision >= 1
     && typeof candidate.outlineHash === 'string'
-    && CANDIDATE_HASH.test(candidate.outlineHash)
+    && CONTENT_HASH.test(candidate.outlineHash)
     && typeof candidate?.planningRevisionId === 'string'
     && candidate.planningRevisionId.length > 0
     && Number.isInteger(candidate.planningRevision)
     && candidate.planningRevision >= 1
     && typeof candidate.planningHash === 'string'
-    && CANDIDATE_HASH.test(candidate.planningHash)
+    && CONTENT_HASH.test(candidate.planningHash)
     && Number.isInteger(candidate.canonRevision)
     && candidate.canonRevision >= 0
     && Number.isInteger(candidate.projectionRevision)
     && candidate.projectionRevision >= 0
     && typeof candidate.projectionHash === 'string'
-    && CANDIDATE_HASH.test(candidate.projectionHash)
+    && CONTENT_HASH.test(candidate.projectionHash)
   )
 }
 
@@ -139,6 +192,11 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     || savingCandidate.value
     || generatingDraft.value
   ))
+  const commandBusy = computed(() => (
+    creating.value
+    || savingCandidate.value
+    || generatingDraft.value
+  ))
   const busy = computed(() => loading.value || writeBusy.value)
 
   function resetPendingFlags() {
@@ -196,6 +254,11 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
 
   function acceptWorkspace(nextWorkspace) {
     workspace.value = normalizeWorkspace(nextWorkspace)
+    error.value = null
+  }
+
+  function clearWorkspace() {
+    workspace.value = null
     error.value = null
   }
 
@@ -280,7 +343,10 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
         current.lifecycle === 'archived'
         || !routeMatches
         || !confirmed
-      ) return current
+      ) {
+        clearWorkspace()
+        return current
+      }
 
       let loaded
       if (current.activeSession) {
@@ -309,7 +375,10 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
         if (
           confirmed.status !== 'current'
           || current.capabilities?.startSession !== true
-        ) return current
+        ) {
+          clearWorkspace()
+          return current
+        }
         const planning = current.planningAuthority
         const projection = current.canonProjectionAuthority
         loaded = await api.chapterSessions.create(
@@ -465,12 +534,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
-  async function saveWorkingDraft(nextProjectId, content) {
+  async function saveWorkingDraft(nextProjectId, command) {
     const {
       projectId: targetProjectId,
       chapterNumber: targetChapterNumber,
     } = enterContext(nextProjectId, chapterNumber.value)
     assertWriteAvailable()
+    const writeCommand = requireWorkingDraftCommand(command)
     const current = requireWorkspace(workspace.value)
     const generation = draftGuard.begin()
     const targetStateGeneration = stateGeneration
@@ -479,10 +549,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       const saved = await api.chapterSessions.saveWorkingDraft(
         targetProjectId,
         current.session.id,
-        {
-          expectedRevision: current.workingDraft.revision,
-          content,
-        },
+        writeCommand,
       )
       if (isCurrent(
         draftGuard,
@@ -516,12 +583,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
-  async function saveCandidate(nextProjectId) {
+  async function saveCandidate(nextProjectId, command) {
     const {
       projectId: targetProjectId,
       chapterNumber: targetChapterNumber,
     } = enterContext(nextProjectId, chapterNumber.value)
     assertWriteAvailable()
+    const writeCommand = requireCandidateCommand(command)
     const current = requireWorkspace(workspace.value)
     const generation = candidateGuard.begin()
     const targetStateGeneration = stateGeneration
@@ -530,7 +598,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       const saved = await api.chapterSessions.saveCandidate(
         targetProjectId,
         current.session.id,
-        { expectedWorkingDraftRevision: current.workingDraft.revision },
+        writeCommand,
       )
       if (isCurrent(
         candidateGuard,
@@ -564,12 +632,13 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
-  async function generateWorkingDraft(nextProjectId, authorInstruction = '') {
+  async function generateWorkingDraft(nextProjectId, command) {
     const {
       projectId: targetProjectId,
       chapterNumber: targetChapterNumber,
     } = enterContext(nextProjectId, chapterNumber.value)
     assertWriteAvailable()
+    const writeCommand = requireGenerationCommand(command)
     const current = requireWorkspace(workspace.value)
     const generation = generationGuard.begin()
     const targetStateGeneration = stateGeneration
@@ -578,10 +647,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       const generated = await api.chapterSessions.generateWorkingDraft(
         targetProjectId,
         current.session.id,
-        {
-          expectedWorkingDraftRevision: current.workingDraft.revision,
-          authorInstruction,
-        },
+        writeCommand,
       )
       if (isCurrent(
         generationGuard,
@@ -641,6 +707,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     candidates,
     hasSession,
     writeBusy,
+    commandBusy,
     busy,
     load,
     openAuthoritative,

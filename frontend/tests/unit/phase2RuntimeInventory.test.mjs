@@ -239,17 +239,14 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
   }
   assert.doesNotMatch(writer, /planningStore|usePlanningStore/)
   assert.doesNotMatch(writer, /watch\(\s*workingDraft/)
-  assert.match(writer, /createChapterEditorState/)
-  assert.match(writer, /decideChapterNavigation/)
-  assert.match(writer, /editorState\.finishSave/)
-  assert.match(writer, /editorState\.finishGeneration/)
-  assert.match(writer, /onBeforeRouteLeave/)
-  assert.match(writer, /onBeforeRouteUpdate/)
-  assert.match(
-    writer,
-    /:disabled="!session \|\| chapterSessionStore\.generatingDraft"/,
-  )
+  assert.match(writer, /createWorkingDraftAutosave/)
+  assert.match(writer, /createChapterWriterController/)
+  assert.match(writer, /PlainTextDraftEditor/)
+  assert.match(writer, /onBeforeRouteLeave\(async/)
+  assert.match(writer, /onBeforeRouteUpdate\(async/)
+  assert.doesNotMatch(writer, /chapterEditorState|createChapterEditorState|decideChapterNavigation/)
   assert.match(store, /const busy = computed\(/)
+  assert.match(store, /const commandBusy = computed\(/)
   assert.match(store, /function assertWriteAvailable\(/)
   assert.match(writer, /请先完成并确认本章小纲/)
   assert.match(

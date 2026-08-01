@@ -165,12 +165,23 @@ test('chapter session store edits working draft without creating candidate', asy
       expectedCanonRevision: 0,
       apiKey: 'must-not-send',
     })
-    await store.saveWorkingDraft('project-1', '正文')
+    await store.saveWorkingDraft('project-1', {
+      expectedRevision: 1,
+      expectedContentHash: 'a'.repeat(64),
+      content: '正文',
+    })
     assert.equal(store.candidates.length, 0)
-    await store.generateWorkingDraft('project-1', '多一点市井对话')
+    await store.generateWorkingDraft('project-1', {
+      expectedWorkingDraftRevision: 2,
+      authorInstruction: '多一点市井对话',
+    })
     assert.equal(store.workingDraft.content, 'AI 生成正文')
     assert.equal(store.candidates.length, 0)
-    await store.saveCandidate('project-1')
+    await store.saveCandidate('project-1', {
+      expectedWorkingDraftRevision: 3,
+      expectedContentHash: 'a'.repeat(64),
+      idempotencyKey: '11111111-1111-1111-1111-111111111111',
+    })
     assert.equal(store.candidates.length, 1)
     assert.deepEqual(calls, [
       ['create', 'project-1', 1, {
@@ -181,12 +192,20 @@ test('chapter session store edits working draft without creating candidate', asy
         expectedOutlineHash: 'c'.repeat(64),
         expectedCanonRevision: 0,
       }],
-      ['draft', 'project-1', 'session-1', { expectedRevision: 1, content: '正文' }],
+      ['draft', 'project-1', 'session-1', {
+        expectedRevision: 1,
+        expectedContentHash: 'a'.repeat(64),
+        content: '正文',
+      }],
       ['generate', 'project-1', 'session-1', {
         expectedWorkingDraftRevision: 2,
         authorInstruction: '多一点市井对话',
       }],
-      ['candidate', 'project-1', 'session-1', { expectedWorkingDraftRevision: 3 }],
+      ['candidate', 'project-1', 'session-1', {
+        expectedWorkingDraftRevision: 3,
+        expectedContentHash: 'a'.repeat(64),
+        idempotencyKey: '11111111-1111-1111-1111-111111111111',
+      }],
     ])
   })
 })
@@ -255,6 +274,139 @@ test('wrong writer route returns current authority without Session request or re
     assert.equal(await store.openAuthoritative('project-1', 7), current)
     assert.equal(sessionRequests, 0)
     assert.equal(store.hasSession, false)
+  })
+})
+
+test('writer commands preserve controller-captured CAS authority over a newer workspace', async () => {
+  const calls = []
+  const capturedHash = 'a'.repeat(64)
+  const newerWorkspace = workspace({ revision: 5 })
+  newerWorkspace.workingDraft.contentHash = 'f'.repeat(64)
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => newerWorkspace],
+    [api.chapterSessions, 'saveWorkingDraft', async (projectId, sessionId, command) => {
+      calls.push(['draft', projectId, sessionId, structuredClone(command)])
+      return newerWorkspace
+    }],
+    [api.chapterSessions, 'generateWorkingDraft', async (projectId, sessionId, command) => {
+      calls.push(['generate', projectId, sessionId, structuredClone(command)])
+      return newerWorkspace
+    }],
+    [api.chapterSessions, 'saveCandidate', async (projectId, sessionId, command) => {
+      calls.push(['candidate', projectId, sessionId, structuredClone(command)])
+      return newerWorkspace
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+
+    await store.saveWorkingDraft('project-1', {
+      expectedRevision: 4,
+      expectedContentHash: capturedHash,
+      content: '本地草稿',
+    })
+    await store.generateWorkingDraft('project-1', {
+      expectedWorkingDraftRevision: 4,
+      authorInstruction: '更克制',
+    })
+    await store.saveCandidate('project-1', {
+      expectedWorkingDraftRevision: 4,
+      expectedContentHash: capturedHash,
+      idempotencyKey: '11111111-1111-1111-1111-111111111111',
+    })
+
+    assert.deepEqual(calls, [
+      ['draft', 'project-1', 'session-1', {
+        expectedRevision: 4,
+        expectedContentHash: capturedHash,
+        content: '本地草稿',
+      }],
+      ['generate', 'project-1', 'session-1', {
+        expectedWorkingDraftRevision: 4,
+        authorInstruction: '更克制',
+      }],
+      ['candidate', 'project-1', 'session-1', {
+        expectedWorkingDraftRevision: 4,
+        expectedContentHash: capturedHash,
+        idempotencyKey: '11111111-1111-1111-1111-111111111111',
+      }],
+    ])
+  })
+})
+
+test('writer commands reject malformed authorities and incomplete workspaces before API calls', async () => {
+  const malformedHash = 'not-a-content-hash'
+  let apiCalls = 0
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => workspace()],
+    [api.chapterSessions, 'saveWorkingDraft', async () => { apiCalls += 1 }],
+    [api.chapterSessions, 'generateWorkingDraft', async () => { apiCalls += 1 }],
+    [api.chapterSessions, 'saveCandidate', async () => { apiCalls += 1 }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+
+    await assert.rejects(store.saveWorkingDraft('project-1', {
+      expectedRevision: 1,
+      expectedContentHash: malformedHash,
+      content: '正文',
+    }), error => error instanceof TypeError && !String(error.message).includes(malformedHash))
+    await assert.rejects(store.saveCandidate('project-1', {
+      expectedWorkingDraftRevision: 1,
+      expectedContentHash: 'a'.repeat(64),
+      idempotencyKey: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'.toUpperCase(),
+    }), error => error instanceof TypeError && !String(error.message).includes('AAAAAAAA'))
+    assert.equal(apiCalls, 0)
+
+    store.workspace = { session: { id: 'session-1' } }
+    await assert.rejects(store.generateWorkingDraft('project-1', {
+      expectedWorkingDraftRevision: 1,
+      authorInstruction: '更克制',
+    }), TypeError)
+    await assert.rejects(store.saveCandidate('project-1', {
+      expectedWorkingDraftRevision: 1,
+      expectedContentHash: 'a'.repeat(64),
+      idempotencyKey: '11111111-1111-1111-1111-111111111111',
+    }), TypeError)
+    assert.equal(apiCalls, 0)
+  })
+})
+
+test('authoritative no-session result clears a prior workspace in the same route context', async () => {
+  let currentCalls = 0
+  let createCalls = 0
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => {
+      currentCalls += 1
+      return currentCalls === 1
+        ? currentOutline()
+        : { ...currentOutline({ startSession: false }), lifecycle: 'archived' }
+    }],
+    [api.chapterSessions, 'create', async () => {
+      createCalls += 1
+      return workspace({
+        planningRevision: 7,
+        outlineRevision: 9,
+        expectedCanonRevision: 5,
+      })
+    }],
+    [api.chapterSessions, 'get', async () => {
+      assert.fail('no active session must not GET')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    await store.openAuthoritative('project-1', 1)
+    assert.equal(store.session.id, 'session-1')
+    await store.openAuthoritative('project-1', 1)
+
+    assert.equal(createCalls, 1)
+    assert.equal(store.workspace, null)
+    assert.equal(store.session, null)
+    assert.equal(store.error, null)
   })
 })
 
@@ -677,19 +829,30 @@ test('invalidate clears every pending flag and late completions cannot revive th
     {
       name: 'saveWorkingDraft',
       flag: 'savingDraft',
-      start: store => store.saveWorkingDraft('project-1', '正文'),
+      start: store => store.saveWorkingDraft('project-1', {
+        expectedRevision: 1,
+        expectedContentHash: 'a'.repeat(64),
+        content: '正文',
+      }),
       seed: true,
     },
     {
       name: 'generateWorkingDraft',
       flag: 'generatingDraft',
-      start: store => store.generateWorkingDraft('project-1', '更有烟火气'),
+      start: store => store.generateWorkingDraft('project-1', {
+        expectedWorkingDraftRevision: 1,
+        authorInstruction: '更有烟火气',
+      }),
       seed: true,
     },
     {
       name: 'saveCandidate',
       flag: 'savingCandidate',
-      start: store => store.saveCandidate('project-1'),
+      start: store => store.saveCandidate('project-1', {
+        expectedWorkingDraftRevision: 1,
+        expectedContentHash: 'a'.repeat(64),
+        idempotencyKey: '11111111-1111-1111-1111-111111111111',
+      }),
       seed: true,
     },
   ]
@@ -797,9 +960,20 @@ test('same chapter write operations are mutually exclusive before any second API
           expectedOutlineHash: 'c'.repeat(64),
           expectedCanonRevision: 0,
         }),
-        saveWorkingDraft: () => store.saveWorkingDraft('project-1', '正文'),
-        generateWorkingDraft: () => store.generateWorkingDraft('project-1', ''),
-        saveCandidate: () => store.saveCandidate('project-1'),
+        saveWorkingDraft: () => store.saveWorkingDraft('project-1', {
+          expectedRevision: 1,
+          expectedContentHash: 'a'.repeat(64),
+          content: '正文',
+        }),
+        generateWorkingDraft: () => store.generateWorkingDraft('project-1', {
+          expectedWorkingDraftRevision: 1,
+          authorInstruction: '',
+        }),
+        saveCandidate: () => store.saveCandidate('project-1', {
+          expectedWorkingDraftRevision: 1,
+          expectedContentHash: 'a'.repeat(64),
+          idempotencyKey: '11111111-1111-1111-1111-111111111111',
+        }),
       }
 
       const pending = invoke[activeName]()

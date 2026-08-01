@@ -1210,6 +1210,7 @@ test('chapter session client separates session draft and explicit candidate writ
     })
     await api.chapterSessions.saveWorkingDraft('project-1', 'session-1', {
       expectedRevision: 1,
+      expectedContentHash: 'a'.repeat(64),
       content: '正文',
       rawModelOutput: 'must-not-send',
     })
@@ -1222,7 +1223,10 @@ test('chapter session client separates session draft and explicit candidate writ
     })
     await api.chapterSessions.saveCandidate('project-1', 'session-1', {
       expectedWorkingDraftRevision: 3,
+      expectedContentHash: 'b'.repeat(64),
+      idempotencyKey: '11111111-1111-1111-1111-111111111111',
       apiKey: 'must-not-send',
+      provider: 'must-not-send',
     })
   })
 
@@ -1244,13 +1248,18 @@ test('chapter session client separates session draft and explicit candidate writ
   })
   assert.deepEqual(bodyOf(calls[2]), {
     expectedRevision: 1,
+    expectedContentHash: 'a'.repeat(64),
     content: '正文',
   })
   assert.deepEqual(bodyOf(calls[3]), {
     expectedWorkingDraftRevision: 2,
     authorInstruction: '多一点市井对话',
   })
-  assert.deepEqual(bodyOf(calls[4]), { expectedWorkingDraftRevision: 3 })
+  assert.deepEqual(bodyOf(calls[4]), {
+    expectedWorkingDraftRevision: 3,
+    expectedContentHash: 'b'.repeat(64),
+    idempotencyKey: '11111111-1111-1111-1111-111111111111',
+  })
 })
 
 test('chapter working draft generation uses a long model timeout', async () => {
