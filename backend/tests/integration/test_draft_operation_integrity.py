@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import json
 import re
@@ -62,22 +63,86 @@ class _ProviderBoundary:
         entered: asyncio.Event | None = None,
         release: asyncio.Event | None = None,
         failure: ChapterDraftProviderError | None = None,
+        transaction_probe=None,
     ):
         self.output = output
         self.entered = entered
         self.release = release
         self.failure = failure
+        self.transaction_probe = transaction_probe
         self.invocations = 0
+        self.active_transaction_observations = []
 
     async def generate(self, *, provider, messages, generation_config):
         self.invocations += 1
+        if self.transaction_probe is not None:
+            self.active_transaction_observations.append(
+                self.transaction_probe.active
+            )
         if self.entered is not None:
             self.entered.set()
         if self.release is not None:
             await asyncio.wait_for(self.release.wait(), timeout=_TIMEOUT)
+        if self.transaction_probe is not None:
+            self.active_transaction_observations.append(
+                self.transaction_probe.active
+            )
         if self.failure is not None:
             raise self.failure
         return self.output
+
+
+class _ObservedTransactionSession:
+    def __init__(self, delegate, probe):
+        self._delegate = delegate
+        self._probe = probe
+        self._observed_first_call = False
+
+    def _observe_first_call(self):
+        if not self._observed_first_call:
+            self._observed_first_call = True
+            self._probe.observe_first_call()
+
+    async def execute(self, sql, args=None):
+        self._observe_first_call()
+        return await self._delegate.execute(sql, args)
+
+    async def fetchone(self, sql, args=None):
+        self._observe_first_call()
+        return await self._delegate.fetchone(sql, args)
+
+    async def fetchall(self, sql, args=None):
+        self._observe_first_call()
+        return await self._delegate.fetchall(sql, args)
+
+
+class _TransactionLifecycleProbe:
+    """Observe, but never replace, disposable MySQL transaction lifetimes."""
+
+    def __init__(self, delegate, *, first_call_target: int = 1):
+        self._delegate = delegate
+        self._first_call_target = first_call_target
+        self.first_calls_ready = asyncio.Event()
+        self.active = 0
+        self.entries = 0
+        self.exits = 0
+        self.first_calls = 0
+
+    def observe_first_call(self):
+        self.first_calls += 1
+        if self.first_calls >= self._first_call_target:
+            self.first_calls_ready.set()
+
+    @asynccontextmanager
+    async def factory(self):
+        async with self._delegate() as session:
+            self.active += 1
+            self.entries += 1
+            try:
+                yield _ObservedTransactionSession(session, self)
+            finally:
+                self.active -= 1
+                self.exits += 1
 
 
 async def _prove_owned_database(disposable_mysql) -> None:
@@ -130,6 +195,42 @@ def _command(workspace, key: str, *, instruction: str = "增强人物试探"):
         idempotency_key=key,
         author_instruction=instruction,
     )
+
+
+async def _queue_reservation_race(
+    transaction_factory,
+    probe,
+    service,
+    commands,
+):
+    tasks = []
+    async with transaction_factory() as lock_session:
+        await lock_session.fetchone(
+            "SELECT id FROM projects WHERE id=%s FOR UPDATE",
+            (commands[0].project_id,),
+        )
+        await lock_session.fetchone(
+            """SELECT id FROM chapter_sessions
+                 WHERE project_id=%s AND id=%s FOR UPDATE""",
+            (commands[0].project_id, commands[0].chapter_session_id),
+        )
+        tasks = [
+            asyncio.create_task(service.start(command))
+            for command in commands
+        ]
+        try:
+            await asyncio.wait_for(
+                probe.first_calls_ready.wait(), timeout=_TIMEOUT
+            )
+            assert probe.active == len(commands)
+            assert probe.first_calls == len(commands)
+            assert all(not task.done() for task in tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+    return tasks
 
 
 async def _attempts(session, chapter_session_id: str):
@@ -208,8 +309,34 @@ async def test_success_commits_one_attempt_recovery_events_and_matching_metadata
     assert draft_count == {"total": 1}
     assert draft["revision"] == workspace.working_draft.revision + 1
     assert result.status == attempts[0]["status"] == "completed"
+    before, after = recovery
     assert [row["snapshot_role"] for row in recovery] == ["before", "after"]
+    assert before["working_draft_revision"] == workspace.working_draft.revision
+    assert before["content"] == workspace.working_draft.content
+    assert before["content_hash"] == workspace.working_draft.content_hash
+    assert before["content_hash"] == hashlib.sha256(
+        before["content"].encode("utf-8")
+    ).hexdigest()
+    assert after["working_draft_revision"] == draft["revision"]
+    assert after["content"] == draft["content"]
+    assert after["content_hash"] == draft["content_hash"]
+    assert after["content_hash"] == hashlib.sha256(
+        after["content"].encode("utf-8")
+    ).hexdigest()
+    assert all(row["working_draft_id"] == draft["id"] for row in recovery)
+    assert all(
+        row["source_operation_id"] == attempts[0]["id"]
+        for row in recovery
+    )
     assert [row["event_type"] for row in events] == ["started", "completed"]
+    assert [row["sequence_num"] for row in events] == [1, 2]
+    assert all(row["project_id"] == PROJECT for row in events)
+    assert all(
+        row["draft_operation_id"] == attempts[0]["id"] for row in events
+    )
+    assert attempts[0]["last_event_sequence"] == 2
+    assert result.last_event_sequence == 2
+    assert result.last_event_sequence == events[-1]["sequence_num"]
     assert result.result_working_draft_revision == draft["revision"]
     assert result.result_content_hash == draft["content_hash"]
     assert attempts[0]["result_working_draft_revision"] == draft["revision"]
@@ -223,8 +350,6 @@ async def test_success_commits_one_attempt_recovery_events_and_matching_metadata
     assert source["operationId"] == attempts[0]["id"]
     assert source["providerId"] == attempts[0]["provider_id"]
     assert source["modelName"] == attempts[0]["model_name_snapshot"]
-    assert recovery[0]["content_hash"] == workspace.working_draft.content_hash
-    assert recovery[1]["content_hash"] == draft["content_hash"]
 
     provider = await disposable_mysql.session.fetchone(
         "SELECT api_key,base_url FROM provider_profiles WHERE id=%s",
@@ -245,33 +370,45 @@ async def test_concurrent_same_key_invokes_provider_and_effect_once(disposable_m
     entered = asyncio.Event()
     release = asyncio.Event()
     gateway = _ProviderBoundary(entered=entered, release=release)
-    service = _operation_service(transaction_factory, gateway)
+    probe = _TransactionLifecycleProbe(
+        transaction_factory, first_call_target=2
+    )
+    service = _operation_service(probe.factory, gateway)
     command = _command(
         workspace, "41000000-0000-4000-8000-000000000002"
     )
-    first_task = asyncio.create_task(service.start(command))
+    tasks = await _queue_reservation_race(
+        transaction_factory, probe, service, (command, command)
+    )
     try:
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
-        replay = await asyncio.wait_for(service.start(command), timeout=_TIMEOUT)
+        done, pending = await asyncio.wait(
+            tasks, timeout=_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert len(done) == len(pending) == 1
+        replay = next(iter(done)).result()
         assert replay.status == "running"
         assert gateway.invocations == 1
         assert len(
             await _attempts(disposable_mysql.session, workspace.session.id)
         ) == 1
         release.set()
-        first = await asyncio.wait_for(first_task, timeout=_TIMEOUT)
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=_TIMEOUT)
     finally:
         release.set()
-        if not first_task.done():
-            first_task.cancel()
-        await asyncio.gather(first_task, return_exceptions=True)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     attempts = await _attempts(disposable_mysql.session, workspace.session.id)
     draft = await _draft(disposable_mysql.session, workspace.session.id)
-    assert first.status == "completed"
+    assert sorted(result.status for result in results) == ["completed", "running"]
     assert len(attempts) == gateway.invocations == 1
     assert draft["revision"] == workspace.working_draft.revision + 1
     assert len(await _recovery(disposable_mysql.session, workspace.session.id)) == 2
+    assert probe.active == 0
+    assert probe.entries == probe.exits == 3
 
 
 @pytest.mark.asyncio
@@ -282,16 +419,24 @@ async def test_concurrent_different_keys_allow_only_one_live_active_slot(
     entered = asyncio.Event()
     release = asyncio.Event()
     gateway = _ProviderBoundary(entered=entered, release=release)
-    service = _operation_service(transaction_factory, gateway)
-    first_task = asyncio.create_task(service.start(_command(
-        workspace, "41000000-0000-4000-8000-000000000003"
-    )))
+    probe = _TransactionLifecycleProbe(
+        transaction_factory, first_call_target=2
+    )
+    service = _operation_service(probe.factory, gateway)
+    commands = (
+        _command(workspace, "41000000-0000-4000-8000-000000000003"),
+        _command(workspace, "41000000-0000-4000-8000-000000000004"),
+    )
+    tasks = await _queue_reservation_race(
+        transaction_factory, probe, service, commands
+    )
     try:
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
-        with pytest.raises(DraftOperationConflict):
-            await asyncio.wait_for(service.start(_command(
-                workspace, "41000000-0000-4000-8000-000000000004"
-            )), timeout=_TIMEOUT)
+        done, pending = await asyncio.wait(
+            tasks, timeout=_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert len(done) == len(pending) == 1
+        assert isinstance(next(iter(done)).exception(), DraftOperationConflict)
         active = await disposable_mysql.session.fetchall(
             """SELECT id FROM draft_operation_attempts
                  WHERE chapter_session_id=%s AND active_slot=1""",
@@ -299,13 +444,26 @@ async def test_concurrent_different_keys_allow_only_one_live_active_slot(
         )
         assert len(active) == 1
         assert gateway.invocations == 1
+        assert probe.active == 0
+        release.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=_TIMEOUT
+        )
     finally:
         release.set()
-        await asyncio.wait_for(first_task, timeout=_TIMEOUT)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-    assert len(await _attempts(
-        disposable_mysql.session, workspace.session.id
-    )) == 1
+    attempts = await _attempts(disposable_mysql.session, workspace.session.id)
+    assert sum(isinstance(item, DraftOperationConflict) for item in results) == 1
+    assert sum(getattr(item, "status", None) == "completed" for item in results) == 1
+    assert len(attempts) == gateway.invocations == 1
+    assert attempts[0]["status"] == "completed"
+    assert len(await _recovery(disposable_mysql.session, workspace.session.id)) == 2
+    assert probe.active == 0
+    assert probe.entries == probe.exits == 3
 
 
 @pytest.mark.asyncio
@@ -458,13 +616,21 @@ async def test_provider_wait_leaves_second_connection_readable(disposable_mysql)
     workspace, transaction_factory, _ = await _workspace(disposable_mysql)
     entered = asyncio.Event()
     release = asyncio.Event()
-    gateway = _ProviderBoundary(entered=entered, release=release)
-    service = _operation_service(transaction_factory, gateway)
+    probe = _TransactionLifecycleProbe(transaction_factory)
+    gateway = _ProviderBoundary(
+        entered=entered,
+        release=release,
+        transaction_probe=probe,
+    )
+    service = _operation_service(probe.factory, gateway)
     task = asyncio.create_task(service.start(_command(
         workspace, "41000000-0000-4000-8000-000000000010"
     )))
     try:
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
+        assert gateway.active_transaction_observations == [0]
+        assert probe.active == 0
+        assert probe.entries == probe.exits == 1
 
         async def read_on_second_connection():
             async with transaction_factory() as session:
@@ -483,6 +649,12 @@ async def test_provider_wait_leaves_second_connection_readable(disposable_mysql)
         assert _DATABASE_NAME.fullmatch(selected["database_name"])
         assert unrelated["total"] > 0
         assert not task.done()
+        assert probe.active == 0
     finally:
         release.set()
-        await asyncio.wait_for(task, timeout=_TIMEOUT)
+        result = await asyncio.wait_for(task, timeout=_TIMEOUT)
+
+    assert result.status == "completed"
+    assert gateway.active_transaction_observations == [0, 0]
+    assert probe.active == 0
+    assert probe.entries == probe.exits == 2
