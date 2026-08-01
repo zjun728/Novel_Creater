@@ -8,6 +8,10 @@ import pytest
 from backend.domain.json_contracts import canonical_hash
 from backend.domain.chapter_outlines import EditableChapterOutlineContent
 from backend.repositories.chapter_sessions import ChapterSessionRepository
+from backend.repositories.model_bindings import ModelBindingRepository
+from backend.repositories.planning import PlanningRepository
+from backend.repositories.projects import ProjectRepository
+from backend.routers.contracts import _public_confirmed
 from backend.services.chapter_sessions import (
     ChapterSessionService,
     CreateChapterSession,
@@ -22,10 +26,19 @@ from backend.services.chapter_outlines import (
     CreateChapterOutlineDraft,
     SaveChapterOutlineDraft,
 )
+from backend.services.bibles import ConfirmBible, SaveBibleDraft
+from backend.services.model_bindings import ModelBindingService
 from backend.services.planning import (
     ConfirmPlanningDraft,
     CreatePlanningDraft,
+    PlanningService,
     SavePlanningDraft,
+)
+from backend.services.project_lifecycle import ProjectLifecycleService
+from backend.services.projections import build_projection_bundle
+from backend.tests.integration.test_bible_revisions import (
+    bible_service,
+    confirmed_contract_basis,
 )
 from backend.tests.integration.test_planning_aggregate_lifecycle import (
     NOW,
@@ -37,6 +50,7 @@ from backend.tests.integration.test_planning_aggregate_lifecycle import (
 )
 from backend.tests.integration.test_seed_revisions import connection_factory_for
 from backend.tests.support.disposable_mysql import transaction_factory_for
+from backend.tests.unit.test_bible_service import bible_payload
 
 
 pytestmark = pytest.mark.mysql
@@ -362,6 +376,145 @@ async def test_real_mysql_manual_outline_save_confirm_replay_and_history(
         )
     )
     assert await service.confirm_draft(command) == confirmed
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_confirmed_story_chain_survives_planning_unbind(
+    disposable_mysql,
+):
+    contract_service, confirmed_contract = await confirmed_contract_basis(
+        disposable_mysql
+    )
+    bible = bible_service(disposable_mysql, contract_service)
+    saved_bible = await bible.save_draft(
+        SaveBibleDraft(PROJECT, 0, bible_payload())
+    )
+    await bible.confirm(
+        ConfirmBible(
+            PROJECT,
+            "confirm-bible-before-planning-unbind",
+            saved_bible.draft_version,
+            0,
+        )
+    )
+    bundle = build_projection_bundle(0, ())
+    await disposable_mysql.session.execute(
+        """INSERT INTO canon_revisions
+           (id,project_id,revision_number,parent_revision_number,
+            idempotency_key,source_type,source_id,content_hash,created_at)
+           VALUES ('9d040000-0000-0000-0000-000000000001',%s,0,0,
+                   'planning-unbind-bootstrap','bootstrap',NULL,%s,%s)""",
+        (PROJECT, bundle.content_hash, NOW),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO projection_heads
+           (project_id,canon_revision_number,projection_revision_number,
+            content_hash,updated_at) VALUES (%s,0,0,%s,%s)""",
+        (PROJECT, bundle.content_hash, NOW),
+    )
+    await disposable_mysql.session.execute(
+        """INSERT INTO project_planning_heads
+           (project_id,revision,planning_revision_id,content_hash,updated_at)
+           VALUES (%s,0,NULL,NULL,%s)""",
+        (PROJECT, NOW),
+    )
+    planning_ids = iter(
+        f"9d040000-0000-0000-0001-{number:012d}"
+        for number in range(1, 20)
+    )
+    planning_service = PlanningService(
+        PlanningRepository(),
+        transaction_factory=transaction_factory_for(
+            disposable_mysql.connection_config
+        ),
+        id_factory=planning_ids.__next__,
+        clock=lambda: NOW,
+    )
+    saved_planning = await _save_complete(planning_service)
+    planning = await planning_service.confirm_draft(
+        ConfirmPlanningDraft(
+            PROJECT,
+            saved_planning.draft_id,
+            saved_planning.draft_revision,
+            saved_planning.content_hash,
+            "confirm-before-planning-unbind",
+        )
+    )
+    transaction_factory = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    connection_factory = connection_factory_for(
+        disposable_mysql.connection_config
+    )
+    outline_ids = iter(
+        (
+            "9d050000-0000-0000-0000-000000000001",
+            "9d050000-0000-0000-0000-000000000002",
+            "9d050000-0000-0000-0000-000000000003",
+        )
+    )
+    outline_service = ChapterOutlineService(
+        _repository(),
+        ChapterSessionRepository(),
+        transaction_factory=transaction_factory,
+        id_factory=outline_ids.__next__,
+        clock=lambda: NOW + 225,
+    )
+    draft = await outline_service.create_draft(
+        CreateChapterOutlineDraft(PROJECT, 1)
+    )
+    saved = await outline_service.save_draft(
+        SaveChapterOutlineDraft(
+            PROJECT,
+            1,
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            _editable_outline(planning.content),
+        )
+    )
+    await outline_service.confirm_draft(
+        ConfirmChapterOutlineDraft(
+            PROJECT,
+            1,
+            saved.draft_id,
+            saved.draft_revision,
+            saved.content_hash,
+            0,
+            "confirm-outline-before-planning-unbind",
+        )
+    )
+    binding_service = ModelBindingService(
+        ModelBindingRepository(),
+        transaction_factory=transaction_factory,
+        connection_factory=connection_factory,
+    )
+    binding = await binding_service.get_current(PROJECT)
+    mapping = {item.task_key: item.provider_id for item in binding.items}
+    mapping["planning"] = None
+    await binding_service.replace_all(PROJECT, binding.revision, mapping)
+
+    contract = await contract_service.get_head(PROJECT)
+    lifecycle = ProjectLifecycleService(
+        ProjectRepository(),
+        transaction_factory,
+        connection_factory,
+        contract_service=contract_service,
+    )
+    preparation = await lifecycle.preparation(PROJECT)
+
+    assert confirmed_contract.contract_ready is True
+    assert contract.contract_ready is False
+    assert _public_confirmed(contract)["contractReady"] is False
+    assert "binding_drift" in contract.reasons
+    assert (
+        preparation.contract,
+        preparation.bible,
+        preparation.planning,
+        preparation.outline,
+    ) == ("current", "current", "current", "current")
+    assert preparation.next_action == "start_chapter_session"
+    assert "planning_model_not_ready" in preparation.reasons
 
 
 @pytest.mark.asyncio

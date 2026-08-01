@@ -276,17 +276,19 @@ class ProjectLifecycleService:
     @classmethod
     def _contract_status(cls, snapshot, contract_result) -> str:
         head_revision = int(_value(contract_result, "revision") or 0)
-        if cls._contract_draft_is_current(snapshot, head_revision):
-            return "draft"
-        if _value(contract_result, "contract_ready") is True:
+        if cls._confirmed_contract_basis(snapshot, contract_result) is not None:
             return "current"
         if head_revision > 0 or _value(contract_result, "has_contract") is True:
             return "superseded"
+        if cls._contract_draft_is_current(snapshot, head_revision):
+            return "draft"
         return "missing"
 
     @staticmethod
-    def _contract_basis(contract_result):
-        if _value(contract_result, "contract_ready") is not True:
+    def _confirmed_contract_basis(snapshot, contract_result):
+        selection = snapshot.get("selection")
+        reasons = _value(contract_result, "reasons", ()) or ()
+        if selection is None or "contract_head_drift" in reasons:
             return None
         seed = _value(contract_result, "seed_ref")
         try:
@@ -313,6 +315,11 @@ class ProjectLifecycleService:
         if (
             basis["selection_revision"] <= 0
             or basis["contract_revision"] <= 0
+            or basis["selection_revision"]
+            != int(selection.get("selection_revision") or 0)
+            or basis["seed_id"] != selection.get("seed_id")
+            or basis["seed_revision_id"] != selection.get("seed_revision_id")
+            or basis["seed_hash"] != selection.get("seed_hash")
             or not all(
                 isinstance(value, str) and bool(value)
                 for key, value in basis.items()
@@ -322,6 +329,10 @@ class ProjectLifecycleService:
         ):
             return None
         return basis
+
+    @classmethod
+    def _contract_basis(cls, snapshot, contract_result):
+        return cls._confirmed_contract_basis(snapshot, contract_result)
 
     @staticmethod
     def _matches_bible_basis(row, basis) -> bool:
@@ -338,7 +349,7 @@ class ProjectLifecycleService:
 
     @classmethod
     def _bible_status(cls, snapshot, contract_result) -> str:
-        basis = cls._contract_basis(contract_result)
+        basis = cls._contract_basis(snapshot, contract_result)
         head = snapshot.get("bible_head")
         draft = snapshot.get("bible_draft")
         head_revision = int((head or {}).get("head_revision") or 0)
@@ -357,17 +368,19 @@ class ProjectLifecycleService:
             and int(draft.get("base_head_revision") or 0) == head_revision
             and cls._matches_bible_basis(draft, basis)
         )
-        if draft_is_current:
-            return "draft"
         if head_is_current:
             return "current"
-        if head_revision > 0 or draft is not None:
+        if head_revision > 0:
+            return "superseded"
+        if draft_is_current:
+            return "draft"
+        if draft is not None:
             return "superseded"
         return "missing"
 
     @classmethod
     def _planning_basis(cls, snapshot, contract_result):
-        contract_basis = cls._contract_basis(contract_result)
+        contract_basis = cls._contract_basis(snapshot, contract_result)
         bible_head = snapshot.get("bible_head")
         if contract_basis is None or bible_head is None:
             return None
