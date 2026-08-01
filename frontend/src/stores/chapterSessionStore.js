@@ -34,6 +34,68 @@ function requireWorkspace(workspace) {
   return workspace
 }
 
+const CANDIDATE_BASIS_FIELDS = Object.freeze([
+  'outlineRevisionId',
+  'outlineRevision',
+  'outlineHash',
+  'planningRevisionId',
+  'planningRevision',
+  'planningHash',
+  'canonRevision',
+  'projectionRevision',
+  'projectionHash',
+])
+const CANDIDATE_HASH = /^[0-9a-f]{64}$/
+
+function candidateBasisIsSafe(candidate) {
+  return (
+    typeof candidate?.outlineRevisionId === 'string'
+    && candidate.outlineRevisionId.length > 0
+    && Number.isInteger(candidate.outlineRevision)
+    && candidate.outlineRevision >= 1
+    && CANDIDATE_HASH.test(candidate.outlineHash)
+    && typeof candidate?.planningRevisionId === 'string'
+    && candidate.planningRevisionId.length > 0
+    && Number.isInteger(candidate.planningRevision)
+    && candidate.planningRevision >= 1
+    && CANDIDATE_HASH.test(candidate.planningHash)
+    && Number.isInteger(candidate.canonRevision)
+    && candidate.canonRevision >= 0
+    && Number.isInteger(candidate.projectionRevision)
+    && candidate.projectionRevision >= 0
+    && CANDIDATE_HASH.test(candidate.projectionHash)
+  )
+}
+
+function normalizeCandidate(candidate) {
+  const source = candidate && typeof candidate === 'object' ? candidate : {}
+  const { provenance, basisHash, basis_hash, ...publicCandidate } = source
+  const basisStatus = source.basisStatus
+  const basisIsSafe = (
+    (basisStatus === 'current' || basisStatus === 'stale')
+    && candidateBasisIsSafe(source)
+  )
+  const basis = Object.fromEntries(CANDIDATE_BASIS_FIELDS.map(field => [
+    field,
+    basisIsSafe ? source[field] : null,
+  ]))
+  return {
+    ...publicCandidate,
+    ...basis,
+    basisStatus: basisIsSafe ? basisStatus : 'stale',
+  }
+}
+
+function normalizeWorkspace(nextWorkspace) {
+  if (!nextWorkspace || typeof nextWorkspace !== 'object') return nextWorkspace
+  return {
+    ...nextWorkspace,
+    candidates: Array.isArray(nextWorkspace.candidates)
+      ? nextWorkspace.candidates.map(normalizeCandidate)
+      : [],
+  }
+}
+
 export const useChapterSessionStore = defineStore('chapterSession', () => {
   const projectId = ref('')
   const chapterNumber = ref(0)
@@ -120,7 +182,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   }
 
   function acceptWorkspace(nextWorkspace) {
-    workspace.value = nextWorkspace
+    workspace.value = normalizeWorkspace(nextWorkspace)
     error.value = null
   }
 
@@ -135,16 +197,26 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     const projection = current?.canonProjectionAuthority
     const outline = current?.confirmedOutline
     const active = current?.activeSession
+    const expectedPlanningRevisionId = (
+      active?.planningRevisionId ?? planning?.planningRevisionId
+    )
+    const expectedPlanningRevision = active?.planningRevision ?? planning?.revision
+    const expectedPlanningHash = active?.planningHash ?? planning?.contentHash
+    const expectedOutlineRevisionId = (
+      active?.outlineRevisionId ?? outline?.outlineRevisionId
+    )
+    const expectedOutlineRevision = active?.outlineRevision ?? outline?.revision
+    const expectedOutlineHash = active?.outlineHash ?? outline?.contentHash
     return Boolean(
       sessionValue?.id
       && (!expectedSessionId || sessionValue.id === expectedSessionId)
       && sessionValue.chapterNum === targetChapterNumber
-      && sessionValue.planningRevisionId === planning?.planningRevisionId
-      && sessionValue.planningRevision === planning?.revision
-      && sessionValue.planningHash === planning?.contentHash
-      && sessionValue.chapterOutlineRevisionId === outline?.outlineRevisionId
-      && sessionValue.chapterOutlineRevision === outline?.revision
-      && sessionValue.chapterOutlineHash === outline?.contentHash
+      && sessionValue.planningRevisionId === expectedPlanningRevisionId
+      && sessionValue.planningRevision === expectedPlanningRevision
+      && sessionValue.planningHash === expectedPlanningHash
+      && sessionValue.chapterOutlineRevisionId === expectedOutlineRevisionId
+      && sessionValue.chapterOutlineRevision === expectedOutlineRevision
+      && sessionValue.chapterOutlineHash === expectedOutlineHash
       && sessionValue.expectedCanonRevision === projection?.canonRevision
       && (
         !active

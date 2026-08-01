@@ -189,7 +189,12 @@ onBeforeUnmount(() => {
           <h1>章节工作台</h1>
           <p>编辑不会自动生成候选；只有点击“保存为候选”才会冻结当前工作稿。</p>
         </div>
-        <n-button @click="backToProject">返回项目</n-button>
+        <div class="writer-navigation">
+          <router-link :to="storyBlocksPath" class="writer-outline-link">
+            调整本章小纲
+          </router-link>
+          <n-button @click="backToProject">返回项目</n-button>
+        </div>
       </header>
 
       <n-alert
@@ -318,6 +323,16 @@ onBeforeUnmount(() => {
             <ol v-if="candidates.length" class="candidate-list">
               <li v-for="candidate in candidates" :key="candidate.id">
                 revision {{ candidate.workingDraftRevision }}
+                <span
+                  class="candidate-basis"
+                  :class="candidate.basisStatus === 'current'
+                    ? 'candidate-basis--current'
+                    : 'candidate-basis--stale'"
+                >
+                  {{ candidate.basisStatus === 'current'
+                    ? '依据当前小纲'
+                    : '依据旧小纲，不能定稿' }}
+                </span>
               </li>
             </ol>
             <p v-else class="muted">暂无候选。先保存工作稿，再按需保存为候选。</p>
@@ -337,6 +352,8 @@ onBeforeUnmount(() => {
 .writer-loading, .writer-result, .writer-hero, .writer-alert, .workspace-grid { width: min(1180px, 100%); margin-inline: auto; }
 .writer-loading { display: grid; gap: 20px; padding: 34px; border: 1px solid #ddd3c0; border-radius: 16px; background: #fffdf8; }
 .writer-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid #d7cbb8; }
+.writer-navigation { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+.writer-outline-link { color: #8b5c25; font-size: 13px; font-weight: 700; }
 .eyebrow { margin: 0 0 8px; color: #967548; font-size: 10px; font-weight: 800; letter-spacing: .18em; }
 h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(34px, 5vw, 54px); font-weight: 650; }
 .writer-hero p:last-child { max-width: 64ch; margin: 12px 0 0; color: #786f62; line-height: 1.8; }
@@ -358,5 +375,8 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .outline-summary dt { color: #967548; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
 .outline-summary dd { margin: 0; color: #6f6559; font-size: 13px; line-height: 1.65; }
 .candidate-list { margin: 14px 0 0; padding-left: 20px; color: #675d51; font-size: 13px; }
+.candidate-basis { display: block; margin-top: 4px; font-size: 12px; }
+.candidate-basis--current { color: #487252; }
+.candidate-basis--stale { color: #a35b42; }
 @media (max-width: 900px) { .workspace-grid { grid-template-columns: 1fr; } .writer-hero { align-items: flex-start; flex-direction: column; } }
 </style>

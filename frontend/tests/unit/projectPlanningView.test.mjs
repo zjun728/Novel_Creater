@@ -77,6 +77,19 @@ test('history is immutable and retired duplicate planning surfaces stay absent',
   }
 })
 
+test('writer exposes a visible router link back to the current outline workspace', async () => {
+  const writer = await source('views/ChapterWriterView.vue')
+
+  assert.match(
+    writer,
+    /<router-link\s+:to="storyBlocksPath"\s+class="writer-outline-link">\s*调整本章小纲\s*<\/router-link>/,
+  )
+  assert.match(writer, /candidate\.basisStatus === 'current'/)
+  assert.match(writer, /依据当前小纲/)
+  assert.match(writer, /依据旧小纲，不能定稿/)
+  assert.doesNotMatch(writer, /window\.location|page\.evaluate/)
+})
+
 test('planning editors expose only their owned fields and no reverse IDs', async () => {
   const [volume, plot, storyBlock] = await Promise.all([
     source('components/planning/VolumeEditor.vue'),

@@ -75,6 +75,11 @@ const authorityRefreshFailed = computed(() => (
   props.store.outlineState != null
   && props.store.outlineError?.code === 'ChapterOutlineRefreshFailed'
 ))
+const outlineAdoptionLabel = computed(() => (
+  props.store.outlineState?.confirmedOutline
+    ? '更新当前小纲'
+    : '采用小纲'
+))
 
 const clone = value => (
   value == null ? value : JSON.parse(JSON.stringify(value))
@@ -362,6 +367,13 @@ onBeforeUnmount(() => confirmFocus.unmount())
       <aside v-if="controller.readOnly.value" class="read-only-note">
         当前小纲为只读权威记录；本地字段与正式引用均不会被改写。
       </aside>
+      <section
+        v-if="controller.canAdjustOutline.value"
+        class="outline-paper outline-adjustment"
+      >
+        <p>调整本章小纲</p>
+        <span>采用后作为当前写作依据；正文定稿前仍可调整。</span>
+      </section>
 
       <section
         v-if="store.outlineState.capabilities?.createDraft === true"
@@ -581,7 +593,7 @@ onBeforeUnmount(() => confirmFocus.unmount())
             :disabled="!controller.canConfirm.value || !hierarchyValid"
             @click="openConfirm"
           >
-            预览并确认小纲
+            {{ outlineAdoptionLabel }}
           </button>
         </template>
       </footer>
@@ -650,6 +662,8 @@ onBeforeUnmount(() => confirmFocus.unmount())
 .outline-paper,.outline-sheet,.outline-ai { border:1px solid var(--nc-border); background:var(--nc-paper); box-shadow:0 18px 42px color-mix(in srgb,var(--nc-ink) 7%,transparent); }
 .outline-paper { display:grid; gap:10px; padding:26px; }
 .outline-paper h3 { margin:0; font:600 24px Georgia,'Noto Serif SC',serif; }
+.outline-adjustment { gap:4px; padding:16px 20px; }
+.outline-adjustment p { margin:0; color:var(--nc-vermilion); font-weight:700; }
 .empty-outline button { justify-self:start; margin-top:6px; }
 .outline-sheet { position:relative; }
 .outline-scroll { max-height:min(720px,calc(100vh - 180px)); overflow:auto; padding:24px; transition:opacity .15s ease; }

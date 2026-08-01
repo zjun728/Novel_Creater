@@ -258,6 +258,85 @@ test('wrong writer route returns current authority without Session request or re
   })
 })
 
+test('candidate basis parsing preserves API order and fails closed without raw provenance', async () => {
+  const validBasis = {
+    outlineRevisionId: 'outline-revision-1',
+    outlineRevision: 3,
+    outlineHash: 'c'.repeat(64),
+    planningRevisionId: 'planning-revision-1',
+    planningRevision: 7,
+    planningHash: 'a'.repeat(64),
+    canonRevision: 5,
+    projectionRevision: 5,
+    projectionHash: 'd'.repeat(64),
+  }
+  const loaded = workspace({
+    candidates: [
+      { id: 'current', basisStatus: 'current', ...validBasis },
+      { id: 'stale', basisStatus: 'stale', ...validBasis },
+      {
+        id: 'malformed',
+        basisStatus: 'future',
+        ...validBasis,
+        provenance: { secret: 'must-not-escape' },
+        basisHash: 'e'.repeat(64),
+      },
+    ],
+  })
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => loaded],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    await store.load('project-1', 1)
+
+    assert.deepEqual(store.candidates.map(candidate => candidate.id), [
+      'current', 'stale', 'malformed',
+    ])
+    assert.deepEqual(store.candidates.map(candidate => candidate.basisStatus), [
+      'current', 'stale', 'stale',
+    ])
+    assert.equal('provenance' in store.candidates[2], false)
+    assert.equal('basisHash' in store.candidates[2], false)
+    for (const field of Object.keys(validBasis)) {
+      assert.equal(store.candidates[2][field], null)
+    }
+  })
+})
+
+test('active Session workspace accepts its immutable r1 pins after current outline advances', async () => {
+  const current = currentOutline({
+    activeSession: {
+      chapterSessionId: 'session-1',
+      chapterNumber: 1,
+      status: 'drafting',
+      planningRevisionId: 'planning-revision-1',
+      planningRevision: 1,
+      planningHash: 'a'.repeat(64),
+      outlineRevisionId: 'outline-revision-1',
+      outlineRevision: 3,
+      outlineHash: 'c'.repeat(64),
+    },
+    startSession: false,
+  })
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => current],
+    [api.chapterSessions, 'get', async () => workspace({
+      planningRevision: 1,
+      outlineRevision: 3,
+      expectedCanonRevision: 5,
+    })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    assert.equal(await store.openAuthoritative('project-1', 1), current)
+    assert.equal(store.session.planningRevision, 1)
+    assert.equal(store.session.chapterOutlineRevision, 3)
+  })
+})
+
 test('active authoritative Session is replayed with GET and never POSTed', async () => {
   const calls = []
   const current = currentOutline({

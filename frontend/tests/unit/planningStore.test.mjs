@@ -1686,6 +1686,29 @@ function outlineForPlanningR1(
   return loaded
 }
 
+test('drafting active Session exposes only server-authorized outline adjustment', () => {
+  setActivePinia(createPinia())
+  const store = usePlanningStore()
+  store.outlineState = outlineState('project-1')
+  store.outlineState.activeSession = { status: 'drafting' }
+  store.outlineState.capabilities = {
+    ...store.outlineState.capabilities,
+    createDraft: true,
+    editDraft: false,
+  }
+
+  assert.equal(store.canAdjustOutline, true)
+
+  store.outlineState = {
+    ...store.outlineState,
+    capabilities: {
+      ...store.outlineState.capabilities,
+      createDraft: false,
+    },
+  }
+  assert.equal(store.canAdjustOutline, false)
+})
+
 test('real ChapterOutline response boundary keeps mutation and history secrets out of Store state', async () => {
   const originalFetch = global.fetch
   const secret = 'MUST-NOT-ENTER-OUTLINE-STORE'
