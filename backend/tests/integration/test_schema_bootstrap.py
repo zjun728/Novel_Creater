@@ -43,6 +43,7 @@ EXPECTED_TABLES = {
     "chapter_outline_drafts", "chapter_outline_generation_attempts",
     "chapter_outline_revisions", "project_chapter_outline_heads",
     "chapter_outline_confirmation_requests", "chapter_sessions", "working_drafts",
+    "working_draft_revisions", "draft_operation_attempts", "draft_operation_events",
     "draft_candidates", "candidate_freeze_requests", "finalization_change_sets", "finalization_records",
     "final_chapters", "canon_entities", "entity_aliases", "canon_revisions",
     "canon_events", "current_state_projections", "memory_views",

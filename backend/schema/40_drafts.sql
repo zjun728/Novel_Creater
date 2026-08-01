@@ -13,6 +13,8 @@ CREATE TABLE chapter_sessions (
   chapter_num INT NOT NULL,
   expected_canon_revision INT NOT NULL,
   status VARCHAR(24) NOT NULL,
+  draft_operation_fencing_token BIGINT NOT NULL DEFAULT 0,
+  active_draft_operation_id CHAR(36) NULL,
   created_at BIGINT NOT NULL,
   finalized_at BIGINT NULL,
   UNIQUE KEY uq_chapter_session_num (project_id, chapter_num),
@@ -25,6 +27,7 @@ CREATE TABLE chapter_sessions (
   CHECK (story_block_revision > 0),
   CHECK (chapter_outline_revision > 0),
   CHECK (expected_canon_revision >= 0),
+  CHECK (draft_operation_fencing_token >= 0),
   CHECK (status IN ('drafting','final'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
@@ -42,6 +45,114 @@ CREATE TABLE working_drafts (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
   CHECK (revision > 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE working_draft_revisions (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  chapter_session_id CHAR(36) NOT NULL,
+  working_draft_id CHAR(36) NOT NULL,
+  working_draft_revision INT NOT NULL,
+  snapshot_role VARCHAR(16) NOT NULL,
+  replacement_reason VARCHAR(32) NOT NULL,
+  source_operation_id CHAR(36) NOT NULL,
+  content LONGTEXT NOT NULL,
+  content_hash CHAR(64) NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_working_draft_revision_identity
+    (working_draft_id, working_draft_revision),
+  UNIQUE KEY uq_working_draft_revision_recovery
+    (chapter_session_id, working_draft_revision, snapshot_role),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id)
+    REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (working_draft_id) REFERENCES working_drafts(id) ON DELETE CASCADE,
+  CHECK (working_draft_revision > 0),
+  CHECK (snapshot_role IN ('before','after')),
+  CHECK (replacement_reason IN ('generate_new','rewrite','expand','compress'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE draft_operation_attempts (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  chapter_session_id CHAR(36) NOT NULL,
+  operation_id CHAR(36) NOT NULL,
+  idempotency_key VARCHAR(64) NOT NULL,
+  request_fingerprint CHAR(64) NOT NULL,
+  active_slot TINYINT NULL,
+  fencing_token BIGINT NOT NULL,
+  lease_expires_at BIGINT NOT NULL,
+  base_working_draft_revision INT NOT NULL,
+  base_working_draft_hash CHAR(64) NOT NULL,
+  input_manifest_json JSON NOT NULL,
+  input_manifest_hash CHAR(64) NOT NULL,
+  provider_id CHAR(36) NOT NULL,
+  model_name_snapshot VARCHAR(200) NOT NULL,
+  result_working_draft_revision INT NULL,
+  result_working_draft_hash CHAR(64) NULL,
+  last_sequence_num INT NOT NULL,
+  failure_code VARCHAR(64) NULL,
+  status VARCHAR(24) NOT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  UNIQUE KEY uq_draft_operation_identity (operation_id),
+  UNIQUE KEY uq_draft_operation_idempotency
+    (chapter_session_id, idempotency_key),
+  UNIQUE KEY uq_draft_operation_active_slot
+    (chapter_session_id, active_slot),
+  UNIQUE KEY uq_draft_operation_fencing
+    (chapter_session_id, fencing_token),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id)
+    REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT,
+  CHECK (active_slot IS NULL OR active_slot = 1),
+  CHECK (fencing_token > 0),
+  CHECK (lease_expires_at >= created_at),
+  CHECK (base_working_draft_revision > 0),
+  CHECK (last_sequence_num >= 0),
+  CHECK (
+    (result_working_draft_revision IS NULL AND result_working_draft_hash IS NULL)
+    OR (result_working_draft_revision IS NOT NULL
+      AND result_working_draft_revision > base_working_draft_revision
+      AND result_working_draft_hash IS NOT NULL)
+  ),
+  CHECK (status IN ('starting','running','completed','failed','expired')),
+  CHECK (
+    (status IN ('starting','running') AND active_slot IS NOT NULL AND active_slot = 1
+      AND result_working_draft_revision IS NULL AND result_working_draft_hash IS NULL
+      AND failure_code IS NULL)
+    OR (status = 'completed' AND active_slot IS NULL
+      AND result_working_draft_revision IS NOT NULL
+      AND result_working_draft_hash IS NOT NULL AND failure_code IS NULL)
+    OR (status IN ('failed','expired') AND active_slot IS NULL
+      AND result_working_draft_revision IS NULL AND result_working_draft_hash IS NULL
+      AND failure_code IS NOT NULL)
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE draft_operation_events (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  draft_operation_id CHAR(36) NOT NULL,
+  sequence_num INT NOT NULL,
+  event_type VARCHAR(16) NOT NULL,
+  closed_payload_json JSON NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_draft_operation_event_sequence
+    (draft_operation_id, sequence_num),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (draft_operation_id) REFERENCES draft_operation_attempts(operation_id)
+    ON DELETE CASCADE,
+  CHECK (sequence_num > 0),
+  CHECK (event_type IN ('started','completed','failed')),
+  CHECK (
+    (event_type = 'started' AND closed_payload_json IS NULL)
+    OR (event_type IN ('completed','failed') AND closed_payload_json IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 

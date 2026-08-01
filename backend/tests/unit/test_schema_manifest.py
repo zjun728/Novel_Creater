@@ -98,6 +98,9 @@ EXPECTED_TABLES = {
     "chapter_outline_confirmation_requests",
     "chapter_sessions",
     "working_drafts",
+    "working_draft_revisions",
+    "draft_operation_attempts",
+    "draft_operation_events",
     "draft_candidates",
     "candidate_freeze_requests",
     "final_chapters",
@@ -751,6 +754,95 @@ def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
     ) in final_chapter
     assert "story_block_revision" not in final_chapter
     assert "planning_snapshot_json" not in final_chapter
+
+
+def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
+    names = created_table_names()
+    assert names.index("working_drafts") < names.index("working_draft_revisions")
+    assert names.index("working_draft_revisions") < names.index("draft_operation_attempts")
+    assert names.index("draft_operation_attempts") < names.index("draft_operation_events")
+
+    sessions = _table_statement("chapter_sessions")
+    for contract in (
+        "draft_operation_fencing_token bigint not null default 0",
+        "active_draft_operation_id char(36) null",
+        "check (draft_operation_fencing_token >= 0)",
+    ):
+        assert contract in sessions
+
+    revisions = _table_statement("working_draft_revisions")
+    for contract in (
+        "working_draft_id char(36) not null",
+        "working_draft_revision int not null",
+        "snapshot_role varchar(16) not null",
+        "replacement_reason varchar(32) not null",
+        "source_operation_id char(36) not null",
+        "unique key uq_working_draft_revision_recovery "
+        "(chapter_session_id, working_draft_revision, snapshot_role)",
+        "foreign key (working_draft_id) references working_drafts(id) on delete cascade",
+        "check (working_draft_revision > 0)",
+        "check (snapshot_role in ('before','after'))",
+        "check (replacement_reason in ('generate_new','rewrite','expand','compress'))",
+    ):
+        assert contract in revisions
+
+    operations = _table_statement("draft_operation_attempts")
+    for contract in (
+        "operation_id char(36) not null",
+        "idempotency_key varchar(64) not null",
+        "request_fingerprint char(64) not null",
+        "active_slot tinyint null",
+        "fencing_token bigint not null",
+        "lease_expires_at bigint not null",
+        "base_working_draft_revision int not null",
+        "base_working_draft_hash char(64) not null",
+        "input_manifest_json json not null",
+        "input_manifest_hash char(64) not null",
+        "provider_id char(36) not null",
+        "model_name_snapshot varchar(200) not null",
+        "result_working_draft_revision int null",
+        "result_working_draft_hash char(64) null",
+        "last_sequence_num int not null",
+        "failure_code varchar(64) null",
+        "unique key uq_draft_operation_idempotency "
+        "(chapter_session_id, idempotency_key)",
+        "unique key uq_draft_operation_active_slot "
+        "(chapter_session_id, active_slot)",
+        "unique key uq_draft_operation_fencing "
+        "(chapter_session_id, fencing_token)",
+        "foreign key (project_id, chapter_session_id) references "
+        "chapter_sessions(project_id, id) on delete cascade",
+        "foreign key (provider_id) references provider_profiles(id) on delete restrict",
+        "check (active_slot is null or active_slot = 1)",
+        "check (fencing_token > 0)",
+        "check (base_working_draft_revision > 0)",
+        "check (last_sequence_num >= 0)",
+        "check (status in ('starting','running','completed','failed','expired'))",
+    ):
+        assert contract in operations
+    for forbidden in (
+        "provider_body",
+        "provider_key",
+        "base_url",
+        "prompt",
+        "raw_response",
+    ):
+        assert forbidden not in operations
+
+    events = _table_statement("draft_operation_events")
+    for contract in (
+        "draft_operation_id char(36) not null",
+        "sequence_num int not null",
+        "event_type varchar(16) not null",
+        "closed_payload_json json null",
+        "unique key uq_draft_operation_event_sequence "
+        "(draft_operation_id, sequence_num)",
+        "foreign key (draft_operation_id) references draft_operation_attempts(operation_id) "
+        "on delete cascade",
+        "check (sequence_num > 0)",
+        "check (event_type in ('started','completed','failed'))",
+    ):
+        assert contract in events
 
 
 def test_candidate_identity_is_content_and_immutable_basis_hash():
