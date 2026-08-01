@@ -399,7 +399,7 @@ Settle in transaction 2:
 
 Provider/validation failure settles to fixed codes such as `DraftProviderFailed` or `DraftProviderResultInvalid`. Only the gateway's declared safe `ChapterDraftProviderError` boundary becomes the fixed provider failure. An unexpected non-cancellation program exception must not masquerade as a normal business failure: raise a fixed internal exception without its raw text and leave the durable running attempt recoverable by lease; cancellation remains uncaught. An elapsed lease uses the natural-expiration primitive; authority, manifest or base drift while the lease is still live uses the dedicated drift-expiration primitive. Both settle to `expired` without public raw detail. Coordination/storage failures are re-raised so a rolled-back terminal write is never presented as durable, including failures of the final complete/fail attempt update itself.
 
-All replay and terminal states use one fail-closed public projection. In B1, `starting`, `running` and `expired` require `last_event_sequence == 1`; `completed` and `failed` require sequence `2`, in addition to canonical identity, operation type, model/provider and result/failure correlations. Expiration must not substitute placeholder public fields or preserve a malformed sequence.
+All replay and terminal states use one fail-closed public projection, exposed as `DraftOperationService.project_stored_result` so HTTP reads and service replay cannot drift into separate rule sets. Every required stored column must exist; integer fields must be actual non-boolean integers and are never coerced from strings or booleans. In B1, `starting`, `running` and `expired` require `last_event_sequence == 1`; `completed` and `failed` require sequence `2`, in addition to canonical identity, operation type, model/provider and result/failure correlations. Expiration must not substitute placeholder public fields or preserve a malformed sequence.
 
 - [ ] **Step 5: Run service GREEN**
 
@@ -422,8 +422,10 @@ git commit -m "feat: run fenced generate new operations"
 - Modify: `backend/routers/chapter_sessions.py`
 - Create: `backend/tests/api/test_draft_operation_routes.py`
 - Modify: `backend/tests/api/test_chapter_session_routes.py`
+- Modify: `backend/tests/api/test_route_inventory.py`
 - Delete: `backend/services/chapter_draft_generation.py`
-- Delete: `backend/tests/unit/test_chapter_draft_generation.py`
+- Delete: `backend/tests/unit/test_chapter_draft_generation_service.py`
+- Modify: `backend/tests/unit/test_archived_write_inventory.py`
 - Modify: `backend/main.py` only if dependency assembly requires it
 
 - [ ] **Step 1: Write API RED tests**
@@ -436,7 +438,7 @@ GET  /api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operati
 GET  /api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}/events?after=0
 ```
 
-Test exact body allowlisting, canonical hash/UUID validation, only `generate_new`, instruction bound, project/session/operation ownership, after >= 0, maximum 100 public events, and closed operation/event responses. Assert unknown fields including `prompt`, `messages`, `provider`, `model`, `apiKey`, `baseUrl`, `debug`, and `responseBody` return the fixed public request error.
+Test exact body allowlisting at the raw JSON layer, including recursive rejection of duplicate members before normal JSON decoding, canonical hash/UUID validation, only `generate_new`, instruction bound, project/session/operation ownership, `0 <= after <= 2147483647`, maximum 100 public events, and closed operation/event responses. Assert unknown fields including `prompt`, `messages`, `provider`, `model`, `apiKey`, `baseUrl`, `debug`, and `responseBody` return the fixed public request error.
 
 Add a source/runtime assertion that POSTing the old `/generate-working-draft` path returns 404 and that no router or service symbol for `generate_working_draft` remains.
 
@@ -450,7 +452,7 @@ Expected: missing formal routes and old-route-retirement failures.
 
 - [ ] **Step 3: Implement strict routes and public projections**
 
-Use Pydantic `extra="forbid"` bodies. POST always returns HTTP 200 for both the first execution and an idempotent replay; clients use the closed operation body's `status` and never infer business completion from a differing transport status. Status GET never triggers provider work. Event GET returns:
+Before reading any body bytes, require exactly one case-insensitive `application/json` media type, optionally with only a UTF-8 charset; missing, duplicate, suffix/other media types, unknown parameters and non-UTF-8 charsets use the fixed request error. Then use a streaming size-bounded strict raw-JSON decoder that stops on overflow, rejects excessive nesting before decoding, maps recursion/UTF-8/JSON failures to the fixed request error, and recursively rejects duplicate keys before Pydantic `extra="forbid"` validation. POST always returns HTTP 200 for both the first execution and an idempotent replay; clients use the closed operation body's `status` and never infer business completion from a differing transport status. Validate the returned operation identity against the path, and require a completed result revision to equal the request's base revision plus one. Status GET never triggers provider work, uses `DraftOperationService.project_stored_result` as the sole stored-row projection, and validates projected owner identity against the path. Event GET validates event owner identity, a continuous sequence after the cursor, the exact count through `lastEventSequence`, and the sequence-1 started / sequence-2 terminal payload correlation with the projected operation. It returns:
 
 ```json
 {
@@ -480,7 +482,7 @@ Expected: formal routes pass and old route/service are absent from the active gr
 - [ ] **Step 5: Commit API cutover**
 
 ```powershell
-git add backend/routers/chapter_sessions.py backend/main.py backend/tests/api/test_draft_operation_routes.py backend/tests/api/test_chapter_session_routes.py backend/services/chapter_draft_generation.py backend/tests/unit/test_chapter_draft_generation.py frontend/tests/unit/phase2RuntimeInventory.test.mjs
+git add backend/routers/chapter_sessions.py backend/main.py backend/tests/api/test_draft_operation_routes.py backend/tests/api/test_chapter_session_routes.py backend/tests/api/test_route_inventory.py backend/services/chapter_draft_generation.py backend/tests/unit/test_chapter_draft_generation_service.py backend/tests/unit/test_archived_write_inventory.py frontend/tests/unit/phase2RuntimeInventory.test.mjs
 git commit -m "feat: expose formal draft operations"
 ```
 
