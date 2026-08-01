@@ -1,12 +1,97 @@
 import assert from 'node:assert/strict'
 import { access, readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { parse as parseTemplate } from '@vue/compiler-dom'
+import { createSSRApp, h, reactive } from 'vue'
+import { renderToString } from '@vue/server-renderer'
+import vuePlugin from '@vitejs/plugin-vue'
+import { createServer } from 'vite'
 
 const source = relativePath => readFile(
   new URL(`../../src/${relativePath}`, import.meta.url),
   'utf8',
 )
+const frontendRoot = fileURLToPath(new URL('../..', import.meta.url))
+const sourceRoot = fileURLToPath(new URL('../../src', import.meta.url))
+
+async function createWriterVite() {
+  return createServer({
+    configFile: false,
+    root: frontendRoot,
+    resolve: { alias: { '@': sourceRoot } },
+    server: { middlewareMode: true, hmr: false, ws: false },
+    appType: 'custom',
+    logLevel: 'error',
+    plugins: [
+      {
+        name: 'writer-candidate-render-stub',
+        enforce: 'pre',
+        transform(code, id) {
+          if (!id.endsWith('ChapterWriterView.vue')) return null
+          return code
+            .replace(
+              "import { computed, onBeforeUnmount, ref, watch } from 'vue'",
+              "import { computed, h, onBeforeUnmount, ref, watch } from 'vue'",
+            )
+            .replace(
+              /import\s*\{\s*onBeforeRouteLeave,[\s\S]*?\}\s*from 'vue-router'/u,
+              "const useRoute = () => globalThis.__writerRoute; const useRouter = () => ({ push() {} }); const onBeforeRouteLeave = () => {}; const onBeforeRouteUpdate = () => {};",
+            )
+            .replace(
+              /import\s*\{\s*NAlert,[\s\S]*?\}\s*from 'naive-ui'/u,
+              "const container = tag => ({ inheritAttrs: false, setup(_, { attrs, slots }) { return () => h(tag, attrs, slots.default?.()) } }); const NAlert = container('section'); const NButton = container('button'); const NCard = container('section'); const NInput = container('textarea'); const NResult = container('section'); const NSkeleton = container('div'); const NStatistic = container('div'); const NTag = container('span');",
+            )
+            .replace(
+              "import { useChapterSessionStore } from '@/stores/chapterSessionStore'",
+              'const useChapterSessionStore = () => globalThis.__writerStore',
+            )
+            .replace('const loading = ref(true)', 'const loading = ref(false)')
+            .replaceAll('loading.value = true', 'loading.value = false')
+        },
+      },
+      vuePlugin(),
+    ],
+    optimizeDeps: { noDiscovery: true },
+  })
+}
+
+async function renderWriterCandidates(candidates) {
+  globalThis.__writerRoute = reactive({
+    params: { projectId: 'project-1', chapterNumber: '1' },
+  })
+  globalThis.__writerStore = reactive({
+    session: { chapterNum: 1, status: 'drafting' },
+    workingDraft: { revision: 1 },
+    candidates,
+    hasSession: true,
+    busy: false,
+    writeBusy: false,
+    generatingDraft: false,
+    creating: false,
+    savingDraft: false,
+    savingCandidate: false,
+    workspace: null,
+    error: null,
+    async openAuthoritative() { return null },
+    invalidate() {},
+  })
+  const vite = await createWriterVite()
+  try {
+    const Writer = await vite.ssrLoadModule('/src/views/ChapterWriterView.vue')
+    const app = createSSRApp(Writer.default)
+    app.component('router-link', {
+      setup(_, { attrs, slots }) {
+        return () => h('a', attrs, slots.default?.())
+      },
+    })
+    return await renderToString(app)
+  } finally {
+    await vite.close()
+    delete globalThis.__writerRoute
+    delete globalThis.__writerStore
+  }
+}
 function hasPersistentOutlineLink(node, conditional = false) {
   if (!node || typeof node !== 'object') return false
   const nextConditional = conditional || (
@@ -112,13 +197,20 @@ test('writer keeps the outline router link visible while the workspace loads', a
   assert.equal(hasPersistentOutlineLink(ast), true)
 })
 
-test('writer renders candidate basis statuses without location navigation', async () => {
-  const writer = await source('views/ChapterWriterView.vue')
+test('writer renders current and stale candidate basis badges', async () => {
+  const html = await renderWriterCandidates([
+    { id: 'candidate-current', workingDraftRevision: 1, basisStatus: 'current' },
+    { id: 'candidate-stale', workingDraftRevision: 2, basisStatus: 'stale' },
+  ])
 
-  assert.match(writer, /candidate\.basisStatus === 'current'/)
-  assert.match(writer, /依据当前小纲/)
-  assert.match(writer, /依据旧小纲，不能定稿/)
-  assert.doesNotMatch(writer, /window\.location|page\.evaluate/)
+  assert.match(
+    html,
+    /revision 1\s*<span class="candidate-basis candidate-basis--current"[^>]*>依据当前小纲<\/span>/,
+  )
+  assert.match(
+    html,
+    /revision 2\s*<span class="candidate-basis candidate-basis--stale"[^>]*>依据旧小纲，不能定稿<\/span>/,
+  )
 })
 
 test('planning editors expose only their owned fields and no reverse IDs', async () => {
