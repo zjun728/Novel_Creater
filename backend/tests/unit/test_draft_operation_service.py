@@ -448,6 +448,35 @@ async def test_generate_new_reserves_calls_outside_transaction_and_atomically_co
 
 
 @pytest.mark.asyncio
+async def test_public_stored_projection_returns_valid_completed_operation():
+    service, repo, _, _, _ = make_service()
+    await service.start(command())
+    stored = next(iter(repo.operations.values()))
+
+    result = service.project_stored_result(stored)
+
+    assert result.operation_id == stored["id"]
+    assert result.status == "completed"
+    assert result.last_event_sequence == 2
+    assert result.result_content_hash == stored["result_content_hash"]
+
+
+@pytest.mark.asyncio
+async def test_public_stored_projection_fails_closed_for_malformed_row():
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _ = make_service()
+    await service.start(command())
+    stored = {
+        **next(iter(repo.operations.values())),
+        "last_event_sequence": 999,
+    }
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
 async def test_current_outline_can_replace_session_entry_pins_before_prose_is_final():
     service, repo, gateway, _, _ = make_service()
     repo.session.update({

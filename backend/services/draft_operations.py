@@ -232,7 +232,7 @@ class DraftOperationService:
                             "could not expire replayed operation"
                         )
                     return self._project_expired(existing), None
-                return self._result(existing), None
+                return self.project_stored_result(existing), None
 
             if chapter_session.get("status") != "drafting":
                 raise DraftOperationConflict()
@@ -517,7 +517,7 @@ class DraftOperationService:
     async def _terminal_or_expire_drift(self, session, context, locked):
         attempt = locked["attempt"]
         if attempt.get("status") != "running":
-            return self._result(attempt)
+            return self.project_stored_result(attempt)
         now = self._clock()
         if int(attempt["lease_expires_at"]) <= now:
             if not await self.repository.expire_draft_operation(
@@ -533,7 +533,7 @@ class DraftOperationService:
             and attempt.get("active_slot") == 1
         )
         if not owned:
-            return self._result(attempt)
+            return self.project_stored_result(attempt)
 
         authority = await self._read_authority(
             session, locked["session"], locked["draft"], strict=False
@@ -945,8 +945,8 @@ class DraftOperationService:
 
     @staticmethod
     def _project_expired(attempt):
-        DraftOperationService._result(attempt)
-        return DraftOperationService._result({
+        DraftOperationService.project_stored_result(attempt)
+        return DraftOperationService.project_stored_result({
             **attempt,
             "status": "expired",
             "active_slot": None,
@@ -956,7 +956,7 @@ class DraftOperationService:
         })
 
     @staticmethod
-    def _result(row):
+    def project_stored_result(row) -> DraftOperationResult:
         try:
             status = row["status"]
             operation_type = row["operation_type"]
