@@ -48,6 +48,19 @@ class FakeChapterRepository:
             },
             "status": "drafting",
         }
+        self.current_outline = {
+            "planning_revision_id": self.session["planning_revision_id"],
+            "planning_revision": self.session["planning_revision"],
+            "planning_hash": self.session["planning_hash"],
+            "chapter_outline_revision_id": self.session[
+                "chapter_outline_revision_id"
+            ],
+            "chapter_outline_revision": self.session["chapter_outline_revision"],
+            "chapter_outline_hash": self.session["chapter_outline_hash"],
+            "canon_revision": self.session["outline_canon_revision"],
+            "projection_revision": self.session["outline_projection_revision"],
+            "projection_hash": self.session["outline_projection_hash"],
+        }
         self.working_draft = {
             "id": "draft-1",
             "project_id": "p1",
@@ -81,6 +94,14 @@ class FakeChapterRepository:
     async def read_working_draft(self, session, chapter_session_id):
         if chapter_session_id == self.working_draft["chapter_session_id"]:
             return self.working_draft
+        return None
+
+    async def read_current_outline(self, session, project_id, chapter_number):
+        if (
+            project_id == self.session["project_id"]
+            and chapter_number == self.session["chapter_num"]
+        ):
+            return self.current_outline
         return None
 
     async def resolve_writing_provider(self, session, project_id):
