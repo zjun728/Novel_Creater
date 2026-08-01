@@ -1332,6 +1332,10 @@ function draftOperationResponse(value, expected = {}) {
     if (
       !Number.isInteger(revision)
       || revision < 1
+      || (
+        expected.expectedBaseRevision !== undefined
+        && revision !== expected.expectedBaseRevision + 1
+      )
       || failureCode !== null
     ) throw new TypeError('Invalid draft operation response')
     draftOperationHash(resultHash, 'result content hash')
@@ -1378,7 +1382,9 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
       || item.createdAt < 0
     ) throw new TypeError('Invalid draft operation event')
     const result = { sequence, type: item.type, createdAt: item.createdAt }
-    if (item.type === 'completed') {
+    if (sequence === 1) {
+      if (item.type !== 'started') throw new TypeError('Invalid draft operation event')
+    } else if (sequence === 2 && item.type === 'completed') {
       if (
         !Number.isInteger(item.resultWorkingDraftRevision)
         || item.resultWorkingDraftRevision < 1
@@ -1388,12 +1394,12 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
         item.resultContentHash,
         'event result content hash',
       )
-    } else if (item.type === 'failed') {
+    } else if (sequence === 2 && item.type === 'failed') {
       if (!DRAFT_OPERATION_FAILURE_CODES.has(item.failureCode)) {
         throw new TypeError('Invalid draft operation event')
       }
       result.failureCode = item.failureCode
-    } else if (item.type !== 'started') {
+    } else {
       throw new TypeError('Invalid draft operation event')
     }
     return Object.freeze(result)
@@ -1998,7 +2004,11 @@ export const api = {
         `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations`,
         body,
         DRAFT_OPERATION_TIMEOUT,
-      ), { projectId: normalizedProjectId, sessionId: normalizedSessionId })
+      ), {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        expectedBaseRevision: body.expectedWorkingDraftRevision,
+      })
     },
     readDraftOperation: async (projectId, sessionId, operationId) => {
       const normalizedProjectId = draftOperationUuid(projectId, 'project id')

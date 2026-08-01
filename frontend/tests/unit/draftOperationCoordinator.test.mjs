@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createDraftOperationCoordinator } from '../../src/application/writer/draftOperationCoordinator.js'
+import { ApiError } from '../../src/api/db/api-error.js'
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111'
 const SESSION_ID = '22222222-2222-4222-8222-222222222222'
@@ -36,12 +37,17 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+function immediatePollScheduler() {
+  return { promise: Promise.resolve(), cancel() {} }
+}
+
 function coordinator(overrides = {}) {
   return createDraftOperationCoordinator({
     startOperation: async () => operation(),
     readOperation: async () => operation(),
     reloadWorkspace: async () => ({ workingDraft: { content: 'authoritative' } }),
     idFactory: () => KEY,
+    pollScheduler: immediatePollScheduler,
     ...overrides,
   })
 }
@@ -86,11 +92,11 @@ test('coordinator replays exactly the frozen command after an unknown transport 
     startOperation: async next => {
       calls.push(next)
       attempt += 1
-      if (attempt === 1) throw new Error('network unavailable')
+      if (attempt === 1) throw new ApiError()
       return operation({ status: 'failed', resultWorkingDraftRevision: null, resultContentHash: null, failureCode: 'DraftProviderFailed' })
     },
   })
-  await assert.rejects(() => subject.generateNew(command()), /network unavailable/)
+  await assert.rejects(() => subject.generateNew(command()), ApiError)
   assert.equal(subject.status, 'unknown')
   assert.equal(subject.failureCode, 'request_unknown')
   await subject.retryUnknown()
@@ -98,6 +104,208 @@ test('coordinator replays exactly the frozen command after an unknown transport 
   assert.strictEqual(calls[1], calls[0])
   assert.equal(subject.status, 'failed')
   assert.equal(subject.failureCode, 'DraftProviderFailed')
+})
+
+test('coordinator polls a running operation with its fenced id until completed once', async () => {
+  const reads = []
+  let reloads = 0
+  const subject = coordinator({
+    startOperation: async () => operation({
+      status: 'running',
+      lastEventSequence: 1,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+    readOperation: async operationId => {
+      reads.push(operationId)
+      return reads.length === 1
+        ? operation({
+          status: 'running',
+          lastEventSequence: 1,
+          resultWorkingDraftRevision: null,
+          resultContentHash: null,
+        })
+        : operation()
+    },
+    reloadWorkspace: async () => {
+      reloads += 1
+      return { workingDraft: { content: 'reloaded' } }
+    },
+  })
+  assert.deepEqual(await subject.generateNew(command()), {
+    workingDraft: { content: 'reloaded' },
+  })
+  assert.deepEqual(reads, [OPERATION_ID, OPERATION_ID])
+  assert.equal(reloads, 1)
+  assert.equal(subject.status, 'completed')
+})
+
+test('coordinator polls a running operation through failed and expired terminal states without reload', async () => {
+  for (const terminal of [
+    operation({
+      status: 'failed',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+      failureCode: 'DraftProviderFailed',
+    }),
+    operation({
+      status: 'expired',
+      lastEventSequence: 1,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+  ]) {
+    let reloads = 0
+    const subject = coordinator({
+      startOperation: async () => operation({
+        status: 'running',
+        lastEventSequence: 1,
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+      }),
+      readOperation: async () => terminal,
+      reloadWorkspace: async () => { reloads += 1 },
+    })
+    assert.equal(await subject.generateNew(command()), null)
+    assert.equal(subject.status, terminal.status)
+    assert.equal(reloads, 0)
+  }
+})
+
+test('coordinator fences reset and dispose while a status read is pending', async () => {
+  for (const reset of [
+    subject => subject.resetContext(),
+    subject => subject.dispose(),
+  ]) {
+    const pendingRead = deferred()
+    let reloads = 0
+    const subject = coordinator({
+      startOperation: async () => operation({
+        status: 'running',
+        lastEventSequence: 1,
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+      }),
+      readOperation: () => pendingRead.promise,
+      reloadWorkspace: async () => { reloads += 1 },
+    })
+    const request = subject.generateNew(command())
+    await Promise.resolve()
+    reset(subject)
+    pendingRead.resolve(operation())
+    assert.equal(await request, null)
+    assert.equal(reloads, 0)
+    assert.equal(subject.operation, null)
+  }
+})
+
+test('reset and dispose cancel a pending bounded poll delay without another status read', async () => {
+  for (const invalidate of [
+    subject => subject.resetContext(),
+    subject => subject.dispose(),
+  ]) {
+    const delay = deferred()
+    let cancelled = 0
+    let reads = 0
+    const subject = coordinator({
+      startOperation: async () => operation({
+        status: 'running',
+        lastEventSequence: 1,
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+      }),
+      readOperation: async () => {
+        reads += 1
+        return operation({
+          status: 'running',
+          lastEventSequence: 1,
+          resultWorkingDraftRevision: null,
+          resultContentHash: null,
+        })
+      },
+      pollScheduler: delayMs => {
+        assert.equal(delayMs, 1_000)
+        return {
+          promise: delay.promise,
+          cancel() {
+            cancelled += 1
+            delay.resolve()
+          },
+        }
+      },
+    })
+    const request = subject.generateNew(command())
+    await Promise.resolve()
+    await Promise.resolve()
+    invalidate(subject)
+    assert.equal(await request, null)
+    assert.equal(cancelled, 1)
+    assert.equal(reads, 1)
+  }
+})
+
+test('known HTTP rejection is public-safe, never retryable, and permits a distinct new action', async () => {
+  const knownFailure = new ApiError({ status: 409, code: 'DraftOperationConflict', message: 'raw server detail' })
+  let starts = 0
+  const subject = coordinator({
+    startOperation: async () => {
+      starts += 1
+      if (starts === 1) throw knownFailure
+      return operation()
+    },
+  })
+  await assert.rejects(() => subject.generateNew(command()), ApiError)
+  assert.equal(subject.status, 'request_rejected')
+  assert.equal(subject.failureCode, 'request_rejected')
+  assert.equal(JSON.stringify({ status: subject.status, failureCode: subject.failureCode }).includes('raw server detail'), false)
+  await assert.rejects(() => subject.retryUnknown(), /no unknown/i)
+  assert.deepEqual(await subject.generateNew(command()), {
+    workingDraft: { content: 'authoritative' },
+  })
+})
+
+test('local and response-invalid failures are fixed public states, never unknown recovery', async () => {
+  for (const startOperation of [
+    async () => { throw new TypeError('local implementation detail') },
+    async () => ({ operationId: OPERATION_ID, prompt: 'private response' }),
+  ]) {
+    const subject = coordinator({ startOperation })
+    await assert.rejects(() => subject.generateNew(command()), TypeError)
+    assert.equal(subject.status, 'operation_invalid')
+    assert.equal(subject.failureCode, 'operation_invalid')
+    assert.equal(JSON.stringify({ status: subject.status, failureCode: subject.failureCode }).match(/detail|private/i), null)
+    await assert.rejects(() => subject.retryUnknown(), /no unknown/i)
+  }
+})
+
+test('unknown status recovery keeps its frozen command and rejects new generate actions', async () => {
+  const pendingRead = deferred()
+  const calls = []
+  let starts = 0
+  const subject = coordinator({
+    startOperation: async next => {
+      calls.push(next)
+      starts += 1
+      if (starts === 2) return operation()
+      return operation({
+        status: 'running',
+        lastEventSequence: 1,
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+      })
+    },
+    readOperation: () => pendingRead.promise,
+  })
+  const first = subject.generateNew(command())
+  await Promise.resolve()
+  pendingRead.reject(new ApiError())
+  await assert.rejects(first, ApiError)
+  await assert.rejects(() => subject.generateNew(command()), /recovery/i)
+  assert.deepEqual(await subject.retryUnknown(), {
+    workingDraft: { content: 'authoritative' },
+  })
+  assert.equal(calls.length, 2)
+  assert.strictEqual(calls[1], calls[0])
 })
 
 test('completed operation reloads authoritative workspace exactly once and never exposes output text', async () => {

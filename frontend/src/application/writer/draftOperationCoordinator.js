@@ -1,8 +1,27 @@
+import { ApiError } from '../../api/db/api-error.js'
+
 const CONTENT_HASH = /^[0-9a-f]{64}$/
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'expired'])
 const PUBLIC_STATUSES = new Set(['starting', 'running', 'completed', 'failed', 'expired'])
 const FAILURE_CODES = new Set(['DraftProviderFailed', 'DraftProviderResultInvalid'])
+const POLL_INTERVAL_MS = 1_000
+const MAX_STATUS_READS = 1_200
+
+function defaultPollScheduler(delayMs) {
+  let resolve
+  const promise = new Promise(nextResolve => {
+    resolve = nextResolve
+  })
+  const timer = setTimeout(resolve, delayMs)
+  return Object.freeze({
+    promise,
+    cancel() {
+      clearTimeout(timer)
+      resolve()
+    },
+  })
+}
 
 function requireFunction(value, label) {
   if (typeof value !== 'function') throw new TypeError(`${label} is required`)
@@ -103,16 +122,26 @@ function publicOperation(value) {
   })
 }
 
+function isUnknownTransport(error) {
+  return error instanceof ApiError && error.status === 0
+}
+
+function knownFailureCode(error) {
+  return error instanceof TypeError ? 'operation_invalid' : 'request_rejected'
+}
+
 export function createDraftOperationCoordinator({
   startOperation,
   readOperation,
   reloadWorkspace,
   idFactory,
+  pollScheduler = defaultPollScheduler,
 } = {}) {
   const start = requireFunction(startOperation, 'startOperation')
-  requireFunction(readOperation, 'readOperation')
+  const read = requireFunction(readOperation, 'readOperation')
   const reload = requireFunction(reloadWorkspace, 'reloadWorkspace')
   const createId = requireFunction(idFactory, 'idFactory')
+  const schedulePoll = requireFunction(pollScheduler, 'pollScheduler')
   let actionGeneration = 0
   let activeAction = null
   let retryCommand = null
@@ -121,9 +150,30 @@ export function createDraftOperationCoordinator({
   let currentBusy = false
   let currentFailureCode = null
   let disposed = false
+  let pendingDelay = null
 
   function isCurrent(token) {
     return !disposed && activeAction?.token === token && actionGeneration === token
+  }
+
+  function clearPendingDelay() {
+    if (!pendingDelay) return
+    const pending = pendingDelay
+    pendingDelay = null
+    pending.cancel()
+  }
+
+  function waitForPoll() {
+    const pending = schedulePoll(POLL_INTERVAL_MS)
+    if (
+      !pending
+      || typeof pending.promise?.then !== 'function'
+      || typeof pending.cancel !== 'function'
+    ) throw new TypeError('Invalid draft operation poll scheduler')
+    pendingDelay = pending
+    return pending.promise.finally(() => {
+      if (pendingDelay === pending) pendingDelay = null
+    })
   }
 
   function clearPublicState(nextStatus = 'idle') {
@@ -131,6 +181,75 @@ export function createDraftOperationCoordinator({
     currentOperation = null
     currentBusy = false
     currentFailureCode = null
+  }
+
+  function markUnknown(frozenCommand) {
+    retryCommand = frozenCommand
+    currentStatus = 'unknown'
+    currentOperation = null
+    currentFailureCode = 'request_unknown'
+  }
+
+  function markKnownFailure(error) {
+    retryCommand = null
+    currentStatus = knownFailureCode(error)
+    currentOperation = null
+    currentFailureCode = currentStatus
+  }
+
+  function acceptOperation(received) {
+    const operation = publicOperation(received)
+    currentOperation = operation
+    currentStatus = operation.status
+    currentFailureCode = operation.failureCode
+    if (TERMINAL_STATUSES.has(operation.status)) retryCommand = null
+    return operation
+  }
+
+  async function reloadCompleted(token) {
+    try {
+      const workspace = await reload()
+      if (!isCurrent(token)) return null
+      return workspace
+    } catch (error) {
+      if (isCurrent(token)) currentFailureCode = 'workspace_reload_failed'
+      throw error
+    }
+  }
+
+  async function recover(token, frozenCommand, initialOperation) {
+    let operation = initialOperation
+    let reads = 0
+    while (!TERMINAL_STATUSES.has(operation.status)) {
+      if (reads >= MAX_STATUS_READS) {
+        if (isCurrent(token)) markUnknown(frozenCommand)
+        return null
+      }
+      if (reads > 0) {
+        await waitForPoll()
+        if (!isCurrent(token)) return null
+      }
+      reads += 1
+      let received
+      try {
+        received = await read(operation.operationId)
+      } catch (error) {
+        if (!isCurrent(token)) return null
+        if (isUnknownTransport(error)) markUnknown(frozenCommand)
+        else markKnownFailure(error)
+        throw error
+      }
+      if (!isCurrent(token)) return null
+      try {
+        operation = acceptOperation(received)
+      } catch (error) {
+        if (isCurrent(token)) markKnownFailure(error)
+        throw error
+      }
+    }
+    if (operation.status !== 'completed') return null
+    if (!isCurrent(token)) return null
+    return reloadCompleted(token)
   }
 
   async function submit(frozenCommand) {
@@ -148,36 +267,21 @@ export function createDraftOperationCoordinator({
         received = await start(frozenCommand)
       } catch (error) {
         if (!isCurrent(token)) return null
-        retryCommand = frozenCommand
-        currentStatus = 'unknown'
-        currentOperation = null
-        currentFailureCode = 'request_unknown'
+        if (isUnknownTransport(error)) markUnknown(frozenCommand)
+        else markKnownFailure(error)
         throw error
       }
       if (!isCurrent(token)) return null
       let operation
       try {
-        operation = publicOperation(received)
+        operation = acceptOperation(received)
       } catch (error) {
-        currentStatus = 'invalid'
-        currentOperation = null
-        currentFailureCode = 'operation_invalid'
+        if (isCurrent(token)) markKnownFailure(error)
         throw error
       }
-      currentOperation = operation
-      currentStatus = operation.status
-      currentFailureCode = operation.failureCode
-      if (TERMINAL_STATUSES.has(operation.status)) retryCommand = null
-      if (operation.status !== 'completed') return null
-      if (!isCurrent(token)) return null
-      try {
-        const workspace = await reload()
-        if (!isCurrent(token)) return null
-        return workspace
-      } catch (error) {
-        if (isCurrent(token)) currentFailureCode = 'workspace_reload_failed'
-        throw error
-      }
+      if (operation.status === 'completed') return await reloadCompleted(token)
+      if (TERMINAL_STATUSES.has(operation.status)) return null
+      return await recover(token, frozenCommand, operation)
     } finally {
       if (isCurrent(token)) {
         activeAction = null
@@ -194,6 +298,7 @@ export function createDraftOperationCoordinator({
     generateNew(value) {
       if (disposed) throw new TypeError('draft operation coordinator is disposed')
       if (activeAction) return Promise.reject(new TypeError('draft operation is already in progress'))
+      if (retryCommand) return Promise.reject(new TypeError('draft operation recovery is pending'))
       return submit(command(value, createId))
     },
     retryUnknown() {
@@ -203,6 +308,7 @@ export function createDraftOperationCoordinator({
     },
     resetContext() {
       actionGeneration += 1
+      clearPendingDelay()
       activeAction = null
       retryCommand = null
       clearPublicState()
@@ -210,6 +316,7 @@ export function createDraftOperationCoordinator({
     dispose() {
       disposed = true
       actionGeneration += 1
+      clearPendingDelay()
       activeAction = null
       retryCommand = null
       clearPublicState('disposed')

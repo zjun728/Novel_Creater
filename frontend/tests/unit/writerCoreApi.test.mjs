@@ -1401,6 +1401,60 @@ test('draft operation client rejects malformed commands, identifiers, cursors, a
   }
 })
 
+test('draft operation client rejects invalid completed revisions and event state sequences after fetch', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  const valid = {
+    operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: 'a'.repeat(64),
+    failureCode: null,
+    providerId: 'provider-1',
+    modelName: 'writer-model',
+  }
+  let calls = 0
+  const responses = [
+    { ...valid, resultWorkingDraftRevision: 6 },
+    { operationId, events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'started',
+      createdAt: 2,
+    }] },
+  ]
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse(responses.shift())
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await assert.rejects(
+      () => api.chapterSessions.createDraftOperation(projectId, sessionId, command),
+      TypeError,
+    )
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, 0),
+      TypeError,
+    )
+    assert.equal(calls, 2)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
 test('every shared client path segment is encoded without changing route structure', async () => {
   const calls = await captureRequests(async api => {
     await api.projects.get('project/one')
