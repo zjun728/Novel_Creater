@@ -7,6 +7,8 @@ const PUBLIC_STATUSES = new Set(['starting', 'running', 'completed', 'failed', '
 const FAILURE_CODES = new Set(['DraftProviderFailed', 'DraftProviderResultInvalid'])
 const POLL_INTERVAL_MS = 1_000
 const MAX_STATUS_READS = 1_200
+const MAX_BASE_REVISION = 2_147_483_646
+const MAX_RESULT_REVISION = 2_147_483_647
 
 function defaultPollScheduler(delayMs) {
   let resolve
@@ -56,6 +58,7 @@ function command(value, idFactory) {
     || fields.some(field => !Object.hasOwn(source, field))
     || !Number.isInteger(source.expectedWorkingDraftRevision)
     || source.expectedWorkingDraftRevision < 1
+    || source.expectedWorkingDraftRevision > MAX_BASE_REVISION
     || typeof source.expectedContentHash !== 'string'
     || !CONTENT_HASH.test(source.expectedContentHash)
     || typeof source.authorInstruction !== 'string'
@@ -94,6 +97,7 @@ function publicOperation(value) {
     if (
       !Number.isInteger(revision)
       || revision < 1
+      || revision > MAX_RESULT_REVISION
       || typeof contentHash !== 'string'
       || !CONTENT_HASH.test(contentHash)
       || failureCode !== null
@@ -197,6 +201,13 @@ export function createDraftOperationCoordinator({
     currentFailureCode = currentStatus
   }
 
+  function markOperationInvalid() {
+    retryCommand = null
+    currentStatus = 'operation_invalid'
+    currentOperation = null
+    currentFailureCode = 'operation_invalid'
+  }
+
   function acceptOperation(received) {
     const operation = publicOperation(received)
     currentOperation = operation
@@ -212,7 +223,8 @@ export function createDraftOperationCoordinator({
       if (!isCurrent(token)) return null
       return workspace
     } catch (error) {
-      if (isCurrent(token)) currentFailureCode = 'workspace_reload_failed'
+      if (!isCurrent(token)) return null
+      currentFailureCode = 'workspace_reload_failed'
       throw error
     }
   }
@@ -226,7 +238,13 @@ export function createDraftOperationCoordinator({
         return null
       }
       if (reads > 0) {
-        await waitForPoll()
+        try {
+          await waitForPoll()
+        } catch (error) {
+          if (!isCurrent(token)) return null
+          markOperationInvalid()
+          throw error
+        }
         if (!isCurrent(token)) return null
       }
       reads += 1
@@ -307,6 +325,7 @@ export function createDraftOperationCoordinator({
       return submit(retryCommand)
     },
     resetContext() {
+      if (disposed) return
       actionGeneration += 1
       clearPendingDelay()
       activeAction = null
@@ -314,6 +333,7 @@ export function createDraftOperationCoordinator({
       clearPublicState()
     },
     dispose() {
+      if (disposed) return
       disposed = true
       actionGeneration += 1
       clearPendingDelay()

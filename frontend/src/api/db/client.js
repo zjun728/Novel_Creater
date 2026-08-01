@@ -1218,6 +1218,8 @@ const DRAFT_OPERATION_STATUSES = new Set([
 const DRAFT_OPERATION_FAILURE_CODES = new Set([
   'DraftProviderFailed', 'DraftProviderResultInvalid',
 ])
+const DRAFT_OPERATION_MAX_BASE_REVISION = 2_147_483_646
+const DRAFT_OPERATION_MAX_RESULT_REVISION = 2_147_483_647
 const DRAFT_OPERATION_SENSITIVE_KEYS = new Set([
   'prompt', 'messages', 'provider', 'model', 'apikey', 'baseurl', 'debug',
   'responsebody',
@@ -1282,6 +1284,7 @@ function draftOperationCommand(value) {
     || source.operationType !== 'generate_new'
     || !Number.isInteger(source.expectedWorkingDraftRevision)
     || source.expectedWorkingDraftRevision < 1
+    || source.expectedWorkingDraftRevision > DRAFT_OPERATION_MAX_BASE_REVISION
     || typeof source.authorInstruction !== 'string'
     || source.authorInstruction.length > 2000
   ) {
@@ -1332,6 +1335,7 @@ function draftOperationResponse(value, expected = {}) {
     if (
       !Number.isInteger(revision)
       || revision < 1
+      || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
       || (
         expected.expectedBaseRevision !== undefined
         && revision !== expected.expectedBaseRevision + 1
@@ -1388,6 +1392,7 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
       if (
         !Number.isInteger(item.resultWorkingDraftRevision)
         || item.resultWorkingDraftRevision < 1
+        || item.resultWorkingDraftRevision > DRAFT_OPERATION_MAX_RESULT_REVISION
       ) throw new TypeError('Invalid draft operation event')
       result.resultWorkingDraftRevision = item.resultWorkingDraftRevision
       result.resultContentHash = draftOperationHash(

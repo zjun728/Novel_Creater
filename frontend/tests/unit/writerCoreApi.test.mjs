@@ -1428,7 +1428,7 @@ test('draft operation client rejects invalid completed revisions and event state
   }
   let calls = 0
   const responses = [
-    { ...valid, resultWorkingDraftRevision: 6 },
+    { ...valid, resultWorkingDraftRevision: 4 },
     { operationId, events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
       sequence: 2,
       type: 'started',
@@ -1449,6 +1449,74 @@ test('draft operation client rejects invalid completed revisions and event state
       () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, 0),
       TypeError,
     )
+    assert.equal(calls, 2)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client enforces exact safe revision bounds before transport and on public projections', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const base = 2_147_483_646
+  const result = 2_147_483_647
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: base,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  const valid = {
+    operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    resultWorkingDraftRevision: result,
+    resultContentHash: 'a'.repeat(64),
+    failureCode: null,
+    providerId: 'provider-1',
+    modelName: 'writer-model',
+  }
+  const responses = [valid, {
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'completed',
+      createdAt: 2,
+      resultWorkingDraftRevision: result + 1,
+      resultContentHash: 'a'.repeat(64),
+    }],
+  }]
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse(responses.shift())
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    assert.equal(
+      (await api.chapterSessions.createDraftOperation(projectId, sessionId, command)).resultWorkingDraftRevision,
+      result,
+    )
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, 0),
+      TypeError,
+    )
+    assert.equal(calls, 2)
+    for (const revision of [base + 1, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, {
+          ...command,
+          expectedWorkingDraftRevision: revision,
+        }),
+        TypeError,
+      )
+    }
     assert.equal(calls, 2)
   } finally {
     global.fetch = originalFetch

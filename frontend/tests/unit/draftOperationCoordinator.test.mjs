@@ -386,3 +386,182 @@ test('coordinator exposes only read-only public state without request or provide
   }
   assert.equal(JSON.stringify(publicState).match(/secret|prompt|authorInstruction|idempotencyKey|baseUrl|responseBody/i), null)
 })
+
+test('coordinator bounds command and completed revisions without issuing unsafe starts', async () => {
+  const base = 2_147_483_646
+  const result = 2_147_483_647
+  const calls = []
+  const subject = coordinator({
+    startOperation: async next => {
+      calls.push(next)
+      return operation({
+        resultWorkingDraftRevision: result,
+      })
+    },
+  })
+  assert.equal((await subject.generateNew({
+    ...command(),
+    expectedWorkingDraftRevision: base,
+  })).workingDraft.content, 'authoritative')
+  for (const revision of [base + 1, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => subject.generateNew({
+      ...command(),
+      expectedWorkingDraftRevision: revision,
+    }), TypeError)
+  }
+  assert.equal(calls.length, 1)
+  const invalidResult = coordinator({
+    startOperation: async () => operation({
+      resultWorkingDraftRevision: Number.MAX_SAFE_INTEGER + 1,
+    }),
+  })
+  await assert.rejects(() => invalidResult.generateNew(command()), TypeError)
+  assert.equal(invalidResult.status, 'operation_invalid')
+})
+
+test('late reload rejection after reset or dispose resolves null without public contamination', async () => {
+  for (const invalidate of [
+    subject => subject.resetContext(),
+    subject => subject.dispose(),
+  ]) {
+    const lateReload = deferred()
+    const subject = coordinator({ reloadWorkspace: () => lateReload.promise })
+    const request = subject.generateNew(command())
+    await Promise.resolve()
+    invalidate(subject)
+    lateReload.reject(new Error('late reload detail'))
+    assert.equal(await request, null)
+    assert.equal(subject.operation, null)
+    assert.equal(subject.failureCode, null)
+  }
+})
+
+test('scheduler synchronous and async failures become operation_invalid, while invalidated rejection is ignored', async () => {
+  for (const pollScheduler of [
+    () => { throw new Error('scheduler detail') },
+    () => ({ promise: Promise.reject(new Error('scheduler detail')), cancel() {} }),
+  ]) {
+    const subject = coordinator({
+      startOperation: async () => operation({
+        status: 'running', lastEventSequence: 1,
+        resultWorkingDraftRevision: null, resultContentHash: null,
+      }),
+      readOperation: async () => operation({
+        status: 'running', lastEventSequence: 1,
+        resultWorkingDraftRevision: null, resultContentHash: null,
+      }),
+      pollScheduler,
+    })
+    await assert.rejects(() => subject.generateNew(command()), Error)
+    assert.equal(subject.status, 'operation_invalid')
+    assert.equal(subject.failureCode, 'operation_invalid')
+    await assert.rejects(() => subject.retryUnknown(), /no unknown/i)
+  }
+
+  const delayed = deferred()
+  const subject = coordinator({
+    startOperation: async () => operation({
+      status: 'running', lastEventSequence: 1,
+      resultWorkingDraftRevision: null, resultContentHash: null,
+    }),
+    readOperation: async () => operation({
+      status: 'running', lastEventSequence: 1,
+      resultWorkingDraftRevision: null, resultContentHash: null,
+    }),
+    pollScheduler: () => ({
+      promise: delayed.promise,
+      cancel() { delayed.reject(new Error('cancelled scheduler detail')) },
+    }),
+  })
+  const request = subject.generateNew(command())
+  await Promise.resolve()
+  await Promise.resolve()
+  subject.resetContext()
+  assert.equal(await request, null)
+  assert.equal(subject.status, 'idle')
+})
+
+test('dispose is idempotent and resetContext cannot revive a disposed coordinator', () => {
+  const subject = coordinator()
+  subject.dispose()
+  subject.resetContext()
+  assert.equal(subject.status, 'disposed')
+  subject.dispose()
+  assert.equal(subject.status, 'disposed')
+  assert.throws(() => subject.generateNew(command()), /disposed/i)
+})
+
+test('default polling uses one-second timers, cancellation clears them, and bounded recovery retains retry state', async () => {
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const timers = []
+  const cleared = []
+  global.setTimeout = (callback, delayMs) => {
+    const timer = { callback, delayMs }
+    timers.push(timer)
+    return timer
+  }
+  global.clearTimeout = timer => { cleared.push(timer) }
+  try {
+    for (const invalidate of [
+      subject => subject.resetContext(),
+      subject => subject.dispose(),
+    ]) {
+      let reads = 0
+      const subject = createDraftOperationCoordinator({
+        startOperation: async () => operation({
+          status: 'running', lastEventSequence: 1,
+          resultWorkingDraftRevision: null, resultContentHash: null,
+        }),
+        readOperation: async () => {
+          reads += 1
+          return operation({
+            status: 'running', lastEventSequence: 1,
+            resultWorkingDraftRevision: null, resultContentHash: null,
+          })
+        },
+        reloadWorkspace: async () => ({}),
+        idFactory: () => KEY,
+      })
+      const request = subject.generateNew(command())
+      await Promise.resolve()
+      await Promise.resolve()
+      const timer = timers.at(-1)
+      assert.equal(reads, 1)
+      assert.equal(timer.delayMs, 1_000)
+      invalidate(subject)
+      assert.equal(await request, null)
+      assert.equal(cleared.at(-1), timer)
+      assert.equal(reads, 1)
+    }
+  } finally {
+    global.setTimeout = originalSetTimeout
+    global.clearTimeout = originalClearTimeout
+  }
+
+  let reads = 0
+  let delays = 0
+  const exhausted = coordinator({
+    startOperation: async () => operation({
+      status: 'running', lastEventSequence: 1,
+      resultWorkingDraftRevision: null, resultContentHash: null,
+    }),
+    readOperation: async () => {
+      reads += 1
+      return operation({
+        status: 'running', lastEventSequence: 1,
+        resultWorkingDraftRevision: null, resultContentHash: null,
+      })
+    },
+    pollScheduler: () => {
+      delays += 1
+      return { promise: Promise.resolve(), cancel() {} }
+    },
+  })
+  assert.equal(await exhausted.generateNew(command()), null)
+  assert.equal(reads, 1_200)
+  assert.equal(delays, 1_199)
+  assert.equal(exhausted.status, 'unknown')
+  assert.equal(exhausted.failureCode, 'request_unknown')
+  await assert.rejects(() => exhausted.generateNew(command()), /recovery/i)
+})
