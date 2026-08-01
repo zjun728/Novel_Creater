@@ -1227,6 +1227,7 @@ async def test_real_mysql_drafting_session_keeps_r1_while_outline_advances_to_r2
             PROJECT,
             workspace.session.id,
             workspace.working_draft.revision,
+            workspace.working_draft.content_hash,
             "保留的正文工作稿",
         )
     )

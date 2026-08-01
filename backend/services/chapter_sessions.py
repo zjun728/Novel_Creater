@@ -57,6 +57,7 @@ class SaveWorkingDraft:
     project_id: str
     chapter_session_id: str
     expected_revision: int
+    expected_content_hash: str
     content: str
 
 
@@ -311,6 +312,7 @@ class ChapterSessionService:
             )
 
     async def save_working_draft(self, command: SaveWorkingDraft) -> ChapterWorkspace:
+        self._validate_save_working_draft_command(command)
         async with self.transaction_factory() as session:
             if await self.repository.lock_project(
                 session, command.project_id
@@ -331,19 +333,32 @@ class ChapterSessionService:
             current = await self.repository.read_working_draft(
                 session, command.chapter_session_id,
             )
-            if current is None or int(current["revision"]) != command.expected_revision:
-                raise ChapterSessionConflict("working draft revision drift")
+            if (
+                current is None
+                or int(current["revision"]) != command.expected_revision
+                or current["content_hash"] != command.expected_content_hash
+            ):
+                raise ChapterSessionConflict("working draft revision or hash drift")
+            if current["content"] == command.content:
+                return await self._workspace(session, chapter_session)
+            content_hash = self._content_hash(command.content)
             row = self._working_row(
                 command.project_id,
                 command.chapter_session_id,
                 revision=command.expected_revision + 1,
                 content=command.content,
+                content_hash=content_hash,
                 source_payload=current.get("source_payload") or current.get("source_payload_json") or {},
                 updated_at=int(time.time() * 1000),
                 draft_id=current["id"],
             )
-            if not await self.repository.upsert_working_draft(session, row):
-                raise ChapterSessionConflict("working draft was not saved")
+            if not await self.repository.upsert_working_draft(
+                session,
+                row,
+                expected_revision=command.expected_revision,
+                expected_content_hash=command.expected_content_hash,
+            ):
+                raise ChapterSessionConflict("working draft revision or hash drift")
             return await self._workspace(session, chapter_session)
 
     async def save_candidate(self, command: SaveDraftCandidate) -> ChapterWorkspace:
@@ -444,6 +459,27 @@ class ChapterSessionService:
                 "chapter session create command is invalid",
             )
 
+    def _validate_save_working_draft_command(
+        self,
+        command: SaveWorkingDraft,
+    ) -> None:
+        if (
+            type(command.project_id) is not str
+            or not command.project_id
+            or type(command.chapter_session_id) is not str
+            or not command.chapter_session_id
+            or type(command.expected_revision) is not int
+            or command.expected_revision < 1
+            or type(command.expected_content_hash) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", command.expected_content_hash)
+            is None
+            or type(command.content) is not str
+            or len(command.content) > 100_000
+        ):
+            raise ChapterSessionRequestInvalid(
+                "working draft save command is invalid",
+            )
+
     def _matches_create_command(
         self,
         session: Mapping[str, Any],
@@ -465,12 +501,13 @@ class ChapterSessionService:
     def _working_row(
         self, project_id: str, chapter_session_id: str, *, revision: int,
         content: str, source_payload: Mapping[str, Any], updated_at: int,
-        draft_id: str | None = None,
+        draft_id: str | None = None, content_hash: str | None = None,
     ) -> dict[str, Any]:
         return {
             "id": draft_id or str(uuid4()), "project_id": project_id,
             "chapter_session_id": chapter_session_id, "revision": revision,
-            "content": content, "content_hash": self._content_hash(content),
+            "content": content,
+            "content_hash": content_hash or self._content_hash(content),
             "source_payload": dict(source_payload), "updated_at": updated_at,
         }
 

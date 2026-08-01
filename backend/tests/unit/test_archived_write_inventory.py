@@ -453,7 +453,7 @@ WRITE_ENTRYPOINTS = (
         "lock_project",
         _chapter_service,
         lambda service: service.save_working_draft(
-            SaveWorkingDraft("p1", "session-1", 1, "正文")
+            SaveWorkingDraft("p1", "session-1", 1, "a" * 64, "正文")
         ),
     ),
     _WriteEntrypoint(

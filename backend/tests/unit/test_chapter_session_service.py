@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from backend import http_errors
@@ -13,6 +15,10 @@ BLOCK_HASH = "b" * 64
 OUTLINE_ID = "outline-revision-1"
 OUTLINE_HASH = "c" * 64
 PROJECTION_HASH = "d" * 64
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class FakeChapterRepository:
@@ -95,6 +101,7 @@ class FakeChapterRepository:
         self.call_order = []
         self.active_error = None
         self.reject_candidate_insert = False
+        self.working_draft_cas_calls = []
 
     async def lock_project(self, session, project_id):
         self.call_order.append("lock_project")
@@ -168,8 +175,28 @@ class FakeChapterRepository:
         self.call_order.append("read_working_draft")
         return self.working_drafts.get(chapter_session_id)
 
-    async def upsert_working_draft(self, session, row):
+    async def upsert_working_draft(
+        self,
+        session,
+        row,
+        *,
+        expected_revision=None,
+        expected_content_hash=None,
+    ):
         self.call_order.append("upsert_working_draft")
+        if expected_revision is not None or expected_content_hash is not None:
+            self.working_draft_cas_calls.append(
+                (expected_revision, expected_content_hash)
+            )
+            current = self.working_drafts.get(row["chapter_session_id"])
+            if (
+                expected_revision is None
+                or expected_content_hash is None
+                or current is None
+                or current["revision"] != expected_revision
+                or current["content_hash"] != expected_content_hash
+            ):
+                return False
         self.working_drafts[row["chapter_session_id"]] = row
         return True
 
@@ -763,6 +790,7 @@ async def test_save_working_draft_updates_revision_and_does_not_create_candidate
             project_id="p1",
             chapter_session_id=created.session.id,
             expected_revision=1,
+            expected_content_hash=sha256_text(""),
             content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
         )
     )
@@ -771,6 +799,57 @@ async def test_save_working_draft_updates_revision_and_does_not_create_candidate
     assert updated.working_draft.content.startswith("沈清源")
     assert updated.candidates == ()
     assert repo.candidates == []
+    assert repo.working_draft_cas_calls == [(1, sha256_text(""))]
+
+
+@pytest.mark.asyncio
+async def test_save_working_draft_requires_revision_and_hash():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    current = dict(repo.working_drafts[created.session.id])
+
+    with pytest.raises(ChapterSessionConflict, match="revision or hash drift"):
+        await service.save_working_draft(SaveWorkingDraft(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_revision=current["revision"],
+            expected_content_hash="0" * 64,
+            content="作者刚刚输入的正文",
+        ))
+
+    assert repo.working_drafts[created.session.id] == current
+    assert repo.candidates == []
+
+
+@pytest.mark.asyncio
+async def test_save_working_draft_is_noop_for_current_content_and_authority():
+    from backend.services.chapter_sessions import ChapterSessionService, SaveWorkingDraft
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    current = repo.working_drafts[created.session.id]
+    repo.call_order.clear()
+
+    result = await service.save_working_draft(SaveWorkingDraft(
+        project_id="p1",
+        chapter_session_id=created.session.id,
+        expected_revision=current["revision"],
+        expected_content_hash=current["content_hash"],
+        content=current["content"],
+    ))
+
+    assert result.working_draft.revision == current["revision"]
+    assert result.working_draft.content_hash == current["content_hash"]
+    assert "upsert_working_draft" not in repo.call_order
+    assert repo.working_draft_cas_calls == []
 
 
 @pytest.mark.asyncio
@@ -789,6 +868,7 @@ async def test_save_candidate_freezes_current_working_draft_explicitly():
             project_id="p1",
             chapter_session_id=created.session.id,
             expected_revision=1,
+            expected_content_hash=sha256_text(""),
             content="沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
         )
     )
@@ -819,7 +899,9 @@ async def test_save_candidate_exact_identity_replay_is_idempotent():
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
     created = await service.create_session(create_command())
     await service.save_working_draft(
-        SaveWorkingDraft("p1", created.session.id, 1, "同一候选正文")
+        SaveWorkingDraft(
+            "p1", created.session.id, 1, sha256_text(""), "同一候选正文"
+        )
     )
     command = SaveDraftCandidate("p1", created.session.id, 2)
 
@@ -843,7 +925,9 @@ async def test_save_candidate_reports_explicit_repository_identity_conflict():
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
     created = await service.create_session(create_command())
     await service.save_working_draft(
-        SaveWorkingDraft("p1", created.session.id, 1, "冲突候选正文")
+        SaveWorkingDraft(
+            "p1", created.session.id, 1, sha256_text(""), "冲突候选正文"
+        )
     )
     repo.reject_candidate_insert = True
 
@@ -871,6 +955,7 @@ async def test_candidates_stamp_current_outline_basis_and_derive_staleness():
             project_id="p1",
             chapter_session_id=created.session.id,
             expected_revision=1,
+            expected_content_hash=sha256_text(""),
             content="候选稿 A",
         )
     )
@@ -894,6 +979,7 @@ async def test_candidates_stamp_current_outline_basis_and_derive_staleness():
             project_id="p1",
             chapter_session_id=created.session.id,
             expected_revision=2,
+            expected_content_hash=sha256_text("候选稿 A"),
             content="候选稿 B",
         )
     )
@@ -936,7 +1022,9 @@ async def test_save_candidate_requires_drafting_session_and_current_outline():
     service = ChapterSessionService(repo, transaction_factory=tx_factory)
     created = await service.create_session(create_command())
     await service.save_working_draft(
-        SaveWorkingDraft("p1", created.session.id, 1, "可以冻结的正文")
+        SaveWorkingDraft(
+            "p1", created.session.id, 1, sha256_text(""), "可以冻结的正文"
+        )
     )
     repo.sessions[0]["status"] = "final"
 
@@ -981,7 +1069,9 @@ async def test_malformed_candidate_basis_fails_closed_without_public_metadata(
     )
     created = await service.create_session(create_command())
     await service.save_working_draft(
-        SaveWorkingDraft("p1", created.session.id, 1, "损坏基础候选稿")
+        SaveWorkingDraft(
+            "p1", created.session.id, 1, sha256_text(""), "损坏基础候选稿"
+        )
     )
     await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
     if field == "basis_hash":
@@ -1021,6 +1111,7 @@ async def test_existing_draft_writes_recheck_active_project(operation):
             project_id="p1",
             chapter_session_id=created.session.id,
             expected_revision=1,
+            expected_content_hash=sha256_text(""),
             content="归档前正文",
         )
     )
@@ -1032,6 +1123,7 @@ async def test_existing_draft_writes_recheck_active_project(operation):
                 project_id="p1",
                 chapter_session_id=created.session.id,
                 expected_revision=2,
+                expected_content_hash=sha256_text("归档前正文"),
                 content="不能保存",
             )
         )

@@ -28,6 +28,34 @@ class CapturingSession:
         return self.execute_result
 
 
+@pytest.mark.asyncio
+async def test_upsert_working_draft_uses_revision_and_hash_cas():
+    row = {
+        "id": "draft-1",
+        "project_id": "p1",
+        "chapter_session_id": "session-1",
+        "revision": 3,
+        "content": "新正文",
+        "content_hash": "b" * 64,
+        "source_payload": {"source": "manual"},
+        "updated_at": 1,
+    }
+    session = CapturingSession(execute_result=1)
+
+    assert await ChapterSessionRepository().upsert_working_draft(
+        session,
+        row,
+        expected_revision=2,
+        expected_content_hash="a" * 64,
+    )
+
+    sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "UPDATE working_drafts" in compact
+    assert "AND revision=%s AND content_hash=%s" in compact
+    assert args[-2:] == (2, "a" * 64)
+
+
 def _candidate_row():
     basis = {
         "schemaVersion": "draft-candidate-basis-v1",

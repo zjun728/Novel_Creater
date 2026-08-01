@@ -16,6 +16,7 @@ from backend.security.redaction import install_error_handlers
 class FakeChapterSessionService:
     def __init__(self):
         self.saved_content = ""
+        self.saved_expected_content_hash = None
         self.candidates = ()
         self.create_error = None
         self.session = ChapterSessionView(
@@ -65,6 +66,7 @@ class FakeChapterSessionService:
 
     async def save_working_draft(self, command):
         self.saved_content = command.content
+        self.saved_expected_content_hash = command.expected_content_hash
         self.draft = WorkingDraftView(
             id="draft-1", project_id="p1", chapter_session_id="session-1",
             revision=command.expected_revision + 1,
@@ -142,6 +144,7 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
     })
     saved = client.put("/api/projects/p1/chapter-sessions/session-1/working-draft", json={
         "expectedRevision": 1,
+        "expectedContentHash": "e3b0c442" + "0" * 56,
         "content": "沈清源站在织机前，先听见的是木轴发涩的吱呀声。",
     })
     candidated = client.post("/api/projects/p1/chapter-sessions/session-1/candidates", json={
@@ -171,6 +174,7 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
     assert saved.json()["candidates"] == []
     assert candidated.json()["candidates"][0]["workingDraftRevision"] == 2
     assert service.saved_content.startswith("沈清源")
+    assert service.saved_expected_content_hash == "e3b0c442" + "0" * 56
 
 
 def test_chapter_session_get_reads_only_the_requested_chapter():
@@ -272,12 +276,33 @@ def test_chapter_session_routes_reject_unknown_fields():
 
     response = client.put("/api/projects/p1/chapter-sessions/session-1/working-draft", json={
         "expectedRevision": 1,
+        "expectedContentHash": "e3b0c442" + "0" * 56,
         "content": "正文",
         "apiKey": "must-not-send",
     })
 
     assert response.status_code == 422
     assert response.json()["code"] == "ChapterSessionRequestInvalid"
+
+
+def test_save_working_draft_route_requires_canonical_content_hash():
+    client, _, _ = make_client()
+
+    for body in (
+        {"expectedRevision": 1, "content": "正文"},
+        {
+            "expectedRevision": 1,
+            "expectedContentHash": "A" * 64,
+            "content": "正文",
+        },
+    ):
+        response = client.put(
+            "/api/projects/p1/chapter-sessions/session-1/working-draft",
+            json=body,
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "ChapterSessionRequestInvalid"
 
 
 def test_generate_working_draft_route_updates_draft_without_candidate():

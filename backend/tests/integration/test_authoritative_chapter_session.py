@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 
@@ -302,7 +303,13 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     )
     created = await service.create_session(_create_command(planning, outline_r1))
     await service.save_working_draft(
-        SaveWorkingDraft(PROJECT, created.session.id, 1, "候选稿 A")
+        SaveWorkingDraft(
+            PROJECT,
+            created.session.id,
+            1,
+            created.working_draft.content_hash,
+            "候选稿 A",
+        )
     )
     await service.save_candidate(SaveDraftCandidate(PROJECT, created.session.id, 2))
 
@@ -344,11 +351,22 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     replay = await service.save_candidate(
         SaveDraftCandidate(PROJECT, created.session.id, 2)
     )
-    await service.save_working_draft(
-        SaveWorkingDraft(PROJECT, created.session.id, 2, "候选稿 A")
-    )
+    intermediate = await service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        created.session.id,
+        2,
+        replay.working_draft.content_hash,
+        "候选稿 B",
+    ))
+    restored = await service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        created.session.id,
+        3,
+        intermediate.working_draft.content_hash,
+        "候选稿 A",
+    ))
     third = await service.save_candidate(
-        SaveDraftCandidate(PROJECT, created.session.id, 3)
+        SaveDraftCandidate(PROJECT, created.session.id, 4)
     )
 
     workspace = await service.get(PROJECT, 1)
@@ -373,10 +391,158 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     assert rows[0]["content_hash"] == rows[1]["content_hash"]
     assert rows[0]["id"] != rows[1]["id"]
     assert rows[0]["basis_hash"] != rows[1]["basis_hash"]
-    assert rows[1]["working_draft_revision"] == 2
+    assert restored.working_draft.revision == 4
+    assert rows[1]["working_draft_revision"] == 4
     stored_basis = json.loads(rows[1]["provenance_json"])
-    assert stored_basis["workingDraftRevision"] == 2
+    assert stored_basis["workingDraftRevision"] == 4
     assert stored_basis["outlineRevision"] == outline_r2.revision
+
+
+@pytest.mark.asyncio
+async def test_concurrent_working_draft_saves_commit_once_without_candidates(
+    disposable_mysql,
+):
+    await _prove_owned_database(disposable_mysql)
+    _, planning, outline = await _confirmed_outline(disposable_mysql)
+    transaction_factory = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    service = ChapterSessionService(
+        ChapterSessionRepository(),
+        transaction_factory=transaction_factory,
+    )
+    created = await service.create_session(_create_command(planning, outline))
+    base = created.working_draft
+
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            service.save_working_draft(SaveWorkingDraft(
+                PROJECT,
+                created.session.id,
+                base.revision,
+                base.content_hash,
+                "并发写入 A",
+            )),
+            service.save_working_draft(SaveWorkingDraft(
+                PROJECT,
+                created.session.id,
+                base.revision,
+                base.content_hash,
+                "并发写入 B",
+            )),
+            return_exceptions=True,
+        ),
+        timeout=_TIMEOUT,
+    )
+
+    successes = [result for result in results if not isinstance(result, Exception)]
+    conflicts = [result for result in results if isinstance(result, Exception)]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert isinstance(conflicts[0], ChapterSessionConflict)
+    assert "revision or hash drift" in str(conflicts[0])
+
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT revision,content,content_hash FROM working_drafts
+             WHERE chapter_session_id=%s""",
+        (created.session.id,),
+    )
+    assert draft["revision"] == 2
+    assert draft["content"] in {"并发写入 A", "并发写入 B"}
+    assert len(draft["content_hash"]) == 64
+    candidates = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count FROM draft_candidates
+             WHERE chapter_session_id=%s""",
+        (created.session.id,),
+    )
+    assert candidates == {"count": 0}
+
+
+@pytest.mark.asyncio
+async def test_repository_working_draft_cas_allows_one_of_two_base_writers(
+    disposable_mysql,
+):
+    await _prove_owned_database(disposable_mysql)
+    _, planning, outline = await _confirmed_outline(disposable_mysql)
+    transaction_factory = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    repository = ChapterSessionRepository()
+    service = ChapterSessionService(
+        repository,
+        transaction_factory=transaction_factory,
+    )
+    created = await service.create_session(_create_command(planning, outline))
+    base = await repository.read_working_draft(
+        disposable_mysql.session,
+        created.session.id,
+    )
+    assert base is not None
+
+    def row_for(content: str):
+        return {
+            **base,
+            "revision": int(base["revision"]) + 1,
+            "content": content,
+            "content_hash": hashlib.sha256(
+                content.encode("utf-8")
+            ).hexdigest(),
+            "updated_at": NOW + 1_000,
+        }
+
+    ready = asyncio.Event()
+    release = asyncio.Event()
+    arrivals = 0
+
+    async def cas_write(row):
+        nonlocal arrivals
+        async with transaction_factory() as session:
+            arrivals += 1
+            if arrivals == 2:
+                ready.set()
+            await release.wait()
+            return await repository.upsert_working_draft(
+                session,
+                row,
+                expected_revision=int(base["revision"]),
+                expected_content_hash=base["content_hash"],
+            )
+
+    first = asyncio.create_task(cas_write(row_for("仓储竞争写入 A")))
+    second = asyncio.create_task(cas_write(row_for("仓储竞争写入 B")))
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=_TIMEOUT)
+        release.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(first, second),
+            timeout=_TIMEOUT,
+        )
+    finally:
+        release.set()
+        for task in (first, second):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+    # Without the revision/hash predicates, both different-content UPDATEs
+    # match the same row and return True; exactly one True proves CAS loss.
+    assert sorted(results) == [False, True]
+    draft = await disposable_mysql.session.fetchone(
+        """SELECT revision,content,content_hash FROM working_drafts
+             WHERE chapter_session_id=%s""",
+        (created.session.id,),
+    )
+    assert draft["revision"] == int(base["revision"]) + 1
+    assert draft["content"] in {"仓储竞争写入 A", "仓储竞争写入 B"}
+    assert draft["content_hash"] == hashlib.sha256(
+        draft["content"].encode("utf-8")
+    ).hexdigest()
+    candidates = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count FROM draft_candidates
+             WHERE chapter_session_id=%s""",
+        (created.session.id,),
+    )
+    assert candidates == {"count": 0}
 
 
 @pytest.mark.asyncio
@@ -391,7 +557,13 @@ async def test_final_session_rejects_candidate_save_without_creating_row(
     )
     created = await service.create_session(_create_command(planning, outline))
     await service.save_working_draft(
-        SaveWorkingDraft(PROJECT, created.session.id, 1, "不可保存的候选稿")
+        SaveWorkingDraft(
+            PROJECT,
+            created.session.id,
+            1,
+            created.working_draft.content_hash,
+            "不可保存的候选稿",
+        )
     )
     await disposable_mysql.session.execute(
         "UPDATE chapter_sessions SET status='final' WHERE id=%s",

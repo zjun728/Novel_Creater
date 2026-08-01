@@ -93,6 +93,7 @@ class CreateSessionBody(_StrictBody):
 
 class SaveWorkingDraftBody(_StrictBody):
     expectedRevision: int = Field(ge=1)
+    expectedContentHash: str = Field(pattern=r"^[0-9a-f]{64}$")
     content: str = Field(max_length=100_000)
 
 
@@ -229,6 +230,7 @@ async def save_working_draft(
             project_id=pid,
             chapter_session_id=session_id,
             expected_revision=body.expectedRevision,
+            expected_content_hash=body.expectedContentHash,
             content=body.content,
         ))
     except ValidationError:
