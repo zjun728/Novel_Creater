@@ -455,10 +455,17 @@ class ChapterSessionRepository:
                       operation.updated_at=%s,operation.completed_at=%s,
                       chapter.active_draft_operation_id=NULL
                 WHERE operation.id=%s AND operation.fencing_token=%s
-                  AND operation.status IN ('starting','running')
                   AND operation.active_slot=1
-                  AND chapter.active_draft_operation_id=operation.id""",
-            (now, now, operation_id, fencing_token),
+                  AND operation.lease_expires_at<=%s
+                  AND (
+                    (operation.status='starting' AND (
+                      chapter.active_draft_operation_id IS NULL
+                      OR chapter.active_draft_operation_id=operation.id
+                    ))
+                    OR (operation.status='running'
+                      AND chapter.active_draft_operation_id=operation.id)
+                  )""",
+            (now, now, operation_id, fencing_token, now),
         )
         return changed > 0
 
@@ -544,6 +551,12 @@ class ChapterSessionRepository:
         after_sequence: int,
         limit: int,
     ):
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise ValueError("draft operation event limit must be within 1..100")
         rows = await session.fetchall(
             """SELECT id,project_id,draft_operation_id,sequence_num,event_type,
                       closed_payload_json,created_at
@@ -580,7 +593,9 @@ class ChapterSessionRepository:
         if changed == 1:
             return True
         existing = await session.fetchone(
-            """SELECT content,content_hash FROM working_draft_revisions
+            """SELECT id,working_draft_id,replacement_reason,
+                      source_operation_id,content,content_hash,created_at
+                 FROM working_draft_revisions
                  WHERE project_id=%s AND chapter_session_id=%s
                    AND working_draft_revision=%s AND snapshot_role=%s
                  FOR UPDATE""",
@@ -593,8 +608,18 @@ class ChapterSessionRepository:
         )
         return bool(
             existing
-            and existing["content"] == row["content"]
-            and existing["content_hash"] == row["content_hash"]
+            and all(
+                existing[field] == row[field]
+                for field in (
+                    "id",
+                    "working_draft_id",
+                    "replacement_reason",
+                    "source_operation_id",
+                    "content",
+                    "content_hash",
+                    "created_at",
+                )
+            )
         )
 
     async def upsert_working_draft(

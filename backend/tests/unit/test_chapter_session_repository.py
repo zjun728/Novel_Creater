@@ -443,7 +443,30 @@ async def test_terminal_operation_updates_require_matching_fence_and_clear_same_
         assert "operation.active_slot=NULL" in compact
     assert session.calls[0][1][-2:] == ("operation-1", 3)
     assert session.calls[1][1][-2:] == ("operation-1", 3)
-    assert session.calls[2][1][-2:] == ("operation-1", 3)
+    assert session.calls[2][1] == (180, 180, "operation-1", 3, 180)
+
+
+@pytest.mark.asyncio
+async def test_expire_operation_requires_elapsed_lease_and_only_its_starting_or_running_owner():
+    session = CapturingSession()
+
+    assert await ChapterSessionRepository().expire_draft_operation(
+        session, "operation-1", 3, 180
+    )
+
+    sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "operation.lease_expires_at<=%s" in compact
+    assert (
+        "operation.status='starting' AND ( "
+        "chapter.active_draft_operation_id IS NULL OR "
+        "chapter.active_draft_operation_id=operation.id )"
+    ) in compact
+    assert (
+        "operation.status='running' AND "
+        "chapter.active_draft_operation_id=operation.id"
+    ) in compact
+    assert args == (180, 180, "operation-1", 3, 180)
 
 
 @pytest.mark.asyncio
@@ -479,6 +502,19 @@ async def test_event_append_advances_only_expected_sequence_and_lists_bounded_ro
 
 
 @pytest.mark.asyncio
+async def test_event_list_rejects_limits_outside_hard_safe_range():
+    session = CapturingSession()
+    repository = ChapterSessionRepository()
+
+    with pytest.raises(ValueError, match="1..100"):
+        await repository.list_draft_operation_events(session, "operation-1", 0, 0)
+    with pytest.raises(ValueError, match="1..100"):
+        await repository.list_draft_operation_events(session, "operation-1", 0, 101)
+
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
 async def test_recovery_insert_is_append_only_and_accepts_only_exact_content_replay():
     row = {
         "id": "recovery-1",
@@ -494,17 +530,21 @@ async def test_recovery_insert_is_append_only_and_accepts_only_exact_content_rep
         "created_at": 160,
     }
     repository = ChapterSessionRepository()
-    exact = CapturingSession(
-        rows=[{"content": "before prose", "content_hash": "e" * 64}],
-        execute_result=0,
-    )
-    conflict = CapturingSession(
-        rows=[{"content": "changed prose", "content_hash": "f" * 64}],
-        execute_result=0,
-    )
+    exact = CapturingSession(rows=[dict(row)], execute_result=0)
+    conflicts = [
+        {**row, "id": "recovery-other"},
+        {**row, "working_draft_id": "draft-other"},
+        {**row, "replacement_reason": "other"},
+        {**row, "source_operation_id": "operation-other"},
+        {**row, "content": "changed prose"},
+        {**row, "content_hash": "f" * 64},
+        {**row, "created_at": 161},
+    ]
 
     assert await repository.insert_working_draft_revision(exact, row)
-    assert not await repository.insert_working_draft_revision(conflict, row)
+    for existing in conflicts:
+        conflict = CapturingSession(rows=[existing], execute_result=0)
+        assert not await repository.insert_working_draft_revision(conflict, row)
     insert_sql = " ".join(exact.calls[0][0].split())
     assert "ON DUPLICATE KEY UPDATE id=id" in insert_sql
     lookup_sql, lookup_args = exact.calls[1]
@@ -512,3 +552,13 @@ async def test_recovery_insert_is_append_only_and_accepts_only_exact_content_rep
     assert "project_id=%s AND chapter_session_id=%s" in compact
     assert "FOR UPDATE" in compact
     assert lookup_args == ("project-1", "chapter-session-1", 1, "before")
+    for field in (
+        "id",
+        "working_draft_id",
+        "replacement_reason",
+        "source_operation_id",
+        "content",
+        "content_hash",
+        "created_at",
+    ):
+        assert field in compact
