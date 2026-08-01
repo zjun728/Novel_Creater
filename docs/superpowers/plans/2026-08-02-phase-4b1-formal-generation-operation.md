@@ -365,7 +365,9 @@ Accept only `generate_new`, canonical lowercase UUID keys, positive revision, lo
 }
 ```
 
-Build an immutable input manifest from public identities and exact story context only: current confirmed Outline identity/content, Planning identity/hash, Session entry pins, Canon/projection identities, WorkingDraft revision/hash, binding identity/hash, public provider/model identity, operation type, and author instruction. Do not store API key, base URL, provider body or generated prose in the manifest.
+Build an immutable input manifest from public identities and exact story context only: current confirmed Outline identity/content and its Planning basis, current Planning Head identity/hash, historical Session entry pins, the Planning basis and current immutable Seed/Contract/Bible authority fields, Canon/projection identities, WorkingDraft revision/hash, binding identity/hash, public provider/model identity, operation type, and author instruction. Session entry pins, current Outline and current Planning Head are independent snapshots and may legitimately differ; do not require equality between them. The current Outline's referenced Planning must still match the permanent Seed/Contract/Bible baseline, and its projection must match current projection authority. Do not store API key, base URL, provider body or generated prose in the manifest.
+
+Normalize the complete provider authority before hashing. MySQL `DECIMAL` temperature must have a stable canonical representation; zero is a valid configured temperature and only NULL uses the default. Require a finite non-negative temperature and a positive non-boolean output-token count. Hashing or validation failure is fail-closed, never a comparable `None` sentinel. API key and base URL may participate only in the ephemeral in-memory authority fingerprint so mid-call provider drift is fenced; they never enter the manifest, attempt/event/recovery rows, public result or errors. Freeze their normalized secret variants in an immutable tuple before the call, and pass isolated copies of provider/config/messages to the gateway so gateway mutation cannot change the later response-scan baseline or authority context.
 
 - [ ] **Step 4: Implement reserve/call/settle**
 
@@ -395,7 +397,9 @@ Settle in transaction 2:
 9. insert completed event sequence 2 with only result revision/hash;
 10. complete the attempt and clear Session active ownership.
 
-Provider/validation failure settles to fixed codes such as `DraftProviderFailed` or `DraftProviderResultInvalid`. An elapsed lease uses the natural-expiration primitive; authority, manifest or base drift while the lease is still live uses the dedicated drift-expiration primitive. Both settle to `expired` without public raw detail. Coordination/storage failures are re-raised so a rolled-back terminal write is never presented as durable.
+Provider/validation failure settles to fixed codes such as `DraftProviderFailed` or `DraftProviderResultInvalid`. Only the gateway's declared safe `ChapterDraftProviderError` boundary becomes the fixed provider failure. An unexpected non-cancellation program exception must not masquerade as a normal business failure: raise a fixed internal exception without its raw text and leave the durable running attempt recoverable by lease; cancellation remains uncaught. An elapsed lease uses the natural-expiration primitive; authority, manifest or base drift while the lease is still live uses the dedicated drift-expiration primitive. Both settle to `expired` without public raw detail. Coordination/storage failures are re-raised so a rolled-back terminal write is never presented as durable, including failures of the final complete/fail attempt update itself.
+
+All replay and terminal states use one fail-closed public projection. In B1, `starting`, `running` and `expired` require `last_event_sequence == 1`; `completed` and `failed` require sequence `2`, in addition to canonical identity, operation type, model/provider and result/failure correlations. Expiration must not substitute placeholder public fields or preserve a malformed sequence.
 
 - [ ] **Step 5: Run service GREEN**
 
