@@ -364,11 +364,16 @@ class ChapterSessionRepository:
         if existing is None or existing["basis_hash"] != row["basis_hash"]:
             return False
         provenance = self._json(existing["provenance_json"])
-        return all(
-            provenance.get(key) == value
-            for key, value in row["provenance"].items()
-            if key not in {"source", "workingDraftRevision"}
-        )
+        if not isinstance(provenance, Mapping):
+            return False
+        ignored = {"source", "workingDraftRevision"}
+        stored_basis = {
+            key: value for key, value in provenance.items() if key not in ignored
+        }
+        incoming_basis = {
+            key: value for key, value in row["provenance"].items() if key not in ignored
+        }
+        return canonical_json(stored_basis) == canonical_json(incoming_basis)
 
     async def list_candidates(self, session, chapter_session_id: str):
         rows = await session.fetchall(
@@ -468,6 +473,7 @@ class ChapterSessionRepository:
             "working_draft_revision": row["working_draft_revision"],
             "content": row["content"],
             "content_hash": row["content_hash"],
+            "basis_hash": row["basis_hash"],
             "provenance": self._json(row["provenance_json"]),
             "created_at": row["created_at"],
             "effective_status": row.get("effective_status", "drafting"),

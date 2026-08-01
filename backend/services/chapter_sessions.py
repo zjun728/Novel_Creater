@@ -69,6 +69,18 @@ class SaveDraftCandidate:
 
 class ChapterSessionService:
     _CANDIDATE_BASIS_SCHEMA_VERSION = "draft-candidate-basis-v1"
+    _CANDIDATE_BASIS_KEYS = (
+        "schemaVersion",
+        "outlineRevisionId",
+        "outlineRevision",
+        "outlineHash",
+        "planningRevisionId",
+        "planningRevision",
+        "planningHash",
+        "canonRevision",
+        "projectionRevision",
+        "projectionHash",
+    )
     _GENERATION_FIELDS = (
         "selection_revision",
         "seed_id",
@@ -516,33 +528,73 @@ class ChapterSessionService:
         row,
         authority: Mapping[str, Any] | None,
     ) -> DraftCandidateView:
-        provenance = row.get("provenance") or {}
-        matches = authority is not None and (
-            provenance.get("outlineRevisionId")
+        basis = self._validated_candidate_basis(row)
+        matches = basis is not None and authority is not None and (
+            basis["outlineRevisionId"]
             == authority["chapter_outline_revision_id"]
-            and provenance.get("outlineRevision")
+            and basis["outlineRevision"]
             == authority["chapter_outline_revision"]
-            and provenance.get("outlineHash") == authority["chapter_outline_hash"]
-            and provenance.get("planningRevisionId")
+            and basis["outlineHash"] == authority["chapter_outline_hash"]
+            and basis["planningRevisionId"]
             == authority["planning_revision_id"]
-            and provenance.get("planningRevision")
+            and basis["planningRevision"]
             == authority["planning_revision"]
-            and provenance.get("planningHash") == authority["planning_hash"]
+            and basis["planningHash"] == authority["planning_hash"]
         )
         return DraftCandidateView(
             id=row["id"], project_id=row["project_id"],
             chapter_session_id=row["chapter_session_id"],
             working_draft_revision=int(row["working_draft_revision"]),
             content=row["content"], content_hash=row["content_hash"],
-            outline_revision_id=provenance.get("outlineRevisionId"),
-            outline_revision=provenance.get("outlineRevision"),
-            outline_hash=provenance.get("outlineHash"),
-            planning_revision_id=provenance.get("planningRevisionId"),
-            planning_revision=provenance.get("planningRevision"),
-            planning_hash=provenance.get("planningHash"),
-            canon_revision=provenance.get("canonRevision"),
-            projection_revision=provenance.get("projectionRevision"),
-            projection_hash=provenance.get("projectionHash"),
+            outline_revision_id=None if basis is None else basis["outlineRevisionId"],
+            outline_revision=None if basis is None else basis["outlineRevision"],
+            outline_hash=None if basis is None else basis["outlineHash"],
+            planning_revision_id=None if basis is None else basis["planningRevisionId"],
+            planning_revision=None if basis is None else basis["planningRevision"],
+            planning_hash=None if basis is None else basis["planningHash"],
+            canon_revision=None if basis is None else basis["canonRevision"],
+            projection_revision=None if basis is None else basis["projectionRevision"],
+            projection_hash=None if basis is None else basis["projectionHash"],
             basis_status="current" if matches else "stale",
             status=row.get("effective_status", "drafting"),
         )
+
+    def _validated_candidate_basis(self, row) -> dict[str, Any] | None:
+        provenance = row.get("provenance")
+        basis_hash = row.get("basis_hash")
+        if not isinstance(provenance, Mapping):
+            return None
+        try:
+            payload = {key: provenance[key] for key in self._CANDIDATE_BASIS_KEYS}
+        except KeyError:
+            return None
+        if payload["schemaVersion"] != self._CANDIDATE_BASIS_SCHEMA_VERSION:
+            return None
+        if any(
+            type(payload[key]) is not str or not payload[key]
+            for key in ("outlineRevisionId", "planningRevisionId")
+        ):
+            return None
+        if any(
+            type(payload[key]) is not int or payload[key] < minimum
+            for key, minimum in (
+                ("outlineRevision", 1),
+                ("planningRevision", 1),
+                ("canonRevision", 0),
+                ("projectionRevision", 0),
+            )
+        ):
+            return None
+        if any(
+            type(payload[key]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", payload[key]) is None
+            for key in ("outlineHash", "planningHash", "projectionHash")
+        ):
+            return None
+        if (
+            type(basis_hash) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", basis_hash) is None
+            or basis_hash != canonical_hash(payload)
+        ):
+            return None
+        return payload

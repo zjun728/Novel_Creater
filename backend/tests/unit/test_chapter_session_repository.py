@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.repositories.chapter_sessions import ChapterSessionRepository
 
 
 class CapturingSession:
-    def __init__(self, rows=(), all_rows=()):
+    def __init__(self, rows=(), all_rows=(), execute_result=1):
         self.calls = []
         self.rows = list(rows)
         self.all_rows = list(all_rows)
+        self.execute_result = execute_result
 
     async def fetchone(self, sql, args=None):
         self.calls.append((sql, args))
@@ -18,6 +22,120 @@ class CapturingSession:
     async def fetchall(self, sql, args=None):
         self.calls.append((sql, args))
         return list(self.all_rows)
+
+    async def execute(self, sql, args=None):
+        self.calls.append((sql, args))
+        return self.execute_result
+
+
+def _candidate_row():
+    basis = {
+        "schemaVersion": "draft-candidate-basis-v1",
+        "outlineRevisionId": "outline-revision-1",
+        "outlineRevision": 1,
+        "outlineHash": "a" * 64,
+        "planningRevisionId": "planning-revision-1",
+        "planningRevision": 1,
+        "planningHash": "b" * 64,
+        "canonRevision": 0,
+        "projectionRevision": 0,
+        "projectionHash": "c" * 64,
+    }
+    return {
+        "id": "candidate-1",
+        "project_id": "p1",
+        "chapter_session_id": "session-1",
+        "working_draft_revision": 2,
+        "content": "正文",
+        "content_hash": "d" * 64,
+        "basis_hash": canonical_hash(basis),
+        "provenance": {"source": "save", "workingDraftRevision": 2, **basis},
+        "created_at": 1,
+    }
+
+
+def test_candidate_row_retains_internal_basis_hash_only_for_service_validation():
+    row = {
+        "id": "candidate-1",
+        "project_id": "p1",
+        "chapter_session_id": "session-1",
+        "working_draft_revision": 2,
+        "content": "正文",
+        "content_hash": "a" * 64,
+        "basis_hash": "b" * 64,
+        "provenance_json": "{}",
+        "created_at": 1,
+    }
+
+    candidate = ChapterSessionRepository()._candidate(row)
+
+    assert candidate["basis_hash"] == "b" * 64
+
+
+@pytest.mark.asyncio
+async def test_insert_candidate_reports_new_insert_without_replay_lookup():
+    session = CapturingSession(execute_result=1)
+
+    assert await ChapterSessionRepository().insert_candidate(session, _candidate_row())
+
+    assert len(session.calls) == 1
+    compact = " ".join(session.calls[0][0].split())
+    assert "ON DUPLICATE KEY UPDATE id=id" in compact
+
+
+@pytest.mark.asyncio
+async def test_insert_candidate_accepts_exact_identity_basis_replay():
+    row = _candidate_row()
+    stored = {
+        **row["provenance"],
+        "source": "replay",
+        "workingDraftRevision": 99,
+    }
+    session = CapturingSession(
+        rows=[
+            {
+                "basis_hash": row["basis_hash"],
+                "provenance_json": canonical_json(stored),
+            }
+        ],
+        execute_result=0,
+    )
+
+    assert await ChapterSessionRepository().insert_candidate(session, row)
+    lookup_sql, lookup_args = session.calls[1]
+    assert lookup_args == (
+        row["chapter_session_id"],
+        row["content_hash"],
+        row["basis_hash"],
+    )
+    assert "WHERE chapter_session_id=%s AND content_hash=%s AND basis_hash=%s" in " ".join(
+        lookup_sql.split()
+    )
+
+
+@pytest.mark.asyncio
+async def test_insert_candidate_rejects_mismatched_stored_basis_payload():
+    row = _candidate_row()
+    stored = deepcopy(row["provenance"])
+    stored["outlineRevision"] = True
+    session = CapturingSession(
+        rows=[
+            {
+                "basis_hash": row["basis_hash"],
+                "provenance_json": canonical_json(stored),
+            }
+        ],
+        execute_result=0,
+    )
+
+    assert not await ChapterSessionRepository().insert_candidate(session, row)
+
+
+@pytest.mark.asyncio
+async def test_insert_candidate_rejects_conflict_without_matching_identity():
+    session = CapturingSession(rows=[None], execute_result=0)
+
+    assert not await ChapterSessionRepository().insert_candidate(session, _candidate_row())
 
 
 @pytest.mark.asyncio
