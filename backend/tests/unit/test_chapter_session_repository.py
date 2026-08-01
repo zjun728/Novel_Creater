@@ -368,6 +368,48 @@ async def test_operation_owner_reads_lock_exact_session_and_operation_rows():
 
 
 @pytest.mark.asyncio
+async def test_working_draft_operation_lock_uses_exact_owner_and_normalizes_status():
+    session = CapturingSession(
+        rows=[
+            {
+                "id": "draft-1",
+                "project_id": "project-1",
+                "chapter_session_id": "chapter-session-1",
+                "revision": 2,
+                "content": "正文",
+                "content_hash": "a" * 64,
+                "source_payload_json": '{"source":"manual"}',
+                "updated_at": 120,
+                "effective_status": "drafting",
+            }
+        ]
+    )
+
+    result = await ChapterSessionRepository().lock_working_draft_for_operation(
+        session, "project-1", "chapter-session-1"
+    )
+
+    assert result == {
+        "id": "draft-1",
+        "project_id": "project-1",
+        "chapter_session_id": "chapter-session-1",
+        "revision": 2,
+        "content": "正文",
+        "content_hash": "a" * 64,
+        "source_payload": {"source": "manual"},
+        "updated_at": 120,
+        "effective_status": "drafting",
+    }
+    sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "JOIN chapter_sessions chapter" in compact
+    assert "chapter.status AS effective_status" in compact
+    assert "draft.project_id=%s AND draft.chapter_session_id=%s" in compact
+    assert "FOR UPDATE" in compact
+    assert args == ("project-1", "chapter-session-1")
+
+
+@pytest.mark.asyncio
 async def test_next_operation_fence_locks_owned_session_before_incrementing():
     session = CapturingSession(rows=[{"draft_operation_fencing_token": 3}])
 
@@ -467,6 +509,44 @@ async def test_expire_operation_requires_elapsed_lease_and_only_its_starting_or_
         "chapter.active_draft_operation_id=operation.id"
     ) in compact
     assert args == (180, 180, "operation-1", 3, 180)
+
+
+@pytest.mark.asyncio
+async def test_drift_expiry_only_closes_live_running_operation_owned_by_session():
+    session = CapturingSession()
+
+    assert await ChapterSessionRepository().expire_draft_operation_for_drift(
+        session,
+        "project-1",
+        "chapter-session-1",
+        "operation-1",
+        3,
+        180,
+    )
+
+    sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "UPDATE draft_operation_attempts operation" in compact
+    assert "JOIN chapter_sessions chapter" in compact
+    assert "operation.project_id=%s" in compact
+    assert "operation.chapter_session_id=%s" in compact
+    assert "operation.id=%s" in compact
+    assert "operation.fencing_token=%s" in compact
+    assert "operation.status='running'" in compact
+    assert "operation.active_slot=1" in compact
+    assert "operation.lease_expires_at>%s" in compact
+    assert "chapter.active_draft_operation_id=operation.id" in compact
+    assert "operation.active_slot=NULL" in compact
+    assert "chapter.active_draft_operation_id=NULL" in compact
+    assert args == (
+        180,
+        180,
+        "project-1",
+        "chapter-session-1",
+        "operation-1",
+        3,
+        180,
+    )
 
 
 @pytest.mark.asyncio

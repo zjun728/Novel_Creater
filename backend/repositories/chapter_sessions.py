@@ -277,6 +277,24 @@ class ChapterSessionRepository:
         )
         return self._draft(row) if row else None
 
+    async def lock_working_draft_for_operation(
+        self,
+        session,
+        project_id: str,
+        chapter_session_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT draft.*,chapter.status AS effective_status
+                 FROM working_drafts draft
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=draft.project_id
+                  AND chapter.id=draft.chapter_session_id
+                WHERE draft.project_id=%s AND draft.chapter_session_id=%s
+                FOR UPDATE""",
+            (project_id, chapter_session_id),
+        )
+        return self._draft(row) if row else None
+
     async def lock_session_for_operation(
         self,
         session,
@@ -466,6 +484,42 @@ class ChapterSessionRepository:
                       AND chapter.active_draft_operation_id=operation.id)
                   )""",
             (now, now, operation_id, fencing_token, now),
+        )
+        return changed > 0
+
+    async def expire_draft_operation_for_drift(
+        self,
+        session,
+        project_id: str,
+        chapter_session_id: str,
+        operation_id: str,
+        fencing_token: int,
+        now: int,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                  SET operation.status='expired',operation.active_slot=NULL,
+                      operation.updated_at=%s,operation.completed_at=%s,
+                      chapter.active_draft_operation_id=NULL
+                WHERE operation.project_id=%s
+                  AND operation.chapter_session_id=%s
+                  AND operation.id=%s AND operation.fencing_token=%s
+                  AND operation.status='running'
+                  AND operation.active_slot=1
+                  AND operation.lease_expires_at>%s
+                  AND chapter.active_draft_operation_id=operation.id""",
+            (
+                now,
+                now,
+                project_id,
+                chapter_session_id,
+                operation_id,
+                fencing_token,
+                now,
+            ),
         )
         return changed > 0
 
