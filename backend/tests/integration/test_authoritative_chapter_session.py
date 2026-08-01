@@ -344,8 +344,11 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     replay = await service.save_candidate(
         SaveDraftCandidate(PROJECT, created.session.id, 2)
     )
+    await service.save_working_draft(
+        SaveWorkingDraft(PROJECT, created.session.id, 2, "候选稿 A")
+    )
     third = await service.save_candidate(
-        SaveDraftCandidate(PROJECT, created.session.id, 2)
+        SaveDraftCandidate(PROJECT, created.session.id, 3)
     )
 
     workspace = await service.get(PROJECT, 1)
@@ -371,7 +374,9 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     assert rows[0]["id"] != rows[1]["id"]
     assert rows[0]["basis_hash"] != rows[1]["basis_hash"]
     assert rows[1]["working_draft_revision"] == 2
-    assert json.loads(rows[1]["provenance_json"]) == third.candidates[1].provenance
+    stored_basis = json.loads(rows[1]["provenance_json"])
+    assert stored_basis["workingDraftRevision"] == 2
+    assert stored_basis["outlineRevision"] == outline_r2.revision
 
 
 @pytest.mark.asyncio

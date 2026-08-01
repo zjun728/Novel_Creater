@@ -42,7 +42,6 @@ class DraftCandidateView:
     working_draft_revision: int
     content: str
     content_hash: str
-    provenance: Mapping[str, Any]
     outline_revision_id: str | None
     outline_revision: int | None
     outline_hash: str | None

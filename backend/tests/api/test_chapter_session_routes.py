@@ -79,13 +79,6 @@ class FakeChapterSessionService:
             id="candidate-1", project_id="p1", chapter_session_id="session-1",
             working_draft_revision=command.expected_working_draft_revision,
             content=self.draft.content, content_hash=self.draft.content_hash,
-            provenance={
-                "source": "explicit-save-candidate",
-                "apiKey": "LEAK-SENTINEL",
-                "prompt": "LEAK-SENTINEL",
-                "raw": "LEAK-SENTINEL",
-                "provider": "LEAK-SENTINEL",
-            },
             outline_revision_id="outline-revision-3",
             outline_revision=3,
             outline_hash="c" * 64,

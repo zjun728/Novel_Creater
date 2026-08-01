@@ -159,7 +159,11 @@ class FakeChapterRepository:
         return True
 
     async def insert_candidate(self, session, row):
-        if any(item["content_hash"] == row["content_hash"] for item in self.candidates):
+        if any(
+            item["content_hash"] == row["content_hash"]
+            and item["basis_hash"] == row["basis_hash"]
+            for item in self.candidates
+        ):
             return False
         self.candidates.append(row)
         return True
@@ -198,6 +202,12 @@ def create_command(**overrides):
     }
     values.update(overrides)
     return CreateChapterSession(**values)
+
+
+def test_candidate_view_does_not_expose_raw_provenance():
+    from backend.domain.drafts import DraftCandidateView
+
+    assert "provenance" not in DraftCandidateView.__dataclass_fields__
 
 
 @pytest.mark.parametrize(

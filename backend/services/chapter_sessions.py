@@ -534,7 +534,6 @@ class ChapterSessionService:
             chapter_session_id=row["chapter_session_id"],
             working_draft_revision=int(row["working_draft_revision"]),
             content=row["content"], content_hash=row["content_hash"],
-            provenance=provenance,
             outline_revision_id=provenance.get("outlineRevisionId"),
             outline_revision=provenance.get("outlineRevision"),
             outline_hash=provenance.get("outlineHash"),
