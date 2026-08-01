@@ -134,7 +134,7 @@ assert chapter_sessions.columns["active_draft_operation_id"].nullable is True
 assert manifest.schema_version == "writer-core-v1.8.0"
 ```
 
-Require unique identities for `(chapter_session_id, idempotency_key)`, `(chapter_session_id, active_slot)`, `(chapter_session_id, fencing_token)`, recovery `(chapter_session_id, working_draft_revision, snapshot_role)`, and event `(draft_operation_id, sequence_num)`.
+Require unique identities for `(chapter_session_id, idempotency_key)`, `(chapter_session_id, active_slot)`, `(chapter_session_id, fencing_token)`, recovery `(chapter_session_id, working_draft_revision, snapshot_role)`, and event `(draft_operation_id, sequence_num)`. Also require database-enforced owner identities for WorkingDraft `(project_id, chapter_session_id, id)`, attempt `(project_id, id)` and `(project_id, chapter_session_id, id)` so recovery and event rows cannot compose identifiers from different owners.
 
 - [ ] **Step 2: Run schema RED**
 
@@ -156,6 +156,8 @@ active_draft_operation_id CHAR(36) NULL,
 CHECK (draft_operation_fencing_token >= 0)
 ```
 
+Create tables in foreign-key dependency order: `working_drafts`, `draft_operation_attempts`, `working_draft_revisions`, then `draft_operation_events`. The contracts below describe their required fields and constraints even where the explanatory order differs.
+
 Add `working_draft_revisions` with exact immutable fields:
 
 ```sql
@@ -173,10 +175,11 @@ CREATE TABLE working_draft_revisions (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_working_draft_recovery
     (chapter_session_id, working_draft_revision, snapshot_role),
-  FOREIGN KEY (project_id, chapter_session_id)
-    REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (working_draft_id)
-    REFERENCES working_drafts(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, working_draft_id)
+    REFERENCES working_drafts(project_id, chapter_session_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, source_operation_id)
+    REFERENCES draft_operation_attempts(project_id, chapter_session_id, id)
+    ON DELETE CASCADE,
   CHECK (working_draft_revision > 0),
   CHECK (snapshot_role IN ('before','after')),
   CHECK (replacement_reason IN ('generate_new'))
@@ -198,9 +201,11 @@ state: status, last_event_sequence, failure_code
 time: created_at, updated_at, completed_at
 ```
 
-Use only `generate_new` for `operation_type`; statuses are `starting`, `running`, `completed`, `failed`, `expired`; `active_slot` is `1` only while starting/running and otherwise NULL. A completed row requires result revision/hash and no failure code; failed requires a fixed failure code and no result; expired has neither result nor failure.
+Define attempt owner keys `(project_id, id)` and `(project_id, chapter_session_id, id)`. Define the WorkingDraft owner key `(project_id, chapter_session_id, id)` before recovery snapshots. Use only `generate_new` for `operation_type`; statuses are `starting`, `running`, `completed`, `failed`, `expired`; `active_slot` is `1` only while starting/running and otherwise NULL. A completed row requires result revision/hash and no failure code; failed requires a fixed failure code and no result; expired has neither result nor failure.
 
-Add `draft_operation_events` with operation identity, monotonically increasing sequence, type `started|completed|failed`, closed `payload_json`, and timestamp. Do not add provider request/response columns.
+Add `draft_operation_events` with operation identity, monotonically increasing sequence, type `started|completed|failed`, closed `payload_json`, and timestamp. Its `(project_id, draft_operation_id)` foreign key must target the attempt owner key; do not use independent project and operation foreign keys. Do not add provider request/response columns.
+
+Add a real disposable-MySQL behavior test proving that cross-Session draft/source-operation recovery rows and cross-project event rows are rejected, same-owner before/after/event rows are accepted, and deleting one Session cascades only that Session's operation state while another owner remains intact.
 
 Update `CURRENT_PROJECT_STATE.md` only to record `writer-core-v1.8.0` as source schema and Phase4B1 as in progress; do not call Phase4B or Phase4 complete.
 
