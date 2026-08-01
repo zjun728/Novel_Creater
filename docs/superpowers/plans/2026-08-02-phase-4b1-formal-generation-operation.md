@@ -239,6 +239,7 @@ Add contract tests for these methods:
 
 ```python
 lock_session_for_operation(session, project_id, chapter_session_id)
+lock_working_draft_for_operation(session, project_id, chapter_session_id)
 read_draft_operation_by_key(session, chapter_session_id, idempotency_key)
 read_draft_operation(session, project_id, chapter_session_id, operation_id)
 read_active_draft_operation(session, chapter_session_id)
@@ -248,12 +249,15 @@ mark_draft_operation_running(session, operation_id, fencing_token, now)
 complete_draft_operation(session, row)
 fail_draft_operation(session, row)
 expire_draft_operation(session, operation_id, fencing_token, now)
+expire_draft_operation_for_drift(
+    session, project_id, chapter_session_id, operation_id, fencing_token, now
+)
 insert_draft_operation_event(session, row)
 list_draft_operation_events(session, operation_id, after_sequence, limit)
 insert_working_draft_revision(session, row)
 ```
 
-Tests must assert SQL contains project/session ownership predicates, the operation/fencing pair on every terminal update, `FOR UPDATE` on ownership reads, event limits restricted to `1..100`, and no secret/provider payload columns. Expiration must be one atomic lease guard: `lease_expires_at <= now`; a `starting` attempt may be expired only when the Session active pointer is NULL or points to itself, while a `running` attempt requires the Session pointer to point to itself.
+Tests must assert SQL contains project/session ownership predicates, the operation/fencing pair on every terminal update, `FOR UPDATE` on Session, operation and WorkingDraft ownership reads, event limits restricted to `1..100`, and no secret/provider payload columns. Natural expiration must be one atomic lease guard: `lease_expires_at <= now`; a `starting` attempt may be expired only when the Session active pointer is NULL or points to itself, while a `running` attempt requires the Session pointer to point to itself. Drift expiration is a separate fenced primitive for an active `running` attempt whose Session pointer is still self-owned and whose lease is still live (`lease_expires_at > now`); it must not synthesize a future timestamp to reuse natural expiration.
 
 - [ ] **Step 2: Run repository RED**
 
@@ -391,7 +395,7 @@ Settle in transaction 2:
 9. insert completed event sequence 2 with only result revision/hash;
 10. complete the attempt and clear Session active ownership.
 
-Provider/validation failure settles to fixed codes such as `DraftProviderFailed` or `DraftProviderResultInvalid`; authority/lease drift settles to `expired` without public raw detail. Coordination/storage failures are re-raised so a rolled-back terminal write is never presented as durable.
+Provider/validation failure settles to fixed codes such as `DraftProviderFailed` or `DraftProviderResultInvalid`. An elapsed lease uses the natural-expiration primitive; authority, manifest or base drift while the lease is still live uses the dedicated drift-expiration primitive. Both settle to `expired` without public raw detail. Coordination/storage failures are re-raised so a rolled-back terminal write is never presented as durable.
 
 - [ ] **Step 5: Run service GREEN**
 
