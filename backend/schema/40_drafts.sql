@@ -42,32 +42,10 @@ CREATE TABLE working_drafts (
   source_payload_json JSON NOT NULL,
   updated_at BIGINT NOT NULL,
   UNIQUE KEY uq_working_draft_session (chapter_session_id),
+  UNIQUE KEY uq_working_draft_owner (project_id, chapter_session_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
   CHECK (revision > 0)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
-;-- statement
-
-CREATE TABLE working_draft_revisions (
-  id CHAR(36) PRIMARY KEY,
-  project_id CHAR(36) NOT NULL,
-  chapter_session_id CHAR(36) NOT NULL,
-  working_draft_id CHAR(36) NOT NULL,
-  working_draft_revision INT NOT NULL,
-  snapshot_role VARCHAR(24) NOT NULL,
-  replacement_reason VARCHAR(40) NOT NULL,
-  source_operation_id CHAR(36) NOT NULL,
-  content LONGTEXT NOT NULL,
-  content_hash CHAR(64) NOT NULL,
-  created_at BIGINT NOT NULL,
-  UNIQUE KEY uq_working_draft_recovery
-    (chapter_session_id, working_draft_revision, snapshot_role),
-  FOREIGN KEY (project_id, chapter_session_id)
-    REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (working_draft_id) REFERENCES working_drafts(id) ON DELETE CASCADE,
-  CHECK (working_draft_revision > 0),
-  CHECK (snapshot_role IN ('before','after')),
-  CHECK (replacement_reason IN ('generate_new'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -101,6 +79,8 @@ CREATE TABLE draft_operation_attempts (
     (chapter_session_id, active_slot),
   UNIQUE KEY uq_draft_operation_fencing
     (chapter_session_id, fencing_token),
+  UNIQUE KEY uq_draft_operation_project_id (project_id, id),
+  UNIQUE KEY uq_draft_operation_owner (project_id, chapter_session_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, chapter_session_id)
     REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
@@ -136,6 +116,30 @@ CREATE TABLE draft_operation_attempts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
+CREATE TABLE working_draft_revisions (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  chapter_session_id CHAR(36) NOT NULL,
+  working_draft_id CHAR(36) NOT NULL,
+  working_draft_revision INT NOT NULL,
+  snapshot_role VARCHAR(24) NOT NULL,
+  replacement_reason VARCHAR(40) NOT NULL,
+  source_operation_id CHAR(36) NOT NULL,
+  content LONGTEXT NOT NULL,
+  content_hash CHAR(64) NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_working_draft_recovery
+    (chapter_session_id, working_draft_revision, snapshot_role),
+  FOREIGN KEY (project_id, chapter_session_id, working_draft_id)
+    REFERENCES working_drafts(project_id, chapter_session_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, source_operation_id)
+    REFERENCES draft_operation_attempts(project_id, chapter_session_id, id) ON DELETE CASCADE,
+  CHECK (working_draft_revision > 0),
+  CHECK (snapshot_role IN ('before','after')),
+  CHECK (replacement_reason IN ('generate_new'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
 CREATE TABLE draft_operation_events (
   id CHAR(36) PRIMARY KEY,
   project_id CHAR(36) NOT NULL,
@@ -146,8 +150,8 @@ CREATE TABLE draft_operation_events (
   created_at BIGINT NOT NULL,
   UNIQUE KEY uq_draft_operation_event_sequence
     (draft_operation_id, sequence_num),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (draft_operation_id) REFERENCES draft_operation_attempts(id)
+  FOREIGN KEY (project_id, draft_operation_id)
+    REFERENCES draft_operation_attempts(project_id, id)
     ON DELETE CASCADE,
   CHECK (sequence_num > 0),
   CHECK (event_type IN ('started','completed','failed')),

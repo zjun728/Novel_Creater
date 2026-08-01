@@ -758,9 +758,9 @@ def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
 
 def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
     names = created_table_names()
-    assert names.index("working_drafts") < names.index("working_draft_revisions")
-    assert names.index("working_draft_revisions") < names.index("draft_operation_attempts")
-    assert names.index("draft_operation_attempts") < names.index("draft_operation_events")
+    assert names.index("working_drafts") < names.index("draft_operation_attempts")
+    assert names.index("draft_operation_attempts") < names.index("working_draft_revisions")
+    assert names.index("working_draft_revisions") < names.index("draft_operation_events")
 
     sessions = _table_statement("chapter_sessions")
     for contract in (
@@ -779,7 +779,12 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "source_operation_id char(36) not null",
         "unique key uq_working_draft_recovery "
         "(chapter_session_id, working_draft_revision, snapshot_role)",
-        "foreign key (working_draft_id) references working_drafts(id) on delete cascade",
+        "foreign key (project_id, chapter_session_id, working_draft_id) "
+        "references working_drafts(project_id, chapter_session_id, id) "
+        "on delete cascade",
+        "foreign key (project_id, chapter_session_id, source_operation_id) "
+        "references draft_operation_attempts(project_id, chapter_session_id, id) "
+        "on delete cascade",
         "check (working_draft_revision > 0)",
         "check (snapshot_role in ('before','after'))",
         "check (replacement_reason in ('generate_new'))",
@@ -789,6 +794,7 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
     assert "uq_working_draft_revision_recovery" not in revisions
     assert revisions.count("unique key") == 1
     assert "foreign key (project_id) references projects(id)" not in revisions
+    assert "foreign key (working_draft_id) references working_drafts(id)" not in revisions
 
     operations = _table_statement("draft_operation_attempts")
     for contract in (
@@ -815,6 +821,9 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "(chapter_session_id, active_slot)",
         "unique key uq_draft_operation_fencing "
         "(chapter_session_id, fencing_token)",
+        "unique key uq_draft_operation_project_id (project_id, id)",
+        "unique key uq_draft_operation_owner "
+        "(project_id, chapter_session_id, id)",
         "foreign key (project_id, chapter_session_id) references "
         "chapter_sessions(project_id, id) on delete cascade",
         "foreign key (provider_id) references provider_profiles(id) on delete restrict",
@@ -866,12 +875,21 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "closed_payload_json json null",
         "unique key uq_draft_operation_event_sequence "
         "(draft_operation_id, sequence_num)",
-        "foreign key (draft_operation_id) references draft_operation_attempts(id) "
+        "foreign key (project_id, draft_operation_id) "
+        "references draft_operation_attempts(project_id, id) "
         "on delete cascade",
         "check (sequence_num > 0)",
         "check (event_type in ('started','completed','failed'))",
     ):
         assert contract in events
+    assert "foreign key (project_id) references projects(id)" not in events
+    assert "foreign key (draft_operation_id) references draft_operation_attempts(id)" not in events
+
+    drafts = _table_statement("working_drafts")
+    assert (
+        "unique key uq_working_draft_owner "
+        "(project_id, chapter_session_id, id)"
+    ) in drafts
 
 
 def test_candidate_identity_is_content_and_immutable_basis_hash():
