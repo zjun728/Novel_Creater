@@ -51,7 +51,7 @@ _SAFE_DRAFT_FAILURE_CODES = frozenset({
 _DRAFT_OPERATION_CREATE_BODY_MAX_BYTES = 12 * 1024
 _DRAFT_OPERATION_EVENT_CURSOR_MAX = 2_147_483_647
 _DRAFT_OPERATION_CONTENT_TYPE = re.compile(
-    r'^\s*application/json\s*(?:;\s*charset\s*=\s*(?:"\s*utf-8\s*"|utf-8)\s*)?$',
+    r'^[ \t]*application/json[ \t]*(?:;[ \t]*charset[ \t]*=[ \t]*(?:"utf-8"|utf-8)[ \t]*)?$',
     re.IGNORECASE,
 )
 

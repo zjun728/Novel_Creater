@@ -458,6 +458,32 @@ async def test_create_draft_operation_reader_rejects_duplicate_content_type_befo
     assert reads == 0
 
 
+def test_draft_operation_content_type_uses_only_http_ows_and_exact_quoted_utf8():
+    def request_with_content_type(value):
+        return Request({
+            "type": "http",
+            "method": "POST",
+            "headers": [(b"content-type", value)],
+        })
+
+    for value in (
+        b'application/json; charset=" utf-8 "',
+        b"application/json\r\n",
+        b"application/json\v",
+        b"application/json\f",
+        b"application/json;\r\ncharset=utf-8",
+    ):
+        assert not chapter_sessions._has_draft_operation_json_content_type(
+            request_with_content_type(value)
+        )
+
+    assert chapter_sessions._has_draft_operation_json_content_type(
+        request_with_content_type(
+            b'Application/JSON\t;\tcharset\t=\t"UTF-8"\t'
+        )
+    )
+
+
 def test_formal_operation_reads_are_owner_scoped_and_never_start_provider_work():
     client, service, repository = make_client()
 
