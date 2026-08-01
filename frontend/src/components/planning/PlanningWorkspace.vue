@@ -165,7 +165,7 @@ watch(
       projectId
       && typeof props.store.ensureOutlineLoaded === 'function'
     ) {
-      void outlineController.hydrate().catch(() => {})
+      void outlineController.hydrate({ force: true }).catch(() => {})
     }
   },
   { immediate: true },

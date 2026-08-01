@@ -591,6 +591,67 @@ test('mounted PlanningWorkspace renders future planning and Canon facts in one t
   }
 })
 
+test('mounted PlanningWorkspace re-entry force-refreshes a same-project cached outline', async () => {
+  const vite = await createPlanningVite()
+  const originalDocument = global.document
+  try {
+    const body = node('body')
+    global.document = {
+      activeElement: null,
+      querySelector: selector => selector === 'body' ? body : null,
+    }
+    const [Workspace, Volume, Plot, Drawer] = await Promise.all([
+      vite.ssrLoadModule('/src/components/planning/PlanningWorkspace.vue'),
+      vite.ssrLoadModule('/src/components/planning/VolumeEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlotEditor.vue'),
+      vite.ssrLoadModule('/src/components/planning/PlanningHistoryDrawer.vue'),
+    ])
+    Workspace.default.render = await clientRender('components/planning/PlanningWorkspace.vue')
+    await renderActualProgressPanel(vite)
+    Volume.default.render = await clientRender('components/planning/VolumeEditor.vue')
+    Plot.default.render = await clientRender('components/planning/PlotEditor.vue')
+    Drawer.default.render = await clientRender('components/planning/PlanningHistoryDrawer.vue')
+
+    const store = workspaceStore()
+    store.projectId = 'A'
+    store.outlineState = {
+      projectId: 'A',
+      activeSession: null,
+      capabilities: { createDraft: false },
+    }
+    const outlineLoads = []
+    store.ensureOutlineLoaded = async (projectId, options) => {
+      outlineLoads.push({ projectId, options })
+      return store.outlineState
+    }
+    const controller = createPlanningWorkspaceController({
+      store,
+      projectId: () => 'A',
+    })
+
+    for (let entry = 0; entry < 2; entry += 1) {
+      const root = node('root')
+      const app = renderer.createApp(Workspace.default, {
+        store,
+        controller,
+        activeTab: 'volumes',
+      })
+      app.provide(ssrContextKey, { modules: new Set() })
+      app.mount(root)
+      await flush()
+      app.unmount()
+    }
+
+    assert.deepEqual(outlineLoads, [
+      { projectId: 'A', options: { force: true } },
+      { projectId: 'A', options: { force: true } },
+    ])
+  } finally {
+    global.document = originalDocument
+    await vite.close()
+  }
+})
+
 async function createPlanningVite() {
   return createServer({
     configFile: false,
@@ -1648,6 +1709,7 @@ test('mounted outline selectors are locked to the active story hierarchy and cas
       hasCriticalRecovery: ref(false),
       readOnly: ref(false),
       editable: ref(true),
+      canAdjustOutline: ref(false),
       canCreateDraft: ref(false),
       canSave: ref(true),
       canGenerate: ref(false),
@@ -1686,7 +1748,7 @@ test('mounted outline selectors are locked to the active story hierarchy and cas
       true,
     )
     assert.equal(
-      byButtonText(root, '预览并确认小纲').props.disabled,
+      byButtonText(root, '采用小纲').props.disabled,
       true,
     )
 
