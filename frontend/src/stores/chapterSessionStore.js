@@ -45,6 +45,14 @@ const CANDIDATE_BASIS_FIELDS = Object.freeze([
   'projectionRevision',
   'projectionHash',
 ])
+const CANDIDATE_PUBLIC_FIELDS = Object.freeze([
+  'id',
+  'projectId',
+  'chapterSessionId',
+  'workingDraftRevision',
+  'content',
+  'contentHash',
+])
 const CANDIDATE_HASH = /^[0-9a-f]{64}$/
 
 function candidateBasisIsSafe(candidate) {
@@ -53,23 +61,25 @@ function candidateBasisIsSafe(candidate) {
     && candidate.outlineRevisionId.length > 0
     && Number.isInteger(candidate.outlineRevision)
     && candidate.outlineRevision >= 1
+    && typeof candidate.outlineHash === 'string'
     && CANDIDATE_HASH.test(candidate.outlineHash)
     && typeof candidate?.planningRevisionId === 'string'
     && candidate.planningRevisionId.length > 0
     && Number.isInteger(candidate.planningRevision)
     && candidate.planningRevision >= 1
+    && typeof candidate.planningHash === 'string'
     && CANDIDATE_HASH.test(candidate.planningHash)
     && Number.isInteger(candidate.canonRevision)
     && candidate.canonRevision >= 0
     && Number.isInteger(candidate.projectionRevision)
     && candidate.projectionRevision >= 0
+    && typeof candidate.projectionHash === 'string'
     && CANDIDATE_HASH.test(candidate.projectionHash)
   )
 }
 
 function normalizeCandidate(candidate) {
   const source = candidate && typeof candidate === 'object' ? candidate : {}
-  const { provenance, basisHash, basis_hash, ...publicCandidate } = source
   const basisStatus = source.basisStatus
   const basisIsSafe = (
     (basisStatus === 'current' || basisStatus === 'stale')
@@ -80,7 +90,10 @@ function normalizeCandidate(candidate) {
     basisIsSafe ? source[field] : null,
   ]))
   return {
-    ...publicCandidate,
+    ...Object.fromEntries(CANDIDATE_PUBLIC_FIELDS.map(field => [
+      field,
+      source[field],
+    ])),
     ...basis,
     basisStatus: basisIsSafe ? basisStatus : 'stale',
   }
@@ -217,19 +230,19 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       && sessionValue.chapterOutlineRevisionId === expectedOutlineRevisionId
       && sessionValue.chapterOutlineRevision === expectedOutlineRevision
       && sessionValue.chapterOutlineHash === expectedOutlineHash
-      && sessionValue.expectedCanonRevision === projection?.canonRevision
       && (
-        !active
-        || (
-          active.chapterSessionId === sessionValue.id
-          && active.chapterNumber === sessionValue.chapterNum
-          && active.planningRevisionId === sessionValue.planningRevisionId
-          && active.planningRevision === sessionValue.planningRevision
-          && active.planningHash === sessionValue.planningHash
-          && active.outlineRevisionId === sessionValue.chapterOutlineRevisionId
-          && active.outlineRevision === sessionValue.chapterOutlineRevision
-          && active.outlineHash === sessionValue.chapterOutlineHash
-        )
+        active
+          ? (
+            active.chapterSessionId === sessionValue.id
+            && active.chapterNumber === sessionValue.chapterNum
+            && active.planningRevisionId === sessionValue.planningRevisionId
+            && active.planningRevision === sessionValue.planningRevision
+            && active.planningHash === sessionValue.planningHash
+            && active.outlineRevisionId === sessionValue.chapterOutlineRevisionId
+            && active.outlineRevision === sessionValue.chapterOutlineRevision
+            && active.outlineHash === sessionValue.chapterOutlineHash
+          )
+          : sessionValue.expectedCanonRevision === projection?.canonRevision
       )
     )
   }

@@ -1,11 +1,38 @@
 import assert from 'node:assert/strict'
 import { access, readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { parse as parseTemplate } from '@vue/compiler-dom'
 
 const source = relativePath => readFile(
   new URL(`../../src/${relativePath}`, import.meta.url),
   'utf8',
 )
+function hasPersistentOutlineLink(node, conditional = false) {
+  if (!node || typeof node !== 'object') return false
+  const nextConditional = conditional || (
+    node.type === 1
+    && node.props?.some(prop => (
+      prop.type === 7 && ['if', 'else-if', 'else'].includes(prop.name)
+    ))
+  )
+  if (
+    node.type === 1
+    && node.tag === 'router-link'
+    && !nextConditional
+    && node.props?.some(prop => (
+      prop.type === 7
+      && prop.name === 'bind'
+      && prop.arg?.content === 'to'
+      && prop.exp?.content === 'storyBlocksPath'
+    ))
+    && node.children?.some(child => (
+      child.type === 2 && child.content.includes('调整本章小纲')
+    ))
+  ) return true
+  return (node.children || []).some(child => (
+    hasPersistentOutlineLink(child, nextConditional)
+  ))
+}
 
 test('one project planning view hosts all three canonical tabs and the shared workspace', async () => {
   const [view, workspace, storyBlocks] = await Promise.all([
@@ -77,13 +104,17 @@ test('history is immutable and retired duplicate planning surfaces stay absent',
   }
 })
 
-test('writer exposes a visible router link back to the current outline workspace', async () => {
+test('writer keeps the outline router link visible while the workspace loads', async () => {
+  const writer = await source('views/ChapterWriterView.vue')
+  const template = writer.match(/<template>([\s\S]*)<\/template>/u)?.[1]
+  const ast = parseTemplate(template || '')
+
+  assert.equal(hasPersistentOutlineLink(ast), true)
+})
+
+test('writer renders candidate basis statuses without location navigation', async () => {
   const writer = await source('views/ChapterWriterView.vue')
 
-  assert.match(
-    writer,
-    /<router-link\s+:to="storyBlocksPath"\s+class="writer-outline-link">\s*调整本章小纲\s*<\/router-link>/,
-  )
   assert.match(writer, /candidate\.basisStatus === 'current'/)
   assert.match(writer, /依据当前小纲/)
   assert.match(writer, /依据旧小纲，不能定稿/)

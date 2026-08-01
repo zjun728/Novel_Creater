@@ -146,6 +146,11 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="writer-shell">
+    <nav class="writer-navigation" aria-label="章节工作台导航">
+      <router-link :to="storyBlocksPath" class="writer-outline-link">
+        调整本章小纲
+      </router-link>
+    </nav>
     <section v-if="loading" class="writer-loading" aria-busy="true" aria-label="正在加载章节工作台">
       <n-skeleton text width="28%" />
       <n-skeleton height="420px" />
@@ -189,12 +194,7 @@ onBeforeUnmount(() => {
           <h1>章节工作台</h1>
           <p>编辑不会自动生成候选；只有点击“保存为候选”才会冻结当前工作稿。</p>
         </div>
-        <div class="writer-navigation">
-          <router-link :to="storyBlocksPath" class="writer-outline-link">
-            调整本章小纲
-          </router-link>
-          <n-button @click="backToProject">返回项目</n-button>
-        </div>
+        <n-button @click="backToProject">返回项目</n-button>
       </header>
 
       <n-alert
@@ -352,7 +352,7 @@ onBeforeUnmount(() => {
 .writer-loading, .writer-result, .writer-hero, .writer-alert, .workspace-grid { width: min(1180px, 100%); margin-inline: auto; }
 .writer-loading { display: grid; gap: 20px; padding: 34px; border: 1px solid #ddd3c0; border-radius: 16px; background: #fffdf8; }
 .writer-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid #d7cbb8; }
-.writer-navigation { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+.writer-navigation { display: flex; width: min(1180px, 100%); margin: 0 auto 16px; justify-content: flex-end; }
 .writer-outline-link { color: #8b5c25; font-size: 13px; font-weight: 700; }
 .eyebrow { margin: 0 0 8px; color: #967548; font-size: 10px; font-weight: 800; letter-spacing: .18em; }
 h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(34px, 5vw, 54px); font-weight: 650; }

@@ -337,6 +337,136 @@ test('active Session workspace accepts its immutable r1 pins after current outli
   })
 })
 
+test('active Session accepts matching immutable pins after Canon and Projection advance', async () => {
+  const current = currentOutline({
+    activeSession: {
+      chapterSessionId: 'session-1',
+      chapterNumber: 1,
+      status: 'drafting',
+      planningRevisionId: 'planning-revision-1',
+      planningRevision: 1,
+      planningHash: 'a'.repeat(64),
+      outlineRevisionId: 'outline-revision-1',
+      outlineRevision: 3,
+      outlineHash: 'c'.repeat(64),
+    },
+    startSession: false,
+  })
+  current.canonProjectionAuthority = {
+    ...current.canonProjectionAuthority,
+    canonRevision: 9,
+    projectionRevision: 9,
+  }
+  await withApiMethods([
+    [api.chapterOutlines, 'current', async () => current],
+    [api.chapterSessions, 'get', async () => workspace({
+      planningRevision: 1,
+      outlineRevision: 3,
+      expectedCanonRevision: 5,
+    })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    assert.equal(await store.openAuthoritative('project-1', 1), current)
+    assert.equal(store.session.expectedCanonRevision, 5)
+  })
+})
+
+test('candidate boundary allowlists public fields and rejects non-string hashes', async () => {
+  const basis = {
+    outlineRevisionId: 'outline-revision-1',
+    outlineRevision: 3,
+    outlineHash: 'c'.repeat(64),
+    planningRevisionId: 'planning-revision-1',
+    planningRevision: 7,
+    planningHash: 'a'.repeat(64),
+    canonRevision: 5,
+    projectionRevision: 5,
+    projectionHash: 'd'.repeat(64),
+  }
+  const loaded = workspace({
+    candidates: [
+      {
+        id: 'bad-array-hash',
+        projectId: 'project-1',
+        chapterSessionId: 'session-1',
+        workingDraftRevision: 1,
+        content: '正文',
+        contentHash: 'e'.repeat(64),
+        basisStatus: 'current',
+        ...basis,
+        outlineHash: ['c'.repeat(64)],
+      },
+      {
+        id: 'bad-object-hash',
+        projectId: 'project-1',
+        chapterSessionId: 'session-1',
+        workingDraftRevision: 1,
+        content: '正文',
+        contentHash: 'e'.repeat(64),
+        basisStatus: 'current',
+        ...basis,
+        planningHash: { value: 'a'.repeat(64) },
+      },
+      {
+        id: 'bad-number-hash',
+        projectId: 'project-1',
+        chapterSessionId: 'session-1',
+        workingDraftRevision: 1,
+        content: '正文',
+        contentHash: 'e'.repeat(64),
+        basisStatus: 'current',
+        ...basis,
+        projectionHash: 42,
+      },
+      {
+        id: 'safe',
+        projectId: 'project-1',
+        chapterSessionId: 'session-1',
+        workingDraftRevision: 2,
+        content: '正文二',
+        contentHash: 'f'.repeat(64),
+        basisStatus: 'stale',
+        ...basis,
+        apiKey: 'must-not-escape',
+        prompt: 'must-not-escape',
+        raw: { value: 'must-not-escape' },
+        provider: 'must-not-escape',
+        unknown: 'must-not-escape',
+        provenance: { value: 'must-not-escape' },
+        basisHash: 'f'.repeat(64),
+        basis_hash: 'f'.repeat(64),
+      },
+    ],
+  })
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => loaded],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+
+    await store.load('project-1', 1)
+
+    assert.deepEqual(store.candidates.map(candidate => candidate.id), [
+      'bad-array-hash', 'bad-object-hash', 'bad-number-hash', 'safe',
+    ])
+    for (const candidate of store.candidates.slice(0, 3)) {
+      assert.equal(candidate.basisStatus, 'stale')
+      for (const field of Object.keys(basis)) {
+        assert.equal(candidate[field], null)
+      }
+    }
+    assert.deepEqual(
+      Object.keys(store.candidates[3]).sort(),
+      [
+        'id', 'projectId', 'chapterSessionId', 'workingDraftRevision',
+        'content', 'contentHash', 'basisStatus', ...Object.keys(basis),
+      ].sort(),
+    )
+  })
+})
+
 test('active authoritative Session is replayed with GET and never POSTed', async () => {
   const calls = []
   const current = currentOutline({
