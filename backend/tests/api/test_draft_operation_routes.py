@@ -341,7 +341,11 @@ async def test_create_draft_operation_reader_stops_streaming_after_the_size_limi
             "more_body": bool(chunks),
         }
 
-    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "headers": [(b"content-type", b"application/json")],
+    }, receive)
 
     with pytest.raises(chapter_sessions.DraftOperationRequestInvalid):
         await chapter_sessions._read_draft_operation_create_body(request)
@@ -393,6 +397,65 @@ def test_create_formal_draft_operation_rejects_oversized_body_without_starting_s
     assert response.status_code == 422
     assert response.json()["code"] == "DraftOperationRequestInvalid"
     assert service.commands == []
+
+
+def test_create_formal_draft_operation_requires_exact_json_content_type():
+    client, service, _ = make_client()
+    path = operation_path().rsplit("/", 1)[0]
+    raw = raw_create_body()
+
+    for content_type in (
+        None,
+        "text/plain",
+        "application/octet-stream",
+        "application/problem+json",
+        "application/json; charset=latin-1",
+        "application/json; boundary=unexpected",
+    ):
+        kwargs = {}
+        if content_type is not None:
+            kwargs["headers"] = {"content-type": content_type}
+        response = client.post(path, content=raw, **kwargs)
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "DraftOperationRequestInvalid"
+
+    for content_type in (
+        "application/json",
+        'Application/JSON ; CHARSET = "UTF-8"',
+    ):
+        response = client.post(
+            path,
+            content=raw,
+            headers={"content-type": content_type},
+        )
+
+        assert response.status_code == 200
+    assert len(service.commands) == 2
+
+
+@pytest.mark.asyncio
+async def test_create_draft_operation_reader_rejects_duplicate_content_type_before_reading():
+    reads = 0
+
+    async def receive():
+        nonlocal reads
+        reads += 1
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-type", b"application/json"),
+        ],
+    }, receive)
+
+    with pytest.raises(chapter_sessions.DraftOperationRequestInvalid):
+        await chapter_sessions._read_draft_operation_create_body(request)
+
+    assert reads == 0
 
 
 def test_formal_operation_reads_are_owner_scoped_and_never_start_provider_work():

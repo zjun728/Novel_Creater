@@ -50,6 +50,10 @@ _SAFE_DRAFT_FAILURE_CODES = frozenset({
 })
 _DRAFT_OPERATION_CREATE_BODY_MAX_BYTES = 12 * 1024
 _DRAFT_OPERATION_EVENT_CURSOR_MAX = 2_147_483_647
+_DRAFT_OPERATION_CONTENT_TYPE = re.compile(
+    r'^\s*application/json\s*(?:;\s*charset\s*=\s*(?:"\s*utf-8\s*"|utf-8)\s*)?$',
+    re.IGNORECASE,
+)
 
 
 def get_chapter_session_service() -> ChapterSessionService:
@@ -351,7 +355,24 @@ def _require_json_nesting_within_limit(value: str):
             depth -= 1
 
 
+def _has_draft_operation_json_content_type(request: Request) -> bool:
+    values = [
+        value
+        for name, value in request.scope.get("headers", ())
+        if name.lower() == b"content-type"
+    ]
+    if len(values) != 1:
+        return False
+    try:
+        value = values[0].decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    return _DRAFT_OPERATION_CONTENT_TYPE.fullmatch(value) is not None
+
+
 async def _read_draft_operation_create_body(request: Request):
+    if not _has_draft_operation_json_content_type(request):
+        raise DraftOperationRequestInvalid()
     try:
         chunks = []
         byte_count = 0
