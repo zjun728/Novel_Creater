@@ -561,3 +561,151 @@ test('unknown retry reuses the coordinator key and context reset clears it synch
   assert.equal(resetSubject.operationRetryAvailable.value, false)
   await assert.rejects(resetSubject.retryUnknown(), /no unknown/i)
 })
+
+test('pending navigation owns the action lock against generate retry and candidate requests', async () => {
+  for (const contender of ['generate', 'retry', 'candidate']) {
+    const state = autosave({ revision: 4, hash: HASH })
+    const flushGate = deferred()
+    const flushStarted = deferred()
+    let operationStarts = 0
+    let candidateStarts = 0
+    const controller = operationController({
+      autosave: state,
+      createDraftOperation: async () => {
+        operationStarts += 1
+        if (contender === 'retry' && operationStarts === 1) throw new ApiError()
+        return operation()
+      },
+      freezeCandidate: async () => {
+        candidateStarts += 1
+        return { workingDraft: { content: '候选正文' } }
+      },
+    })
+    if (contender === 'retry') {
+      await assert.rejects(controller.generateWorkingDraft(), ApiError)
+      assert.equal(controller.operationRetryAvailable.value, true)
+    }
+    state.flush = async () => {
+      flushStarted.resolve()
+      const succeeded = await flushGate.promise
+      if (succeeded) {
+        state.dirty.value = false
+        state.status.value = 'saved'
+      }
+      return succeeded
+    }
+
+    const navigation = controller.canNavigate()
+    await flushStarted.promise
+    let competing
+    try {
+      assert.equal(controller.actionBusy.value, true, `${contender} saw navigation unlocked`)
+      competing = contender === 'generate'
+        ? controller.generateWorkingDraft()
+        : contender === 'retry'
+          ? controller.retryUnknown()
+          : controller.saveCandidate()
+      assert.equal(await competing, false)
+      assert.equal(operationStarts, contender === 'retry' ? 1 : 0)
+      assert.equal(candidateStarts, 0)
+    } finally {
+      flushGate.resolve(true)
+      await Promise.allSettled([navigation, competing].filter(Boolean))
+    }
+    assert.equal(await navigation, true)
+    assert.equal(controller.actionBusy.value, false)
+  }
+})
+
+test('failed navigation flush returns false and releases the action lock', async () => {
+  const state = autosave({ revision: 4, hash: HASH })
+  const flushGate = deferred()
+  const flushStarted = deferred()
+  state.flush = async () => {
+    flushStarted.resolve()
+    return flushGate.promise
+  }
+  let candidateStarts = 0
+  const controller = operationController({
+    autosave: state,
+    freezeCandidate: async () => {
+      candidateStarts += 1
+      return { workingDraft: { content: '候选正文' } }
+    },
+  })
+
+  const navigation = controller.canNavigate()
+  await flushStarted.promise
+  assert.equal(controller.actionBusy.value, true)
+  flushGate.resolve(false)
+
+  assert.equal(await navigation, false)
+  assert.equal(controller.actionBusy.value, false)
+  state.flush = async () => true
+  assert.deepEqual(await controller.saveCandidate(), { workingDraft: { content: '候选正文' } })
+  assert.equal(candidateStarts, 1)
+})
+
+test('reset fences a pending navigation and its late flush cannot unlock the new context action', async () => {
+  const state = autosave({ revision: 4, hash: HASH })
+  const navigationFlush = deferred()
+  const navigationStarted = deferred()
+  const operationGate = deferred()
+  const operationStarted = deferred()
+  let flushCalls = 0
+  state.flush = async () => {
+    flushCalls += 1
+    if (flushCalls === 1) {
+      navigationStarted.resolve()
+      return navigationFlush.promise
+    }
+    return true
+  }
+  const controller = operationController({
+    autosave: state,
+    createDraftOperation: () => {
+      operationStarted.resolve()
+      return operationGate.promise
+    },
+  })
+
+  const navigation = controller.canNavigate()
+  await navigationStarted.promise
+  controller.resetContext()
+  const generation = controller.generateWorkingDraft()
+  await operationStarted.promise
+  assert.equal(controller.actionBusy.value, true)
+
+  navigationFlush.resolve(true)
+  assert.equal(await navigation, false)
+  assert.equal(controller.actionBusy.value, true)
+
+  operationGate.resolve(operation())
+  await generation
+  assert.equal(controller.actionBusy.value, false)
+})
+
+test('dispose fences a pending navigation without allowing its late flush to revive the controller', async () => {
+  const state = autosave({ revision: 4, hash: HASH })
+  const flushGate = deferred()
+  const flushStarted = deferred()
+  state.flush = async () => {
+    flushStarted.resolve()
+    return flushGate.promise
+  }
+  let candidateStarts = 0
+  const controller = operationController({
+    autosave: state,
+    freezeCandidate: async () => { candidateStarts += 1 },
+  })
+
+  const navigation = controller.canNavigate()
+  await flushStarted.promise
+  controller.dispose()
+  flushGate.resolve(true)
+
+  assert.equal(await navigation, false)
+  assert.equal(controller.actionBusy.value, false)
+  assert.equal(await controller.saveCandidate(), false)
+  assert.equal(candidateStarts, 0)
+})

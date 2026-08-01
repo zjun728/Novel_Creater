@@ -303,11 +303,17 @@ export function createChapterWriterController({
   }
 
   async function canNavigate() {
-    if (actionLock.value || currentBusy(writeBusy)) return false
-    if (autosave.status?.value === 'failed' || autosave.status?.value === 'conflict') {
-      return false
+    const token = claimAction('navigate')
+    if (token === null) return false
+    try {
+      if (autosave.status?.value === 'failed' || autosave.status?.value === 'conflict') {
+        return false
+      }
+      const flushed = await flushPersistedDraft()
+      return flushed && isActionCurrent(token)
+    } finally {
+      releaseAction(token)
     }
-    return flushPersistedDraft()
   }
 
   return {
