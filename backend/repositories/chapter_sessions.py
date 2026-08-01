@@ -332,11 +332,12 @@ class ChapterSessionRepository:
         return changed in (1, 2)
 
     async def insert_candidate(self, session, row: dict) -> bool:
-        return await session.execute(
-            """INSERT IGNORE INTO draft_candidates
+        changed = await session.execute(
+            """INSERT INTO draft_candidates
                (id,project_id,chapter_session_id,working_draft_revision,content,
-                content_hash,provenance_json,created_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+                content_hash,basis_hash,provenance_json,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON DUPLICATE KEY UPDATE id=id""",
             (
                 row["id"],
                 row["project_id"],
@@ -344,10 +345,30 @@ class ChapterSessionRepository:
                 row["working_draft_revision"],
                 row["content"],
                 row["content_hash"],
+                row["basis_hash"],
                 canonical_json(row["provenance"]),
                 row["created_at"],
             ),
-        ) in (0, 1)
+        )
+        if changed == 1:
+            return True
+        existing = await session.fetchone(
+            """SELECT basis_hash,provenance_json FROM draft_candidates
+                 WHERE chapter_session_id=%s AND content_hash=%s AND basis_hash=%s""",
+            (
+                row["chapter_session_id"],
+                row["content_hash"],
+                row["basis_hash"],
+            ),
+        )
+        if existing is None or existing["basis_hash"] != row["basis_hash"]:
+            return False
+        provenance = self._json(existing["provenance_json"])
+        return all(
+            provenance.get(key) == value
+            for key, value in row["provenance"].items()
+            if key not in {"source", "workingDraftRevision"}
+        )
 
     async def list_candidates(self, session, chapter_session_id: str):
         rows = await session.fetchall(

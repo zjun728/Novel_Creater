@@ -79,8 +79,11 @@ stage only the files named by that task and inspect `git diff --cached`.
   typed Planning realization, or post-finalization outline locking here.
 - Do not add editable setting-library, memory, arc, or plot-progress modules.
   Their existing Canon projection read APIs remain unchanged.
-- Do not change `writer-core-v1.5.0`, add columns, or create a migration.
-  Candidate basis fits in existing `draft_candidates.provenance_json`.
+- **2026-08-01 necessary exception:** the later authoritative Candidate identity
+  rule requires `writer-core-v1.6.0` and a non-null `basis_hash` column on new
+  `draft_candidates` databases. There is still no migration, compatibility
+  query, nullable fallback, or backfill; existing databases must be explicitly
+  reinitialized.
 - Do not migrate or read a product database. Automated tests use only owned
   `novel_creator_test_%` databases.
 - Do not call a real Provider, model, or public website.

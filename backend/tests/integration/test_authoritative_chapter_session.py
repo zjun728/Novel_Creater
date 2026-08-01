@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 
 import pytest
@@ -340,10 +341,12 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
             "adjust-outline-before-finalization",
         )
     )
-    await service.save_working_draft(
-        SaveWorkingDraft(PROJECT, created.session.id, 2, "候选稿 B")
+    replay = await service.save_candidate(
+        SaveDraftCandidate(PROJECT, created.session.id, 2)
     )
-    await service.save_candidate(SaveDraftCandidate(PROJECT, created.session.id, 3))
+    third = await service.save_candidate(
+        SaveDraftCandidate(PROJECT, created.session.id, 2)
+    )
 
     workspace = await service.get(PROJECT, 1)
 
@@ -354,6 +357,50 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     assert candidate_b.outline_revision == outline_r2.revision
     assert candidate_b.canon_revision == 0
     assert workspace.session.chapter_outline_revision == outline_r1.revision
+    assert candidate_a.content_hash == candidate_b.content_hash
+    assert len(replay.candidates) == len(third.candidates) == 2
+    rows = await disposable_mysql.session.fetchall(
+        """SELECT id,content_hash,basis_hash,working_draft_revision,provenance_json
+             FROM draft_candidates
+            WHERE chapter_session_id=%s
+            ORDER BY created_at,id""",
+        (created.session.id,),
+    )
+    assert len(rows) == 2
+    assert rows[0]["content_hash"] == rows[1]["content_hash"]
+    assert rows[0]["id"] != rows[1]["id"]
+    assert rows[0]["basis_hash"] != rows[1]["basis_hash"]
+    assert rows[1]["working_draft_revision"] == 2
+    assert json.loads(rows[1]["provenance_json"]) == third.candidates[1].provenance
+
+
+@pytest.mark.asyncio
+async def test_final_session_rejects_candidate_save_without_creating_row(
+    disposable_mysql,
+):
+    await _prove_owned_database(disposable_mysql)
+    _, planning, outline = await _confirmed_outline(disposable_mysql)
+    transaction_factory = transaction_factory_for(disposable_mysql.connection_config)
+    service = ChapterSessionService(
+        ChapterSessionRepository(), transaction_factory=transaction_factory
+    )
+    created = await service.create_session(_create_command(planning, outline))
+    await service.save_working_draft(
+        SaveWorkingDraft(PROJECT, created.session.id, 1, "不可保存的候选稿")
+    )
+    await disposable_mysql.session.execute(
+        "UPDATE chapter_sessions SET status='final' WHERE id=%s",
+        (created.session.id,),
+    )
+
+    with pytest.raises(ChapterSessionConflict, match="finalized"):
+        await service.save_candidate(SaveDraftCandidate(PROJECT, created.session.id, 2))
+
+    row = await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM draft_candidates WHERE chapter_session_id=%s",
+        (created.session.id,),
+    )
+    assert row == {"count": 0}
 
 
 @pytest.mark.asyncio

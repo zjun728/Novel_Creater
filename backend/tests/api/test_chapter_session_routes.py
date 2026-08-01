@@ -349,6 +349,7 @@ def test_chapter_session_public_workspace_exports_only_candidate_basis_fields():
     assert candidate["projectionHash"] == "d" * 64
     assert candidate["basisStatus"] == "current"
     assert "provenance" not in candidate
+    assert "basisHash" not in candidate
     assert "provider" not in candidate
     assert "prompt" not in candidate
 

@@ -935,9 +935,9 @@ async def _insert_planning_draft_canon_and_projections(session) -> None:
     await session.execute(
         """INSERT INTO draft_candidates
            (id,project_id,chapter_session_id,working_draft_revision,content,
-            content_hash,provenance_json,created_at)
-           VALUES (%s,%s,%s,1,'draft',%s,'{}',%s)""",
-        (CANDIDATE_ID, PROJECT_ID, SESSION_ID, "9" * 64, NOW),
+            content_hash,basis_hash,provenance_json,created_at)
+           VALUES (%s,%s,%s,1,'draft',%s,%s,'{}',%s)""",
+        (CANDIDATE_ID, PROJECT_ID, SESSION_ID, "9" * 64, "a" * 64, NOW),
     )
     await session.execute(
         """INSERT INTO finalization_change_sets

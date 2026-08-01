@@ -13,6 +13,7 @@ from backend.domain.drafts import (
     DraftCandidateView,
     WorkingDraftView,
 )
+from backend.domain.json_contracts import canonical_hash
 from backend.http_errors import ProjectNotFound
 from backend.repositories.chapter_sessions import (
     ActiveChapterSessionConflict,
@@ -67,6 +68,7 @@ class SaveDraftCandidate:
 
 
 class ChapterSessionService:
+    _CANDIDATE_BASIS_SCHEMA_VERSION = "draft-candidate-basis-v1"
     _GENERATION_FIELDS = (
         "selection_revision",
         "seed_id",
@@ -359,6 +361,7 @@ class ChapterSessionService:
                 raise ChapterSessionPreconditionFailed(
                     "current Outline authority is required"
                 )
+            basis, basis_hash = self._candidate_basis(authority)
             draft = await self.repository.read_working_draft(session, command.chapter_session_id)
             if draft is None:
                 raise ChapterSessionPreconditionFailed("working draft is required")
@@ -371,22 +374,16 @@ class ChapterSessionService:
                 "chapter_session_id": command.chapter_session_id,
                 "working_draft_revision": int(draft["revision"]),
                 "content": draft["content"], "content_hash": draft["content_hash"],
+                "basis_hash": basis_hash,
                 "provenance": {
                     "source": "explicit-save-candidate",
                     "workingDraftRevision": int(draft["revision"]),
-                    "outlineRevisionId": authority["chapter_outline_revision_id"],
-                    "outlineRevision": int(authority["chapter_outline_revision"]),
-                    "outlineHash": authority["chapter_outline_hash"],
-                    "planningRevisionId": authority["planning_revision_id"],
-                    "planningRevision": int(authority["planning_revision"]),
-                    "planningHash": authority["planning_hash"],
-                    "canonRevision": int(authority["canon_revision"]),
-                    "projectionRevision": int(authority["projection_revision"]),
-                    "projectionHash": authority["projection_hash"],
+                    **basis,
                 },
                 "created_at": int(time.time() * 1000),
             }
-            await self.repository.insert_candidate(session, candidate)
+            if not await self.repository.insert_candidate(session, candidate):
+                raise ChapterSessionConflict("candidate identity conflict")
             return await self._workspace(session, chapter_session)
 
     async def _workspace(self, session, chapter_session: Mapping[str, Any]) -> ChapterWorkspace:
@@ -464,6 +461,24 @@ class ChapterSessionService:
             "content": content, "content_hash": self._content_hash(content),
             "source_payload": dict(source_payload), "updated_at": updated_at,
         }
+
+    def _candidate_basis(
+        self,
+        authority: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], str]:
+        payload = {
+            "schemaVersion": self._CANDIDATE_BASIS_SCHEMA_VERSION,
+            "outlineRevisionId": authority["chapter_outline_revision_id"],
+            "outlineRevision": int(authority["chapter_outline_revision"]),
+            "outlineHash": authority["chapter_outline_hash"],
+            "planningRevisionId": authority["planning_revision_id"],
+            "planningRevision": int(authority["planning_revision"]),
+            "planningHash": authority["planning_hash"],
+            "canonRevision": int(authority["canon_revision"]),
+            "projectionRevision": int(authority["projection_revision"]),
+            "projectionHash": authority["projection_hash"],
+        }
+        return payload, canonical_hash(payload)
 
     def _content_hash(self, content: str) -> str:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()

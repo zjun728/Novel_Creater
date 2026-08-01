@@ -760,11 +760,11 @@ async def install_first_final_chapter(
     await session.execute(
         """INSERT INTO draft_candidates
            (id,project_id,chapter_session_id,working_draft_revision,content,
-            content_hash,provenance_json,created_at)
-           VALUES (%s,%s,%s,1,%s,%s,%s,6)""",
+            content_hash,basis_hash,provenance_json,created_at)
+           VALUES (%s,%s,%s,1,%s,%s,%s,%s,6)""",
         (
             candidate_id, project_id, chapter_session_id,
-            candidate_content, candidate_hash, candidate_provenance,
+            candidate_content, candidate_hash, "a" * 64, candidate_provenance,
         ),
     )
     change_set_payload = {

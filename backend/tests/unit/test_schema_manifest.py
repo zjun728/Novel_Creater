@@ -752,6 +752,17 @@ def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
     assert "planning_snapshot_json" not in final_chapter
 
 
+def test_candidate_identity_is_content_and_immutable_basis_hash():
+    candidate = _table_statement("draft_candidates")
+
+    assert "basis_hash char(64) not null" in candidate
+    assert (
+        "unique key uq_candidate_identity "
+        "(chapter_session_id, content_hash, basis_hash)"
+    ) in candidate
+    assert "uq_candidate_hash" not in candidate
+
+
 def test_corpus_revision_identity_allows_metadata_only_revisions_on_one_blob():
     revisions = _table_statement("corpus_source_revisions")
     assert "unique key uq_corpus_source_import" not in revisions

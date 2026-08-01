@@ -41,9 +41,11 @@ copy their untracked files or caches into this worktree.
 
 ## Frozen decisions
 
-- Phase 3D makes no schema change. The source schema remains exactly
-  `writer-core-v1.5.0`; there is no migration, compatibility query, fallback,
-  alias, or second Planning runtime.
+- **2026-08-01 necessary exception:** the later authoritative Candidate identity
+  rule requires `writer-core-v1.6.0` with non-null `draft_candidates.basis_hash`
+  on new databases. There is no migration, compatibility query, nullable
+  fallback, backfill, alias, or second Planning runtime; existing databases
+  must be explicitly reinitialized.
 - The existing `planning-v1` aggregate, `PlanningService`,
   `PlanningRepository`, `planningStore`, and `PlanningWorkspace.vue` are
   extended in place. Do not add `PlanningV2`, `planningV2Store`,
