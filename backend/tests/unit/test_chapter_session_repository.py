@@ -9,11 +9,18 @@ from backend.repositories.chapter_sessions import ChapterSessionRepository
 
 
 class CapturingSession:
-    def __init__(self, rows=(), all_rows=(), execute_result=1):
+    def __init__(
+        self,
+        rows=(),
+        all_rows=(),
+        execute_result=1,
+        execute_results=(),
+    ):
         self.calls = []
         self.rows = list(rows)
         self.all_rows = list(all_rows)
         self.execute_result = execute_result
+        self.execute_results = list(execute_results)
 
     async def fetchone(self, sql, args=None):
         self.calls.append((sql, args))
@@ -25,6 +32,8 @@ class CapturingSession:
 
     async def execute(self, sql, args=None):
         self.calls.append((sql, args))
+        if self.execute_results:
+            return self.execute_results.pop(0)
         return self.execute_result
 
 
@@ -294,3 +303,212 @@ async def test_max_final_chapter_authority_returns_normalized_scalar(row, expect
     assert "SELECT MAX(chapter_num) AS chapter_num" in compact
     assert "FROM final_chapters" in compact
     assert "project_id=%s" in compact
+
+
+def _draft_operation_row():
+    return {
+        "id": "operation-1",
+        "project_id": "project-1",
+        "chapter_session_id": "chapter-session-1",
+        "operation_type": "generate_new",
+        "idempotency_key": "idempotency-1",
+        "request_fingerprint": "a" * 64,
+        "active_slot": 1,
+        "fencing_token": 3,
+        "lease_expires_at": 200,
+        "base_working_draft_revision": 1,
+        "base_working_draft_hash": "b" * 64,
+        "input_manifest": {"operationType": "generate_new"},
+        "input_manifest_hash": "c" * 64,
+        "provider_id": "provider-1",
+        "model_name_snapshot": "fake-writer",
+        "last_event_sequence": 0,
+        "status": "starting",
+        "created_at": 100,
+        "updated_at": 100,
+        "completed_at": None,
+        "result_working_draft_revision": None,
+        "result_content_hash": None,
+        "failure_code": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_operation_owner_reads_lock_exact_session_and_operation_rows():
+    session = CapturingSession(
+        rows=[
+            {"id": "chapter-session-1"},
+            {"id": "operation-1"},
+            {"id": "operation-1"},
+            {"id": "operation-1"},
+        ]
+    )
+    repository = ChapterSessionRepository()
+
+    assert await repository.lock_session_for_operation(
+        session, "project-1", "chapter-session-1"
+    ) == {"id": "chapter-session-1"}
+    assert await repository.read_draft_operation_by_key(
+        session, "chapter-session-1", "idempotency-1"
+    ) == {"id": "operation-1"}
+    assert await repository.read_draft_operation(
+        session, "project-1", "chapter-session-1", "operation-1"
+    ) == {"id": "operation-1"}
+    assert await repository.read_active_draft_operation(
+        session, "chapter-session-1"
+    ) == {"id": "operation-1"}
+
+    sqls = [" ".join(sql.split()) for sql, _ in session.calls]
+    assert all("FOR UPDATE" in sql for sql in sqls)
+    assert "project_id=%s AND id=%s" in sqls[0]
+    assert "chapter_session_id=%s AND idempotency_key=%s" in sqls[1]
+    assert "project_id=%s AND chapter_session_id=%s AND id=%s" in sqls[2]
+    assert "chapter_session_id=%s AND active_slot=1" in sqls[3]
+    assert all("api_key" not in sql and "base_url" not in sql for sql in sqls)
+
+
+@pytest.mark.asyncio
+async def test_next_operation_fence_locks_owned_session_before_incrementing():
+    session = CapturingSession(rows=[{"draft_operation_fencing_token": 3}])
+
+    assert await ChapterSessionRepository().next_draft_operation_fencing_token(
+        session, "project-1", "chapter-session-1"
+    ) == 4
+
+    lock_sql, lock_args = session.calls[0]
+    update_sql, update_args = session.calls[1]
+    assert "FOR UPDATE" in " ".join(lock_sql.split())
+    assert lock_args == ("project-1", "chapter-session-1")
+    assert "draft_operation_fencing_token=%s" in " ".join(update_sql.split())
+    assert update_args == (4, "project-1", "chapter-session-1", 3)
+
+
+@pytest.mark.asyncio
+async def test_insert_operation_uses_only_safe_parameterized_columns():
+    session = CapturingSession()
+
+    assert await ChapterSessionRepository().insert_draft_operation(
+        session, _draft_operation_row()
+    )
+
+    sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "draft_operation_attempts" in compact
+    assert "%s" in compact
+    assert "api_key" not in compact and "base_url" not in compact
+    assert args[0:3] == ("operation-1", "project-1", "chapter-session-1")
+
+
+@pytest.mark.asyncio
+async def test_mark_running_requires_matching_operation_fence_and_session_owner():
+    session = CapturingSession()
+
+    assert await ChapterSessionRepository().mark_draft_operation_running(
+        session, "operation-1", 3, 120
+    )
+
+    sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert "UPDATE draft_operation_attempts operation" in compact
+    assert "JOIN chapter_sessions chapter" in compact
+    assert "operation.id=%s" in compact
+    assert "operation.fencing_token=%s" in compact
+    assert "chapter.active_draft_operation_id IS NULL" in compact
+    assert args == (120, "operation-1", 3)
+
+
+@pytest.mark.asyncio
+async def test_terminal_operation_updates_require_matching_fence_and_clear_same_owner():
+    repository = ChapterSessionRepository()
+    complete = {
+        **_draft_operation_row(),
+        "result_working_draft_revision": 2,
+        "result_content_hash": "d" * 64,
+        "updated_at": 160,
+        "completed_at": 160,
+    }
+    failed = {**_draft_operation_row(), "failure_code": "DraftProviderFailed", "updated_at": 170, "completed_at": 170}
+    session = CapturingSession()
+
+    assert await repository.complete_draft_operation(session, complete)
+    assert await repository.fail_draft_operation(session, failed)
+    assert await repository.expire_draft_operation(session, "operation-1", 3, 180)
+
+    for sql, _ in session.calls:
+        compact = " ".join(sql.split())
+        assert "JOIN chapter_sessions chapter" in compact
+        assert "operation.id=%s" in compact
+        assert "operation.fencing_token=%s" in compact
+        assert "chapter.active_draft_operation_id=operation.id" in compact
+        assert "operation.active_slot=NULL" in compact
+    assert session.calls[0][1][-2:] == ("operation-1", 3)
+    assert session.calls[1][1][-2:] == ("operation-1", 3)
+    assert session.calls[2][1][-2:] == ("operation-1", 3)
+
+
+@pytest.mark.asyncio
+async def test_event_append_advances_only_expected_sequence_and_lists_bounded_rows():
+    row = {
+        "id": "event-2",
+        "project_id": "project-1",
+        "draft_operation_id": "operation-1",
+        "sequence_num": 2,
+        "event_type": "completed",
+        "closed_payload": {"workingDraftRevision": 2, "contentHash": "d" * 64},
+        "created_at": 160,
+    }
+    session = CapturingSession(all_rows=[{"id": "event-2"}], execute_results=[1, 1])
+    repository = ChapterSessionRepository()
+
+    assert await repository.insert_draft_operation_event(session, row)
+    assert await repository.list_draft_operation_events(session, "operation-1", 1, 20) == [
+        {"id": "event-2"}
+    ]
+
+    advance_sql, advance_args = session.calls[0]
+    insert_sql, insert_args = session.calls[1]
+    list_sql, list_args = session.calls[2]
+    assert "last_event_sequence=%s" in " ".join(advance_sql.split())
+    assert advance_args == (2, "operation-1", "project-1", 1)
+    assert "closed_payload_json" in " ".join(insert_sql.split())
+    assert "provider" not in " ".join(insert_sql.split())
+    assert insert_args[-1] == 160
+    compact = " ".join(list_sql.split())
+    assert "sequence_num>%s" in compact and "LIMIT %s" in compact
+    assert list_args == ("operation-1", 1, 20)
+
+
+@pytest.mark.asyncio
+async def test_recovery_insert_is_append_only_and_accepts_only_exact_content_replay():
+    row = {
+        "id": "recovery-1",
+        "project_id": "project-1",
+        "chapter_session_id": "chapter-session-1",
+        "working_draft_id": "draft-1",
+        "working_draft_revision": 1,
+        "snapshot_role": "before",
+        "replacement_reason": "generate_new",
+        "source_operation_id": "operation-1",
+        "content": "before prose",
+        "content_hash": "e" * 64,
+        "created_at": 160,
+    }
+    repository = ChapterSessionRepository()
+    exact = CapturingSession(
+        rows=[{"content": "before prose", "content_hash": "e" * 64}],
+        execute_result=0,
+    )
+    conflict = CapturingSession(
+        rows=[{"content": "changed prose", "content_hash": "f" * 64}],
+        execute_result=0,
+    )
+
+    assert await repository.insert_working_draft_revision(exact, row)
+    assert not await repository.insert_working_draft_revision(conflict, row)
+    insert_sql = " ".join(exact.calls[0][0].split())
+    assert "ON DUPLICATE KEY UPDATE id=id" in insert_sql
+    lookup_sql, lookup_args = exact.calls[1]
+    compact = " ".join(lookup_sql.split())
+    assert "project_id=%s AND chapter_session_id=%s" in compact
+    assert "FOR UPDATE" in compact
+    assert lookup_args == ("project-1", "chapter-session-1", 1, "before")

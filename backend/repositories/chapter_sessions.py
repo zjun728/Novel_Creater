@@ -277,6 +277,326 @@ class ChapterSessionRepository:
         )
         return self._draft(row) if row else None
 
+    async def lock_session_for_operation(
+        self,
+        session,
+        project_id: str,
+        chapter_session_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM chapter_sessions
+                 WHERE project_id=%s AND id=%s
+                 FOR UPDATE""",
+            (project_id, chapter_session_id),
+        )
+        return dict(row) if row else None
+
+    async def read_draft_operation_by_key(
+        self,
+        session,
+        chapter_session_id: str,
+        idempotency_key: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM draft_operation_attempts
+                 WHERE chapter_session_id=%s AND idempotency_key=%s
+                 FOR UPDATE""",
+            (chapter_session_id, idempotency_key),
+        )
+        return dict(row) if row else None
+
+    async def read_draft_operation(
+        self,
+        session,
+        project_id: str,
+        chapter_session_id: str,
+        operation_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM draft_operation_attempts
+                 WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                 FOR UPDATE""",
+            (project_id, chapter_session_id, operation_id),
+        )
+        return dict(row) if row else None
+
+    async def read_active_draft_operation(self, session, chapter_session_id: str):
+        row = await session.fetchone(
+            """SELECT * FROM draft_operation_attempts
+                 WHERE chapter_session_id=%s AND active_slot=1
+                 FOR UPDATE""",
+            (chapter_session_id,),
+        )
+        return dict(row) if row else None
+
+    async def next_draft_operation_fencing_token(
+        self,
+        session,
+        project_id: str,
+        chapter_session_id: str,
+    ) -> int | None:
+        row = await session.fetchone(
+            """SELECT draft_operation_fencing_token
+                 FROM chapter_sessions
+                WHERE project_id=%s AND id=%s
+                FOR UPDATE""",
+            (project_id, chapter_session_id),
+        )
+        if row is None:
+            return None
+        previous = int(row["draft_operation_fencing_token"])
+        token = previous + 1
+        changed = await session.execute(
+            """UPDATE chapter_sessions
+                  SET draft_operation_fencing_token=%s
+                WHERE project_id=%s AND id=%s
+                  AND draft_operation_fencing_token=%s""",
+            (token, project_id, chapter_session_id, previous),
+        )
+        return token if changed == 1 else None
+
+    async def insert_draft_operation(self, session, row: dict) -> bool:
+        changed = await session.execute(
+            """INSERT INTO draft_operation_attempts
+               (id,project_id,chapter_session_id,operation_type,idempotency_key,
+                request_fingerprint,active_slot,fencing_token,lease_expires_at,
+                base_working_draft_revision,base_working_draft_hash,
+                input_manifest_json,input_manifest_hash,provider_id,
+                model_name_snapshot,result_working_draft_revision,
+                result_content_hash,last_event_sequence,failure_code,status,
+                created_at,updated_at,completed_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["chapter_session_id"],
+                row["operation_type"],
+                row["idempotency_key"],
+                row["request_fingerprint"],
+                row["active_slot"],
+                row["fencing_token"],
+                row["lease_expires_at"],
+                row["base_working_draft_revision"],
+                row["base_working_draft_hash"],
+                canonical_json(row["input_manifest"]),
+                row["input_manifest_hash"],
+                row["provider_id"],
+                row["model_name_snapshot"],
+                row["result_working_draft_revision"],
+                row["result_content_hash"],
+                row["last_event_sequence"],
+                row["failure_code"],
+                row["status"],
+                row["created_at"],
+                row["updated_at"],
+                row["completed_at"],
+            ),
+        )
+        return changed == 1
+
+    async def mark_draft_operation_running(
+        self,
+        session,
+        operation_id: str,
+        fencing_token: int,
+        now: int,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                  SET operation.status='running',operation.updated_at=%s,
+                      chapter.active_draft_operation_id=operation.id
+                WHERE operation.id=%s AND operation.fencing_token=%s
+                  AND operation.status='starting'
+                  AND operation.active_slot=1
+                  AND chapter.active_draft_operation_id IS NULL""",
+            (now, operation_id, fencing_token),
+        )
+        return changed > 0
+
+    async def complete_draft_operation(self, session, row: dict) -> bool:
+        return await self._terminal_draft_operation_update(
+            session,
+            row,
+            status="completed",
+            assignments="""operation.result_working_draft_revision=%s,
+                      operation.result_content_hash=%s,""",
+            values=(
+                row["result_working_draft_revision"],
+                row["result_content_hash"],
+            ),
+        )
+
+    async def fail_draft_operation(self, session, row: dict) -> bool:
+        return await self._terminal_draft_operation_update(
+            session,
+            row,
+            status="failed",
+            assignments="operation.failure_code=%s,",
+            values=(row["failure_code"],),
+        )
+
+    async def expire_draft_operation(
+        self,
+        session,
+        operation_id: str,
+        fencing_token: int,
+        now: int,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                  SET operation.status='expired',operation.active_slot=NULL,
+                      operation.updated_at=%s,operation.completed_at=%s,
+                      chapter.active_draft_operation_id=NULL
+                WHERE operation.id=%s AND operation.fencing_token=%s
+                  AND operation.status IN ('starting','running')
+                  AND operation.active_slot=1
+                  AND chapter.active_draft_operation_id=operation.id""",
+            (now, now, operation_id, fencing_token),
+        )
+        return changed > 0
+
+    async def _terminal_draft_operation_update(
+        self,
+        session,
+        row: dict,
+        *,
+        status: str,
+        assignments: str,
+        values: tuple,
+    ) -> bool:
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                  SET """
+            + assignments
+            + """
+                      operation.status=%s,operation.active_slot=NULL,
+                      operation.updated_at=%s,operation.completed_at=%s,
+                      chapter.active_draft_operation_id=NULL
+                WHERE operation.project_id=%s
+                  AND operation.chapter_session_id=%s AND operation.id=%s
+                  AND operation.fencing_token=%s
+                  AND operation.status IN ('starting','running')
+                  AND operation.active_slot=1
+                  AND chapter.active_draft_operation_id=operation.id""",
+            (
+                *values,
+                status,
+                row["updated_at"],
+                row["completed_at"],
+                row["project_id"],
+                row["chapter_session_id"],
+                row["id"],
+                row["fencing_token"],
+            ),
+        )
+        return changed > 0
+
+    async def insert_draft_operation_event(self, session, row: dict) -> bool:
+        sequence_num = row["sequence_num"]
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts
+                  SET last_event_sequence=%s
+                WHERE id=%s AND project_id=%s
+                  AND last_event_sequence=%s""",
+            (
+                sequence_num,
+                row["draft_operation_id"],
+                row["project_id"],
+                sequence_num - 1,
+            ),
+        )
+        if changed != 1:
+            return False
+        return await session.execute(
+            """INSERT INTO draft_operation_events
+               (id,project_id,draft_operation_id,sequence_num,event_type,
+                closed_payload_json,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["draft_operation_id"],
+                sequence_num,
+                row["event_type"],
+                (
+                    canonical_json(row["closed_payload"])
+                    if row["closed_payload"] is not None
+                    else None
+                ),
+                row["created_at"],
+            ),
+        ) == 1
+
+    async def list_draft_operation_events(
+        self,
+        session,
+        operation_id: str,
+        after_sequence: int,
+        limit: int,
+    ):
+        rows = await session.fetchall(
+            """SELECT id,project_id,draft_operation_id,sequence_num,event_type,
+                      closed_payload_json,created_at
+                 FROM draft_operation_events
+                WHERE draft_operation_id=%s AND sequence_num>%s
+                ORDER BY sequence_num,id
+                LIMIT %s""",
+            (operation_id, after_sequence, limit),
+        )
+        return [dict(row) for row in rows]
+
+    async def insert_working_draft_revision(self, session, row: dict) -> bool:
+        changed = await session.execute(
+            """INSERT INTO working_draft_revisions
+               (id,project_id,chapter_session_id,working_draft_id,
+                working_draft_revision,snapshot_role,replacement_reason,
+                source_operation_id,content,content_hash,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON DUPLICATE KEY UPDATE id=id""",
+            (
+                row["id"],
+                row["project_id"],
+                row["chapter_session_id"],
+                row["working_draft_id"],
+                row["working_draft_revision"],
+                row["snapshot_role"],
+                row["replacement_reason"],
+                row["source_operation_id"],
+                row["content"],
+                row["content_hash"],
+                row["created_at"],
+            ),
+        )
+        if changed == 1:
+            return True
+        existing = await session.fetchone(
+            """SELECT content,content_hash FROM working_draft_revisions
+                 WHERE project_id=%s AND chapter_session_id=%s
+                   AND working_draft_revision=%s AND snapshot_role=%s
+                 FOR UPDATE""",
+            (
+                row["project_id"],
+                row["chapter_session_id"],
+                row["working_draft_revision"],
+                row["snapshot_role"],
+            ),
+        )
+        return bool(
+            existing
+            and existing["content"] == row["content"]
+            and existing["content_hash"] == row["content_hash"]
+        )
+
     async def upsert_working_draft(
         self,
         session,
