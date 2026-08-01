@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+from decimal import Decimal
 import hashlib
 import json
 from uuid import UUID
@@ -127,6 +129,36 @@ class FakeRepository:
             "projection_revision": 5,
             "projection_hash": "d" * 64,
             "chapter_outline": {"chapterGoal": "逼主角公开选择阵营"},
+            "current_planning_revision_id": "planning-head-2",
+            "current_planning_revision": 8,
+            "current_planning_hash": "8" * 64,
+            "planning_selection_revision": 1,
+            "planning_seed_id": "seed-1",
+            "planning_seed_revision_id": "seed-revision-1",
+            "planning_seed_hash": "1" * 64,
+            "planning_contract_revision": 1,
+            "planning_creation_contract_id": "creation-contract-1",
+            "planning_creation_hash": "2" * 64,
+            "planning_style_contract_id": "style-contract-1",
+            "planning_style_hash": "3" * 64,
+            "planning_bible_revision": 1,
+            "planning_bible_revision_id": "bible-revision-1",
+            "planning_bible_hash": "4" * 64,
+            "current_selection_revision": 1,
+            "current_seed_id": "seed-1",
+            "current_seed_revision_id": "seed-revision-1",
+            "current_seed_hash": "1" * 64,
+            "current_contract_revision": 1,
+            "current_creation_contract_id": "creation-contract-1",
+            "current_creation_hash": "2" * 64,
+            "current_style_contract_id": "style-contract-1",
+            "current_style_hash": "3" * 64,
+            "current_bible_revision": 1,
+            "current_bible_revision_id": "bible-revision-1",
+            "current_bible_hash": "4" * 64,
+            "story_block_id": "block-current",
+            "story_block_revision": 9,
+            "story_block_hash": "5" * 64,
         }
         self.projection = {
             "canon_revision_number": 5,
@@ -154,7 +186,7 @@ class FakeRepository:
             "model_name": "fake-writing-model",
             "base_url": "https://private.provider.invalid/v1",
             "api_key": "private-provider-key",
-            "temperature": 0.72,
+            "temperature": Decimal("0.720"),
             "max_output_tokens": 4500,
         }
         self.operations = {}
@@ -388,6 +420,52 @@ async def test_generate_new_reserves_calls_outside_transaction_and_atomically_co
 
 
 @pytest.mark.asyncio
+async def test_current_outline_can_replace_session_entry_pins_before_prose_is_final():
+    service, repo, gateway, _, _ = make_service()
+    repo.session.update({
+        "planning_revision_id": "entry-planning-old",
+        "planning_revision": 1,
+        "planning_hash": "6" * 64,
+        "story_block_id": "entry-block-old",
+        "story_block_revision": 1,
+        "story_block_hash": "7" * 64,
+        "chapter_outline_revision_id": "entry-outline-old",
+        "chapter_outline_revision": 1,
+        "chapter_outline_hash": "9" * 64,
+        "expected_canon_revision": 1,
+        "outline_canon_revision": 1,
+        "outline_projection_revision": 1,
+        "outline_projection_hash": "0" * 64,
+    })
+    repo.outline["chapter_outline"] = {"chapterGoal": "使用作者刚确认的新小纲"}
+
+    result = await service.start(command())
+
+    assert result.status == "completed"
+    rendered = "\n".join(item["content"] for item in gateway.calls[0]["messages"])
+    assert "使用作者刚确认的新小纲" in rendered
+    attempt = next(iter(repo.operations.values()))
+    assert attempt["input_manifest"]["outline"]["revisionId"] == "outline-1"
+    assert (
+        attempt["input_manifest"]["session"]["chapter_outline_revision_id"]
+        == "entry-outline-old"
+    )
+
+
+@pytest.mark.asyncio
+async def test_outline_planning_baseline_mismatch_is_precondition_before_provider():
+    from backend.services.draft_operations import DraftOperationPreconditionFailed
+
+    service, repo, gateway, _, _ = make_service()
+    repo.outline["planning_seed_hash"] = "9" * 64
+
+    with pytest.raises(DraftOperationPreconditionFailed):
+        await service.start(command())
+    assert gateway.calls == []
+    assert repo.operations == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field,value", (("expected_working_draft_revision", 9), ("expected_content_hash", "9" * 64)))
 async def test_base_cas_mismatch_fails_before_provider(field, value):
     from backend.services.draft_operations import DraftOperationConflict
@@ -500,6 +578,39 @@ async def test_replay_fails_closed_for_malformed_stored_public_result():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "last_sequence,result_hash",
+    ((999, None), (1, "8" * 64)),
+)
+async def test_expired_projection_does_not_rewrite_invalid_running_state(
+    last_sequence, result_hash
+):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, gateway, _, clock = make_service()
+    operation_id = str(UUID(int=908))
+    repo.operations[operation_id] = {
+        "id": operation_id, "project_id": PROJECT_ID,
+        "chapter_session_id": SESSION_ID, "operation_type": "generate_new",
+        "idempotency_key": KEY, "request_fingerprint": _fingerprint(),
+        "active_slot": 1, "fencing_token": 1,
+        "lease_expires_at": clock.now, "base_working_draft_revision": 1,
+        "base_working_draft_hash": EMPTY_HASH, "input_manifest": {},
+        "input_manifest_hash": "1" * 64, "provider_id": "provider-writing",
+        "model_name_snapshot": "fake-writing-model",
+        "result_working_draft_revision": None, "result_content_hash": result_hash,
+        "last_event_sequence": last_sequence, "failure_code": None,
+        "status": "running",
+        "created_at": 1, "updated_at": 1, "completed_at": None,
+    }
+    repo.session["active_draft_operation_id"] = operation_id
+
+    with pytest.raises(DraftOperationStorageError):
+        await service.start(command())
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
 async def test_live_active_different_key_is_rejected():
     from backend.services.draft_operations import DraftOperationConflict
 
@@ -588,6 +699,82 @@ async def test_authority_or_base_drift_expires_without_changing_draft(drift):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "field,replacement",
+    (
+        ("api_key", "rotated-private-key"),
+        ("base_url", "https://rotated.private.invalid/v1"),
+        ("temperature", Decimal("0.000")),
+        ("temperature", Decimal("NaN")),
+        ("max_output_tokens", 9000),
+    ),
+)
+async def test_private_provider_authority_drift_expires_without_draft_write(
+    field, replacement
+):
+    repo = FakeRepository()
+
+    def mutate():
+        repo.provider[field] = replacement
+
+    gateway = FakeGateway(on_generate=mutate)
+    service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
+
+    result = await service.start(command())
+
+    assert result.status == "expired"
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
+    attempt = next(iter(repo.operations.values()))
+    manifest_text = json.dumps(attempt["input_manifest"], ensure_ascii=False)
+    assert "private-provider-key" not in manifest_text
+    assert "private.provider.invalid" not in manifest_text
+
+
+@pytest.mark.asyncio
+async def test_equivalent_decimal_temperature_has_stable_provider_authority():
+    repo = FakeRepository()
+
+    def normalize_scale_only():
+        repo.provider["temperature"] = Decimal("0.7200")
+
+    gateway = FakeGateway(on_generate=normalize_scale_only)
+    service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
+
+    result = await service.start(command())
+
+    assert result.status == "completed"
+    assert repo.draft["revision"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field",
+    (
+        "current_planning_hash",
+        "current_seed_hash",
+        "current_creation_hash",
+        "current_bible_hash",
+        "story_block_hash",
+    ),
+)
+async def test_current_planning_or_baseline_drift_expires_without_draft_write(field):
+    repo = FakeRepository()
+
+    def mutate():
+        repo.outline[field] = "9" * 64
+
+    gateway = FakeGateway(on_generate=mutate)
+    service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
+
+    result = await service.start(command())
+
+    assert result.status == "expired"
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "output,code",
     (
         (ChapterDraftProviderError("safe provider boundary"), "DraftProviderFailed"),
@@ -607,6 +794,66 @@ async def test_provider_or_validation_failure_records_fixed_failure(output, code
     assert repo.revisions == []
     assert repo.events[-1]["event_type"] == "failed"
     assert repo.events[-1]["closed_payload"] == {"failureCode": code}
+
+
+@pytest.mark.asyncio
+async def test_unexpected_gateway_exception_is_settled_to_fixed_failure_without_raw_detail():
+    gateway = FakeGateway(ValueError("remote body and secret detail"))
+    service, repo, _, _, _ = make_service(gateway=gateway)
+
+    result = await service.start(command())
+
+    assert result.status == "failed"
+    assert result.failure_code == "DraftProviderFailed"
+    assert next(iter(repo.operations.values()))["status"] == "failed"
+    assert repo.session["active_draft_operation_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_cancellation_is_not_converted_to_provider_failure():
+    gateway = FakeGateway(asyncio.CancelledError())
+    service, repo, _, _, _ = make_service(gateway=gateway)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.start(command())
+    assert next(iter(repo.operations.values()))["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_zero_temperature_is_preserved_for_gateway():
+    repo = FakeRepository()
+    repo.provider["temperature"] = Decimal("0.000")
+    service, repo, gateway, _, _ = make_service(repo=repo)
+
+    result = await service.start(command())
+
+    assert result.status == "completed"
+    assert gateway.calls[0]["generation_config"]["temperature"] == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("temperature", Decimal("NaN")),
+        ("temperature", Decimal("Infinity")),
+        ("temperature", Decimal("-0.1")),
+        ("temperature", True),
+        ("max_output_tokens", 0),
+        ("max_output_tokens", True),
+        ("max_output_tokens", "4500"),
+    ),
+)
+async def test_invalid_provider_generation_config_fails_before_provider(field, value):
+    from backend.services.draft_operations import DraftOperationPreconditionFailed
+
+    service, repo, gateway, _, _ = make_service()
+    repo.provider[field] = value
+
+    with pytest.raises(DraftOperationPreconditionFailed):
+        await service.start(command())
+    assert gateway.calls == []
+    assert repo.operations == {}
 
 
 @pytest.mark.asyncio

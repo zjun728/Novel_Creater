@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 import hashlib
 import re
 import time
@@ -10,10 +12,7 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from backend.domain.json_contracts import canonical_hash
-from backend.gateways.chapter_draft_provider import (
-    ChapterDraftProviderError,
-    ChapterDraftProviderGateway,
-)
+from backend.gateways.chapter_draft_provider import ChapterDraftProviderGateway
 from backend.http_errors import PublicDomainError
 from backend.prompts.chapter_draft import build_chapter_draft_messages
 from backend.security.provider_secrets import (
@@ -48,19 +47,6 @@ _SESSION_IDENTITY_FIELDS = (
     "outline_projection_revision",
     "outline_projection_hash",
     "status",
-)
-_PROVIDER_AUTHORITY_FIELDS = (
-    "binding_revision_id",
-    "binding_revision",
-    "binding_hash",
-    "binding_item_hash",
-    "id",
-    "provider_type",
-    "model_name",
-    "base_url",
-    "api_key",
-    "temperature",
-    "max_output_tokens",
 )
 _STATUSES = frozenset({"starting", "running", "completed", "failed", "expired"})
 _SAFE_FAILURE_CODES = frozenset({"DraftProviderFailed", "DraftProviderResultInvalid"})
@@ -193,7 +179,7 @@ class DraftOperationService:
                 messages=context["messages"],
                 generation_config=self._generation_config(context["provider"]),
             )
-        except ChapterDraftProviderError:
+        except Exception:
             return await self._settle_failure(context, "DraftProviderFailed")
         return await self._settle_success(context, generated)
 
@@ -228,7 +214,7 @@ class DraftOperationService:
                         raise DraftOperationStorageError(
                             "could not expire replayed operation"
                         )
-                    return self._expired_result(existing), None
+                    return self._project_expired(existing), None
                 return self._result(existing), None
 
             if chapter_session.get("status") != "drafting":
@@ -242,6 +228,7 @@ class DraftOperationService:
             authority = await self._read_authority(session, chapter_session, draft)
             manifest = self._manifest(command, authority)
             manifest_hash = canonical_hash(manifest)
+            provider_authority = authority["provider_authority"]
             now = self._clock()
             active = await self.repository.read_active_draft_operation(
                 session, command.chapter_session_id
@@ -277,8 +264,8 @@ class DraftOperationService:
                 "base_working_draft_hash": command.expected_content_hash,
                 "input_manifest": manifest,
                 "input_manifest_hash": manifest_hash,
-                "provider_id": authority["provider"]["id"],
-                "model_name_snapshot": authority["provider"]["model_name"],
+                "provider_id": provider_authority["id"],
+                "model_name_snapshot": provider_authority["model_name"],
                 "result_working_draft_revision": None,
                 "result_content_hash": None,
                 "last_event_sequence": 0,
@@ -310,9 +297,7 @@ class DraftOperationService:
                 "manifest": manifest,
                 "manifest_hash": manifest_hash,
                 "authority": self._authority_snapshot(authority),
-                "provider_authority_hash": self._provider_authority_hash(
-                    authority["provider"]
-                ),
+                "provider_authority_hash": canonical_hash(provider_authority),
                 "provider": dict(authority["provider"]),
                 "messages": build_chapter_draft_messages(
                     operation_type="generate_new",
@@ -509,7 +494,7 @@ class DraftOperationService:
                 session, attempt["id"], int(attempt["fencing_token"]), now
             ):
                 raise DraftOperationStorageError("could not expire elapsed operation")
-            return self._expired_result(attempt)
+            return self._project_expired(attempt)
 
         owned = (
             locked["session"].get("active_draft_operation_id") == attempt["id"]
@@ -538,8 +523,8 @@ class DraftOperationService:
         authority_matches = (
             authority is not None
             and self._authority_snapshot(authority) == context["authority"]
-            and self._provider_authority_hash(authority["provider"])
-            == context["provider_authority_hash"]
+            and canonical_hash(authority["provider_authority"])
+                == context["provider_authority_hash"]
             and canonical_hash(self._manifest(context["command"], authority))
             == context["manifest_hash"]
             and self._draft_matches_command(locked["draft"], context["command"])
@@ -555,7 +540,7 @@ class DraftOperationService:
             now,
         ):
             raise DraftOperationStorageError("could not expire drifted operation")
-        return self._expired_result(attempt)
+        return self._project_expired(attempt)
 
     async def _read_authority(self, session, chapter_session, draft, *, strict=True):
         try:
@@ -577,12 +562,16 @@ class DraftOperationService:
             provider = await self.repository.resolve_writing_provider(
                 session, authoritative_session["project_id"]
             )
+            provider_row = dict(provider)
             authority = {
                 "session": dict(authoritative_session),
                 "outline": self._outline_snapshot(outline),
                 "projection": self._projection_snapshot(projection),
                 "draft": self._draft_snapshot(draft),
-                "provider": dict(provider),
+                "provider": provider_row,
+                "provider_authority": self._normalize_provider_authority(
+                    provider_row
+                ),
             }
             self._validate_authority(authority)
             return authority
@@ -596,35 +585,15 @@ class DraftOperationService:
         session = authority["session"]
         outline = authority["outline"]
         projection = authority["projection"]
-        provider = authority["provider"]
+        provider = authority["provider_authority"]
         if session["status"] != "drafting":
             raise ValueError
-        for session_key, outline_key in (
-            ("chapter_outline_revision_id", "revisionId"),
-            ("chapter_outline_revision", "revision"),
-            ("chapter_outline_hash", "contentHash"),
-            ("planning_revision_id", "planningRevisionId"),
-            ("planning_revision", "planningRevision"),
-            ("planning_hash", "planningHash"),
-            ("outline_canon_revision", "canonRevision"),
-            ("outline_projection_revision", "projectionRevision"),
-            ("outline_projection_hash", "projectionHash"),
-        ):
-            if session[session_key] != outline[outline_key]:
-                raise ValueError
         if (
-            int(session["expected_canon_revision"]) != projection["canonRevision"]
-            or projection["canonRevision"] != projection["projectionRevision"]
+            projection["canonRevision"] != projection["projectionRevision"]
             or outline["canonRevision"] != projection["canonRevision"]
             or outline["projectionRevision"] != projection["projectionRevision"]
             or outline["projectionHash"] != projection["contentHash"]
-            or provider.get("provider_type") != "openai-compatible"
-            or not all(
-                isinstance(provider.get(key), str) and bool(provider[key].strip())
-                for key in ("id", "model_name", "base_url", "api_key")
-            )
-            or int(provider["binding_revision"]) <= 0
-            or _HASH.fullmatch(str(provider["binding_hash"])) is None
+            or outline["planningBaseline"] != outline["currentBaseline"]
         ):
             raise ValueError
         secrets = normalize_provider_secrets((provider["api_key"], provider["base_url"]))
@@ -638,17 +607,114 @@ class DraftOperationService:
     def _outline_snapshot(outline):
         if outline is None:
             raise ValueError
+        planning_baseline = {
+            "selectionRevision": DraftOperationService._positive_int(
+                outline["planning_selection_revision"]
+            ),
+            "seedId": DraftOperationService._nonblank(outline["planning_seed_id"]),
+            "seedRevisionId": DraftOperationService._nonblank(
+                outline["planning_seed_revision_id"]
+            ),
+            "seedHash": DraftOperationService._hash(outline["planning_seed_hash"]),
+            "contractRevision": DraftOperationService._positive_int(
+                outline["planning_contract_revision"]
+            ),
+            "creationContractId": DraftOperationService._nonblank(
+                outline["planning_creation_contract_id"]
+            ),
+            "creationHash": DraftOperationService._hash(
+                outline["planning_creation_hash"]
+            ),
+            "styleContractId": DraftOperationService._nonblank(
+                outline["planning_style_contract_id"]
+            ),
+            "styleHash": DraftOperationService._hash(outline["planning_style_hash"]),
+            "bibleRevision": DraftOperationService._positive_int(
+                outline["planning_bible_revision"]
+            ),
+            "bibleRevisionId": DraftOperationService._nonblank(
+                outline["planning_bible_revision_id"]
+            ),
+            "bibleHash": DraftOperationService._hash(outline["planning_bible_hash"]),
+        }
+        current_baseline = {
+            "selectionRevision": DraftOperationService._positive_int(
+                outline["current_selection_revision"]
+            ),
+            "seedId": DraftOperationService._nonblank(outline["current_seed_id"]),
+            "seedRevisionId": DraftOperationService._nonblank(
+                outline["current_seed_revision_id"]
+            ),
+            "seedHash": DraftOperationService._hash(outline["current_seed_hash"]),
+            "contractRevision": DraftOperationService._positive_int(
+                outline["current_contract_revision"]
+            ),
+            "creationContractId": DraftOperationService._nonblank(
+                outline["current_creation_contract_id"]
+            ),
+            "creationHash": DraftOperationService._hash(outline["current_creation_hash"]),
+            "styleContractId": DraftOperationService._nonblank(
+                outline["current_style_contract_id"]
+            ),
+            "styleHash": DraftOperationService._hash(outline["current_style_hash"]),
+            "bibleRevision": DraftOperationService._positive_int(
+                outline["current_bible_revision"]
+            ),
+            "bibleRevisionId": DraftOperationService._nonblank(
+                outline["current_bible_revision_id"]
+            ),
+            "bibleHash": DraftOperationService._hash(outline["current_bible_hash"]),
+        }
+        content = outline["chapter_outline"]
+        if not isinstance(content, Mapping):
+            raise ValueError
         return {
-            "revisionId": outline["chapter_outline_revision_id"],
-            "revision": int(outline["chapter_outline_revision"]),
-            "contentHash": outline["chapter_outline_hash"],
-            "planningRevisionId": outline["planning_revision_id"],
-            "planningRevision": int(outline["planning_revision"]),
-            "planningHash": outline["planning_hash"],
-            "canonRevision": int(outline["canon_revision"]),
-            "projectionRevision": int(outline["projection_revision"]),
-            "projectionHash": outline["projection_hash"],
-            "content": outline["chapter_outline"],
+            "revisionId": DraftOperationService._nonblank(
+                outline["chapter_outline_revision_id"]
+            ),
+            "revision": DraftOperationService._positive_int(
+                outline["chapter_outline_revision"]
+            ),
+            "contentHash": DraftOperationService._hash(
+                outline["chapter_outline_hash"]
+            ),
+            "planningRevisionId": DraftOperationService._nonblank(
+                outline["planning_revision_id"]
+            ),
+            "planningRevision": DraftOperationService._positive_int(
+                outline["planning_revision"]
+            ),
+            "planningHash": DraftOperationService._hash(outline["planning_hash"]),
+            "currentPlanning": {
+                "revisionId": DraftOperationService._nonblank(
+                    outline["current_planning_revision_id"]
+                ),
+                "revision": DraftOperationService._positive_int(
+                    outline["current_planning_revision"]
+                ),
+                "contentHash": DraftOperationService._hash(
+                    outline["current_planning_hash"]
+                ),
+            },
+            "planningBaseline": planning_baseline,
+            "currentBaseline": current_baseline,
+            "storyBlock": {
+                "id": DraftOperationService._nonblank(outline["story_block_id"]),
+                "revision": DraftOperationService._positive_int(
+                    outline["story_block_revision"]
+                ),
+                "contentHash": DraftOperationService._hash(
+                    outline["story_block_hash"]
+                ),
+            },
+            "canonRevision": DraftOperationService._nonnegative_int(
+                outline["canon_revision"]
+            ),
+            "projectionRevision": DraftOperationService._nonnegative_int(
+                outline["projection_revision"]
+            ),
+            "projectionHash": DraftOperationService._hash(outline["projection_hash"]),
+            "content": dict(content),
         }
 
     @staticmethod
@@ -656,9 +722,13 @@ class DraftOperationService:
         if projection is None:
             raise ValueError
         return {
-            "canonRevision": int(projection["canon_revision_number"]),
-            "projectionRevision": int(projection["projection_revision_number"]),
-            "contentHash": projection["content_hash"],
+            "canonRevision": DraftOperationService._nonnegative_int(
+                projection["canon_revision_number"]
+            ),
+            "projectionRevision": DraftOperationService._nonnegative_int(
+                projection["projection_revision_number"]
+            ),
+            "contentHash": DraftOperationService._hash(projection["content_hash"]),
         }
 
     @staticmethod
@@ -666,13 +736,14 @@ class DraftOperationService:
         if draft is None:
             raise ValueError
         return {
-            "id": draft["id"],
-            "revision": int(draft["revision"]),
-            "contentHash": draft["content_hash"],
+            "id": DraftOperationService._nonblank(draft["id"]),
+            "revision": DraftOperationService._positive_int(draft["revision"]),
+            "contentHash": DraftOperationService._hash(draft["content_hash"]),
         }
 
     @classmethod
     def _authority_snapshot(cls, authority):
+        provider = authority["provider_authority"]
         return {
             "session": {
                 key: authority["session"].get(key)
@@ -682,14 +753,14 @@ class DraftOperationService:
             "projection": authority["projection"],
             "draft": authority["draft"],
             "binding": {
-                "revisionId": authority["provider"].get("binding_revision_id"),
-                "revision": authority["provider"].get("binding_revision"),
-                "contentHash": authority["provider"].get("binding_hash"),
-                "itemHash": authority["provider"].get("binding_item_hash"),
+                "revisionId": provider["binding_revision_id"],
+                "revision": provider["binding_revision"],
+                "contentHash": provider["binding_hash"],
+                "itemHash": provider["binding_item_hash"],
             },
             "model": {
-                "providerId": authority["provider"].get("id"),
-                "modelName": authority["provider"].get("model_name"),
+                "providerId": provider["id"],
+                "modelName": provider["model_name"],
             },
         }
 
@@ -730,21 +801,85 @@ class DraftOperationService:
             and draft.get("content_hash") == command.expected_content_hash
         )
 
-    @staticmethod
-    def _provider_authority_hash(provider):
-        try:
-            return canonical_hash({
-                key: provider[key] for key in _PROVIDER_AUTHORITY_FIELDS
-            })
-        except (KeyError, TypeError, ValueError):
-            return None
+    @classmethod
+    def _normalize_provider_authority(cls, provider):
+        if not isinstance(provider, Mapping):
+            raise ValueError
+        temperature_value = provider["temperature"]
+        if temperature_value is None:
+            temperature = Decimal("0.82")
+        elif isinstance(temperature_value, bool) or not isinstance(
+            temperature_value, (Decimal, int, float)
+        ):
+            raise ValueError
+        else:
+            try:
+                temperature = Decimal(str(temperature_value))
+            except (InvalidOperation, ValueError, TypeError):
+                raise ValueError from None
+        if not temperature.is_finite() or temperature < 0:
+            raise ValueError
+        if temperature == 0:
+            temperature_text = "0"
+        else:
+            temperature_text = format(temperature.normalize(), "f")
+        max_output_tokens = provider["max_output_tokens"]
+        if (
+            isinstance(max_output_tokens, bool)
+            or not isinstance(max_output_tokens, int)
+            or max_output_tokens <= 0
+        ):
+            raise ValueError
+        normalized = {
+            "binding_revision_id": cls._nonblank(provider["binding_revision_id"]),
+            "binding_revision": cls._positive_int(provider["binding_revision"]),
+            "binding_hash": cls._hash(provider["binding_hash"]),
+            "binding_item_hash": cls._hash(provider["binding_item_hash"]),
+            "id": cls._nonblank(provider["id"]),
+            "provider_type": cls._nonblank(provider["provider_type"]),
+            "model_name": cls._nonblank(provider["model_name"]),
+            "base_url": cls._nonblank(provider["base_url"]),
+            "api_key": cls._nonblank(provider["api_key"]),
+            "temperature": temperature_text,
+            "max_output_tokens": max_output_tokens,
+        }
+        if normalized["provider_type"] != "openai-compatible":
+            raise ValueError
+        canonical_hash(normalized)
+        return normalized
+
+    @classmethod
+    def _generation_config(cls, provider):
+        authority = cls._normalize_provider_authority(provider)
+        return {
+            "temperature": float(Decimal(authority["temperature"])),
+            "maxOutputTokens": authority["max_output_tokens"],
+        }
 
     @staticmethod
-    def _generation_config(provider):
-        return {
-            "temperature": float(provider.get("temperature") or 0.82),
-            "maxOutputTokens": int(provider.get("max_output_tokens") or 4500),
-        }
+    def _nonblank(value):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError
+        value.encode("utf-8")
+        return value.strip()
+
+    @staticmethod
+    def _hash(value):
+        if not isinstance(value, str) or _HASH.fullmatch(value) is None:
+            raise ValueError
+        return value
+
+    @staticmethod
+    def _positive_int(value):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError
+        return value
+
+    @staticmethod
+    def _nonnegative_int(value):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError
+        return value
 
     def _new_id(self):
         value = self._id()
@@ -779,20 +914,16 @@ class DraftOperationService:
         }
 
     @staticmethod
-    def _expired_result(attempt):
-        return DraftOperationResult(
-            operation_id=attempt["id"],
-            project_id=attempt["project_id"],
-            chapter_session_id=attempt["chapter_session_id"],
-            operation_type=attempt.get("operation_type", "generate_new"),
-            status="expired",
-            last_event_sequence=int(attempt.get("last_event_sequence") or 1),
-            result_working_draft_revision=None,
-            result_content_hash=None,
-            failure_code=None,
-            provider_id=attempt.get("provider_id", "unavailable"),
-            model_name=attempt.get("model_name_snapshot", "unavailable"),
-        )
+    def _project_expired(attempt):
+        DraftOperationService._result(attempt)
+        return DraftOperationService._result({
+            **attempt,
+            "status": "expired",
+            "active_slot": None,
+            "result_working_draft_revision": None,
+            "result_content_hash": None,
+            "failure_code": None,
+        })
 
     @staticmethod
     def _result(row):
@@ -808,23 +939,36 @@ class DraftOperationService:
             failure_code = row.get("failure_code")
             provider_id = row["provider_id"]
             model_name = row["model_name_snapshot"]
+            base_revision = DraftOperationService._positive_int(
+                row["base_working_draft_revision"]
+            )
+            DraftOperationService._hash(row["base_working_draft_hash"])
+            expected_sequence = 2 if status in {"completed", "failed"} else 1
             if (
                 not DraftOperationService._canonical_uuid(row["id"])
                 or not DraftOperationService._canonical_uuid(row["project_id"])
                 or not DraftOperationService._canonical_uuid(row["chapter_session_id"])
                 or operation_type != "generate_new"
                 or status not in _STATUSES
-                or last_event_sequence < 0
+                or last_event_sequence != expected_sequence
                 or not isinstance(provider_id, str)
                 or not provider_id.strip()
                 or not isinstance(model_name, str)
                 or not model_name.strip()
+                or (
+                    status in {"starting", "running"}
+                    and row.get("active_slot") != 1
+                )
+                or (
+                    status in {"completed", "failed", "expired"}
+                    and row.get("active_slot") is not None
+                )
             ):
                 raise ValueError
             if status == "completed":
                 if (
                     result_revision is None
-                    or result_revision <= int(row["base_working_draft_revision"])
+                    or result_revision != base_revision + 1
                     or not isinstance(result_hash, str)
                     or _HASH.fullmatch(result_hash) is None
                     or failure_code is not None
