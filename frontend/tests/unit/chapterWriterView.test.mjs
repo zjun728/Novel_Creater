@@ -13,7 +13,8 @@ test('writer view has one controller-owned plain-text working draft loop', async
   assert.match(view, /components\/writer\/PlainTextDraftEditor\.vue/)
   assert.match(view, /createWorkingDraftAutosave/)
   assert.match(view, /createChapterWriterController/)
-  assert.match(view, /chapterSessionStore\.commandBusy/)
+  assert.match(view, /writeBusy:\s*\(\)\s*=>\s*chapterSessionStore\.commandBusy/)
+  assert.doesNotMatch(view, /writeBusy:\s*\(\)\s*=>\s*chapterSessionStore\.writeBusy/)
   assert.match(view, /controller\.resetContext\(\)/)
   assert.match(view, /controller\.setAuthorInstruction/)
   assert.match(view, /controller\.setSelection/)
@@ -36,5 +37,11 @@ test('writer view has one controller-owned plain-text working draft loop', async
   for (const label of ['正在暂存', '已暂存', '暂存失败', '与服务端版本冲突']) {
     assert.match(editor, new RegExp(label))
   }
+  assert.match(editor, /请先复制当前正文，再刷新页面重新加载服务端版本。/)
+  assert.match(editor, /class="draft-status" aria-live="polite"/)
+  assert.doesNotMatch(editor, /class="draft-persistence" aria-live=/)
+  const conflictBranch = editor.match(/<template v-if="status === 'conflict'">[\s\S]*?<\/template>/)?.[0]
+  assert.ok(conflictBranch)
+  assert.doesNotMatch(conflictBranch, /retry|reload|reset|disabled/)
   assert.match(editor, /@click="emit\('retry'\)"/)
 })

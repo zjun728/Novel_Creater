@@ -69,13 +69,18 @@ defineExpose({ locateRange })
     @keyup="emitSelection($event.target)"
     @mouseup="emitSelection($event.target)"
   />
-  <div class="draft-persistence" aria-live="polite">
+  <div class="draft-persistence">
     <span>{{ characterCount }} 字</span>
-      <span v-if="status === 'conflict'">与服务端版本冲突</span>
-    <span v-else-if="status === 'failed'">暂存失败，<button type="button" :disabled="disabled" @click="emit('retry')">重试</button></span>
-    <span v-else-if="status === 'saving'">正在暂存</span>
-    <span v-else-if="dirty">未暂存</span>
-    <span v-else>已暂存 {{ savedAt }}</span>
+    <span class="draft-status" aria-live="polite">
+      <template v-if="status === 'conflict'">
+        <span>与服务端版本冲突</span>
+        <span>请先复制当前正文，再刷新页面重新加载服务端版本。</span>
+      </template>
+      <span v-else-if="status === 'failed'">暂存失败，<button type="button" :disabled="disabled" @click="emit('retry')">重试</button></span>
+      <span v-else-if="status === 'saving'">正在暂存</span>
+      <span v-else-if="dirty">未暂存</span>
+      <span v-else>已暂存 {{ savedAt }}</span>
+    </span>
   </div>
 </template>
 
@@ -97,6 +102,7 @@ defineExpose({ locateRange })
 .plain-text-draft-editor:focus { border-color: #967548; box-shadow: 0 0 0 3px rgba(150, 117, 72, .14); }
 .plain-text-draft-editor:disabled { color: #81776a; background: #f1ebdf; cursor: not-allowed; }
 .draft-persistence { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; color: #82786b; font-size: 12px; }
+.draft-status { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; text-align: right; }
 .draft-persistence button { border: 0; padding: 0; color: #8b5c25; background: transparent; font: inherit; font-weight: 700; cursor: pointer; text-decoration: underline; }
 .draft-persistence button:disabled { color: #9d9387; cursor: not-allowed; }
 </style>
