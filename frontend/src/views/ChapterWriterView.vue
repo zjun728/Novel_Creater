@@ -131,7 +131,9 @@ async function generateWorkingDraft() {
       actionError.value = '当前工作稿未能安全暂存，请稍后重试。'
     }
   } catch {
-    // The controller exposes only the fixed, public-safe operation state.
+    if (!controller.operationStatusText.value) {
+      actionError.value = '当前工作稿未能完成生成，请检查作者要求后重试。'
+    }
   }
 }
 
@@ -297,7 +299,7 @@ onBeforeUnmount(() => {
 
           <div class="generation-box">
             <label for="author-instruction">作者临时要求</label>
-            <n-input id="author-instruction" :value="controller.authorInstruction.value" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="可选：例如“多一点市井对话”“情绪更压迫”“不要写成设定说明”。" :disabled="commandDisabled" @update:value="controller.setAuthorInstruction" />
+            <n-input id="author-instruction" :value="controller.authorInstruction.value" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" :maxlength="2000" show-count placeholder="可选：例如“多一点市井对话”“情绪更压迫”“不要写成设定说明”。" :disabled="commandDisabled" @update:value="controller.setAuthorInstruction" />
           </div>
 
           <div class="editor-actions">

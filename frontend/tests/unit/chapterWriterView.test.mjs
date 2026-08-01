@@ -4,6 +4,19 @@ import { readFile } from 'node:fs/promises'
 
 const source = path => readFile(new URL(`../../src/${path}`, import.meta.url), 'utf8')
 
+function functionBody(moduleSource, signature) {
+  const start = moduleSource.indexOf(signature)
+  assert.notEqual(start, -1)
+  const open = moduleSource.indexOf('{', start + signature.length)
+  let depth = 0
+  for (let index = open; index < moduleSource.length; index += 1) {
+    if (moduleSource[index] === '{') depth += 1
+    if (moduleSource[index] === '}') depth -= 1
+    if (depth === 0) return moduleSource.slice(open + 1, index)
+  }
+  assert.fail(`unterminated function: ${signature}`)
+}
+
 test('writer view has one controller-owned plain-text working draft loop', async () => {
   const [view, editor] = await Promise.all([
     source('views/ChapterWriterView.vue'),
@@ -83,4 +96,38 @@ test('route loading resets coordinator context synchronously before any awaited 
   assert.ok(body)
   assert.ok(body.indexOf('controller.resetContext()') >= 0)
   assert.ok(body.indexOf('controller.resetContext()') < body.indexOf('await '))
+})
+
+test('local generation rejection shows one fixed safe fallback only without an operation status', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const body = functionBody(view, 'async function generateWorkingDraft()')
+  const invoke = new Function(
+    'controller',
+    'actionError',
+    `return (async () => {${body}})()`,
+  )
+  const rawFailure = new Error('raw provider and authority detail')
+  const actionError = { value: 'stale' }
+  const controller = {
+    operationStatusText: { value: '' },
+    async generateWorkingDraft() { throw rawFailure },
+  }
+
+  await invoke(controller, actionError)
+
+  assert.equal(actionError.value, '当前工作稿未能完成生成，请检查作者要求后重试。')
+  assert.doesNotMatch(actionError.value, /raw|provider|authority|detail/i)
+
+  actionError.value = 'stale'
+  controller.operationStatusText.value = '生成失败'
+  await invoke(controller, actionError)
+  assert.equal(actionError.value, '')
+})
+
+test('author instruction input enforces the coordinator 2000 character boundary', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const input = view.match(/<n-input id="author-instruction"[^>]*\/>/)?.[0]
+  assert.ok(input)
+  assert.match(input, /:maxlength="2000"/)
+  assert.match(input, /\sshow-count(?:\s|\/>)/)
 })
