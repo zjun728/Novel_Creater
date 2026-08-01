@@ -774,21 +774,25 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
     for contract in (
         "working_draft_id char(36) not null",
         "working_draft_revision int not null",
-        "snapshot_role varchar(16) not null",
-        "replacement_reason varchar(32) not null",
+        "snapshot_role varchar(24) not null",
+        "replacement_reason varchar(40) not null",
         "source_operation_id char(36) not null",
-        "unique key uq_working_draft_revision_recovery "
+        "unique key uq_working_draft_recovery "
         "(chapter_session_id, working_draft_revision, snapshot_role)",
         "foreign key (working_draft_id) references working_drafts(id) on delete cascade",
         "check (working_draft_revision > 0)",
         "check (snapshot_role in ('before','after'))",
-        "check (replacement_reason in ('generate_new','rewrite','expand','compress'))",
+        "check (replacement_reason in ('generate_new'))",
     ):
         assert contract in revisions
+    assert "uq_working_draft_revision_identity" not in revisions
+    assert "uq_working_draft_revision_recovery" not in revisions
+    assert revisions.count("unique key") == 1
+    assert "foreign key (project_id) references projects(id)" not in revisions
 
     operations = _table_statement("draft_operation_attempts")
     for contract in (
-        "operation_id char(36) not null",
+        "operation_type varchar(40) not null",
         "idempotency_key varchar(64) not null",
         "request_fingerprint char(64) not null",
         "active_slot tinyint null",
@@ -801,9 +805,10 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "provider_id char(36) not null",
         "model_name_snapshot varchar(200) not null",
         "result_working_draft_revision int null",
-        "result_working_draft_hash char(64) null",
-        "last_sequence_num int not null",
+        "result_content_hash char(64) null",
+        "last_event_sequence int not null",
         "failure_code varchar(64) null",
+        "completed_at bigint null",
         "unique key uq_draft_operation_idempotency "
         "(chapter_session_id, idempotency_key)",
         "unique key uq_draft_operation_active_slot "
@@ -816,10 +821,34 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "check (active_slot is null or active_slot = 1)",
         "check (fencing_token > 0)",
         "check (base_working_draft_revision > 0)",
-        "check (last_sequence_num >= 0)",
+        "check (last_event_sequence >= 0)",
+        "check (operation_type = 'generate_new')",
         "check (status in ('starting','running','completed','failed','expired'))",
+        "status in ('starting','running') and active_slot is not null "
+        "and active_slot = 1 and result_working_draft_revision is null "
+        "and result_content_hash is null and failure_code is null "
+        "and completed_at is null",
+        "status = 'completed' and active_slot is null "
+        "and result_working_draft_revision is not null "
+        "and result_content_hash is not null and failure_code is null "
+        "and completed_at is not null",
+        "status = 'failed' and active_slot is null "
+        "and result_working_draft_revision is null "
+        "and result_content_hash is null and failure_code is not null "
+        "and completed_at is not null",
+        "status = 'expired' and active_slot is null "
+        "and result_working_draft_revision is null "
+        "and result_content_hash is null and failure_code is null "
+        "and completed_at is not null",
     ):
         assert contract in operations
+    for forbidden in (
+        "operation_id char(36)",
+        "uq_draft_operation_identity",
+        "result_working_draft_hash",
+        "last_sequence_num",
+    ):
+        assert forbidden not in operations
     for forbidden in (
         "provider_body",
         "provider_key",
@@ -837,7 +866,7 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "closed_payload_json json null",
         "unique key uq_draft_operation_event_sequence "
         "(draft_operation_id, sequence_num)",
-        "foreign key (draft_operation_id) references draft_operation_attempts(operation_id) "
+        "foreign key (draft_operation_id) references draft_operation_attempts(id) "
         "on delete cascade",
         "check (sequence_num > 0)",
         "check (event_type in ('started','completed','failed'))",
