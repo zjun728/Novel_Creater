@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
+import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,22 +17,68 @@ from backend.services.draft_operations import (
 
 
 PROJECT_ID = "10000000-0000-0000-0000-000000000001"
+OTHER_PROJECT_ID = "10000000-0000-0000-0000-000000000002"
 SESSION_ID = "20000000-0000-0000-0000-000000000001"
 OPERATION_ID = "30000000-0000-0000-0000-000000000001"
 IDEMPOTENCY_KEY = "40000000-0000-0000-0000-000000000001"
+START_EVENT_ID = "50000000-0000-0000-0000-000000000001"
+TERMINAL_EVENT_ID = "50000000-0000-0000-0000-000000000002"
 HASH = "a" * 64
+
+
+def stored_operation(**overrides):
+    row = {
+        "id": OPERATION_ID,
+        "project_id": PROJECT_ID,
+        "chapter_session_id": SESSION_ID,
+        "operation_type": "generate_new",
+        "status": "completed",
+        "active_slot": None,
+        "last_event_sequence": 2,
+        "base_working_draft_revision": 1,
+        "base_working_draft_hash": HASH,
+        "result_working_draft_revision": 2,
+        "result_content_hash": HASH,
+        "failure_code": None,
+        "provider_id": "provider-1",
+        "model_name_snapshot": "fake-model",
+    }
+    row.update(overrides)
+    return row
+
+
+def stored_events():
+    events = [
+        {
+            "id": START_EVENT_ID,
+            "project_id": PROJECT_ID,
+            "draft_operation_id": OPERATION_ID,
+            "sequence_num": 1,
+            "event_type": "started",
+            "closed_payload_json": None,
+            "created_at": 100,
+        },
+        {
+            "id": TERMINAL_EVENT_ID,
+            "project_id": PROJECT_ID,
+            "draft_operation_id": OPERATION_ID,
+            "sequence_num": 2,
+            "event_type": "completed",
+            "closed_payload_json": json.dumps({
+                "resultWorkingDraftRevision": 2,
+                "resultContentHash": HASH,
+            }),
+            "created_at": 101,
+        },
+    ]
+    return events
 
 
 class FakeDraftOperationService:
     def __init__(self):
         self.commands = []
         self.error = None
-
-    async def start(self, command):
-        self.commands.append(command)
-        if self.error is not None:
-            raise self.error
-        return DraftOperationResult(
+        self.result = DraftOperationResult(
             operation_id=OPERATION_ID,
             project_id=PROJECT_ID,
             chapter_session_id=SESSION_ID,
@@ -44,11 +92,19 @@ class FakeDraftOperationService:
             model_name="fake-model",
         )
 
+    async def start(self, command):
+        self.commands.append(command)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
 
 class FakeDraftOperationRepository:
     def __init__(self):
         self.operation_reads = []
         self.event_reads = []
+        self.operation = stored_operation()
+        self.events = stored_events()
 
     async def read_draft_operation(self, session, project_id, session_id, operation_id):
         self.operation_reads.append((project_id, session_id, operation_id))
@@ -56,42 +112,16 @@ class FakeDraftOperationRepository:
             PROJECT_ID, SESSION_ID, OPERATION_ID,
         ):
             return None
-        return {
-            "id": OPERATION_ID,
-            "project_id": PROJECT_ID,
-            "chapter_session_id": SESSION_ID,
-            "operation_type": "generate_new",
-            "status": "completed",
-            "last_event_sequence": 2,
-            "result_working_draft_revision": 2,
-            "result_content_hash": HASH,
-            "failure_code": None,
-            "provider_id": "provider-1",
-            "model_name_snapshot": "fake-model",
-        }
+        return dict(self.operation)
 
     async def list_draft_operation_events(
         self, session, operation_id, after_sequence, limit,
     ):
         self.event_reads.append((operation_id, after_sequence, limit))
         return [
-            {
-                "sequence_num": 1,
-                "event_type": "started",
-                "closed_payload_json": None,
-                "created_at": 100,
-                "project_id": PROJECT_ID,
-            },
-            {
-                "sequence_num": 2,
-                "event_type": "completed",
-                "closed_payload_json": (
-                    '{"resultWorkingDraftRevision":2,'
-                    f'"resultContentHash":"{HASH}"}}'
-                ),
-                "created_at": 101,
-                "project_id": PROJECT_ID,
-            },
+            dict(event)
+            for event in self.events
+            if event["sequence_num"] > after_sequence
         ]
 
 
@@ -218,6 +248,59 @@ def test_create_formal_draft_operation_hides_internal_provider_and_storage_error
         assert "LEAK-SENTINEL" not in response.text
 
 
+def test_create_formal_draft_operation_rejects_wrong_owner_or_malformed_service_result():
+    client, service, _ = make_client()
+
+    for result in (
+        replace(service.result, project_id=OTHER_PROJECT_ID),
+        object(),
+    ):
+        service.result = result
+        response = client.post(
+            operation_path().rsplit("/", 1)[0], json=create_body(),
+        )
+
+        assert response.status_code == 502
+        assert response.json()["code"] == "DraftOperationUnavailable"
+
+
+def test_create_formal_draft_operation_rejects_duplicate_raw_json_members():
+    client, service, _ = make_client()
+    body = json.dumps(
+        create_body(), separators=(",", ":"), ensure_ascii=False,
+    )
+    duplicate_top_level = body.replace(
+        '"operationType":"generate_new"',
+        '"operationType":"generate_new","operationType":"generate_new"',
+    )
+    duplicate_nested = body.replace(
+        '"authorInstruction":"增加人物之间的试探"',
+        '"authorInstruction":{"hint":1,"hint":2}',
+    )
+    nonfinite_number = body.replace(
+        '"expectedWorkingDraftRevision":1',
+        '"expectedWorkingDraftRevision":NaN',
+    )
+
+    for raw_json in (duplicate_top_level, duplicate_nested, nonfinite_number):
+        response = client.post(
+            operation_path().rsplit("/", 1)[0],
+            content=raw_json.encode("utf-8"),
+            headers={"content-type": "application/json"},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "DraftOperationRequestInvalid"
+    invalid_utf8 = client.post(
+        operation_path().rsplit("/", 1)[0],
+        content=b"\xff",
+        headers={"content-type": "application/json"},
+    )
+    assert invalid_utf8.status_code == 422
+    assert invalid_utf8.json()["code"] == "DraftOperationRequestInvalid"
+    assert service.commands == []
+
+
 def test_formal_operation_reads_are_owner_scoped_and_never_start_provider_work():
     client, service, repository = make_client()
 
@@ -252,6 +335,101 @@ def test_formal_operation_reads_are_owner_scoped_and_never_start_provider_work()
     assert repository.event_reads == [(OPERATION_ID, 0, 100)]
 
 
+def test_formal_operation_status_fails_closed_for_cross_owner_or_incomplete_stored_row():
+    client, _, repository = make_client()
+
+    for mutation in (
+        lambda: repository.operation.update(project_id=OTHER_PROJECT_ID),
+        lambda: repository.operation.pop("base_working_draft_hash"),
+        lambda: repository.operation.pop("active_slot"),
+    ):
+        repository.operation = stored_operation()
+        mutation()
+        response = client.get(operation_path())
+
+        assert response.status_code == 404
+        assert response.json()["code"] == "DraftOperationNotFound"
+
+
+def test_formal_operation_events_reject_cross_owner_or_invalid_b1_terminal_history():
+    client, _, repository = make_client()
+
+    invalid_events = []
+    cross_owner = stored_events()
+    cross_owner[1]["project_id"] = OTHER_PROJECT_ID
+    invalid_events.append(cross_owner)
+    cross_operation = stored_events()
+    cross_operation[1]["draft_operation_id"] = (
+        "30000000-0000-0000-0000-000000000099"
+    )
+    invalid_events.append(cross_operation)
+    malformed_event_id = stored_events()
+    malformed_event_id[1]["id"] = "not-a-uuid"
+    invalid_events.append(malformed_event_id)
+    invalid_events.append(list(reversed(stored_events())))
+    wrong_terminal = stored_events()
+    wrong_terminal[1].update(
+        event_type="failed",
+        closed_payload_json=json.dumps({"failureCode": "DraftProviderFailed"}),
+    )
+    invalid_events.append(wrong_terminal)
+    wrong_result = stored_events()
+    wrong_result[1]["closed_payload_json"] = json.dumps({
+        "resultWorkingDraftRevision": 2,
+        "resultContentHash": "b" * 64,
+    })
+    invalid_events.append(wrong_result)
+    invalid_events.append(stored_events() * 51)
+
+    for events in invalid_events:
+        repository.events = events
+        response = client.get(f"{operation_path()}/events?after=0")
+
+        assert response.status_code == 404
+        assert response.json()["code"] == "DraftOperationNotFound"
+
+
+def test_formal_operation_events_require_failure_payload_to_match_stored_result():
+    client, _, repository = make_client()
+    repository.operation = stored_operation(
+        status="failed",
+        result_working_draft_revision=None,
+        result_content_hash=None,
+        failure_code="DraftProviderFailed",
+    )
+    repository.events = stored_events()
+    repository.events[1].update(
+        event_type="failed",
+        closed_payload_json=json.dumps({
+            "failureCode": "DraftProviderResultInvalid",
+        }),
+    )
+
+    response = client.get(f"{operation_path()}/events?after=0")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "DraftOperationNotFound"
+
+
+def test_formal_operation_events_return_only_the_strict_cursor_suffix():
+    client, _, repository = make_client()
+
+    terminal_only = client.get(f"{operation_path()}/events?after=1")
+    exhausted = client.get(f"{operation_path()}/events?after=2")
+
+    assert terminal_only.status_code == 200
+    assert terminal_only.json()["events"] == [{
+        "sequence": 2,
+        "type": "completed",
+        "createdAt": 101,
+        "resultWorkingDraftRevision": 2,
+        "resultContentHash": HASH,
+    }]
+    assert exhausted.status_code == 200
+    assert exhausted.json()["events"] == []
+    assert repository.event_reads == [(OPERATION_ID, 1, 100), (OPERATION_ID, 2, 100)]
+
+
 def test_formal_operation_read_rejects_noncanonical_owner_before_repository_access():
     client, service, repository = make_client()
 
@@ -269,7 +447,9 @@ def test_formal_operation_read_rejects_noncanonical_owner_before_repository_acce
 def test_formal_operation_event_cursor_rejects_invalid_values_and_old_post_is_gone():
     client, _, repository = make_client()
 
-    for after in ("-1", "1.0", "secret-shaped-token"):
+    for after in (
+        "-1", "1.0", "secret-shaped-token", "2147483648", "9" * 5000,
+    ):
         response = client.get(f"{operation_path()}/events?after={after}")
         assert response.status_code == 422
         assert response.json()["code"] == "DraftOperationRequestInvalid"

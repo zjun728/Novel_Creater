@@ -5,7 +5,7 @@ import re
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from backend.database import connection, transaction
@@ -48,6 +48,8 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_DRAFT_FAILURE_CODES = frozenset({
     "DraftProviderFailed", "DraftProviderResultInvalid",
 })
+_DRAFT_OPERATION_CREATE_BODY_MAX_BYTES = 12 * 1024
+_DRAFT_OPERATION_EVENT_CURSOR_MAX = 2_147_483_647
 
 
 def get_chapter_session_service() -> ChapterSessionService:
@@ -205,26 +207,40 @@ def _public_draft_operation(result: DraftOperationResult):
     }
 
 
-def _operation_result_from_row(row: dict) -> DraftOperationResult:
+def _require_closed_draft_operation(
+    result: object,
+    project_id: str,
+    chapter_session_id: str,
+    operation_id: str | None,
+    error_type,
+) -> DraftOperationResult:
     try:
-        status = row["status"]
-        operation_type = row["operation_type"]
-        result_revision = row["result_working_draft_revision"]
-        result_hash = row["result_content_hash"]
-        failure_code = row["failure_code"]
+        if not isinstance(result, DraftOperationResult):
+            raise ValueError
+        status = result.status
+        result_revision = result.result_working_draft_revision
+        result_hash = result.result_content_hash
+        failure_code = result.failure_code
         expected_sequence = 2 if status in {"completed", "failed"} else 1
         if (
-            not _canonical_uuid(row["id"])
-            or not _canonical_uuid(row["project_id"])
-            or not _canonical_uuid(row["chapter_session_id"])
-            or operation_type != "generate_new"
+            not _canonical_uuid(result.operation_id)
+            or not _canonical_uuid(result.project_id)
+            or not _canonical_uuid(result.chapter_session_id)
+            or result.project_id != project_id
+            or result.chapter_session_id != chapter_session_id
+            or (
+                operation_id is not None
+                and result.operation_id != operation_id
+            )
+            or result.operation_type != "generate_new"
             or status not in {"starting", "running", "completed", "failed", "expired"}
-            or isinstance(row["last_event_sequence"], bool)
-            or int(row["last_event_sequence"]) != expected_sequence
-            or not isinstance(row["provider_id"], str)
-            or not row["provider_id"].strip()
-            or not isinstance(row["model_name_snapshot"], str)
-            or not row["model_name_snapshot"].strip()
+            or isinstance(result.last_event_sequence, bool)
+            or not isinstance(result.last_event_sequence, int)
+            or result.last_event_sequence != expected_sequence
+            or not isinstance(result.provider_id, str)
+            or not result.provider_id.strip()
+            or not isinstance(result.model_name, str)
+            or not result.model_name.strip()
         ):
             raise ValueError
         if status == "completed":
@@ -246,70 +262,145 @@ def _operation_result_from_row(row: dict) -> DraftOperationResult:
                 raise ValueError
         elif result_revision is not None or result_hash is not None or failure_code is not None:
             raise ValueError
-        return DraftOperationResult(
-            operation_id=row["id"],
-            project_id=row["project_id"],
-            chapter_session_id=row["chapter_session_id"],
-            operation_type=operation_type,
-            status=status,
-            last_event_sequence=int(row["last_event_sequence"]),
-            result_working_draft_revision=result_revision,
-            result_content_hash=result_hash,
-            failure_code=failure_code,
-            provider_id=row["provider_id"],
-            model_name=row["model_name_snapshot"],
-        )
+        return result
     except (KeyError, TypeError, ValueError):
-        raise DraftOperationNotFound() from None
+        raise error_type() from None
 
 
-def _event_payload(row: dict):
+def _stored_draft_operation_for_path(
+    row: object,
+    project_id: str,
+    chapter_session_id: str,
+    operation_id: str,
+) -> DraftOperationResult:
+    if not isinstance(row, dict) or "active_slot" not in row:
+        raise DraftOperationNotFound()
     try:
-        sequence = row["sequence_num"]
-        event_type = row["event_type"]
-        created_at = row["created_at"]
-        if (
-            isinstance(sequence, bool)
-            or not isinstance(sequence, int)
-            or sequence < 1
-            or isinstance(created_at, bool)
-            or not isinstance(created_at, int)
-        ):
+        result = DraftOperationService.project_stored_result(row)
+    except DraftOperationStorageError:
+        raise DraftOperationNotFound() from None
+    return _require_closed_draft_operation(
+        result,
+        project_id,
+        chapter_session_id,
+        operation_id,
+        DraftOperationNotFound,
+    )
+
+
+def _reject_duplicate_json_members(pairs):
+    result = {}
+    for key, value in pairs:
+        if not isinstance(key, str) or key in result:
             raise ValueError
-        result = {
-            "sequence": sequence,
-            "type": event_type,
-            "createdAt": created_at,
-        }
-        closed_payload = row["closed_payload_json"]
-        if event_type == "started" and closed_payload is None:
-            return result
-        if not isinstance(closed_payload, str):
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json_number(_value):
+    raise ValueError
+
+
+def _strict_json_object(raw: bytes | str):
+    try:
+        decoded = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        value = json.loads(
+            decoded,
+            object_pairs_hook=_reject_duplicate_json_members,
+            parse_constant=_reject_nonfinite_json_number,
+        )
+        if not isinstance(value, dict):
             raise ValueError
-        payload = json.loads(closed_payload)
-        if event_type == "completed":
+        return value
+    except (
+        AttributeError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        raise ValueError from None
+
+
+async def _read_draft_operation_create_body(request: Request):
+    raw = await request.body()
+    if len(raw) > _DRAFT_OPERATION_CREATE_BODY_MAX_BYTES:
+        raise DraftOperationRequestInvalid()
+    try:
+        return _strict_json_object(raw)
+    except ValueError:
+        raise DraftOperationRequestInvalid() from None
+
+
+def _public_draft_operation_events(
+    rows: object,
+    result: DraftOperationResult,
+    project_id: str,
+    operation_id: str,
+    after_sequence: int,
+):
+    try:
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise ValueError
+        expected_sequences = list(range(
+            after_sequence + 1,
+            result.last_event_sequence + 1,
+        ))
+        if len(rows) != len(expected_sequences):
+            raise ValueError
+        events = []
+        for expected_sequence, row in zip(expected_sequences, rows, strict=True):
+            if not isinstance(row, dict):
+                raise ValueError
+            sequence = row["sequence_num"]
+            event_type = row["event_type"]
+            created_at = row["created_at"]
             if (
-                not isinstance(payload, dict)
-                or set(payload) != {
-                    "resultWorkingDraftRevision", "resultContentHash",
-                }
-                or isinstance(payload["resultWorkingDraftRevision"], bool)
-                or not isinstance(payload["resultWorkingDraftRevision"], int)
-                or payload["resultWorkingDraftRevision"] < 1
-                or not isinstance(payload["resultContentHash"], str)
-                or _HASH.fullmatch(payload["resultContentHash"]) is None
+                not _canonical_uuid(row["id"])
+                or row["project_id"] != project_id
+                or row["draft_operation_id"] != operation_id
+                or isinstance(sequence, bool)
+                or not isinstance(sequence, int)
+                or sequence != expected_sequence
+                or isinstance(created_at, bool)
+                or not isinstance(created_at, int)
+                or created_at < 0
             ):
                 raise ValueError
-            return {**result, **payload}
-        if (
-            event_type == "failed"
-            and isinstance(payload, dict)
-            and set(payload) == {"failureCode"}
-            and payload["failureCode"] in _SAFE_DRAFT_FAILURE_CODES
-        ):
-            return {**result, **payload}
-        raise ValueError
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            payload = row["closed_payload_json"]
+            event = {
+                "sequence": sequence,
+                "type": event_type,
+                "createdAt": created_at,
+            }
+            if sequence == 1:
+                if event_type != "started" or payload is not None:
+                    raise ValueError
+            elif result.status == "completed":
+                if event_type != "completed":
+                    raise ValueError
+                if _strict_json_object(payload) != {
+                    "resultWorkingDraftRevision": (
+                        result.result_working_draft_revision
+                    ),
+                    "resultContentHash": result.result_content_hash,
+                }:
+                    raise ValueError
+                event["resultWorkingDraftRevision"] = (
+                    result.result_working_draft_revision
+                )
+                event["resultContentHash"] = result.result_content_hash
+            elif result.status == "failed":
+                if event_type != "failed" or _strict_json_object(payload) != {
+                    "failureCode": result.failure_code,
+                }:
+                    raise ValueError
+                event["failureCode"] = result.failure_code
+            else:
+                raise ValueError
+            events.append(event)
+        return events
+    except (KeyError, TypeError, ValueError):
         raise DraftOperationNotFound() from None
 
 
@@ -431,11 +522,12 @@ async def save_working_draft(
 
 @router.post("/projects/{pid}/chapter-sessions/{session_id}/draft-operations")
 async def create_draft_operation(
-    pid: str, session_id: str, raw_body: object = Body(...),
+    pid: str, session_id: str, request: Request,
     service=Depends(get_draft_operation_service),
 ):
     try:
         _require_operation_identity(pid, session_id)
+        raw_body = await _read_draft_operation_create_body(request)
         body = CreateDraftOperationBody.model_validate(raw_body)
         result = await service.start(StartDraftOperation(
             project_id=pid,
@@ -450,6 +542,13 @@ async def create_draft_operation(
         raise DraftOperationRequestInvalid() from None
     except Exception as error:
         _raise_public(error)
+    result = _require_closed_draft_operation(
+        result,
+        pid,
+        session_id,
+        None,
+        DraftOperationUnavailable,
+    )
     return _public_draft_operation(result)
 
 
@@ -471,7 +570,10 @@ async def get_draft_operation(
             )
         if row is None:
             raise DraftOperationNotFound()
-        return _public_draft_operation(_operation_result_from_row(row))
+        result = _stored_draft_operation_for_path(
+            row, pid, session_id, operation_id,
+        )
+        return _public_draft_operation(result)
     except Exception as error:
         _raise_public(error)
 
@@ -490,22 +592,31 @@ async def list_draft_operation_events(
 ):
     try:
         _require_operation_identity(pid, session_id, operation_id)
-        if not re.fullmatch(r"(?:0|[1-9][0-9]*)", after):
+        if (
+            not re.fullmatch(r"(?:0|[1-9][0-9]*)", after)
+            or len(after) > 10
+        ):
             raise DraftOperationRequestInvalid()
         after_sequence = int(after)
+        if after_sequence > _DRAFT_OPERATION_EVENT_CURSOR_MAX:
+            raise DraftOperationRequestInvalid()
         async with transaction_factory() as session:
             row = await repository.read_draft_operation(
                 session, pid, session_id, operation_id,
             )
             if row is None:
                 raise DraftOperationNotFound()
-            _operation_result_from_row(row)
+            result = _stored_draft_operation_for_path(
+                row, pid, session_id, operation_id,
+            )
             events = await repository.list_draft_operation_events(
                 session, operation_id, after_sequence, 100,
             )
         return {
             "operationId": operation_id,
-            "events": [_event_payload(event) for event in events],
+            "events": _public_draft_operation_events(
+                events, result, pid, operation_id, after_sequence,
+            ),
         }
     except Exception as error:
         _raise_public(error)
