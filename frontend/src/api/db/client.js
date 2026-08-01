@@ -4,7 +4,7 @@ import { ApiError, parseApiError } from './api-error.js'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
-const CHAPTER_DRAFT_GENERATION_TIMEOUT = 1_200_000
+const DRAFT_OPERATION_TIMEOUT = 1_200_000
 const BIBLE_GENERATION_TIMEOUT = 210_000
 const PLANNING_GENERATION_TIMEOUT = 210_000
 const CHAPTER_OUTLINE_GENERATION_TIMEOUT = 210_000
@@ -1212,6 +1212,202 @@ function chapterOutlineOperationResponse(value, expectedOperationId) {
   }
 }
 
+const DRAFT_OPERATION_STATUSES = new Set([
+  'starting', 'running', 'completed', 'failed', 'expired',
+])
+const DRAFT_OPERATION_FAILURE_CODES = new Set([
+  'DraftProviderFailed', 'DraftProviderResultInvalid',
+])
+const DRAFT_OPERATION_SENSITIVE_KEYS = new Set([
+  'prompt', 'messages', 'provider', 'model', 'apikey', 'baseurl', 'debug',
+  'responsebody',
+])
+const DRAFT_OPERATION_COMMAND_FIELDS = [
+  'operationType', 'expectedWorkingDraftRevision', 'expectedContentHash',
+  'idempotencyKey', 'authorInstruction',
+]
+
+function draftOperationObject(value, label) {
+  if (
+    !value
+    || typeof value !== 'object'
+    || Array.isArray(value)
+    || (Object.getPrototypeOf(value) !== Object.prototype
+      && Object.getPrototypeOf(value) !== null)
+  ) {
+    throw new TypeError(`Invalid draft operation ${label}`)
+  }
+  return value
+}
+
+function draftOperationUuid(value, label) {
+  if (
+    typeof value !== 'string'
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
+  ) {
+    throw new TypeError(`Invalid draft operation ${label}`)
+  }
+  return value
+}
+
+function draftOperationHash(value, label) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new TypeError(`Invalid draft operation ${label}`)
+  }
+  return value
+}
+
+function hasSensitiveDraftOperationKey(value, ancestors = new WeakSet()) {
+  if (!value || typeof value !== 'object') return false
+  if (ancestors.has(value)) return true
+  ancestors.add(value)
+  try {
+    for (const key of Object.keys(value)) {
+      const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase()
+      if (DRAFT_OPERATION_SENSITIVE_KEYS.has(normalized)) return true
+      if (hasSensitiveDraftOperationKey(value[key], ancestors)) return true
+    }
+    return false
+  } finally {
+    ancestors.delete(value)
+  }
+}
+
+function draftOperationCommand(value) {
+  const source = draftOperationObject(value, 'command')
+  if (
+    hasSensitiveDraftOperationKey(source)
+    || Object.keys(source).length !== DRAFT_OPERATION_COMMAND_FIELDS.length
+    || DRAFT_OPERATION_COMMAND_FIELDS.some(field => !Object.hasOwn(source, field))
+    || source.operationType !== 'generate_new'
+    || !Number.isInteger(source.expectedWorkingDraftRevision)
+    || source.expectedWorkingDraftRevision < 1
+    || typeof source.authorInstruction !== 'string'
+    || source.authorInstruction.length > 2000
+  ) {
+    throw new TypeError('Invalid draft operation command')
+  }
+  return Object.freeze({
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: source.expectedWorkingDraftRevision,
+    expectedContentHash: draftOperationHash(
+      source.expectedContentHash,
+      'expected content hash',
+    ),
+    idempotencyKey: draftOperationUuid(source.idempotencyKey, 'idempotency key'),
+    authorInstruction: source.authorInstruction,
+  })
+}
+
+function draftOperationResponse(value, expected = {}) {
+  const source = draftOperationObject(value, 'response')
+  const operationId = draftOperationUuid(source.operationId, 'id')
+  const projectId = draftOperationUuid(source.projectId, 'project id')
+  const chapterSessionId = draftOperationUuid(source.chapterSessionId, 'session id')
+  const status = source.status
+  const sequence = source.lastEventSequence
+  const revision = source.resultWorkingDraftRevision
+  const resultHash = source.resultContentHash
+  const failureCode = source.failureCode
+  const providerId = publicPlanningLabel(source.providerId)
+  const modelName = publicPlanningLabel(source.modelName)
+  if (
+    (expected.operationId && operationId !== expected.operationId)
+    || (expected.projectId && projectId !== expected.projectId)
+    || (expected.sessionId && chapterSessionId !== expected.sessionId)
+    || source.operationType !== 'generate_new'
+    || !DRAFT_OPERATION_STATUSES.has(status)
+    || !Number.isInteger(sequence)
+    || sequence < 1
+    || !providerId
+    || !modelName
+  ) {
+    throw new TypeError('Invalid draft operation response')
+  }
+  const terminal = status === 'completed' || status === 'failed'
+  if (sequence !== (terminal ? 2 : 1)) {
+    throw new TypeError('Invalid draft operation response')
+  }
+  if (status === 'completed') {
+    if (
+      !Number.isInteger(revision)
+      || revision < 1
+      || failureCode !== null
+    ) throw new TypeError('Invalid draft operation response')
+    draftOperationHash(resultHash, 'result content hash')
+  } else if (status === 'failed') {
+    if (
+      revision !== null
+      || resultHash !== null
+      || !DRAFT_OPERATION_FAILURE_CODES.has(failureCode)
+    ) throw new TypeError('Invalid draft operation response')
+  } else if (revision !== null || resultHash !== null || failureCode !== null) {
+    throw new TypeError('Invalid draft operation response')
+  }
+  return Object.freeze({
+    operationId,
+    projectId,
+    chapterSessionId,
+    operationType: 'generate_new',
+    status,
+    lastEventSequence: sequence,
+    resultWorkingDraftRevision: revision,
+    resultContentHash: resultHash,
+    failureCode,
+    providerId,
+    modelName,
+  })
+}
+
+function draftOperationEventsResponse(value, expectedOperationId, afterSequence) {
+  const source = draftOperationObject(value, 'events response')
+  if (
+    draftOperationUuid(source.operationId, 'id') !== expectedOperationId
+    || !Array.isArray(source.events)
+    || source.events.length > 100
+  ) throw new TypeError('Invalid draft operation events response')
+  const events = source.events.map((event, index) => {
+    const item = draftOperationObject(event, 'event')
+    const sequence = item.sequence
+    if (
+      !Number.isInteger(sequence)
+      || sequence < 1
+      || sequence !== afterSequence + index + 1
+      || typeof item.type !== 'string'
+      || !Number.isInteger(item.createdAt)
+      || item.createdAt < 0
+    ) throw new TypeError('Invalid draft operation event')
+    const result = { sequence, type: item.type, createdAt: item.createdAt }
+    if (item.type === 'completed') {
+      if (
+        !Number.isInteger(item.resultWorkingDraftRevision)
+        || item.resultWorkingDraftRevision < 1
+      ) throw new TypeError('Invalid draft operation event')
+      result.resultWorkingDraftRevision = item.resultWorkingDraftRevision
+      result.resultContentHash = draftOperationHash(
+        item.resultContentHash,
+        'event result content hash',
+      )
+    } else if (item.type === 'failed') {
+      if (!DRAFT_OPERATION_FAILURE_CODES.has(item.failureCode)) {
+        throw new TypeError('Invalid draft operation event')
+      }
+      result.failureCode = item.failureCode
+    } else if (item.type !== 'started') {
+      throw new TypeError('Invalid draft operation event')
+    }
+    return Object.freeze(result)
+  })
+  return Object.freeze({ operationId: expectedOperationId, events: Object.freeze(events) })
+}
+
+function draftOperationAfterSequence(value) {
+  if (!Number.isInteger(value) || value < 0 || value > 2_147_483_647) {
+    throw new TypeError('Invalid draft operation event cursor')
+  }
+  return value
+}
+
 function bibleCloneSource(value = {}) {
   const hasDraftId = value?.sourceDraftId !== undefined && value.sourceDraftId !== null
   const hasRevision = value?.sourceRevision !== undefined && value.sourceRevision !== null
@@ -1794,14 +1990,37 @@ export const api = {
         content: data.content,
       },
     ),
-    generateWorkingDraft: (projectId, sessionId, data) => post(
-      `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/generate-working-draft`,
-      {
-        expectedWorkingDraftRevision: data.expectedWorkingDraftRevision,
-        authorInstruction: data.authorInstruction,
-      },
-      CHAPTER_DRAFT_GENERATION_TIMEOUT,
-    ),
+    createDraftOperation: async (projectId, sessionId, command) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const body = draftOperationCommand(command)
+      return draftOperationResponse(await post(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations`,
+        body,
+        DRAFT_OPERATION_TIMEOUT,
+      ), { projectId: normalizedProjectId, sessionId: normalizedSessionId })
+    },
+    readDraftOperation: async (projectId, sessionId, operationId) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const normalizedOperationId = draftOperationUuid(operationId, 'id')
+      return draftOperationResponse(await get(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations/${segment(normalizedOperationId)}`,
+      ), {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        operationId: normalizedOperationId,
+      })
+    },
+    listDraftOperationEvents: async (projectId, sessionId, operationId, afterSequence) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const normalizedOperationId = draftOperationUuid(operationId, 'id')
+      const after = draftOperationAfterSequence(afterSequence)
+      return draftOperationEventsResponse(await get(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations/${segment(normalizedOperationId)}/events?after=${after}`,
+      ), normalizedOperationId, after)
+    },
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,
       {

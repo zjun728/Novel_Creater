@@ -1214,13 +1214,6 @@ test('chapter session client separates session draft and explicit candidate writ
       content: '正文',
       rawModelOutput: 'must-not-send',
     })
-    await api.chapterSessions.generateWorkingDraft('project-1', 'session-1', {
-      expectedWorkingDraftRevision: 2,
-      authorInstruction: '多一点市井对话',
-      apiKey: 'must-not-send',
-      baseURL: 'https://must-not-send.invalid',
-      debug: true,
-    })
     await api.chapterSessions.saveCandidate('project-1', 'session-1', {
       expectedWorkingDraftRevision: 3,
       expectedContentHash: 'b'.repeat(64),
@@ -1234,7 +1227,6 @@ test('chapter session client separates session draft and explicit candidate writ
     ['GET', '/api/projects/project-1/chapter-sessions/1'],
     ['POST', '/api/projects/project-1/chapter-sessions/1'],
     ['PUT', '/api/projects/project-1/chapter-sessions/session-1/working-draft'],
-    ['POST', '/api/projects/project-1/chapter-sessions/session-1/generate-working-draft'],
     ['POST', '/api/projects/project-1/chapter-sessions/session-1/candidates'],
   ])
   assert.equal(bodyOf(calls[0]), undefined)
@@ -1252,40 +1244,160 @@ test('chapter session client separates session draft and explicit candidate writ
     content: '正文',
   })
   assert.deepEqual(bodyOf(calls[3]), {
-    expectedWorkingDraftRevision: 2,
-    authorInstruction: '多一点市井对话',
-  })
-  assert.deepEqual(bodyOf(calls[4]), {
     expectedWorkingDraftRevision: 3,
     expectedContentHash: 'b'.repeat(64),
     idempotencyKey: '11111111-1111-1111-1111-111111111111',
   })
 })
 
-test('chapter working draft generation uses a long model timeout', async () => {
+test('draft operation client uses only formal routes, strict bodies, and closed public DTOs', async () => {
   const originalFetch = global.fetch
-  const originalSetTimeout = global.setTimeout
-  const originalClearTimeout = global.clearTimeout
-  const timeouts = []
-  global.fetch = async () => jsonResponse()
-  global.setTimeout = (callback, timeoutMs) => {
-    timeouts.push(timeoutMs)
-    return { callback, timeoutMs }
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const key = '44444444-4444-4444-8444-444444444444'
+  const hash = 'a'.repeat(64)
+  const secret = 'MUST-NOT-CROSS-DRAFT-OPERATION'
+  const operation = {
+    operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: hash,
+    failureCode: null,
+    providerId: 'provider-1',
+    modelName: 'writer-model',
+    prompt: secret,
+    provider: { apiKey: secret },
   }
-  global.clearTimeout = () => {}
-
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    if (new URL(url).pathname.endsWith('/events')) {
+      return jsonResponse({
+        operationId,
+        events: [{
+          sequence: 1,
+          type: 'started',
+          createdAt: 1,
+          responseBody: secret,
+        }, {
+          sequence: 2,
+          type: 'completed',
+          createdAt: 2,
+          resultWorkingDraftRevision: 5,
+          resultContentHash: hash,
+          messages: secret,
+        }],
+        debug: true,
+      })
+    }
+    return jsonResponse(operation)
+  }
   try {
     const { api } = await import('../../src/api/db/client.js')
-    await api.chapterSessions.generateWorkingDraft('project-1', 'session-1', {
-      expectedWorkingDraftRevision: 2,
-      authorInstruction: '放慢节奏，多写人物反应',
-    })
+    const command = {
+      operationType: 'generate_new',
+      expectedWorkingDraftRevision: 4,
+      expectedContentHash: hash,
+      idempotencyKey: key,
+      authorInstruction: '多一点人物试探',
+    }
+    const created = await api.chapterSessions.createDraftOperation(
+      projectId, sessionId, command,
+    )
+    const read = await api.chapterSessions.readDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    const events = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
+    )
 
-    assert.equal(timeouts.at(-1), 1_200_000)
+    assert.deepEqual(calls.map(call => [
+      call.options.method,
+      new URL(call.url).pathname + new URL(call.url).search,
+    ]), [
+      ['POST', `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations`],
+      ['GET', `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations/${operationId}`],
+      ['GET', `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations/${operationId}/events?after=0`],
+    ])
+    assert.deepEqual(bodyOf(calls[0]), command)
+    const expectedOperation = {
+      operationId,
+      projectId,
+      chapterSessionId: sessionId,
+      operationType: 'generate_new',
+      status: 'completed',
+      lastEventSequence: 2,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: hash,
+      failureCode: null,
+      providerId: 'provider-1',
+      modelName: 'writer-model',
+    }
+    assert.deepEqual(created, expectedOperation)
+    assert.deepEqual(read, expectedOperation)
+    assert.deepEqual(events, {
+      operationId,
+      events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+        sequence: 2,
+        type: 'completed',
+        createdAt: 2,
+        resultWorkingDraftRevision: 5,
+        resultContentHash: hash,
+      }],
+    })
+    assert.equal(JSON.stringify({ created, read, events }).includes(secret), false)
+    assert.equal(Object.hasOwn(api.chapterSessions, 'generateWorkingDraft'), false)
   } finally {
     global.fetch = originalFetch
-    global.setTimeout = originalSetTimeout
-    global.clearTimeout = originalClearTimeout
+  }
+})
+
+test('draft operation client rejects malformed commands, identifiers, cursors, and deep sensitive keys before fetch', async () => {
+  const originalFetch = global.fetch
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse()
+  }
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 1,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const invalid of [
+      { ...command, expectedWorkingDraftRevision: true },
+      { ...command, expectedContentHash: 'A'.repeat(64) },
+      { ...command, idempotencyKey: '44444444-4444-4444-8444-44444444444A' },
+      { ...command, authorInstruction: 'x'.repeat(2001) },
+      { ...command, prompt: { messages: [{ provider: { apiKey: 'secret' } }] } },
+    ]) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, invalid),
+        TypeError,
+      )
+    }
+    for (const invalidRequest of [
+      () => api.chapterSessions.createDraftOperation('project/1', sessionId, command),
+      () => api.chapterSessions.readDraftOperation(projectId, sessionId, 'not-a-uuid'),
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, -1),
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, 2147483648),
+      () => api.chapterSessions.listDraftOperationEvents(projectId, sessionId, operationId, true),
+    ]) await assert.rejects(invalidRequest(), TypeError)
+    assert.equal(calls, 0)
+  } finally {
+    global.fetch = originalFetch
   }
 })
 
