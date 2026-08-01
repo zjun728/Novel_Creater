@@ -66,6 +66,30 @@ class SaveDraftCandidate:
     project_id: str
     chapter_session_id: str
     expected_working_draft_revision: int
+    expected_content_hash: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True)
+class CandidateSaveResult:
+    workspace: ChapterWorkspace
+    saved_candidate_id: str
+
+    @property
+    def project_id(self) -> str:
+        return self.workspace.project_id
+
+    @property
+    def session(self) -> ChapterSessionView:
+        return self.workspace.session
+
+    @property
+    def working_draft(self) -> WorkingDraftView:
+        return self.workspace.working_draft
+
+    @property
+    def candidates(self) -> tuple[DraftCandidateView, ...]:
+        return self.workspace.candidates
 
 
 class ChapterSessionService:
@@ -361,7 +385,11 @@ class ChapterSessionService:
                 raise ChapterSessionConflict("working draft revision or hash drift")
             return await self._workspace(session, chapter_session)
 
-    async def save_candidate(self, command: SaveDraftCandidate) -> ChapterWorkspace:
+    async def save_candidate(
+        self,
+        command: SaveDraftCandidate,
+    ) -> CandidateSaveResult:
+        self._validate_save_candidate_command(command)
         async with self.transaction_factory() as session:
             if await self.repository.lock_project(
                 session, command.project_id
@@ -372,6 +400,24 @@ class ChapterSessionService:
             )
             if chapter_session is None:
                 raise ChapterSessionNotFound("Chapter session not found")
+            request_hash = canonical_hash({
+                "projectId": command.project_id,
+                "chapterSessionId": command.chapter_session_id,
+                "workingDraftRevision": command.expected_working_draft_revision,
+                "contentHash": command.expected_content_hash,
+            })
+            freeze_request = await self.repository.read_candidate_freeze_request(
+                session,
+                command.chapter_session_id,
+                command.idempotency_key,
+            )
+            if freeze_request is not None:
+                if freeze_request["request_hash"] != request_hash:
+                    raise ChapterSessionConflict("candidate idempotency conflict")
+                return CandidateSaveResult(
+                    await self._workspace(session, chapter_session),
+                    str(freeze_request["draft_candidate_id"]),
+                )
             effective_status = chapter_session.get(
                 "effective_status", chapter_session["status"]
             )
@@ -392,8 +438,12 @@ class ChapterSessionService:
             draft = await self.repository.read_working_draft(session, command.chapter_session_id)
             if draft is None:
                 raise ChapterSessionPreconditionFailed("working draft is required")
-            if int(draft["revision"]) != command.expected_working_draft_revision:
-                raise ChapterSessionConflict("working draft revision drift")
+            if (
+                int(draft["revision"])
+                != command.expected_working_draft_revision
+                or draft["content_hash"] != command.expected_content_hash
+            ):
+                raise ChapterSessionConflict("working draft revision or hash drift")
             if not str(draft["content"]).strip():
                 raise ChapterSessionPreconditionFailed("working draft content is empty")
             candidate = {
@@ -411,7 +461,28 @@ class ChapterSessionService:
             }
             if not await self.repository.insert_candidate(session, candidate):
                 raise ChapterSessionConflict("candidate identity conflict")
-            return await self._workspace(session, chapter_session)
+            persisted_candidate = await self.repository.read_candidate_by_identity(
+                session,
+                command.chapter_session_id,
+                candidate["content_hash"],
+                basis_hash,
+            )
+            if persisted_candidate is None:
+                raise ChapterSessionConflict("candidate identity conflict")
+            if not await self.repository.insert_candidate_freeze_request(session, {
+                "id": str(uuid4()),
+                "project_id": command.project_id,
+                "chapter_session_id": command.chapter_session_id,
+                "idempotency_key": command.idempotency_key,
+                "request_hash": request_hash,
+                "draft_candidate_id": persisted_candidate["id"],
+                "created_at": int(time.time() * 1000),
+            }):
+                raise ChapterSessionConflict("candidate freeze request conflict")
+            return CandidateSaveResult(
+                await self._workspace(session, chapter_session),
+                str(persisted_candidate["id"]),
+            )
 
     async def _workspace(self, session, chapter_session: Mapping[str, Any]) -> ChapterWorkspace:
         draft = await self.repository.read_working_draft(session, chapter_session["id"])
@@ -478,6 +549,30 @@ class ChapterSessionService:
         ):
             raise ChapterSessionRequestInvalid(
                 "working draft save command is invalid",
+            )
+
+    def _validate_save_candidate_command(
+        self,
+        command: SaveDraftCandidate,
+    ) -> None:
+        if (
+            type(command.project_id) is not str
+            or not command.project_id
+            or type(command.chapter_session_id) is not str
+            or not command.chapter_session_id
+            or type(command.expected_working_draft_revision) is not int
+            or command.expected_working_draft_revision < 1
+            or type(command.expected_content_hash) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", command.expected_content_hash)
+            is None
+            or type(command.idempotency_key) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                command.idempotency_key,
+            ) is None
+        ):
+            raise ChapterSessionRequestInvalid(
+                "candidate save command is invalid",
             )
 
     def _matches_create_command(

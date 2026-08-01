@@ -131,6 +131,16 @@ async def _counts(session):
     return sessions["count"], drafts["count"]
 
 
+def _candidate_command(workspace, *, idempotency_key):
+    return SaveDraftCandidate(
+        PROJECT,
+        workspace.session.id,
+        workspace.working_draft.revision,
+        workspace.working_draft.content_hash,
+        idempotency_key,
+    )
+
+
 @pytest.mark.asyncio
 async def test_concurrent_different_chapters_create_only_authority_and_replay(
     disposable_mysql,
@@ -302,7 +312,7 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
         connection_factory=transaction_factory,
     )
     created = await service.create_session(_create_command(planning, outline_r1))
-    await service.save_working_draft(
+    saved_a = await service.save_working_draft(
         SaveWorkingDraft(
             PROJECT,
             created.session.id,
@@ -311,7 +321,11 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
             "候选稿 A",
         )
     )
-    await service.save_candidate(SaveDraftCandidate(PROJECT, created.session.id, 2))
+    await service.save_candidate(
+        _candidate_command(
+            saved_a, idempotency_key="11111111-1111-1111-1111-111111111111"
+        )
+    )
 
     ids = iter(
         f"9e200000-0000-0000-0000-{number:012d}"
@@ -349,7 +363,9 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
         )
     )
     replay = await service.save_candidate(
-        SaveDraftCandidate(PROJECT, created.session.id, 2)
+        _candidate_command(
+            saved_a, idempotency_key="22222222-2222-2222-2222-222222222222"
+        )
     )
     intermediate = await service.save_working_draft(SaveWorkingDraft(
         PROJECT,
@@ -366,7 +382,9 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
         "候选稿 A",
     ))
     third = await service.save_candidate(
-        SaveDraftCandidate(PROJECT, created.session.id, 4)
+        _candidate_command(
+            restored, idempotency_key="33333333-3333-3333-3333-333333333333"
+        )
     )
 
     workspace = await service.get(PROJECT, 1)
@@ -392,9 +410,9 @@ async def test_candidate_basis_follows_current_outline_not_immutable_session(
     assert rows[0]["id"] != rows[1]["id"]
     assert rows[0]["basis_hash"] != rows[1]["basis_hash"]
     assert restored.working_draft.revision == 4
-    assert rows[1]["working_draft_revision"] == 4
+    assert rows[1]["working_draft_revision"] == 2
     stored_basis = json.loads(rows[1]["provenance_json"])
-    assert stored_basis["workingDraftRevision"] == 4
+    assert stored_basis["workingDraftRevision"] == 2
     assert stored_basis["outlineRevision"] == outline_r2.revision
 
 
@@ -546,6 +564,150 @@ async def test_repository_working_draft_cas_allows_one_of_two_base_writers(
 
 
 @pytest.mark.asyncio
+async def test_candidate_freeze_reuses_identity_for_different_keys(
+    disposable_mysql,
+):
+    await _prove_owned_database(disposable_mysql)
+    _, planning, outline = await _confirmed_outline(disposable_mysql)
+    transaction_factory = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    service = ChapterSessionService(
+        ChapterSessionRepository(),
+        transaction_factory=transaction_factory,
+    )
+    created = await service.create_session(_create_command(planning, outline))
+    saved = await service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        created.session.id,
+        created.working_draft.revision,
+        created.working_draft.content_hash,
+        "同一可见候选正文",
+    ))
+
+    first = await service.save_candidate(
+        _candidate_command(
+            saved, idempotency_key="11111111-1111-1111-1111-111111111111"
+        )
+    )
+    second = await service.save_candidate(
+        _candidate_command(
+            saved, idempotency_key="22222222-2222-2222-2222-222222222222"
+        )
+    )
+
+    assert first.candidates[-1].id == second.candidates[-1].id
+    candidates = await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM draft_candidates WHERE chapter_session_id=%s",
+        (created.session.id,),
+    )
+    freezes = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count FROM candidate_freeze_requests
+             WHERE chapter_session_id=%s""",
+        (created.session.id,),
+    )
+    assert candidates == {"count": 1}
+    assert freezes == {"count": 2}
+
+
+@pytest.mark.asyncio
+async def test_candidate_freeze_replay_preserves_original_id_after_draft_and_final_state(
+    disposable_mysql,
+):
+    await _prove_owned_database(disposable_mysql)
+    _, planning, outline = await _confirmed_outline(disposable_mysql)
+    transaction_factory = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    service = ChapterSessionService(
+        ChapterSessionRepository(), transaction_factory=transaction_factory,
+    )
+    created = await service.create_session(_create_command(planning, outline))
+    first_draft = await service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        created.session.id,
+        created.working_draft.revision,
+        created.working_draft.content_hash,
+        "首个候选正文",
+    ))
+    first_command = _candidate_command(
+        first_draft, idempotency_key="11111111-1111-1111-1111-111111111111",
+    )
+    first = await service.save_candidate(first_command)
+    second_draft = await service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        created.session.id,
+        first_draft.working_draft.revision,
+        first_draft.working_draft.content_hash,
+        "后续候选正文",
+    ))
+    await service.save_candidate(_candidate_command(
+        second_draft, idempotency_key="22222222-2222-2222-2222-222222222222",
+    ))
+
+    replay_after_later_candidate = await service.save_candidate(first_command)
+    await disposable_mysql.session.execute(
+        "UPDATE chapter_sessions SET status='final' WHERE id=%s",
+        (created.session.id,),
+    )
+    replay_after_final = await service.save_candidate(first_command)
+
+    assert replay_after_later_candidate.saved_candidate_id == first.saved_candidate_id
+    assert replay_after_final.saved_candidate_id == first.saved_candidate_id
+    candidates = await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM draft_candidates WHERE chapter_session_id=%s",
+        (created.session.id,),
+    )
+    freezes = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count FROM candidate_freeze_requests
+             WHERE chapter_session_id=%s""",
+        (created.session.id,),
+    )
+    assert candidates == freezes == {"count": 2}
+
+
+@pytest.mark.asyncio
+async def test_candidate_freeze_ledger_failure_rolls_back_candidate(
+    disposable_mysql,
+):
+    await _prove_owned_database(disposable_mysql)
+    _, planning, outline = await _confirmed_outline(disposable_mysql)
+    transaction_factory = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    service = ChapterSessionService(
+        _RejectCandidateFreezeRequestInsert(),
+        transaction_factory=transaction_factory,
+    )
+    created = await service.create_session(_create_command(planning, outline))
+    saved = await service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        created.session.id,
+        created.working_draft.revision,
+        created.working_draft.content_hash,
+        "回滚候选正文",
+    ))
+
+    with pytest.raises(ChapterSessionConflict, match="freeze request conflict"):
+        await service.save_candidate(
+            _candidate_command(
+                saved, idempotency_key="33333333-3333-3333-3333-333333333333"
+            )
+        )
+
+    candidates = await disposable_mysql.session.fetchone(
+        "SELECT COUNT(*) AS count FROM draft_candidates WHERE chapter_session_id=%s",
+        (created.session.id,),
+    )
+    freezes = await disposable_mysql.session.fetchone(
+        """SELECT COUNT(*) AS count FROM candidate_freeze_requests
+             WHERE chapter_session_id=%s""",
+        (created.session.id,),
+    )
+    assert candidates == freezes == {"count": 0}
+
+
+@pytest.mark.asyncio
 async def test_final_session_rejects_candidate_save_without_creating_row(
     disposable_mysql,
 ):
@@ -556,7 +718,7 @@ async def test_final_session_rejects_candidate_save_without_creating_row(
         ChapterSessionRepository(), transaction_factory=transaction_factory
     )
     created = await service.create_session(_create_command(planning, outline))
-    await service.save_working_draft(
+    saved = await service.save_working_draft(
         SaveWorkingDraft(
             PROJECT,
             created.session.id,
@@ -571,7 +733,11 @@ async def test_final_session_rejects_candidate_save_without_creating_row(
     )
 
     with pytest.raises(ChapterSessionConflict, match="finalized"):
-        await service.save_candidate(SaveDraftCandidate(PROJECT, created.session.id, 2))
+        await service.save_candidate(
+            _candidate_command(
+                saved, idempotency_key="44444444-4444-4444-4444-444444444444"
+            )
+        )
 
     row = await disposable_mysql.session.fetchone(
         "SELECT COUNT(*) AS count FROM draft_candidates WHERE chapter_session_id=%s",
@@ -638,4 +804,9 @@ class _RejectAfterWorkingDraftInsert(ChapterSessionRepository):
             expected_revision=expected_revision,
             expected_content_hash=expected_content_hash,
         )
+        return False
+
+
+class _RejectCandidateFreezeRequestInsert(ChapterSessionRepository):
+    async def insert_candidate_freeze_request(self, session, row):
         return False

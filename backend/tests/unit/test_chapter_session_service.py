@@ -15,10 +15,27 @@ BLOCK_HASH = "b" * 64
 OUTLINE_ID = "outline-revision-1"
 OUTLINE_HASH = "c" * 64
 PROJECTION_HASH = "d" * 64
+FREEZE_KEY_1 = "11111111-1111-1111-1111-111111111111"
+FREEZE_KEY_2 = "22222222-2222-2222-2222-222222222222"
+FREEZE_KEY_3 = "33333333-3333-3333-3333-333333333333"
+FREEZE_KEY_4 = "44444444-4444-4444-4444-444444444444"
 
 
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def candidate_command(repo, chapter_session_id, *, idempotency_key=FREEZE_KEY_1):
+    from backend.services.chapter_sessions import SaveDraftCandidate
+
+    draft = repo.working_drafts[chapter_session_id]
+    return SaveDraftCandidate(
+        project_id="p1",
+        chapter_session_id=chapter_session_id,
+        expected_working_draft_revision=draft["revision"],
+        expected_content_hash=draft["content_hash"],
+        idempotency_key=idempotency_key,
+    )
 
 
 class FakeChapterRepository:
@@ -101,7 +118,9 @@ class FakeChapterRepository:
         self.call_order = []
         self.active_error = None
         self.reject_candidate_insert = False
+        self.reject_freeze_request_insert = False
         self.working_draft_cas_calls = []
+        self.freeze_requests = []
 
     async def lock_project(self, session, project_id):
         self.call_order.append("lock_project")
@@ -214,6 +233,37 @@ class FakeChapterRepository:
             ):
                 return self._basis_payload(item) == basis
         self.candidates.append(row)
+        return True
+
+    async def read_candidate_by_identity(
+        self, session, chapter_session_id, content_hash, basis_hash
+    ):
+        return next(
+            (
+                item for item in self.candidates
+                if item["chapter_session_id"] == chapter_session_id
+                and item["content_hash"] == content_hash
+                and item["basis_hash"] == basis_hash
+            ),
+            None,
+        )
+
+    async def read_candidate_freeze_request(
+        self, session, chapter_session_id, idempotency_key
+    ):
+        return next(
+            (
+                item for item in self.freeze_requests
+                if item["chapter_session_id"] == chapter_session_id
+                and item["idempotency_key"] == idempotency_key
+            ),
+            None,
+        )
+
+    async def insert_candidate_freeze_request(self, session, row):
+        if self.reject_freeze_request_insert:
+            return False
+        self.freeze_requests.append(row)
         return True
 
     def _basis_payload(self, row):
@@ -873,18 +923,171 @@ async def test_save_candidate_freezes_current_working_draft_explicitly():
         )
     )
 
-    result = await service.save_candidate(
-        SaveDraftCandidate(
-            project_id="p1",
-            chapter_session_id=created.session.id,
-            expected_working_draft_revision=2,
-        )
-    )
+    result = await service.save_candidate(candidate_command(repo, created.session.id))
 
     assert len(result.candidates) == 1
     assert result.candidates[0].working_draft_revision == 2
     assert result.candidates[0].content == result.working_draft.content
     assert result.candidates[0].content_hash == result.working_draft.content_hash
+
+
+@pytest.mark.asyncio
+async def test_save_candidate_replays_same_key_and_rejects_a_changed_fingerprint():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+        SaveDraftCandidate,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, 1, sha256_text(""), "屏幕正文"
+    ))
+    command = candidate_command(repo, created.session.id, idempotency_key=FREEZE_KEY_1)
+
+    first = await service.save_candidate(command)
+    replay = await service.save_candidate(command)
+
+    assert first.candidates[-1].id == replay.candidates[-1].id
+    assert len(repo.candidates) == len(repo.freeze_requests) == 1
+    with pytest.raises(ChapterSessionConflict, match="idempotency"):
+        await service.save_candidate(SaveDraftCandidate(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_working_draft_revision=command.expected_working_draft_revision,
+            expected_content_hash="0" * 64,
+            idempotency_key=FREEZE_KEY_1,
+        ))
+    with pytest.raises(ChapterSessionConflict, match="revision or hash drift"):
+        await service.save_candidate(SaveDraftCandidate(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_working_draft_revision=command.expected_working_draft_revision,
+            expected_content_hash="0" * 64,
+            idempotency_key=FREEZE_KEY_2,
+        ))
+
+
+@pytest.mark.asyncio
+async def test_save_candidate_replay_returns_original_id_after_a_later_candidate():
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    first_draft = await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, 1, sha256_text(""), "候选稿 A"
+    ))
+    first_command = candidate_command(
+        repo, created.session.id, idempotency_key=FREEZE_KEY_1,
+    )
+    first = await service.save_candidate(first_command)
+    later_draft = await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, first_draft.working_draft.revision,
+        first_draft.working_draft.content_hash, "候选稿 B",
+    ))
+    await service.save_candidate(candidate_command(
+        repo, created.session.id, idempotency_key=FREEZE_KEY_2,
+    ))
+
+    replay = await service.save_candidate(first_command)
+
+    assert later_draft.working_draft.content == "候选稿 B"
+    assert replay.saved_candidate_id == first.saved_candidate_id
+    assert len(repo.candidates) == len(repo.freeze_requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_save_candidate_replay_survives_a_finalized_session():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+        SaveDraftCandidate,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, 1, sha256_text(""), "可重放候选稿"
+    ))
+    command = candidate_command(repo, created.session.id, idempotency_key=FREEZE_KEY_1)
+    first = await service.save_candidate(command)
+    repo.sessions[0]["status"] = "final"
+
+    replay = await service.save_candidate(command)
+
+    assert replay.saved_candidate_id == first.saved_candidate_id
+    assert len(repo.candidates) == len(repo.freeze_requests) == 1
+    with pytest.raises(ChapterSessionConflict, match="idempotency"):
+        await service.save_candidate(SaveDraftCandidate(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_working_draft_revision=command.expected_working_draft_revision,
+            expected_content_hash="0" * 64,
+            idempotency_key=command.idempotency_key,
+        ))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("idempotency_key", (
+    "freeze-1",
+    "11111111-1111-1111-1111-11111111111A",
+    "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+))
+async def test_save_candidate_requires_canonical_lowercase_uuid_idempotency_key(
+    idempotency_key,
+):
+    from backend.services.chapter_sessions import (
+        ChapterSessionRequestInvalid,
+        ChapterSessionService,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, 1, sha256_text(""), "正文"
+    ))
+
+    with pytest.raises(ChapterSessionRequestInvalid):
+        await service.save_candidate(candidate_command(
+            repo, created.session.id, idempotency_key=idempotency_key,
+        ))
+
+
+@pytest.mark.asyncio
+async def test_save_candidate_reuses_identity_for_a_different_key():
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(SaveWorkingDraft(
+        "p1", created.session.id, 1, sha256_text(""), "同一可见正文"
+    ))
+
+    first = await service.save_candidate(
+        candidate_command(repo, created.session.id, idempotency_key=FREEZE_KEY_1)
+    )
+    second = await service.save_candidate(
+        candidate_command(repo, created.session.id, idempotency_key=FREEZE_KEY_2)
+    )
+
+    assert first.candidates[-1].id == second.candidates[-1].id
+    assert len(repo.candidates) == 1
+    assert len(repo.freeze_requests) == 2
 
 
 @pytest.mark.asyncio
@@ -903,7 +1106,7 @@ async def test_save_candidate_exact_identity_replay_is_idempotent():
             "p1", created.session.id, 1, sha256_text(""), "同一候选正文"
         )
     )
-    command = SaveDraftCandidate("p1", created.session.id, 2)
+    command = candidate_command(repo, created.session.id)
 
     first = await service.save_candidate(command)
     replay = await service.save_candidate(command)
@@ -932,7 +1135,7 @@ async def test_save_candidate_reports_explicit_repository_identity_conflict():
     repo.reject_candidate_insert = True
 
     with pytest.raises(ChapterSessionConflict, match="candidate identity conflict"):
-        await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
+        await service.save_candidate(candidate_command(repo, created.session.id))
 
 
 @pytest.mark.asyncio
@@ -960,7 +1163,7 @@ async def test_candidates_stamp_current_outline_basis_and_derive_staleness():
         )
     )
     await service.save_candidate(
-        SaveDraftCandidate("p1", created.session.id, 2)
+        candidate_command(repo, created.session.id, idempotency_key=FREEZE_KEY_3)
     )
 
     repo.outline.update(
@@ -984,7 +1187,7 @@ async def test_candidates_stamp_current_outline_basis_and_derive_staleness():
         )
     )
     await service.save_candidate(
-        SaveDraftCandidate("p1", created.session.id, 3)
+        candidate_command(repo, created.session.id, idempotency_key=FREEZE_KEY_4)
     )
     repo.candidates.append({
         "id": "legacy-candidate",
@@ -1029,7 +1232,7 @@ async def test_save_candidate_requires_drafting_session_and_current_outline():
     repo.sessions[0]["status"] = "final"
 
     with pytest.raises(ChapterSessionConflict, match="finalized"):
-        await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
+        await service.save_candidate(candidate_command(repo, created.session.id))
 
     repo.sessions[0]["status"] = "drafting"
     repo.outline = None
@@ -1037,7 +1240,7 @@ async def test_save_candidate_requires_drafting_session_and_current_outline():
         ChapterSessionPreconditionFailed,
         match="current Outline authority",
     ):
-        await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
+        await service.save_candidate(candidate_command(repo, created.session.id))
 
 
 @pytest.mark.asyncio
@@ -1073,7 +1276,7 @@ async def test_malformed_candidate_basis_fails_closed_without_public_metadata(
             "p1", created.session.id, 1, sha256_text(""), "损坏基础候选稿"
         )
     )
-    await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
+    await service.save_candidate(candidate_command(repo, created.session.id))
     if field == "basis_hash":
         repo.candidates[0][field] = value
     else:
@@ -1128,13 +1331,7 @@ async def test_existing_draft_writes_recheck_active_project(operation):
             )
         )
     else:
-        awaitable = service.save_candidate(
-            SaveDraftCandidate(
-                project_id="p1",
-                chapter_session_id=created.session.id,
-                expected_working_draft_revision=2,
-            )
-        )
+        awaitable = service.save_candidate(candidate_command(repo, created.session.id))
 
     with pytest.raises(http_errors.ProjectArchived):
         await awaitable

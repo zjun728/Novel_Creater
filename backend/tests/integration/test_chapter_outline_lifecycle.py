@@ -1236,6 +1236,8 @@ async def test_real_mysql_drafting_session_keeps_r1_while_outline_advances_to_r2
             PROJECT,
             workspace.session.id,
             saved_workspace.working_draft.revision,
+            saved_workspace.working_draft.content_hash,
+            "11111111-1111-1111-1111-111111111111",
         )
     )
     before_session = await disposable_mysql.session.fetchone(

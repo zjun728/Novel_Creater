@@ -375,6 +375,51 @@ class ChapterSessionRepository:
         }
         return canonical_json(stored_basis) == canonical_json(incoming_basis)
 
+    async def read_candidate_by_identity(
+        self,
+        session,
+        chapter_session_id: str,
+        content_hash: str,
+        basis_hash: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM draft_candidates
+                 WHERE chapter_session_id=%s AND content_hash=%s AND basis_hash=%s""",
+            (chapter_session_id, content_hash, basis_hash),
+        )
+        return self._candidate(row) if row else None
+
+    async def read_candidate_freeze_request(
+        self,
+        session,
+        chapter_session_id: str,
+        idempotency_key: str,
+    ):
+        return await session.fetchone(
+            """SELECT request_hash,draft_candidate_id
+                 FROM candidate_freeze_requests
+                WHERE chapter_session_id=%s AND idempotency_key=%s""",
+            (chapter_session_id, idempotency_key),
+        )
+
+    async def insert_candidate_freeze_request(self, session, row: dict) -> bool:
+        changed = await session.execute(
+            """INSERT INTO candidate_freeze_requests
+               (id,project_id,chapter_session_id,idempotency_key,request_hash,
+                draft_candidate_id,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["chapter_session_id"],
+                row["idempotency_key"],
+                row["request_hash"],
+                row["draft_candidate_id"],
+                row["created_at"],
+            ),
+        )
+        return changed == 1
+
     async def list_candidates(self, session, chapter_session_id: str):
         rows = await session.fetchall(
             """SELECT candidate.*,chapter.status AS effective_status

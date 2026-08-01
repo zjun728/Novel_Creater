@@ -167,6 +167,21 @@ async def test_insert_candidate_rejects_conflict_without_matching_identity():
 
 
 @pytest.mark.asyncio
+async def test_candidate_freeze_request_repository_scopes_replay_to_session():
+    session = CapturingSession(rows=[None])
+
+    assert await ChapterSessionRepository().read_candidate_freeze_request(
+        session,
+        "session-1",
+        "idempotency-1",
+    ) is None
+
+    sql, args = session.calls[-1]
+    assert args == ("session-1", "idempotency-1")
+    assert "candidate_freeze_requests" in " ".join(sql.split())
+
+
+@pytest.mark.asyncio
 async def test_current_outline_reads_exact_planning_and_current_generation_pins():
     session = CapturingSession()
 

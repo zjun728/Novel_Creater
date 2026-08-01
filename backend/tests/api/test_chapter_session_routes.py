@@ -13,10 +13,14 @@ from backend.routers import chapter_sessions
 from backend.security.redaction import install_error_handlers
 
 
+FREEZE_KEY = "11111111-1111-1111-1111-111111111111"
+
+
 class FakeChapterSessionService:
     def __init__(self):
         self.saved_content = ""
         self.saved_expected_content_hash = None
+        self.candidate_commands = []
         self.candidates = ()
         self.create_error = None
         self.session = ChapterSessionView(
@@ -77,6 +81,9 @@ class FakeChapterSessionService:
         return self.workspace()
 
     async def save_candidate(self, command):
+        from backend.services.chapter_sessions import CandidateSaveResult
+
+        self.candidate_commands.append(command)
         candidate = DraftCandidateView(
             id="candidate-1", project_id="p1", chapter_session_id="session-1",
             working_draft_revision=command.expected_working_draft_revision,
@@ -94,7 +101,7 @@ class FakeChapterSessionService:
             status="drafting",
         )
         self.candidates = (candidate,)
-        return self.workspace()
+        return CandidateSaveResult(self.workspace(), candidate.id)
 
 
 class FakeChapterDraftGenerationService:
@@ -149,6 +156,8 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
     })
     candidated = client.post("/api/projects/p1/chapter-sessions/session-1/candidates", json={
         "expectedWorkingDraftRevision": 2,
+        "expectedContentHash": "a" * 64,
+        "idempotencyKey": FREEZE_KEY,
     })
 
     assert [created.status_code, saved.status_code, candidated.status_code] == [201, 200, 201]
@@ -173,8 +182,11 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
     assert saved.json()["workingDraft"]["revision"] == 2
     assert saved.json()["candidates"] == []
     assert candidated.json()["candidates"][0]["workingDraftRevision"] == 2
+    assert candidated.json()["savedCandidateId"] == "candidate-1"
     assert service.saved_content.startswith("沈清源")
     assert service.saved_expected_content_hash == "e3b0c442" + "0" * 56
+    assert service.candidate_commands[0].expected_content_hash == "a" * 64
+    assert service.candidate_commands[0].idempotency_key == FREEZE_KEY
 
 
 def test_chapter_session_get_reads_only_the_requested_chapter():
@@ -305,6 +317,26 @@ def test_save_working_draft_route_requires_canonical_content_hash():
         assert response.json()["code"] == "ChapterSessionRequestInvalid"
 
 
+def test_save_candidate_route_requires_canonical_lowercase_uuid_idempotency_key():
+    client, _, _ = make_client()
+
+    for idempotency_key in (
+        "secret-shaped-token-which-was-previously-allowed",
+        "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
+    ):
+        response = client.post(
+            "/api/projects/p1/chapter-sessions/session-1/candidates",
+            json={
+                "expectedWorkingDraftRevision": 1,
+                "expectedContentHash": "e3b0c442" + "0" * 56,
+                "idempotencyKey": idempotency_key,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["code"] == "ChapterSessionRequestInvalid"
+
+
 def test_generate_working_draft_route_updates_draft_without_candidate():
     client, _, generation_service = make_client()
 
@@ -334,15 +366,23 @@ def test_chapter_session_public_workspace_never_exports_internal_metadata():
 
     response = client.post(
         "/api/projects/p1/chapter-sessions/session-1/candidates",
-        json={"expectedWorkingDraftRevision": 1},
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+            "idempotencyKey": FREEZE_KEY,
+        },
     )
 
     assert response.status_code == 201
     body = response.json()
     assert "sourcePayload" not in body["workingDraft"]
     assert "provenance" not in body["candidates"][0]
+    assert body["savedCandidateId"] == "candidate-1"
     serialized = response.text
-    for forbidden in ("LEAK-SENTINEL", "apiKey", "prompt", "raw", "provider"):
+    for forbidden in (
+        "LEAK-SENTINEL", "apiKey", "prompt", "raw", "provider",
+        "idempotencyKey", "freeze_requests",
+    ):
         assert forbidden not in serialized
 
 
@@ -351,7 +391,11 @@ def test_chapter_session_public_workspace_exports_only_candidate_basis_fields():
 
     response = client.post(
         "/api/projects/p1/chapter-sessions/session-1/candidates",
-        json={"expectedWorkingDraftRevision": 1},
+        json={
+            "expectedWorkingDraftRevision": 1,
+            "expectedContentHash": "e3b0c442" + "0" * 56,
+            "idempotencyKey": FREEZE_KEY,
+        },
     )
 
     assert response.status_code == 201

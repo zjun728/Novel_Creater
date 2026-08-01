@@ -99,6 +99,13 @@ class SaveWorkingDraftBody(_StrictBody):
 
 class SaveCandidateBody(_StrictBody):
     expectedWorkingDraftRevision: int = Field(ge=1)
+    expectedContentHash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    idempotencyKey: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            r"[0-9a-f]{12}$"
+        ),
+    )
 
 
 class GenerateWorkingDraftBody(_StrictBody):
@@ -267,13 +274,17 @@ async def save_candidate(
 ):
     try:
         body = SaveCandidateBody.model_validate(raw_body)
-        workspace = await service.save_candidate(SaveDraftCandidate(
+        result = await service.save_candidate(SaveDraftCandidate(
             project_id=pid,
             chapter_session_id=session_id,
             expected_working_draft_revision=body.expectedWorkingDraftRevision,
+            expected_content_hash=body.expectedContentHash,
+            idempotency_key=body.idempotencyKey,
         ))
     except ValidationError:
         raise ChapterSessionRequestInvalid() from None
     except Exception as error:
         _raise_public(error)
-    return _public_workspace(workspace)
+    public_workspace = _public_workspace(result.workspace)
+    public_workspace["savedCandidateId"] = result.saved_candidate_id
+    return public_workspace

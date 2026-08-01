@@ -461,7 +461,10 @@ WRITE_ENTRYPOINTS = (
         "lock_project",
         _chapter_service,
         lambda service: service.save_candidate(
-            SaveDraftCandidate("p1", "session-1", 1)
+            SaveDraftCandidate(
+                "p1", "session-1", 1, "a" * 64,
+                "11111111-1111-1111-1111-111111111111",
+            )
         ),
     ),
     _WriteEntrypoint(
