@@ -93,6 +93,23 @@ class FakeGateway:
         return self.output
 
 
+class MutatingGateway(FakeGateway):
+    async def generate(self, *, provider, messages, generation_config):
+        assert self.tracker is None or self.tracker.active == 0
+        original_api_key = provider["api_key"]
+        original_base_url = provider["base_url"]
+        provider["api_key"] = "gateway-mutated-key"
+        provider["base_url"] = "https://gateway-mutated.invalid/v1"
+        messages[0]["content"] = "gateway-mutated-message"
+        generation_config["temperature"] = 999
+        self.calls.append({
+            "provider": provider,
+            "messages": messages,
+            "generation_config": generation_config,
+        })
+        return f"provider leaked {original_api_key} from {original_base_url}"
+
+
 class FakeRepository:
     def __init__(self):
         self.project = {"id": PROJECT_ID}
@@ -195,9 +212,14 @@ class FakeRepository:
         self.fail_snapshot_role = None
         self.fail_event_sequence = None
         self.fail_cas = False
+        self.fail_complete = False
+        self.fail_terminal_failure = False
 
     def snapshot(self):
-        excluded = {"fail_snapshot_role", "fail_event_sequence", "fail_cas"}
+        excluded = {
+            "fail_snapshot_role", "fail_event_sequence", "fail_cas",
+            "fail_complete", "fail_terminal_failure",
+        }
         return copy.deepcopy({
             key: value for key, value in self.__dict__.items() if key not in excluded
         })
@@ -207,6 +229,8 @@ class FakeRepository:
             "fail_snapshot_role": self.fail_snapshot_role,
             "fail_event_sequence": self.fail_event_sequence,
             "fail_cas": self.fail_cas,
+            "fail_complete": self.fail_complete,
+            "fail_terminal_failure": self.fail_terminal_failure,
         }
         self.__dict__.update(copy.deepcopy(snapshot))
         self.__dict__.update(controls)
@@ -331,6 +355,8 @@ class FakeRepository:
         return True
 
     async def complete_draft_operation(self, session, row):
+        if self.fail_complete:
+            return False
         operation = self.operations[row["id"]]
         if operation["fencing_token"] != row["fencing_token"]:
             return False
@@ -346,6 +372,8 @@ class FakeRepository:
         return True
 
     async def fail_draft_operation(self, session, row):
+        if self.fail_terminal_failure:
+            return False
         operation = self.operations[row["id"]]
         operation.update(
             status="failed", active_slot=None, failure_code=row["failure_code"],
@@ -797,16 +825,39 @@ async def test_provider_or_validation_failure_records_fixed_failure(output, code
 
 
 @pytest.mark.asyncio
-async def test_unexpected_gateway_exception_is_settled_to_fixed_failure_without_raw_detail():
-    gateway = FakeGateway(ValueError("remote body and secret detail"))
-    service, repo, _, _, _ = make_service(gateway=gateway)
+async def test_gateway_mutation_cannot_replace_frozen_secret_scan_or_authority():
+    gateway = MutatingGateway()
+    service, repo, gateway, _, _ = make_service(gateway=gateway)
 
     result = await service.start(command())
 
     assert result.status == "failed"
-    assert result.failure_code == "DraftProviderFailed"
-    assert next(iter(repo.operations.values()))["status"] == "failed"
-    assert repo.session["active_draft_operation_id"] is None
+    assert result.failure_code == "DraftProviderResultInvalid"
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
+    operation = next(iter(repo.operations.values()))
+    assert operation["status"] == "failed"
+    assert operation["provider_id"] == "provider-writing"
+    assert repo.provider["api_key"] == "private-provider-key"
+    assert repo.provider["base_url"] == "https://private.provider.invalid/v1"
+    assert gateway.calls[0]["provider"]["api_key"] == "gateway-mutated-key"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_gateway_exception_raises_fixed_internal_error_and_leaves_recovery():
+    from backend.services.draft_operations import DraftOperationUnexpectedProviderError
+
+    gateway = FakeGateway(ValueError("remote body and secret detail"))
+    service, repo, _, _, _ = make_service(gateway=gateway)
+
+    with pytest.raises(DraftOperationUnexpectedProviderError) as exc_info:
+        await service.start(command())
+
+    assert str(exc_info.value) == "Draft provider failed unexpectedly"
+    assert exc_info.value.__cause__ is None
+    assert "remote body" not in str(exc_info.value)
+    assert next(iter(repo.operations.values()))["status"] == "running"
+    assert repo.session["active_draft_operation_id"] is not None
 
 
 @pytest.mark.asyncio
@@ -881,6 +932,47 @@ async def test_settle_storage_failure_rolls_back_every_settle_write(failure, val
     assert repo.revisions == []
     assert [row["event_type"] for row in repo.events] == ["started"]
     assert next(iter(repo.operations.values()))["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_complete_terminal_failure_rolls_back_snapshots_cas_and_event_two():
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    repo = FakeRepository()
+    repo.fail_complete = True
+    service, repo, _, _, _ = make_service(repo=repo)
+
+    with pytest.raises(DraftOperationStorageError):
+        await service.start(command())
+
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
+    assert [row["event_type"] for row in repo.events] == ["started"]
+    operation = next(iter(repo.operations.values()))
+    assert operation["status"] == "running"
+    assert operation["last_event_sequence"] == 1
+    assert repo.session["active_draft_operation_id"] == operation["id"]
+
+
+@pytest.mark.asyncio
+async def test_failed_terminal_failure_rolls_back_failed_event_and_status():
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    repo = FakeRepository()
+    repo.fail_terminal_failure = True
+    gateway = FakeGateway(ChapterDraftProviderError("safe boundary failure"))
+    service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
+
+    with pytest.raises(DraftOperationStorageError):
+        await service.start(command())
+
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
+    assert [row["event_type"] for row in repo.events] == ["started"]
+    operation = next(iter(repo.operations.values()))
+    assert operation["status"] == "running"
+    assert operation["last_event_sequence"] == 1
+    assert repo.session["active_draft_operation_id"] == operation["id"]
 
 
 @pytest.mark.parametrize(

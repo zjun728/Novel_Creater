@@ -12,7 +12,10 @@ from typing import Literal
 from uuid import UUID, uuid4
 
 from backend.domain.json_contracts import canonical_hash
-from backend.gateways.chapter_draft_provider import ChapterDraftProviderGateway
+from backend.gateways.chapter_draft_provider import (
+    ChapterDraftProviderError,
+    ChapterDraftProviderGateway,
+)
 from backend.http_errors import PublicDomainError
 from backend.prompts.chapter_draft import build_chapter_draft_messages
 from backend.security.provider_secrets import (
@@ -83,6 +86,13 @@ class DraftOperationPreconditionFailed(PublicDomainError):
 
 class DraftOperationStorageError(RuntimeError):
     """A coordination/storage write failed and its transaction must roll back."""
+
+
+class DraftOperationUnexpectedProviderError(RuntimeError):
+    """Unexpected internal Provider failure with no remote detail."""
+
+    def __init__(self):
+        super().__init__("Draft provider failed unexpectedly")
 
 
 @dataclass(frozen=True)
@@ -173,14 +183,21 @@ class DraftOperationService:
         replay, context = await self._reserve(command)
         if replay is not None:
             return replay
+        gateway_provider = dict(context["gateway_provider"])
+        gateway_messages = [
+            dict(message) for message in context["gateway_messages"]
+        ]
+        gateway_config = dict(context["gateway_config"])
         try:
             generated = await self._gateway.generate(
-                provider=context["provider"],
-                messages=context["messages"],
-                generation_config=self._generation_config(context["provider"]),
+                provider=gateway_provider,
+                messages=gateway_messages,
+                generation_config=gateway_config,
             )
-        except Exception:
+        except ChapterDraftProviderError:
             return await self._settle_failure(context, "DraftProviderFailed")
+        except Exception:
+            raise DraftOperationUnexpectedProviderError() from None
         return await self._settle_success(context, generated)
 
     async def _reserve(self, command):
@@ -291,6 +308,19 @@ class DraftOperationService:
 
             prompt_session = dict(chapter_session)
             prompt_session["chapter_outline"] = authority["outline"]["content"]
+            gateway_provider = {
+                "id": provider_authority["id"],
+                "provider_type": provider_authority["provider_type"],
+                "model_name": provider_authority["model_name"],
+                "base_url": provider_authority["base_url"],
+                "api_key": provider_authority["api_key"],
+            }
+            gateway_messages = build_chapter_draft_messages(
+                operation_type="generate_new",
+                chapter_session=prompt_session,
+                working_draft=draft,
+                author_instruction=command.author_instruction,
+            )
             return None, {
                 "command": command,
                 "attempt": {**row, "status": "running", "last_event_sequence": 1},
@@ -298,13 +328,15 @@ class DraftOperationService:
                 "manifest_hash": manifest_hash,
                 "authority": self._authority_snapshot(authority),
                 "provider_authority_hash": canonical_hash(provider_authority),
-                "provider": dict(authority["provider"]),
-                "messages": build_chapter_draft_messages(
-                    operation_type="generate_new",
-                    chapter_session=prompt_session,
-                    working_draft=draft,
-                    author_instruction=command.author_instruction,
+                "provider_secrets": (
+                    provider_authority["api_key"],
+                    provider_authority["base_url"],
                 ),
+                "gateway_provider": gateway_provider,
+                "gateway_config": self._generation_config(
+                    authority["provider"]
+                ),
+                "gateway_messages": gateway_messages,
             }
 
     async def _settle_success(self, context, generated):
@@ -317,9 +349,7 @@ class DraftOperationService:
             draft = locked["draft"]
             try:
                 content = validate_provider_response_text(generated, strip=True)
-                secrets = normalize_provider_secrets(
-                    (context["provider"].get("api_key"), context["provider"].get("base_url"))
-                )
+                secrets = context["provider_secrets"]
                 if (
                     provider_response_text_contains_secret(content, secrets)
                     or provider_response_value_contains_secret(content, secrets)
@@ -1014,5 +1044,6 @@ __all__ = [
     "DraftOperationResult",
     "DraftOperationService",
     "DraftOperationStorageError",
+    "DraftOperationUnexpectedProviderError",
     "StartDraftOperation",
 ]
