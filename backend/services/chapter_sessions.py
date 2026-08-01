@@ -343,10 +343,22 @@ class ChapterSessionService:
             )
             if chapter_session is None:
                 raise ChapterSessionNotFound("Chapter session not found")
-            if chapter_session.get(
+            effective_status = chapter_session.get(
                 "effective_status", chapter_session["status"]
-            ) == "superseded":
+            )
+            if effective_status == "superseded":
                 raise ChapterSessionConflict("Chapter session is superseded")
+            if effective_status != "drafting":
+                raise ChapterSessionConflict("Chapter session is finalized")
+            authority = await self.repository.read_current_outline(
+                session,
+                command.project_id,
+                int(chapter_session["chapter_num"]),
+            )
+            if authority is None:
+                raise ChapterSessionPreconditionFailed(
+                    "current Outline authority is required"
+                )
             draft = await self.repository.read_working_draft(session, command.chapter_session_id)
             if draft is None:
                 raise ChapterSessionPreconditionFailed("working draft is required")
@@ -362,6 +374,15 @@ class ChapterSessionService:
                 "provenance": {
                     "source": "explicit-save-candidate",
                     "workingDraftRevision": int(draft["revision"]),
+                    "outlineRevisionId": authority["chapter_outline_revision_id"],
+                    "outlineRevision": int(authority["chapter_outline_revision"]),
+                    "outlineHash": authority["chapter_outline_hash"],
+                    "planningRevisionId": authority["planning_revision_id"],
+                    "planningRevision": int(authority["planning_revision"]),
+                    "planningHash": authority["planning_hash"],
+                    "canonRevision": int(authority["canon_revision"]),
+                    "projectionRevision": int(authority["projection_revision"]),
+                    "projectionHash": authority["projection_hash"],
                 },
                 "created_at": int(time.time() * 1000),
             }
@@ -371,13 +392,20 @@ class ChapterSessionService:
     async def _workspace(self, session, chapter_session: Mapping[str, Any]) -> ChapterWorkspace:
         draft = await self.repository.read_working_draft(session, chapter_session["id"])
         candidates = await self.repository.list_candidates(session, chapter_session["id"])
+        authority = await self.repository.read_current_outline(
+            session,
+            chapter_session["project_id"],
+            int(chapter_session["chapter_num"]),
+        )
         if draft is None:
             raise ChapterSessionPreconditionFailed("working draft is required")
         return ChapterWorkspace(
             project_id=chapter_session["project_id"],
             session=self._session_view(chapter_session),
             working_draft=self._draft_view(draft),
-            candidates=tuple(self._candidate_view(row) for row in candidates),
+            candidates=tuple(
+                self._candidate_view(row, authority) for row in candidates
+            ),
         )
 
     def _validate_create_command(self, command: CreateChapterSession) -> None:
@@ -468,12 +496,39 @@ class ChapterSessionService:
             status=row.get("effective_status", "drafting"),
         )
 
-    def _candidate_view(self, row) -> DraftCandidateView:
+    def _candidate_view(
+        self,
+        row,
+        authority: Mapping[str, Any] | None,
+    ) -> DraftCandidateView:
+        provenance = row.get("provenance") or {}
+        matches = authority is not None and (
+            provenance.get("outlineRevisionId")
+            == authority["chapter_outline_revision_id"]
+            and provenance.get("outlineRevision")
+            == authority["chapter_outline_revision"]
+            and provenance.get("outlineHash") == authority["chapter_outline_hash"]
+            and provenance.get("planningRevisionId")
+            == authority["planning_revision_id"]
+            and provenance.get("planningRevision")
+            == authority["planning_revision"]
+            and provenance.get("planningHash") == authority["planning_hash"]
+        )
         return DraftCandidateView(
             id=row["id"], project_id=row["project_id"],
             chapter_session_id=row["chapter_session_id"],
             working_draft_revision=int(row["working_draft_revision"]),
             content=row["content"], content_hash=row["content_hash"],
-            provenance=row.get("provenance") or {},
+            provenance=provenance,
+            outline_revision_id=provenance.get("outlineRevisionId"),
+            outline_revision=provenance.get("outlineRevision"),
+            outline_hash=provenance.get("outlineHash"),
+            planning_revision_id=provenance.get("planningRevisionId"),
+            planning_revision=provenance.get("planningRevision"),
+            planning_hash=provenance.get("planningHash"),
+            canon_revision=provenance.get("canonRevision"),
+            projection_revision=provenance.get("projectionRevision"),
+            projection_hash=provenance.get("projectionHash"),
+            basis_status="current" if matches else "stale",
             status=row.get("effective_status", "drafting"),
         )

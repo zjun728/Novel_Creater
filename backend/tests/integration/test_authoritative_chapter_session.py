@@ -19,6 +19,8 @@ from backend.services.chapter_sessions import (
     ChapterSessionPreconditionFailed,
     ChapterSessionService,
     CreateChapterSession,
+    SaveDraftCandidate,
+    SaveWorkingDraft,
 )
 from backend.services.planning import ConfirmPlanningDraft
 from backend.tests.integration.test_chapter_outline_lifecycle import (
@@ -281,6 +283,77 @@ async def test_current_planning_drift_and_archived_project_fail_closed(
     with pytest.raises(http_errors.ProjectArchived):
         await service.create_session(_create_command(planning, outline))
     assert await _counts(disposable_mysql.session) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_candidate_basis_follows_current_outline_not_immutable_session(
+    disposable_mysql,
+):
+    await _prove_owned_database(disposable_mysql)
+    _, planning, outline_r1 = await _confirmed_outline(disposable_mysql)
+    transaction_factory = transaction_factory_for(
+        disposable_mysql.connection_config
+    )
+    service = ChapterSessionService(
+        ChapterSessionRepository(),
+        transaction_factory=transaction_factory,
+        connection_factory=transaction_factory,
+    )
+    created = await service.create_session(_create_command(planning, outline_r1))
+    await service.save_working_draft(
+        SaveWorkingDraft(PROJECT, created.session.id, 1, "候选稿 A")
+    )
+    await service.save_candidate(SaveDraftCandidate(PROJECT, created.session.id, 2))
+
+    ids = iter(
+        f"9e200000-0000-0000-0000-{number:012d}"
+        for number in range(1, 20)
+    )
+    outline_service = ChapterOutlineService(
+        ChapterOutlineRepository(),
+        ChapterSessionRepository(),
+        transaction_factory=transaction_factory,
+        id_factory=ids.__next__,
+        clock=lambda: NOW + 950,
+    )
+    draft = await outline_service.create_draft(
+        CreateChapterOutlineDraft(PROJECT, 1)
+    )
+    saved = await outline_service.save_draft(
+        SaveChapterOutlineDraft(
+            PROJECT,
+            1,
+            draft.draft_id,
+            draft.draft_revision,
+            draft.content_hash,
+            _editable_outline(planning.content),
+        )
+    )
+    outline_r2 = await outline_service.confirm_draft(
+        ConfirmChapterOutlineDraft(
+            PROJECT,
+            1,
+            saved.draft_id,
+            saved.draft_revision,
+            saved.content_hash,
+            outline_r1.revision,
+            "adjust-outline-before-finalization",
+        )
+    )
+    await service.save_working_draft(
+        SaveWorkingDraft(PROJECT, created.session.id, 2, "候选稿 B")
+    )
+    await service.save_candidate(SaveDraftCandidate(PROJECT, created.session.id, 3))
+
+    workspace = await service.get(PROJECT, 1)
+
+    candidate_a, candidate_b = workspace.candidates
+    assert candidate_a.basis_status == "stale"
+    assert candidate_a.outline_revision == outline_r1.revision
+    assert candidate_b.basis_status == "current"
+    assert candidate_b.outline_revision == outline_r2.revision
+    assert candidate_b.canon_revision == 0
+    assert workspace.session.chapter_outline_revision == outline_r1.revision
 
 
 @pytest.mark.asyncio

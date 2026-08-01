@@ -382,6 +382,7 @@ async def test_active_session_replays_exact_pins_without_revalidating_new_heads(
         "read_active_session",
         "read_chapter_session",
         "read_working_draft",
+        "read_current_outline",
     ]
 
 
@@ -723,6 +724,107 @@ async def test_save_candidate_freezes_current_working_draft_explicitly():
     assert result.candidates[0].working_draft_revision == 2
     assert result.candidates[0].content == result.working_draft.content
     assert result.candidates[0].content_hash == result.working_draft.content_hash
+
+
+@pytest.mark.asyncio
+async def test_candidates_stamp_current_outline_basis_and_derive_staleness():
+    from backend.services.chapter_sessions import (
+        ChapterSessionService,
+        SaveDraftCandidate,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(
+        repo,
+        transaction_factory=tx_factory,
+        connection_factory=tx_factory,
+    )
+    created = await service.create_session(create_command())
+    await service.save_working_draft(
+        SaveWorkingDraft(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_revision=1,
+            content="候选稿 A",
+        )
+    )
+    await service.save_candidate(
+        SaveDraftCandidate("p1", created.session.id, 2)
+    )
+
+    repo.outline.update(
+        chapter_outline_revision_id="outline-revision-2",
+        chapter_outline_revision=4,
+        chapter_outline_hash="e" * 64,
+        planning_revision_id="planning-revision-2",
+        planning_revision=2,
+        planning_hash="f" * 64,
+        canon_revision=4,
+        projection_revision=4,
+        projection_hash="g" * 64,
+    )
+    await service.save_working_draft(
+        SaveWorkingDraft(
+            project_id="p1",
+            chapter_session_id=created.session.id,
+            expected_revision=2,
+            content="候选稿 B",
+        )
+    )
+    await service.save_candidate(
+        SaveDraftCandidate("p1", created.session.id, 3)
+    )
+    repo.candidates.append({
+        "id": "legacy-candidate",
+        "project_id": "p1",
+        "chapter_session_id": created.session.id,
+        "working_draft_revision": 1,
+        "content": "旧候选稿",
+        "content_hash": "h" * 64,
+        "provenance": {"source": "legacy"},
+    })
+
+    workspace = await service.get("p1", 1)
+
+    first, second, legacy = workspace.candidates
+    assert first.basis_status == "stale"
+    assert first.outline_revision == 3
+    assert second.basis_status == "current"
+    assert second.outline_revision == 4
+    assert second.canon_revision == 4
+    assert legacy.basis_status == "stale"
+    assert workspace.session.chapter_outline_revision == 3
+
+
+@pytest.mark.asyncio
+async def test_save_candidate_requires_drafting_session_and_current_outline():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionPreconditionFailed,
+        ChapterSessionService,
+        SaveDraftCandidate,
+        SaveWorkingDraft,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(repo, transaction_factory=tx_factory)
+    created = await service.create_session(create_command())
+    await service.save_working_draft(
+        SaveWorkingDraft("p1", created.session.id, 1, "可以冻结的正文")
+    )
+    repo.sessions[0]["status"] = "finalized"
+
+    with pytest.raises(ChapterSessionConflict, match="finalized"):
+        await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
+
+    repo.sessions[0]["status"] = "drafting"
+    repo.outline = None
+    with pytest.raises(
+        ChapterSessionPreconditionFailed,
+        match="current Outline authority",
+    ):
+        await service.save_candidate(SaveDraftCandidate("p1", created.session.id, 2))
 
 
 @pytest.mark.asyncio

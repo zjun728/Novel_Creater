@@ -161,6 +161,16 @@ def _public_workspace(workspace):
             "workingDraftRevision": candidate.working_draft_revision,
             "content": candidate.content,
             "contentHash": candidate.content_hash,
+            "outlineRevisionId": candidate.outline_revision_id,
+            "outlineRevision": candidate.outline_revision,
+            "outlineHash": candidate.outline_hash,
+            "planningRevisionId": candidate.planning_revision_id,
+            "planningRevision": candidate.planning_revision,
+            "planningHash": candidate.planning_hash,
+            "canonRevision": candidate.canon_revision,
+            "projectionRevision": candidate.projection_revision,
+            "projectionHash": candidate.projection_hash,
+            "basisStatus": candidate.basis_status,
         } for candidate in workspace.candidates],
     }
 

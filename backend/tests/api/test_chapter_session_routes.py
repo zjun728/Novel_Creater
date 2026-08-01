@@ -86,6 +86,16 @@ class FakeChapterSessionService:
                 "raw": "LEAK-SENTINEL",
                 "provider": "LEAK-SENTINEL",
             },
+            outline_revision_id="outline-revision-3",
+            outline_revision=3,
+            outline_hash="c" * 64,
+            planning_revision_id="planning-revision-1",
+            planning_revision=1,
+            planning_hash="a" * 64,
+            canon_revision=0,
+            projection_revision=0,
+            projection_hash="d" * 64,
+            basis_status="current",
             status="drafting",
         )
         self.candidates = (candidate,)
@@ -316,6 +326,31 @@ def test_chapter_session_public_workspace_never_exports_internal_metadata():
     serialized = response.text
     for forbidden in ("LEAK-SENTINEL", "apiKey", "prompt", "raw", "provider"):
         assert forbidden not in serialized
+
+
+def test_chapter_session_public_workspace_exports_only_candidate_basis_fields():
+    client, _, _ = make_client()
+
+    response = client.post(
+        "/api/projects/p1/chapter-sessions/session-1/candidates",
+        json={"expectedWorkingDraftRevision": 1},
+    )
+
+    assert response.status_code == 201
+    candidate = response.json()["candidates"][0]
+    assert candidate["outlineRevisionId"] == "outline-revision-3"
+    assert candidate["outlineRevision"] == 3
+    assert candidate["outlineHash"] == "c" * 64
+    assert candidate["planningRevisionId"] == "planning-revision-1"
+    assert candidate["planningRevision"] == 1
+    assert candidate["planningHash"] == "a" * 64
+    assert candidate["canonRevision"] == 0
+    assert candidate["projectionRevision"] == 0
+    assert candidate["projectionHash"] == "d" * 64
+    assert candidate["basisStatus"] == "current"
+    assert "provenance" not in candidate
+    assert "provider" not in candidate
+    assert "prompt" not in candidate
 
 
 def test_generate_working_draft_route_rejects_secret_debug_fields():
