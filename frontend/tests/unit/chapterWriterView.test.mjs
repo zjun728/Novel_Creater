@@ -124,10 +124,13 @@ test('local generation rejection shows one fixed safe fallback only without an o
   assert.equal(actionError.value, '')
 })
 
-test('author instruction input enforces the coordinator 2000 character boundary', async () => {
+test('author instruction input enforces a Unicode-scalar limit with an accessible count', async () => {
   const view = await source('views/ChapterWriterView.vue')
   const input = view.match(/<n-input id="author-instruction"[^>]*\/>/)?.[0]
   assert.ok(input)
-  assert.match(input, /:maxlength="2000"/)
-  assert.match(input, /\sshow-count(?:\s|\/>)/)
+  assert.doesNotMatch(input, /maxlength|show-count/)
+  assert.match(input, /aria-describedby="author-instruction-count"/)
+  assert.match(input, /@update:value="updateAuthorInstruction"/)
+  assert.match(view, /unicodeScalarLength|limitUnicodeScalarText/)
+  assert.match(view, /id="author-instruction-count"[^>]*aria-live="polite"/)
 })

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import replace
+import hashlib
 import json
 
 from fastapi import FastAPI
@@ -34,14 +35,22 @@ def stored_operation(**overrides):
         "project_id": PROJECT_ID,
         "chapter_session_id": SESSION_ID,
         "operation_type": "generate_new",
+        "idempotency_key": IDEMPOTENCY_KEY,
+        "request_fingerprint": "b" * 64,
         "status": "completed",
         "active_slot": None,
+        "fencing_token": 1,
+        "lease_expires_at": 200,
         "last_event_sequence": 2,
         "base_working_draft_revision": 1,
         "base_working_draft_hash": HASH,
+        "input_manifest_json": "{}",
+        "input_manifest_hash": hashlib.sha256(b"{}").hexdigest(),
         "result_working_draft_revision": 2,
         "result_content_hash": HASH,
         "failure_code": None,
+        "created_at": 100,
+        "updated_at": 101,
         "completed_at": 101,
         "provider_id": "provider-1",
         "model_name_snapshot": "fake-model",
@@ -187,7 +196,7 @@ def test_create_formal_draft_operation_returns_only_closed_result_fields():
 
     assert response.status_code == 200
     assert response.json() == {
-        "operationId": OPERATION_ID,
+        "id": OPERATION_ID,
         "projectId": PROJECT_ID,
         "chapterSessionId": SESSION_ID,
         "operationType": "generate_new",
@@ -196,8 +205,10 @@ def test_create_formal_draft_operation_returns_only_closed_result_fields():
         "resultWorkingDraftRevision": 2,
         "resultContentHash": HASH,
         "failureCode": None,
-        "providerId": "provider-1",
-        "modelName": "fake-model",
+        "model": {
+            "providerId": "provider-1",
+            "modelName": "fake-model",
+        },
     }
     assert len(service.commands) == 1
     command = service.commands[0]
@@ -240,6 +251,29 @@ def test_create_formal_draft_operation_requires_canonical_command_fields():
         assert response.status_code == 422
         assert response.json()["code"] == "DraftOperationRequestInvalid"
     assert service.commands == []
+
+
+def test_create_formal_draft_operation_counts_unicode_scalars_and_rejects_lone_surrogates():
+    client, service, _ = make_client()
+    path = operation_path().rsplit("/", 1)[0]
+
+    for size in (1001, 2000):
+        response = client.post(path, json=create_body(authorInstruction="😀" * size))
+        assert response.status_code == 200
+    too_long = client.post(path, json=create_body(authorInstruction="😀" * 2001))
+    assert too_long.status_code == 422
+    raw = json.dumps(
+        create_body(authorInstruction="\ud800"),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    malformed = client.post(
+        path,
+        content=raw,
+        headers={"content-type": "application/json"},
+    )
+    assert malformed.status_code == 422
+    assert len(service.commands) == 2
 
 
 def test_create_formal_draft_operation_hides_internal_provider_and_storage_errors():
@@ -492,7 +526,7 @@ def test_formal_operation_reads_are_owner_scoped_and_never_start_provider_work()
     missing = client.get(operation_path("30000000-0000-0000-0000-000000000099"))
 
     assert status.status_code == 200
-    assert status.json()["operationId"] == OPERATION_ID
+    assert status.json()["id"] == OPERATION_ID
     assert events.status_code == 200
     assert events.json() == {
         "operationId": OPERATION_ID,

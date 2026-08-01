@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 
-from backend.domain.json_contracts import canonical_hash
+from backend.domain.json_contracts import canonical_hash, canonical_json
 from backend.gateways.chapter_draft_provider import ChapterDraftProviderError
 
 
@@ -28,6 +28,14 @@ def _fingerprint(*, instruction="多一点人物试探", revision=1, content_has
         "baseWorkingDraftHash": content_hash,
         "authorInstruction": instruction,
     })
+
+
+def _stored_attempt(row):
+    stored = copy.deepcopy(row)
+    if "input_manifest" in stored:
+        manifest = stored.pop("input_manifest")
+        stored["input_manifest_json"] = canonical_json(manifest)
+    return stored
 
 
 class SequentialIds:
@@ -274,18 +282,18 @@ class FakeRepository:
         return dict(self.provider) if project_id == PROJECT_ID else None
 
     async def read_draft_operation_by_key(self, session, chapter_session_id, key):
-        return next((dict(row) for row in self.operations.values()
+        return next((_stored_attempt(row) for row in self.operations.values()
                      if row["chapter_session_id"] == chapter_session_id
                      and row["idempotency_key"] == key), None)
 
     async def read_draft_operation(self, session, project_id, chapter_session_id, operation_id):
         row = self.operations.get(operation_id)
         if row and row["project_id"] == project_id and row["chapter_session_id"] == chapter_session_id:
-            return dict(row)
+            return _stored_attempt(row)
         return None
 
     async def read_active_draft_operation(self, session, chapter_session_id):
-        return next((dict(row) for row in self.operations.values()
+        return next((_stored_attempt(row) for row in self.operations.values()
                      if row["chapter_session_id"] == chapter_session_id
                      and row["active_slot"] == 1), None)
 
@@ -451,7 +459,7 @@ async def test_generate_new_reserves_calls_outside_transaction_and_atomically_co
 async def test_public_stored_projection_returns_valid_completed_operation():
     service, repo, _, _, _ = make_service()
     await service.start(command())
-    stored = next(iter(repo.operations.values()))
+    stored = _stored_attempt(next(iter(repo.operations.values())))
 
     result = service.project_stored_result(stored)
 
@@ -462,13 +470,95 @@ async def test_public_stored_projection_returns_valid_completed_operation():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "required_key",
+    (
+        "id", "project_id", "chapter_session_id", "operation_type",
+        "idempotency_key", "request_fingerprint", "active_slot",
+        "fencing_token", "lease_expires_at", "base_working_draft_revision",
+        "base_working_draft_hash", "input_manifest_json",
+        "input_manifest_hash", "provider_id", "model_name_snapshot",
+        "result_working_draft_revision", "result_content_hash",
+        "last_event_sequence", "failure_code", "status", "created_at",
+        "updated_at", "completed_at",
+    ),
+)
+async def test_public_stored_projection_requires_every_select_star_column(required_key):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _ = make_service()
+    await service.start(command())
+    stored = _stored_attempt(next(iter(repo.operations.values())))
+    stored.pop(required_key)
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", (True, "1"))
+async def test_public_stored_projection_rejects_coerced_integer_and_time_columns(invalid):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _ = make_service()
+    await service.start(command())
+    completed = _stored_attempt(next(iter(repo.operations.values())))
+    for field in (
+        "fencing_token", "lease_expires_at", "base_working_draft_revision",
+        "result_working_draft_revision", "last_event_sequence", "created_at",
+        "updated_at", "completed_at",
+    ):
+        stored = {**completed, field: invalid}
+        with pytest.raises(DraftOperationStorageError):
+            service.project_stored_result(stored)
+
+    running = {
+        **completed,
+        "status": "running",
+        "active_slot": invalid,
+        "last_event_sequence": 1,
+        "result_working_draft_revision": None,
+        "result_content_hash": None,
+        "failure_code": None,
+        "completed_at": None,
+    }
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(running)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        {"input_manifest_json": "not-json"},
+        {"input_manifest_json": "[]"},
+        {"input_manifest_hash": "f" * 64},
+        {"request_fingerprint": "F" * 64},
+        {"idempotency_key": "not-a-uuid"},
+    ),
+)
+async def test_public_stored_projection_validates_stored_json_hashes_and_identity(corruption):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _ = make_service()
+    await service.start(command())
+    stored = {
+        **_stored_attempt(next(iter(repo.operations.values()))),
+        **corruption,
+    }
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
 async def test_public_stored_projection_fails_closed_for_malformed_row():
     from backend.services.draft_operations import DraftOperationStorageError
 
     service, repo, _, _, _ = make_service()
     await service.start(command())
     stored = {
-        **next(iter(repo.operations.values())),
+        **_stored_attempt(next(iter(repo.operations.values()))),
         "last_event_sequence": 999,
     }
 
@@ -494,7 +584,7 @@ async def test_public_stored_projection_rejects_coerced_or_incomplete_rows(corru
 
     service, repo, _, _, _ = make_service()
     await service.start(command())
-    stored = dict(next(iter(repo.operations.values())))
+    stored = _stored_attempt(next(iter(repo.operations.values())))
     if corruption == "sequence-string":
         stored["last_event_sequence"] = "2"
     elif corruption == "result-revision-string":
@@ -615,7 +705,7 @@ async def test_same_key_same_fingerprint_replays_without_provider_or_mutable_che
         "request_fingerprint": _fingerprint(), "active_slot": 1 if status in {"starting", "running"} else None,
         "fencing_token": 1, "lease_expires_at": clock.now + 500,
         "base_working_draft_revision": 1, "base_working_draft_hash": EMPTY_HASH,
-        "input_manifest": {}, "input_manifest_hash": "1" * 64,
+        "input_manifest": {}, "input_manifest_hash": canonical_hash({}),
         "provider_id": "provider-writing", "model_name_snapshot": "fake-writing-model",
         "result_working_draft_revision": 2 if status == "completed" else None,
         "result_content_hash": "2" * 64 if status == "completed" else None,
@@ -646,7 +736,7 @@ async def test_same_key_different_fingerprint_is_fixed_conflict():
         "request_fingerprint": "9" * 64, "active_slot": None, "fencing_token": 1,
         "lease_expires_at": 1, "base_working_draft_revision": 1,
         "base_working_draft_hash": EMPTY_HASH, "input_manifest": {},
-        "input_manifest_hash": "1" * 64, "provider_id": "provider-writing",
+        "input_manifest_hash": canonical_hash({}), "provider_id": "provider-writing",
         "model_name_snapshot": "fake-writing-model", "result_working_draft_revision": None,
         "result_content_hash": None, "last_event_sequence": 1, "failure_code": None,
         "status": "expired", "created_at": 1, "updated_at": 1, "completed_at": 1,
@@ -666,7 +756,7 @@ async def test_same_key_elapsed_attempt_replays_as_expired_without_provider():
         "request_fingerprint": _fingerprint(), "active_slot": 1, "fencing_token": 1,
         "lease_expires_at": clock.now, "base_working_draft_revision": 1,
         "base_working_draft_hash": EMPTY_HASH, "input_manifest": {},
-        "input_manifest_hash": "1" * 64, "provider_id": "provider-writing",
+        "input_manifest_hash": canonical_hash({}), "provider_id": "provider-writing",
         "model_name_snapshot": "fake-writing-model", "result_working_draft_revision": None,
         "result_content_hash": None, "last_event_sequence": 1, "failure_code": None,
         "status": "running", "created_at": 1, "updated_at": 1, "completed_at": None,
@@ -692,7 +782,7 @@ async def test_replay_fails_closed_for_malformed_stored_public_result():
         "request_fingerprint": _fingerprint(), "active_slot": None, "fencing_token": 1,
         "lease_expires_at": 1, "base_working_draft_revision": 1,
         "base_working_draft_hash": EMPTY_HASH, "input_manifest": {},
-        "input_manifest_hash": "1" * 64, "provider_id": "provider-writing",
+        "input_manifest_hash": canonical_hash({}), "provider_id": "provider-writing",
         "model_name_snapshot": "fake-writing-model", "result_working_draft_revision": 2,
         "result_content_hash": "NOT-A-HASH", "last_event_sequence": 2,
         "failure_code": None, "status": "completed", "created_at": 1,
@@ -723,7 +813,7 @@ async def test_expired_projection_does_not_rewrite_invalid_running_state(
         "active_slot": 1, "fencing_token": 1,
         "lease_expires_at": clock.now, "base_working_draft_revision": 1,
         "base_working_draft_hash": EMPTY_HASH, "input_manifest": {},
-        "input_manifest_hash": "1" * 64, "provider_id": "provider-writing",
+        "input_manifest_hash": canonical_hash({}), "provider_id": "provider-writing",
         "model_name_snapshot": "fake-writing-model",
         "result_working_draft_revision": None, "result_content_hash": result_hash,
         "last_event_sequence": last_sequence, "failure_code": None,
@@ -810,7 +900,9 @@ async def test_authority_or_base_drift_expires_without_changing_draft(drift):
         elif drift == "provider":
             repo.provider["binding_hash"] = "7" * 64
         elif drift == "manifest":
-            next(iter(repo.operations.values()))["input_manifest_hash"] = "7" * 64
+            operation = next(iter(repo.operations.values()))
+            operation["input_manifest"] = {**operation["input_manifest"], "drift": True}
+            operation["input_manifest_hash"] = canonical_hash(operation["input_manifest"])
         else:
             repo.draft["content_hash"] = "7" * 64
 
@@ -1093,3 +1185,14 @@ def test_command_validation_is_strict(overrides):
     service, _, _, _, _ = make_service()
     with pytest.raises(DraftOperationRequestInvalid):
         service.validate(command(**overrides))
+
+
+def test_command_validation_counts_unicode_scalar_values():
+    from backend.services.draft_operations import DraftOperationRequestInvalid
+
+    service, _, _, _, _ = make_service()
+    for size in (1001, 2000):
+        validated = service.validate(command(author_instruction="😀" * size))
+        assert len(validated.author_instruction) == size
+    with pytest.raises(DraftOperationRequestInvalid):
+        service.validate(command(author_instruction="😀" * 2001))

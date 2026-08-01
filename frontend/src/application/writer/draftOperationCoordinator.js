@@ -1,4 +1,5 @@
 import { ApiError } from '../../api/db/api-error.js'
+import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 
 const CONTENT_HASH = /^[0-9a-f]{64}$/
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -9,6 +10,12 @@ const POLL_INTERVAL_MS = 1_000
 const MAX_STATUS_READS = 1_200
 const MAX_BASE_REVISION = 2_147_483_646
 const MAX_RESULT_REVISION = 2_147_483_647
+const OPERATION_FIELDS = [
+  'id', 'projectId', 'chapterSessionId', 'operationType', 'status',
+  'lastEventSequence', 'resultWorkingDraftRevision', 'resultContentHash',
+  'failureCode', 'model',
+]
+const MODEL_FIELDS = ['providerId', 'modelName']
 
 function defaultPollScheduler(delayMs) {
   let resolve
@@ -62,7 +69,7 @@ function command(value, idFactory) {
     || typeof source.expectedContentHash !== 'string'
     || !CONTENT_HASH.test(source.expectedContentHash)
     || typeof source.authorInstruction !== 'string'
-    || source.authorInstruction.length > 2000
+    || unicodeScalarLength(source.authorInstruction) > 2000
   ) throw new TypeError('Invalid draft operation command')
   return Object.freeze({
     operationType: 'generate_new',
@@ -75,7 +82,11 @@ function command(value, idFactory) {
 
 function publicOperation(value) {
   const source = object(value, 'draft operation response')
-  const operationId = uuid(source.operationId, 'draft operation id')
+  if (
+    Object.keys(source).length !== OPERATION_FIELDS.length
+    || OPERATION_FIELDS.some(field => !Object.hasOwn(source, field))
+  ) throw new TypeError('Invalid draft operation response')
+  const operationId = uuid(source.id, 'draft operation id')
   const projectId = uuid(source.projectId, 'draft operation project id')
   const chapterSessionId = uuid(source.chapterSessionId, 'draft operation session id')
   const status = source.status
@@ -83,15 +94,18 @@ function publicOperation(value) {
   const revision = source.resultWorkingDraftRevision
   const contentHash = source.resultContentHash
   const failureCode = source.failureCode
+  const sourceModel = object(source.model, 'draft operation model')
   if (
     source.operationType !== 'generate_new'
     || !PUBLIC_STATUSES.has(status)
     || !Number.isInteger(sequence)
     || sequence !== ((status === 'completed' || status === 'failed') ? 2 : 1)
-    || typeof source.providerId !== 'string'
-    || source.providerId.length === 0
-    || typeof source.modelName !== 'string'
-    || source.modelName.length === 0
+    || Object.keys(sourceModel).length !== MODEL_FIELDS.length
+    || MODEL_FIELDS.some(field => !Object.hasOwn(sourceModel, field))
+    || typeof sourceModel.providerId !== 'string'
+    || sourceModel.providerId.length === 0
+    || typeof sourceModel.modelName !== 'string'
+    || sourceModel.modelName.length === 0
   ) throw new TypeError('Invalid draft operation response')
   if (status === 'completed') {
     if (
@@ -111,8 +125,12 @@ function publicOperation(value) {
   } else if (revision !== null || contentHash !== null || failureCode !== null) {
     throw new TypeError('Invalid draft operation response')
   }
+  const model = Object.freeze({
+    providerId: sourceModel.providerId,
+    modelName: sourceModel.modelName,
+  })
   return Object.freeze({
-    operationId,
+    id: operationId,
     projectId,
     chapterSessionId,
     operationType: 'generate_new',
@@ -121,13 +139,15 @@ function publicOperation(value) {
     resultWorkingDraftRevision: revision,
     resultContentHash: contentHash,
     failureCode,
-    providerId: source.providerId,
-    modelName: source.modelName,
+    model,
   })
 }
 
 function isUnknownTransport(error) {
-  return error instanceof ApiError && error.status === 0
+  return error instanceof ApiError && (
+    error.status === 0
+    || (error.status === 502 && error.code === 'DraftOperationUnavailable')
+  )
 }
 
 function knownFailureCode(error) {
@@ -250,7 +270,7 @@ export function createDraftOperationCoordinator({
       reads += 1
       let received
       try {
-        received = await read(operation.operationId)
+        received = await read(operation.id)
       } catch (error) {
         if (!isCurrent(token)) return null
         if (isUnknownTransport(error)) markUnknown(frozenCommand)

@@ -197,7 +197,7 @@ def _require_operation_identity(
 
 def _public_draft_operation(result: DraftOperationResult):
     return {
-        "operationId": result.operation_id,
+        "id": result.operation_id,
         "projectId": result.project_id,
         "chapterSessionId": result.chapter_session_id,
         "operationType": result.operation_type,
@@ -206,8 +206,10 @@ def _public_draft_operation(result: DraftOperationResult):
         "resultWorkingDraftRevision": result.result_working_draft_revision,
         "resultContentHash": result.result_content_hash,
         "failureCode": result.failure_code,
-        "providerId": result.provider_id,
-        "modelName": result.model_name,
+        "model": {
+            "providerId": result.provider_id,
+            "modelName": result.model_name,
+        },
     }
 
 

@@ -23,7 +23,7 @@ function deferred() {
 
 function operation(overrides = {}) {
   return {
-    operationId: OPERATION_ID,
+    id: OPERATION_ID,
     projectId: PROJECT_ID,
     chapterSessionId: SESSION_ID,
     operationType: 'generate_new',
@@ -32,8 +32,7 @@ function operation(overrides = {}) {
     resultWorkingDraftRevision: 5,
     resultContentHash: FLUSHED_HASH,
     failureCode: null,
-    providerId: 'provider-1',
-    modelName: 'writer-model',
+    model: Object.freeze({ providerId: 'provider-1', modelName: 'writer-model' }),
     ...overrides,
   }
 }

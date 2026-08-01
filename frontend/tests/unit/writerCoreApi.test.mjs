@@ -1260,7 +1260,7 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
   const hash = 'a'.repeat(64)
   const secret = 'MUST-NOT-CROSS-DRAFT-OPERATION'
   const operation = {
-    operationId,
+    id: operationId,
     projectId,
     chapterSessionId: sessionId,
     operationType: 'generate_new',
@@ -1269,10 +1269,7 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
     resultWorkingDraftRevision: 5,
     resultContentHash: hash,
     failureCode: null,
-    providerId: 'provider-1',
-    modelName: 'writer-model',
-    prompt: secret,
-    provider: { apiKey: secret },
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
   global.fetch = async (url, options) => {
     calls.push({ url: String(url), options })
@@ -1326,7 +1323,7 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
     ])
     assert.deepEqual(bodyOf(calls[0]), command)
     const expectedOperation = {
-      operationId,
+      id: operationId,
       projectId,
       chapterSessionId: sessionId,
       operationType: 'generate_new',
@@ -1335,11 +1332,12 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
       resultWorkingDraftRevision: 5,
       resultContentHash: hash,
       failureCode: null,
-      providerId: 'provider-1',
-      modelName: 'writer-model',
+      model: { providerId: 'provider-1', modelName: 'writer-model' },
     }
     assert.deepEqual(created, expectedOperation)
     assert.deepEqual(read, expectedOperation)
+    assert.equal(Object.isFrozen(created), true)
+    assert.equal(Object.isFrozen(created.model), true)
     assert.deepEqual(events, {
       operationId,
       events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
@@ -1352,6 +1350,101 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
     })
     assert.equal(JSON.stringify({ created, read, events }).includes(secret), false)
     assert.equal(Object.hasOwn(api.chapterSessions, 'generateWorkingDraft'), false)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects extra operation and nested model fields', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const command = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+    authorInstruction: '',
+  }
+  const operation = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'completed',
+    lastEventSequence: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: 'a'.repeat(64),
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const responses = [
+    { ...operation, prompt: 'MUST-NOT-CROSS' },
+    {
+      ...operation,
+      model: { ...operation.model, apiKey: 'MUST-NOT-CROSS' },
+    },
+  ]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, command),
+        TypeError,
+      )
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client counts author instructions by Unicode scalar value', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse({
+      id: operationId,
+      projectId,
+      chapterSessionId: sessionId,
+      operationType: 'generate_new',
+      status: 'completed',
+      lastEventSequence: 2,
+      resultWorkingDraftRevision: 2,
+      resultContentHash: 'a'.repeat(64),
+      failureCode: null,
+      model: { providerId: 'provider-1', modelName: 'writer-model' },
+    })
+  }
+  const base = {
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 1,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '44444444-4444-4444-8444-444444444444',
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (const size of [1_001, 2_000]) {
+      await api.chapterSessions.createDraftOperation(projectId, sessionId, {
+        ...base,
+        authorInstruction: '😀'.repeat(size),
+      })
+    }
+    for (const authorInstruction of ['😀'.repeat(2_001), '\ud800']) {
+      await assert.rejects(
+        () => api.chapterSessions.createDraftOperation(projectId, sessionId, {
+          ...base,
+          authorInstruction,
+        }),
+        TypeError,
+      )
+    }
+    assert.equal(calls, 2)
   } finally {
     global.fetch = originalFetch
   }
@@ -1414,7 +1507,7 @@ test('draft operation client rejects invalid completed revisions and event state
     authorInstruction: '',
   }
   const valid = {
-    operationId,
+    id: operationId,
     projectId,
     chapterSessionId: sessionId,
     operationType: 'generate_new',
@@ -1423,8 +1516,7 @@ test('draft operation client rejects invalid completed revisions and event state
     resultWorkingDraftRevision: 5,
     resultContentHash: 'a'.repeat(64),
     failureCode: null,
-    providerId: 'provider-1',
-    modelName: 'writer-model',
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
   let calls = 0
   const responses = [
@@ -1470,7 +1562,7 @@ test('draft operation client enforces exact safe revision bounds before transpor
     authorInstruction: '',
   }
   const valid = {
-    operationId,
+    id: operationId,
     projectId,
     chapterSessionId: sessionId,
     operationType: 'generate_new',
@@ -1479,8 +1571,7 @@ test('draft operation client enforces exact safe revision bounds before transpor
     resultWorkingDraftRevision: result,
     resultContentHash: 'a'.repeat(64),
     failureCode: null,
-    providerId: 'provider-1',
-    modelName: 'writer-model',
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
   }
   const responses = [valid, {
     operationId,

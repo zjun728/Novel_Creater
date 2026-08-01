@@ -12,7 +12,7 @@ const HASH = 'a'.repeat(64)
 
 function operation(overrides = {}) {
   return {
-    operationId: OPERATION_ID,
+    id: OPERATION_ID,
     projectId: PROJECT_ID,
     chapterSessionId: SESSION_ID,
     operationType: 'generate_new',
@@ -21,8 +21,7 @@ function operation(overrides = {}) {
     resultWorkingDraftRevision: 5,
     resultContentHash: HASH,
     failureCode: null,
-    providerId: 'provider-1',
-    modelName: 'writer-model',
+    model: Object.freeze({ providerId: 'provider-1', modelName: 'writer-model' }),
     ...overrides,
   }
 }
@@ -85,6 +84,28 @@ test('coordinator creates one frozen canonical command and prohibits duplicate s
   await request
 })
 
+test('author instruction limit counts Unicode scalars and rejects malformed Unicode', async () => {
+  const instructions = []
+  const subjectFor = () => coordinator({
+    startOperation: async next => {
+      instructions.push(next.authorInstruction)
+      return operation()
+    },
+  })
+
+  await subjectFor().generateNew({ ...command(), authorInstruction: '😀'.repeat(1_001) })
+  await subjectFor().generateNew({ ...command(), authorInstruction: '😀'.repeat(2_000) })
+  assert.deepEqual(instructions.map(value => Array.from(value).length), [1_001, 2_000])
+  assert.throws(
+    () => subjectFor().generateNew({ ...command(), authorInstruction: '😀'.repeat(2_001) }),
+    TypeError,
+  )
+  assert.throws(
+    () => subjectFor().generateNew({ ...command(), authorInstruction: '\ud800' }),
+    TypeError,
+  )
+})
+
 test('coordinator replays exactly the frozen command after an unknown transport outcome', async () => {
   const calls = []
   let attempt = 0
@@ -104,6 +125,43 @@ test('coordinator replays exactly the frozen command after an unknown transport 
   assert.strictEqual(calls[1], calls[0])
   assert.equal(subject.status, 'failed')
   assert.equal(subject.failureCode, 'DraftProviderFailed')
+})
+
+test('exact durable-operation 502 keeps the frozen command for same-key replay', async () => {
+  const calls = []
+  let attempt = 0
+  const subject = coordinator({
+    startOperation: async next => {
+      calls.push(next)
+      attempt += 1
+      if (attempt === 1) {
+        throw new ApiError({ status: 502, code: 'DraftOperationUnavailable' })
+      }
+      return operation({
+        status: 'failed',
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+        failureCode: 'DraftProviderFailed',
+      })
+    },
+  })
+
+  await assert.rejects(() => subject.generateNew(command()), ApiError)
+  assert.equal(subject.status, 'unknown')
+  await subject.retryUnknown()
+  assert.strictEqual(calls[1], calls[0])
+})
+
+test('an unrelated 502 remains a known rejection without recovery state', async () => {
+  const subject = coordinator({
+    startOperation: async () => {
+      throw new ApiError({ status: 502, code: 'GatewayUnavailable' })
+    },
+  })
+
+  await assert.rejects(() => subject.generateNew(command()), ApiError)
+  assert.equal(subject.status, 'request_rejected')
+  await assert.rejects(() => subject.retryUnknown(), /no unknown/i)
 })
 
 test('coordinator polls a running operation with its fenced id until completed once', async () => {
@@ -267,7 +325,7 @@ test('known HTTP rejection is public-safe, never retryable, and permits a distin
 test('local and response-invalid failures are fixed public states, never unknown recovery', async () => {
   for (const startOperation of [
     async () => { throw new TypeError('local implementation detail') },
-    async () => ({ operationId: OPERATION_ID, prompt: 'private response' }),
+    async () => ({ ...operation(), prompt: 'private response' }),
   ]) {
     const subject = coordinator({ startOperation })
     await assert.rejects(() => subject.generateNew(command()), TypeError)
@@ -298,7 +356,10 @@ test('unknown status recovery keeps its frozen command and rejects new generate 
   })
   const first = subject.generateNew(command())
   await Promise.resolve()
-  pendingRead.reject(new ApiError())
+  pendingRead.reject(new ApiError({
+    status: 502,
+    code: 'DraftOperationUnavailable',
+  }))
   await assert.rejects(first, ApiError)
   await assert.rejects(() => subject.generateNew(command()), /recovery/i)
   assert.deepEqual(await subject.retryUnknown(), {
@@ -311,7 +372,7 @@ test('unknown status recovery keeps its frozen command and rejects new generate 
 test('completed operation reloads authoritative workspace exactly once and never exposes output text', async () => {
   let reloads = 0
   const subject = coordinator({
-    startOperation: async () => operation({ output: 'must-not-cross' }),
+    startOperation: async () => operation(),
     reloadWorkspace: async () => {
       reloads += 1
       return { workingDraft: { content: 'authoritative only' } }
@@ -320,7 +381,7 @@ test('completed operation reloads authoritative workspace exactly once and never
   const workspace = await subject.generateNew(command())
   assert.deepEqual(workspace, { workingDraft: { content: 'authoritative only' } })
   assert.equal(reloads, 1)
-  assert.equal(JSON.stringify(subject.operation).includes('must-not-cross'), false)
+  assert.equal(Object.hasOwn(subject.operation, 'output'), false)
 })
 
 test('failed and expired operations neither reload nor alter editor-owned workspace', async () => {
@@ -368,13 +429,7 @@ test('dispose fences a late authoritative reload response', async () => {
 })
 
 test('coordinator exposes only read-only public state without request or provider secrets', async () => {
-  const subject = coordinator({
-    startOperation: async () => operation({
-      prompt: 'secret prose',
-      provider: { apiKey: 'secret-key' },
-      model: { baseUrl: 'https://secret.invalid' },
-    }),
-  })
+  const subject = coordinator()
   await subject.generateNew(command())
   assert.equal(Object.isFrozen(subject), true)
   assert.throws(() => { subject.status = 'tampered' }, TypeError)
@@ -385,6 +440,8 @@ test('coordinator exposes only read-only public state without request or provide
     failureCode: subject.failureCode,
   }
   assert.equal(JSON.stringify(publicState).match(/secret|prompt|authorInstruction|idempotencyKey|baseUrl|responseBody/i), null)
+  assert.equal(Object.isFrozen(subject.operation), true)
+  assert.equal(Object.isFrozen(subject.operation.model), true)
 })
 
 test('coordinator bounds command and completed revisions without issuing unsafe starts', async () => {

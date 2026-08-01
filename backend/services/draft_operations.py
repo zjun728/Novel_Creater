@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
+import json
 import re
 import time
 from typing import Literal
@@ -53,6 +54,31 @@ _SESSION_IDENTITY_FIELDS = (
 )
 _STATUSES = frozenset({"starting", "running", "completed", "failed", "expired"})
 _SAFE_FAILURE_CODES = frozenset({"DraftProviderFailed", "DraftProviderResultInvalid"})
+_STORED_OPERATION_COLUMNS = frozenset({
+    "id",
+    "project_id",
+    "chapter_session_id",
+    "operation_type",
+    "idempotency_key",
+    "request_fingerprint",
+    "active_slot",
+    "fencing_token",
+    "lease_expires_at",
+    "base_working_draft_revision",
+    "base_working_draft_hash",
+    "input_manifest_json",
+    "input_manifest_hash",
+    "provider_id",
+    "model_name_snapshot",
+    "result_working_draft_revision",
+    "result_content_hash",
+    "last_event_sequence",
+    "failure_code",
+    "status",
+    "created_at",
+    "updated_at",
+    "completed_at",
+})
 
 
 class DraftOperationRequestInvalid(PublicDomainError):
@@ -961,25 +987,62 @@ class DraftOperationService:
         try:
             if not isinstance(row, Mapping):
                 raise ValueError
+            if not _STORED_OPERATION_COLUMNS.issubset(row.keys()):
+                raise ValueError
             status = row["status"]
             operation_type = row["operation_type"]
+            idempotency_key = row["idempotency_key"]
+            request_fingerprint = row["request_fingerprint"]
             last_event_sequence = row["last_event_sequence"]
+            fencing_token = row["fencing_token"]
+            lease_expires_at = row["lease_expires_at"]
             base_revision = row["base_working_draft_revision"]
             base_hash = row["base_working_draft_hash"]
+            manifest_json = row["input_manifest_json"]
+            manifest_hash = row["input_manifest_hash"]
             result_revision = row["result_working_draft_revision"]
             result_hash = row["result_content_hash"]
             failure_code = row["failure_code"]
             active_slot = row["active_slot"]
+            created_at = row["created_at"]
+            updated_at = row["updated_at"]
             completed_at = row["completed_at"]
             provider_id = row["provider_id"]
             model_name = row["model_name_snapshot"]
-            if type(last_event_sequence) is not int:
-                raise ValueError
-            if type(base_revision) is not int or base_revision <= 0:
+            required_integers = (
+                fencing_token,
+                lease_expires_at,
+                base_revision,
+                last_event_sequence,
+                created_at,
+                updated_at,
+            )
+            if any(type(value) is not int for value in required_integers):
                 raise ValueError
             if result_revision is not None and type(result_revision) is not int:
                 raise ValueError
+            if completed_at is not None and type(completed_at) is not int:
+                raise ValueError
+            if (
+                fencing_token <= 0
+                or base_revision <= 0
+                or created_at < 0
+                or updated_at < created_at
+                or lease_expires_at < created_at
+            ):
+                raise ValueError
+            if not isinstance(manifest_json, str):
+                raise ValueError
+            manifest = json.loads(manifest_json)
+            if not isinstance(manifest, dict):
+                raise ValueError
+            if canonical_hash(manifest) != manifest_hash:
+                raise ValueError
+            if not DraftOperationService._canonical_uuid(idempotency_key):
+                raise ValueError
+            DraftOperationService._hash(request_fingerprint)
             DraftOperationService._hash(base_hash)
+            DraftOperationService._hash(manifest_hash)
             expected_sequence = 2 if status in {"completed", "failed"} else 1
             if (
                 not DraftOperationService._canonical_uuid(row["id"])
@@ -1008,7 +1071,7 @@ class DraftOperationService:
                     status in {"completed", "failed", "expired"}
                     and (
                         type(completed_at) is not int
-                        or completed_at < 0
+                        or completed_at < updated_at
                     )
                 )
             ):
@@ -1048,7 +1111,7 @@ class DraftOperationService:
                 provider_id=provider_id,
                 model_name=model_name,
             )
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
             raise DraftOperationStorageError("stored draft operation is invalid") from None
 
 

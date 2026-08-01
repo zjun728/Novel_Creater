@@ -1,6 +1,7 @@
 /** Writer Core product API client. */
 
 import { ApiError, parseApiError } from './api-error.js'
+import { unicodeScalarLength } from '../../utils/unicodeScalarText.js'
 
 const BASE = (import.meta.env?.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api').replace(/\/+$/, '')
 const DEFAULT_TIMEOUT = 30000
@@ -1228,6 +1229,12 @@ const DRAFT_OPERATION_COMMAND_FIELDS = [
   'operationType', 'expectedWorkingDraftRevision', 'expectedContentHash',
   'idempotencyKey', 'authorInstruction',
 ]
+const DRAFT_OPERATION_RESPONSE_FIELDS = [
+  'id', 'projectId', 'chapterSessionId', 'operationType', 'status',
+  'lastEventSequence', 'resultWorkingDraftRevision', 'resultContentHash',
+  'failureCode', 'model',
+]
+const DRAFT_OPERATION_MODEL_FIELDS = ['providerId', 'modelName']
 
 function draftOperationObject(value, label) {
   if (
@@ -1286,7 +1293,7 @@ function draftOperationCommand(value) {
     || source.expectedWorkingDraftRevision < 1
     || source.expectedWorkingDraftRevision > DRAFT_OPERATION_MAX_BASE_REVISION
     || typeof source.authorInstruction !== 'string'
-    || source.authorInstruction.length > 2000
+    || unicodeScalarLength(source.authorInstruction) > 2000
   ) {
     throw new TypeError('Invalid draft operation command')
   }
@@ -1304,7 +1311,11 @@ function draftOperationCommand(value) {
 
 function draftOperationResponse(value, expected = {}) {
   const source = draftOperationObject(value, 'response')
-  const operationId = draftOperationUuid(source.operationId, 'id')
+  if (
+    Object.keys(source).length !== DRAFT_OPERATION_RESPONSE_FIELDS.length
+    || DRAFT_OPERATION_RESPONSE_FIELDS.some(field => !Object.hasOwn(source, field))
+  ) throw new TypeError('Invalid draft operation response')
+  const operationId = draftOperationUuid(source.id, 'id')
   const projectId = draftOperationUuid(source.projectId, 'project id')
   const chapterSessionId = draftOperationUuid(source.chapterSessionId, 'session id')
   const status = source.status
@@ -1312,8 +1323,13 @@ function draftOperationResponse(value, expected = {}) {
   const revision = source.resultWorkingDraftRevision
   const resultHash = source.resultContentHash
   const failureCode = source.failureCode
-  const providerId = publicPlanningLabel(source.providerId)
-  const modelName = publicPlanningLabel(source.modelName)
+  const sourceModel = draftOperationObject(source.model, 'model')
+  if (
+    Object.keys(sourceModel).length !== DRAFT_OPERATION_MODEL_FIELDS.length
+    || DRAFT_OPERATION_MODEL_FIELDS.some(field => !Object.hasOwn(sourceModel, field))
+  ) throw new TypeError('Invalid draft operation response')
+  const providerId = publicPlanningLabel(sourceModel.providerId)
+  const modelName = publicPlanningLabel(sourceModel.modelName)
   if (
     (expected.operationId && operationId !== expected.operationId)
     || (expected.projectId && projectId !== expected.projectId)
@@ -1352,8 +1368,9 @@ function draftOperationResponse(value, expected = {}) {
   } else if (revision !== null || resultHash !== null || failureCode !== null) {
     throw new TypeError('Invalid draft operation response')
   }
+  const model = Object.freeze({ providerId, modelName })
   return Object.freeze({
-    operationId,
+    id: operationId,
     projectId,
     chapterSessionId,
     operationType: 'generate_new',
@@ -1362,8 +1379,7 @@ function draftOperationResponse(value, expected = {}) {
     resultWorkingDraftRevision: revision,
     resultContentHash: resultHash,
     failureCode,
-    providerId,
-    modelName,
+    model,
   })
 }
 

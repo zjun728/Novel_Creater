@@ -23,6 +23,10 @@ import { createChapterWriterController } from '@/application/writer/chapterWrite
 import { useChapterSessionStore } from '@/stores/chapterSessionStore'
 import { createLatestRequestGuard } from '@/utils/latestRequest'
 import {
+  limitUnicodeScalarText,
+  unicodeScalarLength,
+} from '@/utils/unicodeScalarText'
+import {
   planningStoryBlocksPath,
   projectOverviewPath,
 } from '@/router/projectRoutes'
@@ -73,6 +77,22 @@ const controller = createChapterWriterController({
   ),
   reloadWorkspace: () => chapterSessionStore.reloadCurrentWorkspace(projectId.value),
 })
+const authorInstructionNotice = ref('')
+const authorInstructionCount = computed(
+  () => unicodeScalarLength(controller.authorInstruction.value),
+)
+
+function updateAuthorInstruction(nextInstruction) {
+  try {
+    const limited = limitUnicodeScalarText(String(nextInstruction ?? ''), 2_000)
+    controller.setAuthorInstruction(limited.value)
+    authorInstructionNotice.value = limited.truncated
+      ? '已截断超过 2000 个 Unicode 字符的内容。'
+      : ''
+  } catch {
+    authorInstructionNotice.value = '输入包含无效字符，未接受。'
+  }
+}
 
 const editorDisabled = computed(() => !session.value || controller.actionBusy.value)
 const commandDisabled = computed(() => (
@@ -299,7 +319,8 @@ onBeforeUnmount(() => {
 
           <div class="generation-box">
             <label for="author-instruction">作者临时要求</label>
-            <n-input id="author-instruction" :value="controller.authorInstruction.value" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" :maxlength="2000" show-count placeholder="可选：例如“多一点市井对话”“情绪更压迫”“不要写成设定说明”。" :disabled="commandDisabled" @update:value="controller.setAuthorInstruction" />
+            <n-input id="author-instruction" :value="controller.authorInstruction.value" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" aria-describedby="author-instruction-count" placeholder="可选：例如“多一点市井对话”“情绪更压迫”“不要写成设定说明”。" :disabled="commandDisabled" @update:value="updateAuthorInstruction" />
+            <p id="author-instruction-count" class="author-instruction-count" aria-live="polite">{{ authorInstructionCount }} / 2000<span v-if="authorInstructionNotice"> · {{ authorInstructionNotice }}</span></p>
           </div>
 
           <div class="editor-actions">
@@ -371,6 +392,7 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .draft-empty { min-height: 440px; display: grid; place-items: center; margin: 0; color: #81776a; border: 1px dashed #d7cbb8; border-radius: 10px; background: #fffefb; }
 .generation-box { display: grid; gap: 8px; margin-top: 14px; }
 .generation-box label { color: #70675c; font-size: 12px; font-weight: 700; }
+.author-instruction-count { margin: 0; color: #81776a; font-size: 12px; text-align: right; }
 .editor-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .writer-action-error { margin-top: 14px; }
 .side-stack { display: grid; align-content: start; gap: 16px; }
