@@ -213,6 +213,7 @@ def _require_closed_draft_operation(
     chapter_session_id: str,
     operation_id: str | None,
     error_type,
+    expected_base_revision: int | None = None,
 ) -> DraftOperationResult:
     try:
         if not isinstance(result, DraftOperationResult):
@@ -248,6 +249,10 @@ def _require_closed_draft_operation(
                 isinstance(result_revision, bool)
                 or not isinstance(result_revision, int)
                 or result_revision < 1
+                or (
+                    expected_base_revision is not None
+                    and result_revision != expected_base_revision + 1
+                )
                 or not isinstance(result_hash, str)
                 or _HASH.fullmatch(result_hash) is None
                 or failure_code is not None
@@ -318,16 +323,47 @@ def _strict_json_object(raw: bytes | str):
         ValueError,
         UnicodeDecodeError,
         json.JSONDecodeError,
+        RecursionError,
     ):
         raise ValueError from None
 
 
+def _require_json_nesting_within_limit(value: str):
+    depth = 0
+    inside_string = False
+    escaping = False
+    for character in value:
+        if inside_string:
+            if escaping:
+                escaping = False
+            elif character == "\\":
+                escaping = True
+            elif character == '"':
+                inside_string = False
+            continue
+        if character == '"':
+            inside_string = True
+        elif character in "{[":
+            depth += 1
+            if depth > 64:
+                raise ValueError
+        elif character in "}]":
+            depth -= 1
+
+
 async def _read_draft_operation_create_body(request: Request):
-    raw = await request.body()
-    if len(raw) > _DRAFT_OPERATION_CREATE_BODY_MAX_BYTES:
-        raise DraftOperationRequestInvalid()
     try:
-        return _strict_json_object(raw)
+        chunks = []
+        byte_count = 0
+        async for chunk in request.stream():
+            byte_count += len(chunk)
+            if byte_count > _DRAFT_OPERATION_CREATE_BODY_MAX_BYTES:
+                raise ValueError
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        decoded = raw.decode("utf-8")
+        _require_json_nesting_within_limit(decoded)
+        return _strict_json_object(decoded)
     except ValueError:
         raise DraftOperationRequestInvalid() from None
 
@@ -548,6 +584,7 @@ async def create_draft_operation(
         session_id,
         None,
         DraftOperationUnavailable,
+        body.expectedWorkingDraftRevision,
     )
     return _public_draft_operation(result)
 

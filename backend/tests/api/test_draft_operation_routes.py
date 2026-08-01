@@ -6,6 +6,8 @@ import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request
+import pytest
 
 from backend.routers import chapter_sessions
 from backend.security.redaction import install_error_handlers
@@ -40,6 +42,7 @@ def stored_operation(**overrides):
         "result_working_draft_revision": 2,
         "result_content_hash": HASH,
         "failure_code": None,
+        "completed_at": 101,
         "provider_id": "provider-1",
         "model_name_snapshot": "fake-model",
     }
@@ -169,6 +172,14 @@ def operation_path(operation_id=OPERATION_ID):
     )
 
 
+def raw_create_body(**overrides):
+    return json.dumps(
+        create_body(**overrides),
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
 def test_create_formal_draft_operation_returns_only_closed_result_fields():
     client, service, _ = make_client()
 
@@ -264,6 +275,21 @@ def test_create_formal_draft_operation_rejects_wrong_owner_or_malformed_service_
         assert response.json()["code"] == "DraftOperationUnavailable"
 
 
+def test_create_formal_draft_operation_requires_completed_result_to_advance_the_submitted_base_once():
+    client, service, _ = make_client()
+    service.result = replace(
+        service.result,
+        result_working_draft_revision=999,
+    )
+
+    response = client.post(
+        operation_path().rsplit("/", 1)[0], json=create_body(),
+    )
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "DraftOperationUnavailable"
+
+
 def test_create_formal_draft_operation_rejects_duplicate_raw_json_members():
     client, service, _ = make_client()
     body = json.dumps(
@@ -298,6 +324,74 @@ def test_create_formal_draft_operation_rejects_duplicate_raw_json_members():
     )
     assert invalid_utf8.status_code == 422
     assert invalid_utf8.json()["code"] == "DraftOperationRequestInvalid"
+    assert service.commands == []
+
+
+@pytest.mark.asyncio
+async def test_create_draft_operation_reader_stops_streaming_after_the_size_limit():
+    reads = 0
+    chunks = [b"x" * (12 * 1024 + 1), b"must-not-be-buffered"]
+
+    async def receive():
+        nonlocal reads
+        reads += 1
+        return {
+            "type": "http.request",
+            "body": chunks.pop(0),
+            "more_body": bool(chunks),
+        }
+
+    request = Request({"type": "http", "method": "POST", "headers": []}, receive)
+
+    with pytest.raises(chapter_sessions.DraftOperationRequestInvalid):
+        await chapter_sessions._read_draft_operation_create_body(request)
+
+    assert reads == 1
+
+
+def test_create_formal_draft_operation_bounds_nesting_without_rejecting_literal_brackets():
+    client, service, _ = make_client()
+    command_prefix = json.dumps({
+        key: value
+        for key, value in create_body().items()
+        if key != "authorInstruction"
+    }, separators=(",", ":"))[:-1].encode("utf-8")
+    deeply_nested = (
+        command_prefix + b',"authorInstruction":' + b"[" * 4000
+        + b"0" + b"]" * 4000 + b"}"
+    )
+
+    too_deep = client.post(
+        operation_path().rsplit("/", 1)[0],
+        content=deeply_nested,
+        headers={"content-type": "application/json"},
+    )
+    literal_brackets = client.post(
+        operation_path().rsplit("/", 1)[0],
+        content=raw_create_body(
+            authorInstruction='文字中的 { [ ] } 和转义引号 " 都不是结构。',
+        ),
+        headers={"content-type": "application/json"},
+    )
+
+    assert len(deeply_nested) < 12 * 1024
+    assert too_deep.status_code == 422
+    assert too_deep.json()["code"] == "DraftOperationRequestInvalid"
+    assert literal_brackets.status_code == 200
+    assert len(service.commands) == 1
+
+
+def test_create_formal_draft_operation_rejects_oversized_body_without_starting_service():
+    client, service, _ = make_client()
+
+    response = client.post(
+        operation_path().rsplit("/", 1)[0],
+        content=raw_create_body(authorInstruction="x" * (12 * 1024)),
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "DraftOperationRequestInvalid"
     assert service.commands == []
 
 
