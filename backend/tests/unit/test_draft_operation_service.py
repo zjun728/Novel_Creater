@@ -477,6 +477,76 @@ async def test_public_stored_projection_fails_closed_for_malformed_row():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "sequence-string",
+        "result-revision-string",
+        "active-bool",
+        "expired-missing-result",
+        "expired-missing-failure",
+        "terminal-missing-completed-at",
+        "terminal-bool-completed-at",
+    ),
+)
+async def test_public_stored_projection_rejects_coerced_or_incomplete_rows(corruption):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _ = make_service()
+    await service.start(command())
+    stored = dict(next(iter(repo.operations.values())))
+    if corruption == "sequence-string":
+        stored["last_event_sequence"] = "2"
+    elif corruption == "result-revision-string":
+        stored["result_working_draft_revision"] = "2"
+    elif corruption == "active-bool":
+        stored.update({
+            "status": "running",
+            "active_slot": True,
+            "last_event_sequence": 1,
+            "result_working_draft_revision": None,
+            "result_content_hash": None,
+            "failure_code": None,
+            "completed_at": None,
+        })
+    elif corruption == "expired-missing-result":
+        stored.update({
+            "status": "expired", "active_slot": None,
+            "last_event_sequence": 1,
+            "result_working_draft_revision": None,
+            "result_content_hash": None,
+            "failure_code": None,
+        })
+        stored.pop("result_content_hash")
+    elif corruption == "expired-missing-failure":
+        stored.update({
+            "status": "expired", "active_slot": None,
+            "last_event_sequence": 1,
+            "result_working_draft_revision": None,
+            "result_content_hash": None,
+            "failure_code": None,
+        })
+        stored.pop("failure_code")
+    elif corruption == "terminal-missing-completed-at":
+        stored.pop("completed_at")
+    else:
+        stored["completed_at"] = True
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+def test_public_stored_projection_requires_mapping():
+    from backend.services.draft_operations import (
+        DraftOperationService,
+        DraftOperationStorageError,
+    )
+
+    with pytest.raises(DraftOperationStorageError):
+        DraftOperationService.project_stored_result([])
+
+
+@pytest.mark.asyncio
 async def test_current_outline_can_replace_session_entry_pins_before_prose_is_final():
     service, repo, gateway, _, _ = make_service()
     repo.session.update({

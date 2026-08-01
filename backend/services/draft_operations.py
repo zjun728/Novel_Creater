@@ -231,7 +231,7 @@ class DraftOperationService:
                         raise DraftOperationStorageError(
                             "could not expire replayed operation"
                         )
-                    return self._project_expired(existing), None
+                    return self._project_expired(existing, now), None
                 return self.project_stored_result(existing), None
 
             if chapter_session.get("status") != "drafting":
@@ -524,7 +524,7 @@ class DraftOperationService:
                 session, attempt["id"], int(attempt["fencing_token"]), now
             ):
                 raise DraftOperationStorageError("could not expire elapsed operation")
-            return self._project_expired(attempt)
+            return self._project_expired(attempt, now)
 
         owned = (
             locked["session"].get("active_draft_operation_id") == attempt["id"]
@@ -570,7 +570,7 @@ class DraftOperationService:
             now,
         ):
             raise DraftOperationStorageError("could not expire drifted operation")
-        return self._project_expired(attempt)
+        return self._project_expired(attempt, now)
 
     async def _read_authority(self, session, chapter_session, draft, *, strict=True):
         try:
@@ -944,7 +944,7 @@ class DraftOperationService:
         }
 
     @staticmethod
-    def _project_expired(attempt):
+    def _project_expired(attempt, completed_at):
         DraftOperationService.project_stored_result(attempt)
         return DraftOperationService.project_stored_result({
             **attempt,
@@ -953,26 +953,33 @@ class DraftOperationService:
             "result_working_draft_revision": None,
             "result_content_hash": None,
             "failure_code": None,
+            "completed_at": completed_at,
         })
 
     @staticmethod
     def project_stored_result(row) -> DraftOperationResult:
         try:
+            if not isinstance(row, Mapping):
+                raise ValueError
             status = row["status"]
             operation_type = row["operation_type"]
-            last_event_sequence = int(row["last_event_sequence"])
-            result_revision = (
-                int(row["result_working_draft_revision"])
-                if row.get("result_working_draft_revision") is not None else None
-            )
-            result_hash = row.get("result_content_hash")
-            failure_code = row.get("failure_code")
+            last_event_sequence = row["last_event_sequence"]
+            base_revision = row["base_working_draft_revision"]
+            base_hash = row["base_working_draft_hash"]
+            result_revision = row["result_working_draft_revision"]
+            result_hash = row["result_content_hash"]
+            failure_code = row["failure_code"]
+            active_slot = row["active_slot"]
+            completed_at = row["completed_at"]
             provider_id = row["provider_id"]
             model_name = row["model_name_snapshot"]
-            base_revision = DraftOperationService._positive_int(
-                row["base_working_draft_revision"]
-            )
-            DraftOperationService._hash(row["base_working_draft_hash"])
+            if type(last_event_sequence) is not int:
+                raise ValueError
+            if type(base_revision) is not int or base_revision <= 0:
+                raise ValueError
+            if result_revision is not None and type(result_revision) is not int:
+                raise ValueError
+            DraftOperationService._hash(base_hash)
             expected_sequence = 2 if status in {"completed", "failed"} else 1
             if (
                 not DraftOperationService._canonical_uuid(row["id"])
@@ -987,11 +994,22 @@ class DraftOperationService:
                 or not model_name.strip()
                 or (
                     status in {"starting", "running"}
-                    and row.get("active_slot") != 1
+                    and (type(active_slot) is not int or active_slot != 1)
                 )
                 or (
                     status in {"completed", "failed", "expired"}
-                    and row.get("active_slot") is not None
+                    and active_slot is not None
+                )
+                or (
+                    status in {"starting", "running"}
+                    and completed_at is not None
+                )
+                or (
+                    status in {"completed", "failed", "expired"}
+                    and (
+                        type(completed_at) is not int
+                        or completed_at < 0
+                    )
                 )
             ):
                 raise ValueError
