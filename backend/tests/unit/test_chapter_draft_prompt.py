@@ -28,4 +28,3 @@ def test_rewrite_prompt_keeps_existing_prose_available_for_later_operation_types
 
     rendered = "\n".join(item["content"] for item in messages)
     assert "需要保留的作者正文" in rendered
-
