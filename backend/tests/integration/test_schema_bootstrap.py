@@ -865,6 +865,15 @@ async def test_draft_operation_owner_foreign_keys_reject_cross_owner_rows_and_ca
             ),
         ),
     )
+    await _assert_mysql_rejects(
+        session.execute(
+            revision_sql,
+            (
+                "00000000-0000-0000-0000-000000009015", PROJECT_ID, session_one,
+                draft_one, "before", operation_two, HASH_A, NOW,
+            ),
+        ),
+    )
     for revision_id, snapshot_role in (
         ("00000000-0000-0000-0000-000000009011", "before"),
         ("00000000-0000-0000-0000-000000009012", "after"),
