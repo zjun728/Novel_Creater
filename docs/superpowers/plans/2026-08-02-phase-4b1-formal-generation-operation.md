@@ -114,7 +114,7 @@ One task has one implementer. Specification and quality reviewers run serially. 
 - Modify: `backend/tests/unit/test_initialize_database.py`
 - Modify: `backend/tests/integration/test_schema_bootstrap.py`
 
-- [ ] **Step 1: Write schema RED tests**
+- [x] **Step 1: Write schema RED tests**
 
 Extend exact manifest tests to require:
 
@@ -136,7 +136,7 @@ assert manifest.schema_version == "writer-core-v1.8.0"
 
 Require unique identities for `(chapter_session_id, idempotency_key)`, `(chapter_session_id, active_slot)`, `(chapter_session_id, fencing_token)`, recovery `(chapter_session_id, working_draft_revision, snapshot_role)`, and event `(draft_operation_id, sequence_num)`. Also require database-enforced owner identities for WorkingDraft `(project_id, chapter_session_id, id)`, attempt `(project_id, id)` and `(project_id, chapter_session_id, id)` so recovery and event rows cannot compose identifiers from different owners.
 
-- [ ] **Step 2: Run schema RED**
+- [x] **Step 2: Run schema RED**
 
 Run:
 
@@ -146,7 +146,7 @@ python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/t
 
 Expected: failures for the missing tables/session columns and old `writer-core-v1.7.0` version.
 
-- [ ] **Step 3: Add the minimal exact schema**
+- [x] **Step 3: Add the minimal exact schema**
 
 Advance `EXPECTED_SCHEMA_VERSION` to `writer-core-v1.8.0`. Add these Session columns:
 
@@ -209,7 +209,7 @@ Add a real disposable-MySQL behavior test proving that cross-Session draft/sourc
 
 Update `CURRENT_PROJECT_STATE.md` only to record `writer-core-v1.8.0` as source schema and Phase4B1 as in progress; do not call Phase4B or Phase4 complete.
 
-- [ ] **Step 4: Run schema GREEN and MySQL exact bootstrap**
+- [x] **Step 4: Run schema GREEN and MySQL exact bootstrap**
 
 Run serially:
 
@@ -220,7 +220,7 @@ python -m pytest backend/tests/integration/test_schema_bootstrap.py -m mysql -q 
 
 Expected: both commands exit 0; integration reports equal created/cleaned counts and remaining=0.
 
-- [ ] **Step 5: Commit schema**
+- [x] **Step 5: Commit schema**
 
 ```powershell
 git add backend/schema/40_drafts.sql backend/schema_version.py CURRENT_PROJECT_STATE.md backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/integration/test_schema_bootstrap.py
@@ -233,7 +233,7 @@ git commit -m "feat: add persistent draft operation schema"
 - Modify: `backend/repositories/chapter_sessions.py`
 - Modify: `backend/tests/unit/test_chapter_session_repository.py`
 
-- [ ] **Step 1: Write repository RED tests**
+- [x] **Step 1: Write repository RED tests**
 
 Add contract tests for these methods:
 
@@ -259,7 +259,7 @@ insert_working_draft_revision(session, row)
 
 Tests must assert SQL contains project/session ownership predicates, the operation/fencing pair on every terminal update, `FOR UPDATE` on Session, operation and WorkingDraft ownership reads, event limits restricted to `1..100`, and no secret/provider payload columns. Natural expiration must be one atomic lease guard: `lease_expires_at <= now`; a `starting` attempt may be expired only when the Session active pointer is NULL or points to itself, while a `running` attempt requires the Session pointer to point to itself. Drift expiration is a separate fenced primitive for an active `running` attempt whose Session pointer is still self-owned and whose lease is still live (`lease_expires_at > now`); it must not synthesize a future timestamp to reuse natural expiration.
 
-- [ ] **Step 2: Run repository RED**
+- [x] **Step 2: Run repository RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_chapter_session_repository.py -q
@@ -267,13 +267,13 @@ python -m pytest backend/tests/unit/test_chapter_session_repository.py -q
 
 Expected: missing-method failures.
 
-- [ ] **Step 3: Implement minimal SQL methods**
+- [x] **Step 3: Implement minimal SQL methods**
 
 Use parameterized SQL for every value. `next_draft_operation_fencing_token` must lock the Session row and update `draft_operation_fencing_token = current + 1`. `insert_draft_operation_event` must update `last_event_sequence` only when the same operation owns the expected next sequence. Terminal updates must clear both `active_slot` and `chapter_sessions.active_draft_operation_id` only when the operation ID and fencing token still match.
 
 Recovery insertion is append-only. A duplicate business identity is accepted only as an exact replay of every immutable field: primary ID, WorkingDraft ID, replacement reason, source operation ID, content, hash and creation timestamp (with project/Session/revision/role already fixed by the lookup). Any mismatch is rejected; an existing snapshot is never updated.
 
-- [ ] **Step 4: Run repository GREEN**
+- [x] **Step 4: Run repository GREEN**
 
 ```powershell
 python -m pytest backend/tests/unit/test_chapter_session_repository.py -q
@@ -281,7 +281,7 @@ python -m pytest backend/tests/unit/test_chapter_session_repository.py -q
 
 Expected: all selected tests pass.
 
-- [ ] **Step 5: Commit repository primitives**
+- [x] **Step 5: Commit repository primitives**
 
 ```powershell
 git add backend/repositories/chapter_sessions.py backend/tests/unit/test_chapter_session_repository.py
@@ -296,7 +296,7 @@ git commit -m "feat: persist fenced draft operation state"
 - Modify: `backend/prompts/chapter_draft.py`
 - Modify: `backend/tests/unit/test_chapter_draft_prompt.py`
 
-- [ ] **Step 1: Write service RED tests**
+- [x] **Step 1: Write service RED tests**
 
 Define the desired command and result API in tests:
 
@@ -342,7 +342,7 @@ Cover one behavior per test:
 - no transaction context remains active during gateway invocation;
 - request fingerprint and manifest never contain provider secrets or base URL.
 
-- [ ] **Step 2: Run service RED**
+- [x] **Step 2: Run service RED**
 
 ```powershell
 python -m pytest backend/tests/unit/test_draft_operation_service.py backend/tests/unit/test_chapter_draft_prompt.py -q
@@ -350,7 +350,7 @@ python -m pytest backend/tests/unit/test_draft_operation_service.py backend/test
 
 Expected: module-not-found and missing prompt-contract failures.
 
-- [ ] **Step 3: Implement strict validation and canonical fingerprints**
+- [x] **Step 3: Implement strict validation and canonical fingerprints**
 
 Accept only `generate_new`, canonical lowercase UUID keys, positive revision, lowercase SHA-256 hash, and an author instruction of at most 2,000 Unicode scalar values. Build the request fingerprint from:
 
@@ -369,7 +369,7 @@ Build an immutable input manifest from public identities and exact story context
 
 Normalize the complete provider authority before hashing. MySQL `DECIMAL` temperature must have a stable canonical representation; zero is a valid configured temperature and only NULL uses the default. Require a finite non-negative temperature and a positive non-boolean output-token count. Hashing or validation failure is fail-closed, never a comparable `None` sentinel. API key and base URL may participate only in the ephemeral in-memory authority fingerprint so mid-call provider drift is fenced; they never enter the manifest, attempt/event/recovery rows, public result or errors. Freeze their normalized secret variants in an immutable tuple before the call, and pass isolated copies of provider/config/messages to the gateway so gateway mutation cannot change the later response-scan baseline or authority context.
 
-- [ ] **Step 4: Implement reserve/call/settle**
+- [x] **Step 4: Implement reserve/call/settle**
 
 Reserve in transaction 1:
 
@@ -401,7 +401,7 @@ Provider/validation failure settles to fixed codes such as `DraftProviderFailed`
 
 All replay and terminal states use one fail-closed public projection, exposed as `DraftOperationService.project_stored_result` so HTTP reads and service replay cannot drift into separate rule sets. Every required stored column must exist; integer fields must be actual non-boolean integers and are never coerced from strings or booleans. In B1, `starting`, `running` and `expired` require `last_event_sequence == 1`; `completed` and `failed` require sequence `2`, in addition to canonical identity, operation type, model/provider and result/failure correlations. Expiration must not substitute placeholder public fields or preserve a malformed sequence.
 
-- [ ] **Step 5: Run service GREEN**
+- [x] **Step 5: Run service GREEN**
 
 ```powershell
 python -m pytest backend/tests/unit/test_draft_operation_service.py backend/tests/unit/test_chapter_draft_prompt.py -q
@@ -409,7 +409,7 @@ python -m pytest backend/tests/unit/test_draft_operation_service.py backend/test
 
 Expected: all selected tests pass with one fake provider call on same-key replay.
 
-- [ ] **Step 6: Commit service**
+- [x] **Step 6: Commit service**
 
 ```powershell
 git add backend/services/draft_operations.py backend/prompts/chapter_draft.py backend/tests/unit/test_draft_operation_service.py backend/tests/unit/test_chapter_draft_prompt.py
@@ -428,7 +428,7 @@ git commit -m "feat: run fenced generate new operations"
 - Modify: `backend/tests/unit/test_archived_write_inventory.py`
 - Modify: `backend/main.py` only if dependency assembly requires it
 
-- [ ] **Step 1: Write API RED tests**
+- [x] **Step 1: Write API RED tests**
 
 Require:
 
@@ -442,7 +442,7 @@ Test exact body allowlisting at the raw JSON layer, including recursive rejectio
 
 Add a source/runtime assertion that POSTing the old `/generate-working-draft` path returns 404 and that no router or service symbol for `generate_working_draft` remains.
 
-- [ ] **Step 2: Run API RED**
+- [x] **Step 2: Run API RED**
 
 ```powershell
 python -m pytest backend/tests/api/test_draft_operation_routes.py backend/tests/api/test_chapter_session_routes.py -q
@@ -450,7 +450,7 @@ python -m pytest backend/tests/api/test_draft_operation_routes.py backend/tests/
 
 Expected: missing formal routes and old-route-retirement failures.
 
-- [ ] **Step 3: Implement strict routes and public projections**
+- [x] **Step 3: Implement strict routes and public projections**
 
 Before reading any body bytes, require exactly one case-insensitive `application/json` media type, optionally with only a UTF-8 charset; missing, duplicate, suffix/other media types, unknown parameters and non-UTF-8 charsets use the fixed request error. Then use a streaming size-bounded strict raw-JSON decoder that stops on overflow, rejects excessive nesting before decoding, maps recursion/UTF-8/JSON failures to the fixed request error, and recursively rejects duplicate keys before Pydantic `extra="forbid"` validation. POST always returns HTTP 200 for both the first execution and an idempotent replay; clients use the closed operation body's `status` and never infer business completion from a differing transport status. Validate the returned operation identity against the path, and require a completed result revision to equal the request's base revision plus one. Status GET never triggers provider work, uses `DraftOperationService.project_stored_result` as the sole stored-row projection, and validates projected owner identity against the path. Event GET validates event owner identity, a continuous sequence after the cursor, the exact count through `lastEventSequence`, and the sequence-1 started / sequence-2 terminal payload correlation with the projected operation. It returns:
 
@@ -470,7 +470,7 @@ Failed events expose only `failureCode`; no event exposes content or internal ow
 
 Delete the temporary service, tests, dependency factory and old route in the same change. Do not retain a compatibility alias.
 
-- [ ] **Step 4: Run API GREEN and retired-runtime checks**
+- [x] **Step 4: Run API GREEN and retired-runtime checks**
 
 ```powershell
 python -m pytest backend/tests/api/test_draft_operation_routes.py backend/tests/api/test_chapter_session_routes.py -q
@@ -479,7 +479,7 @@ node --test frontend/tests/unit/phase2RuntimeInventory.test.mjs
 
 Expected: formal routes pass and old route/service are absent from the active graph.
 
-- [ ] **Step 5: Commit API cutover**
+- [x] **Step 5: Commit API cutover**
 
 ```powershell
 git add backend/routers/chapter_sessions.py backend/main.py backend/tests/api/test_draft_operation_routes.py backend/tests/api/test_chapter_session_routes.py backend/tests/api/test_route_inventory.py backend/services/chapter_draft_generation.py backend/tests/unit/test_chapter_draft_generation_service.py backend/tests/unit/test_archived_write_inventory.py frontend/tests/unit/phase2RuntimeInventory.test.mjs
@@ -491,7 +491,7 @@ git commit -m "feat: expose formal draft operations"
 **Files:**
 - Create: `backend/tests/integration/test_draft_operation_integrity.py`
 
-- [ ] **Step 1: Write MySQL RED scenarios**
+- [x] **Step 1: Write MySQL RED scenarios**
 
 Use only `disposable_mysql`. Prove database ownership first with `SELECT DATABASE()` and the exact `novel_creator_test_[0-9a-f]{32}` pattern. Add scenarios for:
 
@@ -505,7 +505,7 @@ Use only `disposable_mysql`. Prove database ownership first with `SELECT DATABAS
 - event sequence and result metadata match the committed WorkingDraft;
 - no attempt/event/manifest column stores API key, base URL or provider response body.
 
-- [ ] **Step 2: Run MySQL RED**
+- [x] **Step 2: Run MySQL RED**
 
 ```powershell
 python -m pytest backend/tests/integration/test_draft_operation_integrity.py -m mysql -q --basetemp .codex-test-artifacts/pytest/integration
@@ -513,11 +513,11 @@ python -m pytest backend/tests/integration/test_draft_operation_integrity.py -m 
 
 Expected: failures until repository/service transaction semantics are complete.
 
-- [ ] **Step 3: Make only integration-driven corrections**
+- [x] **Step 3: Make only integration-driven corrections**
 
 Correct SQL predicates, locks, unique-key conflict handling and rollback behavior without changing the public contract. Every correction starts from the failing integration assertion and reruns only that scenario before the full file.
 
-- [ ] **Step 4: Run MySQL GREEN**
+- [x] **Step 4: Run MySQL GREEN**
 
 ```powershell
 python -m pytest backend/tests/integration/test_draft_operation_integrity.py -m mysql -q --basetemp .codex-test-artifacts/pytest/integration
@@ -525,7 +525,7 @@ python -m pytest backend/tests/integration/test_draft_operation_integrity.py -m 
 
 Expected: all scenarios pass; disposable MySQL created=cleaned and remaining=0.
 
-- [ ] **Step 5: Commit integration evidence**
+- [x] **Step 5: Commit integration evidence**
 
 ```powershell
 git add backend/tests/integration/test_draft_operation_integrity.py backend/repositories/chapter_sessions.py backend/services/draft_operations.py
@@ -540,7 +540,7 @@ git commit -m "test: prove draft operation integrity"
 - Create: `frontend/src/application/writer/draftOperationCoordinator.js`
 - Create: `frontend/tests/unit/draftOperationCoordinator.test.mjs`
 
-- [ ] **Step 1: Write frontend RED tests**
+- [x] **Step 1: Write frontend RED tests**
 
 API tests require exact POST/status/event paths, encoded segments, strict outgoing keys, and closed public response projection. Coordinator tests define:
 
@@ -570,7 +570,7 @@ Cover:
 - public state is read-only and contains no request body, prose, provider payload or key;
 - no client method for `generate-working-draft` remains.
 
-- [ ] **Step 2: Run frontend RED**
+- [x] **Step 2: Run frontend RED**
 
 ```powershell
 node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/draftOperationCoordinator.test.mjs
@@ -578,7 +578,7 @@ node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/draft
 
 Expected: missing formal client/coordinator and retired-method failures.
 
-- [ ] **Step 3: Implement the closed client**
+- [x] **Step 3: Implement the closed client**
 
 Expose:
 
@@ -590,11 +590,11 @@ listDraftOperationEvents(projectId, sessionId, operationId, afterSequence)
 
 The client sends only the five approved create fields and accepts only the public operation/event fields. Sensitive keys at any depth fail closed before fetch. Remove `generateWorkingDraft` and its old path.
 
-- [ ] **Step 4: Implement the coordinator**
+- [x] **Step 4: Implement the coordinator**
 
 Expose read-only `status`, `operation`, `busy`, `failureCode`, and methods `generateNew`, `retryUnknown`, `resetContext`, `dispose`. `generateNew` freezes one command and UUID for the action. A known terminal response clears retry state; an unknown transport error retains the frozen command in private memory so explicit retry replays it. A completed operation calls `reloadWorkspace()` and returns that authoritative workspace, never operation output text.
 
-- [ ] **Step 5: Run frontend GREEN**
+- [x] **Step 5: Run frontend GREEN**
 
 ```powershell
 node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/draftOperationCoordinator.test.mjs
@@ -602,7 +602,7 @@ node --test frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/draft
 
 Expected: all selected tests pass.
 
-- [ ] **Step 6: Commit frontend operation boundary**
+- [x] **Step 6: Commit frontend operation boundary**
 
 ```powershell
 git add frontend/src/api/db/client.js frontend/src/application/writer/draftOperationCoordinator.js frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/draftOperationCoordinator.test.mjs
@@ -620,7 +620,7 @@ git commit -m "feat: coordinate persistent draft generation"
 - Modify: `frontend/tests/unit/chapterWriterView.test.mjs`
 - Modify: `frontend/tests/unit/phase2RuntimeInventory.test.mjs`
 
-- [ ] **Step 1: Write UI integration RED tests**
+- [x] **Step 1: Write UI integration RED tests**
 
 Prove:
 
@@ -634,7 +634,7 @@ Prove:
 - UI shows fixed statuses `正在生成`, `生成完成`, `生成失败`, `生成结果已失效`, and `结果未知，可重试` without raw store/provider errors;
 - the source graph contains no old API method, old route token or second generation write path.
 
-- [ ] **Step 2: Run UI RED**
+- [x] **Step 2: Run UI RED**
 
 ```powershell
 node --test frontend/tests/unit/chapterSessionStore.test.mjs frontend/tests/unit/chapterWriterController.test.mjs frontend/tests/unit/chapterWriterView.test.mjs frontend/tests/unit/phase2RuntimeInventory.test.mjs
@@ -642,13 +642,13 @@ node --test frontend/tests/unit/chapterSessionStore.test.mjs frontend/tests/unit
 
 Expected: failures for old synchronous method and missing coordinator state.
 
-- [ ] **Step 3: Wire the formal operation**
+- [x] **Step 3: Wire the formal operation**
 
 The store exposes create/read/events calls and reloads the current authoritative chapter workspace after completion. It does not own idempotency retry memory. The controller owns one coordinator, flushes before generation, keeps its existing action lock, and fences late workspace reloads with edit generation and route context.
 
 The View uses one shallow overlay driven by coordinator/controller state. It does not render provider output separately in B1 because the non-stream operation commits only terminal output; after completion it displays the authoritative WorkingDraft. Keep the candidate action separate and never auto-freeze generated text.
 
-- [ ] **Step 4: Run UI GREEN and build**
+- [x] **Step 4: Run UI GREEN and build**
 
 ```powershell
 node --test frontend/tests/unit/plainTextRange.test.mjs frontend/tests/unit/workingDraftAutosave.test.mjs frontend/tests/unit/draftOperationCoordinator.test.mjs frontend/tests/unit/chapterSessionStore.test.mjs frontend/tests/unit/chapterWriterController.test.mjs frontend/tests/unit/chapterWriterView.test.mjs frontend/tests/unit/writerCoreApi.test.mjs frontend/tests/unit/phase2RuntimeInventory.test.mjs
@@ -657,7 +657,7 @@ npm run build
 
 Expected: all selected tests and Vite build pass.
 
-- [ ] **Step 5: Commit UI cutover**
+- [x] **Step 5: Commit UI cutover**
 
 ```powershell
 git add frontend/src/stores/chapterSessionStore.js frontend/src/application/writer/chapterWriterController.js frontend/src/views/ChapterWriterView.vue frontend/tests/unit/chapterSessionStore.test.mjs frontend/tests/unit/chapterWriterController.test.mjs frontend/tests/unit/chapterWriterView.test.mjs frontend/tests/unit/phase2RuntimeInventory.test.mjs
@@ -670,7 +670,13 @@ git commit -m "feat: generate through persistent draft operations"
 - Modify: `CURRENT_PROJECT_STATE.md`
 - Create: `docs/acceptance/2026-08-02-phase-4b1-formal-generation.md`
 
-- [ ] **Step 1: Self-review the complete B1 diff**
+> **完成证据（2026-08-02）：**Task 1–7 的实现提交从 `2ef5f53`（schema）、
+> `231d023`（repository）、`f2b9eec`（service）、`71f75a4`（HTTP）、`a0e1814`
+> （MySQL integrity）、`936fe2c`（frontend coordinator）到 `1ed0905`（writer UI）；
+> 随后的闭合修复止于 `27e91c8`。Task 8 的 fresh controller gate：integration
+> `355 passed`、build `2964 modules`、review spec/quality `0/0/0`、全部 owned residue `0`。
+
+- [x] **Step 1: Self-review the complete B1 diff**
 
 Check:
 
@@ -684,7 +690,7 @@ Check:
 - no public response/log/test output contains author prose, secrets, provider body, base URL or DSN;
 - no streaming/cancel/rewrite/undo/Phase4B-complete claim appears.
 
-- [ ] **Step 2: Run fresh focused gates**
+- [x] **Step 2: Run fresh focused gates**
 
 ```powershell
 python -m pytest backend/tests/unit/test_schema_manifest.py backend/tests/unit/test_schema_version.py backend/tests/unit/test_initialize_database.py backend/tests/unit/test_chapter_session_repository.py backend/tests/unit/test_draft_operation_service.py backend/tests/unit/test_chapter_draft_prompt.py backend/tests/api/test_draft_operation_routes.py backend/tests/api/test_chapter_session_routes.py -q
@@ -696,15 +702,15 @@ git diff --check
 
 Expected: every command exits 0 and disposable database residue is zero.
 
-- [ ] **Step 3: Specification review to 0/0/0**
+- [x] **Step 3: Specification review to 0/0/0**
 
 Review the complete `2b99516..HEAD` B1 diff against `docs/superpowers/specs/2026-08-01-phase-4-writer-loop-design.md` and this plan. Resolve every Critical/Important/Minor finding with the same implementer, TDD and fresh focused evidence until counts are `0/0/0`.
 
-- [ ] **Step 4: Quality review to 0/0/0**
+- [x] **Step 4: Quality review to 0/0/0**
 
 After specification review is clean, review concurrency, transaction boundaries, idempotency, lease/fencing, recovery atomicity, secret safety, frontend late-response fencing, accessibility and test quality. Resolve findings through the same implementer until `0/0/0`.
 
-- [ ] **Step 5: Controller fresh full gates and resource ledger**
+- [x] **Step 5: Controller fresh full gates and resource ledger**
 
 Run serially:
 
@@ -716,7 +722,7 @@ git diff --check
 
 Then audit only proven-owned `novel_creator_test_%` databases, Node/Python runner processes, ports 8000/4173/5173, `.codex-test-artifacts`, and Vite `deps_temp*`. Expected residue for every category: 0.
 
-- [ ] **Step 6: Record the exact acceptance boundary**
+- [x] **Step 6: Record the exact acceptance boundary**
 
 The acceptance document records only exit codes, passed/failed/skipped counts, first root cause if a gate required repair, review counts, and the zero-residue ledger. It states:
 
@@ -728,7 +734,7 @@ quality and product-database readiness remain unaccepted.
 
 Update `CURRENT_PROJECT_STATE.md` to name Phase4B2 streaming/reconnect/cancel as the unique next engineering step. Separately state that a controlled DeepSeek V3 Flash smoke test requires an explicit user approval and a valid token and is not an automated gate.
 
-- [ ] **Step 7: Commit B1 acceptance**
+- [x] **Step 7: Commit B1 acceptance**
 
 ```powershell
 git add CURRENT_PROJECT_STATE.md docs/acceptance/2026-08-02-phase-4b1-formal-generation.md docs/superpowers/plans/2026-08-02-phase-4b1-formal-generation-operation.md
