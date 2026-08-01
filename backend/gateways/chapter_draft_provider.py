@@ -51,7 +51,10 @@ class ChapterDraftProviderGateway:
             "max_tokens": generation_config["maxOutputTokens"],
             "stream": False,
         }
-        headers = {"Authorization": f"Bearer {provider['api_key']}"}
+        headers = {
+            "Authorization": f"Bearer {provider['api_key']}",
+            "Accept-Encoding": "identity",
+        }
         try:
             async with httpx.AsyncClient(
                 transport=self._transport,
@@ -65,6 +68,18 @@ class ChapterDraftProviderGateway:
                 ) as response:
                     if response.is_error:
                         raise ChapterDraftProviderHTTPError("provider request failed")
+                    content_encodings = response.headers.get_list(
+                        "content-encoding"
+                    )
+                    if content_encodings:
+                        if (
+                            len(content_encodings) != 1
+                            or "," in content_encodings[0]
+                            or content_encodings[0].strip().lower() != "identity"
+                        ):
+                            raise ChapterDraftProviderResponseError(
+                                "provider response was invalid"
+                            )
                     declared_length = response.headers.get("content-length")
                     if declared_length is not None:
                         try:
@@ -78,7 +93,7 @@ class ChapterDraftProviderGateway:
                                 "provider response was invalid"
                             )
                     raw = bytearray()
-                    async for chunk in response.aiter_bytes():
+                    async for chunk in response.aiter_raw():
                         remaining = (
                             MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES
                             + 1
