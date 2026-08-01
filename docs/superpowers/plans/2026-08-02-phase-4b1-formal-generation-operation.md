@@ -253,7 +253,7 @@ list_draft_operation_events(session, operation_id, after_sequence, limit)
 insert_working_draft_revision(session, row)
 ```
 
-Tests must assert SQL contains project/session ownership predicates, the operation/fencing pair on every terminal update, `FOR UPDATE` on ownership reads, bounded event reads, and no secret/provider payload columns.
+Tests must assert SQL contains project/session ownership predicates, the operation/fencing pair on every terminal update, `FOR UPDATE` on ownership reads, event limits restricted to `1..100`, and no secret/provider payload columns. Expiration must be one atomic lease guard: `lease_expires_at <= now`; a `starting` attempt may be expired only when the Session active pointer is NULL or points to itself, while a `running` attempt requires the Session pointer to point to itself.
 
 - [ ] **Step 2: Run repository RED**
 
@@ -267,7 +267,7 @@ Expected: missing-method failures.
 
 Use parameterized SQL for every value. `next_draft_operation_fencing_token` must lock the Session row and update `draft_operation_fencing_token = current + 1`. `insert_draft_operation_event` must update `last_event_sequence` only when the same operation owns the expected next sequence. Terminal updates must clear both `active_slot` and `chapter_sessions.active_draft_operation_id` only when the operation ID and fencing token still match.
 
-Recovery insertion is append-only and rejects an existing identity whose hash/content differs. It never updates an existing snapshot.
+Recovery insertion is append-only. A duplicate business identity is accepted only as an exact replay of every immutable field: primary ID, WorkingDraft ID, replacement reason, source operation ID, content, hash and creation timestamp (with project/Session/revision/role already fixed by the lookup). Any mismatch is rejected; an existing snapshot is never updated.
 
 - [ ] **Step 4: Run repository GREEN**
 
