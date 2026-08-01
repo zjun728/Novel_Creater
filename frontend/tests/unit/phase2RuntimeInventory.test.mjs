@@ -160,6 +160,7 @@ const CANONICAL_RUNTIME = [
   'stores/chapterSessionStore.js',
   'stores/creationContractStore.js',
   'stores/planningStore.js',
+  'application/writer/draftOperationCoordinator.js',
   'components/planning/PlanningWorkspace.vue',
   'components/planning/StoryBlockEditor.vue',
   'api/ai/providerPresets.js',
@@ -220,10 +221,11 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
     path.join(sourceRoot, relativePath),
     'utf8',
   )
-  const [client, store, writer] = await Promise.all([
+  const [client, store, writer, controller] = await Promise.all([
     readSource('api/db/client.js'),
     readSource('stores/chapterSessionStore.js'),
     readSource('views/ChapterWriterView.vue'),
+    readSource('application/writer/chapterWriterController.js'),
   ])
 
   for (const [name, source] of [
@@ -241,6 +243,7 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
   assert.doesNotMatch(writer, /watch\(\s*workingDraft/)
   assert.match(writer, /createWorkingDraftAutosave/)
   assert.match(writer, /createChapterWriterController/)
+  assert.match(controller, /createDraftOperationCoordinator/)
   assert.match(writer, /PlainTextDraftEditor/)
   assert.match(writer, /onBeforeRouteLeave\(async/)
   assert.match(writer, /onBeforeRouteUpdate\(async/)
@@ -258,6 +261,14 @@ test('chapter writer has one exact-outline session path and no legacy StoryBlock
     /watch\(\s*\(\)\s*=>\s*\[route\.params\.projectId,\s*route\.params\.chapterNumber\]/,
   )
   assert.doesNotMatch(client, /chapterSessions\/current|chapterSessions:\s*\{[\s\S]*?current:/)
+  assert.doesNotMatch(client, /generateWorkingDraft|generate-working-draft/)
+  assert.doesNotMatch(store, /generateWorkingDraft|generate-working-draft/)
+  assert.doesNotMatch(writer, /chapterSessionStore\.generateWorkingDraft/)
+  assert.match(store, /api\.chapterSessions\.createDraftOperation/)
+  assert.match(store, /api\.chapterSessions\.readDraftOperation/)
+  assert.match(store, /api\.chapterSessions\.listDraftOperationEvents/)
+  assert.match(writer, /chapterSessionStore\.reloadCurrentWorkspace/)
+  assert.equal((writer.match(/chapterSessionStore\.saveWorkingDraft/g) ?? []).length, 1)
   assert.match(store, /const chapterNumber = ref\(0\)/)
   assert.match(
     store,

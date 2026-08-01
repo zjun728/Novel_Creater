@@ -18,7 +18,7 @@ test('writer view has one controller-owned plain-text working draft loop', async
   assert.match(view, /controller\.resetContext\(\)/)
   assert.match(view, /controller\.setAuthorInstruction/)
   assert.match(view, /controller\.setSelection/)
-  assert.match(view, /<plain-text-draft-editor\s+v-if="session"/)
+  assert.match(view, /<div v-if="session" class="editor-surface"[\s\S]*?<plain-text-draft-editor/)
   assert.match(view, /onBeforeRouteLeave\(async/)
   assert.match(view, /onBeforeRouteUpdate\(async/)
   assert.match(view, /beforeunload/)
@@ -44,4 +44,43 @@ test('writer view has one controller-owned plain-text working draft loop', async
   assert.ok(conflictBranch)
   assert.doesNotMatch(conflictBranch, /retry|reload|reset|disabled/)
   assert.match(editor, /@click="emit\('retry'\)"/)
+})
+
+test('operation status is a shallow readable overlay with one auditable busy lock', async () => {
+  const [view, controller] = await Promise.all([
+    source('views/ChapterWriterView.vue'),
+    source('application/writer/chapterWriterController.js'),
+  ])
+
+  assert.match(view, /createDraftOperation:\s*command\s*=>\s*chapterSessionStore\.createDraftOperation/)
+  assert.match(view, /readDraftOperation:\s*operationId\s*=>\s*chapterSessionStore\.readDraftOperation/)
+  assert.match(view, /reloadWorkspace:\s*\(\)\s*=>\s*chapterSessionStore\.reloadCurrentWorkspace/)
+  assert.match(view, /controller\.retryUnknown/)
+  assert.match(view, /class="draft-operation-layer"[\s\S]*?aria-live="polite"/)
+  assert.match(view, /\{\{ controller\.operationStatusText\.value \}\}/)
+  assert.match(view, /draft-operation-layer\s*\{[^}]*pointer-events:\s*none/)
+  assert.match(view, /draft-operation-layer[\s\S]*?max-height:/)
+  assert.match(view, /plain-text-draft-editor[\s\S]*?:disabled="editorDisabled"/)
+  assert.match(view, /writer-outline-link[\s\S]*?:aria-disabled="controller\.actionBusy\.value"/)
+  assert.match(view, /@click="guardBusyNavigation"/)
+  assert.match(view, /返回项目[\s\S]*?:disabled="controller\.actionBusy\.value"|:disabled="controller\.actionBusy\.value"[\s\S]*?返回项目/)
+  assert.match(view, /controller\.dispose\(\)/)
+  assert.doesNotMatch(view, /operation\.output|providerId|modelName|failureCode|idempotencyKey/)
+
+  for (const label of [
+    '正在生成',
+    '生成完成',
+    '生成失败',
+    '生成结果已失效',
+    '结果未知，可重试',
+  ]) assert.match(controller, new RegExp(label))
+  assert.doesNotMatch(controller, /operationStatusText[\s\S]{0,300}(?:error\.message|failureCode\.value)/)
+})
+
+test('route loading resets coordinator context synchronously before any awaited work', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const body = view.match(/async function loadWorkspace\([\s\S]*?\n\}/)?.[0]
+  assert.ok(body)
+  assert.ok(body.indexOf('controller.resetContext()') >= 0)
+  assert.ok(body.indexOf('controller.resetContext()') < body.indexOf('await '))
 })

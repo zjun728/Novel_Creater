@@ -63,10 +63,15 @@ const controller = createChapterWriterController({
   autosave,
   writeBusy: () => chapterSessionStore.commandBusy,
   freezeCandidate: command => chapterSessionStore.saveCandidate(projectId.value, command),
-  generateWorkingDraft: command => chapterSessionStore.generateWorkingDraft(
+  createDraftOperation: command => chapterSessionStore.createDraftOperation(
     projectId.value,
     command,
   ),
+  readDraftOperation: operationId => chapterSessionStore.readDraftOperation(
+    projectId.value,
+    operationId,
+  ),
+  reloadWorkspace: () => chapterSessionStore.reloadCurrentWorkspace(projectId.value),
 })
 
 const editorDisabled = computed(() => !session.value || controller.actionBusy.value)
@@ -122,9 +127,20 @@ async function generateWorkingDraft() {
   actionError.value = ''
   try {
     const result = await controller.generateWorkingDraft()
-    if (!result) actionError.value = '当前工作稿未能安全暂存，请稍后重试。'
+    if (!result && !controller.operationStatusText.value) {
+      actionError.value = '当前工作稿未能安全暂存，请稍后重试。'
+    }
   } catch {
-    actionError.value = '当前工作稿未能完成生成，请稍后重试。'
+    // The controller exposes only the fixed, public-safe operation state.
+  }
+}
+
+async function retryUnknown() {
+  actionError.value = ''
+  try {
+    await controller.retryUnknown()
+  } catch {
+    // Unknown retries retain the coordinator-owned key and fixed status text.
   }
 }
 
@@ -147,7 +163,13 @@ async function retryAutosave() {
 }
 
 function backToProject() {
+  if (controller.actionBusy.value) return
   router.push(projectOverviewPath(projectId.value))
+}
+
+function guardBusyNavigation(event) {
+  if (!controller.actionBusy.value) return
+  event.preventDefault()
 }
 
 function beforeUnload(event) {
@@ -180,6 +202,7 @@ onBeforeUnmount(() => {
   stopBeforeUnloadRisk()
   syncBeforeUnloadRisk(false)
   loadGuard.invalidate()
+  controller.dispose()
   autosave.dispose()
   chapterSessionStore.invalidate()
 })
@@ -188,7 +211,13 @@ onBeforeUnmount(() => {
 <template>
   <main class="writer-shell">
     <nav class="writer-navigation" aria-label="章节工作台导航">
-      <router-link :to="storyBlocksPath" class="writer-outline-link">调整本章小纲</router-link>
+      <router-link
+        :to="storyBlocksPath"
+        class="writer-outline-link"
+        :aria-disabled="controller.actionBusy.value"
+        :tabindex="controller.actionBusy.value ? -1 : 0"
+        @click="guardBusyNavigation"
+      >调整本章小纲</router-link>
     </nav>
     <section v-if="loading" class="writer-loading" aria-busy="true" aria-label="正在加载章节工作台">
       <n-skeleton text width="28%" />
@@ -197,7 +226,7 @@ onBeforeUnmount(() => {
 
     <n-result v-else-if="pageError" status="error" title="章节工作台未能加载" :description="pageError" class="writer-result">
       <template #footer>
-        <n-button @click="backToProject">返回项目</n-button>
+        <n-button :disabled="controller.actionBusy.value" @click="backToProject">返回项目</n-button>
         <n-button type="primary" @click="loadWorkspace(projectId, chapterNumber)">重试</n-button>
       </template>
     </n-result>
@@ -217,7 +246,7 @@ onBeforeUnmount(() => {
           <h1>章节工作台</h1>
           <p>编辑会自动暂存；只有点击“保存为候选”才会冻结当前工作稿。</p>
         </div>
-        <n-button @click="backToProject">返回项目</n-button>
+        <n-button :disabled="controller.actionBusy.value" @click="backToProject">返回项目</n-button>
       </header>
 
       <n-alert v-if="!confirmedOutline" type="warning" class="writer-alert" title="请先完成并确认本章小纲">
@@ -237,18 +266,33 @@ onBeforeUnmount(() => {
             </div>
           </template>
 
-          <plain-text-draft-editor
-            v-if="session"
-            :model-value="autosave.text.value"
-            :disabled="editorDisabled"
-            :dirty="autosave.dirty.value"
-            :status="autosave.status.value"
-            :last-saved-at="lastSavedAt"
-            placeholder="在这里手动输入、粘贴或继续编辑章节正文。AI 生成只会进入工作稿，不会自动保存候选。"
-            @update:model-value="controller.edit"
-            @selection-change="controller.setSelection"
-            @retry="retryAutosave"
-          />
+          <div v-if="session" class="editor-surface" :aria-busy="controller.actionBusy.value">
+            <plain-text-draft-editor
+              :model-value="autosave.text.value"
+              :disabled="editorDisabled"
+              :dirty="autosave.dirty.value"
+              :status="autosave.status.value"
+              :last-saved-at="lastSavedAt"
+              placeholder="在这里手动输入、粘贴或继续编辑章节正文。AI 生成只会进入工作稿，不会自动保存候选。"
+              @update:model-value="controller.edit"
+              @selection-change="controller.setSelection"
+              @retry="retryAutosave"
+            />
+            <div
+              v-if="controller.operationStatusText.value"
+              class="draft-operation-layer"
+              aria-live="polite"
+              role="status"
+            >
+              <span>{{ controller.operationStatusText.value }}</span>
+              <button
+                v-if="controller.operationRetryAvailable.value"
+                type="button"
+                class="draft-operation-retry"
+                @click="retryUnknown"
+              >重试</button>
+            </div>
+          </div>
           <p v-else class="draft-empty">完成并确认本章小纲后，即可开始撰写正文。</p>
 
           <div class="generation-box">
@@ -317,6 +361,11 @@ h1 { margin: 0; font-family: Georgia, 'Noto Serif SC', serif; font-size: clamp(3
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .card-header strong { display: block; font-family: Georgia, 'Noto Serif SC', serif; font-size: 18px; }
 .card-header span { color: #82786b; font-size: 12px; }
+.editor-surface { position: relative; }
+.editor-surface :deep(.plain-text-draft-editor) { overflow: auto; }
+.draft-operation-layer { position: absolute; z-index: 2; top: 12px; right: 12px; display: flex; align-items: center; gap: 10px; max-width: calc(100% - 24px); max-height: 48px; overflow: auto; pointer-events: none; border: 1px solid rgba(150, 117, 72, .34); border-radius: 999px; padding: 8px 12px; color: #534535; background: rgba(255, 253, 248, .9); box-shadow: 0 8px 24px rgba(58, 48, 34, .1); font-size: 12px; font-weight: 700; }
+.draft-operation-retry { pointer-events: auto; border: 0; padding: 0; color: #8b5c25; background: transparent; font: inherit; cursor: pointer; text-decoration: underline; }
+.draft-operation-retry:focus-visible { outline: 2px solid #8b5c25; outline-offset: 3px; }
 .draft-empty { min-height: 440px; display: grid; place-items: center; margin: 0; color: #81776a; border: 1px dashed #d7cbb8; border-radius: 10px; background: #fffefb; }
 .generation-box { display: grid; gap: 8px; margin-top: 14px; }
 .generation-box label { color: #70675c; font-size: 12px; font-weight: 700; }

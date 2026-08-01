@@ -141,9 +141,9 @@ test('chapter session store edits working draft without creating candidate', asy
       calls.push(['draft', projectId, sessionId, structuredClone(command)])
       return workspace({ content: command.content, revision: command.expectedRevision + 1 })
     }],
-    [api.chapterSessions, 'generateWorkingDraft', async (projectId, sessionId, command) => {
-      calls.push(['generate', projectId, sessionId, structuredClone(command)])
-      return workspace({ content: 'AI 生成正文', revision: command.expectedWorkingDraftRevision + 1 })
+    [api.chapterSessions, 'createDraftOperation', async (projectId, sessionId, command) => {
+      calls.push(['operation', projectId, sessionId, structuredClone(command)])
+      return { operationId: 'operation-1', status: 'running' }
     }],
     [api.chapterSessions, 'saveCandidate', async (projectId, sessionId, command) => {
       calls.push(['candidate', projectId, sessionId, structuredClone(command)])
@@ -171,14 +171,17 @@ test('chapter session store edits working draft without creating candidate', asy
       content: '正文',
     })
     assert.equal(store.candidates.length, 0)
-    await store.generateWorkingDraft('project-1', {
+    await store.createDraftOperation('project-1', {
+      operationType: 'generate_new',
       expectedWorkingDraftRevision: 2,
+      expectedContentHash: 'a'.repeat(64),
+      idempotencyKey: '22222222-2222-2222-2222-222222222222',
       authorInstruction: '多一点市井对话',
     })
-    assert.equal(store.workingDraft.content, 'AI 生成正文')
+    assert.equal(store.workingDraft.content, '正文')
     assert.equal(store.candidates.length, 0)
     await store.saveCandidate('project-1', {
-      expectedWorkingDraftRevision: 3,
+      expectedWorkingDraftRevision: 2,
       expectedContentHash: 'a'.repeat(64),
       idempotencyKey: '11111111-1111-1111-1111-111111111111',
     })
@@ -197,12 +200,15 @@ test('chapter session store edits working draft without creating candidate', asy
         expectedContentHash: 'a'.repeat(64),
         content: '正文',
       }],
-      ['generate', 'project-1', 'session-1', {
+      ['operation', 'project-1', 'session-1', {
+        operationType: 'generate_new',
         expectedWorkingDraftRevision: 2,
+        expectedContentHash: 'a'.repeat(64),
+        idempotencyKey: '22222222-2222-2222-2222-222222222222',
         authorInstruction: '多一点市井对话',
       }],
       ['candidate', 'project-1', 'session-1', {
-        expectedWorkingDraftRevision: 3,
+        expectedWorkingDraftRevision: 2,
         expectedContentHash: 'a'.repeat(64),
         idempotencyKey: '11111111-1111-1111-1111-111111111111',
       }],
@@ -288,9 +294,9 @@ test('writer commands preserve controller-captured CAS authority over a newer wo
       calls.push(['draft', projectId, sessionId, structuredClone(command)])
       return newerWorkspace
     }],
-    [api.chapterSessions, 'generateWorkingDraft', async (projectId, sessionId, command) => {
-      calls.push(['generate', projectId, sessionId, structuredClone(command)])
-      return newerWorkspace
+    [api.chapterSessions, 'createDraftOperation', async (projectId, sessionId, command) => {
+      calls.push(['operation', projectId, sessionId, structuredClone(command)])
+      return { operationId: 'operation-1', status: 'running' }
     }],
     [api.chapterSessions, 'saveCandidate', async (projectId, sessionId, command) => {
       calls.push(['candidate', projectId, sessionId, structuredClone(command)])
@@ -306,8 +312,11 @@ test('writer commands preserve controller-captured CAS authority over a newer wo
       expectedContentHash: capturedHash,
       content: '本地草稿',
     })
-    await store.generateWorkingDraft('project-1', {
+    await store.createDraftOperation('project-1', {
+      operationType: 'generate_new',
       expectedWorkingDraftRevision: 4,
+      expectedContentHash: capturedHash,
+      idempotencyKey: '22222222-2222-2222-2222-222222222222',
       authorInstruction: '更克制',
     })
     await store.saveCandidate('project-1', {
@@ -322,8 +331,11 @@ test('writer commands preserve controller-captured CAS authority over a newer wo
         expectedContentHash: capturedHash,
         content: '本地草稿',
       }],
-      ['generate', 'project-1', 'session-1', {
+      ['operation', 'project-1', 'session-1', {
+        operationType: 'generate_new',
         expectedWorkingDraftRevision: 4,
+        expectedContentHash: capturedHash,
+        idempotencyKey: '22222222-2222-2222-2222-222222222222',
         authorInstruction: '更克制',
       }],
       ['candidate', 'project-1', 'session-1', {
@@ -341,7 +353,7 @@ test('writer commands reject malformed authorities and incomplete workspaces bef
   await withApiMethods([
     [api.chapterSessions, 'get', async () => workspace()],
     [api.chapterSessions, 'saveWorkingDraft', async () => { apiCalls += 1 }],
-    [api.chapterSessions, 'generateWorkingDraft', async () => { apiCalls += 1 }],
+    [api.chapterSessions, 'createDraftOperation', async () => { apiCalls += 1 }],
     [api.chapterSessions, 'saveCandidate', async () => { apiCalls += 1 }],
   ], async () => {
     setActivePinia(createPinia())
@@ -361,8 +373,11 @@ test('writer commands reject malformed authorities and incomplete workspaces bef
     assert.equal(apiCalls, 0)
 
     store.workspace = { session: { id: 'session-1' } }
-    await assert.rejects(store.generateWorkingDraft('project-1', {
+    await assert.rejects(store.createDraftOperation('project-1', {
+      operationType: 'generate_new',
       expectedWorkingDraftRevision: 1,
+      expectedContentHash: 'a'.repeat(64),
+      idempotencyKey: '22222222-2222-2222-2222-222222222222',
       authorInstruction: '更克制',
     }), TypeError)
     await assert.rejects(store.saveCandidate('project-1', {
@@ -837,15 +852,6 @@ test('invalidate clears every pending flag and late completions cannot revive th
       seed: true,
     },
     {
-      name: 'generateWorkingDraft',
-      flag: 'generatingDraft',
-      start: store => store.generateWorkingDraft('project-1', {
-        expectedWorkingDraftRevision: 1,
-        authorInstruction: '更有烟火气',
-      }),
-      seed: true,
-    },
-    {
       name: 'saveCandidate',
       flag: 'savingCandidate',
       start: store => store.saveCandidate('project-1', {
@@ -869,9 +875,6 @@ test('invalidate clears every pending flag and late completions cannot revive th
       [api.chapterSessions, 'saveWorkingDraft', async () => (
         scenario.name === 'saveWorkingDraft' ? gate.promise : workspace()
       )],
-      [api.chapterSessions, 'generateWorkingDraft', async () => (
-        scenario.name === 'generateWorkingDraft' ? gate.promise : workspace()
-      )],
       [api.chapterSessions, 'saveCandidate', async () => (
         scenario.name === 'saveCandidate' ? gate.promise : workspace()
       )],
@@ -888,7 +891,6 @@ test('invalidate clears every pending flag and late completions cannot revive th
         'creating',
         'savingDraft',
         'savingCandidate',
-        'generatingDraft',
       ]) {
         assert.equal(store[flag], false, `${scenario.name} left ${flag} active`)
       }
@@ -900,7 +902,6 @@ test('invalidate clears every pending flag and late completions cannot revive th
         'creating',
         'savingDraft',
         'savingCandidate',
-        'generatingDraft',
       ]) {
         assert.equal(store[flag], false, `${scenario.name} completion revived ${flag}`)
       }
@@ -911,8 +912,7 @@ test('invalidate clears every pending flag and late completions cannot revive th
 test('same chapter write operations are mutually exclusive before any second API call', async () => {
   const scenarios = [
     ['create', 'saveWorkingDraft'],
-    ['saveWorkingDraft', 'generateWorkingDraft'],
-    ['generateWorkingDraft', 'saveCandidate'],
+    ['saveWorkingDraft', 'saveCandidate'],
     ['saveCandidate', 'create'],
   ]
 
@@ -921,7 +921,6 @@ test('same chapter write operations are mutually exclusive before any second API
     const calls = {
       create: 0,
       saveWorkingDraft: 0,
-      generateWorkingDraft: 0,
       saveCandidate: 0,
     }
     await withApiMethods([
@@ -933,13 +932,6 @@ test('same chapter write operations are mutually exclusive before any second API
       [api.chapterSessions, 'saveWorkingDraft', async () => {
         calls.saveWorkingDraft += 1
         return activeName === 'saveWorkingDraft' ? gate.promise : workspace({ revision: 2 })
-      }],
-      [api.chapterSessions, 'generateWorkingDraft', async () => {
-        calls.generateWorkingDraft += 1
-        return activeName === 'generateWorkingDraft' ? gate.promise : workspace({
-          content: 'AI 生成正文',
-          revision: 2,
-        })
       }],
       [api.chapterSessions, 'saveCandidate', async () => {
         calls.saveCandidate += 1
@@ -965,10 +957,6 @@ test('same chapter write operations are mutually exclusive before any second API
           expectedContentHash: 'a'.repeat(64),
           content: '正文',
         }),
-        generateWorkingDraft: () => store.generateWorkingDraft('project-1', {
-          expectedWorkingDraftRevision: 1,
-          authorInstruction: '',
-        }),
         saveCandidate: () => store.saveCandidate('project-1', {
           expectedWorkingDraftRevision: 1,
           expectedContentHash: 'a'.repeat(64),
@@ -985,7 +973,7 @@ test('same chapter write operations are mutually exclusive before any second API
       assert.equal(calls[blockedName], 0)
 
       gate.resolve(workspace({
-        content: activeName === 'generateWorkingDraft' ? 'AI 生成正文' : '正文',
+        content: '正文',
         revision: 2,
         candidates: activeName === 'saveCandidate'
           ? [{ id: 'candidate-1', workingDraftRevision: 1 }]
@@ -996,4 +984,66 @@ test('same chapter write operations are mutually exclusive before any second API
       assert.equal(store.workingDraft.revision, 2)
     })
   }
+})
+
+test('formal draft operation store is a stateless create read events boundary and reloads current workspace', async () => {
+  const calls = []
+  const command = Object.freeze({
+    operationType: 'generate_new',
+    expectedWorkingDraftRevision: 4,
+    expectedContentHash: 'a'.repeat(64),
+    idempotencyKey: '11111111-1111-1111-1111-111111111111',
+    authorInstruction: '更克制',
+  })
+  const created = { operationId: 'operation-1', status: 'running' }
+  const read = { operationId: 'operation-1', status: 'completed' }
+  const events = { operationId: 'operation-1', events: [] }
+  let getCalls = 0
+  await withApiMethods([
+    [api.chapterSessions, 'get', async (projectId, chapterNumber) => {
+      getCalls += 1
+      if (getCalls === 1) return workspace()
+      calls.push(['reload', projectId, chapterNumber])
+      return workspace({ content: '权威生成正文', revision: 5 })
+    }],
+    [api.chapterSessions, 'createDraftOperation', async (projectId, sessionId, value) => {
+      calls.push(['createOperation', projectId, sessionId, value])
+      return created
+    }],
+    [api.chapterSessions, 'readDraftOperation', async (projectId, sessionId, operationId) => {
+      calls.push(['readOperation', projectId, sessionId, operationId])
+      return read
+    }],
+    [api.chapterSessions, 'listDraftOperationEvents', async (projectId, sessionId, operationId, afterSequence) => {
+      calls.push(['events', projectId, sessionId, operationId, afterSequence])
+      return events
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+    calls.length = 0
+
+    assert.strictEqual(await store.createDraftOperation('project-1', command), created)
+    assert.strictEqual(await store.readDraftOperation('project-1', 'operation-1'), read)
+    assert.strictEqual(
+      await store.listDraftOperationEvents('project-1', 'operation-1', 1),
+      events,
+    )
+    assert.equal(store.workingDraft.content, '')
+    assert.equal(store.commandBusy, false)
+    assert.deepEqual(await store.reloadCurrentWorkspace('project-1'), workspace({
+      content: '权威生成正文',
+      revision: 5,
+    }))
+    assert.equal(store.workingDraft.content, '权威生成正文')
+    assert.deepEqual(calls, [
+      ['createOperation', 'project-1', 'session-1', command],
+      ['readOperation', 'project-1', 'session-1', 'operation-1'],
+      ['events', 'project-1', 'session-1', 'operation-1', 1],
+      ['reload', 'project-1', 1],
+    ])
+    assert.equal('draftOperationRetry' in store, false)
+    assert.equal('operationIdempotencyKey' in store, false)
+  })
 })

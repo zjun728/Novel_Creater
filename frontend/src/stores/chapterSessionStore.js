@@ -74,21 +74,6 @@ function requireCandidateCommand(command) {
   })
 }
 
-function requireGenerationCommand(command) {
-  if (
-    !command
-    || !Number.isInteger(command.expectedWorkingDraftRevision)
-    || command.expectedWorkingDraftRevision < 1
-    || typeof command.authorInstruction !== 'string'
-  ) {
-    throw new TypeError('working draft generation command is required')
-  }
-  return Object.freeze({
-    expectedWorkingDraftRevision: command.expectedWorkingDraftRevision,
-    authorInstruction: command.authorInstruction,
-  })
-}
-
 const CANDIDATE_BASIS_FIELDS = Object.freeze([
   'outlineRevisionId',
   'outlineRevision',
@@ -171,12 +156,10 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
   const creating = ref(false)
   const savingDraft = ref(false)
   const savingCandidate = ref(false)
-  const generatingDraft = ref(false)
   const loadGuard = createLatestRequestGuard()
   const createGuard = createLatestRequestGuard()
   const draftGuard = createLatestRequestGuard()
   const candidateGuard = createLatestRequestGuard()
-  const generationGuard = createLatestRequestGuard()
   const authoritativeEntryGuard = createLatestRequestGuard()
   let stateGeneration = 0
 
@@ -190,12 +173,10 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value
     || savingDraft.value
     || savingCandidate.value
-    || generatingDraft.value
   ))
   const commandBusy = computed(() => (
     creating.value
     || savingCandidate.value
-    || generatingDraft.value
   ))
   const busy = computed(() => loading.value || writeBusy.value)
 
@@ -204,7 +185,6 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating.value = false
     savingDraft.value = false
     savingCandidate.value = false
-    generatingDraft.value = false
   }
 
   function assertWriteAvailable() {
@@ -225,7 +205,6 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
       createGuard.invalidate()
       draftGuard.invalidate()
       candidateGuard.invalidate()
-      generationGuard.invalidate()
       authoritativeEntryGuard.invalidate()
       workspace.value = null
       error.value = null
@@ -632,53 +611,42 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     }
   }
 
-  async function generateWorkingDraft(nextProjectId, command) {
-    const {
-      projectId: targetProjectId,
-      chapterNumber: targetChapterNumber,
-    } = enterContext(nextProjectId, chapterNumber.value)
-    assertWriteAvailable()
-    const writeCommand = requireGenerationCommand(command)
+  function operationContext(nextProjectId) {
+    const context = enterContext(nextProjectId, chapterNumber.value)
     const current = requireWorkspace(workspace.value)
-    const generation = generationGuard.begin()
-    const targetStateGeneration = stateGeneration
-    generatingDraft.value = true
-    try {
-      const generated = await api.chapterSessions.generateWorkingDraft(
-        targetProjectId,
-        current.session.id,
-        writeCommand,
-      )
-      if (isCurrent(
-        generationGuard,
-        generation,
-        targetProjectId,
-        targetChapterNumber,
-        targetStateGeneration,
-      )) {
-        acceptWorkspace(generated)
-      }
-      return generated
-    } catch (failure) {
-      if (isCurrent(
-        generationGuard,
-        generation,
-        targetProjectId,
-        targetChapterNumber,
-        targetStateGeneration,
-      )) {
-        error.value = publicError(failure)
-      }
-      throw failure
-    } finally {
-      if (
-        projectId.value === targetProjectId
-        && chapterNumber.value === targetChapterNumber
-        && generationGuard.isCurrent(generation)
-      ) {
-        generatingDraft.value = false
-      }
-    }
+    return { projectId: context.projectId, sessionId: current.session.id }
+  }
+
+  async function createDraftOperation(nextProjectId, command) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.createDraftOperation(
+      context.projectId,
+      context.sessionId,
+      command,
+    )
+  }
+
+  async function readDraftOperation(nextProjectId, operationId) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.readDraftOperation(
+      context.projectId,
+      context.sessionId,
+      operationId,
+    )
+  }
+
+  async function listDraftOperationEvents(nextProjectId, operationId, afterSequence) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.listDraftOperationEvents(
+      context.projectId,
+      context.sessionId,
+      operationId,
+      afterSequence,
+    )
+  }
+
+  function reloadCurrentWorkspace(nextProjectId) {
+    return load(nextProjectId, chapterNumber.value)
   }
 
   function invalidate() {
@@ -687,7 +655,6 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     createGuard.invalidate()
     draftGuard.invalidate()
     candidateGuard.invalidate()
-    generationGuard.invalidate()
     authoritativeEntryGuard.invalidate()
     resetPendingFlags()
   }
@@ -701,7 +668,6 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     creating,
     savingDraft,
     savingCandidate,
-    generatingDraft,
     session,
     workingDraft,
     candidates,
@@ -713,7 +679,10 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     openAuthoritative,
     create,
     saveWorkingDraft,
-    generateWorkingDraft,
+    createDraftOperation,
+    readDraftOperation,
+    listDraftOperationEvents,
+    reloadCurrentWorkspace,
     saveCandidate,
     invalidate,
   }
