@@ -115,7 +115,7 @@ Phase 3 acceptance 见：
 
 ## 当前 Schema 与数据库边界
 
-- 当前开发分支 committed 源码 Schema：`writer-core-v1.6.0`。
+- 当前开发分支 committed 源码 Schema：`writer-core-v1.7.0`。
 - Phase 3B 没有 Schema 变更、迁移或兼容路径。
 - Phase 3C 没有 Schema 变更、迁移或兼容路径。
 - Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1.6.0`；没有 migration 或 compatibility path。

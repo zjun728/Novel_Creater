@@ -63,6 +63,24 @@ CREATE TABLE draft_candidates (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
+CREATE TABLE candidate_freeze_requests (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  chapter_session_id CHAR(36) NOT NULL,
+  idempotency_key VARCHAR(64) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  draft_candidate_id CHAR(36) NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_candidate_freeze_idempotency
+    (chapter_session_id, idempotency_key),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id)
+    REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, draft_candidate_id)
+    REFERENCES draft_candidates(project_id, id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
 CREATE TABLE finalization_change_sets (
   id CHAR(36) PRIMARY KEY,
   project_id CHAR(36) NOT NULL,

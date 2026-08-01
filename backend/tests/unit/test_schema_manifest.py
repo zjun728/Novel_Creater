@@ -99,6 +99,7 @@ EXPECTED_TABLES = {
     "chapter_sessions",
     "working_drafts",
     "draft_candidates",
+    "candidate_freeze_requests",
     "final_chapters",
     "finalization_change_sets",
     "finalization_records",
@@ -761,6 +762,26 @@ def test_candidate_identity_is_content_and_immutable_basis_hash():
         "(chapter_session_id, content_hash, basis_hash)"
     ) in candidate
     assert "uq_candidate_hash" not in candidate
+
+
+def test_phase4a_draft_integrity_tables_are_in_exact_manifest():
+    names = created_table_names()
+    assert names.index("draft_candidates") < names.index("candidate_freeze_requests")
+    assert names.index("candidate_freeze_requests") < names.index(
+        "finalization_change_sets"
+    )
+
+    freeze_requests = _table_statement("candidate_freeze_requests")
+    for contract in (
+        "unique key uq_candidate_freeze_idempotency "
+        "(chapter_session_id, idempotency_key)",
+        "foreign key (project_id) references projects(id) on delete cascade",
+        "foreign key (project_id, chapter_session_id) references "
+        "chapter_sessions(project_id, id) on delete cascade",
+        "foreign key (project_id, draft_candidate_id) references "
+        "draft_candidates(project_id, id) on delete cascade",
+    ):
+        assert contract in freeze_requests
 
 
 def test_corpus_revision_identity_allows_metadata_only_revisions_on_one_blob():
