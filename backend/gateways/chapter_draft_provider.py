@@ -26,6 +26,26 @@ class ChapterDraftProviderTransportError(ChapterDraftProviderError):
     pass
 
 
+async def _close_stream_resources(
+    response: httpx.Response | None,
+    client: httpx.AsyncClient | None,
+) -> tuple[bool, asyncio.CancelledError | None]:
+    failed = False
+    cancellation = None
+    for resource in (response, client):
+        if resource is None:
+            continue
+        try:
+            await resource.aclose()
+        except asyncio.CancelledError as caught:
+            failed = True
+            if cancellation is None:
+                cancellation = caught
+        except BaseException:
+            failed = True
+    return failed, cancellation
+
+
 class ChapterDraftProviderGateway:
     def __init__(self, *, transport: httpx.AsyncBaseTransport | None = None):
         self._transport = transport
@@ -154,41 +174,67 @@ class ChapterDraftProviderGateway:
 
         parser = OpenAITextSSEParser()
         raw_bytes = 0
+        client = None
+        response = None
+        failure: BaseException | None = None
         try:
+            client = httpx.AsyncClient(
+                transport=self._transport,
+                timeout=httpx.Timeout(connect=30, read=1200, write=30, pool=30),
+            )
+            request = client.build_request(
+                "POST",
+                self._endpoint(str(provider["base_url"])),
+                headers=headers,
+                json=body,
+            )
             async with asyncio.timeout_at(deadline):
-                async with httpx.AsyncClient(
-                    transport=self._transport,
-                    timeout=httpx.Timeout(connect=30, read=1200, write=30, pool=30),
-                ) as client:
-                    async with client.stream(
-                        "POST",
-                        self._endpoint(str(provider["base_url"])),
-                        headers=headers,
-                        json=body,
-                    ) as response:
-                        if response.is_error:
-                            raise ChapterDraftProviderHTTPError("provider request failed")
-                        self._validate_stream_headers(response)
-                        async for chunk in response.aiter_raw():
-                            raw_bytes += len(chunk)
-                            if raw_bytes > MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES:
-                                raise ChapterDraftProviderResponseError(
-                                    "provider response was invalid"
-                                )
-                            for text in parser.feed(chunk):
-                                yield text
-                        parser.finish()
-        except asyncio.CancelledError:
-            raise
-        except ChapterDraftProviderError:
-            raise
-        except (httpx.TransportError, httpx.InvalidURL, TimeoutError):
+                response = await client.send(request, stream=True)
+            if response.is_error:
+                raise ChapterDraftProviderHTTPError("provider request failed")
+            self._validate_stream_headers(response)
+            raw_iterator = response.aiter_raw().__aiter__()
+            while True:
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        chunk = await anext(raw_iterator)
+                except StopAsyncIteration:
+                    break
+                raw_bytes += len(chunk)
+                if raw_bytes > MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES:
+                    raise ChapterDraftProviderResponseError(
+                        "provider response was invalid"
+                    )
+                texts = parser.feed(chunk)
+                for text in texts:
+                    yield text
+            parser.finish()
+        except BaseException as caught:
+            failure = caught
+
+        cleanup_failed, cleanup_cancellation = await _close_stream_resources(
+            response,
+            client,
+        )
+        if isinstance(failure, asyncio.CancelledError):
+            raise failure
+        if failure is None and cleanup_cancellation is not None:
+            raise cleanup_cancellation
+        if isinstance(failure, (GeneratorExit, KeyboardInterrupt, SystemExit)):
+            raise failure
+        if isinstance(failure, ChapterDraftProviderError):
+            raise failure from None
+        if isinstance(failure, (httpx.TransportError, httpx.InvalidURL, TimeoutError)):
             raise ChapterDraftProviderTransportError(
                 "provider transport failed"
             ) from None
-        except Exception:
+        if failure is not None:
             raise ChapterDraftProviderResponseError(
                 "provider response was invalid"
+            ) from None
+        if cleanup_failed:
+            raise ChapterDraftProviderTransportError(
+                "provider transport failed"
             ) from None
 
     @staticmethod

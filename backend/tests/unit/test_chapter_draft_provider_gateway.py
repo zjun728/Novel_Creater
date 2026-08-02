@@ -9,6 +9,7 @@ import pytest
 
 from backend.gateways.chapter_draft_provider import (
     MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES,
+    ChapterDraftProviderError,
     ChapterDraftProviderGateway,
     ChapterDraftProviderHTTPError,
     ChapterDraftProviderResponseError,
@@ -134,6 +135,7 @@ async def test_stream_rejects_invalid_representation_before_iterating_body(heade
         await _stream(gateway)
 
     assert stream.iterated is False
+    assert stream.close_calls == 1
     assert caught.value.__cause__ is None
     assert "REMOTE-BODY-MUST-NOT-BE-READ" not in repr(caught.value)
 
@@ -225,8 +227,188 @@ async def test_stream_uses_one_absolute_1200_second_deadline(monkeypatch):
     )
 
     assert await _stream(gateway) == []
-    assert len(recorded) == 1
+    assert len(recorded) >= 3
+    assert len(set(recorded)) == 1
     assert 1_199.0 < recorded[0] - asyncio.get_running_loop().time() < 1_200.1
+
+
+@pytest.mark.asyncio
+async def test_stream_timeout_context_never_crosses_a_consumer_yield(monkeypatch):
+    import backend.gateways.chapter_draft_provider as provider_module
+
+    state = {"active": 0, "expired": False}
+
+    class ControlledTimeout:
+        async def __aenter__(self):
+            if state["expired"]:
+                raise TimeoutError
+            state["active"] += 1
+
+        async def __aexit__(self, *_args):
+            state["active"] -= 1
+
+    monkeypatch.setattr(
+        provider_module.asyncio,
+        "timeout_at",
+        lambda _deadline: ControlledTimeout(),
+    )
+    wire = ChunkStream(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"one"}}]}\n\n',
+            b'data: {"choices":[{"index":0,"delta":{"content":"two"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    gateway = ChapterDraftProviderGateway(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, stream=wire
+            )
+        )
+    )
+    iterator = gateway.stream(
+        provider=_provider(),
+        messages=({"role": "user", "content": "facts"},),
+        generation_config={"temperature": 0.2, "maxOutputTokens": 4500},
+    )
+
+    assert await anext(iterator) == "one"
+    assert state["active"] == 0
+    state["expired"] = True
+    with pytest.raises(ChapterDraftProviderTransportError) as caught:
+        await anext(iterator)
+
+    assert caught.value.__cause__ is None
+    assert wire.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_cancellation_survives_response_and_client_close_failures():
+    entered = asyncio.Event()
+    secret = "mysql://user:CLOSE_SECRET@provider.invalid/database"
+
+    class FailingResponseStream(httpx.AsyncByteStream):
+        def __init__(self):
+            self.close_calls = 0
+
+        async def __aiter__(self):
+            entered.set()
+            await asyncio.Event().wait()
+            yield b""
+
+        async def aclose(self):
+            self.close_calls += 1
+            raise RuntimeError(secret)
+
+    class FailingCloseTransport(httpx.AsyncBaseTransport):
+        def __init__(self, stream):
+            self.stream = stream
+            self.close_calls = 0
+
+        async def handle_async_request(self, request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=self.stream,
+                request=request,
+            )
+
+        async def aclose(self):
+            self.close_calls += 1
+            raise RuntimeError(secret)
+
+    response_stream = FailingResponseStream()
+    transport = FailingCloseTransport(response_stream)
+    gateway = ChapterDraftProviderGateway(transport=transport)
+    task = asyncio.create_task(_stream(gateway))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+
+    assert caught.value.args == ()
+    assert response_stream.close_calls == 1
+    assert transport.close_calls == 1
+    assert secret not in repr(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_stream_non_cancel_cleanup_failures_are_safe_and_close_both_resources():
+    secret = "mysql://user:CLOSE_SECRET@provider.invalid/database"
+
+    class FailingResponseStream(ChunkStream):
+        async def aclose(self):
+            self.close_calls += 1
+            raise RuntimeError(secret)
+
+    class FailingCloseTransport(httpx.AsyncBaseTransport):
+        def __init__(self, stream):
+            self.stream = stream
+            self.close_calls = 0
+
+        async def handle_async_request(self, request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=self.stream,
+                request=request,
+            )
+
+        async def aclose(self):
+            self.close_calls += 1
+            raise RuntimeError(secret)
+
+    response_stream = FailingResponseStream([b"data: [DONE]\n\n"])
+    transport = FailingCloseTransport(response_stream)
+    gateway = ChapterDraftProviderGateway(transport=transport)
+
+    with pytest.raises(ChapterDraftProviderError) as caught:
+        await _stream(gateway)
+
+    assert response_stream.close_calls == 1
+    assert transport.close_calls == 1
+    assert caught.value.__cause__ is None
+    assert secret not in repr(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_aclose_closes_response_and_client_once():
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        def __init__(self, stream):
+            self.stream = stream
+            self.close_calls = 0
+
+        async def handle_async_request(self, request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=self.stream,
+                request=request,
+            )
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    response_stream = ChunkStream(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"one"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    transport = RecordingTransport(response_stream)
+    gateway = ChapterDraftProviderGateway(transport=transport)
+    iterator = gateway.stream(
+        provider=_provider(),
+        messages=({"role": "user", "content": "facts"},),
+        generation_config={"temperature": 0.2, "maxOutputTokens": 4500},
+    )
+
+    assert await anext(iterator) == "one"
+    await iterator.aclose()
+
+    assert response_stream.close_calls == 1
+    assert transport.close_calls == 1
 
 
 @pytest.mark.asyncio

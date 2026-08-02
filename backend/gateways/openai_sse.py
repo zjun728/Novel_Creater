@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import codecs
 import json
 from collections.abc import Mapping
 
 from backend.gateways.chapter_draft_provider import ChapterDraftProviderResponseError
 
 _MAX_EVENT_BYTES = 64 * 1024
+_MAX_EVENT_LINES = 1_024
 _MAX_JSON_DEPTH = 64
 _MAX_JSON_NODES = 2_048
 _ROOT_FIELDS = frozenset(
@@ -25,6 +25,9 @@ _ROOT_FIELDS = frozenset(
 )
 _CHOICE_FIELDS = frozenset({"index", "delta", "logprobs", "finish_reason"})
 _DELTA_FIELDS = frozenset({"role", "content"})
+_FINISH_REASONS = frozenset(
+    {"stop", "length", "content_filter", "tool_calls", "function_call"}
+)
 
 
 def _invalid() -> ChapterDraftProviderResponseError:
@@ -49,57 +52,67 @@ class OpenAITextSSEParser:
     """Incrementally parse a terminal OpenAI chat-completion SSE response."""
 
     def __init__(self) -> None:
-        self._decoder = codecs.getincrementaldecoder("utf-8")("strict")
-        self._line = ""
+        self._line = bytearray()
         self._saw_cr = False
         self._data_lines: list[str] = []
+        self._event_bytes = 0
+        self._event_lines = 0
         self._done = False
 
     def feed(self, chunk: bytes) -> tuple[str, ...]:
         if not isinstance(chunk, bytes):
             raise _invalid() from None
-        try:
-            text = self._decoder.decode(chunk, final=False)
-        except UnicodeDecodeError:
+        if self._done and chunk:
             raise _invalid() from None
         emitted: list[str] = []
-        for character in text:
+        for value in chunk:
             if self._saw_cr:
                 self._saw_cr = False
-                self._finish_line(emitted)
-                if character == "\n":
+                if value == 0x0A:
+                    self._count_event_byte()
+                    self._finish_line(emitted)
                     continue
-            if character == "\r":
+                self._finish_line(emitted)
+            if self._done:
+                raise _invalid() from None
+            self._count_event_byte()
+            if value == 0x0D:
                 self._saw_cr = True
-            elif character == "\n":
+            elif value == 0x0A:
                 self._finish_line(emitted)
             else:
-                self._line += character
-                if len(self._line.encode("utf-8")) > _MAX_EVENT_BYTES:
-                    raise _invalid() from None
+                self._line.append(value)
         return tuple(emitted)
 
     def finish(self) -> None:
-        try:
-            trailing = self._decoder.decode(b"", final=True)
-        except UnicodeDecodeError:
-            raise _invalid() from None
-        if trailing:
-            self.feed(trailing.encode("utf-8"))
         if self._saw_cr:
             self._saw_cr = False
             self._finish_line([])
         if self._line or self._data_lines or not self._done:
             raise _invalid() from None
 
+    def _count_event_byte(self) -> None:
+        self._event_bytes += 1
+        if self._event_bytes > _MAX_EVENT_BYTES:
+            raise _invalid() from None
+
     def _finish_line(self, emitted: list[str]) -> None:
-        line, self._line = self._line, ""
+        raw_line = bytes(self._line)
+        self._line.clear()
         if self._done:
             raise _invalid() from None
-        if not line:
+        if not raw_line:
             if self._data_lines:
                 emitted.extend(self._dispatch_event())
+            self._reset_event_bounds()
             return
+        self._event_lines += 1
+        if self._event_lines > _MAX_EVENT_LINES:
+            raise _invalid() from None
+        try:
+            line = raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            raise _invalid() from None
         if line.startswith(":"):
             return
         field, separator, value = line.partition(":")
@@ -110,8 +123,10 @@ class OpenAITextSSEParser:
         if field != "data":
             raise _invalid() from None
         self._data_lines.append(value)
-        if sum(len(item.encode("utf-8")) for item in self._data_lines) > _MAX_EVENT_BYTES:
-            raise _invalid() from None
+
+    def _reset_event_bounds(self) -> None:
+        self._event_bytes = 0
+        self._event_lines = 0
 
     def _dispatch_event(self) -> tuple[str, ...]:
         data_lines, self._data_lines = self._data_lines, []
@@ -128,6 +143,7 @@ class OpenAITextSSEParser:
         _bounded_json(payload)
         if not isinstance(payload, dict) or set(payload) - _ROOT_FIELDS:
             raise _invalid() from None
+        self._validate_root_metadata(payload)
         choices = payload.get("choices")
         if not isinstance(choices, list) or len(choices) != 1:
             raise _invalid() from None
@@ -137,8 +153,18 @@ class OpenAITextSSEParser:
         index = choice.get("index")
         if type(index) is not int or index != 0:
             raise _invalid() from None
+        if choice.get("logprobs") is not None:
+            raise _invalid() from None
+        finish_reason = choice.get("finish_reason")
+        if finish_reason is not None and (
+            not isinstance(finish_reason, str)
+            or finish_reason not in _FINISH_REASONS
+        ):
+            raise _invalid() from None
         delta = choice.get("delta")
         if not isinstance(delta, dict) or set(delta) - _DELTA_FIELDS:
+            raise _invalid() from None
+        if "role" in delta and delta["role"] != "assistant":
             raise _invalid() from None
         content = delta.get("content")
         if content is None:
@@ -146,3 +172,17 @@ class OpenAITextSSEParser:
         if not isinstance(content, str):
             raise _invalid() from None
         return (content,)
+
+    @staticmethod
+    def _validate_root_metadata(payload: dict[str, object]) -> None:
+        for field in ("id", "object", "model"):
+            if field in payload and not isinstance(payload[field], str):
+                raise _invalid() from None
+        if "created" in payload and type(payload["created"]) is not int:
+            raise _invalid() from None
+        for field in ("system_fingerprint", "service_tier"):
+            value = payload.get(field)
+            if field in payload and value is not None and not isinstance(value, str):
+                raise _invalid() from None
+        if payload.get("usage") is not None:
+            raise _invalid() from None

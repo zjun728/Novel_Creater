@@ -112,3 +112,93 @@ def test_parser_rejects_oversized_and_recursively_nested_json():
     parser = OpenAITextSSEParser()
     with pytest.raises(ChapterDraftProviderResponseError):
         parser.feed(b"data: " + nested.encode() + b"\n\n")
+
+
+@pytest.mark.parametrize("prefix", (b"data:\n", b": comment\n"))
+def test_parser_bounds_empty_data_and_comment_lines_before_event_boundary(prefix):
+    parser = OpenAITextSSEParser()
+
+    with pytest.raises(ChapterDraftProviderResponseError):
+        parser.feed(prefix * 1_025)
+
+
+def test_parser_resets_framing_counters_at_each_event_boundary():
+    parser = OpenAITextSSEParser()
+    comments = b": c\n" * 1_024 + b"\n"
+
+    assert parser.feed(comments) == ()
+    assert parser.feed(comments) == ()
+    assert parser.feed(b"data: [DONE]\n\n") == ()
+    parser.finish()
+
+
+def test_parser_handles_a_long_line_split_into_single_byte_chunks():
+    content = "x" * 32_000
+    wire = _frame(_choice(content))
+    parser = OpenAITextSSEParser()
+    emitted = []
+
+    for value in wire:
+        emitted.extend(parser.feed(bytes((value,))))
+    parser.feed(b"data: [DONE]\n\n")
+    parser.finish()
+
+    assert emitted == [content]
+
+
+@pytest.mark.parametrize(
+    ("root_updates", "choice_updates", "delta_updates"),
+    (
+        ({}, {}, {"role": 7}),
+        ({}, {}, {"role": "user"}),
+        ({}, {"finish_reason": {}}, {}),
+        ({}, {"logprobs": "invalid"}, {}),
+        ({"id": 1}, {}, {}),
+        ({"object": []}, {}, {}),
+        ({"model": {}}, {}, {}),
+        ({"created": True}, {}, {}),
+        ({"created": "1"}, {}, {}),
+        ({"system_fingerprint": 1}, {}, {}),
+        ({"service_tier": []}, {}, {}),
+        ({"usage": {}}, {}, {}),
+    ),
+)
+def test_parser_type_closes_every_admitted_json_sibling(
+    root_updates, choice_updates, delta_updates
+):
+    payload = _choice(None)
+    payload.update(root_updates)
+    payload["choices"][0].update(choice_updates)
+    payload["choices"][0]["delta"].update(delta_updates)
+    parser = OpenAITextSSEParser()
+
+    with pytest.raises(ChapterDraftProviderResponseError):
+        parser.feed(_frame(payload))
+
+
+@pytest.mark.parametrize(
+    "finish_reason",
+    (None, "stop", "length", "content_filter", "tool_calls", "function_call"),
+)
+def test_parser_accepts_closed_compatible_metadata_shapes(finish_reason):
+    payload = _choice(None)
+    payload.update(
+        {
+            "id": "chunk-id",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "fake-model",
+            "system_fingerprint": None,
+            "service_tier": "default",
+            "usage": None,
+        }
+    )
+    payload["choices"][0].update(
+        {"finish_reason": finish_reason, "logprobs": None}
+    )
+    payload["choices"][0]["delta"]["role"] = "assistant"
+    parser = OpenAITextSSEParser()
+
+    assert parser.feed(_frame(payload)) == ()
+    assert parser.feed(b"data: [DONE]\n\n") == ()
+    parser.finish()
