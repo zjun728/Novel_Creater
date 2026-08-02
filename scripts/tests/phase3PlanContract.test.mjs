@@ -369,7 +369,7 @@ test('Phase 3B detailed plan freezes its delivery and safety contract', async ()
   );
 });
 
-test('Phase 3 completion facts are current and Phase 4 is the only next step', async () => {
+test('Phase 3 and Phase 4B1 completion facts are current and Phase 4B2 is the only next step', async () => {
   const [
     currentState,
     productPlan,
@@ -402,7 +402,7 @@ test('Phase 3 completion facts are current and Phase 4 is the only next step', a
   );
   assert.match(
     currentConclusion,
-    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\*。$/m,
+    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\* 与 \*\*Phase 4B1 Formal Generation\*\*（仅注入 fake provider）。$/m,
   );
   assert.match(
     currentConclusion,
@@ -414,21 +414,21 @@ test('Phase 3 completion facts are current and Phase 4 is the only next step', a
   );
   assert.match(
     currentConclusion,
-    /^- 唯一下一步：\*\*Phase 4 Writer Loop\*\*。$/m,
+    /^- 唯一下一工程步：\*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 功能代码 HEAD：`382dcefa57f575209cc703d3af0e60fd1b11137d`。$/m,
+    /^- 功能代码 HEAD：`27e91c81fabe316594fe8d775f0b973a0d33b4d9`。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`、\r?\n  Disposable MySQL 8、UI-only 真实浏览器；正式 Writer Loop、Finalization 和\r?\n  Content Quality 仍未就绪。$/m,
+    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`；\r?\n  Phase 4B1 的 `generate_new` 仅以注入 fake provider 验收。正式流式写作、\r?\n  Finalization 和 Content Quality 仍未就绪。$/m,
   );
 
   const nextStep = readSection(currentState, '唯一下一步');
   assert.match(
     nextStep,
-    /^建设并验收 \*\*Phase 4 Writer Loop\*\*。它以前序完整的 Phase 3 规划链为基础；自动\r?\n门禁继续禁止真实 Provider、产品数据库和 live 网站。Seed、Contract 与 Bible 的\r?\n已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。正文定稿前对应\r?\n大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持的范围为准。\r?\nSetting 与知识库仍在 Phase 5 通过 Canon\/Projection 落地，不在本阶段声称已实现。$/m,
+    /^建设 \*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*。Phase 4B1 formal `generate_new`\r?\n已仅以注入 fake provider 验收；自动门禁继续禁止真实 Provider、产品数据库和 live\r?\n网站。受控 DeepSeek V3 Flash smoke 仍须用户明确批准和有效 token，且不是自动门禁。\r?\nSeed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。\r?\n正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持\r?\n的范围为准。Setting 与知识库仍在 Phase 5 通过 Canon\/Projection 落地，不在本阶段声称已实现。$/m,
   );
 
   const schemaBoundary = readSection(currentState, '当前 Schema 与数据库边界');
@@ -442,7 +442,7 @@ test('Phase 3 completion facts are current and Phase 4 is the only next step', a
   );
   assert.match(
     schemaBoundary,
-    /^- 当前开发分支 committed 源码 Schema：`writer-core-v1\.6\.0`。$/m,
+    /^- 当前开发分支源码 Schema：`writer-core-v1\.8\.0`。$/m,
   );
   assert.match(
     schemaBoundary,
@@ -871,7 +871,7 @@ test('Phase 3C detailed plan freezes its delivery and safety contract', async ()
   }
 });
 
-test('Phase 3 immutable-boundary acceptance closes Phase 3 without claiming finalization', async () => {
+test('Phase 3 immutable-boundary acceptance preserves Phase 4B2 as next without claiming finalization', async () => {
   const [acceptance, alignment, currentState, productPlan, developmentLog] = await Promise.all([
     readProjectFile('docs/acceptance/2026-07-30-phase-3-story-planning.md'),
     readProjectFile('docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md'),
@@ -985,11 +985,11 @@ test('Phase 3 immutable-boundary acceptance closes Phase 3 without claiming fina
     'the report may record only the fixed delivery baseline and functional implementation SHAs',
   );
 
-  assert.match(currentState, /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\*。$/m);
+  assert.match(currentState, /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\* 与 \*\*Phase 4B1 Formal Generation\*\*（仅注入 fake provider）。$/m);
   assert.match(currentState, /^- 当前开发分支：`codex\/phase3d-boundary-acceptance`。$/m);
   assert.match(currentState, /^- Phase 3D 与 Phase 3 已完成：Future Plan\/Actual Progress\/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。$/m);
-  assert.match(currentState, /^- 唯一下一步：\*\*Phase 4 Writer Loop\*\*。$/m);
-  assert.match(currentState, /^- 功能代码 HEAD：`382dcefa57f575209cc703d3af0e60fd1b11137d`。$/m);
+  assert.match(currentState, /^- 唯一下一工程步：\*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*。$/m);
+  assert.match(currentState, /^- 功能代码 HEAD：`27e91c81fabe316594fe8d775f0b973a0d33b4d9`。$/m);
   assert.doesNotMatch(currentState, /Phase 3D[^\n]*下一步/u);
 
   assert.match(productPlan, /^\| Phase 3 \|.*\| 已完成门禁 \|$/m);
