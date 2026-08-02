@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import weakref
 
 import pytest
 
@@ -322,3 +324,112 @@ async def test_cancelled_aclose_waiter_preserves_first_reason_and_shared_drain(
     await successful_waiter
     assert worker_settled.is_set()
     assert registry.size == 0
+
+
+@pytest.mark.asyncio
+async def test_detached_task_is_strongly_retained_until_its_private_wait_completes(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        draft_operation_tasks,
+        "_DRAFT_OPERATION_TASK_SHUTDOWN_TIMEOUT_SECONDS",
+        0.01,
+    )
+    registry = DraftOperationTaskRegistry()
+    await registry.start()
+    worker_started = asyncio.Event()
+    first_cancel_seen = asyncio.Event()
+    worker_settled = asyncio.Event()
+    weak_handles = {}
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    errors = []
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+    async def stubborn_worker(signal):
+        private_wait = loop.create_future()
+        weak_handles["task"] = weakref.ref(asyncio.current_task())
+        weak_handles["wait"] = weakref.ref(private_wait)
+        worker_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            assert signal.is_set()
+            first_cancel_seen.set()
+            await private_wait
+        worker_settled.set()
+
+    try:
+        registry.launch("same-id", stubborn_worker)
+        await worker_started.wait()
+        await registry.aclose()
+        await first_cancel_seen.wait()
+        assert registry.size == 0
+
+        for _ in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+        assert weak_handles["task"]() is not None
+        assert weak_handles["wait"]() is not None
+        assert not any(
+            context.get("message") == "Task was destroyed but it is pending!"
+            for context in errors
+        )
+
+        await registry.start()
+        replacement_release = asyncio.Event()
+
+        async def replacement(signal):
+            await replacement_release.wait()
+
+        registry.launch("same-id", replacement)
+        private_wait = weak_handles["wait"]()
+        assert private_wait is not None
+        private_wait.set_result(None)
+        del private_wait
+        await worker_settled.wait()
+        await asyncio.sleep(0)
+        assert registry.size == 1
+        replacement_release.set()
+        await _wait_for(lambda: registry.size == 0)
+        await registry.aclose()
+
+        for _ in range(3):
+            gc.collect()
+            await asyncio.sleep(0)
+        assert weak_handles["task"]() is None
+        assert errors == []
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+
+@pytest.mark.asyncio
+async def test_launch_supports_same_loop_future_awaitables():
+    registry = DraftOperationTaskRegistry()
+    await registry.start()
+    loop = asyncio.get_running_loop()
+    completed = loop.create_future()
+    received = []
+
+    def completed_worker(signal):
+        received.append(signal)
+        return completed
+
+    signal = registry.launch("complete", completed_worker)
+    assert received == [signal]
+    assert registry.size == 1
+    completed.set_result(None)
+    await _wait_for(lambda: registry.size == 0)
+
+    cancelled = loop.create_future()
+
+    def cancelled_worker(signal):
+        received.append(signal)
+        return cancelled
+
+    cancel_signal = registry.launch("cancel", cancelled_worker)
+    assert received[-1] is cancel_signal
+    assert registry.cancel("cancel") is True
+    assert cancel_signal.is_set()
+    await _wait_for(lambda: cancelled.cancelled() and registry.size == 0)
+    await registry.aclose()

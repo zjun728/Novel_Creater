@@ -13,7 +13,8 @@ class DraftOperationTaskRegistry:
     """Own only active worker tasks and their cooperative cancellation signals."""
 
     def __init__(self) -> None:
-        self._entries: dict[str, tuple[asyncio.Task[None], asyncio.Event]] = {}
+        self._entries: dict[str, tuple[asyncio.Future[None], asyncio.Event]] = {}
+        self._detached: set[asyncio.Future[None]] = set()
         self._active = False
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
@@ -36,7 +37,7 @@ class DraftOperationTaskRegistry:
             raise RuntimeError("draft operation task is already registered")
 
         signal = asyncio.Event()
-        task = asyncio.create_task(worker(signal))
+        task = asyncio.ensure_future(worker(signal))
         self._entries[operation_id] = (task, signal)
         task.add_done_callback(
             lambda completed: self._on_done(operation_id, completed)
@@ -78,7 +79,8 @@ class DraftOperationTaskRegistry:
     def size(self) -> int:
         return len(self._entries)
 
-    def _on_done(self, operation_id: str, task: asyncio.Task[None]) -> None:
+    def _on_done(self, operation_id: str, task: asyncio.Future[None]) -> None:
+        self._detached.discard(task)
         entry = self._entries.get(operation_id)
         if entry is not None and entry[0] is task:
             self._entries.pop(operation_id)
@@ -87,14 +89,15 @@ class DraftOperationTaskRegistry:
     async def _drain(
         self,
         entries: tuple[
-            tuple[str, tuple[asyncio.Task[None], asyncio.Event]],
+            tuple[str, tuple[asyncio.Future[None], asyncio.Event]],
             ...,
         ],
     ) -> None:
         tasks = tuple(entry[0] for _, entry in entries)
+        pending = set(tasks)
         try:
             if tasks:
-                done, _ = await asyncio.wait(
+                done, pending = await asyncio.wait(
                     tasks,
                     timeout=_DRAFT_OPERATION_TASK_SHUTDOWN_TIMEOUT_SECONDS,
                 )
@@ -103,11 +106,13 @@ class DraftOperationTaskRegistry:
         finally:
             for operation_id, entry in entries:
                 if self._entries.get(operation_id) is entry:
+                    if entry[0] in pending and not entry[0].done():
+                        self._detached.add(entry[0])
                     self._entries.pop(operation_id)
             self._closing = False
 
     @staticmethod
-    def _consume_result(task: asyncio.Task[None]) -> None:
+    def _consume_result(task: asyncio.Future[None]) -> None:
         if not task.done():
             return
         try:
