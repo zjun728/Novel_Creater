@@ -833,11 +833,6 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "check (base_working_draft_revision > 0)",
         "check (last_event_sequence >= 0)",
         "check (operation_type = 'generate_new')",
-        "check (status in ('starting','running','completed','failed','cancelled','expired'))",
-        "status in ('starting','running') and active_slot is not null "
-        "and active_slot = 1 and result_working_draft_revision is null "
-        "and result_content_hash is null and failure_code is null "
-        "and completed_at is null and cancelled_at is null",
         "status = 'completed' and active_slot is null "
         "and result_working_draft_revision is not null "
         "and result_content_hash is not null and failure_code is null "
@@ -850,8 +845,6 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "and result_working_draft_revision is null "
         "and result_content_hash is null and failure_code is null "
         "and completed_at is not null",
-        "status = 'cancelled' and active_slot is null and failure_code is null "
-        "and completed_at is not null and cancelled_at is not null",
     ):
         assert contract in operations
     for forbidden in (
@@ -881,8 +874,6 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
         "foreign key (project_id, draft_operation_id) "
         "references draft_operation_attempts(project_id, id) "
         "on delete cascade",
-        "check (sequence_num between 1 and 2048)",
-        "check (event_type in ('started','delta','heartbeat','completed','failed','cancelled'))",
     ):
         assert contract in events
     assert "foreign key (project_id) references projects(id)" not in events
@@ -895,7 +886,7 @@ def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
     ) in drafts
 
 
-def test_phase_4b2_streaming_schema_and_cancellation_design_are_exact():
+def test_phase_4b2_streaming_schema_is_exact():
     operations = _table_statement("draft_operation_attempts")
     for contract in (
         "partial_output_text longtext not null",
@@ -927,6 +918,8 @@ def test_phase_4b2_streaming_schema_and_cancellation_design_are_exact():
     ):
         assert contract in events
 
+
+def test_phase_4b2_governing_design_commits_only_safe_nonempty_cancelled_partial():
     design_path = (
         Path(schema_manifest.__file__).resolve().parents[1]
         / "docs/superpowers/specs/2026-08-01-phase-4-writer-loop-design.md"

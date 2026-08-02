@@ -1,6 +1,6 @@
 # 产品开发规划
 
-> 当前有效规划。日期：`2026-08-01`。
+> 当前有效规划。日期：`2026-08-02`。
 
 ## 1. 产品目标
 
@@ -25,7 +25,7 @@ Novel Creator 要帮助作者持续写出长篇、连贯、可控并且让人愿
 | Phase 1 | 产品壳层与项目生命周期 | 已完成门禁 |
 | Phase 2 | 创作资产、Provider/模型设置、市场来源、选题与种子、契约、圣经、模型继承与资产冻结 | 已完成门禁 |
 | Phase 3 | 分卷、情节、故事块、小纲、已发生事实与未来计划 | 已完成门禁 |
-| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | 唯一下一产品包；待开始 |
+| Phase 4 | 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 | Phase 4B1 formal `generate_new` 已验收（仅 fake provider）；Phase 4B2 streaming / reconnect / cancel 正在实施，尚未验收 |
 | Phase 5 | 质量审核、单次事实提取、整体确认、原子定稿与失败回滚 | 待开始 |
 | Phase 6 | 小说下载、安全备份、预检与导入 | 待开始 |
 | Phase 7 | 产品库、真实 Provider、自由浏览器探索、《典镇山河》30 章人工验收 | 待开始 |
@@ -82,7 +82,9 @@ Canon/Projection 落地；这不是已交付能力。详细证据见：
 - `docs/acceptance/2026-07-30-phase-3-story-planning.md`
 - `docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md`
 
-- 唯一下一产品包：**Phase 4 Writer Loop**。
+- Phase 4B1 formal `generate_new` 已验收（仅 fake provider）。
+- Phase 4B2 streaming / reconnect / cancel 正在实施，尚未验收；不宣称其运行态、
+  UI 或真实 Provider 已就绪。
 
 ## 5. 写作链路的先决修复
 

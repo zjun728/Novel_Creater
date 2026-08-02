@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 from typing import Mapping
 
 from backend.domain.json_contracts import canonical_json
 from backend.domain.provider_policy import GENERATION_PROVIDER_TYPE
 from backend.repositories.project_lifecycle import lock_active_project
+
+
+_EMPTY_PARTIAL_TEXT = ""
+_EMPTY_PARTIAL_HASH = sha256(_EMPTY_PARTIAL_TEXT.encode("utf-8")).hexdigest()
 
 
 class ActiveChapterSessionConflict(RuntimeError):
@@ -379,12 +384,13 @@ class ChapterSessionRepository:
                (id,project_id,chapter_session_id,operation_type,idempotency_key,
                 request_fingerprint,active_slot,fencing_token,lease_expires_at,
                 base_working_draft_revision,base_working_draft_hash,
-                input_manifest_json,input_manifest_hash,provider_id,
-                model_name_snapshot,result_working_draft_revision,
-                result_content_hash,last_event_sequence,failure_code,status,
-                created_at,updated_at,completed_at)
+                 input_manifest_json,input_manifest_hash,provider_id,
+                 model_name_snapshot,result_working_draft_revision,
+                 result_content_hash,last_event_sequence,failure_code,
+                 partial_output_text,partial_output_hash,partial_output_scalars,
+                 heartbeat_at,status,created_at,updated_at,completed_at)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                       %s,%s,%s,%s,%s)""",
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
                 row["id"],
                 row["project_id"],
@@ -405,6 +411,10 @@ class ChapterSessionRepository:
                 row["result_content_hash"],
                 row["last_event_sequence"],
                 row["failure_code"],
+                _EMPTY_PARTIAL_TEXT,
+                _EMPTY_PARTIAL_HASH,
+                0,
+                row["created_at"],
                 row["status"],
                 row["created_at"],
                 row["updated_at"],

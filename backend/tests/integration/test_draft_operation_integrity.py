@@ -282,6 +282,48 @@ def _json_object(value):
 
 
 @pytest.mark.asyncio
+async def test_production_reservation_persists_safe_empty_streaming_state(
+    disposable_mysql,
+):
+    workspace, transaction_factory, _ = await _workspace(disposable_mysql)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    service = _operation_service(
+        transaction_factory,
+        _ProviderBoundary(entered=entered, release=release),
+    )
+    task = asyncio.create_task(service.start(
+        _command(workspace, "41000000-0000-4000-8000-000000000000")
+    ))
+
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
+        attempts = await _attempts(disposable_mysql.session, workspace.session.id)
+        events = await _events(disposable_mysql.session, attempts[0]["id"])
+    finally:
+        release.set()
+        result = await asyncio.wait_for(task, timeout=_TIMEOUT)
+
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    assert attempt["status"] == "running"
+    assert attempt["active_slot"] == 1
+    assert attempt["last_event_sequence"] == 1
+    assert attempt["result_working_draft_revision"] is None
+    assert attempt["result_content_hash"] is None
+    assert attempt["partial_output_text"] == ""
+    assert attempt["partial_output_hash"] == hashlib.sha256(
+        attempt["partial_output_text"].encode("utf-8")
+    ).hexdigest()
+    assert attempt["partial_output_scalars"] == 0
+    assert attempt["heartbeat_at"] == attempt["created_at"] == _NOW
+    assert events[0]["event_type"] == "started"
+    assert events[0]["sequence_num"] == 1
+    assert events[0]["closed_payload_json"] is None
+    assert result.status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_success_commits_one_attempt_recovery_events_and_matching_metadata(
     disposable_mysql,
 ):

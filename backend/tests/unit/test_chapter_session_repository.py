@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 
 import pytest
 
@@ -439,6 +440,32 @@ async def test_insert_operation_uses_only_safe_parameterized_columns():
     assert "%s" in compact
     assert "api_key" not in compact and "base_url" not in compact
     assert args[0:3] == ("operation-1", "project-1", "chapter-session-1")
+
+
+@pytest.mark.asyncio
+async def test_insert_operation_initializes_exact_empty_streaming_state():
+    session = CapturingSession()
+
+    assert await ChapterSessionRepository().insert_draft_operation(
+        session, _draft_operation_row()
+    )
+
+    sql, args = session.calls[-1]
+    compact = " ".join(sql.split())
+    assert (
+        "partial_output_text,partial_output_hash,partial_output_scalars, "
+        "heartbeat_at,status"
+    ) in compact
+    assert args[19:27] == (
+        "",
+        hashlib.sha256("".encode("utf-8")).hexdigest(),
+        0,
+        100,
+        "starting",
+        100,
+        100,
+        None,
+    )
 
 
 @pytest.mark.asyncio
