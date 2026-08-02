@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 
 import { createDraftOperationCoordinator } from '../../src/application/writer/draftOperationCoordinator.js'
@@ -10,17 +11,30 @@ const OPERATION_ID = '33333333-3333-4333-8333-333333333333'
 const KEY = '44444444-4444-4444-8444-444444444444'
 const HASH = 'a'.repeat(64)
 
+function textHash(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
 function operation(overrides = {}) {
+  const status = overrides.status ?? 'completed'
+  const partialOutput = overrides.partialOutput
+    ?? (status === 'completed' ? 'authoritative' : '')
+  const partialOutputHash = overrides.partialOutputHash ?? textHash(partialOutput)
+  const partialOutputScalars = overrides.partialOutputScalars
+    ?? Array.from(partialOutput).length
   return {
     id: OPERATION_ID,
     projectId: PROJECT_ID,
     chapterSessionId: SESSION_ID,
     operationType: 'generate_new',
-    status: 'completed',
-    lastEventSequence: 2,
-    resultWorkingDraftRevision: 5,
-    resultContentHash: HASH,
-    failureCode: null,
+    status,
+    lastEventSequence: status === 'completed' || status === 'failed' || status === 'cancelled' ? 2 : 1,
+    partialOutput,
+    partialOutputHash,
+    partialOutputScalars,
+    resultWorkingDraftRevision: status === 'completed' ? 5 : null,
+    resultContentHash: status === 'completed' ? partialOutputHash : null,
+    failureCode: status === 'failed' ? 'DraftProviderFailed' : null,
     model: Object.freeze({ providerId: 'provider-1', modelName: 'writer-model' }),
     ...overrides,
   }
@@ -44,6 +58,19 @@ function coordinator(overrides = {}) {
   return createDraftOperationCoordinator({
     startOperation: async () => operation(),
     readOperation: async () => operation(),
+    listEvents: async (operationId, after) => ({
+      operationId,
+      events: [],
+      lastEventSequence: after,
+      nextAfter: after,
+      hasMore: false,
+    }),
+    cancelOperation: async () => operation({
+      status: 'cancelled',
+      partialOutput: '',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
     reloadWorkspace: async () => ({ workingDraft: { content: 'authoritative' } }),
     idFactory: () => KEY,
     pollScheduler: immediatePollScheduler,
@@ -82,6 +109,556 @@ test('coordinator creates one frozen canonical command and prohibits duplicate s
   assert.equal(Object.isFrozen(calls[0]), true)
   pending.resolve(operation())
   await request
+})
+
+test('resume calibrates the fresh snapshot, drains only retained suffixes, and never POSTs or creates a key', async () => {
+  const calls = []
+  let reads = 0
+  const subject = coordinator({
+    startOperation: async () => assert.fail('resume must not POST'),
+    idFactory: () => assert.fail('resume must not create a key'),
+    readOperation: async operationId => {
+      calls.push(['read', operationId])
+      reads += 1
+      return reads === 1
+        ? operation({ status: 'running', lastEventSequence: 8, partialOutput: '甲' })
+        : operation({
+          status: 'completed',
+          lastEventSequence: 10,
+          partialOutput: '甲乙',
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('甲乙'),
+        })
+    },
+    listEvents: async (operationId, after) => {
+      calls.push(['events', operationId, after])
+      assert.equal(after, 8)
+      return {
+        operationId,
+        events: [{
+          sequence: 9,
+          type: 'delta',
+          createdAt: 9,
+          text: '乙',
+          partialOutputHash: textHash('甲乙'),
+          partialOutputScalars: 2,
+        }, {
+          sequence: 10,
+          type: 'completed',
+          createdAt: 10,
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('甲乙'),
+        }],
+        lastEventSequence: 10,
+        nextAfter: 10,
+        hasMore: false,
+      }
+    },
+  })
+
+  const result = await subject.resume(OPERATION_ID)
+  assert.deepEqual(result, { workingDraft: { content: 'authoritative' } })
+  assert.equal(subject.preview, '甲乙')
+  assert.equal(subject.reconnecting, false)
+  assert.deepEqual(calls, [
+    ['read', OPERATION_ID],
+    ['events', OPERATION_ID, 8],
+    ['read', OPERATION_ID],
+  ])
+})
+
+test('resume rejects a non-canonical operation id before any transport call', () => {
+  let reads = 0
+  const subject = coordinator({
+    readOperation: async () => {
+      reads += 1
+      return operation()
+    },
+  })
+
+  assert.throws(() => subject.resume('NOT-A-CANONICAL-ID'), TypeError)
+  assert.equal(reads, 0)
+  assert.equal(subject.status, 'idle')
+  assert.equal(subject.busy, false)
+})
+
+test('status ahead of retained events drains immediately before any one-second wait', async () => {
+  const calls = []
+  let reads = 0
+  let eventReads = 0
+  let delays = 0
+  const subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listEvents: async (operationId, after) => {
+      calls.push(['events', after])
+      eventReads += 1
+      if (eventReads === 1) {
+        return { operationId, events: [], lastEventSequence: 1, nextAfter: 1, hasMore: false }
+      }
+      if (eventReads === 3) {
+        assert.equal(after, 2)
+        return { operationId, events: [], lastEventSequence: 2, nextAfter: 2, hasMore: false }
+      }
+      if (eventReads === 4) {
+        assert.equal(after, 2)
+        return {
+          operationId,
+          events: [{ sequence: 3, type: 'completed', createdAt: 3 }],
+          lastEventSequence: 3,
+          nextAfter: 3,
+          hasMore: false,
+        }
+      }
+      return {
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'delta',
+          createdAt: 2,
+          text: '甲',
+          partialOutputHash: textHash('甲'),
+          partialOutputScalars: 1,
+        }],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      }
+    },
+    readOperation: async () => {
+      reads += 1
+      calls.push(['read', reads])
+      return reads === 1
+        ? operation({ status: 'running', lastEventSequence: 2, partialOutput: '甲' })
+        : operation({
+          status: 'completed',
+          lastEventSequence: 3,
+          partialOutput: '甲',
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('甲'),
+        })
+    },
+    pollScheduler: () => {
+      delays += 1
+      calls.push(['delay'])
+      return { promise: Promise.resolve(), cancel() {} }
+    },
+  })
+  await subject.generateNew(command())
+  assert.equal(subject.preview, '甲')
+  assert.equal(delays, 1)
+  assert.deepEqual(calls, [
+    ['events', 1], ['read', 1], ['events', 1], ['delay'],
+    ['events', 2], ['read', 2], ['events', 2],
+  ])
+})
+
+test('a retained-cycle status behind the drained event cursor fails closed', async () => {
+  let eventReads = 0
+  let statusReads = 0
+  const subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listEvents: async (operationId, after) => {
+      eventReads += 1
+      assert.equal(after, 1)
+      return {
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'delta',
+          createdAt: 2,
+          text: '甲',
+          partialOutputHash: textHash('甲'),
+          partialOutputScalars: 1,
+        }],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      }
+    },
+    readOperation: async () => {
+      statusReads += 1
+      return operation({ status: 'running', lastEventSequence: 1 })
+    },
+  })
+
+  await assert.rejects(subject.generateNew(command()), TypeError)
+  assert.equal(subject.status, 'operation_invalid')
+  assert.equal(subject.preview, '甲')
+  assert.equal(eventReads, 1)
+  assert.equal(statusReads, 1)
+})
+
+test('an unknown transport failure during the status-ahead drain keeps same-key recovery', async () => {
+  const starts = []
+  let eventReads = 0
+  const subject = coordinator({
+    startOperation: async next => {
+      starts.push(next)
+      return starts.length === 1
+        ? operation({ status: 'running', lastEventSequence: 1 })
+        : operation()
+    },
+    listEvents: async (operationId, after) => {
+      eventReads += 1
+      if (eventReads === 1) {
+        return { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+      }
+      throw new ApiError()
+    },
+    readOperation: async () => operation({
+      status: 'running',
+      lastEventSequence: 2,
+      partialOutput: '甲',
+    }),
+  })
+
+  await assert.rejects(subject.generateNew(command()), ApiError)
+  assert.equal(subject.status, 'unknown')
+  assert.equal(subject.retryAvailable, true)
+  await subject.retryUnknown()
+  assert.strictEqual(starts[1], starts[0])
+})
+
+test('cancellation wins over a rejected status-ahead event drain', async () => {
+  const secondDrain = deferred()
+  const secondDrainStarted = deferred()
+  let eventReads = 0
+  const subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listEvents: async (operationId, after) => {
+      eventReads += 1
+      if (eventReads === 1) {
+        return { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+      }
+      secondDrainStarted.resolve()
+      return secondDrain.promise
+    },
+    readOperation: async () => operation({
+      status: 'running',
+      lastEventSequence: 2,
+      partialOutput: '甲',
+    }),
+    cancelOperation: async () => operation({
+      status: 'cancelled',
+      lastEventSequence: 2,
+      partialOutput: '',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+  })
+
+  const generation = subject.generateNew(command())
+  await secondDrainStarted.promise
+  const cancelled = await subject.cancelActive()
+  secondDrain.reject(new Error('stale second drain failed'))
+
+  assert.deepEqual(await generation, cancelled)
+  assert.equal(subject.status, 'cancelled')
+})
+
+test('cancellation during asynchronous page hashing prevents another event request', async () => {
+  const hashStarted = deferred()
+  const hashGate = deferred()
+  const unexpectedList = deferred()
+  const unexpectedListStarted = deferred()
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  const originalCrypto = globalThis.crypto
+  const originalDigest = originalCrypto.subtle.digest.bind(originalCrypto.subtle)
+  let gated = false
+  let listCalls = 0
+  let generation
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      subtle: {
+        async digest(algorithm, data) {
+          if (!gated && data.byteLength > 0) {
+            gated = true
+            hashStarted.resolve()
+            await hashGate.promise
+          }
+          return originalDigest(algorithm, data)
+        },
+      },
+    },
+  })
+  try {
+    const subject = coordinator({
+      startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+      listEvents: async operationId => {
+        listCalls += 1
+        if (listCalls > 1) {
+          unexpectedListStarted.resolve()
+          return unexpectedList.promise
+        }
+        return {
+          operationId,
+          events: [{
+            sequence: 2,
+            type: 'delta',
+            createdAt: 2,
+            text: '甲',
+            partialOutputHash: textHash('甲'),
+            partialOutputScalars: 1,
+          }],
+          lastEventSequence: 3,
+          nextAfter: 2,
+          hasMore: true,
+        }
+      },
+      cancelOperation: async () => operation({
+        status: 'cancelled',
+        lastEventSequence: 3,
+        partialOutput: '甲',
+        resultWorkingDraftRevision: 5,
+        resultContentHash: textHash('甲'),
+      }),
+    })
+
+    generation = subject.generateNew(command())
+    await hashStarted.promise
+    const cancelled = await subject.cancelActive()
+    hashGate.resolve()
+    const winner = await Promise.race([
+      generation.then(value => ({ kind: 'settled', value })),
+      unexpectedListStarted.promise.then(() => ({ kind: 'extra-list' })),
+    ])
+    if (winner.kind === 'extra-list') {
+      unexpectedList.resolve({
+        operationId: OPERATION_ID,
+        events: [],
+        lastEventSequence: 3,
+        nextAfter: 3,
+        hasMore: false,
+      })
+    }
+    const generationResult = await generation
+    assert.equal(winner.kind, 'settled')
+    assert.equal(listCalls, 1)
+    assert.deepEqual(generationResult, cancelled)
+  } finally {
+    hashGate.resolve()
+    unexpectedList.resolve({
+      operationId: OPERATION_ID,
+      events: [],
+      lastEventSequence: 3,
+      nextAfter: 3,
+      hasMore: false,
+    })
+    if (generation) await generation.catch(() => {})
+    if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor)
+    else delete globalThis.crypto
+  }
+})
+
+test('cancellation during status snapshot hashing cannot publish stale running state', async () => {
+  const hashStarted = deferred()
+  const hashGate = deferred()
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
+  const originalCrypto = globalThis.crypto
+  const originalDigest = originalCrypto.subtle.digest.bind(originalCrypto.subtle)
+  let nonEmptyDigests = 0
+  let generation
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      subtle: {
+        async digest(algorithm, data) {
+          if (data.byteLength > 0) {
+            nonEmptyDigests += 1
+            if (nonEmptyDigests === 2) {
+              hashStarted.resolve()
+              await hashGate.promise
+              return new Uint8Array(32).buffer
+            }
+          }
+          return originalDigest(algorithm, data)
+        },
+      },
+    },
+  })
+  try {
+    const subject = coordinator({
+      startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+      listEvents: async operationId => ({
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'delta',
+          createdAt: 2,
+          text: '甲',
+          partialOutputHash: textHash('甲'),
+          partialOutputScalars: 1,
+        }],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      }),
+      readOperation: async () => operation({
+        status: 'running',
+        lastEventSequence: 2,
+        partialOutput: '甲',
+      }),
+      cancelOperation: async () => operation({
+        status: 'cancelled',
+        lastEventSequence: 3,
+        partialOutput: '甲',
+        resultWorkingDraftRevision: 5,
+        resultContentHash: textHash('甲'),
+      }),
+    })
+
+    generation = subject.generateNew(command())
+    await hashStarted.promise
+    const cancelled = await subject.cancelActive()
+    hashGate.resolve()
+
+    assert.deepEqual(await generation, cancelled)
+    assert.equal(subject.status, 'cancelled')
+    assert.equal(subject.operation.status, 'cancelled')
+    assert.equal(subject.busy, false)
+  } finally {
+    hashGate.resolve()
+    if (generation) await generation.catch(() => {})
+    if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor)
+    else delete globalThis.crypto
+  }
+})
+
+test('cancelActive shares one terminal settlement with the running action and reloads only for output', async () => {
+  for (const partialOutput of ['甲', '']) {
+    const eventGate = deferred()
+    const eventStarted = deferred()
+    let reloads = 0
+    let cancels = 0
+    const subject = coordinator({
+      startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+      listEvents: async (operationId, after) => {
+        eventStarted.resolve()
+        await eventGate.promise
+        if (!partialOutput) throw new Error('stale event request failed')
+        return { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+      },
+      cancelOperation: async operationId => {
+        cancels += 1
+        return operation({
+          id: operationId,
+          status: 'cancelled',
+          lastEventSequence: 2,
+          partialOutput,
+          resultWorkingDraftRevision: partialOutput ? 5 : null,
+          resultContentHash: partialOutput ? textHash(partialOutput) : null,
+        })
+      },
+      reloadWorkspace: async () => {
+        reloads += 1
+        return { workingDraft: { content: partialOutput } }
+      },
+    })
+    const generation = subject.generateNew(command())
+    await eventStarted.promise
+    const cancellation = subject.cancelActive()
+    const repeatedCancellation = subject.cancelActive()
+    assert.strictEqual(repeatedCancellation, cancellation)
+    assert.equal(subject.cancelling, true)
+    const cancelResult = await cancellation
+    eventGate.resolve()
+    const generationResult = await generation
+    assert.equal(cancels, 1)
+    assert.equal(reloads, partialOutput ? 1 : 0)
+    assert.deepEqual(generationResult, cancelResult)
+    assert.equal(subject.status, 'cancelled')
+    assert.equal(subject.cancelling, false)
+  }
+})
+
+test('a stale status response cannot roll back a completed cancellation', async () => {
+  const pendingStatus = deferred()
+  const statusStarted = deferred()
+  const subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    readOperation: () => {
+      statusStarted.resolve()
+      return pendingStatus.promise
+    },
+    cancelOperation: async () => operation({
+      status: 'cancelled',
+      lastEventSequence: 2,
+      partialOutput: '甲',
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('甲'),
+    }),
+  })
+  const generation = subject.generateNew(command())
+  await statusStarted.promise
+  const cancelled = await subject.cancelActive()
+  pendingStatus.resolve(operation({ status: 'running', lastEventSequence: 1 }))
+  assert.deepEqual(await generation, cancelled)
+  assert.equal(subject.status, 'cancelled')
+  assert.equal(subject.preview, '甲')
+})
+
+test('a stale rejected status request settles through the completed cancellation', async () => {
+  const pendingStatus = deferred()
+  const statusStarted = deferred()
+  const subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    readOperation: () => {
+      statusStarted.resolve()
+      return pendingStatus.promise
+    },
+    cancelOperation: async () => operation({
+      status: 'cancelled',
+      lastEventSequence: 2,
+      partialOutput: '',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+  })
+
+  const generation = subject.generateNew(command())
+  await statusStarted.promise
+  const cancelled = await subject.cancelActive()
+  pendingStatus.reject(new Error('stale status request failed'))
+
+  assert.deepEqual(await generation, cancelled)
+  assert.equal(subject.status, 'cancelled')
+  assert.equal(subject.preview, '')
+})
+
+test('resetContext fences a pending event page before it can mutate preview state', async () => {
+  const pendingEvents = deferred()
+  const eventsStarted = deferred()
+  const subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listEvents: () => {
+      eventsStarted.resolve()
+      return pendingEvents.promise
+    },
+  })
+
+  const generation = subject.generateNew(command())
+  await eventsStarted.promise
+  subject.resetContext()
+  pendingEvents.resolve({
+    operationId: OPERATION_ID,
+    events: [{
+      sequence: 2,
+      type: 'delta',
+      text: '迟到正文',
+      partialOutputHash: textHash('迟到正文'),
+      partialOutputScalars: 4,
+      createdAt: 1,
+    }],
+    lastEventSequence: 2,
+    nextAfter: 2,
+    hasMore: false,
+  })
+
+  assert.equal(await generation, null)
+  assert.equal(subject.status, 'idle')
+  assert.equal(subject.preview, '')
+  assert.equal(subject.busy, false)
 })
 
 test('author instruction limit counts Unicode scalars and rejects malformed Unicode', async () => {
@@ -229,6 +806,7 @@ test('reset and dispose cancel explicit lease recovery before automatic replay',
     subject => subject.dispose(),
   ]) {
     const delay = deferred()
+    const delayStarted = deferred()
     let starts = 0
     let cancelled = 0
     const subject = coordinator({
@@ -247,7 +825,7 @@ test('reset and dispose cancel explicit lease recovery before automatic replay',
         resultWorkingDraftRevision: null, resultContentHash: null,
       }),
       pollScheduler: () => ({
-        promise: delay.promise,
+        promise: (delayStarted.resolve(), delay.promise),
         cancel() {
           cancelled += 1
           delay.resolve()
@@ -256,8 +834,7 @@ test('reset and dispose cancel explicit lease recovery before automatic replay',
     })
     await assert.rejects(() => subject.generateNew(command()), ApiError)
     const recovery = subject.retryUnknown()
-    await Promise.resolve()
-    await Promise.resolve()
+    await delayStarted.promise
     invalidate(subject)
     assert.equal(await recovery, null)
     assert.equal(starts, 2)
@@ -296,8 +873,27 @@ test('coordinator polls a running operation with its fenced id until completed o
           resultWorkingDraftRevision: null,
           resultContentHash: null,
         })
-        : operation()
+        : operation({ lastEventSequence: 3 })
     },
+    listEvents: async (operationId, after) => (reads.length < 2
+      ? { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+      : {
+          operationId,
+          events: [
+            {
+              sequence: 2,
+              type: 'delta',
+              createdAt: 2,
+              text: 'authoritative',
+              partialOutputHash: textHash('authoritative'),
+              partialOutputScalars: 13,
+            },
+            { sequence: 3, type: 'completed', createdAt: 3 },
+          ],
+          lastEventSequence: 3,
+          nextAfter: 3,
+          hasMore: false,
+        }),
     reloadWorkspace: async () => {
       reloads += 1
       return { workingDraft: { content: 'reloaded' } }
@@ -335,6 +931,17 @@ test('coordinator polls a running operation through failed and expired terminal 
         resultContentHash: null,
       }),
       readOperation: async () => terminal,
+      listEvents: async (operationId, after) => (
+        terminal.lastEventSequence === after
+          ? { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+          : {
+              operationId,
+              events: [{ sequence: 2, type: terminal.status, createdAt: 2 }],
+              lastEventSequence: 2,
+              nextAfter: 2,
+              hasMore: false,
+            }
+      ),
       reloadWorkspace: async () => { reloads += 1 },
     })
     assert.equal(await subject.generateNew(command()), null)
@@ -376,6 +983,7 @@ test('reset and dispose cancel a pending bounded poll delay without another stat
     subject => subject.dispose(),
   ]) {
     const delay = deferred()
+    const delayStarted = deferred()
     let cancelled = 0
     let reads = 0
     const subject = coordinator({
@@ -396,6 +1004,7 @@ test('reset and dispose cancel a pending bounded poll delay without another stat
       },
       pollScheduler: delayMs => {
         assert.equal(delayMs, 1_000)
+        delayStarted.resolve()
         return {
           promise: delay.promise,
           cancel() {
@@ -406,8 +1015,7 @@ test('reset and dispose cancel a pending bounded poll delay without another stat
       },
     })
     const request = subject.generateNew(command())
-    await Promise.resolve()
-    await Promise.resolve()
+    await delayStarted.promise
     invalidate(subject)
     assert.equal(await request, null)
     assert.equal(cancelled, 1)
@@ -451,6 +1059,7 @@ test('local and response-invalid failures are fixed public states, never unknown
 
 test('unknown status recovery keeps its frozen command and rejects new generate actions', async () => {
   const pendingRead = deferred()
+  const readStarted = deferred()
   const calls = []
   let starts = 0
   const subject = coordinator({
@@ -465,10 +1074,13 @@ test('unknown status recovery keeps its frozen command and rejects new generate 
         resultContentHash: null,
       })
     },
-    readOperation: () => pendingRead.promise,
+    readOperation: () => {
+      readStarted.resolve()
+      return pendingRead.promise
+    },
   })
   const first = subject.generateNew(command())
-  await Promise.resolve()
+  await readStarted.promise
   pendingRead.reject(new ApiError({
     status: 502,
     code: 'DraftOperationUnavailable',
@@ -595,9 +1207,15 @@ test('late reload rejection after reset or dispose resolves null without public 
     subject => subject.dispose(),
   ]) {
     const lateReload = deferred()
-    const subject = coordinator({ reloadWorkspace: () => lateReload.promise })
+    const reloadStarted = deferred()
+    const subject = coordinator({
+      reloadWorkspace: () => {
+        reloadStarted.resolve()
+        return lateReload.promise
+      },
+    })
     const request = subject.generateNew(command())
-    await Promise.resolve()
+    await reloadStarted.promise
     invalidate(subject)
     lateReload.reject(new Error('late reload detail'))
     assert.equal(await request, null)
@@ -690,12 +1308,27 @@ test('default polling uses one-second timers, cancellation clears them, and boun
             resultWorkingDraftRevision: null, resultContentHash: null,
           })
         },
+        listEvents: async (operationId, after) => ({
+          operationId,
+          events: [],
+          lastEventSequence: after,
+          nextAfter: after,
+          hasMore: false,
+        }),
+        cancelOperation: async () => operation({
+          status: 'cancelled',
+          partialOutput: '',
+          resultWorkingDraftRevision: null,
+          resultContentHash: null,
+        }),
         reloadWorkspace: async () => ({}),
         idFactory: () => KEY,
       })
+      const timerCount = timers.length
       const request = subject.generateNew(command())
-      await Promise.resolve()
-      await Promise.resolve()
+      while (timers.length === timerCount) {
+        await new Promise(resolve => setImmediate(resolve))
+      }
       const timer = timers.at(-1)
       assert.equal(reads, 1)
       assert.equal(timer.delayMs, 1_000)

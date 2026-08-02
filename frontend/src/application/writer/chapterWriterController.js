@@ -34,6 +34,8 @@ export function createChapterWriterController({
   freezeCandidate: freezeCandidateRequest,
   createDraftOperation,
   readDraftOperation,
+  listDraftOperationEvents,
+  cancelDraftOperation,
   reloadWorkspace,
   idFactory = generateId,
   pollScheduler,
@@ -46,11 +48,15 @@ export function createChapterWriterController({
     throw new TypeError('autosave is required')
   }
 
+  const coordinatorRevision = ref(0)
   const coordinator = createDraftOperationCoordinator({
     startOperation: createDraftOperation || unavailable('createDraftOperation'),
     readOperation: readDraftOperation || unavailable('readDraftOperation'),
+    listEvents: listDraftOperationEvents || unavailable('listDraftOperationEvents'),
+    cancelOperation: cancelDraftOperation || unavailable('cancelDraftOperation'),
     reloadWorkspace: reloadWorkspace || unavailable('reloadWorkspace'),
     idFactory,
+    onChange: () => { coordinatorRevision.value += 1 },
     ...(pollScheduler ? { pollScheduler } : {}),
   })
   let editGeneration = 0
@@ -60,21 +66,34 @@ export function createChapterWriterController({
   let retryFence = null
   let disposed = false
   const actionLock = ref(false)
-  const coordinatorRevision = ref(0)
   const actionBusy = computed(() => actionLock.value)
   const authorInstructionState = ref('')
   const selectionState = ref(null)
   const authorInstruction = computed(() => authorInstructionState.value)
   const selection = computed(() => selectionState.value)
+  const streamingPreview = computed(() => {
+    coordinatorRevision.value
+    return coordinator.busy ? coordinator.preview : null
+  })
+  const editorText = computed(() => (
+    actionLock.value
+    && (activeAction?.kind === 'generate' || activeAction?.kind === 'resume')
+    && streamingPreview.value !== null
+      ? streamingPreview.value
+      : String(autosave.text?.value ?? '')
+  ))
   const operationStatus = computed(() => {
     coordinatorRevision.value
     return coordinator.status
   })
-  const operationRetryAvailable = computed(() => (
-    operationStatus.value === 'unknown' && !actionLock.value
-  ))
+  const operationRetryAvailable = computed(() => {
+    coordinatorRevision.value
+    return coordinator.retryAvailable && !actionLock.value
+  })
   const operationStatusText = computed(() => {
     const status = operationStatus.value
+    if (coordinator.cancelling) return '正在取消'
+    if (coordinator.reconnecting) return '正在恢复连接'
     if (
       status === 'failed'
       || status === 'request_rejected'
@@ -86,8 +105,15 @@ export function createChapterWriterController({
     }
     if (status === 'starting' || status === 'running') return '正在生成'
     if (status === 'completed') return '生成完成'
+    if (status === 'cancelled') {
+      return coordinator.operation?.resultWorkingDraftRevision === null
+        ? '已停止，正文未改变'
+        : '已停止，已保留生成内容'
+    }
     if (status === 'expired') return '生成结果已失效'
-    if (status === 'unknown') return '结果未知，可重试'
+    if (status === 'unknown') {
+      return coordinator.retryAvailable ? '结果未知，可重试' : '生成失败'
+    }
     return ''
   })
 
@@ -302,6 +328,53 @@ export function createChapterWriterController({
     }
   }
 
+  async function resumeDraftOperation(operationId) {
+    const token = claimAction('resume')
+    if (token === null) return false
+    const fence = {
+      editGeneration,
+      contextGeneration,
+      visibleText: autosave.text?.value,
+    }
+    retryFence = null
+    try {
+      let request
+      try {
+        request = coordinator.resume(operationId)
+      } finally {
+        touchCoordinator()
+      }
+      const result = await request
+      touchCoordinator()
+      if (!isActionCurrent(token)) return null
+      resyncIfUnchanged(result, fence)
+      return result
+    } catch (error) {
+      touchCoordinator()
+      throw error
+    } finally {
+      releaseAction(token)
+      touchCoordinator()
+    }
+  }
+
+  async function cancelGeneration() {
+    if (
+      !actionLock.value
+      || (activeAction?.kind !== 'generate' && activeAction?.kind !== 'resume')
+    ) return false
+    try {
+      const request = coordinator.cancelActive()
+      touchCoordinator()
+      const result = await request
+      touchCoordinator()
+      return result
+    } catch (error) {
+      touchCoordinator()
+      throw error
+    }
+  }
+
   async function canNavigate() {
     const token = claimAction('navigate')
     if (token === null) return false
@@ -321,6 +394,8 @@ export function createChapterWriterController({
     saveCandidate,
     generateWorkingDraft,
     retryUnknown,
+    resumeDraftOperation,
+    cancelGeneration,
     canNavigate,
     edit,
     setAuthorInstruction,
@@ -328,6 +403,8 @@ export function createChapterWriterController({
     resetContext,
     dispose,
     actionBusy,
+    editorText,
+    streamingPreview,
     operationStatus,
     operationStatusText,
     operationRetryAvailable,

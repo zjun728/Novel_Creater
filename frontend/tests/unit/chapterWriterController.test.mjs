@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 
 import { createChapterWriterController } from '../../src/application/writer/chapterWriterController.js'
@@ -11,6 +12,10 @@ const SESSION_ID = '22222222-2222-4222-8222-222222222222'
 const OPERATION_ID = '33333333-3333-4333-8333-333333333333'
 const KEY = '44444444-4444-4444-8444-444444444444'
 
+function textHash(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex')
+}
+
 function deferred() {
   let resolve
   let reject
@@ -22,16 +27,23 @@ function deferred() {
 }
 
 function operation(overrides = {}) {
+  const status = overrides.status ?? 'completed'
+  const partialOutput = overrides.partialOutput
+    ?? (status === 'completed' ? '权威生成正文' : '')
+  const partialOutputHash = overrides.partialOutputHash ?? textHash(partialOutput)
   return {
     id: OPERATION_ID,
     projectId: PROJECT_ID,
     chapterSessionId: SESSION_ID,
     operationType: 'generate_new',
-    status: 'completed',
-    lastEventSequence: 2,
-    resultWorkingDraftRevision: 5,
-    resultContentHash: FLUSHED_HASH,
-    failureCode: null,
+    status,
+    lastEventSequence: status === 'completed' || status === 'failed' || status === 'cancelled' ? 2 : 1,
+    partialOutput,
+    partialOutputHash,
+    partialOutputScalars: Array.from(partialOutput).length,
+    resultWorkingDraftRevision: status === 'completed' ? 5 : null,
+    resultContentHash: status === 'completed' ? partialOutputHash : null,
+    failureCode: status === 'failed' ? 'DraftProviderFailed' : null,
     model: Object.freeze({ providerId: 'provider-1', modelName: 'writer-model' }),
     ...overrides,
   }
@@ -42,6 +54,19 @@ function operationController(overrides = {}) {
     autosave: autosave({ revision: 4, hash: HASH }),
     createDraftOperation: async () => operation(),
     readDraftOperation: async () => operation(),
+    listDraftOperationEvents: async (operationId, after) => ({
+      operationId,
+      events: [],
+      lastEventSequence: after,
+      nextAfter: after,
+      hasMore: false,
+    }),
+    cancelDraftOperation: async () => operation({
+      status: 'cancelled',
+      partialOutput: '',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
     reloadWorkspace: async () => ({ workingDraft: { content: '权威生成正文' } }),
     idFactory: () => KEY,
     pollScheduler: () => ({ promise: Promise.resolve(), cancel() {} }),
@@ -116,6 +141,150 @@ test('candidate freeze flushes first and uses post-flush authority with one UUID
   ])
   assert.equal(state.flushCalls, 1)
   assert.equal(state.resetCalls.length, 1)
+})
+
+test('streaming preview owns editorText during generation without editing autosave', async () => {
+  const state = autosave({ text: '作者原正文', revision: 4, hash: HASH })
+  const statusRead = deferred()
+  const statusStarted = deferred()
+  const controller = operationController({
+    autosave: state,
+    createDraftOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listDraftOperationEvents: async (operationId, after) => (after === 1
+      ? {
+          operationId,
+          events: [{
+            sequence: 2,
+            type: 'delta',
+            createdAt: 2,
+            text: '流式新正文',
+            partialOutputHash: textHash('流式新正文'),
+            partialOutputScalars: 5,
+          }],
+          lastEventSequence: 2,
+          nextAfter: 2,
+          hasMore: false,
+        }
+      : {
+          operationId,
+          events: [{ sequence: 3, type: 'completed', createdAt: 3 }],
+          lastEventSequence: 3,
+          nextAfter: 3,
+          hasMore: false,
+        }),
+    readDraftOperation: () => {
+      statusStarted.resolve()
+      return statusRead.promise
+    },
+  })
+  const generation = controller.generateWorkingDraft()
+  await statusStarted.promise
+  assert.equal(controller.streamingPreview.value, '流式新正文')
+  assert.equal(controller.editorText.value, '流式新正文')
+  assert.equal(state.text.value, '作者原正文')
+  assert.equal(state.dirty.value, false)
+
+  statusRead.resolve(operation({
+    status: 'completed',
+    lastEventSequence: 3,
+    partialOutput: '流式新正文',
+    resultWorkingDraftRevision: 5,
+    resultContentHash: textHash('流式新正文'),
+  }))
+  await generation
+  assert.equal(state.resetCalls.length, 1)
+  assert.equal(controller.streamingPreview.value, null)
+  assert.equal(controller.editorText.value, '作者原正文')
+})
+
+test('resumeDraftOperation is GET-only and cancelGeneration settles inside the active generation lock', async () => {
+  const state = autosave({ text: '原正文', revision: 4, hash: HASH })
+  const resumeRead = deferred()
+  let flushes = 0
+  state.flush = async () => {
+    flushes += 1
+    return true
+  }
+  const resumed = operationController({
+    autosave: state,
+    idFactory: () => assert.fail('resume must not create a key'),
+    createDraftOperation: async () => assert.fail('resume must not POST'),
+    readDraftOperation: () => resumeRead.promise,
+  })
+  const resume = resumed.resumeDraftOperation(OPERATION_ID)
+  assert.equal(resumed.actionBusy.value, true)
+  assert.equal(resumed.operationStatusText.value, '正在恢复连接')
+  resumeRead.resolve(operation())
+  await resume
+  assert.equal(flushes, 0)
+  assert.equal(state.resetCalls.length, 1)
+
+  const eventGate = deferred()
+  const eventStarted = deferred()
+  let cancelCalls = 0
+  const cancelled = operationController({
+    autosave: state,
+    createDraftOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listDraftOperationEvents: async (operationId, after) => {
+      eventStarted.resolve()
+      await eventGate.promise
+      return { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+    },
+    cancelDraftOperation: async () => {
+      cancelCalls += 1
+      return operation({
+        status: 'cancelled',
+        lastEventSequence: 2,
+        partialOutput: '已保留',
+        resultWorkingDraftRevision: 5,
+        resultContentHash: textHash('已保留'),
+      })
+    },
+    reloadWorkspace: async () => ({ workingDraft: { content: '已保留' } }),
+  })
+  const generation = cancelled.generateWorkingDraft()
+  await eventStarted.promise
+  const cancellation = cancelled.cancelGeneration()
+  assert.equal(cancelled.operationStatusText.value, '正在取消')
+  await cancellation
+  assert.equal(cancelled.operationStatusText.value, '已停止，已保留生成内容')
+  eventGate.resolve()
+  await generation
+  assert.equal(cancelCalls, 1)
+  assert.equal(state.resetCalls.length, 2)
+})
+
+test('cancelled generation without retained output reports that the working draft did not change', async () => {
+  const eventsStarted = deferred()
+  const eventGate = deferred()
+  let reloads = 0
+  const controller = operationController({
+    createDraftOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listDraftOperationEvents: async (operationId, after) => {
+      eventsStarted.resolve()
+      await eventGate.promise
+      return { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+    },
+    cancelDraftOperation: async () => operation({
+      status: 'cancelled',
+      lastEventSequence: 2,
+      partialOutput: '',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+    reloadWorkspace: async () => {
+      reloads += 1
+      return { workingDraft: { content: '不应加载' } }
+    },
+  })
+
+  const generation = controller.generateWorkingDraft()
+  await eventsStarted.promise
+  await controller.cancelGeneration()
+  assert.equal(controller.operationStatusText.value, '已停止，正文未改变')
+  eventGate.resolve()
+  assert.equal(await generation, null)
+  assert.equal(reloads, 0)
 })
 
 test('generation does not reset when edits return to the flushed text during the request', async () => {
@@ -524,7 +693,7 @@ test('one busy action blocks edit candidate navigation and exposes fixed safe op
 
   const cases = [
     [async () => operation({ status: 'failed', resultWorkingDraftRevision: null, resultContentHash: null, failureCode: 'DraftProviderFailed' }), '生成失败'],
-    [async () => operation({ status: 'expired', lastEventSequence: 1, resultWorkingDraftRevision: null, resultContentHash: null }), '生成结果已失效'],
+      [async () => operation({ status: 'expired', lastEventSequence: 1, resultWorkingDraftRevision: null, resultContentHash: null }), '生成结果已失效'],
     [async () => { throw new ApiError() }, '结果未知，可重试'],
     [async () => { throw new ApiError({ status: 409, message: 'raw provider detail' }) }, '生成失败'],
   ]
@@ -556,6 +725,7 @@ test('unknown retry reuses the coordinator key and context reset clears it synch
     createDraftOperation: async () => { throw new ApiError() },
   })
   await assert.rejects(resetSubject.generateWorkingDraft(), ApiError)
+  assert.equal(resetSubject.operationRetryAvailable.value, true)
   resetSubject.resetContext()
   assert.equal(resetSubject.operationRetryAvailable.value, false)
   await assert.rejects(resetSubject.retryUnknown(), /no unknown/i)
