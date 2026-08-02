@@ -38,6 +38,20 @@ from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
 
 
+class DraftOperationTaskRegistryLifecycleError(RuntimeError):
+    pass
+
+
+async def _close_draft_operation_task_registry(registry) -> bool:
+    try:
+        await registry.aclose()
+    except BaseException:
+        return False
+    finally:
+        registry = None
+    return True
+
+
 async def _close_planning_provider_gateway(gateway) -> bool:
     try:
         await gateway.aclose()
@@ -83,12 +97,15 @@ async def lifespan(app: FastAPI):
     application_error = None
     planning_gateway_start_attempted = False
     outline_gateway_start_attempted = False
+    draft_registry_start_attempted = False
     shutdown_cancellations = 0
     pool_close_transferred = False
     app.state.market_scheduler_shutdown_transfer = None
     try:
         async with connection() as session:
             await verify_schema_version(session)
+        draft_registry_start_attempted = True
+        await chapter_sessions.draft_operation_task_registry.start()
         scheduler_runtime = build_market_scheduler_runtime()
         app.state.market_scheduler_runtime = scheduler_runtime
         scheduler_runtime.start()
@@ -101,6 +118,25 @@ async def lifespan(app: FastAPI):
         application_error = error
     finally:
         cleanup_errors = []
+        if draft_registry_start_attempted:
+            draft_registry_cleanup = asyncio.create_task(
+                _close_draft_operation_task_registry(
+                    chapter_sessions.draft_operation_task_registry
+                ),
+                name="draft-operation-task-registry-close",
+            )
+            draft_registry_close_succeeded, observed_cancellations = (
+                await _settle_independent_cleanup(draft_registry_cleanup)
+            )
+            draft_registry_cleanup = None
+            shutdown_cancellations += observed_cancellations
+            observed_cancellations = 0
+            if not draft_registry_close_succeeded:
+                cleanup_errors.append(
+                    DraftOperationTaskRegistryLifecycleError(
+                        "Draft operation task registry lifecycle failed"
+                    )
+                )
         if outline_gateway_start_attempted:
             outline_cleanup = asyncio.create_task(
                 _close_planning_provider_gateway(

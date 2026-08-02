@@ -15,6 +15,7 @@ from backend.gateways.chapter_outline_provider import (
     ChapterOutlineProviderGateway,
 )
 from backend.routers import chapter_outlines, planning
+from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
 from backend.schema_version import SchemaMismatch
 from backend.tests.support.fakes import FakeAsyncContext
 
@@ -28,6 +29,19 @@ class FakePlanningProviderGateway:
 
     async def aclose(self):
         self.events.append("provider-close")
+
+
+class FakeDraftOperationTaskRegistry:
+    def __init__(self, events=None):
+        self.events = events
+
+    async def start(self):
+        if self.events is not None:
+            self.events.append("draft-registry-start")
+
+    async def aclose(self):
+        if self.events is not None:
+            self.events.append("draft-registry-close")
 
 
 def _assert_no_sensitive_error_graph(
@@ -155,6 +169,11 @@ def install_lifespan_fakes(monkeypatch, verify_error=None):
         "planning_provider_gateway",
         FakePlanningProviderGateway(events),
         raising=False,
+    )
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        FakeDraftOperationTaskRegistry(),
     )
     return events
 
@@ -1057,6 +1076,303 @@ async def test_lifespan_cancellation_during_stop_defers_pool_close(
     assert "close-after-cleaned" not in before_release
     assert transfer is not None
     assert events[-2:] == ["scheduler-cleaned", "close-after-cleaned"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_draft_registry_after_schema_and_drains_it_first(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    registry = FakeDraftOperationTaskRegistry(events)
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    context = main.lifespan(main.app)
+
+    await context.__aenter__()
+    events.append("app-yielded")
+    await context.__aexit__(None, None, None)
+
+    assert events.index("verify") < events.index("draft-registry-start")
+    assert events.index("draft-registry-start") < events.index("scheduler-build")
+    assert events.index("draft-registry-start") < events.index("app-yielded")
+    assert events.index("draft-registry-close") < events.index("provider-close")
+    assert events.index("draft-registry-close") < events.index("scheduler-stop")
+    assert events.index("draft-registry-close") < events.index("close")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_waits_for_named_draft_registry_drain_before_other_cleanup(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    class BlockingRegistry(FakeDraftOperationTaskRegistry):
+        def __init__(self, actual_events):
+            super().__init__(actual_events)
+            self.close_started = asyncio.Event()
+            self.close_release = asyncio.Event()
+            self.close_completed = asyncio.Event()
+            self.close_task_name = None
+
+        async def aclose(self):
+            self.close_task_name = asyncio.current_task().get_name()
+            events.append("draft-registry-close-start")
+            self.close_started.set()
+            await self.close_release.wait()
+            events.append("draft-registry-close-complete")
+            self.close_completed.set()
+
+    registry = BlockingRegistry(events)
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    shutdown = asyncio.create_task(context.__aexit__(None, None, None))
+    try:
+        await asyncio.wait_for(registry.close_started.wait(), timeout=1)
+        assert "provider-close" not in events
+        assert "scheduler-stop" not in events
+        assert "close" not in events
+    finally:
+        registry.close_release.set()
+        await asyncio.wait_for(shutdown, timeout=1)
+
+    assert registry.close_completed.is_set()
+    assert registry.close_task_name == "draft-operation-task-registry-close"
+    assert events.index("draft-registry-close-complete") < events.index(
+        "provider-close"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", (1, 2, 4))
+async def test_repeated_cancellation_cannot_interrupt_draft_registry_drain(
+    monkeypatch,
+    cancel_count,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    class BlockingRegistry(FakeDraftOperationTaskRegistry):
+        def __init__(self):
+            super().__init__(events)
+            self.close_started = asyncio.Event()
+            self.close_release = asyncio.Event()
+            self.close_completed = asyncio.Event()
+
+        async def aclose(self):
+            events.append("draft-registry-close-start")
+            self.close_started.set()
+            await self.close_release.wait()
+            events.append("draft-registry-close-complete")
+            self.close_completed.set()
+
+    registry = BlockingRegistry()
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    shutdown = asyncio.create_task(context.__aexit__(None, None, None))
+    try:
+        await asyncio.wait_for(registry.close_started.wait(), timeout=1)
+        for _ in range(cancel_count):
+            shutdown.cancel()
+            await _next_loop_turn()
+        assert shutdown.done() is False
+        assert "provider-close" not in events
+        assert "close" not in events
+    finally:
+        registry.close_release.set()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await asyncio.wait_for(shutdown, timeout=1)
+
+    assert caught.value.args == ()
+    assert shutdown.cancelling() == cancel_count
+    assert registry.close_completed.is_set()
+    assert events.index("draft-registry-close-complete") < events.index(
+        "provider-close"
+    )
+
+
+@pytest.mark.asyncio
+async def test_draft_registry_start_failure_is_primary_and_still_closes(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    startup_error = RuntimeError("synthetic draft registry startup")
+
+    class StartFailingRegistry(FakeDraftOperationTaskRegistry):
+        async def start(self):
+            events.append("draft-registry-start")
+            raise startup_error
+
+        async def aclose(self):
+            events.append("draft-registry-close")
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        StartFailingRegistry(events),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        await main.lifespan(main.app).__aenter__()
+
+    assert caught.value is startup_error
+    assert "scheduler-build" not in events
+    assert "provider-start" not in events
+    assert events[-2:] == ["draft-registry-close", "close"]
+
+
+@pytest.mark.asyncio
+async def test_draft_registry_close_failure_is_fixed_and_other_cleanup_continues(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    cleanup_secret = "DRAFT_REGISTRY_CLEANUP_SECRET_SENTINEL"
+
+    class CloseFailingRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            events.append("draft-registry-close")
+            raise RuntimeError(cleanup_secret)
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        CloseFailingRegistry(events),
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(RuntimeError) as caught:
+        await context.__aexit__(None, None, None)
+
+    assert caught.value.args == (
+        "Draft operation task registry lifecycle failed",
+    )
+    assert events[-4:] == [
+        "draft-registry-close",
+        "provider-close",
+        "scheduler-stop",
+        "close",
+    ]
+    _assert_no_sensitive_error_graph(caught.value, (cleanup_secret,))
+
+
+@pytest.mark.asyncio
+async def test_application_error_stays_primary_when_draft_registry_close_fails(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    application_error = RuntimeError("synthetic application failure")
+    cleanup_secret = "DRAFT_REGISTRY_AGGREGATION_SECRET_SENTINEL"
+
+    class CloseFailingRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            raise RuntimeError(cleanup_secret)
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        CloseFailingRegistry(events),
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await context.__aexit__(
+            RuntimeError,
+            application_error,
+            application_error.__traceback__,
+        )
+
+    assert caught.value.exceptions[0] is application_error
+    lifecycle_error = caught.value.exceptions[1]
+    assert isinstance(
+        lifecycle_error,
+        main.DraftOperationTaskRegistryLifecycleError,
+    )
+    assert lifecycle_error.args == (
+        "Draft operation task registry lifecycle failed",
+    )
+    _assert_no_sensitive_error_graph(caught.value, (cleanup_secret,))
+
+
+@pytest.mark.asyncio
+async def test_lifespan_restarts_the_same_draft_registry_cleanly(monkeypatch):
+    install_lifespan_fakes(monkeypatch)
+    registry = DraftOperationTaskRegistry()
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+
+    for generation in (1, 2):
+        context = main.lifespan(main.app)
+        await context.__aenter__()
+        completed = asyncio.Event()
+
+        async def worker(_signal):
+            completed.set()
+
+        registry.launch(f"operation-{generation}", worker)
+        await asyncio.wait_for(completed.wait(), timeout=1)
+        await context.__aexit__(None, None, None)
+        assert registry.size == 0
+
+
+@pytest.mark.asyncio
+async def test_lifespan_shutdown_only_cancels_task_without_business_cancel(
+    monkeypatch,
+):
+    install_lifespan_fakes(monkeypatch)
+    registry = DraftOperationTaskRegistry()
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    business_cancels = []
+
+    async def forbidden_business_cancel(*args):
+        business_cancels.append(args)
+
+    monkeypatch.setattr(
+        main.chapter_sessions._draft_operation_service,
+        "cancel",
+        forbidden_business_cancel,
+    )
+    worker_started = asyncio.Event()
+    worker_cancelled = asyncio.Event()
+
+    async def worker(_signal):
+        worker_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            worker_cancelled.set()
+            raise
+
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    registry.launch("operation-active-at-shutdown", worker)
+    await asyncio.wait_for(worker_started.wait(), timeout=1)
+
+    await context.__aexit__(None, None, None)
+
+    assert worker_cancelled.is_set()
+    assert business_cancels == []
+    assert registry.size == 0
 
 
 @pytest.mark.asyncio
