@@ -77,6 +77,23 @@ async def test_stream_flushes_at_256_scalars_and_completes_with_exact_text():
 
 
 @pytest.mark.asyncio
+async def test_stream_flushes_exact_whitespace_at_256_scalars():
+    from backend.services.draft_operation_execution import DraftOperationExecution
+
+    whitespace = " \t" * 128
+    deltas: list[str] = []
+
+    await DraftOperationExecution().run_stream(
+        stream=_chunks(whitespace),
+        on_delta=lambda text: _append(deltas, text),
+        on_heartbeat=lambda: _noop(),
+        on_complete=lambda text: _noop(),
+    )
+
+    assert deltas == [whitespace]
+
+
+@pytest.mark.asyncio
 async def test_stream_flushes_private_buffer_after_one_second_provider_stall():
     from backend.services.draft_operation_execution import DraftOperationExecution
 

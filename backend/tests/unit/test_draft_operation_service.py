@@ -625,8 +625,9 @@ async def test_public_stored_projection_returns_valid_completed_operation():
         "base_working_draft_hash", "input_manifest_json",
         "input_manifest_hash", "provider_id", "model_name_snapshot",
         "result_working_draft_revision", "result_content_hash",
-        "last_event_sequence", "failure_code", "status", "created_at",
-        "updated_at", "completed_at",
+        "last_event_sequence", "failure_code", "partial_output_text",
+        "partial_output_hash", "partial_output_scalars", "heartbeat_at",
+        "status", "created_at", "updated_at", "completed_at", "cancelled_at",
     ),
 )
 async def test_public_stored_projection_requires_every_select_star_column(required_key):
@@ -652,7 +653,7 @@ async def test_public_stored_projection_rejects_coerced_integer_and_time_columns
     for field in (
         "fencing_token", "lease_expires_at", "base_working_draft_revision",
         "result_working_draft_revision", "last_event_sequence", "created_at",
-        "updated_at", "completed_at",
+        "updated_at", "completed_at", "partial_output_scalars", "heartbeat_at",
     ):
         stored = {**completed, field: invalid}
         with pytest.raises(DraftOperationStorageError):
@@ -849,7 +850,7 @@ async def test_same_key_same_fingerprint_replays_without_provider_or_mutable_che
         "id": operation_id, "project_id": PROJECT_ID, "chapter_session_id": SESSION_ID,
         "operation_type": "generate_new", "idempotency_key": KEY,
         "request_fingerprint": _fingerprint(), "active_slot": 1 if status in {"starting", "running"} else None,
-        "fencing_token": 1, "lease_expires_at": clock.now + 500,
+        "fencing_token": 1, "lease_expires_at": clock.now + 30_000,
         "base_working_draft_revision": 1, "base_working_draft_hash": EMPTY_HASH,
         "input_manifest": {}, "input_manifest_hash": canonical_hash({}),
         "provider_id": "provider-writing", "model_name_snapshot": "fake-writing-model",
@@ -857,8 +858,9 @@ async def test_same_key_same_fingerprint_replays_without_provider_or_mutable_che
         "result_content_hash": "2" * 64 if status == "completed" else None,
         "last_event_sequence": 2 if status in {"completed", "failed"} else 1,
         "failure_code": "DraftProviderFailed" if status == "failed" else None,
-        "status": status, "created_at": 1, "updated_at": 1,
-        "completed_at": 1 if status in {"completed", "failed"} else None,
+        "status": status, "created_at": clock.now, "updated_at": clock.now,
+        "heartbeat_at": clock.now,
+        "completed_at": clock.now if status in {"completed", "failed"} else None,
     }
     repo.session["status"] = "finalized"
     repo.draft["revision"] = 99
@@ -895,6 +897,7 @@ async def test_same_key_different_fingerprint_is_fixed_conflict():
 @pytest.mark.asyncio
 async def test_same_key_elapsed_attempt_replays_as_expired_without_provider():
     service, repo, gateway, _, clock = make_service()
+    clock.now = 40_000
     operation_id = str(UUID(int=906))
     repo.operations[operation_id] = {
         "id": operation_id, "project_id": PROJECT_ID, "chapter_session_id": SESSION_ID,
@@ -905,7 +908,8 @@ async def test_same_key_elapsed_attempt_replays_as_expired_without_provider():
         "input_manifest_hash": canonical_hash({}), "provider_id": "provider-writing",
         "model_name_snapshot": "fake-writing-model", "result_working_draft_revision": None,
         "result_content_hash": None, "last_event_sequence": 1, "failure_code": None,
-        "status": "running", "created_at": 1, "updated_at": 1, "completed_at": None,
+        "status": "running", "created_at": 10_000, "updated_at": 10_000,
+        "heartbeat_at": 10_000, "completed_at": None,
     }
     repo.session["active_draft_operation_id"] = operation_id
 
@@ -1017,7 +1021,7 @@ async def test_late_result_after_new_fence_cannot_update_draft():
 
     def fence_late_result():
         operation = next(iter(repo.operations.values()))
-        repo._expire(operation, 10_100)
+        repo._expire(operation, 40_000)
         repo.session["draft_operation_fencing_token"] += 1
 
     gateway = FakeGateway(on_generate=fence_late_result)
@@ -1057,9 +1061,9 @@ async def test_authority_or_base_drift_expires_without_changing_draft(drift):
 
     result = await start_and_finish(service, command())
 
-    expected = "expired" if drift in {"manifest", "base"} else "completed"
+    expected = "running" if drift in {"manifest", "base"} else "completed"
     assert result.status == expected
-    assert repo.draft["revision"] == (1 if expected == "expired" else 2)
+    assert repo.draft["revision"] == (1 if expected == "running" else 2)
     assert bool(repo.revisions) is (expected == "completed")
 
 
@@ -1575,6 +1579,7 @@ async def test_cancel_empty_or_whitespace_partial_preserves_working_draft():
             partial_output_text=partial,
             partial_output_hash=hashlib.sha256(partial.encode()).hexdigest(),
             partial_output_scalars=len(partial),
+            last_event_sequence=2 if partial else 1,
         )
         original = copy.deepcopy(repo.draft)
 
@@ -1638,3 +1643,220 @@ async def test_completion_replaces_partial_snapshot_with_exact_normalized_termin
     assert result.partial_output == repo.draft["content"]
     assert result.partial_output_hash == result.result_content_hash
     assert result.partial_output_scalars == len("exact terminal")
+
+
+@pytest.mark.asyncio
+async def test_internally_owned_default_registry_starts_launches_and_replay_does_not_relaunch():
+    from backend.services.draft_operations import DraftOperationService
+
+    repo = FakeRepository()
+    tracker = TransactionTracker(repo)
+    gateway = FakeGateway(tracker=tracker)
+    service = DraftOperationService(
+        repo,
+        provider_gateway=gateway,
+        transaction_factory=tracker.factory,
+        id_factory=SequentialIds(),
+        clock=FakeClock(),
+    )
+
+    started = await service.start(command())
+    for _ in range(100):
+        stored = repo.operations[started.operation_id]
+        if stored["status"] == "completed":
+            break
+        await asyncio.sleep(0)
+    assert stored["status"] == "completed"
+    replay = await service.start(command())
+    for _ in range(100):
+        if service._registry.size == 0:
+            break
+        await asyncio.sleep(0)
+
+    assert replay.status == "completed"
+    assert len(gateway.calls) == 1
+    assert service._registry.size == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_persists_exact_whitespace_then_cancel_normalizes_to_empty():
+    class StallingWhitespaceGateway(StreamingGateway):
+        def __init__(self):
+            super().__init__(chunks=())
+            self.release = asyncio.Event()
+
+        async def stream(self, *, provider, messages, generation_config):
+            assert self.tracker is None or self.tracker.active == 0
+            self.stream_calls.append((dict(provider), list(messages), dict(generation_config)))
+            yield " " * 256
+            await self.release.wait()
+
+    repo = FakeRepository()
+    repo.provider.update(stream=True, supports_streaming=True)
+    gateway = StallingWhitespaceGateway()
+    service, repo, _, registry, _, _ = make_background_service(
+        repo=repo, gateway=gateway
+    )
+    started = await service.start(command())
+    worker = asyncio.create_task(registry.launches[0][1](asyncio.Event()))
+    for _ in range(100):
+        if repo.operations[started.operation_id]["last_event_sequence"] == 2:
+            break
+        await asyncio.sleep(0)
+
+    persisted = repo.operations[started.operation_id]
+    assert persisted["partial_output_text"] == " " * 256
+    assert persisted["partial_output_scalars"] == 256
+    assert persisted["partial_output_hash"] == hashlib.sha256(b" " * 256).hexdigest()
+    assert persisted["lease_expires_at"] == persisted["heartbeat_at"] + 30_000
+
+    cancelled = await service.cancel(PROJECT_ID, SESSION_ID, started.operation_id)
+    worker.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.partial_output == ""
+    assert cancelled.partial_output_hash == EMPTY_HASH
+    assert cancelled.partial_output_scalars == 0
+    assert repo.draft["revision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_projector_rejects_cancelled_nonempty_revision_not_base_plus_one():
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, registry, _, _ = make_background_service()
+    started = await service.start(command())
+    operation = repo.operations[started.operation_id]
+    partial = "persisted"
+    operation.update(
+        partial_output_text=partial,
+        partial_output_hash=hashlib.sha256(partial.encode()).hexdigest(),
+        partial_output_scalars=len(partial),
+        last_event_sequence=2,
+    )
+    await service.cancel(PROJECT_ID, SESSION_ID, started.operation_id)
+    stored = _stored_attempt(operation)
+    stored["result_working_draft_revision"] = 3
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
+async def test_projector_reserves_sequence_2048_for_nonexpired_terminals():
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _, clock = make_background_service()
+    started = await service.start(command())
+    stored = _stored_attempt(repo.operations[started.operation_id])
+    stored.update(
+        status="expired",
+        active_slot=None,
+        last_event_sequence=2048,
+        updated_at=clock.now + 30_000,
+        completed_at=clock.now + 30_000,
+    )
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "lease-duration",
+        "running-heartbeat-update",
+        "terminal-heartbeat-after-update",
+        "terminal-after-lease",
+        "expired-before-lease",
+    ),
+)
+async def test_projector_enforces_exact_timing_correlations(corruption):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _, clock = make_background_service()
+    started = await service.start(command())
+    stored = _stored_attempt(repo.operations[started.operation_id])
+    if corruption == "lease-duration":
+        stored["lease_expires_at"] += 1
+    elif corruption == "running-heartbeat-update":
+        stored["heartbeat_at"] += 1
+    elif corruption == "terminal-heartbeat-after-update":
+        stored.update(
+            status="failed",
+            active_slot=None,
+            last_event_sequence=2,
+            failure_code="DraftProviderFailed",
+            completed_at=clock.now + 1,
+            updated_at=clock.now + 1,
+            heartbeat_at=clock.now + 2,
+            lease_expires_at=clock.now + 30_002,
+        )
+    elif corruption == "terminal-after-lease":
+        stored.update(
+            status="failed",
+            active_slot=None,
+            last_event_sequence=2,
+            failure_code="DraftProviderFailed",
+            completed_at=clock.now + 30_000,
+            updated_at=clock.now + 30_000,
+        )
+    else:
+        stored.update(
+            status="expired",
+            active_slot=None,
+            completed_at=clock.now + 29_999,
+            updated_at=clock.now + 29_999,
+        )
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    ("starting-sequence", "starting-partial", "running-seq1-partial"),
+)
+async def test_projector_enforces_initial_state_correlations(state):
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    service, repo, _, _, _, _ = make_background_service()
+    started = await service.start(command())
+    stored = _stored_attempt(repo.operations[started.operation_id])
+    if state.startswith("starting"):
+        stored["status"] = "starting"
+    if state == "starting-sequence":
+        stored["last_event_sequence"] = 2
+    else:
+        partial = "unexpected"
+        stored.update(
+            partial_output_text=partial,
+            partial_output_hash=hashlib.sha256(partial.encode()).hexdigest(),
+            partial_output_scalars=len(partial),
+        )
+
+    with pytest.raises(DraftOperationStorageError):
+        service.project_stored_result(stored)
+
+
+@pytest.mark.asyncio
+async def test_projector_accepts_running_heartbeat_sequence_with_empty_partial():
+    service, repo, _, _, _, clock = make_background_service()
+    started = await service.start(command())
+    stored = _stored_attempt(repo.operations[started.operation_id])
+    stored.update(
+        last_event_sequence=2,
+        heartbeat_at=clock.now + 10_000,
+        updated_at=clock.now + 10_000,
+        lease_expires_at=clock.now + 40_000,
+    )
+
+    projected = service.project_stored_result(stored)
+
+    assert projected.status == "running"
+    assert projected.last_event_sequence == 2
+    assert projected.partial_output == ""

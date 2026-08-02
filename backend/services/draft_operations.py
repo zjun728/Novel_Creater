@@ -185,6 +185,7 @@ class DraftOperationService:
     ):
         self.repository = repository
         self._gateway = provider_gateway or ChapterDraftProviderGateway()
+        self._owns_registry = task_registry is None
         self._registry = task_registry or DraftOperationTaskRegistry()
         self._execution = execution or DraftOperationExecution(clock=clock)
         self._transaction = transaction_factory
@@ -238,6 +239,8 @@ class DraftOperationService:
         if replay is not None:
             return replay
         try:
+            if self._owns_registry:
+                await self._registry.start()
             self._registry.launch(
                 context["attempt"]["id"],
                 lambda cancellation: self._run_worker(context, cancellation),
@@ -259,6 +262,27 @@ class DraftOperationService:
             raise ValueError
         return content
 
+    @staticmethod
+    def _validated_provider_partial(context, cumulative):
+        if not isinstance(cumulative, str):
+            raise ValueError
+        try:
+            cumulative.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError from None
+        if len(cumulative) > DRAFT_OPERATION_CONTENT_MAX_SCALARS:
+            raise ValueError
+        secrets = context["provider_secrets"]
+        if (
+            (
+                cumulative.strip()
+                and provider_response_text_contains_secret(cumulative, secrets)
+            )
+            or provider_response_value_contains_secret(cumulative, secrets)
+        ):
+            raise ValueError
+        return cumulative
+
     async def _run_worker(self, context, cancellation) -> None:
         del cancellation  # Task cancellation is authoritative; the signal is advisory.
         provider = dict(context["gateway_provider"])
@@ -266,9 +290,7 @@ class DraftOperationService:
         config = dict(context["gateway_config"])
 
         async def on_delta(cumulative: str) -> None:
-            validated = self._validated_provider_content(
-                context, cumulative, strip=False
-            )
+            validated = self._validated_provider_partial(context, cumulative)
             if validated != cumulative:
                 raise ValueError
             await self._append_delta(context, cumulative)
@@ -803,16 +825,7 @@ class DraftOperationService:
             locked["draft"], context["command"]
         ):
             return None
-        if not await self.repository.expire_draft_operation_for_drift(
-            session,
-            context["command"].project_id,
-            context["command"].chapter_session_id,
-            attempt["id"],
-            int(attempt["fencing_token"]),
-            now,
-        ):
-            raise DraftOperationStorageError("could not expire drifted operation")
-        return self._project_expired(attempt, now)
+        return self.project_stored_result(attempt)
 
     async def read(
         self, project_id: str, session_id: str, operation_id: str
@@ -1401,6 +1414,7 @@ class DraftOperationService:
             "result_working_draft_revision": None,
             "result_content_hash": None,
             "failure_code": None,
+            "updated_at": completed_at,
             "completed_at": completed_at,
             "cancelled_at": None,
         })
@@ -1463,6 +1477,7 @@ class DraftOperationService:
                 or lease_expires_at < created_at
                 or heartbeat_at < created_at
                 or partial_output_scalars < 0
+                or lease_expires_at != heartbeat_at + DRAFT_OPERATION_LEASE_MS
             ):
                 raise ValueError
             if not isinstance(partial_output, str):
@@ -1512,6 +1527,10 @@ class DraftOperationService:
                     and last_event_sequence > MAX_DRAFT_OPERATION_EVENTS - 1
                 )
                 or (
+                    status == "expired"
+                    and last_event_sequence > MAX_DRAFT_OPERATION_EVENTS - 1
+                )
+                or (
                     status in {"completed", "failed", "cancelled"}
                     and last_event_sequence < 2
                 )
@@ -1532,12 +1551,46 @@ class DraftOperationService:
                     and completed_at is not None
                 )
                 or (
+                    status in {"starting", "running"}
+                    and (
+                        heartbeat_at != updated_at
+                        or updated_at >= lease_expires_at
+                    )
+                )
+                or (
+                    status in {"completed", "failed", "cancelled"}
+                    and (
+                        heartbeat_at > updated_at
+                        or updated_at >= lease_expires_at
+                    )
+                )
+                or (
+                    status == "expired"
+                    and (
+                        lease_expires_at > updated_at
+                        or lease_expires_at > completed_at
+                    )
+                )
+                or (
                     status in {"completed", "failed", "cancelled", "expired"}
                     and (
                         type(completed_at) is not int
                         or completed_at < updated_at
                     )
                 )
+            ):
+                raise ValueError
+            if status == "starting" and (
+                last_event_sequence != 1
+                or partial_output
+                or partial_output_hash != _EMPTY_OUTPUT_HASH
+                or partial_output_scalars != 0
+            ):
+                raise ValueError
+            if status == "running" and last_event_sequence == 1 and (
+                partial_output
+                or partial_output_hash != _EMPTY_OUTPUT_HASH
+                or partial_output_scalars != 0
             ):
                 raise ValueError
             if status == "completed":
@@ -1562,6 +1615,7 @@ class DraftOperationService:
                         bool(partial_output)
                         and (
                             result_revision is None
+                            or result_revision != base_revision + 1
                             or result_hash != partial_output_hash
                         )
                     )
