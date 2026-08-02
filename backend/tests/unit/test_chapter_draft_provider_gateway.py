@@ -412,6 +412,63 @@ async def test_stream_consumer_aclose_closes_response_and_client_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("buffering", ("same-chunk", "next-immediate-chunk"))
+async def test_stream_real_loop_rejects_buffered_text_after_absolute_deadline(
+    monkeypatch,
+    buffering,
+):
+    import backend.gateways.chapter_draft_provider as provider_module
+
+    first = b'data: {"choices":[{"index":0,"delta":{"content":"one"}}]}\n\n'
+    second = b'data: {"choices":[{"index":0,"delta":{"content":"two"}}]}\n\n'
+    done = b"data: [DONE]\n\n"
+    chunks = [first + second + done] if buffering == "same-chunk" else [first, second + done]
+
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        def __init__(self, stream):
+            self.stream = stream
+            self.close_calls = 0
+
+        async def handle_async_request(self, request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=self.stream,
+                request=request,
+            )
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    monkeypatch.setattr(
+        provider_module,
+        "_CHAPTER_DRAFT_STREAM_TIMEOUT_SECONDS",
+        0.05,
+        raising=False,
+    )
+    response_stream = ChunkStream(chunks)
+    transport = RecordingTransport(response_stream)
+    gateway = ChapterDraftProviderGateway(transport=transport)
+    iterator = gateway.stream(
+        provider=_provider(),
+        messages=({"role": "user", "content": "facts"},),
+        generation_config={"temperature": 0.2, "maxOutputTokens": 4500},
+    )
+
+    try:
+        assert await anext(iterator) == "one"
+        await asyncio.sleep(0.08)
+        with pytest.raises(ChapterDraftProviderTransportError) as caught:
+            await anext(iterator)
+    finally:
+        await iterator.aclose()
+
+    assert caught.value.__cause__ is None
+    assert response_stream.close_calls == 1
+    assert transport.close_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_maps_remote_failures_to_safe_existing_gateway_errors():
     secret = "mysql://user:REMOTE_PASSWORD@provider.invalid/database"
     gateway = ChapterDraftProviderGateway(

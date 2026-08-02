@@ -8,6 +8,7 @@ import httpx
 
 
 MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES = 1024 * 1024
+_CHAPTER_DRAFT_STREAM_TIMEOUT_SECONDS = 1200
 
 
 class ChapterDraftProviderError(RuntimeError):
@@ -44,6 +45,14 @@ async def _close_stream_resources(
         except BaseException:
             failed = True
     return failed, cancellation
+
+
+def _raise_if_stream_deadline_elapsed(
+    loop: asyncio.AbstractEventLoop,
+    deadline: float,
+) -> None:
+    if loop.time() >= deadline:
+        raise TimeoutError
 
 
 class ChapterDraftProviderGateway:
@@ -169,7 +178,8 @@ class ChapterDraftProviderGateway:
             "Accept": "text/event-stream",
             "Accept-Encoding": "identity",
         }
-        deadline = asyncio.get_running_loop().time() + 1200
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _CHAPTER_DRAFT_STREAM_TIMEOUT_SECONDS
         from backend.gateways.openai_sse import OpenAITextSSEParser
 
         parser = OpenAITextSSEParser()
@@ -188,16 +198,21 @@ class ChapterDraftProviderGateway:
                 headers=headers,
                 json=body,
             )
+            _raise_if_stream_deadline_elapsed(loop, deadline)
             async with asyncio.timeout_at(deadline):
                 response = await client.send(request, stream=True)
+            _raise_if_stream_deadline_elapsed(loop, deadline)
             if response.is_error:
                 raise ChapterDraftProviderHTTPError("provider request failed")
             self._validate_stream_headers(response)
+            _raise_if_stream_deadline_elapsed(loop, deadline)
             raw_iterator = response.aiter_raw().__aiter__()
             while True:
                 try:
+                    _raise_if_stream_deadline_elapsed(loop, deadline)
                     async with asyncio.timeout_at(deadline):
                         chunk = await anext(raw_iterator)
+                    _raise_if_stream_deadline_elapsed(loop, deadline)
                 except StopAsyncIteration:
                     break
                 raw_bytes += len(chunk)
@@ -206,9 +221,13 @@ class ChapterDraftProviderGateway:
                         "provider response was invalid"
                     )
                 texts = parser.feed(chunk)
+                _raise_if_stream_deadline_elapsed(loop, deadline)
                 for text in texts:
+                    _raise_if_stream_deadline_elapsed(loop, deadline)
                     yield text
+            _raise_if_stream_deadline_elapsed(loop, deadline)
             parser.finish()
+            _raise_if_stream_deadline_elapsed(loop, deadline)
         except BaseException as caught:
             failure = caught
 
