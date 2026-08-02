@@ -5,7 +5,7 @@ import hashlib
 import re
 import time
 from typing import Any, Mapping
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from backend.domain.drafts import (
     ChapterSessionView,
@@ -39,6 +39,15 @@ class ChapterSessionPreconditionFailed(ChapterSessionError):
 
 class ChapterSessionRequestInvalid(ChapterSessionError):
     pass
+
+
+def _canonical_uuid(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        return str(UUID(value)) == value
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -494,6 +503,16 @@ class ChapterSessionService:
         )
         if draft is None:
             raise ChapterSessionPreconditionFailed("working draft is required")
+        active_draft_operation_id = chapter_session.get(
+            "active_draft_operation_id"
+        )
+        if (
+            active_draft_operation_id is not None
+            and not _canonical_uuid(active_draft_operation_id)
+        ):
+            raise ChapterSessionConflict(
+                "active draft operation authority is invalid"
+            )
         return ChapterWorkspace(
             project_id=chapter_session["project_id"],
             session=self._session_view(chapter_session),
@@ -501,6 +520,7 @@ class ChapterSessionService:
             candidates=tuple(
                 self._candidate_view(row, authority) for row in candidates
             ),
+            active_draft_operation_id=active_draft_operation_id,
         )
 
     def _validate_create_command(self, command: CreateChapterSession) -> None:

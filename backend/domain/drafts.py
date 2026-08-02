@@ -61,3 +61,4 @@ class ChapterWorkspace:
     session: ChapterSessionView
     working_draft: WorkingDraftView
     candidates: tuple[DraftCandidateView, ...]
+    active_draft_operation_id: str | None = None

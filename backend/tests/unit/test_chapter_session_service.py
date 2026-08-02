@@ -400,14 +400,40 @@ async def test_get_chapter_session_reads_exact_chapter_and_never_latest():
         connection_factory=tx_factory,
     )
     created = await service.create_session(create_command())
+    repo.sessions[0]["active_draft_operation_id"] = (
+        "30000000-0000-0000-0000-000000000001"
+    )
     repo.chapter_reads.clear()
 
     chapter_one = await service.get("p1", 1)
     chapter_two = await service.get("p1", 2)
 
     assert chapter_one.session.id == created.session.id
+    assert chapter_one.active_draft_operation_id == (
+        "30000000-0000-0000-0000-000000000001"
+    )
     assert chapter_two is None
     assert repo.chapter_reads == [("p1", 1), ("p1", 2)]
+
+
+@pytest.mark.asyncio
+async def test_workspace_rejects_malformed_active_draft_operation_authority():
+    from backend.services.chapter_sessions import (
+        ChapterSessionConflict,
+        ChapterSessionService,
+    )
+
+    repo = FakeChapterRepository()
+    service = ChapterSessionService(
+        repo,
+        transaction_factory=tx_factory,
+        connection_factory=tx_factory,
+    )
+    await service.create_session(create_command())
+    repo.sessions[0]["active_draft_operation_id"] = "not-a-uuid"
+
+    with pytest.raises(ChapterSessionConflict):
+        await service.get("p1", 1)
 
 
 @pytest.mark.asyncio

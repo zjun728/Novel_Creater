@@ -14,6 +14,7 @@ from backend.security.redaction import install_error_handlers
 
 
 FREEZE_KEY = "11111111-1111-1111-1111-111111111111"
+ACTIVE_OPERATION_ID = "30000000-0000-0000-0000-000000000001"
 
 
 class FakeChapterSessionService:
@@ -23,6 +24,7 @@ class FakeChapterSessionService:
         self.candidate_commands = []
         self.candidates = ()
         self.create_error = None
+        self.active_draft_operation_id = ACTIVE_OPERATION_ID
         self.session = ChapterSessionView(
             id="session-1",
             project_id="p1",
@@ -56,6 +58,7 @@ class FakeChapterSessionService:
         return ChapterWorkspace(
             project_id="p1", session=self.session,
             working_draft=self.draft, candidates=self.candidates,
+            active_draft_operation_id=self.active_draft_operation_id,
         )
 
     async def get(self, project_id, chapter_number):
@@ -153,6 +156,7 @@ def test_chapter_session_routes_keep_working_draft_and_candidate_separate():
         "status": "drafting",
     }
     assert created.json()["workingDraft"]["content"] == ""
+    assert created.json()["activeDraftOperationId"] == ACTIVE_OPERATION_ID
     assert created.json()["candidates"] == []
     assert saved.json()["workingDraft"]["revision"] == 2
     assert saved.json()["candidates"] == []
@@ -174,6 +178,16 @@ def test_chapter_session_get_reads_only_the_requested_chapter():
     assert chapter_one.json()["session"]["chapterNum"] == 1
     assert chapter_two.status_code == 200
     assert chapter_two.json() is None
+
+
+def test_chapter_session_workspace_rejects_malformed_active_operation_authority():
+    client, service = make_client()
+    service.active_draft_operation_id = "not-a-canonical-operation-id"
+
+    response = client.get("/api/projects/p1/chapter-sessions/1")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "ChapterSessionConflict"
 
 
 def test_create_chapter_session_rejects_url_body_chapter_mismatch():

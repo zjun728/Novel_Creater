@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Literal
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from backend.database import connection, transaction
 from backend.http_errors import PublicDomainError
 from backend.repositories.chapter_sessions import ChapterSessionRepository
+from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
 from backend.services.draft_operations import (
     DraftOperationConflict,
     DraftOperationIdempotencyConflict,
@@ -41,14 +43,18 @@ _service = ChapterSessionService(
     connection_factory=connection,
 )
 _draft_operation_repository = ChapterSessionRepository()
+draft_operation_task_registry = DraftOperationTaskRegistry()
 _draft_operation_service = DraftOperationService(
-    _draft_operation_repository, transaction_factory=transaction,
+    _draft_operation_repository,
+    task_registry=draft_operation_task_registry,
+    transaction_factory=transaction,
 )
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_DRAFT_FAILURE_CODES = frozenset({
     "DraftProviderFailed", "DraftProviderResultInvalid",
 })
 _DRAFT_OPERATION_CREATE_BODY_MAX_BYTES = 12 * 1024
+_DRAFT_OPERATION_CANCEL_BODY_MAX_BYTES = 1024
 _DRAFT_OPERATION_EVENT_CURSOR_MAX = 2_147_483_647
 _DRAFT_OPERATION_CONTENT_TYPE = re.compile(
     r'^[ \t]*application/json[ \t]*(?:;[ \t]*charset[ \t]*=[ \t]*(?:"utf-8"|utf-8)[ \t]*)?$',
@@ -203,6 +209,9 @@ def _public_draft_operation(result: DraftOperationResult):
         "operationType": result.operation_type,
         "status": result.status,
         "lastEventSequence": result.last_event_sequence,
+        "partialOutput": result.partial_output,
+        "partialOutputHash": result.partial_output_hash,
+        "partialOutputScalars": result.partial_output_scalars,
         "resultWorkingDraftRevision": result.result_working_draft_revision,
         "resultContentHash": result.result_content_hash,
         "failureCode": result.failure_code,
@@ -228,7 +237,9 @@ def _require_closed_draft_operation(
         result_revision = result.result_working_draft_revision
         result_hash = result.result_content_hash
         failure_code = result.failure_code
-        expected_sequence = 2 if status in {"completed", "failed"} else 1
+        partial = result.partial_output
+        partial_hash = result.partial_output_hash
+        partial_scalars = result.partial_output_scalars
         if (
             not _canonical_uuid(result.operation_id)
             or not _canonical_uuid(result.project_id)
@@ -240,16 +251,44 @@ def _require_closed_draft_operation(
                 and result.operation_id != operation_id
             )
             or result.operation_type != "generate_new"
-            or status not in {"starting", "running", "completed", "failed", "expired"}
+            or status not in {
+                "starting", "running", "completed", "failed", "cancelled", "expired"
+            }
             or isinstance(result.last_event_sequence, bool)
             or not isinstance(result.last_event_sequence, int)
-            or result.last_event_sequence != expected_sequence
+            or not 1 <= result.last_event_sequence <= 2048
+            or (
+                status in {"starting", "running", "expired"}
+                and result.last_event_sequence > 2047
+            )
+            or (
+                status in {"completed", "failed", "cancelled"}
+                and result.last_event_sequence < 2
+            )
+            or not isinstance(partial, str)
+            or len(partial) > 100_000
+            or not isinstance(partial_hash, str)
+            or _HASH.fullmatch(partial_hash) is None
+            or hashlib.sha256(partial.encode("utf-8")).hexdigest() != partial_hash
+            or isinstance(partial_scalars, bool)
+            or not isinstance(partial_scalars, int)
+            or partial_scalars != len(partial)
             or not isinstance(result.provider_id, str)
             or not result.provider_id.strip()
             or not isinstance(result.model_name, str)
             or not result.model_name.strip()
         ):
             raise ValueError
+        if status == "starting" and (
+            result.last_event_sequence != 1 or partial or partial_scalars != 0
+        ):
+            raise ValueError
+        if status == "running" and result.last_event_sequence == 1 and (
+            partial or partial_scalars != 0
+        ):
+            raise ValueError
+        result.provider_id.encode("utf-8")
+        result.model_name.encode("utf-8")
         if status == "completed":
             if (
                 isinstance(result_revision, bool)
@@ -262,6 +301,9 @@ def _require_closed_draft_operation(
                 or not isinstance(result_hash, str)
                 or _HASH.fullmatch(result_hash) is None
                 or failure_code is not None
+                or not partial
+                or partial != partial.strip()
+                or result_hash != partial_hash
             ):
                 raise ValueError
         elif status == "failed":
@@ -271,32 +313,35 @@ def _require_closed_draft_operation(
                 or failure_code not in _SAFE_DRAFT_FAILURE_CODES
             ):
                 raise ValueError
-        elif result_revision is not None or result_hash is not None or failure_code is not None:
+        elif status == "cancelled":
+            if (
+                failure_code is not None
+                or partial != partial.strip()
+                or (bool(partial) != (result_revision is not None))
+                or (result_revision is None) != (result_hash is None)
+                or (
+                    partial
+                    and (
+                        type(result_revision) is not int
+                        or result_revision < 1
+                        or (
+                            expected_base_revision is not None
+                            and result_revision != expected_base_revision + 1
+                        )
+                    )
+                )
+                or (result_hash is not None and result_hash != partial_hash)
+            ):
+                raise ValueError
+        elif (
+            result_revision is not None
+            or result_hash is not None
+            or failure_code is not None
+        ):
             raise ValueError
         return result
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, UnicodeError):
         raise error_type() from None
-
-
-def _stored_draft_operation_for_path(
-    row: object,
-    project_id: str,
-    chapter_session_id: str,
-    operation_id: str,
-) -> DraftOperationResult:
-    if not isinstance(row, dict) or "active_slot" not in row:
-        raise DraftOperationNotFound()
-    try:
-        result = DraftOperationService.project_stored_result(row)
-    except DraftOperationStorageError:
-        raise DraftOperationNotFound() from None
-    return _require_closed_draft_operation(
-        result,
-        project_id,
-        chapter_session_id,
-        operation_id,
-        DraftOperationNotFound,
-    )
 
 
 def _reject_duplicate_json_members(pairs):
@@ -391,6 +436,37 @@ async def _read_draft_operation_create_body(request: Request):
         raise DraftOperationRequestInvalid() from None
 
 
+async def _read_empty_cancel_body(request: Request) -> None:
+    content_types = [
+        value
+        for name, value in request.scope.get("headers", ())
+        if name.lower() == b"content-type"
+    ]
+    if len(content_types) > 1:
+        raise DraftOperationRequestInvalid()
+    try:
+        chunks = []
+        byte_count = 0
+        async for chunk in request.stream():
+            byte_count += len(chunk)
+            if byte_count > _DRAFT_OPERATION_CANCEL_BODY_MAX_BYTES:
+                raise ValueError
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        if not content_types:
+            if raw:
+                raise ValueError
+            return
+        if not _has_draft_operation_json_content_type(request) or not raw:
+            raise ValueError
+        decoded = raw.decode("utf-8")
+        _require_json_nesting_within_limit(decoded)
+        if _strict_json_object(decoded) != {}:
+            raise ValueError
+    except (UnicodeDecodeError, ValueError):
+        raise DraftOperationRequestInvalid() from None
+
+
 def _public_draft_operation_events(
     rows: object,
     result: DraftOperationResult,
@@ -401,13 +477,32 @@ def _public_draft_operation_events(
     try:
         if not isinstance(rows, list) or len(rows) > 100:
             raise ValueError
-        expected_sequences = list(range(
-            after_sequence + 1,
-            result.last_event_sequence + 1,
-        ))
-        if len(rows) != len(expected_sequences):
+        expected_count = min(
+            100,
+            max(0, result.last_event_sequence - after_sequence),
+        )
+        if len(rows) < expected_count:
             raise ValueError
+        for offset, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                raise ValueError
+            sequence = row["sequence_num"]
+            created_at = row["created_at"]
+            if (
+                not _canonical_uuid(row["id"])
+                or row["project_id"] != project_id
+                or row["draft_operation_id"] != operation_id
+                or type(sequence) is not int
+                or sequence != after_sequence + offset
+                or type(created_at) is not int
+                or created_at < 0
+            ):
+                raise ValueError
+        rows = rows[:expected_count]
+        expected_sequences = range(after_sequence + 1, after_sequence + 1 + len(rows))
         events = []
+        known_partial = "" if after_sequence == 0 else None
+        last_partial_scalars = None
         for expected_sequence, row in zip(expected_sequences, rows, strict=True):
             if not isinstance(row, dict):
                 raise ValueError
@@ -432,11 +527,61 @@ def _public_draft_operation_events(
                 "type": event_type,
                 "createdAt": created_at,
             }
+            if sequence > result.last_event_sequence:
+                raise ValueError
+            if (
+                sequence == result.last_event_sequence
+                and result.status in {"completed", "failed", "cancelled"}
+                and event_type != result.status
+            ):
+                raise ValueError
             if sequence == 1:
                 if event_type != "started" or payload is not None:
                     raise ValueError
-            elif result.status == "completed":
-                if event_type != "completed":
+            elif event_type == "delta":
+                closed = _strict_json_object(payload)
+                text = closed.get("text")
+                output_hash = closed.get("partialOutputHash")
+                scalars = closed.get("partialOutputScalars")
+                if (
+                    set(closed) != {"text", "partialOutputHash", "partialOutputScalars"}
+                    or not isinstance(text, str)
+                    or not text
+                    or len(text) > 100_000
+                    or not isinstance(output_hash, str)
+                    or _HASH.fullmatch(output_hash) is None
+                    or type(scalars) is not int
+                    or not len(text) <= scalars <= 100_000
+                    or (
+                        last_partial_scalars is not None
+                        and scalars != last_partial_scalars + len(text)
+                    )
+                ):
+                    raise ValueError
+                text.encode("utf-8")
+                if known_partial is not None:
+                    known_partial += text
+                    if (
+                        len(known_partial) != scalars
+                        or hashlib.sha256(
+                            known_partial.encode("utf-8")
+                        ).hexdigest() != output_hash
+                    ):
+                        raise ValueError
+                last_partial_scalars = scalars
+                event.update(
+                    text=text,
+                    partialOutputHash=output_hash,
+                    partialOutputScalars=scalars,
+                )
+            elif event_type == "heartbeat":
+                if payload is not None:
+                    raise ValueError
+            elif event_type == "completed":
+                if (
+                    result.status != "completed"
+                    or sequence != result.last_event_sequence
+                ):
                     raise ValueError
                 if _strict_json_object(payload) != {
                     "resultWorkingDraftRevision": (
@@ -449,12 +594,31 @@ def _public_draft_operation_events(
                     result.result_working_draft_revision
                 )
                 event["resultContentHash"] = result.result_content_hash
-            elif result.status == "failed":
-                if event_type != "failed" or _strict_json_object(payload) != {
-                    "failureCode": result.failure_code,
-                }:
+            elif event_type == "failed":
+                if (
+                    result.status != "failed"
+                    or sequence != result.last_event_sequence
+                    or _strict_json_object(payload)
+                    != {"failureCode": result.failure_code}
+                ):
                     raise ValueError
                 event["failureCode"] = result.failure_code
+            elif event_type == "cancelled":
+                if (
+                    result.status != "cancelled"
+                    or sequence != result.last_event_sequence
+                    or _strict_json_object(payload) != {
+                        "resultWorkingDraftRevision": (
+                            result.result_working_draft_revision
+                        ),
+                        "resultContentHash": result.result_content_hash,
+                    }
+                ):
+                    raise ValueError
+                event["resultWorkingDraftRevision"] = (
+                    result.result_working_draft_revision
+                )
+                event["resultContentHash"] = result.result_content_hash
             else:
                 raise ValueError
             events.append(event)
@@ -464,8 +628,15 @@ def _public_draft_operation_events(
 
 
 def _public_workspace(workspace):
+    active_draft_operation_id = workspace.active_draft_operation_id
+    if (
+        active_draft_operation_id is not None
+        and not _canonical_uuid(active_draft_operation_id)
+    ):
+        raise ChapterSessionStateConflict()
     return {
         "projectId": workspace.project_id,
+        "activeDraftOperationId": active_draft_operation_id,
         "session": {
             "id": workspace.session.id,
             "projectId": workspace.session.project_id,
@@ -619,19 +790,13 @@ async def get_draft_operation(
     pid: str,
     session_id: str,
     operation_id: str,
-    repository=Depends(get_draft_operation_repository),
-    transaction_factory=Depends(get_draft_operation_transaction_factory),
+    service=Depends(get_draft_operation_service),
 ):
     try:
         _require_operation_identity(pid, session_id, operation_id)
-        async with transaction_factory() as session:
-            row = await repository.read_draft_operation(
-                session, pid, session_id, operation_id,
-            )
-        if row is None:
-            raise DraftOperationNotFound()
-        result = _stored_draft_operation_for_path(
-            row, pid, session_id, operation_id,
+        result = await service.read(pid, session_id, operation_id)
+        result = _require_closed_draft_operation(
+            result, pid, session_id, operation_id, DraftOperationNotFound,
         )
         return _public_draft_operation(result)
     except Exception as error:
@@ -647,6 +812,7 @@ async def list_draft_operation_events(
     session_id: str,
     operation_id: str,
     after: str = Query("0"),
+    service=Depends(get_draft_operation_service),
     repository=Depends(get_draft_operation_repository),
     transaction_factory=Depends(get_draft_operation_transaction_factory),
 ):
@@ -660,24 +826,57 @@ async def list_draft_operation_events(
         after_sequence = int(after)
         if after_sequence > _DRAFT_OPERATION_EVENT_CURSOR_MAX:
             raise DraftOperationRequestInvalid()
-        async with transaction_factory() as session:
-            row = await repository.read_draft_operation(
-                session, pid, session_id, operation_id,
-            )
-            if row is None:
-                raise DraftOperationNotFound()
-            result = _stored_draft_operation_for_path(
-                row, pid, session_id, operation_id,
-            )
-            events = await repository.list_draft_operation_events(
-                session, operation_id, after_sequence, 100,
-            )
+        result = await service.read(pid, session_id, operation_id)
+        result = _require_closed_draft_operation(
+            result, pid, session_id, operation_id, DraftOperationNotFound,
+        )
+        try:
+            async with transaction_factory() as session:
+                events = await repository.list_draft_operation_events(
+                    session, operation_id, after_sequence, 100,
+                )
+        except DraftOperationStorageError:
+            raise
+        except Exception:
+            raise DraftOperationStorageError(
+                "draft operation event read failed"
+            ) from None
+        public_events = _public_draft_operation_events(
+            events, result, pid, operation_id, after_sequence,
+        )
+        next_after = (
+            public_events[-1]["sequence"] if public_events else after_sequence
+        )
         return {
             "operationId": operation_id,
-            "events": _public_draft_operation_events(
-                events, result, pid, operation_id, after_sequence,
-            ),
+            "events": public_events,
+            "lastEventSequence": result.last_event_sequence,
+            "nextAfter": next_after,
+            "hasMore": next_after < result.last_event_sequence,
         }
+    except Exception as error:
+        _raise_public(error)
+
+
+@router.post(
+    "/projects/{pid}/chapter-sessions/{session_id}/draft-operations/"
+    "{operation_id}/cancel"
+)
+async def cancel_draft_operation(
+    pid: str,
+    session_id: str,
+    operation_id: str,
+    request: Request,
+    service=Depends(get_draft_operation_service),
+):
+    try:
+        _require_operation_identity(pid, session_id, operation_id)
+        await _read_empty_cancel_body(request)
+        result = await service.cancel(pid, session_id, operation_id)
+        result = _require_closed_draft_operation(
+            result, pid, session_id, operation_id, DraftOperationNotFound,
+        )
+        return _public_draft_operation(result)
     except Exception as error:
         _raise_public(error)
 

@@ -561,12 +561,22 @@ class DraftOperationService:
                 raise _DraftOperationResultInvalid(
                     "draft operation event budget exhausted"
                 )
+            previous_partial = attempt["partial_output_text"]
+            if (
+                not cumulative.startswith(previous_partial)
+                or len(cumulative) <= len(previous_partial)
+            ):
+                raise _DraftOperationResultInvalid(
+                    "draft operation partial is not append-only"
+                )
+            delta_text = cumulative[len(previous_partial):]
             row = {
                 **self._stream_guard_row(context, attempt, sequence, now),
                 "partial_output_text": cumulative,
                 "partial_output_hash": output_hash,
                 "partial_output_scalars": len(cumulative),
                 "closed_payload": {
+                    "text": delta_text,
                     "partialOutputHash": output_hash,
                     "partialOutputScalars": len(cumulative),
                 },

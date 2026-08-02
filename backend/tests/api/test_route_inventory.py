@@ -129,6 +129,7 @@ APPROVED_FORMAL_ROUTES = {
     ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations"),
     ("GET", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}"),
     ("GET", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}/events"),
+    ("POST", "/api/projects/{pid}/chapter-sessions/{session_id}/draft-operations/{operation_id}/cancel"),
     ("GET", "/api/assets/style-templates"),
     ("GET", "/api/assets/style-templates/{revision_id}"),
     ("GET", "/api/assets/experience-cards"),

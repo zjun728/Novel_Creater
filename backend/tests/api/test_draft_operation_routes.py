@@ -27,6 +27,9 @@ IDEMPOTENCY_KEY = "40000000-0000-0000-0000-000000000001"
 START_EVENT_ID = "50000000-0000-0000-0000-000000000001"
 TERMINAL_EVENT_ID = "50000000-0000-0000-0000-000000000002"
 HASH = "a" * 64
+OUTPUT = "正文"
+OUTPUT_HASH = hashlib.sha256(OUTPUT.encode("utf-8")).hexdigest()
+EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 
 
 def stored_operation(**overrides):
@@ -78,7 +81,7 @@ def stored_events():
             "event_type": "completed",
             "closed_payload_json": json.dumps({
                 "resultWorkingDraftRevision": 2,
-                "resultContentHash": HASH,
+                "resultContentHash": OUTPUT_HASH,
             }),
             "created_at": 101,
         },
@@ -89,6 +92,8 @@ def stored_events():
 class FakeDraftOperationService:
     def __init__(self):
         self.commands = []
+        self.reads = []
+        self.cancels = []
         self.error = None
         self.result = DraftOperationResult(
             operation_id=OPERATION_ID,
@@ -98,10 +103,13 @@ class FakeDraftOperationService:
             status="completed",
             last_event_sequence=2,
             result_working_draft_revision=2,
-            result_content_hash=HASH,
+            result_content_hash=OUTPUT_HASH,
             failure_code=None,
             provider_id="provider-1",
             model_name="fake-model",
+            partial_output=OUTPUT,
+            partial_output_hash=OUTPUT_HASH,
+            partial_output_scalars=len(OUTPUT),
         )
 
     async def start(self, command):
@@ -110,11 +118,28 @@ class FakeDraftOperationService:
             raise self.error
         return self.result
 
+    async def read(self, project_id, session_id, operation_id):
+        self.reads.append((project_id, session_id, operation_id))
+        if self.error is not None:
+            raise self.error
+        if operation_id != OPERATION_ID:
+            raise chapter_sessions.DraftOperationNotFound()
+        return self.result
+
+    async def cancel(self, project_id, session_id, operation_id):
+        self.cancels.append((project_id, session_id, operation_id))
+        if self.error is not None:
+            raise self.error
+        if operation_id != OPERATION_ID:
+            raise chapter_sessions.DraftOperationNotFound()
+        return self.result
+
 
 class FakeDraftOperationRepository:
     def __init__(self):
         self.operation_reads = []
         self.event_reads = []
+        self.error = None
         self.operation = stored_operation()
         self.events = stored_events()
 
@@ -130,11 +155,13 @@ class FakeDraftOperationRepository:
         self, session, operation_id, after_sequence, limit,
     ):
         self.event_reads.append((operation_id, after_sequence, limit))
+        if self.error is not None:
+            raise self.error
         return [
             dict(event)
             for event in self.events
             if event["sequence_num"] > after_sequence
-        ]
+        ][:limit]
 
 
 def make_client():
@@ -181,12 +208,38 @@ def operation_path(operation_id=OPERATION_ID):
     )
 
 
+def test_router_exports_the_exact_registry_injected_into_the_global_service():
+    assert (
+        chapter_sessions._draft_operation_service._registry
+        is chapter_sessions.draft_operation_task_registry
+    )
+    assert chapter_sessions._draft_operation_service._owns_registry is False
+
+
 def raw_create_body(**overrides):
     return json.dumps(
         create_body(**overrides),
         separators=(",", ":"),
         ensure_ascii=False,
     ).encode("utf-8")
+
+
+def event_id(sequence):
+    return f"50000000-0000-0000-0000-{sequence:012x}"
+
+
+def stored_event(sequence, event_type, payload=None):
+    return {
+        "id": event_id(sequence),
+        "project_id": PROJECT_ID,
+        "draft_operation_id": OPERATION_ID,
+        "sequence_num": sequence,
+        "event_type": event_type,
+        "closed_payload_json": (
+            None if payload is None else json.dumps(payload, ensure_ascii=False)
+        ),
+        "created_at": 99 + sequence,
+    }
 
 
 def test_create_formal_draft_operation_returns_only_closed_result_fields():
@@ -202,8 +255,11 @@ def test_create_formal_draft_operation_returns_only_closed_result_fields():
         "operationType": "generate_new",
         "status": "completed",
         "lastEventSequence": 2,
+        "partialOutput": OUTPUT,
+        "partialOutputHash": OUTPUT_HASH,
+        "partialOutputScalars": len(OUTPUT),
         "resultWorkingDraftRevision": 2,
-        "resultContentHash": HASH,
+        "resultContentHash": OUTPUT_HASH,
         "failureCode": None,
         "model": {
             "providerId": "provider-1",
@@ -307,6 +363,31 @@ def test_create_formal_draft_operation_rejects_wrong_owner_or_malformed_service_
 
         assert response.status_code == 502
         assert response.json()["code"] == "DraftOperationUnavailable"
+
+
+def test_formal_operation_projection_rejects_terminal_sequence_one_and_invalid_unicode():
+    client, service, _ = make_client()
+
+    for result in (
+        replace(service.result, last_event_sequence=1),
+        replace(
+            service.result,
+            status="running",
+            last_event_sequence=1,
+            result_working_draft_revision=None,
+            result_content_hash=None,
+        ),
+        replace(
+            service.result,
+            partial_output="\ud800",
+            partial_output_hash=EMPTY_HASH,
+            partial_output_scalars=1,
+        ),
+    ):
+        service.result = result
+        response = client.get(operation_path())
+        assert response.status_code == 404
+        assert response.json()["code"] == "DraftOperationNotFound"
 
 
 def test_create_formal_draft_operation_requires_completed_result_to_advance_the_submitted_base_once():
@@ -537,33 +618,50 @@ def test_formal_operation_reads_are_owner_scoped_and_never_start_provider_work()
                 "type": "completed",
                 "createdAt": 101,
                 "resultWorkingDraftRevision": 2,
-                "resultContentHash": HASH,
+                "resultContentHash": OUTPUT_HASH,
             },
         ],
+        "lastEventSequence": 2,
+        "nextAfter": 2,
+        "hasMore": False,
     }
     assert missing.status_code == 404
     assert missing.json()["code"] == "DraftOperationNotFound"
     assert service.commands == []
-    assert repository.operation_reads == [
+    assert service.reads == [
         (PROJECT_ID, SESSION_ID, OPERATION_ID),
         (PROJECT_ID, SESSION_ID, OPERATION_ID),
         (PROJECT_ID, SESSION_ID, "30000000-0000-0000-0000-000000000099"),
     ]
+    assert repository.operation_reads == []
     assert repository.event_reads == [(OPERATION_ID, 0, 100)]
 
 
-def test_formal_operation_status_fails_closed_for_cross_owner_or_incomplete_stored_row():
-    client, _, repository = make_client()
+def test_formal_operation_status_fails_closed_for_cross_owner_or_malformed_result():
+    client, service, _ = make_client()
 
-    for mutation in (
-        lambda: repository.operation.update(project_id=OTHER_PROJECT_ID),
-        lambda: repository.operation.pop("base_working_draft_hash"),
-        lambda: repository.operation.pop("active_slot"),
+    for result in (
+        replace(service.result, project_id=OTHER_PROJECT_ID),
+        replace(service.result, partial_output_hash=HASH),
+        object(),
     ):
-        repository.operation = stored_operation()
-        mutation()
+        service.result = result
         response = client.get(operation_path())
 
+        assert response.status_code == 404
+        assert response.json()["code"] == "DraftOperationNotFound"
+
+
+def test_cancelled_projection_requires_a_positive_integer_result_revision():
+    client, service, _ = make_client()
+
+    for revision in (True, "2", 0, -1):
+        service.result = replace(
+            service.result,
+            status="cancelled",
+            result_working_draft_revision=revision,
+        )
+        response = client.get(operation_path())
         assert response.status_code == 404
         assert response.json()["code"] == "DraftOperationNotFound"
 
@@ -606,10 +704,44 @@ def test_formal_operation_events_reject_cross_owner_or_invalid_b1_terminal_histo
         assert response.json()["code"] == "DraftOperationNotFound"
 
 
-def test_formal_operation_events_require_failure_payload_to_match_stored_result():
+@pytest.mark.parametrize(
+    ("event_type", "payload"),
+    (
+        (
+            "delta",
+            {
+                "text": OUTPUT,
+                "partialOutputHash": OUTPUT_HASH,
+                "partialOutputScalars": len(OUTPUT),
+            },
+        ),
+        ("heartbeat", None),
+    ),
+)
+def test_terminal_operation_requires_its_terminal_event_at_the_last_sequence(
+    event_type,
+    payload,
+):
     client, _, repository = make_client()
-    repository.operation = stored_operation(
+    repository.events = [
+        stored_event(1, "started"),
+        stored_event(2, event_type, payload),
+    ]
+
+    response = client.get(f"{operation_path()}/events?after=0")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "DraftOperationNotFound"
+
+
+def test_formal_operation_events_require_failure_payload_to_match_stored_result():
+    client, service, repository = make_client()
+    service.result = replace(
+        service.result,
         status="failed",
+        partial_output="",
+        partial_output_hash=EMPTY_HASH,
+        partial_output_scalars=0,
         result_working_draft_revision=None,
         result_content_hash=None,
         failure_code="DraftProviderFailed",
@@ -628,6 +760,63 @@ def test_formal_operation_events_require_failure_payload_to_match_stored_result(
     assert response.json()["code"] == "DraftOperationNotFound"
 
 
+@pytest.mark.parametrize(
+    ("status", "payload", "expected_terminal"),
+    (
+        (
+            "failed",
+            {"failureCode": "DraftProviderFailed"},
+            {"failureCode": "DraftProviderFailed"},
+        ),
+        (
+            "cancelled",
+            {
+                "resultWorkingDraftRevision": 2,
+                "resultContentHash": OUTPUT_HASH,
+            },
+            {
+                "resultWorkingDraftRevision": 2,
+                "resultContentHash": OUTPUT_HASH,
+            },
+        ),
+    ),
+)
+def test_formal_operation_events_project_closed_failure_and_cancel(
+    status,
+    payload,
+    expected_terminal,
+):
+    client, service, repository = make_client()
+    if status == "failed":
+        service.result = replace(
+            service.result,
+            status=status,
+            partial_output="",
+            partial_output_hash=EMPTY_HASH,
+            partial_output_scalars=0,
+            result_working_draft_revision=None,
+            result_content_hash=None,
+            failure_code="DraftProviderFailed",
+        )
+    else:
+        service.result = replace(service.result, status=status)
+    repository.events = [
+        stored_event(1, "started"),
+        stored_event(2, status, payload),
+    ]
+
+    response = client.get(f"{operation_path()}/events?after=0")
+
+    assert response.status_code == 200
+    terminal = response.json()["events"][-1]
+    assert terminal == {
+        "sequence": 2,
+        "type": status,
+        "createdAt": 101,
+        **expected_terminal,
+    }
+
+
 def test_formal_operation_events_return_only_the_strict_cursor_suffix():
     client, _, repository = make_client()
 
@@ -640,11 +829,291 @@ def test_formal_operation_events_return_only_the_strict_cursor_suffix():
         "type": "completed",
         "createdAt": 101,
         "resultWorkingDraftRevision": 2,
-        "resultContentHash": HASH,
+        "resultContentHash": OUTPUT_HASH,
     }]
+    assert terminal_only.json()["lastEventSequence"] == 2
+    assert terminal_only.json()["nextAfter"] == 2
+    assert terminal_only.json()["hasMore"] is False
     assert exhausted.status_code == 200
-    assert exhausted.json()["events"] == []
+    assert exhausted.json() == {
+        "operationId": OPERATION_ID,
+        "events": [],
+        "lastEventSequence": 2,
+        "nextAfter": 2,
+        "hasMore": False,
+    }
     assert repository.event_reads == [(OPERATION_ID, 1, 100), (OPERATION_ID, 2, 100)]
+
+
+def test_formal_operation_events_project_delta_and_heartbeat_closed_payloads():
+    client, service, repository = make_client()
+    service.result = replace(
+        service.result,
+        status="running",
+        last_event_sequence=3,
+        result_working_draft_revision=None,
+        result_content_hash=None,
+    )
+    repository.events = [
+        stored_event(1, "started"),
+        stored_event(2, "delta", {
+            "text": OUTPUT,
+            "partialOutputHash": OUTPUT_HASH,
+            "partialOutputScalars": len(OUTPUT),
+        }),
+        stored_event(3, "heartbeat"),
+    ]
+
+    response = client.get(f"{operation_path()}/events?after=0")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "operationId": OPERATION_ID,
+        "events": [
+            {"sequence": 1, "type": "started", "createdAt": 100},
+            {
+                "sequence": 2,
+                "type": "delta",
+                "createdAt": 101,
+                "text": OUTPUT,
+                "partialOutputHash": OUTPUT_HASH,
+                "partialOutputScalars": len(OUTPUT),
+            },
+            {"sequence": 3, "type": "heartbeat", "createdAt": 102},
+        ],
+        "lastEventSequence": 3,
+        "nextAfter": 3,
+        "hasMore": False,
+    }
+
+
+def test_formal_operation_delta_after_cursor_exposes_only_the_new_suffix():
+    client, service, repository = make_client()
+    cumulative = "甲乙"
+    cumulative_hash = hashlib.sha256(cumulative.encode("utf-8")).hexdigest()
+    service.result = replace(
+        service.result,
+        status="running",
+        last_event_sequence=9,
+        partial_output=cumulative,
+        partial_output_hash=cumulative_hash,
+        partial_output_scalars=len(cumulative),
+        result_working_draft_revision=None,
+        result_content_hash=None,
+    )
+    repository.events = [stored_event(9, "delta", {
+        "text": "乙",
+        "partialOutputHash": cumulative_hash,
+        "partialOutputScalars": len(cumulative),
+    })]
+
+    response = client.get(f"{operation_path()}/events?after=8")
+
+    assert response.status_code == 200
+    assert response.json()["events"] == [{
+        "sequence": 9,
+        "type": "delta",
+        "createdAt": 108,
+        "text": "乙",
+        "partialOutputHash": cumulative_hash,
+        "partialOutputScalars": len(cumulative),
+    }]
+
+
+def test_formal_operation_delta_after_cursor_rejects_invalid_unicode_text():
+    client, service, repository = make_client()
+    service.result = replace(
+        service.result,
+        status="running",
+        last_event_sequence=9,
+        result_working_draft_revision=None,
+        result_content_hash=None,
+    )
+    repository.events = [stored_event(9, "delta", {
+        "text": "\ud800",
+        "partialOutputHash": OUTPUT_HASH,
+        "partialOutputScalars": 99,
+    })]
+
+    response = client.get(f"{operation_path()}/events?after=8")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "DraftOperationNotFound"
+
+
+def test_formal_operation_events_page_at_one_hundred_with_truthful_envelope():
+    client, service, repository = make_client()
+    service.result = replace(service.result, last_event_sequence=137)
+    repository.events = [stored_event(1, "started")]
+    repository.events.extend(
+        stored_event(sequence, "heartbeat") for sequence in range(2, 137)
+    )
+    repository.events.append(stored_event(137, "completed", {
+        "resultWorkingDraftRevision": 2,
+        "resultContentHash": OUTPUT_HASH,
+    }))
+
+    first = client.get(f"{operation_path()}/events?after=0")
+    second = client.get(f"{operation_path()}/events?after=100")
+
+    assert first.status_code == 200
+    assert len(first.json()["events"]) == 100
+    assert first.json()["events"][-1]["sequence"] == 100
+    assert first.json() | {"events": []} == {
+        "operationId": OPERATION_ID,
+        "events": [],
+        "lastEventSequence": 137,
+        "nextAfter": 100,
+        "hasMore": True,
+    }
+    assert second.status_code == 200
+    assert len(second.json()["events"]) == 37
+    assert second.json()["events"][-1]["type"] == "completed"
+    assert second.json()["nextAfter"] == 137
+    assert second.json()["hasMore"] is False
+
+
+def test_formal_operation_events_fail_closed_for_an_incomplete_page():
+    client, service, repository = make_client()
+    service.result = replace(service.result, last_event_sequence=3)
+    repository.events = [stored_event(1, "started")]
+
+    response = client.get(f"{operation_path()}/events?after=0")
+
+    assert response.status_code == 404
+    assert response.json()["code"] == "DraftOperationNotFound"
+
+
+def test_active_event_page_uses_the_service_snapshot_when_a_new_tail_arrives():
+    client, service, repository = make_client()
+    service.result = replace(
+        service.result,
+        status="running",
+        result_working_draft_revision=None,
+        result_content_hash=None,
+    )
+    repository.events = [
+        stored_event(1, "started"),
+        stored_event(2, "delta", {
+            "text": OUTPUT,
+            "partialOutputHash": OUTPUT_HASH,
+            "partialOutputScalars": len(OUTPUT),
+        }),
+        stored_event(3, "heartbeat"),
+    ]
+
+    response = client.get(f"{operation_path()}/events?after=0")
+
+    assert response.status_code == 200
+    assert [event["sequence"] for event in response.json()["events"]] == [1, 2]
+    assert response.json()["lastEventSequence"] == 2
+    assert response.json()["nextAfter"] == 2
+    assert response.json()["hasMore"] is False
+
+
+def test_cancel_formal_operation_accepts_only_absent_body_or_exact_empty_object():
+    client, service, _ = make_client()
+    service.result = replace(service.result, status="cancelled")
+    cancel_path = f"{operation_path()}/cancel"
+
+    absent = client.post(cancel_path)
+    empty_object = client.post(
+        cancel_path,
+        content=b"{}",
+        headers={"content-type": "application/json"},
+    )
+
+    assert absent.status_code == 200
+    assert empty_object.status_code == 200
+    assert absent.json()["status"] == "cancelled"
+    assert absent.json()["partialOutput"] == OUTPUT
+    assert service.cancels == [
+        (PROJECT_ID, SESSION_ID, OPERATION_ID),
+        (PROJECT_ID, SESSION_ID, OPERATION_ID),
+    ]
+
+
+def test_cancel_formal_operation_rejects_nonempty_or_noncanonical_requests():
+    client, service, _ = make_client()
+    cancel_path = f"{operation_path()}/cancel"
+    requests = (
+        ({
+            "content": b'{"reason":"stop"}',
+            "headers": {"content-type": "application/json"},
+        }),
+        ({
+            "content": b'{"x":1,"x":1}',
+            "headers": {"content-type": "application/json"},
+        }),
+        ({"content": b"[]", "headers": {"content-type": "application/json"}}),
+        ({"content": b"{}", "headers": {"content-type": "text/plain"}}),
+        ({"content": b"", "headers": {"content-type": "application/json"}}),
+        ({"content": b" " * 1025, "headers": {"content-type": "application/json"}}),
+    )
+
+    for request in requests:
+        response = client.post(cancel_path, **request)
+        assert response.status_code == 422
+        assert response.json()["code"] == "DraftOperationRequestInvalid"
+
+    wrong_owner = client.post(
+        f"/api/projects/not-a-uuid/chapter-sessions/{SESSION_ID}/"
+        f"draft-operations/{OPERATION_ID}/cancel"
+    )
+    assert wrong_owner.status_code == 404
+    assert wrong_owner.json()["code"] == "DraftOperationNotFound"
+    assert service.cancels == []
+
+
+def test_status_events_and_cancel_hide_storage_failures():
+    client, service, _ = make_client()
+    service.error = DraftOperationStorageError("LEAK-SENTINEL")
+
+    responses = (
+        client.get(operation_path()),
+        client.get(f"{operation_path()}/events?after=0"),
+        client.post(f"{operation_path()}/cancel"),
+    )
+
+    for response in responses:
+        assert response.status_code == 502
+        assert response.json()["code"] == "DraftOperationUnavailable"
+        assert "LEAK-SENTINEL" not in response.text
+
+
+def test_events_hide_native_repository_failures():
+    client, _, repository = make_client()
+    repository.error = RuntimeError("LEAK-SENTINEL")
+
+    response = client.get(f"{operation_path()}/events?after=0")
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "DraftOperationUnavailable"
+    assert "LEAK-SENTINEL" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_cancel_reader_rejects_duplicate_content_type_without_reading_body():
+    reads = 0
+
+    async def receive():
+        nonlocal reads
+        reads += 1
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-type", b"application/json"),
+        ],
+    }, receive)
+
+    with pytest.raises(chapter_sessions.DraftOperationRequestInvalid):
+        await chapter_sessions._read_empty_cancel_body(request)
+
+    assert reads == 0
 
 
 def test_formal_operation_read_rejects_noncanonical_owner_before_repository_access():
@@ -658,6 +1127,7 @@ def test_formal_operation_read_rejects_noncanonical_owner_before_repository_acce
     assert response.status_code == 404
     assert response.json()["code"] == "DraftOperationNotFound"
     assert service.commands == []
+    assert service.reads == []
     assert repository.operation_reads == []
 
 

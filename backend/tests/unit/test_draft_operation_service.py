@@ -1645,6 +1645,39 @@ async def test_completion_replaces_partial_snapshot_with_exact_normalized_termin
     assert result.partial_output == repo.draft["content"]
     assert result.partial_output_hash == result.result_content_hash
     assert result.partial_output_scalars == len("exact terminal")
+    delta = next(event for event in repo.events if event["event_type"] == "delta")
+    assert delta["closed_payload"] == {
+        "text": "  exact terminal  \n",
+        "partialOutputHash": hashlib.sha256(
+            "  exact terminal  \n".encode()
+        ).hexdigest(),
+        "partialOutputScalars": len("  exact terminal  \n"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_each_persisted_delta_contains_only_its_new_suffix():
+    first = "甲" * 256
+    second = "乙" * 256
+    gateway = StreamingGateway(chunks=(first, second))
+    repo = FakeRepository()
+    repo.provider.update(stream=True, supports_streaming=True)
+    service, repo, _, registry, _, _ = make_background_service(
+        repo=repo, gateway=gateway
+    )
+
+    await service.start(command())
+    await registry.launches[0][1](asyncio.Event())
+    deltas = [event for event in repo.events if event["event_type"] == "delta"]
+
+    assert [event["closed_payload"]["text"] for event in deltas] == [
+        first,
+        second,
+    ]
+    assert deltas[-1]["closed_payload"]["partialOutputScalars"] == 512
+    assert deltas[-1]["closed_payload"]["partialOutputHash"] == hashlib.sha256(
+        (first + second).encode("utf-8")
+    ).hexdigest()
 
 
 @pytest.mark.asyncio
