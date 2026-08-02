@@ -6,6 +6,7 @@ import { createLatestRequestGuard } from '../utils/latestRequest.js'
 
 const CONTENT_HASH = /^[0-9a-f]{64}$/
 const IDEMPOTENCY_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const DRAFT_OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function publicError(error) {
   return {
@@ -93,6 +94,22 @@ const CANDIDATE_PUBLIC_FIELDS = Object.freeze([
   'content',
   'contentHash',
 ])
+const SESSION_PUBLIC_FIELDS = Object.freeze([
+  'id', 'projectId', 'planningRevisionId', 'planningRevision', 'planningHash',
+  'storyBlockId', 'storyBlockRevision', 'storyBlockHash',
+  'chapterOutlineRevisionId', 'chapterOutlineRevision', 'chapterOutlineHash',
+  'chapterNum', 'expectedCanonRevision', 'status',
+])
+const WORKING_DRAFT_PUBLIC_FIELDS = Object.freeze([
+  'id', 'projectId', 'chapterSessionId', 'revision', 'content', 'contentHash',
+])
+
+function publicFields(value, fields) {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : {}
+  return Object.fromEntries(fields.map(field => [field, source[field]]))
+}
 function candidateBasisIsSafe(candidate) {
   return (
     typeof candidate?.outlineRevisionId === 'string'
@@ -139,8 +156,24 @@ function normalizeCandidate(candidate) {
 
 function normalizeWorkspace(nextWorkspace) {
   if (!nextWorkspace || typeof nextWorkspace !== 'object') return nextWorkspace
+  const activeDraftOperationId = nextWorkspace.activeDraftOperationId
+  if (
+    activeDraftOperationId !== null
+    && (
+      typeof activeDraftOperationId !== 'string'
+      || !DRAFT_OPERATION_ID.test(activeDraftOperationId)
+    )
+  ) {
+    throw new TypeError('Invalid active draft operation id')
+  }
   return {
-    ...nextWorkspace,
+    projectId: nextWorkspace.projectId,
+    activeDraftOperationId,
+    session: publicFields(nextWorkspace.session, SESSION_PUBLIC_FIELDS),
+    workingDraft: publicFields(
+      nextWorkspace.workingDraft,
+      WORKING_DRAFT_PUBLIC_FIELDS,
+    ),
     candidates: Array.isArray(nextWorkspace.candidates)
       ? nextWorkspace.candidates.map(normalizeCandidate)
       : [],
@@ -645,6 +678,15 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     )
   }
 
+  async function cancelDraftOperation(nextProjectId, operationId) {
+    const context = operationContext(nextProjectId)
+    return api.chapterSessions.cancelDraftOperation(
+      context.projectId,
+      context.sessionId,
+      operationId,
+    )
+  }
+
   function reloadCurrentWorkspace(nextProjectId) {
     return load(nextProjectId, chapterNumber.value)
   }
@@ -682,6 +724,7 @@ export const useChapterSessionStore = defineStore('chapterSession', () => {
     createDraftOperation,
     readDraftOperation,
     listDraftOperationEvents,
+    cancelDraftOperation,
     reloadCurrentWorkspace,
     saveCandidate,
     invalidate,

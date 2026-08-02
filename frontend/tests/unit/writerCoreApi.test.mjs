@@ -1258,7 +1258,6 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
   const operationId = '33333333-3333-4333-8333-333333333333'
   const key = '44444444-4444-4444-8444-444444444444'
   const hash = 'a'.repeat(64)
-  const secret = 'MUST-NOT-CROSS-DRAFT-OPERATION'
   const operation = {
     id: operationId,
     projectId,
@@ -1266,6 +1265,9 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
     operationType: 'generate_new',
     status: 'completed',
     lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: hash,
+    partialOutputScalars: 2,
     resultWorkingDraftRevision: 5,
     resultContentHash: hash,
     failureCode: null,
@@ -1280,16 +1282,16 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
           sequence: 1,
           type: 'started',
           createdAt: 1,
-          responseBody: secret,
         }, {
           sequence: 2,
           type: 'completed',
           createdAt: 2,
           resultWorkingDraftRevision: 5,
           resultContentHash: hash,
-          messages: secret,
         }],
-        debug: true,
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
       })
     }
     return jsonResponse(operation)
@@ -1322,6 +1324,10 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
       ['GET', `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations/${operationId}/events?after=0`],
     ])
     assert.deepEqual(bodyOf(calls[0]), command)
+    assert.equal(
+      new Headers(calls[0].options.headers).get('content-type'),
+      'application/json',
+    )
     const expectedOperation = {
       id: operationId,
       projectId,
@@ -1329,6 +1335,9 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
       operationType: 'generate_new',
       status: 'completed',
       lastEventSequence: 2,
+      partialOutput: '正文',
+      partialOutputHash: hash,
+      partialOutputScalars: 2,
       resultWorkingDraftRevision: 5,
       resultContentHash: hash,
       failureCode: null,
@@ -1347,9 +1356,397 @@ test('draft operation client uses only formal routes, strict bodies, and closed 
         resultWorkingDraftRevision: 5,
         resultContentHash: hash,
       }],
+      lastEventSequence: 2,
+      nextAfter: 2,
+      hasMore: false,
     })
-    assert.equal(JSON.stringify({ created, read, events }).includes(secret), false)
     assert.equal(Object.hasOwn(api.chapterSessions, 'generateWorkingDraft'), false)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client exposes bounded streaming status, paginated events, and bodyless cancel', async () => {
+  const originalFetch = global.fetch
+  const calls = []
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const partialOutput = '甲😀'
+  const partialOutputHash = 'b'.repeat(64)
+  const operation = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'cancelled',
+    lastEventSequence: 4,
+    partialOutput,
+    partialOutputHash,
+    partialOutputScalars: 2,
+    resultWorkingDraftRevision: 5,
+    resultContentHash: partialOutputHash,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options })
+    if (new URL(url).pathname.endsWith('/events')) {
+      return jsonResponse({
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'delta',
+          createdAt: 2,
+          text: partialOutput,
+          partialOutputHash,
+          partialOutputScalars: 2,
+        }, {
+          sequence: 3,
+          type: 'heartbeat',
+          createdAt: 3,
+        }, {
+          sequence: 4,
+          type: 'cancelled',
+          createdAt: 4,
+          resultWorkingDraftRevision: 5,
+          resultContentHash: partialOutputHash,
+        }],
+        lastEventSequence: 4,
+        nextAfter: 4,
+        hasMore: false,
+      })
+    }
+    return jsonResponse(operation)
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const cancelled = await api.chapterSessions.cancelDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    const events = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 1,
+    )
+    assert.deepEqual(cancelled, operation)
+    assert.equal(calls[0].options.body, undefined)
+    assert.equal(new Headers(calls[0].options.headers).has('content-type'), false)
+    assert.equal(
+      new URL(calls[0].url).pathname,
+      `/api/projects/${projectId}/chapter-sessions/${sessionId}/draft-operations/${operationId}/cancel`,
+    )
+    assert.deepEqual(events, {
+      operationId,
+      events: [{
+        sequence: 2,
+        type: 'delta',
+        createdAt: 2,
+        text: partialOutput,
+        partialOutputHash,
+        partialOutputScalars: 2,
+      }, {
+        sequence: 3,
+        type: 'heartbeat',
+        createdAt: 3,
+      }, {
+        sequence: 4,
+        type: 'cancelled',
+        createdAt: 4,
+        resultWorkingDraftRevision: 5,
+        resultContentHash: partialOutputHash,
+      }],
+      lastEventSequence: 4,
+      nextAfter: 4,
+      hasMore: false,
+    })
+    assert.equal(Object.isFrozen(cancelled), true)
+    assert.equal(Object.isFrozen(events), true)
+    assert.equal(Object.isFrozen(events.events), true)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects malformed streaming scalars and recursive extra fields', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const base = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'running',
+    lastEventSequence: 2,
+    partialOutput: '😀',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 1,
+    resultWorkingDraftRevision: null,
+    resultContentHash: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const responses = [
+    { ...base, partialOutputScalars: 2 },
+    { ...base, model: { ...base.model, diagnostics: { apiKey: 'MUST-NOT-CROSS' } } },
+  ]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(
+        () => api.chapterSessions.readDraftOperation(projectId, sessionId, operationId),
+        TypeError,
+      )
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation client rejects impossible streaming status correlations', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const partialHash = 'a'.repeat(64)
+  const base = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'running',
+    lastEventSequence: 2,
+    partialOutput: '甲',
+    partialOutputHash: partialHash,
+    partialOutputScalars: 1,
+    resultWorkingDraftRevision: null,
+    resultContentHash: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const impossible = [
+    { ...base, status: 'starting' },
+    { ...base, lastEventSequence: 1 },
+    { ...base, status: 'expired', lastEventSequence: 2_048 },
+    {
+      ...base,
+      status: 'completed',
+      partialOutput: '',
+      partialOutputScalars: 0,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: partialHash,
+    },
+    {
+      ...base,
+      status: 'completed',
+      resultWorkingDraftRevision: 5,
+      resultContentHash: 'b'.repeat(64),
+    },
+    { ...base, status: 'cancelled' },
+  ]
+  global.fetch = async () => jsonResponse(impossible.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await assert.rejects(
+        () => api.chapterSessions.readDraftOperation(projectId, sessionId, operationId),
+        TypeError,
+      )
+    }
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation event paging accepts an ahead 32-bit cursor and rejects a short retained page', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const responses = [{
+    operationId,
+    events: [],
+    lastEventSequence: 4,
+    nextAfter: 2_147_483_647,
+    hasMore: false,
+  }, {
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }],
+    lastEventSequence: 137,
+    nextAfter: 1,
+    hasMore: true,
+  }]
+  let calls = 0
+  global.fetch = async () => {
+    calls += 1
+    return jsonResponse(responses.shift())
+  }
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    assert.deepEqual(
+      await api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 2_147_483_647,
+      ),
+      {
+        operationId,
+        events: [],
+        lastEventSequence: 4,
+        nextAfter: 2_147_483_647,
+        hasMore: false,
+      },
+    )
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 0,
+      ),
+      TypeError,
+    )
+    assert.equal(calls, 2)
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation events reject terminal hash drift and a nonterminal sequence 2048 tail', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const responses = [{
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'delta',
+      createdAt: 2,
+      text: '甲',
+      partialOutputHash: 'a'.repeat(64),
+      partialOutputScalars: 1,
+    }, {
+      sequence: 3,
+      type: 'completed',
+      createdAt: 3,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: 'b'.repeat(64),
+    }],
+    lastEventSequence: 3,
+    nextAfter: 3,
+    hasMore: false,
+  }, {
+    operationId,
+    events: Array.from({ length: 100 }, (_, index) => ({
+      sequence: 1_949 + index,
+      type: 'heartbeat',
+      createdAt: 1_949 + index,
+    })),
+    lastEventSequence: 2_048,
+    nextAfter: 2_048,
+    hasMore: false,
+  }]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 0,
+      ),
+      TypeError,
+    )
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 1_948,
+      ),
+      TypeError,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation events accept a complete 100-item page and reject recursive sensitive extras', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const completePage = [{ sequence: 1, type: 'started', createdAt: 1 }, ...Array.from(
+    { length: 99 },
+    (_, index) => ({ sequence: index + 2, type: 'heartbeat', createdAt: index + 2 }),
+  )]
+  const responses = [{
+    operationId,
+    events: completePage,
+    lastEventSequence: 137,
+    nextAfter: 100,
+    hasMore: true,
+  }, {
+    operationId,
+    events: [{
+      sequence: 1,
+      type: 'started',
+      createdAt: 1,
+      diagnostics: { apiKey: 'MUST-NOT-CROSS' },
+    }],
+    lastEventSequence: 1,
+    nextAfter: 1,
+    hasMore: false,
+  }]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const page = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
+    )
+    assert.equal(page.events.length, 100)
+    assert.equal(page.nextAfter, 100)
+    assert.equal(page.hasMore, true)
+    await assert.rejects(
+      () => api.chapterSessions.listDraftOperationEvents(
+        projectId, sessionId, operationId, 0,
+      ),
+      TypeError,
+    )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation partials accept exactly 100000 Unicode scalars and reject malformed Unicode', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const exactBound = '😀'.repeat(100_000)
+  const base = {
+    id: operationId,
+    projectId,
+    chapterSessionId: sessionId,
+    operationType: 'generate_new',
+    status: 'running',
+    lastEventSequence: 2,
+    partialOutput: exactBound,
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 100_000,
+    resultWorkingDraftRevision: null,
+    resultContentHash: null,
+    failureCode: null,
+    model: { providerId: 'provider-1', modelName: 'writer-model' },
+  }
+  const responses = [base, {
+    ...base,
+    partialOutput: '\ud800',
+    partialOutputScalars: 1,
+  }]
+  global.fetch = async () => jsonResponse(responses.shift())
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const accepted = await api.chapterSessions.readDraftOperation(
+      projectId, sessionId, operationId,
+    )
+    assert.equal(accepted.partialOutputScalars, 100_000)
+    await assert.rejects(
+      () => api.chapterSessions.readDraftOperation(projectId, sessionId, operationId),
+      TypeError,
+    )
   } finally {
     global.fetch = originalFetch
   }
@@ -1374,6 +1771,9 @@ test('draft operation client rejects extra operation and nested model fields', a
     operationType: 'generate_new',
     status: 'completed',
     lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 2,
     resultWorkingDraftRevision: 5,
     resultContentHash: 'a'.repeat(64),
     failureCode: null,
@@ -1415,6 +1815,9 @@ test('draft operation client counts author instructions by Unicode scalar value'
       operationType: 'generate_new',
       status: 'completed',
       lastEventSequence: 2,
+      partialOutput: '正文',
+      partialOutputHash: 'a'.repeat(64),
+      partialOutputScalars: 2,
       resultWorkingDraftRevision: 2,
       resultContentHash: 'a'.repeat(64),
       failureCode: null,
@@ -1513,6 +1916,9 @@ test('draft operation client rejects invalid completed revisions and event state
     operationType: 'generate_new',
     status: 'completed',
     lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 2,
     resultWorkingDraftRevision: 5,
     resultContentHash: 'a'.repeat(64),
     failureCode: null,
@@ -1525,7 +1931,7 @@ test('draft operation client rejects invalid completed revisions and event state
       sequence: 2,
       type: 'started',
       createdAt: 2,
-    }] },
+    }], lastEventSequence: 2, nextAfter: 2, hasMore: false },
   ]
   global.fetch = async () => {
     calls += 1
@@ -1568,6 +1974,9 @@ test('draft operation client enforces exact safe revision bounds before transpor
     operationType: 'generate_new',
     status: 'completed',
     lastEventSequence: 2,
+    partialOutput: '正文',
+    partialOutputHash: 'a'.repeat(64),
+    partialOutputScalars: 2,
     resultWorkingDraftRevision: result,
     resultContentHash: 'a'.repeat(64),
     failureCode: null,
@@ -1582,6 +1991,9 @@ test('draft operation client enforces exact safe revision bounds before transpor
       resultWorkingDraftRevision: result + 1,
       resultContentHash: 'a'.repeat(64),
     }],
+    lastEventSequence: 2,
+    nextAfter: 2,
+    hasMore: false,
   }]
   let calls = 0
   global.fetch = async () => {

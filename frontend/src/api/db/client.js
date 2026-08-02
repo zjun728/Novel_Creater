@@ -17,10 +17,12 @@ async function request(method, path, body, timeoutMs = DEFAULT_TIMEOUT) {
   try {
     const options = {
       method,
-      headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
     }
-    if (body !== undefined) options.body = JSON.stringify(body)
+    if (body !== undefined) {
+      options.headers = { 'Content-Type': 'application/json' }
+      options.body = JSON.stringify(body)
+    }
 
     const response = await fetch(`${BASE}${path}`, options)
     if (!response.ok) {
@@ -1214,7 +1216,7 @@ function chapterOutlineOperationResponse(value, expectedOperationId) {
 }
 
 const DRAFT_OPERATION_STATUSES = new Set([
-  'starting', 'running', 'completed', 'failed', 'expired',
+  'starting', 'running', 'completed', 'failed', 'cancelled', 'expired',
 ])
 const DRAFT_OPERATION_FAILURE_CODES = new Set([
   'DraftProviderFailed', 'DraftProviderResultInvalid',
@@ -1231,10 +1233,18 @@ const DRAFT_OPERATION_COMMAND_FIELDS = [
 ]
 const DRAFT_OPERATION_RESPONSE_FIELDS = [
   'id', 'projectId', 'chapterSessionId', 'operationType', 'status',
+  'partialOutput', 'partialOutputHash', 'partialOutputScalars',
   'lastEventSequence', 'resultWorkingDraftRevision', 'resultContentHash',
   'failureCode', 'model',
 ]
 const DRAFT_OPERATION_MODEL_FIELDS = ['providerId', 'modelName']
+const DRAFT_OPERATION_EVENT_ENVELOPE_FIELDS = [
+  'operationId', 'events', 'lastEventSequence', 'nextAfter', 'hasMore',
+]
+const DRAFT_OPERATION_EVENT_BASE_FIELDS = ['sequence', 'type', 'createdAt']
+const DRAFT_OPERATION_MAX_EVENTS = 2_048
+const DRAFT_OPERATION_MAX_EVENT_CURSOR = 2_147_483_647
+const DRAFT_OPERATION_MAX_PARTIAL_SCALARS = 100_000
 
 function draftOperationObject(value, label) {
   if (
@@ -1320,6 +1330,9 @@ function draftOperationResponse(value, expected = {}) {
   const chapterSessionId = draftOperationUuid(source.chapterSessionId, 'session id')
   const status = source.status
   const sequence = source.lastEventSequence
+  const partialOutput = source.partialOutput
+  const partialOutputHash = source.partialOutputHash
+  const partialOutputScalars = source.partialOutputScalars
   const revision = source.resultWorkingDraftRevision
   const resultHash = source.resultContentHash
   const failureCode = source.failureCode
@@ -1338,18 +1351,34 @@ function draftOperationResponse(value, expected = {}) {
     || !DRAFT_OPERATION_STATUSES.has(status)
     || !Number.isInteger(sequence)
     || sequence < 1
+    || sequence > DRAFT_OPERATION_MAX_EVENTS
+    || (
+      (status === 'starting' || status === 'running' || status === 'expired')
+      && sequence > DRAFT_OPERATION_MAX_EVENTS - 1
+    )
+    || typeof partialOutput !== 'string'
+    || !Number.isInteger(partialOutputScalars)
+    || partialOutputScalars < 0
+    || partialOutputScalars > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+    || unicodeScalarLength(partialOutput) !== partialOutputScalars
     || !providerId
     || !modelName
   ) {
     throw new TypeError('Invalid draft operation response')
   }
-  const terminal = status === 'completed' || status === 'failed'
-  if (sequence !== (terminal ? 2 : 1)) {
-    throw new TypeError('Invalid draft operation response')
-  }
+  draftOperationHash(partialOutputHash, 'partial output hash')
+  if (
+    (status === 'starting' && (
+      sequence !== 1 || partialOutput !== '' || partialOutputScalars !== 0
+    ))
+    || (status === 'running' && sequence === 1 && (
+      partialOutput !== '' || partialOutputScalars !== 0
+    ))
+  ) throw new TypeError('Invalid draft operation response')
   if (status === 'completed') {
     if (
-      !Number.isInteger(revision)
+      sequence < 2
+      || !Number.isInteger(revision)
       || revision < 1
       || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
       || (
@@ -1357,11 +1386,39 @@ function draftOperationResponse(value, expected = {}) {
         && revision !== expected.expectedBaseRevision + 1
       )
       || failureCode !== null
+      || partialOutput === ''
+      || partialOutput !== partialOutput.trim()
+      || resultHash !== partialOutputHash
     ) throw new TypeError('Invalid draft operation response')
     draftOperationHash(resultHash, 'result content hash')
+  } else if (status === 'cancelled') {
+    const hasResult = revision !== null || resultHash !== null
+    if (
+      sequence < 2
+      || failureCode !== null
+      || partialOutput !== partialOutput.trim()
+      || (revision === null) !== (resultHash === null)
+      || Boolean(partialOutput) !== hasResult
+      || (hasResult && (
+        !Number.isInteger(revision)
+        || revision < 1
+        || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
+        || (
+          expected.expectedBaseRevision !== undefined
+          && revision !== expected.expectedBaseRevision + 1
+        )
+      ))
+    ) throw new TypeError('Invalid draft operation response')
+    if (hasResult) {
+      draftOperationHash(resultHash, 'result content hash')
+      if (resultHash !== partialOutputHash) {
+        throw new TypeError('Invalid draft operation response')
+      }
+    }
   } else if (status === 'failed') {
     if (
-      revision !== null
+      sequence < 2
+      || revision !== null
       || resultHash !== null
       || !DRAFT_OPERATION_FAILURE_CODES.has(failureCode)
     ) throw new TypeError('Invalid draft operation response')
@@ -1376,6 +1433,9 @@ function draftOperationResponse(value, expected = {}) {
     operationType: 'generate_new',
     status,
     lastEventSequence: sequence,
+    partialOutput,
+    partialOutputHash,
+    partialOutputScalars,
     resultWorkingDraftRevision: revision,
     resultContentHash: resultHash,
     failureCode,
@@ -1386,16 +1446,36 @@ function draftOperationResponse(value, expected = {}) {
 function draftOperationEventsResponse(value, expectedOperationId, afterSequence) {
   const source = draftOperationObject(value, 'events response')
   if (
-    draftOperationUuid(source.operationId, 'id') !== expectedOperationId
+    hasSensitiveDraftOperationKey(source)
+    || Object.keys(source).length !== DRAFT_OPERATION_EVENT_ENVELOPE_FIELDS.length
+    || DRAFT_OPERATION_EVENT_ENVELOPE_FIELDS.some(field => !Object.hasOwn(source, field))
+    || draftOperationUuid(source.operationId, 'id') !== expectedOperationId
     || !Array.isArray(source.events)
     || source.events.length > 100
+    || !Number.isInteger(source.lastEventSequence)
+    || source.lastEventSequence < 1
+    || source.lastEventSequence > DRAFT_OPERATION_MAX_EVENTS
+    || !Number.isInteger(source.nextAfter)
+    || source.nextAfter < afterSequence
+    || source.nextAfter > DRAFT_OPERATION_MAX_EVENT_CURSOR
+    || typeof source.hasMore !== 'boolean'
   ) throw new TypeError('Invalid draft operation events response')
+  const expectedEventCount = Math.min(
+    100,
+    Math.max(0, source.lastEventSequence - afterSequence),
+  )
+  if (source.events.length !== expectedEventCount) {
+    throw new TypeError('Invalid draft operation events response')
+  }
+  let lastPartialScalars = afterSequence === 0 ? 0 : null
+  let lastPartialHash = null
   const events = source.events.map((event, index) => {
     const item = draftOperationObject(event, 'event')
     const sequence = item.sequence
     if (
       !Number.isInteger(sequence)
       || sequence < 1
+      || sequence > DRAFT_OPERATION_MAX_EVENTS
       || sequence !== afterSequence + index + 1
       || typeof item.type !== 'string'
       || !Number.isInteger(item.createdAt)
@@ -1403,10 +1483,51 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
     ) throw new TypeError('Invalid draft operation event')
     const result = { sequence, type: item.type, createdAt: item.createdAt }
     if (sequence === 1) {
-      if (item.type !== 'started') throw new TypeError('Invalid draft operation event')
-    } else if (sequence === 2 && item.type === 'completed') {
       if (
-        !Number.isInteger(item.resultWorkingDraftRevision)
+        item.type !== 'started'
+        || Object.keys(item).length !== DRAFT_OPERATION_EVENT_BASE_FIELDS.length
+      ) throw new TypeError('Invalid draft operation event')
+    } else if (item.type === 'delta') {
+      const fields = [
+        ...DRAFT_OPERATION_EVENT_BASE_FIELDS,
+        'text', 'partialOutputHash', 'partialOutputScalars',
+      ]
+      const textScalars = typeof item.text === 'string'
+        ? unicodeScalarLength(item.text)
+        : -1
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || textScalars < 1
+        || !Number.isInteger(item.partialOutputScalars)
+        || item.partialOutputScalars < textScalars
+        || item.partialOutputScalars > DRAFT_OPERATION_MAX_PARTIAL_SCALARS
+        || (
+          lastPartialScalars !== null
+          && item.partialOutputScalars !== lastPartialScalars + textScalars
+        )
+      ) throw new TypeError('Invalid draft operation event')
+      result.text = item.text
+      result.partialOutputHash = draftOperationHash(
+        item.partialOutputHash,
+        'event partial output hash',
+      )
+      result.partialOutputScalars = item.partialOutputScalars
+      lastPartialScalars = item.partialOutputScalars
+      lastPartialHash = result.partialOutputHash
+    } else if (item.type === 'heartbeat') {
+      if (Object.keys(item).length !== DRAFT_OPERATION_EVENT_BASE_FIELDS.length) {
+        throw new TypeError('Invalid draft operation event')
+      }
+    } else if (item.type === 'completed') {
+      const fields = [
+        ...DRAFT_OPERATION_EVENT_BASE_FIELDS,
+        'resultWorkingDraftRevision', 'resultContentHash',
+      ]
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || !Number.isInteger(item.resultWorkingDraftRevision)
         || item.resultWorkingDraftRevision < 1
         || item.resultWorkingDraftRevision > DRAFT_OPERATION_MAX_RESULT_REVISION
       ) throw new TypeError('Invalid draft operation event')
@@ -1415,21 +1536,84 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
         item.resultContentHash,
         'event result content hash',
       )
-    } else if (sequence === 2 && item.type === 'failed') {
-      if (!DRAFT_OPERATION_FAILURE_CODES.has(item.failureCode)) {
+      if (
+        lastPartialHash !== null
+        && result.resultContentHash !== lastPartialHash
+      ) throw new TypeError('Invalid draft operation event')
+    } else if (item.type === 'failed') {
+      const fields = [...DRAFT_OPERATION_EVENT_BASE_FIELDS, 'failureCode']
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || !DRAFT_OPERATION_FAILURE_CODES.has(item.failureCode)
+      ) {
         throw new TypeError('Invalid draft operation event')
       }
       result.failureCode = item.failureCode
+    } else if (item.type === 'cancelled') {
+      const fields = [
+        ...DRAFT_OPERATION_EVENT_BASE_FIELDS,
+        'resultWorkingDraftRevision', 'resultContentHash',
+      ]
+      const revision = item.resultWorkingDraftRevision
+      const resultHash = item.resultContentHash
+      if (
+        Object.keys(item).length !== fields.length
+        || fields.some(field => !Object.hasOwn(item, field))
+        || (revision === null) !== (resultHash === null)
+        || (revision !== null && (
+          !Number.isInteger(revision)
+          || revision < 1
+          || revision > DRAFT_OPERATION_MAX_RESULT_REVISION
+        ))
+      ) throw new TypeError('Invalid draft operation event')
+      if (resultHash !== null) {
+        draftOperationHash(resultHash, 'event result content hash')
+      }
+      if (lastPartialHash !== null && resultHash !== lastPartialHash) {
+        throw new TypeError('Invalid draft operation event')
+      }
+      result.resultWorkingDraftRevision = revision
+      result.resultContentHash = resultHash
     } else {
       throw new TypeError('Invalid draft operation event')
     }
     return Object.freeze(result)
   })
-  return Object.freeze({ operationId: expectedOperationId, events: Object.freeze(events) })
+  const terminalIndex = events.findIndex(event => (
+    event.type === 'completed' || event.type === 'failed' || event.type === 'cancelled'
+  ))
+  const expectedNextAfter = events.length
+    ? events[events.length - 1].sequence
+    : afterSequence
+  if (
+    source.nextAfter !== expectedNextAfter
+    || source.hasMore !== (source.nextAfter < source.lastEventSequence)
+    || (
+      events.length > 0
+      && events[events.length - 1].sequence === DRAFT_OPERATION_MAX_EVENTS
+      && terminalIndex !== events.length - 1
+    )
+    || (terminalIndex !== -1 && (
+      terminalIndex !== events.length - 1
+      || events[terminalIndex].sequence !== source.lastEventSequence
+    ))
+  ) throw new TypeError('Invalid draft operation events response')
+  return Object.freeze({
+    operationId: expectedOperationId,
+    events: Object.freeze(events),
+    lastEventSequence: source.lastEventSequence,
+    nextAfter: source.nextAfter,
+    hasMore: source.hasMore,
+  })
 }
 
 function draftOperationAfterSequence(value) {
-  if (!Number.isInteger(value) || value < 0 || value > 2_147_483_647) {
+  if (
+    !Number.isInteger(value)
+    || value < 0
+    || value > DRAFT_OPERATION_MAX_EVENT_CURSOR
+  ) {
     throw new TypeError('Invalid draft operation event cursor')
   }
   return value
@@ -2051,6 +2235,18 @@ export const api = {
       return draftOperationEventsResponse(await get(
         `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations/${segment(normalizedOperationId)}/events?after=${after}`,
       ), normalizedOperationId, after)
+    },
+    cancelDraftOperation: async (projectId, sessionId, operationId) => {
+      const normalizedProjectId = draftOperationUuid(projectId, 'project id')
+      const normalizedSessionId = draftOperationUuid(sessionId, 'session id')
+      const normalizedOperationId = draftOperationUuid(operationId, 'id')
+      return draftOperationResponse(await post(
+        `/projects/${segment(normalizedProjectId)}/chapter-sessions/${segment(normalizedSessionId)}/draft-operations/${segment(normalizedOperationId)}/cancel`,
+      ), {
+        projectId: normalizedProjectId,
+        sessionId: normalizedSessionId,
+        operationId: normalizedOperationId,
+      })
     },
     saveCandidate: (projectId, sessionId, data) => post(
       `/projects/${segment(projectId)}/chapter-sessions/${segment(sessionId)}/candidates`,

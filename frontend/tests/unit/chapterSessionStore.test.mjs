@@ -11,6 +11,7 @@ function workspace({
   content = '',
   revision = 1,
   candidates = [],
+  activeDraftOperationId = null,
   sessionId = `session-${chapterNumber}`,
   planningRevision = 1,
   planningHash = 'a'.repeat(64),
@@ -20,6 +21,7 @@ function workspace({
 } = {}) {
   return {
     projectId: 'project-1',
+    activeDraftOperationId,
     session: {
       id: sessionId, chapterNum: chapterNumber, expectedCanonRevision,
       planningRevisionId: 'planning-revision-1',
@@ -36,7 +38,6 @@ function workspace({
     workingDraft: {
       id: `draft-${chapterNumber}`, chapterSessionId: sessionId,
       revision, content, contentHash: 'a'.repeat(64),
-      sourcePayload: { source: 'manual-empty' },
     },
     candidates,
   }
@@ -998,6 +999,7 @@ test('formal draft operation store is a stateless create read events boundary an
   const created = { operationId: 'operation-1', status: 'running' }
   const read = { operationId: 'operation-1', status: 'completed' }
   const events = { operationId: 'operation-1', events: [] }
+  const cancelled = { operationId: 'operation-1', status: 'cancelled' }
   let getCalls = 0
   await withApiMethods([
     [api.chapterSessions, 'get', async (projectId, chapterNumber) => {
@@ -1018,6 +1020,10 @@ test('formal draft operation store is a stateless create read events boundary an
       calls.push(['events', projectId, sessionId, operationId, afterSequence])
       return events
     }],
+    [api.chapterSessions, 'cancelDraftOperation', async (projectId, sessionId, operationId) => {
+      calls.push(['cancelOperation', projectId, sessionId, operationId])
+      return cancelled
+    }],
   ], async () => {
     setActivePinia(createPinia())
     const store = useChapterSessionStore()
@@ -1030,6 +1036,10 @@ test('formal draft operation store is a stateless create read events boundary an
       await store.listDraftOperationEvents('project-1', 'operation-1', 1),
       events,
     )
+    assert.strictEqual(
+      await store.cancelDraftOperation('project-1', 'operation-1'),
+      cancelled,
+    )
     assert.equal(store.workingDraft.content, '')
     assert.equal(store.commandBusy, false)
     assert.deepEqual(await store.reloadCurrentWorkspace('project-1'), workspace({
@@ -1041,9 +1051,51 @@ test('formal draft operation store is a stateless create read events boundary an
       ['createOperation', 'project-1', 'session-1', command],
       ['readOperation', 'project-1', 'session-1', 'operation-1'],
       ['events', 'project-1', 'session-1', 'operation-1', 1],
+      ['cancelOperation', 'project-1', 'session-1', 'operation-1'],
       ['reload', 'project-1', 1],
     ])
     assert.equal('draftOperationRetry' in store, false)
     assert.equal('operationIdempotencyKey' in store, false)
+  })
+})
+
+test('workspace reload preserves only a canonical active draft operation id and never creates an operation', async () => {
+  const activeDraftOperationId = '33333333-3333-4333-8333-333333333333'
+  const leakedWorkspace = workspace({ activeDraftOperationId })
+  leakedWorkspace.providerTaskStatus = 'running'
+  leakedWorkspace.providerTask = { apiKey: 'MUST-NOT-RETAIN' }
+  leakedWorkspace.session.providerTaskStatus = 'running'
+  leakedWorkspace.workingDraft.providerResponse = { apiKey: 'MUST-NOT-RETAIN' }
+  let createCalls = 0
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => leakedWorkspace],
+    [api.chapterSessions, 'createDraftOperation', async () => {
+      createCalls += 1
+      throw new Error('must not create')
+    }],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await store.load('project-1', 1)
+    assert.equal(store.workspace.activeDraftOperationId, activeDraftOperationId)
+    assert.equal(Object.hasOwn(store.workspace, 'providerTaskStatus'), false)
+    assert.equal(Object.hasOwn(store.workspace, 'providerTask'), false)
+    assert.equal(Object.hasOwn(store.workspace.session, 'providerTaskStatus'), false)
+    assert.equal(Object.hasOwn(store.workspace.workingDraft, 'providerResponse'), false)
+    assert.equal(JSON.stringify(store.workspace).includes('MUST-NOT-RETAIN'), false)
+    await store.reloadCurrentWorkspace('project-1')
+    assert.equal(store.workspace.activeDraftOperationId, activeDraftOperationId)
+    assert.equal(createCalls, 0)
+  })
+
+  await withApiMethods([
+    [api.chapterSessions, 'get', async () => workspace({
+      activeDraftOperationId: '33333333-3333-4333-8333-33333333333A',
+    })],
+  ], async () => {
+    setActivePinia(createPinia())
+    const store = useChapterSessionStore()
+    await assert.rejects(store.load('project-1', 1), TypeError)
+    assert.equal(store.workspace, null)
   })
 })
