@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 
 import pytest
 
@@ -181,6 +182,56 @@ async def test_non_stream_heartbeats_without_fake_delta_then_completes():
     release.set()
     await task
     assert events == [("heartbeat", None), ("complete", " exact output ")]
+
+
+@pytest.mark.asyncio
+async def test_non_stream_collects_failed_generation_when_parent_is_cancelled_in_heartbeat():
+    from backend.services.draft_operation_execution import DraftOperationExecution
+
+    timer = ManualTime()
+    release_generation = asyncio.Event()
+    heartbeat_started = asyncio.Event()
+    generation_failed = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    reports = []
+    loop.set_exception_handler(lambda _loop, context: reports.append(context))
+
+    async def generate():
+        await release_generation.wait()
+        generation_failed.set()
+        raise RuntimeError("generation failure sentinel")
+
+    async def heartbeat():
+        heartbeat_started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        DraftOperationExecution(clock=timer.clock, sleep=timer.sleep).run_non_stream(
+            generate=generate,
+            on_heartbeat=heartbeat,
+            on_complete=_noop,
+        )
+    )
+    try:
+        await _wait_for(lambda: bool(timer.waiters))
+        await timer.advance(10_000)
+        await heartbeat_started.wait()
+        release_generation.set()
+        await generation_failed.wait()
+        await asyncio.sleep(0)
+        task.cancel("cancel-during-heartbeat")
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await task
+        assert exc_info.value.args == ("cancel-during-heartbeat",)
+        del exc_info
+        del task
+        gc.collect()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert reports == []
+    finally:
+        loop.set_exception_handler(previous_handler)
 
 
 @pytest.mark.asyncio

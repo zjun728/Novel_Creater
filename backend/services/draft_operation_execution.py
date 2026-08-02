@@ -148,7 +148,7 @@ class DraftOperationExecution:
             await self._cancel_timer(heartbeat)
             if not generation.done():
                 generation.cancel()
-                await asyncio.gather(generation, return_exceptions=True)
+            await asyncio.gather(generation, return_exceptions=True)
 
     @staticmethod
     def _validate_chunk(chunk: object) -> None:
