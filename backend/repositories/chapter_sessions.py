@@ -383,14 +383,14 @@ class ChapterSessionRepository:
             """INSERT INTO draft_operation_attempts
                (id,project_id,chapter_session_id,operation_type,idempotency_key,
                 request_fingerprint,active_slot,fencing_token,lease_expires_at,
-                base_working_draft_revision,base_working_draft_hash,
+                 base_working_draft_revision,base_working_draft_hash,
                  input_manifest_json,input_manifest_hash,provider_id,
                  model_name_snapshot,result_working_draft_revision,
                  result_content_hash,last_event_sequence,failure_code,
                  partial_output_text,partial_output_hash,partial_output_scalars,
                  heartbeat_at,status,created_at,updated_at,completed_at)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (
                 row["id"],
                 row["project_id"],
@@ -444,6 +444,241 @@ class ChapterSessionRepository:
             (now, operation_id, fencing_token),
         )
         return changed > 0
+
+    async def append_draft_operation_delta(self, session, row: dict) -> bool:
+        if not self._valid_stream_sequence(row, maximum=2047):
+            return False
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                  SET operation.partial_output_text=%s,
+                      operation.partial_output_hash=%s,
+                      operation.partial_output_scalars=%s,
+                      operation.heartbeat_at=%s,
+                      operation.lease_expires_at=%s,
+                      operation.updated_at=%s,
+                      operation.last_event_sequence=%s
+                WHERE operation.project_id=%s
+                  AND operation.chapter_session_id=%s
+                  AND operation.id=%s
+                  AND operation.fencing_token=%s
+                  AND operation.status='running'
+                  AND operation.active_slot=1
+                  AND chapter.active_draft_operation_id=operation.id
+                  AND operation.lease_expires_at>%s
+                  AND operation.partial_output_hash=%s
+                  AND operation.last_event_sequence=%s""",
+            (
+                row["partial_output_text"],
+                row["partial_output_hash"],
+                row["partial_output_scalars"],
+                row["heartbeat_at"],
+                row["lease_expires_at"],
+                row["updated_at"],
+                row["sequence_num"],
+                row["project_id"],
+                row["chapter_session_id"],
+                row["draft_operation_id"],
+                row["fencing_token"],
+                row["updated_at"],
+                row["previous_partial_output_hash"],
+                row["previous_last_event_sequence"],
+            ),
+        )
+        if changed != 1:
+            return False
+        return await self._insert_stream_event(
+            session,
+            row,
+            event_type="delta",
+            closed_payload=row["closed_payload"],
+        )
+
+    async def append_draft_operation_heartbeat(self, session, row: dict) -> bool:
+        if not self._valid_stream_sequence(row, maximum=2047):
+            return False
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                  SET operation.heartbeat_at=%s,
+                      operation.lease_expires_at=%s,
+                      operation.updated_at=%s,
+                      operation.last_event_sequence=%s
+                WHERE operation.project_id=%s
+                  AND operation.chapter_session_id=%s
+                  AND operation.id=%s
+                  AND operation.fencing_token=%s
+                  AND operation.status='running'
+                  AND operation.active_slot=1
+                  AND chapter.active_draft_operation_id=operation.id
+                  AND operation.lease_expires_at>%s
+                  AND operation.partial_output_hash=%s
+                  AND operation.last_event_sequence=%s""",
+            (
+                row["heartbeat_at"],
+                row["lease_expires_at"],
+                row["updated_at"],
+                row["sequence_num"],
+                row["project_id"],
+                row["chapter_session_id"],
+                row["draft_operation_id"],
+                row["fencing_token"],
+                row["updated_at"],
+                row["previous_partial_output_hash"],
+                row["previous_last_event_sequence"],
+            ),
+        )
+        if changed != 1:
+            return False
+        return await self._insert_stream_event(
+            session,
+            row,
+            event_type="heartbeat",
+            closed_payload=None,
+        )
+
+    async def cancel_draft_operation(self, session, row: dict) -> bool:
+        if not self._valid_stream_sequence(row, maximum=2048):
+            return False
+        result_revision = row["result_working_draft_revision"]
+        result_hash = row["result_content_hash"]
+        if (result_revision is None) != (result_hash is None):
+            return False
+        commits_partial = result_revision is not None
+        partial_guard = (
+            "operation.partial_output_scalars>0"
+            if commits_partial
+            else "operation.partial_output_scalars=0"
+        )
+        common_guard = f"""operation.project_id=%s
+                  AND operation.chapter_session_id=%s
+                  AND operation.id=%s
+                  AND operation.fencing_token=%s
+                  AND operation.status='running'
+                  AND operation.active_slot=1
+                  AND chapter.active_draft_operation_id=operation.id
+                  AND operation.lease_expires_at>%s
+                  AND operation.partial_output_hash=%s
+                  AND operation.last_event_sequence=%s
+                  AND {partial_guard}"""
+        guard_args = (
+            row["project_id"],
+            row["chapter_session_id"],
+            row["draft_operation_id"],
+            row["fencing_token"],
+            row["updated_at"],
+            row["previous_partial_output_hash"],
+            row["previous_last_event_sequence"],
+        )
+        locked = await session.fetchone(
+            """SELECT operation.id
+                 FROM draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                WHERE """
+            + common_guard
+            + " FOR UPDATE",
+            guard_args,
+        )
+        if locked is None:
+            return False
+
+        if commits_partial:
+            if not await self.insert_working_draft_revision(
+                session, row["before_revision"]
+            ):
+                return False
+            if not await self.upsert_working_draft(
+                session,
+                row["working_draft"],
+                expected_revision=row["expected_working_draft_revision"],
+                expected_content_hash=row["expected_working_draft_hash"],
+            ):
+                return False
+            if not await self.insert_working_draft_revision(
+                session, row["after_revision"]
+            ):
+                return False
+
+        changed = await session.execute(
+            """UPDATE draft_operation_attempts operation
+                 JOIN chapter_sessions chapter
+                   ON chapter.project_id=operation.project_id
+                  AND chapter.id=operation.chapter_session_id
+                  SET operation.status='cancelled',
+                      operation.active_slot=NULL,
+                      operation.result_working_draft_revision=%s,
+                      operation.result_content_hash=%s,
+                      operation.failure_code=NULL,
+                      operation.updated_at=%s,
+                      operation.completed_at=%s,
+                      operation.cancelled_at=%s,
+                      operation.last_event_sequence=%s,
+                      chapter.active_draft_operation_id=NULL
+                WHERE """
+            + common_guard,
+            (
+                result_revision,
+                result_hash,
+                row["updated_at"],
+                row["completed_at"],
+                row["cancelled_at"],
+                row["sequence_num"],
+                *guard_args,
+            ),
+        )
+        if changed != 1:
+            return False
+        return await self._insert_stream_event(
+            session,
+            row,
+            event_type="cancelled",
+            closed_payload=row["closed_payload"],
+        )
+
+    @staticmethod
+    def _valid_stream_sequence(row: dict, *, maximum: int) -> bool:
+        sequence = row.get("sequence_num")
+        previous = row.get("previous_last_event_sequence")
+        return (
+            type(sequence) is int
+            and type(previous) is int
+            and 2 <= sequence <= maximum
+            and previous == sequence - 1
+        )
+
+    async def _insert_stream_event(
+        self,
+        session,
+        row: dict,
+        *,
+        event_type: str,
+        closed_payload,
+    ) -> bool:
+        return await session.execute(
+            """INSERT INTO draft_operation_events
+               (id,project_id,draft_operation_id,sequence_num,event_type,
+                closed_payload_json,created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["draft_operation_id"],
+                row["sequence_num"],
+                event_type,
+                (
+                    canonical_json(closed_payload)
+                    if closed_payload is not None
+                    else None
+                ),
+                row["created_at"],
+            ),
+        ) == 1
 
     async def complete_draft_operation(self, session, row: dict) -> bool:
         return await self._terminal_draft_operation_update(
@@ -849,7 +1084,7 @@ class ChapterSessionRepository:
                       h.content_hash AS binding_hash,
                       i.item_hash AS binding_item_hash,
                       p.id,p.name,p.provider_type,p.model_name,p.base_url,p.api_key,
-                      p.temperature,p.max_output_tokens
+                      p.temperature,p.max_output_tokens,p.stream,p.supports_streaming
                  FROM project_model_binding_heads h
                  JOIN project_model_binding_revisions r
                    ON r.project_id=h.project_id AND r.id=h.binding_revision_id

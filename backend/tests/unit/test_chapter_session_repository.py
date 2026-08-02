@@ -334,6 +334,112 @@ def _draft_operation_row():
     }
 
 
+def _stream_write_row(**overrides):
+    row = {
+        "id": "event-2",
+        "project_id": "project-1",
+        "chapter_session_id": "chapter-session-1",
+        "draft_operation_id": "operation-1",
+        "fencing_token": 3,
+        "previous_partial_output_hash": "a" * 64,
+        "previous_last_event_sequence": 1,
+        "sequence_num": 2,
+        "partial_output_text": "片段",
+        "partial_output_hash": "b" * 64,
+        "partial_output_scalars": 2,
+        "heartbeat_at": 150,
+        "lease_expires_at": 250,
+        "updated_at": 150,
+        "closed_payload": {
+            "text": "片段",
+            "partialOutputHash": "b" * 64,
+            "partialOutputScalars": 2,
+        },
+        "created_at": 150,
+    }
+    row.update(overrides)
+    return row
+
+
+def _cancel_row(*, commit_partial=False, **overrides):
+    row = {
+        **_stream_write_row(
+            id="cancel-event-2",
+            closed_payload={"committedPartial": commit_partial},
+        ),
+        "cancelled_at": 150,
+        "completed_at": 150,
+        "result_working_draft_revision": None,
+        "result_content_hash": None,
+    }
+    if commit_partial:
+        row.update({
+            "result_working_draft_revision": 2,
+            "result_content_hash": "b" * 64,
+            "expected_working_draft_revision": 1,
+            "expected_working_draft_hash": "c" * 64,
+            "working_draft": {
+                "id": "draft-1",
+                "project_id": "project-1",
+                "chapter_session_id": "chapter-session-1",
+                "revision": 2,
+                "content": "片段",
+                "content_hash": "b" * 64,
+                "source_payload": {
+                    "source": "draft-operation-cancel",
+                    "operationId": "operation-1",
+                },
+                "updated_at": 150,
+            },
+            "before_revision": {
+                "id": "before-1",
+                "project_id": "project-1",
+                "chapter_session_id": "chapter-session-1",
+                "working_draft_id": "draft-1",
+                "working_draft_revision": 1,
+                "snapshot_role": "before",
+                "replacement_reason": "generate_new",
+                "source_operation_id": "operation-1",
+                "content": "原文",
+                "content_hash": "c" * 64,
+                "created_at": 150,
+            },
+            "after_revision": {
+                "id": "after-1",
+                "project_id": "project-1",
+                "chapter_session_id": "chapter-session-1",
+                "working_draft_id": "draft-1",
+                "working_draft_revision": 2,
+                "snapshot_role": "after",
+                "replacement_reason": "generate_new",
+                "source_operation_id": "operation-1",
+                "content": "片段",
+                "content_hash": "b" * 64,
+                "created_at": 150,
+            },
+        })
+    row.update(overrides)
+    return row
+
+
+def _assert_exact_stream_guards(sql):
+    compact = " ".join(sql.split())
+    for predicate in (
+        "operation.project_id=%s",
+        "operation.chapter_session_id=%s",
+        "operation.id=%s",
+        "operation.fencing_token=%s",
+        "operation.status='running'",
+        "operation.active_slot=1",
+        "chapter.active_draft_operation_id=operation.id",
+        "operation.lease_expires_at>%s",
+        "operation.partial_output_hash=%s",
+        "operation.last_event_sequence=%s",
+    ):
+        assert predicate in compact
+    return compact
+
+
 @pytest.mark.asyncio
 async def test_operation_owner_reads_lock_exact_session_and_operation_rows():
     session = CapturingSession(
@@ -466,6 +572,269 @@ async def test_insert_operation_initializes_exact_empty_streaming_state():
         100,
         None,
     )
+
+
+@pytest.mark.asyncio
+async def test_delta_atomically_updates_exact_running_owner_and_appends_closed_event():
+    row = _stream_write_row()
+    session = CapturingSession(execute_results=[1, 1])
+
+    assert await ChapterSessionRepository().append_draft_operation_delta(
+        session, row
+    )
+
+    assert len(session.calls) == 2
+    update_sql, update_args = session.calls[0]
+    event_sql, event_args = session.calls[1]
+    compact = _assert_exact_stream_guards(update_sql)
+    for assignment in (
+        "operation.partial_output_text=%s",
+        "operation.partial_output_hash=%s",
+        "operation.partial_output_scalars=%s",
+        "operation.heartbeat_at=%s",
+        "operation.lease_expires_at=%s",
+        "operation.updated_at=%s",
+        "operation.last_event_sequence=%s",
+    ):
+        assert assignment in compact
+    assert update_args == (
+        "片段", "b" * 64, 2, 150, 250, 150, 2,
+        "project-1", "chapter-session-1", "operation-1", 3,
+        150, "a" * 64, 1,
+    )
+    assert "INSERT INTO draft_operation_events" in " ".join(event_sql.split())
+    assert event_args == (
+        "event-2", "project-1", "operation-1", 2, "delta",
+        canonical_json(row["closed_payload"]), 150,
+    )
+    assert "provider" not in canonical_json(row["closed_payload"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_keeps_partial_unchanged_and_appends_null_payload_event():
+    row = _stream_write_row(id="heartbeat-event-2")
+    session = CapturingSession(execute_results=[1, 1])
+
+    assert await ChapterSessionRepository().append_draft_operation_heartbeat(
+        session, row
+    )
+
+    update_sql, update_args = session.calls[0]
+    event_sql, event_args = session.calls[1]
+    compact = _assert_exact_stream_guards(update_sql)
+    assert "SET operation.heartbeat_at=%s" in compact
+    assert "operation.lease_expires_at=%s" in compact
+    assert "operation.updated_at=%s" in compact
+    assert "operation.last_event_sequence=%s" in compact
+    assert "operation.partial_output_text=%s" not in compact
+    assert "operation.partial_output_scalars=%s" not in compact
+    assert update_args == (
+        150, 250, 150, 2, "project-1", "chapter-session-1",
+        "operation-1", 3, 150, "a" * 64, 1,
+    )
+    assert "INSERT INTO draft_operation_events" in " ".join(event_sql.split())
+    assert event_args == (
+        "heartbeat-event-2", "project-1", "operation-1", 2,
+        "heartbeat", None, 150,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "sequence_num", "previous_sequence"),
+    (
+        ("append_draft_operation_delta", 1, 0),
+        ("append_draft_operation_delta", 2048, 2047),
+        ("append_draft_operation_heartbeat", 1, 0),
+        ("append_draft_operation_heartbeat", 2048, 2047),
+        ("append_draft_operation_delta", 3, 1),
+    ),
+)
+async def test_nonterminal_stream_writes_reject_reserved_or_nonconsecutive_sequences(
+    method_name, sequence_num, previous_sequence,
+):
+    session = CapturingSession()
+    row = _stream_write_row(
+        sequence_num=sequence_num,
+        previous_last_event_sequence=previous_sequence,
+    )
+
+    assert not await getattr(ChapterSessionRepository(), method_name)(session, row)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method_name",
+    ("append_draft_operation_delta", "append_draft_operation_heartbeat"),
+)
+async def test_stale_nonterminal_guard_stops_event_insert(method_name):
+    session = CapturingSession(execute_result=0)
+
+    assert not await getattr(ChapterSessionRepository(), method_name)(
+        session, _stream_write_row()
+    )
+    assert len(session.calls) == 1
+    _assert_exact_stream_guards(session.calls[0][0])
+
+
+@pytest.mark.asyncio
+async def test_delta_event_failure_returns_false_for_caller_transaction_rollback():
+    session = CapturingSession(execute_results=[1, 0])
+
+    assert not await ChapterSessionRepository().append_draft_operation_delta(
+        session, _stream_write_row()
+    )
+    assert len(session.calls) == 2
+    _assert_exact_stream_guards(session.calls[0][0])
+    assert "INSERT INTO draft_operation_events" in " ".join(
+        session.calls[1][0].split()
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_empty_partial_closes_exact_owner_without_draft_writes():
+    row = _cancel_row()
+    session = CapturingSession(rows=[{"id": "operation-1"}], execute_results=[1, 1])
+
+    assert await ChapterSessionRepository().cancel_draft_operation(session, row)
+
+    assert len(session.calls) == 3
+    guard_sql, guard_args = session.calls[0]
+    update_sql, update_args = session.calls[1]
+    event_sql, event_args = session.calls[2]
+    assert "FOR UPDATE" in _assert_exact_stream_guards(guard_sql)
+    assert "operation.partial_output_scalars=0" in " ".join(guard_sql.split())
+    assert guard_args == (
+        "project-1", "chapter-session-1", "operation-1", 3,
+        150, "a" * 64, 1,
+    )
+    compact = _assert_exact_stream_guards(update_sql)
+    for assignment in (
+        "operation.status='cancelled'",
+        "operation.active_slot=NULL",
+        "operation.result_working_draft_revision=%s",
+        "operation.result_content_hash=%s",
+        "operation.failure_code=NULL",
+        "operation.cancelled_at=%s",
+        "operation.completed_at=%s",
+        "chapter.active_draft_operation_id=NULL",
+    ):
+        assert assignment in compact
+    assert update_args == (
+        None, None, 150, 150, 150, 2,
+        "project-1", "chapter-session-1", "operation-1", 3,
+        150, "a" * 64, 1,
+    )
+    assert "working_drafts" not in compact
+    assert "working_draft_revisions" not in compact
+    assert "INSERT INTO draft_operation_events" in " ".join(event_sql.split())
+    assert event_args == (
+        "cancel-event-2", "project-1", "operation-1", 2, "cancelled",
+        canonical_json(row["closed_payload"]), 150,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_nonempty_partial_recovers_cas_commits_and_then_closes_owner():
+    row = _cancel_row(commit_partial=True)
+    session = CapturingSession(
+        rows=[{"id": "operation-1"}],
+        execute_results=[1, 1, 1, 1, 1],
+    )
+
+    assert await ChapterSessionRepository().cancel_draft_operation(session, row)
+
+    assert len(session.calls) == 6
+    guard_sql, _ = session.calls[0]
+    before_sql, before_args = session.calls[1]
+    draft_sql, draft_args = session.calls[2]
+    after_sql, after_args = session.calls[3]
+    update_sql, update_args = session.calls[4]
+    event_sql, event_args = session.calls[5]
+    assert "FOR UPDATE" in _assert_exact_stream_guards(guard_sql)
+    assert "operation.partial_output_scalars>0" in " ".join(guard_sql.split())
+    assert "INSERT INTO working_draft_revisions" in " ".join(before_sql.split())
+    assert before_args[0] == "before-1"
+    assert "UPDATE working_drafts" in " ".join(draft_sql.split())
+    assert draft_args[-2:] == (1, "c" * 64)
+    assert "INSERT INTO working_draft_revisions" in " ".join(after_sql.split())
+    assert after_args[0] == "after-1"
+    _assert_exact_stream_guards(update_sql)
+    assert update_args == (
+        2, "b" * 64, 150, 150, 150, 2,
+        "project-1", "chapter-session-1", "operation-1", 3,
+        150, "a" * 64, 1,
+    )
+    assert "INSERT INTO draft_operation_events" in " ".join(event_sql.split())
+    assert event_args[4] == "cancelled"
+    assert event_args[5] == canonical_json(row["closed_payload"])
+
+
+@pytest.mark.asyncio
+async def test_cancel_stale_guard_stops_all_writes():
+    session = CapturingSession(rows=[])
+
+    assert not await ChapterSessionRepository().cancel_draft_operation(
+        session, _cancel_row()
+    )
+    assert len(session.calls) == 1
+    assert "FOR UPDATE" in _assert_exact_stream_guards(session.calls[0][0])
+
+
+@pytest.mark.asyncio
+async def test_cancel_nonempty_draft_cas_failure_stops_recovery_and_terminal_writes():
+    session = CapturingSession(
+        rows=[{"id": "operation-1"}],
+        execute_results=[1, 0],
+    )
+
+    assert not await ChapterSessionRepository().cancel_draft_operation(
+        session, _cancel_row(commit_partial=True)
+    )
+    assert len(session.calls) == 3
+    assert "INSERT INTO working_draft_revisions" in " ".join(
+        session.calls[1][0].split()
+    )
+    assert "UPDATE working_drafts" in " ".join(session.calls[2][0].split())
+
+
+@pytest.mark.asyncio
+async def test_cancel_terminal_guard_failure_stops_event_for_caller_rollback():
+    session = CapturingSession(
+        rows=[{"id": "operation-1"}],
+        execute_results=[1, 1, 1, 0],
+    )
+
+    assert not await ChapterSessionRepository().cancel_draft_operation(
+        session, _cancel_row(commit_partial=True)
+    )
+    assert len(session.calls) == 5
+    _assert_exact_stream_guards(session.calls[4][0])
+    assert all(
+        "INSERT INTO draft_operation_events" not in " ".join(sql.split())
+        for sql, _ in session.calls
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sequence_num", "previous_sequence"),
+    ((1, 0), (2049, 2048), (3, 1)),
+)
+async def test_cancel_rejects_reserved_or_nonconsecutive_terminal_sequence(
+    sequence_num, previous_sequence,
+):
+    session = CapturingSession()
+
+    assert not await ChapterSessionRepository().cancel_draft_operation(
+        session,
+        _cancel_row(
+            sequence_num=sequence_num,
+            previous_last_event_sequence=previous_sequence,
+        ),
+    )
+    assert session.calls == []
 
 
 @pytest.mark.asyncio
@@ -619,6 +988,29 @@ async def test_event_list_rejects_limits_outside_hard_safe_range():
         await repository.list_draft_operation_events(session, "operation-1", 0, 101)
 
     assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_writing_provider_resolution_freezes_streaming_capabilities_privately():
+    session = CapturingSession(rows=[{
+        "id": "provider-1",
+        "stream": 1,
+        "supports_streaming": 1,
+        "api_key": "private-key",
+    }])
+
+    result = await ChapterSessionRepository().resolve_writing_provider(
+        session, "project-1"
+    )
+
+    sql, args = session.calls[0]
+    compact = " ".join(sql.split())
+    assert "p.stream" in compact
+    assert "p.supports_streaming" in compact
+    assert args == ("project-1",)
+    assert result["stream"] == 1
+    assert result["supports_streaming"] == 1
+    assert result["api_key"] == "private-key"
 
 
 @pytest.mark.asyncio
