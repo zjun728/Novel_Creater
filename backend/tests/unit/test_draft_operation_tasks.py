@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from backend.runtime import draft_operation_tasks
 from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
 
 
@@ -203,3 +204,121 @@ async def test_aclose_preserves_caller_cancellation_after_settling_children():
     await _wait_for(lambda: worker_cancelled.is_set() and registry.size == 0)
     with pytest.raises(RuntimeError):
         registry.launch("op-2", worker)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_aclose_is_single_flight_bounded_and_detaches_stubborn_task(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        draft_operation_tasks,
+        "_DRAFT_OPERATION_TASK_SHUTDOWN_TIMEOUT_SECONDS",
+        0.01,
+    )
+    registry = DraftOperationTaskRegistry()
+    await registry.start()
+    worker_started = asyncio.Event()
+    first_cancel_seen = asyncio.Event()
+    old_release = asyncio.Event()
+    old_settled = asyncio.Event()
+    cancel_count = 0
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    errors = []
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+    async def stubborn_worker(signal):
+        nonlocal cancel_count
+        worker_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancel_count += 1
+            assert signal.is_set()
+            first_cancel_seen.set()
+            await old_release.wait()
+        old_settled.set()
+
+    try:
+        registry.launch("same-id", stubborn_worker)
+        await worker_started.wait()
+        first_close = asyncio.create_task(registry.aclose())
+        second_close = asyncio.create_task(registry.aclose())
+        await first_cancel_seen.wait()
+        with pytest.raises(RuntimeError):
+            await registry.start()
+        await asyncio.wait_for(
+            asyncio.gather(first_close, second_close),
+            timeout=0.2,
+        )
+        assert cancel_count == 1
+        assert registry.size == 0
+
+        await registry.start()
+        new_release = asyncio.Event()
+        new_started = asyncio.Event()
+
+        async def new_worker(signal):
+            new_started.set()
+            await new_release.wait()
+
+        registry.launch("same-id", new_worker)
+        await new_started.wait()
+        old_release.set()
+        await old_settled.wait()
+        await asyncio.sleep(0)
+        assert registry.size == 1
+        new_release.set()
+        await _wait_for(lambda: registry.size == 0)
+        await registry.aclose()
+        await asyncio.sleep(0)
+        assert errors == []
+    finally:
+        old_release.set()
+        loop.set_exception_handler(previous_handler)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_aclose_waiter_preserves_first_reason_and_shared_drain(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        draft_operation_tasks,
+        "_DRAFT_OPERATION_TASK_SHUTDOWN_TIMEOUT_SECONDS",
+        0.2,
+    )
+    registry = DraftOperationTaskRegistry()
+    await registry.start()
+    worker_started = asyncio.Event()
+    worker_cancelled = asyncio.Event()
+    worker_release = asyncio.Event()
+    worker_settled = asyncio.Event()
+
+    async def worker(signal):
+        worker_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            assert signal.is_set()
+            worker_cancelled.set()
+            await worker_release.wait()
+        worker_settled.set()
+
+    registry.launch("op-1", worker)
+    await worker_started.wait()
+    cancelled_waiter = asyncio.create_task(registry.aclose())
+    successful_waiter = asyncio.create_task(registry.aclose())
+    await worker_cancelled.wait()
+    cancelled_waiter.cancel("caller-reason")
+    await asyncio.sleep(0)
+    cancelled_waiter.cancel("later-reason")
+    await asyncio.sleep(0)
+    assert not successful_waiter.done()
+    worker_release.set()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await cancelled_waiter
+    assert exc_info.value.args == ("caller-reason",)
+    await successful_waiter
+    assert worker_settled.is_set()
+    assert registry.size == 0
