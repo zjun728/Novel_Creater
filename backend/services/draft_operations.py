@@ -944,11 +944,18 @@ class DraftOperationService:
                     )
                     if draft is None:
                         raise DraftOperationNotFound()
-                    result_revision = int(draft["revision"]) + 1
+                    base_revision = int(attempt["base_working_draft_revision"])
+                    base_hash = attempt["base_working_draft_hash"]
+                    if (
+                        int(draft.get("revision") or -1) != base_revision
+                        or draft.get("content_hash") != base_hash
+                    ):
+                        raise DraftOperationConflict()
+                    result_revision = base_revision + 1
                     row.update(
                         result_working_draft_revision=result_revision,
-                        expected_working_draft_revision=int(draft["revision"]),
-                        expected_working_draft_hash=draft["content_hash"],
+                        expected_working_draft_revision=base_revision,
+                        expected_working_draft_hash=base_hash,
                         working_draft=self._working_draft_row(
                             attempt, draft, normalized, result_hash, now
                         ),

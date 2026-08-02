@@ -1860,3 +1860,41 @@ async def test_projector_accepts_running_heartbeat_sequence_with_empty_partial()
     assert projected.status == "running"
     assert projected.last_event_sequence == 2
     assert projected.partial_output == ""
+
+
+@pytest.mark.asyncio
+async def test_cancel_nonempty_partial_rejects_external_working_draft_drift_atomically():
+    from backend.services.draft_operations import DraftOperationConflict
+
+    service, repo, _, registry, _, _ = make_background_service()
+    started = await service.start(command())
+    attempt = repo.operations[started.operation_id]
+    partial = "persisted recovery"
+    attempt.update(
+        partial_output_text=partial,
+        partial_output_hash=hashlib.sha256(partial.encode()).hexdigest(),
+        partial_output_scalars=len(partial),
+        last_event_sequence=2,
+    )
+    external_content = "用户在 operation 运行期间保存的新稿"
+    external_hash = hashlib.sha256(external_content.encode()).hexdigest()
+    repo.draft.update(
+        revision=2,
+        content=external_content,
+        content_hash=external_hash,
+        updated_at=9_999,
+    )
+    external_draft = copy.deepcopy(repo.draft)
+
+    with pytest.raises(DraftOperationConflict):
+        await service.cancel(PROJECT_ID, SESSION_ID, started.operation_id)
+
+    assert repo.draft == external_draft
+    assert repo.revisions == []
+    assert attempt["status"] == "running"
+    assert attempt["result_working_draft_revision"] is None
+    assert attempt["result_content_hash"] is None
+    assert registry.cancelled == []
+    readable = await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
+    assert readable.status == "running"
+    assert readable.partial_output == partial
