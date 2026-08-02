@@ -549,12 +549,7 @@ class ChapterSessionRepository:
         if (result_revision is None) != (result_hash is None):
             return False
         commits_partial = result_revision is not None
-        partial_guard = (
-            "operation.partial_output_scalars>0"
-            if commits_partial
-            else "operation.partial_output_scalars=0"
-        )
-        common_guard = f"""operation.project_id=%s
+        common_guard = """operation.project_id=%s
                   AND operation.chapter_session_id=%s
                   AND operation.id=%s
                   AND operation.fencing_token=%s
@@ -563,8 +558,7 @@ class ChapterSessionRepository:
                   AND chapter.active_draft_operation_id=operation.id
                   AND operation.lease_expires_at>%s
                   AND operation.partial_output_hash=%s
-                  AND operation.last_event_sequence=%s
-                  AND {partial_guard}"""
+                  AND operation.last_event_sequence=%s"""
         guard_args = (
             row["project_id"],
             row["chapter_session_id"],
@@ -614,6 +608,9 @@ class ChapterSessionRepository:
                       operation.active_slot=NULL,
                       operation.result_working_draft_revision=%s,
                       operation.result_content_hash=%s,
+                      operation.partial_output_text=%s,
+                      operation.partial_output_hash=%s,
+                      operation.partial_output_scalars=%s,
                       operation.failure_code=NULL,
                       operation.updated_at=%s,
                       operation.completed_at=%s,
@@ -625,6 +622,9 @@ class ChapterSessionRepository:
             (
                 result_revision,
                 result_hash,
+                row["partial_output_text"],
+                row["partial_output_hash"],
+                row["partial_output_scalars"],
                 row["updated_at"],
                 row["completed_at"],
                 row["cancelled_at"],
@@ -681,19 +681,35 @@ class ChapterSessionRepository:
         ) == 1
 
     async def complete_draft_operation(self, session, row: dict) -> bool:
+        if not self._valid_stream_sequence(row, maximum=2048):
+            return False
+        if (
+            row["result_working_draft_revision"] is None
+            or row["result_content_hash"] is None
+        ):
+            return False
         return await self._terminal_draft_operation_update(
             session,
             row,
             status="completed",
             assignments="""operation.result_working_draft_revision=%s,
-                      operation.result_content_hash=%s,""",
+                      operation.result_content_hash=%s,
+                      operation.partial_output_text=%s,
+                      operation.partial_output_hash=%s,
+                      operation.partial_output_scalars=%s,
+                      operation.failure_code=NULL,""",
             values=(
                 row["result_working_draft_revision"],
                 row["result_content_hash"],
+                row["partial_output_text"],
+                row["partial_output_hash"],
+                row["partial_output_scalars"],
             ),
         )
 
     async def fail_draft_operation(self, session, row: dict) -> bool:
+        if not self._valid_stream_sequence(row, maximum=2048):
+            return False
         return await self._terminal_draft_operation_update(
             session,
             row,
@@ -785,27 +801,36 @@ class ChapterSessionRepository:
                   SET """
             + assignments
             + """
-                      operation.status=%s,operation.active_slot=NULL,
+                      operation.status='"""
+            + status
+            + """',operation.active_slot=NULL,
                       operation.updated_at=%s,operation.completed_at=%s,
+                      operation.last_event_sequence=%s,
                       chapter.active_draft_operation_id=NULL
                 WHERE operation.project_id=%s
                   AND operation.chapter_session_id=%s AND operation.id=%s
                   AND operation.fencing_token=%s
-                  AND operation.status IN ('starting','running')
+                  AND operation.status='running'
                   AND operation.active_slot=1
-                  AND chapter.active_draft_operation_id=operation.id""",
+                  AND chapter.active_draft_operation_id=operation.id
+                  AND operation.lease_expires_at>%s
+                  AND operation.partial_output_hash=%s
+                  AND operation.last_event_sequence=%s""",
             (
                 *values,
-                status,
                 row["updated_at"],
                 row["completed_at"],
+                row["sequence_num"],
                 row["project_id"],
                 row["chapter_session_id"],
                 row["id"],
                 row["fencing_token"],
+                row["updated_at"],
+                row["previous_partial_output_hash"],
+                row["sequence_num"],
             ),
         )
-        return changed > 0
+        return changed == 1
 
     async def insert_draft_operation_event(self, session, row: dict) -> bool:
         sequence_num = row["sequence_num"]

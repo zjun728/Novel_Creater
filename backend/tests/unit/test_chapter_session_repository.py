@@ -365,7 +365,10 @@ def _cancel_row(*, commit_partial=False, **overrides):
     row = {
         **_stream_write_row(
             id="cancel-event-2",
-            closed_payload={"committedPartial": commit_partial},
+            closed_payload={
+                "resultWorkingDraftRevision": None,
+                "resultContentHash": None,
+            },
         ),
         "cancelled_at": 150,
         "completed_at": 150,
@@ -418,6 +421,54 @@ def _cancel_row(*, commit_partial=False, **overrides):
                 "created_at": 150,
             },
         })
+        row["closed_payload"] = {
+            "resultWorkingDraftRevision": 2,
+            "resultContentHash": "b" * 64,
+        }
+    else:
+        row.update({
+            "partial_output_text": "",
+            "partial_output_hash": hashlib.sha256(b"").hexdigest(),
+            "partial_output_scalars": 0,
+        })
+    row.update(overrides)
+    return row
+
+
+def _complete_terminal_row(**overrides):
+    row = {
+        "id": "operation-1",
+        "project_id": "project-1",
+        "chapter_session_id": "chapter-session-1",
+        "fencing_token": 3,
+        "result_working_draft_revision": 2,
+        "result_content_hash": "d" * 64,
+        "partial_output_text": "exact terminal",
+        "partial_output_hash": "d" * 64,
+        "partial_output_scalars": len("exact terminal"),
+        "previous_partial_output_hash": "a" * 64,
+        "previous_last_event_sequence": 7,
+        "sequence_num": 8,
+        "updated_at": 160,
+        "completed_at": 160,
+    }
+    row.update(overrides)
+    return row
+
+
+def _failed_terminal_row(**overrides):
+    row = {
+        "id": "operation-1",
+        "project_id": "project-1",
+        "chapter_session_id": "chapter-session-1",
+        "fencing_token": 3,
+        "failure_code": "DraftProviderFailed",
+        "previous_partial_output_hash": "a" * 64,
+        "previous_last_event_sequence": 7,
+        "sequence_num": 8,
+        "updated_at": 170,
+        "completed_at": 170,
+    }
     row.update(overrides)
     return row
 
@@ -704,7 +755,7 @@ async def test_cancel_empty_partial_closes_exact_owner_without_draft_writes():
     update_sql, update_args = session.calls[1]
     event_sql, event_args = session.calls[2]
     assert "FOR UPDATE" in _assert_exact_stream_guards(guard_sql)
-    assert "operation.partial_output_scalars=0" in " ".join(guard_sql.split())
+    assert "operation.partial_output_scalars" not in " ".join(guard_sql.split())
     assert guard_args == (
         "project-1", "chapter-session-1", "operation-1", 3,
         150, "a" * 64, 1,
@@ -715,6 +766,9 @@ async def test_cancel_empty_partial_closes_exact_owner_without_draft_writes():
         "operation.active_slot=NULL",
         "operation.result_working_draft_revision=%s",
         "operation.result_content_hash=%s",
+        "operation.partial_output_text=%s",
+        "operation.partial_output_hash=%s",
+        "operation.partial_output_scalars=%s",
         "operation.failure_code=NULL",
         "operation.cancelled_at=%s",
         "operation.completed_at=%s",
@@ -722,7 +776,8 @@ async def test_cancel_empty_partial_closes_exact_owner_without_draft_writes():
     ):
         assert assignment in compact
     assert update_args == (
-        None, None, 150, 150, 150, 2,
+        None, None, "", hashlib.sha256(b"").hexdigest(), 0,
+        150, 150, 150, 2,
         "project-1", "chapter-session-1", "operation-1", 3,
         150, "a" * 64, 1,
     )
@@ -753,7 +808,7 @@ async def test_cancel_nonempty_partial_recovers_cas_commits_and_then_closes_owne
     update_sql, update_args = session.calls[4]
     event_sql, event_args = session.calls[5]
     assert "FOR UPDATE" in _assert_exact_stream_guards(guard_sql)
-    assert "operation.partial_output_scalars>0" in " ".join(guard_sql.split())
+    assert "operation.partial_output_scalars" not in " ".join(guard_sql.split())
     assert "INSERT INTO working_draft_revisions" in " ".join(before_sql.split())
     assert before_args[0] == "before-1"
     assert "UPDATE working_drafts" in " ".join(draft_sql.split())
@@ -762,13 +817,43 @@ async def test_cancel_nonempty_partial_recovers_cas_commits_and_then_closes_owne
     assert after_args[0] == "after-1"
     _assert_exact_stream_guards(update_sql)
     assert update_args == (
-        2, "b" * 64, 150, 150, 150, 2,
+        2, "b" * 64, "片段", "b" * 64, 2,
+        150, 150, 150, 2,
         "project-1", "chapter-session-1", "operation-1", 3,
         150, "a" * 64, 1,
     )
     assert "INSERT INTO draft_operation_events" in " ".join(event_sql.split())
     assert event_args[4] == "cancelled"
     assert event_args[5] == canonical_json(row["closed_payload"])
+
+
+@pytest.mark.asyncio
+async def test_cancel_whitespace_snapshot_accepts_normalized_empty_terminal_state():
+    whitespace = " \n\t "
+    row = _cancel_row(
+        previous_partial_output_hash=hashlib.sha256(whitespace.encode()).hexdigest(),
+    )
+    session = CapturingSession(rows=[{"id": "operation-1"}], execute_results=[1, 1])
+
+    assert await ChapterSessionRepository().cancel_draft_operation(session, row)
+
+    guard_sql, guard_args = session.calls[0]
+    update_sql, update_args = session.calls[1]
+    assert "operation.partial_output_scalars" not in " ".join(guard_sql.split())
+    assert guard_args[-2:] == (row["previous_partial_output_hash"], 1)
+    assert "operation.partial_output_text=%s" in " ".join(update_sql.split())
+    assert update_args[:5] == (
+        None,
+        None,
+        "",
+        hashlib.sha256(b"").hexdigest(),
+        0,
+    )
+    assert all(
+        "working_drafts" not in " ".join(sql.split())
+        and "working_draft_revisions" not in " ".join(sql.split())
+        for sql, _ in session.calls
+    )
 
 
 @pytest.mark.asyncio
@@ -856,32 +941,127 @@ async def test_mark_running_requires_matching_operation_fence_and_session_owner(
 
 
 @pytest.mark.asyncio
-async def test_terminal_operation_updates_require_matching_fence_and_clear_same_owner():
-    repository = ChapterSessionRepository()
-    complete = {
-        **_draft_operation_row(),
-        "result_working_draft_revision": 2,
-        "result_content_hash": "d" * 64,
-        "updated_at": 160,
-        "completed_at": 160,
-    }
-    failed = {**_draft_operation_row(), "failure_code": "DraftProviderFailed", "updated_at": 170, "completed_at": 170}
+async def test_complete_uses_service_row_to_persist_exact_terminal_partial_and_sequence():
+    row = _complete_terminal_row()
     session = CapturingSession()
 
-    assert await repository.complete_draft_operation(session, complete)
-    assert await repository.fail_draft_operation(session, failed)
-    assert await repository.expire_draft_operation(session, "operation-1", 3, 180)
+    assert await ChapterSessionRepository().complete_draft_operation(session, row)
 
-    for sql, _ in session.calls:
-        compact = " ".join(sql.split())
-        assert "JOIN chapter_sessions chapter" in compact
-        assert "operation.id=%s" in compact
-        assert "operation.fencing_token=%s" in compact
-        assert "chapter.active_draft_operation_id=operation.id" in compact
-        assert "operation.active_slot=NULL" in compact
-    assert session.calls[0][1][-2:] == ("operation-1", 3)
-    assert session.calls[1][1][-2:] == ("operation-1", 3)
-    assert session.calls[2][1] == (180, 180, "operation-1", 3, 180)
+    assert len(session.calls) == 1
+    sql, args = session.calls[0]
+    compact = _assert_exact_stream_guards(sql)
+    for assignment in (
+        "operation.status='completed'",
+        "operation.active_slot=NULL",
+        "operation.result_working_draft_revision=%s",
+        "operation.result_content_hash=%s",
+        "operation.partial_output_text=%s",
+        "operation.partial_output_hash=%s",
+        "operation.partial_output_scalars=%s",
+        "operation.failure_code=NULL",
+        "operation.last_event_sequence=%s",
+        "chapter.active_draft_operation_id=NULL",
+    ):
+        assert assignment in compact
+    assert args == (
+        2, "d" * 64, "exact terminal", "d" * 64, len("exact terminal"),
+        160, 160, 8,
+        "project-1", "chapter-session-1", "operation-1", 3,
+        160, "a" * 64, 8,
+    )
+
+
+@pytest.mark.asyncio
+async def test_failure_preserves_partial_and_closes_at_service_advanced_sequence():
+    row = _failed_terminal_row()
+    session = CapturingSession()
+
+    assert await ChapterSessionRepository().fail_draft_operation(session, row)
+
+    assert len(session.calls) == 1
+    sql, args = session.calls[0]
+    compact = _assert_exact_stream_guards(sql)
+    assert "operation.status='failed'" in compact
+    assert "operation.failure_code=%s" in compact
+    assert "operation.active_slot=NULL" in compact
+    assert "operation.last_event_sequence=%s" in compact
+    assert "chapter.active_draft_operation_id=NULL" in compact
+    set_clause = compact.split(" WHERE ", 1)[0]
+    assert "operation.partial_output_text=%s" not in set_clause
+    assert "operation.partial_output_hash=%s" not in set_clause
+    assert "operation.partial_output_scalars=%s" not in set_clause
+    assert args == (
+        "DraftProviderFailed", 170, 170, 8,
+        "project-1", "chapter-session-1", "operation-1", 3,
+        170, "a" * 64, 8,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name,row", (
+    ("complete_draft_operation", _complete_terminal_row()),
+    ("fail_draft_operation", _failed_terminal_row()),
+))
+async def test_complete_and_failure_false_require_caller_to_rollback_prior_event(
+    method_name, row,
+):
+    session = CapturingSession(execute_result=0)
+
+    assert not await getattr(ChapterSessionRepository(), method_name)(session, row)
+    assert len(session.calls) == 1
+    _assert_exact_stream_guards(session.calls[0][0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name,row", (
+    (
+        "complete_draft_operation",
+        _complete_terminal_row(sequence_num=9, previous_last_event_sequence=7),
+    ),
+    (
+        "fail_draft_operation",
+        _failed_terminal_row(sequence_num=2049, previous_last_event_sequence=2048),
+    ),
+))
+async def test_complete_and_failure_reject_invalid_terminal_sequence(method_name, row):
+    session = CapturingSession()
+
+    assert not await getattr(ChapterSessionRepository(), method_name)(session, row)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result_revision", "result_hash"),
+    ((None, None), (2, None), (None, "d" * 64)),
+)
+async def test_completion_rejects_missing_result_pair(result_revision, result_hash):
+    session = CapturingSession()
+    row = _complete_terminal_row(
+        result_working_draft_revision=result_revision,
+        result_content_hash=result_hash,
+    )
+
+    assert not await ChapterSessionRepository().complete_draft_operation(session, row)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_expire_operation_clears_matching_owner():
+    session = CapturingSession()
+
+    assert await ChapterSessionRepository().expire_draft_operation(
+        session, "operation-1", 3, 180
+    )
+
+    sql, args = session.calls[0]
+    compact = " ".join(sql.split())
+    assert "JOIN chapter_sessions chapter" in compact
+    assert "operation.id=%s" in compact
+    assert "operation.fencing_token=%s" in compact
+    assert "chapter.active_draft_operation_id=operation.id" in compact
+    assert "operation.active_slot=NULL" in compact
+    assert args == (180, 180, "operation-1", 3, 180)
 
 
 @pytest.mark.asyncio
