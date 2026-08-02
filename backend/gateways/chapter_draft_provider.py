@@ -244,7 +244,14 @@ class ChapterDraftProviderGateway:
             raise failure
         if cleanup_cancellation is not None:
             raise cleanup_cancellation
-        if isinstance(failure, (GeneratorExit, KeyboardInterrupt, SystemExit)):
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            raise failure
+        if isinstance(
+            cleanup_system_failure,
+            (KeyboardInterrupt, SystemExit, GeneratorExit),
+        ):
+            raise cleanup_system_failure
+        if isinstance(failure, GeneratorExit):
             raise failure
         if failure is not None and not isinstance(failure, Exception):
             raise failure

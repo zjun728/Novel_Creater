@@ -619,6 +619,79 @@ async def test_redirect_response_is_http_failure_without_body_iteration():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_target", ("response", "client"))
+@pytest.mark.parametrize(
+    "system_error_type",
+    (KeyboardInterrupt, SystemExit, GeneratorExit),
+)
+async def test_consumer_aclose_preserves_cleanup_system_exception_precedence(
+    monkeypatch,
+    cleanup_target,
+    system_error_type,
+):
+    import backend.gateways.chapter_draft_provider as provider_module
+
+    marker = f"consumer-{cleanup_target}-{system_error_type.__name__}"
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = httpx.Headers({"content-type": "text/event-stream"})
+            self.is_success = True
+            self.close_calls = 0
+
+        async def aiter_raw(self):
+            yield b'data: {"choices":[{"index":0,"delta":{"content":"one"}}]}\n\n'
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            self.close_calls += 1
+            if cleanup_target == "response":
+                raise system_error_type(marker)
+
+    class FakeClient:
+        def __init__(self, response):
+            self.response = response
+            self.close_calls = 0
+
+        def build_request(self, *_args, **_kwargs):
+            return object()
+
+        async def send(self, _request, *, stream):
+            assert stream is True
+            return self.response
+
+        async def aclose(self):
+            self.close_calls += 1
+            if cleanup_target == "client":
+                raise system_error_type(marker)
+
+    response = FakeResponse()
+    client = FakeClient(response)
+    monkeypatch.setattr(
+        provider_module.httpx,
+        "AsyncClient",
+        lambda **_kwargs: client,
+    )
+    iterator = ChapterDraftProviderGateway().stream(
+        provider=_provider(),
+        messages=({"role": "user", "content": "facts"},),
+        generation_config={"temperature": 0.2, "maxOutputTokens": 4500},
+    )
+
+    assert await anext(iterator) == "one"
+    if system_error_type is GeneratorExit:
+        # Async-generator aclose deliberately suppresses a selected GeneratorExit.
+        await iterator.aclose()
+    else:
+        with pytest.raises(system_error_type) as caught:
+            await iterator.aclose()
+        assert caught.value.args == (marker,)
+
+    assert response.close_calls == 1
+    assert client.close_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_maps_remote_failures_to_safe_existing_gateway_errors():
     secret = "mysql://user:REMOTE_PASSWORD@provider.invalid/database"
     gateway = ChapterDraftProviderGateway(
