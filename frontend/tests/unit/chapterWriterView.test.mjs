@@ -58,10 +58,10 @@ test('writer view has one controller-owned plain-text working draft loop', async
   assert.ok(conflictBranch)
   assert.doesNotMatch(conflictBranch, /retry|reload|reset|disabled/)
   assert.match(editor, /@click="emit\('retry'\)"/)
-  assert.match(editor, /:readonly="readonly"/)
+  assert.match(editor, /:readonly="readonly \|\| streaming"/)
   assert.match(editor, /:disabled="disabled"/)
-  assert.match(editor, /:disabled="disabled \|\| readonly"/)
-  assert.match(editor, /if \(props\.readonly \|\| props\.disabled\) return/)
+  assert.match(editor, /:disabled="disabled \|\| readonly \|\| streaming"/)
+  assert.match(editor, /if \(props\.readonly \|\| props\.disabled \|\| props\.streaming\) return/)
   const selectionBody = functionBody(editor, 'function emitSelection(')
   assert.doesNotMatch(selectionBody, /readonly|disabled/)
   assert.match(editor, /:read-only:not\(:disabled\)/)
@@ -75,6 +75,8 @@ test('operation status is a shallow readable overlay with one auditable busy loc
 
   assert.match(view, /createDraftOperation:\s*command\s*=>\s*chapterSessionStore\.createDraftOperation/)
   assert.match(view, /readDraftOperation:\s*operationId\s*=>\s*chapterSessionStore\.readDraftOperation/)
+  assert.match(view, /listDraftOperationEvents:\s*\(operationId, afterSequence\)\s*=>\s*chapterSessionStore\.listDraftOperationEvents/)
+  assert.match(view, /cancelDraftOperation:\s*operationId\s*=>\s*chapterSessionStore\.cancelDraftOperation/)
   assert.match(view, /reloadWorkspace:\s*\(\)\s*=>\s*chapterSessionStore\.reloadCurrentWorkspace/)
   assert.match(view, /controller\.retryUnknown/)
   assert.match(view, /class="draft-operation-layer"[\s\S]*?aria-live="polite"/)
@@ -85,6 +87,8 @@ test('operation status is a shallow readable overlay with one auditable busy loc
   assert.match(view, /const editorReadonly = computed\(\(\) => controller\.actionBusy\.value\)/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:disabled="editorDisabled"/)
   assert.match(view, /plain-text-draft-editor[\s\S]*?:readonly="editorReadonly"/)
+  assert.match(view, /plain-text-draft-editor[\s\S]*?:model-value="controller\.editorText\.value"/)
+  assert.match(view, /plain-text-draft-editor[\s\S]*?:streaming="controller\.streamingPreview\.value !== null"/)
   assert.match(view, /writer-outline-link[\s\S]*?:aria-disabled="controller\.actionBusy\.value"/)
   assert.match(view, /@click="guardBusyNavigation"/)
   assert.match(view, /返回项目[\s\S]*?:disabled="controller\.actionBusy\.value"|:disabled="controller\.actionBusy\.value"[\s\S]*?返回项目/)
@@ -93,11 +97,15 @@ test('operation status is a shallow readable overlay with one auditable busy loc
 
   for (const label of [
     '正在生成',
+    '正在恢复连接',
+    '正在取消',
+    '已停止，已保留生成内容',
+    '已停止，正文未改变',
     '生成完成',
     '生成失败',
-    '生成结果已失效',
-    '结果未知，可重试',
+    '生成已失效',
   ]) assert.match(controller, new RegExp(label))
+  assert.doesNotMatch(controller, /结果未知，可重试/)
   assert.doesNotMatch(controller, /operationStatusText[\s\S]{0,300}(?:error\.message|failureCode\.value)/)
 })
 
@@ -107,6 +115,33 @@ test('route loading resets coordinator context synchronously before any awaited 
   assert.ok(body)
   assert.ok(body.indexOf('controller.resetContext()') >= 0)
   assert.ok(body.indexOf('controller.resetContext()') < body.indexOf('await '))
+})
+
+test('route loading starts a nonblocking safe resume after autosave reset when the workspace has an active operation', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const body = functionBody(view, 'async function loadWorkspace(')
+  const reset = body.indexOf('autosave.reset(chapterSessionStore.workspace)')
+  const resume = body.indexOf('controller.resumeDraftOperation(activeDraftOperationId)')
+  assert.ok(reset >= 0)
+  assert.ok(resume > reset)
+  assert.match(body, /const activeDraftOperationId = chapterSessionStore\.workspace\?\.activeDraftOperationId/)
+  assert.match(body, /void controller\.resumeDraftOperation\(activeDraftOperationId\)\.catch\(\(\) => \{[\s\S]*?if \(!loadGuard\.isCurrent\(generation\)\) return[\s\S]*?actionError\.value = '生成失败'/)
+  assert.doesNotMatch(body.slice(resume, resume + 220), /await controller\.resumeDraftOperation/)
+})
+
+test('stop generation is available only while the controller marks the current operation cancellable', async () => {
+  const view = await source('views/ChapterWriterView.vue')
+  const stop = functionBody(view, 'async function stopGeneration(')
+  assert.match(stop, /controller\.cancelGeneration\(\)/)
+  assert.match(view, /<n-button v-if="controller\.operationCancellable\.value"[\s\S]*?@click="stopGeneration"[\s\S]*?>停止生成<\/n-button>/)
+  assert.doesNotMatch(view, /<n-button v-if="controller\.actionBusy\.value"[\s\S]*?@click="stopGeneration"/)
+  assert.match(view, /plain-text-draft-editor[\s\S]*?:streaming="controller\.streamingPreview\.value !== null"/)
+  assert.doesNotMatch(view, /:streaming="controller\.operationCancellable\.value"/)
+  assert.match(view, /<template v-else>[\s\S]*?AI 生成工作稿[\s\S]*?保存为候选[\s\S]*?<\/template>/)
+  assert.match(view, /:disabled="commandDisabled"/)
+  assert.match(view, /:loading="controller\.actionBusy\.value"/)
+  assert.match(view, /:aria-disabled="controller\.actionBusy\.value"/)
+  assert.match(view, /onBeforeRouteLeave\(async \(\) => await controller\.canNavigate\(\)\)/)
 })
 
 test('local generation rejection shows one fixed safe fallback only without an operation status', async () => {

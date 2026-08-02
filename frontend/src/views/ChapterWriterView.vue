@@ -75,6 +75,15 @@ const controller = createChapterWriterController({
     projectId.value,
     operationId,
   ),
+  listDraftOperationEvents: (operationId, afterSequence) => chapterSessionStore.listDraftOperationEvents(
+    projectId.value,
+    operationId,
+    afterSequence,
+  ),
+  cancelDraftOperation: operationId => chapterSessionStore.cancelDraftOperation(
+    projectId.value,
+    operationId,
+  ),
   reloadWorkspace: () => chapterSessionStore.reloadCurrentWorkspace(projectId.value),
 })
 const authorInstructionNotice = ref('')
@@ -135,6 +144,13 @@ async function loadWorkspace(nextProjectId, nextChapterNumber) {
     if (chapterSessionStore.workspace?.workingDraft) {
       autosave.reset(chapterSessionStore.workspace)
       updateLastSavedAt()
+      const activeDraftOperationId = chapterSessionStore.workspace?.activeDraftOperationId
+      if (activeDraftOperationId) {
+        void controller.resumeDraftOperation(activeDraftOperationId).catch(() => {
+          if (!loadGuard.isCurrent(generation)) return
+          actionError.value = '生成失败'
+        })
+      }
     }
   } catch {
     if (!loadGuard.isCurrent(generation)) return
@@ -164,6 +180,15 @@ async function retryUnknown() {
     await controller.retryUnknown()
   } catch {
     // Unknown retries retain the coordinator-owned key and fixed status text.
+  }
+}
+
+async function stopGeneration() {
+  actionError.value = ''
+  try {
+    await controller.cancelGeneration()
+  } catch {
+    if (!controller.operationStatusText.value) actionError.value = '生成失败'
   }
 }
 
@@ -291,9 +316,10 @@ onBeforeUnmount(() => {
 
           <div v-if="session" class="editor-surface" :aria-busy="controller.actionBusy.value">
             <plain-text-draft-editor
-              :model-value="autosave.text.value"
+              :model-value="controller.editorText.value"
               :disabled="editorDisabled"
               :readonly="editorReadonly"
+              :streaming="controller.streamingPreview.value !== null"
               :dirty="autosave.dirty.value"
               :status="autosave.status.value"
               :last-saved-at="lastSavedAt"
@@ -326,9 +352,12 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="editor-actions">
-            <n-button v-if="!session" type="primary" :disabled="true" :loading="chapterSessionStore.creating">请先完成并确认本章小纲</n-button>
-            <n-button type="primary" secondary :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="generateWorkingDraft">AI 生成工作稿</n-button>
-            <n-button type="success" :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="saveCandidate">保存为候选</n-button>
+            <n-button v-if="controller.operationCancellable.value" type="warning" @click="stopGeneration">停止生成</n-button>
+            <template v-else>
+              <n-button v-if="!session" type="primary" :disabled="true" :loading="chapterSessionStore.creating">请先完成并确认本章小纲</n-button>
+              <n-button type="primary" secondary :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="generateWorkingDraft">AI 生成工作稿</n-button>
+              <n-button type="success" :disabled="commandDisabled" :loading="controller.actionBusy.value" @click="saveCandidate">保存为候选</n-button>
+            </template>
           </div>
           <n-alert v-if="actionError" type="error" class="writer-action-error" title="章节操作未完成">{{ actionError }}</n-alert>
         </n-card>

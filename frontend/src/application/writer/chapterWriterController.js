@@ -75,6 +75,14 @@ export function createChapterWriterController({
     coordinatorRevision.value
     return coordinator.busy ? coordinator.preview : null
   })
+  const operationCancellable = computed(() => {
+    coordinatorRevision.value
+    const status = coordinator.operation?.status
+    return actionLock.value
+      && (activeAction?.kind === 'generate' || activeAction?.kind === 'resume')
+      && !coordinator.cancelling
+      && (status === 'starting' || status === 'running')
+  })
   const editorText = computed(() => (
     actionLock.value
     && (activeAction?.kind === 'generate' || activeAction?.kind === 'resume')
@@ -110,10 +118,8 @@ export function createChapterWriterController({
         ? '已停止，正文未改变'
         : '已停止，已保留生成内容'
     }
-    if (status === 'expired') return '生成结果已失效'
-    if (status === 'unknown') {
-      return coordinator.retryAvailable ? '结果未知，可重试' : '生成失败'
-    }
+    if (status === 'expired') return '生成已失效'
+    if (status === 'unknown') return '生成失败'
     return ''
   })
 
@@ -403,6 +409,7 @@ export function createChapterWriterController({
     resetContext,
     dispose,
     actionBusy,
+    operationCancellable,
     editorText,
     streamingPreview,
     operationStatus,

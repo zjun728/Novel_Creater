@@ -213,9 +213,11 @@ test('resumeDraftOperation is GET-only and cancelGeneration settles inside the a
   })
   const resume = resumed.resumeDraftOperation(OPERATION_ID)
   assert.equal(resumed.actionBusy.value, true)
+  assert.equal(resumed.operationCancellable.value, false)
   assert.equal(resumed.operationStatusText.value, '正在恢复连接')
   resumeRead.resolve(operation())
   await resume
+  assert.equal(resumed.operationCancellable.value, false)
   assert.equal(flushes, 0)
   assert.equal(state.resetCalls.length, 1)
 
@@ -244,14 +246,38 @@ test('resumeDraftOperation is GET-only and cancelGeneration settles inside the a
   })
   const generation = cancelled.generateWorkingDraft()
   await eventStarted.promise
+  assert.equal(cancelled.operationCancellable.value, true)
   const cancellation = cancelled.cancelGeneration()
+  assert.equal(cancelled.operationCancellable.value, false)
   assert.equal(cancelled.operationStatusText.value, '正在取消')
   await cancellation
   assert.equal(cancelled.operationStatusText.value, '已停止，已保留生成内容')
   eventGate.resolve()
   await generation
+  assert.equal(cancelled.operationCancellable.value, false)
   assert.equal(cancelCalls, 1)
   assert.equal(state.resetCalls.length, 2)
+})
+
+test('generation is not cancellable until the start response identifies an active operation', async () => {
+  const startGate = deferred()
+  const startCalled = deferred()
+  const controller = operationController({
+    createDraftOperation: () => {
+      startCalled.resolve()
+      return startGate.promise
+    },
+  })
+
+  const generation = controller.generateWorkingDraft()
+  await startCalled.promise
+  assert.equal(controller.actionBusy.value, true)
+  assert.equal(controller.operationCancellable.value, false)
+  assert.equal(await controller.cancelGeneration(), false)
+
+  startGate.resolve(operation())
+  await generation
+  assert.equal(controller.operationCancellable.value, false)
 })
 
 test('cancelled generation without retained output reports that the working draft did not change', async () => {
@@ -693,8 +719,8 @@ test('one busy action blocks edit candidate navigation and exposes fixed safe op
 
   const cases = [
     [async () => operation({ status: 'failed', resultWorkingDraftRevision: null, resultContentHash: null, failureCode: 'DraftProviderFailed' }), '生成失败'],
-      [async () => operation({ status: 'expired', lastEventSequence: 1, resultWorkingDraftRevision: null, resultContentHash: null }), '生成结果已失效'],
-    [async () => { throw new ApiError() }, '结果未知，可重试'],
+      [async () => operation({ status: 'expired', lastEventSequence: 1, resultWorkingDraftRevision: null, resultContentHash: null }), '生成已失效'],
+    [async () => { throw new ApiError() }, '生成失败'],
     [async () => { throw new ApiError({ status: 409, message: 'raw provider detail' }) }, '生成失败'],
   ]
   for (const [createDraftOperation, expected] of cases) {
