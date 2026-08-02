@@ -213,6 +213,90 @@ async def test_cancelled_stream_discards_private_buffer_and_propagates():
     assert completed == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("cancel", "callback"))
+async def test_stream_closes_iterator_when_delta_does_not_return(failure):
+    from backend.services.draft_operation_execution import DraftOperationExecution
+
+    delta_started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def stream():
+        try:
+            yield "x" * 256
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    async def on_delta(_text):
+        delta_started.set()
+        if failure == "callback":
+            raise RuntimeError("fence-lost sentinel")
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        DraftOperationExecution().run_stream(
+            stream=stream(),
+            on_delta=on_delta,
+            on_heartbeat=_noop,
+            on_complete=_noop,
+        )
+    )
+    await delta_started.wait()
+    if failure == "cancel":
+        task.cancel("cancel-during-delta")
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await task
+        assert exc_info.value.args == ("cancel-during-delta",)
+    else:
+        with pytest.raises(RuntimeError, match="fence-lost sentinel"):
+            await task
+
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "first,advance_ms,expected",
+    (("x", 1_000, "delta:x"), ("", 10_000, "heartbeat")),
+)
+async def test_stream_honors_due_timer_when_chunk_is_simultaneously_ready(
+    first, advance_ms, expected
+):
+    from backend.services.draft_operation_execution import DraftOperationExecution
+
+    timer = ManualTime()
+    release_both = asyncio.Event()
+    stop = asyncio.Event()
+    events: list[str] = []
+
+    async def stream():
+        yield first
+        await release_both.wait()
+        yield ""
+        await stop.wait()
+
+    task = asyncio.create_task(
+        DraftOperationExecution(clock=timer.clock, sleep=timer.sleep).run_stream(
+            stream=stream(),
+            on_delta=lambda text: _append(events, f"delta:{text}"),
+            on_heartbeat=lambda: _append(events, "heartbeat"),
+            on_complete=lambda text: _append(events, f"complete:{text}"),
+        )
+    )
+    await _wait_for(
+        lambda: any(deadline == advance_ms for deadline, _ in timer.waiters)
+    )
+    release_both.set()
+    await timer.advance(advance_ms)
+    try:
+        await _wait_for(lambda: expected in events)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
 async def _append(target, value):
     target.append(value)
 

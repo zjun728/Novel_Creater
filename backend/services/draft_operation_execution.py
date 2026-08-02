@@ -42,6 +42,7 @@ class DraftOperationExecution:
         delta_at = renewed_at
         next_chunk: asyncio.Task[str] | None = asyncio.create_task(anext(iterator))
         timer: asyncio.Task[None] | None = None
+        primary_failure: BaseException | None = None
         try:
             while True:
                 now = self._clock()
@@ -56,9 +57,15 @@ class DraftOperationExecution:
                     (next_chunk, timer), return_when=asyncio.FIRST_COMPLETED
                 )
 
-                if next_chunk in done:
-                    await self._cancel_timer(timer)
+                timer_ready = timer in done
+                if timer_ready:
+                    timer.result()
                     timer = None
+
+                if next_chunk in done:
+                    if not timer_ready:
+                        await self._cancel_timer(timer)
+                        timer = None
                     try:
                         chunk = next_chunk.result()
                     except StopAsyncIteration:
@@ -77,27 +84,35 @@ class DraftOperationExecution:
                         renewed_at = self._clock()
                         delta_at = renewed_at
                     next_chunk = asyncio.create_task(anext(iterator))
-                    continue
-
-                timer.result()
-                timer = None
-                now = self._clock()
-                if (
-                    len(accumulated) > persisted_scalars
-                    and now >= delta_at + DELTA_FLUSH_MS
-                ):
-                    await on_delta(accumulated)
-                    persisted_scalars = len(accumulated)
-                    renewed_at = self._clock()
-                    delta_at = renewed_at
-                elif now >= renewed_at + HEARTBEAT_MS:
-                    await on_heartbeat()
-                    renewed_at = self._clock()
+                if timer_ready:
+                    now = self._clock()
+                    if (
+                        len(accumulated) > persisted_scalars
+                        and now >= delta_at + DELTA_FLUSH_MS
+                    ):
+                        await on_delta(accumulated)
+                        persisted_scalars = len(accumulated)
+                        renewed_at = self._clock()
+                        delta_at = renewed_at
+                    elif now >= renewed_at + HEARTBEAT_MS:
+                        await on_heartbeat()
+                        renewed_at = self._clock()
+        except BaseException as error:
+            primary_failure = error
+            raise
         finally:
             await self._cancel_timer(timer)
-            if next_chunk is not None and not next_chunk.done():
-                next_chunk.cancel()
+            if next_chunk is not None:
+                if not next_chunk.done():
+                    next_chunk.cancel()
                 await asyncio.gather(next_chunk, return_exceptions=True)
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                try:
+                    await close()
+                except BaseException:
+                    if primary_failure is None:
+                        raise
 
     async def run_non_stream(
         self,
@@ -146,9 +161,10 @@ class DraftOperationExecution:
 
     @staticmethod
     async def _cancel_timer(timer: asyncio.Task[None] | None) -> None:
-        if timer is None or timer.done():
+        if timer is None:
             return
-        timer.cancel()
+        if not timer.done():
+            timer.cancel()
         await asyncio.gather(timer, return_exceptions=True)
 
 

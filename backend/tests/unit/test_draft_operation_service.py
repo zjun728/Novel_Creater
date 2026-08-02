@@ -1898,3 +1898,97 @@ async def test_cancel_nonempty_partial_rejects_external_working_draft_drift_atom
     readable = await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
     assert readable.status == "running"
     assert readable.partial_output == partial
+
+
+@pytest.mark.asyncio
+async def test_raw_delta_storage_exception_does_not_become_provider_failure():
+    from backend.services.draft_operations import DraftOperationStorageError
+
+    class ExplodingDeltaRepository(FakeRepository):
+        async def append_draft_operation_delta(self, session, row):
+            raise RuntimeError("private database detail")
+
+    repo = ExplodingDeltaRepository()
+    repo.provider.update(stream=True, supports_streaming=True)
+    gateway = StreamingGateway(chunks=("x" * 256,))
+    service, repo, _, registry, _, _ = make_background_service(
+        repo=repo, gateway=gateway
+    )
+    started = await service.start(command())
+
+    with pytest.raises(DraftOperationStorageError):
+        await registry.launches[0][1](asyncio.Event())
+
+    attempt = repo.operations[started.operation_id]
+    assert attempt["status"] == "running"
+    assert attempt["failure_code"] is None
+    assert [event["event_type"] for event in repo.events] == ["started"]
+
+
+@pytest.mark.asyncio
+async def test_raw_transaction_exception_is_fixed_storage_error():
+    from contextlib import asynccontextmanager
+
+    from backend.services.draft_operations import (
+        DraftOperationService,
+        DraftOperationStorageError,
+    )
+
+    @asynccontextmanager
+    async def broken_transaction():
+        raise RuntimeError("private transaction detail")
+        yield  # pragma: no cover
+
+    service = DraftOperationService(
+        FakeRepository(), transaction_factory=broken_transaction
+    )
+
+    with pytest.raises(DraftOperationStorageError) as exc_info:
+        await service.read(PROJECT_ID, SESSION_ID, str(UUID(int=31)))
+
+    assert str(exc_info.value) == "draft operation storage transaction failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ("delta", "read"))
+async def test_operation_writes_lock_project_then_session_then_attempt(path):
+    class RecordingLockRepository(FakeRepository):
+        def __init__(self):
+            super().__init__()
+            self.lock_order = []
+
+        async def lock_project(self, session, project_id):
+            self.lock_order.append("project")
+            return await super().lock_project(session, project_id)
+
+        async def lock_session_for_operation(
+            self, session, project_id, chapter_session_id
+        ):
+            self.lock_order.append("session")
+            return await super().lock_session_for_operation(
+                session, project_id, chapter_session_id
+            )
+
+        async def read_draft_operation(
+            self, session, project_id, chapter_session_id, operation_id
+        ):
+            self.lock_order.append("attempt")
+            return await super().read_draft_operation(
+                session, project_id, chapter_session_id, operation_id
+            )
+
+    repo = RecordingLockRepository()
+    repo.provider.update(stream=True, supports_streaming=True)
+    gateway = StreamingGateway(chunks=("x" * 256,))
+    service, repo, _, registry, _, _ = make_background_service(
+        repo=repo, gateway=gateway
+    )
+    started = await service.start(command())
+    repo.lock_order.clear()
+
+    if path == "delta":
+        await registry.launches[0][1](asyncio.Event())
+    else:
+        await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
+
+    assert repo.lock_order[:3] == ["project", "session", "attempt"]

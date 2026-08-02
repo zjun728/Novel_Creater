@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -192,6 +193,23 @@ class DraftOperationService:
         self._id = id_factory or (lambda: str(uuid4()))
         self._clock = clock or (lambda: int(time.time() * 1000))
 
+    @asynccontextmanager
+    async def _storage_transaction(self):
+        try:
+            async with self._transaction() as session:
+                yield session
+        except (
+            PublicDomainError,
+            DraftOperationStorageError,
+            _DraftOperationFenceLost,
+            ValueError,
+        ):
+            raise
+        except Exception:
+            raise DraftOperationStorageError(
+                "draft operation storage transaction failed"
+            ) from None
+
     @staticmethod
     def _canonical_uuid(value: object) -> bool:
         if not isinstance(value, str):
@@ -359,7 +377,7 @@ class DraftOperationService:
 
     async def _reserve(self, command):
         fingerprint = self._request_fingerprint(command)
-        async with self._transaction() as session:
+        async with self._storage_transaction() as session:
             if await self.repository.lock_project(session, command.project_id) is None:
                 raise DraftOperationNotFound()
             chapter_session = await self.repository.lock_session_for_operation(
@@ -512,7 +530,20 @@ class DraftOperationService:
     async def _append_delta(self, context, cumulative: str) -> None:
         now = self._clock()
         output_hash = hashlib.sha256(cumulative.encode("utf-8")).hexdigest()
-        async with self._transaction() as session:
+        async with self._storage_transaction() as session:
+            if (
+                await self.repository.lock_project(
+                    session, context["command"].project_id
+                )
+                is None
+                or await self.repository.lock_session_for_operation(
+                    session,
+                    context["command"].project_id,
+                    context["command"].chapter_session_id,
+                )
+                is None
+            ):
+                raise _DraftOperationFenceLost()
             attempt = await self.repository.read_draft_operation(
                 session,
                 context["command"].project_id,
@@ -548,7 +579,20 @@ class DraftOperationService:
 
     async def _append_heartbeat(self, context) -> None:
         now = self._clock()
-        async with self._transaction() as session:
+        async with self._storage_transaction() as session:
+            if (
+                await self.repository.lock_project(
+                    session, context["command"].project_id
+                )
+                is None
+                or await self.repository.lock_session_for_operation(
+                    session,
+                    context["command"].project_id,
+                    context["command"].chapter_session_id,
+                )
+                is None
+            ):
+                raise _DraftOperationFenceLost()
             attempt = await self.repository.read_draft_operation(
                 session,
                 context["command"].project_id,
@@ -601,7 +645,7 @@ class DraftOperationService:
         )
 
     async def _settle_success(self, context, content):
-        async with self._transaction() as session:
+        async with self._storage_transaction() as session:
             locked = await self._lock_settlement(session, context)
             terminal = await self._terminal_or_expire_drift(session, context, locked)
             if terminal is not None:
@@ -705,7 +749,7 @@ class DraftOperationService:
             )
 
     async def _settle_failure(self, context, code):
-        async with self._transaction() as session:
+        async with self._storage_transaction() as session:
             locked = await self._lock_settlement(session, context)
             terminal = await self._terminal_or_expire_drift(session, context, locked)
             if terminal is not None:
@@ -835,8 +879,12 @@ class DraftOperationService:
             for value in (project_id, session_id, operation_id)
         ):
             raise DraftOperationNotFound()
-        async with self._transaction() as session:
+        async with self._storage_transaction() as session:
             if await self.repository.lock_project(session, project_id) is None:
+                raise DraftOperationNotFound()
+            if await self.repository.lock_session_for_operation(
+                session, project_id, session_id
+            ) is None:
                 raise DraftOperationNotFound()
             row = await self.repository.read_draft_operation(
                 session, project_id, session_id, operation_id
@@ -868,7 +916,7 @@ class DraftOperationService:
             raise DraftOperationNotFound()
         cancelled = False
         try:
-            async with self._transaction() as session:
+            async with self._storage_transaction() as session:
                 if await self.repository.lock_project(session, project_id) is None:
                     raise DraftOperationNotFound()
                 chapter_session = await self.repository.lock_session_for_operation(
