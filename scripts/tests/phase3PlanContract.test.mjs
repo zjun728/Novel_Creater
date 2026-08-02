@@ -871,7 +871,7 @@ test('Phase 3C detailed plan freezes its delivery and safety contract', async ()
   }
 });
 
-test('Phase 3 immutable-boundary acceptance preserves Phase 4B2 as next without claiming finalization', async () => {
+test('Phase 3 immutable-boundary acceptance remains historical while current state advances to Phase 4B2', async () => {
   const [acceptance, alignment, currentState, productPlan, developmentLog] = await Promise.all([
     readProjectFile('docs/acceptance/2026-07-30-phase-3-story-planning.md'),
     readProjectFile('docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md'),
