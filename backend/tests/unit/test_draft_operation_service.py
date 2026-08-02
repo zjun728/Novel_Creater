@@ -1061,10 +1061,11 @@ async def test_authority_or_base_drift_expires_without_changing_draft(drift):
 
     result = await start_and_finish(service, command())
 
-    expected = "running" if drift in {"manifest", "base"} else "completed"
-    assert result.status == expected
-    assert repo.draft["revision"] == (1 if expected == "running" else 2)
-    assert bool(repo.revisions) is (expected == "completed")
+    assert result.status == "expired"
+    assert result.last_event_sequence == 1
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
+    assert [event["event_type"] for event in repo.events] == ["started"]
 
 
 @pytest.mark.asyncio
@@ -1091,9 +1092,9 @@ async def test_private_provider_authority_drift_expires_without_draft_write(
 
     result = await start_and_finish(service, command())
 
-    assert result.status == "completed"
-    assert repo.draft["revision"] == 2
-    assert len(repo.revisions) == 2
+    assert result.status == "expired"
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
     attempt = next(iter(repo.operations.values()))
     manifest_text = json.dumps(attempt["input_manifest"], ensure_ascii=False)
     assert "private-provider-key" not in manifest_text
@@ -1138,9 +1139,9 @@ async def test_current_planning_or_baseline_drift_expires_without_draft_write(fi
 
     result = await start_and_finish(service, command())
 
-    assert result.status == "completed"
-    assert repo.draft["revision"] == 2
-    assert len(repo.revisions) == 2
+    assert result.status == "expired"
+    assert repo.draft["revision"] == 1
+    assert repo.revisions == []
 
 
 @pytest.mark.asyncio
@@ -1524,7 +1525,8 @@ async def test_worker_uses_only_frozen_stream_capability_pair(requested, support
 
     assert bool(gateway.stream_calls) is use_stream
     assert bool(gateway.calls) is (not use_stream)
-    assert next(iter(repo.operations.values()))["status"] == "completed"
+    assert next(iter(repo.operations.values()))["status"] == "expired"
+    assert repo.draft["revision"] == 1
 
 
 @pytest.mark.asyncio
@@ -1771,7 +1773,7 @@ async def test_projector_reserves_sequence_2048_for_nonexpired_terminals():
         "running-heartbeat-update",
         "terminal-heartbeat-after-update",
         "terminal-after-lease",
-        "expired-before-lease",
+        "expired-completed-mismatch",
     ),
 )
 async def test_projector_enforces_exact_timing_correlations(corruption):
@@ -1808,8 +1810,8 @@ async def test_projector_enforces_exact_timing_correlations(corruption):
         stored.update(
             status="expired",
             active_slot=None,
-            completed_at=clock.now + 29_999,
-            updated_at=clock.now + 29_999,
+            completed_at=clock.now + 1,
+            updated_at=clock.now,
         )
 
     with pytest.raises(DraftOperationStorageError):
@@ -1901,12 +1903,15 @@ async def test_cancel_nonempty_partial_rejects_external_working_draft_drift_atom
 
 
 @pytest.mark.asyncio
-async def test_raw_delta_storage_exception_does_not_become_provider_failure():
+@pytest.mark.parametrize("native_error", (RuntimeError, ValueError))
+async def test_raw_delta_storage_exception_does_not_become_provider_failure(
+    native_error
+):
     from backend.services.draft_operations import DraftOperationStorageError
 
     class ExplodingDeltaRepository(FakeRepository):
         async def append_draft_operation_delta(self, session, row):
-            raise RuntimeError("private database detail")
+            raise native_error("private database detail")
 
     repo = ExplodingDeltaRepository()
     repo.provider.update(stream=True, supports_streaming=True)
@@ -1923,6 +1928,48 @@ async def test_raw_delta_storage_exception_does_not_become_provider_failure():
     assert attempt["status"] == "running"
     assert attempt["failure_code"] is None
     assert [event["event_type"] for event in repo.events] == ["started"]
+
+
+@pytest.mark.asyncio
+async def test_reserve_locks_active_attempt_before_working_draft():
+    class RecordingReserveRepository(FakeRepository):
+        def __init__(self):
+            super().__init__()
+            self.lock_order = []
+
+        async def lock_project(self, session, project_id):
+            self.lock_order.append("project")
+            return await super().lock_project(session, project_id)
+
+        async def lock_session_for_operation(
+            self, session, project_id, chapter_session_id
+        ):
+            self.lock_order.append("session")
+            return await super().lock_session_for_operation(
+                session, project_id, chapter_session_id
+            )
+
+        async def read_active_draft_operation(self, session, chapter_session_id):
+            self.lock_order.append("attempt")
+            return await super().read_active_draft_operation(
+                session, chapter_session_id
+            )
+
+        async def lock_working_draft_for_operation(
+            self, session, project_id, chapter_session_id
+        ):
+            self.lock_order.append("draft")
+            return await super().lock_working_draft_for_operation(
+                session, project_id, chapter_session_id
+            )
+
+    repo = RecordingReserveRepository()
+    service, repo, _, _, _ = make_service(repo=repo)
+
+    await service.start(command())
+
+    assert repo.lock_order[:2] == ["project", "session"]
+    assert repo.lock_order.index("attempt") < repo.lock_order.index("draft")
 
 
 @pytest.mark.asyncio

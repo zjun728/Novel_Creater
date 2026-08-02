@@ -141,6 +141,10 @@ class _DraftOperationFenceLost(RuntimeError):
     """A persisted terminal/fence won while this in-process worker was active."""
 
 
+class _DraftOperationResultInvalid(ValueError):
+    """An intentional safe provider-result failure, never a storage exception."""
+
+
 @dataclass(frozen=True)
 class StartDraftOperation:
     project_id: str
@@ -202,7 +206,7 @@ class DraftOperationService:
             PublicDomainError,
             DraftOperationStorageError,
             _DraftOperationFenceLost,
-            ValueError,
+            _DraftOperationResultInvalid,
         ):
             raise
         except Exception:
@@ -411,16 +415,6 @@ class DraftOperationService:
 
             if chapter_session.get("status") != "drafting":
                 raise DraftOperationConflict()
-            draft = await self.repository.lock_working_draft_for_operation(
-                session, command.project_id, command.chapter_session_id
-            )
-            if not self._draft_matches_command(draft, command):
-                raise DraftOperationConflict()
-
-            authority = await self._read_authority(session, chapter_session, draft)
-            manifest = self._manifest(command, authority)
-            manifest_hash = canonical_hash(manifest)
-            provider_authority = authority["provider_authority"]
             now = self._clock()
             active = await self.repository.read_active_draft_operation(
                 session, command.chapter_session_id
@@ -436,6 +430,16 @@ class DraftOperationService:
                 ):
                     raise DraftOperationStorageError("could not expire elapsed operation")
 
+            draft = await self.repository.lock_working_draft_for_operation(
+                session, command.project_id, command.chapter_session_id
+            )
+            if not self._draft_matches_command(draft, command):
+                raise DraftOperationConflict()
+
+            authority = await self._read_authority(session, chapter_session, draft)
+            manifest = self._manifest(command, authority)
+            manifest_hash = canonical_hash(manifest)
+            provider_authority = authority["provider_authority"]
             fencing_token = await self.repository.next_draft_operation_fencing_token(
                 session, command.project_id, command.chapter_session_id
             )
@@ -554,7 +558,9 @@ class DraftOperationService:
                 raise _DraftOperationFenceLost()
             sequence = int(attempt["last_event_sequence"]) + 1
             if sequence > MAX_DRAFT_OPERATION_EVENTS - 1:
-                raise ValueError("draft operation event budget exhausted")
+                raise _DraftOperationResultInvalid(
+                    "draft operation event budget exhausted"
+                )
             row = {
                 **self._stream_guard_row(context, attempt, sequence, now),
                 "partial_output_text": cumulative,
@@ -603,7 +609,9 @@ class DraftOperationService:
                 raise _DraftOperationFenceLost()
             sequence = int(attempt["last_event_sequence"]) + 1
             if sequence > MAX_DRAFT_OPERATION_EVENTS - 1:
-                raise ValueError("draft operation event budget exhausted")
+                raise _DraftOperationResultInvalid(
+                    "draft operation event budget exhausted"
+                )
             row = self._stream_guard_row(context, attempt, sequence, now)
             if not await self.repository.append_draft_operation_heartbeat(
                 session, row
@@ -656,7 +664,9 @@ class DraftOperationService:
             now = self._clock()
             sequence = int(attempt["last_event_sequence"]) + 1
             if sequence > MAX_DRAFT_OPERATION_EVENTS:
-                raise ValueError("draft operation event budget exhausted")
+                raise _DraftOperationResultInvalid(
+                    "draft operation event budget exhausted"
+                )
             result_revision = int(draft["revision"]) + 1
             result_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             before = self._recovery_row(
@@ -865,11 +875,36 @@ class DraftOperationService:
             and attempt.get("model_name_snapshot")
             == context["attempt"]["model_name_snapshot"]
         )
-        if persisted_matches and self._draft_matches_command(
-            locked["draft"], context["command"]
-        ):
+        authority = await self._read_authority(
+            session, locked["session"], locked["draft"], strict=False
+        )
+        authority_matches = False
+        if authority is not None:
+            try:
+                authority_matches = (
+                    self._authority_snapshot(authority) == context["authority"]
+                    and canonical_hash(authority["provider_authority"])
+                    == context["provider_authority_hash"]
+                    and canonical_hash(self._manifest(context["command"], authority))
+                    == context["manifest_hash"]
+                    and self._draft_matches_command(
+                        locked["draft"], context["command"]
+                    )
+                )
+            except (KeyError, TypeError, ValueError, UnicodeError, PublicDomainError):
+                authority_matches = False
+        if persisted_matches and authority_matches:
             return None
-        return self.project_stored_result(attempt)
+        if not await self.repository.expire_draft_operation_for_drift(
+            session,
+            context["command"].project_id,
+            context["command"].chapter_session_id,
+            attempt["id"],
+            int(attempt["fencing_token"]),
+            now,
+        ):
+            raise DraftOperationStorageError("could not expire drifted operation")
+        return self._project_expired(attempt, now)
 
     async def read(
         self, project_id: str, session_id: str, operation_id: str
@@ -1622,8 +1657,8 @@ class DraftOperationService:
                 or (
                     status == "expired"
                     and (
-                        lease_expires_at > updated_at
-                        or lease_expires_at > completed_at
+                        heartbeat_at > updated_at
+                        or completed_at != updated_at
                     )
                 )
                 or (
