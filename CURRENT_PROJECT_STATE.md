@@ -26,7 +26,7 @@
 - 当前完成交付包：**Phase 3 Story Planning** 与 **Phase 4B1 Formal Generation**（仅注入 fake provider）。
 - 当前开发分支：`codex/phase3d-boundary-acceptance`。
 - Phase 3D 与 Phase 3 已完成：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。
-- 唯一下一工程步：**Phase 4B2 streaming / reconnect / cancel**。
+- 当前进行中的工程切片：**Phase 4B2 streaming / reconnect / cancel**；尚未验收。
 - 交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`。
 - 功能代码 HEAD：`27e91c81fabe316594fe8d775f0b973a0d33b4d9`。
 - 当前自动证据边界：Real Provider calls `0`、Product DB reads/writes `0/0`；
@@ -115,14 +115,18 @@ Phase 3 acceptance 见：
 
 ## 当前 Schema 与数据库边界
 
-- 当前开发分支源码 Schema：`writer-core-v1.8.0`。
+- 当前开发分支源码 Schema：`writer-core-v1.9.0`。
 - Phase 4B1 持久化 Draft Operation / Recovery Schema 与正式 `generate_new`：
   **已验收（仅注入 fake provider）**；未完成 Phase 4B、真实 Provider 或产品数据库验收。
+- Phase 4B2 的 streaming / reconnect / cancel 持久化 Schema contract 正在实施，
+  **尚未验收**；不宣称 Provider、运行态或 UI 已完成。
 - Phase 3B 没有 Schema 变更、迁移或兼容路径。
 - Phase 3C 没有 Schema 变更、迁移或兼容路径。
 - Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1.6.0`；没有 migration 或 compatibility path。
 - 产品数据库现存 Schema 未读取、未重建、未验证。
 - 源码 Schema 版本不得推导为产品数据库现存版本。
+- 既有数据库只能通过显式 reinitialize 使用 `writer-core-v1.9.0`；不添加 runtime
+  migration 或 compatibility path，也不读取产品数据库。
 - 不迁移旧数据，不保留旧 Planning 表兼容查询。
 - Phase 3 自动集成只能使用随机命名的 Disposable MySQL 测试库。
 
@@ -136,10 +140,10 @@ Phase 3 acceptance 见：
 - Phase 7：产品数据库、真实 Provider、自由浏览器探索和《典镇山河》前 30 章
   人工内容验收。
 
-## 唯一下一步
+## 当前工程切片
 
-建设 **Phase 4B2 streaming / reconnect / cancel**。Phase 4B1 formal `generate_new`
-已仅以注入 fake provider 验收；自动门禁继续禁止真实 Provider、产品数据库和 live
+继续建设 **Phase 4B2 streaming / reconnect / cancel**（尚未验收）。Phase 4B1 formal
+`generate_new` 已仅以注入 fake provider 验收；自动门禁继续禁止真实 Provider、产品数据库和 live
 网站。受控 DeepSeek V3 Flash smoke 仍须用户明确批准和有效 token，且不是自动门禁。
 Seed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。
 正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持

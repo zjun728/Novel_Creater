@@ -108,7 +108,7 @@ base[0:startOffset] + providerResult + base[endOffset:]
 
 and commits it with the operation fence in one short transaction. Only then does the browser replace its editor buffer. All text outside the selected range must remain byte-for-byte equivalent after UTF-8 encoding.
 
-Cancellation, provider failure, disconnect, lease expiry, or stale selection leaves the original WorkingDraft unchanged.
+Cancellation commits the latest safe persisted non-empty partial to the WorkingDraft. Empty partial, failure, and expiry preserve the prior WorkingDraft. A stale selection, provider failure, disconnect, or lease expiry cannot overwrite the prior WorkingDraft.
 
 ### 4.4 Phase 5 audit location contract
 
@@ -236,7 +236,7 @@ Every event carries operation ID and monotonically increasing sequence. Persiste
 
 Providers that support streaming emit real deltas. Non-stream providers emit progress heartbeats and one completed result; the application never fabricates token chunks.
 
-Cancellation marks the matching attempt and signals the in-process provider task. A result arriving after cancellation fails the final fence and cannot alter the draft. Server restart leaves a running attempt recoverable as expired after its lease; the original draft remains authoritative.
+Cancellation marks the matching attempt and signals the in-process provider task. Cancellation commits the latest safe persisted non-empty partial to the WorkingDraft. Empty partial, failure, and expiry preserve the prior WorkingDraft. A result arriving after cancellation fails the final fence and cannot alter the draft. Server restart leaves a running attempt recoverable as expired after its lease; the original draft remains authoritative.
 
 ## 8. Candidate semantics
 

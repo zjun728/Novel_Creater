@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from hashlib import sha256
+from pathlib import Path
 
 from backend import schema_manifest
 from backend.domain.assets import ASSET_CATEGORIES
@@ -144,7 +145,7 @@ def _raw_table_statement(table_name: str) -> str:
 def test_manifest_has_exact_ordered_fragments_and_tables():
     assert FRAGMENTS == EXPECTED_FRAGMENTS
     assert set(created_table_names()) == EXPECTED_TABLES
-    assert len(created_table_names()) == len(EXPECTED_TABLES)
+    assert len(created_table_names()) == len(EXPECTED_TABLES) == 87
     assert set(created_table_names()).isdisjoint(
         {"task_model_bindings", "task_model_binding_items", "contract_asset_refs"}
     )
@@ -756,7 +757,7 @@ def test_chapter_session_and_phase_five_placeholders_pin_planning_and_outline():
     assert "planning_snapshot_json" not in final_chapter
 
 
-def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
+def test_phase_4b_draft_operation_recovery_schema_is_exact_and_secret_free():
     names = created_table_names()
     assert names.index("working_drafts") < names.index("draft_operation_attempts")
     assert names.index("draft_operation_attempts") < names.index("working_draft_revisions")
@@ -832,11 +833,11 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "check (base_working_draft_revision > 0)",
         "check (last_event_sequence >= 0)",
         "check (operation_type = 'generate_new')",
-        "check (status in ('starting','running','completed','failed','expired'))",
+        "check (status in ('starting','running','completed','failed','cancelled','expired'))",
         "status in ('starting','running') and active_slot is not null "
         "and active_slot = 1 and result_working_draft_revision is null "
         "and result_content_hash is null and failure_code is null "
-        "and completed_at is null",
+        "and completed_at is null and cancelled_at is null",
         "status = 'completed' and active_slot is null "
         "and result_working_draft_revision is not null "
         "and result_content_hash is not null and failure_code is null "
@@ -849,6 +850,8 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "and result_working_draft_revision is null "
         "and result_content_hash is null and failure_code is null "
         "and completed_at is not null",
+        "status = 'cancelled' and active_slot is null and failure_code is null "
+        "and completed_at is not null and cancelled_at is not null",
     ):
         assert contract in operations
     for forbidden in (
@@ -878,8 +881,8 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "foreign key (project_id, draft_operation_id) "
         "references draft_operation_attempts(project_id, id) "
         "on delete cascade",
-        "check (sequence_num > 0)",
-        "check (event_type in ('started','completed','failed'))",
+        "check (sequence_num between 1 and 2048)",
+        "check (event_type in ('started','delta','heartbeat','completed','failed','cancelled'))",
     ):
         assert contract in events
     assert "foreign key (project_id) references projects(id)" not in events
@@ -890,6 +893,50 @@ def test_phase_4b1_draft_operation_recovery_schema_is_exact_and_secret_free():
         "unique key uq_working_draft_owner "
         "(project_id, chapter_session_id, id)"
     ) in drafts
+
+
+def test_phase_4b2_streaming_schema_and_cancellation_design_are_exact():
+    operations = _table_statement("draft_operation_attempts")
+    for contract in (
+        "partial_output_text longtext not null",
+        "partial_output_hash char(64) not null",
+        "partial_output_scalars int not null",
+        "heartbeat_at bigint not null",
+        "cancelled_at bigint null",
+        "check (partial_output_scalars between 0 and 100000)",
+        "check (heartbeat_at >= created_at)",
+        "check ( (status = 'cancelled' and cancelled_at is not null) or "
+        "(status <> 'cancelled' and cancelled_at is null) )",
+        "check (status in ('starting','running','completed','failed','cancelled','expired'))",
+        "status in ('starting','running') and active_slot is not null "
+        "and active_slot = 1 and result_working_draft_revision is null "
+        "and result_content_hash is null and failure_code is null "
+        "and completed_at is null and cancelled_at is null",
+        "status = 'cancelled' and active_slot is null and failure_code is null "
+        "and completed_at is not null and cancelled_at is not null",
+    ):
+        assert contract in operations
+
+    events = _table_statement("draft_operation_events")
+    for contract in (
+        "check (sequence_num between 1 and 2048)",
+        "check (event_type in ('started','delta','heartbeat','completed','failed','cancelled'))",
+        "event_type in ('started','heartbeat') and closed_payload_json is null",
+        "event_type in ('delta','completed','failed','cancelled') "
+        "and closed_payload_json is not null",
+    ):
+        assert contract in events
+
+    design_path = (
+        Path(schema_manifest.__file__).resolve().parents[1]
+        / "docs/superpowers/specs/2026-08-01-phase-4-writer-loop-design.md"
+    )
+    design = design_path.read_text(encoding="utf-8")
+    assert (
+        "Cancellation commits the latest safe persisted non-empty partial to "
+        "the WorkingDraft. Empty partial, failure, and expiry preserve the "
+        "prior WorkingDraft."
+    ) in design
 
 
 def test_candidate_identity_is_content_and_immutable_basis_hash():

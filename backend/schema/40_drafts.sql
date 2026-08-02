@@ -69,10 +69,15 @@ CREATE TABLE draft_operation_attempts (
   result_content_hash CHAR(64) NULL,
   last_event_sequence INT NOT NULL,
   failure_code VARCHAR(64) NULL,
+  partial_output_text LONGTEXT NOT NULL,
+  partial_output_hash CHAR(64) NOT NULL,
+  partial_output_scalars INT NOT NULL,
+  heartbeat_at BIGINT NOT NULL,
   status VARCHAR(24) NOT NULL,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   completed_at BIGINT NULL,
+  cancelled_at BIGINT NULL,
   UNIQUE KEY uq_draft_operation_idempotency
     (chapter_session_id, idempotency_key),
   UNIQUE KEY uq_draft_operation_active_slot
@@ -90,6 +95,12 @@ CREATE TABLE draft_operation_attempts (
   CHECK (lease_expires_at >= created_at),
   CHECK (base_working_draft_revision > 0),
   CHECK (last_event_sequence >= 0),
+  CHECK (partial_output_scalars BETWEEN 0 AND 100000),
+  CHECK (heartbeat_at >= created_at),
+  CHECK (
+    (status = 'cancelled' AND cancelled_at IS NOT NULL)
+    OR (status <> 'cancelled' AND cancelled_at IS NULL)
+  ),
   CHECK (
     (result_working_draft_revision IS NULL AND result_content_hash IS NULL)
     OR (result_working_draft_revision IS NOT NULL
@@ -97,11 +108,11 @@ CREATE TABLE draft_operation_attempts (
       AND result_content_hash IS NOT NULL)
   ),
   CHECK (operation_type = 'generate_new'),
-  CHECK (status IN ('starting','running','completed','failed','expired')),
+  CHECK (status IN ('starting','running','completed','failed','cancelled','expired')),
   CHECK (
     (status IN ('starting','running') AND active_slot IS NOT NULL AND active_slot = 1
       AND result_working_draft_revision IS NULL AND result_content_hash IS NULL
-      AND failure_code IS NULL AND completed_at IS NULL)
+      AND failure_code IS NULL AND completed_at IS NULL AND cancelled_at IS NULL)
     OR (status = 'completed' AND active_slot IS NULL
       AND result_working_draft_revision IS NOT NULL
       AND result_content_hash IS NOT NULL AND failure_code IS NULL
@@ -109,6 +120,8 @@ CREATE TABLE draft_operation_attempts (
     OR (status = 'failed' AND active_slot IS NULL
       AND result_working_draft_revision IS NULL AND result_content_hash IS NULL
       AND failure_code IS NOT NULL AND completed_at IS NOT NULL)
+    OR (status = 'cancelled' AND active_slot IS NULL
+      AND failure_code IS NULL AND completed_at IS NOT NULL AND cancelled_at IS NOT NULL)
     OR (status = 'expired' AND active_slot IS NULL
       AND result_working_draft_revision IS NULL AND result_content_hash IS NULL
       AND failure_code IS NULL AND completed_at IS NOT NULL)
@@ -153,11 +166,12 @@ CREATE TABLE draft_operation_events (
   FOREIGN KEY (project_id, draft_operation_id)
     REFERENCES draft_operation_attempts(project_id, id)
     ON DELETE CASCADE,
-  CHECK (sequence_num > 0),
-  CHECK (event_type IN ('started','completed','failed')),
+  CHECK (sequence_num BETWEEN 1 AND 2048),
+  CHECK (event_type IN ('started','delta','heartbeat','completed','failed','cancelled')),
   CHECK (
-    (event_type = 'started' AND closed_payload_json IS NULL)
-    OR (event_type IN ('completed','failed') AND closed_payload_json IS NOT NULL)
+    (event_type IN ('started','heartbeat') AND closed_payload_json IS NULL)
+    OR (event_type IN ('delta','completed','failed','cancelled')
+      AND closed_payload_json IS NOT NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement

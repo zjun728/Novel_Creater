@@ -787,14 +787,15 @@ async def _insert_draft_operation_owner_fixture(
            (id,project_id,chapter_session_id,operation_type,idempotency_key,
             request_fingerprint,active_slot,fencing_token,lease_expires_at,
             base_working_draft_revision,base_working_draft_hash,input_manifest_json,
-            input_manifest_hash,provider_id,model_name_snapshot,
-            result_working_draft_revision,result_content_hash,last_event_sequence,
-            failure_code,status,created_at,updated_at,completed_at)
-           VALUES (%s,%s,%s,'generate_new',%s,%s,1,1,%s,1,%s,'{}',%s,%s,
-                   'writer',NULL,NULL,0,NULL,'starting',%s,%s,NULL)""",
+             input_manifest_hash,provider_id,model_name_snapshot,
+             result_working_draft_revision,result_content_hash,last_event_sequence,
+             failure_code,partial_output_text,partial_output_hash,partial_output_scalars,
+             heartbeat_at,status,created_at,updated_at,completed_at,cancelled_at)
+            VALUES (%s,%s,%s,'generate_new',%s,%s,1,1,%s,1,%s,'{}',%s,%s,
+                    'writer',NULL,NULL,0,NULL,'',%s,0,%s,'starting',%s,%s,NULL,NULL)""",
         (
             operation_id, project_id, session_id, operation_id, HASH_B, NOW,
-            HASH_A, HASH_C, provider_id, NOW, NOW,
+            HASH_A, HASH_C, provider_id, HASH_A, NOW, NOW, NOW,
         ),
     )
 
@@ -930,6 +931,96 @@ async def test_draft_operation_owner_foreign_keys_reject_cross_owner_rows_and_ca
     assert await session.fetchone(
         "SELECT COUNT(*) AS count FROM projects WHERE id=%s", (project_two,)
     ) == {"count": 1}
+
+
+@pytest.mark.mysql
+async def test_draft_operation_streaming_state_and_event_constraints(disposable_mysql):
+    session = disposable_mysql.session
+    provider_id = "00000000-0000-0000-0000-000000009101"
+    session_id = "00000000-0000-0000-0000-000000009102"
+    working_draft_id = "00000000-0000-0000-0000-000000009103"
+    operation_id = "00000000-0000-0000-0000-000000009104"
+    fixture = await _insert_planning_outline_fixture(session)
+    await _insert_active_provider(session, provider_id, "streaming writer")
+    await _insert_draft_operation_owner_fixture(
+        session,
+        project_id=PROJECT_ID,
+        planning_fixture=fixture,
+        session_id=session_id,
+        working_draft_id=working_draft_id,
+        operation_id=operation_id,
+        provider_id=provider_id,
+    )
+
+    await session.execute(
+        """UPDATE draft_operation_attempts
+           SET active_slot=NULL,status='cancelled',completed_at=%s,cancelled_at=%s
+           WHERE id=%s""",
+        (NOW, NOW, operation_id),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET failure_code='cancelled' WHERE id=%s",
+            (operation_id,),
+        )
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET cancelled_at=NULL WHERE id=%s",
+            (operation_id,),
+        )
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET partial_output_scalars=100001 WHERE id=%s",
+            (operation_id,),
+        )
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET heartbeat_at=%s WHERE id=%s",
+            (NOW - 1, operation_id),
+        )
+    )
+    await session.execute(
+        """UPDATE draft_operation_attempts
+           SET result_working_draft_revision=2,result_content_hash=%s
+           WHERE id=%s""",
+        (HASH_B, operation_id),
+    )
+    await _assert_mysql_rejects(
+        session.execute(
+            "UPDATE draft_operation_attempts SET result_content_hash=NULL WHERE id=%s",
+            (operation_id,),
+        )
+    )
+
+    event_sql = """INSERT INTO draft_operation_events
+        (id,project_id,draft_operation_id,sequence_num,event_type,
+         closed_payload_json,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)"""
+    for event_id, sequence_num, event_type, payload in (
+        ("00000000-0000-0000-0000-000000009105", 1, "started", None),
+        ("00000000-0000-0000-0000-000000009106", 2, "heartbeat", None),
+        ("00000000-0000-0000-0000-000000009107", 3, "delta", "{}"),
+        ("00000000-0000-0000-0000-000000009108", 4, "cancelled", "{}"),
+    ):
+        await session.execute(
+            event_sql,
+            (event_id, PROJECT_ID, operation_id, sequence_num, event_type, payload, NOW),
+        )
+    for event_id, sequence_num, event_type, payload in (
+        ("00000000-0000-0000-0000-000000009109", 0, "started", None),
+        ("00000000-0000-0000-0000-000000009110", 2049, "started", None),
+        ("00000000-0000-0000-0000-000000009111", 5, "heartbeat", "{}"),
+        ("00000000-0000-0000-0000-000000009112", 6, "delta", None),
+    ):
+        await _assert_mysql_rejects(
+            session.execute(
+                event_sql,
+                (event_id, PROJECT_ID, operation_id, sequence_num, event_type, payload, NOW),
+            )
+        )
 
 
 async def _insert_planning_draft(
