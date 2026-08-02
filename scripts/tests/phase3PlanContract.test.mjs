@@ -993,8 +993,9 @@ test('Phase 3 immutable-boundary acceptance remains historical while current sta
   assert.doesNotMatch(currentState, /Phase 3D[^\n]*下一步/u);
 
   assert.match(productPlan, /^\| Phase 3 \|.*\| 已完成门禁 \|$/m);
-  assert.match(productPlan, /^\| Phase 4 \|.*\| 唯一下一产品包；待开始 \|$/m);
-  assert.match(productPlan, /^- 唯一下一产品包：\*\*Phase 4 Writer Loop\*\*。$/m);
+  assert.match(productPlan, /^\| Phase 4 \| 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 \| Phase 4B1 formal `generate_new` 已验收（仅 fake provider）；Phase 4B2 streaming \/ reconnect \/ cancel 正在实施，尚未验收 \|$/m);
+  assert.match(productPlan, /^- Phase 4B1 formal `generate_new` 已验收（仅 fake provider）。$/m);
+  assert.match(productPlan, /^- Phase 4B2 streaming \/ reconnect \/ cancel 正在实施，尚未验收；不宣称其运行态、\r?\n  UI 或真实 Provider 已就绪。$/m);
   assert.doesNotMatch(productPlan, /Phase 3D[^\n]*下一步/u);
 
   const phase3Log = readSection(developmentLog, '2026-07-30 Phase 3 Story Planning 完成');
