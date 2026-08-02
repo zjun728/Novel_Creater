@@ -202,3 +202,48 @@ def test_parser_accepts_closed_compatible_metadata_shapes(finish_reason):
     assert parser.feed(_frame(payload)) == ()
     assert parser.feed(b"data: [DONE]\n\n") == ()
     parser.finish()
+
+
+@pytest.mark.parametrize(
+    "json_text",
+    (
+        '{"choices":[{"index":0,"delta":{}}],"choices":[{"index":0,"delta":{}}]}',
+        '{"choices":[{"index":0,"index":0,"delta":{}}]}',
+        '{"choices":[{"index":0,"delta":{"content":"a","content":"b"}}]}',
+        '{"usage":{"nested":1,"nested":2},"choices":[{"index":0,"delta":{}}]}',
+    ),
+)
+def test_parser_rejects_duplicate_members_at_every_object_depth(json_text):
+    sentinel = "REMOTE_DUPLICATE_VALUE_SENTINEL"
+    parser = OpenAITextSSEParser()
+
+    with pytest.raises(ChapterDraftProviderResponseError) as caught:
+        parser.feed(b"data: " + json_text.replace("b", sentinel).encode() + b"\n\n")
+
+    assert caught.value.__cause__ is None
+    assert sentinel not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    "json_text",
+    (
+        r'{"choices":[{"index":0,"delta":{"content":"\ud800"}}]}',
+        r'{"model":"\udfff","choices":[{"index":0,"delta":{}}]}',
+        r'{"\ud800":"value","choices":[{"index":0,"delta":{}}]}',
+    ),
+)
+def test_parser_rejects_lone_surrogates_in_all_json_strings_and_keys(json_text):
+    parser = OpenAITextSSEParser()
+
+    with pytest.raises(ChapterDraftProviderResponseError) as caught:
+        parser.feed(b"data: " + json_text.encode("ascii") + b"\n\n")
+
+    assert caught.value.__cause__ is None
+
+
+def test_parser_preserves_valid_supplementary_unicode():
+    parser = OpenAITextSSEParser()
+
+    assert parser.feed(_frame(_choice("😀"))) == ("😀",)
+    assert parser.feed(b"data: [DONE]\n\n") == ()
+    parser.finish()

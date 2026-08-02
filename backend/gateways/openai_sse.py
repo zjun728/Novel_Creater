@@ -34,6 +34,22 @@ def _invalid() -> ChapterDraftProviderResponseError:
     return ChapterDraftProviderResponseError("provider response was invalid")
 
 
+def _reject_duplicate_members(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, nested in pairs:
+        if key in value:
+            raise ValueError
+        value[key] = nested
+    return value
+
+
+def _validate_strict_utf8(value: str) -> None:
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise _invalid() from None
+
+
 def _bounded_json(value: object) -> None:
     pending: list[tuple[object, int]] = [(value, 0)]
     nodes = 0
@@ -42,8 +58,12 @@ def _bounded_json(value: object) -> None:
         nodes += 1
         if nodes > _MAX_JSON_NODES or depth > _MAX_JSON_DEPTH:
             raise _invalid() from None
-        if isinstance(item, Mapping):
-            pending.extend((nested, depth + 1) for nested in item.values())
+        if isinstance(item, str):
+            _validate_strict_utf8(item)
+        elif isinstance(item, Mapping):
+            for key, nested in item.items():
+                pending.append((key, depth + 1))
+                pending.append((nested, depth + 1))
         elif isinstance(item, list):
             pending.extend((nested, depth + 1) for nested in item)
 
@@ -137,7 +157,11 @@ class OpenAITextSSEParser:
         if len(data.encode("utf-8")) > _MAX_EVENT_BYTES:
             raise _invalid() from None
         try:
-            payload = json.loads(data, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+            payload = json.loads(
+                data,
+                object_pairs_hook=_reject_duplicate_members,
+                parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
+            )
         except (RecursionError, TypeError, ValueError, UnicodeError):
             raise _invalid() from None
         _bounded_json(payload)

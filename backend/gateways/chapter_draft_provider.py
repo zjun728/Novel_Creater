@@ -30,9 +30,10 @@ class ChapterDraftProviderTransportError(ChapterDraftProviderError):
 async def _close_stream_resources(
     response: httpx.Response | None,
     client: httpx.AsyncClient | None,
-) -> tuple[bool, asyncio.CancelledError | None]:
+) -> tuple[bool, asyncio.CancelledError | None, BaseException | None]:
     failed = False
     cancellation = None
+    system_failure = None
     for resource in (response, client):
         if resource is None:
             continue
@@ -42,9 +43,12 @@ async def _close_stream_resources(
             failed = True
             if cancellation is None:
                 cancellation = caught
-        except BaseException:
+        except Exception:
             failed = True
-    return failed, cancellation
+        except BaseException as caught:
+            if system_failure is None:
+                system_failure = caught
+    return failed, cancellation, system_failure
 
 
 def _raise_if_stream_deadline_elapsed(
@@ -202,7 +206,7 @@ class ChapterDraftProviderGateway:
             async with asyncio.timeout_at(deadline):
                 response = await client.send(request, stream=True)
             _raise_if_stream_deadline_elapsed(loop, deadline)
-            if response.is_error:
+            if not response.is_success:
                 raise ChapterDraftProviderHTTPError("provider request failed")
             self._validate_stream_headers(response)
             _raise_if_stream_deadline_elapsed(loop, deadline)
@@ -231,16 +235,21 @@ class ChapterDraftProviderGateway:
         except BaseException as caught:
             failure = caught
 
-        cleanup_failed, cleanup_cancellation = await _close_stream_resources(
-            response,
-            client,
-        )
+        (
+            cleanup_failed,
+            cleanup_cancellation,
+            cleanup_system_failure,
+        ) = await _close_stream_resources(response, client)
         if isinstance(failure, asyncio.CancelledError):
             raise failure
-        if failure is None and cleanup_cancellation is not None:
+        if cleanup_cancellation is not None:
             raise cleanup_cancellation
         if isinstance(failure, (GeneratorExit, KeyboardInterrupt, SystemExit)):
             raise failure
+        if failure is not None and not isinstance(failure, Exception):
+            raise failure
+        if cleanup_system_failure is not None:
+            raise cleanup_system_failure
         if isinstance(failure, ChapterDraftProviderError):
             raise failure from None
         if isinstance(failure, (httpx.TransportError, httpx.InvalidURL, TimeoutError)):

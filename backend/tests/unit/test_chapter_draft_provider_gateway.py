@@ -469,6 +469,156 @@ async def test_stream_real_loop_rejects_buffered_text_after_absolute_deadline(
 
 
 @pytest.mark.asyncio
+async def test_cleanup_cancellation_overrides_earlier_framing_failure():
+    close_entered = asyncio.Event()
+    close_release = asyncio.Event()
+
+    class BlockingCloseStream(ChunkStream):
+        async def aclose(self):
+            self.close_calls += 1
+            close_entered.set()
+            await close_release.wait()
+
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        def __init__(self, stream):
+            self.stream = stream
+            self.close_calls = 0
+
+        async def handle_async_request(self, request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=self.stream,
+                request=request,
+            )
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    response_stream = BlockingCloseStream([b"data: {}\n\n"])
+    transport = RecordingTransport(response_stream)
+    gateway = ChapterDraftProviderGateway(transport=transport)
+    task = asyncio.create_task(_stream(gateway))
+    try:
+        await asyncio.wait_for(close_entered.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+    finally:
+        close_release.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    assert caught.value.args == ()
+    assert response_stream.close_calls == 1
+    assert transport.close_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_target", ("response", "client"))
+@pytest.mark.parametrize("primary_failure", (False, True), ids=("success", "primary-failure"))
+@pytest.mark.parametrize(
+    "system_error_type",
+    (KeyboardInterrupt, SystemExit, GeneratorExit),
+)
+async def test_cleanup_system_exceptions_are_retained_with_explicit_precedence(
+    monkeypatch,
+    cleanup_target,
+    primary_failure,
+    system_error_type,
+):
+    import backend.gateways.chapter_draft_provider as provider_module
+
+    marker = f"{cleanup_target}-{system_error_type.__name__}"
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+            self.headers = httpx.Headers({"content-type": "text/event-stream"})
+            self.is_error = False
+            self.is_success = True
+            self.close_calls = 0
+
+        async def aiter_raw(self):
+            yield self.body
+
+        async def aclose(self):
+            self.close_calls += 1
+            if cleanup_target == "response":
+                raise system_error_type(marker)
+
+    class FakeClient:
+        def __init__(self, response):
+            self.response = response
+            self.close_calls = 0
+
+        def build_request(self, *_args, **_kwargs):
+            return object()
+
+        async def send(self, _request, *, stream):
+            assert stream is True
+            return self.response
+
+        async def aclose(self):
+            self.close_calls += 1
+            if cleanup_target == "client":
+                raise system_error_type(marker)
+
+    body = b"data: {}\n\n" if primary_failure else b"data: [DONE]\n\n"
+    response = FakeResponse(body)
+    client = FakeClient(response)
+    monkeypatch.setattr(
+        provider_module.httpx,
+        "AsyncClient",
+        lambda **_kwargs: client,
+    )
+    gateway = ChapterDraftProviderGateway()
+
+    with pytest.raises(system_error_type) as caught:
+        await _stream(gateway)
+
+    assert caught.value.args == (marker,)
+    assert response.close_calls == 1
+    assert client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_redirect_response_is_http_failure_without_body_iteration():
+    class RecordingTransport(httpx.AsyncBaseTransport):
+        def __init__(self, stream):
+            self.stream = stream
+            self.close_calls = 0
+
+        async def handle_async_request(self, request):
+            return httpx.Response(
+                302,
+                headers={"content-type": "text/event-stream"},
+                stream=self.stream,
+                request=request,
+            )
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    response_stream = ChunkStream(
+        [b'data: {"choices":[{"index":0,"delta":{"content":"REMOTE"}}]}\n\n']
+    )
+    transport = RecordingTransport(response_stream)
+    gateway = ChapterDraftProviderGateway(transport=transport)
+
+    with pytest.raises(ChapterDraftProviderHTTPError) as caught:
+        await _stream(gateway)
+
+    assert response_stream.iterated is False
+    assert response_stream.close_calls == 1
+    assert transport.close_calls == 1
+    assert caught.value.__cause__ is None
+    assert "REMOTE" not in repr(caught.value)
+
+
+@pytest.mark.asyncio
 async def test_stream_maps_remote_failures_to_safe_existing_gateway_errors():
     secret = "mysql://user:REMOTE_PASSWORD@provider.invalid/database"
     gateway = ChapterDraftProviderGateway(
