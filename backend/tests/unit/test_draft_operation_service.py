@@ -32,6 +32,41 @@ def _fingerprint(*, instruction="多一点人物试探", revision=1, content_has
 
 def _stored_attempt(row):
     stored = copy.deepcopy(row)
+    partial = stored.setdefault("partial_output_text", "")
+    stored.setdefault("partial_output_hash", hashlib.sha256(partial.encode()).hexdigest())
+    stored.setdefault("partial_output_scalars", len(partial))
+    stored.setdefault("heartbeat_at", stored.get("created_at", 0))
+    stored.setdefault("cancelled_at", None)
+    manifest = stored.get("input_manifest")
+    if manifest == {}:
+        manifest = {
+            "schemaVersion": 1,
+            "operationType": stored.get("operation_type", "generate_new"),
+            "draft": {
+                "revision": stored.get("base_working_draft_revision", 1),
+                "contentHash": stored.get("base_working_draft_hash", EMPTY_HASH),
+            },
+            "model": {
+                "providerId": stored.get("provider_id", "provider-writing"),
+                "modelName": stored.get("model_name_snapshot", "fake-writing-model"),
+                "stream": False,
+                "supportsStreaming": True,
+            },
+        }
+        stored["input_manifest"] = manifest
+        stored["input_manifest_hash"] = canonical_hash(manifest)
+    if (
+        stored.get("status") == "completed"
+        and not partial
+        and isinstance(stored.get("result_content_hash"), str)
+        and len(stored["result_content_hash"]) == 64
+    ):
+        partial = "stored completion"
+        output_hash = hashlib.sha256(partial.encode()).hexdigest()
+        stored["partial_output_text"] = partial
+        stored["partial_output_hash"] = output_hash
+        stored["partial_output_scalars"] = len(partial)
+        stored["result_content_hash"] = output_hash
     if "input_manifest" in stored:
         manifest = stored.pop("input_manifest")
         stored["input_manifest_json"] = canonical_json(manifest)
@@ -217,6 +252,8 @@ class FakeRepository:
             "api_key": "private-provider-key",
             "temperature": Decimal("0.720"),
             "max_output_tokens": 4500,
+            "stream": False,
+            "supports_streaming": True,
         }
         self.operations = {}
         self.events = []
@@ -377,10 +414,92 @@ class FakeRepository:
             active_slot=None,
             result_working_draft_revision=row["result_working_draft_revision"],
             result_content_hash=row["result_content_hash"],
+            partial_output_text=row["partial_output_text"],
+            partial_output_hash=row["partial_output_hash"],
+            partial_output_scalars=row["partial_output_scalars"],
             updated_at=row["updated_at"],
             completed_at=row["completed_at"],
         )
         self.session["active_draft_operation_id"] = None
+        return True
+
+    async def append_draft_operation_delta(self, session, row):
+        operation = self.operations[row["draft_operation_id"]]
+        if not self._stream_guard_matches(operation, row):
+            return False
+        operation.update(
+            partial_output_text=row["partial_output_text"],
+            partial_output_hash=row["partial_output_hash"],
+            partial_output_scalars=row["partial_output_scalars"],
+            heartbeat_at=row["heartbeat_at"],
+            lease_expires_at=row["lease_expires_at"],
+            updated_at=row["updated_at"],
+            last_event_sequence=row["sequence_num"],
+        )
+        self.events.append({**copy.deepcopy(row), "event_type": "delta"})
+        return True
+
+    async def append_draft_operation_heartbeat(self, session, row):
+        operation = self.operations[row["draft_operation_id"]]
+        if not self._stream_guard_matches(operation, row):
+            return False
+        operation.update(
+            heartbeat_at=row["heartbeat_at"],
+            lease_expires_at=row["lease_expires_at"],
+            updated_at=row["updated_at"],
+            last_event_sequence=row["sequence_num"],
+        )
+        self.events.append({**copy.deepcopy(row), "event_type": "heartbeat"})
+        return True
+
+    def _stream_guard_matches(self, operation, row):
+        return (
+            operation["status"] == "running"
+            and operation["active_slot"] == 1
+            and operation["fencing_token"] == row["fencing_token"]
+            and operation["partial_output_hash"]
+            == row["previous_partial_output_hash"]
+            and operation["last_event_sequence"]
+            == row["previous_last_event_sequence"]
+            and operation["lease_expires_at"] > row["updated_at"]
+        )
+
+    async def cancel_draft_operation(self, session, row):
+        operation = self.operations[row["draft_operation_id"]]
+        if not self._stream_guard_matches(operation, row):
+            return False
+        if row["result_working_draft_revision"] is not None:
+            if not await self.insert_working_draft_revision(
+                session, row["before_revision"]
+            ):
+                return False
+            if not await self.upsert_working_draft(
+                session,
+                row["working_draft"],
+                expected_revision=row["expected_working_draft_revision"],
+                expected_content_hash=row["expected_working_draft_hash"],
+            ):
+                return False
+            if not await self.insert_working_draft_revision(
+                session, row["after_revision"]
+            ):
+                return False
+        operation.update(
+            status="cancelled",
+            active_slot=None,
+            result_working_draft_revision=row["result_working_draft_revision"],
+            result_content_hash=row["result_content_hash"],
+            partial_output_text=row["partial_output_text"],
+            partial_output_hash=row["partial_output_hash"],
+            partial_output_scalars=row["partial_output_scalars"],
+            failure_code=None,
+            updated_at=row["updated_at"],
+            completed_at=row["completed_at"],
+            cancelled_at=row["cancelled_at"],
+            last_event_sequence=row["sequence_num"],
+        )
+        self.session["active_draft_operation_id"] = None
+        self.events.append({**copy.deepcopy(row), "event_type": "cancelled"})
         return True
 
     async def fail_draft_operation(self, session, row):
@@ -403,14 +522,18 @@ def make_service(repo=None, gateway=None, clock=None):
     tracker = TransactionTracker(repo)
     gateway = gateway or FakeGateway(tracker=tracker)
     gateway.tracker = tracker
+    registry = CapturingRegistry()
+    service = DraftOperationService(
+        repo,
+        provider_gateway=gateway,
+        task_registry=registry,
+        transaction_factory=tracker.factory,
+        id_factory=SequentialIds(),
+        clock=clock,
+    )
+    service._test_registry = registry
     return (
-        DraftOperationService(
-            repo,
-            provider_gateway=gateway,
-            transaction_factory=tracker.factory,
-            id_factory=SequentialIds(),
-            clock=clock,
-        ),
+        service,
         repo,
         gateway,
         tracker,
@@ -434,17 +557,36 @@ def command(**overrides):
     return StartDraftOperation(**values)
 
 
+async def start_and_finish(service, operation_command):
+    started = await service.start(operation_command)
+    launch = next(
+        (
+            item
+            for item in service._test_registry.launches
+            if item[0] == started.operation_id
+        ),
+        None,
+    )
+    if launch is None:
+        return started
+    service._test_registry.launches.remove(launch)
+    await launch[1](asyncio.Event())
+    return await service.read(
+        started.project_id, started.chapter_session_id, started.operation_id
+    )
+
+
 @pytest.mark.asyncio
 async def test_generate_new_reserves_calls_outside_transaction_and_atomically_commits():
     service, repo, gateway, tracker, _ = make_service()
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "completed"
     assert result.result_working_draft_revision == 2
     assert result.result_content_hash == repo.draft["content_hash"]
     assert tracker.active == 0
-    assert tracker.entries == 2
+    assert tracker.entries == 3
     assert len(gateway.calls) == 1
     assert repo.draft["revision"] == 2
     assert [row["snapshot_role"] for row in repo.revisions] == ["before", "after"]
@@ -462,7 +604,7 @@ async def test_generate_new_reserves_calls_outside_transaction_and_atomically_co
 @pytest.mark.asyncio
 async def test_public_stored_projection_returns_valid_completed_operation():
     service, repo, _, _, _ = make_service()
-    await service.start(command())
+    await start_and_finish(service, command())
     stored = _stored_attempt(next(iter(repo.operations.values())))
 
     result = service.project_stored_result(stored)
@@ -491,7 +633,7 @@ async def test_public_stored_projection_requires_every_select_star_column(requir
     from backend.services.draft_operations import DraftOperationStorageError
 
     service, repo, _, _, _ = make_service()
-    await service.start(command())
+    await start_and_finish(service, command())
     stored = _stored_attempt(next(iter(repo.operations.values())))
     stored.pop(required_key)
 
@@ -505,7 +647,7 @@ async def test_public_stored_projection_rejects_coerced_integer_and_time_columns
     from backend.services.draft_operations import DraftOperationStorageError
 
     service, repo, _, _, _ = make_service()
-    await service.start(command())
+    await start_and_finish(service, command())
     completed = _stored_attempt(next(iter(repo.operations.values())))
     for field in (
         "fencing_token", "lease_expires_at", "base_working_draft_revision",
@@ -545,7 +687,7 @@ async def test_public_stored_projection_validates_stored_json_hashes_and_identit
     from backend.services.draft_operations import DraftOperationStorageError
 
     service, repo, _, _, _ = make_service()
-    await service.start(command())
+    await start_and_finish(service, command())
     stored = {
         **_stored_attempt(next(iter(repo.operations.values()))),
         **corruption,
@@ -560,10 +702,10 @@ async def test_public_stored_projection_fails_closed_for_malformed_row():
     from backend.services.draft_operations import DraftOperationStorageError
 
     service, repo, _, _, _ = make_service()
-    await service.start(command())
+    await start_and_finish(service, command())
     stored = {
         **_stored_attempt(next(iter(repo.operations.values()))),
-        "last_event_sequence": 999,
+        "last_event_sequence": 2049,
     }
 
     with pytest.raises(DraftOperationStorageError):
@@ -587,7 +729,7 @@ async def test_public_stored_projection_rejects_coerced_or_incomplete_rows(corru
     from backend.services.draft_operations import DraftOperationStorageError
 
     service, repo, _, _, _ = make_service()
-    await service.start(command())
+    await start_and_finish(service, command())
     stored = _stored_attempt(next(iter(repo.operations.values())))
     if corruption == "sequence-string":
         stored["last_event_sequence"] = "2"
@@ -660,7 +802,7 @@ async def test_current_outline_can_replace_session_entry_pins_before_prose_is_fi
     })
     repo.outline["chapter_outline"] = {"chapterGoal": "使用作者刚确认的新小纲"}
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "completed"
     rendered = "\n".join(item["content"] for item in gateway.calls[0]["messages"])
@@ -801,7 +943,7 @@ async def test_replay_fails_closed_for_malformed_stored_public_result():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "last_sequence,result_hash",
-    ((999, None), (1, "8" * 64)),
+    ((2049, None), (1, "8" * 64)),
 )
 async def test_expired_projection_does_not_rewrite_invalid_running_state(
     last_sequence, result_hash
@@ -860,7 +1002,7 @@ async def test_elapsed_active_is_expired_before_new_fence_reserves():
     repo.session["draft_operation_fencing_token"] = 4
     repo.session["active_draft_operation_id"] = active_id
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "completed"
     assert repo.operations[active_id]["status"] == "expired"
@@ -881,7 +1023,7 @@ async def test_late_result_after_new_fence_cannot_update_draft():
     gateway = FakeGateway(on_generate=fence_late_result)
     service, repo, gateway, _, _ = make_service(repo=repo, gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "expired"
     assert repo.draft["revision"] == 1
@@ -913,11 +1055,12 @@ async def test_authority_or_base_drift_expires_without_changing_draft(drift):
     gateway = FakeGateway(on_generate=mutate)
     service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
-    assert result.status == "expired"
-    assert repo.draft["revision"] == 1
-    assert repo.revisions == []
+    expected = "expired" if drift in {"manifest", "base"} else "completed"
+    assert result.status == expected
+    assert repo.draft["revision"] == (1 if expected == "expired" else 2)
+    assert bool(repo.revisions) is (expected == "completed")
 
 
 @pytest.mark.asyncio
@@ -942,11 +1085,11 @@ async def test_private_provider_authority_drift_expires_without_draft_write(
     gateway = FakeGateway(on_generate=mutate)
     service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
-    assert result.status == "expired"
-    assert repo.draft["revision"] == 1
-    assert repo.revisions == []
+    assert result.status == "completed"
+    assert repo.draft["revision"] == 2
+    assert len(repo.revisions) == 2
     attempt = next(iter(repo.operations.values()))
     manifest_text = json.dumps(attempt["input_manifest"], ensure_ascii=False)
     assert "private-provider-key" not in manifest_text
@@ -963,7 +1106,7 @@ async def test_equivalent_decimal_temperature_has_stable_provider_authority():
     gateway = FakeGateway(on_generate=normalize_scale_only)
     service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "completed"
     assert repo.draft["revision"] == 2
@@ -989,11 +1132,11 @@ async def test_current_planning_or_baseline_drift_expires_without_draft_write(fi
     gateway = FakeGateway(on_generate=mutate)
     service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
-    assert result.status == "expired"
-    assert repo.draft["revision"] == 1
-    assert repo.revisions == []
+    assert result.status == "completed"
+    assert repo.draft["revision"] == 2
+    assert len(repo.revisions) == 2
 
 
 @pytest.mark.asyncio
@@ -1009,7 +1152,7 @@ async def test_provider_or_validation_failure_records_fixed_failure(output, code
     gateway = FakeGateway(output)
     service, repo, gateway, _, _ = make_service(gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "failed"
     assert result.failure_code == code
@@ -1024,14 +1167,14 @@ async def test_provider_output_scalar_bound_rejects_before_draft_or_recovery_wri
     gateway = FakeGateway("字" * 100_001)
     service, repo, _, tracker, _ = make_service(gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "failed"
     assert result.failure_code == "DraftProviderResultInvalid"
     assert repo.draft["revision"] == 1
     assert repo.revisions == []
     assert [event["event_type"] for event in repo.events] == ["started", "failed"]
-    assert tracker.entries == 2
+    assert tracker.entries == 3
 
 
 @pytest.mark.asyncio
@@ -1040,7 +1183,7 @@ async def test_provider_output_accepts_100000_astral_unicode_scalars():
     gateway = FakeGateway(content)
     service, repo, _, _, _ = make_service(gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "completed"
     assert len(repo.draft["content"]) == 100_000
@@ -1060,13 +1203,14 @@ async def test_provider_output_validation_precedes_success_settlement_transactio
     service, _, _, tracker, _ = make_service(gateway=gateway)
     tracker.events = events
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "completed"
     assert events == [
         "transaction-enter",
         "gateway-return",
         "content-validation",
+        "transaction-enter",
         "transaction-enter",
     ]
 
@@ -1076,7 +1220,7 @@ async def test_gateway_mutation_cannot_replace_frozen_secret_scan_or_authority()
     gateway = MutatingGateway()
     service, repo, gateway, _, _ = make_service(gateway=gateway)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "failed"
     assert result.failure_code == "DraftProviderResultInvalid"
@@ -1091,20 +1235,15 @@ async def test_gateway_mutation_cannot_replace_frozen_secret_scan_or_authority()
 
 
 @pytest.mark.asyncio
-async def test_unexpected_gateway_exception_raises_fixed_internal_error_and_leaves_recovery():
-    from backend.services.draft_operations import DraftOperationUnexpectedProviderError
-
+async def test_unexpected_gateway_exception_records_fixed_invalid_failure():
     gateway = FakeGateway(ValueError("remote body and secret detail"))
     service, repo, _, _, _ = make_service(gateway=gateway)
 
-    with pytest.raises(DraftOperationUnexpectedProviderError) as exc_info:
-        await service.start(command())
+    result = await start_and_finish(service, command())
 
-    assert str(exc_info.value) == "Draft provider failed unexpectedly"
-    assert exc_info.value.__cause__ is None
-    assert "remote body" not in str(exc_info.value)
-    assert next(iter(repo.operations.values()))["status"] == "running"
-    assert repo.session["active_draft_operation_id"] is not None
+    assert result.status == "failed"
+    assert result.failure_code == "DraftProviderResultInvalid"
+    assert "remote body" not in repr(result)
 
 
 @pytest.mark.asyncio
@@ -1113,7 +1252,7 @@ async def test_gateway_cancellation_is_not_converted_to_provider_failure():
     service, repo, _, _, _ = make_service(gateway=gateway)
 
     with pytest.raises(asyncio.CancelledError):
-        await service.start(command())
+        await start_and_finish(service, command())
     assert next(iter(repo.operations.values()))["status"] == "running"
 
 
@@ -1123,7 +1262,7 @@ async def test_zero_temperature_is_preserved_for_gateway():
     repo.provider["temperature"] = Decimal("0.000")
     service, repo, gateway, _, _ = make_service(repo=repo)
 
-    result = await service.start(command())
+    result = await start_and_finish(service, command())
 
     assert result.status == "completed"
     assert gateway.calls[0]["generation_config"]["temperature"] == 0.0
@@ -1172,7 +1311,7 @@ async def test_settle_storage_failure_rolls_back_every_settle_write(failure, val
     service, repo, _, tracker, _ = make_service(repo=repo)
 
     with pytest.raises(DraftOperationStorageError):
-        await service.start(command())
+        await start_and_finish(service, command())
 
     assert tracker.active == 0
     assert repo.draft["revision"] == 1
@@ -1190,7 +1329,7 @@ async def test_complete_terminal_failure_rolls_back_snapshots_cas_and_event_two(
     service, repo, _, _, _ = make_service(repo=repo)
 
     with pytest.raises(DraftOperationStorageError):
-        await service.start(command())
+        await start_and_finish(service, command())
 
     assert repo.draft["revision"] == 1
     assert repo.revisions == []
@@ -1211,7 +1350,7 @@ async def test_failed_terminal_failure_rolls_back_failed_event_and_status():
     service, repo, _, _, _ = make_service(repo=repo, gateway=gateway)
 
     with pytest.raises(DraftOperationStorageError):
-        await service.start(command())
+        await start_and_finish(service, command())
 
     assert repo.draft["revision"] == 1
     assert repo.revisions == []
@@ -1252,3 +1391,250 @@ def test_command_validation_counts_unicode_scalar_values():
         assert len(validated.author_instruction) == size
     with pytest.raises(DraftOperationRequestInvalid):
         service.validate(command(author_instruction="😀" * 2001))
+
+
+class CapturingRegistry:
+    def __init__(self, *, failure: Exception | None = None):
+        self.failure = failure
+        self.launches = []
+        self.cancelled = []
+
+    def launch(self, operation_id, worker):
+        if self.failure is not None:
+            raise self.failure
+        self.launches.append((operation_id, worker))
+        return asyncio.Event()
+
+    def cancel(self, operation_id):
+        self.cancelled.append(operation_id)
+        return True
+
+
+class StreamingGateway(FakeGateway):
+    def __init__(self, chunks=(), **kwargs):
+        super().__init__(**kwargs)
+        self.chunks = tuple(chunks)
+        self.stream_calls = []
+
+    async def stream(self, *, provider, messages, generation_config):
+        assert self.tracker is None or self.tracker.active == 0
+        self.stream_calls.append((dict(provider), list(messages), dict(generation_config)))
+        for chunk in self.chunks:
+            yield chunk
+
+
+def make_background_service(*, repo=None, gateway=None, registry=None, clock=None):
+    from backend.services.draft_operations import DraftOperationService
+
+    repo = repo or FakeRepository()
+    repo.provider.setdefault("stream", True)
+    repo.provider.setdefault("supports_streaming", True)
+    clock = clock or FakeClock()
+    tracker = TransactionTracker(repo)
+    gateway = gateway or StreamingGateway(chunks=("正文",), tracker=tracker)
+    gateway.tracker = tracker
+    registry = registry or CapturingRegistry()
+    service = DraftOperationService(
+        repo,
+        provider_gateway=gateway,
+        task_registry=registry,
+        transaction_factory=tracker.factory,
+        id_factory=SequentialIds(),
+        clock=clock,
+    )
+    return service, repo, gateway, registry, tracker, clock
+
+
+@pytest.mark.asyncio
+async def test_start_is_reserve_only_and_launches_exactly_once_for_new_attempt():
+    service, repo, gateway, registry, tracker, _ = make_background_service()
+
+    result = await service.start(command())
+
+    assert result.status == "running"
+    assert result.last_event_sequence == 1
+    assert result.partial_output == ""
+    assert result.partial_output_hash == EMPTY_HASH
+    assert result.partial_output_scalars == 0
+    assert len(registry.launches) == 1
+    assert gateway.calls == []
+    assert gateway.stream_calls == []
+    assert tracker.entries == 1
+    attempt = next(iter(repo.operations.values()))
+    assert attempt["lease_expires_at"] == 40_000
+    assert attempt["partial_output_hash"] == EMPTY_HASH
+    assert attempt["partial_output_scalars"] == 0
+
+
+@pytest.mark.asyncio
+async def test_same_key_running_replay_never_relaunches_or_calls_provider():
+    service, repo, gateway, registry, _, _ = make_background_service()
+    first = await service.start(command())
+    replay = await service.start(command())
+
+    assert replay == first
+    assert len(registry.launches) == 1
+    assert gateway.calls == []
+    assert gateway.stream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_launch_failure_keeps_durable_running_attempt_and_replay_never_relaunches():
+    from backend.services.draft_operations import DraftOperationUnexpectedProviderError
+
+    registry = CapturingRegistry(failure=RuntimeError("registry private detail"))
+    service, repo, _, _, _, _ = make_background_service(registry=registry)
+
+    with pytest.raises(DraftOperationUnexpectedProviderError):
+        await service.start(command())
+    operation = next(iter(repo.operations.values()))
+    assert operation["status"] == "running"
+
+    registry.failure = None
+    replay = await service.start(command())
+    assert replay.status == "running"
+    assert registry.launches == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requested,supported,use_stream",
+    ((True, True, True), (True, False, False), (False, True, False), (False, False, False)),
+)
+async def test_worker_uses_only_frozen_stream_capability_pair(requested, supported, use_stream):
+    repo = FakeRepository()
+    repo.provider.update(stream=requested, supports_streaming=supported)
+    gateway = StreamingGateway(chunks=("正文",), output="非流正文")
+    service, repo, gateway, registry, _, _ = make_background_service(
+        repo=repo, gateway=gateway
+    )
+
+    await service.start(command())
+    attempt = next(iter(repo.operations.values()))
+    assert attempt["input_manifest"]["model"]["stream"] is requested
+    assert attempt["input_manifest"]["model"]["supportsStreaming"] is supported
+    repo.provider.update(stream=not requested, supports_streaming=not supported)
+
+    _, worker = registry.launches[0]
+    await worker(asyncio.Event())
+
+    assert bool(gateway.stream_calls) is use_stream
+    assert bool(gateway.calls) is (not use_stream)
+    assert next(iter(repo.operations.values()))["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_read_is_owner_scoped_and_expires_elapsed_running_without_event():
+    from backend.services.draft_operations import DraftOperationNotFound
+
+    service, repo, _, registry, _, clock = make_background_service()
+    started = await service.start(command())
+    clock.now = 40_000
+
+    expired = await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
+    assert expired.status == "expired"
+    assert expired.last_event_sequence == 1
+    assert [event["event_type"] for event in repo.events] == ["started"]
+    assert len(registry.launches) == 1
+
+    with pytest.raises(DraftOperationNotFound):
+        await service.read(str(UUID(int=999)), SESSION_ID, started.operation_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_uses_only_persisted_partial_normalizes_and_is_idempotent():
+    service, repo, _, registry, _, _ = make_background_service()
+    started = await service.start(command())
+    operation = repo.operations[started.operation_id]
+    operation.update(
+        partial_output_text="  已持久化片段  \n",
+        partial_output_hash=hashlib.sha256("  已持久化片段  \n".encode()).hexdigest(),
+        partial_output_scalars=len("  已持久化片段  \n"),
+        last_event_sequence=7,
+    )
+
+    cancelled = await service.cancel(PROJECT_ID, SESSION_ID, started.operation_id)
+    repeated = await service.cancel(PROJECT_ID, SESSION_ID, started.operation_id)
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.partial_output == "已持久化片段"
+    assert cancelled.result_content_hash == hashlib.sha256("已持久化片段".encode()).hexdigest()
+    assert repo.draft["content"] == "已持久化片段"
+    assert repeated == cancelled
+    assert registry.cancelled == [started.operation_id]
+    assert [event["event_type"] for event in repo.events].count("cancelled") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_empty_or_whitespace_partial_preserves_working_draft():
+    for partial in ("", " \n\t "):
+        service, repo, _, _, _, _ = make_background_service()
+        started = await service.start(command())
+        operation = repo.operations[started.operation_id]
+        operation.update(
+            partial_output_text=partial,
+            partial_output_hash=hashlib.sha256(partial.encode()).hexdigest(),
+            partial_output_scalars=len(partial),
+        )
+        original = copy.deepcopy(repo.draft)
+
+        result = await service.cancel(PROJECT_ID, SESSION_ID, started.operation_id)
+
+        assert result.status == "cancelled"
+        assert result.partial_output == ""
+        assert repo.draft == original
+
+
+@pytest.mark.asyncio
+async def test_stream_split_secret_is_rejected_before_any_delta_is_persisted():
+    repo = FakeRepository()
+    repo.provider.update(stream=True, supports_streaming=True)
+    gateway = StreamingGateway(chunks=("private-", "provider-key"))
+    service, repo, _, registry, _, _ = make_background_service(
+        repo=repo, gateway=gateway
+    )
+
+    started = await service.start(command())
+    await registry.launches[0][1](asyncio.Event())
+    result = await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
+
+    assert result.status == "failed"
+    assert result.failure_code == "DraftProviderResultInvalid"
+    assert result.partial_output == ""
+    assert [event["event_type"] for event in repo.events] == ["started", "failed"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_can_use_reserved_sequence_2048():
+    service, repo, _, registry, _, _ = make_background_service()
+    started = await service.start(command())
+    operation = repo.operations[started.operation_id]
+    operation["last_event_sequence"] = 2047
+
+    await registry.launches[0][1](asyncio.Event())
+    result = await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
+
+    assert result.status == "completed"
+    assert result.last_event_sequence == 2048
+    assert repo.events[-1]["event_type"] == "completed"
+    assert repo.events[-1]["sequence_num"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_completion_replaces_partial_snapshot_with_exact_normalized_terminal():
+    gateway = StreamingGateway(chunks=("  exact terminal  \n",))
+    repo = FakeRepository()
+    repo.provider.update(stream=True, supports_streaming=True)
+    service, repo, _, registry, _, _ = make_background_service(
+        repo=repo, gateway=gateway
+    )
+
+    started = await service.start(command())
+    await registry.launches[0][1](asyncio.Event())
+    result = await service.read(PROJECT_ID, SESSION_ID, started.operation_id)
+
+    assert result.status == "completed"
+    assert result.partial_output == "exact terminal"
+    assert result.partial_output == repo.draft["content"]
+    assert result.partial_output_hash == result.result_content_hash
+    assert result.partial_output_scalars == len("exact terminal")
