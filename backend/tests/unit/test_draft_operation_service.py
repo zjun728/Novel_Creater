@@ -1275,6 +1275,33 @@ async def test_zero_temperature_is_preserved_for_gateway():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "stream,supports_streaming,expected_stream_enabled",
+    ((0, 0, False), (0, 1, False), (1, 0, False), (1, 1, True)),
+)
+async def test_mysql_boolean_provider_flags_are_normalized_before_operation_reservation(
+    stream, supports_streaming, expected_stream_enabled
+):
+    service, repo, _, _, _ = make_service()
+    repo.provider.update(stream=stream, supports_streaming=supports_streaming)
+
+    result = await service.start(command())
+
+    assert result.status == "running"
+    attempt = next(iter(repo.operations.values()))
+    model = attempt["input_manifest"]["model"]
+    assert type(model["stream"]) is bool
+    assert type(model["supportsStreaming"]) is bool
+    assert model == {
+        "providerId": "provider-writing",
+        "modelName": "fake-writing-model",
+        "stream": bool(stream),
+        "supportsStreaming": bool(supports_streaming),
+    }
+    assert (model["stream"] and model["supportsStreaming"]) is expected_stream_enabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "field,value",
     (
         ("temperature", Decimal("NaN")),
@@ -1284,6 +1311,12 @@ async def test_zero_temperature_is_preserved_for_gateway():
         ("max_output_tokens", 0),
         ("max_output_tokens", True),
         ("max_output_tokens", "4500"),
+        ("stream", 2),
+        ("stream", -1),
+        ("stream", "true"),
+        ("supports_streaming", 2),
+        ("supports_streaming", -1),
+        ("supports_streaming", "true"),
     ),
 )
 async def test_invalid_provider_generation_config_fails_before_provider(field, value):

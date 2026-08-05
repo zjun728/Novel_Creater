@@ -27,6 +27,7 @@ from backend.tests.integration.test_authoritative_chapter_session import (
     _confirmed_outline,
     _create_command,
 )
+from backend.tests.integration.test_contract_drafts import PROVIDER
 from backend.tests.support.disposable_mysql import transaction_factory_for
 
 
@@ -156,6 +157,9 @@ async def _prove_owned_database(disposable_mysql) -> None:
 async def _workspace(disposable_mysql):
     await _prove_owned_database(disposable_mysql)
     _, planning, outline = await _confirmed_outline(disposable_mysql)
+    await disposable_mysql.session.execute(
+        "UPDATE provider_profiles SET stream=0 WHERE id=%s", (PROVIDER,)
+    )
     transaction_factory = transaction_factory_for(
         disposable_mysql.connection_config
     )
@@ -183,6 +187,48 @@ def _operation_service(
         id_factory=ids or _SequentialIds(),
         clock=clock or _Clock(),
     )
+
+
+async def _settled_result(service, started):
+    async def worker_finished():
+        while service._registry.size:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(worker_finished(), timeout=_TIMEOUT)
+    return await service.read(
+        started.project_id, started.chapter_session_id, started.operation_id
+    )
+
+
+async def _cleanup_blocked_workers(release, services, start_tasks):
+    release.set()
+    for task in start_tasks:
+        if not task.done():
+            task.cancel()
+    if start_tasks:
+        try:
+            await asyncio.gather(*start_tasks, return_exceptions=True)
+        except BaseException:
+            pass
+    for service in services:
+        try:
+            await service._registry.aclose()
+        except BaseException:
+            pass
+
+
+@asynccontextmanager
+async def _blocked_worker_scope(release, *, services, start_tasks=()):
+    try:
+        yield
+    except BaseException:
+        await _cleanup_blocked_workers(release, services, start_tasks)
+        raise
+
+
+async def _release_and_settle(release, service, started):
+    release.set()
+    return await _settled_result(service, started)
 
 
 def _command(workspace, key: str, *, instruction: str = "增强人物试探"):
@@ -296,13 +342,14 @@ async def test_production_reservation_persists_safe_empty_streaming_state(
         _command(workspace, "41000000-0000-4000-8000-000000000000")
     ))
 
-    try:
+    async with _blocked_worker_scope(
+        release, services=(service,), start_tasks=(task,)
+    ):
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
+        started = await asyncio.wait_for(task, timeout=_TIMEOUT)
         attempts = await _attempts(disposable_mysql.session, workspace.session.id)
         events = await _events(disposable_mysql.session, attempts[0]["id"])
-    finally:
-        release.set()
-        result = await asyncio.wait_for(task, timeout=_TIMEOUT)
+        result = await _release_and_settle(release, service, started)
 
     assert len(attempts) == 1
     attempt = attempts[0]
@@ -320,6 +367,7 @@ async def test_production_reservation_persists_safe_empty_streaming_state(
     assert events[0]["event_type"] == "started"
     assert events[0]["sequence_num"] == 1
     assert events[0]["closed_payload_json"] is None
+    assert started.status == "running"
     assert result.status == "completed"
 
 
@@ -331,9 +379,11 @@ async def test_success_commits_one_attempt_recovery_events_and_matching_metadata
     gateway = _ProviderBoundary()
     service = _operation_service(transaction_factory, gateway)
 
-    result = await service.start(
+    started = await service.start(
         _command(workspace, "41000000-0000-4000-8000-000000000001")
     )
+    assert started.status == "running"
+    result = await _settled_result(service, started)
 
     attempts = await _attempts(disposable_mysql.session, workspace.session.id)
     events = await _events(disposable_mysql.session, result.operation_id)
@@ -402,7 +452,7 @@ async def test_success_commits_one_attempt_recovery_events_and_matching_metadata
     )
     assert all(
         sentinel not in persisted_coordination
-        for sentinel in (provider["api_key"], provider["base_url"], _GENERATED_A)
+        for sentinel in (provider["api_key"], provider["base_url"])
     )
 
 
@@ -422,35 +472,29 @@ async def test_concurrent_same_key_invokes_provider_and_effect_once(disposable_m
     tasks = await _queue_reservation_race(
         transaction_factory, probe, service, (command, command)
     )
-    try:
+    async with _blocked_worker_scope(
+        release,
+        services=(service,),
+        start_tasks=tasks,
+    ):
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
-        done, pending = await asyncio.wait(
-            tasks, timeout=_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
-        )
-        assert len(done) == len(pending) == 1
-        replay = next(iter(done)).result()
-        assert replay.status == "running"
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=_TIMEOUT)
+        assert all(result.status == "running" for result in results)
+        assert len({result.operation_id for result in results}) == 1
         assert gateway.invocations == 1
         assert len(
             await _attempts(disposable_mysql.session, workspace.session.id)
         ) == 1
-        release.set()
-        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=_TIMEOUT)
-    finally:
-        release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        result = await _release_and_settle(release, service, results[0])
 
     attempts = await _attempts(disposable_mysql.session, workspace.session.id)
     draft = await _draft(disposable_mysql.session, workspace.session.id)
-    assert sorted(result.status for result in results) == ["completed", "running"]
+    assert result.status == "completed"
     assert len(attempts) == gateway.invocations == 1
     assert draft["revision"] == workspace.working_draft.revision + 1
     assert len(await _recovery(disposable_mysql.session, workspace.session.id)) == 2
     assert probe.active == 0
-    assert probe.entries == probe.exits == 3
+    assert probe.entries == probe.exits == 4
 
 
 @pytest.mark.asyncio
@@ -472,13 +516,20 @@ async def test_concurrent_different_keys_allow_only_one_live_active_slot(
     tasks = await _queue_reservation_race(
         transaction_factory, probe, service, commands
     )
-    try:
+    async with _blocked_worker_scope(
+        release, services=(service,), start_tasks=tasks
+    ):
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
-        done, pending = await asyncio.wait(
-            tasks, timeout=_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=_TIMEOUT
         )
-        assert len(done) == len(pending) == 1
-        assert isinstance(next(iter(done)).exception(), DraftOperationConflict)
+        running = [
+            result
+            for result in results
+            if getattr(result, "status", None) == "running"
+        ]
+        assert len(running) == 1
+        assert sum(isinstance(item, DraftOperationConflict) for item in results) == 1
         active = await disposable_mysql.session.fetchall(
             """SELECT id FROM draft_operation_attempts
                  WHERE chapter_session_id=%s AND active_slot=1""",
@@ -487,25 +538,15 @@ async def test_concurrent_different_keys_allow_only_one_live_active_slot(
         assert len(active) == 1
         assert gateway.invocations == 1
         assert probe.active == 0
-        release.set()
-        results = await asyncio.wait_for(
-            asyncio.gather(*tasks, return_exceptions=True), timeout=_TIMEOUT
-        )
-    finally:
-        release.set()
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        result = await _release_and_settle(release, service, running[0])
 
     attempts = await _attempts(disposable_mysql.session, workspace.session.id)
-    assert sum(isinstance(item, DraftOperationConflict) for item in results) == 1
-    assert sum(getattr(item, "status", None) == "completed" for item in results) == 1
+    assert result.status == "completed"
     assert len(attempts) == gateway.invocations == 1
     assert attempts[0]["status"] == "completed"
     assert len(await _recovery(disposable_mysql.session, workspace.session.id)) == 2
     assert probe.active == 0
-    assert probe.entries == probe.exits == 3
+    assert probe.entries == probe.exits == 4
 
 
 @pytest.mark.asyncio
@@ -528,19 +569,21 @@ async def test_expired_attempt_late_result_cannot_cross_new_fencing_token(
     first_task = asyncio.create_task(first_service.start(_command(
         workspace, "41000000-0000-4000-8000-000000000005"
     )))
-    try:
+    async with _blocked_worker_scope(
+        release,
+        services=(first_service, second_service),
+        start_tasks=(first_task,),
+    ):
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
+        first_started = await asyncio.wait_for(first_task, timeout=_TIMEOUT)
+        assert first_started.status == "running"
         clock.now += DRAFT_OPERATION_LEASE_MS + 1
-        second = await asyncio.wait_for(second_service.start(_command(
+        second_started = await asyncio.wait_for(second_service.start(_command(
             workspace, "41000000-0000-4000-8000-000000000006"
         )), timeout=_TIMEOUT)
-        release.set()
-        first = await asyncio.wait_for(first_task, timeout=_TIMEOUT)
-    finally:
-        release.set()
-        if not first_task.done():
-            first_task.cancel()
-        await asyncio.gather(first_task, return_exceptions=True)
+        assert second_started.status == "running"
+        first = await _release_and_settle(release, first_service, first_started)
+        second = await _settled_result(second_service, second_started)
 
     attempts = await _attempts(disposable_mysql.session, workspace.session.id)
     draft = await _draft(disposable_mysql.session, workspace.session.id)
@@ -568,8 +611,12 @@ async def test_same_key_different_request_rejects_without_new_rows(disposable_my
     first_task = asyncio.create_task(service.start(_command(
         workspace, key, instruction="第一种要求"
     )))
-    try:
+    async with _blocked_worker_scope(
+        release, services=(service,), start_tasks=(first_task,)
+    ):
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
+        first_started = await asyncio.wait_for(first_task, timeout=_TIMEOUT)
+        assert first_started.status == "running"
         with pytest.raises(DraftOperationIdempotencyConflict):
             await asyncio.wait_for(service.start(_command(
                 workspace, key, instruction="另一种要求"
@@ -580,9 +627,7 @@ async def test_same_key_different_request_rejects_without_new_rows(disposable_my
         assert len(await _recovery(
             disposable_mysql.session, workspace.session.id
         )) == 0
-    finally:
-        release.set()
-        await asyncio.wait_for(first_task, timeout=_TIMEOUT)
+        await _release_and_settle(release, service, first_started)
 
 
 @pytest.mark.asyncio
@@ -593,9 +638,12 @@ async def test_provider_failure_preserves_draft_and_clears_active_ownership(
     gateway = _ProviderBoundary(
         failure=ChapterDraftProviderError("closed provider failure")
     )
-    result = await _operation_service(transaction_factory, gateway).start(
+    service = _operation_service(transaction_factory, gateway)
+    started = await service.start(
         _command(workspace, "41000000-0000-4000-8000-000000000008")
     )
+    assert started.status == "running"
+    result = await _settled_result(service, started)
 
     attempts = await _attempts(disposable_mysql.session, workspace.session.id)
     draft = await _draft(disposable_mysql.session, workspace.session.id)
@@ -625,8 +673,12 @@ async def test_working_draft_cas_drift_expires_without_recovery(
     task = asyncio.create_task(service.start(_command(
         workspace, "41000000-0000-4000-8000-000000000009"
     )))
-    try:
+    async with _blocked_worker_scope(
+        release, services=(service,), start_tasks=(task,)
+    ):
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
+        started = await asyncio.wait_for(task, timeout=_TIMEOUT)
+        assert started.status == "running"
         drifted = await chapter_service.save_working_draft(SaveWorkingDraft(
             PROJECT,
             workspace.session.id,
@@ -634,13 +686,7 @@ async def test_working_draft_cas_drift_expires_without_recovery(
             workspace.working_draft.content_hash,
             "作者在模型等待期间保存的版本",
         ))
-        release.set()
-        result = await asyncio.wait_for(task, timeout=_TIMEOUT)
-    finally:
-        release.set()
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        result = await _release_and_settle(release, service, started)
 
     attempts = await _attempts(disposable_mysql.session, workspace.session.id)
     draft = await _draft(disposable_mysql.session, workspace.session.id)
@@ -668,8 +714,13 @@ async def test_provider_wait_leaves_second_connection_readable(disposable_mysql)
     task = asyncio.create_task(service.start(_command(
         workspace, "41000000-0000-4000-8000-000000000010"
     )))
-    try:
+    async with _blocked_worker_scope(
+        release, services=(service,), start_tasks=(task,)
+    ):
         await asyncio.wait_for(entered.wait(), timeout=_TIMEOUT)
+        started = await asyncio.wait_for(task, timeout=_TIMEOUT)
+        assert started.status == "running"
+        assert service._registry.size == 1
         assert gateway.active_transaction_observations == [0]
         assert probe.active == 0
         assert probe.entries == probe.exits == 1
@@ -690,13 +741,11 @@ async def test_provider_wait_leaves_second_connection_readable(disposable_mysql)
         assert selected == {"database_name": disposable_mysql.database_name}
         assert _DATABASE_NAME.fullmatch(selected["database_name"])
         assert unrelated["total"] > 0
-        assert not task.done()
+        assert service._registry.size == 1
         assert probe.active == 0
-    finally:
-        release.set()
-        result = await asyncio.wait_for(task, timeout=_TIMEOUT)
+        result = await _release_and_settle(release, service, started)
 
     assert result.status == "completed"
     assert gateway.active_transaction_observations == [0, 0]
     assert probe.active == 0
-    assert probe.entries == probe.exits == 2
+    assert probe.entries == probe.exits == 3

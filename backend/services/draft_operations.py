@@ -1415,10 +1415,8 @@ class DraftOperationService:
             or max_output_tokens <= 0
         ):
             raise ValueError
-        stream = provider["stream"]
-        supports_streaming = provider["supports_streaming"]
-        if type(stream) is not bool or type(supports_streaming) is not bool:
-            raise ValueError
+        stream = cls._provider_boolean(provider["stream"])
+        supports_streaming = cls._provider_boolean(provider["supports_streaming"])
         normalized = {
             "binding_revision_id": cls._nonblank(provider["binding_revision_id"]),
             "binding_revision": cls._positive_int(provider["binding_revision"]),
@@ -1438,6 +1436,14 @@ class DraftOperationService:
             raise ValueError
         canonical_hash(normalized)
         return normalized
+
+    @staticmethod
+    def _provider_boolean(value):
+        if type(value) is bool:
+            return value
+        if type(value) is int and value in (0, 1):
+            return bool(value)
+        raise ValueError
 
     @classmethod
     def _generation_config(cls, provider):

@@ -746,7 +746,7 @@ async def test_delta_event_failure_returns_false_for_caller_transaction_rollback
 @pytest.mark.asyncio
 async def test_cancel_empty_partial_closes_exact_owner_without_draft_writes():
     row = _cancel_row()
-    session = CapturingSession(rows=[{"id": "operation-1"}], execute_results=[1, 1])
+    session = CapturingSession(rows=[{"id": "operation-1"}], execute_results=[2, 1])
 
     assert await ChapterSessionRepository().cancel_draft_operation(session, row)
 
@@ -795,7 +795,7 @@ async def test_cancel_nonempty_partial_recovers_cas_commits_and_then_closes_owne
     row = _cancel_row(commit_partial=True)
     session = CapturingSession(
         rows=[{"id": "operation-1"}],
-        execute_results=[1, 1, 1, 1, 1],
+        execute_results=[1, 1, 1, 2, 1],
     )
 
     assert await ChapterSessionRepository().cancel_draft_operation(session, row)
@@ -833,7 +833,7 @@ async def test_cancel_whitespace_snapshot_accepts_normalized_empty_terminal_stat
     row = _cancel_row(
         previous_partial_output_hash=hashlib.sha256(whitespace.encode()).hexdigest(),
     )
-    session = CapturingSession(rows=[{"id": "operation-1"}], execute_results=[1, 1])
+    session = CapturingSession(rows=[{"id": "operation-1"}], execute_results=[2, 1])
 
     assert await ChapterSessionRepository().cancel_draft_operation(session, row)
 
@@ -943,7 +943,7 @@ async def test_mark_running_requires_matching_operation_fence_and_session_owner(
 @pytest.mark.asyncio
 async def test_complete_uses_service_row_to_persist_exact_terminal_partial_and_sequence():
     row = _complete_terminal_row()
-    session = CapturingSession()
+    session = CapturingSession(execute_result=2)
 
     assert await ChapterSessionRepository().complete_draft_operation(session, row)
 
@@ -974,7 +974,7 @@ async def test_complete_uses_service_row_to_persist_exact_terminal_partial_and_s
 @pytest.mark.asyncio
 async def test_failure_preserves_partial_and_closes_at_service_advanced_sequence():
     row = _failed_terminal_row()
-    session = CapturingSession()
+    session = CapturingSession(execute_result=2)
 
     assert await ChapterSessionRepository().fail_draft_operation(session, row)
 
@@ -1010,6 +1010,34 @@ async def test_complete_and_failure_false_require_caller_to_rollback_prior_event
     assert not await getattr(ChapterSessionRepository(), method_name)(session, row)
     assert len(session.calls) == 1
     _assert_exact_stream_guards(session.calls[0][0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", (1, 0))
+@pytest.mark.parametrize("method_name,row", (
+    ("complete_draft_operation", _complete_terminal_row()),
+    ("fail_draft_operation", _failed_terminal_row()),
+))
+async def test_terminal_multi_table_update_rejects_nonpair_affected_rows(
+    method_name, row, changed,
+):
+    session = CapturingSession(execute_result=changed)
+
+    assert not await getattr(ChapterSessionRepository(), method_name)(session, row)
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", (1, 0))
+async def test_cancel_multi_table_update_rejects_nonpair_affected_rows(changed):
+    session = CapturingSession(
+        rows=[{"id": "operation-1"}], execute_results=[changed]
+    )
+
+    assert not await ChapterSessionRepository().cancel_draft_operation(
+        session, _cancel_row()
+    )
+    assert len(session.calls) == 2
 
 
 @pytest.mark.asyncio

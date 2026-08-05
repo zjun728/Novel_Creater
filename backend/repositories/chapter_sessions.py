@@ -632,7 +632,7 @@ class ChapterSessionRepository:
                 *guard_args,
             ),
         )
-        if changed != 1:
+        if changed != 2:
             return False
         return await self._insert_stream_event(
             session,
@@ -830,7 +830,7 @@ class ChapterSessionRepository:
                 row["sequence_num"],
             ),
         )
-        return changed == 1
+        return changed == 2
 
     async def insert_draft_operation_event(self, session, row: dict) -> bool:
         sequence_num = row["sequence_num"]
