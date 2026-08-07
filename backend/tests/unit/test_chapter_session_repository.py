@@ -39,6 +39,42 @@ class CapturingSession:
 
 
 @pytest.mark.asyncio
+async def test_read_session_by_id_projects_active_draft_operation_id():
+    active_operation_id = "22222222-2222-2222-2222-222222222222"
+    session = CapturingSession(rows=[{
+        "id": "11111111-1111-1111-1111-111111111111",
+        "project_id": "00000000-0000-0000-0000-000000000001",
+        "planning_revision_id": "planning-revision-1",
+        "planning_revision": 1,
+        "planning_hash": "a" * 64,
+        "story_block_id": "story-block-1",
+        "story_block_revision": 1,
+        "story_block_hash": "b" * 64,
+        "chapter_outline_revision_id": "outline-revision-1",
+        "chapter_outline_revision": 1,
+        "chapter_outline_hash": "c" * 64,
+        "chapter_num": 1,
+        "expected_canon_revision": 0,
+        "outline_canon_revision": 0,
+        "outline_projection_revision": 0,
+        "outline_projection_hash": "d" * 64,
+        "chapter_outline_json": canonical_json({"title": "Chapter 1"}),
+        "status": "drafting",
+        "active_draft_operation_id": active_operation_id,
+        "created_at": 1,
+        "finalized_at": None,
+    }])
+
+    result = await ChapterSessionRepository().read_session_by_id(
+        session,
+        "00000000-0000-0000-0000-000000000001",
+        "11111111-1111-1111-1111-111111111111",
+    )
+
+    assert result["active_draft_operation_id"] == active_operation_id
+
+
+@pytest.mark.asyncio
 async def test_upsert_working_draft_uses_revision_and_hash_cas():
     row = {
         "id": "draft-1",

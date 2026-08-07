@@ -1162,6 +1162,7 @@ class ChapterSessionRepository:
             "outline_projection_hash": row["outline_projection_hash"],
             "chapter_outline": self._json(row["chapter_outline_json"]),
             "status": row["status"],
+            "active_draft_operation_id": row["active_draft_operation_id"],
             "created_at": row["created_at"],
             "finalized_at": row["finalized_at"],
         }
