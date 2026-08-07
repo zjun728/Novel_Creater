@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
+import { watch } from 'vue'
 
 import { createChapterWriterController } from '../../src/application/writer/chapterWriterController.js'
 import { ApiError } from '../../src/api/db/api-error.js'
@@ -24,6 +25,14 @@ function deferred() {
     reject = fail
   })
   return { promise, resolve, reject }
+}
+
+async function waitForSignalBeforeSettlement(signal, pending, name) {
+  const settledFirst = Promise.resolve(pending).then(
+    () => { throw new Error(`${name} settled before its expected signal`) },
+    () => { throw new Error(`${name} settled before its expected signal`) },
+  )
+  await Promise.race([signal, settledFirst])
 }
 
 function operation(overrides = {}) {
@@ -257,6 +266,61 @@ test('resumeDraftOperation is GET-only and cancelGeneration settles inside the a
   assert.equal(cancelled.operationCancellable.value, false)
   assert.equal(cancelCalls, 1)
   assert.equal(state.resetCalls.length, 2)
+})
+
+test('operationStatusText notifies reactive views after cancellation reload releases cancelling state', async () => {
+  const eventGate = deferred()
+  const eventStarted = deferred()
+  const reloadStarted = deferred()
+  const reload = deferred()
+  const controller = operationController({
+    createDraftOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listDraftOperationEvents: async (operationId, after) => {
+      eventStarted.resolve()
+      await eventGate.promise
+      return { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+    },
+    cancelDraftOperation: async () => operation({
+      status: 'cancelled',
+      lastEventSequence: 2,
+      partialOutput: '已保留',
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('已保留'),
+    }),
+    reloadWorkspace: async () => {
+      reloadStarted.resolve()
+      return reload.promise
+    },
+  })
+  const observedStatusTexts = []
+  const stopWatching = watch(
+    controller.operationStatusText,
+    (statusText) => observedStatusTexts.push(statusText),
+    { immediate: true, flush: 'sync' },
+  )
+  let generation
+  let cancellation
+
+  try {
+    generation = controller.generateWorkingDraft()
+    await waitForSignalBeforeSettlement(eventStarted.promise, generation, 'generation')
+    cancellation = controller.cancelGeneration()
+    await waitForSignalBeforeSettlement(reloadStarted.promise, cancellation, 'cancellation')
+    assert.equal(observedStatusTexts.at(-1), '正在取消')
+
+    reload.resolve({ workingDraft: { content: '已保留' } })
+    await cancellation
+    assert.deepEqual(observedStatusTexts.slice(-2), ['正在取消', '已停止，已保留生成内容'])
+    eventGate.resolve()
+    await generation
+  } finally {
+    stopWatching()
+    reload.resolve({ workingDraft: { content: '已保留' } })
+    eventGate.resolve()
+    await Promise.allSettled([generation, cancellation].filter(Boolean))
+    controller.dispose()
+  }
+
 })
 
 test('generation is not cancellable until the start response identifies an active operation', async () => {

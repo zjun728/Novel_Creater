@@ -99,6 +99,7 @@ export function createChapterWriterController({
     return coordinator.retryAvailable && !actionLock.value
   })
   const operationStatusText = computed(() => {
+    coordinatorRevision.value
     const status = operationStatus.value
     if (coordinator.cancelling) return '正在取消'
     if (coordinator.reconnecting) return '正在恢复连接'
