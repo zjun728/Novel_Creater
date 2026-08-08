@@ -668,19 +668,19 @@ git commit -m "test: accept streamed draft recovery"
 - Modify: `CURRENT_PROJECT_STATE.md`
 - Modify: this plan only after fresh evidence exists
 
-- [ ] **Step 1: Implementer/controller diff review**
+- [x] **Step 1: Implementer/controller diff review**
 
 Each implementer checks owned files for scope, transaction waits, closed DTOs, leakage, and late fences. Controller reviews the full diff from `8ff40f0` and runs `git diff --check`.
 
-- [ ] **Step 2: Specification review to 0/0/0**
+- [x] **Step 2: Specification review to 0/0/0**
 
 One Sol High spec reviewer compares approved design/plan/diff. Fixes return to original owners; repeat until Critical/Important/Minor = 0/0/0.
 
-- [ ] **Step 3: Quality review to 0/0/0**
+- [x] **Step 3: Quality review to 0/0/0**
 
 Only after spec is clean, a different Sol High reviewer audits races, SQL fences, parser bounds, lifecycle cleanup, frontend isolation, browser safety, and tests. Fix with original owners; repeat to 0/0/0.
 
-- [ ] **Step 4: Controller fresh unit/API**
+- [x] **Step 4: Controller fresh unit/API**
 
 ```powershell
 npm test
@@ -688,7 +688,7 @@ npm test
 
 Expected: exit 0; retain counts only.
 
-- [ ] **Step 5: Controller fresh disposable MySQL**
+- [x] **Step 5: Controller fresh disposable MySQL**
 
 ```powershell
 npm run test:integration
@@ -696,13 +696,13 @@ npm run test:integration
 
 Expected: exit 0; created=cleaned; remaining test DB 0.
 
-- [ ] **Step 6: Controller fresh build**
+- [x] **Step 6: Controller fresh build**
 
 ```powershell
 npm run build
 ```
 
-- [ ] **Step 7: Controller fresh browser**
+- [x] **Step 7: Controller fresh browser**
 
 ```powershell
 npm run test:browser:phase4b2
@@ -710,11 +710,11 @@ npm run test:browser:phase4b2
 
 Expected: 4/4 and zero residue. On failure use systematic-debugging, form one hypothesis, and run one smallest scenario; never loop blindly.
 
-- [ ] **Step 8: Audit control plane and owned residue**
+- [x] **Step 8: Audit control plane and owned residue**
 
 Check active agents, completed roles, branch/HEAD/status, proven-owned Node/Python tasks, known ports, owned temp/artifacts, Vite `deps_temp`, and only `novel_creator_test_*` names. Do not inspect product DB or kill normal MySQL.
 
-- [ ] **Step 9: Write bounded acceptance and commit**
+- [x] **Step 9: Write bounded acceptance and commit**
 
 The exact claim is:
 

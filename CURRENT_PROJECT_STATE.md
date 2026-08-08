@@ -23,15 +23,18 @@
 - Canonical release branch：`main`。
 - Phase 2 验收链已进入 `main`，链末提交：
   `f11faad531f04250f2a987390a468dfd14bf06a3`。
-- 当前完成交付包：**Phase 3 Story Planning** 与 **Phase 4B1 Formal Generation**（仅注入 fake provider）。
+- 当前完成交付包：**Phase 3 Story Planning**、**Phase 4B1 Formal Generation** 与
+  **Phase 4B2 streaming / reconnect / cancel**（均仅注入 fake provider）。
 - 当前开发分支：`codex/phase3d-boundary-acceptance`。
 - Phase 3D 与 Phase 3 已完成：Future Plan/Actual Progress/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。
-- 当前进行中的工程切片：**Phase 4B2 streaming / reconnect / cancel**；尚未验收。
+- **Phase 4B2 streaming / reconnect / cancel 已验收**；尚未启动 rewrite/local tools、
+  undo 或后续 Phase 4B 切片。
 - 交付基线：`main@e8aebd9eb851ccc64f160022984342344905cd15`。
-- 功能代码 HEAD：`27e91c81fabe316594fe8d775f0b973a0d33b4d9`。
+- 功能代码 HEAD：`abec8414cb765bdd9dbd70c62724d5f2d4fcd296`。
 - 当前自动证据边界：Real Provider calls `0`、Product DB reads/writes `0/0`；
-  Phase 4B1 的 `generate_new` 仅以注入 fake provider 验收。正式流式写作、
-  Finalization 和 Content Quality 仍未就绪。
+  Phase 4B2 的 `generate_new` streaming、automatic reconnect 与 cancellation 仅以注入
+  fake streaming provider 验收。Rewrite/local tools、undo、full Phase 4B、real-provider
+  quality、product-database readiness、Finalization 和 Content Quality 仍未就绪。
 
 ## Phase 2 已完成能力
 
@@ -118,8 +121,9 @@ Phase 3 acceptance 见：
 - 当前开发分支源码 Schema：`writer-core-v1.9.0`。
 - Phase 4B1 持久化 Draft Operation / Recovery Schema 与正式 `generate_new`：
   **已验收（仅注入 fake provider）**；未完成 Phase 4B、真实 Provider 或产品数据库验收。
-- Phase 4B2 的 streaming / reconnect / cancel 持久化 Schema contract 正在实施，
-  **尚未验收**；不宣称 Provider、运行态或 UI 已完成。
+- Phase 4B2 的 streaming / reconnect / cancel 持久化 Schema、provider/runtime 与 UI：
+  **已验收（仅注入 fake streaming provider）**；不宣称 full Phase 4B、真实 Provider 或
+  产品数据库已完成。
 - Phase 3B 没有 Schema 变更、迁移或兼容路径。
 - Phase 3C 没有 Schema 变更、迁移或兼容路径。
 - Phase 3D 将 Candidate 依据身份纳入 `writer-core-v1.6.0`；没有 migration 或 compatibility path。
@@ -132,7 +136,7 @@ Phase 3 acceptance 见：
 
 ## 尚未完成
 
-- Phase 4B2：流式新稿、reconnect 与 cancel；后续仍包括改写/扩写/压缩、候选、
+- Phase 4B 剩余能力：rewrite/local tools、undo，以及尚未验收的改写/扩写/压缩、候选、
   对比和融合。
 - Phase 5：质量审核、单次 `FinalizationChangeSet` 提取、整体确认、
   Canon 写入、单事务定稿和完整回滚。
@@ -142,9 +146,10 @@ Phase 3 acceptance 见：
 
 ## 当前工程切片
 
-继续建设 **Phase 4B2 streaming / reconnect / cancel**（尚未验收）。Phase 4B1 formal
-`generate_new` 已仅以注入 fake provider 验收；自动门禁继续禁止真实 Provider、产品数据库和 live
-网站。受控 DeepSeek V3 Flash smoke 仍须用户明确批准和有效 token，且不是自动门禁。
+**Phase 4B2 streaming / reconnect / cancel 已仅以注入 fake streaming provider 验收**；
+当前未启动新的工程切片。Rewrite/local tools、undo 与 full Phase 4B 仍未验收。自动门禁继续
+禁止真实 Provider、产品数据库和 live 网站。受控 DeepSeek V3 Flash smoke 仍须用户明确批准
+和有效 token，且不是自动门禁。
 Seed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。
 正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持
 的范围为准。Setting 与知识库仍在 Phase 5 通过 Canon/Projection 落地，不在本阶段声称已实现。
