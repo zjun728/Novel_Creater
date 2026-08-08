@@ -12,7 +12,8 @@
 3. `docs/superpowers/specs/2026-07-24-phase-3-story-planning-design.md`：
    当前 Phase 3 领域设计。
 4. 当前阶段实施计划及其验收报告。
-5. 本文件、`PRODUCT_DEVELOPMENT_PLAN.md` 和 `DEVELOPMENT_LOG.md`：
+5. `docs/testing/test-gate-policy.md`：当前测试证据分层、复用与失效规则。
+6. 本文件、`PRODUCT_DEVELOPMENT_PLAN.md` 和 `DEVELOPMENT_LOG.md`：
    已取得的证据与下一步。
 
 旧 Writer Core 路线、phase-e shadow QA、旧 runner、旧 artifact 和其他 worktree
@@ -153,3 +154,7 @@ Phase 3 acceptance 见：
 Seed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。
 正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持
 的范围为准。Setting 与知识库仍在 Phase 5 通过 Canon/Projection 落地，不在本阶段声称已实现。
+
+测试执行遵循 `docs/testing/test-gate-policy.md`：开发与 review 使用 focused/slice evidence，
+未改代码的 review 复用同次 fresh 证据；完整 unit、disposable-MySQL、build、正式 browser 与
+资源残留门禁只在 Phase 收口时串行运行一次。Release 候选另运行 release matrix。
