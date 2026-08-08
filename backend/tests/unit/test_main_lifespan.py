@@ -15,6 +15,7 @@ from backend.gateways.chapter_outline_provider import (
     ChapterOutlineProviderGateway,
 )
 from backend.routers import chapter_outlines, planning
+from backend.runtime import draft_operation_tasks
 from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
 from backend.schema_version import SchemaMismatch
 from backend.tests.support.fakes import FakeAsyncContext
@@ -133,6 +134,8 @@ async def _next_loop_turn():
 
 def install_lifespan_fakes(monkeypatch, verify_error=None):
     events = []
+    main.app.state.draft_operation_shutdown_transfer = None
+    main.app.state.market_scheduler_shutdown_transfer = None
     session = object()
     context = FakeAsyncContext(session, events)
 
@@ -1259,13 +1262,494 @@ async def test_draft_registry_close_failure_is_fixed_and_other_cleanup_continues
     assert caught.value.args == (
         "Draft operation task registry lifecycle failed",
     )
-    assert events[-4:] == [
+    assert events[-3:] == [
         "draft-registry-close",
         "provider-close",
         "scheduler-stop",
-        "close",
     ]
+    assert "close" not in events
     _assert_no_sensitive_error_graph(caught.value, (cleanup_secret,))
+
+
+@pytest.mark.asyncio
+async def test_generic_draft_failure_blocks_market_transfer_pool_callback(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    class CloseFailingRegistry(FakeDraftOperationTaskRegistry):
+        async def aclose(self):
+            events.append("draft-registry-close")
+            raise RuntimeError("PRIVATE_DRAFT_CLOSE_SENTINEL")
+
+    class CleanupTransfer:
+        def __init__(self):
+            self.task = None
+
+        def start_pool_close(self, close_pool_callback):
+            if self.task is None:
+                self.task = asyncio.create_task(close_pool_callback())
+                self.task.add_done_callback(
+                    lambda task: task.exception()
+                    if not task.cancelled()
+                    else None
+                )
+            return self.task
+
+    cleanup_transfer = CleanupTransfer()
+
+    class TransferredRuntime:
+        def start(self):
+            events.append("scheduler-start")
+
+        async def stop(self):
+            events.append("scheduler-stop")
+            error = TimeoutError("market scheduler shutdown timed out")
+            error.cleanup_transfer = cleanup_transfer
+            raise error
+
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        CloseFailingRegistry(events),
+    )
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        lambda: TransferredRuntime(),
+    )
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+
+    with pytest.raises(BaseExceptionGroup):
+        await context.__aexit__(None, None, None)
+
+    transfer_task = main.app.state.market_scheduler_shutdown_transfer
+    await asyncio.gather(transfer_task, return_exceptions=True)
+
+    assert "draft-registry-close" in events
+    assert "provider-close" in events
+    assert "scheduler-stop" in events
+    assert "close" not in events
+
+
+@pytest.mark.asyncio
+async def test_draft_registry_pending_drain_transfers_pool_close_safely(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    monkeypatch.setattr(
+        draft_operation_tasks,
+        "_DRAFT_OPERATION_TASK_SHUTDOWN_TIMEOUT_SECONDS",
+        0.01,
+    )
+    registry = DraftOperationTaskRegistry()
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    worker_started = asyncio.Event()
+    worker_cancelled = asyncio.Event()
+    worker_release = asyncio.Event()
+    worker_settled = asyncio.Event()
+    worker_secret = "DRAFT_WORKER_PRIVATE_SENTINEL"
+
+    async def stubborn_worker(signal):
+        sensitive_local = worker_secret
+        worker_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            assert signal.is_set()
+            worker_cancelled.set()
+            await worker_release.wait()
+        assert sensitive_local == worker_secret
+        events.append("draft-worker-settled")
+        worker_settled.set()
+
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    registry.launch("private-operation-id", stubborn_worker)
+    await worker_started.wait()
+    transfer = None
+    try:
+        with pytest.raises(
+            main.DraftOperationTaskRegistryLifecycleError
+        ) as caught:
+            await asyncio.wait_for(
+                context.__aexit__(None, None, None),
+                timeout=0.5,
+            )
+
+        transfer = main.app.state.draft_operation_shutdown_transfer
+        before_release = tuple(events)
+        assert caught.value.args == (
+            "Draft operation task registry lifecycle failed",
+        )
+        assert worker_cancelled.is_set()
+        assert registry.state == "closing"
+        assert registry.size == 1
+        assert transfer is not None
+        assert not transfer.done()
+        assert "close" not in before_release
+        _assert_no_sensitive_error_graph(
+            caught.value,
+            (worker_secret, "private-operation-id"),
+        )
+
+        worker_release.set()
+        await asyncio.wait_for(transfer, timeout=1)
+
+        assert worker_settled.is_set()
+        assert registry.state == "closed"
+        assert registry.size == 0
+        assert events.count("close") == 1
+        assert events.index("draft-worker-settled") < events.index("close")
+    finally:
+        worker_release.set()
+        transfer = getattr(
+            main.app.state,
+            "draft_operation_shutdown_transfer",
+            transfer,
+        )
+        if transfer is not None:
+            await asyncio.wait_for(
+                asyncio.shield(transfer),
+                timeout=1,
+            )
+        await asyncio.wait_for(worker_settled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_draft_and_market_pending_drains_share_one_ordered_pool_transfer(
+    monkeypatch,
+):
+    from backend.runtime.market_scheduler import MarketSchedulerRuntime
+
+    events = install_lifespan_fakes(monkeypatch)
+    monkeypatch.setattr(
+        draft_operation_tasks,
+        "_DRAFT_OPERATION_TASK_SHUTDOWN_TIMEOUT_SECONDS",
+        0.01,
+    )
+    registry = DraftOperationTaskRegistry()
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+
+    class UnresponsiveScheduler:
+        enabled = True
+        next_run_at = None
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cleaned = asyncio.Event()
+
+        async def run_once(self):
+            self.started.set()
+            try:
+                while not self.release.is_set():
+                    try:
+                        await self.release.wait()
+                    except asyncio.CancelledError:
+                        asyncio.current_task().uncancel()
+            finally:
+                events.append("market-drained")
+                self.cleaned.set()
+
+    scheduler = UnresponsiveScheduler()
+    runtime = MarketSchedulerRuntime(
+        scheduler,
+        poll_interval_seconds=60,
+        shutdown_timeout_seconds=0.01,
+    )
+    monkeypatch.setattr(
+        main,
+        "build_market_scheduler_runtime",
+        lambda: runtime,
+    )
+    draft_started = asyncio.Event()
+    draft_cancelled = asyncio.Event()
+    draft_release = asyncio.Event()
+    draft_settled = asyncio.Event()
+
+    async def stubborn_draft(signal):
+        draft_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            assert signal.is_set()
+            draft_cancelled.set()
+            await draft_release.wait()
+        events.append("draft-drained")
+        draft_settled.set()
+
+    context = main.lifespan(main.app)
+    await context.__aenter__()
+    await asyncio.wait_for(scheduler.started.wait(), timeout=1)
+    registry.launch("operation", stubborn_draft)
+    await draft_started.wait()
+    draft_transfer = None
+    market_transfer = None
+    try:
+        with pytest.raises(BaseExceptionGroup):
+            await asyncio.wait_for(
+                context.__aexit__(None, None, None),
+                timeout=0.5,
+            )
+
+        draft_transfer = main.app.state.draft_operation_shutdown_transfer
+        market_transfer = main.app.state.market_scheduler_shutdown_transfer
+        assert draft_cancelled.is_set()
+        assert draft_transfer is not None
+        assert draft_transfer is market_transfer
+        assert "close" not in events
+
+        scheduler.release.set()
+        await asyncio.wait_for(scheduler.cleaned.wait(), timeout=1)
+        await _next_loop_turn()
+        assert "close" not in events
+
+        draft_release.set()
+        await asyncio.wait_for(draft_transfer, timeout=1)
+
+        assert draft_settled.is_set()
+        assert registry.state == "closed"
+        assert events.count("close") == 1
+        assert events.index("market-drained") < events.index("close")
+        assert events.index("draft-drained") < events.index("close")
+    finally:
+        scheduler.release.set()
+        draft_release.set()
+        final_tasks = {
+            task
+            for task in (
+                getattr(
+                    main.app.state,
+                    "draft_operation_shutdown_transfer",
+                    draft_transfer,
+                ),
+                getattr(
+                    main.app.state,
+                    "market_scheduler_shutdown_transfer",
+                    market_transfer,
+                ),
+            )
+            if task is not None
+        }
+        if final_tasks:
+            await asyncio.wait_for(
+                asyncio.gather(*final_tasks, return_exceptions=True),
+                timeout=1,
+            )
+        await asyncio.wait_for(scheduler.cleaned.wait(), timeout=1)
+        await asyncio.wait_for(draft_settled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_lifespan_fails_closed_while_previous_draft_transfer_is_pending(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    never = asyncio.Event()
+    previous_transfer = asyncio.create_task(never.wait())
+    main.app.state.draft_operation_shutdown_transfer = previous_transfer
+    context = main.lifespan(main.app)
+    entered = False
+
+    try:
+        with pytest.raises(
+            main.DraftOperationTaskRegistryLifecycleError
+        ) as caught:
+            await context.__aenter__()
+            entered = True
+
+        assert caught.value.args == (
+            "Draft operation task registry lifecycle failed",
+        )
+        assert events == []
+    finally:
+        if entered:
+            await context.__aexit__(None, None, None)
+        previous_transfer.cancel()
+        await asyncio.gather(previous_transfer, return_exceptions=True)
+        main.app.state.draft_operation_shutdown_transfer = None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_fails_closed_safely_after_previous_draft_transfer_failure(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    transfer_secret = "DRAFT_TRANSFER_FAILURE_SECRET_SENTINEL"
+
+    async def fail_transfer():
+        raise RuntimeError(transfer_secret)
+
+    previous_transfer = asyncio.create_task(fail_transfer())
+    await asyncio.gather(previous_transfer, return_exceptions=True)
+    main.app.state.draft_operation_shutdown_transfer = previous_transfer
+    context = main.lifespan(main.app)
+    entered = False
+
+    try:
+        with pytest.raises(
+            main.DraftOperationTaskRegistryLifecycleError
+        ) as caught:
+            await context.__aenter__()
+            entered = True
+
+        assert caught.value.args == (
+            "Draft operation task registry lifecycle failed",
+        )
+        assert events == []
+        _assert_no_sensitive_error_graph(caught.value, (transfer_secret,))
+    finally:
+        if entered:
+            await context.__aexit__(None, None, None)
+        main.app.state.draft_operation_shutdown_transfer = None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_fails_closed_before_startup_for_pending_market_transfer(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    registry = FakeDraftOperationTaskRegistry(events)
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    previous_transfer = asyncio.create_task(asyncio.Event().wait())
+    main.app.state.market_scheduler_shutdown_transfer = previous_transfer
+    context = main.lifespan(main.app)
+    entered = False
+
+    try:
+        with pytest.raises(
+            main.DraftOperationTaskRegistryLifecycleError
+        ) as caught:
+            await context.__aenter__()
+            entered = True
+
+        assert caught.value.args == (
+            "Draft operation task registry lifecycle failed",
+        )
+        assert events == []
+    finally:
+        if entered:
+            await context.__aexit__(None, None, None)
+        previous_transfer.cancel()
+        await asyncio.gather(previous_transfer, return_exceptions=True)
+        main.app.state.market_scheduler_shutdown_transfer = None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_fails_closed_safely_for_failed_market_transfer(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    registry = FakeDraftOperationTaskRegistry(events)
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    transfer_secret = "MARKET_TRANSFER_FAILURE_SECRET_SENTINEL"
+
+    async def fail_transfer():
+        raise RuntimeError(transfer_secret)
+
+    previous_transfer = asyncio.create_task(fail_transfer())
+    await asyncio.gather(previous_transfer, return_exceptions=True)
+    main.app.state.market_scheduler_shutdown_transfer = previous_transfer
+    context = main.lifespan(main.app)
+    entered = False
+
+    try:
+        with pytest.raises(
+            main.DraftOperationTaskRegistryLifecycleError
+        ) as caught:
+            await context.__aenter__()
+            entered = True
+
+        assert caught.value.args == (
+            "Draft operation task registry lifecycle failed",
+        )
+        assert events == []
+        _assert_no_sensitive_error_graph(caught.value, (transfer_secret,))
+    finally:
+        if entered:
+            await context.__aexit__(None, None, None)
+        main.app.state.market_scheduler_shutdown_transfer = None
+
+
+@pytest.mark.asyncio
+async def test_lifespan_allows_restart_after_successful_market_transfer(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+    registry = FakeDraftOperationTaskRegistry(events)
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+    previous_transfer = asyncio.create_task(asyncio.sleep(0))
+    await previous_transfer
+    main.app.state.market_scheduler_shutdown_transfer = previous_transfer
+    context = main.lifespan(main.app)
+
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+
+    assert events.index("verify") < events.index("draft-registry-start")
+    assert events.index("draft-registry-start") < events.index("scheduler-build")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_deduplicates_same_successful_draft_and_market_transfer(
+    monkeypatch,
+):
+    events = install_lifespan_fakes(monkeypatch)
+
+    class ClosedRegistry(FakeDraftOperationTaskRegistry):
+        state = "closed"
+
+    registry = ClosedRegistry(events)
+    monkeypatch.setattr(
+        main.chapter_sessions,
+        "draft_operation_task_registry",
+        registry,
+    )
+
+    class SuccessfulTransfer:
+        def __init__(self):
+            self.result_calls = 0
+
+        def done(self):
+            return True
+
+        def cancelled(self):
+            return False
+
+        def result(self):
+            self.result_calls += 1
+
+    previous_transfer = SuccessfulTransfer()
+    main.app.state.draft_operation_shutdown_transfer = previous_transfer
+    main.app.state.market_scheduler_shutdown_transfer = previous_transfer
+    context = main.lifespan(main.app)
+
+    await context.__aenter__()
+    await context.__aexit__(None, None, None)
+
+    assert previous_transfer.result_calls == 1
 
 
 @pytest.mark.asyncio

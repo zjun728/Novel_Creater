@@ -1468,7 +1468,6 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
     throw new TypeError('Invalid draft operation events response')
   }
   let lastPartialScalars = afterSequence === 0 ? 0 : null
-  let lastPartialHash = null
   const events = source.events.map((event, index) => {
     const item = draftOperationObject(event, 'event')
     const sequence = item.sequence
@@ -1514,7 +1513,6 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
       )
       result.partialOutputScalars = item.partialOutputScalars
       lastPartialScalars = item.partialOutputScalars
-      lastPartialHash = result.partialOutputHash
     } else if (item.type === 'heartbeat') {
       if (Object.keys(item).length !== DRAFT_OPERATION_EVENT_BASE_FIELDS.length) {
         throw new TypeError('Invalid draft operation event')
@@ -1536,10 +1534,6 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
         item.resultContentHash,
         'event result content hash',
       )
-      if (
-        lastPartialHash !== null
-        && result.resultContentHash !== lastPartialHash
-      ) throw new TypeError('Invalid draft operation event')
     } else if (item.type === 'failed') {
       const fields = [...DRAFT_OPERATION_EVENT_BASE_FIELDS, 'failureCode']
       if (
@@ -1569,9 +1563,6 @@ function draftOperationEventsResponse(value, expectedOperationId, afterSequence)
       ) throw new TypeError('Invalid draft operation event')
       if (resultHash !== null) {
         draftOperationHash(resultHash, 'event result content hash')
-      }
-      if (lastPartialHash !== null && resultHash !== lastPartialHash) {
-        throw new TypeError('Invalid draft operation event')
       }
       result.resultWorkingDraftRevision = revision
       result.resultContentHash = resultHash

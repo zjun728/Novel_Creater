@@ -9,6 +9,7 @@ import httpx
 
 MAX_CHAPTER_DRAFT_PROVIDER_RESPONSE_BYTES = 1024 * 1024
 _CHAPTER_DRAFT_STREAM_TIMEOUT_SECONDS = 1200
+_CHAPTER_DRAFT_STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 class ChapterDraftProviderError(RuntimeError):
@@ -27,6 +28,29 @@ class ChapterDraftProviderTransportError(ChapterDraftProviderError):
     pass
 
 
+def _consume_close_result(task: asyncio.Future[object]) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except BaseException:
+        return
+
+
+async def _close_stream_resource(
+    resource: httpx.Response | httpx.AsyncClient,
+) -> tuple[str, BaseException | None]:
+    try:
+        await resource.aclose()
+    except asyncio.CancelledError as caught:
+        return "cancelled", caught
+    except Exception:
+        return "failed", None
+    except BaseException as caught:
+        return "system", caught
+    return "succeeded", None
+
+
 async def _close_stream_resources(
     response: httpx.Response | None,
     client: httpx.AsyncClient | None,
@@ -34,11 +58,14 @@ async def _close_stream_resources(
     failed = False
     cancellation = None
     system_failure = None
+    close_tasks = []
     for resource in (response, client):
         if resource is None:
             continue
         try:
-            await resource.aclose()
+            close_tasks.append(
+                asyncio.ensure_future(_close_stream_resource(resource))
+            )
         except asyncio.CancelledError as caught:
             failed = True
             if cancellation is None:
@@ -48,6 +75,51 @@ async def _close_stream_resources(
         except BaseException as caught:
             if system_failure is None:
                 system_failure = caught
+
+    loop = asyncio.get_running_loop()
+    cleanup_deadline = (
+        loop.time() + _CHAPTER_DRAFT_STREAM_CLEANUP_TIMEOUT_SECONDS
+    )
+    pending = set(close_tasks)
+    while pending:
+        remaining = cleanup_deadline - loop.time()
+        if remaining <= 0:
+            failed = True
+            break
+        try:
+            done, pending = await asyncio.wait(pending, timeout=remaining)
+        except asyncio.CancelledError as caught:
+            if cancellation is None:
+                cancellation = caught
+            continue
+        if not done:
+            failed = True
+            break
+        for task in done:
+            try:
+                outcome, caught = task.result()
+            except asyncio.CancelledError as caught:
+                failed = True
+                if cancellation is None:
+                    cancellation = caught
+            except Exception:
+                failed = True
+            except BaseException as caught:
+                if system_failure is None:
+                    system_failure = caught
+            else:
+                if outcome == "cancelled":
+                    failed = True
+                    if cancellation is None:
+                        cancellation = caught
+                elif outcome == "failed":
+                    failed = True
+                elif outcome == "system" and system_failure is None:
+                    system_failure = caught
+
+    for task in pending:
+        task.add_done_callback(_consume_close_result)
+        task.cancel()
     return failed, cancellation, system_failure
 
 

@@ -5,6 +5,7 @@ import { createDraftOperationTimeline } from './draftOperationTimeline.js'
 const CONTENT_HASH = /^[0-9a-f]{64}$/
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'expired'])
+const EVENT_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
 const PUBLIC_STATUSES = new Set([
   'starting', 'running', 'completed', 'failed', 'cancelled', 'expired',
 ])
@@ -320,15 +321,21 @@ export function createDraftOperationCoordinator({
     return operation
   }
 
-  function acceptOperation(received, expectedOperationId = null) {
-    return publishOperation(validateOperation(received, expectedOperationId))
+  async function calibrateAndPublish(token, operation, { allowCancellation = false } = {}) {
+    const committed = await timeline.calibrate(operation)
+    if (
+      !committed
+      || !isCurrent(token)
+      || (!allowCancellation && activeAction.cancelPromise)
+    ) return false
+    publishOperation(operation)
+    return true
   }
 
-  async function calibrateOperation(token, operation) {
-    await timeline.calibrate(operation)
-    if (!isCurrent(token)) return false
-    changed()
-    return true
+  function cancellationResult(token) {
+    return activeAction?.token === token
+      ? activeAction.cancelPromise
+      : null
   }
 
   async function reloadCompleted(token) {
@@ -360,11 +367,27 @@ export function createDraftOperationCoordinator({
     else markKnownFailure(error)
   }
 
-  async function drainEventPages(token, operationId, requiredSequence = timeline.cursor) {
+  function requireTerminalEvent(page, terminalStatus, requiredSequence) {
+    if (terminalStatus === null || page?.nextAfter !== requiredSequence) return
+    const terminal = Array.isArray(page.events) ? page.events.at(-1) : null
+    if (
+      !terminal
+      || terminal.sequence !== requiredSequence
+      || terminal.type !== terminalStatus
+    ) throw new TypeError('Invalid draft operation event page')
+  }
+
+  async function drainEventPages(
+    token,
+    operationId,
+    requiredSequence = timeline.cursor,
+    terminalStatus = null,
+  ) {
     while (isCurrent(token)) {
       const page = await list(operationId, timeline.cursor)
       if (!isCurrent(token)) return false
       if (activeAction.cancelPromise) return true
+      requireTerminalEvent(page, terminalStatus, requiredSequence)
       await timeline.applyPage(page)
       if (!isCurrent(token)) return false
       if (activeAction.cancelPromise) return true
@@ -393,8 +416,19 @@ export function createDraftOperationCoordinator({
     if (activeAction.cancelPromise) return activeAction.cancelPromise
     let operation
     try {
-      operation = acceptOperation(received, currentOperation?.id ?? null)
-      if (!await calibrateOperation(token, operation)) return null
+      operation = validateOperation(received, currentOperation?.id ?? null)
+      if (operation.lastEventSequence < timeline.cursor) {
+        throw new TypeError('Invalid draft operation response')
+      }
+      if (operation.lastEventSequence > timeline.cursor) {
+        if (!await drainEventPages(
+          token,
+          operation.id,
+          operation.lastEventSequence,
+          EVENT_TERMINAL_STATUSES.has(operation.status) ? operation.status : null,
+        )) return null
+      }
+      if (!await calibrateAndPublish(token, operation)) return cancellationResult(token)
       if (activeAction.cancelPromise) return activeAction.cancelPromise
     } catch (error) {
       if (!isCurrent(token)) return null
@@ -475,7 +509,12 @@ export function createDraftOperationCoordinator({
       }
       if (candidate.lastEventSequence > timeline.cursor) {
         try {
-          if (!await drainEventPages(token, candidate.id, candidate.lastEventSequence)) return null
+          if (!await drainEventPages(
+            token,
+            candidate.id,
+            candidate.lastEventSequence,
+            EVENT_TERMINAL_STATUSES.has(candidate.status) ? candidate.status : null,
+          )) return null
         } catch (error) {
           if (!isCurrent(token)) return null
           if (activeAction.cancelPromise) return activeAction.cancelPromise
@@ -491,9 +530,9 @@ export function createDraftOperationCoordinator({
         }
       }
       try {
-        if (!await calibrateOperation(token, candidate)) return null
+        if (!await calibrateAndPublish(token, candidate)) return cancellationResult(token)
         if (activeAction.cancelPromise) return activeAction.cancelPromise
-        operation = publishOperation(candidate)
+        operation = candidate
       } catch (error) {
         if (!isCurrent(token)) return null
         if (activeAction.cancelPromise) return activeAction.cancelPromise
@@ -532,8 +571,22 @@ export function createDraftOperationCoordinator({
       if (!isCurrent(token)) return null
       let operation
       try {
-        operation = acceptOperation(received, timeline.cursor > 0 ? currentOperation?.id : null)
-        if (!await calibrateOperation(token, operation)) return null
+        operation = validateOperation(
+          received,
+          timeline.cursor > 0 ? currentOperation?.id ?? null : null,
+        )
+        if (operation.lastEventSequence < timeline.cursor) {
+          throw new TypeError('Invalid draft operation response')
+        }
+        if (timeline.cursor > 0 && operation.lastEventSequence > timeline.cursor) {
+          if (!await drainEventPages(
+            token,
+            operation.id,
+            operation.lastEventSequence,
+            EVENT_TERMINAL_STATUSES.has(operation.status) ? operation.status : null,
+          )) return null
+        }
+        if (!await calibrateAndPublish(token, operation)) return cancellationResult(token)
       } catch (error) {
         if (!isCurrent(token)) return null
         if (activeAction.cancelPromise) return activeAction.cancelPromise
@@ -582,8 +635,8 @@ export function createDraftOperationCoordinator({
       if (!isCurrent(token)) return null
       let operation
       try {
-        operation = acceptOperation(received, operationId)
-        if (!await calibrateOperation(token, operation)) return null
+        operation = validateOperation(received, operationId)
+        if (!await calibrateAndPublish(token, operation)) return cancellationResult(token)
         if (activeAction.cancelPromise) return activeAction.cancelPromise
       } catch (error) {
         if (!isCurrent(token)) return null
@@ -622,12 +675,12 @@ export function createDraftOperationCoordinator({
       try {
         const received = await cancel(operation.id)
         if (!isCurrent(token)) return null
-        const terminal = acceptOperation(received, operation.id)
+        const terminal = validateOperation(received, operation.id)
         if (!TERMINAL_STATUSES.has(terminal.status)) {
           throw new TypeError('Invalid draft operation cancel response')
         }
         timeline.reset()
-        if (!await calibrateOperation(token, terminal)) return null
+        if (!await calibrateAndPublish(token, terminal, { allowCancellation: true })) return null
         return await settleTerminal(token, terminal)
       } catch (error) {
         if (!isCurrent(token)) return null

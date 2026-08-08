@@ -32,8 +32,9 @@ from backend.routers import (
     style_trials,
     story_engines,
 )
-from backend.schema_version import verify_schema_version
+from backend.runtime.draft_operation_tasks import DraftOperationTasksDrainPending
 from backend.runtime.market_scheduler import build_market_scheduler_runtime
+from backend.schema_version import verify_schema_version
 from backend.security.paths import resolve_spa_file
 from backend.security.redaction import install_error_handlers
 
@@ -42,14 +43,18 @@ class DraftOperationTaskRegistryLifecycleError(RuntimeError):
     pass
 
 
-async def _close_draft_operation_task_registry(registry) -> bool:
+async def _close_draft_operation_task_registry(
+    registry,
+) -> tuple[bool, object | None]:
     try:
         await registry.aclose()
+    except DraftOperationTasksDrainPending as error:
+        return False, error.cleanup_transfer
     except BaseException:
-        return False
+        return False, None
     finally:
         registry = None
-    return True
+    return True, None
 
 
 async def _close_planning_provider_gateway(gateway) -> bool:
@@ -91,8 +96,55 @@ async def _settle_independent_cleanup(
     return succeeded, observed_cancellations
 
 
+def _previous_shutdown_transfer_failed(app: FastAPI) -> bool:
+    draft_transfer = getattr(
+        app.state,
+        "draft_operation_shutdown_transfer",
+        None,
+    )
+    market_transfer = getattr(
+        app.state,
+        "market_scheduler_shutdown_transfer",
+        None,
+    )
+    transfers = []
+    for transfer in (draft_transfer, market_transfer):
+        if transfer is not None and not any(
+            existing is transfer for existing in transfers
+        ):
+            transfers.append(transfer)
+
+    failed = False
+    for transfer in transfers:
+        try:
+            if not transfer.done() or transfer.cancelled():
+                failed = True
+                continue
+            transfer.result()
+        except BaseException:
+            failed = True
+
+    if draft_transfer is not None:
+        registry_closed = (
+            getattr(
+                chapter_sessions.draft_operation_task_registry,
+                "state",
+                None,
+            )
+            == "closed"
+        )
+        if not registry_closed:
+            failed = True
+    return failed
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if _previous_shutdown_transfer_failed(app):
+        raise DraftOperationTaskRegistryLifecycleError(
+            "Draft operation task registry lifecycle failed"
+        ) from None
+
     scheduler_runtime = None
     application_error = None
     planning_gateway_start_attempted = False
@@ -100,6 +152,10 @@ async def lifespan(app: FastAPI):
     draft_registry_start_attempted = False
     shutdown_cancellations = 0
     pool_close_transferred = False
+    pool_close_blocked = False
+    draft_cleanup_transfer = None
+    market_cleanup_transfer = None
+    app.state.draft_operation_shutdown_transfer = None
     app.state.market_scheduler_shutdown_transfer = None
     try:
         async with connection() as session:
@@ -125,13 +181,18 @@ async def lifespan(app: FastAPI):
                 ),
                 name="draft-operation-task-registry-close",
             )
-            draft_registry_close_succeeded, observed_cancellations = (
+            draft_registry_close_result, observed_cancellations = (
                 await _settle_independent_cleanup(draft_registry_cleanup)
             )
+            (
+                draft_registry_close_succeeded,
+                draft_cleanup_transfer,
+            ) = draft_registry_close_result
             draft_registry_cleanup = None
             shutdown_cancellations += observed_cancellations
             observed_cancellations = 0
             if not draft_registry_close_succeeded:
+                pool_close_blocked = draft_cleanup_transfer is None
                 cleanup_errors.append(
                     DraftOperationTaskRegistryLifecycleError(
                         "Draft operation task registry lifecycle failed"
@@ -179,18 +240,41 @@ async def lifespan(app: FastAPI):
             try:
                 await scheduler_runtime.stop()
             except BaseException as error:
-                cleanup_transfer = getattr(
+                market_cleanup_transfer = getattr(
                     error,
                     "cleanup_transfer",
                     None,
                 )
-                if cleanup_transfer is not None:
-                    app.state.market_scheduler_shutdown_transfer = (
-                        cleanup_transfer.start_pool_close(close_pool)
-                    )
-                    pool_close_transferred = True
                 cleanup_errors.append(error)
-        if not pool_close_transferred:
+        if market_cleanup_transfer is not None:
+            if draft_cleanup_transfer is not None:
+
+                async def close_pool_after_draft_drain():
+                    await draft_cleanup_transfer.start_pool_close(close_pool)
+
+                final_transfer = market_cleanup_transfer.start_pool_close(
+                    close_pool_after_draft_drain
+                )
+                app.state.draft_operation_shutdown_transfer = final_transfer
+            elif pool_close_blocked:
+
+                async def reject_transferred_pool_close():
+                    raise DraftOperationTaskRegistryLifecycleError(
+                        "Draft operation task registry lifecycle failed"
+                    )
+
+                final_transfer = market_cleanup_transfer.start_pool_close(
+                    reject_transferred_pool_close
+                )
+            else:
+                final_transfer = market_cleanup_transfer.start_pool_close(close_pool)
+            app.state.market_scheduler_shutdown_transfer = final_transfer
+            pool_close_transferred = True
+        elif draft_cleanup_transfer is not None:
+            final_transfer = draft_cleanup_transfer.start_pool_close(close_pool)
+            app.state.draft_operation_shutdown_transfer = final_transfer
+            pool_close_transferred = True
+        if not pool_close_transferred and not pool_close_blocked:
             pool_cleanup = asyncio.create_task(
                 _close_pool_for_lifespan(),
                 name="application-database-pool-close",

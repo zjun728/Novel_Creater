@@ -121,7 +121,7 @@ test('resume calibrates the fresh snapshot, drains only retained suffixes, and n
       calls.push(['read', operationId])
       reads += 1
       return reads === 1
-        ? operation({ status: 'running', lastEventSequence: 8, partialOutput: '甲' })
+        ? operation({ status: 'running', lastEventSequence: 8, partialOutput: ' 甲' })
         : operation({
           status: 'completed',
           lastEventSequence: 10,
@@ -139,9 +139,9 @@ test('resume calibrates the fresh snapshot, drains only retained suffixes, and n
           sequence: 9,
           type: 'delta',
           createdAt: 9,
-          text: '乙',
-          partialOutputHash: textHash('甲乙'),
-          partialOutputScalars: 2,
+          text: '乙 ',
+          partialOutputHash: textHash(' 甲乙 '),
+          partialOutputScalars: 4,
         }, {
           sequence: 10,
           type: 'completed',
@@ -165,6 +165,132 @@ test('resume calibrates the fresh snapshot, drains only retained suffixes, and n
     ['events', OPERATION_ID, 8],
     ['read', OPERATION_ID],
   ])
+})
+
+test('coordinator calibrates normalized completed and cancelled snapshots after a terminal-only event page', async () => {
+  for (const status of ['completed', 'cancelled']) {
+    let eventReads = 0
+    let reloads = 0
+    const snapshots = []
+    let subject
+    subject = coordinator({
+      startOperation: async () => operation({
+        status: 'running',
+        lastEventSequence: 1,
+        partialOutput: '',
+        resultWorkingDraftRevision: null,
+        resultContentHash: null,
+      }),
+      listEvents: async (operationId, after) => {
+        eventReads += 1
+        if (eventReads === 1) {
+          assert.equal(after, 1)
+          return {
+            operationId,
+            events: [{
+              sequence: 2,
+              type: 'delta',
+              createdAt: 2,
+              text: ' 甲 ',
+              partialOutputHash: textHash(' 甲 '),
+              partialOutputScalars: 3,
+            }],
+            lastEventSequence: 3,
+            nextAfter: 2,
+            hasMore: true,
+          }
+        }
+        assert.equal(after, 2)
+        return {
+          operationId,
+          events: [{
+            sequence: 3,
+            type: status,
+            createdAt: 3,
+            resultWorkingDraftRevision: 5,
+            resultContentHash: textHash('甲'),
+          }],
+          lastEventSequence: 3,
+          nextAfter: 3,
+          hasMore: false,
+        }
+      },
+      readOperation: async () => operation({
+        status,
+        lastEventSequence: 3,
+        partialOutput: '甲',
+        resultWorkingDraftRevision: 5,
+        resultContentHash: textHash('甲'),
+      }),
+      reloadWorkspace: async () => {
+        reloads += 1
+        return { workingDraft: { content: 'authoritative' } }
+      },
+      onChange: () => snapshots.push({
+        status: subject.status,
+        operation: subject.operation?.status ?? null,
+        preview: subject.preview,
+      }),
+    })
+    await subject.generateNew(command())
+    assert.equal(subject.preview, '甲')
+    assert.equal(subject.status, status)
+    assert.equal(reloads, 1)
+    const terminalSnapshots = snapshots.filter(snapshot => snapshot.operation === status)
+    assert.ok(terminalSnapshots.length > 0)
+    assert.equal(
+      terminalSnapshots.every(snapshot => snapshot.preview === '甲'),
+      true,
+    )
+  }
+})
+
+test('coordinator calibrates whitespace-only cancellation to empty without reloading', async () => {
+  let reloads = 0
+  const subject = coordinator({
+    startOperation: async () => operation({
+      status: 'running',
+      lastEventSequence: 1,
+      partialOutput: '',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+    listEvents: async (operationId, after) => {
+      assert.equal(after, 1)
+      return {
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'delta',
+          createdAt: 2,
+          text: ' ',
+          partialOutputHash: textHash(' '),
+          partialOutputScalars: 1,
+        }, {
+          sequence: 3,
+          type: 'cancelled',
+          createdAt: 3,
+          resultWorkingDraftRevision: null,
+          resultContentHash: null,
+        }],
+        lastEventSequence: 3,
+        nextAfter: 3,
+        hasMore: false,
+      }
+    },
+    readOperation: async () => operation({
+      status: 'cancelled',
+      lastEventSequence: 3,
+      partialOutput: '',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+    reloadWorkspace: async () => { reloads += 1 },
+  })
+  assert.equal(await subject.generateNew(command()), null)
+  assert.equal(subject.preview, '')
+  assert.equal(subject.status, 'cancelled')
+  assert.equal(reloads, 0)
 })
 
 test('resume rejects a non-canonical operation id before any transport call', () => {
@@ -203,7 +329,13 @@ test('status ahead of retained events drains immediately before any one-second w
         assert.equal(after, 2)
         return {
           operationId,
-          events: [{ sequence: 3, type: 'completed', createdAt: 3 }],
+          events: [{
+            sequence: 3,
+            type: 'completed',
+            createdAt: 3,
+            resultWorkingDraftRevision: 5,
+            resultContentHash: textHash('甲'),
+          }],
           lastEventSequence: 3,
           nextAfter: 3,
           hasMore: false,
@@ -288,6 +420,188 @@ test('a retained-cycle status behind the drained event cursor fails closed', asy
   assert.equal(statusReads, 1)
 })
 
+test('expired status drains its retained delta suffix without requiring a terminal event', async () => {
+  let eventReads = 0
+  let reloads = 0
+  const subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listEvents: async (operationId, after) => {
+      eventReads += 1
+      if (eventReads === 1) {
+        assert.equal(after, 1)
+        return { operationId, events: [], lastEventSequence: 1, nextAfter: 1, hasMore: false }
+      }
+      assert.equal(after, 1)
+      return {
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'delta',
+          createdAt: 2,
+          text: '甲',
+          partialOutputHash: textHash('甲'),
+          partialOutputScalars: 1,
+        }],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      }
+    },
+    readOperation: async () => operation({
+      status: 'expired',
+      lastEventSequence: 2,
+      partialOutput: '甲',
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }),
+    reloadWorkspace: async () => { reloads += 1 },
+  })
+  assert.equal(await subject.generateNew(command()), null)
+  assert.equal(subject.status, 'expired')
+  assert.equal(subject.preview, '甲')
+  assert.equal(eventReads, 2)
+  assert.equal(reloads, 0)
+})
+
+test('generic retained terminal evidence must match the same-cursor status before publish or reload', async () => {
+  const cases = [
+    ['failed', 'completed'],
+    ['completed', 'cancelled'],
+    ['completed', 'failed'],
+    ['completed', 'expired'],
+    ['failed', 'running'],
+  ]
+  for (const [eventType, status] of cases) {
+    const snapshots = []
+    let reloads = 0
+    let statusRead = false
+    let subject
+    const event = eventType === 'completed'
+      ? {
+          sequence: 2,
+          type: 'completed',
+          createdAt: 2,
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('甲'),
+        }
+      : {
+          sequence: 2,
+          type: 'failed',
+          createdAt: 2,
+          failureCode: 'DraftProviderFailed',
+        }
+    const terminal = status === 'completed' || status === 'cancelled'
+      ? operation({
+          status,
+          lastEventSequence: 2,
+          partialOutput: '甲',
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('甲'),
+        })
+      : operation({
+          status,
+          lastEventSequence: 2,
+          partialOutput: '',
+          resultWorkingDraftRevision: null,
+          resultContentHash: null,
+          failureCode: status === 'failed' ? 'DraftProviderFailed' : null,
+        })
+    subject = coordinator({
+      startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+      listEvents: async operationId => ({
+        operationId,
+        events: [event],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      }),
+      readOperation: async () => {
+        statusRead = true
+        return terminal
+      },
+      reloadWorkspace: async () => { reloads += 1 },
+      onChange: () => snapshots.push({
+        status: subject.status,
+        operation: subject.operation?.status ?? null,
+        afterStatusRead: statusRead,
+      }),
+    })
+    await assert.rejects(subject.generateNew(command()), TypeError, `${eventType}->${status}`)
+    assert.equal(subject.status, 'operation_invalid', `${eventType}->${status}`)
+    assert.equal(subject.operation, null, `${eventType}->${status}`)
+    assert.equal(reloads, 0, `${eventType}->${status}`)
+    assert.equal(
+      snapshots.some(snapshot => (
+        snapshot.afterStatusRead && snapshot.operation === status
+      )),
+      false,
+      `${eventType}->${status}`,
+    )
+  }
+})
+
+test('generic retained terminal evidence binds result revisions hashes and failure codes', async () => {
+  const cases = [
+    ['completed', {
+      sequence: 2,
+      type: 'completed',
+      createdAt: 2,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('甲'),
+    }, operation({
+      status: 'completed',
+      lastEventSequence: 2,
+      partialOutput: '甲',
+      resultWorkingDraftRevision: 6,
+      resultContentHash: textHash('甲'),
+    })],
+    ['cancelled', {
+      sequence: 2,
+      type: 'cancelled',
+      createdAt: 2,
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('甲'),
+    }, operation({
+      status: 'cancelled',
+      lastEventSequence: 2,
+      partialOutput: '乙',
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('乙'),
+    })],
+    ['failed', {
+      sequence: 2,
+      type: 'failed',
+      createdAt: 2,
+      failureCode: 'DraftProviderFailed',
+    }, operation({
+      status: 'failed',
+      lastEventSequence: 2,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+      failureCode: 'DraftProviderResultInvalid',
+    })],
+  ]
+  for (const [status, event, terminal] of cases) {
+    let reloads = 0
+    const subject = coordinator({
+      startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+      listEvents: async operationId => ({
+        operationId,
+        events: [event],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      }),
+      readOperation: async () => terminal,
+      reloadWorkspace: async () => { reloads += 1 },
+    })
+    await assert.rejects(subject.generateNew(command()), TypeError, status)
+    assert.equal(subject.status, 'operation_invalid', status)
+    assert.equal(subject.operation, null, status)
+    assert.equal(reloads, 0, status)
+  }
+})
+
 test('an unknown transport failure during the status-ahead drain keeps same-key recovery', async () => {
   const starts = []
   let eventReads = 0
@@ -302,6 +616,21 @@ test('an unknown transport failure during the status-ahead drain keeps same-key 
       eventReads += 1
       if (eventReads === 1) {
         return { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
+      }
+      if (eventReads === 3) {
+        return {
+          operationId,
+          events: [{
+            sequence: 2,
+            type: 'completed',
+            createdAt: 2,
+            resultWorkingDraftRevision: 5,
+            resultContentHash: textHash('authoritative'),
+          }],
+          lastEventSequence: 2,
+          nextAfter: 2,
+          hasMore: false,
+        }
       }
       throw new ApiError()
     },
@@ -454,11 +783,17 @@ test('cancellation during asynchronous page hashing prevents another event reque
 test('cancellation during status snapshot hashing cannot publish stale running state', async () => {
   const hashStarted = deferred()
   const hashGate = deferred()
+  const hashReleased = deferred()
+  const cancelStarted = deferred()
+  const pendingCancel = deferred()
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto')
   const originalCrypto = globalThis.crypto
   const originalDigest = originalCrypto.subtle.digest.bind(originalCrypto.subtle)
   let nonEmptyDigests = 0
+  const nonEmptyInputs = []
   let generation
+  const snapshots = []
+  let subject
   Object.defineProperty(globalThis, 'crypto', {
     configurable: true,
     value: {
@@ -466,59 +801,99 @@ test('cancellation during status snapshot hashing cannot publish stale running s
         async digest(algorithm, data) {
           if (data.byteLength > 0) {
             nonEmptyDigests += 1
-            if (nonEmptyDigests === 2) {
+            nonEmptyInputs.push(new TextDecoder().decode(data))
+            if (nonEmptyDigests === 3) {
               hashStarted.resolve()
               await hashGate.promise
-              return new Uint8Array(32).buffer
             }
           }
-          return originalDigest(algorithm, data)
+          const result = await originalDigest(algorithm, data)
+          if (nonEmptyDigests === 3) hashReleased.resolve()
+          return result
         },
       },
     },
   })
   try {
-    const subject = coordinator({
-      startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    subject = coordinator({
+      startOperation: async () => operation({
+        status: 'running',
+        lastEventSequence: 2,
+        partialOutput: '起',
+      }),
       listEvents: async operationId => ({
         operationId,
         events: [{
-          sequence: 2,
+          sequence: 3,
           type: 'delta',
           createdAt: 2,
           text: '甲',
-          partialOutputHash: textHash('甲'),
-          partialOutputScalars: 1,
+          partialOutputHash: textHash('起甲'),
+          partialOutputScalars: 2,
         }],
-        lastEventSequence: 2,
-        nextAfter: 2,
+        lastEventSequence: 3,
+        nextAfter: 3,
         hasMore: false,
       }),
       readOperation: async () => operation({
         status: 'running',
-        lastEventSequence: 2,
-        partialOutput: '甲',
-      }),
-      cancelOperation: async () => operation({
-        status: 'cancelled',
         lastEventSequence: 3,
-        partialOutput: '甲',
-        resultWorkingDraftRevision: 5,
-        resultContentHash: textHash('甲'),
+        partialOutput: '起甲',
+      }),
+      cancelOperation: async () => {
+        cancelStarted.resolve()
+        return pendingCancel.promise
+      },
+      onChange: () => snapshots.push({
+        status: subject.status,
+        operation: subject.operation?.status ?? null,
+        operationRef: subject.operation,
+        cancelling: subject.cancelling,
       }),
     })
 
     generation = subject.generateNew(command())
     await hashStarted.promise
-    const cancelled = await subject.cancelActive()
+    assert.deepEqual(nonEmptyInputs, ['起', '起甲', '起甲'])
+    const cancellation = subject.cancelActive()
+    await cancelStarted.promise
+    assert.equal(
+      snapshots.filter(snapshot => snapshot.cancelling && snapshot.operation === 'running').length,
+      1,
+    )
     hashGate.resolve()
+    await hashReleased.promise
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(
+      snapshots.filter(snapshot => snapshot.cancelling && snapshot.operation === 'running').length,
+      1,
+    )
+    pendingCancel.resolve(operation({
+      status: 'cancelled',
+      lastEventSequence: 4,
+      partialOutput: '起甲',
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('起甲'),
+    }))
+    const cancelled = await cancellation
 
     assert.deepEqual(await generation, cancelled)
     assert.equal(subject.status, 'cancelled')
     assert.equal(subject.operation.status, 'cancelled')
     assert.equal(subject.busy, false)
+    const terminalReferences = snapshots
+      .filter(snapshot => snapshot.operation === 'cancelled')
+      .map(snapshot => snapshot.operationRef)
+    assert.equal(new Set(terminalReferences).size, 1)
   } finally {
     hashGate.resolve()
+    pendingCancel.resolve(operation({
+      status: 'cancelled',
+      lastEventSequence: 4,
+      partialOutput: '起甲',
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('起甲'),
+    }))
     if (generation) await generation.catch(() => {})
     if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor)
     else delete globalThis.crypto
@@ -702,6 +1077,282 @@ test('coordinator replays exactly the frozen command after an unknown transport 
   assert.strictEqual(calls[1], calls[0])
   assert.equal(subject.status, 'failed')
   assert.equal(subject.failureCode, 'DraftProviderFailed')
+})
+
+test('hash-invalid start and resume snapshots never become public operations', async () => {
+  for (const mode of ['start', 'resume']) {
+    const snapshots = []
+    let reloads = 0
+    let subject
+    const invalid = operation({
+      status: mode === 'start' ? 'running' : 'completed',
+      lastEventSequence: 2,
+      partialOutput: '甲',
+      partialOutputHash: textHash('乙'),
+      resultWorkingDraftRevision: mode === 'start' ? null : 5,
+      resultContentHash: mode === 'start' ? null : textHash('乙'),
+    })
+    subject = coordinator({
+      startOperation: async () => invalid,
+      readOperation: async () => invalid,
+      reloadWorkspace: async () => { reloads += 1 },
+      onChange: () => snapshots.push({
+        status: subject.status,
+        operation: subject.operation?.status ?? null,
+        failureCode: subject.failureCode,
+      }),
+    })
+    const request = mode === 'start'
+      ? subject.generateNew(command())
+      : subject.resume(OPERATION_ID)
+    await assert.rejects(request, TypeError)
+    assert.equal(subject.status, 'operation_invalid')
+    assert.equal(subject.operation, null)
+    assert.equal(reloads, 0)
+    assert.equal(snapshots.some(snapshot => snapshot.operation === invalid.status), false)
+  }
+})
+
+test('hash-invalid direct cancellation never publishes its terminal snapshot', async () => {
+  const eventGate = deferred()
+  const eventStarted = deferred()
+  const snapshots = []
+  let reloads = 0
+  let subject
+  subject = coordinator({
+    startOperation: async () => operation({ status: 'running', lastEventSequence: 1 }),
+    listEvents: async () => {
+      eventStarted.resolve()
+      return eventGate.promise
+    },
+    cancelOperation: async () => operation({
+      status: 'cancelled',
+      lastEventSequence: 2,
+      partialOutput: '甲',
+      partialOutputHash: textHash('乙'),
+      resultWorkingDraftRevision: 5,
+      resultContentHash: textHash('乙'),
+    }),
+    reloadWorkspace: async () => { reloads += 1 },
+    onChange: () => snapshots.push({
+      status: subject.status,
+      operation: subject.operation?.status ?? null,
+      failureCode: subject.failureCode,
+    }),
+  })
+  const generation = subject.generateNew(command())
+  await eventStarted.promise
+  await assert.rejects(subject.cancelActive(), TypeError)
+  eventGate.resolve({
+    operationId: OPERATION_ID,
+    events: [],
+    lastEventSequence: 1,
+    nextAfter: 1,
+    hasMore: false,
+  })
+  await assert.rejects(generation, TypeError)
+  assert.equal(subject.status, 'operation_invalid')
+  assert.equal(subject.operation, null)
+  assert.equal(reloads, 0)
+  assert.equal(snapshots.some(snapshot => snapshot.operation === 'cancelled'), false)
+})
+
+test('same-key completed and cancelled replays drain retained terminal suffixes before reloading', async () => {
+  for (const status of ['completed', 'cancelled']) {
+    const starts = []
+    const eventCursors = []
+    let reads = 0
+    let reloads = 0
+    const subject = coordinator({
+      startOperation: async next => {
+        starts.push(next)
+        return starts.length === 1
+          ? operation({ status: 'running', lastEventSequence: 1 })
+          : operation({
+            status,
+            lastEventSequence: 3,
+            partialOutput: '甲',
+            resultWorkingDraftRevision: 5,
+            resultContentHash: textHash('甲'),
+          })
+      },
+      listEvents: async (operationId, after) => {
+        eventCursors.push(after)
+        return eventCursors.length === 1
+          ? { operationId, events: [], lastEventSequence: 1, nextAfter: 1, hasMore: false }
+          : {
+              operationId,
+              events: [{
+                sequence: 2,
+                type: 'delta',
+                createdAt: 2,
+                text: '甲',
+                partialOutputHash: textHash('甲'),
+                partialOutputScalars: 1,
+              }, {
+                sequence: 3,
+                type: status,
+                createdAt: 3,
+                resultWorkingDraftRevision: 5,
+                resultContentHash: textHash('甲'),
+              }],
+              lastEventSequence: 3,
+              nextAfter: 3,
+              hasMore: false,
+            }
+      },
+      readOperation: async () => {
+        reads += 1
+        throw new ApiError()
+      },
+      reloadWorkspace: async () => {
+        reloads += 1
+        return { workingDraft: { content: 'authoritative' } }
+      },
+    })
+    await assert.rejects(subject.generateNew(command()), ApiError)
+    assert.deepEqual(await subject.retryUnknown(), {
+      workingDraft: { content: 'authoritative' },
+    })
+    assert.strictEqual(starts[1], starts[0])
+    assert.deepEqual(eventCursors, [1, 1])
+    assert.equal(reads, 1)
+    assert.equal(subject.status, status)
+    assert.equal(subject.preview, '甲')
+    assert.equal(reloads, 1)
+  }
+})
+
+test('hash-invalid same-key replay never publishes its cancelled terminal snapshot', async () => {
+  const snapshots = []
+  let eventReads = 0
+  let subject
+  subject = coordinator({
+    startOperation: async () => (
+      eventReads === 0
+        ? operation({ status: 'running', lastEventSequence: 1 })
+        : operation({
+          status: 'cancelled',
+          lastEventSequence: 2,
+          partialOutput: '甲',
+          partialOutputHash: textHash('乙'),
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('乙'),
+        })
+    ),
+    listEvents: async operationId => {
+      eventReads += 1
+      if (eventReads === 1) {
+        return { operationId, events: [], lastEventSequence: 1, nextAfter: 1, hasMore: false }
+      }
+      return {
+        operationId,
+        events: [{
+          sequence: 2,
+          type: 'cancelled',
+          createdAt: 2,
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('乙'),
+        }],
+        lastEventSequence: 2,
+        nextAfter: 2,
+        hasMore: false,
+      }
+    },
+    readOperation: async () => { throw new ApiError() },
+    onChange: () => snapshots.push({
+      status: subject.status,
+      operation: subject.operation?.status ?? null,
+      failureCode: subject.failureCode,
+    }),
+  })
+  await assert.rejects(subject.generateNew(command()), ApiError)
+  await assert.rejects(subject.retryUnknown(), TypeError)
+  assert.equal(subject.status, 'operation_invalid')
+  assert.equal(snapshots.some(snapshot => snapshot.operation === 'cancelled'), false)
+})
+
+test('same-key replay rejects a lower status cursor and a mismatched terminal page without reloading', async () => {
+  for (const caseName of ['lower_cursor', 'wrong_terminal']) {
+    const eventCursors = []
+    let starts = 0
+    let reads = 0
+    let reloads = 0
+    const subject = coordinator({
+      startOperation: async () => {
+        starts += 1
+        if (starts === 1) return operation({ status: 'running', lastEventSequence: 1 })
+        if (caseName === 'lower_cursor') {
+          return operation({
+            status: 'expired',
+            lastEventSequence: 1,
+            resultWorkingDraftRevision: null,
+            resultContentHash: null,
+          })
+        }
+        return operation({
+          status: 'completed',
+          lastEventSequence: 3,
+          partialOutput: '甲',
+          resultWorkingDraftRevision: 5,
+          resultContentHash: textHash('甲'),
+        })
+      },
+      listEvents: async (operationId, after) => {
+        eventCursors.push(after)
+        if (caseName === 'lower_cursor' || eventCursors.length === 1) {
+          return {
+            operationId,
+            events: [{
+              sequence: 2,
+              type: 'delta',
+              createdAt: 2,
+              text: '甲',
+              partialOutputHash: textHash('甲'),
+              partialOutputScalars: 1,
+            }],
+            lastEventSequence: 2,
+            nextAfter: 2,
+            hasMore: false,
+          }
+        }
+        return {
+          operationId,
+          events: [{
+            sequence: 2,
+            type: 'delta',
+            createdAt: 2,
+            text: '甲',
+            partialOutputHash: textHash('甲'),
+            partialOutputScalars: 1,
+          }, {
+            sequence: 3,
+            type: 'failed',
+            createdAt: 3,
+            failureCode: 'DraftProviderFailed',
+          }],
+          lastEventSequence: 3,
+          nextAfter: 3,
+          hasMore: false,
+        }
+      },
+      readOperation: async () => {
+        reads += 1
+        throw new ApiError()
+      },
+      reloadWorkspace: async () => { reloads += 1 },
+    })
+    await assert.rejects(subject.generateNew(command()), ApiError)
+    await assert.rejects(subject.retryUnknown(), TypeError, caseName)
+    assert.equal(subject.status, 'operation_invalid', caseName)
+    assert.equal(reloads, 0, caseName)
+    assert.equal(reads, 1, caseName)
+    assert.deepEqual(
+      eventCursors,
+      caseName === 'lower_cursor' ? [1] : [1, 2],
+      caseName,
+    )
+  }
 })
 
 test('exact durable-operation 502 keeps the frozen command for same-key replay', async () => {
@@ -888,7 +1539,13 @@ test('coordinator polls a running operation with its fenced id until completed o
               partialOutputHash: textHash('authoritative'),
               partialOutputScalars: 13,
             },
-            { sequence: 3, type: 'completed', createdAt: 3 },
+            {
+              sequence: 3,
+              type: 'completed',
+              createdAt: 3,
+              resultWorkingDraftRevision: 5,
+              resultContentHash: textHash('authoritative'),
+            },
           ],
           lastEventSequence: 3,
           nextAfter: 3,
@@ -936,7 +1593,12 @@ test('coordinator polls a running operation through failed and expired terminal 
           ? { operationId, events: [], lastEventSequence: after, nextAfter: after, hasMore: false }
           : {
               operationId,
-              events: [{ sequence: 2, type: terminal.status, createdAt: 2 }],
+              events: [{
+                sequence: 2,
+                type: terminal.status,
+                createdAt: 2,
+                failureCode: terminal.failureCode,
+              }],
               lastEventSequence: 2,
               nextAfter: 2,
               hasMore: false,
@@ -1078,6 +1740,19 @@ test('unknown status recovery keeps its frozen command and rejects new generate 
       readStarted.resolve()
       return pendingRead.promise
     },
+    listEvents: async operationId => ({
+      operationId,
+      events: [{
+        sequence: 2,
+        type: 'completed',
+        createdAt: 2,
+        resultWorkingDraftRevision: 5,
+        resultContentHash: textHash('authoritative'),
+      }],
+      lastEventSequence: 2,
+      nextAfter: 2,
+      hasMore: false,
+    }),
   })
   const first = subject.generateNew(command())
   await readStarted.promise

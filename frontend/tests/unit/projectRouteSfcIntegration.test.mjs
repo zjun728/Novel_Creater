@@ -273,6 +273,7 @@ function currentOutline({
 function sessionWorkspace(chapterNumber = 1) {
   return {
     projectId: 'project-1',
+    activeDraftOperationId: null,
     session: {
       id: `session-${chapterNumber}`,
       chapterNum: chapterNumber,

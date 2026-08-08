@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 
 function jsonResponse(body = {}) {
@@ -1608,26 +1609,28 @@ test('draft operation event paging accepts an ahead 32-bit cursor and rejects a 
   }
 })
 
-test('draft operation events reject terminal hash drift and a nonterminal sequence 2048 tail', async () => {
+test('draft operation events accept a normalized terminal result after raw streamed delta and reject a nonterminal sequence 2048 tail', async () => {
   const originalFetch = global.fetch
   const projectId = '11111111-1111-4111-8111-111111111111'
   const sessionId = '22222222-2222-4222-8222-222222222222'
   const operationId = '33333333-3333-4333-8333-333333333333'
+  const rawHash = createHash('sha256').update(' 甲 ', 'utf8').digest('hex')
+  const normalizedHash = createHash('sha256').update('甲', 'utf8').digest('hex')
   const responses = [{
     operationId,
     events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
       sequence: 2,
       type: 'delta',
       createdAt: 2,
-      text: '甲',
-      partialOutputHash: 'a'.repeat(64),
-      partialOutputScalars: 1,
+      text: ' 甲 ',
+      partialOutputHash: rawHash,
+      partialOutputScalars: 3,
     }, {
       sequence: 3,
       type: 'completed',
       createdAt: 3,
       resultWorkingDraftRevision: 5,
-      resultContentHash: 'b'.repeat(64),
+      resultContentHash: normalizedHash,
     }],
     lastEventSequence: 3,
     nextAfter: 3,
@@ -1646,18 +1649,55 @@ test('draft operation events reject terminal hash drift and a nonterminal sequen
   global.fetch = async () => jsonResponse(responses.shift())
   try {
     const { api } = await import('../../src/api/db/client.js')
-    await assert.rejects(
-      () => api.chapterSessions.listDraftOperationEvents(
-        projectId, sessionId, operationId, 0,
-      ),
-      TypeError,
+    const normalized = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
     )
+    assert.notEqual(rawHash, normalizedHash)
+    assert.equal(normalized.events.at(-1).resultContentHash, normalizedHash)
     await assert.rejects(
       () => api.chapterSessions.listDraftOperationEvents(
         projectId, sessionId, operationId, 1_948,
       ),
       TypeError,
     )
+  } finally {
+    global.fetch = originalFetch
+  }
+})
+
+test('draft operation events accept a whitespace-only delta followed by an empty cancellation result', async () => {
+  const originalFetch = global.fetch
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const sessionId = '22222222-2222-4222-8222-222222222222'
+  const operationId = '33333333-3333-4333-8333-333333333333'
+  const whitespaceHash = createHash('sha256').update(' ', 'utf8').digest('hex')
+  global.fetch = async () => jsonResponse({
+    operationId,
+    events: [{ sequence: 1, type: 'started', createdAt: 1 }, {
+      sequence: 2,
+      type: 'delta',
+      createdAt: 2,
+      text: ' ',
+      partialOutputHash: whitespaceHash,
+      partialOutputScalars: 1,
+    }, {
+      sequence: 3,
+      type: 'cancelled',
+      createdAt: 3,
+      resultWorkingDraftRevision: null,
+      resultContentHash: null,
+    }],
+    lastEventSequence: 3,
+    nextAfter: 3,
+    hasMore: false,
+  })
+  try {
+    const { api } = await import('../../src/api/db/client.js')
+    const result = await api.chapterSessions.listDraftOperationEvents(
+      projectId, sessionId, operationId, 0,
+    )
+    assert.equal(result.events.at(-1).type, 'cancelled')
+    assert.equal(result.events.at(-1).resultContentHash, null)
   } finally {
     global.fetch = originalFetch
   }

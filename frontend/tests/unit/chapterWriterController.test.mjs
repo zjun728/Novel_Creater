@@ -176,7 +176,13 @@ test('streaming preview owns editorText during generation without editing autosa
         }
       : {
           operationId,
-          events: [{ sequence: 3, type: 'completed', createdAt: 3 }],
+          events: [{
+            sequence: 3,
+            type: 'completed',
+            createdAt: 3,
+            resultWorkingDraftRevision: 5,
+            resultContentHash: textHash('流式新正文'),
+          }],
           lastEventSequence: 3,
           nextAfter: 3,
           hasMore: false,

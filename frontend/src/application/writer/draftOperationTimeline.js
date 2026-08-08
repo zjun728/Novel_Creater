@@ -7,6 +7,11 @@ const EVENT_TYPES = new Set([
   'started', 'delta', 'heartbeat', 'completed', 'failed', 'cancelled',
 ])
 const TERMINAL_EVENT_TYPES = new Set(['completed', 'failed', 'cancelled'])
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'expired'])
+const OPERATION_STATUSES = new Set([
+  'starting', 'running', 'completed', 'failed', 'cancelled', 'expired',
+])
+const NORMALIZING_TERMINAL_STATUSES = new Set(['completed', 'cancelled'])
 const MAX_EVENTS = 2_048
 const MAX_PARTIAL_SCALARS = 100_000
 
@@ -24,16 +29,68 @@ function invalid() {
   throw new TypeError('Invalid draft operation timeline')
 }
 
+function terminalEvidence(type, revision, resultHash, failureCode, { event = false } = {}) {
+  if (type === 'completed') {
+    if (
+      !Number.isInteger(revision)
+      || revision < 1
+      || typeof resultHash !== 'string'
+      || !CONTENT_HASH.test(resultHash)
+      || (!event && failureCode !== null)
+    ) invalid()
+    return { type, revision, resultHash }
+  }
+  if (type === 'cancelled') {
+    if (
+      (revision === null) !== (resultHash === null)
+      || (!event && failureCode !== null)
+      || (revision !== null && (
+        !Number.isInteger(revision)
+        || revision < 1
+        || typeof resultHash !== 'string'
+        || !CONTENT_HASH.test(resultHash)
+      ))
+    ) invalid()
+    return { type, revision, resultHash }
+  }
+  if (type === 'failed') {
+    if (
+      (!event && (revision !== null || resultHash !== null))
+      || typeof failureCode !== 'string'
+      || failureCode.length === 0
+    ) invalid()
+    return { type, failureCode }
+  }
+  if (type === 'expired') {
+    if (!event && (revision !== null || resultHash !== null || failureCode !== null)) invalid()
+    return { type }
+  }
+  invalid()
+}
+
+function sameTerminalEvidence(left, right) {
+  if (left === null || right === null || left.type !== right.type) return false
+  if (left.type === 'completed' || left.type === 'cancelled') {
+    return left.revision === right.revision && left.resultHash === right.resultHash
+  }
+  return left.failureCode === right.failureCode
+}
+
 async function calibratedSnapshot(value, hashText) {
   if (!plainObject(value)) invalid()
   const operationId = value.id
+  const status = value.status
   const text = value.partialOutput
   const outputHash = value.partialOutputHash
   const scalars = value.partialOutputScalars
   const sequence = value.lastEventSequence
+  const revision = value.resultWorkingDraftRevision
+  const resultHash = value.resultContentHash
+  const failureCode = value.failureCode
   if (
     typeof operationId !== 'string'
     || !CANONICAL_UUID.test(operationId)
+    || !OPERATION_STATUSES.has(status)
     || typeof text !== 'string'
     || typeof outputHash !== 'string'
     || !CONTENT_HASH.test(outputHash)
@@ -47,7 +104,18 @@ async function calibratedSnapshot(value, hashText) {
   ) invalid()
   const actualHash = await hashText(text)
   if (actualHash !== outputHash) invalid()
-  return { operationId, text, outputHash, scalars, sequence }
+  const evidence = TERMINAL_STATUSES.has(status)
+    ? terminalEvidence(status, revision, resultHash, failureCode)
+    : null
+  return {
+    operationId,
+    status,
+    text,
+    outputHash,
+    scalars,
+    sequence,
+    evidence,
+  }
 }
 
 export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
@@ -59,29 +127,47 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
   let currentHash = null
   let currentScalars = 0
   let currentCursor = 0
+  let currentTerminalEvidence = null
   let stateGeneration = 0
 
   async function calibrate(operation) {
     const generation = stateGeneration
     const snapshot = await calibratedSnapshot(operation, hashText)
-    if (generation !== stateGeneration) return
-    if (
-      currentOperationId !== null
-      && currentOperationId !== snapshot.operationId
-    ) invalid()
-    if (currentOperationId === null || currentCursor > snapshot.sequence) {
+    if (generation !== stateGeneration) return false
+    if (currentOperationId === null) {
       currentOperationId = snapshot.operationId
       currentPreview = snapshot.text
       currentHash = snapshot.outputHash
       currentScalars = snapshot.scalars
       currentCursor = snapshot.sequence
-      return
+      currentTerminalEvidence = snapshot.evidence
+      return true
     }
+    if (
+      currentOperationId !== snapshot.operationId
+      || currentCursor !== snapshot.sequence
+    ) invalid()
+    if (TERMINAL_EVENT_TYPES.has(snapshot.status)) {
+      if (!sameTerminalEvidence(currentTerminalEvidence, snapshot.evidence)) invalid()
+    } else if (snapshot.status === 'expired') {
+      if (currentTerminalEvidence?.type !== 'expired' && currentTerminalEvidence !== null) {
+        invalid()
+      }
+    } else if (currentTerminalEvidence !== null) invalid()
     if (currentCursor === snapshot.sequence && (
       currentPreview !== snapshot.text
       || currentHash !== snapshot.outputHash
       || currentScalars !== snapshot.scalars
-    )) invalid()
+    )) {
+      if (!NORMALIZING_TERMINAL_STATUSES.has(snapshot.status)) invalid()
+      currentPreview = snapshot.text
+      currentHash = snapshot.outputHash
+      currentScalars = snapshot.scalars
+    }
+    if (TERMINAL_STATUSES.has(snapshot.status)) {
+      currentTerminalEvidence = snapshot.evidence
+    }
+    return true
   }
 
   async function applyPage(value) {
@@ -103,9 +189,15 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
     let nextHash = currentHash
     let nextScalars = currentScalars
     let nextCursor = currentCursor
+    let nextTerminalEvidence = currentTerminalEvidence
+    if (
+      nextTerminalEvidence !== null
+      && (events.length > 0 || value.lastEventSequence > currentCursor || value.hasMore)
+    ) invalid()
     let terminalIndex = -1
     for (let index = 0; index < events.length; index += 1) {
       const event = events[index]
+      if (nextTerminalEvidence !== null) invalid()
       if (!plainObject(event)) invalid()
       if (
         !Number.isInteger(event.sequence)
@@ -136,6 +228,13 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
       } else if (TERMINAL_EVENT_TYPES.has(event.type)) {
         if (terminalIndex !== -1) invalid()
         terminalIndex = index
+        nextTerminalEvidence = terminalEvidence(
+          event.type,
+          event.resultWorkingDraftRevision,
+          event.resultContentHash,
+          event.failureCode,
+          { event: true },
+        )
       }
       nextCursor = event.sequence
     }
@@ -153,6 +252,7 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
     currentHash = nextHash
     currentScalars = nextScalars
     currentCursor = nextCursor
+    currentTerminalEvidence = nextTerminalEvidence
   }
 
   function reset() {
@@ -162,6 +262,7 @@ export function createDraftOperationTimeline({ hashText = sha256Text } = {}) {
     currentHash = null
     currentScalars = 0
     currentCursor = 0
+    currentTerminalEvidence = null
   }
 
   return Object.freeze({

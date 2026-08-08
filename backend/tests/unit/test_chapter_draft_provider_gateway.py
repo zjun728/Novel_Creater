@@ -373,6 +373,76 @@ async def test_stream_non_cancel_cleanup_failures_are_safe_and_close_both_resour
 
 
 @pytest.mark.asyncio
+async def test_stream_cleanup_deadline_attempts_both_resources_and_fails_safely(
+    monkeypatch,
+):
+    import backend.gateways.chapter_draft_provider as provider_module
+
+    close_release = asyncio.Event()
+    response_close_entered = asyncio.Event()
+    client_close_entered = asyncio.Event()
+
+    class BlockingResponse:
+        headers = httpx.Headers({"content-type": "text/event-stream"})
+        is_success = True
+
+        async def aiter_raw(self):
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            response_close_entered.set()
+            await close_release.wait()
+
+    class BlockingClient:
+        def __init__(self, response):
+            self.response = response
+
+        def build_request(self, *_args, **_kwargs):
+            return object()
+
+        async def send(self, _request, *, stream):
+            assert stream is True
+            return self.response
+
+        async def aclose(self):
+            client_close_entered.set()
+            await close_release.wait()
+
+    response = BlockingResponse()
+    client = BlockingClient(response)
+    monkeypatch.setattr(
+        provider_module,
+        "_CHAPTER_DRAFT_STREAM_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        provider_module.httpx,
+        "AsyncClient",
+        lambda **_kwargs: client,
+    )
+    task = asyncio.create_task(_stream(ChapterDraftProviderGateway()))
+
+    done, _ = await asyncio.wait({task}, timeout=0.2)
+    if task not in done:
+        close_release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        pytest.fail("stream cleanup exceeded its independent deadline")
+
+    try:
+        with pytest.raises(ChapterDraftProviderTransportError) as caught:
+            await task
+    finally:
+        close_release.set()
+
+    assert response_close_entered.is_set()
+    assert client_close_entered.is_set()
+    assert caught.value.args == ("provider transport failed",)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.asyncio
 async def test_stream_consumer_aclose_closes_response_and_client_once():
     class RecordingTransport(httpx.AsyncBaseTransport):
         def __init__(self, stream):
@@ -469,7 +539,9 @@ async def test_stream_real_loop_rejects_buffered_text_after_absolute_deadline(
 
 
 @pytest.mark.asyncio
-async def test_cleanup_cancellation_overrides_earlier_framing_failure():
+async def test_cleanup_cancellation_overrides_earlier_framing_failure(monkeypatch):
+    import backend.gateways.chapter_draft_provider as provider_module
+
     close_entered = asyncio.Event()
     close_release = asyncio.Event()
 
@@ -497,6 +569,11 @@ async def test_cleanup_cancellation_overrides_earlier_framing_failure():
 
     response_stream = BlockingCloseStream([b"data: {}\n\n"])
     transport = RecordingTransport(response_stream)
+    monkeypatch.setattr(
+        provider_module,
+        "_CHAPTER_DRAFT_STREAM_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
     gateway = ChapterDraftProviderGateway(transport=transport)
     task = asyncio.create_task(_stream(gateway))
     try:

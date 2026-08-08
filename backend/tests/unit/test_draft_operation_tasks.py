@@ -7,7 +7,12 @@ import weakref
 import pytest
 
 from backend.runtime import draft_operation_tasks
-from backend.runtime.draft_operation_tasks import DraftOperationTaskRegistry
+from backend.runtime.draft_operation_tasks import (
+    DraftOperationTaskRegistry,
+    DraftOperationTasksCleanupTransfer,
+    DraftOperationTasksDrainPending,
+    DraftOperationTasksTransferLifecycleError,
+)
 
 
 async def _wait_for(predicate):
@@ -21,12 +26,14 @@ async def _wait_for(predicate):
 @pytest.mark.asyncio
 async def test_launch_requires_start_and_start_is_idempotent_and_restartable():
     registry = DraftOperationTaskRegistry()
+    assert registry.state == "inactive"
 
     with pytest.raises(RuntimeError):
         registry.launch("op-1", lambda signal: asyncio.sleep(0))
 
     await registry.start()
     await registry.start()
+    assert registry.state == "active"
     completed = []
 
     async def worker(signal):
@@ -37,11 +44,14 @@ async def test_launch_requires_start_and_start_is_idempotent_and_restartable():
     await _wait_for(lambda: len(completed) == 1)
     await _wait_for(lambda: registry.size == 0)
     await registry.aclose()
+    assert registry.state == "closed"
     await registry.start()
+    assert registry.state == "active"
     registry.launch("op-1", worker)
     await _wait_for(lambda: len(completed) == 2)
     await registry.aclose()
     assert registry.size == 0
+    assert registry.state == "closed"
 
 
 @pytest.mark.asyncio
@@ -209,7 +219,7 @@ async def test_aclose_preserves_caller_cancellation_after_settling_children():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_aclose_is_single_flight_bounded_and_detaches_stubborn_task(
+async def test_aclose_timeout_transfers_stubborn_task_without_reopening_registry(
     monkeypatch,
 ):
     monkeypatch.setattr(
@@ -220,81 +230,84 @@ async def test_concurrent_aclose_is_single_flight_bounded_and_detaches_stubborn_
     registry = DraftOperationTaskRegistry()
     await registry.start()
     worker_started = asyncio.Event()
-    first_cancel_seen = asyncio.Event()
-    old_release = asyncio.Event()
-    old_settled = asyncio.Event()
-    cancel_count = 0
-    loop = asyncio.get_running_loop()
-    previous_handler = loop.get_exception_handler()
-    errors = []
-    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+    cancel_seen = asyncio.Event()
+    release = asyncio.Event()
+    settled = asyncio.Event()
+    pool_close_count = 0
 
     async def stubborn_worker(signal):
-        nonlocal cancel_count
         worker_started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            cancel_count += 1
             assert signal.is_set()
-            first_cancel_seen.set()
-            await old_release.wait()
-        old_settled.set()
+            cancel_seen.set()
+            await release.wait()
+        settled.set()
 
+    async def close_pool():
+        nonlocal pool_close_count
+        assert settled.is_set()
+        pool_close_count += 1
+
+    registry.launch("same-id", stubborn_worker)
+    await worker_started.wait()
     try:
-        registry.launch("same-id", stubborn_worker)
-        await worker_started.wait()
-        first_close = asyncio.create_task(registry.aclose())
-        second_close = asyncio.create_task(registry.aclose())
-        await first_cancel_seen.wait()
+        with pytest.raises(DraftOperationTasksDrainPending) as caught:
+            await asyncio.wait_for(registry.aclose(), timeout=0.2)
+
+        assert caught.value.args == (
+            "draft operation task shutdown drain is pending",
+        )
+        assert registry.state == "closing"
+        assert registry.size == 1
         with pytest.raises(RuntimeError):
             await registry.start()
-        await asyncio.wait_for(
-            asyncio.gather(first_close, second_close),
-            timeout=0.2,
+        with pytest.raises(RuntimeError):
+            registry.launch("new-id", stubborn_worker)
+
+        transfer_task = caught.value.cleanup_transfer.start_pool_close(close_pool)
+        assert (
+            caught.value.cleanup_transfer.start_pool_close(close_pool)
+            is transfer_task
         )
-        assert cancel_count == 1
-        assert registry.size == 0
-
-        await registry.start()
-        new_release = asyncio.Event()
-        new_started = asyncio.Event()
-
-        async def new_worker(signal):
-            new_started.set()
-            await new_release.wait()
-
-        registry.launch("same-id", new_worker)
-        await new_started.wait()
-        old_release.set()
-        await old_settled.wait()
         await asyncio.sleep(0)
-        assert registry.size == 1
-        new_release.set()
+        assert cancel_seen.is_set()
+        assert pool_close_count == 0
+        release.set()
+        await asyncio.wait_for(transfer_task, timeout=1)
+
+        assert settled.is_set()
+        assert registry.size == 0
+        assert registry.state == "closed"
+        assert pool_close_count == 1
+        await registry.start()
+        registry.launch("same-id", lambda _signal: asyncio.sleep(0))
         await _wait_for(lambda: registry.size == 0)
         await registry.aclose()
-        await asyncio.sleep(0)
-        assert errors == []
     finally:
-        old_release.set()
-        loop.set_exception_handler(previous_handler)
+        release.set()
+        await asyncio.wait_for(settled.wait(), timeout=1)
 
 
 @pytest.mark.asyncio
-async def test_cancelled_aclose_waiter_preserves_first_reason_and_shared_drain(
+async def test_concurrent_aclose_shares_pending_transfer_and_cancelled_waiter_reason(
     monkeypatch,
 ):
     monkeypatch.setattr(
         draft_operation_tasks,
         "_DRAFT_OPERATION_TASK_SHUTDOWN_TIMEOUT_SECONDS",
-        0.2,
+        0.01,
     )
     registry = DraftOperationTaskRegistry()
     await registry.start()
     worker_started = asyncio.Event()
     worker_cancelled = asyncio.Event()
     worker_release = asyncio.Event()
-    worker_settled = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop_errors = []
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
 
     async def worker(signal):
         worker_started.set()
@@ -304,30 +317,52 @@ async def test_cancelled_aclose_waiter_preserves_first_reason_and_shared_drain(
             assert signal.is_set()
             worker_cancelled.set()
             await worker_release.wait()
-        worker_settled.set()
+    try:
+        registry.launch("op-1", worker)
+        await worker_started.wait()
+        first_waiter = asyncio.create_task(registry.aclose())
+        second_waiter = asyncio.create_task(registry.aclose())
+        cancelled_waiter = asyncio.create_task(registry.aclose())
+        await worker_cancelled.wait()
+        cancelled_waiter.cancel("caller-reason")
+        await asyncio.sleep(0)
+        cancelled_waiter.cancel("later-reason")
 
-    registry.launch("op-1", worker)
-    await worker_started.wait()
-    cancelled_waiter = asyncio.create_task(registry.aclose())
-    successful_waiter = asyncio.create_task(registry.aclose())
-    await worker_cancelled.wait()
-    cancelled_waiter.cancel("caller-reason")
-    await asyncio.sleep(0)
-    cancelled_waiter.cancel("later-reason")
-    await asyncio.sleep(0)
-    assert not successful_waiter.done()
-    worker_release.set()
+        first_result, second_result = await asyncio.wait_for(
+            asyncio.gather(
+                first_waiter,
+                second_waiter,
+                return_exceptions=True,
+            ),
+            timeout=0.2,
+        )
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await cancelled_waiter
 
-    with pytest.raises(asyncio.CancelledError) as exc_info:
-        await cancelled_waiter
-    assert exc_info.value.args == ("caller-reason",)
-    await successful_waiter
-    assert worker_settled.is_set()
-    assert registry.size == 0
+        assert isinstance(first_result, DraftOperationTasksDrainPending)
+        assert first_result is second_result
+        assert first_result.cleanup_transfer is second_result.cleanup_transfer
+        assert exc_info.value.args == ("caller-reason",)
+        assert registry.state == "closing"
+        assert registry.size == 1
+
+        transfer_task = first_result.cleanup_transfer.start_pool_close(
+            lambda: asyncio.sleep(0)
+        )
+        worker_release.set()
+        await asyncio.wait_for(transfer_task, timeout=1)
+        await asyncio.sleep(0)
+        assert registry.state == "closed"
+        assert registry.size == 0
+        assert loop_errors == []
+    finally:
+        worker_release.set()
+        await asyncio.sleep(0)
+        loop.set_exception_handler(previous_handler)
 
 
 @pytest.mark.asyncio
-async def test_detached_task_is_strongly_retained_until_its_private_wait_completes(
+async def test_pending_transfer_strongly_retains_task_until_private_wait_completes(
     monkeypatch,
 ):
     monkeypatch.setattr(
@@ -362,9 +397,11 @@ async def test_detached_task_is_strongly_retained_until_its_private_wait_complet
     try:
         registry.launch("same-id", stubborn_worker)
         await worker_started.wait()
-        await registry.aclose()
+        with pytest.raises(DraftOperationTasksDrainPending) as caught:
+            await registry.aclose()
         await first_cancel_seen.wait()
-        assert registry.size == 0
+        assert registry.state == "closing"
+        assert registry.size == 1
 
         for _ in range(3):
             gc.collect()
@@ -376,23 +413,21 @@ async def test_detached_task_is_strongly_retained_until_its_private_wait_complet
             for context in errors
         )
 
-        await registry.start()
-        replacement_release = asyncio.Event()
-
-        async def replacement(signal):
-            await replacement_release.wait()
-
-        registry.launch("same-id", replacement)
+        with pytest.raises(RuntimeError):
+            await registry.start()
         private_wait = weak_handles["wait"]()
         assert private_wait is not None
         private_wait.set_result(None)
         del private_wait
-        await worker_settled.wait()
-        await asyncio.sleep(0)
-        assert registry.size == 1
-        replacement_release.set()
-        await _wait_for(lambda: registry.size == 0)
-        await registry.aclose()
+        await asyncio.wait_for(
+            caught.value.cleanup_transfer.start_pool_close(
+                lambda: asyncio.sleep(0)
+            ),
+            timeout=1,
+        )
+        assert worker_settled.is_set()
+        assert registry.size == 0
+        assert registry.state == "closed"
 
         for _ in range(3):
             gc.collect()
@@ -400,7 +435,107 @@ async def test_detached_task_is_strongly_retained_until_its_private_wait_complet
         assert weak_handles["task"]() is None
         assert errors == []
     finally:
+        private_wait = weak_handles.get("wait", lambda: None)()
+        if private_wait is not None and not private_wait.done():
+            private_wait.set_result(None)
+            await asyncio.sleep(0)
         loop.set_exception_handler(previous_handler)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drain_outcome", ("failed", "cancelled"))
+async def test_cleanup_transfer_never_closes_pool_after_unsuccessful_drain(
+    drain_outcome,
+):
+    drain_secret = "DRAFT_DRAIN_FAILURE_SECRET_SENTINEL"
+    pool_close_calls = 0
+
+    async def drain():
+        if drain_outcome == "failed":
+            raise RuntimeError(drain_secret)
+        await asyncio.Event().wait()
+
+    drain_task = asyncio.create_task(drain())
+    transfer = DraftOperationTasksCleanupTransfer(drain_task)
+    if drain_outcome == "cancelled":
+        drain_task.cancel()
+
+    async def close_pool():
+        nonlocal pool_close_calls
+        pool_close_calls += 1
+
+    with pytest.raises(DraftOperationTasksTransferLifecycleError) as caught:
+        await transfer.start_pool_close(close_pool)
+
+    assert caught.value.args == (
+        "draft operation shutdown transfer failed",
+    )
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert drain_secret not in str(caught.value)
+    assert pool_close_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cleanup_transfer_maps_drain_cancellation_while_waiting_to_safe_failure():
+    drain_started = asyncio.Event()
+    pool_close_calls = 0
+
+    async def drain():
+        drain_started.set()
+        await asyncio.Event().wait()
+
+    drain_task = asyncio.create_task(drain())
+    transfer = DraftOperationTasksCleanupTransfer(drain_task)
+
+    async def close_pool():
+        nonlocal pool_close_calls
+        pool_close_calls += 1
+
+    transferred = transfer.start_pool_close(close_pool)
+    await drain_started.wait()
+    await asyncio.sleep(0)
+    drain_task.cancel("PRIVATE_DRAIN_CANCELLATION_SENTINEL")
+
+    with pytest.raises(DraftOperationTasksTransferLifecycleError) as caught:
+        await transferred
+
+    assert caught.value.args == (
+        "draft operation shutdown transfer failed",
+    )
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "PRIVATE_DRAIN_CANCELLATION_SENTINEL" not in repr(caught.value)
+    assert pool_close_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cleanup_transfer_caller_cancellation_wins_failed_drain_without_pool():
+    drain_release = asyncio.Event()
+    pool_close_calls = 0
+
+    async def failing_drain():
+        await drain_release.wait()
+        raise RuntimeError("PRIVATE_DRAIN_FAILURE_SENTINEL")
+
+    transfer = DraftOperationTasksCleanupTransfer(
+        asyncio.create_task(failing_drain())
+    )
+
+    async def close_pool():
+        nonlocal pool_close_calls
+        pool_close_calls += 1
+
+    transferred = transfer.start_pool_close(close_pool)
+    await asyncio.sleep(0)
+    transferred.cancel("caller-reason")
+    drain_release.set()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await transferred
+
+    assert caught.value.args == ("caller-reason",)
+    assert pool_close_calls == 0
 
 
 @pytest.mark.asyncio
