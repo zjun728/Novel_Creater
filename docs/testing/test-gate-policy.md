@@ -1,6 +1,6 @@
 # Test Gate Policy
 
-状态：Current  
+状态：Current
 权威设计：`docs/superpowers/specs/2026-08-08-lean-test-gate-policy-design.md`
 
 ## 原则
