@@ -59,7 +59,7 @@ report, extraction identity, and state:
 
 `preparing -> awaiting_author -> committing -> committed`
 
-Terminal non-success states are `invalidated` and `failed`. A nullable unique active slot allows
+Terminal non-success states are `invalidated`, `cancelled`, and `failed`. A nullable unique active slot allows
 at most one `preparing`, `awaiting_author`, or `committing` attempt per ChapterSession. Reusing an
 idempotency key with another fingerprint is a conflict.
 

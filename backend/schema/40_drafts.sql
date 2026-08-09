@@ -223,24 +223,136 @@ CREATE TABLE candidate_freeze_requests (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
-CREATE TABLE finalization_change_sets (
+CREATE TABLE candidate_quality_reports (
   id CHAR(36) PRIMARY KEY,
   project_id CHAR(36) NOT NULL,
+  chapter_session_id CHAR(36) NOT NULL,
   draft_candidate_id CHAR(36) NOT NULL,
-  extraction_id CHAR(36) NOT NULL,
   candidate_hash CHAR(64) NOT NULL,
   expected_canon_revision INT NOT NULL,
   expected_planning_hash CHAR(64) NOT NULL,
   expected_outline_hash CHAR(64) NOT NULL,
-  payload_json JSON NOT NULL,
+  policy_version VARCHAR(32) NOT NULL,
+  context_manifest_hash CHAR(64) NOT NULL,
+  provider_id CHAR(36) NULL,
+  provider_profile_revision INT NULL,
+  model_name_snapshot VARCHAR(200) NULL,
+  status VARCHAR(32) NOT NULL,
+  deterministic_blocks_json JSON NOT NULL,
+  findings_json JSON NOT NULL,
   content_hash CHAR(64) NOT NULL,
   created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_quality_report_project_id (project_id, id),
+  UNIQUE KEY uq_quality_report_owner_id
+    (project_id, chapter_session_id, draft_candidate_id, id),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id)
+    REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, draft_candidate_id)
+    REFERENCES draft_candidates(project_id, chapter_session_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (provider_id) REFERENCES provider_profiles(id) ON DELETE RESTRICT,
+  CHECK (expected_canon_revision >= 0),
+  CHECK (provider_profile_revision IS NULL OR provider_profile_revision >= 0),
+  CHECK (
+    (provider_id IS NULL AND provider_profile_revision IS NULL
+      AND model_name_snapshot IS NULL)
+    OR (provider_id IS NOT NULL AND provider_profile_revision IS NOT NULL
+      AND model_name_snapshot IS NOT NULL)
+  ),
+  CHECK (status IN ('completed','quality_not_completed'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE finalization_change_sets (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  chapter_session_id CHAR(36) NOT NULL,
+  draft_candidate_id CHAR(36) NOT NULL,
+  quality_report_id CHAR(36) NULL,
+  extraction_id CHAR(36) NULL,
+  idempotency_key CHAR(64) NOT NULL,
+  request_fingerprint CHAR(64) NOT NULL,
+  active_slot TINYINT NULL,
+  candidate_hash CHAR(64) NOT NULL,
+  expected_canon_revision INT NOT NULL,
+  expected_planning_hash CHAR(64) NOT NULL,
+  expected_outline_hash CHAR(64) NOT NULL,
+  context_manifest_json JSON NOT NULL,
+  context_manifest_hash CHAR(64) NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  current_revision INT NULL,
+  current_revision_hash CHAR(64) NULL,
+  confirmed_revision INT NULL,
+  confirmed_revision_hash CHAR(64) NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
   confirmed_at BIGINT NULL,
-  UNIQUE KEY uq_changeset_candidate (draft_candidate_id, candidate_hash, expected_canon_revision),
+  UNIQUE KEY uq_changeset_idempotency (chapter_session_id, idempotency_key),
+  UNIQUE KEY uq_finalization_active_slot (chapter_session_id, active_slot),
   UNIQUE KEY uq_changeset_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, draft_candidate_id) REFERENCES draft_candidates(project_id, id) ON DELETE CASCADE,
-  CHECK (expected_canon_revision >= 0)
+  FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, draft_candidate_id)
+    REFERENCES draft_candidates(project_id, chapter_session_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, draft_candidate_id, quality_report_id)
+    REFERENCES candidate_quality_reports(project_id, chapter_session_id, draft_candidate_id, id)
+    ON DELETE RESTRICT,
+  CHECK (expected_canon_revision >= 0),
+  CHECK (active_slot IS NULL OR active_slot = 1),
+  CHECK (current_revision IS NULL OR current_revision > 0),
+  CHECK (confirmed_revision IS NULL OR confirmed_revision > 0),
+  CHECK (
+    (current_revision IS NULL AND current_revision_hash IS NULL)
+    OR (current_revision IS NOT NULL AND current_revision_hash IS NOT NULL)
+  ),
+  CHECK (
+    (confirmed_revision IS NULL AND confirmed_revision_hash IS NULL
+      AND confirmed_at IS NULL)
+    OR (confirmed_revision IS NOT NULL AND confirmed_revision_hash IS NOT NULL
+      AND confirmed_at IS NOT NULL)
+  ),
+  CHECK (
+    confirmed_revision IS NULL
+    OR (confirmed_revision = current_revision
+      AND confirmed_revision_hash = current_revision_hash)
+  ),
+  CHECK (status IN ('preparing','awaiting_author','committing','committed','invalidated','cancelled','failed')),
+  CHECK (
+    (status IN ('preparing','awaiting_author','committing') AND active_slot = 1)
+    OR (status IN ('committed','invalidated','cancelled','failed') AND active_slot IS NULL)
+  ),
+  CHECK (
+    (status = 'preparing' AND quality_report_id IS NULL
+      AND extraction_id IS NULL AND current_revision IS NULL
+      AND confirmed_revision IS NULL)
+    OR (status = 'awaiting_author' AND quality_report_id IS NOT NULL
+      AND extraction_id IS NOT NULL AND current_revision IS NOT NULL)
+    OR (status IN ('committing','committed')
+      AND quality_report_id IS NOT NULL AND extraction_id IS NOT NULL
+      AND current_revision IS NOT NULL AND confirmed_revision IS NOT NULL)
+    OR status IN ('invalidated','cancelled','failed')
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+;-- statement
+
+CREATE TABLE finalization_change_set_revisions (
+  id CHAR(36) PRIMARY KEY,
+  project_id CHAR(36) NOT NULL,
+  change_set_id CHAR(36) NOT NULL,
+  revision INT NOT NULL,
+  payload_json JSON NOT NULL,
+  content_hash CHAR(64) NOT NULL,
+  source VARCHAR(24) NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE KEY uq_changeset_revision (change_set_id, revision),
+  UNIQUE KEY uq_changeset_revision_hash
+    (project_id, change_set_id, revision, content_hash),
+  UNIQUE KEY uq_changeset_revision_project_id (project_id, id),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, change_set_id)
+    REFERENCES finalization_change_sets(project_id, id) ON DELETE CASCADE,
+  CHECK (revision > 0),
+  CHECK (source IN ('extraction','author_correction'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
 ;-- statement
 
@@ -250,20 +362,25 @@ CREATE TABLE finalization_records (
   chapter_session_id CHAR(36) NOT NULL,
   draft_candidate_id CHAR(36) NOT NULL,
   change_set_id CHAR(36) NOT NULL,
+  change_set_revision INT NOT NULL,
   idempotency_key CHAR(64) NOT NULL,
+  request_fingerprint CHAR(64) NOT NULL,
   candidate_hash CHAR(64) NOT NULL,
   change_set_hash CHAR(64) NOT NULL,
   expected_canon_revision INT NOT NULL,
   committed_canon_revision INT NOT NULL,
   result_payload_json JSON NOT NULL,
   finalized_at BIGINT NOT NULL,
-  UNIQUE KEY uq_finalization_idempotency (idempotency_key),
+  UNIQUE KEY uq_finalization_idempotency (project_id, idempotency_key),
   UNIQUE KEY uq_finalization_session (chapter_session_id),
   UNIQUE KEY uq_finalization_project_id (project_id, id),
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY (project_id, chapter_session_id) REFERENCES chapter_sessions(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, draft_candidate_id) REFERENCES draft_candidates(project_id, id) ON DELETE CASCADE,
-  FOREIGN KEY (project_id, change_set_id) REFERENCES finalization_change_sets(project_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, chapter_session_id, draft_candidate_id)
+    REFERENCES draft_candidates(project_id, chapter_session_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id, change_set_id, change_set_revision, change_set_hash)
+    REFERENCES finalization_change_set_revisions(project_id, change_set_id, revision, content_hash) ON DELETE RESTRICT,
+  CHECK (change_set_revision > 0),
   CHECK (expected_canon_revision >= 0),
   CHECK (committed_canon_revision > expected_canon_revision)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
