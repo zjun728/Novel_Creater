@@ -309,3 +309,44 @@ def test_corrupted_stored_member_is_rejected_during_streamed_crc_verification(tm
     path.write_bytes(data[:data_offset] + b"X" + data[data_offset + 1:])
     with pytest.raises(ProjectImportInvalid, match="invalid project import archive"):
         verify_raw_zip_envelope(path)
+
+
+def test_truncated_member_stream_reaches_exact_length_guard(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "package.zip"
+    _valid_archive(path)
+    import backend.security.project_import_archives as archives
+
+    real_open = archives.zipfile.ZipFile.open
+    real_invalid = archives._invalid
+    invalid_calls = 0
+
+    class TruncatedStream:
+        def __init__(self, source) -> None:
+            self._source = source
+
+        def __enter__(self):
+            self._source.__enter__()
+            return self
+
+        def __exit__(self, *args) -> None:
+            self._source.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            self._source.read(size)
+            return b""
+
+    def open_truncated(self, *args, **kwargs):
+        return TruncatedStream(real_open(self, *args, **kwargs))
+
+    def record_invalid():
+        nonlocal invalid_calls
+        invalid_calls += 1
+        return real_invalid()
+
+    monkeypatch.setattr(archives.zipfile.ZipFile, "open", open_truncated)
+    monkeypatch.setattr(archives, "_invalid", record_invalid)
+    with pytest.raises(ProjectImportInvalid, match="invalid project import archive") as raised:
+        verify_raw_zip_envelope(path)
+
+    assert invalid_calls == 1
+    assert raised.value.__cause__ is None
