@@ -219,6 +219,7 @@ def run_finalization_prechecks(
         != authority.expected_canon_revision
         or session.get("planning_hash") != authority.expected_planning_hash
         or session.get("chapter_outline_hash") != authority.expected_outline_hash
+        or session.get("working_draft_content_hash") != authority.candidate_hash
         or candidate.get("id") != authority.candidate_id
         or candidate.get("project_id") != authority.project_id
         or candidate.get("chapter_session_id") != authority.chapter_session_id

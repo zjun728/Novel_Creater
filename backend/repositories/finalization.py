@@ -7,6 +7,7 @@ import json
 
 from backend.domain.finalization import change_set_payload
 from backend.domain.json_contracts import canonical_json
+from backend.domain.provider_policy import provider_is_generation_ready
 from backend.repositories.project_lifecycle import lock_active_project
 
 
@@ -42,14 +43,21 @@ class FinalizationRepository:
 
     async def lock_session(self, session, project_id: str, session_id: str):
         row = await session.fetchone(
-            """SELECT id,project_id,planning_revision_id,planning_revision,
-                      planning_hash,story_block_id,story_block_revision,
-                      story_block_hash,chapter_outline_revision_id,
-                      chapter_outline_revision,chapter_outline_hash,chapter_num,
-                      expected_canon_revision,status,active_draft_operation_id,
-                      finalized_at
-                 FROM chapter_sessions
-                WHERE project_id=%s AND id=%s FOR UPDATE""",
+            """SELECT chapter.id,chapter.project_id,
+                      chapter.planning_revision_id,chapter.planning_revision,
+                      chapter.planning_hash,chapter.story_block_id,
+                      chapter.story_block_revision,chapter.story_block_hash,
+                      chapter.chapter_outline_revision_id,
+                      chapter.chapter_outline_revision,
+                      chapter.chapter_outline_hash,chapter.chapter_num,
+                      chapter.expected_canon_revision,chapter.status,
+                      chapter.active_draft_operation_id,chapter.finalized_at,
+                      draft.content_hash AS working_draft_content_hash
+                 FROM chapter_sessions chapter
+                 JOIN working_drafts draft
+                   ON draft.project_id=chapter.project_id
+                  AND draft.chapter_session_id=chapter.id
+                WHERE chapter.project_id=%s AND chapter.id=%s FOR UPDATE""",
             (project_id, session_id),
         )
         return None if row is None else dict(row)
@@ -103,6 +111,177 @@ class FinalizationRepository:
             (project_id, chapter_number),
         )
         return None if row is None else dict(row)
+
+    async def load_preparation_context(
+        self,
+        session,
+        project_id: str,
+        chapter_number: int,
+    ):
+        head = await session.fetchone(
+            """SELECT projection.canon_revision_number AS canon_revision,
+                      projection.content_hash AS projection_hash,
+                      planning_revision.id AS planning_revision_id,
+                      planning_revision.revision AS planning_revision,
+                      planning_revision.content_hash AS planning_hash,
+                      planning_revision.content_json AS planning_json,
+                      outline_revision.id AS outline_revision_id,
+                      outline_revision.revision AS outline_revision,
+                      outline_revision.content_hash AS outline_hash,
+                      outline_revision.content_json AS outline_json,
+                      contract.revision AS contract_revision,
+                      contract.content_hash AS contract_hash,
+                      contract.content_json AS contract_json,
+                      contract.id AS creation_contract_id,
+                      style.merged_style_json AS style_json,
+                      bible.revision AS bible_revision,
+                      bible.content_hash AS bible_hash,
+                      bible.content_json AS bible_json,
+                      bible.policy_version
+                 FROM projection_heads projection
+                 JOIN project_planning_heads planning
+                   ON planning.project_id=projection.project_id
+                 JOIN planning_revisions planning_revision
+                   ON planning_revision.project_id=planning.project_id
+                  AND planning_revision.id=planning.planning_revision_id
+                  AND planning_revision.revision=planning.revision
+                  AND planning_revision.content_hash=planning.content_hash
+                 JOIN project_chapter_outline_heads outline
+                   ON outline.project_id=projection.project_id
+                  AND outline.chapter_num=%s
+                 JOIN chapter_outline_revisions outline_revision
+                   ON outline_revision.project_id=outline.project_id
+                  AND outline_revision.chapter_num=outline.chapter_num
+                  AND outline_revision.id=outline.outline_revision_id
+                  AND outline_revision.revision=outline.revision
+                  AND outline_revision.content_hash=outline.content_hash
+                 JOIN project_contract_heads contract_head
+                   ON contract_head.project_id=projection.project_id
+                 JOIN creation_contracts contract
+                   ON contract.project_id=contract_head.project_id
+                  AND contract.id=contract_head.creation_contract_id
+                  AND contract.revision=contract_head.revision
+                  AND contract.content_hash=contract_head.creation_hash
+                 JOIN style_contracts style
+                   ON style.project_id=contract_head.project_id
+                  AND style.id=contract_head.style_contract_id
+                  AND style.revision=contract_head.revision
+                  AND style.content_hash=contract_head.style_hash
+                 JOIN project_bible_heads bible_head
+                   ON bible_head.project_id=projection.project_id
+                 JOIN creation_bible_revisions bible
+                   ON bible.project_id=bible_head.project_id
+                  AND bible.id=bible_head.bible_revision_id
+                  AND bible.revision=bible_head.revision
+                  AND bible.content_hash=bible_head.content_hash
+                WHERE projection.project_id=%s FOR UPDATE""",
+            (chapter_number, project_id),
+        )
+        if head is None:
+            return None
+        value = dict(head)
+        planning = _decoded_object(value.get("planning_json"), "Planning context")
+        outline = _decoded_object(value.get("outline_json"), "Outline context")
+        contract = _decoded_object(value.get("contract_json"), "Contract context")
+        style = _decoded_object(value.get("style_json"), "Style context")
+        bible = _decoded_object(value.get("bible_json"), "Bible context")
+
+        entities = tuple(dict(row) for row in await session.fetchall(
+            """SELECT id,entity_type,canonical_name
+                 FROM canon_entities
+                WHERE project_id=%s AND created_revision<=%s
+                ORDER BY id""",
+            (project_id, value.get("canon_revision")),
+        ))
+        state_rows = await session.fetchall(
+            """SELECT entity_id,field_path,payload_json,content_hash
+                 FROM current_state_projections
+                WHERE project_id=%s AND revision_number=%s
+                ORDER BY entity_id,field_path""",
+            (project_id, value.get("canon_revision")),
+        )
+        current_state = []
+        for row in state_rows:
+            item = dict(row)
+            item["payload"] = _decoded_object(
+                item.pop("payload_json", None), "Canon projection payload",
+            )
+            current_state.append(item)
+
+        references = tuple(dict(row) for row in await session.fetchall(
+            """SELECT fragment.id,fragment.normalized_text AS content,
+                      fragment.content_hash
+                 FROM creation_contract_corpus_fragment_refs reference
+                 JOIN corpus_fragments fragment
+                   ON fragment.corpus_source_id=reference.corpus_source_id
+                  AND fragment.corpus_chapter_id=reference.corpus_chapter_id
+                  AND fragment.id=reference.corpus_fragment_id
+                  AND fragment.content_hash=reference.fragment_hash
+                WHERE reference.creation_contract_id=%s
+                ORDER BY reference.sort_order""",
+            (value.get("creation_contract_id"),),
+        ))
+        binding_rows = await session.fetchall(
+            """SELECT item.task_key,provider.id,provider.provider_type,
+                      provider.model_name,provider.base_url,provider.api_key,
+                      provider.enabled,provider.lifecycle_status,
+                      provider.revision,provider.temperature,
+                      provider.max_context_tokens,provider.max_output_tokens
+                 FROM project_model_binding_heads head
+                 JOIN project_model_binding_items item
+                   ON item.binding_revision_id=head.binding_revision_id
+                  AND item.task_key IN ('audit','extraction')
+                 LEFT JOIN provider_profiles provider
+                   ON provider.id=item.provider_id
+                WHERE head.project_id=%s
+                  AND item.resolution_status='bound'
+                ORDER BY item.task_key FOR UPDATE""",
+            (project_id,),
+        )
+        bindings = {}
+        for row in binding_rows:
+            binding = dict(row)
+            task_key = binding.get("task_key")
+            if task_key in {"audit", "extraction"} and provider_is_generation_ready(
+                binding
+            ):
+                bindings[task_key] = binding
+
+        return {
+            "canon_context": {
+                "revision": value.get("canon_revision"),
+                "projectionHash": value.get("projection_hash"),
+                "entities": list(entities),
+                "currentState": current_state,
+            },
+            "planning_context": {
+                "id": value.get("planning_revision_id"),
+                "revision": value.get("planning_revision"),
+                "contentHash": value.get("planning_hash"),
+                "content": planning,
+            },
+            "outline_context": {
+                "id": value.get("outline_revision_id"),
+                "revision": value.get("outline_revision"),
+                "contentHash": value.get("outline_hash"),
+                "content": outline,
+            },
+            "contract_context": {
+                "revision": value.get("contract_revision"),
+                "contentHash": value.get("contract_hash"),
+                "content": contract,
+                "style": style,
+            },
+            "bible_context": {
+                "revision": value.get("bible_revision"),
+                "contentHash": value.get("bible_hash"),
+                "content": bible,
+            },
+            "policy_version": value.get("policy_version"),
+            "reference_sources": list(references),
+            "audit_binding": bindings.get("audit"),
+            "extraction_binding": bindings.get("extraction"),
+        }
 
     async def find_by_idempotency(
         self,
@@ -222,6 +401,32 @@ class FinalizationRepository:
             (
                 report_id, extraction_id, revision, revision_hash,
                 updated_at, project_id, session_id, change_set_id,
+            ),
+        )
+        return affected == 1
+
+    async def mark_terminal(
+        self,
+        session,
+        *,
+        project_id: str,
+        session_id: str,
+        change_set_id: str,
+        status: str,
+        report_id: str | None,
+        updated_at: int,
+    ) -> bool:
+        if status not in {"invalidated", "cancelled", "failed"}:
+            raise ValueError("unsupported finalization terminal state")
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+                  SET quality_report_id=COALESCE(%s,quality_report_id),
+                      status=%s,active_slot=NULL,updated_at=%s
+                WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                  AND status='preparing' AND active_slot=1""",
+            (
+                report_id, status, updated_at, project_id, session_id,
+                change_set_id,
             ),
         )
         return affected == 1

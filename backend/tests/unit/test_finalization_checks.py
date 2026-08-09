@@ -56,6 +56,7 @@ def _fixture(content="这是一个完整候选正文，主角走进山门并作�
         "expected_canon_revision": 0,
         "planning_hash": HASH_B,
         "chapter_outline_hash": HASH_C,
+        "working_draft_content_hash": candidate_hash,
     }
     candidate = {
         "id": CANDIDATE_ID,
@@ -99,6 +100,7 @@ def test_current_complete_candidate_with_completed_empty_copy_set_passes():
         ("session", "project_id", "other", "session_drift"),
         ("session", "status", "final", "session_drift"),
         ("session", "active_draft_operation_id", "operation-1", "session_drift"),
+        ("session", "working_draft_content_hash", HASH_A, "session_drift"),
         ("candidate", "chapter_session_id", "other", "session_drift"),
         ("candidate", "content_hash", HASH_A, "candidate_hash_drift"),
         ("current", "canon_revision", 1, "canon_conflict"),

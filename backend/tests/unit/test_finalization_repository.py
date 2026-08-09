@@ -16,8 +16,9 @@ HASH_B = "b" * 64
 
 
 class CapturingSession:
-    def __init__(self, *, rows=(), execute_results=()):
+    def __init__(self, *, rows=(), all_rows=(), execute_results=()):
         self.rows = list(rows)
+        self.all_rows = list(all_rows)
         self.execute_results = list(execute_results)
         self.calls = []
 
@@ -28,6 +29,10 @@ class CapturingSession:
     async def execute(self, sql, args=None):
         self.calls.append((sql, args))
         return self.execute_results.pop(0) if self.execute_results else 1
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append((sql, args))
+        return self.all_rows.pop(0) if self.all_rows else []
 
 
 def _compact(sql):
@@ -59,9 +64,26 @@ async def test_lock_session_uses_exact_project_owner_and_for_update():
     )
 
     sql, args = session.calls[0]
-    assert "WHERE project_id=%s AND id=%s FOR UPDATE" in _compact(sql)
+    assert "WHERE chapter.project_id=%s AND chapter.id=%s FOR UPDATE" in _compact(sql)
     assert args == ("project-1", "session-1")
     assert result == row and result is not row
+
+
+@pytest.mark.asyncio
+async def test_lock_session_includes_current_working_draft_hash():
+    session = CapturingSession(rows=[{
+        "id": "session-1", "working_draft_content_hash": HASH_A,
+    }])
+
+    result = await FinalizationRepository().lock_session(
+        session, "project-1", "session-1",
+    )
+
+    sql, _ = session.calls[0]
+    compact = _compact(sql)
+    assert "JOIN working_drafts draft" in compact
+    assert "draft.content_hash AS working_draft_content_hash" in compact
+    assert result["working_draft_content_hash"] == HASH_A
 
 
 @pytest.mark.asyncio
@@ -236,3 +258,117 @@ async def test_publish_awaiting_author_is_preparing_state_cas_and_checks_row_cou
         revision_hash=HASH_A,
         updated_at=2,
     )
+
+
+@pytest.mark.asyncio
+async def test_load_preparation_context_decodes_closed_heads_canon_references_and_bindings():
+    head = {
+        "canon_revision": 2,
+        "projection_hash": HASH_A,
+        "planning_revision_id": "planning-2",
+        "planning_revision": 2,
+        "planning_hash": HASH_B,
+        "planning_json": '{"volumes":[]}',
+        "outline_revision_id": "outline-1",
+        "outline_revision": 1,
+        "outline_hash": HASH_A,
+        "outline_json": '{"chapterGoal":"进入城中"}',
+        "contract_revision": 1,
+        "contract_hash": HASH_A,
+        "contract_json": '{"genre":"悬疑"}',
+        "style_json": '{"tone":"克制"}',
+        "bible_revision": 1,
+        "bible_hash": HASH_B,
+        "bible_json": '{"characters":[]}',
+        "policy_version": "quality-v1",
+        "creation_contract_id": "contract-1",
+    }
+    entities = [{
+        "id": "entity-1", "entity_type": "person",
+        "canonical_name": "林舟",
+    }]
+    states = [{
+        "entity_id": "entity-1", "field_path": "location",
+        "payload_json": '{"value":"城门"}', "content_hash": HASH_A,
+    }]
+    references = [{
+        "id": "fragment-1", "content": "参考文本", "content_hash": HASH_B,
+    }]
+    bindings = [{
+        "task_key": key, "id": f"provider-{key}",
+        "provider_type": "openai-compatible", "model_name": "model",
+        "base_url": "https://provider.invalid/v1", "api_key": "SECRET",
+        "enabled": 1, "lifecycle_status": "active", "revision": 4,
+    } for key in ("audit", "extraction")]
+    session = CapturingSession(
+        rows=[head], all_rows=[entities, states, references, bindings],
+    )
+
+    result = await FinalizationRepository().load_preparation_context(
+        session, "project-1", 3,
+    )
+
+    assert result["policy_version"] == "quality-v1"
+    assert result["canon_context"]["entities"] == entities
+    assert result["canon_context"]["currentState"][0]["payload"] == {
+        "value": "城门",
+    }
+    assert result["planning_context"]["content"] == {"volumes": []}
+    assert result["outline_context"]["content"]["chapterGoal"] == "进入城中"
+    assert result["contract_context"]["style"] == {"tone": "克制"}
+    assert result["reference_sources"] == references
+    assert result["audit_binding"]["id"] == "provider-audit"
+    assert result["extraction_binding"]["id"] == "provider-extraction"
+    compact_calls = [_compact(sql) for sql, _ in session.calls]
+    assert "FOR UPDATE" in compact_calls[0]
+    assert "task_key IN ('audit','extraction')" in compact_calls[4]
+
+
+@pytest.mark.asyncio
+async def test_load_preparation_context_rejects_corrupt_persisted_json_without_raw_value():
+    sentinel = "RAW_CONTEXT_SENTINEL"
+    session = CapturingSession(rows=[{
+        "planning_json": sentinel,
+        "outline_json": "{}",
+        "contract_json": "{}",
+        "style_json": "{}",
+        "bible_json": "{}",
+    }])
+
+    with pytest.raises(FinalizationDataCorruption) as raised:
+        await FinalizationRepository().load_preparation_context(
+            session, "project-1", 1,
+        )
+
+    assert sentinel not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_mark_terminal_releases_active_slot_with_owner_and_state_cas():
+    session = CapturingSession(execute_results=[1])
+
+    assert await FinalizationRepository().mark_terminal(
+        session,
+        project_id="project-1",
+        session_id="session-1",
+        change_set_id="attempt-1",
+        status="failed",
+        report_id="report-1",
+        updated_at=3,
+    )
+    sql, args = session.calls[0]
+    compact = _compact(sql)
+    assert "active_slot=NULL" in compact
+    assert "status='preparing' AND active_slot=1" in compact
+    assert args[-3:] == ("project-1", "session-1", "attempt-1")
+
+    with pytest.raises(ValueError):
+        await FinalizationRepository().mark_terminal(
+            CapturingSession(),
+            project_id="project-1",
+            session_id="session-1",
+            change_set_id="attempt-1",
+            status="committed",
+            report_id=None,
+            updated_at=3,
+        )
