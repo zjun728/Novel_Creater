@@ -199,76 +199,85 @@ class CanonService:
                 session, request.project_id
             ) is None:
                 raise ProjectNotFound()
-            head = await self.repository.lock_head(session, request.project_id)
-            existing = await self.repository.find_idempotent(
-                session, request.project_id, request.idempotency_key,
-            )
-            if existing is not None:
-                return CommitCanonResult.from_row(existing)
-            if head != request.expected_head:
-                raise CanonHeadMismatch(expected=request.expected_head, actual=head)
+            return await self.commit_locked(session, request)
 
-            await self._validate_references(session, request)
-            incoming = tuple(item.event for item in request.events)
-            scopes = tuple(sorted({
-                (event.entity_id, event.field_path)
-                for event in incoming
-                if event.fact_kind.value == "stable_definition"
-            }))
-            existing_events = await self.repository.list_active_stable_events(
-                session, request.project_id, scopes,
-            )
-            conflicts = find_hard_conflicts(existing_events, incoming)
-            if conflicts:
-                raise CanonHardConflictError(conflicts)
+    async def commit_locked(
+        self, session, request: CommitCanonRevision,
+    ) -> CommitCanonResult:
+        """Commit using the caller's transaction after the project lock is held."""
 
-            revision_number = head + 1
-            revision_id = self.id_factory()
-            _id(revision_id, "generated revision id")
-            created_at = self._created_at()
-            revision = {
-                "id": revision_id,
-                "project_id": request.project_id,
-                "revision_number": revision_number,
-                "parent_revision_number": head,
-                "idempotency_key": request.idempotency_key,
-                "source_type": request.source_type,
-                "source_id": request.source_id,
-                "content_hash": "0" * 64,
-                "created_at": created_at,
-            }
-            await self.repository.insert_revision(session, revision)
-            await self.repository.insert_entities(
-                session, self._entity_rows(request, revision_number, created_at),
-            )
-            await self.repository.insert_aliases(
-                session, self._alias_rows(request, revision_number, created_at),
-            )
-            await self.repository.insert_events(
-                session,
-                self._event_rows(
-                    request, revision_id, revision_number, created_at,
-                ),
-            )
-            events = await self.repository.list_confirmed_events(
-                session, request.project_id,
-            )
-            bundle = build_projection_bundle(revision_number, events)
-            await self.repository.replace_projections(
-                session, request.project_id, bundle,
-            )
-            await self.repository.set_revision_content_hash(
-                session, revision_id, bundle.content_hash,
-            )
-            await self.repository.advance_heads(
-                session, request.project_id, revision_number, bundle.content_hash,
-            )
-            return CommitCanonResult(
-                revision_id=revision_id,
-                revision_number=revision_number,
-                projection_hash=bundle.content_hash,
-                idempotent=False,
-            )
+        if type(request) is not CommitCanonRevision:
+            raise CanonValidationError("request must be a CommitCanonRevision")
+        head = await self.repository.lock_head(session, request.project_id)
+        existing = await self.repository.find_idempotent(
+            session, request.project_id, request.idempotency_key,
+        )
+        if existing is not None:
+            return CommitCanonResult.from_row(existing)
+        if head != request.expected_head:
+            raise CanonHeadMismatch(expected=request.expected_head, actual=head)
+
+        await self._validate_references(session, request)
+        incoming = tuple(item.event for item in request.events)
+        scopes = tuple(sorted({
+            (event.entity_id, event.field_path)
+            for event in incoming
+            if event.fact_kind.value == "stable_definition"
+        }))
+        existing_events = await self.repository.list_active_stable_events(
+            session, request.project_id, scopes,
+        )
+        conflicts = find_hard_conflicts(existing_events, incoming)
+        if conflicts:
+            raise CanonHardConflictError(conflicts)
+
+        revision_number = head + 1
+        revision_id = self.id_factory()
+        _id(revision_id, "generated revision id")
+        created_at = self._created_at()
+        revision = {
+            "id": revision_id,
+            "project_id": request.project_id,
+            "revision_number": revision_number,
+            "parent_revision_number": head,
+            "idempotency_key": request.idempotency_key,
+            "source_type": request.source_type,
+            "source_id": request.source_id,
+            "content_hash": "0" * 64,
+            "created_at": created_at,
+        }
+        await self.repository.insert_revision(session, revision)
+        await self.repository.insert_entities(
+            session, self._entity_rows(request, revision_number, created_at),
+        )
+        await self.repository.insert_aliases(
+            session, self._alias_rows(request, revision_number, created_at),
+        )
+        await self.repository.insert_events(
+            session,
+            self._event_rows(
+                request, revision_id, revision_number, created_at,
+            ),
+        )
+        events = await self.repository.list_confirmed_events(
+            session, request.project_id,
+        )
+        bundle = build_projection_bundle(revision_number, events)
+        await self.repository.replace_projections(
+            session, request.project_id, bundle,
+        )
+        await self.repository.set_revision_content_hash(
+            session, revision_id, bundle.content_hash,
+        )
+        await self.repository.advance_heads(
+            session, request.project_id, revision_number, bundle.content_hash,
+        )
+        return CommitCanonResult(
+            revision_id=revision_id,
+            revision_number=revision_number,
+            projection_hash=bundle.content_hash,
+            idempotent=False,
+        )
 
     async def _validate_references(self, session, request: CommitCanonRevision) -> None:
         incoming_ids = {item.id for item in request.entities}

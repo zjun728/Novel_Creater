@@ -16,12 +16,20 @@ from backend.repositories.finalization import (
     FinalizationDataCorruption,
     FinalizationRepository,
 )
+from backend.repositories.canon import CanonRepository
+from backend.repositories.planning import PlanningRepository
+from backend.services.canon import CanonService
 from backend.services.finalization import (
     ConfirmFinalization,
     CorrectFinalization,
     FinalizationConflict,
     FinalizationService,
     PrepareFinalization,
+)
+from backend.services.finalization_commit import (
+    AtomicFinalizationService,
+    CommitFinalization,
+    FinalizationCommitInvalid,
 )
 
 
@@ -35,10 +43,22 @@ _service = FinalizationService(
     extraction_provider=finalization_extraction_gateway,
     clock=lambda: int(time.time() * 1000),
 )
+_canon_repository = CanonRepository()
+_atomic_service = AtomicFinalizationService(
+    transaction_factory=transaction,
+    repository=FinalizationRepository(),
+    planning_repository=PlanningRepository(),
+    canon_committer=CanonService(_canon_repository),
+    clock=lambda: int(time.time() * 1000),
+)
 
 
 def get_finalization_service() -> FinalizationService:
     return _service
+
+
+def get_atomic_finalization_service() -> AtomicFinalizationService:
+    return _atomic_service
 
 
 class FinalizationRequestInvalid(PublicDomainError):
@@ -87,12 +107,19 @@ class ConfirmFinalizationBody(_StrictBody):
     expectedRevisionHash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CommitFinalizationBody(ConfirmFinalizationBody):
+    idempotencyKey: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 def _raise_public(error: Exception) -> None:
     if isinstance(error, FinalizationConflict) and str(error).startswith(
         "FINALIZATION_NOT_FOUND"
     ):
         raise FinalizationNotFound() from None
-    if isinstance(error, (FinalizationConflict, FinalizationDataCorruption)):
+    if isinstance(error, (
+        FinalizationConflict, FinalizationDataCorruption,
+        FinalizationCommitInvalid,
+    )):
         raise FinalizationStateConflict() from None
     raise FinalizationRequestInvalid() from None
 
@@ -207,9 +234,44 @@ async def confirm_finalization(
     return _reviewed(value)
 
 
+@router.post(
+    "/projects/{project_id}/chapter-sessions/{session_id}/finalization/commit",
+)
+async def commit_finalization(
+    project_id: str,
+    session_id: str,
+    body: CommitFinalizationBody,
+    service: AtomicFinalizationService = Depends(get_atomic_finalization_service),
+):
+    try:
+        value = await service.commit(CommitFinalization(
+            project_id=project_id,
+            chapter_session_id=session_id,
+            idempotency_key=body.idempotencyKey,
+            expected_revision=body.expectedRevision,
+            expected_revision_hash=body.expectedRevisionHash,
+        ))
+    except (
+        FinalizationCommitInvalid, FinalizationDataCorruption,
+        TypeError, ValueError,
+    ) as error:
+        _raise_public(error)
+    return {
+        "recordId": value.record_id,
+        "finalChapterId": value.final_chapter_id,
+        "canonRevision": value.canon_revision,
+        "projectionHash": value.projection_hash,
+        "planningRevisionId": value.planning_revision_id,
+        "planningRevision": value.planning_revision,
+        "planningHash": value.planning_hash,
+        "replayed": value.replayed,
+    }
+
+
 __all__ = [
     "finalization_extraction_gateway",
     "finalization_quality_gateway",
+    "get_atomic_finalization_service",
     "get_finalization_service",
     "router",
 ]

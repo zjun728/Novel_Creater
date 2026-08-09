@@ -338,6 +338,70 @@ class FinalizationRepository:
         )
         return None if row is None else dict(row)
 
+    async def lock_latest_attempt(
+        self,
+        session,
+        project_id: str,
+        session_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM finalization_change_sets
+                WHERE project_id=%s AND chapter_session_id=%s
+                ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE""",
+            (project_id, session_id),
+        )
+        return None if row is None else dict(row)
+
+    async def lock_commit_by_key(
+        self, session, project_id: str, idempotency_key: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM finalization_records
+                WHERE project_id=%s AND idempotency_key=%s FOR UPDATE""",
+            (project_id, idempotency_key),
+        )
+        return self._commit_record(row)
+
+    async def lock_commit_by_session(
+        self, session, project_id: str, session_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT * FROM finalization_records
+                WHERE project_id=%s AND chapter_session_id=%s FOR UPDATE""",
+            (project_id, session_id),
+        )
+        return self._commit_record(row)
+
+    @staticmethod
+    def _commit_record(row):
+        if row is None:
+            return None
+        result = dict(row)
+        result["result"] = _decoded_object(
+            result.pop("result_payload_json", None),
+            "finalization receipt",
+        )
+        return result
+
+    async def list_finalized_outline_contents(self, session, project_id: str):
+        rows = await session.fetchall(
+            """SELECT outline.content_json
+                 FROM final_chapters chapter
+                 JOIN chapter_outline_revisions outline
+                   ON outline.project_id=chapter.project_id
+                  AND outline.chapter_num=chapter.chapter_num
+                  AND outline.id=chapter.chapter_outline_revision_id
+                  AND outline.revision=chapter.chapter_outline_revision
+                  AND outline.content_hash=chapter.chapter_outline_hash
+                WHERE chapter.project_id=%s
+                ORDER BY chapter.chapter_num,chapter.id""",
+            (project_id,),
+        )
+        return tuple(
+            _decoded_object(row["content_json"], "finalized chapter outline")
+            for row in rows
+        )
+
     async def lock_change_set_revision(
         self,
         session,
@@ -643,6 +707,103 @@ class FinalizationRepository:
                 report_id, status, updated_at, project_id, session_id,
                 change_set_id,
             ),
+        )
+        return affected == 1
+
+    async def mark_committing(
+        self,
+        session,
+        *,
+        project_id: str,
+        session_id: str,
+        change_set_id: str,
+        updated_at: int,
+    ) -> bool:
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+                  SET status='committing',updated_at=%s
+                WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                  AND status='awaiting_author' AND active_slot=1
+                  AND confirmed_revision=current_revision
+                  AND confirmed_revision_hash=current_revision_hash""",
+            (updated_at, project_id, session_id, change_set_id),
+        )
+        return affected == 1
+
+    async def insert_finalization_record(
+        self, session, row: Mapping[str, object],
+    ) -> None:
+        await session.execute(
+            """INSERT INTO finalization_records
+               (id,project_id,chapter_session_id,draft_candidate_id,
+                change_set_id,change_set_revision,idempotency_key,
+                request_fingerprint,candidate_hash,change_set_hash,
+                expected_canon_revision,committed_canon_revision,
+                result_payload_json,finalized_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (
+                row["id"], row["project_id"], row["chapter_session_id"],
+                row["draft_candidate_id"], row["change_set_id"],
+                row["change_set_revision"], row["idempotency_key"],
+                row["request_fingerprint"], row["candidate_hash"],
+                row["change_set_hash"], row["expected_canon_revision"],
+                row["committed_canon_revision"],
+                _canonical_json_value(row["result"]), row["finalized_at"],
+            ),
+        )
+
+    async def insert_final_chapter(
+        self, session, row: Mapping[str, object],
+    ) -> None:
+        await session.execute(
+            """INSERT INTO final_chapters
+               (id,project_id,chapter_session_id,draft_candidate_id,
+                finalization_record_id,chapter_num,title,content,content_hash,
+                canon_revision,planning_revision_id,planning_revision,
+                planning_hash,chapter_outline_revision_id,
+                chapter_outline_revision,chapter_outline_hash,finalized_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            tuple(row[key] for key in (
+                "id", "project_id", "chapter_session_id", "draft_candidate_id",
+                "finalization_record_id", "chapter_num", "title", "content",
+                "content_hash", "canon_revision", "planning_revision_id",
+                "planning_revision", "planning_hash",
+                "chapter_outline_revision_id", "chapter_outline_revision",
+                "chapter_outline_hash", "finalized_at",
+            )),
+        )
+
+    async def finalize_session(
+        self,
+        session,
+        *,
+        project_id: str,
+        session_id: str,
+        finalized_at: int,
+    ) -> bool:
+        affected = await session.execute(
+            """UPDATE chapter_sessions SET status='final',finalized_at=%s
+                WHERE project_id=%s AND id=%s AND status='drafting'
+                  AND active_draft_operation_id IS NULL""",
+            (finalized_at, project_id, session_id),
+        )
+        return affected == 1
+
+    async def mark_committed(
+        self,
+        session,
+        *,
+        project_id: str,
+        session_id: str,
+        change_set_id: str,
+        updated_at: int,
+    ) -> bool:
+        affected = await session.execute(
+            """UPDATE finalization_change_sets
+                  SET status='committed',active_slot=NULL,updated_at=%s
+                WHERE project_id=%s AND chapter_session_id=%s AND id=%s
+                  AND status='committing' AND active_slot=1""",
+            (updated_at, project_id, session_id, change_set_id),
         )
         return affected == 1
 

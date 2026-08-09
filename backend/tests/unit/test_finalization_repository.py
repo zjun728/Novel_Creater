@@ -500,3 +500,73 @@ async def test_read_current_view_rejects_quality_report_hash_mismatch():
         await FinalizationRepository().read_current_view(
             session, "project-1", "session-1",
         )
+
+
+@pytest.mark.asyncio
+async def test_commit_receipt_queries_are_locked_and_decode_only_result_json():
+    row = {
+        "id": "record-1", "chapter_session_id": "session-1",
+        "result_payload_json": '{"canonRevision":2}',
+    }
+    session = CapturingSession(rows=[row, row])
+    repository = FinalizationRepository()
+
+    by_key = await repository.lock_commit_by_key(
+        session, "project-1", HASH_A,
+    )
+    by_session = await repository.lock_commit_by_session(
+        session, "project-1", "session-1",
+    )
+
+    assert by_key["result"] == by_session["result"] == {"canonRevision": 2}
+    assert all("FOR UPDATE" in _compact(sql) for sql, _ in session.calls)
+    assert session.calls[0][1] == ("project-1", HASH_A)
+    assert session.calls[1][1] == ("project-1", "session-1")
+
+
+@pytest.mark.asyncio
+async def test_commit_writes_and_state_transitions_are_exact_owner_scoped():
+    session = CapturingSession(execute_results=[1, 1, 1, 1, 1])
+    repository = FinalizationRepository()
+    record = {
+        "id": "record-1", "project_id": "project-1",
+        "chapter_session_id": "session-1", "draft_candidate_id": "candidate-1",
+        "change_set_id": "attempt-1", "change_set_revision": 2,
+        "idempotency_key": HASH_A, "request_fingerprint": HASH_B,
+        "candidate_hash": HASH_A, "change_set_hash": HASH_B,
+        "expected_canon_revision": 1, "committed_canon_revision": 2,
+        "result": {"canonRevision": 2}, "finalized_at": 9,
+    }
+    chapter = {
+        "id": "chapter-1", "project_id": "project-1",
+        "chapter_session_id": "session-1", "draft_candidate_id": "candidate-1",
+        "finalization_record_id": "record-1", "chapter_num": 1,
+        "title": "第一章", "content": "正文", "content_hash": HASH_A,
+        "canon_revision": 2, "planning_revision_id": "planning-1",
+        "planning_revision": 1, "planning_hash": HASH_A,
+        "chapter_outline_revision_id": "outline-1",
+        "chapter_outline_revision": 1, "chapter_outline_hash": HASH_B,
+        "finalized_at": 9,
+    }
+
+    assert await repository.mark_committing(
+        session, project_id="project-1", session_id="session-1",
+        change_set_id="attempt-1", updated_at=9,
+    )
+    await repository.insert_finalization_record(session, record)
+    await repository.insert_final_chapter(session, chapter)
+    assert await repository.finalize_session(
+        session, project_id="project-1", session_id="session-1", finalized_at=9,
+    )
+    assert await repository.mark_committed(
+        session, project_id="project-1", session_id="session-1",
+        change_set_id="attempt-1", updated_at=9,
+    )
+
+    sql = [_compact(item[0]) for item in session.calls]
+    assert "status='awaiting_author'" in sql[0]
+    assert "INSERT INTO finalization_records" in sql[1]
+    assert json.loads(session.calls[1][1][12]) == {"canonRevision": 2}
+    assert "INSERT INTO final_chapters" in sql[2]
+    assert "status='final'" in sql[3]
+    assert "status='committed',active_slot=NULL" in sql[4]

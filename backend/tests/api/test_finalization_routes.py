@@ -11,6 +11,7 @@ from backend.services.finalization import (
     PreparedFinalization,
     ReviewedFinalization,
 )
+from backend.services.finalization_commit import CommittedFinalization
 
 
 HASH_A = "a" * 64
@@ -87,17 +88,32 @@ class FakeFinalizationService:
         )
 
 
+class FakeAtomicFinalizationService:
+    def __init__(self):
+        self.committed = []
+
+    async def commit(self, command):
+        self.committed.append(command)
+        return CommittedFinalization(
+            record_id="record-1", final_chapter_id="chapter-1",
+            canon_revision=2, projection_hash=HASH_C,
+            planning_revision_id="planning-2", planning_revision=2,
+            planning_hash=HASH_B,
+        )
+
 def _client():
     service = FakeFinalizationService()
+    atomic = FakeAtomicFinalizationService()
     app = FastAPI()
     app.include_router(finalization.router, prefix="/api")
     app.dependency_overrides[finalization.get_finalization_service] = lambda: service
+    app.dependency_overrides[finalization.get_atomic_finalization_service] = lambda: atomic
     install_error_handlers(app)
-    return TestClient(app, raise_server_exceptions=False), service
+    return TestClient(app, raise_server_exceptions=False), service, atomic
 
 
 def test_prepare_get_correct_and_confirm_use_narrow_closed_contracts():
-    client, service = _client()
+    client, service, atomic = _client()
     base = "/api/projects/p1/chapter-sessions/session-1"
 
     prepared = client.post(
@@ -120,11 +136,16 @@ def test_prepare_get_correct_and_confirm_use_narrow_closed_contracts():
         "expectedRevision": 1,
         "expectedRevisionHash": HASH_A,
     })
+    committed = client.post(f"{base}/finalization/commit", json={
+        "idempotencyKey": HASH_C,
+        "expectedRevision": 1,
+        "expectedRevisionHash": HASH_A,
+    })
 
     assert [
         prepared.status_code, viewed.status_code,
-        corrected.status_code, confirmed.status_code,
-    ] == [201, 200, 201, 200]
+        corrected.status_code, confirmed.status_code, committed.status_code,
+    ] == [201, 200, 201, 200, 200]
     assert prepared.json()["currentRevision"] == 1
     assert viewed.json()["changeSet"]["payload"] == _change_set()
     assert corrected.json()["currentRevision"] == 2
@@ -132,10 +153,12 @@ def test_prepare_get_correct_and_confirm_use_narrow_closed_contracts():
     assert service.prepared[0].candidate_id == "candidate-1"
     assert isinstance(service.corrected[0].change_set, FinalizationChangeSet)
     assert service.confirmed[0].expected_revision_hash == HASH_A
+    assert committed.json()["finalChapterId"] == "chapter-1"
+    assert atomic.committed[0].idempotency_key == HASH_C
 
 
 def test_strict_bodies_reject_unknown_keys_and_malformed_full_payload():
-    client, service = _client()
+    client, service, _ = _client()
     base = "/api/projects/p1/chapter-sessions/session-1"
 
     unknown = client.post(f"{base}/finalization/confirm", json={
@@ -154,7 +177,7 @@ def test_strict_bodies_reject_unknown_keys_and_malformed_full_payload():
 
 
 def test_service_errors_are_stable_and_do_not_return_internal_text():
-    client, service = _client()
+    client, service, _ = _client()
     service.error = FinalizationConflict(
         "FINALIZATION_STATE_CONFLICT RAW_PROSE_SENTINEL SECRET_KEY"
     )
