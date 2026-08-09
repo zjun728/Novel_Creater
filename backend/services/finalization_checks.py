@@ -81,7 +81,7 @@ def _basis_is_valid(candidate: Mapping[str, Any], authority, current) -> bool:
         basis = {key: provenance[key] for key in _BASIS_KEYS}
     except KeyError:
         return False
-    if basis.get("schemaVersion") != "candidate-basis-v1":
+    if basis.get("schemaVersion") != "draft-candidate-basis-v1":
         return False
     try:
         if candidate.get("basis_hash") != canonical_hash(basis):

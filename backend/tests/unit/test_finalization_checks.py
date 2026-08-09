@@ -23,7 +23,7 @@ def _hash_text(value: str) -> str:
 def _fixture(content="这是一个完整候选正文，主角走进山门并作出选择。"):
     candidate_hash = _hash_text(content)
     basis = {
-        "schemaVersion": "candidate-basis-v1",
+        "schemaVersion": "draft-candidate-basis-v1",
         "outlineRevisionId": "outline-revision-1",
         "outlineRevision": 1,
         "outlineHash": HASH_C,
