@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from hashlib import sha256
+import json
 import re
 from types import MappingProxyType
 
-from backend.domain.project_packages import PackageRecord, ProjectPackageInvalid, freeze_json_value
+from backend.domain.bibles import BiblePayload
+from backend.domain.chapter_outlines import ChapterOutline, DraftChapterOutline, EditableChapterOutlineContent
+from backend.domain.planning import DraftPlanningAggregate, PlanningAggregate
+from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS, ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound, freeze_json_value
+from backend.database import DatabaseSession
 from backend.security.paths import UnsafeLocalPath, managed_corpus_storage_key
 
 
@@ -848,6 +854,24 @@ PROJECT_TABLE_COLUMN_POLICIES = MappingProxyType({
                         'updated_at': 'public_field'}}.items()
 })
 
+@dataclass(frozen=True, slots=True)
+class OwnershipJoin:
+    child_table: str
+    child_column: str
+    parent_table: str
+    parent_column: str = "id"
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedQueryPlan:
+    table: str
+    sql: str
+    selected_columns: tuple[str, ...]
+    order_columns: tuple[str, ...]
+    scope_table: str
+    scope_column: str
+    ownership_joins: tuple[OwnershipJoin, ...] = ()
+
 _NON_PACKAGE_REFERENCE_COLUMNS = frozenset({
     ("seed_inspiration_attempts", "market_source_id"), ("seed_inspiration_attempts", "market_snapshot_id"),
     ("creation_contract_corpus_refs", "corpus_source_id"),
@@ -873,6 +897,7 @@ for _table, _column in {
     _policy_copy[_table][_column] = "excluded_sensitive_operational"
 _policy_copy["chapter_sessions"]["story_block_id"] = "nested_logical_reference"
 _policy_copy["canon_revisions"]["source_id"] = "polymorphic_logical_reference"
+_policy_copy["project_model_binding_revisions"]["source_project_id"] = "normalized_inert_evidence"
 PROJECT_TABLE_COLUMN_POLICIES = MappingProxyType({
     table: MappingProxyType(policy) for table, policy in _policy_copy.items()
 })
@@ -884,6 +909,512 @@ POLYMORPHIC_LOGICAL_REFERENCE_TARGETS: Mapping[tuple[str, str], Mapping[str, str
         "bootstrap": None, "finalization": "finalization_records", "manual_test": None,
     }),
 })
+
+
+_INDIRECT_OWNERSHIP_JOINS: Mapping[str, OwnershipJoin] = MappingProxyType({
+    "creative_seed_heads": OwnershipJoin(
+        "creative_seed_heads", "revision_id", "creative_seed_revisions"
+    ),
+    "project_model_binding_items": OwnershipJoin(
+        "project_model_binding_items", "binding_revision_id", "project_model_binding_revisions"
+    ),
+    "style_contract_template_refs": OwnershipJoin(
+        "style_contract_template_refs", "style_contract_id", "style_contracts"
+    ),
+    "creation_contract_experience_refs": OwnershipJoin(
+        "creation_contract_experience_refs", "creation_contract_id", "creation_contracts"
+    ),
+    "creation_contract_corpus_refs": OwnershipJoin(
+        "creation_contract_corpus_refs", "creation_contract_id", "creation_contracts"
+    ),
+    "creation_contract_corpus_fragment_refs": OwnershipJoin(
+        "creation_contract_corpus_fragment_refs", "creation_contract_id", "creation_contracts"
+    ),
+})
+
+_ORDER_COLUMNS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "creation_contract_corpus_fragment_refs": (
+        "creation_contract_id", "sort_order", "corpus_fragment_id", "chapter_char_start", "chapter_char_end"
+    ),
+    "creation_contract_corpus_refs": ("creation_contract_id", "sort_order", "corpus_source_id"),
+    "creation_contract_engine_refs": ("creation_contract_id",),
+    "creation_contract_experience_refs": ("creation_contract_id", "sort_order", "experience_card_id"),
+    "creative_seed_heads": ("seed_id",),
+    "project_bible_heads": ("project_id",),
+    "project_chapter_outline_heads": ("project_id", "chapter_num"),
+    "project_contract_heads": ("project_id",),
+    "project_model_binding_heads": ("project_id",),
+    "project_model_binding_items": ("binding_revision_id", "task_key"),
+    "project_planning_heads": ("project_id",),
+    "project_seed_selection_revisions": ("project_id", "selection_revision"),
+    "project_selected_seeds": ("project_id", "selection_revision"),
+    "style_contract_template_refs": ("style_contract_id", "role"),
+})
+
+
+def _owned_query_plan(table: str) -> OwnedQueryPlan:
+    selected_columns = tuple(sorted(
+        column
+        for column, category in PROJECT_TABLE_COLUMN_POLICIES[table].items()
+        if category != "excluded_sensitive_operational"
+    ))
+    order_columns = _ORDER_COLUMNS.get(table, ("id",))
+    join = _INDIRECT_OWNERSHIP_JOINS.get(table)
+    ownership_joins = (join,) if join is not None else ()
+    scope_table = join.parent_table if join is not None else table
+    scope_alias = "t1" if join is not None else "t0"
+    scope_column = "id" if table == "projects" else "project_id"
+    select_sql = ",".join(f"t0.{column} AS {column}" for column in selected_columns)
+    from_sql = f"FROM {table} t0"
+    if join is not None:
+        from_sql += (
+            f" JOIN {join.parent_table} t1"
+            f" ON t0.{join.child_column}=t1.{join.parent_column}"
+        )
+    order_sql = ",".join(f"t0.{column}" for column in order_columns)
+    return OwnedQueryPlan(
+        table=table,
+        sql=f"SELECT {select_sql} {from_sql} WHERE {scope_alias}.{scope_column}=%s ORDER BY {order_sql}",
+        selected_columns=selected_columns,
+        order_columns=order_columns,
+        scope_table=scope_table,
+        scope_column=scope_column,
+        ownership_joins=ownership_joins,
+    )
+
+
+PROJECT_OWNED_QUERY_PLANS: Mapping[str, OwnedQueryPlan] = MappingProxyType({
+    table: _owned_query_plan(table) for table in sorted(PROJECT_OWNED_TABLES)
+})
+
+
+_REFERENCE_TARGET_BY_COLUMN: Mapping[str, str] = MappingProxyType({
+    "active_draft_operation_id": "draft_operation_attempts",
+    "batch_id": "story_engine_batches",
+    "bible_revision_id": "creation_bible_revisions",
+    "binding_revision_id": "project_model_binding_revisions",
+    "change_set_id": "finalization_change_sets",
+    "chapter_outline_draft_id": "chapter_outline_drafts",
+    "chapter_outline_revision_id": "chapter_outline_revisions",
+    "chapter_session_id": "chapter_sessions",
+    "creation_contract_id": "creation_contracts",
+    "draft_candidate_id": "draft_candidates",
+    "draft_operation_id": "draft_operation_attempts",
+    "engine_option_id": "story_engine_options",
+    "entity_id": "canon_entities",
+    "experience_card_id": "experience_cards",
+    "finalization_record_id": "finalization_records",
+    "market_analysis_id": "market_analyses",
+    "outline_draft_id": "chapter_outline_drafts",
+    "outline_revision_id": "chapter_outline_revisions",
+    "planning_draft_id": "planning_drafts",
+    "planning_revision_id": "planning_revisions",
+    "quality_report_id": "candidate_quality_reports",
+    "seed_id": "creative_seeds",
+    "seed_revision_id": "creative_seed_revisions",
+    "source_candidate_id": "draft_candidates",
+    "source_operation_id": "draft_operation_attempts",
+    "source_project_id": "projects",
+    "style_contract_id": "style_contracts",
+    "style_template_id": "style_templates",
+    "working_draft_id": "working_drafts",
+})
+_REFERENCE_TARGET_OVERRIDES: Mapping[tuple[str, str], str] = MappingProxyType({
+    ("asset_recommendation_requests", "attempt_id"): "asset_recommendation_attempts",
+    ("bible_confirmation_requests", "draft_id"): "project_bible_drafts",
+    ("canon_events", "revision_id"): "canon_revisions",
+    ("chapter_outline_drafts", "source_attempt_id"): "chapter_outline_generation_attempts",
+    ("chapter_outline_generation_attempts", "draft_id"): "chapter_outline_drafts",
+    ("creative_seed_heads", "revision_id"): "creative_seed_revisions",
+    ("planning_drafts", "source_attempt_id"): "planning_generation_attempts",
+    ("planning_generation_attempts", "draft_id"): "planning_drafts",
+    ("seed_inspiration_requests", "attempt_id"): "seed_inspiration_attempts",
+    ("style_trial_requests", "attempt_id"): "style_trial_attempts",
+})
+
+_PROVIDER_PROFILE_QUERY = (
+    "SELECT DISTINCT p.name AS provider_name,p.model_name AS model_name,"
+    "p.api_key AS api_key,p.base_url AS base_url "
+    "FROM provider_profiles p "
+    "JOIN project_model_binding_items i ON i.provider_id=p.id "
+    "JOIN project_model_binding_revisions r ON r.id=i.binding_revision_id "
+    "WHERE r.project_id=%s "
+    "ORDER BY p.name,p.model_name,p.api_key,p.base_url"
+)
+_MARKET_SNAPSHOT_EVIDENCE_QUERY = (
+    "SELECT s.content_hash AS snapshot_hash,s.captured_at AS captured_at "
+    "FROM market_snapshots s WHERE s.id=%s AND s.content_hash=%s ORDER BY s.id"
+)
+
+_FROZEN_ASSET_QUERIES: Mapping[str, str] = MappingProxyType({
+    "experience_cards": (
+        "SELECT id,stable_key,revision,title,category,payload_json,provenance_json,content_hash,status,created_at "
+        "FROM experience_cards WHERE id=%s AND revision=%s AND content_hash=%s ORDER BY id"
+    ),
+    "style_templates": (
+        "SELECT id,stable_key,revision,name,payload_json,provenance_json,content_hash,status,created_at "
+        "FROM style_templates WHERE id=%s AND revision=%s AND content_hash=%s ORDER BY id"
+    ),
+})
+
+_FROZEN_CORPUS_REVISION_QUERY = (
+    "SELECT r.id,r.source_id,s.source_key,r.revision,r.content_hash,r.relative_path,r.display_name,"
+    "r.author,r.reference_tags_json,r.notes,r.provenance_json,r.byte_length,r.encoding,"
+    "r.parser_version,r.normalizer_version,r.fragmenter_version,r.index_version,r.status,"
+    "r.imported_at,r.analyzed_at,r.created_at,b.byte_length AS blob_byte_length,b.storage_key "
+    "FROM corpus_source_revisions r "
+    "JOIN corpus_sources s ON s.id=r.source_id "
+    "JOIN corpus_blobs b ON b.content_hash=r.content_hash "
+    "WHERE r.source_id=%s AND r.revision=%s AND r.content_hash=%s ORDER BY r.id"
+)
+_REFERENCE_USE_CORPUS_REVISION_QUERY = (
+    "SELECT r.source_id,r.revision,r.content_hash FROM corpus_chapters c "
+    "JOIN corpus_source_revisions r ON r.id=c.source_revision_id "
+    "WHERE c.corpus_source_id=%s AND c.id=%s ORDER BY r.id"
+)
+_FROZEN_CORPUS_CHAPTER_QUERY = (
+    "SELECT c.id AS chapter_id,c.chapter_order,c.title,c.raw_byte_start,c.raw_byte_end,"
+    "c.normalized_char_start,c.normalized_char_end,c.normalized_text,c.content_hash,c.created_at "
+    "FROM corpus_chapters c WHERE c.corpus_source_id=%s AND c.source_revision_id=%s "
+    "ORDER BY c.chapter_order,c.id"
+)
+_FROZEN_CORPUS_FRAGMENT_QUERY = (
+    "SELECT f.id AS fragment_id,f.fragment_order,f.chapter_char_start,f.chapter_char_end,"
+    "f.normalized_text,f.content_hash,f.analysis_version,f.index_payload,f.created_at "
+    "FROM corpus_fragments f WHERE f.corpus_source_id=%s AND f.corpus_chapter_id=%s "
+    "ORDER BY f.fragment_order,f.id"
+)
+
+_PROJECTION_QUERIES: Mapping[str, str] = MappingProxyType({
+    "arcProjections": "SELECT content_hash FROM arc_projections WHERE project_id=%s ORDER BY revision_number,entity_id,arc_key,id",
+    "currentStateProjections": "SELECT content_hash FROM current_state_projections WHERE project_id=%s ORDER BY revision_number,entity_id,field_path,id",
+    "memoryViews": "SELECT content_hash FROM memory_views WHERE project_id=%s ORDER BY revision_number,subject_key,id",
+    "plotThreadProjections": "SELECT content_hash FROM plot_thread_projections WHERE project_id=%s ORDER BY revision_number,subject_key,field_path,id",
+    "projectionHeads": "SELECT content_hash FROM projection_heads WHERE project_id=%s ORDER BY project_id",
+})
+
+
+def _camel_case(value: str) -> str:
+    head, *tail = value.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in tail)
+
+
+def _json_value(value: object) -> object:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        return json.loads(value)
+    if isinstance(value, (Mapping, list, tuple)):
+        return value
+    raise _invalid()
+
+
+def _public_field_name(column: str, allowlist: frozenset[str]) -> str | None:
+    direct = _camel_case(column)
+    aliases = {
+        "chapter_num": "chapterNumber",
+        "deterministic_blocks_json": "deterministicBlocks",
+        "draft_json": "payload",
+        "evidence_json": "evidence",
+        "findings_json": "findings",
+        "model_name_snapshot": "modelName",
+        "operation_type": "operationKind",
+        "payload_json": "payload",
+        "provider_name_snapshot": "providerName",
+        "request_hash": "requestFingerprint",
+        "result_content_hash": "resultHash",
+        "result_payload_json": "resultPayload",
+        "sequence_num": "sequence",
+        "source_payload_json": "payload",
+        "value_json": "value",
+    }
+    candidates = (direct, aliases.get(column))
+    if column == "content_json":
+        candidates += ("payload", "content")
+    if column == "result_content_json":
+        candidates += ("payload",)
+    for candidate in candidates:
+        if candidate is not None and candidate in allowlist:
+            return candidate
+    return None
+
+
+def _logical_field_name(table: str, column: str, allowlist: frozenset[str]) -> str | None:
+    base = column.removesuffix("_id")
+    aliases = {
+        "chapter_session": "chapter",
+        "draft_candidate": "candidate",
+        "draft_operation": "operation",
+    }
+    base = aliases.get(base, base)
+    candidate = _camel_case(base) + "LogicalId"
+    if table == "canon_events" and column == "revision_id":
+        candidate = "canonRevisionLogicalId"
+    elif table == "working_draft_revisions" and column == "source_candidate_id":
+        candidate = "candidateLogicalId"
+    elif table == "working_draft_revisions" and column == "source_operation_id":
+        candidate = "operationLogicalId"
+    elif table in {"chapter_sessions", "final_chapters"} and column == "chapter_outline_revision_id":
+        candidate = "outlineRevisionLogicalId"
+    return candidate if candidate in allowlist else None
+
+
+def _column_export_decision(table: str, column: str, category: str) -> str:
+    allowlist = RECORD_FIELD_ALLOWLISTS[PROJECT_TABLE_RECORD_TYPES[table]]
+    explicit = {
+        ("creation_contract_engine_refs", "engine_hash"): "contentHash",
+        ("creation_contract_engine_refs", "engine_option_id"): "storyEngineLogicalId",
+        ("style_contract_template_refs", "asset_hash"): "contentHash",
+        ("style_contract_template_refs", "style_template_id"): "@frozen-style-template",
+        ("creation_contract_experience_refs", "asset_hash"): "contentHash",
+        ("creation_contract_experience_refs", "experience_card_id"): "@frozen-experience-card",
+        ("creation_contract_corpus_refs", "source_hash"): "contentHash",
+        ("creation_contract_corpus_fragment_refs", "source_hash"): "@frozen-corpus-revision",
+        ("creation_contract_corpus_fragment_refs", "fragment_hash"): "contentHash",
+    }.get((table, column))
+    if explicit is not None:
+        return explicit
+    if table == "project_model_binding_revisions" and column == "source_project_id":
+        return "@binding-source"
+    if table == "style_contracts" and column in {
+        "merged_style_json", "likes_json", "dislikes_json",
+    }:
+        return "@style-contract-payload"
+    if category in {"public_field", "normalized_inert_evidence"}:
+        return _public_field_name(column, allowlist) or "@omit-normalized"
+    if category == "logical_reference":
+        return _logical_field_name(table, column, allowlist) or "@validate-logical"
+    if category == "nested_logical_reference":
+        return "storyBlockLogicalId"
+    if category == "polymorphic_logical_reference":
+        return "sourceLogicalId"
+    raise RuntimeError("unclassified project package column")
+
+
+PACKAGE_COLUMN_EXPORT_DECISIONS: Mapping[tuple[str, str], str] = MappingProxyType({
+    (table, column): _column_export_decision(table, column, category)
+    for table, policy in PROJECT_TABLE_COLUMN_POLICIES.items()
+    for column, category in policy.items()
+    if category not in {"derived", "excluded_sensitive_operational"}
+})
+_PACKAGE_COLUMN_EXPORT_DECISION_MANIFEST = "\n".join(
+    f"{table}.{column}={decision}"
+    for (table, column), decision in sorted(PACKAGE_COLUMN_EXPORT_DECISIONS.items())
+)
+PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT = sha256(
+    _PACKAGE_COLUMN_EXPORT_DECISION_MANIFEST.encode("utf-8")
+).hexdigest()
+if PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT != (
+    "15ea66b6eb6784daff215debdd202e1c82924b9902d5e868bb82c61a034fa90b"
+):
+    raise RuntimeError("project package export decisions require an explicit audit")
+
+
+def _reference_target(table: str, column: str) -> str:
+    target = _REFERENCE_TARGET_OVERRIDES.get((table, column), _REFERENCE_TARGET_BY_COLUMN.get(column))
+    if target is None:
+        raise _invalid()
+    return target
+
+
+def _record_revision(row: Mapping[str, object]) -> int:
+    for column in ("revision", "selection_revision", "draft_revision", "working_draft_revision"):
+        value = row.get(column)
+        if type(value) is int and value >= 0:
+            return value
+    return 0
+
+
+def _record_order(row: Mapping[str, object]) -> int:
+    for column in ("event_order", "option_order", "candidate_order", "sort_order", "sequence_num"):
+        value = row.get(column)
+        if type(value) is int and value >= 0:
+            return value
+    return 0
+
+
+_BIBLE_ITEM_TYPES: Mapping[str, str] = MappingProxyType({
+    "worldRules": "bible-world-rule",
+    "coreCast": "bible-core-cast",
+    "factions": "bible-faction",
+    "longTermConflicts": "bible-long-term-conflict",
+    "relationshipDynamics": "bible-relationship-dynamic",
+    "continuityGuardrails": "bible-continuity-guardrail",
+    "openDesignQuestions": "bible-open-design-question",
+})
+
+
+def _register_authority_id(
+    identities: dict[tuple[str, object], str],
+    counters: dict[str, int],
+    kind: str,
+    raw_id: object,
+) -> str:
+    if not isinstance(raw_id, str) or not raw_id:
+        raise _invalid()
+    identity_key = (kind, raw_id)
+    existing = identities.get(identity_key)
+    if existing is not None:
+        return existing
+    counters[kind] = counters.get(kind, 0) + 1
+    logical_id = f"{kind}:{counters[kind]}"
+    identities[identity_key] = logical_id
+    return logical_id
+
+
+def _authority_id(identities: Mapping[tuple[str, object], str], kind: str, raw_id: object) -> str:
+    matched = identities.get((kind, raw_id))
+    if matched is None:
+        raise _invalid()
+    return matched
+
+
+def _planning_node_source_id(node: object) -> str:
+    database_id = getattr(node, "id", None)
+    client_key = getattr(node, "client_key", None)
+    if database_id is not None:
+        return database_id
+    if client_key is not None:
+        return client_key
+    raise _invalid()
+
+
+def _validate_planning_payload(table: str, value: object) -> PlanningAggregate | DraftPlanningAggregate:
+    parsed = _json_value(value)
+    if table == "planning_revisions":
+        return PlanningAggregate.model_validate(parsed)
+    try:
+        return PlanningAggregate.model_validate(parsed)
+    except ValueError:
+        return DraftPlanningAggregate.model_validate(parsed)
+
+
+def _register_planning_nodes(
+    planning: PlanningAggregate | DraftPlanningAggregate,
+    identities: dict[tuple[str, object], str],
+    counters: dict[str, int],
+) -> None:
+    for node in planning.volumes:
+        _register_authority_id(identities, counters, "planning-volume", _planning_node_source_id(node))
+    for node in planning.plots:
+        _register_authority_id(identities, counters, "planning-plot", _planning_node_source_id(node))
+    for block in planning.story_blocks:
+        _register_authority_id(identities, counters, "story-block", _planning_node_source_id(block))
+        for stage in block.stages:
+            _register_authority_id(identities, counters, "planning-stage", _planning_node_source_id(stage))
+            for task in stage.scene_tasks:
+                _register_authority_id(identities, counters, "scene-task", _planning_node_source_id(task))
+
+
+def _rewrite_planning_payload(
+    planning: PlanningAggregate | DraftPlanningAggregate,
+    identities: Mapping[tuple[str, object], str],
+) -> dict[str, object]:
+    payload = planning.model_dump(mode="json", by_alias=True)
+
+    def replace_definition(node: object, dumped: dict[str, object], kind: str) -> None:
+        source_id = _planning_node_source_id(node)
+        key = "id" if getattr(node, "id", None) is not None else "clientNodeKey"
+        dumped[key] = _authority_id(identities, kind, source_id)
+
+    for node, dumped in zip(planning.volumes, payload["volumes"], strict=True):
+        replace_definition(node, dumped, "planning-volume")
+    for node, dumped in zip(planning.plots, payload["plots"], strict=True):
+        replace_definition(node, dumped, "planning-plot")
+    for block, dumped_block in zip(planning.story_blocks, payload["storyBlocks"], strict=True):
+        replace_definition(block, dumped_block, "story-block")
+        if isinstance(planning, PlanningAggregate):
+            dumped_block["volumeId"] = _authority_id(identities, "planning-volume", block.volume_id)
+            dumped_block["plotIds"] = [
+                _authority_id(identities, "planning-plot", plot_id) for plot_id in block.plot_ids
+            ]
+        else:
+            dumped_block["volumeRef"] = _authority_id(identities, "planning-volume", block.volume_ref)
+            dumped_block["plotRefs"] = [
+                _authority_id(identities, "planning-plot", plot_id) for plot_id in block.plot_refs
+            ]
+        for stage, dumped_stage in zip(block.stages, dumped_block["stages"], strict=True):
+            replace_definition(stage, dumped_stage, "planning-stage")
+            if isinstance(planning, PlanningAggregate):
+                dumped_stage["storyBlockId"] = _authority_id(
+                    identities, "story-block", stage.story_block_id
+                )
+            for task, dumped_task in zip(stage.scene_tasks, dumped_stage["sceneTasks"], strict=True):
+                replace_definition(task, dumped_task, "scene-task")
+                if isinstance(planning, PlanningAggregate):
+                    dumped_task["stageId"] = _authority_id(identities, "planning-stage", task.stage_id)
+    if isinstance(planning, PlanningAggregate):
+        if planning.active_story_block_id is not None:
+            payload["activeStoryBlockId"] = _authority_id(
+                identities, "story-block", planning.active_story_block_id
+            )
+    elif planning.active_story_block_ref is not None:
+        payload["activeStoryBlockRef"] = _authority_id(
+            identities, "story-block", planning.active_story_block_ref
+        )
+    return payload
+
+
+def _register_bible_items(
+    bible: BiblePayload,
+    identities: dict[tuple[str, object], str],
+    counters: dict[str, int],
+) -> None:
+    for field_name, kind in _BIBLE_ITEM_TYPES.items():
+        for item in getattr(bible, field_name):
+            _register_authority_id(identities, counters, kind, item.id)
+
+
+def _rewrite_bible_payload(
+    bible: BiblePayload,
+    identities: Mapping[tuple[str, object], str],
+) -> dict[str, object]:
+    payload = bible.model_dump(mode="json", by_alias=True)
+    for field_name, kind in _BIBLE_ITEM_TYPES.items():
+        for item, dumped in zip(getattr(bible, field_name), payload[field_name], strict=True):
+            dumped["id"] = _authority_id(identities, kind, item.id)
+    return payload
+
+
+def _validate_outline_payload(
+    table: str, value: object,
+) -> ChapterOutline | DraftChapterOutline | EditableChapterOutlineContent:
+    parsed = _json_value(value)
+    if table == "chapter_outline_revisions":
+        return ChapterOutline.model_validate(parsed)
+    for model in (ChapterOutline, DraftChapterOutline, EditableChapterOutlineContent):
+        try:
+            return model.model_validate(parsed)
+        except ValueError:
+            pass
+    raise _invalid()
+
+
+def _rewrite_outline_payload(
+    outline: ChapterOutline | DraftChapterOutline | EditableChapterOutlineContent,
+    planning_identities: Mapping[tuple[str, object], str],
+    planning_revision_ids: Mapping[object, str],
+) -> dict[str, object]:
+    payload = outline.model_dump(mode="json", by_alias=True)
+    if isinstance(outline, (ChapterOutline, DraftChapterOutline)):
+        planning_logical_id = planning_revision_ids.get(outline.planning_revision_id)
+        if planning_logical_id is None:
+            raise _invalid()
+        payload["planningRevisionId"] = planning_logical_id
+    references = (
+        ("volumeRef", "planning-volume", (outline.volume_ref,) if outline.volume_ref is not None else ()),
+        ("storyBlockRef", "story-block", (outline.story_block_ref,) if outline.story_block_ref is not None else ()),
+        ("stageRefs", "planning-stage", outline.stage_refs),
+        ("sceneTaskRefs", "scene-task", outline.scene_task_refs),
+    )
+    for field_name, kind, values in references:
+        if field_name in {"volumeRef", "storyBlockRef"}:
+            if values:
+                payload[field_name]["id"] = _authority_id(planning_identities, kind, values[0].id)
+        else:
+            for value, dumped in zip(values, payload[field_name], strict=True):
+                dumped["id"] = _authority_id(planning_identities, kind, value.id)
+    return payload
 
 
 def _invalid() -> ProjectPackageInvalid:
@@ -959,7 +1490,518 @@ class ProjectPackageSnapshot:
 
 
 class ProjectPackageRepository:
-    """Read-only repository boundary; snapshot query implementation follows in Task 2B."""
+    """Materialize one deterministic package graph from a single database snapshot."""
+
+    def __init__(self, *, pool, session_factory=DatabaseSession) -> None:
+        self._pool = pool
+        self._session_factory = session_factory
 
     async def read_snapshot(self, project_id: str, expected_lifecycle_revision: int) -> ProjectPackageSnapshot:
-        raise NotImplementedError
+        raw = await self._pool.acquire()
+        session = self._session_factory(raw)
+        try:
+            await session.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            await session.execute("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT")
+            project = await session.fetchone(
+                "SELECT id,lifecycle_revision FROM projects WHERE id=%s", (project_id,)
+            )
+            if project is None:
+                raise ProjectPackageNotFound("project package not found")
+            if project["lifecycle_revision"] != expected_lifecycle_revision:
+                raise ProjectPackageConflict("project package conflict")
+            busy = await session.fetchone(
+                """SELECT 1 AS present WHERE EXISTS (SELECT 1 FROM draft_operation_attempts WHERE project_id=%s AND active_slot=1 AND status IN ('starting','running')) OR EXISTS (SELECT 1 FROM market_analyses WHERE project_id=%s AND status IN ('reserved','running')) OR EXISTS (SELECT 1 FROM finalization_change_sets WHERE project_id=%s AND status IN ('preparing','awaiting_author','committing'))""",
+                (project_id, project_id, project_id),
+            )
+            if busy is not None:
+                raise ProjectPackageBusy("project package busy")
+
+            rows_by_table: dict[str, tuple[Mapping[str, object], ...]] = {}
+            for table, plan in PROJECT_OWNED_QUERY_PLANS.items():
+                rows = tuple(await session.fetchall(plan.sql, (project_id,)))
+                if any(not isinstance(row, Mapping) or set(row) != set(plan.selected_columns) for row in rows):
+                    raise _invalid()
+                rows_by_table[table] = rows
+
+            market_evidence_by_analysis: dict[object, Mapping[str, object]] = {}
+            for analysis_id, snapshot_id, snapshot_hash in sorted({
+                (row["market_analysis_id"], row["market_snapshot_id"], row["market_snapshot_hash"])
+                for row in rows_by_table["seed_inspiration_attempts"]
+                if row["market_analysis_id"] is not None
+            }):
+                matched = tuple(await session.fetchall(
+                    _MARKET_SNAPSHOT_EVIDENCE_QUERY, (snapshot_id, snapshot_hash)
+                ))
+                if len(matched) != 1 or set(matched[0]) != {"snapshot_hash", "captured_at"}:
+                    raise _invalid()
+                existing = market_evidence_by_analysis.get(analysis_id)
+                if existing is not None and existing != matched[0]:
+                    raise _invalid()
+                market_evidence_by_analysis[analysis_id] = matched[0]
+
+            frozen_asset_rows: dict[str, tuple[Mapping[str, object], ...]] = {}
+            frozen_asset_refs = {
+                "experience_cards": sorted({
+                    (row["experience_card_id"], row["asset_revision"], row["asset_hash"])
+                    for row in rows_by_table["creation_contract_experience_refs"]
+                }),
+                "style_templates": sorted({
+                    (row["style_template_id"], row["asset_revision"], row["asset_hash"])
+                    for row in rows_by_table["style_contract_template_refs"]
+                }),
+            }
+            for table in sorted(_FROZEN_ASSET_QUERIES):
+                materialized: list[Mapping[str, object]] = []
+                for reference in frozen_asset_refs[table]:
+                    matched = tuple(await session.fetchall(_FROZEN_ASSET_QUERIES[table], reference))
+                    if len(matched) != 1:
+                        raise _invalid()
+                    materialized.append(matched[0])
+                frozen_asset_rows[table] = tuple(materialized)
+
+            corpus_revision_ref_set = {
+                (row["corpus_source_id"], row["source_revision"], row["source_hash"])
+                for table in ("creation_contract_corpus_refs", "creation_contract_corpus_fragment_refs")
+                for row in rows_by_table[table]
+            }
+            for source_id, chapter_id in sorted({
+                (row["corpus_source_id"], row["corpus_chapter_id"])
+                for row in rows_by_table["reference_uses"]
+            }):
+                matched = tuple(await session.fetchall(
+                    _REFERENCE_USE_CORPUS_REVISION_QUERY, (source_id, chapter_id)
+                ))
+                if len(matched) != 1 or set(matched[0]) != {"source_id", "revision", "content_hash"}:
+                    raise _invalid()
+                corpus_revision_ref_set.add((
+                    matched[0]["source_id"], matched[0]["revision"], matched[0]["content_hash"]
+                ))
+            corpus_revision_refs = sorted(corpus_revision_ref_set)
+            frozen_corpus_rows: list[Mapping[str, object]] = []
+            frozen_corpus_descriptors: dict[object, tuple[tuple[Mapping[str, object], tuple[Mapping[str, object], ...]], ...]] = {}
+            for reference in corpus_revision_refs:
+                matched = tuple(await session.fetchall(_FROZEN_CORPUS_REVISION_QUERY, reference))
+                if len(matched) != 1:
+                    raise _invalid()
+                revision_row = matched[0]
+                frozen_corpus_rows.append(revision_row)
+                chapters = tuple(await session.fetchall(
+                    _FROZEN_CORPUS_CHAPTER_QUERY, (revision_row["source_id"], revision_row["id"])
+                ))
+                chapter_descriptors: list[tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]] = []
+                for chapter in chapters:
+                    fragments = tuple(await session.fetchall(
+                        _FROZEN_CORPUS_FRAGMENT_QUERY, (revision_row["source_id"], chapter["chapter_id"])
+                    ))
+                    chapter_descriptors.append((chapter, fragments))
+                frozen_corpus_descriptors[revision_row["id"]] = tuple(chapter_descriptors)
+
+            provider_rows = tuple(await session.fetchall(_PROVIDER_PROFILE_QUERY, (project_id,)))
+            projection_rows = {
+                name: tuple(await session.fetchall(sql, (project_id,)))
+                for name, sql in _PROJECTION_QUERIES.items()
+            }
+
+            try:
+                identity_maps: dict[str, dict[object, str]] = {
+                    table: {} for table in PROJECT_OWNED_TABLES | set(NORMALIZED_SHARED_RECORD_TYPES)
+                }
+                logical_ids_by_table: dict[str, tuple[str, ...]] = {}
+                counters: dict[str, int] = {}
+                for table in sorted(PROJECT_OWNED_TABLES):
+                    record_type = PROJECT_TABLE_RECORD_TYPES[table]
+                    logical_ids: list[str] = []
+                    for row in rows_by_table[table]:
+                        counters[record_type] = counters.get(record_type, 0) + 1
+                        logical_id = f"{record_type}:{counters[record_type]}"
+                        logical_ids.append(logical_id)
+                        database_id = row.get("id")
+                        if database_id is not None:
+                            if database_id in identity_maps[table]:
+                                raise _invalid()
+                            identity_maps[table][database_id] = logical_id
+                    logical_ids_by_table[table] = tuple(logical_ids)
+
+                authority_identities: dict[tuple[str, object], str] = {}
+                authority_counters: dict[str, int] = {}
+                planning_models: dict[int, PlanningAggregate | DraftPlanningAggregate] = {}
+                for table in ("planning_revisions", "planning_drafts"):
+                    for row in rows_by_table[table]:
+                        planning = _validate_planning_payload(table, row["content_json"])
+                        planning_models[id(row)] = planning
+                        _register_planning_nodes(planning, authority_identities, authority_counters)
+
+                bible_models: dict[int, BiblePayload] = {}
+                for table, column in (
+                    ("creation_bible_revisions", "content_json"),
+                    ("project_bible_drafts", "draft_json"),
+                ):
+                    for row in rows_by_table[table]:
+                        bible = BiblePayload.model_validate_json(
+                            json.dumps(_json_value(row[column]), ensure_ascii=False)
+                        )
+                        bible_models[id(row)] = bible
+                        _register_bible_items(bible, authority_identities, authority_counters)
+
+                planning_revision_ids: dict[object, str] = {}
+                for table in ("planning_revisions", "planning_drafts"):
+                    for database_id, logical_id in identity_maps[table].items():
+                        existing = planning_revision_ids.get(database_id)
+                        if existing is not None and existing != logical_id:
+                            raise _invalid()
+                        planning_revision_ids[database_id] = logical_id
+
+                outline_models: dict[
+                    int, ChapterOutline | DraftChapterOutline | EditableChapterOutlineContent
+                ] = {}
+                for table in ("chapter_outline_revisions", "chapter_outline_drafts"):
+                    for row in rows_by_table[table]:
+                        outline_models[id(row)] = _validate_outline_payload(table, row["content_json"])
+
+                authority_payloads: dict[int, object] = {
+                    row_id: _rewrite_planning_payload(model, authority_identities)
+                    for row_id, model in planning_models.items()
+                }
+                authority_payloads.update({
+                    row_id: _rewrite_bible_payload(model, authority_identities)
+                    for row_id, model in bible_models.items()
+                })
+                authority_payloads.update({
+                    row_id: _rewrite_outline_payload(
+                        model, authority_identities, planning_revision_ids
+                    )
+                    for row_id, model in outline_models.items()
+                })
+                nested_story_blocks = {
+                    raw_id: logical_id
+                    for (kind, raw_id), logical_id in authority_identities.items()
+                    if kind == "story-block"
+                }
+
+                frozen_asset_records: list[PackageRecord] = []
+                shared_assets_by_id: dict[str, Mapping[str, object]] = {}
+                for table in sorted(frozen_asset_rows):
+                    for row in frozen_asset_rows[table]:
+                        expected_columns = {
+                            "id", "stable_key", "revision", "payload_json", "provenance_json",
+                            "content_hash", "status", "created_at",
+                        } | ({"name"} if table == "style_templates" else {"title", "category"})
+                        if not isinstance(row, Mapping) or set(row) != expected_columns:
+                            raise _invalid()
+                        database_id = row["id"]
+                        if database_id in identity_maps[table]:
+                            raise _invalid()
+                        counters["asset"] = counters.get("asset", 0) + 1
+                        logical_id = f"asset:{counters['asset']}"
+                        identity_maps[table][database_id] = logical_id
+                        shared_assets_by_id[database_id] = row
+                        data = {
+                            "assetKind": "style-template" if table == "style_templates" else "experience-card",
+                            "stableKey": row["stable_key"],
+                            "revision": row["revision"],
+                            "name": row.get("name", row.get("title")),
+                            "payload": _json_value(row["payload_json"]),
+                            "provenance": _json_value(row["provenance_json"]),
+                            "contentHash": row["content_hash"],
+                            "status": row["status"],
+                            "createdAt": row["created_at"],
+                        }
+                        if row.get("category") is not None:
+                            data["category"] = row["category"]
+                        frozen_asset_records.append(PackageRecord(
+                            "asset", logical_id, revision=row["revision"], data=data,
+                        ))
+
+                corpus_revision_records: list[PackageRecord] = []
+                corpus_blobs: list[FrozenCorpusBlob] = []
+                corpus_logical_ids_by_ref: dict[tuple[object, object, object], str] = {}
+                corpus_reference_by_chapter: dict[tuple[object, object], tuple[object, object, object]] = {}
+                blob_logical_ids_by_hash: dict[str, str] = {}
+                expected_corpus_columns = {
+                    "id", "source_id", "source_key", "revision", "content_hash", "relative_path",
+                    "display_name", "author", "reference_tags_json", "notes", "provenance_json",
+                    "byte_length", "encoding", "parser_version", "normalizer_version",
+                    "fragmenter_version", "index_version", "status", "imported_at", "analyzed_at",
+                    "created_at", "blob_byte_length", "storage_key",
+                }
+                expected_chapter_columns = {
+                    "chapter_id", "chapter_order", "title", "raw_byte_start", "raw_byte_end",
+                    "normalized_char_start", "normalized_char_end", "normalized_text", "content_hash",
+                    "created_at",
+                }
+                expected_fragment_columns = {
+                    "fragment_id", "fragment_order", "chapter_char_start", "chapter_char_end",
+                    "normalized_text", "content_hash", "analysis_version", "index_payload", "created_at",
+                }
+                corpus_chapter_count = 0
+                corpus_fragment_count = 0
+                for row in frozen_corpus_rows:
+                    if not isinstance(row, Mapping) or set(row) != expected_corpus_columns:
+                        raise _invalid()
+                    reference = (row["source_id"], row["revision"], row["content_hash"])
+                    if reference in corpus_logical_ids_by_ref:
+                        raise _invalid()
+                    counters["corpus-revision"] = counters.get("corpus-revision", 0) + 1
+                    logical_id = f"corpus-revision:{counters['corpus-revision']}"
+                    corpus_logical_ids_by_ref[reference] = logical_id
+                    identity_maps["corpus_source_revisions"][row["id"]] = logical_id
+                    chapters_data: list[dict[str, object]] = []
+                    fragments_data: list[dict[str, object]] = []
+                    for chapter, fragments in frozen_corpus_descriptors[row["id"]]:
+                        if not isinstance(chapter, Mapping) or set(chapter) != expected_chapter_columns:
+                            raise _invalid()
+                        chapter_order = chapter["chapter_order"]
+                        chapter_reference_key = (row["source_id"], chapter["chapter_id"])
+                        if chapter_reference_key in corpus_reference_by_chapter:
+                            raise _invalid()
+                        corpus_reference_by_chapter[chapter_reference_key] = reference
+                        corpus_chapter_count += 1
+                        chapters_data.append({
+                            "logicalId": f"corpus-chapter:{corpus_chapter_count}",
+                            "chapterOrder": chapter_order, "title": chapter["title"],
+                            "rawByteStart": chapter["raw_byte_start"], "rawByteEnd": chapter["raw_byte_end"],
+                            "normalizedCharStart": chapter["normalized_char_start"],
+                            "normalizedCharEnd": chapter["normalized_char_end"],
+                            "normalizedText": chapter["normalized_text"],
+                            "contentHash": chapter["content_hash"], "createdAt": chapter["created_at"],
+                        })
+                        for fragment in fragments:
+                            if not isinstance(fragment, Mapping) or set(fragment) != expected_fragment_columns:
+                                raise _invalid()
+                            corpus_fragment_count += 1
+                            fragments_data.append({
+                                "logicalId": f"corpus-fragment:{corpus_fragment_count}",
+                                "chapterOrder": chapter_order, "fragmentOrder": fragment["fragment_order"],
+                                "chapterCharStart": fragment["chapter_char_start"],
+                                "chapterCharEnd": fragment["chapter_char_end"],
+                                "normalizedText": fragment["normalized_text"],
+                                "contentHash": fragment["content_hash"], "createdAt": fragment["created_at"],
+                                "analysisVersion": fragment["analysis_version"],
+                                "indexPayload": _json_value(fragment["index_payload"]),
+                            })
+                    corpus_revision_records.append(PackageRecord(
+                        "corpus-revision",
+                        logical_id,
+                        revision=row["revision"],
+                        data={
+                            "sourceKey": row["source_key"], "revision": row["revision"],
+                            "relativePath": row["relative_path"], "displayName": row["display_name"],
+                            "author": row["author"], "referenceTags": _json_value(row["reference_tags_json"]),
+                            "notes": row["notes"], "provenance": _json_value(row["provenance_json"]),
+                            "contentHash": row["content_hash"], "byteLength": row["byte_length"],
+                            "encoding": row["encoding"], "parserVersion": row["parser_version"],
+                            "normalizerVersion": row["normalizer_version"],
+                            "fragmenterVersion": row["fragmenter_version"], "indexVersion": row["index_version"],
+                            "status": row["status"], "importedAt": row["imported_at"],
+                            "analyzedAt": row["analyzed_at"], "createdAt": row["created_at"],
+                            "chapters": tuple(chapters_data), "fragments": tuple(fragments_data),
+                        },
+                    ))
+                    content_hash = row["content_hash"]
+                    if content_hash not in blob_logical_ids_by_hash:
+                        blob_logical_id = f"corpus-blob:{len(blob_logical_ids_by_hash) + 1}"
+                        blob_logical_ids_by_hash[content_hash] = blob_logical_id
+                        corpus_blobs.append(FrozenCorpusBlob(
+                            blob_logical_id, content_hash, row["blob_byte_length"], row["storage_key"]
+                        ))
+
+                graph_records: list[PackageRecord] = []
+                operation_records: list[PackageRecord] = []
+                provider_history_records: list[PackageRecord] = []
+                counts: dict[str, int] = {}
+                for table in sorted(PROJECT_OWNED_TABLES):
+                    record_type = PROJECT_TABLE_RECORD_TYPES[table]
+                    allowlist = RECORD_FIELD_ALLOWLISTS[record_type]
+                    for row, logical_id in zip(rows_by_table[table], logical_ids_by_table[table], strict=True):
+                        data: dict[str, object] = {}
+                        for column, category in PROJECT_TABLE_COLUMN_POLICIES[table].items():
+                            if category in {"derived", "excluded_sensitive_operational"}:
+                                continue
+                            value = row[column]
+                            if table == "project_model_binding_revisions" and column == "source_project_id":
+                                if value == project_id:
+                                    data["sourceProjectLogicalId"] = identity_maps["projects"][project_id]
+                                elif value is not None:
+                                    data["sourceKind"] = "inherited"
+                                continue
+                            if category in {"public_field", "normalized_inert_evidence"}:
+                                field_name = PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]
+                                if field_name.startswith("@"):
+                                    continue
+                                if column.endswith("_json") and value is not None:
+                                    value = (
+                                        authority_payloads[id(row)]
+                                        if id(row) in authority_payloads
+                                        else _json_value(value)
+                                    )
+                                data[field_name] = value
+                                continue
+                            if category == "logical_reference":
+                                if value is None:
+                                    continue
+                                target_table = _reference_target(table, column)
+                                target_logical_id = identity_maps[target_table].get(value)
+                                if target_logical_id is None:
+                                    raise _invalid()
+                                field_name = PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]
+                                if not field_name.startswith("@"):
+                                    data[field_name] = target_logical_id
+                                continue
+                            if category == "nested_logical_reference":
+                                if value is not None:
+                                    target_logical_id = nested_story_blocks.get(value)
+                                    if target_logical_id is None:
+                                        raise _invalid()
+                                    data[PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]] = target_logical_id
+                                continue
+                            if category == "polymorphic_logical_reference":
+                                source_type = row.get("source_type")
+                                target_table = POLYMORPHIC_LOGICAL_REFERENCE_TARGETS[(table, column)].get(source_type)
+                                if source_type not in POLYMORPHIC_LOGICAL_REFERENCE_TARGETS[(table, column)]:
+                                    raise _invalid()
+                                if target_table is not None:
+                                    target_logical_id = identity_maps[target_table].get(value)
+                                    if target_logical_id is None:
+                                        raise _invalid()
+                                    data[PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]] = target_logical_id
+                                continue
+                            raise _invalid()
+
+                        if table == "style_contracts":
+                            data["payload"] = {
+                                "mergedStyle": _json_value(row["merged_style_json"]),
+                                "likes": _json_value(row["likes_json"]),
+                                "dislikes": _json_value(row["dislikes_json"]),
+                            }
+                        elif table == "style_contract_template_refs":
+                            shared = shared_assets_by_id.get(row["style_template_id"])
+                            if shared is None:
+                                raise _invalid()
+                            data["templateName"] = shared["name"]
+                            data["templateRevision"] = shared["revision"]
+                        elif table == "creation_contract_experience_refs":
+                            shared = shared_assets_by_id.get(row["experience_card_id"])
+                            if shared is None:
+                                raise _invalid()
+                            data["experienceTitle"] = shared["title"]
+                            data["experienceRevision"] = shared["revision"]
+                        elif table in {"creation_contract_corpus_refs", "creation_contract_corpus_fragment_refs"}:
+                            reference = (row["corpus_source_id"], row["source_revision"], row["source_hash"])
+                            corpus_logical_id = corpus_logical_ids_by_ref.get(reference)
+                            if corpus_logical_id is None:
+                                raise _invalid()
+                            data["corpusRevisionLogicalId"] = corpus_logical_id
+                            if table == "creation_contract_corpus_fragment_refs":
+                                data["fragmentOrder"] = row["sort_order"]
+                        elif table == "reference_uses":
+                            reference = corpus_reference_by_chapter.get((
+                                row["corpus_source_id"], row["corpus_chapter_id"]
+                            ))
+                            if reference is None:
+                                raise _invalid()
+                            corpus_logical_id = corpus_logical_ids_by_ref.get(reference)
+                            if corpus_logical_id is None:
+                                raise _invalid()
+                            data["corpusRevisionLogicalId"] = corpus_logical_id
+                        elif table == "market_analyses":
+                            evidence = market_evidence_by_analysis.get(row["id"])
+                            if evidence is not None:
+                                data["snapshotHash"] = evidence["snapshot_hash"]
+                                data["timeRange"] = {"capturedAt": evidence["captured_at"]}
+                            if row["result_hash"] is not None:
+                                data["contentHash"] = row["result_hash"]
+
+                        record = PackageRecord(
+                            entity_type=record_type,
+                            logical_id=logical_id,
+                            revision=_record_revision(row),
+                            order=_record_order(row),
+                            data=data,
+                        )
+                        counts[record_type] = counts.get(record_type, 0) + 1
+                        if table in {"draft_operation_attempts", "draft_operation_events"}:
+                            operation_records.append(record)
+                        else:
+                            graph_records.append(record)
+
+                referenced_secret_values: list[bytes] = []
+                for provider_row in provider_rows:
+                    if not isinstance(provider_row, Mapping) or set(provider_row) != {
+                        "provider_name", "model_name", "api_key", "base_url"
+                    }:
+                        raise _invalid()
+                    for secret_column in ("api_key", "base_url"):
+                        secret_value = provider_row[secret_column]
+                        if isinstance(secret_value, str) and secret_value:
+                            referenced_secret_values.append(secret_value.encode("utf-8"))
+                        elif isinstance(secret_value, bytes) and secret_value:
+                            referenced_secret_values.append(bytes(secret_value))
+                        elif secret_value not in (None, "", b""):
+                            raise _invalid()
+
+                binding_revisions_by_id = {
+                    row["id"]: row for row in rows_by_table["project_model_binding_revisions"]
+                }
+                for item in rows_by_table["project_model_binding_items"]:
+                    binding_revision = binding_revisions_by_id.get(item["binding_revision_id"])
+                    binding_logical_id = identity_maps["project_model_binding_revisions"].get(
+                        item["binding_revision_id"]
+                    )
+                    if binding_revision is None or binding_logical_id is None:
+                        raise _invalid()
+                    provider_data = {
+                        "taskKey": item["task_key"],
+                        "bindingRevisionLogicalId": binding_logical_id,
+                        "bindingHash": binding_revision["content_hash"],
+                    }
+                    if item["provider_name_snapshot"] is not None:
+                        provider_data["providerName"] = item["provider_name_snapshot"]
+                    if item["model_name_snapshot"] is not None:
+                        provider_data["modelName"] = item["model_name_snapshot"]
+                    counters["provider-history"] = counters.get("provider-history", 0) + 1
+                    provider_history_records.append(PackageRecord(
+                        "provider-history",
+                        f"provider-history:{counters['provider-history']}",
+                        data=provider_data,
+                    ))
+                    counts["provider-history"] = counts.get("provider-history", 0) + 1
+
+                for record in frozen_asset_records:
+                    counts[record.entity_type] = counts.get(record.entity_type, 0) + 1
+                for record in corpus_revision_records:
+                    counts[record.entity_type] = counts.get(record.entity_type, 0) + 1
+
+                projection_validation: dict[str, object] = {}
+                for name, rows in projection_rows.items():
+                    hashes: list[str] = []
+                    for row in rows:
+                        if not isinstance(row, Mapping) or set(row) != {"content_hash"}:
+                            raise _invalid()
+                        content_hash = row["content_hash"]
+                        if not isinstance(content_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+                            raise _invalid()
+                        hashes.append(content_hash)
+                    projection_validation[name] = {"count": len(hashes), "hashes": tuple(hashes)}
+
+                return ProjectPackageSnapshot(
+                    source_project_logical_id=identity_maps["projects"].get(project_id, ""),
+                    lifecycle_revision=expected_lifecycle_revision,
+                    graph_records=tuple(graph_records),
+                    operation_records=tuple(operation_records),
+                    provider_history_records=tuple(provider_history_records),
+                    frozen_asset_records=tuple(frozen_asset_records),
+                    corpus_revision_records=tuple(corpus_revision_records),
+                    corpus_blobs=tuple(corpus_blobs),
+                    projection_validation=projection_validation,
+                    referenced_secret_values=tuple(referenced_secret_values),
+                    counts=counts,
+                )
+            except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
+                raise _invalid() from None
+        except (KeyError, TypeError, ValueError, UnicodeError, ProjectPackageInvalid):
+            raise _invalid() from None
+        finally:
+            rollback = getattr(raw, "rollback", None)
+            if rollback is not None:
+                await rollback()
+            self._pool.release(raw)

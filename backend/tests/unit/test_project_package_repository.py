@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 
 import pytest
 
+from backend.domain.bibles import BiblePayload
+from backend.domain.chapter_outlines import ChapterOutline
+from backend.domain.planning import PlanningAggregate
 from backend.domain.project_packages import PackageRecord, RECORD_FIELD_ALLOWLISTS
-from backend.domain.project_packages import ProjectPackageInvalid
+from backend.domain.project_packages import ProjectPackageBusy, ProjectPackageConflict, ProjectPackageInvalid, ProjectPackageNotFound
 from backend.repositories.project_packages import (
     INTERNAL_NON_PACKAGE_TABLES,
     PROJECT_OWNED_TABLES,
@@ -20,6 +24,10 @@ from backend.repositories.project_packages import (
     POLYMORPHIC_LOGICAL_REFERENCE_TARGETS,
     FrozenCorpusBlob,
     ProjectPackageSnapshot,
+    ProjectPackageRepository,
+    PROJECT_OWNED_QUERY_PLANS,
+    PACKAGE_COLUMN_EXPORT_DECISIONS,
+    PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT,
 )
 from backend.security.project_package_paths import reject_sensitive_keys
 
@@ -56,6 +64,22 @@ def _schema_foreign_key_targets() -> dict[tuple[str, str], str]:
             for column in re.findall(r"[a-z_]+", local):
                 targets[(table, column)] = target
     return targets
+
+
+def _schema_foreign_key_edges() -> dict[tuple[str, str], tuple[str, str]]:
+    schema_dir = Path(__file__).parents[2] / "schema"
+    schema_text = "\n".join(path.read_text(encoding="utf-8") for path in schema_dir.glob("*.sql"))
+    edges: dict[tuple[str, str], tuple[str, str]] = {}
+    for table, body in re.findall(r"CREATE TABLE\s+([a-z_]+)\s*\((.*?)\)\s*ENGINE=", schema_text, re.DOTALL):
+        for local, target, remote in re.findall(
+            r"FOREIGN KEY\s*\(([^)]+)\)\s*REFERENCES\s+([a-z_]+)\s*\(([^)]+)\)", body
+        ):
+            local_columns = re.findall(r"[a-z_]+", local)
+            remote_columns = re.findall(r"[a-z_]+", remote)
+            assert len(local_columns) == len(remote_columns)
+            for local_column, remote_column in zip(local_columns, remote_columns, strict=True):
+                edges[(table, local_column)] = (target, remote_column)
+    return edges
 
 
 def test_explicit_ownership_inventory_closes_over_every_create_only_schema_table() -> None:
@@ -211,3 +235,943 @@ def test_snapshot_rejects_non_tuple_record_collections_with_a_fixed_error() -> N
             graph_records=[], operation_records=(), provider_history_records=(), frozen_asset_records=(),
             corpus_revision_records=(), corpus_blobs=(), projection_validation={}, referenced_secret_values=(),
         )
+
+
+@pytest.mark.asyncio
+async def test_repository_starts_one_read_only_repeatable_read_snapshot_before_authority_reads() -> None:
+    calls: list[tuple[str, object]] = []
+
+    class Session:
+        async def execute(self, sql, args=None):
+            calls.append((sql, args))
+        async def fetchone(self, sql, args=None):
+            calls.append((sql, args))
+            return None
+        async def fetchall(self, sql, args=None):
+            calls.append((sql, args))
+            return []
+    class Pool:
+        async def acquire(self):
+            return Session()
+        def release(self, raw): pass
+    repository = ProjectPackageRepository(pool=Pool(), session_factory=lambda session: session)
+
+    with pytest.raises(ProjectPackageNotFound, match="project package not found"):
+        await repository.read_snapshot("project:1", 0)
+
+    assert calls[:3] == [
+        ("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", None),
+        ("START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT", None),
+        ("SELECT id,lifecycle_revision FROM projects WHERE id=%s", ("project:1",)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_lifecycle_revision_conflicts_before_payload_reads() -> None:
+    class Session:
+        async def execute(self, sql, args=None): pass
+        async def fetchone(self, sql, args=None): return {"id": "db-uuid", "lifecycle_revision": 7}
+    class Pool:
+        async def acquire(self): return Session()
+        def release(self, raw): pass
+
+    with pytest.raises(ProjectPackageConflict, match="project package conflict"):
+        await ProjectPackageRepository(pool=Pool(), session_factory=lambda session: session).read_snapshot("project:1", 6)
+
+
+def test_owned_query_plan_closes_over_all_owned_tables_with_safe_static_sql() -> None:
+    schema_columns = _schema_columns()
+    foreign_keys = _schema_foreign_key_edges()
+    assert set(PROJECT_OWNED_QUERY_PLANS) == PROJECT_OWNED_TABLES
+    direct = indirect = special = 0
+    for table, plan in PROJECT_OWNED_QUERY_PLANS.items():
+        assert "SELECT *" not in plan.sql.upper()
+        assert plan.sql.count("%s") == 1
+        assert "ORDER BY" in plan.sql.upper()
+        expected_columns = {
+            column
+            for column, category in PROJECT_TABLE_COLUMN_POLICIES[table].items()
+            if category != "excluded_sensitive_operational"
+        }
+        assert set(plan.selected_columns) == expected_columns
+        assert set(plan.selected_columns) <= schema_columns[table]
+        assert plan.order_columns
+        assert set(plan.order_columns) <= schema_columns[table]
+        for column in plan.selected_columns:
+            assert f"t0.{column} AS {column}" in plan.sql
+
+        current_table = table
+        for join in plan.ownership_joins:
+            assert join.child_table == current_table
+            assert foreign_keys[(join.child_table, join.child_column)] == (
+                join.parent_table,
+                join.parent_column,
+            )
+            current_table = join.parent_table
+        assert current_table == plan.scope_table
+        assert plan.scope_column in schema_columns[plan.scope_table]
+        if table == "projects":
+            special += 1
+            assert not plan.ownership_joins
+            assert plan.scope_column == "id"
+        elif plan.ownership_joins:
+            indirect += 1
+            assert plan.scope_column == "project_id"
+        else:
+            direct += 1
+            assert plan.scope_table == table
+            assert plan.scope_column == "project_id"
+    assert (direct, indirect, special) == (53, 6, 1)
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_busy_draft_market_or_finalization_before_payload_reads() -> None:
+    class Session:
+        async def execute(self, sql, args=None): pass
+        async def fetchone(self, sql, args=None):
+            if "FROM projects" in sql: return {"id": "db", "lifecycle_revision": 7}
+            return {"present": 1}
+    class Pool:
+        async def acquire(self): return Session()
+        def release(self, raw): pass
+    with pytest.raises(ProjectPackageBusy, match="project package busy"):
+        await ProjectPackageRepository(pool=Pool(), session_factory=lambda value: value).read_snapshot("project:1", 7)
+
+
+def _owned_row(table: str, **values) -> dict[str, object]:
+    row = {column: None for column in PROJECT_OWNED_QUERY_PLANS[table].selected_columns}
+    row.update(values)
+    return row
+
+
+def _planning_authority_json(block_id: str, content_hash: str) -> str:
+    return json.dumps({
+        "schemaVersion": "planning-v1", "activeStoryBlockId": block_id,
+        "volumes": [{
+            "id": f"{block_id}-volume", "revision": 1, "contentHash": "1" * 64,
+            "lifecycle": "active", "order": 1, "title": "Volume", "coreChange": "Change",
+            "mainPressure": "Pressure", "ensembleFocus": [], "forbiddenEvents": [],
+        }],
+        "plots": [{
+            "id": f"{block_id}-plot", "revision": 1, "contentHash": "2" * 64,
+            "lifecycle": "active", "order": 1, "title": "Plot", "plotType": "main",
+            "storyQuestion": "Question?", "futureDirection": "Forward",
+            "expectedPayoff": "Payoff", "relatedCharacters": [],
+        }],
+        "storyBlocks": [{
+            "id": block_id, "revision": 1, "contentHash": "3" * 64, "lifecycle": "active",
+            "volumeId": f"{block_id}-volume", "plotIds": [f"{block_id}-plot"], "order": 1,
+            "title": "Block", "entrySituation": "Entry", "blockGoal": "Goal",
+            "mainPressure": "Pressure", "expectedChange": "Change", "openQuestions": [],
+            "involvedCharacters": [], "stages": [{
+                "id": f"{block_id}-stage", "revision": 1, "contentHash": "4" * 64,
+                "lifecycle": "active", "storyBlockId": block_id, "order": 1, "title": "Stage",
+                "purpose": "Purpose", "dramaticQuestion": "Question?", "sceneTasks": [{
+                    "id": f"{block_id}-task", "revision": 1, "contentHash": "5" * 64,
+                    "lifecycle": "active", "stageId": f"{block_id}-stage", "order": 1,
+                    "task": "Act", "completionEvidence": "Done",
+                }],
+            }],
+        }],
+        "contentHash": content_hash,
+    })
+
+
+def _bible_authority_json() -> str:
+    return json.dumps({
+        "premiseAndPromise": "Promise", "powerOrProgressionSystem": "Progress",
+        "protagonist": "Hero", "toneAndNarrativeBoundaries": "Tone",
+        **{
+            field: [{"id": f"{field}-1", "text": field}]
+            for field in (
+                "worldRules", "coreCast", "factions", "longTermConflicts",
+                "relationshipDynamics", "continuityGuardrails", "openDesignQuestions",
+            )
+        },
+    })
+
+
+def _outline_authority_json(
+    planning_id: str, block_id: str, planning_hash: str, content_hash: str,
+) -> str:
+    return json.dumps({
+        "schemaVersion": "chapter-outline-v1", "chapterNumber": 1,
+        "planningRevisionId": planning_id, "planningRevision": 4, "planningHash": planning_hash,
+        "volumeRef": {"id": f"{block_id}-volume", "revision": 1, "contentHash": "1" * 64},
+        "storyBlockRef": {"id": block_id, "revision": 1, "contentHash": "3" * 64},
+        "stageRefs": [{"id": f"{block_id}-stage", "revision": 1, "contentHash": "4" * 64}],
+        "sceneTaskRefs": [{"id": f"{block_id}-task", "revision": 1, "contentHash": "5" * 64}],
+        "chapterGoal": "Goal", "expectedCharacters": [], "continuation": [],
+        "plannedTasks": ["Act"], "scenes": ["Scene"], "forbiddenEarlyEvents": [],
+        "capacityPolicy": {"targetMin": 1, "targetMax": 2, "softCeiling": 3},
+        "canonRevision": 0, "projectionRevision": 0, "projectionHash": "e" * 64,
+        "contentHash": content_hash,
+    })
+
+
+class _SnapshotSession:
+    def __init__(self, rows_by_table: dict[str, list[dict[str, object]]], *, busy=False, extra_rows=None):
+        self.rows_by_table = rows_by_table
+        self.busy = busy
+        self.extra_rows = extra_rows or {}
+        self.calls: list[tuple[str, object]] = []
+
+    async def execute(self, sql, args=None):
+        self.calls.append((sql, args))
+
+    async def fetchone(self, sql, args=None):
+        self.calls.append((sql, args))
+        if sql == "SELECT id,lifecycle_revision FROM projects WHERE id=%s":
+            return {"id": "project-db", "lifecycle_revision": 7}
+        if "SELECT 1 AS present WHERE EXISTS" in sql:
+            return {"present": 1} if self.busy else None
+        return None
+
+    async def fetchall(self, sql, args=None):
+        self.calls.append((sql, args))
+        for table, plan in PROJECT_OWNED_QUERY_PLANS.items():
+            if sql == plan.sql:
+                return self.rows_by_table.get(table, [])
+        for marker, rows in self.extra_rows.items():
+            if marker in sql:
+                return rows
+        return []
+
+    async def rollback(self):
+        self.calls.append(("ROLLBACK", None))
+
+
+class _SnapshotPool:
+    def __init__(self, session):
+        self.session = session
+
+    async def acquire(self):
+        return self.session
+
+    def release(self, raw):
+        self.session.calls.append(("RELEASE", None))
+
+
+@pytest.mark.asyncio
+async def test_repository_materializes_every_owned_plan_and_returns_secret_free_public_records() -> None:
+    secret = "SECRET_SENTINEL_MUST_STAY_PRIVATE"
+    session = _SnapshotSession({
+        "projects": [_owned_row(
+            "projects", id="project-db", lifecycle_revision=7, title="Stable title",
+            status="active", target_words=1000, target_chapters=2, current_chapter=1,
+            created_at=11, updated_at=12,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    plan_calls = [(sql, args) for sql, args in session.calls if sql in {plan.sql for plan in PROJECT_OWNED_QUERY_PLANS.values()}]
+    assert len(plan_calls) == len(PROJECT_OWNED_QUERY_PLANS) == 60
+    assert all(args == ("project-db",) for _, args in plan_calls)
+    assert snapshot.source_project_logical_id == "project:1"
+    assert snapshot.graph_records[0].logical_id == "project:1"
+    assert snapshot.graph_records[0].data["title"] == "Stable title"
+    assert "id" not in snapshot.graph_records[0].data
+    assert "projectId" not in snapshot.graph_records[0].data
+    assert secret not in repr(snapshot.graph_records)
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+
+
+@pytest.mark.asyncio
+async def test_style_contract_exports_complete_authoritative_payload_without_database_ids() -> None:
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "style_contracts": [_owned_row(
+            "style_contracts", id="style-contract-db", project_id="project-db",
+            revision=3, merged_style_json='{"voice":{"pace":"fast"}}',
+            likes_json='["tight scenes",{"imagery":"rain"}]',
+            dislikes_json='{"omit":["exposition"]}', content_hash="a" * 64,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    record = next(item for item in snapshot.graph_records if item.entity_type == "style-contract")
+    assert record.to_public_dict()["data"]["payload"] == {
+        "mergedStyle": {"voice": {"pace": "fast"}},
+        "likes": ["tight scenes", {"imagery": "rain"}],
+        "dislikes": {"omit": ["exposition"]},
+    }
+    assert "style-contract-db" not in repr(record.to_public_dict())
+    assert all(
+        PACKAGE_COLUMN_EXPORT_DECISIONS[("style_contracts", column)] != "@omit-normalized"
+        for column in ("merged_style_json", "likes_json", "dislikes_json")
+    )
+
+
+@pytest.mark.asyncio
+async def test_style_contract_rejects_invalid_authoritative_json_with_fixed_error() -> None:
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "style_contracts": [_owned_row(
+            "style_contracts", id="style-contract-db", project_id="project-db",
+            revision=3, merged_style_json="not-json", likes_json="[]", dislikes_json="{}",
+            content_hash="a" * 64,
+        )],
+    })
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_authority_payloads_rewrite_all_typed_definitions_and_cross_references() -> None:
+    ids = {
+        "planning": "00000000-0000-0000-0000-000000000100",
+        "volume": "00000000-0000-0000-0000-000000000101",
+        "plot": "00000000-0000-0000-0000-000000000102",
+        "block": "00000000-0000-0000-0000-000000000103",
+        "stage": "00000000-0000-0000-0000-000000000104",
+        "task": "00000000-0000-0000-0000-000000000105",
+        "bible": "00000000-0000-0000-0000-000000000200",
+        "outline": "00000000-0000-0000-0000-000000000300",
+    }
+    node_hashes = {name: str(index) * 64 for index, name in enumerate(
+        ("volume", "plot", "block", "stage", "task"), start=1,
+    )}
+    planning = PlanningAggregate.model_validate({
+        "schemaVersion": "planning-v1", "activeStoryBlockId": ids["block"],
+        "volumes": [{
+            "id": ids["volume"], "revision": 1, "contentHash": node_hashes["volume"],
+            "lifecycle": "active", "order": 1, "title": "Volume", "coreChange": "Change",
+            "mainPressure": "Pressure", "ensembleFocus": ["A"], "forbiddenEvents": ["B"],
+        }],
+        "plots": [{
+            "id": ids["plot"], "revision": 1, "contentHash": node_hashes["plot"],
+            "lifecycle": "active", "order": 1, "title": "Plot", "plotType": "main",
+            "storyQuestion": "Question?", "futureDirection": "Forward",
+            "expectedPayoff": "Payoff", "relatedCharacters": ["A"],
+        }],
+        "storyBlocks": [{
+            "id": ids["block"], "revision": 1, "contentHash": node_hashes["block"],
+            "lifecycle": "active", "volumeId": ids["volume"], "plotIds": [ids["plot"]],
+            "order": 1, "title": "Block", "entrySituation": "Entry", "blockGoal": "Goal",
+            "mainPressure": "Pressure", "expectedChange": "Change", "openQuestions": ["Q"],
+            "involvedCharacters": ["A"], "stages": [{
+                "id": ids["stage"], "revision": 1, "contentHash": node_hashes["stage"],
+                "lifecycle": "active", "storyBlockId": ids["block"], "order": 1,
+                "title": "Stage", "purpose": "Purpose", "dramaticQuestion": "Dramatic?",
+                "sceneTasks": [{
+                    "id": ids["task"], "revision": 1, "contentHash": node_hashes["task"],
+                    "lifecycle": "active", "stageId": ids["stage"], "order": 1,
+                    "task": "Act", "completionEvidence": "Done",
+                }],
+            }],
+        }],
+        "contentHash": "f" * 64,
+    })
+    bible_lists = {
+        field: ({"id": f"00000000-0000-0000-0000-{index:012d}", "text": field},)
+        for index, field in enumerate((
+            "worldRules", "coreCast", "factions", "longTermConflicts",
+            "relationshipDynamics", "continuityGuardrails", "openDesignQuestions",
+        ), start=201)
+    }
+    bible = BiblePayload.model_validate({
+        "premiseAndPromise": "Promise", "powerOrProgressionSystem": "Progress",
+        "protagonist": "Hero", "toneAndNarrativeBoundaries": "Tone", **bible_lists,
+    })
+    outline = ChapterOutline.model_validate({
+        "schemaVersion": "chapter-outline-v1", "chapterNumber": 1,
+        "planningRevisionId": ids["planning"], "planningRevision": 4,
+        "planningHash": "f" * 64,
+        "volumeRef": {"id": ids["volume"], "revision": 1, "contentHash": node_hashes["volume"]},
+        "storyBlockRef": {"id": ids["block"], "revision": 1, "contentHash": node_hashes["block"]},
+        "stageRefs": [{"id": ids["stage"], "revision": 1, "contentHash": node_hashes["stage"]}],
+        "sceneTaskRefs": [{"id": ids["task"], "revision": 1, "contentHash": node_hashes["task"]}],
+        "chapterGoal": "Goal", "expectedCharacters": ["A"], "continuation": ["Continue"],
+        "plannedTasks": ["Act"], "scenes": ["Scene"], "forbiddenEarlyEvents": ["Reveal"],
+        "capacityPolicy": {"targetMin": 1, "targetMax": 2, "softCeiling": 3},
+        "canonRevision": 0, "projectionRevision": 0, "projectionHash": "e" * 64,
+        "contentHash": "d" * 64,
+    })
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id=ids["planning"], project_id="project-db", revision=4,
+            content_json=json.dumps(planning.model_dump(mode="json", by_alias=True)), content_hash="f" * 64,
+        )],
+        "creation_bible_revisions": [_owned_row(
+            "creation_bible_revisions", id=ids["bible"], project_id="project-db", revision=2,
+            content_json=json.dumps(bible.model_dump(mode="json", by_alias=True)), content_hash="c" * 64,
+        )],
+            "chapter_outline_revisions": [_owned_row(
+                "chapter_outline_revisions", id=ids["outline"], project_id="project-db",
+                planning_revision_id=ids["planning"], revision=1,
+            content_json=json.dumps(outline.model_dump(mode="json", by_alias=True)), content_hash="d" * 64,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    records = {record.entity_type: record.to_public_dict()["data"] for record in snapshot.graph_records}
+    planning_payload = records["planning-revision"]["payload"]
+    volume, plot, block = planning_payload["volumes"][0], planning_payload["plots"][0], planning_payload["storyBlocks"][0]
+    stage, task = block["stages"][0], block["stages"][0]["sceneTasks"][0]
+    assert planning_payload["activeStoryBlockId"] == block["id"]
+    assert block["volumeId"] == volume["id"]
+    assert block["plotIds"] == [plot["id"]]
+    assert stage["storyBlockId"] == block["id"]
+    assert task["stageId"] == stage["id"]
+    assert {volume["contentHash"], plot["contentHash"], block["contentHash"], stage["contentHash"], task["contentHash"]} == set(node_hashes.values())
+    bible_payload = records["creation-bible-revision"]["payload"]
+    assert bible_payload["worldRules"][0]["id"].startswith("bible-world-rule:")
+    outline_payload = records["chapter-outline-revision"]["payload"]
+    assert outline_payload["planningRevisionId"] == records["chapter-outline-revision"]["planningRevisionLogicalId"]
+    assert outline_payload["volumeRef"]["id"] == volume["id"]
+    assert outline_payload["storyBlockRef"]["id"] == block["id"]
+    assert outline_payload["stageRefs"][0]["id"] == stage["id"]
+    assert outline_payload["sceneTaskRefs"][0]["id"] == task["id"]
+    public_snapshot = repr(records)
+    assert all(database_id not in public_snapshot for database_id in ids.values())
+    assert all(item["id"] not in public_snapshot for values in bible_lists.values() for item in values)
+
+
+@pytest.mark.asyncio
+async def test_authority_payload_rejects_an_unknown_raw_identity_without_cause() -> None:
+    payload = json.loads(_planning_authority_json("block-db", "a" * 64))
+    payload["volumes"][0]["unknownId"] = "00000000-0000-0000-0000-000000000999"
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id="planning-db", project_id="project-db", revision=1,
+            content_json=json.dumps(payload), content_hash="a" * 64,
+        )],
+    })
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_a_dangling_logical_reference_with_fixed_error() -> None:
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "creative_seed_revisions": [_owned_row(
+            "creative_seed_revisions", id="seed-revision-db", project_id="project-db",
+            seed_id="missing-seed-db", revision=1, payload_json="{}", content_hash="a" * 64,
+            created_at=1,
+        )],
+    })
+
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    assert raised.value.__cause__ is None
+    assert "missing-seed-db" not in str(raised.value)
+    assert session.calls[-2:] == [("ROLLBACK", None), ("RELEASE", None)]
+
+
+@pytest.mark.asyncio
+async def test_repository_busy_sql_blocks_starting_and_running_not_pending() -> None:
+    session = _SnapshotSession({})
+    with pytest.raises(ProjectPackageInvalid):
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+
+    busy_sql = next(sql for sql, _ in session.calls if "SELECT 1 AS present WHERE EXISTS" in sql)
+    assert "status IN ('starting','running')" in busy_sql
+    assert "pending" not in busy_sql
+
+
+@pytest.mark.asyncio
+async def test_repository_keeps_provider_secrets_private_and_exports_only_public_history() -> None:
+    api_key = "PRIVATE_API_KEY_SENTINEL"
+    base_url = "https://private-provider.invalid/sentinel"
+    session = _SnapshotSession(
+        {
+            "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+            "project_model_binding_revisions": [_owned_row(
+                "project_model_binding_revisions", id="binding-db", project_id="project-db",
+                revision=2, content_hash="a" * 64, created_at=1,
+            )],
+            "project_model_binding_items": [_owned_row(
+                "project_model_binding_items", binding_revision_id="binding-db", task_key="planning",
+                resolution_status="resolved", provider_name_snapshot="Owned provider",
+                model_name_snapshot="owned-model", item_hash="b" * 64,
+            )],
+            "project_model_binding_heads": [_owned_row(
+                "project_model_binding_heads", project_id="project-db", revision=2,
+                binding_revision_id="binding-db", content_hash="a" * 64, updated_at=2,
+            )],
+        },
+        extra_rows={"FROM provider_profiles p": [{
+            "provider_name": "Profile-only provider", "model_name": "profile-only-model",
+            "api_key": api_key, "base_url": base_url,
+        }]},
+    )
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    public = repr(tuple(record.to_public_dict() for record in snapshot.provider_history_records))
+    assert all(record.entity_type == "provider-history" for record in snapshot.provider_history_records)
+    assert "Owned provider" in public and "owned-model" in public
+    assert "Profile-only provider" not in public and "profile-only-model" not in public
+    provider_history = snapshot.provider_history_records[0]
+    assert provider_history.data["taskKey"] == "planning"
+    assert provider_history.data["bindingRevisionLogicalId"].startswith("project-model-binding-revision:")
+    assert provider_history.data["bindingHash"] == "a" * 64
+    assert {record.entity_type for record in snapshot.graph_records} >= {
+        "project-model-binding-revision", "project-model-binding-item", "project-model-binding-head",
+    }
+    assert api_key not in public and base_url not in public
+    assert snapshot.referenced_secret_values == (api_key.encode(), base_url.encode())
+    provider_sql = next(sql for sql, _ in session.calls if "FROM provider_profiles p" in sql)
+    assert "p.id AS" not in provider_sql
+    assert "p.base_url AS base_url" in provider_sql
+    assert "p.api_key AS api_key" in provider_sql
+
+
+@pytest.mark.asyncio
+async def test_repository_freezes_exact_referenced_style_template_revision() -> None:
+    session = _SnapshotSession(
+        {
+            "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+            "style_contracts": [_owned_row(
+                "style_contracts", id="style-contract-db", project_id="project-db",
+                revision=1, merged_style_json="{}", likes_json="[]", dislikes_json="[]",
+                content_hash="b" * 64,
+            )],
+            "style_contract_template_refs": [_owned_row(
+                "style_contract_template_refs", style_contract_id="style-contract-db",
+                style_template_id="style-template-db", asset_revision=3, asset_hash="c" * 64,
+                role="primary", sort_order=1,
+            )],
+        },
+        extra_rows={"FROM style_templates": [{
+            "id": "style-template-db", "stable_key": "classic", "revision": 3,
+            "name": "Classic", "payload_json": '{"tone":"warm"}',
+            "provenance_json": '{"source":"fixture"}', "content_hash": "c" * 64,
+            "status": "archived", "created_at": 4,
+        }]},
+    )
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    assert len(snapshot.frozen_asset_records) == 1
+    assert snapshot.frozen_asset_records[0].data["assetKind"] == "style-template"
+    assert snapshot.frozen_asset_records[0].data["revision"] == 3
+    assert snapshot.frozen_asset_records[0].data["payload"]["tone"] == "warm"
+    style_ref = next(record for record in snapshot.graph_records if record.entity_type == "style-contract-template-ref")
+    assert style_ref.data["templateName"] == "Classic"
+    assert style_ref.data["templateRevision"] == 3
+    assert style_ref.data["contentHash"] == "c" * 64
+    assert "style-template-db" not in repr(tuple(record.to_public_dict() for record in snapshot.frozen_asset_records))
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_invalid_authoritative_json_without_cause() -> None:
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id="planning-db", project_id="project-db", revision=1,
+            content_json="{not-json", content_hash="d" * 64, created_at=1,
+        )],
+    })
+    with pytest.raises(ProjectPackageInvalid, match="invalid package value") as raised:
+        await ProjectPackageRepository(
+            pool=_SnapshotPool(session), session_factory=lambda value: value,
+        ).read_snapshot("project-db", 7)
+    assert raised.value.__cause__ is None
+
+
+@pytest.mark.asyncio
+async def test_engine_and_experience_refs_export_complete_restore_authority() -> None:
+    session = _SnapshotSession(
+        {
+            "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+            "creation_contracts": [_owned_row(
+                "creation_contracts", id="contract-db", project_id="project-db",
+                revision=1, content_hash="1" * 64,
+            )],
+            "story_engine_batches": [_owned_row(
+                "story_engine_batches", id="batch-db", project_id="project-db",
+                status="completed",
+            )],
+            "story_engine_options": [_owned_row(
+                "story_engine_options", id="engine-db", batch_id="batch-db",
+                option_order=1, content_hash="3" * 64,
+            )],
+            "creation_contract_engine_refs": [_owned_row(
+                "creation_contract_engine_refs", creation_contract_id="contract-db",
+                engine_option_id="engine-db", engine_hash="4" * 64,
+            )],
+            "creation_contract_experience_refs": [_owned_row(
+                "creation_contract_experience_refs", creation_contract_id="contract-db",
+                experience_card_id="experience-db", asset_revision=2, asset_hash="5" * 64,
+                sort_order=1,
+            )],
+        },
+        extra_rows={"FROM experience_cards": [{
+            "id": "experience-db", "stable_key": "mentor", "revision": 2,
+            "title": "Mentor", "category": "character", "payload_json": "{}",
+            "provenance_json": "{}", "content_hash": "5" * 64,
+            "status": "active", "created_at": 1,
+        }]},
+    )
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    records = {record.entity_type: record.data for record in snapshot.graph_records}
+    engine = records["creation-contract-engine-ref"]
+    assert engine["creationContractLogicalId"].startswith("creation-contract:")
+    assert engine["storyEngineLogicalId"].startswith("story-engine-option:")
+    assert engine["contentHash"] == "4" * 64
+    experience = records["creation-contract-experience-ref"]
+    assert experience["experienceTitle"] == "Mentor"
+    assert experience["experienceRevision"] == 2
+    assert experience["contentHash"] == "5" * 64
+
+
+@pytest.mark.asyncio
+async def test_repository_freezes_referenced_corpus_revision_and_blob_descriptor() -> None:
+    content_hash = "e" * 64
+    storage_key = f"sha256/ee/{content_hash}"
+    session = _SnapshotSession(
+        {
+            "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+            "creation_contracts": [_owned_row(
+                "creation_contracts", id="contract-db", project_id="project-db",
+                revision=1, content_hash="f" * 64,
+            )],
+            "creation_contract_corpus_refs": [_owned_row(
+                "creation_contract_corpus_refs", creation_contract_id="contract-db",
+                corpus_source_id="source-db", source_revision=2, source_hash=content_hash,
+                selection_mode="full", sort_order=1,
+            )],
+            "creation_contract_corpus_fragment_refs": [_owned_row(
+                "creation_contract_corpus_fragment_refs", creation_contract_id="contract-db",
+                corpus_source_id="source-db", corpus_chapter_id="chapter-db",
+                corpus_fragment_id="fragment-db", source_revision=2, source_hash=content_hash,
+                fragment_hash="5" * 64, chapter_char_start=0, chapter_char_end=9,
+                reference_use="background", sort_order=1,
+            )],
+            "reference_uses": [_owned_row(
+                "reference_uses", id="reference-use-db", project_id="project-db",
+                corpus_source_id="source-db", corpus_chapter_id="chapter-db",
+                reference_purpose="background", referenced_text_hash="6" * 64, created_at=5,
+            )],
+        },
+        extra_rows={
+            "JOIN corpus_source_revisions r ON r.id=c.source_revision_id": [{
+                "source_id": "source-db", "revision": 2, "content_hash": content_hash,
+            }],
+            "FROM corpus_source_revisions r": [{
+                "id": "revision-db", "source_id": "source-db", "source_key": "fixture-source",
+                "revision": 2, "content_hash": content_hash, "relative_path": "fixture.txt",
+                "display_name": "Fixture", "author": "Author", "reference_tags_json": "[]",
+                "notes": "", "provenance_json": "{}", "byte_length": 9, "encoding": "utf-8",
+                "parser_version": "p1", "normalizer_version": "n1", "fragmenter_version": "f1",
+                "index_version": "i1", "status": "analyzed", "imported_at": 1,
+                "analyzed_at": 2, "created_at": 1, "blob_byte_length": 9, "storage_key": storage_key,
+            }],
+            "FROM corpus_chapters c": [{
+                "chapter_id": "chapter-db", "chapter_order": 1, "title": "Chapter one",
+                "raw_byte_start": 0, "raw_byte_end": 9, "normalized_char_start": 0,
+                "normalized_char_end": 9, "normalized_text": "chapter text",
+                "content_hash": "4" * 64, "created_at": 3,
+            }],
+            "FROM corpus_fragments f": [{
+                "fragment_id": "fragment-db",
+                "fragment_order": 1, "chapter_char_start": 0, "chapter_char_end": 9,
+                "normalized_text": "fragment text", "content_hash": "5" * 64,
+                "analysis_version": "v1", "index_payload": '{"terms":[]}', "created_at": 4,
+            }],
+        },
+    )
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    assert snapshot.corpus_revision_records[0].data["sourceKey"] == "fixture-source"
+    assert snapshot.corpus_revision_records[0].data["referenceTags"] == ()
+    assert snapshot.corpus_revision_records[0].data["chapters"][0]["chapterOrder"] == 1
+    assert snapshot.corpus_revision_records[0].data["fragments"][0]["fragmentOrder"] == 1
+    assert snapshot.corpus_revision_records[0].data["chapters"][0]["normalizedText"] == "chapter text"
+    assert snapshot.corpus_revision_records[0].data["fragments"][0]["logicalId"] == "corpus-fragment:1"
+    assert "chapter-db" not in repr(snapshot.corpus_revision_records[0].to_public_dict())
+    assert snapshot.corpus_blobs == (FrozenCorpusBlob("corpus-blob:1", content_hash, 9, storage_key),)
+    corpus_ref = next(record for record in snapshot.graph_records if record.entity_type == "creation-contract-corpus-ref")
+    assert corpus_ref.data["corpusRevisionLogicalId"] == snapshot.corpus_revision_records[0].logical_id
+    assert corpus_ref.data["contentHash"] == content_hash
+    fragment_ref = next(
+        record for record in snapshot.graph_records
+        if record.entity_type == "creation-contract-corpus-fragment-ref"
+    )
+    assert fragment_ref.data["corpusRevisionLogicalId"] == snapshot.corpus_revision_records[0].logical_id
+    assert fragment_ref.data["contentHash"] == "5" * 64
+    reference_use = next(record for record in snapshot.graph_records if record.entity_type == "reference-use")
+    assert reference_use.data["corpusRevisionLogicalId"] == snapshot.corpus_revision_records[0].logical_id
+    assert "source-db" not in repr(tuple(record.to_public_dict() for record in snapshot.corpus_revision_records))
+
+
+@pytest.mark.asyncio
+async def test_repository_resolves_nested_story_block_and_polymorphic_canon_source() -> None:
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id="planning-db", project_id="project-db", revision=1,
+            content_json=_planning_authority_json("block-db", "1" * 64), content_hash="1" * 64,
+        )],
+        "chapter_sessions": [_owned_row(
+            "chapter_sessions", id="chapter-db", project_id="project-db", chapter_num=1,
+            planning_revision_id="planning-db", story_block_id="block-db", status="draft",
+        )],
+        "finalization_records": [_owned_row(
+            "finalization_records", id="finalization-db", project_id="project-db",
+            committed_canon_revision=1, finalized_at=3,
+        )],
+        "canon_revisions": [_owned_row(
+            "canon_revisions", id="canon-revision-db", project_id="project-db", revision_number=1,
+            source_type="finalization", source_id="finalization-db", content_hash="2" * 64, created_at=3,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    canon = next(record for record in snapshot.graph_records if record.entity_type == "canon-revision")
+    assert canon.data["sourceLogicalId"].startswith("finalization-record:")
+    assert "block-db" not in repr(tuple(record.to_public_dict() for record in snapshot.graph_records))
+
+
+@pytest.mark.asyncio
+async def test_repository_projection_rows_only_contribute_count_and_hash_validation() -> None:
+    projection_hash = "3" * 64
+    session = _SnapshotSession(
+        {"projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")]},
+        extra_rows={"FROM current_state_projections": [{"content_hash": projection_hash}]},
+    )
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    assert snapshot.projection_validation["currentStateProjections"] == {
+        "count": 1, "hashes": (projection_hash,),
+    }
+    assert all(record.entity_type != "current-state-projection" for record in snapshot.graph_records)
+
+
+@pytest.mark.asyncio
+async def test_inherited_binding_source_is_inert_and_never_requires_or_leaks_external_project_id() -> None:
+    external_project_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P2")],
+        "project_model_binding_revisions": [_owned_row(
+            "project_model_binding_revisions", id="binding-db", project_id="project-db",
+            revision=1, content_hash="7" * 64, source_project_id=external_project_id, created_at=1,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    binding = next(
+        record for group in (snapshot.graph_records, snapshot.provider_history_records)
+        for record in group if record.entity_type == "project-model-binding-revision"
+    )
+    assert binding.data["sourceKind"] == "inherited"
+    assert "sourceProjectLogicalId" not in binding.data
+    assert external_project_id not in repr(snapshot)
+
+
+def test_every_non_secret_classified_column_has_an_explicit_export_or_normalization_decision() -> None:
+    classified = {
+        (table, column)
+        for table, policy in PROJECT_TABLE_COLUMN_POLICIES.items()
+        for column, category in policy.items()
+        if category not in {"derived", "excluded_sensitive_operational"}
+    }
+    assert set(PACKAGE_COLUMN_EXPORT_DECISIONS) == classified
+    assert all(
+        isinstance(decision, str) and decision and decision != "@undecided"
+        for decision in PACKAGE_COLUMN_EXPORT_DECISIONS.values()
+    )
+    assert PACKAGE_COLUMN_EXPORT_DECISION_FINGERPRINT == (
+        "15ea66b6eb6784daff215debdd202e1c82924b9902d5e868bb82c61a034fa90b"
+    )
+    assert {
+        (table, column): PACKAGE_COLUMN_EXPORT_DECISIONS[(table, column)]
+        for table, column in {
+            ("creation_contract_engine_refs", "engine_option_id"),
+            ("creation_contract_engine_refs", "engine_hash"),
+            ("style_contract_template_refs", "asset_hash"),
+            ("creation_contract_experience_refs", "asset_hash"),
+            ("creation_contract_corpus_refs", "source_hash"),
+            ("creation_contract_corpus_fragment_refs", "fragment_hash"),
+        }
+    } == {
+        ("creation_contract_engine_refs", "engine_option_id"): "storyEngineLogicalId",
+        ("creation_contract_engine_refs", "engine_hash"): "contentHash",
+        ("style_contract_template_refs", "asset_hash"): "contentHash",
+        ("creation_contract_experience_refs", "asset_hash"): "contentHash",
+        ("creation_contract_corpus_refs", "source_hash"): "contentHash",
+        ("creation_contract_corpus_fragment_refs", "fragment_hash"): "contentHash",
+    }
+
+
+@pytest.mark.asyncio
+async def test_key_recovery_relations_are_exported_as_package_logical_ids_and_public_versions() -> None:
+    session = _SnapshotSession({
+        "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+        "creative_seeds": [_owned_row("creative_seeds", id="seed-db", project_id="project-db")],
+        "creative_seed_revisions": [_owned_row(
+            "creative_seed_revisions", id="seed-revision-db", project_id="project-db",
+            seed_id="seed-db", revision=1, payload_json="{}", content_hash="1" * 64,
+        )],
+        "creation_contracts": [_owned_row(
+            "creation_contracts", id="creation-contract-db", project_id="project-db",
+            revision=2, content_hash="2" * 64,
+        )],
+        "style_contracts": [_owned_row(
+            "style_contracts", id="style-contract-db", project_id="project-db",
+            creation_contract_id="creation-contract-db", revision=2,
+            merged_style_json="{}", likes_json="[]", dislikes_json="[]", content_hash="3" * 64,
+        )],
+        "creation_bible_revisions": [_owned_row(
+            "creation_bible_revisions", id="bible-db", project_id="project-db", revision=3,
+            content_json=_bible_authority_json(), content_hash="4" * 64,
+        )],
+        "planning_revisions": [_owned_row(
+            "planning_revisions", id="planning-db", project_id="project-db", revision=4,
+            seed_id="seed-db", seed_revision_id="seed-revision-db",
+            creation_contract_id="creation-contract-db", style_contract_id="style-contract-db",
+            bible_revision_id="bible-db", selection_revision=1, contract_revision=2,
+            bible_revision=3, content_json=_planning_authority_json("story-block-db", "5" * 64),
+            content_hash="5" * 64,
+        )],
+        "chapter_outline_revisions": [_owned_row(
+            "chapter_outline_revisions", id="outline-db", project_id="project-db", revision=5,
+            chapter_num=1, planning_revision_id="planning-db", planning_revision=4,
+            planning_hash="5" * 64,
+            content_json=_outline_authority_json("planning-db", "story-block-db", "5" * 64, "6" * 64),
+            content_hash="6" * 64,
+        )],
+        "chapter_sessions": [_owned_row(
+            "chapter_sessions", id="chapter-db", project_id="project-db", chapter_num=1,
+            planning_revision_id="planning-db", planning_revision=4, planning_hash="5" * 64,
+            chapter_outline_revision_id="outline-db", chapter_outline_revision=5,
+            chapter_outline_hash="6" * 64, story_block_id="story-block-db",
+            story_block_revision=7, story_block_hash="7" * 64, status="draft",
+        )],
+        "working_drafts": [_owned_row(
+            "working_drafts", id="working-draft-db", project_id="project-db",
+            chapter_session_id="chapter-db", revision=1, content="draft", content_hash="8" * 64,
+        )],
+        "draft_candidates": [_owned_row(
+            "draft_candidates", id="candidate-db", project_id="project-db",
+            chapter_session_id="chapter-db", content="candidate", content_hash="9" * 64,
+        )],
+        "draft_operation_attempts": [_owned_row(
+            "draft_operation_attempts", id="operation-db", project_id="project-db",
+            chapter_session_id="chapter-db", operation_type="polish_selection", status="completed",
+        )],
+        "working_draft_revisions": [_owned_row(
+            "working_draft_revisions", id="working-revision-db", project_id="project-db",
+            working_draft_id="working-draft-db", chapter_session_id="chapter-db",
+            source_candidate_id="candidate-db", source_operation_id="operation-db",
+            working_draft_revision=2, content="revision", content_hash="a" * 64,
+        )],
+        "finalization_records": [_owned_row(
+            "finalization_records", id="finalization-db", project_id="project-db",
+            chapter_session_id="chapter-db", draft_candidate_id="candidate-db", finalized_at=9,
+        )],
+        "final_chapters": [_owned_row(
+            "final_chapters", id="final-chapter-db", project_id="project-db",
+            chapter_session_id="chapter-db", draft_candidate_id="candidate-db",
+            finalization_record_id="finalization-db", planning_revision_id="planning-db",
+            planning_revision=4, planning_hash="5" * 64,
+            chapter_outline_revision_id="outline-db", chapter_outline_revision=5,
+            chapter_outline_hash="6" * 64, chapter_num=1, content="final", content_hash="b" * 64,
+            canon_revision=1, finalized_at=10,
+        )],
+    })
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+    by_type = {record.entity_type: record for record in snapshot.graph_records}
+
+    planning = by_type["planning-revision"].data
+    assert {"seedLogicalId", "seedRevisionLogicalId", "creationContractLogicalId", "styleContractLogicalId", "bibleRevisionLogicalId"} <= set(planning)
+    chapter = by_type["chapter"].data
+    assert {"planningRevisionLogicalId", "outlineRevisionLogicalId", "storyBlockLogicalId", "planningRevision", "planningHash", "chapterOutlineRevision", "chapterOutlineHash", "storyBlockRevision", "storyBlockHash"} <= set(chapter)
+    working_revision = by_type["working-draft-revision"].data
+    assert {"workingDraftLogicalId", "chapterLogicalId", "candidateLogicalId", "operationLogicalId"} <= set(working_revision)
+    final_chapter = by_type["final-chapter"].data
+    assert {"chapterLogicalId", "candidateLogicalId", "planningRevisionLogicalId", "outlineRevisionLogicalId", "finalizationRecordLogicalId"} <= set(final_chapter)
+
+
+@pytest.mark.asyncio
+async def test_market_analysis_exports_only_referenced_snapshot_evidence() -> None:
+    snapshot_id = "market-snapshot-db"
+    source_id = "market-source-db"
+    snapshot_hash = "c" * 64
+    analysis_hash = "d" * 64
+    session = _SnapshotSession(
+        {
+            "projects": [_owned_row("projects", id="project-db", lifecycle_revision=7, title="P")],
+            "market_analyses": [_owned_row(
+                "market_analyses", id="analysis-db", project_id="project-db",
+                status="succeeded", analysis_json="{}", result_hash=analysis_hash,
+                created_at=1, completed_at=2,
+            )],
+            "seed_inspiration_attempts": [_owned_row(
+                "seed_inspiration_attempts", id="inspiration-db", project_id="project-db",
+                market_source_id=source_id, market_snapshot_id=snapshot_id,
+                market_snapshot_hash=snapshot_hash, market_analysis_id="analysis-db",
+                market_analysis_hash=analysis_hash, status="succeeded", created_at=2, completed_at=3,
+            )],
+        },
+        extra_rows={"FROM market_snapshots s": [{
+            "snapshot_hash": snapshot_hash, "captured_at": 1_700_000_000_000,
+        }]},
+    )
+
+    snapshot = await ProjectPackageRepository(
+        pool=_SnapshotPool(session), session_factory=lambda value: value,
+    ).read_snapshot("project-db", 7)
+
+    market = next(record for record in snapshot.graph_records if record.entity_type == "market-analysis")
+    assert market.data == {
+        "snapshotHash": snapshot_hash,
+        "timeRange": {"capturedAt": 1_700_000_000_000},
+        "contentHash": analysis_hash,
+        "createdAt": 1,
+    }
+    public = repr(market.to_public_dict())
+    assert snapshot_id not in public and source_id not in public
+    market_sql = next(sql for sql, _ in session.calls if "FROM market_snapshots s" in sql)
+    assert "source_url" not in market_sql
+    assert "SELECT *" not in market_sql.upper()

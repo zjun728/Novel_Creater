@@ -45,7 +45,7 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "creative-seed-head": frozenset({"label", "seedLogicalId", "revisionLogicalId", "revision", "contentHash", "updatedAt"}),
     "project-seed-selection-revision": frozenset({"label", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "selectedAt"}),
     "project-selected-seed": frozenset({"label", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "selectionRevision", "selectedAt", "updatedAt"}),
-    "project-model-binding-revision": frozenset({"label", "revision", "contentHash", "sourceProjectLogicalId", "createdAt"}),
+    "project-model-binding-revision": frozenset({"label", "revision", "contentHash", "sourceProjectLogicalId", "sourceKind", "createdAt"}),
     "project-model-binding-item": frozenset({"label", "bindingRevisionLogicalId", "taskKey", "resolutionStatus", "providerName", "modelName", "itemHash"}),
     "project-model-binding-head": frozenset({"label", "revision", "bindingRevisionLogicalId", "contentHash", "updatedAt"}),
     "market-analysis": frozenset({"label", "snapshotHash", "timeRange", "contentHash", "createdAt"}),
@@ -71,7 +71,7 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "bible-confirmation": frozenset({"label", "status", "bibleRevision", "contentHash", "createdAt", "completedAt"}),
     "planning-draft": frozenset({"label", "revision", "payload", "contentHash", "updatedAt"}),
     "planning-generation-history": frozenset({"label", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
-    "planning-revision": frozenset({"label", "revision", "payload", "contentHash", "createdAt"}),
+    "planning-revision": frozenset({"label", "revision", "parentRevision", "selectionRevision", "seedLogicalId", "seedRevisionLogicalId", "seedHash", "contractRevision", "creationContractLogicalId", "creationHash", "styleContractLogicalId", "styleHash", "bibleRevision", "bibleRevisionLogicalId", "bibleHash", "payload", "contentHash", "createdAt"}),
     "project-planning-head": frozenset({"label", "revision", "planningRevisionLogicalId", "contentHash", "updatedAt"}),
     "planning-confirmation": frozenset({"label", "status", "planningRevision", "contentHash", "createdAt", "completedAt"}),
     "chapter-outline-draft": frozenset({"label", "chapterNumber", "revision", "payload", "contentHash", "updatedAt"}),
@@ -79,18 +79,18 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "chapter-outline-revision": frozenset({"label", "chapterNumber", "revision", "planningRevisionLogicalId", "payload", "contentHash", "createdAt"}),
     "project-chapter-outline-head": frozenset({"label", "chapterNumber", "revision", "outlineRevisionLogicalId", "contentHash", "updatedAt"}),
     "chapter-outline-confirmation": frozenset({"label", "status", "chapterNumber", "outlineRevision", "contentHash", "createdAt", "completedAt"}),
-    "chapter": frozenset({"label", "chapterNumber", "status", "createdAt", "updatedAt"}),
+    "chapter": frozenset({"label", "chapterNumber", "planningRevisionLogicalId", "planningRevision", "planningHash", "outlineRevisionLogicalId", "chapterOutlineRevision", "chapterOutlineHash", "storyBlockLogicalId", "storyBlockRevision", "storyBlockHash", "expectedCanonRevision", "status", "finalizedAt", "createdAt", "updatedAt"}),
     "working-draft": frozenset({"label", "chapterLogicalId", "revision", "content", "contentHash", "updatedAt"}),
     "operation": frozenset({"label", "chapterLogicalId", "operationKind", "status", "requestFingerprint", "resultHash", "createdAt", "completedAt"}),
     "draft-candidate": frozenset({"label", "chapterLogicalId", "candidateOrder", "content", "contentHash", "createdAt"}),
-    "working-draft-revision": frozenset({"label", "workingDraftLogicalId", "revision", "content", "contentHash", "createdAt"}),
+    "working-draft-revision": frozenset({"label", "workingDraftLogicalId", "chapterLogicalId", "candidateLogicalId", "operationLogicalId", "revision", "content", "contentHash", "replacementReason", "snapshotRole", "createdAt"}),
     "operation-event": frozenset({"label", "operationLogicalId", "sequence", "eventType", "contentHash", "createdAt"}),
     "candidate-freeze": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "requestFingerprint", "createdAt"}),
     "candidate-quality": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "expectedCanonRevision", "expectedPlanningHash", "expectedOutlineHash", "policyVersion", "contextManifestHash", "modelName", "deterministicBlocks", "findings", "contentHash", "createdAt"}),
     "finalization-change-set": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "status", "candidateHash", "contentHash", "createdAt", "updatedAt", "confirmedAt"}),
     "finalization-change-set-revision": frozenset({"label", "changeSetLogicalId", "revision", "payload", "contentHash", "source", "createdAt"}),
     "finalization-record": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "changeSetLogicalId", "changeSetRevision", "candidateHash", "changeSetHash", "expectedCanonRevision", "committedCanonRevision", "resultPayload", "resultHash", "finalizedAt"}),
-    "final-chapter": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "chapterNumber", "title", "content", "contentHash", "canonRevision", "finalizedAt"}),
+    "final-chapter": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "finalizationRecordLogicalId", "planningRevisionLogicalId", "planningRevision", "planningHash", "outlineRevisionLogicalId", "chapterOutlineRevision", "chapterOutlineHash", "chapterNumber", "title", "content", "contentHash", "canonRevision", "finalizedAt"}),
     "canon-entity": frozenset({"label", "entityType", "canonicalName", "normalizedName", "createdRevision", "createdAt"}),
     "entity-alias": frozenset({"label", "entityLogicalId", "alias", "normalizedAlias", "createdRevision", "createdAt"}),
     "canon-revision": frozenset({"label", "revisionNumber", "parentRevisionNumber", "sourceType", "sourceLogicalId", "contentHash", "createdAt"}),
@@ -98,7 +98,7 @@ RECORD_FIELD_ALLOWLISTS: Mapping[str, frozenset[str]] = MappingProxyType({
     "reference-use": frozenset({"label", "chapterLogicalId", "candidateLogicalId", "corpusRevisionLogicalId", "locationStart", "locationEnd", "referencePurpose", "referencedTextHash", "createdAt"}),
     "provider-history": frozenset({"label", "providerName", "modelName", "taskKey", "bindingRevisionLogicalId", "bindingHash", "operationLogicalId"}),
     "asset": frozenset({"label", "assetKind", "stableKey", "revision", "name", "category", "payload", "provenance", "contentHash", "status", "createdAt"}),
-    "corpus-revision": frozenset({"label", "sourceKey", "revision", "relativePath", "displayName", "author", "referenceTags", "notes", "provenance", "contentHash", "byteLength", "encoding", "parserVersion", "normalizerVersion", "fragmenterVersion", "indexVersion", "status", "importedAt", "analyzedAt", "createdAt"}),
+    "corpus-revision": frozenset({"label", "sourceKey", "revision", "relativePath", "displayName", "author", "referenceTags", "notes", "provenance", "contentHash", "byteLength", "encoding", "parserVersion", "normalizerVersion", "fragmenterVersion", "indexVersion", "status", "importedAt", "analyzedAt", "createdAt", "chapters", "fragments"}),
 })
 _ENTITY_TYPE_RE = re.compile(r"^[a-z]+(?:-[a-z]+)*$")
 _LOWER_HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -113,6 +113,10 @@ class ProjectPackageNotFound(ProjectPackageError):
 
 
 class ProjectPackageConflict(ProjectPackageError):
+    pass
+
+
+class ProjectPackageBusy(ProjectPackageConflict):
     pass
 
 

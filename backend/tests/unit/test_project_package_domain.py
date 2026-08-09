@@ -152,6 +152,32 @@ def test_record_payload_accepts_only_package_logical_identity_values() -> None:
     assert record.to_public_dict()["logicalId"] == "project:1"
 
 
+def test_corpus_revision_accepts_closed_chapter_and_fragment_descriptors_without_database_ids() -> None:
+    record = PackageRecord(
+        "corpus-revision",
+        "corpus-revision:1",
+        revision=2,
+        data={
+            "chapters": [{
+                "logicalId": "corpus-chapter:1", "chapterOrder": 1, "title": "One",
+                "rawByteStart": 0, "rawByteEnd": 9,
+                "normalizedCharStart": 0, "normalizedCharEnd": 9, "contentHash": "a" * 64,
+                "normalizedText": "chapter text", "createdAt": 1,
+            }],
+            "fragments": [{
+                "logicalId": "corpus-fragment:1", "chapterOrder": 1, "fragmentOrder": 1,
+                "chapterCharStart": 0,
+                "chapterCharEnd": 9, "contentHash": "b" * 64, "analysisVersion": "v1",
+                "indexPayload": {"terms": []}, "normalizedText": "fragment text", "createdAt": 1,
+            }],
+        },
+    )
+
+    public = record.to_public_dict()
+    assert public["data"]["chapters"][0]["chapterOrder"] == 1
+    assert "chapterId" not in repr(public)
+
+
 def test_manifest_entries_are_strict_payload_or_blob_values_without_self_reference() -> None:
     entries = build_structured_entries(_snapshot())
     manifest_entries = tuple(
