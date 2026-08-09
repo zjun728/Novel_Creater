@@ -199,17 +199,31 @@ test('writer keeps the outline router link visible while the workspace loads', a
 
 test('writer renders current and stale candidate basis badges', async () => {
   const html = await renderWriterCandidates([
-    { id: 'candidate-current', workingDraftRevision: 1, basisStatus: 'current' },
-    { id: 'candidate-stale', workingDraftRevision: 2, basisStatus: 'stale' },
+    {
+      id: 'candidate-current',
+      workingDraftRevision: 1,
+      basisStatus: 'current',
+      content: '当前候选',
+      contentHash: 'a'.repeat(64),
+      createdAt: 1_700_000_000_000,
+    },
+    {
+      id: 'candidate-stale',
+      workingDraftRevision: 2,
+      basisStatus: 'stale',
+      content: '旧依据候选',
+      contentHash: 'b'.repeat(64),
+      createdAt: 1_700_000_001_000,
+    },
   ])
 
   assert.match(
     html,
-    /revision 1\s*<span class="candidate-basis candidate-basis--current"[^>]*>依据当前小纲<\/span>/,
+    /候选 1[\s\S]*?<span class="candidate-basis candidate-basis--current"[^>]*>依据当前小纲<\/span>[\s\S]*?4 字 · aaaaaaaa/,
   )
   assert.match(
     html,
-    /revision 2\s*<span class="candidate-basis candidate-basis--stale"[^>]*>依据旧小纲，不能定稿<\/span>/,
+    /候选 2[\s\S]*?<span class="candidate-basis candidate-basis--stale"[^>]*>依据旧小纲，不能定稿<\/span>[\s\S]*?5 字 · bbbbbbbb/,
   )
 })
 

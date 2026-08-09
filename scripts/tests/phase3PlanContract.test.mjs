@@ -369,7 +369,7 @@ test('Phase 3B detailed plan freezes its delivery and safety contract', async ()
   );
 });
 
-test('Phase 3 and Phase 4B1 completion facts are current while Phase 4B2 is in progress', async () => {
+test('Phase 3 remains historical while Phase 4C is accepted and Phase 4 close is next', async () => {
   const [
     currentState,
     productPlan,
@@ -402,7 +402,7 @@ test('Phase 3 and Phase 4B1 completion facts are current while Phase 4B2 is in p
   );
   assert.match(
     currentConclusion,
-    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\* 与 \*\*Phase 4B1 Formal Generation\*\*（仅注入 fake provider）。$/m,
+    /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\*、\*\*Phase 4B1 Formal Generation\*\*、\r?\n  \*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*、\*\*Phase 4B3 exact-selection tools \/\r?\n  one-step undo\*\*（均仅注入 fake provider），以及 \*\*Phase 4C Candidate load \/\r?\n  two-candidate read-only comparison\*\*（不启动 Provider）。$/m,
   );
   assert.match(
     currentConclusion,
@@ -414,22 +414,25 @@ test('Phase 3 and Phase 4B1 completion facts are current while Phase 4B2 is in p
   );
   assert.match(
     currentConclusion,
-    /^- 当前进行中的工程切片：\*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*；尚未验收。$/m,
+    /^- \*\*Phase 4C Candidate load 与 two-candidate read-only comparison 已验收\*\*；下一步为\r?\n  Phase 4 close 的一次完整回归与事实收口。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 功能代码 HEAD：`27e91c81fabe316594fe8d775f0b973a0d33b4d9`。$/m,
+    /^- 功能代码 HEAD：`05491f2`。$/m,
   );
   assert.match(
     currentConclusion,
-    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`；\r?\n  Phase 4B1 的 `generate_new` 仅以注入 fake provider 验收。正式流式写作、\r?\n  Finalization 和 Content Quality 仍未就绪。$/m,
+    /^- 当前自动证据边界：Real Provider calls `0`、Product DB reads\/writes `0\/0`；\r?\n  Phase 4B2 `generate_new` streaming\/reconnect\/cancel 与 Phase 4B3 exact-selection local\r?\n  tools\/one-step undo 仅以注入 fake streaming provider 验收；Phase 4C load\/compare 不启动\r?\n  Provider。Full-draft rewrite、candidate fusion、full Phase 4 close、real-provider quality、\r?\n  product-database readiness、Finalization 和 Content Quality 仍未就绪。$/m,
   );
 
   const currentSlice = readSection(currentState, '当前工程切片');
   assert.match(
     currentSlice,
-    /^继续建设 \*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*（尚未验收）。Phase 4B1 formal\r?\n`generate_new` 已仅以注入 fake provider 验收；自动门禁继续禁止真实 Provider、产品数据库和 live\r?\n网站。受控 DeepSeek V3 Flash smoke 仍须用户明确批准和有效 token，且不是自动门禁。\r?\nSeed、Contract 与 Bible 的已确认内容保持永久基线；未来 Planning 只处理尚未实现的内容。\r?\n正文定稿前对应大纲可以调整，正文定稿后大纲与事实不可修改，均以已实现和规格明确支持\r?\n的范围为准。Setting 与知识库仍在 Phase 5 通过 Canon\/Projection 落地，不在本阶段声称已实现。$/m,
+    /^\*\*Phase 4C Candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收\*\*；$/m,
   );
+  assert.match(currentSlice, /下一步是 Phase 4 close 的完整串行门禁与阶段事实收口/u);
+  assert.match(currentSlice, /fusion 和\r?\nfull-draft rewrite 继续延期/u);
+  assert.match(currentSlice, /自动门禁继续禁止真实 Provider、产品数据库和 live 网站/u);
 
   const schemaBoundary = readSection(currentState, '当前 Schema 与数据库边界');
   assert.match(
@@ -442,7 +445,7 @@ test('Phase 3 and Phase 4B1 completion facts are current while Phase 4B2 is in p
   );
   assert.match(
     schemaBoundary,
-    /^- 当前开发分支源码 Schema：`writer-core-v1\.9\.0`。$/m,
+    /^- 当前开发分支源码 Schema：`writer-core-v1\.11\.0`。$/m,
   );
   assert.match(
     schemaBoundary,
@@ -871,7 +874,7 @@ test('Phase 3C detailed plan freezes its delivery and safety contract', async ()
   }
 });
 
-test('Phase 3 immutable-boundary acceptance remains historical while current state tracks Phase 4B2 in progress', async () => {
+test('Phase 3 immutable-boundary acceptance remains historical while current state tracks Phase 4C acceptance', async () => {
   const [acceptance, alignment, currentState, productPlan, developmentLog] = await Promise.all([
     readProjectFile('docs/acceptance/2026-07-30-phase-3-story-planning.md'),
     readProjectFile('docs/acceptance/2026-07-31-phase-3-immutable-boundary-alignment.md'),
@@ -985,17 +988,17 @@ test('Phase 3 immutable-boundary acceptance remains historical while current sta
     'the report may record only the fixed delivery baseline and functional implementation SHAs',
   );
 
-  assert.match(currentState, /^- 当前完成交付包：\*\*Phase 3 Story Planning\*\* 与 \*\*Phase 4B1 Formal Generation\*\*（仅注入 fake provider）。$/m);
+  assert.match(currentState, /\*\*Phase 4C Candidate load \/\r?\n  two-candidate read-only comparison\*\*（不启动 Provider）。/u);
   assert.match(currentState, /^- 当前开发分支：`codex\/phase3d-boundary-acceptance`。$/m);
   assert.match(currentState, /^- Phase 3D 与 Phase 3 已完成：Future Plan\/Actual Progress\/Canon Projection 同 revision 只读组合与完整 Phase 3 门禁。$/m);
-  assert.match(currentState, /^- 当前进行中的工程切片：\*\*Phase 4B2 streaming \/ reconnect \/ cancel\*\*；尚未验收。$/m);
-  assert.match(currentState, /^- 功能代码 HEAD：`27e91c81fabe316594fe8d775f0b973a0d33b4d9`。$/m);
+  assert.match(currentState, /^- \*\*Phase 4C Candidate load 与 two-candidate read-only comparison 已验收\*\*；下一步为$/m);
+  assert.match(currentState, /^- 功能代码 HEAD：`05491f2`。$/m);
   assert.doesNotMatch(currentState, /Phase 3D[^\n]*下一步/u);
 
   assert.match(productPlan, /^\| Phase 3 \|.*\| 已完成门禁 \|$/m);
-  assert.match(productPlan, /^\| Phase 4 \| 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 \| Phase 4B1 formal `generate_new` 已验收（仅 fake provider）；Phase 4B2 streaming \/ reconnect \/ cancel 正在实施，尚未验收 \|$/m);
+  assert.match(productPlan, /^\| Phase 4 \| 自动暂存、流式新稿、改写、扩写、压缩、候选、对比、融合 \| Phase 4B1、4B2、4B3 已验收（仅 fake provider）；Phase 4C load \/ read-only comparison 已无 Provider 验收；Phase 4 close 完整门禁下一步，fusion\/full-draft rewrite 延期 \|$/m);
   assert.match(productPlan, /^- Phase 4B1 formal `generate_new` 已验收（仅 fake provider）。$/m);
-  assert.match(productPlan, /^- Phase 4B2 streaming \/ reconnect \/ cancel 正在实施，尚未验收；不宣称其运行态、\r?\n  UI 或真实 Provider 已就绪。$/m);
+  assert.match(productPlan, /^- Phase 4C candidate load 与 two-candidate read-only comparison 已在无 Provider 场景验收；\r?\n  下一步是 Phase 4 close 的一次完整回归。AI fusion 与 full-draft rewrite 继续延期。$/m);
   assert.doesNotMatch(productPlan, /Phase 3D[^\n]*下一步/u);
 
   const phase3Log = readSection(developmentLog, '2026-07-30 Phase 3 Story Planning 完成');
