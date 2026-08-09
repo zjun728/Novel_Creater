@@ -167,6 +167,15 @@ class StartDraftOperation:
 
 
 @dataclass(frozen=True)
+class UndoLocalDraft:
+    project_id: str
+    chapter_session_id: str
+    expected_working_draft_revision: int
+    expected_content_hash: str
+    source_operation_id: str
+
+
+@dataclass(frozen=True)
 class DraftOperationResult:
     operation_id: str
     project_id: str
@@ -313,6 +322,162 @@ class DraftOperationService:
         except Exception:
             raise DraftOperationUnexpectedProviderError() from None
         return self._project_context_attempt(context)
+
+    @classmethod
+    def validate_undo(cls, command: UndoLocalDraft) -> UndoLocalDraft:
+        try:
+            if (
+                not isinstance(command, UndoLocalDraft)
+                or not cls._canonical_uuid(command.project_id)
+                or not cls._canonical_uuid(command.chapter_session_id)
+                or isinstance(command.expected_working_draft_revision, bool)
+                or not isinstance(command.expected_working_draft_revision, int)
+                or not 1 <= command.expected_working_draft_revision <= 2_147_483_646
+                or not isinstance(command.expected_content_hash, str)
+                or _HASH.fullmatch(command.expected_content_hash) is None
+                or not cls._canonical_uuid(command.source_operation_id)
+            ):
+                raise ValueError
+        except (AttributeError, TypeError, ValueError):
+            raise DraftOperationRequestInvalid() from None
+        return command
+
+    async def undo_local(self, command: UndoLocalDraft) -> int:
+        command = self.validate_undo(command)
+        async with self._storage_transaction() as session:
+            project = await self.repository.lock_project(session, command.project_id)
+            chapter = await self.repository.lock_session_for_operation(
+                session, command.project_id, command.chapter_session_id,
+            )
+            draft = await self.repository.lock_working_draft_for_operation(
+                session, command.project_id, command.chapter_session_id,
+            )
+            if project is None or chapter is None or draft is None:
+                raise DraftOperationNotFound()
+            if chapter.get("active_draft_operation_id") is not None:
+                raise DraftOperationConflict()
+            if (
+                draft.get("revision") != command.expected_working_draft_revision
+                or draft.get("content_hash") != command.expected_content_hash
+            ):
+                raise DraftOperationConflict()
+
+            stored = await self.repository.read_draft_operation(
+                session,
+                command.project_id,
+                command.chapter_session_id,
+                command.source_operation_id,
+            )
+            if stored is None:
+                raise DraftOperationNotFound()
+            source = self.project_stored_result(stored)
+            payload = draft.get("source_payload")
+            expected_payload = {
+                "source": "draft-operation",
+                "operationId": source.operation_id,
+                "operationType": source.operation_type,
+                "providerId": source.provider_id,
+                "modelName": source.model_name,
+                "baseWorkingDraftRevision": stored["base_working_draft_revision"],
+            }
+            if (
+                source.operation_type not in LOCAL_DRAFT_OPERATION_TYPES
+                or source.status != "completed"
+                or source.result_working_draft_revision != draft.get("revision")
+                or source.result_content_hash != draft.get("content_hash")
+                or payload != expected_payload
+                or not isinstance(draft.get("content"), str)
+            ):
+                raise DraftOperationConflict()
+            try:
+                draft["content"].encode("utf-8")
+            except UnicodeError:
+                raise DraftOperationConflict() from None
+            if (
+                hashlib.sha256(draft["content"].encode("utf-8")).hexdigest()
+                != draft["content_hash"]
+            ):
+                raise DraftOperationConflict()
+
+            before = await self.repository.read_working_draft_recovery_for_operation(
+                session,
+                command.project_id,
+                command.chapter_session_id,
+                command.source_operation_id,
+            )
+            if not self._valid_undo_before(before, stored, draft):
+                raise DraftOperationConflict()
+
+            now = self._clock()
+            current_snapshot = {
+                "id": self._new_id(),
+                "project_id": command.project_id,
+                "chapter_session_id": command.chapter_session_id,
+                "working_draft_id": draft["id"],
+                "working_draft_revision": draft["revision"],
+                "snapshot_role": "before",
+                "replacement_reason": "undo_local",
+                "source_operation_id": source.operation_id,
+                "content": draft["content"],
+                "content_hash": draft["content_hash"],
+                "created_at": now,
+            }
+            if not await self.repository.insert_working_draft_revision(
+                session, current_snapshot,
+            ):
+                raise DraftOperationStorageError("could not append undo snapshot")
+            restored = {
+                "id": draft["id"],
+                "project_id": command.project_id,
+                "chapter_session_id": command.chapter_session_id,
+                "revision": draft["revision"] + 1,
+                "content": before["content"],
+                "content_hash": before["content_hash"],
+                "source_payload": {
+                    "source": "undo-local",
+                    "sourceOperationId": source.operation_id,
+                    "operationType": source.operation_type,
+                    "baseWorkingDraftRevision": draft["revision"],
+                },
+                "updated_at": now,
+            }
+            if not await self.repository.upsert_working_draft(
+                session,
+                restored,
+                expected_revision=draft["revision"],
+                expected_content_hash=draft["content_hash"],
+            ):
+                raise DraftOperationStorageError("working draft undo CAS failed")
+            chapter_number = chapter.get("chapter_num")
+            if isinstance(chapter_number, bool) or not isinstance(chapter_number, int):
+                raise DraftOperationStorageError("chapter identity is invalid")
+            return chapter_number
+
+    @staticmethod
+    def _valid_undo_before(before, stored, draft) -> bool:
+        try:
+            content = before["content"]
+            content_hash = before["content_hash"]
+            content.encode("utf-8")
+            return bool(
+                isinstance(before, Mapping)
+                and before["project_id"] == stored["project_id"]
+                and before["chapter_session_id"] == stored["chapter_session_id"]
+                and before["working_draft_id"] == draft["id"]
+                and before["working_draft_revision"]
+                == stored["base_working_draft_revision"]
+                and before["snapshot_role"] == "before"
+                and before["replacement_reason"] == stored["operation_type"]
+                and before["source_operation_id"] == stored["id"]
+                and isinstance(content, str)
+                and len(content) <= DRAFT_OPERATION_CONTENT_MAX_SCALARS
+                and isinstance(content_hash, str)
+                and _HASH.fullmatch(content_hash) is not None
+                and hashlib.sha256(content.encode("utf-8")).hexdigest()
+                == content_hash
+            )
+        except (KeyError, TypeError, UnicodeError):
+            return False
 
     @staticmethod
     def _validated_provider_content(context, generated, *, strip=True):
@@ -1931,4 +2096,5 @@ __all__ = [
     "DraftOperationStorageError",
     "DraftOperationUnexpectedProviderError",
     "StartDraftOperation",
+    "UndoLocalDraft",
 ]

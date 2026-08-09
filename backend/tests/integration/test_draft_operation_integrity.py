@@ -21,6 +21,7 @@ from backend.services.draft_operations import (
     DraftOperationIdempotencyConflict,
     DraftOperationService,
     StartDraftOperation,
+    UndoLocalDraft,
 )
 from backend.tests.integration.test_authoritative_chapter_session import (
     PROJECT,
@@ -517,6 +518,77 @@ async def test_local_success_replaces_one_range_with_distinct_result_and_partial
     assert all(
         row["replacement_reason"] == "rewrite_selection" for row in recovery
     )
+
+
+@pytest.mark.asyncio
+async def test_local_undo_restores_before_as_new_revision_without_new_operation(
+    disposable_mysql,
+):
+    workspace, transaction_factory, chapter_service = await _workspace(disposable_mysql)
+    original = "左侧目标右侧"
+    workspace = await chapter_service.save_working_draft(SaveWorkingDraft(
+        PROJECT,
+        workspace.session.id,
+        workspace.working_draft.revision,
+        workspace.working_draft.content_hash,
+        original,
+    ))
+    service = _operation_service(
+        transaction_factory, _ProviderBoundary(output="替换片段")
+    )
+    started = await service.start(_local_command(
+        workspace, "41000000-0000-4000-8000-000000000012"
+    ))
+    completed = await _settled_result(service, started)
+
+    chapter_number = await service.undo_local(UndoLocalDraft(
+        project_id=PROJECT,
+        chapter_session_id=workspace.session.id,
+        expected_working_draft_revision=completed.result_working_draft_revision,
+        expected_content_hash=completed.result_content_hash,
+        source_operation_id=completed.operation_id,
+    ))
+
+    restored = await _draft(disposable_mysql.session, workspace.session.id)
+    recovery = await _recovery(disposable_mysql.session, workspace.session.id)
+    attempts = await _attempts(disposable_mysql.session, workspace.session.id)
+    events = await _events(disposable_mysql.session, completed.operation_id)
+    source = _json_object(restored["source_payload_json"])
+    assert chapter_number == workspace.session.chapter_num
+    assert restored["revision"] == completed.result_working_draft_revision + 1
+    assert restored["content"] == original
+    assert restored["content_hash"] == hashlib.sha256(
+        original.encode("utf-8")
+    ).hexdigest()
+    assert source == {
+        "source": "undo-local",
+        "sourceOperationId": completed.operation_id,
+        "operationType": "rewrite_selection",
+        "baseWorkingDraftRevision": completed.result_working_draft_revision,
+    }
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "completed"
+    assert attempts[0]["result_working_draft_revision"] == (
+        completed.result_working_draft_revision
+    )
+    assert len(events) == 2
+    assert [row["replacement_reason"] for row in recovery] == [
+        "rewrite_selection", "rewrite_selection", "undo_local",
+    ]
+    assert recovery[-1]["working_draft_revision"] == (
+        completed.result_working_draft_revision
+    )
+    assert recovery[-1]["content_hash"] == completed.result_content_hash
+
+    with pytest.raises(DraftOperationConflict):
+        await service.undo_local(UndoLocalDraft(
+            project_id=PROJECT,
+            chapter_session_id=workspace.session.id,
+            expected_working_draft_revision=restored["revision"],
+            expected_content_hash=restored["content_hash"],
+            source_operation_id=completed.operation_id,
+        ))
+    assert len(await _recovery(disposable_mysql.session, workspace.session.id)) == 3
 
 
 @pytest.mark.asyncio

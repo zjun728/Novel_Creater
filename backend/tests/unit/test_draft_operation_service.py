@@ -333,6 +333,18 @@ class FakeRepository:
             return _stored_attempt(row)
         return None
 
+    async def read_working_draft_recovery_for_operation(
+        self, session, project_id, chapter_session_id, source_operation_id,
+    ):
+        return next((
+            copy.deepcopy(row)
+            for row in self.revisions
+            if row["project_id"] == project_id
+            and row["chapter_session_id"] == chapter_session_id
+            and row["source_operation_id"] == source_operation_id
+            and row["snapshot_role"] == "before"
+        ), None)
+
     async def read_active_draft_operation(self, session, chapter_session_id):
         return next((_stored_attempt(row) for row in self.operations.values()
                      if row["chapter_session_id"] == chapter_session_id
@@ -2337,3 +2349,151 @@ async def test_local_provider_failure_keeps_original_and_reports_local_type():
     assert result.result_selection_end is None
     assert repo.draft == original
     assert repo.revisions == []
+
+
+@pytest.mark.asyncio
+async def test_undo_local_appends_current_result_and_restores_before_as_new_revision():
+    from backend.services.draft_operations import UndoLocalDraft
+
+    replacement = "新的局部段落"
+    service, repo, gateway, _, _ = make_service(gateway=FakeGateway(replacement))
+    operation_command = local_command(repo)
+    original = copy.deepcopy(repo.draft)
+    completed = await start_and_finish(service, operation_command)
+    operation_before = copy.deepcopy(repo.operations[completed.operation_id])
+    events_before = copy.deepcopy(repo.events)
+    calls_before = len(gateway.calls)
+
+    chapter_number = await service.undo_local(UndoLocalDraft(
+        project_id=PROJECT_ID,
+        chapter_session_id=SESSION_ID,
+        expected_working_draft_revision=2,
+        expected_content_hash=completed.result_content_hash,
+        source_operation_id=completed.operation_id,
+    ))
+
+    assert chapter_number == 7
+    assert repo.draft == {
+        "id": original["id"],
+        "project_id": original["project_id"],
+        "chapter_session_id": original["chapter_session_id"],
+        "revision": 3,
+        "content": original["content"],
+        "content_hash": original["content_hash"],
+        "source_payload": {
+            "source": "undo-local",
+            "sourceOperationId": completed.operation_id,
+            "operationType": "rewrite_selection",
+            "baseWorkingDraftRevision": 2,
+        },
+        "updated_at": 10_000,
+    }
+    assert [row["snapshot_role"] for row in repo.revisions] == [
+        "before", "after", "before",
+    ]
+    undo_snapshot = repo.revisions[-1]
+    assert undo_snapshot["replacement_reason"] == "undo_local"
+    assert undo_snapshot["source_operation_id"] == completed.operation_id
+    assert undo_snapshot["working_draft_revision"] == 2
+    assert undo_snapshot["content_hash"] == completed.result_content_hash
+    assert repo.operations[completed.operation_id] == operation_before
+    assert repo.events == events_before
+    assert len(gateway.calls) == calls_before
+
+
+@pytest.mark.asyncio
+async def test_undo_local_fails_closed_for_stale_or_nonlocal_source_without_writes():
+    from backend.services.draft_operations import (
+        DraftOperationConflict,
+        UndoLocalDraft,
+    )
+
+    service, repo, _, _, _ = make_service()
+    completed = await start_and_finish(service, command())
+    before = repo.snapshot()
+    undo = UndoLocalDraft(
+        project_id=PROJECT_ID,
+        chapter_session_id=SESSION_ID,
+        expected_working_draft_revision=2,
+        expected_content_hash=completed.result_content_hash,
+        source_operation_id=completed.operation_id,
+    )
+
+    with pytest.raises(DraftOperationConflict):
+        await service.undo_local(undo)
+
+    assert repo.snapshot() == before
+
+
+@pytest.mark.asyncio
+async def test_undo_local_is_single_use_and_rolls_back_failed_append_or_cas():
+    from backend.services.draft_operations import (
+        DraftOperationConflict,
+        DraftOperationStorageError,
+        UndoLocalDraft,
+    )
+
+    for failure in ("snapshot", "cas"):
+        service, repo, _, _, _ = make_service(gateway=FakeGateway("替换"))
+        completed = await start_and_finish(service, local_command(repo))
+        undo = UndoLocalDraft(
+            project_id=PROJECT_ID,
+            chapter_session_id=SESSION_ID,
+            expected_working_draft_revision=2,
+            expected_content_hash=completed.result_content_hash,
+            source_operation_id=completed.operation_id,
+        )
+        before = repo.snapshot()
+        if failure == "snapshot":
+            repo.fail_snapshot_role = "before"
+        else:
+            repo.fail_cas = True
+
+        with pytest.raises(DraftOperationStorageError):
+            await service.undo_local(undo)
+        assert repo.snapshot() == before
+
+        repo.fail_snapshot_role = None
+        repo.fail_cas = False
+        await service.undo_local(undo)
+        with pytest.raises(DraftOperationConflict):
+            await service.undo_local(UndoLocalDraft(
+                project_id=PROJECT_ID,
+                chapter_session_id=SESSION_ID,
+                expected_working_draft_revision=3,
+                expected_content_hash=repo.draft["content_hash"],
+                source_operation_id=completed.operation_id,
+            ))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift", ("active", "source", "recovery"))
+async def test_undo_local_rejects_active_write_or_missing_exact_provenance(drift):
+    from backend.services.draft_operations import (
+        DraftOperationConflict,
+        UndoLocalDraft,
+    )
+
+    service, repo, _, _, _ = make_service(gateway=FakeGateway("替换"))
+    completed = await start_and_finish(service, local_command(repo))
+    undo = UndoLocalDraft(
+        project_id=PROJECT_ID,
+        chapter_session_id=SESSION_ID,
+        expected_working_draft_revision=2,
+        expected_content_hash=completed.result_content_hash,
+        source_operation_id=completed.operation_id,
+    )
+    if drift == "active":
+        repo.session["active_draft_operation_id"] = str(UUID(int=999))
+    elif drift == "source":
+        repo.draft["source_payload"] = {"source": "manual"}
+    else:
+        repo.revisions = [
+            row for row in repo.revisions if row["snapshot_role"] != "before"
+        ]
+    before = repo.snapshot()
+
+    with pytest.raises(DraftOperationConflict):
+        await service.undo_local(undo)
+
+    assert repo.snapshot() == before

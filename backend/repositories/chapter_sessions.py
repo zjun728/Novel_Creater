@@ -343,6 +343,25 @@ class ChapterSessionRepository:
         )
         return dict(row) if row else None
 
+    async def read_working_draft_recovery_for_operation(
+        self,
+        session,
+        project_id: str,
+        chapter_session_id: str,
+        source_operation_id: str,
+    ):
+        row = await session.fetchone(
+            """SELECT id,project_id,chapter_session_id,working_draft_id,
+                      working_draft_revision,snapshot_role,replacement_reason,
+                      source_operation_id,content,content_hash,created_at
+                 FROM working_draft_revisions
+                WHERE project_id=%s AND chapter_session_id=%s
+                  AND source_operation_id=%s AND snapshot_role='before'
+                FOR UPDATE""",
+            (project_id, chapter_session_id, source_operation_id),
+        )
+        return dict(row) if row else None
+
     async def read_active_draft_operation(self, session, chapter_session_id: str):
         row = await session.fetchone(
             """SELECT * FROM draft_operation_attempts

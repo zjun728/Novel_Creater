@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 import hashlib
 import json
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -94,6 +95,7 @@ class FakeDraftOperationService:
         self.commands = []
         self.reads = []
         self.cancels = []
+        self.undos = []
         self.error = None
         self.result = DraftOperationResult(
             operation_id=OPERATION_ID,
@@ -134,6 +136,50 @@ class FakeDraftOperationService:
             raise chapter_sessions.DraftOperationNotFound()
         return self.result
 
+    async def undo_local(self, command):
+        self.undos.append(command)
+        if self.error is not None:
+            raise self.error
+        return 7
+
+
+class FakeChapterSessionService:
+    def __init__(self):
+        self.reads = []
+        self.workspace = SimpleNamespace(
+            project_id=PROJECT_ID,
+            active_draft_operation_id=None,
+            session=SimpleNamespace(
+                id=SESSION_ID,
+                project_id=PROJECT_ID,
+                planning_revision_id="planning-1",
+                planning_revision=1,
+                planning_hash="1" * 64,
+                story_block_id="block-1",
+                story_block_revision=1,
+                story_block_hash="2" * 64,
+                chapter_outline_revision_id="outline-1",
+                chapter_outline_revision=1,
+                chapter_outline_hash="3" * 64,
+                chapter_num=7,
+                expected_canon_revision=0,
+                status="drafting",
+            ),
+            working_draft=SimpleNamespace(
+                id="draft-1",
+                project_id=PROJECT_ID,
+                chapter_session_id=SESSION_ID,
+                revision=3,
+                content="撤销后的正文",
+                content_hash="4" * 64,
+            ),
+            candidates=[],
+        )
+
+    async def get(self, project_id, chapter_number):
+        self.reads.append((project_id, chapter_number))
+        return self.workspace
+
 
 class FakeDraftOperationRepository:
     def __init__(self):
@@ -166,6 +212,7 @@ class FakeDraftOperationRepository:
 
 def make_client():
     service = FakeDraftOperationService()
+    chapter_service = FakeChapterSessionService()
     repository = FakeDraftOperationRepository()
     app = FastAPI()
     app.include_router(chapter_sessions.router, prefix="/api")
@@ -173,6 +220,9 @@ def make_client():
         app.dependency_overrides[
             chapter_sessions.get_draft_operation_service
         ] = lambda: service
+    app.dependency_overrides[
+        chapter_sessions.get_chapter_session_service
+    ] = lambda: chapter_service
     if hasattr(chapter_sessions, "get_draft_operation_repository"):
         app.dependency_overrides[
             chapter_sessions.get_draft_operation_repository
@@ -186,6 +236,7 @@ def make_client():
             chapter_sessions.get_draft_operation_transaction_factory
         ] = lambda: transaction_factory
     install_error_handlers(app)
+    service.chapter_service = chapter_service
     return TestClient(app, raise_server_exceptions=False), service, repository
 
 
@@ -197,6 +248,18 @@ def create_body(**overrides):
         "idempotencyKey": IDEMPOTENCY_KEY,
         "authorInstruction": "增加人物之间的试探",
     }
+    body.update(overrides)
+    return body
+
+
+def local_create_body(**overrides):
+    body = create_body(
+        operationType="rewrite_selection",
+        startOffset=2,
+        endOffset=4,
+        selectedTextHash="b" * 64,
+        authorInstruction="保持克制",
+    )
     body.update(overrides)
     return body
 
@@ -260,6 +323,8 @@ def test_create_formal_draft_operation_returns_only_closed_result_fields():
         "partialOutputScalars": len(OUTPUT),
         "resultWorkingDraftRevision": 2,
         "resultContentHash": OUTPUT_HASH,
+        "resultSelectionStart": None,
+        "resultSelectionEnd": None,
         "failureCode": None,
         "model": {
             "providerId": "provider-1",
@@ -272,6 +337,122 @@ def test_create_formal_draft_operation_returns_only_closed_result_fields():
     assert command.chapter_session_id == SESSION_ID
     assert command.operation_type == "generate_new"
     assert command.expected_content_hash == HASH
+
+
+def test_create_local_operation_accepts_only_exact_selection_contract_and_projects_range():
+    client, service, _ = make_client()
+    service.result = replace(
+        service.result,
+        operation_type="rewrite_selection",
+        result_content_hash="c" * 64,
+        result_selection_start=2,
+        result_selection_end=2 + len(OUTPUT),
+    )
+
+    response = client.post(
+        operation_path().rsplit("/", 1)[0], json=local_create_body(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["resultSelectionStart"] == 2
+    assert response.json()["resultSelectionEnd"] == 2 + len(OUTPUT)
+    command = service.commands[0]
+    assert command.operation_type == "rewrite_selection"
+    assert command.start_offset == 2
+    assert command.end_offset == 4
+    assert command.selected_text_hash == "b" * 64
+
+    for body in (
+        local_create_body(startOffset=None),
+        local_create_body(endOffset=2),
+        local_create_body(selectedTextHash="B" * 64),
+        local_create_body(authorInstruction="字" * 1001),
+        create_body(startOffset=0, endOffset=1, selectedTextHash="b" * 64),
+    ):
+        rejected = client.post(operation_path().rsplit("/", 1)[0], json=body)
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "DraftOperationRequestInvalid"
+    assert len(service.commands) == 1
+
+
+def test_create_local_operation_rejects_mismatched_service_type_or_range():
+    client, service, _ = make_client()
+    path = operation_path().rsplit("/", 1)[0]
+    baseline = replace(
+        service.result,
+        operation_type="rewrite_selection",
+        result_content_hash="c" * 64,
+        result_selection_start=2,
+        result_selection_end=2 + len(OUTPUT),
+    )
+    for result in (
+        replace(baseline, operation_type="polish_selection"),
+        replace(
+            baseline,
+            result_selection_start=3,
+            result_selection_end=3 + len(OUTPUT),
+        ),
+    ):
+        service.result = result
+        response = client.post(path, json=local_create_body())
+        assert response.status_code == 502
+        assert response.json()["code"] == "DraftOperationUnavailable"
+
+
+def test_undo_local_requires_exact_body_and_returns_authoritative_workspace():
+    client, service, _ = make_client()
+    path = (
+        f"/api/projects/{PROJECT_ID}/chapter-sessions/{SESSION_ID}/"
+        "working-draft/undo"
+    )
+    body = {
+        "expectedWorkingDraftRevision": 2,
+        "expectedContentHash": OUTPUT_HASH,
+        "sourceOperationId": OPERATION_ID,
+    }
+
+    response = client.post(path, json=body)
+
+    assert response.status_code == 200
+    assert response.json()["workingDraft"] == {
+        "id": "draft-1",
+        "projectId": PROJECT_ID,
+        "chapterSessionId": SESSION_ID,
+        "revision": 3,
+        "content": "撤销后的正文",
+        "contentHash": "4" * 64,
+    }
+    command = service.undos[0]
+    assert command.expected_working_draft_revision == 2
+    assert command.expected_content_hash == OUTPUT_HASH
+    assert command.source_operation_id == OPERATION_ID
+    assert service.chapter_service.reads == [(PROJECT_ID, 7)]
+
+    for invalid in (
+        {**body, "sourceOperationId": "not-a-uuid"},
+        {**body, "unexpected": "LEAK-SENTINEL"},
+        {key: value for key, value in body.items() if key != "expectedContentHash"},
+    ):
+        rejected = client.post(path, json=invalid)
+        assert rejected.status_code == 422
+        assert rejected.json()["code"] == "DraftOperationRequestInvalid"
+        assert "LEAK-SENTINEL" not in rejected.text
+    duplicate = client.post(
+        path,
+        content=(
+            b'{"expectedWorkingDraftRevision":2,'
+            + f'"expectedContentHash":"{OUTPUT_HASH}",'.encode()
+            + f'"sourceOperationId":"{OPERATION_ID}",'.encode()
+            + f'"sourceOperationId":"{OPERATION_ID}"}}'.encode()
+        ),
+        headers={"content-type": "application/json"},
+    )
+    wrong_content_type = client.post(
+        path, content=json.dumps(body), headers={"content-type": "text/plain"},
+    )
+    assert duplicate.status_code == 422
+    assert wrong_content_type.status_code == 422
+    assert len(service.undos) == 1
 
 
 def test_create_formal_draft_operation_rejects_unknown_sensitive_shaped_fields():

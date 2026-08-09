@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from backend.database import connection, transaction
 from backend.http_errors import PublicDomainError
@@ -24,6 +24,7 @@ from backend.services.draft_operations import (
     DraftOperationStorageError,
     DraftOperationUnexpectedProviderError,
     StartDraftOperation,
+    UndoLocalDraft,
 )
 from backend.services.chapter_sessions import (
     ChapterSessionConflict,
@@ -144,7 +145,13 @@ class SaveCandidateBody(_StrictBody):
 
 
 class CreateDraftOperationBody(_StrictBody):
-    operationType: Literal["generate_new"]
+    operationType: Literal[
+        "generate_new",
+        "rewrite_selection",
+        "polish_selection",
+        "expand_selection",
+        "compress_selection",
+    ]
     expectedWorkingDraftRevision: int = Field(ge=1)
     expectedContentHash: str = Field(pattern=r"^[0-9a-f]{64}$")
     idempotencyKey: str = Field(
@@ -154,6 +161,40 @@ class CreateDraftOperationBody(_StrictBody):
         ),
     )
     authorInstruction: str = Field(default="", max_length=2000)
+    startOffset: int | None = Field(default=None, ge=0)
+    endOffset: int | None = Field(default=None, ge=1)
+    selectedTextHash: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="after")
+    def require_exact_operation_shape(self):
+        selection = (
+            self.startOffset,
+            self.endOffset,
+            self.selectedTextHash,
+        )
+        if self.operationType == "generate_new":
+            if any(value is not None for value in selection):
+                raise ValueError
+        elif (
+            any(value is None for value in selection)
+            or self.endOffset <= self.startOffset
+            or len(self.authorInstruction) > 1000
+        ):
+            raise ValueError
+        return self
+
+
+class UndoLocalDraftBody(_StrictBody):
+    expectedWorkingDraftRevision: int = Field(ge=1, le=2_147_483_646)
+    expectedContentHash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sourceOperationId: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            r"[0-9a-f]{12}$"
+        ),
+    )
 
 
 def _raise_public(error: Exception):
@@ -214,6 +255,8 @@ def _public_draft_operation(result: DraftOperationResult):
         "partialOutputScalars": result.partial_output_scalars,
         "resultWorkingDraftRevision": result.result_working_draft_revision,
         "resultContentHash": result.result_content_hash,
+        "resultSelectionStart": result.result_selection_start,
+        "resultSelectionEnd": result.result_selection_end,
         "failureCode": result.failure_code,
         "model": {
             "providerId": result.provider_id,
@@ -229,6 +272,8 @@ def _require_closed_draft_operation(
     operation_id: str | None,
     error_type,
     expected_base_revision: int | None = None,
+    expected_operation_type: str | None = None,
+    expected_selection_start: int | None = None,
 ) -> DraftOperationResult:
     try:
         if not isinstance(result, DraftOperationResult):
@@ -240,6 +285,12 @@ def _require_closed_draft_operation(
         partial = result.partial_output
         partial_hash = result.partial_output_hash
         partial_scalars = result.partial_output_scalars
+        selection_start = result.result_selection_start
+        selection_end = result.result_selection_end
+        local_operation = result.operation_type in {
+            "rewrite_selection", "polish_selection",
+            "expand_selection", "compress_selection",
+        }
         if (
             not _canonical_uuid(result.operation_id)
             or not _canonical_uuid(result.project_id)
@@ -247,10 +298,17 @@ def _require_closed_draft_operation(
             or result.project_id != project_id
             or result.chapter_session_id != chapter_session_id
             or (
+                expected_operation_type is not None
+                and result.operation_type != expected_operation_type
+            )
+            or (
                 operation_id is not None
                 and result.operation_id != operation_id
             )
-            or result.operation_type != "generate_new"
+            or result.operation_type not in {
+                "generate_new", "rewrite_selection", "polish_selection",
+                "expand_selection", "compress_selection",
+            }
             or status not in {
                 "starting", "running", "completed", "failed", "cancelled", "expired"
             }
@@ -302,8 +360,23 @@ def _require_closed_draft_operation(
                 or _HASH.fullmatch(result_hash) is None
                 or failure_code is not None
                 or not partial
-                or partial != partial.strip()
-                or result_hash != partial_hash
+                or (
+                    not local_operation
+                    and (partial != partial.strip() or result_hash != partial_hash)
+                )
+                or (
+                    local_operation
+                    and (
+                        type(selection_start) is not int
+                        or selection_start < 0
+                        or type(selection_end) is not int
+                        or selection_end != selection_start + partial_scalars
+                        or (
+                            expected_selection_start is not None
+                            and selection_start != expected_selection_start
+                        )
+                    )
+                )
             ):
                 raise ValueError
         elif status == "failed":
@@ -316,11 +389,25 @@ def _require_closed_draft_operation(
         elif status == "cancelled":
             if (
                 failure_code is not None
-                or partial != partial.strip()
-                or (bool(partial) != (result_revision is not None))
-                or (result_revision is None) != (result_hash is None)
                 or (
-                    partial
+                    not local_operation
+                    and partial != partial.strip()
+                )
+                or (
+                    local_operation
+                    and (result_revision is not None or result_hash is not None)
+                )
+                or (
+                    not local_operation
+                    and bool(partial) != (result_revision is not None)
+                )
+                or (
+                    not local_operation
+                    and (result_revision is None) != (result_hash is None)
+                )
+                or (
+                    not local_operation
+                    and partial
                     and (
                         type(result_revision) is not int
                         or result_revision < 1
@@ -330,13 +417,22 @@ def _require_closed_draft_operation(
                         )
                     )
                 )
-                or (result_hash is not None and result_hash != partial_hash)
+                or (
+                    not local_operation
+                    and result_hash is not None
+                    and result_hash != partial_hash
+                )
             ):
                 raise ValueError
         elif (
             result_revision is not None
             or result_hash is not None
             or failure_code is not None
+        ):
+            raise ValueError
+        if (
+            (not local_operation or status != "completed")
+            and (selection_start is not None or selection_end is not None)
         ):
             raise ValueError
         return result
@@ -767,6 +863,9 @@ async def create_draft_operation(
             expected_content_hash=body.expectedContentHash,
             idempotency_key=body.idempotencyKey,
             author_instruction=body.authorInstruction,
+            start_offset=body.startOffset,
+            end_offset=body.endOffset,
+            selected_text_hash=body.selectedTextHash,
         ))
     except ValidationError:
         raise DraftOperationRequestInvalid() from None
@@ -779,8 +878,44 @@ async def create_draft_operation(
         None,
         DraftOperationUnavailable,
         body.expectedWorkingDraftRevision,
+        body.operationType,
+        body.startOffset,
     )
     return _public_draft_operation(result)
+
+
+@router.post("/projects/{pid}/chapter-sessions/{session_id}/working-draft/undo")
+async def undo_local_draft_operation(
+    pid: str,
+    session_id: str,
+    request: Request,
+    draft_service=Depends(get_draft_operation_service),
+    chapter_service=Depends(get_chapter_session_service),
+):
+    try:
+        _require_operation_identity(pid, session_id)
+        raw_body = await _read_draft_operation_create_body(request)
+        body = UndoLocalDraftBody.model_validate(raw_body)
+        chapter_number = await draft_service.undo_local(UndoLocalDraft(
+            project_id=pid,
+            chapter_session_id=session_id,
+            expected_working_draft_revision=body.expectedWorkingDraftRevision,
+            expected_content_hash=body.expectedContentHash,
+            source_operation_id=body.sourceOperationId,
+        ))
+        workspace = await chapter_service.get(pid, chapter_number)
+        if (
+            workspace is None
+            or workspace.project_id != pid
+            or workspace.session.id != session_id
+            or workspace.session.chapter_num != chapter_number
+        ):
+            raise DraftOperationStorageError("undo workspace reload failed")
+        return _public_workspace(workspace)
+    except ValidationError:
+        raise DraftOperationRequestInvalid() from None
+    except Exception as error:
+        _raise_public(error)
 
 
 @router.get(

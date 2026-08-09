@@ -562,6 +562,36 @@ async def test_operation_owner_reads_lock_exact_session_and_operation_rows():
 
 
 @pytest.mark.asyncio
+async def test_undo_recovery_read_is_exact_owner_scoped_before_snapshot_and_locked():
+    row = {
+        "id": "recovery-1",
+        "project_id": "project-1",
+        "chapter_session_id": "chapter-session-1",
+        "working_draft_id": "draft-1",
+        "working_draft_revision": 2,
+        "snapshot_role": "before",
+        "replacement_reason": "rewrite_selection",
+        "source_operation_id": "operation-1",
+        "content": "before prose",
+        "content_hash": "e" * 64,
+        "created_at": 160,
+    }
+    session = CapturingSession(rows=[row])
+
+    result = await ChapterSessionRepository().read_working_draft_recovery_for_operation(
+        session, "project-1", "chapter-session-1", "operation-1",
+    )
+
+    assert result == row
+    sql, args = session.calls[0]
+    compact = " ".join(sql.split())
+    assert "project_id=%s AND chapter_session_id=%s" in compact
+    assert "source_operation_id=%s AND snapshot_role='before'" in compact
+    assert "FOR UPDATE" in compact
+    assert args == ("project-1", "chapter-session-1", "operation-1")
+
+
+@pytest.mark.asyncio
 async def test_working_draft_operation_lock_uses_exact_owner_and_normalizes_status():
     session = CapturingSession(
         rows=[
